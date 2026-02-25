@@ -10,6 +10,7 @@
 
 (function () {
   'use strict';
+  // release test touch (no behavior change)
 
   const style = document.createElement('style');
   style.textContent = `
