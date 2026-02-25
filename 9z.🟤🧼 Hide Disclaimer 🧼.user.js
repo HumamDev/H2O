@@ -2,7 +2,7 @@
 // @h2o-id      9z.hide.disclaimer
 // @name         9z.🟤🧼 Hide Disclaimer 🧼
 // @namespace    H2O.ChatGPT.HideDisclaimer
-// @version      1.0.1
+// @version      1.1.0
 // @description  Hide the "ChatGPT can make mistakes..." text using CSS only (keep layout intact)
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
