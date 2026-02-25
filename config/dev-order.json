@@ -1,0 +1,311 @@
+{
+  "version": 1,
+  "format": "h2o-dev-order",
+  "master": "dev-order.tsv",
+  "notes": [
+    "TSV is the master editable file.",
+    "enabled=true means ON; enabled=false means OFF.",
+    "file is the alias filename, e.g. 0A1._H2O_Core_.user.js",
+    "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally."
+  ],
+  "sections": [
+    {
+      "key": "CORE",
+      "title": "🧠 CORE",
+      "items": [
+        {
+          "file": "0A1._H2O_Core_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "DATA",
+      "title": "🗄️ DATA",
+      "items": [
+        {
+          "file": "0B1a._Data_Core_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0B1b._Data_Sync_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0B1c._Sync_Providers_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "CONTROL_HUB",
+      "title": "📍 CONTROL HUB",
+      "items": [
+        {
+          "file": "0Z1._Control_Hub_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0Z2._Data_Tab_(Control_Hub_Plugin)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0Z3._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "MINIMAP_BASE",
+      "title": "🗺️ MINIMAP (base)",
+      "items": [
+        {
+          "file": "1A1a._MiniMap_Kernel_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A1b._MiniMap_Core_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A1c._MiniMap_Shell_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A1d._MiniMap_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A1z._MiniMap_Quick_Controls_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "MINIMAP_PLUGINS",
+      "title": "🧩 MINIMAP (add-ons / plugins)",
+      "items": [
+        {
+          "file": "1A2._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A3._Navigation_Controls_(MiniMap_Add-on)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A4._Revision_Badges_(MiniMap_Plugin)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A5._Quote_Badges_(MiniMap_Plugin)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A6._Highlight_Dots_(MiniMap_Plugin)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A7._Title_Labels_(MiniMap_Plugin)_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "ANSWERS_UI",
+      "title": "🧱 ANSWERS (UI)",
+      "items": [
+        {
+          "file": "1b._Color_Legend_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1E._Answer_Title_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1X._Answer_Numbers_&_Style_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1Z._Answer_Timestamp_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "QUESTIONS_UI",
+      "title": "❓ QUESTIONS (UI)",
+      "items": [
+        {
+          "file": "2A._Question_Wrapper_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "2B._Quote_Tracker_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "2C._Question_Wash_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "2X._Question_Numbers_&_Style_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "2Z._Question_Timestamp_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "UTILITIES",
+      "title": "🧰 UTILITIES / PORTALS",
+      "items": [
+        {
+          "file": "3A._Margin_Anchor_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3B._Sticky_Notes_Portal_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3C._Quote_Backrefs_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "DOCK_ENGINES_TABS",
+      "title": "🧩 DOCK + ENGINES + TABS",
+      "items": [
+        {
+          "file": "4A._Dock_Panel_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4B._Highlights_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4C._Highlights_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4D._Bookmarks_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4E._Bookmarks_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4F._Notes_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4G._Notes_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4H._Section_Bands_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4T._Attachments_Tab_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "PROMPTS_EXPORT",
+      "title": "📝 PROMPTS / EXPORT",
+      "items": [
+        {
+          "file": "5a._Prompt_Manager_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "6a._Export_Chat_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "EXPERIMENTAL",
+      "title": "🧪 EXPERIMENTAL / OFF",
+      "items": [
+        {
+          "file": "7z._Unmount_Messages_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "8A._Themes_Panel_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "8b._Folders_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9a._Interface_Enhancer_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9b._Tab_Title_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9c._Title_Under_Input_bar_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9d._Auto_Emoji_Title_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9e._Keep_Projects_Open_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "9z._Hide_Disclaimer_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "u1._Canvas_Last-Updated_Timestamp_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "x1._Select_All_Answer_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "z1A1e._MiniMap_Context_Menu_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "z1d._Toolbar_Palette_Button_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "z1f._Code_Line_Numbers_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "z6b._Quick_Export_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "zh1._Section_Collapser_(4-Step_Cycle_Restore)_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "zh3._Highlight_Double-Click_.user.js",
+          "enabled": false
+        }
+      ]
+    }
+  ]
+}

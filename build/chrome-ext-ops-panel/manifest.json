@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "H2O Ops Panel (Preview)",
+  "version": "0.1.0",
+  "description": "Preview/scaffold for the future H2O panel extension UI.",
+  "permissions": [
+    "storage"
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "H2O Ops Panel",
+    "default_popup": "panel.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png"
+    }
+  }
+}
