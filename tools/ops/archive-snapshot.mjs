@@ -7,6 +7,7 @@ if (!SRC) throw new Error("Missing SRC arg");
 const FORCE_ALL =
   process.argv.includes("--all") ||
   String(process.env.H2O_ARCHIVE_ALL || "") === "1";
+const MIGRATE_PATHS = process.argv.includes("--migrate-paths");
 
 const ARCHIVE_ROOT = path.join(SRC, "archive");
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
@@ -69,17 +70,29 @@ function withVersionInName(filename, version) {
   return `${base}-${version}${ext}`;
 }
 
-function collectTopLevelScripts(srcDir) {
+function pickUserScriptDir(srcRoot) {
+  const scriptsDir = path.join(srcRoot, "scripts");
+  try {
+    if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
+    const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
+    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+  } catch {
+    return srcRoot;
+  }
+}
+
+function collectUserScripts(srcDir) {
   const out = [];
-  const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  const userDir = pickUserScriptDir(srcDir);
+  const relPrefix = path.relative(srcDir, userDir);
+  const entries = fs.readdirSync(userDir, { withFileTypes: true });
 
   for (const e of entries) {
     if (!e.isFile()) continue;
     if (e.name === ".DS_Store") continue;
     if (e.name.startsWith(".")) continue;
-    if (!/\.(js|mjs)$/i.test(e.name)) continue;
-    if (e.name === "tasks.json") continue;
-    out.push(e.name);
+    if (!/\.user\.js$/i.test(e.name)) continue;
+    out.push(relPrefix && relPrefix !== "." ? path.join(relPrefix, e.name) : e.name);
   }
 
   return out;
@@ -89,12 +102,76 @@ function uniqueSorted(paths) {
   return Array.from(new Set(paths)).sort((a, b) => a.localeCompare(b));
 }
 
-const state = safeReadJSON(STATE_FILE, {});
+function maybeMigrateStatePaths(stateObj, srcRoot) {
+  if (!MIGRATE_PATHS) return stateObj;
+
+  if (!stateObj || typeof stateObj !== "object" || Array.isArray(stateObj)) {
+    return {};
+  }
+
+  const srcKeySet = new Set(Object.keys(stateObj));
+  const next = {};
+  let moved = 0;
+  let skippedDestInState = 0;
+  let skippedNoDest = 0;
+  let skippedOldStillExists = 0;
+
+  for (const [rawKey, value] of Object.entries(stateObj)) {
+    const key = String(rawKey || "").replace(/\\/g, "/");
+    let outKey = key;
+
+    const isRootUserScriptKey =
+      /\.user\.js$/i.test(key) &&
+      !key.startsWith("scripts/") &&
+      !key.includes("/");
+
+    if (isRootUserScriptKey) {
+      const destKey = `scripts/${key}`;
+      const oldPath = path.join(srcRoot, key);
+      const destPath = path.join(srcRoot, destKey);
+      const oldExists = fs.existsSync(oldPath);
+      const destExists = fs.existsSync(destPath);
+
+      if (!destExists) {
+        skippedNoDest++;
+      } else if (oldExists) {
+        skippedOldStillExists++;
+      } else if (srcKeySet.has(destKey)) {
+        skippedDestInState++;
+      } else {
+        outKey = destKey;
+        moved++;
+      }
+    }
+
+    next[outKey] = value;
+  }
+
+  if (moved > 0) {
+    const backupPath = `${STATE_FILE}.bak`;
+    if (fs.existsSync(STATE_FILE)) {
+      fs.copyFileSync(STATE_FILE, backupPath);
+    }
+    fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2));
+    console.log(`[H2O] migrated state paths (--migrate-paths): ${moved}`);
+    console.log(`[H2O] backup: ${backupPath}`);
+  } else {
+    console.log(`[H2O] migrated state paths (--migrate-paths): 0`);
+  }
+
+  if (skippedDestInState) console.log(`[H2O] migrate skipped (dest key already exists): ${skippedDestInState}`);
+  if (skippedNoDest) console.log(`[H2O] migrate skipped (dest file missing): ${skippedNoDest}`);
+  if (skippedOldStillExists) console.log(`[H2O] migrate skipped (old file still exists): ${skippedOldStillExists}`);
+
+  return moved > 0 ? next : stateObj;
+}
+
+const state = maybeMigrateStatePaths(safeReadJSON(STATE_FILE, {}), SRC);
 const todayDir = path.join(ARCHIVE_ROOT, dayStamp());
 fs.mkdirSync(todayDir, { recursive: true });
 
 const trackedRelPaths = uniqueSorted([
-  ...collectTopLevelScripts(SRC),
+  ...collectUserScripts(SRC),
   ...PIPELINE_TRACKED_FILES,
 ]);
 

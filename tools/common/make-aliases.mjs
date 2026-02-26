@@ -30,6 +30,19 @@ const SRC =
 const ORDER_FILE =
   process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
 
+function pickUserScriptDir(srcRoot) {
+  const scriptsDir = path.join(srcRoot, "scripts");
+  try {
+    if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
+    const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
+    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+  } catch {
+    return srcRoot;
+  }
+}
+
+const SCRIPT_SRC_DIR = pickUserScriptDir(SRC);
+
 const ALIAS_MODE = String(process.env.H2O_ALIAS_MODE || "copy").toLowerCase() === "symlink"
   ? "symlink"
   : "copy";
@@ -201,14 +214,14 @@ for (const entry of fs.readdirSync(ALIAS_DIR, { withFileTypes: true })) {
   fs.unlinkSync(path.join(ALIAS_DIR, entry.name));
 }
 
-// 3) Write ONLY ON scripts from SOURCE root
+// 3) Write ONLY ON scripts from source scripts dir (scripts/ preferred, root fallback)
 let copied = 0;
 let linked = 0;
 let linkFallbackToCopy = 0;
 let skippedOff = 0;
 let skippedNotListed = 0;
 
-for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
+for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   if (!entry.isFile()) continue;
   if (entry.name === ".DS_Store") continue;
   if (!/\.user\.js$/i.test(entry.name)) continue;
@@ -222,7 +235,7 @@ for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
     continue;
   }
 
-  const src = path.join(SRC, entry.name);
+  const src = path.join(SCRIPT_SRC_DIR, entry.name);
   const dst = path.join(ALIAS_DIR, aliasName);
 
   if (ALIAS_MODE === "symlink") {
@@ -256,6 +269,7 @@ if (ALIAS_MODE === "symlink" && IS_ICLOUD_SERVER) {
   console.warn("[H2O] warning: for max stability, move H2O_SERVER_DIR outside iCloud or use H2O_ALIAS_MODE=copy.");
 }
 console.log("[H2O] order:", ORDER_FILE);
+console.log("[H2O] scripts dir:", SCRIPT_SRC_DIR);
 console.log("[H2O] ON entries:", ON.size);
 console.log("[H2O] linked:", linked);
 console.log("[H2O] copied:", copied);

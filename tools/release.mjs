@@ -86,6 +86,7 @@ async function main() {
     planned.push({
       ...script,
       mode: args.mode,
+      receipts: decision.receipts || null,
       bump: decision.bump,
       notes: decision.notes,
       sourceCommitSha: decision.sourceCommitSha,
@@ -97,7 +98,17 @@ async function main() {
   }
 
   if (!planned.length) {
+    if (args.dryRun) {
+      console.log(`[dry-run] mode=${args.mode} source=${displayPath(sourceDir)} candidates=0`);
+      console.log("[dry-run] nothing to release");
+      return;
+    }
     console.log("nothing to release");
+    return;
+  }
+
+  if (args.dryRun) {
+    printDryRunPlan(planned, args, sourceDir);
     return;
   }
 
@@ -117,6 +128,7 @@ async function main() {
 
 function parseArgs(argv) {
   let mode = "commits";
+  let dryRun = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -135,6 +147,10 @@ function parseArgs(argv) {
       mode = String(arg.slice("--mode=".length)).trim();
       continue;
     }
+    if (arg === "--dry-run" || arg === "--dry") {
+      dryRun = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -142,11 +158,11 @@ function parseArgs(argv) {
     throw new Error(`Invalid mode "${mode}". Expected "commits" or "file".`);
   }
 
-  return { mode };
+  return { mode, dryRun };
 }
 
 function printHelp() {
-  console.log("Usage: npm run release [-- --mode=commits|file]");
+  console.log("Usage: npm run release [-- --mode=commits|file] [--dry-run|--dry]");
 }
 
 function ensureGitRepo() {
@@ -290,6 +306,7 @@ function findLatestReleaseTag(allTags, scriptId) {
   const prefix = `${scriptId}-`;
   let best = null;
   for (const tag of allTags) {
+    // Exact prefix match only; non-semver suffixes are ignored below.
     if (!tag.startsWith(prefix)) continue;
     const versionPart = tag.slice(prefix.length);
     const valid = semver.valid(versionPart);
@@ -409,6 +426,7 @@ function buildDecisionFromReceipts(script, receiptsByScript, headSha) {
   return {
     bump,
     notes,
+    receipts: receipts.slice(),
     sourceCommitSha: headSha,
   };
 }
@@ -445,6 +463,7 @@ function loadBumpReceipts(scriptById) {
     if (!byScript.has(scriptId)) byScript.set(scriptId, []);
     byScript.get(scriptId).push({
       fileName: entry.name,
+      filePath,
       scriptId,
       bump,
       summary,
@@ -484,6 +503,9 @@ function applyRelease(release) {
   runGit(["add", "--", relScript, relChangelog, relCsv]);
   runGit(["commit", "-m", `chore(release:${release.scriptId}): ${release.nextVersion}`]);
   runGit(["tag", release.tagName]);
+  if (release.mode === "file" && Array.isArray(release.receipts) && release.receipts.length > 0) {
+    moveAppliedReceipts(release.scriptId, release.receipts);
+  }
 
   const idMsg = changeInfo.insertedH2oId ? " +@h2o-id" : "";
   console.log(
@@ -586,6 +608,46 @@ function appendVersionsCsvRow(row) {
   }
   text += `${line}\n`;
   fs.writeFileSync(VERSIONS_CSV_PATH, text);
+}
+
+function printDryRunPlan(planned, args, sourceDir) {
+  console.log(`[dry-run] mode=${args.mode} source=${displayPath(sourceDir)} candidates=${planned.length}`);
+  for (const release of planned) {
+    console.log(
+      `[dry-run] ${release.scriptId}: ${release.versionInfo.rawVersion} -> ${release.nextVersion} (${release.bump}) tag=${release.tagName} notes=${release.notes.length}`,
+    );
+  }
+}
+
+function moveAppliedReceipts(scriptId, receipts) {
+  const appliedDir = path.join(REPO_ROOT, ".bump", "_applied");
+  ensureDir(appliedDir);
+
+  for (const receipt of receipts) {
+    const srcPath = receipt && receipt.filePath ? receipt.filePath : path.join(REPO_ROOT, ".bump", String(receipt?.fileName || ""));
+    const fileName = receipt && receipt.fileName ? receipt.fileName : path.basename(srcPath);
+    const dstPath = path.join(appliedDir, fileName);
+
+    if (!fs.existsSync(srcPath)) {
+      throw new Error(
+        `Failed to move applied receipt for ${scriptId}: source missing ${displayPath(srcPath)}.`,
+      );
+    }
+    if (fs.existsSync(dstPath)) {
+      throw new Error(
+        `Failed to move applied receipt for ${scriptId}: destination exists ${displayPath(dstPath)}.`,
+      );
+    }
+
+    try {
+      fs.renameSync(srcPath, dstPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to move applied receipt for ${scriptId}: ${displayPath(srcPath)} -> ${displayPath(dstPath)} (${msg})`,
+      );
+    }
+  }
 }
 
 function summarizeNotes(notes) {

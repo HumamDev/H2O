@@ -27,9 +27,9 @@ import path from "node:path";
    ENV / PATHS
 ------------------------------ */
 
-const SRC = process.env.H2O_SRC_DIR || process.cwd();
+const SRC_ROOT = process.env.H2O_SRC_DIR || process.cwd();
 const ORDER_FILE =
-  process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
+  process.env.H2O_ORDER_FILE || path.join(SRC_ROOT, "config", "dev-order.tsv");
 
 const DIR = path.dirname(ORDER_FILE);
 fs.mkdirSync(DIR, { recursive: true });
@@ -40,6 +40,19 @@ const STEM = BASE.replace(/\.(json|tsv|txt)$/i, "");
 const OUT_TSV = path.join(DIR, `${STEM}.tsv`);
 const OUT_TXT = path.join(DIR, `${STEM}.txt`);
 const OUT_JSON = path.join(DIR, `${STEM}.json`);
+
+function pickUserScriptDir(srcRoot) {
+  const scriptsDir = path.join(srcRoot, "scripts");
+  try {
+    if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
+    const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
+    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+  } catch {
+    return srcRoot;
+  }
+}
+
+const SCRIPT_SRC_DIR = pickUserScriptDir(SRC_ROOT);
 
 /* -----------------------------
    Alias rules (must match make-aliases.mjs)
@@ -345,7 +358,7 @@ function writeJSON({ fp, sectioned, statusMap }) {
 
 // 1) Scan source folder for real scripts -> alias names
 const foundAliases = new Set();
-for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
+for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   if (!entry.isFile()) continue;
   if (entry.name === ".DS_Store") continue;
   if (!isUserScriptName(entry.name)) continue;
@@ -385,7 +398,8 @@ writeTXT({ fp: OUT_TXT, sectioned, statusMap });
 writeJSON({ fp: OUT_JSON, sectioned, statusMap });
 
 console.log("[H2O] sync-dev-order done");
-console.log("[H2O] SRC:", SRC);
+console.log("[H2O] SRC:", SRC_ROOT);
+console.log("[H2O] scripts dir:", SCRIPT_SRC_DIR);
 console.log("[H2O] wrote TSV:", OUT_TSV);
 console.log("[H2O] wrote TXT:", OUT_TXT);
 console.log("[H2O] wrote JSON:", OUT_JSON);
