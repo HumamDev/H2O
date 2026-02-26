@@ -54,20 +54,28 @@ function runNodeStep(label, scriptPath, extraEnv = {}) {
 
 function main() {
   const { srcDir } = resolveEnvDefaults();
+  const controlsOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls");
+  const leanOutDir = path.join(srcDir, "build", "chrome-ext-dev-lean");
 
   runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev-rebuild.mjs");
 
   runNodeStep("2/3 Build Controls extension (unpacked)", "tools/ext/make-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
-    H2O_EXT_OUT_DIR: path.join(srcDir, "build", "chrome-ext-dev-controls"),
+    H2O_EXT_OUT_DIR: controlsOutDir,
   });
 
   runNodeStep("3/3 Build Lean extension (unpacked)", "tools/ext/make-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "lean",
-    H2O_EXT_OUT_DIR: path.join(srcDir, "build", "chrome-ext-dev-lean"),
+    H2O_EXT_OUT_DIR: leanOutDir,
   });
 
   console.log("\n[dev:all] done");
+  console.log("[dev:all] Outputs:");
+  console.log(`[dev:all]   Controls EXT OUT_DIR: ${controlsOutDir}`);
+  console.log(`[dev:all]   Lean     EXT OUT_DIR: ${leanOutDir}`);
+  console.log(
+    "[dev:all] Reminder: Open chrome://extensions and reload the extension that was loaded from the folder you are testing.",
+  );
   console.log(
     "Now go to chrome://extensions and reload the extension you’re testing (Controls or Lean), then refresh the page.",
   );
