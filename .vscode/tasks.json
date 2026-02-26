@@ -89,6 +89,13 @@
       "problemMatcher": []
     },
     {
+      "label": "H2O: DEV / Z) ONE-BUTTON Rebuild Everything (scripts + aliases + proxy + controls + lean)",
+      "detail": "One-button daily rebuild: common prereqs + Controls extension + Lean extension.",
+      "type": "shell",
+      "command": "npm run dev:all",
+      "problemMatcher": []
+    },
+    {
       "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
       "detail": "⚡ Quick local archive: saves version-changed files into h2o-workspace-ext/h2o-source/archive.",
       "type": "shell",

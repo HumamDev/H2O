@@ -2,6 +2,7 @@
   "name": "h2o-source",
   "private": true,
   "scripts": {
+    "dev:all": "node tools/dev-all.mjs",
     "dev:rebuild": "node tools/dev-rebuild.mjs",
     "dev:check": "node tools/dev-check.mjs",
     "versions:build": "node tools/versions-dashboard.mjs",
