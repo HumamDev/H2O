@@ -2,6 +2,8 @@
   "name": "h2o-source",
   "private": true,
   "scripts": {
+    "dev:rebuild": "node tools/dev-rebuild.mjs",
+    "dev:check": "node tools/dev-check.mjs",
     "release": "node tools/release.mjs",
     "release:dry": "node tools/release.mjs --dry-run"
   },
