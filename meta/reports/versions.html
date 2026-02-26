@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Version Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --line: #2a3140;
+      --text: #e9edf5;
+      --muted: #9aa5b6;
+      --accent: #7cc4ff;
+      --major: #ff6b6b;
+      --minor: #ffd166;
+      --patch: #72e3a6;
+      --chip-bg: #222836;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(180deg, #0d1016 0%, #121721 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px 16px 32px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      letter-spacing: 0.02em;
+    }
+    .meta {
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .toolbar input {
+      width: 100%;
+      max-width: 420px;
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    .toolbar input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(124,196,255,0.15);
+    }
+    .table-wrap {
+      background: rgba(23,26,33,0.75);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #1a202b;
+      z-index: 1;
+      font-weight: 600;
+    }
+    th button {
+      all: unset;
+      cursor: pointer;
+      color: var(--text);
+    }
+    th button:hover {
+      color: var(--accent);
+    }
+    .muted { color: var(--muted); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--chip-bg);
+      border: 1px solid rgba(255,255,255,0.06);
+      text-transform: lowercase;
+    }
+    .badge.major { color: #1a0d0d; background: var(--major); border-color: transparent; }
+    .badge.minor { color: #2f2400; background: var(--minor); border-color: transparent; }
+    .badge.patch { color: #062212; background: var(--patch); border-color: transparent; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #c9e2ff;
+    }
+    .empty {
+      padding: 16px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Version Dashboard</h1>
+    <div class="meta">Generated <code>2026-02-26T12:18:21.487Z</code> • <span id="countMeta">1</span> scripts</div>
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search script_id or summary…" autocomplete="off">
+      <div id="resultCount" class="muted"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th><button type="button" data-sort-key="script_id">script_id</button></th>
+            <th><button type="button" data-sort-key="latest_version">latest_version</button></th>
+            <th><button type="button" data-sort-key="last_bump">last_bump</button></th>
+            <th><button type="button" data-sort-key="last_date">last_date</button></th>
+            <th>last_summary</th>
+            <th>last_commit_sha</th>
+            <th>changelog_path</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>No matching rows.</div>
+    </div>
+  </div>
+  <script id="version-data" type="application/json">[{"script_id":"9z.hide.disclaimer","latest_version":"1.1.0","last_bump":"minor","last_date":"2026-02-25","last_summary":"receipt test: validate --mode=file fallback","last_commit_sha":"8dd0e4c04b3728ddf0080d390228a34b386ec546","changelog_path":"changelogs/9z.hide.disclaimer.CHANGELOG.md","changelog_href":"../../changelogs/9z.hide.disclaimer.CHANGELOG.md"}]</script>
+  <script>
+  (() => {
+    const rowsEl = document.getElementById("rows");
+    const emptyEl = document.getElementById("empty");
+    const searchEl = document.getElementById("search");
+    const resultCountEl = document.getElementById("resultCount");
+    const raw = document.getElementById("version-data").textContent || "[]";
+    let data = [];
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = [];
+    }
+
+    const state = { q: "", key: "script_id", dir: "asc" };
+
+    function cmpText(a, b) {
+      return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    function bumpRank(v) {
+      const s = String(v || "").toLowerCase();
+      if (s === "major") return 3;
+      if (s === "minor") return 2;
+      if (s === "patch") return 1;
+      return 0;
+    }
+
+    function cmpVersion(a, b) {
+      const parse = (v) => {
+        const m = String(v || "").match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/);
+        if (!m) return null;
+        return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] || "" };
+      };
+      const pa = parse(a);
+      const pb = parse(b);
+      if (!pa || !pb) return cmpText(a, b);
+      if (pa.major !== pb.major) return pa.major - pb.major;
+      if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+      if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+      if (pa.pre === pb.pre) return 0;
+      if (!pa.pre) return 1;
+      if (!pb.pre) return -1;
+      return cmpText(pa.pre, pb.pre);
+    }
+
+    function compare(a, b) {
+      let r = 0;
+      if (state.key === "latest_version") r = cmpVersion(a.latest_version, b.latest_version);
+      else if (state.key === "last_bump") r = bumpRank(a.last_bump) - bumpRank(b.last_bump);
+      else if (state.key === "last_date") r = cmpText(a.last_date, b.last_date);
+      else r = cmpText(a[state.key], b[state.key]);
+      if (r === 0) r = cmpText(a.script_id, b.script_id);
+      return state.dir === "asc" ? r : -r;
+    }
+
+    function badgeHtml(bump) {
+      const value = String(bump || "");
+      const cls = ["major", "minor", "patch"].includes(value) ? value : "";
+      return '<span class="badge ' + cls + '">' + escapeHtml(value) + "</span>";
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function render() {
+      const q = state.q.trim().toLowerCase();
+      const filtered = data.filter((row) => {
+        if (!q) return true;
+        return String(row.script_id || "").toLowerCase().includes(q) ||
+               String(row.last_summary || "").toLowerCase().includes(q);
+      }).sort(compare);
+
+      rowsEl.innerHTML = "";
+      for (const row of filtered) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = [
+          "<td><code>" + escapeHtml(row.script_id) + "</code></td>",
+          "<td><code>" + escapeHtml(row.latest_version) + "</code></td>",
+          "<td>" + badgeHtml(row.last_bump) + "</td>",
+          "<td><code>" + escapeHtml(row.last_date) + "</code></td>",
+          "<td>" + escapeHtml(row.last_summary) + "</td>",
+          "<td><code>" + escapeHtml(row.last_commit_sha) + "</code></td>",
+          '<td><a href="' + escapeHtml(row.changelog_href) + '" target="_blank" rel="noopener">Changelog</a></td>',
+        ].join("");
+        rowsEl.appendChild(tr);
+      }
+
+      emptyEl.hidden = filtered.length !== 0;
+      resultCountEl.textContent = filtered.length + " shown";
+    }
+
+    searchEl.addEventListener("input", (e) => {
+      state.q = e.target.value || "";
+      render();
+    });
+
+    for (const btn of document.querySelectorAll("button[data-sort-key]")) {
+      btn.addEventListener("click", () => {
+        const key = btn.getAttribute("data-sort-key");
+        if (!key) return;
+        if (state.key === key) state.dir = state.dir === "asc" ? "desc" : "asc";
+        else {
+          state.key = key;
+          state.dir = "asc";
+        }
+        render();
+      });
+    }
+
+    render();
+  })();
+  </script>
+</body>
+</html>

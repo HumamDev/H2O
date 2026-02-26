@@ -4,6 +4,7 @@
   "scripts": {
     "dev:rebuild": "node tools/dev-rebuild.mjs",
     "dev:check": "node tools/dev-check.mjs",
+    "versions:build": "node tools/versions-dashboard.mjs",
     "release": "node tools/release.mjs",
     "release:dry": "node tools/release.mjs --dry-run"
   },
