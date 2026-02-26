@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..");
-const CHANGELOG_DIR = path.join(REPO_ROOT, "scripts");
+const CHANGELOG_DIR = path.join(REPO_ROOT, "changelogs");
 const VERSIONS_CSV_PATH = path.join(REPO_ROOT, "versions.csv");
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;

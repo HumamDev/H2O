@@ -7,5 +7,8 @@ node_modules/
 # Archive snapshots: ignore outputs, keep state tracked
 archive/*
 !archive/.state/
+archive/.state/*
 !archive/.state/lastVersions.json
-!archive/.state/lastVersions.json.bak
+
+# Generated local extension outputs
+build/
