@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      0b1a.data.core
 // @name         0B1a.⬛️🗄️ Data Core 🗄️
 // @namespace    H2O.Prime.CGX.Data.Core
 // @version      1.2.7-core.3

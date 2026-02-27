@@ -5,7 +5,7 @@
   "notes": [
     "TSV is the master editable file.",
     "enabled=true means ON; enabled=false means OFF.",
-    "file is the alias filename, e.g. 0A1._H2O_Core_.user.js",
+    "file is the alias filename, e.g. 0A1a._H2O_Core_.user.js",
     "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally."
   ],
   "sections": [
@@ -14,7 +14,7 @@
       "title": "🧠 CORE",
       "items": [
         {
-          "file": "0A1._H2O_Core_.user.js",
+          "file": "0A1a._H2O_Core_.user.js",
           "enabled": true
         }
       ]
@@ -42,15 +42,19 @@
       "title": "📍 CONTROL HUB",
       "items": [
         {
-          "file": "0Z1._Control_Hub_.user.js",
+          "file": "0Z1a._Control_Hub_.user.js",
           "enabled": true
         },
         {
-          "file": "0Z2._Data_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z1b._Control_Hub_Quick_Tree_.user.js",
           "enabled": true
         },
         {
-          "file": "0Z3._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z2a._Data_Tab_(Control_Hub_Plugin)_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0Z3a._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
           "enabled": true
         }
       ]
@@ -74,10 +78,6 @@
         {
           "file": "1A1d._MiniMap_Engine_.user.js",
           "enabled": true
-        },
-        {
-          "file": "1A1z._MiniMap_Quick_Controls_.user.js",
-          "enabled": true
         }
       ]
     },
@@ -86,27 +86,27 @@
       "title": "🧩 MINIMAP (add-ons / plugins)",
       "items": [
         {
-          "file": "1A2._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js",
+          "file": "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A3._Navigation_Controls_(MiniMap_Add-on)_.user.js",
+          "file": "1A3a._Navigation_Controls_(MiniMap_Add-on)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A4._Revision_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A4a._Revision_Badges_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A5._Quote_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A5a._Quote_Badges_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A6._Highlight_Dots_(MiniMap_Plugin)_.user.js",
+          "file": "1A6a._Highlight_Dots_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A7._Title_Labels_(MiniMap_Plugin)_.user.js",
+          "file": "1A7a._Title_Labels_(MiniMap_Plugin)_.user.js",
           "enabled": true
         }
       ]
@@ -116,19 +116,31 @@
       "title": "🧱 ANSWERS (UI)",
       "items": [
         {
-          "file": "1b._Color_Legend_.user.js",
+          "file": "1B1a._MiniMap_Quick_Controls_.user.js",
           "enabled": true
         },
         {
-          "file": "1E._Answer_Title_.user.js",
+          "file": "1B2a._MiniMap_Context_Menu_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "1C1a._Color_Legend_.user.js",
           "enabled": true
         },
         {
-          "file": "1X._Answer_Numbers_&_Style_.user.js",
+          "file": "1D1a._Code_Line_Numbers_.user.js",
+          "enabled": false
+        },
+        {
+          "file": "1E1a._Answer_Title_.user.js",
           "enabled": true
         },
         {
-          "file": "1Z._Answer_Timestamp_.user.js",
+          "file": "1X1a._Answer_Numbers_&_Style_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1Z1a._Answer_Timestamp_.user.js",
           "enabled": true
         }
       ]
@@ -138,23 +150,23 @@
       "title": "❓ QUESTIONS (UI)",
       "items": [
         {
-          "file": "2A._Question_Wrapper_.user.js",
+          "file": "2A1a._Question_Wrapper_.user.js",
           "enabled": true
         },
         {
-          "file": "2B._Quote_Tracker_.user.js",
+          "file": "2B1a._Quote_Tracker_.user.js",
           "enabled": true
         },
         {
-          "file": "2C._Question_Wash_Engine_.user.js",
+          "file": "2C1a._Question_Wash_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "2X._Question_Numbers_&_Style_.user.js",
+          "file": "2X1a._Question_Numbers_&_Style_.user.js",
           "enabled": true
         },
         {
-          "file": "2Z._Question_Timestamp_.user.js",
+          "file": "2Z1a._Question_Timestamp_.user.js",
           "enabled": true
         }
       ]
@@ -164,15 +176,19 @@
       "title": "🧰 UTILITIES / PORTALS",
       "items": [
         {
-          "file": "3A._Margin_Anchor_.user.js",
+          "file": "3A1a._Margin_Anchor_.user.js",
           "enabled": true
         },
         {
-          "file": "3B._Sticky_Notes_Portal_.user.js",
+          "file": "3B1a._Sticky_Notes_Portal_.user.js",
           "enabled": true
         },
         {
-          "file": "3C._Quote_Backrefs_.user.js",
+          "file": "3C1a._Quote_Backrefs_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3X1a._Right_Sidebar_Drawer_.user.js",
           "enabled": true
         }
       ]
@@ -182,39 +198,39 @@
       "title": "🧩 DOCK + ENGINES + TABS",
       "items": [
         {
-          "file": "4A._Dock_Panel_.user.js",
+          "file": "4A1a._Dock_Panel_.user.js",
           "enabled": true
         },
         {
-          "file": "4B._Highlights_Engine_.user.js",
+          "file": "4B1a._Highlights_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4C._Highlights_Tab_.user.js",
+          "file": "4B2a._Highlights_Tab_.user.js",
           "enabled": true
         },
         {
-          "file": "4D._Bookmarks_Engine_.user.js",
+          "file": "4C1a._Bookmarks_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4E._Bookmarks_Tab_.user.js",
+          "file": "4C2a._Bookmarks_Tab_.user.js",
           "enabled": true
         },
         {
-          "file": "4F._Notes_Engine_.user.js",
+          "file": "4D1a._Notes_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4G._Notes_Tab_.user.js",
+          "file": "4D2a._Notes_Tab_.user.js",
           "enabled": true
         },
         {
-          "file": "4H._Section_Bands_.user.js",
+          "file": "4S1a._Section_Bands_.user.js",
           "enabled": true
         },
         {
-          "file": "4T._Attachments_Tab_.user.js",
+          "file": "4T1a._Attachments_Tab_.user.js",
           "enabled": true
         }
       ]
@@ -224,12 +240,16 @@
       "title": "📝 PROMPTS / EXPORT",
       "items": [
         {
-          "file": "5a._Prompt_Manager_.user.js",
+          "file": "5A1a._Prompt_Manager_.user.js",
           "enabled": true
         },
         {
-          "file": "6a._Export_Chat_.user.js",
+          "file": "6A1a._Export_Chat_.user.js",
           "enabled": true
+        },
+        {
+          "file": "6B1a._Quick_Export_.user.js",
+          "enabled": false
         }
       ]
     },
@@ -238,71 +258,59 @@
       "title": "🧪 EXPERIMENTAL / OFF",
       "items": [
         {
-          "file": "7z._Unmount_Messages_.user.js",
+          "file": "7Z1a._Unmount_Messages_.user.js",
           "enabled": false
         },
         {
-          "file": "8A._Themes_Panel_.user.js",
+          "file": "8A1a._Themes_Panel_.user.js",
           "enabled": true
         },
         {
-          "file": "8b._Folders_.user.js",
+          "file": "8B1a._Folders_.user.js",
           "enabled": false
         },
         {
-          "file": "9a._Interface_Enhancer_.user.js",
+          "file": "9A1a._Interface_Enhancer_.user.js",
           "enabled": false
         },
         {
-          "file": "9b._Tab_Title_.user.js",
+          "file": "9B1a._Tab_Title_.user.js",
           "enabled": false
         },
         {
-          "file": "9c._Title_Under_Input_bar_.user.js",
+          "file": "9C1a._Title_Under_Input_bar_.user.js",
           "enabled": false
         },
         {
-          "file": "9d._Auto_Emoji_Title_.user.js",
+          "file": "9D1a._Auto_Emoji_Title_.user.js",
           "enabled": false
         },
         {
-          "file": "9e._Keep_Projects_Open_.user.js",
+          "file": "9X1a._Keep_Projects_Open_.user.js",
           "enabled": false
         },
         {
-          "file": "9z._Hide_Disclaimer_.user.js",
+          "file": "9Z1a._Hide_Disclaimer_.user.js",
           "enabled": false
         },
         {
-          "file": "u1._Canvas_Last-Updated_Timestamp_.user.js",
+          "file": "X1._Canvas_Last-Updated_Timestamp_.user.js",
           "enabled": false
         },
         {
-          "file": "x1._Select_All_Answer_.user.js",
+          "file": "X2._Select_All_Answer_.user.js",
           "enabled": false
         },
         {
-          "file": "z1A1e._MiniMap_Context_Menu_.user.js",
+          "file": "X3._Toolbar_Palette_Button_.user.js",
           "enabled": false
         },
         {
-          "file": "z1d._Toolbar_Palette_Button_.user.js",
+          "file": "X4._Section_Collapser_(4-Step_Cycle_Restore)_.user.js",
           "enabled": false
         },
         {
-          "file": "z1f._Code_Line_Numbers_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "z6b._Quick_Export_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "zh1._Section_Collapser_(4-Step_Cycle_Restore)_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "zh3._Highlight_Double-Click_.user.js",
+          "file": "X5._Highlight_Double-Click_.user.js",
           "enabled": false
         }
       ]

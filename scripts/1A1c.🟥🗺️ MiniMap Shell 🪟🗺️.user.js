@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      1a1c.minimap.shell
 // @name         1A1c.🟥🗺️ MiniMap Shell 🪟🗺️
 // @namespace    H2O.Prime.CGX.MiniMapShell
 // @version      12.6.5

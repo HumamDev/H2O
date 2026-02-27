@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      1a1d.minimap.engine
 // @name         1A1d.🟥🗺️ MiniMap Engine 🚀🗺️
 // @namespace    H2O.Prime.CGX.MiniMapEngine
 // @version      12.6.3

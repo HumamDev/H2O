@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      0b1b.data.sync
 // @name         0B1b.⬛️🛜 H2O Sync 🛜
 // @namespace    H2O.Prime.CGX.Data.Sync
 // @version      1.3.2

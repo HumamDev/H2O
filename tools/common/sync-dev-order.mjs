@@ -174,7 +174,7 @@ function groupOf(alias) {
   if (/^1A1/i.test(id)) return "MINIMAP_BASE";
   if (/^1A(2|3|4|5|6|7)/i.test(id)) return "MINIMAP_PLUGINS";
 
-  if (/^1(b|E|X|Z)/i.test(id)) return "ANSWERS_UI";
+  if (/^1(B|C|D|E|X|Z)/i.test(id)) return "ANSWERS_UI";
   if (/^2/i.test(id)) return "QUESTIONS_UI";
   if (/^3/i.test(id)) return "UTILITIES";
   if (/^4/i.test(id)) return "DOCK_ENGINES_TABS";
@@ -329,7 +329,7 @@ function writeJSON({ fp, sectioned, statusMap }) {
     notes: [
       "TSV is the master editable file.",
       "enabled=true means ON; enabled=false means OFF.",
-      "file is the alias filename, e.g. 0A1._H2O_Core_.user.js",
+      "file is the alias filename, e.g. 0A1a._H2O_Core_.user.js",
       "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally.",
     ],
     sections: [],

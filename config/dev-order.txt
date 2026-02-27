@@ -6,7 +6,7 @@
 # =========================
 # 🧠 CORE
 # =========================
-0A1._H2O_Core_.user.js
+0A1a._H2O_Core_.user.js
 
 # =========================
 # 🗄️ DATA
@@ -18,9 +18,10 @@
 # =========================
 # 📍 CONTROL HUB
 # =========================
-0Z1._Control_Hub_.user.js
-0Z2._Data_Tab_(Control_Hub_Plugin)_.user.js
-0Z3._MiniMap_Tab_(Control_Hub_Plugin)_.user.js
+0Z1a._Control_Hub_.user.js
+0Z1b._Control_Hub_Quick_Tree_.user.js
+0Z2a._Data_Tab_(Control_Hub_Plugin)_.user.js
+0Z3a._MiniMap_Tab_(Control_Hub_Plugin)_.user.js
 
 # =========================
 # 🗺️ MINIMAP (base)
@@ -29,79 +30,80 @@
 1A1b._MiniMap_Core_.user.js
 1A1c._MiniMap_Shell_.user.js
 1A1d._MiniMap_Engine_.user.js
-1A1z._MiniMap_Quick_Controls_.user.js
 
 # =========================
 # 🧩 MINIMAP (add-ons / plugins)
 # =========================
-1A2._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js
-1A3._Navigation_Controls_(MiniMap_Add-on)_.user.js
-1A4._Revision_Badges_(MiniMap_Plugin)_.user.js
-1A5._Quote_Badges_(MiniMap_Plugin)_.user.js
-1A6._Highlight_Dots_(MiniMap_Plugin)_.user.js
-1A7._Title_Labels_(MiniMap_Plugin)_.user.js
+1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js
+1A3a._Navigation_Controls_(MiniMap_Add-on)_.user.js
+1A4a._Revision_Badges_(MiniMap_Plugin)_.user.js
+1A5a._Quote_Badges_(MiniMap_Plugin)_.user.js
+1A6a._Highlight_Dots_(MiniMap_Plugin)_.user.js
+1A7a._Title_Labels_(MiniMap_Plugin)_.user.js
 
 # =========================
 # 🧱 ANSWERS (UI)
 # =========================
-1b._Color_Legend_.user.js
-1E._Answer_Title_.user.js
-1X._Answer_Numbers_&_Style_.user.js
-1Z._Answer_Timestamp_.user.js
+1B1a._MiniMap_Quick_Controls_.user.js
+- 1B2a._MiniMap_Context_Menu_.user.js
+1C1a._Color_Legend_.user.js
+- 1D1a._Code_Line_Numbers_.user.js
+1E1a._Answer_Title_.user.js
+1X1a._Answer_Numbers_&_Style_.user.js
+1Z1a._Answer_Timestamp_.user.js
 
 # =========================
 # ❓ QUESTIONS (UI)
 # =========================
-2A._Question_Wrapper_.user.js
-2B._Quote_Tracker_.user.js
-2C._Question_Wash_Engine_.user.js
-2X._Question_Numbers_&_Style_.user.js
-2Z._Question_Timestamp_.user.js
+2A1a._Question_Wrapper_.user.js
+2B1a._Quote_Tracker_.user.js
+2C1a._Question_Wash_Engine_.user.js
+2X1a._Question_Numbers_&_Style_.user.js
+2Z1a._Question_Timestamp_.user.js
 
 # =========================
 # 🧰 UTILITIES / PORTALS
 # =========================
-3A._Margin_Anchor_.user.js
-3B._Sticky_Notes_Portal_.user.js
-3C._Quote_Backrefs_.user.js
+3A1a._Margin_Anchor_.user.js
+3B1a._Sticky_Notes_Portal_.user.js
+3C1a._Quote_Backrefs_.user.js
+3X1a._Right_Sidebar_Drawer_.user.js
 
 # =========================
 # 🧩 DOCK + ENGINES + TABS
 # =========================
-4A._Dock_Panel_.user.js
-4B._Highlights_Engine_.user.js
-4C._Highlights_Tab_.user.js
-4D._Bookmarks_Engine_.user.js
-4E._Bookmarks_Tab_.user.js
-4F._Notes_Engine_.user.js
-4G._Notes_Tab_.user.js
-4H._Section_Bands_.user.js
-4T._Attachments_Tab_.user.js
+4A1a._Dock_Panel_.user.js
+4B1a._Highlights_Engine_.user.js
+4B2a._Highlights_Tab_.user.js
+4C1a._Bookmarks_Engine_.user.js
+4C2a._Bookmarks_Tab_.user.js
+4D1a._Notes_Engine_.user.js
+4D2a._Notes_Tab_.user.js
+4S1a._Section_Bands_.user.js
+4T1a._Attachments_Tab_.user.js
 
 # =========================
 # 📝 PROMPTS / EXPORT
 # =========================
-5a._Prompt_Manager_.user.js
-6a._Export_Chat_.user.js
+5A1a._Prompt_Manager_.user.js
+6A1a._Export_Chat_.user.js
+- 6B1a._Quick_Export_.user.js
 
 # =========================
 # 🧪 EXPERIMENTAL / OFF
 # =========================
-- 7z._Unmount_Messages_.user.js
-8A._Themes_Panel_.user.js
-- 8b._Folders_.user.js
-- 9a._Interface_Enhancer_.user.js
-- 9b._Tab_Title_.user.js
-- 9c._Title_Under_Input_bar_.user.js
-- 9d._Auto_Emoji_Title_.user.js
-- 9e._Keep_Projects_Open_.user.js
-- 9z._Hide_Disclaimer_.user.js
-- u1._Canvas_Last-Updated_Timestamp_.user.js
-- x1._Select_All_Answer_.user.js
-- z1A1e._MiniMap_Context_Menu_.user.js
-- z1d._Toolbar_Palette_Button_.user.js
-- z1f._Code_Line_Numbers_.user.js
-- z6b._Quick_Export_.user.js
-- zh1._Section_Collapser_(4-Step_Cycle_Restore)_.user.js
-- zh3._Highlight_Double-Click_.user.js
+- 7Z1a._Unmount_Messages_.user.js
+8A1a._Themes_Panel_.user.js
+- 8B1a._Folders_.user.js
+- 9A1a._Interface_Enhancer_.user.js
+- 9B1a._Tab_Title_.user.js
+- 9C1a._Title_Under_Input_bar_.user.js
+- 9D1a._Auto_Emoji_Title_.user.js
+- 9X1a._Keep_Projects_Open_.user.js
+- 9Z1a._Hide_Disclaimer_.user.js
+- X1._Canvas_Last-Updated_Timestamp_.user.js
+- X2._Select_All_Answer_.user.js
+- X3._Toolbar_Palette_Button_.user.js
+- X4._Section_Collapser_(4-Step_Cycle_Restore)_.user.js
+- X5._Highlight_Double-Click_.user.js
 

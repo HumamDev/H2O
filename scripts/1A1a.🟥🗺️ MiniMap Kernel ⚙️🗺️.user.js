@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      1a1a.minimap.kernel
 // @name         1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️
 // @namespace    H2O.Prime.CGX.MiniMapKernel
 // @version      12.6.3

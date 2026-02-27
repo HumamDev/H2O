@@ -1,4 +1,5 @@
 // ==UserScript==
+// @h2o-id      0b1c.sync.providers
 // @name         0B1c.⬛️🧩 Sync Providers 🧩 (WebDAV)
 // @namespace    H2O.Prime.CGX.Data.Providers
 // @version      1.2.8-prov.1
