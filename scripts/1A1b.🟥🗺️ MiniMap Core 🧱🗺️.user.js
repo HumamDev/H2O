@@ -2,7 +2,7 @@
 // @h2o-id      1a1b.minimap.core
 // @name         1A1b.🟥🗺️ MiniMap Core 🧱🗺️
 // @namespace    H2O.Prime.CGX.MiniMapCore
-// @version      12.6.4
+// @version      12.6.5
 // @description  MiniMap Core: state/index/rebuild/registry authority
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -24,7 +24,7 @@
   const MM_behavior = () => (TOPW.H2O_MM_SHARED?.get?.() || null)?.util?.behavior || null;
   const MM_uiRefs = () => MM()?.uiRefs?.() || (MM_ui()?.getRefs?.() || {});
 
-  const CORE_VER = '12.6.4';
+  const CORE_VER = '12.6.5';
   const MAX_TRIES = 80;
   const GAP_MS = 120;
   const REBUILD_DEBOUNCE_MS = 120;
@@ -216,7 +216,16 @@
     try {
       const sharedApply = TOPW.H2O_MM_SHARED?.get?.()?.util?.mmApplyWashToBtn;
       if (typeof sharedApply === 'function') {
-        sharedApply(id, btnEl, fallbackApplyWashToMiniBtn);
+        const arity = Number(sharedApply.length || 0);
+        if (arity >= 3) {
+          sharedApply(id, btnEl, fallbackApplyWashToMiniBtn);
+          return true;
+        }
+        const out = sharedApply(id, btnEl);
+        if (out === false) return !!fallbackApplyWashToMiniBtn(id, btnEl);
+        if (out == null) {
+          try { fallbackApplyWashToMiniBtn(id, btnEl); } catch {}
+        }
         return true;
       }
     } catch {}
@@ -1386,6 +1395,15 @@
     const target = answerEl?.querySelector?.('[data-message-content]') || answerEl;
     if (!target) return false;
     try {
+      const hadWrap = !!target.classList?.contains?.(FLASH_CLS.WASH_WRAP);
+      const hadWrapLegacy = !!target.classList?.contains?.(FLASH_CLS.WASH_WRAP_LEGACY);
+      const hasAnyWashTintClass = () => {
+        const classes = Array.from(target.classList || []);
+        return classes.some((cls) => {
+          if (!cls || cls === FLASH_CLS.WASH_WRAP || cls === FLASH_CLS.WASH_WRAP_LEGACY) return false;
+          return cls.startsWith('cgxui-mnmp-wash-') || cls.startsWith('cgxui-wash-');
+        });
+      };
       target.classList?.add?.(FLASH_CLS.WASH_WRAP, FLASH_CLS.WASH_WRAP_LEGACY);
       target.classList?.remove?.(FLASH_CLS.FLASH, FLASH_CLS.FLASH_LEGACY);
       try { target.removeAttribute('data-cgxui-flash'); } catch {}
@@ -1395,6 +1413,13 @@
       setTimeout(() => {
         try { target.classList?.remove?.(FLASH_CLS.FLASH, FLASH_CLS.FLASH_LEGACY); } catch {}
         try { target.removeAttribute('data-cgxui-flash'); } catch {}
+        const keepWrap = hasAnyWashTintClass();
+        if (!hadWrap && !keepWrap) {
+          try { target.classList?.remove?.(FLASH_CLS.WASH_WRAP); } catch {}
+        }
+        if (!hadWrapLegacy && !keepWrap) {
+          try { target.classList?.remove?.(FLASH_CLS.WASH_WRAP_LEGACY); } catch {}
+        }
       }, 2200);
       return true;
     } catch {

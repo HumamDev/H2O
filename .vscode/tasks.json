@@ -114,6 +114,12 @@
       "type": "shell",
       "command": "npm run commit:auto",
       "problemMatcher": []
+    },
+    {
+      "label": "H2O: GIT / B) Auto Commit (DRY RUN)",
+      "type": "shell",
+      "command": "npm run commit:auto:dry",
+      "problemMatcher": []
     }
   ]
 }

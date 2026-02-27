@@ -6,6 +6,7 @@
     "dev:rebuild": "node tools/dev-rebuild.mjs",
     "dev:check": "node tools/dev-check.mjs",
     "commit:auto": "node tools/commit-auto.mjs",
+    "commit:auto:dry": "node tools/commit-auto.mjs --dry-run",
     "versions:build": "node tools/versions-dashboard.mjs",
     "release": "node tools/release.mjs",
     "release:dry": "node tools/release.mjs --dry-run"
