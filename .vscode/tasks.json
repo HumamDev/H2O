@@ -108,6 +108,12 @@
       "type": "shell",
       "command": "node \"${workspaceFolder}/tools/ops/archive-snapshot.mjs\" \"${workspaceFolder}\" --all && echo \"\" && echo \"✅ H2O Local Full Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
       "problemMatcher": []
+    },
+    {
+      "label": "H2O: GIT / A) Auto Commit (stage + message + commit)",
+      "type": "shell",
+      "command": "npm run commit:auto",
+      "problemMatcher": []
     }
   ]
 }

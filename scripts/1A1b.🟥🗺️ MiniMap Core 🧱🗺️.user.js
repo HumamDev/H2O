@@ -2,7 +2,7 @@
 // @h2o-id      1a1b.minimap.core
 // @name         1A1b.🟥🗺️ MiniMap Core 🧱🗺️
 // @namespace    H2O.Prime.CGX.MiniMapCore
-// @version      12.6.3
+// @version      12.6.4
 // @description  MiniMap Core: state/index/rebuild/registry authority
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -24,7 +24,7 @@
   const MM_behavior = () => (TOPW.H2O_MM_SHARED?.get?.() || null)?.util?.behavior || null;
   const MM_uiRefs = () => MM()?.uiRefs?.() || (MM_ui()?.getRefs?.() || {});
 
-  const CORE_VER = '12.6.3';
+  const CORE_VER = '12.6.4';
   const MAX_TRIES = 80;
   const GAP_MS = 120;
   const REBUILD_DEBOUNCE_MS = 120;
@@ -55,6 +55,11 @@
     gutterSyncRaf: 0,
     marginSymbolsBridgeBound: false,
     marginSymbolsBridgeOff: null,
+    washBridgeBound: false,
+    washBridgeOff: null,
+    washRepaintQueue: new Set(),
+    washRepaintRaf: 0,
+    washRepaintAll: false,
   };
 
   const UI_TOK = Object.freeze({
@@ -79,6 +84,20 @@
     orange: '#FFA63A',
   });
   const EV_MARGIN_SYMBOLS_CHANGED = 'evt:h2o:margin:symbols:changed';
+  const EV_WASH_CHANGED = Object.freeze([
+    'evt:h2o:mm:wash_changed',
+    'h2o:mm:wash_changed',
+    'evt:h2o:wash:changed',
+    'h2o:wash:changed',
+    'evt:h2o:answer:wash',
+    'h2o:answer:wash',
+  ]);
+  const FLASH_CLS = Object.freeze({
+    WASH_WRAP: 'cgxui-mnmp-wash-wrap',
+    WASH_WRAP_LEGACY: 'cgxui-wash-wrap',
+    FLASH: 'cgxui-mnmp-flash',
+    FLASH_LEGACY: 'cgxui-flash',
+  });
   const KEY_MARGIN_SYMBOLS_FALLBACK = 'h2o:prm:cgx:mrgnnchr:symbols:v1';
   const KEY_MARGIN_SYMBOL_COLORS_FALLBACK = 'h2o:prm:cgx:mrgnnchr:symbols_colors:v1';
   const KEY_MARGIN_PINS_FALLBACK = 'h2o:prm:cgx:mrgnnchr:state:pins:v1';
@@ -118,6 +137,252 @@
   function mmBtnSelector() {
     const { SEL } = getRegs();
     return SEL.MM_BTN || '[data-cgxui="mnmp-btn"], [data-cgxui="mm-btn"]';
+  }
+
+  function hexToRgb(hex) {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(hex || '').trim());
+    if (!m) return { r: 0, g: 0, b: 0 };
+    return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+  }
+
+  function luminance({ r, g, b }) {
+    const srgb = [r, g, b].map((v0) => {
+      let v = Number(v0) || 0;
+      v /= 255;
+      return v <= 0.03928 ? (v / 12.92) : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+  }
+
+  function bestTextColor(bgHex) {
+    const L = luminance(hexToRgb(bgHex || '#222'));
+    return L > 0.5 ? '#111' : '#fff';
+  }
+
+  function fallbackApplyWashToMiniBtn(primaryAId, btnEl) {
+    const id = String(
+      primaryAId ||
+      btnEl?.dataset?.primaryAId ||
+      btnEl?.dataset?.id ||
+      btnEl?.dataset?.turnId ||
+      ''
+    ).trim();
+    if (!btnEl || !id) return false;
+
+    const washMap = (W?.H2O?.MM?.washMap && typeof W.H2O.MM.washMap === 'object') ? W.H2O.MM.washMap : null;
+    if (!washMap) return false;
+
+    const rawName = washMap?.[id];
+    const norm = String(rawName || '').trim().toLowerCase();
+    const colorName = norm && COLOR_BY_NAME[norm] ? norm : null;
+    if (rawName && !colorName) {
+      try { delete washMap[id]; } catch {}
+    }
+
+    const bg = colorName ? (COLOR_BY_NAME?.[colorName] || null) : null;
+    if (bg) {
+      const isGold = colorName === 'gold' || String(bg).toUpperCase() === '#FFD700';
+      const paintBg = isGold ? '#E6C200' : bg;
+      const text = bestTextColor(paintBg);
+      btnEl.style.background = `linear-gradient(145deg, rgba(255,255,255,0.06), rgba(0,0,0,0.10)), ${paintBg}`;
+      btnEl.style.color = text;
+      btnEl.style.textShadow = (text === '#fff')
+        ? '0 0 2px rgba(0,0,0,.35)'
+        : '0 1px 0 rgba(255,255,255,.35)';
+      btnEl.style.boxShadow = isGold
+        ? '0 0 5px 1px rgba(255,215,0,0.30)'
+        : `0 0 6px 2px ${bg}40`;
+      btnEl.dataset.hl = 'true';
+    } else {
+      btnEl.style.background = 'rgba(255,255,255,.06)';
+      btnEl.style.color = '#e5e7eb';
+      btnEl.style.textShadow = '0 0 2px rgba(0,0,0,.25)';
+      btnEl.style.boxShadow = 'none';
+      btnEl.dataset.hl = 'false';
+    }
+    return true;
+  }
+
+  function applyWashToMiniBtn(primaryAId, btnEl) {
+    const id = String(
+      primaryAId ||
+      btnEl?.dataset?.primaryAId ||
+      btnEl?.dataset?.id ||
+      btnEl?.dataset?.turnId ||
+      ''
+    ).trim();
+    if (!btnEl || !id) return false;
+
+    try {
+      const sharedApply = TOPW.H2O_MM_SHARED?.get?.()?.util?.mmApplyWashToBtn;
+      if (typeof sharedApply === 'function') {
+        sharedApply(id, btnEl, fallbackApplyWashToMiniBtn);
+        return true;
+      }
+    } catch {}
+
+    try {
+      const washApi = W?.H2O?.MM?.wash;
+      if (washApi && typeof washApi.applyToMiniBtn === 'function') {
+        washApi.applyToMiniBtn(id, btnEl);
+        return true;
+      }
+    } catch {}
+
+    return !!fallbackApplyWashToMiniBtn(id, btnEl);
+  }
+
+  function collectMiniBtns() {
+    const out = [];
+    const seen = new Set();
+
+    try {
+      const map = ensureMapStore();
+      for (const btn of map.values()) {
+        if (!btn || !btn.isConnected || seen.has(btn)) continue;
+        seen.add(btn);
+        out.push(btn);
+      }
+    } catch {}
+
+    if (!out.length) {
+      for (const btn of qq(mmBtnSelector())) {
+        if (!btn || seen.has(btn)) continue;
+        seen.add(btn);
+        out.push(btn);
+      }
+    }
+    return out;
+  }
+
+  function repaintMiniBtnByAnswerId(anyId, btnEl = null) {
+    const key = String(
+      anyId ||
+      btnEl?.dataset?.primaryAId ||
+      btnEl?.dataset?.id ||
+      btnEl?.dataset?.turnId ||
+      ''
+    ).trim();
+    if (!key) return false;
+    const btn = btnEl || getBtnById(key);
+    if (!btn) return false;
+    const primaryAId = String(btn?.dataset?.primaryAId || key).trim();
+    if (!primaryAId) return false;
+    return !!applyWashToMiniBtn(primaryAId, btn);
+  }
+
+  function repaintAllMiniBtns() {
+    let painted = 0;
+    for (const btn of collectMiniBtns()) {
+      const id = String(
+        btn?.dataset?.primaryAId ||
+        btn?.dataset?.id ||
+        btn?.dataset?.turnId ||
+        ''
+      ).trim();
+      if (!id) continue;
+      if (repaintMiniBtnByAnswerId(id, btn)) painted += 1;
+    }
+    return painted;
+  }
+
+  function extractWashEventIds(detail) {
+    const ids = new Set();
+    const push = (v) => {
+      const s = String(v || '').trim();
+      if (s) ids.add(s);
+    };
+    push(detail?.primaryAId);
+    push(detail?.answerId);
+    push(detail?.id);
+    push(detail?.turnId);
+    const buckets = [detail?.primaryAIds, detail?.answerIds, detail?.ids, detail?.turnIds];
+    for (const arr of buckets) {
+      if (!Array.isArray(arr)) continue;
+      for (const v of arr) push(v);
+    }
+    return Array.from(ids);
+  }
+
+  function flushWashRepaintQueue() {
+    S.washRepaintRaf = 0;
+    const repaintAll = !!S.washRepaintAll;
+    S.washRepaintAll = false;
+    const ids = Array.from(S.washRepaintQueue.values());
+    S.washRepaintQueue.clear();
+
+    if (repaintAll || !ids.length) {
+      repaintAllMiniBtns();
+      try {
+        const activeBtn = q('[data-cgxui="mnmp-btn"][data-cgxui-state~="active"], [data-cgxui="mm-btn"][data-cgxui-state~="active"], .cgxui-mm-btn.active');
+        const activeId = String(activeBtn?.dataset?.turnId || activeBtn?.dataset?.primaryAId || '').trim();
+        if (activeId) updateToggleColor(activeId);
+      } catch {}
+      return true;
+    }
+
+    for (const id of ids) {
+      try { repaintMiniBtnByAnswerId(id); } catch {}
+    }
+    try { updateToggleColor(ids[0] || ''); } catch {}
+    return true;
+  }
+
+  function scheduleWashRepaint(ids = null) {
+    if (ids == null) S.washRepaintAll = true;
+    else if (Array.isArray(ids)) {
+      for (const raw of ids) {
+        const id = String(raw || '').trim();
+        if (id) S.washRepaintQueue.add(id);
+      }
+      if (!S.washRepaintQueue.size) S.washRepaintAll = true;
+    } else {
+      const id = String(ids || '').trim();
+      if (id) S.washRepaintQueue.add(id);
+      else S.washRepaintAll = true;
+    }
+    if (S.washRepaintRaf) return true;
+    S.washRepaintRaf = requestAnimationFrame(flushWashRepaintQueue);
+    return true;
+  }
+
+  function bindWashBridge() {
+    if (S.washBridgeBound) return true;
+
+    const onWashChanged = (ev) => {
+      const detail = ev?.detail || {};
+      if (detail?.all === true || detail?.full === true) {
+        scheduleWashRepaint();
+        return;
+      }
+      const ids = extractWashEventIds(detail);
+      if (ids.length) scheduleWashRepaint(ids);
+      else scheduleWashRepaint();
+    };
+
+    for (const evtName of EV_WASH_CHANGED) {
+      window.addEventListener(evtName, onWashChanged);
+    }
+
+    S.washBridgeOff = () => {
+      for (const evtName of EV_WASH_CHANGED) {
+        try { window.removeEventListener(evtName, onWashChanged); } catch {}
+      }
+      if (S.washRepaintRaf) {
+        try { cancelAnimationFrame(S.washRepaintRaf); } catch {}
+      }
+      S.washRepaintRaf = 0;
+      S.washRepaintAll = false;
+      S.washRepaintQueue.clear();
+    };
+    S.washBridgeBound = true;
+    return true;
+  }
+
+  function unbindWashBridge() {
+    try { S.washBridgeOff?.(); } catch {}
+    S.washBridgeOff = null;
+    S.washBridgeBound = false;
   }
 
   function getUiRefs() {
@@ -697,6 +962,7 @@
       if (num) num.textContent = String(turn.index || '');
       const symbolMeta = getMarginSymbolMetaForAnswer(answerId, marginSymbolMetaMap);
       updateMiniMapGutterSymbol(btn, symbolMeta.symbols, { color: String(symbolMeta.colors[0] || '').trim() });
+      repaintMiniBtnByAnswerId(answerId || turnId, btn);
 
       map.set(turnId, btn);
       if (answerId) map.set(answerId, btn);
@@ -1120,14 +1386,14 @@
     const target = answerEl?.querySelector?.('[data-message-content]') || answerEl;
     if (!target) return false;
     try {
-      target.classList?.add?.('cgxui-wash-wrap');
-      target.classList?.remove?.('cgxui-flash');
+      target.classList?.add?.(FLASH_CLS.WASH_WRAP, FLASH_CLS.WASH_WRAP_LEGACY);
+      target.classList?.remove?.(FLASH_CLS.FLASH, FLASH_CLS.FLASH_LEGACY);
       try { target.removeAttribute('data-cgxui-flash'); } catch {}
       void target.offsetWidth;
-      target.classList?.add?.('cgxui-flash');
+      target.classList?.add?.(FLASH_CLS.FLASH, FLASH_CLS.FLASH_LEGACY);
       try { target.setAttribute('data-cgxui-flash', '1'); } catch {}
       setTimeout(() => {
-        try { target.classList?.remove?.('cgxui-flash'); } catch {}
+        try { target.classList?.remove?.(FLASH_CLS.FLASH, FLASH_CLS.FLASH_LEGACY); } catch {}
         try { target.removeAttribute('data-cgxui-flash'); } catch {}
       }, 2200);
       return true;
@@ -1294,6 +1560,7 @@
         S.lastRebuildResult = out;
         return out;
       }
+      try { repaintAllMiniBtns(); } catch {}
 
       clearRetry();
       try {
@@ -1362,6 +1629,7 @@
     S.inited = true;
     indexTurns();
     bindMarginSymbolsBridge();
+    bindWashBridge();
     return true;
   }
 
@@ -1376,7 +1644,14 @@
       S.gutterSyncRaf = 0;
     }
     S.gutterSyncQueue.clear();
+    if (S.washRepaintRaf) {
+      try { cancelAnimationFrame(S.washRepaintRaf); } catch {}
+      S.washRepaintRaf = 0;
+    }
+    S.washRepaintQueue.clear();
+    S.washRepaintAll = false;
     unbindMarginSymbolsBridge();
+    unbindWashBridge();
     S.inited = false;
     return true;
   }
@@ -1399,6 +1674,8 @@
     getTurnById,
     getBtnById,
     ensureTurnButtons,
+    repaintMiniBtnByAnswerId,
+    repaintAllMiniBtns,
     updateMiniMapGutterSymbol,
     syncMiniMapGutterForAnswer,
     scheduleMiniMapGutterSync,
@@ -1456,6 +1733,8 @@
         const opts = (arg && typeof arg === 'object' && !Array.isArray(arg)) ? arg : {};
         return CORE_API.syncActiveFromViewport(opts);
       };
+      T.H2O_MM_repaintMiniBtnByAnswerId = (...args) => CORE_API.repaintMiniBtnByAnswerId(...args);
+      T.H2O_MM_repaintAllMiniBtns = (...args) => CORE_API.repaintAllMiniBtns(...args);
       T.applyTempFlash = (...args) => CORE_API.applyTempFlash(...args);
       T.flashAnswer = (...args) => CORE_API.flashAnswer(...args);
       if (typeof T.updateMiniMapGutterSymbol !== 'function') {
