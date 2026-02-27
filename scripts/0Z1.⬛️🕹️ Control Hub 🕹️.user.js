@@ -724,7 +724,7 @@ const FEATURE_CONTROLS = {
     btn.setAttribute(ATTR_CGXUI, UI_CHUB_TOPBTN);
     btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
     btn.className = `${CLS}-topbtn`;
-    btn.innerHTML = `<span>Control</span>`;
+    btn.innerHTML = `<span>Cockpit Pro</span>`;                           // 👈 Host's existing premium button (or just a fun label if not present)
 
     btn.addEventListener('click', () => {
       const p = DOM_buildPanel();
