@@ -7,6 +7,7 @@ if (!SRC) throw new Error("Missing SRC arg");
 const FORCE_ALL =
   process.argv.includes("--all") ||
   String(process.env.H2O_ARCHIVE_ALL || "") === "1";
+// Run once after filename/path renames to migrate lastVersions keys safely.
 const MIGRATE_PATHS = process.argv.includes("--migrate-paths");
 
 const ARCHIVE_ROOT = path.join(SRC, "archive");
@@ -102,6 +103,51 @@ function uniqueSorted(paths) {
   return Array.from(new Set(paths)).sort((a, b) => a.localeCompare(b));
 }
 
+function normalizePathKey(v) {
+  return String(v || "").replace(/\\/g, "/");
+}
+
+function stripEmojiAndInvisibles(s) {
+  return String(s || "")
+    .replace(/[\p{Extended_Pictographic}]/gu, "")
+    .replace(/[\uFE0E\uFE0F\u200D\u200B-\u200F\uFEFF\u2060\u00AD]/g, "")
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, "");
+}
+
+function normalizeUserScriptTitleFromPath(relPath) {
+  const key = normalizePathKey(relPath);
+  if (!/\.user\.js$/i.test(key)) return "";
+
+  const base = path.basename(key).replace(/\.user\.js$/i, "");
+  const firstDot = base.indexOf(".");
+  const title = firstDot >= 0 ? base.slice(firstDot + 1) : base;
+
+  return stripEmojiAndInvisibles(title)
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function buildCurrentUserScriptLookup(srcRoot) {
+  const currentUserScripts = collectUserScripts(srcRoot)
+    .map((p) => normalizePathKey(p))
+    .filter((p) => /\.user\.js$/i.test(p));
+
+  const scriptSet = new Set(currentUserScripts);
+  const byTitle = new Map();
+
+  for (const relPath of currentUserScripts) {
+    const titleKey = normalizeUserScriptTitleFromPath(relPath);
+    if (!titleKey) continue;
+    if (!byTitle.has(titleKey)) byTitle.set(titleKey, []);
+    byTitle.get(titleKey).push(relPath);
+  }
+
+  return { scriptSet, byTitle };
+}
+
 function maybeMigrateStatePaths(stateObj, srcRoot) {
   if (!MIGRATE_PATHS) return stateObj;
 
@@ -109,38 +155,57 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
     return {};
   }
 
-  const srcKeySet = new Set(Object.keys(stateObj));
+  const srcKeySet = new Set(Object.keys(stateObj).map((k) => normalizePathKey(k)));
+  const { scriptSet, byTitle } = buildCurrentUserScriptLookup(srcRoot);
   const next = {};
   let moved = 0;
   let skippedDestInState = 0;
   let skippedNoDest = 0;
   let skippedOldStillExists = 0;
+  let skippedAmbiguousUserScriptTitle = 0;
 
   for (const [rawKey, value] of Object.entries(stateObj)) {
-    const key = String(rawKey || "").replace(/\\/g, "/");
+    const key = normalizePathKey(rawKey);
     let outKey = key;
 
-    const isRootUserScriptKey =
-      /\.user\.js$/i.test(key) &&
-      !key.startsWith("scripts/") &&
-      !key.includes("/");
-
-    if (isRootUserScriptKey) {
-      const destKey = `scripts/${key}`;
+    if (/\.user\.js$/i.test(key)) {
       const oldPath = path.join(srcRoot, key);
-      const destPath = path.join(srcRoot, destKey);
       const oldExists = fs.existsSync(oldPath);
-      const destExists = fs.existsSync(destPath);
+      const isRootUserScriptKey = !key.startsWith("scripts/") && !key.includes("/");
 
-      if (!destExists) {
-        skippedNoDest++;
-      } else if (oldExists) {
-        skippedOldStillExists++;
-      } else if (srcKeySet.has(destKey)) {
-        skippedDestInState++;
-      } else {
-        outKey = destKey;
-        moved++;
+      let destKey = null;
+
+      if (isRootUserScriptKey) {
+        const prefixed = `scripts/${key}`;
+        if (scriptSet.has(prefixed)) {
+          destKey = prefixed;
+        } else {
+          skippedNoDest++;
+        }
+      }
+
+      if (!destKey && !oldExists) {
+        const titleKey = normalizeUserScriptTitleFromPath(key);
+        const candidates = byTitle.get(titleKey) || [];
+        if (candidates.length === 1) {
+          destKey = candidates[0];
+        } else if (candidates.length > 1) {
+          skippedAmbiguousUserScriptTitle++;
+        }
+      }
+
+      if (destKey && destKey !== key) {
+        const destExists = scriptSet.has(destKey) || fs.existsSync(path.join(srcRoot, destKey));
+        if (!destExists) {
+          skippedNoDest++;
+        } else if (oldExists) {
+          skippedOldStillExists++;
+        } else if (srcKeySet.has(destKey)) {
+          skippedDestInState++;
+        } else {
+          outKey = destKey;
+          moved++;
+        }
       }
     }
 
@@ -162,6 +227,9 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
   if (skippedDestInState) console.log(`[H2O] migrate skipped (dest key already exists): ${skippedDestInState}`);
   if (skippedNoDest) console.log(`[H2O] migrate skipped (dest file missing): ${skippedNoDest}`);
   if (skippedOldStillExists) console.log(`[H2O] migrate skipped (old file still exists): ${skippedOldStillExists}`);
+  if (skippedAmbiguousUserScriptTitle) {
+    console.log(`[H2O] migrate skipped (ambiguous userscript title): ${skippedAmbiguousUserScriptTitle}`);
+  }
 
   return moved > 0 ? next : stateObj;
 }
