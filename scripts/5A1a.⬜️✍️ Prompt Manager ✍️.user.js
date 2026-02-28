@@ -2,7 +2,9 @@
 // @h2o-id      5a.prompt.manager
 // @name         5A.⬜️✍️ Prompt Manager ✍️
 // @namespace    https://h2o.dev/prime-manager
-// @version      3.1.3
+// @version      3.1.4
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Prompt Manager (Simple + Settings/Edit), Quick Replies tray, History capture, Sortable reorder — Contract v2.0 Stage-1 compliant.
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -49,6 +51,7 @@
   /* [DEFINE][EV] Canonical events */
   const EV_PM_READY_V1 = 'evt:h2o:promptmgr:ready';
   const EV_PM_CHANGED_V1 = 'evt:h2o:promptmgr:changed';
+  const EV_EXPORT_RUN = 'evt:h2o:export:run';
   // Legacy bridge (kept for older consumers, including Control Hub bridge code)
   const EV_PM_READY_LEGACY_V1 = 'evt:h2o:pm:ready:v1';
   const EV_PM_CHANGED_LEGACY_V1 = 'evt:h2o:pm:changed:v1';
@@ -60,6 +63,7 @@
   /* [DEFINE][UI] UI tokens (SkID-based values) */
   const UI_PM_WRAP = `${SkID}-wrap`;
   const UI_PM_BTNBOX = `${SkID}-btnbox`;
+  const UI_PM_EXPORT_BTN = `${SkID}-export-btn`;
   const UI_PM_BTN = `${SkID}-btn`;
   const UI_PM_PANEL = `${SkID}-panel`;
   const UI_PM_OVERLAY = `${SkID}-overlay`;
@@ -106,6 +110,7 @@
   const UI_PM_QUICK_MODE_DOT = `${SkID}-quick-mode-dot`;
 
   const UI_PM_TOOLTIP = `${SkID}-tooltip`;
+  const LEGACY_XPCH_PROMPT_EXPORT_SEL = '[data-cgxui-owner="xpch"][data-cgxui="xpch-prompt-export-btn"]';
 
   // state classes (shared across render + public API)
   const UI_PM_CLS_OPEN = `cgxui-${SkID}--panel-open`;
@@ -128,6 +133,14 @@
     ANCHOR_MAX_PX: 1200,
     FLOAT_MIN_TOP_SAFE_Y: 52,
     CLICK_DELAY_MS: 220,
+    EXPORT_BTN_LABEL: 'Export',
+    EXPORT_BTN_TITLE: 'Export this chat',
+    EXPORT_MODE_FULL: 'full',
+    EXPORT_MODE_MINIMAL: 'minimal',
+    CHAT_PATH_RE: /\/c\/([a-z0-9-]+)/i,
+    CHAT_TITLE_SUFFIX_RE: /\s*[-|]\s*ChatGPT.*$/i,
+    CHAT_TITLE_PREFIX: 'Chat',
+    CHAT_TITLE_FALLBACK: 'Chat',
     SEND_CLICK_DELAY_MS: 20,
     QUICK_TRAY_SHOW_ON_BOOT: true,
     HISTORY_MAX: 50,
@@ -246,6 +259,32 @@
   const UTIL_emitPmChanged = (detail) => {
     UTIL_event.emit(EV_PM_CHANGED_V1, detail);
     UTIL_event.emit(EV_PM_CHANGED_LEGACY_V1, detail);
+  };
+
+  const UTIL_getChatId = () => {
+    const fromCore = String(W.H2O?.util?.getChatId?.() || '').trim();
+    if (fromCore) return fromCore;
+    const m = String(W.location?.pathname || '').match(CFG_PM.CHAT_PATH_RE);
+    return m ? String(m[1] || '').trim() : '';
+  };
+
+  const UTIL_getChatTitle = (chatId = '') => {
+    const heading = D.querySelector('main h1, [data-testid="conversation-title"], [data-testid="chat-title"]');
+    const text = String(heading?.textContent || '').trim();
+    if (text) return text;
+    const raw = String(D.title || '').trim();
+    const stripped = raw.replace(CFG_PM.CHAT_TITLE_SUFFIX_RE, '').trim();
+    if (stripped) return stripped;
+    return chatId ? `${CFG_PM.CHAT_TITLE_PREFIX} ${chatId}` : CFG_PM.CHAT_TITLE_FALLBACK;
+  };
+
+  const UTIL_emitExportRun = (modeRaw, shiftKey = false) => {
+    const mode = (String(modeRaw || '').toLowerCase() === CFG_PM.EXPORT_MODE_MINIMAL || !!shiftKey)
+      ? CFG_PM.EXPORT_MODE_MINIMAL
+      : CFG_PM.EXPORT_MODE_FULL;
+    const chatId = UTIL_getChatId();
+    const title = UTIL_getChatTitle(chatId);
+    UTIL_event.emit(EV_EXPORT_RUN, { chatId, title, ts: Date.now(), mode });
   };
 
   /* ───────────────────────────── 🔴 STATE — Registries / Caches 📄🔓💧 ───────────────────────────── */
@@ -620,6 +659,7 @@
 
     const WRAP = selScoped(UI_PM_WRAP);
     const BTNBOX = selScoped(UI_PM_BTNBOX);
+    const EXPORT_BTN = selScoped(UI_PM_EXPORT_BTN);
     const BTN = selScoped(UI_PM_BTN);
     const PANEL = selScoped(UI_PM_PANEL);
     const OVERLAY = selScoped(UI_PM_OVERLAY);
@@ -707,7 +747,8 @@ ${BTNBOX}{
   gap: 6px;
 }
 
-${BTN}{
+${BTN},
+${EXPORT_BTN}{
   width: auto;
   min-width: 50px;
   max-width: none;
@@ -735,12 +776,14 @@ ${BTN}{
   cursor: pointer;
   transition: all 0.2s ease;
 }
-${BTN}:hover{
+${BTN}:hover,
+${EXPORT_BTN}:hover{
   opacity: 1;
   filter: brightness(1.08);
   box-shadow: 0 0 6px 2px rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.25);
 }
-${BTN}:active{ transform: scale(0.98); }
+${BTN}:active,
+${EXPORT_BTN}:active{ transform: scale(0.98); }
 
 ${OVERLAY}{
   position: fixed;
@@ -1505,6 +1548,7 @@ ${PANEL} ${SORT_GHOST}{
 
     ensureUI() {
       return SAFE_try('UI_PM.ensureUI', () => {
+        try { D.querySelector(LEGACY_XPCH_PROMPT_EXPORT_SEL)?.remove?.(); } catch {}
         const form = DOM_getForm();
         if (!form) return null;
 
@@ -1517,6 +1561,7 @@ ${PANEL} ${SORT_GHOST}{
 
         wrap.innerHTML = `
           <div ${ATTR_CGXUI}="${UI_PM_BTNBOX}" ${ATTR_CGXUI_OWNER}="${SkID}">
+            <button type="button" ${ATTR_CGXUI}="${UI_PM_EXPORT_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}" title="${CFG_PM.EXPORT_BTN_TITLE}">${CFG_PM.EXPORT_BTN_LABEL}</button>
             <button type="button" ${ATTR_CGXUI}="${UI_PM_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}">Prompts</button>
             <div ${ATTR_CGXUI}="${UI_PM_QUICK_TRAY}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true"></div>
             <button type="button" ${ATTR_CGXUI}="${UI_PM_QUICK_MODE_DOT}" ${ATTR_CGXUI_OWNER}="${SkID}" title="Quick replies: append only">•</button>
@@ -2216,6 +2261,7 @@ ${PANEL} ${SORT_GHOST}{
       // cache nodes
       const panel = DOM_q(UI_PM.selOwned(UI_PM_PANEL), root);
       const overlay = DOM_q(UI_PM.selOwned(UI_PM_OVERLAY), root);
+      const exportBtn = DOM_q(UI_PM.selOwned(UI_PM_EXPORT_BTN), root);
       const btn = DOM_q(UI_PM.selOwned(UI_PM_BTN), root);
       const search = root.querySelector(UI_PM.selOwned(UI_PM_SEARCH));
       const autoSimple = DOM_q(UI_PM.selOwned(UI_PM_AUTOSEND_SIMPLE), root);
@@ -2292,6 +2338,16 @@ ${PANEL} ${SORT_GHOST}{
       }
 
       // Main button click (single) + dblclick (quick tray)
+      if (exportBtn) {
+        const onExport = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          UTIL_emitExportRun(CFG_PM.EXPORT_MODE_FULL, !!e?.shiftKey);
+        };
+        exportBtn.addEventListener('click', onExport);
+        CLEAN_addFn(() => exportBtn.removeEventListener('click', onExport));
+      }
+
       if (btn) {
         const onClick = () => {
           if (STATE_PM.ui.pmClickTimer) return;

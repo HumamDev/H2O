@@ -2,7 +2,9 @@
 // @h2o-id      1a1a.minimap.kernel
 // @name         1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️
 // @namespace    H2O.Prime.CGX.MiniMapKernel
-// @version      12.6.3
+// @version      12.6.4
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  MiniMap Kernel: lifecycle + shared bridge + foundation ownership (Phase 1B)
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -26,7 +28,7 @@
 
   const TOK = 'MM';
   const BrID = 'mnmp';
-  const KERNEL_VER = '12.6.3';
+  const KERNEL_VER = '12.6.4';
 
   const H2O = (W.H2O = W.H2O || {});
   H2O[TOK] = H2O[TOK] || Object.create(null);
@@ -454,11 +456,12 @@
   function mmApplyWashToBtn(primaryAId, btnEl, fallbackApplyFn) {
     const api = mmWashAPI();
     if (api && typeof api.applyToMiniBtn === 'function') {
-      try { api.applyToMiniBtn(primaryAId, btnEl); return; } catch {}
+      try { api.applyToMiniBtn(primaryAId, btnEl); return true; } catch {}
     }
     try {
-      if (typeof fallbackApplyFn === 'function') fallbackApplyFn(primaryAId, btnEl);
+      if (typeof fallbackApplyFn === 'function') return fallbackApplyFn(primaryAId, btnEl) !== false;
     } catch {}
+    return false;
   }
 
   function mmOpenWashPalette(ev, primaryAId) {

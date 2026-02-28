@@ -2,7 +2,9 @@
 // @h2o-id      1a1d.minimap.engine
 // @name         1A1d.🟥🗺️ MiniMap Engine 🚀🗺️
 // @namespace    H2O.Prime.CGX.MiniMapEngine
-// @version      12.6.3
+// @version      12.6.4
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  MiniMap Engine: hard runtime authority (observers, rebuild scheduling, active sync)
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -30,23 +32,20 @@
   const MM_behavior = () => (TOPW.H2O_MM_SHARED?.get?.() || null)?.util?.behavior || null;
   const MM_uiRefs = () => MM()?.uiRefs?.() || (MM_ui()?.getRefs?.() || {});
 
-  const ENGINE_VER = '12.6.3';
+  const ENGINE_VER = '12.6.4';
   const EVT_ENGINE_READY = 'evt:h2o:minimap:engine-ready';
   const EVT_SHELL_READY = 'evt:h2o:minimap:shell-ready';
+  const EVT_ROUTE_CHANGED = 'evt:h2o:route:changed';
   const EVT_ANSWERS_SCAN_FALLBACK = 'evt:h2o:answers:scan';
   const EVT_BEHAVIOR_CHANGED = 'evt:h2o:mm:behavior-changed';
 
   const BOOT_MAX_TRIES = 80;
   const BOOT_GAP_MS = 120;
-  const REBUILD_DEBOUNCE_MS = 120;
-
   const S = {
     running: false,
     bootDone: false,
     bootTries: 0,
     bootTimer: null,
-
-    rebuildTimer: null,
     rebuildReason: '',
     syncRAF: 0,
 
@@ -55,14 +54,15 @@
     formRO: null,
     io: null,
 
-    answerPollTimer: null,
-    turnPollTimer: null,
+    firstPaintRaf: 0,
+    firstPaintTimer: null,
     failsafeTimer: null,
 
     offScroll: null,
     offResize: null,
     offShellReady: null,
     offBehaviorChanged: null,
+    offRouteChanged: null,
     offBtnClick: null,
 
     lastActiveTurnId: '',
@@ -1073,9 +1073,11 @@
   }
 
   function stop(reason = 'engine:stop') {
-    clearTimer('rebuildTimer');
-    clearTimer('answerPollTimer', 'interval');
-    clearTimer('turnPollTimer', 'interval');
+    if (S.firstPaintRaf) {
+      try { cancelAnimationFrame(S.firstPaintRaf); } catch {}
+      S.firstPaintRaf = 0;
+    }
+    clearTimer('firstPaintTimer');
     clearTimer('failsafeTimer');
 
     try { if (S.syncRAF) cancelAnimationFrame(S.syncRAF); } catch {}
@@ -1096,11 +1098,13 @@
     try { S.offResize?.(); } catch {}
     try { S.offShellReady?.(); } catch {}
     try { S.offBehaviorChanged?.(); } catch {}
+    try { S.offRouteChanged?.(); } catch {}
     try { S.offBtnClick?.(); } catch {}
     S.offScroll = null;
     S.offResize = null;
     S.offShellReady = null;
     S.offBehaviorChanged = null;
+    S.offRouteChanged = null;
     S.offBtnClick = null;
 
     S.running = false;
@@ -1172,49 +1176,60 @@
     });
     S.panelMO.observe(document.body, { childList: true, subtree: true });
     bindMiniMapScrollGuards();
+
+    const onRouteChanged = () => {
+      if (!S.running) return;
+      scheduleRebuild('route:changed');
+      scheduleFirstPaintRebuild('route');
+    };
+    try {
+      window.addEventListener(EVT_ROUTE_CHANGED, onRouteChanged, true);
+      window.addEventListener(EVT_ROUTE_CHANGED.replace(/^evt:/, ''), onRouteChanged, true);
+      S.offRouteChanged = () => {
+        try { window.removeEventListener(EVT_ROUTE_CHANGED, onRouteChanged, true); } catch {}
+        try { window.removeEventListener(EVT_ROUTE_CHANGED.replace(/^evt:/, ''), onRouteChanged, true); } catch {}
+      };
+    } catch {}
   }
 
-  function seedRuntimeTimers() {
-    let answerTries = 0;
-    S.answerPollTimer = setInterval(() => {
-      if (!S.running) return;
-      answerTries++;
+  function hasAnswersInDom() {
+    try { return qq(answersSelector()).length > 0; } catch { return false; }
+  }
 
-      const answers = qq(answersSelector());
-      const hasBtn = qq(mmBtnSelector()).length > 0;
-      if (hasBtn || answerTries > 20) {
-        clearTimer('answerPollTimer', 'interval');
-        return;
-      }
-      if (answers.length) scheduleRebuild('boot:init-ready');
+  function buildMissing() {
+    const core = MM_core();
+    const turns = Number(core?.getTurnList?.()?.length || 0);
+    const btns = Number(qq(mmBtnSelector()).length || 0);
+    return turns <= 0 || btns <= 0;
+  }
+
+  function scheduleFirstPaintRebuild(reason = 'boot') {
+    const why = String(reason || 'boot');
+    if (S.firstPaintRaf) {
+      try { cancelAnimationFrame(S.firstPaintRaf); } catch {}
+      S.firstPaintRaf = 0;
+    }
+    clearTimer('firstPaintTimer');
+    clearTimer('failsafeTimer');
+
+    const stage = (tag) => {
+      if (!S.running || !hasAnswersInDom()) return false;
+      if (!buildMissing()) return false;
+      return scheduleRebuild(`boot:first-paint:${why}:${tag}`);
+    };
+
+    S.firstPaintRaf = requestAnimationFrame(() => {
+      S.firstPaintRaf = 0;
+      stage('raf');
+    });
+    S.firstPaintTimer = setTimeout(() => {
+      S.firstPaintTimer = null;
+      stage('250ms');
     }, 250);
-
-    let turnTries = 0;
-    S.turnPollTimer = setInterval(() => {
-      if (!S.running) return;
-      turnTries++;
-
-      const hasTurn = !!W.H2O_MM_hasTurnAPI?.();
-      if (!hasTurn) {
-        if (turnTries > 24) clearTimer('turnPollTimer', 'interval');
-        return;
-      }
-
-      const hasBtn = qq(mmBtnSelector()).length > 0;
-      if (hasBtn || turnTries > 24) {
-        clearTimer('turnPollTimer', 'interval');
-        return;
-      }
-
-      scheduleRebuild('boot:init-ready-turns');
-    }, 250);
-
     S.failsafeTimer = setTimeout(() => {
-      if (!S.running) return;
-      const panel = minimapPanel();
-      const hasBtn = qq(mmBtnSelector()).length > 0;
-      if (panel && !hasBtn) scheduleRebuild('failsafe:panel-no-buttons');
-    }, 1200);
+      S.failsafeTimer = null;
+      stage('1000ms');
+    }, 1000);
   }
 
   function start(reason = 'engine:start') {
@@ -1235,9 +1250,9 @@
     try { W.H2O?.MM?.dots?.attachInlineMutationObserver?.(); } catch (e) { derr('start:attachInlineMutationObserver', e); }
 
     bindObservers();
-    seedRuntimeTimers();
-
-    scheduleRebuild(`boot:${reason}`);
+    if (hasAnswersInDom()) rebuildNow(`boot:answers-present:${reason}`);
+    else scheduleRebuild(`boot:${reason}`);
+    scheduleFirstPaintRebuild(reason);
     setTimeout(() => syncActive('boot:sync'), 80);
 
     dlog('engine:start', { reason });

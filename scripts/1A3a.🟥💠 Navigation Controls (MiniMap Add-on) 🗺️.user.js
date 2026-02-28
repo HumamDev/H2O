@@ -2,7 +2,9 @@
 // @h2o-id      1a3.navigation.controls.minimap.add-on
 // @name         1A3.🟥💠 Navigation Controls (MiniMap Add-on) 🗺️
 // @namespace    H2O.Prime.CGX.NavControls
-// @version      1.3.1
+// @version      1.3.9
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Nav cluster for MiniMap: color wheel + scroll up/down pinned to input. Split-safe: talks ONLY to MiniMap bridge API.
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -51,6 +53,7 @@
     state: Object.create(null),
     api:   Object.create(null),
   });
+  try { VAULT.api?.dispose?.(); } catch {}
 
   VAULT.state.meta = VAULT.state.meta || { TOK, PID, CID, SkID, BrID, DsID, MODTAG, MODICON, EMOJI_HDR, SUITE, HOST };
 
@@ -73,6 +76,9 @@
       'form[data-testid="composer"] textarea',
       'form[action*="conversation"] textarea',
     ].join(', '),
+    PROMPTS_BTN: '[data-cgxui-owner="prmn"][data-cgxui="prmn-btn"]',
+    CHAT_TITLE_HEADING: 'main h1, [data-testid="conversation-title"], [data-testid="chat-title"]',
+    EXPORT_MODE_LAYER: '[data-cgxui-owner="xpch"][data-cgxui="xpch-dl-layer"]',
   });
 
   // ⚠️ Event strings are *owned by MiniMap*; we read them from MiniMap API when possible.
@@ -81,7 +87,8 @@
     MM_READY:        'evt:h2o:minimap:ready',
     MM_VIEW_CHANGED: 'evt:h2o:mm:viewChanged',
     INLINE_CHANGED:  'evt:h2o:inline:changed',
-    ANSWER_HL:       'evt:h2o:answer:highlight',
+    ANSWER_WASH:     'evt:h2o:answer:wash',
+    ANSWER_HL:       'evt:h2o:answer:highlight', // legacy wash alias
   });
 
   // MiniMap identity (for locating its VAULT)
@@ -100,6 +107,7 @@
 
   const EV_ = Object.freeze({
     CHUB_CHANGED_V1: 'h2o.ev:prm:cgx:cntrlhb:changed:v1',
+    EXPORT_RUN: 'evt:h2o:export:run',
   });
 
   const CFG_ = Object.freeze({
@@ -127,6 +135,26 @@
 
     // Toggle for the built-in up/down pair.
     ENABLE_SCROLL_PAIR_BUTTONS: true,
+
+    EXPORT_BTN_LABEL: 'Export',
+    EXPORT_BTN_TITLE: 'Export this chat',
+    EXPORT_MODE_FULL: 'full',
+    EXPORT_MODE_MINIMAL: 'minimal',
+    EXPORT_MIN_WIDTH_PX: 50,
+    EXPORT_STYLE_THROTTLE_MS: 240,
+    CHAT_PATH_RE: /\/c\/([a-z0-9-]+)/i,
+    CHAT_TITLE_SUFFIX_RE: /\s*[-|]\s*ChatGPT.*$/i,
+    CHAT_TITLE_PREFIX: 'Chat',
+    CHAT_TITLE_FALLBACK: 'Chat',
+  });
+
+  const UI_ = Object.freeze({
+    NAV_BOX: `${SkID}-nav-box`,
+    NAV_BOX_LEFT: `${SkID}-nav-box-left`,
+    NAV_BOX_RIGHT: `${SkID}-nav-box-right`,
+    NAV_UP: `${SkID}-nav-up`,
+    NAV_DOWN: `${SkID}-nav-down`,
+    EXPORT_BTN: `${SkID}-export-btn`,
   });
 
   const NAV_BASE_COLORS = Object.freeze({
@@ -398,6 +426,33 @@
       DIAG.errors.push({ t: Date.now(), tag, err: String(err?.message || err) });
       if (DIAG.errors.length > DIAG.errMax) DIAG.errors.splice(0, DIAG.errors.length - DIAG.errMax);
     } catch {}
+  }
+
+  /** @helper */
+  function UTIL_getChatId() {
+    const fromCore = String(W.H2O?.util?.getChatId?.() || '').trim();
+    if (fromCore) return fromCore;
+    const m = String(W.location?.pathname || '').match(CFG_.CHAT_PATH_RE);
+    return m ? String(m[1] || '').trim() : '';
+  }
+
+  /** @helper */
+  function UTIL_getChatTitle(chatId = '') {
+    const heading = document.querySelector(SEL_.CHAT_TITLE_HEADING);
+    const text = String(heading?.textContent || '').trim();
+    if (text) return text;
+
+    const raw = String(document.title || '').trim();
+    const stripped = raw.replace(CFG_.CHAT_TITLE_SUFFIX_RE, '').trim();
+    if (stripped) return stripped;
+
+    if (chatId) return `${CFG_.CHAT_TITLE_PREFIX} ${chatId}`;
+    return CFG_.CHAT_TITLE_FALLBACK;
+  }
+
+  /** @helper */
+  function UTIL_emitWindowEvent(type, detail) {
+    try { W.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true })); } catch {}
   }
 
   /* ──────────── 4) MiniMap Bridge Access (NO internals) ──────────── */
@@ -713,6 +768,27 @@
   const CSS_ = Object.freeze({
     STYLE_ID: `cgxui-${SkID}-style`,
     ROTOR_STYLE_ID: 'cgxui-rotor-style', // shared id (safe global)
+    EXPORT_ACTIVE_CLASS: 'cgxui-nav-export-active',
+    XPCH_ACTIVE_CLASS: 'cgxui-xpch-active',
+    EXPORT_COPY_PROPS: Object.freeze([
+      'height',
+      'min-height',
+      'max-height',
+      'line-height',
+      'padding',
+      'border-radius',
+      'border',
+      'box-sizing',
+      'font-size',
+      'font-weight',
+      'letter-spacing',
+      'font-family',
+      'background',
+      'color',
+      'opacity',
+      'box-shadow',
+      'transition',
+    ]),
   });
 
   /** @critical */
@@ -735,6 +811,15 @@
       }
       .cgxui-nav-wheel{
         will-change: transform;
+      }
+      .${CSS_.EXPORT_ACTIVE_CLASS}{
+        opacity: 1 !important;
+        color: rgba(232,255,240,0.96) !important;
+        filter: brightness(1.18) saturate(1.04) !important;
+        box-shadow:
+          inset 0 0 3px rgba(255,255,255,0.10),
+          0 0 10px rgba(34,197,94,0.50),
+          0 3px 8px rgba(20,83,45,0.45) !important;
       }
     `;
     (document.head || document.documentElement).appendChild(st);
@@ -829,6 +914,7 @@
       box-sizing: border-box;
       pointer-events: auto;
     `;
+
   }
 
   /* ──────────── 8) UI: Button Factory ──────────── */
@@ -890,6 +976,259 @@
 
     if (onClick) btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  /** @helper */
+  function UI_measureExportWidth() {
+    const btn = S.navExportBtn;
+    if (!btn || !btn.isConnected) return;
+    const w = Math.round(btn.getBoundingClientRect?.().width || btn.offsetWidth || 0);
+    if (w > 0) S.exportWidthPx = Math.max(CFG_.EXPORT_MIN_WIDTH_PX, w);
+  }
+
+  /** @helper */
+  function UI_tryMirrorPromptsStyle(opts = Object.create(null)) {
+    const btn = S.navExportBtn;
+    if (!btn || !btn.isConnected) return false;
+
+    const force = !!opts.force;
+    const now = Date.now();
+    if (!force && (now - Number(S.exportStyleAt || 0)) < CFG_.EXPORT_STYLE_THROTTLE_MS) return false;
+
+    const src = document.querySelector(SEL_.PROMPTS_BTN);
+    if (!src) return false;
+
+    const cs = W.getComputedStyle?.(src);
+    if (!cs) return false;
+
+    const sig = CSS_.EXPORT_COPY_PROPS.map((p) => `${p}:${cs.getPropertyValue(p)}`).join('|');
+    if (!force && sig && sig === S.exportStyleSig) return false;
+
+    for (const prop of CSS_.EXPORT_COPY_PROPS) {
+      const val = cs.getPropertyValue(prop);
+      if (val) btn.style.setProperty(prop, val);
+    }
+    btn.style.setProperty('width', 'auto');
+    btn.style.setProperty('min-width', `${CFG_.EXPORT_MIN_WIDTH_PX}px`);
+    btn.style.setProperty('max-width', 'none');
+    btn.style.setProperty('flex', '0 0 auto');
+    btn.style.setProperty('pointer-events', 'auto');
+
+    S.exportStyleSig = sig;
+    S.exportStyleAt = now;
+    UI_measureExportWidth();
+    return true;
+  }
+
+  /** @helper */
+  function UI_scheduleMirrorPromptsStyle(force = false) {
+    if (force) S.exportMirrorForce = true;
+    if (S.exportMirrorRaf) return;
+    S.exportMirrorRaf = requestAnimationFrame(() => {
+      S.exportMirrorRaf = 0;
+      const changed = UI_tryMirrorPromptsStyle({ force: !!S.exportMirrorForce });
+      S.exportMirrorForce = false;
+      if (changed) scheduleLayout(S.navBoxEl, S.navBoxLeft, S.navBoxRight);
+    });
+  }
+
+  /** @helper */
+  function UI_bindExportStyleWatchers() {
+    if (S.exportStyleWired) return;
+    S.exportStyleWired = true;
+
+    const bindSource = () => {
+      const src = document.querySelector(SEL_.PROMPTS_BTN);
+      if (src === S.exportPromptSrcEl) return;
+
+      try { S.exportPromptAttrMo?.disconnect?.(); } catch {}
+      S.exportPromptAttrMo = null;
+      S.exportPromptSrcEl = src || null;
+
+      if (!src) return;
+      const attrMo = new MutationObserver(() => UI_scheduleMirrorPromptsStyle(false));
+      try { attrMo.observe(src, { attributes: true, attributeFilter: ['class', 'style'] }); } catch {}
+      S.exportPromptAttrMo = attrMo;
+      UI_scheduleMirrorPromptsStyle(true);
+    };
+
+    let refreshTick = false;
+    const hostMo = new MutationObserver(() => {
+      if (refreshTick) return;
+      refreshTick = true;
+      requestAnimationFrame(() => {
+        refreshTick = false;
+        bindSource();
+      });
+    });
+    UTIL_observe(hostMo, document.body || document.documentElement, { childList: true, subtree: true });
+    CLEANUP.add(() => {
+      try { S.exportPromptAttrMo?.disconnect?.(); } catch {}
+      S.exportPromptAttrMo = null;
+      S.exportPromptSrcEl = null;
+      S.exportStyleWired = false;
+      if (S.exportMirrorRaf) {
+        try { cancelAnimationFrame(S.exportMirrorRaf); } catch {}
+        S.exportMirrorRaf = 0;
+      }
+      S.exportMirrorForce = false;
+    });
+
+    bindSource();
+  }
+
+  /** @helper */
+  function UI_setExportGlowActive(isActive) {
+    const btn = S.navExportBtn;
+    if (!btn || !btn.isConnected) return;
+    btn.classList.toggle(CSS_.EXPORT_ACTIVE_CLASS, !!isActive);
+    S.exportGlowActive = !!isActive;
+  }
+
+  /** @helper */
+  function UI_syncExportGlowFromModeLayer() {
+    const layer = document.querySelector(SEL_.EXPORT_MODE_LAYER);
+    const active = !!(layer && layer.classList?.contains?.(CSS_.XPCH_ACTIVE_CLASS));
+    UI_setExportGlowActive(active);
+  }
+
+  /** @helper */
+  function UI_bindExportGlowSync() {
+    if (S.exportGlowWired) return;
+    S.exportGlowWired = true;
+
+    const bindLayer = () => {
+      const layer = document.querySelector(SEL_.EXPORT_MODE_LAYER);
+      if (layer === S.exportModeLayerEl) return;
+
+      try { S.exportModeLayerAttrMo?.disconnect?.(); } catch {}
+      S.exportModeLayerAttrMo = null;
+      S.exportModeLayerEl = layer || null;
+
+      if (!layer) {
+        UI_setExportGlowActive(false);
+        return;
+      }
+
+      const mo = new MutationObserver(() => UI_syncExportGlowFromModeLayer());
+      try { mo.observe(layer, { attributes: true, attributeFilter: ['class'] }); } catch {}
+      S.exportModeLayerAttrMo = mo;
+      UI_syncExportGlowFromModeLayer();
+    };
+
+    let raf = 0;
+    const hostMo = new MutationObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        bindLayer();
+      });
+    });
+    UTIL_observe(hostMo, document.body || document.documentElement, { childList: true, subtree: true });
+    CLEANUP.add(() => {
+      if (raf) {
+        try { cancelAnimationFrame(raf); } catch {}
+        raf = 0;
+      }
+      try { S.exportModeLayerAttrMo?.disconnect?.(); } catch {}
+      S.exportModeLayerAttrMo = null;
+      S.exportModeLayerEl = null;
+      S.exportGlowWired = false;
+      UI_setExportGlowActive(false);
+    });
+
+    bindLayer();
+  }
+
+  /** @helper */
+  function UI_emitExportRun(mode) {
+    const safeMode = (mode === CFG_.EXPORT_MODE_MINIMAL) ? CFG_.EXPORT_MODE_MINIMAL : CFG_.EXPORT_MODE_FULL;
+    const chatId = UTIL_getChatId();
+    const title = UTIL_getChatTitle(chatId);
+
+    UTIL_emitWindowEvent(EV_.EXPORT_RUN, {
+      chatId,
+      title,
+      ts: Date.now(),
+      mode: safeMode,
+    });
+  }
+
+  /** @helper */
+  function UI_buildExportButton(navBoxEl) {
+    if (!navBoxEl) return;
+    try { S.navExportBtn?.remove?.(); } catch {}
+    const btn = document.createElement('button');
+    btn.classList.add('cgxui-nav-btn');
+    btn.type = 'button';
+    btn.setAttribute(ATTR_.CGX_OWNER, SkID);
+    btn.setAttribute(ATTR_.CGX_UI, UI_.EXPORT_BTN);
+    btn.title = CFG_.EXPORT_BTN_TITLE;
+    btn.textContent = CFG_.EXPORT_BTN_LABEL;
+    btn.style.cssText = `
+      width: auto;
+      min-width: ${CFG_.EXPORT_MIN_WIDTH_PX}px;
+      max-width: none;
+      height: 20px;
+      min-height: 20px;
+      max-height: 20px;
+      flex: 0 0 auto;
+      flex-shrink: 0;
+      align-self: center;
+      padding: 0 6px;
+      line-height: 20px;
+      border-radius: 8px;
+      border: none;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.03), rgba(0,0,0,0.10)), rgba(38, 39, 45, .78);
+      color: rgba(220, 220, 220, 0.82);
+      opacity: 0.75;
+      box-shadow:
+        inset 0 0 1px rgba(255,255,255,0.05),
+        0 2px 5px rgba(0,0,0,0.30);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      pointer-events: auto;
+    `;
+
+    btn.addEventListener('mouseover', () => {
+      btn.style.opacity = '1';
+      btn.style.filter = 'brightness(1.08)';
+      btn.style.boxShadow = `
+        0 0 6px 2px rgba(255,255,255,0.08),
+        0 2px 4px rgba(0,0,0,0.25)
+      `;
+    });
+    btn.addEventListener('mouseout', () => {
+      btn.style.opacity = '0.75';
+      btn.style.filter = 'none';
+      btn.style.transform = 'scale(1)';
+      btn.style.boxShadow = `
+        inset 0 0 1px rgba(255,255,255,0.05),
+        0 2px 5px rgba(0,0,0,0.30)
+      `;
+    });
+    btn.addEventListener('mousedown', () => { btn.style.transform = 'scale(0.98)'; });
+    btn.addEventListener('mouseup', () => { btn.style.transform = 'scale(1)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.transform = 'scale(1)'; });
+    btn.addEventListener('click', (e) => {
+      try {
+        e.preventDefault();
+        e.stopPropagation();
+      } catch {}
+      UI_setExportGlowActive(true);
+      UI_emitExportRun(e?.shiftKey ? CFG_.EXPORT_MODE_MINIMAL : CFG_.EXPORT_MODE_FULL);
+    });
+
+    navBoxEl.insertBefore(btn, navBoxEl.firstChild || null);
+    S.navExportBtn = btn;
+    UI_measureExportWidth();
   }
 
   /* ──────────── 9) Color Wheel + Roller ──────────── */
@@ -1233,6 +1572,18 @@
 
   /** @critical */
   function UI_buildColorNav(navBoxEl) {
+    if (S.navWheelMask && (!S.navWheelMask.isConnected || S.navWheelMask.parentElement !== navBoxEl)) {
+      S.navWheelMask = null;
+      S.navWheel = null;
+      S.navRoller = null;
+    }
+    if (S.navWheel && (!S.navWheel.isConnected || S.navWheel.parentElement !== S.navWheelMask)) {
+      S.navWheel = null;
+    }
+    if (S.navRoller && (!S.navRoller.isConnected || S.navRoller.parentElement !== navBoxEl)) {
+      S.navRoller = null;
+    }
+
     Object.assign(navBoxEl.style, {
       display: 'flex',
       flexDirection: 'row',
@@ -1428,14 +1779,14 @@
       'linear-gradient(145deg, #8E8E8E, #606060)',
       'Scroll to first answer',
       () => { try { MM_getNav()?.jumpFirst?.(); } catch (e) { ERR('jumpFirst', e); } },
-      `${SkID}-nav-up`
+      UI_.NAV_UP
     );
 
     const btnDown = createMatteNavBtn(
       'linear-gradient(145deg, #6E6E6E, #4A4A4A)',
       'Scroll to last answer',
       () => { try { MM_getNav()?.jumpLast?.(); } catch (e) { ERR('jumpLast', e); } },
-      `${SkID}-nav-down`
+      UI_.NAV_DOWN
     );
 
     for (const [btn, arrow] of [[btnUp, '↑'], [btnDown, '↓']]) {
@@ -1825,12 +2176,14 @@
     const evReady = MM_evt('MM_READY');
     const evView  = MM_evt('MM_VIEW_CHANGED');
     const evInline = MM_evt('INLINE_CHANGED');
+    const evAnswerWash = MM_evt('ANSWER_WASH') || MM_evt('ANSWER_HL');
     const evAnswerHL = MM_evt('ANSWER_HL');
 
     listenDual(evReady, () => { onSync(); scheduleLayout(S.navBoxEl, S.navBoxLeft, S.navBoxRight); }, { passive: true });
     listenDual(evView, () => { onSync(); scheduleLayout(S.navBoxEl, S.navBoxLeft, S.navBoxRight); }, { passive: true });
     listenDual(evInline, () => { onSync(); }, { passive: true });
-    if (evAnswerHL) UTIL_on(W, evAnswerHL, () => { onSync(); }, { passive: true });
+    if (evAnswerWash) listenDual(evAnswerWash, () => { onSync(); }, { passive: true });
+    if (evAnswerHL && evAnswerHL !== evAnswerWash) listenDual(evAnswerHL, () => { onSync(); }, { passive: true });
 
     // Extra wash-change fallbacks (Answer Wash Engine / older bridges may use these)
     listenDual('evt:h2o:wash:changed', () => { onSync(); }, { passive: true });
@@ -1864,12 +2217,15 @@
     UI_injectStyleOnce();
     UI_ensureRotorStyleOnce();
 
-    const navBoxEl = (S.navBoxEl = UI_makeBox('cgxui-nav-box', `${SkID}-nav-box`));
-    const navBoxLeft = (S.navBoxLeft = UI_makeBox('cgxui-nav-box-left', `${SkID}-nav-box-left`));
-    const navBoxRight = (S.navBoxRight = UI_makeBox('cgxui-nav-box-right', `${SkID}-nav-box-right`));
+    const navBoxEl = (S.navBoxEl = UI_makeBox('cgxui-nav-box', UI_.NAV_BOX));
+    const navBoxLeft = (S.navBoxLeft = UI_makeBox('cgxui-nav-box-left', UI_.NAV_BOX_LEFT));
+    const navBoxRight = (S.navBoxRight = UI_makeBox('cgxui-nav-box-right', UI_.NAV_BOX_RIGHT));
     UI_applyBaseBoxStyles(navBoxEl, navBoxLeft, navBoxRight);
 
     UI_buildColorNav(navBoxEl);
+    try {
+      navBoxEl.querySelector?.(`[${ATTR_.CGX_OWNER}="${SkID}"][${ATTR_.CGX_UI}="${UI_.EXPORT_BTN}"]`)?.remove?.();
+    } catch {}
     UI_buildScrollPair(navBoxLeft);
     S.showScrollPair = CHUB_getMiniMapNavSetting();
 
@@ -1891,6 +2247,25 @@
     S.booted = false;
     S.layoutWired = false;
     S.syncWired = false;
+    S.navExportBtn = null;
+    S.exportWidthPx = CFG_.EXPORT_MIN_WIDTH_PX;
+    S.exportStyleSig = '';
+    S.exportStyleAt = 0;
+    S.exportStyleWired = false;
+    S.exportPromptSrcEl = null;
+    S.exportPromptAttrMo = null;
+    S.exportMirrorForce = false;
+    S.exportMirrorRaf = 0;
+    S.exportGlowWired = false;
+    S.exportGlowActive = false;
+    S.exportModeLayerEl = null;
+    S.exportModeLayerAttrMo = null;
+    S.navBoxEl = null;
+    S.navBoxLeft = null;
+    S.navBoxRight = null;
+    S.navWheelMask = null;
+    S.navWheel = null;
+    S.navRoller = null;
   }
 
   VAULT.api.boot = CORE_boot;

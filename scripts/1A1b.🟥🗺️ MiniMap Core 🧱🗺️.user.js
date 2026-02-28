@@ -2,7 +2,9 @@
 // @h2o-id      1a1b.minimap.core
 // @name         1A1b.🟥🗺️ MiniMap Core 🧱🗺️
 // @namespace    H2O.Prime.CGX.MiniMapCore
-// @version      12.6.5
+// @version      12.6.11
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  MiniMap Core: state/index/rebuild/registry authority
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -24,16 +26,18 @@
   const MM_behavior = () => (TOPW.H2O_MM_SHARED?.get?.() || null)?.util?.behavior || null;
   const MM_uiRefs = () => MM()?.uiRefs?.() || (MM_ui()?.getRefs?.() || {});
 
-  const CORE_VER = '12.6.5';
+  const CORE_VER = '12.6.11';
   const MAX_TRIES = 80;
   const GAP_MS = 120;
-  const REBUILD_DEBOUNCE_MS = 120;
+  const REBUILD_FALLBACK_MS = 180;
 
   const S = {
     inited: false,
     installTries: 0,
     installTimer: null,
     rebuildTimer: null,
+    rebuildRaf: 0,
+    rebuildToken: 0,
     rebuildReason: '',
     turnList: [],
     turnById: new Map(),
@@ -60,6 +64,8 @@
     washRepaintQueue: new Set(),
     washRepaintRaf: 0,
     washRepaintAll: false,
+    washBridgeLastSig: '',
+    washBridgeLastTs: 0,
   };
 
   const UI_TOK = Object.freeze({
@@ -192,13 +198,15 @@
       btnEl.style.boxShadow = isGold
         ? '0 0 5px 1px rgba(255,215,0,0.30)'
         : `0 0 6px 2px ${bg}40`;
-      btnEl.dataset.hl = 'true';
+      btnEl.dataset.wash = 'true';
+      try { btnEl.setAttribute('data-cgxui-wash', '1'); } catch {}
     } else {
       btnEl.style.background = 'rgba(255,255,255,.06)';
       btnEl.style.color = '#e5e7eb';
       btnEl.style.textShadow = '0 0 2px rgba(0,0,0,.25)';
       btnEl.style.boxShadow = 'none';
-      btnEl.dataset.hl = 'false';
+      btnEl.dataset.wash = 'false';
+      try { btnEl.removeAttribute('data-cgxui-wash'); } catch {}
     }
     return true;
   }
@@ -254,14 +262,21 @@
       }
     } catch {}
 
-    if (!out.length) {
-      for (const btn of qq(mmBtnSelector())) {
-        if (!btn || seen.has(btn)) continue;
-        seen.add(btn);
-        out.push(btn);
-      }
+    for (const btn of qq(mmBtnSelector())) {
+      if (!btn || seen.has(btn)) continue;
+      seen.add(btn);
+      out.push(btn);
     }
     return out;
+  }
+
+  function washEventSig(detail) {
+    const all = detail?.all === true || detail?.full === true;
+    const color = String(detail?.colorName ?? detail?.color ?? '').trim();
+    if (all) return `all|${color}`;
+    const ids = extractWashEventIds(detail).sort();
+    if (!ids.length && !color) return '';
+    return `${ids.join(',')}|${color}`;
   }
 
   function repaintMiniBtnByAnswerId(anyId, btnEl = null) {
@@ -360,6 +375,13 @@
 
     const onWashChanged = (ev) => {
       const detail = ev?.detail || {};
+      const sig = washEventSig(detail);
+      if (sig) {
+        const now = performance.now();
+        if (sig === S.washBridgeLastSig && (now - S.washBridgeLastTs) < 45) return;
+        S.washBridgeLastSig = sig;
+        S.washBridgeLastTs = now;
+      }
       if (detail?.all === true || detail?.full === true) {
         scheduleWashRepaint();
         return;
@@ -383,6 +405,8 @@
       S.washRepaintRaf = 0;
       S.washRepaintAll = false;
       S.washRepaintQueue.clear();
+      S.washBridgeLastSig = '';
+      S.washBridgeLastTs = 0;
     };
     S.washBridgeBound = true;
     return true;
@@ -559,6 +583,11 @@
       (W.H2O_MM_mapButtons instanceof Map) ? W.H2O_MM_mapButtons :
       (W.mapButtons instanceof Map) ? W.mapButtons :
       new Map();
+    return setMapStore(m);
+  }
+
+  function setMapStore(nextMap) {
+    const m = (nextMap instanceof Map) ? nextMap : new Map();
     S.mapButtons = m;
     try { W.H2O_MM_mapButtons = m; } catch {}
     try { W.mapButtons = m; } catch {}
@@ -937,21 +966,23 @@
     const turns = Array.isArray(list) ? list : [];
     const col = ensureCol();
     if (!col) return null;
-    if (!turns.length) return ensureMapStore();
+    if (!turns.length) {
+      col.textContent = '';
+      return setMapStore(new Map());
+    }
 
-    const map = ensureMapStore();
+    const prevMap = ensureMapStore();
+    const nextMap = new Map();
     const marginSymbolMetaMap = getMarginSymbolMetaMap();
-    const keepTurnIds = new Set();
+    const keepBtns = new Set();
     const frag = document.createDocumentFragment();
 
     for (const turn of turns) {
       const turnId = String(turn?.turnId || '').trim();
       if (!turnId) continue;
-      keepTurnIds.add(turnId);
 
       const answerId = String(turn?.answerId || '').trim();
-      const key = turnId;
-      let btn = map.get(turnId) || map.get(answerId);
+      let btn = prevMap.get(turnId) || (answerId ? prevMap.get(answerId) : null);
       if (!btn || !btn.isConnected) {
         const made = createBtn(turn);
         btn = made.btn;
@@ -962,6 +993,7 @@
           btn.closest(`[data-cgxui="${UI_TOK.WRAP_LEGACY}"]`);
         if (host) frag.appendChild(host);
       }
+      keepBtns.add(btn);
 
       btn.dataset.id = turnId;
       btn.dataset.turnId = turnId;
@@ -973,22 +1005,21 @@
       updateMiniMapGutterSymbol(btn, symbolMeta.symbols, { color: String(symbolMeta.colors[0] || '').trim() });
       repaintMiniBtnByAnswerId(answerId || turnId, btn);
 
-      map.set(turnId, btn);
-      if (answerId) map.set(answerId, btn);
+      nextMap.set(turnId, btn);
+      if (answerId) nextMap.set(answerId, btn);
     }
 
     col.textContent = '';
     col.appendChild(frag);
 
-    for (const [k, btn] of Array.from(map.entries())) {
-      const turnId = String(btn?.dataset?.turnId || '').trim();
-      if (turnId && keepTurnIds.has(turnId)) continue;
+    for (const btn of new Set(Array.from(prevMap.values()))) {
+      if (!btn || !btn.isConnected || keepBtns.has(btn)) continue;
       try {
         (btn?.closest?.(`[data-cgxui="${UI_TOK.WRAP}"]`) ||
          btn?.closest?.(`[data-cgxui="${UI_TOK.WRAP_LEGACY}"]`))?.remove?.();
       } catch {}
-      map.delete(k);
     }
+    const map = setMapStore(nextMap);
 
     for (const turn of turns) {
       const answerId = String(turn?.answerId || '').trim();
@@ -1329,8 +1360,8 @@
   function updateCounter(anyId = '') {
     const key = String(anyId || '').trim();
     const total = Number(
-      W?.H2O?.turn?.total?.()
-      || S.turnList.length
+      S.turnList.length
+      || W?.H2O?.turn?.total?.()
       || getAnswerEls().length
       || 0
     );
@@ -1359,6 +1390,29 @@
 
     if (key) updateToggleColor(key);
     return true;
+  }
+
+  function resolveRebuildActiveId() {
+    try {
+      const active = q('[data-cgxui="mnmp-btn"][data-cgxui-state~="active"], [data-cgxui="mm-btn"][data-cgxui-state~="active"], .cgxui-mm-btn.active');
+      const activeId = String(active?.dataset?.turnId || active?.dataset?.id || active?.dataset?.primaryAId || '').trim();
+      if (activeId) return activeId;
+    } catch {}
+    const viewport = computeActiveFromViewport({});
+    const viewportId = String(viewport?.activeTurnId || viewport?.activeAnswerId || '').trim();
+    if (viewportId) return viewportId;
+    const first = S.turnList[0] || null;
+    return String(first?.turnId || first?.answerId || '').trim();
+  }
+
+  function finalizeRebuildUi(reason = 'core:rebuild') {
+    const activeId = resolveRebuildActiveId();
+    if (activeId) {
+      setActive(activeId, `rebuild:${String(reason || 'core:rebuild')}`);
+      return true;
+    }
+    updateCounter('');
+    return false;
   }
 
   function syncActiveFromViewport(opts = {}) {
@@ -1398,6 +1452,17 @@
       const hadWrap = !!target.classList?.contains?.(FLASH_CLS.WASH_WRAP);
       const hadWrapLegacy = !!target.classList?.contains?.(FLASH_CLS.WASH_WRAP_LEGACY);
       const hasAnyWashTintClass = () => {
+        const inlineBandColor = String(
+          target.style?.getPropertyValue?.('--h2o-band-color')
+          || target.style?.getPropertyValue?.('--cgxui-mnmp-band-color')
+          || ''
+        ).trim();
+        const inlineBandOpacity = String(
+          target.style?.getPropertyValue?.('--h2o-band-opacity')
+          || target.style?.getPropertyValue?.('--cgxui-mnmp-band-opacity')
+          || ''
+        ).trim();
+        if (inlineBandColor || inlineBandOpacity) return true;
         const classes = Array.from(target.classList || []);
         return classes.some((cls) => {
           if (!cls || cls === FLASH_CLS.WASH_WRAP || cls === FLASH_CLS.WASH_WRAP_LEGACY) return false;
@@ -1526,11 +1591,38 @@
     return { ui, refs, ready: !!(refs?.root && refs?.panel) };
   }
 
+  function cancelScheduledRebuild() {
+    if (S.rebuildRaf) {
+      try { cancelAnimationFrame(S.rebuildRaf); } catch {}
+      S.rebuildRaf = 0;
+    }
+    if (S.rebuildTimer) {
+      try { clearTimeout(S.rebuildTimer); } catch {}
+      S.rebuildTimer = null;
+    }
+  }
+
+  function invalidateScheduledRebuild() {
+    S.rebuildToken += 1;
+    cancelScheduledRebuild();
+  }
+
+  function runScheduledRebuild(token) {
+    if (!token || token !== S.rebuildToken) return false;
+    // Consume this cycle token before running rebuild so correctness does not depend on rebuildNow internals.
+    S.rebuildToken += 1;
+    cancelScheduledRebuild();
+    rebuildNow(S.rebuildReason);
+    return true;
+  }
+
   function rebuildNow(reason = 'core:rebuildNow') {
     const why = String(reason || 'core:rebuildNow');
+    // Direct rebuild must run immediately and clear any pending scheduled handles.
+    cancelScheduledRebuild();
     S.rebuildReason = why;
     if (S.rebuildInFlight) {
-      S.rebuildQueuedReason = why;
+      S.rebuildReason = why;
       const queued = makeRebuildResult(why, 'queued');
       S.lastRebuildResult = queued;
       return queued;
@@ -1586,6 +1678,7 @@
         return out;
       }
       try { repaintAllMiniBtns(); } catch {}
+      try { finalizeRebuildUi(why); } catch {}
 
       clearRetry();
       try {
@@ -1614,9 +1707,7 @@
       return failed;
     } finally {
       S.rebuildInFlight = false;
-      const queued = String(S.rebuildQueuedReason || '').trim();
       S.rebuildQueuedReason = '';
-      if (queued && queued !== why) scheduleRebuild(`${queued}:queued`);
     }
   }
 
@@ -1632,11 +1723,12 @@
 
   function scheduleRebuild(reason = 'core:rebuild') {
     S.rebuildReason = String(reason || 'core:rebuild');
-    if (S.rebuildTimer) return true;
+    if (S.rebuildRaf || S.rebuildTimer) return true;
+    const token = (S.rebuildToken += 1);
+    S.rebuildRaf = requestAnimationFrame(() => { runScheduledRebuild(token); });
     S.rebuildTimer = setTimeout(() => {
-      S.rebuildTimer = null;
-      rebuildNow(S.rebuildReason);
-    }, REBUILD_DEBOUNCE_MS);
+      runScheduledRebuild(token);
+    }, REBUILD_FALLBACK_MS);
     return true;
   }
 
@@ -1659,8 +1751,7 @@
   }
 
   function disposeCore() {
-    try { if (S.rebuildTimer) clearTimeout(S.rebuildTimer); } catch {}
-    S.rebuildTimer = null;
+    invalidateScheduledRebuild();
     clearEmptyRetry();
     S.rebuildInFlight = false;
     S.rebuildQueuedReason = '';

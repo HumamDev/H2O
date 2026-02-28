@@ -2,7 +2,9 @@
 // @h2o-id      0z1b.control.hub.quick.tree
 // @name         0Z1.⚫️🌳 Control Hub Quick Tree
 // @namespace    H2O.ChatGPT.POC
-// @version      0.3.1
+// @version      0.5.11
+// @rev        000007
+// @build      2026-02-28T17:33:34Z
 // @description  Double-click Control Hub button to open an animated tree-like quick tools overlay (empty buttons for now).
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -21,26 +23,127 @@
   // Placeholder nodes only (no real actions yet).
   // Keep ids stable for future hooks.
   const QUICK_NODES = Object.freeze([
-    { id: "left", label: "Left" },
-    { id: "mid", label: "Middle" },
-    { id: "right", label: "Right" },
+    { id: "left2", label: "" },
+    { id: "left1", label: "" },
+    { id: "mid", label: "" },
+    { id: "right1", label: "" },
   ]);
 
   const CFG = Object.freeze({
     zIndex: 999999,
-    dropGap: 5,
-    sourceY: 10,
-    childDropY: 54,
-    childGapX: 108,
-    curveK1: 18,
-    curveK2: 14,
-    sidePadX: 52,
-    bottomPadY: 14,
-    nodeWidth: 60,
-    nodeHeight: 32,
-    nodeRadius: 12,
-    clampMargin: 8,
+    // ── Position / spacing controls (main knobs) ─────────────────────────────
+    // Distance from Cockpit button bottom to tree anchor.
+    cockpitGapY: -12,
+    // Additional whole-overlay Y shift after anchoring (negative = up, positive = down).
+    panelOffsetY: 0,
+    // Minimum gap from top viewport/topbar safe area.
+    topbarSafeGapY: 4,
+    // Horizontal clamp margin from left/right viewport edges.
+    panelClampMarginX: 6,
+    // Legacy compatibility (fallback if cockpitGapY not set).
+    dropGap: 0,
+    // Move all node boxes up/down inside the tree (negative = up).
+    nodeOffsetY: 8,
+
+    sourceY: 2,
+    trunkDropY: 5,
+    childDropY: 20,
+    childGapX: 78,
+    nearCurveLiftY: 10,
+    nearCurvePull: 0.42,
+    nearCurveInPull: 0.16,
+    nearCurveDropY: 7,
+    farCurveLiftY: 8,
+    farCurvePullOut: 0.52,
+    farCurvePullIn: 0.22,
+    farCurveDropY: 3,
+    mergeT: 0.52,
+    mergeTStep: -0.12,
+    sidePadX: 42,
+    bottomPadY: 3,
+    // ── D-tab (shadow container) size controls ───────────────────────────────
+    tabTopY: 15,
+    // If tabTopY is null, top is derived from node top minus this padding.
+    tabTopPadY: 11,
+    // Legacy base horizontal padding around outer node edges.
+    tabPadX: 16,
+    // Explicit top width control (bigger => wider top side in X).
+    tabTopPadX: 20,
+    // Explicit bottom width control (negative => narrower bottom side).
+    tabBottomPadX: 8,
+    // Minimum horizontal margin from outer node edges to tab border.
+    tabNodeClearanceX: 10,
+    // Extra height below node bottoms (smaller value => shorter tab in Y).
+    tabBottomPadY: 8,
+    // Rounded corner radius for trapezoid path clip.
+    tabCornerRadius: 14,
+    tabRadius: 26,
+    // Rounded-bottom shaping (legacy; kept for compatibility if needed later).
+    tabBottomRadius: 18,
+    tabBottomRoundH: 20,
+    // Legacy widening amount (compat fallback when tabTopPadX not set).
+    tabTopOutsetX: 20,
+    // Legacy bottom inset (compat fallback when tabBottomPadX not set).
+    tabBottomInsetX: 18,
+    tabFillTopAlpha: 0.24,
+    tabFillBottomAlpha: 0.38,
+    tabBorderAlpha: 0.26,
+    tabShadowAlpha: 0.30,
+    tabGlowAlpha: 0.16,
+    // Inner angled shade (inside the tab body).
+    tabInnerShadowAngleDeg: 166,
+    tabInnerShadowDarkAlpha: 0.5,
+    tabInnerShadowMidAlpha: 0.12,
+    tabInnerShadowBlurPx: 7,
+    tabInnerShadowOpacity: 0.90,
+    tabInsetTopAlpha: 0.16,
+    tabInsetBottomAlpha: 0.28,
+    tabBlurPx: 22,
+    tabSaturate: 1.00,
+    tabContrast: 0.84,
+    // Panel texture (copied direction from Export/Prompt panels)
+    panelTintTopAlpha: 0.00,
+    panelTintBottomAlpha: 0.00,
+    panelBgAAlpha: 0.045,
+    panelBgBAlpha: 0.030,
+    panelBorderAlpha: 0.12,
+    panelRingAlpha: 0.10,
+    panelShadowAlpha: 0.85,
+    panelBlurPx: 14,
+    panelSaturate: 1.05,
+    panelContrast: 1.08,
+    panelBrightness: 1.03,
+    // ── Node/button size controls ─────────────────────────────────────────────
+    nodeWidth: 64,
+    nodeHeight: 30,
+    nodeRadius: 11,
+    // Node style keys (menu-item direction from Export/Prompt panels)
+    nodeBaseRgb: "28,29,32",
+    nodeBaseAlpha: 0.85,
+    nodeGlassTopAlpha: 0.03,
+    nodeGlassBottomAlpha: 0.00,
+    nodeBorderRgb: "255,255,255",
+    nodeBorderAlpha: 0.12,
+    nodeInsetTopAlpha: 0.04,
+    nodeInsetBottomAlpha: 0.00,
+    nodeShadowAlpha: 0.30,
+    nodeGlowAlpha: 0.00,
+    nodeBlurPx: 10,
+    nodeSaturate: 1.03,
+    nodeContrast: 1.03,
+    nodeBrightness: 1.00,
+    // Hover style keys
+    nodeHoverBaseRgb: "44,46,52",
+    nodeHoverBaseAlpha: 0.92,
+    nodeHoverGlassTopAlpha: 0.04,
+    nodeHoverGlassBottomAlpha: 0.00,
+    nodeHoverBorderAlpha: 0.18,
+    nodeHoverShadowAlpha: 0.25,
+    nodeHoverGlowAlpha: 0.00,
+    // Legacy compatibility (use panelClampMarginX / topbarSafeGapY above)
+    clampMargin: 6,
     drawMs: 340,
+    nodeStartDelayMs: 170,
     popMs: 220,
     staggerMs: 55,
     singleClickDelayMs: 280,
@@ -56,24 +159,18 @@
   const CLS = Object.freeze({
     open: "h2o-chqt-open",
     wrap: "h2o-chqt-wrap",
-    panel: "h2o-chqt-panel",
-    shell: "h2o-chqt-shell",
-    branch: "h2o-chqt-branch",
+    tab: "h2o-chqt-tab",
     node: "h2o-chqt-node",
   });
 
-  const SVG_NS = "http://www.w3.org/2000/svg";
-  const NODE_ID_SET = new Set(["left", "mid", "right"]);
-  const ATTR_EXPORT_HIDDEN = "data-h2o-chqt-export-hidden";
+  const NODE_ID_SET = new Set(["left2", "left1", "mid", "right1"]);
   const FORWARDED_CLICK_EVENTS = new WeakSet();
-  const EXPORT_STYLE_BACKUP = new WeakMap();
 
   const STATE = {
     hubBtn: null,
-    exportBtn: null,
     root: null,
     wrap: null,
-    panel: null,
+    tab: null,
     isOpen: false,
     openListenersAttached: false,
     pendingClickTimer: 0,
@@ -97,14 +194,6 @@
       else if (v !== false && v != null) n.setAttribute(k, String(v));
     }
     for (const c of children) n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    return n;
-  }
-
-  function svgEl(tag, attrs = {}) {
-    const n = document.createElementNS(SVG_NS, tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (v !== false && v != null) n.setAttribute(k, String(v));
-    }
     return n;
   }
 
@@ -134,143 +223,63 @@
     STATE.pendingClickPayload = null;
   }
 
-  function normText(val) {
-    return String(val || "").replace(/\s+/g, " ").trim();
-  }
-
-  function isCandidateEl(el, requireVisible = false) {
-    if (!(el instanceof HTMLElement)) return false;
-    if (!el.isConnected) return false;
-    if (el.closest(`#${IDS.root}`)) return false;
-    if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true") return false;
-    if (requireVisible) {
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
-      const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2) return false;
-    }
-    return true;
-  }
-
-  function findExportButton() {
-    // 1) aria-label/title contains "Export"
-    const q1 = [
-      'button[aria-label*="export" i]',
-      'button[title*="export" i]',
-      '[role="button"][aria-label*="export" i]',
-      '[role="button"][title*="export" i]',
-      '[aria-label*="export" i][tabindex]',
-      '[title*="export" i][tabindex]',
-    ].join(",");
-    const byLabel = document.querySelectorAll(q1);
-    for (const el of byLabel) {
-      if (isCandidateEl(el)) return el;
-    }
-
-    // 2) around Cockpit Pro region: clickable text containing "Export"
-    const hub = STATE.hubBtn || findHubButton();
-    let cur = hub;
-    for (let depth = 0; cur && depth < 4; depth += 1) {
-      const candidates = cur.querySelectorAll("button,[role='button'],a,[tabindex]");
-      for (const el of candidates) {
-        if (!isCandidateEl(el)) continue;
-        const txt = normText(el.textContent || el.innerText).toLowerCase();
-        if (txt.includes("export")) return el;
-      }
-      cur = cur.parentElement;
-    }
-
-    // 3) fallback: visible controls with exact text "Export"
-    const fallback = document.querySelectorAll("button,[role='button'],a,[tabindex]");
-    for (const el of fallback) {
-      if (!isCandidateEl(el, true)) continue;
-      const txt = normText(el.textContent || el.innerText).toLowerCase();
-      if (txt === "export") return el;
-    }
-    return null;
-  }
-
-  function softHideExportButton(btn) {
-    if (!btn || !btn.isConnected) return;
-    if (btn.getAttribute(ATTR_EXPORT_HIDDEN) === "1") return;
-    if (!EXPORT_STYLE_BACKUP.has(btn)) {
-      EXPORT_STYLE_BACKUP.set(btn, {
-        visibility: btn.style.visibility,
-        pointerEvents: btn.style.pointerEvents,
-        opacity: btn.style.opacity,
-      });
-    }
-    btn.style.visibility = "hidden";
-    btn.style.pointerEvents = "none";
-    btn.style.opacity = "0";
-    btn.setAttribute(ATTR_EXPORT_HIDDEN, "1");
-  }
-
-  function unhideExportButton(btn) {
-    if (!btn) return;
-    const prev = EXPORT_STYLE_BACKUP.get(btn);
-    if (prev) {
-      btn.style.visibility = prev.visibility;
-      btn.style.pointerEvents = prev.pointerEvents;
-      btn.style.opacity = prev.opacity;
-    } else {
-      btn.style.removeProperty("visibility");
-      btn.style.removeProperty("pointer-events");
-      btn.style.removeProperty("opacity");
-    }
-    btn.removeAttribute(ATTR_EXPORT_HIDDEN);
-  }
-
-  function syncExportButton() {
-    const next = findExportButton();
-    if (next === STATE.exportBtn) {
-      if (next) softHideExportButton(next);
-      return;
-    }
-
-    if (STATE.exportBtn && STATE.exportBtn !== next) {
-      unhideExportButton(STATE.exportBtn);
-    }
-
-    STATE.exportBtn = next;
-    if (STATE.exportBtn) {
-      softHideExportButton(STATE.exportBtn);
-    }
-  }
-
-  function triggerExportFromRightNode() {
-    let btn = STATE.exportBtn;
-    if (!btn || !btn.isConnected) {
-      syncExportButton();
-      btn = STATE.exportBtn;
-    }
-    if (!btn || !btn.isConnected) {
-      // Failsafe: if export cannot be resolved, unhide any tracked export button.
-      if (STATE.exportBtn) unhideExportButton(STATE.exportBtn);
-      return;
-    }
-
-    try {
-      btn.click();
-      return;
-    } catch {}
-
-    try {
-      btn.dispatchEvent(new MouseEvent("click", {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-      }));
-    } catch {}
-  }
-
   function clamp(n, min, max) {
     if (!Number.isFinite(n)) return min;
     if (!Number.isFinite(min)) min = n;
     if (!Number.isFinite(max)) max = n;
     if (max < min) return min;
     return Math.min(max, Math.max(min, n));
+  }
+
+  function fmt(n) {
+    return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
+  }
+
+  function roundedPolygonPath(points, radius) {
+    if (!Array.isArray(points) || points.length < 3) return "";
+    const rBase = Math.max(0, Number(radius) || 0);
+    const n = points.length;
+    let d = "";
+
+    for (let i = 0; i < n; i += 1) {
+      const prev = points[(i - 1 + n) % n];
+      const curr = points[i];
+      const next = points[(i + 1) % n];
+      const vPrev = { x: prev.x - curr.x, y: prev.y - curr.y };
+      const vNext = { x: next.x - curr.x, y: next.y - curr.y };
+      const lPrev = Math.hypot(vPrev.x, vPrev.y);
+      const lNext = Math.hypot(vNext.x, vNext.y);
+      if (lPrev < 0.001 || lNext < 0.001) continue;
+
+      const uPrev = { x: vPrev.x / lPrev, y: vPrev.y / lPrev };
+      const uNext = { x: vNext.x / lNext, y: vNext.y / lNext };
+      const dot = clamp(uPrev.x * uNext.x + uPrev.y * uNext.y, -0.999, 0.999);
+      const theta = Math.acos(dot);
+      const tanHalf = Math.tan(theta / 2);
+      const maxInset = Math.max(0, Math.min(lPrev, lNext) * 0.48);
+      const inset = tanHalf > 0.0001 ? Math.min(rBase / tanHalf, maxInset) : 0;
+
+      const inPt = { x: curr.x + uPrev.x * inset, y: curr.y + uPrev.y * inset };
+      const outPt = { x: curr.x + uNext.x * inset, y: curr.y + uNext.y * inset };
+
+      if (!d) d = `M ${fmt(inPt.x)} ${fmt(inPt.y)}`;
+      else d += ` L ${fmt(inPt.x)} ${fmt(inPt.y)}`;
+      d += ` Q ${fmt(curr.x)} ${fmt(curr.y)} ${fmt(outPt.x)} ${fmt(outPt.y)}`;
+    }
+
+    return d ? `${d} Z` : "";
+  }
+
+  function cubicPoint(p0, p1, p2, p3, t) {
+    const u = 1 - t;
+    const uu = u * u;
+    const uuu = uu * u;
+    const tt = t * t;
+    const ttt = tt * t;
+    return {
+      x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
+      y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
+    };
   }
 
   function buildLayout(nodes) {
@@ -280,33 +289,162 @@
     if (!list.length) return null;
 
     const spread = Math.max(0, list.length - 1) * CFG.childGapX;
-    const width = Math.max(260, spread + CFG.sidePadX * 2);
+    const topPadX = Number.isFinite(CFG.tabTopPadX)
+      ? CFG.tabTopPadX
+      : (CFG.tabPadX + CFG.tabTopOutsetX);
+    const bottomPadX = Number.isFinite(CFG.tabBottomPadX)
+      ? CFG.tabBottomPadX
+      : (CFG.tabPadX - CFG.tabBottomInsetX);
+    const clearX = Math.max(0, Number.isFinite(CFG.tabNodeClearanceX) ? CFG.tabNodeClearanceX : 0);
+    const outerPadX = Math.max(0, topPadX, bottomPadX, clearX);
+    const requiredSpan = spread + CFG.nodeWidth + outerPadX * 2;
+    const width = Math.max(260, spread + CFG.sidePadX * 2, requiredSpan);
 
     const cx = width / 2;
     const source = { x: cx, y: CFG.sourceY };
-    const childY = source.y + CFG.childDropY;
-    const height = childY + Math.ceil(CFG.nodeHeight / 2) + CFG.bottomPadY;
+    const trunkEnd = { x: cx, y: source.y + CFG.trunkDropY };
+    const nodeCenterY = trunkEnd.y + CFG.childDropY + CFG.nodeOffsetY;
+    const nodeTopY = nodeCenterY - CFG.nodeHeight / 2;
+    const baseHeight = nodeCenterY + Math.ceil(CFG.nodeHeight / 2) + CFG.bottomPadY;
 
     const points = new Map();
     const firstX = cx - spread / 2;
     list.forEach((n, i) => {
-      points.set(n.id, { x: firstX + i * CFG.childGapX, y: childY });
+      points.set(n.id, { x: firstX + i * CFG.childGapX, y: nodeCenterY });
+    });
+
+    const endpoints = new Map();
+    list.forEach((n) => {
+      const p = points.get(n.id);
+      if (p) endpoints.set(n.id, { x: p.x, y: p.y - CFG.nodeHeight / 2 });
     });
 
     const branches = [];
-    list.forEach((n) => {
-      const p = points.get(n.id);
-      if (!p) return;
-      const end = { x: p.x, y: p.y - CFG.nodeHeight / 2 };
+    branches.push({
+      start: source,
+      cp1: { x: source.x, y: source.y + CFG.trunkDropY * 0.45 },
+      cp2: { x: trunkEnd.x, y: trunkEnd.y - CFG.trunkDropY * 0.15 },
+      end: trunkEnd,
+    });
+
+    const leftNodes = list.filter((n) => (points.get(n.id)?.x ?? cx) < cx - 0.5);
+    const rightNodes = list.filter((n) => (points.get(n.id)?.x ?? cx) > cx + 0.5);
+    const centerNodes = list.filter((n) => {
+      const x = points.get(n.id)?.x ?? cx;
+      return Math.abs(x - cx) <= 0.5;
+    });
+
+    leftNodes.sort((a, b) => (points.get(b.id)?.x ?? 0) - (points.get(a.id)?.x ?? 0)); // near -> far
+    rightNodes.sort((a, b) => (points.get(a.id)?.x ?? 0) - (points.get(b.id)?.x ?? 0)); // near -> far
+
+    function addSideMergedBranches(sideNodes) {
+      if (!sideNodes.length) return;
+      const nearNode = sideNodes[0];
+      const nearStart = endpoints.get(nearNode.id);
+      if (!nearStart) return;
+
+      const root = trunkEnd;
+      const dxNear = root.x - nearStart.x;
+      const nearCp1 = {
+        x: nearStart.x + dxNear * CFG.nearCurvePull,
+        y: nearStart.y - CFG.nearCurveLiftY,
+      };
+      const nearCp2 = {
+        x: root.x - dxNear * CFG.nearCurveInPull,
+        y: root.y + CFG.nearCurveDropY,
+      };
+      const nearBranch = { start: nearStart, cp1: nearCp1, cp2: nearCp2, end: root };
+
+      const sideBranches = [];
+      sideNodes.slice(1).forEach((n, idx) => {
+        const farStart = endpoints.get(n.id);
+        if (!farStart) return;
+
+        const t = clamp(CFG.mergeT + idx * CFG.mergeTStep, 0.14, 0.86);
+        const merge = cubicPoint(nearStart, nearCp1, nearCp2, root, t);
+        const dxFar = merge.x - farStart.x;
+        const farCp1 = {
+          x: farStart.x + dxFar * CFG.farCurvePullOut,
+          y: farStart.y - CFG.farCurveLiftY,
+        };
+        const farCp2 = {
+          x: merge.x - dxFar * CFG.farCurvePullIn,
+          y: merge.y + CFG.farCurveDropY,
+        };
+        sideBranches.push({ start: farStart, cp1: farCp1, cp2: farCp2, end: merge });
+      });
+
+      // Draw merged children first, then the near branch so the shared track stays visually continuous.
+      branches.push(...sideBranches, nearBranch);
+    }
+
+    addSideMergedBranches(leftNodes);
+    addSideMergedBranches(rightNodes);
+
+    centerNodes.forEach((n) => {
+      const start = endpoints.get(n.id);
+      if (!start) return;
       branches.push({
-        start: source,
-        cp1: { x: source.x, y: source.y + CFG.curveK1 },
-        cp2: { x: end.x, y: end.y - CFG.curveK2 },
-        end,
+        start,
+        cp1: { x: start.x, y: start.y - CFG.nearCurveLiftY },
+        cp2: { x: trunkEnd.x, y: trunkEnd.y + CFG.nearCurveDropY },
+        end: trunkEnd,
       });
     });
 
-    return { width, height, source, points, branches, nodes: list };
+    const xs = list.map((n) => points.get(n.id)?.x).filter((v) => Number.isFinite(v));
+    const minX = xs.length ? Math.min(...xs) : cx;
+    const maxX = xs.length ? Math.max(...xs) : cx;
+    const nodeLeft = minX - CFG.nodeWidth / 2;
+    const nodeRight = maxX + CFG.nodeWidth / 2;
+    const tabTopLeftRaw = Math.min(nodeLeft - topPadX, nodeLeft - clearX);
+    const tabTopRightRaw = Math.max(nodeRight + topPadX, nodeRight + clearX);
+    const tabBottomLeftRaw = Math.min(nodeLeft - bottomPadX, nodeLeft - clearX);
+    const tabBottomRightRaw = Math.max(nodeRight + bottomPadX, nodeRight + clearX);
+    const tabTop = Number.isFinite(CFG.tabTopY)
+      ? CFG.tabTopY
+      : (nodeTopY - (Number.isFinite(CFG.tabTopPadY) ? CFG.tabTopPadY : 10));
+    const tabBottom = nodeCenterY + CFG.nodeHeight / 2 + CFG.tabBottomPadY;
+    const height = Math.max(baseHeight, tabBottom + Math.max(2, CFG.bottomPadY));
+    const topLeft = clamp(tabTopLeftRaw, 0, width);
+    const topRight = clamp(tabTopRightRaw, 0, width);
+    const bottomLeft = clamp(tabBottomLeftRaw, 0, width);
+    const bottomRight = clamp(tabBottomRightRaw, 0, width);
+    const tabLeft = Math.min(topLeft, bottomLeft);
+    const tabRight = Math.max(topRight, bottomRight);
+    const tabWidth = Math.max(0, tabRight - tabLeft);
+    const tabHeight = Math.max(0, tabBottom - tabTop);
+    const topLeftPt = { x: topLeft, y: tabTop };
+    const topRightPt = { x: topRight, y: tabTop };
+    const bottomRightPt = { x: bottomRight, y: tabBottom };
+    const bottomLeftPt = { x: bottomLeft, y: tabBottom };
+    const tabPathData = roundedPolygonPath(
+      [topLeftPt, topRightPt, bottomRightPt, bottomLeftPt],
+      Number.isFinite(CFG.tabCornerRadius) ? CFG.tabCornerRadius : CFG.tabRadius
+    );
+    const tabClipPath = tabPathData ? `path("${tabPathData}")` : "";
+    const tabPolygonClip = `polygon(${fmt(topLeft)}px ${fmt(tabTop)}px, ${fmt(topRight)}px ${fmt(tabTop)}px, ${fmt(bottomRight)}px ${fmt(tabBottom)}px, ${fmt(bottomLeft)}px ${fmt(tabBottom)}px)`;
+
+    return {
+      width,
+      height,
+      source,
+      points,
+      branches,
+      nodes: list,
+      tab: {
+        left: tabLeft,
+        top: tabTop,
+        width: tabWidth,
+        height: tabHeight,
+        topLeftX: Math.max(0, topLeft - tabLeft),
+        topRightX: Math.max(0, topRight - tabLeft),
+        bottomLeftX: Math.max(0, bottomLeft - tabLeft),
+        bottomRightX: Math.max(0, bottomRight - tabLeft),
+        clipPath: tabClipPath,
+        polygonClip: tabPolygonClip,
+      },
+    };
   }
 
   function ensureStyles() {
@@ -328,85 +466,51 @@
   left: 0; top: 0;
   transform: translate(-9999px, -9999px);
 }
-#${IDS.root} .${CLS.panel}{
+#${IDS.root} > .${CLS.wrap} > .${CLS.tab}{
   position: absolute;
   left: 0; top: 0;
   transform: translate(-50%, 0) scale(0.94);
   transform-origin: top center;
-  border-radius: 20px;
-  overflow: visible;
+  border-radius: 14px;
+  overflow: hidden;
   pointer-events: auto;
+  isolation: auto;
+  z-index: 1;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(118,170,236,.08), rgba(118,170,236,0) 56%),
+    radial-gradient(circle at 0% 0%, rgba(255,255,255,0.00), transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(255,255,255,0.00), transparent 55%),
+    linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.030));
+  border: 1px solid rgba(255,255,255,.12);
+  box-shadow:
+    0 26px 80px rgba(0,0,0,.85),
+    0 0 0 1px rgba(255,255,255,.10),
+    inset 0 0 0 1px rgba(0,0,0,.25);
+  backdrop-filter: blur(14px) saturate(1.05) contrast(1.08) brightness(1.03);
+  -webkit-backdrop-filter: blur(14px) saturate(1.05) contrast(1.08) brightness(1.03);
   opacity: 0;
-  filter: drop-shadow(0 8px 24px rgba(0,0,0,.18));
   transition: opacity 180ms ease, transform 220ms cubic-bezier(.2,.9,.2,1);
   will-change: transform, opacity;
 }
-#${IDS.root}.${CLS.open} .${CLS.panel}{
+#${IDS.root} > .${CLS.wrap} > .${CLS.tab}::before{
+  content: "";
+  position: absolute;
+  inset: 1px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    ${CFG.tabInnerShadowAngleDeg}deg,
+    rgba(8,14,24,${CFG.tabInnerShadowDarkAlpha}) 0%,
+    rgba(12,20,32,${CFG.tabInnerShadowMidAlpha}) 44%,
+    rgba(12,20,32,0) 76%
+  );
+  mix-blend-mode: multiply;
+  opacity: ${CFG.tabInnerShadowOpacity};
+  filter: blur(${CFG.tabInnerShadowBlurPx}px);
+}
+#${IDS.root}.${CLS.open} > .${CLS.wrap} > .${CLS.tab}{
   opacity: 1;
   transform: translate(-50%, 0) scale(1);
-}
-
-#${IDS.root} .${CLS.shell}{
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 22px;
-  background: radial-gradient(92% 74% at 50% 36%, rgba(20,34,52,.26), rgba(20,34,52,.08) 58%, rgba(20,34,52,0) 100%);
-  border: 1px solid rgba(255,255,255,.025);
-  box-shadow: 0 0 0 1px rgba(255,255,255,.015) inset;
-  overflow: visible;
-  isolation: isolate;
-}
-
-#${IDS.root} .${CLS.shell}::before{
-  content: "";
-  position: absolute;
-  inset: -34px -46px -38px -46px;
-  border-radius: 52px;
-  pointer-events: none;
-  background:
-    radial-gradient(125% 95% at 50% 0%, rgba(128,190,255,.23), rgba(128,190,255,0) 58%),
-    radial-gradient(95% 75% at 12% 74%, rgba(96,150,255,.13), rgba(96,150,255,0) 62%),
-    radial-gradient(95% 75% at 88% 74%, rgba(112,176,255,.12), rgba(112,176,255,0) 62%),
-    radial-gradient(86% 72% at 50% 44%, rgba(18,28,44,.46), rgba(18,28,44,.18) 60%, rgba(18,28,44,0) 100%);
-  filter: blur(18px) saturate(1.08);
-  opacity: .90;
-  -webkit-mask-image: radial-gradient(120% 100% at 50% 38%, rgba(0,0,0,.98) 0%, rgba(0,0,0,.86) 46%, rgba(0,0,0,.36) 72%, transparent 100%);
-  mask-image: radial-gradient(120% 100% at 50% 38%, rgba(0,0,0,.98) 0%, rgba(0,0,0,.86) 46%, rgba(0,0,0,.36) 72%, transparent 100%);
-  z-index: 0;
-}
-
-#${IDS.root} .${CLS.shell}::after{
-  content: "";
-  position: absolute;
-  inset: -8px -10px -10px -10px;
-  border-radius: 30px;
-  pointer-events: none;
-  background: radial-gradient(85% 62% at 50% 16%, rgba(255,255,255,.09), rgba(255,255,255,0));
-  opacity: .42;
-  z-index: 0;
-}
-
-#${IDS.root} svg{
-  position: absolute;
-  inset: 0;
-  display: block;
-  overflow: visible;
-  z-index: 1;
-}
-
-.${CLS.branch}{
-  stroke: rgba(174,226,255,.6);
-  stroke-width: 2.25;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: var(--h2o-chqt-len, 1);
-  stroke-dashoffset: var(--h2o-chqt-len, 1);
-  transition: stroke-dashoffset ${CFG.drawMs}ms cubic-bezier(.2,.85,.2,1);
-}
-#${IDS.root}.${CLS.open} .${CLS.branch}{
-  stroke-dashoffset: 0;
 }
 
 .${CLS.node}{
@@ -414,10 +518,21 @@
   width: ${CFG.nodeWidth}px;
   height: ${CFG.nodeHeight}px;
   border-radius: ${CFG.nodeRadius}px;
-  background: rgba(255,255,255,.10);
-  border: 1px solid rgba(255,255,255,.20);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255,255,255,${CFG.nodeGlassTopAlpha}) 0%,
+      rgba(255,255,255,${CFG.nodeGlassBottomAlpha}) 100%
+    ),
+    rgba(${CFG.nodeBaseRgb},${CFG.nodeBaseAlpha});
+  border: 1px solid rgba(${CFG.nodeBorderRgb},${CFG.nodeBorderAlpha});
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,${CFG.nodeInsetTopAlpha}),
+    inset 0 -1px 0 rgba(255,255,255,${CFG.nodeInsetBottomAlpha}),
+    0 8px 16px rgba(8,14,24,${CFG.nodeShadowAlpha}),
+    0 0 14px rgba(146,192,244,${CFG.nodeGlowAlpha});
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -426,29 +541,37 @@
   transition:
     opacity 160ms ease,
     transform ${CFG.popMs}ms cubic-bezier(.2,.95,.2,1);
-  transition-delay: var(--h2o-chqt-delay, 0ms);
+  transition-delay: 0ms;
   cursor: pointer;
   z-index: 2;
+  color: rgba(224,243,255,.9);
+  font-size: 12px;
+  font-weight: 580;
+  line-height: 1;
+  letter-spacing: .16px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.24);
 }
 
 #${IDS.root}.${CLS.open} .${CLS.node}{
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
-}
-
-.${CLS.node}::before{
-  content:"";
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(210,240,255,.75);
-  box-shadow: 0 0 16px rgba(140,210,255,.42);
-  opacity: .95;
+  transition-delay: var(--h2o-chqt-delay, 0ms);
 }
 
 .${CLS.node}:hover{
-  background: rgba(255,255,255,.18);
-  border-color: rgba(255,255,255,.34);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255,255,255,${CFG.nodeHoverGlassTopAlpha}) 0%,
+      rgba(255,255,255,${CFG.nodeHoverGlassBottomAlpha}) 100%
+    ),
+    rgba(${CFG.nodeHoverBaseRgb},${CFG.nodeHoverBaseAlpha});
+  border-color: rgba(${CFG.nodeBorderRgb},${CFG.nodeHoverBorderAlpha});
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,${CFG.nodeInsetTopAlpha}),
+    inset 0 -1px 0 rgba(255,255,255,${CFG.nodeInsetBottomAlpha}),
+    0 10px 18px rgba(8,14,24,${CFG.nodeHoverShadowAlpha}),
+    0 0 18px rgba(160,208,255,${CFG.nodeHoverGlowAlpha});
 }
 
 .${CLS.node}:active{
@@ -473,34 +596,22 @@
 
     const root = el("div", { id: IDS.root, "aria-hidden": "true" });
     const wrap = el("div", { class: CLS.wrap });
-    const panel = el("div", {
-      class: CLS.panel,
+    const tab = el("div", {
+      class: CLS.tab,
       role: "dialog",
       "aria-label": "Control Hub Quick Tree",
       "aria-modal": "false",
     });
-    panel.style.width = `${layout.width}px`;
-    panel.style.height = `${layout.height}px`;
-
-    const shell = el("div", { class: CLS.shell });
-    const svg = svgEl("svg", {
-      width: layout.width,
-      height: layout.height,
-      viewBox: `0 0 ${layout.width} ${layout.height}`,
-      "aria-hidden": "true",
-      focusable: "false",
-    });
-
-    layout.branches.forEach((branch) => {
-      const d = `M ${branch.start.x} ${branch.start.y} C ${branch.cp1.x} ${branch.cp1.y} ${branch.cp2.x} ${branch.cp2.y} ${branch.end.x} ${branch.end.y}`;
-      const p = svgEl("path", { d, class: CLS.branch });
-      svg.appendChild(p);
-      let len = 1;
-      try { len = Math.max(1, Math.ceil(p.getTotalLength())); } catch {}
-      p.style.setProperty("--h2o-chqt-len", String(len));
-    });
-
-    shell.appendChild(svg);
+    tab.style.width = `${layout.width}px`;
+    tab.style.height = `${layout.height}px`;
+    if (layout.tab.clipPath) {
+      tab.style.clipPath = layout.tab.clipPath;
+      tab.style.webkitClipPath = layout.tab.clipPath;
+    }
+    if (!tab.style.clipPath && layout.tab.polygonClip) {
+      tab.style.clipPath = layout.tab.polygonClip;
+      tab.style.webkitClipPath = layout.tab.polygonClip;
+    }
 
     layout.nodes.forEach((node, index) => {
       const point = layout.points.get(node.id);
@@ -515,31 +626,21 @@
       });
       btn.style.left = `${point.x}px`;
       btn.style.top = `${point.y}px`;
-      btn.style.setProperty("--h2o-chqt-delay", `${80 + index * CFG.staggerMs}ms`);
+      btn.style.setProperty("--h2o-chqt-delay", `${CFG.nodeStartDelayMs + index * CFG.staggerMs}ms`);
+      if (node.label) btn.textContent = node.label;
 
-      if (node.id === "right") {
-        btn.title = "Export";
-        btn.setAttribute("aria-label", "Export");
-        btn.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          triggerExportFromRightNode();
-        });
-      } else {
-        // Placeholder hook only. No real action yet.
-        btn.addEventListener("click", (event) => event.preventDefault());
-      }
-      shell.appendChild(btn);
+      // Placeholder hook only. No real action yet.
+      btn.addEventListener("click", (event) => event.preventDefault());
+      tab.appendChild(btn);
     });
 
-    panel.appendChild(shell);
-    wrap.appendChild(panel);
+    wrap.appendChild(tab);
     root.appendChild(wrap);
     document.body.appendChild(root);
 
     STATE.root = root;
     STATE.wrap = wrap;
-    STATE.panel = panel;
+    STATE.tab = tab;
 
     return root;
   }
@@ -548,31 +649,27 @@
     const btn = STATE.hubBtn;
     if (!btn || !btn.isConnected) return null;
     const r = btn.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.bottom + CFG.dropGap };
+    const gapY = Number.isFinite(CFG.cockpitGapY) ? CFG.cockpitGapY : CFG.dropGap;
+    return { x: r.left + r.width / 2, y: r.bottom + gapY };
   }
 
   function positionTree() {
-    if (!STATE.wrap || !STATE.panel) return false;
+    if (!STATE.wrap || !STATE.tab) return false;
     const anchor = getAnchorCenter();
     if (!anchor) return false;
 
     let x = anchor.x;
-    let y = anchor.y;
-    const panelW = STATE.panel.offsetWidth || 0;
-    const panelH = STATE.panel.offsetHeight || 0;
+    const safeTop = Number.isFinite(CFG.topbarSafeGapY) ? CFG.topbarSafeGapY : CFG.clampMargin;
+    const panelOffsetY = Number.isFinite(CFG.panelOffsetY) ? CFG.panelOffsetY : 0;
+    let y = Math.max(safeTop, anchor.y + panelOffsetY);
+    const tabW = STATE.tab.offsetWidth || 0;
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-    const m = CFG.clampMargin;
+    const m = Number.isFinite(CFG.panelClampMarginX) ? CFG.panelClampMarginX : CFG.clampMargin;
 
-    if (panelW > 0 && vw > 0) {
-      const minX = panelW / 2 + m;
-      const maxX = vw - panelW / 2 - m;
+    if (tabW > 0 && vw > 0) {
+      const minX = tabW / 2 + m;
+      const maxX = vw - tabW / 2 - m;
       x = clamp(x, minX, maxX);
-    }
-    if (panelH > 0 && vh > 0) {
-      const minY = m;
-      const maxY = vh - panelH - m;
-      y = clamp(y, minY, maxY);
     }
 
     STATE.wrap.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
@@ -591,7 +688,7 @@
 
   function onOpenPointerDown(event) {
     if (!CFG.closeOnOutsidePointer || !STATE.isOpen) return;
-    if (eventHitsEl(event, STATE.panel)) return;
+    if (eventHitsEl(event, STATE.tab)) return;
     if (eventHitsEl(event, STATE.hubBtn)) return;
     closeTree();
   }
@@ -770,14 +867,12 @@
     requestAnimationFrame(() => {
       STATE.syncQueued = false;
       syncHubButton();
-      syncExportButton();
     });
   }
 
   function boot() {
     ensureStyles();
     syncHubButton();
-    syncExportButton();
     document.addEventListener("click", onHubClickCapture, true);
     document.addEventListener("dblclick", onHubDblClickCapture, true);
 

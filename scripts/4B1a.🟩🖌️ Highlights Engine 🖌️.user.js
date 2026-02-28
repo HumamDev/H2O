@@ -2,7 +2,9 @@
 // @h2o-id      4b.highlights.engine
 // @name         4B.🟩🖌️ Highlights Engine 🖌️
 // @namespace    H2O.Prime.CGX.InlineHighlighterEngine
-// @version      3.2.9
+// @version      3.2.11
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  H2O Contract v2.0 refactor — Inline highlights (XPath + TextPosition + TextQuote) w/ robust persistence (Chrome/GM/LS), Cmd/Ctrl+1 highlight, Cmd/Ctrl+2 cycle, MiniMap sync via H2O bus + legacy DOM events, ControlHub toggle. (CSS migrated to cgxui-*)
 // @match        https://chatgpt.com/*
 // @author       HumamDev
@@ -72,6 +74,8 @@
   const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`;
 
   const KEY_DISK_CANON = `${NS_DISK}:state:inline_highlights:v3`;
+  const KEY_DISK_CANON_V2 = `${NS_DISK}:state:inline_highlights:v2`;
+  const KEY_DISK_CANON_V1 = `${NS_DISK}:state:inline_highlights:v1`;
   const KEY_DISK_CANON_ALIAS_V3 = 'h2o:inlineHighlights.v3';
   const KEY_DISK_PUBLIC_SIMPLE = 'h2o:inlineHighlights';
   const KEY_DISK_FUTURE_ALIAS_V2 = 'h2o:inlineHighlights.v2';
@@ -79,6 +83,8 @@
   const KEY_DISK_LEGACY_HO_V1 = 'ho:inlineHighlights';
 
   const LEGACY_DISK_KEYS = Object.freeze([
+    KEY_DISK_CANON_V2,
+    KEY_DISK_CANON_V1,
     KEY_DISK_CANON_ALIAS_V3,
     KEY_DISK_PUBLIC_SIMPLE,
     KEY_DISK_FUTURE_ALIAS_V2,
@@ -319,6 +325,69 @@
     let onChangedListener = null;
     let onStorageListener = null;
 
+    const _isPlainObject = (v) => {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+      const proto = Object.getPrototypeOf(v);
+      return proto === Object.prototype || proto === null;
+    };
+    const _cloneObj = (v) => UTIL_safeParse(JSON.stringify(v || {}), {}) || {};
+    const _asStoreObj = (v) => (_isPlainObject(v) ? v : {});
+    const _countStoreItems = (store) => {
+      let total = 0;
+      const byAnswer = _asStoreObj(_asStoreObj(store).itemsByAnswer);
+      for (const list of Object.values(byAnswer)) {
+        if (!Array.isArray(list)) continue;
+        total += list.length;
+      }
+      return total;
+    };
+    const _mergeStore = (baseRaw, incomingRaw) => {
+      const base = _asStoreObj(baseRaw);
+      const incoming = _asStoreObj(incomingRaw);
+      if (!Object.keys(incoming).length) return _cloneObj(base);
+      const out = _cloneObj(base);
+      out.itemsByAnswer = _asStoreObj(out.itemsByAnswer);
+      const srcItems = _asStoreObj(incoming.itemsByAnswer);
+      for (const [answerIdRaw, srcList] of Object.entries(srcItems)) {
+        const answerId = String(answerIdRaw || '').trim();
+        if (!answerId || !Array.isArray(srcList) || !srcList.length) continue;
+        const prevList = Array.isArray(out.itemsByAnswer[answerId]) ? out.itemsByAnswer[answerId].slice() : [];
+        const byId = new Map();
+        for (const item of prevList) {
+          const id = String(item?.id || '').trim();
+          if (id) byId.set(id, item);
+        }
+        for (const item of srcList) {
+          if (!_isPlainObject(item)) continue;
+          const id = String(item.id || '').trim();
+          if (!id) {
+            prevList.push(item);
+            continue;
+          }
+          const prev = byId.get(id);
+          if (!prev) {
+            byId.set(id, item);
+            continue;
+          }
+          const prevTs = Number(prev?.ts || 0);
+          const nextTs = Number(item?.ts || 0);
+          if (nextTs >= prevTs) byId.set(id, item);
+        }
+        const mergedById = Array.from(byId.values());
+        const merged = mergedById.concat(prevList.filter((item) => {
+          const id = String(item?.id || '').trim();
+          return !id;
+        }));
+        out.itemsByAnswer[answerId] = merged;
+      }
+      if (!out.convoId && incoming.convoId) out.convoId = incoming.convoId;
+      out._meta = _asStoreObj(out._meta);
+      const srcMeta = _asStoreObj(incoming._meta);
+      if (!out._meta.currentColor && srcMeta.currentColor) out._meta.currentColor = srcMeta.currentColor;
+      if (!out._meta.currentColor) out._meta.currentColor = CFG_DEFAULT_COLOR;
+      return out;
+    };
+
     const _readKey = async (key) => {
       if (!key) return {};
       try {
@@ -334,6 +403,17 @@
         const rawLS = localStorage.getItem(key);
         if (!rawLS) return {};
         return UTIL_safeParse(rawLS, {}) || {};
+      } catch {
+        return {};
+      }
+    };
+
+    const _readKeyLocal = (key) => {
+      if (!key) return {};
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return {};
+        return UTIL_safeParse(raw, {}) || {};
       } catch {
         return {};
       }
@@ -356,42 +436,38 @@
       }
     };
 
-    const _delKey = async (key) => {
-      if (!key) return;
-      try {
-        if (hasChrome) {
-          await new Promise(resolve => chrome.storage.local.remove([key], resolve));
-          return;
-        }
-        if (hasGM) {
-          GM_deleteValue(key);
-          return;
-        }
-        localStorage.removeItem(key);
-      } catch {}
+    const _readRaw = async () => {
+      const keys = [KEY_DISK_CANON, ...LEGACY_DISK_KEYS];
+      let merged = {};
+      for (const key of keys) {
+        merged = _mergeStore(merged, await _readKey(key));
+        // Always also check localStorage mirror to survive backend flips (GM <-> LS).
+        merged = _mergeStore(merged, _readKeyLocal(key));
+      }
+      if (!_countStoreItems(merged) && !Object.keys(_asStoreObj(merged)).length) return {};
+      return merged;
     };
 
-    const _readRaw = async () => {
-      const canon = await _readKey(KEY_DISK_CANON);
-      if (canon && typeof canon === 'object' && Object.keys(canon).length) return canon;
-
-      for (const k of LEGACY_DISK_KEYS) {
-        const v = await _readKey(k);
-        if (v && typeof v === 'object' && Object.keys(v).length) return v;
-      }
-      return {};
+    const _writeLocalMirror = (key, obj) => {
+      if (!key) return;
+      try { localStorage.setItem(key, JSON.stringify(obj)); } catch {}
     };
 
     const _writeRaw = async (obj) => {
-      await _writeKey(KEY_DISK_CANON, obj);
+      const safe = _asStoreObj(obj);
+      await _writeKey(KEY_DISK_CANON, safe);
+      _writeLocalMirror(KEY_DISK_CANON, safe);
 
       if (CFG_MIRROR_ALIAS_KEYS) {
-        await _writeKey(KEY_DISK_CANON_ALIAS_V3, obj);
-        await _writeKey(KEY_DISK_FUTURE_ALIAS_V2, obj);
+        await _writeKey(KEY_DISK_CANON_ALIAS_V3, safe);
+        await _writeKey(KEY_DISK_FUTURE_ALIAS_V2, safe);
+        _writeLocalMirror(KEY_DISK_CANON_ALIAS_V3, safe);
+        _writeLocalMirror(KEY_DISK_FUTURE_ALIAS_V2, safe);
       }
 
       if (CFG_MIRROR_LEGACY_KEYS) {
-        await _writeKey(KEY_DISK_LEGACY_HO_V2, obj);
+        await _writeKey(KEY_DISK_LEGACY_HO_V2, safe);
+        _writeLocalMirror(KEY_DISK_LEGACY_HO_V2, safe);
       }
     };
 
@@ -413,7 +489,7 @@
           const pick = (k) => (changes[k] ? (changes[k].newValue || {}) : null);
 
           const vCanon = pick(KEY_DISK_CANON);
-          if (vCanon) cache = vCanon;
+          if (vCanon) cache = _mergeStore(cache || {}, vCanon);
         };
         chrome.storage.onChanged.addListener(onChangedListener);
       } else {
@@ -421,7 +497,10 @@
           if (!e?.key) return;
           const k = String(e.key);
           if (k !== KEY_DISK_CANON) return;
-          try { cache = JSON.parse(e.newValue || '{}'); } catch {}
+          try {
+            const next = UTIL_safeParse(e.newValue || '{}', {}) || {};
+            cache = _mergeStore(cache || {}, next);
+          } catch {}
         };
         window.addEventListener('storage', onStorageListener);
       }
@@ -455,7 +534,6 @@
         return cache;
       },
       saveNow: async () => { if (dirty) { dirty = false; await _writeRaw(cache || {}); } },
-      delKey: _delKey
     };
   })();
 
@@ -503,17 +581,15 @@
     try {
       const s0 = STORE_read() || {};
       if (s0 && Object.keys(s0).length) {
-        UTIL_storage.writeSync(d => d);
+        UTIL_storage.writeSync((d) => {
+          const next = UTIL_safeParse(JSON.stringify(s0), d || {});
+          return next || d || {};
+        });
         await UTIL_storage.saveNow();
       }
     } catch {}
 
-    try {
-      for (const k of LEGACY_DISK_KEYS) {
-        await UTIL_storage.delKey(k);
-      }
-    } catch {}
-
+    // Keep legacy keys as read-aliases; never hard-delete automatically.
     try { await UTIL_mig_setFlag(KEY_MIG_DISK_V1, '1'); } catch {}
   };
 
@@ -2002,7 +2078,7 @@ mark.${CSS_CLS_HL}:hover{
       UTIL_on(document, 'scroll', UI_toolsHide, true);
       UTIL_on(window, 'resize', UI_toolsHide, true);
 
-      log(`InlineHighlighter v3.1.0 loaded ✅ (cgxui CSS)`);
+      log(`InlineHighlighter v3.2.11 loaded ✅ (cgxui CSS)`);
     } catch (err) {
       DIAG_fail(err);
       console.error(`[H2O.${MODTAG}] boot crash`, err);

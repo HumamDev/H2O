@@ -3,6 +3,8 @@
 // @name         h3.🟠✨ Highlight Double-Click ✨
 // @namespace    hobayda.highlight.persistent
 // @version      2.0
+// @rev        000002
+// @build      2026-02-28T17:33:34Z
 // @description  Double-click text to highlight with modern dark-mode friendly colors. Highlights are saved across reloads.
 // @match        https://chatgpt.com/*
 // @grant        none

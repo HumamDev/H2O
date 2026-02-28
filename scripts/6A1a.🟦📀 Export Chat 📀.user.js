@@ -2,8 +2,10 @@
 // @h2o-id      6a.export.chat
 // @name         6a.🟦📀 Export Chat 📀
 // @namespace    H2O.ChatGPT.Export
-// @version      2.2.4
-// @description  Q&A export (MD/PDF), Topbar Export button, MiniMap selection circles (outside boxes) + Select-All dot.
+// @version      2.3.1
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
+// @description  Q&A export (MD/PDF), MiniMap selection circles (outside boxes) + Select-All dot.
 // @author       HumamDev
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -59,6 +61,7 @@
 const EV_ = Object.freeze({
   MM_READY: 'evt:h2o:minimap:ready',
   NAVIGATE: 'evt:h2o:navigate',
+  EXPORT_RUN: 'evt:h2o:export:run',
 });
 
 const MIG_ = Object.freeze({
@@ -66,7 +69,33 @@ const MIG_ = Object.freeze({
   LEG_NAVIGATE: 'ho:navigate',
 });
 
-const EXPORT_CONTROL_WAIT_MS = 2200;
+const MENU_ANCHOR_GAP_PX = 8;
+const MENU_VIEWPORT_PAD_PX = 8;
+const EXPORT_BTN_LABEL = 'Export';
+const EXPORT_BTN_TITLE = 'Export this chat';
+const EXPORT_MODE_FULL = 'full';
+const EXPORT_MODE_MINIMAL = 'minimal';
+const EXPORT_STYLE_THROTTLE_MS = 220;
+const EXPORT_COPY_PROPS = Object.freeze([
+  'height',
+  'min-height',
+  'max-height',
+  'line-height',
+  'padding',
+  'border-radius',
+  'border',
+  'box-sizing',
+  'font-size',
+  'font-weight',
+  'letter-spacing',
+  'font-family',
+  'background',
+  'color',
+  'opacity',
+  'box-shadow',
+  'transition',
+]);
+const PANEL_MAX_H_VH = 62;
 
   const UI_ = Object.freeze({
     STYLE: `${SkID}-style`,
@@ -78,8 +107,8 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
     DL_FORMAT_BTN: `${SkID}-dl-format-btn`,
     DL_MENU_ITEM: `${SkID}-dl-menu-item`,
     DL_MENU_SEP: `${SkID}-dl-menu-sep`,
-    DL_TOGGLE: `${SkID}-dl-toggle`,
     DL_SELECT_ALL: `${SkID}-dl-selectall`,
+    PROMPT_EXPORT_BTN: `${SkID}-prompt-export-btn`,
     DL_ICON: `${SkID}-dl-icon`,
     DL_TEXT: `${SkID}-dl-text`,
   });
@@ -98,8 +127,8 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
     DL_MENU_ITEM: `cgxui-${SkID}-dl-menu-item`,
     DL_MENU_SEP: `cgxui-${SkID}-dl-menu-sep`,
     DL_ICON: `cgxui-${SkID}-dl-icon`,
-    DL_TOGGLE: `cgxui-${SkID}-dl-toggle`,
     DL_SELECT_ALL: `cgxui-${SkID}-dl-selectall`,
+    PROMPT_EXPORT_ACTIVE: `cgxui-${SkID}-prompt-export-active`,
     STATE_ACTIVE: `cgxui-${SkID}-active`,
     STATE_SELECTED: `cgxui-${SkID}-selected`,
     STATE_OPEN: `cgxui-${SkID}-open`,
@@ -127,12 +156,14 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
     </svg>`,
   });
 
-  const ID_ = Object.freeze({
+  const PROMPTS_BTN_SELECTOR = '[data-cgxui-owner="prmn"][data-cgxui="prmn-btn"]';
+  const PROMPT_EXPORT_BTN_SELECTOR = '[data-cgxui-owner="prmn"][data-cgxui="prmn-export-btn"]';
+  const LEGACY_PROMPT_EXPORT_BTN_SELECTOR = `[data-cgxui-owner="${SkID}"][data-cgxui="${UI_.PROMPT_EXPORT_BTN}"]`;
+  const NAV_EXPORT_BTN_SELECTOR = '[data-cgxui-owner="nvcn"][data-cgxui="nvcn-export-btn"]';
+  const LEGACY_ = Object.freeze({
     TOPBTN: `cgxui-${SkID}-export-btn`,
     TOPBTN_WRAP: `cgxui-${SkID}-export-wrap`,
   });
-
-  const CONTROL_BTN_SELECTOR = '[data-cgxui="cnhb-topbtn"][data-cgxui-owner="cnhb"]';
 
   const SEL_ = Object.freeze({
     ANSWER: () => (window.ANSWER_SELECTOR || `[${ATTR_.MSG_ROLE}="assistant"]`),
@@ -146,6 +177,10 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
     MINIMAP: () => document.querySelector(`[data-cgxui="mnmp-minimap"][data-cgxui-owner="mnmp"]`),
     MINIMAP_TOGGLE: () => document.querySelector(`[data-cgxui="mnmp-toggle"][data-cgxui-owner="mnmp"]`),
     MINIMAP_BTN_SEL: () => `[data-cgxui="mnmp-btn"][data-cgxui-owner="mnmp"]`,
+    MINIMAP_ACTIVE_BTN: () =>
+      `[data-cgxui="mnmp-btn"][data-cgxui-owner="mnmp"][data-cgxui-state~="active"],` +
+      `[data-cgxui="mm-btn"][data-cgxui-owner="mnmp"][data-cgxui-state~="active"],` +
+      `.cgxui-mm-btn.active`,
     MINIMAP_WRAP_SEL: () => `[data-cgxui="mnmp-wrap"][data-cgxui-owner="mnmp"]`,
     MINIMAP_GUTTER_SEL: () => `.cgxui-mm-gutter`,
     MINIMAP_GUTTER_SYM_SEL: () => `.cgxui-mm-gutterSym`,
@@ -160,8 +195,9 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
       '[data-cgxui="mnmp-btn"][data-cgxui-owner="mnmp"],' +
       `.${CLS_.DL_MARK}, .${CLS_.DL_MENU}, .${CLS_.DL_SELECT_ALL}`,
     DL_FORMAT_BTN: () => `.${CLS_.DL_FORMAT_BTN}`,
-    DL_TOGGLE: () => `.${CLS_.DL_TOGGLE}`,
-    TOPBTN: () => `#${ID_.TOPBTN}`,
+    PROMPTS_BTN: () => PROMPTS_BTN_SELECTOR,
+    PROMPT_EXPORT_BTN: () => PROMPT_EXPORT_BTN_SELECTOR,
+    NAV_EXPORT_BTN: () => NAV_EXPORT_BTN_SELECTOR,
   });
 
   /* ───────────────────────────── 2) Vault ───────────────────────────── */
@@ -186,8 +222,15 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
   R.selectedIds = new Set();
 
   R.menuEl = null;
-  R.topBtn = null;
+  R.menuAnchorBtn = null;
+  R.menuAnchorRo = null;
+  R.menuAnchorMo = null;
   R.selectAllBtn = null;
+  R.promptExportBtn = null;
+  R.promptExportSrcBtn = null;
+  R.promptExportStyleSig = '';
+  R.promptExportStyleAt = 0;
+  R.promptExportPlacementWired = false;
 
   // Overlay marks live OUTSIDE minimap DOM (prevents squeezing / shifting)
   R.dlLayer = null;               // fixed overlay container
@@ -201,13 +244,9 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
   // Cleanup registry
   R.cleanups = [];
 
-  R.exportWatcher = null;
-  R.exportControlFallback = false;
-  R.fallbackTimer = null;
-  R.controlMissingSince = 0;
-
   // Throttle positioning
   R.rafPos = 0;
+  R.rafMenu = 0;
 
   /* ───────────────────────────── 4) CSS ───────────────────────────── */
   /** @core Injects style once (idempotent). */
@@ -270,62 +309,6 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
   opacity: 1;
 }
 
-/* 🔘 Floating container for Export button */
-#${ID_.TOPBTN_WRAP} {
-  position: fixed;
-  top: 12px;
-  right: 16px;
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  z-index: 2147483645;
-}
-
-/* 🔘 Topbar Export button */
-#${ID_.TOPBTN},
-.${CLS_.DL_TOGGLE} {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 0 10px;
-  min-height: 32px;
-  height: 32px;
-  margin-left: 2px !important;
-  border-radius: 8px;
-  box-sizing: border-box;
-  border: none;
-  outline: none;
-  background: rgba(255, 255, 255, 0.035);
-  box-shadow:
-    inset 0 0 2px rgba(255,255,255,0.03),
-    0 2px 4px rgba(0,0,0,0.2);
-  font: 500 13px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.2px;
-  text-shadow: 0 0 2px rgba(0,0,0,0.2);
-  cursor: pointer;
-  background-clip: padding-box;
-  transition: all 0.2s ease;
-}
-#${ID_.TOPBTN}:hover,
-.${CLS_.DL_TOGGLE}:hover {
-  filter: brightness(1.15);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.07),
-    0 3px 6px rgba(255, 215, 0, 0.2);
-}
-#${ID_.TOPBTN}.${CLS_.STATE_ACTIVE},
-.${CLS_.DL_TOGGLE}.${CLS_.STATE_ACTIVE} {
-  filter: brightness(1.25);
-  color: rgba(255, 255, 255, 0.85);
-  box-shadow:
-    inset 0 0 3px rgba(255, 255, 255, 0.10),
-    0 3px 8px rgba(255, 215, 0, 0.35);
-}
-#${ID_.TOPBTN} span,
-.${CLS_.DL_TOGGLE} span { pointer-events: none; line-height: 1; }
-
 /* Floating “select all answers” dot near MiniMap toggle */
 .${CLS_.DL_SELECT_ALL} {
   position: fixed;
@@ -356,106 +339,116 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
   color: #02140a;
 }
 
+.${CLS_.PROMPT_EXPORT_ACTIVE} {
+  opacity: 1 !important;
+  color: rgba(232,255,240,0.96) !important;
+  filter: brightness(1.18) saturate(1.04) !important;
+  box-shadow:
+    inset 0 0 3px rgba(255,255,255,0.10),
+    0 0 10px rgba(34,197,94,0.50),
+    0 3px 8px rgba(20,83,45,0.45) !important;
+}
+
 /* Floating dropdown under Export button */
 .${CLS_.DL_MENU} {
   position: fixed;
   z-index: 2147483646;
-  min-width: 220px;
-  max-width: 300px;
-  padding: 8px 0 6px;
-  background: rgba(12,18,32,0.92);
-  border-radius: 14px;
-  border: 1px solid rgba(148,163,184,0.5);
-  box-shadow: 0 18px 60px rgba(0,0,0,0.6);
-  backdrop-filter: blur(14px);
+  width: min(420px, 90vw);
+  min-width: 260px;
+  max-width: min(420px, 90vw);
+  padding: 12px;
+  color: var(--cgxui-prmn-text, #f4f6fb);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,255,255,0.00), transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(255,255,255,0.00), transparent 55%),
+    linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.030));
+  border: 1px solid var(--cgxui-prmn-border, rgba(255,255,255,.12));
+  border-radius: var(--cgxui-prmn-radius, 14px);
+  box-shadow: 0 26px 80px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.10);
+  filter: none !important;
+  backdrop-filter: blur(14px) saturate(1.05) contrast(1.08) brightness(1.03);
+  -webkit-backdrop-filter: blur(14px) saturate(1.05) contrast(1.08) brightness(1.03);
+  max-height: ${PANEL_MAX_H_VH}vh;
+  overflow: auto;
   transform-origin: top;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(4px) scale(0.97);
-  transition: opacity .14s ease, transform .14s ease;
+  transform: translateY(10px);
+  transition: opacity .22s ease, transform .22s ease;
 }
 .${CLS_.DL_MENU}.${CLS_.STATE_OPEN} {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0) scale(1);
+  transform: translateY(0);
+}
+.${CLS_.DL_MENU}::-webkit-scrollbar { width: 10px; }
+.${CLS_.DL_MENU}::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.14);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 .${CLS_.DL_MENU_SECTION} {
-  padding: 0 10px 6px;
+  padding: 0 0 8px;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: .05em;
   text-transform: uppercase;
-  color: rgba(148,163,184,0.9);
+  color: var(--cgxui-prmn-muted, rgba(180,180,180,.5));
 }
 .${CLS_.DL_FORMAT_ROW} {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 0 10px 8px;
+  gap: 6px;
+  padding: 0 0 10px;
 }
 .${CLS_.DL_FORMAT_BTN} {
   width: auto;
-  min-width: 72px;
-  padding: 6px 8px;
+  min-width: 0;
+  padding: 5px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(51,65,85,0.9);
-  background: rgba(15,23,42,0.95);
-  color: rgba(226,232,240,0.9);
-  font-size: 12px;
+  border: 1px solid var(--cgxui-prmn-border, rgba(255,255,255,.12));
+  background: rgba(255,255,255,0.02);
+  color: var(--cgxui-prmn-muted, rgba(180,180,180,.5));
+  font-size: 11px;
   cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, color .12s ease;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
 }
 .${CLS_.DL_FORMAT_BTN}:hover { transform: translateY(-1px); }
 .${CLS_.DL_FORMAT_BTN}.${CLS_.STATE_ACTIVE} {
-  background: rgba(30,64,175,0.9);
-  border-color: rgba(59,130,246,1);
-  color: #e5f0ff;
+  background: color-mix(in srgb, var(--cgxui-prmn-accent, #9ca3af) 14%, transparent);
+  border-color: color-mix(in srgb, var(--cgxui-prmn-accent, #9ca3af) 60%, var(--cgxui-prmn-border, rgba(255,255,255,.12)));
+  color: var(--cgxui-prmn-text, #f4f6fb);
 }
 .${CLS_.DL_MENU_ITEM} {
   width: 100%;
-  padding: 7px 12px;
-  background: transparent;
-  border: 0;
-  color: rgba(226,232,240,0.96);
-  font-size: 13px;
+  padding: 8px 10px;
+  background: var(--cgxui-prmn-card, rgba(28,29,32,0.85));
+  border: 1px solid var(--cgxui-prmn-border, rgba(255,255,255,.12));
+  border-radius: 10px;
+  color: var(--cgxui-prmn-text, #f4f6fb);
+  font-size: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
   text-align: left;
+  transition: transform .12s ease, box-shadow .2s ease, border-color .2s ease, background .2s ease;
 }
 .${CLS_.DL_ICON} { width: 18px; display: inline-flex; align-items: center; justify-content: center; }
 .${CLS_.DL_ICON} svg { display: block; width: 18px; height: 18px; }
-.${CLS_.DL_MENU_ITEM}:hover { background: rgba(30,64,175,0.55); }
-.${CLS_.DL_MENU_SEP} { margin: 5px 0; border-top: 1px solid rgba(51,65,85,0.95); }
+.${CLS_.DL_MENU_ITEM}:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--cgxui-prmn-accent, #9ca3af) 12%, var(--cgxui-prmn-card, rgba(28,29,32,0.85)));
+  border-color: color-mix(in srgb, var(--cgxui-prmn-accent, #9ca3af) 35%, var(--cgxui-prmn-border, rgba(255,255,255,.12)));
+  box-shadow: 0 6px 20px rgba(0,0,0,.25);
+}
+.${CLS_.DL_MENU_SEP} {
+  margin: 8px 0;
+  border-top: 1px solid var(--cgxui-prmn-border, rgba(255,255,255,.12));
+}
 `;
     document.head.appendChild(style);
-  }
-
-  function DOM_ensureTopbarDock() {
-    let wrap = document.getElementById(ID_.TOPBTN_WRAP);
-    if (wrap) return wrap;
-
-    wrap = document.createElement('div');
-    wrap.id = ID_.TOPBTN_WRAP;
-    wrap.setAttribute(ATTR_.CGXUI_OWNER, SkID);
-    wrap.style.position = 'fixed';
-    wrap.style.top = '12px';
-    wrap.style.left = 'auto';
-    wrap.style.right = '16px';
-    wrap.style.display = 'flex';
-    wrap.style.alignItems = 'center';
-    wrap.style.gap = '4px';
-    wrap.style.zIndex = '2147483645';
-    wrap.style.pointerEvents = 'none';
-    wrap.style.opacity = '0';
-    wrap.style.visibility = 'hidden';
-    wrap.style.transition = 'opacity .12s ease';
-    wrap.dataset.cgxuiReady = '0';
-    wrap.dataset.cgxuiFallback = '0';
-
-    document.body.appendChild(wrap);
-    return wrap;
   }
 
   /* ───────────────────────────── 5) Small helpers ───────────────────────────── */
@@ -472,6 +465,36 @@ const EXPORT_CONTROL_WAIT_MS = 2200;
   /** @helper */
   function UTIL_emit(evt, detail) {
     try { W.dispatchEvent(new CustomEvent(evt, { detail, bubbles: true, composed: true })); } catch {}
+  }
+
+  /** @helper */
+  function UTIL_getChatId() {
+    const fromCore = String(W.H2O?.util?.getChatId?.() || '').trim();
+    if (fromCore) return fromCore;
+    const m = String(W.location?.pathname || '').match(/\/c\/([a-z0-9-]+)/i);
+    return m ? String(m[1] || '').trim() : '';
+  }
+
+  /** @helper */
+  function UTIL_getChatTitle(chatId = '') {
+    const heading =
+      D.querySelector('main h1, [data-testid="conversation-title"], [data-testid="chat-title"]');
+    const text = String(heading?.textContent || '').trim();
+    if (text) return text;
+    const raw = String(D.title || '').trim();
+    const stripped = raw.replace(/\s*[-|]\s*ChatGPT.*$/i, '').trim();
+    if (stripped) return stripped;
+    return chatId ? `Chat ${chatId}` : 'Chat';
+  }
+
+  /** @helper */
+  function UTIL_emitExportRun(modeRaw, shiftKey = false) {
+    const mode = (String(modeRaw || '').toLowerCase() === EXPORT_MODE_MINIMAL || shiftKey)
+      ? EXPORT_MODE_MINIMAL
+      : EXPORT_MODE_FULL;
+    const chatId = UTIL_getChatId();
+    const title = UTIL_getChatTitle(chatId);
+    UTIL_emit(EV_.EXPORT_RUN, { chatId, title, ts: Date.now(), mode });
   }
 
   /** @helper */
@@ -1204,57 +1227,6 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     }
   }
 
-  function UI_hideExportWrap(wrap) {
-    if (!wrap) return;
-    wrap.style.opacity = '0';
-    wrap.style.visibility = 'hidden';
-    wrap.style.pointerEvents = 'none';
-    wrap.dataset.cgxuiReady = '0';
-  }
-
-  function UI_showExportWrap(wrap) {
-    if (!wrap) return;
-    wrap.style.opacity = '1';
-    wrap.style.visibility = 'visible';
-    wrap.style.pointerEvents = 'auto';
-    wrap.dataset.cgxuiReady = '1';
-  }
-
-  function UI_positionExportButton() {
-    const wrap = document.getElementById(ID_.TOPBTN_WRAP);
-    if (!wrap) return;
-    const control = document.querySelector(CONTROL_BTN_SELECTOR);
-    if (control && R.fallbackTimer) {
-      clearTimeout(R.fallbackTimer);
-      R.fallbackTimer = null;
-    }
-    const now = Date.now();
-    if (!control) {
-      if (!R.controlMissingSince) R.controlMissingSince = now;
-      const missingForMs = now - R.controlMissingSince;
-      const fallback = R.exportControlFallback || missingForMs >= EXPORT_CONTROL_WAIT_MS;
-      if (missingForMs >= EXPORT_CONTROL_WAIT_MS) R.exportControlFallback = true;
-      wrap.dataset.cgxuiFallback = fallback ? '1' : '0';
-      if (!fallback) {
-        UI_hideExportWrap(wrap);
-        return;
-      }
-      wrap.style.left = 'auto';
-      wrap.style.right = '16px';
-      wrap.style.top = '12px';
-      UI_showExportWrap(wrap);
-      return;
-    }
-    R.controlMissingSince = 0;
-    R.exportControlFallback = false;
-    wrap.dataset.cgxuiFallback = '0';
-    const rect = control.getBoundingClientRect();
-    wrap.style.left = `${Math.round(rect.right + 4)}px`;
-    wrap.style.top = `${Math.round(rect.top)}px`;
-    wrap.style.right = 'auto';
-    UI_showExportWrap(wrap);
-  }
-
   /** @helper */
   function UI_scheduleReposition() {
     if (R.rafPos) return;
@@ -1262,36 +1234,6 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
       R.rafPos = 0;
       UI_positionAllMarks();
       UI_positionSelectAllBtn();
-      UI_positionExportButton();
-    });
-  }
-
-  function UI_startExportWatcher() {
-    if (R.exportWatcher) return;
-    UI_positionExportButton();
-    R.exportWatcher = setInterval(UI_positionExportButton, 400);
-    CLEAN_add(() => {
-      if (R.exportWatcher) {
-        clearInterval(R.exportWatcher);
-        R.exportWatcher = null;
-      }
-    });
-
-    if (R.fallbackTimer) {
-      clearTimeout(R.fallbackTimer);
-      R.fallbackTimer = null;
-    }
-    R.fallbackTimer = setTimeout(() => {
-      R.exportControlFallback = true;
-      const wrap = document.getElementById(ID_.TOPBTN_WRAP);
-      if (wrap) wrap.dataset.cgxuiFallback = '1';
-      UI_positionExportButton();
-    }, EXPORT_CONTROL_WAIT_MS);
-    CLEAN_add(() => {
-      if (R.fallbackTimer) {
-        clearTimeout(R.fallbackTimer);
-        R.fallbackTimer = null;
-      }
     });
   }
 
@@ -1358,6 +1300,274 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     btn.style.top = `${Math.round(window.scrollY + r.top + r.height / 2 - 10)}px`;
     btn.style.left = `${Math.round(window.scrollX + r.right + 2)}px`;
     btn.classList.toggle(CLS_.STATE_ACTIVE, !!R.allSelected);
+  }
+
+  /** @helper */
+  function UI_setPromptExportActive(flag) {
+    const btn = (R.promptExportBtn?.isConnected ? R.promptExportBtn : D.querySelector(SEL_.PROMPT_EXPORT_BTN()));
+    R.promptExportBtn = btn || null;
+    if (!btn || !btn.isConnected) return;
+    btn.classList.toggle(CLS_.PROMPT_EXPORT_ACTIVE, !!flag);
+  }
+
+  /** @helper */
+  function UI_copyPromptsStyleToExport(exportBtn, promptsBtn) {
+    if (!exportBtn || !promptsBtn) return false;
+    const now = UTIL_now();
+    if ((now - Number(R.promptExportStyleAt || 0)) < EXPORT_STYLE_THROTTLE_MS) return false;
+    const cs = W.getComputedStyle?.(promptsBtn);
+    if (!cs) return false;
+
+    const sig = [
+      promptsBtn.className || '',
+      promptsBtn.getAttribute('style') || '',
+      ...EXPORT_COPY_PROPS.map((p) => `${p}:${cs.getPropertyValue(p)}`),
+    ].join('|');
+    if (sig && sig === R.promptExportStyleSig) return false;
+
+    for (const prop of EXPORT_COPY_PROPS) {
+      const val = cs.getPropertyValue(prop);
+      if (val) exportBtn.style.setProperty(prop, val);
+    }
+    exportBtn.style.setProperty('width', 'auto');
+    exportBtn.style.setProperty('min-width', '50px');
+    exportBtn.style.setProperty('max-width', 'none');
+    exportBtn.style.setProperty('flex', '0 0 auto');
+    exportBtn.style.setProperty('display', 'inline-flex');
+    exportBtn.style.setProperty('visibility', 'visible');
+    exportBtn.style.setProperty('pointer-events', 'auto');
+
+    R.promptExportStyleSig = sig;
+    R.promptExportStyleAt = now;
+    return true;
+  }
+
+  /** @helper */
+  function UI_ensurePromptExportButton() {
+    const promptsBtn = D.querySelector(SEL_.PROMPTS_BTN());
+    if (!promptsBtn || !promptsBtn.isConnected) return null;
+
+    const host = promptsBtn.parentElement;
+    if (!host) return null;
+
+    let btn = R.promptExportBtn;
+    if (!btn || !btn.isConnected) {
+      btn = D.querySelector(SEL_.PROMPT_EXPORT_BTN());
+    }
+    if (!btn || !btn.isConnected) {
+      btn = D.createElement('button');
+      btn.type = 'button';
+      btn.textContent = EXPORT_BTN_LABEL;
+      btn.title = EXPORT_BTN_TITLE;
+      btn.setAttribute(ATTR_.CGXUI_OWNER, SkID);
+      btn.setAttribute(ATTR_.CGXUI, UI_.PROMPT_EXPORT_BTN);
+      btn.addEventListener('click', (e) => {
+        try { e.preventDefault(); e.stopPropagation(); } catch {}
+        UI_setPromptExportActive(true);
+        UTIL_emitExportRun(EXPORT_MODE_FULL, !!e?.shiftKey);
+      });
+      btn.addEventListener('mouseover', () => {
+        btn.style.opacity = '1';
+        btn.style.filter = 'brightness(1.08)';
+        btn.style.boxShadow = '0 0 6px 2px rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.25)';
+      });
+      btn.addEventListener('mouseout', () => {
+        btn.style.filter = 'none';
+      });
+      btn.addEventListener('mouseleave', () => {
+        btn.style.transform = 'scale(1)';
+      });
+      btn.addEventListener('mousedown', () => {
+        btn.style.transform = 'scale(0.98)';
+      });
+      btn.addEventListener('mouseup', () => {
+        btn.style.transform = 'scale(1)';
+      });
+    }
+
+    if (btn.parentElement !== host || btn.nextElementSibling !== promptsBtn) {
+      host.insertBefore(btn, promptsBtn);
+    }
+
+    R.promptExportBtn = btn;
+    R.promptExportSrcBtn = promptsBtn;
+    UI_copyPromptsStyleToExport(btn, promptsBtn);
+    UI_setPromptExportActive(R.isDownloadMode);
+    return btn;
+  }
+
+  /** @helper */
+  function UI_removePromptExportButton() {
+    if (R.promptExportBtn?.parentNode) R.promptExportBtn.remove();
+    R.promptExportBtn = null;
+    R.promptExportSrcBtn = null;
+    R.promptExportStyleSig = '';
+    R.promptExportStyleAt = 0;
+  }
+
+  /** @helper */
+  function UI_resolveMenuAnchorBtn(fallbackBtn = null) {
+    const promptBtn = D.querySelector(SEL_.PROMPT_EXPORT_BTN());
+    if (promptBtn?.isConnected) return promptBtn;
+    const navBtn = document.querySelector(SEL_.NAV_EXPORT_BTN());
+    if (navBtn?.isConnected) return navBtn;
+    if (fallbackBtn?.isConnected) return fallbackBtn;
+    return null;
+  }
+
+  /** @helper */
+  function UI_clearMenuAnchorWatchers() {
+    try { R.menuAnchorRo?.disconnect?.(); } catch {}
+    try { R.menuAnchorMo?.disconnect?.(); } catch {}
+    R.menuAnchorRo = null;
+    R.menuAnchorMo = null;
+  }
+
+  /** @helper */
+  function UI_bindMenuAnchorWatchers(anchorBtn) {
+    UI_clearMenuAnchorWatchers();
+    if (!anchorBtn || !anchorBtn.isConnected) return;
+
+    try {
+      const ro = new ResizeObserver(() => UI_scheduleMenuReposition());
+      ro.observe(anchorBtn);
+      const parent = anchorBtn.parentElement;
+      if (parent && parent !== anchorBtn) ro.observe(parent);
+      R.menuAnchorRo = ro;
+    } catch {}
+
+    try {
+      const mo = new MutationObserver(() => UI_scheduleMenuReposition());
+      mo.observe(anchorBtn, { attributes: true, attributeFilter: ['class', 'style'] });
+      const parent = anchorBtn.parentElement;
+      if (parent && parent !== anchorBtn) {
+        mo.observe(parent, { attributes: true, attributeFilter: ['class', 'style'] });
+      }
+      R.menuAnchorMo = mo;
+    } catch {}
+  }
+
+  /** @helper */
+  function UI_positionMenuAtAnchor(anchorBtn) {
+    const menu = R.menuEl;
+    if (!menu || !anchorBtn) return;
+
+    const rect = anchorBtn.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    const mw = mr.width || menu.offsetWidth || 260;
+    const mh = mr.height || menu.offsetHeight || 220;
+
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const pad = MENU_VIEWPORT_PAD_PX;
+    const gap = MENU_ANCHOR_GAP_PX;
+
+    let left = rect.left;
+    const minLeft = pad;
+    const maxLeft = Math.max(minLeft, vw - mw - pad);
+    if (left < minLeft) left = minLeft;
+    if (left > maxLeft) left = maxLeft;
+
+    const topAbove = rect.top - gap - mh;
+    const topBelow = rect.bottom + gap;
+    const canOpenBelow = (topBelow + mh) <= (vh - pad);
+    const canOpenAbove = topAbove >= pad;
+    let top = topBelow;
+    if (!canOpenBelow && canOpenAbove) {
+      top = topAbove;
+    }
+    const maxTop = Math.max(pad, vh - mh - pad);
+    if (top < pad) top = pad;
+    if (top > maxTop) top = maxTop;
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.right = 'auto';
+    menu.style.bottom = 'auto';
+  }
+
+  /** @helper */
+  function UI_repositionMenuIfOpen(fallbackBtn = null) {
+    if (!R.menuEl?.classList?.contains?.(CLS_.STATE_OPEN)) return;
+    const anchor = UI_resolveMenuAnchorBtn(fallbackBtn || R.menuAnchorBtn);
+    if (!anchor) return;
+    R.menuAnchorBtn = anchor;
+    UI_positionMenuAtAnchor(anchor);
+  }
+
+  /** @helper */
+  function UI_scheduleMenuReposition() {
+    if (R.rafMenu) return;
+    R.rafMenu = requestAnimationFrame(() => {
+      R.rafMenu = 0;
+      UI_repositionMenuIfOpen();
+    });
+  }
+
+  /** @helper Remove legacy topbar export UI injected by older versions. */
+  function UI_removeLegacyTopbarExport() {
+    const legacyBtn = document.getElementById(LEGACY_.TOPBTN);
+    if (legacyBtn?.parentNode) legacyBtn.remove();
+    const legacyWrap = document.getElementById(LEGACY_.TOPBTN_WRAP);
+    if (legacyWrap?.parentNode) legacyWrap.remove();
+  }
+
+  /** @helper Remove old prompt-strip export button owned by xpch. */
+  function UI_removeLegacyPromptStripExport() {
+    try {
+      const old = D.querySelector(LEGACY_PROMPT_EXPORT_BTN_SELECTOR);
+      if (old?.parentNode) old.remove();
+    } catch {}
+  }
+
+  /** @core Keep prompt-strip Export mounted immediately left of Prompts. */
+  function CORE_bindPromptExportPlacement() {
+    if (R.promptExportPlacementWired) return;
+    R.promptExportPlacementWired = true;
+
+    let raf = 0;
+    let srcAttrMo = null;
+    let srcBtn = null;
+
+    const bindSrcAttrWatch = (btn) => {
+      if (!btn || btn === srcBtn) return;
+      try { srcAttrMo?.disconnect?.(); } catch {}
+      srcAttrMo = null;
+      srcBtn = btn;
+
+      srcAttrMo = new MutationObserver(() => {
+        UI_copyPromptsStyleToExport(R.promptExportBtn, btn);
+      });
+      try { srcAttrMo.observe(btn, { attributes: true, attributeFilter: ['class', 'style'] }); } catch {}
+    };
+
+    const scheduleEnsure = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const exportBtn = UI_ensurePromptExportButton();
+        if (exportBtn) bindSrcAttrWatch(R.promptExportSrcBtn);
+      });
+    };
+
+    const hostMo = new MutationObserver(scheduleEnsure);
+    try { hostMo.observe(D.body || D.documentElement, { childList: true, subtree: true }); } catch {}
+    CLEAN_add(() => {
+      try { hostMo.disconnect(); } catch {}
+      try { srcAttrMo?.disconnect?.(); } catch {}
+      srcAttrMo = null;
+      srcBtn = null;
+      if (raf) {
+        try { cancelAnimationFrame(raf); } catch {}
+        raf = 0;
+      }
+      R.promptExportPlacementWired = false;
+    });
+
+    UTIL_on(W, 'resize', scheduleEnsure, { passive: true });
+    UTIL_on(W, EV_.NAVIGATE, scheduleEnsure, { passive: true });
+    UTIL_on(W, 'popstate', scheduleEnsure, { passive: true });
+    scheduleEnsure();
   }
 
   /* ───────────────────────────── 12) Menu ───────────────────────────── */
@@ -1432,38 +1642,29 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
 
       UTIL_on(document, 'click', (e) => {
         if (!R.menuEl?.classList.contains(CLS_.STATE_OPEN)) return;
-        const btn = document.getElementById(ID_.TOPBTN) || document.querySelector(SEL_.DL_TOGGLE());
-        if (R.menuEl.contains(e.target) || btn?.contains(e.target)) return;
+        const anchor = UI_resolveMenuAnchorBtn(R.menuAnchorBtn);
+        if (R.menuEl.contains(e.target) || anchor?.contains?.(e.target)) return;
         UI_hideMenu();
       });
 
       UTIL_on(window, 'keydown', (e) => { if (e.key === 'Escape') UI_hideMenu(); });
     }
 
-    const r = anchorBtn.getBoundingClientRect();
-    // Open first so we can measure width, then center under the button.
-    R.menuEl.style.top = `${Math.round(r.bottom + 8 + window.scrollY)}px`;
-    R.menuEl.style.left = `${Math.round(r.left + window.scrollX)}px`; // temp
-    R.menuEl.style.right = 'auto';
+    const anchor = UI_resolveMenuAnchorBtn(anchorBtn);
+    if (!anchor) return;
+    R.menuAnchorBtn = anchor;
+    UI_bindMenuAnchorWatchers(anchor);
     R.menuEl.classList.add(CLS_.STATE_OPEN);
-
-    requestAnimationFrame(() => {
-      const menu = R.menuEl;
-      if (!menu) return;
-      const mw = menu.getBoundingClientRect().width || menu.offsetWidth || 260;
-      let left = (window.scrollX + r.left + (r.width / 2) - (mw / 2));
-      // clamp to viewport
-      const pad = 10;
-      const minL = window.scrollX + pad;
-      const maxL = window.scrollX + window.innerWidth - mw - pad;
-      if (left < minL) left = minL;
-      if (left > maxL) left = maxL;
-      menu.style.left = `${Math.round(left)}px`;
-    });
+    UI_positionMenuAtAnchor(anchor);
+    UI_scheduleMenuReposition();
   }
 
   /** @helper */
-  function UI_hideMenu() { R.menuEl?.classList.remove(CLS_.STATE_OPEN); }
+  function UI_hideMenu() {
+    R.menuEl?.classList.remove(CLS_.STATE_OPEN);
+    R.menuAnchorBtn = null;
+    UI_clearMenuAnchorWatchers();
+  }
 
   /* ───────────────────────────── 13) Actions ───────────────────────────── */
   /** @critical */
@@ -1502,67 +1703,58 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     R.selectedIds.clear();
     R.allSelected = false;
 
-    const btn = document.getElementById(ID_.TOPBTN) || document.querySelector(SEL_.DL_TOGGLE());
-    btn?.classList.remove(CLS_.STATE_ACTIVE);
-
     if (R.selectAllBtn) R.selectAllBtn.classList.remove(CLS_.STATE_ACTIVE);
 
     R.isDownloadMode = false;
     if (R.dlLayer) R.dlLayer.classList.remove(CLS_.STATE_ACTIVE);
     UI_positionAllMarks();     // hides marks
     UI_positionSelectAllBtn(); // hides select-all dot
+    UI_setPromptExportActive(false);
   }
 
-  /* ───────────────────────────── 14) Topbar button ───────────────────────────── */
-  /** @core */
+  /** @helper */
+  function ACT_pickMinimalTargetId() {
+    const active = document.querySelector(SEL_.MINIMAP_ACTIVE_BTN());
+    const activeId = String(active?.getAttribute?.(ATTR_.DATA_ID) || active?.dataset?.id || '').trim();
+    if (activeId) return activeId;
 
-  function UI_attachTopbarBtnOnce() {
-    if (document.getElementById(ID_.TOPBTN)) {
-      R.topBtn = document.getElementById(ID_.TOPBTN);
+    const first = DATA_answers()[0] || null;
+    return String(UTIL_getMessageId(first) || '').trim();
+  }
+
+  /** @core */
+  function ACT_runExternalExport(detail = Object.create(null)) {
+    const modeRaw = String(detail?.mode || '').trim().toLowerCase();
+    const mode = (modeRaw === EXPORT_MODE_MINIMAL) ? EXPORT_MODE_MINIMAL : EXPORT_MODE_FULL;
+    const anchorBtn = UI_resolveMenuAnchorBtn();
+    if (!anchorBtn) return;
+
+    // Toggle behavior: second click exits export mode completely.
+    if (R.isDownloadMode) {
+      UI_hideMenu();
+      ACT_clearSelectionsAndExit();
       return;
     }
 
-    const btn = document.createElement('button');
-    btn.id = ID_.TOPBTN;
-    btn.className = CLS_.DL_TOGGLE;
-    btn.setAttribute(ATTR_.CGXUI_OWNER, SkID);
-    btn.setAttribute(ATTR_.CGXUI, UI_.DL_TOGGLE);
-    btn.innerHTML = `<span data-cgxui-owner="${SkID}" data-cgxui="${UI_.DL_TEXT}">Export</span>`;
-
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const panel = SEL_.MINIMAP();
-      const menuOpen = R.menuEl?.classList?.contains?.(CLS_.STATE_OPEN);
-
-      // Turn ON
-      if (!R.isDownloadMode) {
-        R.isDownloadMode = true;
-        btn.classList.add(CLS_.STATE_ACTIVE);
-
-        UI_ensureDlLayer();
-        if (R.dlLayer) R.dlLayer.classList.add(CLS_.STATE_ACTIVE);
-        UI_ensureSelectAllBtn();
-        UI_positionSelectAllBtn();
-
-        UI_ensureMenu(btn);
-      } else if (!menuOpen) {
-        UI_ensureMenu(btn);
-      }
-
-      const menu = R.menuEl?.classList?.contains?.(CLS_.STATE_OPEN);
-      if (menu && !R.isDownloadMode) {
-        UI_hideMenu();
-      }
-    });
-
-    const container = DOM_ensureTopbarDock();
-    if (container) {
-      container.appendChild(btn);
-      R.topBtn = btn;
-      UI_positionExportButton();
+    if (!R.isDownloadMode) {
+      R.isDownloadMode = true;
+      UI_ensureDlLayer();
+      if (R.dlLayer) R.dlLayer.classList.add(CLS_.STATE_ACTIVE);
+      UI_ensureSelectAllBtn();
+      UI_positionSelectAllBtn();
     }
+
+    if (mode === 'minimal') {
+      R.selectedIds.clear();
+      R.allSelected = false;
+      if (R.selectAllBtn) R.selectAllBtn.classList.remove(CLS_.STATE_ACTIVE);
+      const id = ACT_pickMinimalTargetId();
+      if (id) R.selectedIds.add(id);
+    }
+
+    UI_positionAllMarks();
+    UI_setPromptExportActive(true);
+    UI_ensureMenu(anchorBtn);
   }
 
   /* ───────────────────────────── 15) Boot + wiring ───────────────────────────── */
@@ -1570,6 +1762,7 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
   function CORE_wireRepositionListeners() {
     UTIL_on(window, 'scroll', UI_scheduleReposition, { passive: true });
     UTIL_on(window, 'resize', UI_scheduleReposition);
+    UTIL_on(window, 'resize', UI_scheduleMenuReposition, { passive: true });
 
     // MinimMap internal scrolling can move boxes without window scroll
     const onInnerScroll = (e) => {
@@ -1578,6 +1771,11 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
       if (mm.contains(e.target)) UI_scheduleReposition();
     };
     UTIL_on(document, 'scroll', onInnerScroll, true);
+
+    if (window.visualViewport) {
+      UTIL_on(window.visualViewport, 'resize', UI_scheduleMenuReposition, { passive: true });
+      UTIL_on(window.visualViewport, 'scroll', UI_scheduleMenuReposition, { passive: true });
+    }
 
   }
 
@@ -1591,23 +1789,26 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     CLEAN_add(() => {
       try { delete W.attachDownloadCheck; } catch {}
       try { delete W.h2oAttachDownloadCheck; } catch {}
+      UI_clearMenuAnchorWatchers();
     });
 
     CORE_injectCssOnce();
-    UI_attachTopbarBtnOnce();
+    UI_removeLegacyTopbarExport();
+    UI_removeLegacyPromptStripExport();
     CORE_wireRepositionListeners();
-    UI_startExportWatcher();
 
     // Canonical events
     const onMmReady = () => {
       if (R.isDownloadMode) UI_scheduleReposition();
-      UI_attachTopbarBtnOnce();
     };
     UTIL_on(window, EV_.MM_READY, onMmReady);
+    UTIL_on(window, EV_.EXPORT_RUN, (e) => {
+      ACT_runExternalExport(e?.detail || Object.create(null));
+    });
 
     // Light navigation hooks
-    UTIL_on(window, EV_.NAVIGATE, () => UI_attachTopbarBtnOnce());
-    UTIL_on(window, 'popstate', () => UI_attachTopbarBtnOnce());
+    UTIL_on(window, EV_.NAVIGATE, () => UI_scheduleMenuReposition());
+    UTIL_on(window, 'popstate', () => UI_scheduleMenuReposition());
 
     // Legacy bridge (listen old → re-dispatch canonical)
     const onLegacyMmReady = (e) => { UTIL_emit(EV_.MM_READY, e?.detail); };
@@ -1615,14 +1816,6 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     UTIL_on(window, MIG_.LEG_MM_READY, onLegacyMmReady);
     UTIL_on(window, MIG_.LEG_NAVIGATE, onLegacyNavigate);
 
-    // Poll in case header loads later
-    let tries = 0;
-    const t = setInterval(() => {
-      tries += 1;
-      UI_attachTopbarBtnOnce();
-      if (document.getElementById(ID_.TOPBTN) || tries > 40) clearInterval(t);
-    }, 300);
-    CLEAN_add(() => { try { clearInterval(t); } catch {} });
   }
 
   /** @core */
@@ -1637,6 +1830,11 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
       try { cancelAnimationFrame(R.rafPos); } catch {}
       R.rafPos = 0;
     }
+    if (R.rafMenu) {
+      try { cancelAnimationFrame(R.rafMenu); } catch {}
+      R.rafMenu = 0;
+    }
+    UI_clearMenuAnchorWatchers();
 
     R.selectedIds.clear();
     R.dlMarkById.clear();
@@ -1648,16 +1846,18 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
 
     if (R.menuEl?.parentNode) R.menuEl.remove();
     if (R.selectAllBtn?.parentNode) R.selectAllBtn.remove();
-    if (R.topBtn?.parentNode) R.topBtn.remove();
-    const wrap = document.getElementById(ID_.TOPBTN_WRAP);
-    if (wrap?.parentNode) wrap.remove();
     if (R.dlLayer?.parentNode) R.dlLayer.remove();
+    UI_removeLegacyPromptStripExport();
+    UI_removeLegacyTopbarExport();
     const styleEl = document.getElementById(CSS_.STYLE_ID);
     if (styleEl?.parentNode) styleEl.remove();
     R.menuEl = null;
+    R.menuAnchorBtn = null;
+    R.menuAnchorRo = null;
+    R.menuAnchorMo = null;
     R.selectAllBtn = null;
-    R.topBtn = null;
     R.dlLayer = null;
+    R.promptExportPlacementWired = false;
   }
 
   CORE_EC_boot();

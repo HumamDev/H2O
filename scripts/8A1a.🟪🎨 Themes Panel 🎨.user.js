@@ -2,7 +2,9 @@
 // @h2o-id      8a.themes.panel
 // @name         8A.🟪🎨 Themes Panel 🎨
 // @namespace    H2O.ChatGPT.Themes
-// @version      2.1.8
+// @version      2.1.14
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -104,11 +106,18 @@
 
   const SEL_TINY_RAIL = '#stage-sidebar-tiny-bar';
   const SEL_TINY_RAIL_IMG = 'img';
+  const SEL_TINY_RAIL_ICON_HOST = '.icon, .icon-lg';
+  const SEL_TINY_RAIL_STACK_PRIMARY = 'div.mt-\\(\\--sidebar-section-first-margin-top\\)';
+  const SEL_TINY_RAIL_STACK_FALLBACK = ':scope > div:nth-child(2)';
   const SEL_TINY_RAIL_TEMPLATE_A =
     'a.__menu-item.hoverable[data-sidebar-item="true"],' +
     'a.__menu-item[data-sidebar-item="true"],' +
     'a[data-sidebar-item="true"],' +
     'a.__menu-item';
+  const ATTR_TINY_RAIL_VIEW = 'data-h2o-rail-view';
+  const TINY_RAIL_VIEW_THEMES = 'themes';
+  const CLS_DOCK_RAIL_NAV_BTN = 'cgxui-dcpn-rail-nav-btn';
+  const CLS_DOCK_RAIL_NAV_TXT = 'cgxui-dcpn-rail-nav-txt';
 
   // ───────────────────────── UI Locate Helpers ─────────────────────────
   // ChatGPT's DOM shifts a lot. The Themes Panel needs a *stable* anchor
@@ -147,8 +156,8 @@
   const CFG_TINY_RAIL_MIN_H         = 200;
   const CFG_TINY_RAIL_BOTTOM_ZONE_PX = 160;
 
-  const CFG_TINY_BTN_W              = 30;
-  const CFG_TINY_BTN_H              = 30;
+  const CFG_TINY_BTN_W              = 24;
+  const CFG_TINY_BTN_H              = 24;
   const CFG_TINY_BTN_PAD            = 8;
   /* ───────────────────────────── 🟦 SHAPE — CONTRACTS / TYPES 📄🔓💧 ───────────────────────────── */
   // (Stage-1: keep behavior same; no doc-polish here)
@@ -390,6 +399,7 @@
   function CSS_TP_text() {
     const BACKDROP = DOM_selScoped(UI_TPANEL_BACKDROP);
     const PANEL    = DOM_selScoped(UI_TPANEL_PANEL);
+    const TINYBTN  = DOM_selScoped(UI_TPANEL_TINY_RAIL);
 
     const TABBTN   = DOM_selScoped(UI_TPANEL_TABBTN);
     const PANE     = DOM_selScoped(UI_TPANEL_PANE);
@@ -755,6 +765,55 @@ ${PANEL} [data-part="aval"] span{ font-weight:600; }
 ${PANEL} [data-part="srow"]{ display:flex; align-items:center; gap:8px; font-size:11px; }
 ${PANEL} [data-part="srow"] span{ width:70px; opacity:0.9; }
 ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
+
+/* tiny rail themes button: dock-panel badge style fallback */
+${TINYBTN} .${CLS_DOCK_RAIL_NAV_BTN}{
+  width: var(--cgxui-rail-btn-w, 24px);
+  height: var(--cgxui-rail-btn-h, 24px);
+  display: block;
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,0.03), rgba(0,0,0,0.10)),
+    var(--cgxui-btn-bg, #777) !important;
+  opacity: 0.78;
+  box-shadow:
+    inset 0 0 1px rgba(255,255,255,0.05),
+    0 2px 5px rgba(0,0,0,0.30);
+  transition: opacity .18s ease, filter .18s ease, box-shadow .18s ease, transform .18s ease;
+  pointer-events: none;
+  position: relative;
+}
+[${ATTR_TINY_RAIL_VIEW}="${TINY_RAIL_VIEW_THEMES}"]:hover .${CLS_DOCK_RAIL_NAV_BTN}{
+  opacity: 1;
+  filter: brightness(1.08);
+  box-shadow:
+    0 0 6px 2px rgba(255,255,255,0.08),
+    0 2px 4px rgba(0,0,0,0.25);
+}
+${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT}{
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Inter", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.55px;
+  color: rgba(255,255,255,0.72);
+  opacity: 0.88;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.45);
+  pointer-events: none;
+  user-select: none;
+}
+${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 `;
   }
 
@@ -1390,7 +1449,7 @@ ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
   /* ───────────────────────────── 🟧 BOUNDARIES — Tiny Rail Button 📝🔓💥 ───────────────────────────── */
 
   const UI_TPANEL_SVG_ICON = `
-<svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   <path d="M12 22a10 10 0 1 1 10-10c0 2.2-1.8 4-4 4h-1.5a2.5 2.5 0 0 0 0 5H12z"/>
   <circle cx="7.5" cy="10.5" r="1"/>
   <circle cx="12" cy="8" r="1"/>
@@ -1429,59 +1488,97 @@ ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
     return clickable.closest('div[data-state]') || clickable;
   }
 
+  function UI_TP_findTinyRailStack(rail, templateWrap, avatarWrap) {
+    if (!rail) return null;
+    if (avatarWrap?.parentElement && rail.contains(avatarWrap.parentElement)) {
+      return avatarWrap.parentElement;
+    }
+    if (templateWrap?.parentElement && rail.contains(templateWrap.parentElement)) {
+      return templateWrap.parentElement;
+    }
+    return (
+      rail.querySelector(SEL_TINY_RAIL_STACK_PRIMARY) ||
+      rail.querySelector(SEL_TINY_RAIL_STACK_FALLBACK) ||
+      rail
+    );
+  }
+
   function UI_TP_ensureTinyRailButton() {
     const rail = UI_TP_findTinyRailEl();
+    if (!rail) return;
 
-    // DOM drift fallback: if the tiny-rail node isn't found, keep the button
-    // available anyway (fixed left-side position).
-    const rr = rail ? rail.getBoundingClientRect() : null;
+    const ownedBtnSel = DOM_selScoped(UI_TPANEL_TINY_RAIL);
+    const rr = rail.getBoundingClientRect();
+    if (rr.width < CFG_TINY_RAIL_MIN_W || rr.height < CFG_TINY_RAIL_MIN_H) return;
 
-    if (rr && (rr.width < CFG_TINY_RAIL_MIN_W || rr.height < CFG_TINY_RAIL_MIN_H)) return;
+    const templateWrap =
+      rail.querySelector?.(`div[data-state]:not([${ATTR_CGXUI_OWNER}="${SkID}"])`) ||
+      rail.querySelector?.('div[data-state]') ||
+      rail.querySelector?.(':scope > div') ||
+      null;
+    const templateA =
+      templateWrap?.querySelector?.(SEL_TINY_RAIL_TEMPLATE_A) ||
+      rail.querySelector?.(SEL_TINY_RAIL_TEMPLATE_A) ||
+      null;
+    const templateIconHost = templateA?.querySelector?.(SEL_TINY_RAIL_ICON_HOST) || templateA || null;
+    const iconR = templateIconHost?.getBoundingClientRect?.() || null;
+    const railW = Math.max(18, Math.round(iconR?.width || CFG_TINY_BTN_W));
+    const railH = Math.max(18, Math.round(iconR?.height || CFG_TINY_BTN_H));
 
-    // ✅ React-safe: NEVER insert nodes inside the rail (React-managed DOM)
-    // Instead, render a fixed-position overlay button anchored to the rail's viewport rect.
-    let btn = STATE.tinyRailWrap; // keep legacy name to avoid touching other code
-    if (!btn || !btn.isConnected) {
-      btn = document.createElement('button');
-      btn.type = 'button';
+    const avatarWrap = UI_TP_findTinyRailAvatarWrap(rail);
+    const stack = UI_TP_findTinyRailStack(rail, templateWrap, avatarWrap);
+    if (!stack) return;
+
+    let wrap = STATE.tinyRailWrap;
+    let btn = wrap?.querySelector?.(ownedBtnSel) || null;
+    const needsNew = !wrap || !wrap.isConnected || !btn || !btn.isConnected;
+    if (needsNew) {
+      wrap = templateWrap ? templateWrap.cloneNode(true) : document.createElement('div');
+      wrap.setAttribute('data-state', wrap.getAttribute('data-state') || 'closed');
+      wrap.setAttribute(ATTR_CGXUI_OWNER, SkID);
+      wrap.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
+
+      btn = templateA ? templateA.cloneNode(true) : document.createElement('a');
+      wrap.textContent = '';
+      wrap.appendChild(btn);
+
+      try { btn.removeAttribute('href'); } catch {}
+      try { btn.removeAttribute('data-testid'); } catch {}
+      btn.setAttribute('role', 'button');
+      btn.setAttribute('tabindex', '0');
+      btn.setAttribute('data-sidebar-item', 'true');
       btn.setAttribute('aria-label', 'Themes');
-      btn.title = 'Themes';
-      btn.className = 'cgxui-tp-tiny-rail-btn';
-
-      // Inline styles (kept here to avoid touching global CSS / React DOM)
-      btn.style.position = 'fixed';
-      btn.style.zIndex = '2147483646';
-      btn.style.width = CFG_TINY_BTN_W + 'px';
-      btn.style.height = CFG_TINY_BTN_H + 'px';
-      btn.style.border = '1px solid rgba(255,255,255,0.08)';
-      btn.style.borderRadius = '10px';
-      btn.style.cursor = 'pointer';
-      btn.style.display = 'flex';
-      btn.style.alignItems = 'center';
-      btn.style.justifyContent = 'center';
-      btn.style.color = 'rgba(237,241,246,0.92)';
-      btn.style.background = '#ff0000'; // strong test color: pure red
-      btn.style.boxShadow = '0 2px 8px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.03)';
-      btn.style.backdropFilter = 'none';
-      btn.style.opacity = '1';
-      btn.innerHTML = UI_TPANEL_SVG_ICON;
+      btn.setAttribute(ATTR_TITLE, CFG_TINY_RAIL_TTL);
 
       // Contract UI hooks (so Control Hub can discover & manage the button)
       btn.setAttribute(ATTR_CGXUI, UI_TPANEL_TINY_RAIL);
       btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
       btn.setAttribute(ATTR_OWNER, SkID);
+      btn.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
 
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        // Use the panel's own toggle (do not depend on an undefined API_*)
         UI_TP_togglePanel();
       }, true);
 
-      document.documentElement.appendChild(btn);
-      STATE.tinyRailWrap = btn;
+      btn.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        UI_TP_togglePanel();
+      }, true);
 
-      // One-time wiring: keep the button glued to the rail on scroll/resize.
+      const stop = (ev) => {
+        try { ev.preventDefault(); } catch {}
+        try { ev.stopPropagation(); } catch {}
+      };
+      btn.addEventListener('pointerdown', stop, true);
+      btn.addEventListener('mousedown', stop, true);
+
+      STATE.tinyRailWrap = wrap;
+
+      // One-time wiring: react to viewport shifts that can reflow rail internals.
       if (!STATE._tinyRailPosWired) {
         STATE._tinyRailPosWired = true;
 
@@ -1500,7 +1597,6 @@ ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
         window.addEventListener('scroll', schedule, { passive: true });
         window.addEventListener('resize', schedule, { passive: true });
 
-        // VisualViewport handles mobile / dynamic address-bar shifts
         if (window.visualViewport) {
           window.visualViewport.addEventListener('resize', schedule, { passive: true });
           window.visualViewport.addEventListener('scroll', schedule, { passive: true });
@@ -1508,26 +1604,42 @@ ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
       }
     }
 
-    // Position overlay near the bottom of the rail (same “spot” as the old in-rail insert)
-    const BTN_W = CFG_TINY_BTN_W;
-    const BTN_H = CFG_TINY_BTN_H;
+    wrap.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
+    wrap.style.position = '';
+    wrap.style.zIndex = '';
+    wrap.style.pointerEvents = '';
+    wrap.style.width = '';
+    wrap.style.height = '';
+    wrap.style.left = '';
+    wrap.style.top = '';
 
-    const avatarWrap = rail ? UI_TP_findTinyRailAvatarWrap(rail) : null;
-    const avatarRect = avatarWrap?.getBoundingClientRect();
+    btn.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
+    btn.setAttribute(ATTR_TITLE, CFG_TINY_RAIL_TTL);
+    btn.setAttribute('aria-label', 'Themes');
+    btn.style.cursor = 'pointer';
 
-    const baseX = avatarRect
-      ? avatarRect.left + (avatarRect.width - BTN_W) / 2
-      : (rr ? rr.left + (rr.width - BTN_W) / 2 : 10);
+    const iconHost = btn.querySelector(SEL_TINY_RAIL_ICON_HOST) || btn;
+    iconHost.style.display = 'flex';
+    iconHost.style.alignItems = 'center';
+    iconHost.style.justifyContent = 'center';
+    iconHost.innerHTML = `
+      <span class="${CLS_DOCK_RAIL_NAV_BTN}" aria-hidden="true"
+        style="--cgxui-btn-bg:#6b7280; --cgxui-rail-btn-w:${railW}px; --cgxui-rail-btn-h:${railH}px;">
+        <span class="${CLS_DOCK_RAIL_NAV_TXT}" aria-hidden="true">${UI_TPANEL_SVG_ICON}</span>
+      </span>
+    `;
 
-    let y = avatarRect
-      ? avatarRect.top - BTN_H - CFG_TINY_BTN_PAD
-      : (rr ? rr.bottom - BTN_H - CFG_TINY_BTN_PAD : Math.max(80, Math.round(window.innerHeight - 220)));
+    const parent = avatarWrap?.parentElement && rail.contains(avatarWrap.parentElement)
+      ? avatarWrap.parentElement
+      : stack;
 
-    const minY = rr ? rr.top + CFG_TINY_BTN_PAD : CFG_TINY_BTN_PAD;
-    if (y < minY) y = minY;
-
-    btn.style.left = Math.round(baseX) + 'px';
-    btn.style.top  = Math.round(y) + 'px';
+    if (avatarWrap && avatarWrap !== wrap && avatarWrap.parentElement === parent) {
+      if (wrap.parentElement !== parent || wrap.nextSibling !== avatarWrap) {
+        parent.insertBefore(wrap, avatarWrap);
+      }
+    } else if (wrap.parentElement !== parent) {
+      parent.appendChild(wrap);
+    }
   }
 
   function UI_TP_wireTinyRailEnsure() {

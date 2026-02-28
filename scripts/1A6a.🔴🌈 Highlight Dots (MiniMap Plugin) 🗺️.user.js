@@ -2,7 +2,9 @@
 // @h2o-id      1a6.highlight.dots.minimap.plugin
 // @name         1A6.🔴🌈 Highlight Dots (MiniMap Plugin) 🗺️
 // @namespace    H2O.Prime.CGX.MiniMap.Dots
-// @version      1.3.1
+// @version      1.3.8
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Self-contained copy of the MiniMap left-side inline highlight dots (identical visuals + behavior)
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -26,8 +28,9 @@
 
   // ✅ Ownership flag: this script is the single authority for MiniMap left-side dots
   const TOPW = (W.top || W);
+  const DOTS_VER = '1.3.8';
   TOPW.H2O_MM_DOTS_PLUGIN = true;
-  TOPW.H2O_MM_DOTS_PLUGIN_VER = '1.1.1';
+  TOPW.H2O_MM_DOTS_PLUGIN_VER = DOTS_VER;
   const MM_HAS_EXTERNAL_WASH = () => !!TOPW.H2O_MM_WASH_PLUGIN || !!(W.H2O && W.H2O.MM && W.H2O.MM.wash);
 
   const SUITE = 'prm';
@@ -35,6 +38,7 @@
   const DsID  = 'mnmp';
   const SkID  = 'mnmp';
   const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`;
+  const NS_DISK_INLINE = 'h2o:prm:cgx:nlnhghlghtr';
 
   /* ───────────────────────── 1) Tokens (attrs/ui/cls/sel) ───────────────────────── */
   const ATTR_ = Object.freeze({
@@ -74,25 +78,45 @@
   const SEL_ = Object.freeze({
     MINIMAP:   `[${ATTR_.CGXUI}="${UI_.MINIMAP}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
     MM_COL:    `[${ATTR_.CGXUI}="${UI_.COL}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
-    MM_WRAP:   `[${ATTR_.CGXUI}="${UI_.WRAP}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
-    MM_BTN:    `[${ATTR_.CGXUI}="${UI_.BTN}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
+    MM_WRAP:   `[${ATTR_.CGXUI}="${UI_.WRAP}"][${ATTR_.CGXUI_OWNER}="${SkID}"], [${ATTR_.CGXUI}="mm-wrap"][${ATTR_.CGXUI_OWNER}="${SkID}"], .cgxui-mm-wrap, .ho-mm-wrap`,
+    MM_BTN:    `[${ATTR_.CGXUI}="${UI_.BTN}"][${ATTR_.CGXUI_OWNER}="${SkID}"], [${ATTR_.CGXUI}="mm-btn"][${ATTR_.CGXUI_OWNER}="${SkID}"], [${ATTR_.CGXUI}="${UI_.BTN}"], [${ATTR_.CGXUI}="mm-btn"], .cgxui-mm-btn, .ho-mm-btn`,
     MM_DOTROW: `[${ATTR_.CGXUI}="${UI_.DOTROW}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
   });
 
   /* ───────────────────────── 2) Events & Keys ───────────────────────── */
   const EV_ = Object.freeze({
     INLINE_CHANGED:   'evt:h2o:inline:changed',
+    INLINE_CHANGED_HO:'h2o-inline:changed',
+    INLINE_CHANGED_CGXUI:'cgxui-inline:changed',
     INLINE_RESTORED:  'evt:h2o:inline:restored',
-    ANSWER_HIGHLIGHT: 'evt:h2o:answer:highlight',
+    INLINE_HL_CHANGED:'evt:h2o:inlineHL:changed',
+    ANSWERS_SCAN:     'evt:h2o:answers:scan',
+    SHELL_READY:      'evt:h2o:minimap:shell-ready',
+    ENGINE_READY:     'evt:h2o:minimap:engine-ready',
+    ANSWER_WASH:      'evt:h2o:answer:wash',
+    ANSWER_WASH_ALIAS:'h2o:answer:wash',
+    ANSWER_WASH_LEGACY_EVT:'evt:h2o:answer:highlight',
+    ANSWER_WASH_LEGACY_ALIAS:'h2o:answer:highlight',
   });
 
   // Live Sync signal (WebDAV LiveState poll/push can listen without monkeypatching storage)
   const EV_LIVE_CHANGED = 'evt:h2o:data:liveChanged';
 
   const KEY_ = Object.freeze({
-    DISK_GLOW_HL:      `${NS_DISK}:state:glow_hl:v7`,
+    DISK_WASH_MAP_LEGACY_GLOW_HL: `${NS_DISK}:state:glow_hl:v7`,
     DISK_WASH_MAP:     `${NS_DISK}:state:wash_map:v1`,
     DISK_INLINE_DOTS:  `${NS_DISK}:state:inline_dots:v2`,
+    DISK_INLINE_DOTS_V1:`${NS_DISK}:state:inline_dots:v1`,
+    DISK_INLINE_DOTS_LEGACY_A: 'h2o:mm:inlineDotMap:v1',
+    DISK_INLINE_DOTS_LEGACY_B: 'h2o:mm:inlineDotMap',
+    DISK_INLINE_HL_STORE_V3: `${NS_DISK_INLINE}:state:inline_highlights:v3`,
+    DISK_INLINE_HL_STORE_V2: `${NS_DISK_INLINE}:state:inline_highlights:v2`,
+    DISK_INLINE_HL_STORE_V1: `${NS_DISK_INLINE}:state:inline_highlights:v1`,
+    DISK_INLINE_HL_STORE_ALIAS_V3: 'h2o:inlineHighlights.v3',
+    DISK_INLINE_HL_STORE_ALIAS_V2: 'h2o:inlineHighlights.v2',
+    DISK_INLINE_HL_STORE_ALIAS: 'h2o:inlineHighlights',
+    DISK_INLINE_HL_STORE_LEGACY_HO_V2: 'ho:inlineHighlights.v2',
+    DISK_INLINE_HL_STORE_LEGACY_HO_V1: 'ho:inlineHighlights',
   });
 
   /* ───────────────────────── 3) Storage helpers ───────────────────────── */
@@ -193,8 +217,25 @@
 
   /* ───────────────────────── 5) Wash + Inline dot maps (persisted) ───────────────────────── */
   const STORAGE_WASH_MAP_NEW = KEY_.DISK_WASH_MAP;
-  const STORAGE_WASH_MAP_OLD = KEY_.DISK_GLOW_HL;
+  const STORAGE_WASH_MAP_LEGACY_GLOW_HL = KEY_.DISK_WASH_MAP_LEGACY_GLOW_HL;
   const KEY_INLINE_DOTS      = KEY_.DISK_INLINE_DOTS;
+  const KEY_INLINE_DOTS_LEGACY = [
+    KEY_.DISK_INLINE_DOTS,
+    KEY_.DISK_INLINE_DOTS_V1,
+    KEY_.DISK_INLINE_DOTS_LEGACY_A,
+    KEY_.DISK_INLINE_DOTS_LEGACY_B,
+  ];
+  const KEY_INLINE_HL_STORE_COMPAT = [
+    KEY_.DISK_INLINE_HL_STORE_V3,
+    KEY_.DISK_INLINE_HL_STORE_V2,
+    KEY_.DISK_INLINE_HL_STORE_V1,
+    KEY_.DISK_INLINE_HL_STORE_ALIAS_V3,
+    KEY_.DISK_INLINE_HL_STORE_ALIAS_V2,
+    KEY_.DISK_INLINE_HL_STORE_ALIAS,
+    KEY_.DISK_INLINE_HL_STORE_LEGACY_HO_V2,
+    KEY_.DISK_INLINE_HL_STORE_LEGACY_HO_V1,
+  ];
+  let STATE_INLINE_DOTS_LOADED_FROM_COMPAT = false;
 
   const washMap = (() => {
     const topW = (W && W.top) ? W.top : window;
@@ -208,7 +249,7 @@
       } catch {}
       if (!fromDisk) {
         try {
-          const rawOld = UTIL_storage.getStr(STORAGE_WASH_MAP_OLD, null);
+          const rawOld = UTIL_storage.getStr(STORAGE_WASH_MAP_LEGACY_GLOW_HL, null);
           const parsedOld = rawOld ? JSON.parse(rawOld) : null;
           if (parsedOld && typeof parsedOld === 'object' && !Array.isArray(parsedOld)) fromDisk = parsedOld;
         } catch {}
@@ -229,7 +270,7 @@
           detail: {
             domain: DsID,
             source: 'dots',
-            keys: [STORAGE_WASH_MAP_NEW, STORAGE_WASH_MAP_OLD],
+            keys: [STORAGE_WASH_MAP_NEW, STORAGE_WASH_MAP_LEGACY_GLOW_HL],
             at: Date.now(),
           }
         }));
@@ -237,20 +278,163 @@
     } catch {}
   }
 
+  function hasOwnKeys(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    try { return Object.keys(obj).length > 0; } catch { return false; }
+  }
+
+  function readJSONObj(key) {
+    if (!key) return null;
+    try {
+      const raw = UTIL_storage.getStr(key, null);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizeDotMapShape(rawMap) {
+    const out = Object.create(null);
+    if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return out;
+    for (const [idRaw, rawColors] of Object.entries(rawMap)) {
+      const id = String(idRaw || '').trim();
+      if (!id) continue;
+      const arr = Array.isArray(rawColors) ? rawColors : (rawColors == null ? [] : [rawColors]);
+      const colors = canonicalInlineColors(arr).filter(isValidDotName);
+      if (colors.length) out[id] = colors;
+    }
+    return out;
+  }
+
+  function dotMapFromHighlightStore(rawStore) {
+    const out = Object.create(null);
+    const itemsByAnswer = rawStore?.itemsByAnswer;
+    if (!itemsByAnswer || typeof itemsByAnswer !== 'object') return out;
+    for (const [idRaw, list] of Object.entries(itemsByAnswer)) {
+      const id = String(idRaw || '').trim();
+      if (!id || !Array.isArray(list) || !list.length) continue;
+      const src = [];
+      for (const item of list) {
+        const colorName = String(item?.color || '').trim().toLowerCase();
+        const hexColor = String(item?.hex || '').trim();
+        if (colorName) src.push(colorName);
+        if (hexColor) src.push(hexColor);
+      }
+      const colors = canonicalInlineColors(src).filter(isValidDotName);
+      if (colors.length) out[id] = colors;
+    }
+    return out;
+  }
+
+  function mergeNormalizedDotMap(target, mapLike) {
+    if (!target || typeof target !== 'object') return 0;
+    const src = normalizeDotMapShape(mapLike);
+    if (!hasOwnKeys(src)) return 0;
+    let changed = 0;
+    for (const [id, colors] of Object.entries(src)) {
+      const prev = Array.isArray(target[id]) ? target[id] : [];
+      const merged = canonicalInlineColors([...(prev || []), ...(colors || [])]).filter(isValidDotName);
+      if (!merged.length) continue;
+      const same = (prev.length === merged.length) && prev.every((c, i) => String(c || '') === String(merged[i] || ''));
+      if (same) continue;
+      target[id] = merged;
+      changed += 1;
+    }
+    return changed;
+  }
+
+  function loadInlineDotsCompat() {
+    STATE_INLINE_DOTS_LOADED_FROM_COMPAT = false;
+    const out = Object.create(null);
+    for (const key of KEY_INLINE_DOTS_LEGACY) {
+      const raw = readJSONObj(key);
+      if (!raw) continue;
+      const changed = mergeNormalizedDotMap(out, raw);
+      if (changed > 0 && key !== KEY_INLINE_DOTS) STATE_INLINE_DOTS_LOADED_FROM_COMPAT = true;
+    }
+    for (const key of KEY_INLINE_HL_STORE_COMPAT) {
+      const highlightStore = readJSONObj(key);
+      if (!highlightStore) continue;
+      const changed = mergeNormalizedDotMap(out, dotMapFromHighlightStore(highlightStore));
+      if (changed > 0) STATE_INLINE_DOTS_LOADED_FROM_COMPAT = true;
+    }
+    return out;
+  }
+
   const inlineDotMap = (() => {
     const topW = (W && W.top) ? W.top : window;
     if (topW.H2O_MM_inlineDotMap && typeof topW.H2O_MM_inlineDotMap === 'object') {
-      return topW.H2O_MM_inlineDotMap;
+      const shared = topW.H2O_MM_inlineDotMap;
+      if (!hasOwnKeys(shared)) {
+        const compat = loadInlineDotsCompat();
+        for (const [id, colors] of Object.entries(compat)) shared[id] = colors;
+      }
+      return shared;
     }
-    let obj = Object.create(null);
-    try {
-      const raw = UTIL_storage.getStr(KEY_INLINE_DOTS, null);
-      const parsed = raw ? JSON.parse(raw) : null;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed;
-    } catch {}
+    let obj = loadInlineDotsCompat();
     topW.H2O_MM_inlineDotMap = obj;
     return obj;
   })();
+
+  function sameColorList(a, b) {
+    const aa = Array.isArray(a) ? a : [];
+    const bb = Array.isArray(b) ? b : [];
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i += 1) {
+      if (String(aa[i] || '') !== String(bb[i] || '')) return false;
+    }
+    return true;
+  }
+
+  function mergeInlineDotsMap(rawMap, { persist = false } = {}) {
+    const next = normalizeDotMapShape(rawMap);
+    if (!hasOwnKeys(next)) return 0;
+    let changed = 0;
+    for (const [id, colors] of Object.entries(next)) {
+      const prev = inlineDotMap[id] || [];
+      const normalized = canonicalInlineColors(colors).filter(isValidDotName);
+      if (!normalized.length) continue;
+      if (sameColorList(prev, normalized)) continue;
+      inlineDotMap[id] = normalized;
+      changed += 1;
+    }
+    if (changed && persist) saveInlineDots();
+    return changed;
+  }
+
+  function hydrateInlineDotsFromInlineApi({ persist = true } = {}) {
+    const readers = [
+      W?.H2O?.inline?.getStore,
+      W?.H2OInline?.getStore,
+      TOPW?.H2O?.inline?.getStore,
+      TOPW?.H2OInline?.getStore,
+    ];
+    for (const readStore of readers) {
+      if (typeof readStore !== 'function') continue;
+      try {
+        const out = readStore();
+        if (out && typeof out.then === 'function') {
+          try {
+            out.then((store) => {
+              try {
+                const map = dotMapFromHighlightStore(store);
+                const changed = mergeInlineDotsMap(map, { persist });
+                if (changed) scheduleRepaintDotsForAllMiniBtns();
+              } catch {}
+            }).catch(() => {});
+          } catch {}
+          continue;
+        }
+        const map = dotMapFromHighlightStore(out);
+        const changed = mergeInlineDotsMap(map, { persist });
+        if (changed) return changed;
+      } catch {}
+    }
+    return 0;
+  }
 
   function saveInlineDots() {
     try {
@@ -268,6 +452,12 @@
         }));
       } catch {}
     } catch {}
+  }
+
+  if (STATE_INLINE_DOTS_LOADED_FROM_COMPAT && hasOwnKeys(inlineDotMap)) {
+    setTimeout(() => {
+      try { saveInlineDots(); } catch {}
+    }, 0);
   }
 
   try {
@@ -301,10 +491,7 @@
   --mm-dot-gutter: 22px;
   --mm-dot-gap: 10px;
   --mm-dot-x: calc(-2 * (var(--mm-dot-gutter) - var(--mm-dot-gap)) + 8px);
-
-  /* move lane one step LEFT from the button edge */
-  --mm-dot-shift: 2px;                                  /* 👈👈👈👈 */
-
+  --mm-dot-shift: 2px;
   --mm-dot-size: 5px;
   --mm-dot-col-gap: 3px;
   --mm-dot-row-gap: 3px;
@@ -485,12 +672,24 @@ ${dotSel}{
       if (found) return found;
     } catch {}
 
-    // DOM search fallback
+    // DOM scan fallback
     try {
-      const esc = CSS.escape ? CSS.escape(key) : key.replace(/"/g, '\\"');
-      return document.querySelector(`${SEL_.MM_BTN}[${ATTR_.PRIMARY_A_ID}="${esc}"]`)
-          || document.querySelector(`${SEL_.MM_BTN}[${ATTR_.CGXUI_ID}="${esc}"]`)
-          || document.querySelector(`${SEL_.MM_BTN}[data-primary-a-id="${esc}"]`);
+      const btns = document.querySelectorAll(SEL_.MM_BTN);
+      for (const btn of btns) {
+        const pid = String(
+          btn?.dataset?.primaryAId ||
+          btn?.getAttribute?.(ATTR_.PRIMARY_A_ID) ||
+          btn?.getAttribute?.('data-primary-a-id') ||
+          ''
+        ).trim();
+        const bid = String(
+          btn?.dataset?.id ||
+          btn?.dataset?.turnId ||
+          btn?.getAttribute?.(ATTR_.CGXUI_ID) ||
+          ''
+        ).trim();
+        if (pid === key || bid === key) return btn;
+      }
     } catch {}
     return null;
   }
@@ -531,19 +730,25 @@ ${dotSel}{
       btn.style.textShadow =
         text === '#fff' ? '0 0 2px rgba(0,0,0,.35)' : '0 1px 0 rgba(255,255,255,.35)';
       btn.style.boxShadow = `0 0 6px 2px ${bg}40`;
-      btn.dataset.hl = 'true';
+      btn.dataset.wash = 'true';
+      try { btn.setAttribute('data-cgxui-wash', '1'); } catch {}
     } else {
       btn.style.background = 'rgba(255,255,255,.06)';
       btn.style.color = '#e5e7eb';
       btn.style.textShadow = '0 0 2px rgba(0,0,0,.25)';
       btn.style.boxShadow = 'none';
-      btn.dataset.hl = 'false';
+      btn.dataset.wash = 'false';
+      try { btn.removeAttribute('data-cgxui-wash'); } catch {}
     }
   }
 
   function applyMiniMapDots(primaryId, host, btn, colors = null, opts = {}) {
     const { persist = false } = opts;
     if (!host || !btn) return;
+    const staleInBtn = btn.querySelector?.(SEL_.MM_DOTROW) || null;
+    if (staleInBtn && staleInBtn.parentElement === btn) {
+      try { staleInBtn.remove?.(); } catch {}
+    }
 
     let source = colors;
     if (source == null) source = inlineDotMap?.[primaryId] || [];
@@ -589,7 +794,7 @@ ${dotSel}{
         if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
 
         const rowEl = event.currentTarget;
-        const btnEl = rowEl?.closest?.(SEL_.MM_WRAP)?.querySelector?.(SEL_.MM_BTN) || null;
+        const btnEl = rowEl?.closest?.(SEL_.MM_WRAP)?.querySelector?.(SEL_.MM_BTN) || rowEl?.closest?.(SEL_.MM_BTN) || null;
         const turnId = String(
           rowEl?.getAttribute?.(ATTR_.TURN_ID) ||
           btnEl?.dataset?.turnId ||
@@ -649,6 +854,7 @@ ${dotSel}{
           const rowEl = event.currentTarget?.closest?.(SEL_.MM_DOTROW) || null;
           const btnEl =
             rowEl?.closest?.(SEL_.MM_WRAP)?.querySelector?.(SEL_.MM_BTN) ||
+            rowEl?.closest?.(SEL_.MM_BTN) ||
             event.currentTarget?.closest?.(SEL_.MM_WRAP)?.querySelector?.(SEL_.MM_BTN) ||
             null;
           const turnId = String(
@@ -772,24 +978,172 @@ ${dotSel}{
     });
   }
 
+  let STATE_DOTS_REPAINT_RAF = 0;
+  function repaintDotsForBtn(btn) {
+    if (!btn) return false;
+    const id = String(
+      btn.dataset?.primaryAId ||
+      btn.getAttribute?.(ATTR_.PRIMARY_A_ID) ||
+      btn.getAttribute?.('data-primary-a-id') ||
+      ''
+    ).trim();
+    if (!id) return false;
+    syncMiniMapDot(id);
+    return true;
+  }
+
+  function repaintDotsForAllMiniBtns() {
+    const seen = new Set();
+    let painted = 0;
+    let btns = [];
+    try { btns = Array.from(document.querySelectorAll(SEL_.MM_BTN)); } catch { btns = []; }
+    for (const btn of btns) {
+      if (!btn || seen.has(btn)) continue;
+      seen.add(btn);
+      if (repaintDotsForBtn(btn)) painted += 1;
+    }
+    return painted;
+  }
+
+  function scheduleRepaintDotsForAllMiniBtns() {
+    if (STATE_DOTS_REPAINT_RAF) return;
+    STATE_DOTS_REPAINT_RAF = requestAnimationFrame(() => {
+      STATE_DOTS_REPAINT_RAF = 0;
+      try { repaintDotsForAllMiniBtns(); } catch {}
+    });
+  }
+
+  function hasAnyStoredDots() {
+    try {
+      for (const value of Object.values(inlineDotMap || {})) {
+        if (!Array.isArray(value)) continue;
+        if (canonicalInlineColors(value).filter(isValidDotName).length) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function countStoredDotIds() {
+    let total = 0;
+    try {
+      for (const value of Object.values(inlineDotMap || {})) {
+        if (!Array.isArray(value)) continue;
+        if (canonicalInlineColors(value).filter(isValidDotName).length) total += 1;
+      }
+    } catch {}
+    return total;
+  }
+
+  function countDotRowsInMiniMap() {
+    try { return document.querySelectorAll(`.${CLS_.DOTROW}`).length; } catch { return 0; }
+  }
+
+  let STATE_DOTS_SAFETY_TIMER = 0;
+  function scheduleSafetyRepaint(reason = 'safety') {
+    void reason;
+    if (STATE_DOTS_SAFETY_TIMER) return;
+    STATE_DOTS_SAFETY_TIMER = setTimeout(() => {
+      STATE_DOTS_SAFETY_TIMER = 0;
+      let btnCount = 0;
+      try { btnCount = document.querySelectorAll(SEL_.MM_BTN).length; } catch { btnCount = 0; }
+      if (!btnCount) return;
+      try { hydrateInlineDotsFromInlineApi({ persist: true }); } catch {}
+      if (!hasAnyStoredDots()) return;
+      const rowCount = countDotRowsInMiniMap();
+      const storedCount = countStoredDotIds();
+      const targetRows = Math.max(1, Math.min(btnCount, storedCount || btnCount));
+      if (rowCount >= targetRows) return;
+      try { repaintDotsForAllMiniBtns(); } catch {}
+    }, 1000);
+  }
+
+  function extractAnswerIds(detail = {}) {
+    const out = [];
+    const seen = new Set();
+    const pushId = (idRaw) => {
+      const id = String(idRaw || '').trim();
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push(id);
+    };
+    pushId(detail.answerId);
+    pushId(detail.primaryAId);
+    pushId(detail.id);
+    pushId(detail.turnId);
+    const arrKeys = ['answerIds', 'primaryAIds', 'ids', 'turnIds'];
+    for (const key of arrKeys) {
+      const arr = detail[key];
+      if (!Array.isArray(arr)) continue;
+      for (const idRaw of arr) pushId(idRaw);
+    }
+    return out;
+  }
+
+  const INLINE_EVENT_DEDUPE_MS = 35;
+  const WASH_EVENT_DEDUPE_MS = 45;
+  let STATE_LAST_INLINE_DETAIL = null;
+  let STATE_LAST_INLINE_SIG = '';
+  let STATE_LAST_INLINE_TS = 0;
+  let STATE_LAST_WASH_DETAIL = null;
+  let STATE_LAST_WASH_SIG = '';
+  let STATE_LAST_WASH_TS = 0;
+
+  function shouldSkipInlineEvent(detail, answerIds = []) {
+    const now = performance.now();
+    const sig = `${answerIds.join(',')}|${String(detail?.source || '')}|${String(detail?.ts || '')}`;
+    if ((detail && detail === STATE_LAST_INLINE_DETAIL) || (sig && sig === STATE_LAST_INLINE_SIG)) {
+      if ((now - STATE_LAST_INLINE_TS) < INLINE_EVENT_DEDUPE_MS) return true;
+    }
+    STATE_LAST_INLINE_DETAIL = detail || null;
+    STATE_LAST_INLINE_SIG = sig;
+    STATE_LAST_INLINE_TS = now;
+    return false;
+  }
+
+  function shouldSkipWashEvent(detail, answerId, colorName) {
+    const now = performance.now();
+    const sig = `${String(answerId || '').trim()}|${String(colorName || '')}`;
+    if ((detail && detail === STATE_LAST_WASH_DETAIL) || (sig && sig === STATE_LAST_WASH_SIG)) {
+      if ((now - STATE_LAST_WASH_TS) < WASH_EVENT_DEDUPE_MS) return true;
+    }
+    STATE_LAST_WASH_DETAIL = detail || null;
+    STATE_LAST_WASH_SIG = sig;
+    STATE_LAST_WASH_TS = now;
+    return false;
+  }
+
   /* ───────────────────────── 10) Inline → dots bridge ───────────────────────── */
   function onInlineChanged(e) {
     const detail = e?.detail || {};
-    const answerId = String(detail.answerId || '').trim();
-    if (!answerId) {
-      window.H2O_scheduleMiniMapRebuild?.('inline:changed (no answerId)');
+    const answerIds = extractAnswerIds(detail);
+    if (!answerIds.length) {
+      try { window.H2O_scheduleMiniMapRebuild?.('inline:changed (no answerId)'); } catch {}
+      scheduleRepaintDotsForAllMiniBtns();
+      scheduleSafetyRepaint('inline:changed:no-id');
       return;
     }
-    const hasColors = detail.colors != null;
-    const colors = hasColors ? detail.colors : null;
-    scheduleDotSync(answerId, colors, !!hasColors);
+    if (shouldSkipInlineEvent(detail, answerIds)) return;
+    const colorsById = (detail.colorsById && typeof detail.colorsById === 'object') ? detail.colorsById : null;
+    const hasGlobalColors = detail.colors != null;
+    const globalColors = hasGlobalColors ? detail.colors : null;
+    for (const answerId of answerIds) {
+      const hasSpecific = !!(colorsById && Object.prototype.hasOwnProperty.call(colorsById, answerId));
+      const nextColors = hasSpecific ? colorsById[answerId] : globalColors;
+      const persist = nextColors != null;
+      scheduleDotSync(answerId, persist ? nextColors : null, persist);
+    }
+    if (!hasGlobalColors && !colorsById && answerIds.length > 1) {
+      scheduleRepaintDotsForAllMiniBtns();
+    }
+    scheduleSafetyRepaint('inline:changed');
   }
 
-  function onAnswerHighlight(e) {
+  function onAnswerWash(e) {
     const detail = e?.detail || {};
     const answerId = String(detail.answerId || detail.primaryAId || '').trim();
     const color = detail.color ?? detail.colorName ?? null;
     if (!answerId) return;
+    if (shouldSkipWashEvent(detail, answerId, color)) return;
 
     // Washer add-on owns wash-map writes when present.
     if (!MM_HAS_EXTERNAL_WASH()) {
@@ -806,8 +1160,22 @@ ${dotSel}{
     window.H2O_MM_DOT_BRIDGES = true;
     const dual = (ev, fn) => { window.addEventListener(ev, fn); if (ev.startsWith('evt:')) window.addEventListener(ev.slice(4), fn); };
     dual(EV_.INLINE_CHANGED,   onInlineChanged);
+    window.addEventListener(EV_.INLINE_CHANGED_HO, onInlineChanged);
+    window.addEventListener(EV_.INLINE_CHANGED_CGXUI, onInlineChanged);
     dual(EV_.INLINE_RESTORED,  onInlineChanged);
-    dual(EV_.ANSWER_HIGHLIGHT, onAnswerHighlight);
+    dual(EV_.INLINE_HL_CHANGED, onInlineChanged);
+    dual(EV_.ANSWER_WASH, onAnswerWash);
+    // Legacy compatibility only: old wash emitters used highlight naming.
+    window.addEventListener(EV_.ANSWER_WASH_LEGACY_EVT, onAnswerWash);
+    window.addEventListener(EV_.ANSWER_WASH_LEGACY_ALIAS, onAnswerWash);
+    dual(EV_.ANSWERS_SCAN, () => { hydrateInlineDotsFromInlineApi({ persist: true }); scheduleRepaintDotsForAllMiniBtns(); scheduleSafetyRepaint('answers:scan'); });
+    dual(EV_.SHELL_READY, () => { hydrateInlineDotsFromInlineApi({ persist: true }); scheduleRepaintDotsForAllMiniBtns(); scheduleSafetyRepaint('shell:ready'); });
+    dual(EV_.ENGINE_READY, () => { hydrateInlineDotsFromInlineApi({ persist: true }); scheduleRepaintDotsForAllMiniBtns(); scheduleSafetyRepaint('engine:ready'); });
+    hydrateInlineDotsFromInlineApi({ persist: true });
+    scheduleRepaintDotsForAllMiniBtns();
+    setTimeout(() => { hydrateInlineDotsFromInlineApi({ persist: true }); scheduleRepaintDotsForAllMiniBtns(); }, 220);
+    setTimeout(() => { hydrateInlineDotsFromInlineApi({ persist: true }); scheduleRepaintDotsForAllMiniBtns(); }, 700);
+    scheduleSafetyRepaint('boot');
   })();
 
   /* ───────────────────────── 11) Optional: Inline mutation observer ─────────────────────────
@@ -908,7 +1276,26 @@ ${dotSel}{
     mo.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['style','class','data-inline-hl','data-h2o-inline-color'] });
     root._h2oInlineObs = mo;
   }
-  attachInlineMutationObserver();
+
+  function hasInlineApiProvider() {
+    return !!(
+      W?.H2O?.inline ||
+      W?.H2OInline ||
+      TOPW?.H2O?.inline ||
+      TOPW?.H2OInline
+    );
+  }
+
+  function maybeAttachInlineMutationObserver() {
+    if (TOPW.H2O_MM_DOTS_FORCE_OBSERVER === true) {
+      attachInlineMutationObserver();
+      return true;
+    }
+    if (hasInlineApiProvider()) return false;
+    attachInlineMutationObserver();
+    return true;
+  }
+  setTimeout(() => { try { maybeAttachInlineMutationObserver(); } catch {} }, 1100);
 
   /* ───────────────────────── 12) Dot click → turn-scoped inline jump ───────────────────────── */
   const STATE_DOT_DEBUG = { lastBtnCaptureTs: 0, lastBtnCaptureTurnId: '' };
@@ -1185,6 +1572,8 @@ ${dotSel}{
     W.H2O.MM.dots.scrollToFirstHighlightInTurn = scrollToFirstHighlightInTurn;
     W.H2O.MM.dots.recolorTurnHighlights = recolorTurnHighlights;
     W.H2O.MM.dots.openHighlightsPopupBridge = openHighlightsPopupBridge;
+    W.H2O.MM.dots.repaintDotsForBtn = repaintDotsForBtn;
+    W.H2O.MM.dots.repaintDotsForAllMiniBtns = repaintDotsForAllMiniBtns;
   } catch {}
 
   // Legacy global alias (safe): allows older scripts to keep working without owning dot logic.
@@ -1192,9 +1581,6 @@ ${dotSel}{
 
   /* ───────────────────────── 13) Public helper to repaint all dots (optional) ───────────────────────── */
   window.H2O_MM_repaintDots = function repaintAll() {
-    document.querySelectorAll(SEL_.MM_BTN).forEach(btn => {
-      const id = btn.dataset.primaryAId || btn.getAttribute(ATTR_.PRIMARY_A_ID) || '';
-      if (id) syncMiniMapDot(id);
-    });
+    return repaintDotsForAllMiniBtns();
   };
 })();

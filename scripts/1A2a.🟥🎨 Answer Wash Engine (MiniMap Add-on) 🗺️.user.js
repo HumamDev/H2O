@@ -2,7 +2,9 @@
 // @h2o-id      1a2.answer.wash.engine.minimap.add-on
 // @name         1A2.🟥🎨 Answer Wash Engine (MiniMap Add-on) 🗺️
 // @namespace    H2O.Prime.CGX.MiniMap.Wash
-// @version      1.3.14
+// @version      1.3.16
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Answer Background Washer for H2O MiniMap: persistent wash map + middle-click palette + paints answer + paints minimap buttons (exported API only).
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -15,7 +17,7 @@
   // Realm-safe window (TM + top)
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
   const TOPW = (W.top || W);
-  const WASH_VER = '1.3.13';
+  const WASH_VER = '1.3.16';
   const BOOT_KEY = '__H2O_MM_WASH_BOOTED__';
 
   // Live Sync signal (WebDAV LiveState poll/push can listen without monkeypatching storage)
@@ -36,13 +38,13 @@
 
   const STORAGE_WASH_MAP_NEW = `${NS_DISK}:state:wash_map:v1`;
   const STORAGE_WASH_MAP_OLD = 'H2O_MM_washMap'; // legacy (pre-H2O disk key) alias key used by older builds
-const STORAGE_WASH_MAP_LEGACY_KEYS = [
-  STORAGE_WASH_MAP_OLD,                 // old global
-  'ho:mm:washMap',                      // older experiments
-  `${NS_DISK}:state:wash_map:v0`,       // early H2O drafts
-  `${NS_DISK}:state:washmap:v0`,        // typo-tolerant
-  `${NS_DISK}:state:glow_hl:v1`,        // legacy alias bug (only if shape matches)
-];
+  const STORAGE_WASH_MAP_LEGACY_KEYS = [
+    STORAGE_WASH_MAP_OLD,                    // old global
+    'ho:mm:washMap',                         // older experiments
+    `${NS_DISK}:state:wash_map:v0`,          // early H2O drafts
+    `${NS_DISK}:state:washmap:v0`,           // typo-tolerant
+    `${NS_DISK}:state:glow_hl:v1`,           // legacy read-only alias (misnamed; wash payload)
+  ];
 
   // -------- Minimal CSS/UI tokens (owned) --------
   const SkID = 'mnmp'; // must match MiniMap skin owner for consistent UI ownership tagging
@@ -278,7 +280,7 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
   }
 
   // -------- Paint answer element (copied from MiniMap v12.5.21) --------
-  function setGlow(msgEl, colorName, on) {
+  function applyAnswerWash(msgEl, colorName, on) {
     if (!msgEl) return;
 
     msgEl.classList.add(CLS_.WASH_WRAP);
@@ -327,13 +329,15 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
       btn.style.boxShadow = isGold
         ? '0 0 5px 1px rgba(255,215,0,0.30)'
         : `0 0 6px 2px ${bg}40`;
-      btn.dataset.hl = 'true';
+      btn.dataset.wash = 'true';
+      try { btn.setAttribute('data-cgxui-wash', '1'); } catch {}
     } else {
       btn.style.background = 'rgba(255,255,255,.06)';
       btn.style.color = '#e5e7eb';
       btn.style.textShadow = '0 0 2px rgba(0,0,0,.25)';
       btn.style.boxShadow = 'none';
-      btn.dataset.hl = 'false';
+      btn.dataset.wash = 'false';
+      try { btn.removeAttribute('data-cgxui-wash'); } catch {}
     }
   }
 
@@ -382,7 +386,7 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
     if (!id) return;
     const msgEl = findAnswerElById(id);
     if (!msgEl) return;
-    setGlow(msgEl, colorName, !!colorName);
+    applyAnswerWash(msgEl, colorName, !!colorName);
   }
 
   let RESTORE_RAF = 0;
@@ -417,17 +421,35 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
 
   // -------- Washer -> Core notification (Core repaints answer + button) --------
   const EV_WASH_CHANGED = 'evt:h2o:mm:wash_changed';
-  function emitWashChanged(primaryAId, colorName) {
+  const EV_ANSWER_WASH = 'evt:h2o:answer:wash';
+  const EV_ANSWER_WASH_ALIAS = 'h2o:answer:wash';
+  const EV_ANSWER_WASH_LEGACY_HIGHLIGHT = 'evt:h2o:answer:highlight';
+  const EV_ANSWER_WASH_LEGACY_HIGHLIGHT_ALIAS = 'h2o:answer:highlight';
+  const WASH_EVENT_SOURCE_ENGINE = 'wash-engine';
+  const WASH_EVENT_SOURCE_BRIDGE = 'wash-engine:bridge';
+  function emitWashChanged(primaryAId, colorName, opts = {}) {
     try {
-      const detail = { primaryAId: String(primaryAId || ''), colorName: colorName ? String(colorName) : null };
+      const emitAnswerWash = opts?.emitAnswerWash !== false;
+      const colorNorm = isValidWashName(colorName) ? String(colorName) : null;
+      const id = String(primaryAId || '').trim();
+      const detail = {
+        primaryAId: id,
+        answerId: id,
+        id,
+        colorName: colorNorm,
+        color: colorNorm,
+        source: String(opts?.source || WASH_EVENT_SOURCE_ENGINE),
+      };
       window.dispatchEvent(new CustomEvent(EV_WASH_CHANGED, { detail }));
       // legacy non-prefixed
       window.dispatchEvent(new CustomEvent(EV_WASH_CHANGED.slice(4), { detail }));
       // compatibility aliases used by split modules
       window.dispatchEvent(new CustomEvent('evt:h2o:wash:changed', { detail }));
       window.dispatchEvent(new CustomEvent('h2o:wash:changed', { detail }));
-      window.dispatchEvent(new CustomEvent('evt:h2o:answer:wash', { detail }));
-      window.dispatchEvent(new CustomEvent('h2o:answer:wash', { detail }));
+      if (emitAnswerWash) {
+        window.dispatchEvent(new CustomEvent(EV_ANSWER_WASH, { detail }));
+        window.dispatchEvent(new CustomEvent(EV_ANSWER_WASH_ALIAS, { detail }));
+      }
     } catch {}
   }
 
@@ -700,22 +722,40 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
     if (BRIDGE_BOUND || TOPW.H2O_MM_WASH_BRIDGE) return;
     TOPW.H2O_MM_WASH_BRIDGE = true;
     BRIDGE_BOUND = true;
-    // If other scripts dispatch EV_.ANSWER_HIGHLIGHT with {answerId,colorName}, we only update wash map + emit repaint.
-    const handler = (e) => {
+    let lastBridgeSig = '';
+    let lastBridgeTs = 0;
+    // Canonical wash input + legacy compatibility aliases.
+    const onAnswerWashEvent = (e) => {
       const d = e?.detail || {};
       const answerId = resolvePrimaryAId(String(d.answerId || d.primaryAId || '').trim());
       const color = d.color ?? d.colorName ?? null;
       if (!answerId) return;
+      const source = String(d.source || '').trim();
+      if (source === WASH_EVENT_SOURCE_ENGINE || source === WASH_EVENT_SOURCE_BRIDGE) return;
 
-      if (isValidWashName(color)) washMap[answerId] = String(color);
+      const normalizedColor = isValidWashName(color) ? String(color) : null;
+      const sig = `${answerId}|${normalizedColor || ''}`;
+      const now = performance.now();
+      if (sig && sig === lastBridgeSig && (now - lastBridgeTs) < 45) return;
+      lastBridgeSig = sig;
+      lastBridgeTs = now;
+
+      if (normalizedColor) washMap[answerId] = normalizedColor;
       else delete washMap[answerId];
 
       saveWashMap();
-      repaintAnswerNow(answerId, isValidWashName(color) ? String(color) : null);
-      emitWashChanged(answerId, isValidWashName(color) ? String(color) : null);
+      repaintAnswerNow(answerId, normalizedColor);
+      const fromLegacy = (e?.type === EV_ANSWER_WASH_LEGACY_HIGHLIGHT || e?.type === EV_ANSWER_WASH_LEGACY_HIGHLIGHT_ALIAS);
+      emitWashChanged(answerId, normalizedColor, {
+        emitAnswerWash: fromLegacy,
+        source: WASH_EVENT_SOURCE_BRIDGE,
+      });
     };
-    UTIL_on(window, 'evt:h2o:answer:highlight', handler);
-    UTIL_on(window, 'h2o:answer:highlight', handler);
+    UTIL_on(window, EV_ANSWER_WASH, onAnswerWashEvent);
+    UTIL_on(window, EV_ANSWER_WASH_ALIAS, onAnswerWashEvent);
+    // Legacy read-alias only: old emitters used highlight naming for wash.
+    UTIL_on(window, EV_ANSWER_WASH_LEGACY_HIGHLIGHT, onAnswerWashEvent);
+    UTIL_on(window, EV_ANSWER_WASH_LEGACY_HIGHLIGHT_ALIAS, onAnswerWashEvent);
   }
 
   function bindRestoreBridgeOnce() {
@@ -772,7 +812,7 @@ const STORAGE_WASH_MAP_LEGACY_KEYS = [
 
     // Paint
     applyToMiniBtn: (primaryAId, btnEl) => applyMiniMapWash(String(primaryAId || '').trim(), btnEl),
-    applyToAnswerEl: (answerEl, colorName, on = true) => setGlow(answerEl, colorName, !!on),
+    applyToAnswerEl: (answerEl, colorName, on = true) => applyAnswerWash(answerEl, colorName, !!on),
 
     // UI
     openPalette: (pointerEvent, targetPrimaryAId, anchorBtnEl = null) => {

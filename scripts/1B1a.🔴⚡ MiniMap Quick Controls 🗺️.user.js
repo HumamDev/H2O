@@ -2,7 +2,9 @@
 // @h2o-id      1a1z.minimap.quick.controls
 // @name         1B1.🔴⚡ MiniMap Quick Controls 🗺️
 // @namespace    H2O.Prime.CGX.MiniMapQuickControls
-// @version      1.1.2
+// @version      1.1.15
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  Modern Quick Controls Popover for MiniMap: middle-click toggle opens menu; nudge position (persisted + clamped) + size presets (S/M/L) + theme presets. UI-only plugin: writes CSS vars + disk prefs.
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -18,9 +20,13 @@
   const TOPW = W.top || W;
 
   // Mark plugin
+  const QUICK_VER = '1.1.15';
+  const EV_QUICK_READY = 'evt:h2o:minimap:quick-ready';
+
   try {
     TOPW.H2O_MM_QUICK_PLUGIN = true;
-    TOPW.H2O_MM_QUICK_PLUGIN_VER = '1.0.1';
+    TOPW.H2O_MM_QUICK_PLUGIN_VER = QUICK_VER;
+    if (typeof TOPW.H2O_MM_QUICK_READY !== 'boolean') TOPW.H2O_MM_QUICK_READY = false;
   } catch {}
 
   // Kernel-authoritative bridge access (no fallbacks here; util.mm decides)
@@ -68,11 +74,17 @@
     POP_ANIM_MS: 160,
     NUDGE_STEP: 4,
     NUDGE_STEP_SHIFT: 12,
-    DEFAULT_AXIS_X: 16,
+    CLAMP_X_ON_MANUAL_NUDGE: false,
+    DEFAULT_AXIS_X: -16,
     DEFAULT_AXIS_Y: 0,
+    RESET_AXIS_EACH_LOAD: true,
     OPACITY_MIN: 0.20,
     OPACITY_MAX: 1.00,
     OPACITY_STEP: 0.01,
+    AXIS_X_MIN: -5000,
+    AXIS_X_MAX: 5000,
+    AXIS_Y_MIN: -240,
+    AXIS_Y_MAX: 240,
   });
 
   // ───────────────────────────── Size Presets (CSS vars only) ─────────────────────────────
@@ -80,21 +92,21 @@
   const SIZE_PRESETS = Object.freeze({
     s: {
       '--box-w':'64px', '--box-h':'32px', '--box-r':'7px',
-      '--toggle-x':'0px', '--dial-x':'0px',
+      '--toggle-x':'var(--mm-x)', '--dial-x':'var(--mm-x)',
       '--mm-btn-w':'48px', '--mm-btn-h':'22px', '--mm-btn-r':'6px',
       '--mm-w':'calc(var(--mm-btn-w) + (2 * var(--mm-side-lane)))',
       '--cgxui-mnmp-btn-width':'48px', '--cgxui-mnmp-btn-height':'22px',
     },
     m: {
       '--box-w':'72px', '--box-h':'36px', '--box-r':'8px',
-      '--toggle-x':'0px', '--dial-x':'0px',
+      '--toggle-x':'var(--mm-x)', '--dial-x':'var(--mm-x)',
       '--mm-btn-w':'56px', '--mm-btn-h':'24px', '--mm-btn-r':'6px',
       '--mm-w':'calc(var(--mm-btn-w) + (2 * var(--mm-side-lane)))',
       '--cgxui-mnmp-btn-width':'56px', '--cgxui-mnmp-btn-height':'24px',
     },
     l: {
       '--box-w':'80px', '--box-h':'40px', '--box-r':'9px',
-      '--toggle-x':'0px', '--dial-x':'0px',
+      '--toggle-x':'var(--mm-x)', '--dial-x':'var(--mm-x)',
       '--mm-btn-w':'64px', '--mm-btn-h':'28px', '--mm-btn-r':'8px',
       '--mm-w':'calc(var(--mm-btn-w) + (2 * var(--mm-side-lane)))',
       '--cgxui-mnmp-btn-width':'64px', '--cgxui-mnmp-btn-height':'28px',
@@ -132,6 +144,7 @@
     // Keep keys stable + explicit (no raw strings scattered)
     NS_FALLBACK: 'h2o:prm:cgx:mnmp',
     KEY_AXIS:    'ui:axis-offset:v1',
+    KEY_AXIS_SHIFT_MARK: 'ui:axis-shift-right-step:v4',
     KEY_THEME:   'ui:theme:v1',
     KEY_SIZE:    'ui:size-preset:v1',
     KEY_OPACITY: 'ui:btn-opacity:v1',
@@ -158,6 +171,7 @@
   }
 
   function keyAxis(){ return `${nsDisk()}:${DISK.KEY_AXIS}`; }
+  function keyAxisShiftMark(){ return `${nsDisk()}:${DISK.KEY_AXIS_SHIFT_MARK}`; }
   function keyTheme(){ return `${nsDisk()}:${DISK.KEY_THEME}`; }
   function keySize(){ return `${nsDisk()}:${DISK.KEY_SIZE}`; }
   function keyOpacity(){ return `${nsDisk()}:${DISK.KEY_OPACITY}`; }
@@ -259,8 +273,8 @@
 
     return `
 ${S_ROOT}{
-  transform: translate(calc(var(--axis-x, 0px)), calc(var(--axis-y, 0px)));
-  will-change: transform;
+  /* Shell owns axis transforms; avoid doubling offset at root level. */
+  transform: none !important;
 }
 ${S_TOGGLE}:not([${ATTR.CGXUI_STATE}~="faded"]){
   opacity: var(--mm-ctl-opacity, var(--mm-btn-opacity));
@@ -616,13 +630,17 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
 
   function setAxis(root, x, y){
     if (!root) return;
-    root.style.setProperty('--axis-x', `${Math.round(x)}px`);
-    root.style.setProperty('--axis-y', `${Math.round(y)}px`);
+    const nx = clampNum(Number(x), CFG.AXIS_X_MIN, CFG.AXIS_X_MAX);
+    const ny = clampNum(Number(y), CFG.AXIS_Y_MIN, CFG.AXIS_Y_MAX);
+    root.style.setProperty('--axis-x', `${Math.round(nx)}px`);
+    root.style.setProperty('--axis-y', `${Math.round(ny)}px`);
   }
 
-  function clampAxisToViewport(refs, x, y){
+  function clampAxisToViewport(refs, x, y, opts = {}){
     const root = refs?.root;
     if (!root) return { x, y };
+    const clampX = opts?.clampX !== false;
+    const clampY = opts?.clampY !== false;
 
     // Apply proposed (so DOM reflects), then measure union (toggle + panel + aux).
     setAxis(root, x, y);
@@ -644,11 +662,14 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
     const bottom = Math.max(...boxes.map(r => r.bottom));
 
     let dx = 0, dy = 0;
-    if (left < pad) dx = pad - left;
-    else if (right > (vw - pad)) dx = (vw - pad) - right;
-
-    if (top < pad) dy = pad - top;
-    else if (bottom > (vh - pad)) dy = (vh - pad) - bottom;
+    if (clampX) {
+      if (left < pad) dx = pad - left;
+      else if (right > (vw - pad)) dx = (vw - pad) - right;
+    }
+    if (clampY) {
+      if (top < pad) dy = pad - top;
+      else if (bottom > (vh - pad)) dy = (vh - pad) - bottom;
+    }
 
     const nx = x + dx;
     const ny = y + dy;
@@ -663,15 +684,39 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
 
   function loadAxis(){
     const v = readJSON(keyAxis(), null);
-    const axisX = parsePx(v?.axisX, 0);
-    const axisY = parsePx(v?.axisY, 0);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const hasX = Object.prototype.hasOwnProperty.call(v, 'axisX');
+    const hasY = Object.prototype.hasOwnProperty.call(v, 'axisY');
+    if (!hasX && !hasY) return null;
+    const axisX = parsePx(v.axisX, CFG.DEFAULT_AXIS_X);
+    const axisY = parsePx(v.axisY, CFG.DEFAULT_AXIS_Y);
     return { axisX, axisY };
+  }
+
+  function migrateAxisOneStepRight(stepPx = 4){
+    const markKey = keyAxisShiftMark();
+    if (readStr(markKey, '0') === '1') return false;
+    const raw = readJSON(keyAxis(), null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      writeStr(markKey, '1');
+      return false;
+    }
+    const curX = parsePx(raw.axisX, 0);
+    const curY = parsePx(raw.axisY, 0);
+    const nextX = Math.round(curX + stepPx);
+    const nextY = Math.round(curY);
+    writeJSON(keyAxis(), { axisX: nextX, axisY: nextY });
+    writeStr(markKey, '1');
+    return true;
   }
 
   function applyAxisFromDisk(refs){
     const root = refs?.root;
     if (!root) return false;
-    const clamped = clampAxisToViewport(refs, CFG.DEFAULT_AXIS_X, CFG.DEFAULT_AXIS_Y);
+    const saved = CFG.RESET_AXIS_EACH_LOAD ? null : loadAxis();
+    const seedX = Number.isFinite(saved?.axisX) ? saved.axisX : CFG.DEFAULT_AXIS_X;
+    const seedY = Number.isFinite(saved?.axisY) ? saved.axisY : CFG.DEFAULT_AXIS_Y;
+    const clamped = clampAxisToViewport(refs, seedX, seedY, { clampX: true, clampY: true });
     persistAxis(clamped.x, clamped.y);
     if (S) S.currentAxis = { x: clamped.x, y: clamped.y };
     return true;
@@ -915,15 +960,9 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
     const targetX = cur.x + dx;
     const targetY = cur.y + dy;
 
-    // Horizontal nudges should not be restricted by viewport clamping.
-    if (dy === 0 && dx !== 0) {
-      setAxis(root, targetX, targetY);
-      persistAxis(targetX, targetY);
-      S.currentAxis = { x: targetX, y: targetY };
-      return;
-    }
-
-    const next = clampAxisToViewport(refs, targetX, targetY);
+    // Allow free horizontal movement when configured; keep vertical safety clamping.
+    const clampX = CFG.CLAMP_X_ON_MANUAL_NUDGE !== false;
+    const next = clampAxisToViewport(refs, targetX, targetY, { clampX, clampY: true });
     persistAxis(next.x, next.y);
     S.currentAxis = { x: next.x, y: next.y };
   }
@@ -931,9 +970,8 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
   function doReset(refs){
     const root = refs?.root;
     if (!root) return;
-    const base = S.initialAxis || getAxis(root);
-    const bx = Number.isFinite(base?.axisX) ? base.axisX : (Number.isFinite(base?.x) ? base.x : CFG.DEFAULT_AXIS_X);
-    const by = Number.isFinite(base?.axisY) ? base.axisY : (Number.isFinite(base?.y) ? base.y : CFG.DEFAULT_AXIS_Y);
+    const bx = CFG.DEFAULT_AXIS_X;
+    const by = CFG.DEFAULT_AXIS_Y;
     setAxis(root, bx, by);
     persistAxis(bx, by);
     S.currentAxis = { x: bx, y: by };
@@ -946,18 +984,8 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
     booted: false,
     off: [],
     pop: null,
-    initialAxis: null,
     currentAxis: null,
   };
-
-  function captureInitialAxis(refs){
-    if (S.initialAxis) return;
-    const root = refs?.root;
-    if (!root) return;
-    const a = getAxis(root);
-    S.initialAxis = { axisX: a.x, axisY: a.y };
-    S.currentAxis = { x: a.x, y: a.y };
-  }
 
   function on(target, ev, fn, opts){
     if (!target || !target.addEventListener) return () => {};
@@ -1001,13 +1029,14 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
     ensureStyle();
 
     // Ensure persisted prefs restored
+    if (!CFG.RESET_AXIS_EACH_LOAD) {
+      migrateAxisOneStepRight(CFG.NUDGE_STEP * 2);
+    }
     restoreTheme(refs);
     restoreSizePreset(refs);
     restoreOpacity(refs);
     applyAxisFromDisk(refs);
-    captureInitialAxis(refs);
-    requestAnimationFrame(() => captureInitialAxis(getRefs()));
-    setTimeout(() => captureInitialAxis(getRefs()), 120);
+    S.currentAxis = getAxis(refs.root);
 
     // Create popover (singleton)
     S.pop = document.querySelector(SEL.QUICK_POPO);
@@ -1096,15 +1125,20 @@ ${S_ROOT}[${ATTR.CGXUI_THEME}="contrast"]{
     // Re-clamp on resize
     on(window, 'resize', () => {
       const r = getRefs();
-      const a = loadAxis();
-      const clamped = clampAxisToViewport(r, a.axisX, a.axisY);
+      const cur = S.currentAxis || getAxis(r.root);
+      const sx = Number.isFinite(cur?.x) ? cur.x : CFG.DEFAULT_AXIS_X;
+      const sy = Number.isFinite(cur?.y) ? cur.y : CFG.DEFAULT_AXIS_Y;
+      const clamped = clampAxisToViewport(r, sx, sy, { clampX: true, clampY: true });
       persistAxis(clamped.x, clamped.y);
       S.currentAxis = { x: clamped.x, y: clamped.y };
       if (isOpen(S.pop)) positionPopover(S.pop, getPopoverAnchor(r));
     }, { passive: true });
 
     S.booted = true;
-    log('Ready.', { ver: '1.1.0' });
+    try { TOPW.H2O_MM_QUICK_READY = true; } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_QUICK_READY, { detail: { ver: QUICK_VER } })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_QUICK_READY.replace(/^evt:/, ''), { detail: { ver: QUICK_VER } })); } catch {}
+    log('Ready.', { ver: QUICK_VER });
     return true;
   }
 

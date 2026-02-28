@@ -2,7 +2,9 @@
 // @h2o-id      1a1c.minimap.shell
 // @name         1A1c.🟥🗺️ MiniMap Shell 🪟🗺️
 // @namespace    H2O.Prime.CGX.MiniMapShell
-// @version      12.6.5
+// @version      12.6.23
+// @rev        000001
+// @build      2026-02-28T17:33:34Z
 // @description  MiniMap Shell: UI owner bridge (Phase 2)
 // @author       HumamDev
 // @match        https://chatgpt.com/*
@@ -32,11 +34,16 @@
   const MM_behavior = () => (TOPW.H2O_MM_SHARED?.get?.() || null)?.util?.behavior || null;
   const MM_uiRefs = () => MM()?.uiRefs?.() || (MM_ui()?.getRefs?.() || {});
 
-  const SHELL_VER = '12.6.5';
+  const SHELL_VER = '12.6.23';
   const EV_SHELL_READY = 'evt:h2o:minimap:shell-ready';
+  const EV_ROUTE_CHANGED = 'evt:h2o:route:changed';
+  const EV_QUICK_READY = 'evt:h2o:minimap:quick-ready';
   const EV_BEHAVIOR_CHANGED = 'evt:h2o:mm:behavior-changed';
   const KEY_COLLAPSED = 'h2o:prm:cgx:mnmp:ui:collapsed:v1';
   const KEY_COLLAPSED_LEGACY = 'ho:mm:collapsed';
+  const KEY_COLLAPSED_CHAT_SUFFIX = 'ui:collapsed:chat';
+  const KEY_AXIS_OFFSET_SUFFIX = 'ui:axis-offset:v1';
+  const KEY_CENTER_FIX_X_SUFFIX = 'ui:center-fix-x:v1';
   const KEY_BADGE_QUOTES_SUFFIX = 'ui:badgeVisibility:quotes:v1';
   const KEY_BADGE_REVS_SUFFIX = 'ui:badgeVisibility:revisions:v1';
   const KEY_BADGE_QWASH_SUFFIX = 'ui:badgeVisibility:qwash:v1';
@@ -48,9 +55,15 @@
   const DIAL_HEIGHT_STEP_MAX = 2;
   const DIAL_HEIGHT_STEP_DELTA_PX = 22;
   const DIAL_HEIGHT_STEP_DELTA_VH = 6;
-  const FORCE_COLLAPSED_ON_BOOT = true;
+  const DEFAULT_COLLAPSED_ON_BOOT = true;
+  const AXIS_BOOT_DEFAULT_X = -16;
+  const AXIS_BOOT_DEFAULT_Y = 0;
+  const FORCE_AXIS_DEFAULT_EACH_LOAD = true;
+  const FORCE_CENTER_FIX_RESET_EACH_LOAD = true;
+  const LOCK_MM_CENTER_FIX_TO_AXIS = true;
   const ROOT_CGX = 'mm-root';
   const ROOT_ID = 'cgx-mm-root';
+  const PRELAYOUT_CLASS = 'cgxui-mm-prelayout';
 
   try {
     TOPW.H2O_MM_SHELL_PLUGIN = true;
@@ -100,7 +113,8 @@
     CGXUI_VIEW: 'data-cgxui-view',
     CGXUI_INVIEW: 'data-cgxui-inview',
     CGXUI_FLASH: 'data-cgxui-flash',
-    CGXUI_HL: 'data-cgxui-hl',
+    CGXUI_WASH: 'data-cgxui-wash',
+    CGXUI_WASH_LEGACY_HL: 'data-cgxui-hl',
     MSG_ROLE: 'data-message-author-role',
   });
 
@@ -198,7 +212,7 @@ ${S_ROOT}{
   position: fixed !important;
 
   --root-top: 60px;
-  --root-right: 23px;
+  --root-right: 5px; /* default anchor: near right edge but safely inside */
   top: var(--root-top);
   right: var(--root-right);
 
@@ -243,8 +257,9 @@ ${S_ROOT}{
   /* Used later as: max-height: min(var(--mm-max-vh), calc(100vh - var(--mm-max-sub))); */
 
   --mm-pad-r: 6px;      /* right padding */
-  --mm-pad-b: 10px;     /* bottom padding (last item safety) */
-  --mm-pad-t: 6px;
+  --mm-edge-gap: 6px;   /* keep top/bottom MiniMap edge spacing symmetrical */
+  --mm-pad-t: var(--mm-edge-gap);
+  --mm-pad-b: var(--mm-edge-gap);
 
   /* dot gutter reserved INSIDE minimap on left */
   --mm-dot-gutter: 28px;
@@ -316,10 +331,18 @@ ${S_ROOT}{
   --ui-font-modern: "SF Pro Display", "Inter Variable", "Inter", "Segoe UI Variable Text", "Aptos", "Helvetica Neue", Arial, sans-serif;
   --ui-font-numeric: "SF Pro Rounded", "SF Pro Display", "Inter Variable", "Inter", "Segoe UI Variable Text", "Aptos", "Helvetica Neue", Arial, sans-serif;
 
-  --dial-x: 0px;
+  --dial-x: var(--mm-x);
   --dial-y: calc(-1 * var(--stack-trim));
   --dial-inner-gap: 6px;
   --dial-inner-pad-x: 0px;
+  --dial-slide-y: 0px;
+  --dial-slide-y-hidden: 0px;
+  --dial-fade-in-ms: 360ms;
+  --dial-fade-out-ms: 920ms;
+  --dial-fade-in-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dial-fade-out-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dial-fade-ms: var(--dial-fade-in-ms);
+  --dial-fade-ease: var(--dial-fade-in-ease);
 
   --mm-scrollbar-w: 6px;
   --mm-scrollbar-thumb: #666;
@@ -331,6 +354,14 @@ ${S_ROOT}{
   pointer-events: auto;
 }
 ${S_ROOT} > * { pointer-events: auto; }
+${S_ROOT}, ${S_MINIMAP} {
+  transition: opacity 150ms ease !important;
+}
+${S_ROOT}.${PRELAYOUT_CLASS},
+${S_MINIMAP}.${PRELAYOUT_CLASS} {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
 
 /* Theme tint only (Section 8 owns geometry/background/border) */
 
@@ -457,14 +488,20 @@ ${S_MINIMAP}[${ATTR_.CGXUI_STATE}~="collapsed"]::after {
 ${S_DIAL}[${ATTR_.CGXUI_STATE}~="collapsed"] {
   opacity: 0;
   pointer-events: none;
+  --dial-fade-ms: var(--dial-fade-out-ms);
+  --dial-fade-ease: var(--dial-fade-out-ease);
+  --dial-slide-y: var(--dial-slide-y-hidden);
 }
 
 ${S_DIAL}:not([${ATTR_.CGXUI_STATE}~="collapsed"]) {
   opacity: 1 !important;
   pointer-events: auto;
-  transform: translateX(-50%) translate(
+  --dial-fade-ms: var(--dial-fade-in-ms);
+  --dial-fade-ease: var(--dial-fade-in-ease);
+  --dial-slide-y: 0px;
+  transform: translate(
     calc(var(--axis-x, 0px) + var(--dial-x, 0px)),
-    calc(var(--axis-y, 0px) + var(--dial-y, 0px))
+    calc(var(--axis-y, 0px) + var(--dial-y, 0px) + var(--dial-slide-y, 0px))
   ) !important;
 }
 
@@ -472,6 +509,9 @@ ${S_DIAL}:not([${ATTR_.CGXUI_STATE}~="collapsed"]) {
 ${S_ROOT} ${S_MINIMAP}[${ATTR_.CGXUI_STATE}~="collapsed"] ~ ${S_DIAL} {
   opacity: 0 !important;
   pointer-events: none !important;
+  --dial-fade-ms: var(--dial-fade-out-ms);
+  --dial-fade-ease: var(--dial-fade-out-ease);
+  --dial-slide-y: var(--dial-slide-y-hidden);
 }
 
 /* Collapsed state (toggle OFF): hide Dial too (order-independent) */
@@ -479,6 +519,9 @@ ${S_DIAL}[${ATTR_.CGXUI_STATE}~="collapsed"],
 ${S_ROOT}[${ATTR_.CGXUI_STATE}~="collapsed"] ${S_DIAL} {
   opacity: 0 !important;
   pointer-events: none !important;
+  --dial-fade-ms: var(--dial-fade-out-ms);
+  --dial-fade-ease: var(--dial-fade-out-ease);
+  --dial-slide-y: var(--dial-slide-y-hidden);
 }
 
 ${S_MINIMAP}{
@@ -490,9 +533,9 @@ ${S_MINIMAP}{
   right: auto !important;
 
   /* center under stack axis */
-  left: 50% !important;
-  transform: translateX(-50%) translate(
-    calc(var(--axis-x) + var(--mm-x) + var(--mm-center-fix-x, 0px)),
+  left: auto !important;
+  transform: translate(
+    calc(var(--axis-x) + var(--mm-x)),
     calc(var(--axis-y) + var(--mm-y))
   ) !important;
 
@@ -572,8 +615,8 @@ ${S_TOGGLE}{
   order: 0;
   top: auto !important;
   right: auto !important;
-  left: 50% !important;
-  transform: translateX(-50%) translate(
+  left: auto !important;
+  transform: translate(
     calc(var(--axis-x, 0px) + var(--toggle-x, var(--mm-x, 0px))),
     calc(var(--axis-y, 0px) + var(--toggle-y, 0px))
   ) !important;
@@ -633,16 +676,18 @@ ${S_COUNT} {
   top: 8px;
   transform: translateX(-50%);
   font-family: var(--ui-font-numeric);
-  font-weight: 430;
-  font-size: 14px;
+  font-weight: 520;
+  font-size: 13.5px;
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
-  letter-spacing: 0.02em;
-  color: inherit;
+  letter-spacing: 0.015em;
+  color: rgba(243,245,251,0.94);
   margin: 0;
   padding: 0;
   line-height: 1;
-  text-shadow: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+  white-space: nowrap;
+  -webkit-font-smoothing: antialiased;
   pointer-events: none;
 }
 
@@ -749,13 +794,18 @@ ${S_DIAL}{
   top: auto !important;
   right: auto !important;
 
-  left: 50% !important;
-  transform: translateX(-50%) translate(
+  left: auto !important;
+  transform: translate(
     calc(var(--axis-x, 0px) + var(--dial-x, 0px)),
-    calc(var(--axis-y, 0px) + var(--dial-y, 0px))
+    calc(var(--axis-y, 0px) + var(--dial-y, 0px) + var(--dial-slide-y, 0px))
   ) !important;
 
-  transition: all 0.2s ease;
+  transition:
+    opacity var(--dial-fade-ms, 360ms) var(--dial-fade-ease, cubic-bezier(0.22, 0.61, 0.36, 1)),
+    transform 180ms ease-out,
+    filter 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
 
   width: var(--box-w) !important;
   height: var(--box-h) !important;
@@ -975,11 +1025,6 @@ ${S_BTN}[${ATTR_.CGXUI_FLASH}="1"]::after {
     inset 0 0 2px rgba(255, 215, 0, 0.5);
 }
 
-${S_BTN}[${ATTR_.CGXUI_HL}="1"]{
-  background-image: radial-gradient(circle at calc(100% - 9px) 9px, var(--dot-color, gold) 0 3px, transparent 3.5px) !important;
-  background-repeat: no-repeat;
-}
-
 ${S_BTN}[${ATTR_.CGXUI_INVIEW}="1"] {
   position: relative;
   z-index: 3;
@@ -1007,13 +1052,19 @@ ${S_BTN}[${ATTR_.CGXUI_STATE}~="noanswer"] .cgxui-mm-num{
 }
 
 ${S_BTN} .cgxui-mm-num{
-  display: inline-block; /* allows opacity animation */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-block; /* keeps opacity animation behavior */
   background: transparent;
   border: 0;
   padding: 0;
+  margin: 0 !important;
   border-radius: 0;
   box-shadow: none;
   outline: none;
+  pointer-events: none;
 }
 
 @keyframes cgxui-mnmp-noanswer-num-breathe{
@@ -1161,6 +1212,20 @@ ${S_MINIMAP} .cgxui-under-ui::after {
     alignRaf: 0,
     alignResizeBound: false,
     bootCollapseApplied: false,
+    bootCollapseSig: '',
+    routeSig: '',
+    routeRaf: 0,
+    routeBound: false,
+    routeReason: '',
+    prelayoutSig: '',
+    prelayoutDone: false,
+    prelayoutRaf1: 0,
+    prelayoutRaf2: 0,
+    prelayoutFailsafeTimer: null,
+    prelayoutLastBtnCount: -1,
+    prelayoutStableTicks: 0,
+    prelayoutStartedAt: 0,
+    quickReady: !!TOPW.H2O_MM_QUICK_READY,
     behaviorHooked: false,
     off: [],
     badgeVisibility: {
@@ -1244,31 +1309,105 @@ ${S_MINIMAP} .cgxui-under-ui::after {
     else el.removeAttribute(ATTR.CGXUI_STATE);
   }
 
-  function getCollapsed() {
+  function resolveChatId() {
+    const fromCore = String(W?.H2O?.util?.getChatId?.() || '').trim();
+    if (fromCore) return fromCore;
+    const m = String(location.pathname || '').match(/\/(?:c|chat)\/([a-z0-9-]+)/i);
+    return m ? String(m[1] || '').trim() : '';
+  }
+
+  function safeChatKeyPart(chatId = '') {
+    return String(chatId || '').trim().replace(/[^a-z0-9_-]/gi, '_');
+  }
+
+  function keyCollapsedChat(chatId = '') {
+    const safeId = safeChatKeyPart(chatId || resolveChatId());
+    if (!safeId) return '';
+    return `${nsDisk()}:${KEY_COLLAPSED_CHAT_SUFFIX}:${safeId}:v1`;
+  }
+
+  function readStoredRaw(key) {
+    const k = String(key || '').trim();
+    if (!k) return null;
+    const storage = storageApi();
+    if (storage && typeof storage.getStr === 'function') {
+      return storage.getStr(k, null);
+    }
+    try { return localStorage.getItem(k); } catch { return null; }
+  }
+
+  function writeStoredRaw(key, val) {
+    const k = String(key || '').trim();
+    if (!k) return false;
+    const v = String(val ?? '');
+    const storage = storageApi();
+    if (storage && typeof storage.setStr === 'function') {
+      return !!storage.setStr(k, v);
+    }
     try {
-      const v = localStorage.getItem(KEY_COLLAPSED);
-      if (v != null) return v === '1';
-      return localStorage.getItem(KEY_COLLAPSED_LEGACY) === '1';
+      localStorage.setItem(k, v);
+      return true;
     } catch {
       return false;
     }
   }
 
-  function setCollapsed(on) {
+  function resolveCollapsedStored(chatId = '') {
+    const byChatKey = keyCollapsedChat(chatId);
+    if (byChatKey) {
+      const chatRaw = readStoredRaw(byChatKey);
+      if (chatRaw != null) {
+        return { collapsed: parseStoredBool(chatRaw, DEFAULT_COLLAPSED_ON_BOOT), source: 'chat', key: byChatKey };
+      }
+    }
+    const globalRaw = readStoredRaw(KEY_COLLAPSED);
+    if (globalRaw != null) {
+      return { collapsed: parseStoredBool(globalRaw, DEFAULT_COLLAPSED_ON_BOOT), source: 'global', key: KEY_COLLAPSED };
+    }
+    const legacyRaw = readStoredRaw(KEY_COLLAPSED_LEGACY);
+    if (legacyRaw != null) {
+      return { collapsed: parseStoredBool(legacyRaw, DEFAULT_COLLAPSED_ON_BOOT), source: 'legacy', key: KEY_COLLAPSED_LEGACY };
+    }
+    return { collapsed: !!DEFAULT_COLLAPSED_ON_BOOT, source: 'default', key: '' };
+  }
+
+  function getCollapsed(chatId = '') {
+    return !!resolveCollapsedStored(chatId).collapsed;
+  }
+
+  function setCollapsed(on, opts = {}) {
     const collapsed = !!on;
     const refs = getRefs();
     stateSet(refs.panel, 'collapsed', collapsed);
     stateSet(refs.dial, 'collapsed', collapsed);
     stateSet(refs.toggle, 'faded', collapsed);
-    try { localStorage.setItem(KEY_COLLAPSED, collapsed ? '1' : '0'); } catch {}
+
+    const persist = opts?.persist !== false;
+    if (!persist) return collapsed;
+
+    const chatId = String(opts?.chatId || resolveChatId()).trim();
+    const chatKey = keyCollapsedChat(chatId);
+    const writeGlobal = opts?.writeGlobal === true;
+    const val = collapsed ? '1' : '0';
+
+    if (chatKey) writeStoredRaw(chatKey, val);
+    if (writeGlobal) writeStoredRaw(KEY_COLLAPSED, val);
     return collapsed;
   }
 
-  function applyBootCollapsedDefault() {
-    if (state.bootCollapseApplied) return getCollapsed();
+  function collapsedSig(chatId = '') {
+    const id = String(chatId || resolveChatId()).trim() || '__global__';
+    return `${id}|${location.pathname}|${location.search}`;
+  }
+
+  function applyBootCollapsedDefault(reason = 'boot') {
+    const chatId = resolveChatId();
+    const sig = collapsedSig(chatId);
+    if (state.bootCollapseApplied && state.bootCollapseSig === sig) return getCollapsed(chatId);
     state.bootCollapseApplied = true;
-    if (FORCE_COLLAPSED_ON_BOOT) return setCollapsed(true);
-    return setCollapsed(getCollapsed());
+    state.bootCollapseSig = sig;
+    const desired = getCollapsed(chatId);
+    return setCollapsed(desired, { persist: false, writeGlobal: false, chatId, reason });
   }
 
   function storageApi() {
@@ -1310,6 +1449,14 @@ ${S_MINIMAP} .cgxui-under-ui::after {
 
   function keyDialHeightDir() {
     return `${nsDisk()}:${KEY_DIAL_HEIGHT_DIR_SUFFIX}`;
+  }
+
+  function keyAxisOffset() {
+    return `${nsDisk()}:${KEY_AXIS_OFFSET_SUFFIX}`;
+  }
+
+  function keyCenterFixX() {
+    return `${nsDisk()}:${KEY_CENTER_FIX_X_SUFFIX}`;
   }
 
   function parseStoredBool(raw, fallback = true) {
@@ -1362,6 +1509,68 @@ ${S_MINIMAP} .cgxui-under-ui::after {
       return;
     }
     try { localStorage.setItem(key, val); } catch {}
+  }
+
+  function readStoredJSON(key, fallback = null) {
+    const storage = storageApi();
+    if (storage && typeof storage.getJSON === 'function') {
+      try {
+        const v = storage.getJSON(key, null);
+        return (v == null) ? fallback : v;
+      } catch {}
+    }
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return (parsed == null) ? fallback : parsed;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function parseStoredPx(raw, fallback = 0) {
+    const n = Number.parseFloat(String(raw ?? '').replace('px', '').trim());
+    if (!Number.isFinite(n)) return Number.parseFloat(String(fallback || 0)) || 0;
+    return n;
+  }
+
+  function readAxisOffset() {
+    if (FORCE_AXIS_DEFAULT_EACH_LOAD) {
+      return { x: AXIS_BOOT_DEFAULT_X, y: AXIS_BOOT_DEFAULT_Y };
+    }
+    const raw = readStoredJSON(keyAxisOffset(), null);
+    return {
+      x: Math.round(parseStoredPx(raw?.axisX, 0)),
+      y: Math.round(parseStoredPx(raw?.axisY, 0)),
+    };
+  }
+
+  function applyAxisOffsetFromDisk(root) {
+    if (!root) return false;
+    const axis = readAxisOffset();
+    try { root.style.setProperty('--axis-x', `${axis.x}px`); } catch {}
+    try { root.style.setProperty('--axis-y', `${axis.y}px`); } catch {}
+    return true;
+  }
+
+  function readCenterFixX() {
+    if (FORCE_CENTER_FIX_RESET_EACH_LOAD) return 0;
+    const raw = readStoredRaw(keyCenterFixX());
+    return Math.round(parseStoredPx(raw, 0));
+  }
+
+  function applyCenterFixFromDisk(root) {
+    if (!root) return false;
+    const x = readCenterFixX();
+    try { root.style.setProperty('--mm-center-fix-x', `${x}px`); } catch {}
+    return true;
+  }
+
+  function persistCenterFixX(x) {
+    const v = Math.round(parseStoredPx(x, 0));
+    writeStoredRaw(keyCenterFixX(), `${v}`);
+    return v;
   }
 
   function loadBadgeVisibilityOnce() {
@@ -1819,6 +2028,132 @@ ${S_MINIMAP} .cgxui-under-ui::after {
     }
   }
 
+  function clearPrelayoutRafs() {
+    if (state.prelayoutRaf1) {
+      try { cancelAnimationFrame(state.prelayoutRaf1); } catch {}
+      state.prelayoutRaf1 = 0;
+    }
+    if (state.prelayoutRaf2) {
+      try { cancelAnimationFrame(state.prelayoutRaf2); } catch {}
+      state.prelayoutRaf2 = 0;
+    }
+    if (state.prelayoutFailsafeTimer) {
+      try { clearTimeout(state.prelayoutFailsafeTimer); } catch {}
+      state.prelayoutFailsafeTimer = null;
+    }
+  }
+
+  function prelayoutLoadSig() {
+    const chatId = String(resolveChatId() || '__global__').trim();
+    return `${chatId}|${location.pathname}|${location.search}`;
+  }
+
+  function setPrelayoutClass(refs = getRefs(), on = false) {
+    const root = refs?.root || null;
+    const panel = refs?.panel || null;
+    const add = !!on;
+    if (root) root.classList.toggle(PRELAYOUT_CLASS, add);
+    if (panel) panel.classList.toggle(PRELAYOUT_CLASS, add);
+  }
+
+  function quickPluginPresent() {
+    try { return TOPW.H2O_MM_QUICK_PLUGIN === true; } catch { return false; }
+  }
+
+  function quickReadyNow() {
+    try {
+      if (TOPW.H2O_MM_QUICK_READY === true) return true;
+    } catch {}
+    return state.quickReady === true;
+  }
+
+  function shouldHoldForQuick(elapsedMs = 0) {
+    if (quickReadyNow()) return false;
+    if (quickPluginPresent()) return true;
+    // short grace to let quick-controls mount and apply persisted style/size before unhide
+    return elapsedMs < 700;
+  }
+
+  function maybeCompletePrelayout() {
+    const sig = prelayoutLoadSig();
+    if (state.prelayoutDone && state.prelayoutSig === sig) return true;
+    if (state.prelayoutSig !== sig) return false;
+    const refs = getRefs();
+    if (!(refs?.root && refs?.panel)) return false;
+    const elapsed = Math.max(0, performance.now() - (state.prelayoutStartedAt || 0));
+    if (shouldHoldForQuick(elapsed)) return false;
+    const btnCount = countMiniMapButtons(refs);
+    if (btnCount <= 0) return false;
+    const changedCount = btnCount !== state.prelayoutLastBtnCount;
+    state.prelayoutLastBtnCount = btnCount;
+    const delta = alignMiniMapCenter(refs);
+    if (changedCount || !Number.isFinite(delta) || delta >= 1) {
+      state.prelayoutStableTicks = 0;
+      return false;
+    }
+    state.prelayoutStableTicks += 1;
+    if (state.prelayoutStableTicks < 2) return false;
+    if (state.prelayoutFailsafeTimer) {
+      try { clearTimeout(state.prelayoutFailsafeTimer); } catch {}
+      state.prelayoutFailsafeTimer = null;
+    }
+    setPrelayoutClass(refs, false);
+    state.prelayoutDone = true;
+    return true;
+  }
+
+  function runPrelayoutAlign(reason = 'boot') {
+    const refs = getRefs();
+    if (!(refs?.root && refs?.panel)) return false;
+    applyAxisOffsetFromDisk(refs.root);
+    applyCenterFixFromDisk(refs.root);
+    const sig = prelayoutLoadSig();
+    if (state.prelayoutDone && state.prelayoutSig === sig) return false;
+
+    state.prelayoutSig = sig;
+    state.prelayoutDone = false;
+    state.prelayoutLastBtnCount = -1;
+    state.prelayoutStableTicks = 0;
+    state.prelayoutStartedAt = performance.now();
+    setPrelayoutClass(refs, true);
+    clearPrelayoutRafs();
+    const t0 = performance.now();
+    const maxWaitMs = 2600;
+    const stepWaitMs = 220;
+    const runFailsafe = () => {
+      state.prelayoutFailsafeTimer = null;
+      if (maybeCompletePrelayout()) return;
+      const refsNow = getRefs();
+      const hasBtns = hasMiniMapButtons(refsNow);
+      const hasAnswers = hasAssistantAnswersInDom();
+      const elapsed = performance.now() - t0;
+      if (shouldHoldForQuick(elapsed) && elapsed < maxWaitMs) {
+        state.prelayoutFailsafeTimer = setTimeout(runFailsafe, stepWaitMs);
+        return;
+      }
+      if (!hasBtns && hasAnswers && elapsed < maxWaitMs) {
+        state.prelayoutFailsafeTimer = setTimeout(runFailsafe, stepWaitMs);
+        return;
+      }
+      try { alignMiniMapCenter(refsNow); } catch {}
+      try { setPrelayoutClass(refsNow, false); } catch {}
+      state.prelayoutDone = true;
+    };
+    state.prelayoutFailsafeTimer = setTimeout(runFailsafe, 220);
+
+    state.prelayoutRaf1 = requestAnimationFrame(() => {
+      state.prelayoutRaf1 = 0;
+      try { alignMiniMapCenter(getRefs()); } catch {}
+      maybeCompletePrelayout();
+      state.prelayoutRaf2 = requestAnimationFrame(() => {
+        state.prelayoutRaf2 = 0;
+        try { alignMiniMapCenter(getRefs()); } catch {}
+        maybeCompletePrelayout();
+      });
+    });
+    return true;
+  }
+
   function applyControlBoxSize(el) {
     if (!el) return;
     try { Object.assign(el.style, { width: 'var(--box-w)', height: 'var(--box-h)' }); } catch {}
@@ -1843,36 +2178,57 @@ ${S_MINIMAP} .cgxui-under-ui::after {
     }
   }
 
+  function resetCenterFixToZero(root) {
+    if (!root) return false;
+    try { root.style.setProperty('--mm-center-fix-x', '0px'); } catch {}
+    return true;
+  }
+
   function alignMiniMapCenter(refs = getRefs()) {
     const root = refs?.root;
+    if (!root) return NaN;
+    if (LOCK_MM_CENTER_FIX_TO_AXIS) {
+      resetCenterFixToZero(root);
+      return 0;
+    }
     const anchor = refs?.toggle || refs?.dial;
     const col = refs?.col || null;
-    if (!root || !anchor || !col) return;
+    if (!anchor || !col) return NaN;
     const lane = col.querySelector(mmButtonSel());
-    if (!lane) return;
+    if (!lane) return NaN;
     const aX = centerX(anchor);
-    const lX = centerX(lane);
-    if (!Number.isFinite(aX) || !Number.isFinite(lX)) return;
+    const lX = centerX(col) ?? centerX(lane);
+    if (!Number.isFinite(aX) || !Number.isFinite(lX)) return NaN;
     const dx = aX - lX;
     // Deadband avoids tiny oscillation from fractional layout rounding.
-    if (Math.abs(dx) < 1) return;
+    if (Math.abs(dx) < 1) return 0;
     const cur = Number.parseFloat(String(root.style.getPropertyValue('--mm-center-fix-x') || '0').replace('px', '')) || 0;
     // Apply delta on top of current fix; assigning raw dx causes ping-pong.
     const next = Math.round(cur + dx);
-    if (Math.abs(next - cur) < 1) return;
+    if (Math.abs(next - cur) < 1) return Math.abs(dx);
     try { root.style.setProperty('--mm-center-fix-x', `${next}px`); } catch {}
+    persistCenterFixX(next);
+    return Math.abs(dx);
   }
 
   function scheduleMiniMapCenterAlign() {
     if (state.alignRaf) return;
     state.alignRaf = requestAnimationFrame(() => {
       state.alignRaf = 0;
-      alignMiniMapCenter(getRefs());
+      const refs = getRefs();
+      if (LOCK_MM_CENTER_FIX_TO_AXIS) resetCenterFixToZero(refs?.root || null);
+      else alignMiniMapCenter(refs);
+      maybeCompletePrelayout();
     });
   }
 
   function installMiniMapCenterWatchers(refs = getRefs()) {
     clearAlignWatchers();
+    if (LOCK_MM_CENTER_FIX_TO_AXIS) {
+      resetCenterFixToZero(refs?.root || null);
+      maybeCompletePrelayout();
+      return;
+    }
     const col = refs?.col;
     if (col && typeof MutationObserver !== 'undefined') {
       state.alignMO = new MutationObserver(() => scheduleMiniMapCenterAlign());
@@ -1882,9 +2238,18 @@ ${S_MINIMAP} .cgxui-under-ui::after {
   }
 
   function hasMiniMapButtons(refs = getRefs()) {
+    return countMiniMapButtons(refs) > 0;
+  }
+
+  function countMiniMapButtons(refs = getRefs()) {
     const scope = refs?.col || refs?.panel || null;
-    if (!scope) return false;
-    try { return !!scope.querySelector(mmButtonSel()); } catch {}
+    if (!scope) return 0;
+    try { return Number(scope.querySelectorAll(mmButtonSel()).length || 0); } catch {}
+    return 0;
+  }
+
+  function hasAssistantAnswersInDom() {
+    try { return !!document.querySelector('[data-message-author-role="assistant"]'); } catch {}
     return false;
   }
 
@@ -1903,6 +2268,75 @@ ${S_MINIMAP} .cgxui-under-ui::after {
     // Keep Dial visible immediately with the MiniMap shell.
     // We intentionally avoid boot-wait hiding to prevent reload flash/hide.
     releaseBootHold();
+  }
+
+  function emitRouteChanged(source = 'shell') {
+    const detail = { source: String(source || 'shell'), href: String(location.href || ''), chatId: resolveChatId() };
+    try { window.dispatchEvent(new CustomEvent(EV_ROUTE_CHANGED, { detail })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_ROUTE_CHANGED.replace(/^evt:/, ''), { detail })); } catch {}
+  }
+
+  function installHistoryRouteBridge() {
+    if (TOPW.H2O_MM_ROUTE_BRIDGE_INSTALLED === true) return true;
+
+    const patch = (name) => {
+      const orig = history?.[name];
+      if (typeof orig !== 'function') return;
+      if (orig.__h2oMmRouteWrapped) return;
+      const wrapped = function h2oMmRouteWrapped(...args) {
+        const out = orig.apply(this, args);
+        emitRouteChanged(`history:${name}`);
+        return out;
+      };
+      try { Object.defineProperty(wrapped, '__h2oMmRouteWrapped', { value: true }); } catch {}
+      try { history[name] = wrapped; } catch {}
+    };
+    patch('pushState');
+    patch('replaceState');
+    try { TOPW.H2O_MM_ROUTE_BRIDGE_INSTALLED = true; } catch {}
+    return true;
+  }
+
+  function syncRouteState(reason = 'route') {
+    const sig = collapsedSig(resolveChatId());
+    if (sig === state.routeSig && state.bootCollapseApplied) return false;
+    state.routeSig = sig;
+    applyAxisOffsetFromDisk(getRefs()?.root || null);
+    applyCenterFixFromDisk(getRefs()?.root || null);
+    applyBootCollapsedDefault(`route:${String(reason || 'route')}`);
+    runPrelayoutAlign(`route:${String(reason || 'route')}`);
+    try { MM_core()?.scheduleRebuild?.(`shell:route:${String(reason || 'route')}`); } catch {}
+    return true;
+  }
+
+  function scheduleRouteSync(reason = 'route') {
+    state.routeReason = String(reason || 'route');
+    if (state.routeRaf) return;
+    state.routeRaf = requestAnimationFrame(() => {
+      state.routeRaf = 0;
+      syncRouteState(state.routeReason || 'route');
+    });
+  }
+
+  function ensureRouteBindings() {
+    if (state.routeBound) return;
+    state.routeBound = true;
+    installHistoryRouteBridge();
+
+    const onRoute = () => scheduleRouteSync('event');
+    bind(window, EV_ROUTE_CHANGED, onRoute, { passive: true });
+    bind(window, EV_ROUTE_CHANGED.replace(/^evt:/, ''), onRoute, { passive: true });
+    bind(window, 'popstate', onRoute, { passive: true });
+    bind(window, 'hashchange', onRoute, { passive: true });
+    bind(window, 'evt:h2o:answers:scan', onRoute, { passive: true });
+    bind(window, 'h2o:answers:scan', onRoute, { passive: true });
+
+    const onQuickReady = () => {
+      state.quickReady = true;
+      runPrelayoutAlign('quick-ready');
+    };
+    bind(window, EV_QUICK_READY, onQuickReady, { passive: true });
+    bind(window, EV_QUICK_READY.replace(/^evt:/, ''), onQuickReady, { passive: true });
   }
 
   function ensureDialButtons(dial) {
@@ -2332,8 +2766,13 @@ ${S_MINIMAP} .cgxui-under-ui::after {
 
   function ensureUI(reason = '') {
     ensureBehaviorHook();
+    ensureRouteBindings();
+    state.quickReady = state.quickReady || (TOPW.H2O_MM_QUICK_READY === true);
     const refsBefore = getRefs();
     if (refsBefore.root && refsBefore.panel && refsBefore.toggle && refsBefore.dial) {
+      setPrelayoutClass(refsBefore, true);
+      applyAxisOffsetFromDisk(refsBefore.root);
+      applyCenterFixFromDisk(refsBefore.root);
       applyBootCollapsedDefault();
       loadDialHeightStepOnce(refsBefore);
       ensureToggleBinding(refsBefore.toggle);
@@ -2348,6 +2787,7 @@ ${S_MINIMAP} .cgxui-under-ui::after {
       applyBadgeVisibility(getRefs());
       applyDialVisibility(getRefs());
       syncBootVisibility(refsBefore);
+      runPrelayoutAlign(`ensure:${String(reason || 'reuse')}`);
       return refsBefore;
     }
     if (state.mounting) return refsBefore;
@@ -2360,6 +2800,9 @@ ${S_MINIMAP} .cgxui-under-ui::after {
         root.setAttribute(ATTR.CGXUI_OWNER, SkID);
         root.setAttribute(ATTR.CGXUI, UI.ROOT);
       } catch {}
+      setPrelayoutClass({ root, panel: null }, true);
+      applyAxisOffsetFromDisk(root);
+      applyCenterFixFromDisk(root);
 
       let panel = root.querySelector(SEL.PANEL);
       if (!panel) {
@@ -2373,6 +2816,7 @@ ${S_MINIMAP} .cgxui-under-ui::after {
       panel.setAttribute(ATTR.CGXUI_OWNER, SkID);
       panel.setAttribute(ATTR.CGXUI, UI.MINIMAP);
       panel.setAttribute(ATTR_.CGXUI_VIEW, 'classic');
+      setPrelayoutClass({ root, panel }, true);
 
       let col = panel.querySelector(`[${ATTR.CGXUI}="${UI_.COL}"][${ATTR.CGXUI_OWNER}="${SkID}"]`);
       if (!col) {
@@ -2441,6 +2885,7 @@ ${S_MINIMAP} .cgxui-under-ui::after {
         state.alignResizeBound = true;
         bind(window, 'resize', () => scheduleMiniMapCenterAlign(), { passive: true });
       }
+      runPrelayoutAlign(`mount:${String(reason || 'mount')}`);
       return getRefs();
     } finally {
       state.mounting = false;
@@ -2454,6 +2899,19 @@ ${S_MINIMAP} .cgxui-under-ui::after {
   function unmountUI() {
     const refs = getRefs();
     cleanupListeners();
+    clearPrelayoutRafs();
+    setPrelayoutClass(refs, false);
+    state.prelayoutSig = '';
+    state.prelayoutDone = false;
+    state.prelayoutLastBtnCount = -1;
+    state.prelayoutStableTicks = 0;
+    if (state.routeRaf) {
+      try { cancelAnimationFrame(state.routeRaf); } catch {}
+      state.routeRaf = 0;
+    }
+    state.routeBound = false;
+    state.routeSig = '';
+    state.routeReason = '';
     clearBootHoldWatchers();
     clearAlignWatchers();
     state.alignResizeBound = false;
@@ -2537,6 +2995,7 @@ ${S_MINIMAP} .cgxui-under-ui::after {
   try {
     W.addEventListener('pageshow', () => {
       try { ensureUI('event:pageshow'); } catch {}
+      try { scheduleRouteSync('pageshow'); } catch {}
     }, { passive: true });
   } catch {}
 })();
