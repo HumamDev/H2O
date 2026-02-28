@@ -4,11 +4,19 @@
 # Node
 node_modules/
 
-# Archive snapshots: ignore outputs, keep state tracked
-archive/*
-!archive/.state/
-archive/.state/*
-!archive/.state/lastVersions.json
+# Archive snapshots and state outputs
+archive/**
+!archive/.gitkeep
 
 # Generated local extension outputs
-build/
+build/**
+
+# Generated reports and ledgers (keep placeholders)
+meta/reports/**
+!meta/reports/.gitkeep
+meta/ledger/**
+!meta/ledger/.gitkeep
+
+# Local-only commit message input
+meta/notes/COMMIT_MESSAGE.txt
+meta/notes/COMMIT_QUEUE.txt
