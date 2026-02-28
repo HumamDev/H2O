@@ -6,14 +6,20 @@ const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..");
 
-const INPUT_CSV = path.join(REPO_ROOT, "versions.csv");
+const INPUT_SHIP_CSV = path.join(REPO_ROOT, "versions.csv");
+const INPUT_EDIT_CSV = path.join(REPO_ROOT, "meta", "ledger", "edits.csv");
+const INPUT_EDIT_V2_CSV = path.join(REPO_ROOT, "meta", "ledger", "edits.v2.csv");
+
 const META_LEDGER_DIR = path.join(REPO_ROOT, "meta", "ledger");
 const META_REPORTS_DIR = path.join(REPO_ROOT, "meta", "reports");
+
 const OUT_LATEST_CSV = path.join(META_LEDGER_DIR, "versions-latest.csv");
 const OUT_LATEST_MD = path.join(META_REPORTS_DIR, "versions-latest.md");
 const OUT_HTML = path.join(META_REPORTS_DIR, "versions.html");
 
-const SOURCE_HEADER = ["date", "script_id", "version", "bump", "summary", "commit_sha"];
+const REQUIRED_SHIP_HEADER = ["date", "script_id", "version", "bump", "summary"];
+const REQUIRED_EDIT_HEADER = ["ts", "kind", "script_id", "rel_path", "rev", "build", "note"];
+
 const LATEST_HEADER = [
   "script_id",
   "latest_version",
@@ -48,6 +54,14 @@ function readFileRequired(filePath) {
   return String(text).replace(/^\uFEFF/, "");
 }
 
+function readFileOptional(filePath) {
+  try {
+    return String(fs.readFileSync(filePath, "utf8") || "").replace(/^\uFEFF/, "");
+  } catch {
+    return "";
+  }
+}
+
 function parseCsv(text) {
   const rows = [];
   let row = [];
@@ -72,10 +86,10 @@ function parseCsv(text) {
     const ch = text[i];
 
     if (inQuotes) {
-      if (ch === "\"") {
-        if (text[i + 1] === "\"") {
-          field += "\"";
-          i++;
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 1;
         } else {
           inQuotes = false;
         }
@@ -85,7 +99,7 @@ function parseCsv(text) {
       continue;
     }
 
-    if (ch === "\"") {
+    if (ch === '"') {
       inQuotes = true;
       continue;
     }
@@ -102,9 +116,7 @@ function parseCsv(text) {
     }
 
     if (ch === "\r") {
-      if (text[i + 1] === "\n") {
-        continue;
-      }
+      if (text[i + 1] === "\n") continue;
       pushField();
       pushRow();
       continue;
@@ -114,11 +126,10 @@ function parseCsv(text) {
   }
 
   if (inQuotes) {
-    fail("Malformed CSV: unmatched quote in versions.csv.");
+    fail("Malformed CSV: unmatched quote.");
   }
 
-  const hasTrailingData = field.length > 0 || row.length > 0;
-  if (hasTrailingData) {
+  if (field.length > 0 || row.length > 0) {
     pushField();
     pushRow();
   }
@@ -126,72 +137,127 @@ function parseCsv(text) {
   return rows.filter((r) => !(r.length === 1 && r[0] === ""));
 }
 
-function validateSourceHeader(headerRow) {
-  if (!headerRow) {
-    fail("versions.csv has no header row.");
+function analyzeHeader(headerRow, required, sourceName) {
+  if (!headerRow) fail(`${sourceName} has no header row.`);
+  if (headerRow.length < required.length) {
+    fail(`${sourceName} header has ${headerRow.length} columns; expected at least ${required.length}.`);
   }
-  if (headerRow.length !== SOURCE_HEADER.length) {
-    fail(`versions.csv header has ${headerRow.length} columns; expected ${SOURCE_HEADER.length}.`);
-  }
-  for (let i = 0; i < SOURCE_HEADER.length; i++) {
-    if (headerRow[i] !== SOURCE_HEADER[i]) {
+  for (let i = 0; i < required.length; i++) {
+    if (headerRow[i] !== required[i]) {
       fail(
-        `versions.csv header mismatch at column ${i + 1}: got "${headerRow[i]}", expected "${SOURCE_HEADER[i]}".`,
+        `${sourceName} header mismatch at column ${i + 1}: got "${headerRow[i]}", expected "${required[i]}".`,
       );
     }
   }
+
+  const idx = Object.create(null);
+  headerRow.forEach((name, i) => {
+    idx[name] = i;
+  });
+
+  return {
+    rowWidth: headerRow.length,
+    idx,
+  };
 }
 
 function csvQuote(value) {
-  return `"${String(value ?? "").replace(/"/g, "\"\"")}"`;
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
 function toCsv(rows) {
   return `${rows.map((row) => row.map(csvQuote).join(",")).join("\n")}\n`;
 }
 
-function readReleaseRows() {
-  const text = readFileRequired(INPUT_CSV);
+function readShipRows() {
+  const text = readFileRequired(INPUT_SHIP_CSV);
   const rows = parseCsv(text);
-  if (rows.length === 0) {
-    fail("versions.csv has no rows.");
-  }
+  if (!rows.length) fail("versions.csv has no rows.");
 
-  validateSourceHeader(rows[0]);
+  const header = analyzeHeader(rows[0], REQUIRED_SHIP_HEADER, "versions.csv");
+  const commitShaIndex = Number.isInteger(header.idx.commit_sha) ? header.idx.commit_sha : -1;
 
-  const dataRows = [];
+  const out = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    if (row.length === 1 && row[0] === "") continue;
-    if (row.length !== SOURCE_HEADER.length) {
-      fail(`versions.csv row ${i + 1} has ${row.length} columns; expected ${SOURCE_HEADER.length}.`);
+    if (row.length !== header.rowWidth) {
+      fail(`versions.csv row ${i + 1} has ${row.length} columns; expected ${header.rowWidth}.`);
     }
+
     const obj = {
-      date: row[0],
-      script_id: row[1],
-      version: row[2],
-      bump: row[3],
-      summary: row[4],
-      commit_sha: row[5],
+      date: row[header.idx.date],
+      script_id: row[header.idx.script_id],
+      version: row[header.idx.version],
+      bump: row[header.idx.bump],
+      summary: row[header.idx.summary],
+      commit_sha: commitShaIndex >= 0 ? String(row[commitShaIndex] || "") : "",
       _rowIndex: i,
     };
-    if (!obj.script_id) {
-      fail(`versions.csv row ${i + 1} is missing script_id.`);
-    }
-    dataRows.push(obj);
+
+    if (!obj.script_id) fail(`versions.csv row ${i + 1} is missing script_id.`);
+    out.push(obj);
   }
 
-  if (dataRows.length === 0) {
-    fail("versions.csv contains only a header and no release rows.");
-  }
-
-  return dataRows;
+  if (!out.length) fail("versions.csv contains only a header and no SHIP rows.");
+  return out;
 }
 
-function pickLatestRows(releaseRows) {
+function readEditRowsOptional() {
+  const editInput = resolveEditInputPath();
+  const sourceName = displayPath(editInput);
+  const text = readFileOptional(editInput);
+  if (!String(text).trim()) return [];
+
+  const rows = parseCsv(text);
+  if (!rows.length) return [];
+
+  const header = analyzeEditHeader(rows[0], sourceName);
+
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.length || (row.length === 1 && row[0] === "")) continue;
+    if (row.length !== header.rowWidth) {
+      fail(`${sourceName} row ${i + 1} has ${row.length} columns; expected ${header.rowWidth}.`);
+    }
+
+    const obj = {
+      ts: row[header.idx.ts],
+      kind: String(row[header.idx.kind] || "EDIT"),
+      script_id: row[header.idx.script_id],
+      rel_path: row[header.idx.rel_path],
+      rev: row[header.idx.rev],
+      build: row[header.idx.build],
+      note: row[header.idx.note],
+      msg: header.hasMsg ? String(row[header.idx.msg] || "") : "",
+      _rowIndex: i,
+    };
+
+    if (!obj.script_id) fail(`${sourceName} row ${i + 1} is missing script_id.`);
+    out.push(obj);
+  }
+
+  return out;
+}
+
+function resolveEditInputPath() {
+  if (fs.existsSync(INPUT_EDIT_V2_CSV)) return INPUT_EDIT_V2_CSV;
+  return INPUT_EDIT_CSV;
+}
+
+function analyzeEditHeader(headerRow, sourceName) {
+  const base = analyzeHeader(headerRow, REQUIRED_EDIT_HEADER, sourceName);
+  const hasMsg = Number.isInteger(base.idx.msg);
+  return {
+    ...base,
+    hasMsg,
+  };
+}
+
+function pickLatestRows(shipRows) {
   const byScript = new Map();
 
-  for (const row of releaseRows) {
+  for (const row of shipRows) {
     const best = byScript.get(row.script_id);
     if (!best) {
       byScript.set(row.script_id, row);
@@ -221,11 +287,75 @@ function pickLatestRows(releaseRows) {
     .sort((a, b) => a.script_id.localeCompare(b.script_id, undefined, { numeric: true }));
 }
 
+function normalizeShipTs(dateValue) {
+  const s = String(dateValue || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00Z`;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    return s.replace(/\.\d{3}Z$/, "Z");
+  }
+  return `${s}T00:00:00Z`;
+}
+
+function toTimestampNumber(isoTs) {
+  const n = Date.parse(String(isoTs || ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function buildTimelineEvents(shipRows, editRows) {
+  const events = [];
+
+  for (const row of shipRows) {
+    events.push({
+      ts: normalizeShipTs(row.date),
+      kind: "SHIP",
+      script_id: row.script_id,
+      rev: "",
+      build: "",
+      version: row.version,
+      bump: row.bump,
+      summary_note: row.summary,
+      rel_path: "",
+      _order: row._rowIndex,
+    });
+  }
+
+  for (const row of editRows) {
+    events.push({
+      ts: String(row.ts || "").replace(/\.\d{3}Z$/, "Z"),
+      kind: String(row.kind || "EDIT") || "EDIT",
+      script_id: row.script_id,
+      rev: row.rev,
+      build: row.build,
+      version: "",
+      bump: "",
+      summary_note: row.msg || row.note,
+      rel_path: row.rel_path,
+      _order: 1_000_000 + row._rowIndex,
+    });
+  }
+
+  events.sort((a, b) => {
+    const ta = toTimestampNumber(a.ts);
+    const tb = toTimestampNumber(b.ts);
+    if (tb !== ta) return tb - ta;
+    return b._order - a._order;
+  });
+
+  return events;
+}
+
 function escapeMd(value) {
   return String(value ?? "")
     .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")
     .replace(/\n/g, " ");
+}
+
+function escapeMdExceptLinks(value) {
+  const s = String(value ?? "");
+  if (/^\[[^\]]+\]\([^)]+\)$/.test(s)) return s;
+  return escapeMd(s);
 }
 
 function renderMarkdown(rows, generatedAtIso) {
@@ -256,12 +386,6 @@ function renderMarkdown(rows, generatedAtIso) {
   return `${lines.join("\n")}\n`;
 }
 
-function escapeMdExceptLinks(value) {
-  const s = String(value ?? "");
-  if (/^\[[^\]]+\]\([^)]+\)$/.test(s)) return s;
-  return escapeMd(s);
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -275,19 +399,40 @@ function escapeJsonForScriptTag(jsonText) {
   return String(jsonText).replace(/</g, "\\u003c");
 }
 
-function renderHtml(rows, generatedAtIso) {
-  const dataset = rows.map((row) => ({
-    ...row,
-    changelog_href: `../../${row.changelog_path}`,
-  }));
-  const json = JSON.stringify(dataset);
+function renderHtmlTimeline(events, generatedAtIso) {
+  const json = JSON.stringify(events);
+  const serverRowsHtml = events
+    .map((row) => {
+      const kind = String(row.kind || "").toUpperCase();
+      const kindClass = kind === "SHIP" ? "ship" : "edit";
+      const bump = String(row.bump || "").toLowerCase();
+      const bumpClass = ["major", "minor", "patch"].includes(bump) ? bump : "";
+      const bumpHtml = bump
+        ? `<span class="bump ${bumpClass}">${escapeHtml(bump)}</span>`
+        : "";
+
+      return [
+        "<tr>",
+        `<td><code>${escapeHtml(row.ts || "")}</code></td>`,
+        `<td><span class="kind ${kindClass}">${escapeHtml(kind || "")}</span></td>`,
+        `<td><code>${escapeHtml(row.script_id || "")}</code></td>`,
+        `<td><code>${escapeHtml(row.rev || "")}</code></td>`,
+        `<td><code>${escapeHtml(row.build || "")}</code></td>`,
+        `<td><code>${escapeHtml(row.version || "")}</code></td>`,
+        `<td>${bumpHtml}</td>`,
+        `<td class="summary">${escapeHtml(row.summary_note || "")}</td>`,
+        `<td class="rel">${escapeHtml(row.rel_path || "")}</td>`,
+        "</tr>",
+      ].join("");
+    })
+    .join("");
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Version Dashboard</title>
+  <title>Version Timeline</title>
   <style>
     :root {
       color-scheme: dark;
@@ -297,10 +442,11 @@ function renderHtml(rows, generatedAtIso) {
       --text: #e9edf5;
       --muted: #9aa5b6;
       --accent: #7cc4ff;
+      --ship: #5eb2ff;
+      --edit: #6ee7a5;
       --major: #ff6b6b;
       --minor: #ffd166;
       --patch: #72e3a6;
-      --chip-bg: #222836;
     }
     * { box-sizing: border-box; }
     body {
@@ -310,7 +456,7 @@ function renderHtml(rows, generatedAtIso) {
       color: var(--text);
     }
     .wrap {
-      max-width: 1200px;
+      max-width: 1450px;
       margin: 0 auto;
       padding: 20px 16px 32px;
     }
@@ -331,7 +477,7 @@ function renderHtml(rows, generatedAtIso) {
     }
     .toolbar input {
       width: 100%;
-      max-width: 420px;
+      max-width: 520px;
       background: var(--panel);
       color: var(--text);
       border: 1px solid var(--line);
@@ -352,13 +498,14 @@ function renderHtml(rows, generatedAtIso) {
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 980px;
+      min-width: 1300px;
     }
     th, td {
       padding: 10px 12px;
       border-bottom: 1px solid rgba(255,255,255,0.05);
       vertical-align: top;
       text-align: left;
+      white-space: nowrap;
     }
     th {
       position: sticky;
@@ -367,34 +514,43 @@ function renderHtml(rows, generatedAtIso) {
       z-index: 1;
       font-weight: 600;
     }
-    th button {
-      all: unset;
-      cursor: pointer;
-      color: var(--text);
-    }
-    th button:hover {
-      color: var(--accent);
-    }
     .muted { color: var(--muted); }
-    .badge {
+    .kind {
       display: inline-block;
       padding: 2px 8px;
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 600;
-      background: var(--chip-bg);
-      border: 1px solid rgba(255,255,255,0.06);
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+    .kind.ship { color: #071d31; background: var(--ship); }
+    .kind.edit { color: #082213; background: var(--edit); }
+    .bump {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
       text-transform: lowercase;
     }
-    .badge.major { color: #1a0d0d; background: var(--major); border-color: transparent; }
-    .badge.minor { color: #2f2400; background: var(--minor); border-color: transparent; }
-    .badge.patch { color: #062212; background: var(--patch); border-color: transparent; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    .bump.major { color: #1a0d0d; background: var(--major); }
+    .bump.minor { color: #2f2400; background: var(--minor); }
+    .bump.patch { color: #062212; background: var(--patch); }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
       color: #c9e2ff;
+    }
+    .summary {
+      white-space: normal;
+      min-width: 280px;
+      max-width: 420px;
+    }
+    .rel {
+      white-space: normal;
+      min-width: 240px;
+      max-width: 360px;
+      color: var(--muted);
     }
     .empty {
       padding: 16px;
@@ -404,38 +560,41 @@ function renderHtml(rows, generatedAtIso) {
 </head>
 <body>
   <div class="wrap">
-    <h1>Version Dashboard</h1>
-    <div class="meta">Generated <code>${escapeHtml(generatedAtIso)}</code> • <span id="countMeta">${rows.length}</span> scripts</div>
+    <h1>Version Timeline</h1>
+    <div class="meta">Generated <code>${escapeHtml(generatedAtIso)}</code> • <span id="countMeta">${events.length}</span> events</div>
     <div class="toolbar">
-      <input id="search" type="search" placeholder="Search script_id or summary…" autocomplete="off">
-      <div id="resultCount" class="muted"></div>
+      <input id="search" type="search" placeholder="Search script_id, summary/note, path, kind..." autocomplete="off">
+      <div id="resultCount" class="muted">${events.length} shown</div>
     </div>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th><button type="button" data-sort-key="script_id">script_id</button></th>
-            <th><button type="button" data-sort-key="latest_version">latest_version</button></th>
-            <th><button type="button" data-sort-key="last_bump">last_bump</button></th>
-            <th><button type="button" data-sort-key="last_date">last_date</button></th>
-            <th>last_summary</th>
-            <th>last_commit_sha</th>
-            <th>changelog_path</th>
+            <th>ts</th>
+            <th>kind</th>
+            <th>script_id</th>
+            <th>rev</th>
+            <th>build</th>
+            <th>version</th>
+            <th>bump</th>
+            <th>summary/note</th>
+            <th>rel_path</th>
           </tr>
         </thead>
-        <tbody id="rows"></tbody>
+        <tbody id="rows">${serverRowsHtml}</tbody>
       </table>
-      <div id="empty" class="empty" hidden>No matching rows.</div>
+      <div id="empty" class="empty"${events.length === 0 ? "" : " hidden"}>No matching rows.</div>
     </div>
   </div>
-  <script id="version-data" type="application/json">${escapeJsonForScriptTag(json)}</script>
+  <script id="timeline-data" type="application/json">${escapeJsonForScriptTag(json)}</script>
   <script>
   (() => {
     const rowsEl = document.getElementById("rows");
     const emptyEl = document.getElementById("empty");
     const searchEl = document.getElementById("search");
     const resultCountEl = document.getElementById("resultCount");
-    const raw = document.getElementById("version-data").textContent || "[]";
+    const raw = document.getElementById("timeline-data").textContent || "[]";
+
     let data = [];
     try {
       data = JSON.parse(raw);
@@ -443,82 +602,34 @@ function renderHtml(rows, generatedAtIso) {
       data = [];
     }
 
-    const state = { q: "", key: "script_id", dir: "asc" };
-
-    function cmpText(a, b) {
-      return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
-    }
-
-    function bumpRank(v) {
-      const s = String(v || "").toLowerCase();
-      if (s === "major") return 3;
-      if (s === "minor") return 2;
-      if (s === "patch") return 1;
-      return 0;
-    }
-
-    function cmpVersion(a, b) {
-      const parse = (v) => {
-        const m = String(v || "").match(/^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?(?:\\+([0-9A-Za-z.-]+))?$/);
-        if (!m) return null;
-        return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] || "" };
-      };
-      const pa = parse(a);
-      const pb = parse(b);
-      if (!pa || !pb) return cmpText(a, b);
-      if (pa.major !== pb.major) return pa.major - pb.major;
-      if (pa.minor !== pb.minor) return pa.minor - pb.minor;
-      if (pa.patch !== pb.patch) return pa.patch - pb.patch;
-      if (pa.pre === pb.pre) return 0;
-      if (!pa.pre) return 1;
-      if (!pb.pre) return -1;
-      return cmpText(pa.pre, pb.pre);
-    }
-
-    function compare(a, b) {
-      let r = 0;
-      if (state.key === "latest_version") r = cmpVersion(a.latest_version, b.latest_version);
-      else if (state.key === "last_bump") r = bumpRank(a.last_bump) - bumpRank(b.last_bump);
-      else if (state.key === "last_date") r = cmpText(a.last_date, b.last_date);
-      else r = cmpText(a[state.key], b[state.key]);
-      if (r === 0) r = cmpText(a.script_id, b.script_id);
-      return state.dir === "asc" ? r : -r;
-    }
-
-    function badgeHtml(bump) {
-      const value = String(bump || "");
-      const cls = ["major", "minor", "patch"].includes(value) ? value : "";
-      return '<span class="badge ' + cls + '">' + escapeHtml(value) + "</span>";
-    }
-
     function escapeHtml(value) {
       return String(value ?? "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
+        .replace(/\"/g, "&quot;")
         .replace(/'/g, "&#39;");
     }
 
-    function render() {
-      const q = state.q.trim().toLowerCase();
-      const filtered = data.filter((row) => {
-        if (!q) return true;
-        return String(row.script_id || "").toLowerCase().includes(q) ||
-               String(row.last_summary || "").toLowerCase().includes(q);
-      }).sort(compare);
-
+    function render(filtered) {
       rowsEl.innerHTML = "";
       for (const row of filtered) {
+        const kind = String(row.kind || "").toUpperCase();
+        const kindClass = kind === "SHIP" ? "ship" : "edit";
+        const bump = String(row.bump || "").toLowerCase();
+        const bumpClass = ["major", "minor", "patch"].includes(bump) ? bump : "";
+
         const tr = document.createElement("tr");
         tr.innerHTML = [
-          "<td><code>" + escapeHtml(row.script_id) + "</code></td>",
-          "<td><code>" + escapeHtml(row.latest_version) + "</code></td>",
-          "<td>" + badgeHtml(row.last_bump) + "</td>",
-          "<td><code>" + escapeHtml(row.last_date) + "</code></td>",
-          "<td>" + escapeHtml(row.last_summary) + "</td>",
-          "<td><code>" + escapeHtml(row.last_commit_sha) + "</code></td>",
-          '<td><a href="' + escapeHtml(row.changelog_href) + '" target="_blank" rel="noopener">Changelog</a></td>',
+          "<td><code>" + escapeHtml(row.ts || "") + "</code></td>",
+          "<td><span class=\"kind " + kindClass + "\">" + escapeHtml(kind || "") + "</span></td>",
+          "<td><code>" + escapeHtml(row.script_id || "") + "</code></td>",
+          "<td><code>" + escapeHtml(row.rev || "") + "</code></td>",
+          "<td><code>" + escapeHtml(row.build || "") + "</code></td>",
+          "<td><code>" + escapeHtml(row.version || "") + "</code></td>",
+          "<td>" + (bump ? ("<span class=\"bump " + bumpClass + "\">" + escapeHtml(bump) + "</span>") : "") + "</td>",
+          "<td class=\"summary\">" + escapeHtml(row.summary_note || "") + "</td>",
+          "<td class=\"rel\">" + escapeHtml(row.rel_path || "") + "</td>",
         ].join("");
         rowsEl.appendChild(tr);
       }
@@ -527,25 +638,30 @@ function renderHtml(rows, generatedAtIso) {
       resultCountEl.textContent = filtered.length + " shown";
     }
 
-    searchEl.addEventListener("input", (e) => {
-      state.q = e.target.value || "";
-      render();
-    });
+    function applyFilter() {
+      const q = String(searchEl.value || "").trim().toLowerCase();
+      if (!q) {
+        render(data);
+        return;
+      }
 
-    for (const btn of document.querySelectorAll("button[data-sort-key]")) {
-      btn.addEventListener("click", () => {
-        const key = btn.getAttribute("data-sort-key");
-        if (!key) return;
-        if (state.key === key) state.dir = state.dir === "asc" ? "desc" : "asc";
-        else {
-          state.key = key;
-          state.dir = "asc";
-        }
-        render();
+      const filtered = data.filter((row) => {
+        return String(row.ts || "").toLowerCase().includes(q)
+          || String(row.kind || "").toLowerCase().includes(q)
+          || String(row.script_id || "").toLowerCase().includes(q)
+          || String(row.rev || "").toLowerCase().includes(q)
+          || String(row.build || "").toLowerCase().includes(q)
+          || String(row.version || "").toLowerCase().includes(q)
+          || String(row.bump || "").toLowerCase().includes(q)
+          || String(row.summary_note || "").toLowerCase().includes(q)
+          || String(row.rel_path || "").toLowerCase().includes(q);
       });
+
+      render(filtered);
     }
 
-    render();
+    searchEl.addEventListener("input", applyFilter);
+    render(data);
   })();
   </script>
 </body>
@@ -565,8 +681,10 @@ function main() {
   ensureDir(META_LEDGER_DIR);
   ensureDir(META_REPORTS_DIR);
 
-  const releaseRows = readReleaseRows();
-  const latestRows = pickLatestRows(releaseRows);
+  const shipRows = readShipRows();
+  const editRows = readEditRowsOptional();
+  const latestRows = pickLatestRows(shipRows);
+  const timelineEvents = buildTimelineEvents(shipRows, editRows);
   const generatedAtIso = new Date().toISOString();
 
   const latestCsvRows = [
@@ -584,9 +702,11 @@ function main() {
 
   writeFile(OUT_LATEST_CSV, toCsv(latestCsvRows));
   writeFile(OUT_LATEST_MD, renderMarkdown(latestRows, generatedAtIso));
-  writeFile(OUT_HTML, renderHtml(latestRows, generatedAtIso));
+  writeFile(OUT_HTML, renderHtmlTimeline(timelineEvents, generatedAtIso));
 
-  console.log(`[versions:build] scripts processed: ${latestRows.length}`);
+  console.log(`[versions:build] SHIP rows: ${shipRows.length}`);
+  console.log(`[versions:build] EDIT rows: ${editRows.length}`);
+  console.log(`[versions:build] timeline events: ${timelineEvents.length}`);
   console.log(`[versions:build] wrote ${displayPath(OUT_LATEST_CSV)}`);
   console.log(`[versions:build] wrote ${displayPath(OUT_LATEST_MD)}`);
   console.log(`[versions:build] wrote ${displayPath(OUT_HTML)}`);

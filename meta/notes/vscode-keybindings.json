@@ -1,0 +1,7 @@
+[
+  {
+    "key": "cmd+alt+enter",
+    "command": "workbench.action.tasks.runTask",
+    "args": "H2O: GIT / C) Auto Commit (USE CODEX/GITLENS MESSAGE FILE)"
+  }
+]

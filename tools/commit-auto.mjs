@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 
 const SAFE_STAGE_PATHS = [
   "tools",
@@ -17,6 +18,7 @@ const SAFE_STAGE_PATHS = [
 ];
 
 const MAX_UNSAFE_PRINT = 15;
+const DEFAULT_MESSAGE_FILE = "meta/notes/COMMIT_MESSAGE.txt";
 
 function runGitCapture(args) {
   const res = spawnSync("git", args, { encoding: "utf8" });
@@ -36,6 +38,18 @@ function runGit(args) {
 
 function normalizePath(v) {
   return String(v || "").replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function firstNonEmptyLine(lines) {
+  for (const line of lines) {
+    const t = String(line || "").trim();
+    if (t) return t;
+  }
+  return "";
+}
+
+function asOneLine(v) {
+  return firstNonEmptyLine(String(v || "").split(/\r?\n/));
 }
 
 function uniqueSorted(paths) {
@@ -77,6 +91,7 @@ function isSafePath(filePath) {
   const base = p.split("/").pop() || "";
 
   if (!p) return false;
+  if (p === DEFAULT_MESSAGE_FILE) return false;
   if (base === ".DS_Store") return false;
   if (p.startsWith("build/")) return false;
   if (p.startsWith("node_modules/")) return false;
@@ -138,17 +153,56 @@ function chooseMessage(files) {
 }
 
 function parseFlags() {
-  const known = new Set(["--dry-run", "--force"]);
-  const argv = process.argv.slice(2);
-  for (const arg of argv) {
-    if (!known.has(arg)) {
-      throw new Error(`unknown argument: ${arg}`);
-    }
-  }
-  return {
-    dryRun: argv.includes("--dry-run"),
-    force: argv.includes("--force"),
+  const out = {
+    dryRun: false,
+    force: false,
+    hasMessage: false,
+    message: "",
+    hasMessageFile: false,
+    messageFile: "",
   };
+
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+
+    if (arg === "--dry-run") {
+      out.dryRun = true;
+      continue;
+    }
+    if (arg === "--force") {
+      out.force = true;
+      continue;
+    }
+    if (arg === "--message") {
+      if (i + 1 >= argv.length) throw new Error("missing value for --message");
+      i += 1;
+      out.hasMessage = true;
+      out.message = argv[i];
+      continue;
+    }
+    if (arg.startsWith("--message=")) {
+      out.hasMessage = true;
+      out.message = arg.slice("--message=".length);
+      continue;
+    }
+    if (arg === "--message-file") {
+      if (i + 1 >= argv.length) throw new Error("missing value for --message-file");
+      i += 1;
+      out.hasMessageFile = true;
+      out.messageFile = argv[i];
+      continue;
+    }
+    if (arg.startsWith("--message-file=")) {
+      out.hasMessageFile = true;
+      out.messageFile = arg.slice("--message-file=".length);
+      continue;
+    }
+
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return out;
 }
 
 function printUnsafeWarning(paths) {
@@ -162,8 +216,140 @@ function printUnsafeWarning(paths) {
   }
 }
 
+function readMessageFromText(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const codexLines = [];
+  const gitlensLines = [];
+  let section = "";
+
+  for (const rawLine of lines) {
+    const tag = String(rawLine || "").trim().toLowerCase();
+    if (tag === "[codex]") {
+      section = "codex";
+      continue;
+    }
+    if (tag === "[gitlens]") {
+      section = "gitlens";
+      continue;
+    }
+    if (section === "codex") codexLines.push(rawLine);
+    if (section === "gitlens") gitlensLines.push(rawLine);
+  }
+
+  const codex = firstNonEmptyLine(codexLines);
+  if (codex) return { message: codex, source: "codex" };
+
+  const gitlens = firstNonEmptyLine(gitlensLines);
+  if (gitlens) return { message: gitlens, source: "gitlens" };
+
+  const plain = firstNonEmptyLine(
+    lines.filter((line) => {
+      const t = String(line || "").trim().toLowerCase();
+      return t !== "[codex]" && t !== "[gitlens]";
+    }),
+  );
+  if (plain) return { message: plain, source: "file" };
+
+  return { message: "", source: "empty" };
+}
+
+function readMessageFromFile(filePath, { failOnEmpty }) {
+  const p = normalizePath(filePath);
+  if (!fs.existsSync(p)) {
+    const e = new Error(`message file not found: ${p}`);
+    e.exitCode = 3;
+    throw e;
+  }
+
+  let text = "";
+  try {
+    text = fs.readFileSync(p, "utf8");
+  } catch (err) {
+    const e = new Error(`cannot read message file: ${p}`);
+    e.exitCode = 3;
+    e.cause = err;
+    throw e;
+  }
+
+  const parsed = readMessageFromText(text);
+  if (!parsed.message && failOnEmpty) {
+    const e = new Error(`message file has no usable line: ${p}`);
+    e.exitCode = 3;
+    throw e;
+  }
+  return parsed;
+}
+
+function pickCommitMessage({
+  hasProvidedMessage,
+  providedMessage,
+  hasExplicitMessageFile,
+  explicitMessageFile,
+  inferredMessage,
+}) {
+  if (hasProvidedMessage) {
+    const explicitLine = asOneLine(providedMessage);
+    if (!explicitLine) {
+      const e = new Error("--message is empty");
+      e.exitCode = 3;
+      throw e;
+    }
+    return { message: explicitLine, source: "provided", fileUsed: "" };
+  }
+
+  if (hasExplicitMessageFile) {
+    const pathArg = normalizePath(explicitMessageFile);
+    if (!pathArg) {
+      const e = new Error("--message-file is empty");
+      e.exitCode = 3;
+      throw e;
+    }
+    const parsed = readMessageFromFile(explicitMessageFile, { failOnEmpty: true });
+    return {
+      message: parsed.message,
+      source: parsed.source,
+      fileUsed: pathArg,
+    };
+  }
+
+  if (fs.existsSync(DEFAULT_MESSAGE_FILE)) {
+    console.log(`[commit:auto] using message from ${DEFAULT_MESSAGE_FILE}`);
+    const parsed = readMessageFromFile(DEFAULT_MESSAGE_FILE, { failOnEmpty: false });
+    if (parsed.message) {
+      return {
+        message: parsed.message,
+        source: parsed.source,
+        fileUsed: DEFAULT_MESSAGE_FILE,
+      };
+    }
+    return {
+      message: inferredMessage,
+      source: "fallback",
+      fileUsed: DEFAULT_MESSAGE_FILE,
+    };
+  }
+
+  return { message: inferredMessage, source: "inferred", fileUsed: "" };
+}
+
+function describeMessageSource(source) {
+  if (source === "provided") return "provided";
+  if (source === "codex") return "file(codex)";
+  if (source === "gitlens") return "file(gitlens)";
+  if (source === "file") return "file";
+  if (source === "fallback") return "fallback";
+  return "inferred";
+}
+
 function main() {
-  const { dryRun, force } = parseFlags();
+  const {
+    dryRun,
+    force,
+    hasMessage: hasProvidedMessage,
+    message: providedMessage,
+    hasMessageFile: hasExplicitMessageFile,
+    messageFile: explicitMessageFile,
+  } = parseFlags();
   const changedPaths = parseStatusPaths();
 
   if (!changedPaths.length) {
@@ -188,15 +374,24 @@ function main() {
   }
 
   if (dryRun) {
-    const { message, mixed } = chooseMessage(safeChangedPaths);
+    const inferred = chooseMessage(safeChangedPaths);
+    const pickedDry = pickCommitMessage({
+      hasProvidedMessage,
+      providedMessage,
+      hasExplicitMessageFile,
+      explicitMessageFile,
+      inferredMessage: inferred.message,
+    });
+
     console.log(`[commit:auto] dry-run: would stage ${safeChangedPaths.length} file(s)`);
     for (const p of safeChangedPaths) {
       console.log(`  - ${p}`);
     }
-    if (mixed) {
+    if (inferred.mixed && pickedDry.source === "inferred") {
       console.log("[commit:auto] warning: mixed scopes detected; using fallback message");
     }
-    console.log(`[commit:auto] message: ${message}`);
+    console.log(`[commit:auto] message source: ${describeMessageSource(pickedDry.source)}`);
+    console.log(`[commit:auto] message: ${pickedDry.message}`);
     process.exit(0);
   }
 
@@ -218,14 +413,23 @@ function main() {
     process.exit(0);
   }
 
-  const { message, mixed } = chooseMessage(stagedFiles);
-  if (mixed) {
+  const inferredFromStaged = chooseMessage(stagedFiles);
+  const picked = pickCommitMessage({
+    hasProvidedMessage,
+    providedMessage,
+    hasExplicitMessageFile,
+    explicitMessageFile,
+    inferredMessage: inferredFromStaged.message,
+  });
+
+  if (inferredFromStaged.mixed && picked.source === "inferred") {
     console.log("[commit:auto] warning: mixed scopes detected; using fallback message");
   }
   console.log(`[commit:auto] staged files: ${stagedFiles.length}`);
-  console.log(`[commit:auto] message: ${message}`);
+  console.log(`[commit:auto] message source: ${describeMessageSource(picked.source)}`);
+  console.log(`[commit:auto] message: ${picked.message}`);
 
-  runGit(["commit", "-m", message]);
+  runGit(["commit", "-m", picked.message]);
 
   console.log("[commit:auto] latest commit");
   runGit(["log", "-1", "--oneline"]);
@@ -235,5 +439,5 @@ try {
   main();
 } catch (err) {
   console.error(`[commit:auto] failed: ${err?.message || err}`);
-  process.exit(1);
+  process.exit(err?.exitCode || 1);
 }

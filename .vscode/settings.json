@@ -3,5 +3,11 @@
     "**/node_modules": true,
     "**/.DS_Store": true,
     "**/build": true
+  },
+  "files.associations": {
+    "config/dev-order.tsv": "plaintext",
+    "config/dev-order.txt": "plaintext",
+    "**/dev-order.tsv": "plaintext",
+    "**/dev-order.txt": "plaintext"
   }
 }

@@ -110,6 +110,24 @@
       "problemMatcher": []
     },
     {
+      "label": "H2O: ARCHIVE / One (Pick)",
+      "type": "shell",
+      "command": "npm run archive:pick",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: ARCHIVE / One (Recent)",
+      "type": "shell",
+      "command": "npm run archive:recent",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: ARCHIVE / One (By path prompt)",
+      "type": "shell",
+      "command": "npm run archive:one -- --file \"${input:archiveFile}\"",
+      "problemMatcher": []
+    },
+    {
       "label": "H2O: GIT / A) Auto Commit (stage + message + commit)",
       "type": "shell",
       "command": "npm run commit:auto",
@@ -120,6 +138,80 @@
       "type": "shell",
       "command": "npm run commit:auto:dry",
       "problemMatcher": []
+    },
+    {
+      "label": "H2O: GIT / C) Auto Commit (USE CODEX/GITLENS MESSAGE FILE)",
+      "type": "shell",
+      "command": "npm run commit:auto:msg",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: GIT / D) Auto Commit (DRY RUN + FORCE)",
+      "type": "shell",
+      "command": "npm run commit:auto:msg:dry -- --force",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: GIT / E) Release Commit Helper (pick script + size -> commit)",
+      "type": "shell",
+      "command": "npm run commit:release",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: REV / Stamp @rev+@build (changed scripts)",
+      "type": "shell",
+      "command": "npm run rev:stamp",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: RELEASE / A) Dry Run",
+      "type": "shell",
+      "command": "npm run release:dry",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: SHIP / A) Release + Archive Snapshot",
+      "type": "shell",
+      "command": "npm run ship",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: SHIP / B) Dry",
+      "type": "shell",
+      "command": "npm run ship:dry",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: SHIP / Commit+Bump+Changelog+Archive+Dashboard",
+      "type": "shell",
+      "command": "npm run ship:commit",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: DASHBOARD / Build (Manual)",
+      "type": "shell",
+      "command": "npm run dashboard:build",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: DASHBOARD / Watch (Auto, 15s debounce)",
+      "type": "shell",
+      "command": "npm run dashboard:watch",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: DASHBOARD / Watch (Auto, 5s debounce)",
+      "type": "shell",
+      "command": "npm run dashboard:watch:fast",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "archiveFile",
+      "type": "promptString",
+      "description": "Relative userscript path (scripts/*.user.js)",
+      "default": "scripts/0Z1b.⚫️🌳 Control Hub Quick Tree.user.js"
     }
   ]
 }

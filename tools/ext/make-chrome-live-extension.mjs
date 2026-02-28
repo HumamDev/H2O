@@ -231,13 +231,13 @@ function makeLoaderJs() {
         el = document.createElement("div");
         el.id = id;
         el.style.position = "fixed";
-        el.style.top = "10px";
+        el.style.bottom = "10px";
         el.style.right = "10px";
         el.style.zIndex = "2147483647";
-        el.style.padding = "6px 10px";
-        el.style.borderRadius = "10px";
-        el.style.font = "12px/1.35 system-ui, -apple-system, Segoe UI, sans-serif";
-        el.style.boxShadow = "0 4px 18px rgba(0,0,0,.35)";
+        el.style.padding = "4px 8px";
+        el.style.borderRadius = "8px";
+        el.style.font = "11px/1.3 system-ui, -apple-system, Segoe UI, sans-serif";
+        el.style.boxShadow = "0 3px 12px rgba(0,0,0,.32)";
         el.style.border = "1px solid rgba(255,255,255,.18)";
         el.style.pointerEvents = "none";
         document.documentElement.appendChild(el);
