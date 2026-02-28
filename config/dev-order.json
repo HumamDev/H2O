@@ -291,7 +291,7 @@
         },
         {
           "file": "9Z1a._Hide_Disclaimer_.user.js",
-          "enabled": false
+          "enabled": true
         },
         {
           "file": "X1._Canvas_Last-Updated_Timestamp_.user.js",
