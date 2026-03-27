@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
 const USER_FILE_RE = /\.user\.js$/i;
 const VERSION_RE = /^\s*\/\/\s*@version\s+([^\s]+)\s*$/im;
 const ID_RE = /^\s*\/\/\s*@h2o-id\s+(.+?)\s*$/im;
-const REV_RE = /^\s*\/\/\s*@rev\s+(\d+)\s*$/im;
+const REV_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/im;
 
 const ARCHIVE_ROOT = path.join(REPO_ROOT, "archive");
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");

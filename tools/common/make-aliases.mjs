@@ -1,7 +1,7 @@
 // tools/common/make-aliases.mjs
 // @version 1.0.0
 //
-// Writes ONLY the ON scripts (as alias filenames) into SERVER/alias.
+// Writes scripts (as alias filenames) into SERVER/alias.
 // Mode can be copy (default) or symlink (recommended for instant dev refresh).
 // Master dev-order recommended: config/dev-order.tsv
 //
@@ -29,6 +29,9 @@ const SRC =
 
 const ORDER_FILE =
   process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
+const ALIAS_SCOPE = String(process.env.H2O_ALIAS_SCOPE || "all").trim().toLowerCase() === "on"
+  ? "on"
+  : "all";
 
 function pickUserScriptDir(srcRoot) {
   const scriptsDir = path.join(srcRoot, "scripts");
@@ -43,10 +46,15 @@ function pickUserScriptDir(srcRoot) {
 
 const SCRIPT_SRC_DIR = pickUserScriptDir(SRC);
 
-const ALIAS_MODE = String(process.env.H2O_ALIAS_MODE || "copy").toLowerCase() === "symlink"
+const IS_ICLOUD_SERVER = /Mobile Documents\/com~apple~CloudDocs/.test(SERVER);
+const REQUESTED_ALIAS_MODE = String(process.env.H2O_ALIAS_MODE || "copy").toLowerCase() === "symlink"
   ? "symlink"
   : "copy";
-const IS_ICLOUD_SERVER = /Mobile Documents\/com~apple~CloudDocs/.test(SERVER);
+const FORCE_COPY_FOR_ICLOUD =
+  IS_ICLOUD_SERVER &&
+  REQUESTED_ALIAS_MODE === "symlink" &&
+  process.env.H2O_ALLOW_ICLOUD_SYMLINK !== "1";
+const ALIAS_MODE = FORCE_COPY_FOR_ICLOUD ? "copy" : REQUESTED_ALIAS_MODE;
 
 const ALIAS_DIR = path.join(SERVER, "alias");
 fs.mkdirSync(ALIAS_DIR, { recursive: true });
@@ -57,6 +65,7 @@ fs.mkdirSync(ALIAS_DIR, { recursive: true });
 
 function stripEmojiAndInvisibles(s) {
   return String(s || "")
+    .replace(/[\u{1F3FB}-\u{1F3FF}]/gu, "")
     .replace(/[\p{Extended_Pictographic}]/gu, "")
     .replace(/[\uFE0E\uFE0F\u200D\u200B-\u200F\uFEFF\u2060\u00AD]/g, "")
     .replace(/[\u202A-\u202E\u2066-\u2069]/g, "");
@@ -109,7 +118,7 @@ function pruneConflictCloneAliases(dir) {
 }
 
 /* -----------------------------
-   Read ON set
+   Optional ON filter
 ------------------------------ */
 
 function parseBoolStatus(token) {
@@ -199,11 +208,11 @@ function readOnSet(orderFile) {
   return readOnSetFromTXT(txt);
 }
 
-// 1) Read ON list from dev-order (alias-only)
+// 1) Optional ON list from dev-order (alias-only)
 const ON = readOnSet(ORDER_FILE);
 
 /* -----------------------------
-   Build aliases (ON-only)
+   Build aliases
 ------------------------------ */
 
 // 2) Clean alias folder (prevents ghost files)
@@ -214,12 +223,13 @@ for (const entry of fs.readdirSync(ALIAS_DIR, { withFileTypes: true })) {
   fs.unlinkSync(path.join(ALIAS_DIR, entry.name));
 }
 
-// 3) Write ONLY ON scripts from source scripts dir (scripts/ preferred, root fallback)
+// 3) Write aliases from source scripts dir (scripts/ preferred, root fallback)
 let copied = 0;
 let linked = 0;
 let linkFallbackToCopy = 0;
 let skippedOff = 0;
 let skippedNotListed = 0;
+const filterOn = ALIAS_SCOPE === "on" && ON.size > 0;
 
 for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   if (!entry.isFile()) continue;
@@ -229,8 +239,8 @@ for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   const aliasName = toAliasName(entry.name);
   if (!aliasName) continue;
 
-  if (ON.size > 0 && !ON.has(aliasName)) {
-    // Not ON → skip
+  if (filterOn && !ON.has(aliasName)) {
+    // Not ON when filtering → skip
     skippedOff++;
     continue;
   }
@@ -257,14 +267,19 @@ for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
 
 const prunedConflictClones = pruneConflictCloneAliases(ALIAS_DIR);
 
-if (ON.size === 0) {
-  // Helpful hint: if order file missing or empty, you likely forgot to Sync first.
+if (!filterOn) {
+  // Helpful hint: filter is disabled in all mode.
   skippedNotListed = 0;
 }
 
-console.log("[H2O] aliases (ON-only) ready:", ALIAS_DIR);
+console.log("[H2O] aliases ready:", ALIAS_DIR);
 console.log("[H2O] alias mode:", ALIAS_MODE);
-if (ALIAS_MODE === "symlink" && IS_ICLOUD_SERVER) {
+if (FORCE_COPY_FOR_ICLOUD) {
+  console.warn("[H2O] warning: H2O_SERVER_DIR is inside iCloud Drive; forcing alias mode from symlink -> copy for stability.");
+  console.warn("[H2O] warning: set H2O_ALLOW_ICLOUD_SYMLINK=1 only if you want to bypass this safeguard.");
+}
+console.log("[H2O] alias scope:", ALIAS_SCOPE);
+if (REQUESTED_ALIAS_MODE === "symlink" && IS_ICLOUD_SERVER) {
   console.warn("[H2O] warning: iCloud + symlink mode can recreate duplicate '* 2.js' alias clones.");
   console.warn("[H2O] warning: for max stability, move H2O_SERVER_DIR outside iCloud or use H2O_ALIAS_MODE=copy.");
 }
@@ -275,4 +290,4 @@ console.log("[H2O] linked:", linked);
 console.log("[H2O] copied:", copied);
 console.log("[H2O] symlink fallback->copy:", linkFallbackToCopy);
 console.log("[H2O] pruned conflict clones:", prunedConflictClones);
-console.log("[H2O] skipped (OFF/not listed):", skippedOff);
+console.log("[H2O] skipped (OFF/not listed, scope=on):", skippedOff);

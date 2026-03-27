@@ -1,10 +1,16 @@
-import { spawnSync } from "node:child_process";
+// @version 1.0.0
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..");
+
+function formatDurationMs(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
 
 function resolveEnvDefaults() {
   const srcDir = path.resolve(process.env.H2O_SRC_DIR || REPO_ROOT);
@@ -31,29 +37,43 @@ function runStep(label, scriptPath, extraEnv = {}) {
     console.log(`[dev:rebuild]   H2O_ALIAS_MODE=${env.H2O_ALIAS_MODE}`);
   }
 
-  const result = spawnSync(process.execPath, [scriptPath], {
-    cwd: REPO_ROOT,
-    env,
-    stdio: "inherit",
-  });
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: REPO_ROOT,
+      env,
+      stdio: "inherit",
+    });
 
-  if (typeof result.status === "number" && result.status !== 0) {
-    process.exit(result.status);
-  }
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.signal) {
-    console.error(`[dev:rebuild] Step "${label}" terminated by signal ${result.signal}`);
-    process.exit(1);
-  }
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`[dev:rebuild] Step "${label}" terminated by signal ${signal}`));
+        return;
+      }
+      if (typeof code === "number" && code !== 0) {
+        const err = new Error(`[dev:rebuild] Step "${label}" exited with code ${code}`);
+        err.exitCode = code;
+        reject(err);
+        return;
+      }
+      console.log(`[dev:rebuild]   completed in ${formatDurationMs(Date.now() - startedAt)}`);
+      resolve();
+    });
+  });
 }
 
-function main() {
-  runStep("1/3 sync-dev-order", "tools/common/sync-dev-order.mjs");
-  runStep("2/3 make-aliases", "tools/common/make-aliases.mjs", { H2O_ALIAS_MODE: "symlink" });
-  runStep("3/3 make-ext-proxy-pack", "tools/ext/make-ext-proxy-pack.mjs");
+async function main() {
+  await runStep("1/4 sync-dev-order", "tools/common/sync-dev-order.mjs");
+  await runStep("2/4 make-aliases", "tools/common/make-aliases.mjs", { H2O_ALIAS_MODE: "symlink" });
+  await runStep("3/4 make-ext-proxy-pack", "tools/ext/make-ext-proxy-pack.mjs");
+  await runStep("4/4 validate-loader-order", "tools/common/validate-loader-order.mjs");
   console.log("\n[dev:rebuild] done");
 }
 
-main();
+main().catch((error) => {
+  if (typeof error?.exitCode === "number") {
+    process.exit(error.exitCode);
+  }
+  throw error;
+});

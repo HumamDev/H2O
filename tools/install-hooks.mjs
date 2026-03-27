@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,7 @@ function installPreCommitHook() {
   const hookPath = path.join(hooksDir, "pre-commit");
   const body = [
     "#!/bin/sh",
-    "# h2o opt-in hook: stamp userscript @rev/@build before commit",
+    "# h2o opt-in hook: stamp userscript @revision/@build before commit",
     "npm run rev:stamp",
     "status=$?",
     "if [ \"$status\" -ne 0 ]; then",

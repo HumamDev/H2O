@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,10 +12,11 @@ const REPO_ROOT = path.resolve(TOOL_DIR, "..");
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
 const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
-const REV_LINE_RE = /^\s*\/\/\s*@rev\s+(\d+)\s*$/i;
+const REVISION_LINE_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/i;
 const BUILD_LINE_RE = /^\s*\/\/\s*@build\s+(.+?)\s*$/i;
 const VERSION_LINE_RE = /^\s*\/\/\s*@version\b/i;
 const START_LINE_RE = /^\s*\/\/\s*==UserScript==\s*$/i;
+const META_VALUE_COL = 24;
 
 try {
   await main();
@@ -33,7 +34,7 @@ async function main() {
     process.exit(0);
   }
 
-  const isoNow = args.withBuild ? new Date().toISOString().replace(/\.\d{3}Z$/, "Z") : "";
+  const buildNow = args.withBuild ? formatBerlinBuildStamp(new Date()) : "";
   let changedCount = 0;
   const changedPaths = [];
   const editOverrides = new Map();
@@ -53,7 +54,7 @@ async function main() {
     const next = stampText(text, {
       relPath: normalized,
       withBuild: args.withBuild,
-      buildIso: isoNow,
+      buildStamp: buildNow,
     });
 
     if (!next.changed) {
@@ -206,7 +207,7 @@ function detectChangedUserScripts() {
     });
 }
 
-function stampText(text, { relPath, withBuild, buildIso }) {
+function stampText(text, { relPath, withBuild, buildStamp }) {
   const headerMatch = text.match(USERSCRIPT_HEADER_RE);
   if (!headerMatch || headerMatch.index == null) {
     throw new Error(`[rev:stamp] Missing userscript header in ${relPath}`);
@@ -216,21 +217,22 @@ function stampText(text, { relPath, withBuild, buildIso }) {
   const newline = detectNewline(text);
   const lines = header.split(/\r?\n/);
 
-  let revIdx = findLineIndex(lines, REV_LINE_RE);
-  let oldRev = "000000";
+  let revIdx = findLineIndex(lines, REVISION_LINE_RE);
+  let oldRev = "000";
   let revNum = 0;
   if (revIdx >= 0) {
-    const m = lines[revIdx].match(REV_LINE_RE);
-    if (!m) throw new Error(`[rev:stamp] Invalid @rev format in ${relPath}`);
+    const m = lines[revIdx].match(REVISION_LINE_RE);
+    if (!m) throw new Error(`[rev:stamp] Invalid @revision format in ${relPath}`);
     const raw = String(m[1] || "").trim();
-    if (!/^\d+$/.test(raw)) throw new Error(`[rev:stamp] Invalid @rev value in ${relPath}`);
-    oldRev = String(raw).padStart(6, "0");
+    if (!/^\d+$/.test(raw)) throw new Error(`[rev:stamp] Invalid @revision value in ${relPath}`);
+    oldRev = String(raw).padStart(3, "0");
     revNum = Number(raw);
   }
 
   const nextRevNum = revNum + 1;
-  const nextRev = String(nextRevNum).padStart(6, "0");
-  const revLine = `// @rev        ${nextRev}`;
+  if (nextRevNum > 999) throw new Error(`[rev:stamp] Revision overflow (>999) in ${relPath}`);
+  const nextRev = String(nextRevNum).padStart(3, "0");
+  const revLine = formatMetaLine("revision", nextRev);
 
   if (revIdx >= 0) {
     lines[revIdx] = revLine;
@@ -243,8 +245,8 @@ function stampText(text, { relPath, withBuild, buildIso }) {
   let oldBuild = "";
   let nextBuild = "";
   if (withBuild) {
-    nextBuild = buildIso;
-    const buildLine = `// @build      ${buildIso}`;
+    nextBuild = buildStamp;
+    const buildLine = formatMetaLine("build", buildStamp);
     const buildIdx = findLineIndex(lines, BUILD_LINE_RE);
     if (buildIdx >= 0) {
       const m = lines[buildIdx].match(BUILD_LINE_RE);
@@ -313,6 +315,31 @@ function printApplyLine(relPath, info) {
 
 function detectNewline(text) {
   return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function formatMetaLine(key, value) {
+  const head = `// @${key}`;
+  const spaces = " ".repeat(Math.max(1, META_VALUE_COL - (head.length + 1)));
+  return `${head}${spaces}${value}`;
+}
+
+function formatBerlinBuildStamp(date) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Berlin",
+      year: "2-digit",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value]),
+  );
+  return `${parts.year}${parts.month}${parts.day}-${parts.hour}${parts.minute}${parts.second}`;
 }
 
 function normalizePath(v) {

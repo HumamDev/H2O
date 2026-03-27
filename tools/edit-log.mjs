@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,7 +12,7 @@ const REPO_ROOT = path.resolve(TOOL_DIR, "..");
 const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
 const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
-const REV_LINE_RE = /^\s*\/\/\s*@rev\s+(\d+)\s*$/im;
+const REV_LINE_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/im;
 const BUILD_LINE_RE = /^\s*\/\/\s*@build\s+(.+?)\s*$/im;
 const H2O_ID_LINE_RE = /^\s*\/\/\s*@h2o-id\s+(.+?)\s*$/im;
 const TYPE_PREFIX_RE = /^\s*(fix|feat|perf|refactor|chore)\s*:\s*(.*)$/i;
@@ -196,7 +196,7 @@ export function buildEditRowsForPaths(relPaths, options = Object.create(null)) {
     const override = overrides.get(relPath) || Object.create(null);
 
     const revFromFile = parseRevFromHeader(header);
-    const rev = normalizeRev(String(override.rev ?? revFromFile ?? "000000"));
+    const rev = normalizeRev(String(override.rev ?? revFromFile ?? "000"));
 
     const buildFromFile = parseBuildFromHeader(header);
     const build = String(override.build ?? buildFromFile ?? "").trim();
@@ -280,9 +280,9 @@ export function editLineToCommitSubject(editLine, forcedType = "") {
   const type = normalizedForcedType || inferCommitType(topic);
 
   if (additions && deletions) {
-    return `${type}(${scriptId}): ${topic} (r${rev || "000000"}, +${additions} -${deletions})`;
+    return `${type}(${scriptId}): ${topic} (r${rev || "000"}, +${additions} -${deletions})`;
   }
-  return `${type}(${scriptId}): ${topic} (r${rev || "000000"})`;
+  return `${type}(${scriptId}): ${topic} (r${rev || "000"})`;
 }
 
 function resolveLedgerTarget() {
@@ -603,8 +603,8 @@ function parseBuildFromHeader(header) {
 
 function normalizeRev(raw) {
   const digits = String(raw || "").trim().replace(/[^\d]/g, "");
-  if (!digits) return "000000";
-  return digits.padStart(6, "0");
+  if (!digits) return "000";
+  return digits.padStart(3, "0");
 }
 
 function deriveScriptIdFromFileName(fileName) {

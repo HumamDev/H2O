@@ -1,6 +1,13 @@
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  archiveWorkbenchSourceDir,
+  compareArchiveWorkbenchToSource,
+  getArchiveWorkbenchSourcePresence,
+  getArchiveWorkbenchPresence,
+} from "./ext/pack-studio.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -122,6 +129,48 @@ function printBrokenExamples(brokenSymlinks) {
   }
 }
 
+function printArchiveWorkbenchChecks(srcDir) {
+  const sourceDir = archiveWorkbenchSourceDir(srcDir);
+  const devControlsOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls");
+  const opsPanelOutDir = path.join(srcDir, "build", "chrome-ext-ops-panel");
+  const leanOutDir = path.join(srcDir, "build", "chrome-ext-dev-lean");
+  const devControlsCheck = compareArchiveWorkbenchToSource(srcDir, devControlsOutDir);
+  const opsPanelPresence = getArchiveWorkbenchPresence(opsPanelOutDir);
+  const leanPresence = getArchiveWorkbenchPresence(leanOutDir);
+  const sourcePresence = getArchiveWorkbenchSourcePresence(srcDir);
+
+  console.log(`[dev:check] archiveWorkbench.sourceDir=${sourceDir}`);
+  console.log(`[dev:check] archiveWorkbench.sourceFiles=${sourcePresence.length}`);
+  console.log(`[dev:check] archiveWorkbench.devControlsMatches=${devControlsCheck.matches}`);
+  console.log(`[dev:check] archiveWorkbench.opsPanelFiles=${opsPanelPresence.length}`);
+  console.log(`[dev:check] archiveWorkbench.devLeanFiles=${leanPresence.length}`);
+
+  if (sourcePresence.length !== 3) {
+    console.log(`[dev:check] archiveWorkbench source incomplete: ${sourcePresence.join(", ")}`);
+    process.exitCode = 1;
+  }
+
+  const drift = devControlsCheck.files.filter((item) => !(item.sourceExists && item.outExists && item.equal));
+  if (drift.length) {
+    for (const item of drift) {
+      console.log(
+        `[dev:check] archiveWorkbench drift ${item.name}: source=${item.sourceExists} out=${item.outExists} equal=${item.equal}`,
+      );
+    }
+    process.exitCode = 1;
+  }
+
+  if (opsPanelPresence.length) {
+    console.log(`[dev:check] archiveWorkbench unexpected ops-panel host files: ${opsPanelPresence.join(", ")}`);
+    process.exitCode = 1;
+  }
+
+  if (leanPresence.length) {
+    console.log(`[dev:check] archiveWorkbench unexpected dev-lean host files: ${leanPresence.join(", ")}`);
+    process.exitCode = 1;
+  }
+}
+
 function main() {
   const { srcDir, orderFile, serverDir } = resolveEnvDefaults();
   const scriptPick = pickUserScriptDir(srcDir);
@@ -150,6 +199,7 @@ function main() {
   console.log(`[dev:check] symlinks=${aliasInfo.symlinkCount}`);
   console.log(`[dev:check] brokenSymlinks=${aliasInfo.brokenSymlinks.length}`);
   printBrokenExamples(aliasInfo.brokenSymlinks);
+  printArchiveWorkbenchChecks(srcDir);
 }
 
 main();

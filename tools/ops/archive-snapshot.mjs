@@ -15,12 +15,54 @@ const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
 const PIPELINE_TRACKED_FILES = [
   "tools/ops/archive-snapshot.mjs",
+
   "tools/common/make-aliases.mjs",
   "tools/common/sync-dev-order.mjs",
-  "tools/ext/make-ext-proxy-pack.mjs",
-  "tools/ext/make-chrome-live-extension.mjs",
+  "tools/common/validate-loader-order.mjs",
+
+  "tools/ext/pack-studio.mjs",
+  "tools/ext/chrome-live-background.mjs",
+  "tools/ext/chrome-live-build-context.mjs",
+  "tools/ext/chrome-live-folder-bridge.mjs",
+  "tools/ext/chrome-live-loader.mjs",
+  "tools/ext/chrome-live-manifest.mjs",
+  "tools/ext/chrome-live-popup-css.mjs",
+  "tools/ext/chrome-live-popup-data.mjs",
+  "tools/ext/chrome-live-popup-html.mjs",
+  "tools/ext/chrome-live-popup-js.mjs",
+  "tools/ext/chrome-live-popup-storage.mjs",
+  "tools/ext/chrome-live-popup-view.mjs",
+  "tools/ext/chrome-live-readme.mjs",
+  "tools/ext/chrome-live-source-snapshots.mjs",
+  "tools/ext/pack-desk.mjs",
+  "tools/ext/build-chrome-live-extension.mjs",
   "tools/ext/make-chrome-ops-panel-extension.mjs",
+  "tools/ext/make-ext-proxy-pack.mjs",
   "tools/ext/write-extension-icons.mjs",
+
+  "tools/ops/archive-one.mjs",
+  "tools/ops/commit-auto.mjs",
+  "tools/ops/dashboard-watch.mjs",
+  "tools/ops/dev-all.mjs",
+  "tools/ops/dev-check.mjs",
+  "tools/ops/dev-rebuild.mjs",
+  "tools/ops/edit-log.mjs",
+  "tools/ops/install-hooks.mjs",
+  "tools/ops/release-commit-helper.mjs",
+  "tools/ops/release.mjs",
+  "tools/ops/rev-stamp.mjs",
+  "tools/ops/ship-commit.mjs",
+  "tools/ops/versions-dashboard.mjs",
+
+  "surfaces/studio/studio.css",
+  "surfaces/studio/studio.html",
+  "surfaces/studio/studio.js",
+
+  "surfaces/desk/desk.css",
+  "surfaces/desk/desk.html",
+  "surfaces/desk/desk.js",
+  "surfaces/desk/page-bridge.js",
+
   ".vscode/tasks.json",
 ];
 

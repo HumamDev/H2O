@@ -1,10 +1,16 @@
-import { spawnSync } from "node:child_process";
+// @version 1.0.0
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..");
+
+function formatDurationMs(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
 
 function resolveEnvDefaults() {
   const srcDir = path.resolve(process.env.H2O_SRC_DIR || REPO_ROOT);
@@ -34,37 +40,45 @@ function runNodeStep(label, scriptPath, extraEnv = {}) {
     console.log(`[dev:all]   H2O_EXT_DEV_VARIANT=${env.H2O_EXT_DEV_VARIANT}`);
   }
 
-  const result = spawnSync(process.execPath, [scriptPath], {
-    cwd: REPO_ROOT,
-    env,
-    stdio: "inherit",
-  });
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: REPO_ROOT,
+      env,
+      stdio: "inherit",
+    });
 
-  if (typeof result.status === "number" && result.status !== 0) {
-    process.exit(result.status);
-  }
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.signal) {
-    console.error(`[dev:all] Step "${label}" terminated by signal ${result.signal}`);
-    process.exit(1);
-  }
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`[dev:all] Step "${label}" terminated by signal ${signal}`));
+        return;
+      }
+      if (typeof code === "number" && code !== 0) {
+        const err = new Error(`[dev:all] Step "${label}" exited with code ${code}`);
+        err.exitCode = code;
+        reject(err);
+        return;
+      }
+      console.log(`[dev:all]   completed in ${formatDurationMs(Date.now() - startedAt)}`);
+      resolve();
+    });
+  });
 }
 
-function main() {
+async function main() {
   const { srcDir } = resolveEnvDefaults();
   const controlsOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls");
   const leanOutDir = path.join(srcDir, "build", "chrome-ext-dev-lean");
 
-  runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev-rebuild.mjs");
+  await runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev-rebuild.mjs");
 
-  runNodeStep("2/3 Build Controls extension (unpacked)", "tools/ext/make-chrome-live-extension.mjs", {
+  await runNodeStep("2/3 Build Controls extension (unpacked)", "tools/ext/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
     H2O_EXT_OUT_DIR: controlsOutDir,
   });
 
-  runNodeStep("3/3 Build Lean extension (unpacked)", "tools/ext/make-chrome-live-extension.mjs", {
+  await runNodeStep("3/3 Build Lean extension (unpacked)", "tools/ext/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "lean",
     H2O_EXT_OUT_DIR: leanOutDir,
   });
@@ -81,4 +95,9 @@ function main() {
   );
 }
 
-main();
+main().catch((error) => {
+  if (typeof error?.exitCode === "number") {
+    process.exit(error.exitCode);
+  }
+  throw error;
+});

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";

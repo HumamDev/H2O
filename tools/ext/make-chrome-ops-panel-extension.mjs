@@ -1,6 +1,8 @@
+// @version 1.0.0
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeArchiveWorkbenchFromOut } from "./pack-studio.mjs";
 import { writeExtensionIcons } from "./write-extension-icons.mjs";
 // @version 1.0.0
 
@@ -26,13 +28,17 @@ function writeFile(fp, txt) {
   fs.writeFileSync(fp, String(txt), "utf8");
 }
 
+function removeIfPresent(fp) {
+  try { fs.unlinkSync(fp); } catch {}
+}
+
 function makeManifest() {
   return {
     manifest_version: 3,
     name: "H2O Ops Panel (Preview)",
     version: "0.1.0",
     description: "Preview/scaffold for the future H2O panel extension UI.",
-    permissions: ["storage"],
+    permissions: ["storage", "management"],
     icons: {
       "16": "icon16.png",
       "32": "icon32.png",
@@ -66,6 +72,12 @@ function makePanelHtml() {
       <h1>Ops Panel Preview</h1>
       <p>Separate extension icon for the final Ops Panel UI while you build it gradually.</p>
     </header>
+
+    <section class="card launch-card">
+      <div class="section-title">Archive Workbench</div>
+      <p class="card-copy">Open the saved-chat workbench from the H2O Dev Controls extension.</p>
+      <button id="open-workbench" type="button">Open Workbench</button>
+    </section>
 
     <section class="card grid2">
       <label class="row">
@@ -161,6 +173,7 @@ body {
 }
 .row span { font-size: 12px; }
 .section-title { font-weight: 600; margin-bottom: 8px; }
+.card-copy { margin: 0 0 10px; color: var(--muted); }
 .checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .checklist li { display: flex; align-items: center; gap: 8px; }
 textarea {
@@ -186,6 +199,9 @@ function makePanelJs() {
   "use strict";
 
   const STORAGE_KEY = ${JSON.stringify(STORAGE_KEY)};
+  const MSG_ARCHIVE = "h2o-ext-archive:v1";
+  const DEV_CONTROLS_NAME = "H2O Dev Controls";
+  const DEV_CONTROLS_WORKBENCH_PATH = "surfaces/studio/studio.html#/saved";
   const DEFAULT_STATE = {
     shell: true,
     diagnostics: false,
@@ -209,6 +225,94 @@ function makePanelJs() {
 
   function setStatus(msg) {
     if (statusEl) statusEl.textContent = String(msg || "");
+  }
+
+  function managementGetAll() {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.management.getAll((items) => {
+          const le = chrome.runtime.lastError;
+          if (le) return reject(new Error(String(le.message || le)));
+          resolve(Array.isArray(items) ? items : []);
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async function findDevControlsExtension() {
+    const items = await managementGetAll();
+    for (const item of items) {
+      if (!item || item.id === chrome.runtime.id) continue;
+      if (item.type !== "extension" || item.enabled === false) continue;
+      if (!String(item.name || "").startsWith(DEV_CONTROLS_NAME)) continue;
+      return item;
+    }
+    return null;
+  }
+
+  function buildDevControlsWorkbenchUrl(extId) {
+    return "chrome-extension://" + String(extId || "") + "/" + DEV_CONTROLS_WORKBENCH_PATH;
+  }
+
+  function sendArchiveMessage(extId, req) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(String(extId || ""), { type: MSG_ARCHIVE, req }, (resp) => {
+          const le = chrome.runtime.lastError;
+          if (le) return reject(new Error(String(le.message || le)));
+          if (!resp || resp.ok === false) return reject(new Error(String(resp?.error || "Archive message failed")));
+          resolve(resp.result);
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async function probeDevControlsArchive(extId) {
+    try {
+      const result = await sendArchiveMessage(extId, { op: "ping", payload: {} });
+      return !!result && result.ok !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  function openWorkbenchUrl(url) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.tabs.create({ url: String(url || "") }, (tab) => {
+          const le = chrome.runtime.lastError;
+          if (le) return reject(new Error(String(le.message || le)));
+          resolve(tab || null);
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async function refreshWorkbenchButton() {
+    const btn = document.getElementById("open-workbench");
+    if (!(btn instanceof HTMLButtonElement)) return null;
+    try {
+      const ext = await findDevControlsExtension();
+      btn.disabled = !ext;
+      const archiveReady = ext ? await probeDevControlsArchive(ext.id) : false;
+      btn.title = !ext
+        ? "Load the H2O Dev Controls extension to use the workbench"
+        : (archiveReady
+          ? "Open the dev-controls workbench in a new tab"
+          : "H2O Dev Controls is installed but its archive runtime is not responding");
+      return ext;
+    } catch (err) {
+      btn.disabled = false;
+      btn.title = "Try opening the workbench";
+      setStatus("Workbench lookup error");
+      return null;
+    }
   }
 
   function getState() {
@@ -263,6 +367,7 @@ function makePanelJs() {
   async function init() {
     const state = await getState();
     await applyState(state);
+    await refreshWorkbenchButton();
     setStatus("Saved locally in chrome.storage");
   }
 
@@ -293,6 +398,22 @@ function makePanelJs() {
     setStatus("Reset to defaults");
   });
 
+  document.getElementById("open-workbench").addEventListener("click", async () => {
+    const btn = document.getElementById("open-workbench");
+    if (btn instanceof HTMLButtonElement) btn.disabled = true;
+    setStatus("Opening workbench...");
+    try {
+      const ext = await findDevControlsExtension();
+      if (!ext) throw new Error("H2O Dev Controls extension not found");
+      await openWorkbenchUrl(buildDevControlsWorkbenchUrl(ext.id));
+      setStatus("Workbench opened");
+      window.close();
+    } catch (err) {
+      setStatus(String(err && (err.message || err)) || "Failed to open workbench");
+      await refreshWorkbenchButton();
+    }
+  });
+
   init();
 })();
 `;
@@ -315,6 +436,7 @@ Install:
 
 Notes:
 - State is stored in chrome.storage.local.
+- The Workbench button opens the page hosted by the H2O Dev Controls extension.
 - This preview build does not inject scripts yet.
 `;
 }
@@ -325,6 +447,10 @@ writeFile(path.join(OUT_DIR, "manifest.json"), JSON.stringify(makeManifest(), nu
 writeFile(path.join(OUT_DIR, "panel.html"), makePanelHtml());
 writeFile(path.join(OUT_DIR, "panel.css"), makePanelCss());
 writeFile(path.join(OUT_DIR, "panel.js"), makePanelJs());
+removeArchiveWorkbenchFromOut(OUT_DIR);
+for (const staleName of ["bg.js", "loader.js", "popup.html", "popup.css", "popup.js"]) {
+  removeIfPresent(path.join(OUT_DIR, staleName));
+}
 writeFile(path.join(OUT_DIR, "README.txt"), makeReadme());
 
 console.log("[H2O] panel preview extension generated:");

@@ -2,7 +2,7 @@
 // @version 1.0.0
 //
 // EXT-native proxy pack generator.
-// Writes only the header pack consumed by tools/ext/make-chrome-live-extension.mjs
+// Writes only the header pack consumed by tools/ext/build-chrome-live-extension.mjs
 // and avoids generating TM loader/proxy artifacts.
 //
 // Uses an EXT-specific proxy-pack filename for clearer EXT workflow semantics.
@@ -36,6 +36,15 @@ const OUT_NAME = path.basename(OUT_FILE);
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
+}
+
+function writeTextFileAtomic(fp, text) {
+  const target = path.resolve(fp);
+  const dir = path.dirname(target);
+  const base = path.basename(target);
+  const temp = path.join(dir, `.${base}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(temp, text, "utf8");
+  fs.renameSync(temp, target);
 }
 
 function parseBoolStatus(token) {
@@ -143,6 +152,43 @@ function line(tag, value) {
   return `// @${tag.padEnd(12, " ")} ${value}`;
 }
 
+function countMatches(text, rx) {
+  const m = String(text || "").match(rx);
+  return m ? m.length : 0;
+}
+
+function computeScriptMetrics(fileText) {
+  const text = String(fileText || "");
+  const bytes = Buffer.byteLength(text, "utf8");
+  const lines = text ? text.split(/\r?\n/).length : 0;
+
+  const observerRefs = countMatches(text, /\b(?:MutationObserver|ResizeObserver|IntersectionObserver|PerformanceObserver)\b/g);
+  const intervalRefs = countMatches(text, /\bsetInterval\s*\(/g);
+  const rafRefs = countMatches(text, /\brequestAnimationFrame\s*\(/g);
+  const listenerRefs = countMatches(text, /\.addEventListener\s*\(/g);
+  const domQueryRefs = countMatches(text, /\bquerySelector(?:All)?\s*\(/g);
+
+  const scoreRaw =
+    (bytes / 1024) * 0.32 +
+    (lines / 100) * 0.45 +
+    observerRefs * 2.8 +
+    intervalRefs * 2.2 +
+    rafRefs * 1.6 +
+    listenerRefs * 0.18 +
+    domQueryRefs * 0.06;
+  const score = Math.max(1, Math.min(999, Math.round(scoreRaw)));
+  const weight = score >= 30 ? "heavy" : (score >= 15 ? "medium" : "light");
+
+  return {
+    bytes,
+    lines,
+    score,
+    weight,
+    watchers: observerRefs + intervalRefs + rafRefs,
+    listeners: listenerRefs,
+  };
+}
+
 function buildPackEntry(aliasFile) {
   const aliasPath = path.join(ALIAS_DIR, aliasFile);
   if (!fs.existsSync(aliasPath)) return null;
@@ -151,6 +197,7 @@ function buildPackEntry(aliasFile) {
   const header = readHeaderBlock(txt);
   const name = readTag(header, "name") || aliasFile;
   const runAt = normalizeRunAt(readTag(header, "run-at") || "document-idle");
+  const metrics = computeScriptMetrics(txt);
   const requireUrl = `${DEV_ORIGIN}/alias/${encodeURIComponent(aliasFile)}?v=${encodeURIComponent(BUILD_TS)}`;
 
   return [
@@ -158,6 +205,12 @@ function buildPackEntry(aliasFile) {
     line("name", name),
     line("version", BUILD_TS),
     line("run-at", runAt),
+    line("h2o-lines", String(metrics.lines)),
+    line("h2o-bytes", String(metrics.bytes)),
+    line("h2o-score", String(metrics.score)),
+    line("h2o-weight", metrics.weight),
+    line("h2o-watchers", String(metrics.watchers)),
+    line("h2o-listeners", String(metrics.listeners)),
     line("require", requireUrl),
     "// ==/UserScript==",
     "",
@@ -220,7 +273,7 @@ const banner = [
   "",
 ].join("\n");
 
-fs.writeFileSync(OUT_FILE, banner + chunks.join("\n"), "utf8");
+writeTextFileAtomic(OUT_FILE, banner + chunks.join("\n"));
 
 console.log("[H2O EXT] wrote proxy pack:", OUT_FILE);
 console.log("[H2O EXT] entries:", chunks.length);
