@@ -16,6 +16,10 @@
         {
           "file": "0A1a._H2O_Core_.user.js",
           "enabled": true
+        },
+        {
+          "file": "0A1b._Observer_Hub_.user.js",
+          "enabled": true
         }
       ]
     },
@@ -28,11 +32,49 @@
           "enabled": true
         },
         {
-          "file": "0B1b._Data_Sync_.user.js",
+          "file": "0B2a._Data_Sync_.user.js",
           "enabled": true
         },
         {
-          "file": "0B1c._Sync_Providers_.user.js",
+          "file": "0B2b._Data_Sync_Providers_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0B3a._Data_Archive_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0B3c._Command_Bar_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0B3d._Side_Actions_Panel_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "UNMOUNT_PAGINATION",
+      "title": "🪟 UNMOUNT + PAGINATION",
+      "items": [
+        {
+          "file": "0W1a._Unmount_Messages_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0W2a._Pagination_Windowing_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0W0a._Performance_Governor_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0W0c._Performance_Store_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "0W0d._Executor_Adapters_.user.js",
           "enabled": true
         }
       ]
@@ -46,15 +88,15 @@
           "enabled": true
         },
         {
-          "file": "0Z1b._Control_Hub_Quick_Tree_.user.js",
+          "file": "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "0Z2a._Data_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "0Z3a._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z2a._Control_Hub_Tab_Tree_.user.js",
           "enabled": true
         }
       ]
@@ -68,6 +110,10 @@
           "enabled": true
         },
         {
+          "file": "1A1f._MiniMap_Skin_.user.js",
+          "enabled": true
+        },
+        {
           "file": "1A1b._MiniMap_Core_.user.js",
           "enabled": true
         },
@@ -77,6 +123,10 @@
         },
         {
           "file": "1A1d._MiniMap_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1A1e._MiniMap_Views_.user.js",
           "enabled": true
         }
       ]
@@ -90,23 +140,23 @@
           "enabled": true
         },
         {
-          "file": "1A3a._Navigation_Controls_(MiniMap_Add-on)_.user.js",
+          "file": "1A2b._Navigation_Controls_(MiniMap_Add-on)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A4a._Revision_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A5a._Quote_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A3b._Quote_Badges_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A6a._Highlight_Dots_(MiniMap_Plugin)_.user.js",
+          "file": "1A4b._Revision_Badges_(MiniMap_Plugin)_.user.js",
           "enabled": true
         },
         {
-          "file": "1A7a._Title_Labels_(MiniMap_Plugin)_.user.js",
+          "file": "1A5a._Title_Labels_(MiniMap_Plugin)_.user.js",
           "enabled": true
         }
       ]
@@ -136,7 +186,11 @@
           "enabled": true
         },
         {
-          "file": "1X1a._Answer_Numbers_&_Style_.user.js",
+          "file": "1U1a._Answer_Background_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "1X1a._Answer_Numbers_.user.js",
           "enabled": true
         },
         {
@@ -162,7 +216,11 @@
           "enabled": true
         },
         {
-          "file": "2X1a._Question_Numbers_&_Style_.user.js",
+          "file": "2U1a._Question_Background_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "2X1a._Question_Numbers_.user.js",
           "enabled": true
         },
         {
@@ -172,103 +230,187 @@
       ]
     },
     {
-      "key": "UTILITIES",
-      "title": "🧰 UTILITIES / PORTALS",
-      "items": [
-        {
-          "file": "3A1a._Margin_Anchor_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3B1a._Sticky_Notes_Portal_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3C1a._Quote_Backrefs_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3X1a._Right_Sidebar_Drawer_.user.js",
-          "enabled": true
-        }
-      ]
-    },
-    {
       "key": "DOCK_ENGINES_TABS",
       "title": "🧩 DOCK + ENGINES + TABS",
       "items": [
         {
-          "file": "4A1a._Dock_Panel_.user.js",
+          "file": "3A1a._Dock_Panel_.user.js",
           "enabled": true
         },
         {
-          "file": "4B1a._Highlights_Engine_.user.js",
+          "file": "3B1a._Bookmarks_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4B2a._Highlights_Tab_.user.js",
+          "file": "3B2a._Bookmarks_Tab_.user.js",
           "enabled": true
         },
         {
-          "file": "4C1a._Bookmarks_Engine_.user.js",
+          "file": "3H1a._Highlights_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4C2a._Bookmarks_Tab_.user.js",
+          "file": "3H2a._Highlights_Tab_.user.js",
           "enabled": true
         },
         {
-          "file": "4D1a._Notes_Engine_.user.js",
+          "file": "3H3a._Smart_Highlight_Engine_.user.js",
           "enabled": true
         },
         {
-          "file": "4D2a._Notes_Tab_.user.js",
+          "file": "3H3b._Smart_Highlight_Parser_.user.js",
           "enabled": true
         },
         {
-          "file": "4S1a._Section_Bands_.user.js",
+          "file": "3H3c._Smart_Highlight_UI_.user.js",
           "enabled": true
         },
         {
-          "file": "4T1a._Attachments_Tab_.user.js",
+          "file": "3H3d._Smart_Highlight_State_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3N1a._Notes_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3N2a._Notes_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3T1a._Attachments_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3V1a._Navigator_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3V2a._Navigator_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3W1a._Context_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3W2a._Context_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3X1a._Capture_Engine_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3X2a._Capture_Tab_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3Y2a._Finder_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3Z1a._Workspace_Dock_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3Z2a._Workspace_Core_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3Z3a._Shelf_Panel_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "3Z4a._Drawer_Panel_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "4L0a._Legal_Pack_.user.js",
           "enabled": true
         }
       ]
     },
     {
-      "key": "PROMPTS_EXPORT",
-      "title": "📝 PROMPTS / EXPORT",
+      "key": "EXPORT",
+      "title": "📤 EXPORT",
       "items": [
         {
-          "file": "5A1a._Prompt_Manager_.user.js",
+          "file": "5A1a._Export_Chat_.user.js",
           "enabled": true
         },
         {
-          "file": "6A1a._Export_Chat_.user.js",
+          "file": "5B1a._Quick_Export_.user.js",
           "enabled": true
         },
         {
-          "file": "6B1a._Quick_Export_.user.js",
-          "enabled": false
+          "file": "5C1a._Folders_.user.js",
+          "enabled": true
         }
       ]
     },
     {
-      "key": "EXPERIMENTAL",
-      "title": "🧪 EXPERIMENTAL / OFF",
+      "key": "UTILITIES",
+      "title": "🧰 UTILITIES / PORTALS",
       "items": [
         {
-          "file": "7Z1a._Unmount_Messages_.user.js",
-          "enabled": false
+          "file": "6A1a._Margin_Anchor_.user.js",
+          "enabled": true
         },
+        {
+          "file": "6B1a._Sticky_Notes_Portal_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "6C1a._Quote_Backrefs_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "6S1a._Section_Bands_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "6S2a._Section_Collapser_.user.js",
+          "enabled": true
+        },
+        {
+          "file": "6S2b._Heading_Colorizer_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "PROMPTS",
+      "title": "📝 PROMPTS",
+      "items": [
+        {
+          "file": "7A1a._Prompt_Manager_.user.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "THEMES_SKINS",
+      "title": "🎨 THEMES + SKINS + INPUT",
+      "items": [
         {
           "file": "8A1a._Themes_Panel_.user.js",
           "enabled": true
         },
         {
-          "file": "8B1a._Folders_.user.js",
-          "enabled": false
+          "file": "8A2a._H2O_Skins_Registry_.user.js",
+          "enabled": true
         },
+        {
+          "file": "8Y1a._Input_Dock_(Keys_Rail)_.user.js",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "key": "INTERFACE",
+      "title": "🖥️ INTERFACE",
+      "items": [
         {
           "file": "9A1a._Interface_Enhancer_.user.js",
           "enabled": false
@@ -292,7 +434,13 @@
         {
           "file": "9Z1a._Hide_Disclaimer_.user.js",
           "enabled": true
-        },
+        }
+      ]
+    },
+    {
+      "key": "EXPERIMENTAL",
+      "title": "🧪 EXPERIMENTAL",
+      "items": [
         {
           "file": "X1._Canvas_Last-Updated_Timestamp_.user.js",
           "enabled": false
@@ -303,10 +451,6 @@
         },
         {
           "file": "X3._Toolbar_Palette_Button_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "X4._Section_Collapser_(4-Step_Cycle_Restore)_.user.js",
           "enabled": false
         },
         {
