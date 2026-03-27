@@ -32,5 +32,8 @@
   },
   "devDependencies": {
     "semver": "^7.6.3"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
   }
 }
