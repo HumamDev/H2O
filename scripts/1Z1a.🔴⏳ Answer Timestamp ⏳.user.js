@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.answer.timestamp
 // @author             HumamDev
 // @version            2.0.0
-// @revision           001
-// @build              260304-102754
+// @revision           002
+// @build              260328-002627
 // @description        Timestamp under every assistant message (H2O Core aware) + " | #". Contract v2 Stage-1 spine, cgxui hooks, idempotent boot/dispose, legacy-safe.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -309,7 +309,32 @@
   }
 
   /** @helper */
+  function DOM_AT_getCanonicalTurnIndexFromRuntime(div) {
+    const rt = W.H2O?.turnRuntime;
+    if (!rt) return null;
+
+    const aId = String(
+      W.H2O?.msg?.getIdFromEl?.(div)
+      || div?.getAttribute?.('data-message-id')
+      || div?.dataset?.messageId
+      || ''
+    ).trim();
+    if (!aId) return null;
+
+    try {
+      const record = rt.getTurnRecordByAId?.(aId) || null;
+      const turnNo = Number(record?.turnNo || record?.idx || 0);
+      return (Number.isFinite(turnNo) && turnNo > 0) ? turnNo : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** @helper */
   function DOM_AT_getTurnIndex(div) {
+    const canonical = DOM_AT_getCanonicalTurnIndexFromRuntime(div);
+    if (canonical) return canonical;
+
     const t0 = W.H2O?.turn?.getTurnIndexByAEl?.(div);
     if (!Number.isFinite(t0) || t0 <= 0) return null;
     return t0 + DOM_AT_getPaginationTurnOffset();

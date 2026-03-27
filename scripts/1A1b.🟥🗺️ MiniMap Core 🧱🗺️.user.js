@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.minimap.core
 // @author             HumamDev
 // @version            12.6.15
-// @revision           001
-// @build              260304-102754
+// @revision           002
+// @build              260328-002627
 // @description        MiniMap Core: state/index/rebuild/registry authority
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -1582,11 +1582,74 @@
   }
 
   function setMapStore(nextMap) {
-    const m = (nextMap instanceof Map) ? nextMap : new Map();
+    const incoming = (nextMap instanceof Map) ? nextMap : new Map();
+    const live =
+      (S.mapButtons instanceof Map) ? S.mapButtons :
+      (W.H2O_MM_mapButtons instanceof Map) ? W.H2O_MM_mapButtons :
+      (W.mapButtons instanceof Map) ? W.mapButtons :
+      null;
+    const m = live || incoming;
+    if (m !== incoming) {
+      const entries = Array.from(incoming.entries());
+      m.clear();
+      for (const [key, value] of entries) m.set(key, value);
+    }
     S.mapButtons = m;
     try { W.H2O_MM_mapButtons = m; } catch {}
     try { W.mapButtons = m; } catch {}
     return m;
+  }
+
+  function replaceArrayContents(target, nextItems) {
+    const out = Array.isArray(target) ? target : [];
+    const items = (out === nextItems) ? nextItems.slice() : (Array.isArray(nextItems) ? nextItems : []);
+    out.length = 0;
+    for (const item of items) out.push(item);
+    return out;
+  }
+
+  function replaceMapContents(target, nextMap) {
+    const out = (target instanceof Map) ? target : new Map();
+    const entries = (out === nextMap)
+      ? Array.from(nextMap.entries())
+      : Array.from((nextMap instanceof Map ? nextMap : new Map()).entries());
+    out.clear();
+    for (const [key, value] of entries) out.set(key, value);
+    return out;
+  }
+
+  function publishTurnSnapshot(snapshot = null) {
+    const next = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    const list = Array.isArray(next.list) ? next.list : [];
+    const byId = (next.byId instanceof Map) ? next.byId : new Map();
+    const byAId = (next.byAId instanceof Map) ? next.byAId : new Map();
+    const answerByTurn = (next.answerByTurn instanceof Map) ? next.answerByTurn : new Map();
+    const answers = Array.isArray(next.answers) ? next.answers : [];
+
+    S.turnList = replaceArrayContents(S.turnList, list);
+    S.turnById = replaceMapContents(S.turnById, byId);
+    S.turnIdByAId = replaceMapContents(S.turnIdByAId, byAId);
+    S.answerByTurnId = replaceMapContents(S.answerByTurnId, answerByTurn);
+    S.answerEls = replaceArrayContents(S.answerEls, answers);
+
+    const byIdGlobal =
+      (W.H2O_MM_turnById instanceof Map) ? W.H2O_MM_turnById :
+      new Map();
+    const byAIdGlobal =
+      (W.H2O_MM_turnIdByAId instanceof Map) ? W.H2O_MM_turnIdByAId :
+      new Map();
+    replaceMapContents(byIdGlobal, byId);
+    replaceMapContents(byAIdGlobal, byAId);
+    try { W.H2O_MM_turnById = byIdGlobal; } catch {}
+    try { W.H2O_MM_turnIdByAId = byAIdGlobal; } catch {}
+
+    return {
+      list: S.turnList,
+      byId: S.turnById,
+      byAId: S.turnIdByAId,
+      answerByTurn: S.answerByTurnId,
+      answers: S.answerEls,
+    };
   }
 
   function mmIdxNow() {
@@ -1740,33 +1803,21 @@
       return { ok: false, renderedCount: 0, status: 'cache-empty', chatId: id, lastTurnId: '', lastAnswerId: '' };
     }
 
-    S.turnList = list;
-    S.turnById = byId;
-    S.turnIdByAId = byAId;
-    S.answerByTurnId = new Map();
-    S.answerEls = [];
+    const snapshot = {
+      list,
+      byId,
+      byAId,
+      answerByTurn: new Map(),
+      answers: [],
+    };
 
-    const byIdGlobal =
-      (W.H2O_MM_turnById instanceof Map) ? W.H2O_MM_turnById :
-      new Map();
-    const byAIdGlobal =
-      (W.H2O_MM_turnIdByAId instanceof Map) ? W.H2O_MM_turnIdByAId :
-      new Map();
-    byIdGlobal.clear();
-    byAIdGlobal.clear();
-    for (const t of list) {
-      byIdGlobal.set(t.turnId, t);
-      if (t.answerId) byAIdGlobal.set(t.answerId, t.turnId);
-    }
-    try { W.H2O_MM_turnById = byIdGlobal; } catch {}
-    try { W.H2O_MM_turnIdByAId = byAIdGlobal; } catch {}
-
-    const map = ensureTurnButtons(list);
+    const map = ensureTurnButtons(snapshot.list, { skipActiveSync: true });
     const renderedCount = Number(list.length || 0);
     const last = cached.turns[cached.turns.length - 1] || null;
     const lastTurnId = String(last?.turnId || '').trim();
     const lastAnswerId = String(last?.primaryAId || last?.answerId || '').trim();
     const paginationCoverage = validateTurnsAgainstPagination(list, { source: 'cache-render' });
+    if (map instanceof Map) publishTurnSnapshot(snapshot);
     const activeHint = String(
       cached?.meta?.lastActiveTurnId ||
       cached?.meta?.lastActiveAnswerId ||
@@ -1775,9 +1826,9 @@
       lastTurnId ||
       lastAnswerId
     ).trim();
-    if (activeHint) {
+    if (map instanceof Map && activeHint) {
       try { setActive(activeHint, 'cache-render'); } catch {}
-    } else {
+    } else if (map instanceof Map) {
       try { updateCounter(''); } catch {}
     }
 
@@ -2391,7 +2442,26 @@
     }
   }
 
-  function indexTurns() {
+  function isPaginationWindowingEnabled() {
+    try {
+      return !!W?.H2O_Pagination?.getPageInfo?.()?.enabled;
+    } catch {
+      return false;
+    }
+  }
+
+  function isTurnOnCurrentPaginationPage(turnOrId, answerId = '') {
+    if (!isPaginationWindowingEnabled()) return true;
+    const turnId = (turnOrId && typeof turnOrId === 'object')
+      ? String(turnOrId?.turnId || '').trim()
+      : String(turnOrId || '').trim();
+    const answerKey = String(answerId || (turnOrId && typeof turnOrId === 'object' ? turnOrId?.answerId || '' : '')).trim();
+    const record = getSharedTurnRecordByAnyId(turnId || answerKey);
+    const inCurrent = record?.page?.inCurrentPage;
+    return (typeof inCurrent === 'boolean') ? inCurrent : true;
+  }
+
+  function indexTurns(opts = {}) {
     let answers = [];
     let list = [];
     let byId = new Map();
@@ -2451,28 +2521,10 @@
       }
     }
 
-    S.turnList = list;
-    S.turnById = byId;
-    S.turnIdByAId = byAId;
-    S.answerByTurnId = answerByTurn;
-    S.answerEls = answers.slice();
-
-    const byIdGlobal =
-      (W.H2O_MM_turnById instanceof Map) ? W.H2O_MM_turnById :
-      new Map();
-    const byAIdGlobal =
-      (W.H2O_MM_turnIdByAId instanceof Map) ? W.H2O_MM_turnIdByAId :
-      new Map();
-    byIdGlobal.clear();
-    byAIdGlobal.clear();
-    for (const t of list) {
-      byIdGlobal.set(t.turnId, t);
-      if (t.answerId) byAIdGlobal.set(t.answerId, t.turnId);
-    }
-    try { W.H2O_MM_turnById = byIdGlobal; } catch {}
-    try { W.H2O_MM_turnIdByAId = byAIdGlobal; } catch {}
-
-    return list;
+    const snapshot = { list, byId, byAId, answerByTurn, answers: answers.slice() };
+    if (opts?.commit === false) return snapshot;
+    publishTurnSnapshot(snapshot);
+    return S.turnList;
   }
 
   function getPaginationState() {
@@ -3158,20 +3210,22 @@
     };
   }
 
-  function ensureTurnButtons(list = S.turnList) {
+  function ensureTurnButtons(list = S.turnList, opts = {}) {
     const turns = Array.isArray(list) ? list : [];
     const col = ensureCol();
     if (!col) return null;
     if (!turns.length) {
       col.textContent = '';
+      const clearedMap = setMapStore(new Map());
       try { renderMiniDividerOverlay(resolveChatId()); } catch {}
-      return setMapStore(new Map());
+      return clearedMap;
     }
 
     const prevMap = ensureMapStore();
     const nextMap = new Map();
     const marginSymbolMetaMap = getMarginSymbolMetaMap();
     const frag = document.createDocumentFragment();
+    const postCommitJobs = [];
     const qaEnabled = syncCurrentViewArtifacts() === 'qa';
 
     for (const turn of turns) {
@@ -3216,28 +3270,41 @@
       if (answerId) nextMap.set(answerId, btn);
 
       const symbolMeta = getMarginSymbolMetaForAnswer(answerId, marginSymbolMetaMap);
-      updateMiniMapGutterSymbol(btn, symbolMeta.symbols, { color: String(symbolMeta.colors[0] || '').trim() });
-      repaintMiniBtnByAnswerId(answerId || turnId, btn);
-      try { W.syncMiniMapDot?.(answerId); } catch {}
-      try { W.H2O_MM_syncQuoteBadgesForIdx?.(btn, turn.index); } catch {}
+      postCommitJobs.push({
+        turnId,
+        answerId,
+        turnIndex: turn.index,
+        symbols: symbolMeta.symbols,
+        color: String(symbolMeta.colors[0] || '').trim(),
+      });
     }
 
     col.replaceChildren(frag);
+    const committedMap = setMapStore(nextMap);
     try { renderMiniDividerOverlay(resolveChatId()); } catch {}
-    setMapStore(nextMap);
 
-    const activeId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
-    if (activeId) {
-      try { setActive(activeId, 'rebuild:turn-buttons'); } catch {}
-    } else {
-      try { updateCounter(''); } catch {}
+    if (!opts?.skipActiveSync) {
+      const activeId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
+      if (activeId) {
+        try { setActive(activeId, 'rebuild:turn-buttons'); } catch {}
+      } else {
+        try { updateCounter(''); } catch {}
+      }
+    }
+    for (const job of postCommitJobs) {
+      const btn = committedMap.get(job.turnId) || (job.answerId ? committedMap.get(job.answerId) : null) || null;
+      if (!btn || !btn.isConnected) continue;
+      updateMiniMapGutterSymbol(btn, job.symbols, { color: job.color });
+      repaintMiniBtnByAnswerId(job.answerId || job.turnId, btn);
+      try { W.syncMiniMapDot?.(job.answerId); } catch {}
+      try { W.H2O_MM_syncQuoteBadgesForIdx?.(btn, job.turnIndex); } catch {}
     }
     requestAnimationFrame(() => {
       try { W.H2O?.MM?.dots?.repaintDotsForAllMiniBtns?.(); } catch {}
       try { W.H2O_MM_repaintDots?.(); } catch {}
     });
 
-    return nextMap;
+    return committedMap;
   }
 
   function getPageDividerLabel(pageNum = 0) {
@@ -3405,6 +3472,10 @@
   function computeActiveFromViewport(opts = {}) {
     if (!S.turnList.length && !S.answerEls.length) indexTurns();
     const turns = S.turnList.length ? S.turnList : [];
+    const turnAllowed = (turn) => {
+      if (!turn) return false;
+      return isTurnOnCurrentPaginationPage(turn, String(turn?.answerId || '').trim());
+    };
     const turnAnchor = Number.isFinite(opts?.turnAnchorY)
       ? Number(opts.turnAnchorY)
       : Math.max(0, Math.floor(window.innerHeight * 0.22));
@@ -3447,7 +3518,7 @@
         if (lastEl?.getBoundingClientRect) {
           try {
             const r = lastEl.getBoundingClientRect();
-            if (r.bottom >= 0 && r.top <= window.innerHeight && r.top <= turnAnchor && r.bottom >= turnAnchor) {
+            if (turnAllowed(lastTurn) && r.bottom >= 0 && r.top <= window.innerHeight && r.top <= turnAnchor && r.bottom >= turnAnchor) {
               const turnId = String(lastTurn?.turnId || lastId).trim();
               const answerId = String(lastTurn?.answerId || '').trim();
               const idx = Number(lastTurn?.index || getTurnIndex(turnId || answerId) || 0);
@@ -3484,7 +3555,10 @@
         if (bestEl) {
           const aId = String(getMessageId(bestEl) || '').trim();
           const turnId = aId ? (S.turnIdByAId.get(aId) || '') : '';
-          if (turnId) pickedTurn = S.turnById.get(turnId) || null;
+          if (turnId) {
+            const turn = S.turnById.get(turnId) || null;
+            if (turnAllowed(turn)) pickedTurn = turn;
+          }
         }
       }
 
@@ -3498,7 +3572,10 @@
           if (aEl) {
             const aId = String(getMessageId(aEl) || '').trim();
             const turnId = aId ? (S.turnIdByAId.get(aId) || '') : '';
-            if (turnId) pickedTurn = S.turnById.get(turnId) || null;
+            if (turnId) {
+              const turn = S.turnById.get(turnId) || null;
+              if (turnAllowed(turn)) pickedTurn = turn;
+            }
           }
         } catch {}
       }
@@ -3512,6 +3589,7 @@
 
         for (let i = i0; i <= i1; i += 1) {
           const t = turns[i];
+          if (!turnAllowed(t)) continue;
           const turnId = String(t?.turnId || '').trim();
           let el = t?.el || (turnId ? S.answerByTurnId.get(turnId) : null);
           // Keep active-compute bounded: no per-turn DOM queries in this loop.
@@ -3561,6 +3639,9 @@
     if (!bestEl) return { activeTurnId: '', activeAnswerId: '', activeBtnIndex: 0, activePageNum };
     const aId = String(getMessageId(bestEl) || '').trim();
     const turnId = aId ? (S.turnIdByAId.get(aId) || '') : '';
+    if (!isTurnOnCurrentPaginationPage(turnId || aId, aId)) {
+      return { activeTurnId: '', activeAnswerId: '', activeBtnIndex: 0, activePageNum };
+    }
     return {
       activeTurnId: turnId,
       activeAnswerId: aId,
@@ -4029,8 +4110,9 @@
         return out;
       }
 
-      const list = indexTurns();
-      out.built.turns = Array.isArray(list) ? list.length : 0;
+      const snapshot = indexTurns({ commit: false });
+      const list = Array.isArray(snapshot?.list) ? snapshot.list : [];
+      out.built.turns = list.length;
       if (!out.built.turns) {
         out.reason = 'turns-empty';
         out.retry.scheduled = scheduleRetry('turns-empty', why);
@@ -4047,7 +4129,7 @@
         try {
           map = rt.ensureButtons({
             reason: `core:${why}`,
-            turns: S.turnList.slice(),
+            turns: list.slice(),
             refs: ensured.refs || {},
           }) || null;
         } catch (e) {
@@ -4055,7 +4137,7 @@
         }
       }
       if (!(map instanceof Map)) {
-        map = ensureTurnButtons(S.turnList);
+        map = ensureTurnButtons(list, { skipActiveSync: true });
         usedFallbackEnsureButtons = true;
       }
       out.built.buttons = !!(map && map.size >= 0);
@@ -4068,8 +4150,15 @@
         S.lastRebuildResult = out;
         return out;
       }
+      publishTurnSnapshot(snapshot);
       if (!usedFallbackEnsureButtons) {
         try { repaintAllMiniBtns(); } catch {}
+      }
+      const activeId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
+      if (activeId) {
+        try { setActive(activeId, `rebuild:${why}`); } catch {}
+      } else {
+        try { updateCounter(''); } catch {}
       }
       try { finalizeRebuildUi(why); } catch {}
       try {

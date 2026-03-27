@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.highlight.dots.minimap.plugin
 // @author             HumamDev
 // @version            1.3.11
-// @revision           002
-// @build              260326-patched
+// @revision           003
+// @build              260328-002627
 // @description        Self-contained copy of the MiniMap left-side inline highlight dots (identical visuals + behavior)
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -637,18 +637,107 @@
     return !same;
   }
 
+  function mergeDotTurnRecord(baseRecord = null, nextRecord = null) {
+    const out = (baseRecord && typeof baseRecord === 'object') ? { ...baseRecord } : {};
+    const next = (nextRecord && typeof nextRecord === 'object') ? nextRecord : null;
+    if (!next) return Object.keys(out).length ? out : null;
+
+    for (const [key, value] of Object.entries(next)) {
+      if (value == null) continue;
+      if (typeof value === 'string') {
+        if (!String(value || '').trim()) continue;
+        if (!String(out?.[key] || '').trim()) out[key] = value;
+        continue;
+      }
+      if (typeof value === 'object') {
+        if (!out[key]) out[key] = value;
+        continue;
+      }
+      if (out[key] == null) out[key] = value;
+    }
+
+    const answerId = String(next?.answerId || next?.primaryAId || '').trim();
+    const questionId = String(next?.questionId || next?.qId || '').trim();
+    const turnId = String(next?.turnId || next?.id || '').trim();
+
+    if (answerId) {
+      if (!String(out?.answerId || '').trim()) out.answerId = answerId;
+      if (!String(out?.primaryAId || '').trim()) out.primaryAId = answerId;
+    }
+    if (questionId) {
+      if (!String(out?.questionId || '').trim()) out.questionId = questionId;
+      if (!String(out?.qId || '').trim()) out.qId = questionId;
+    }
+    if (turnId) {
+      if (!String(out?.turnId || '').trim()) out.turnId = turnId;
+      if (!String(out?.id || '').trim()) out.id = turnId;
+    }
+
+    return Object.keys(out).length ? out : null;
+  }
+
   function resolveDotTurnRecord(anyId = '') {
     const direct = resolveDotCanonicalMeta(anyId);
-    if (direct && (direct.turnId || direct.answerId || direct.questionId)) return direct;
+    const directQuestionId = String(direct?.questionId || direct?.qId || '').trim();
+    if (directQuestionId) return direct;
 
-    const variants = buildDotIdVariants(anyId, canonicalizeDotAnswerId(anyId));
+    let merged = mergeDotTurnRecord(null, direct);
+    const hasRichIdentity = (record) => (
+      !!String(record?.turnId || record?.id || '').trim()
+      && !!String(record?.answerId || record?.primaryAId || '').trim()
+      && !!String(record?.questionId || record?.qId || '').trim()
+    );
+    const accept = (candidate) => {
+      merged = mergeDotTurnRecord(merged, candidate);
+      return hasRichIdentity(merged);
+    };
+
+    const variants = buildDotIdVariants(
+      anyId,
+      canonicalizeDotAnswerId(anyId),
+      canonicalizeDotQuestionId(anyId),
+      direct?.turnId || '',
+      direct?.answerId || '',
+      direct?.questionId || ''
+    );
+
     for (const variant of variants) {
       try {
         const row = TOPW.H2O_MM_turnById?.get?.(variant) || null;
-        if (row) return row;
+        if (accept(row)) return merged;
       } catch {}
     }
-    return null;
+
+    const rt = TOPW?.H2O?.turnRuntime || W?.H2O?.turnRuntime || null;
+    for (const variant of variants) {
+      if (!variant) continue;
+      try {
+        const record =
+          rt?.getTurnRecordByTurnId?.(variant)
+          || rt?.getTurnRecordByAId?.(variant)
+          || rt?.getTurnRecordByQId?.(variant)
+          || null;
+        if (accept(record)) return merged;
+      } catch {}
+    }
+
+    try {
+      const turnSvc = W?.H2O?.turn || null;
+      const turns = (typeof turnSvc?.getTurns === 'function') ? (turnSvc.getTurns.call(turnSvc) || []) : [];
+      for (const variant of variants) {
+        if (!variant) continue;
+        let turnIndex = 0;
+        try { turnIndex = Number(turnSvc?.getTurnIndexByQId?.(variant) || 0) || 0; } catch {}
+        if (turnIndex <= 0) {
+          try { turnIndex = Number(turnSvc?.getTurnIndexByAId?.(variant) || 0) || 0; } catch {}
+        }
+        if (turnIndex <= 0) continue;
+        const turn = Array.isArray(turns) ? (turns[turnIndex - 1] || null) : null;
+        if (accept(turn)) return merged;
+      }
+    } catch {}
+
+    return merged;
   }
 
   function resolveDotPrimaryId(anyId = '', btn = null) {
@@ -756,29 +845,8 @@
     STATE_INLINE_DOTS_LOADED_FROM_COMPAT = false;
     const out = Object.create(null);
     const highlightStoreCanon = readJSONObjWithPresence(KEY_.DISK_INLINE_HL_STORE_V3);
-    if (highlightStoreCanon.present) {
-      mergeNormalizedDotMap(out, dotMapFromHighlightStore(highlightStoreCanon.value));
-      return out;
-    }
-
-    const inlineDotsCanon = readJSONObjWithPresence(KEY_INLINE_DOTS);
-    if (inlineDotsCanon.present) {
-      mergeNormalizedDotMap(out, inlineDotsCanon.value);
-      return out;
-    }
-
-    for (const key of KEY_INLINE_DOTS_LEGACY) {
-      const raw = readJSONObj(key);
-      if (!raw) continue;
-      const changed = mergeNormalizedDotMap(out, raw);
-      if (changed > 0) STATE_INLINE_DOTS_LOADED_FROM_COMPAT = true;
-    }
-    for (const key of KEY_INLINE_HL_STORE_LEGACY) {
-      const highlightStore = readJSONObj(key);
-      if (!highlightStore) continue;
-      const changed = mergeNormalizedDotMap(out, dotMapFromHighlightStore(highlightStore));
-      if (changed > 0) STATE_INLINE_DOTS_LOADED_FROM_COMPAT = true;
-    }
+    if (!highlightStoreCanon.present) return out;
+    mergeNormalizedDotMap(out, dotMapFromHighlightStore(highlightStoreCanon.value));
     return out;
   }
 
@@ -835,6 +903,7 @@
   }
 
   function hydrateInlineDotsFromInlineApi({ persist = true } = {}) {
+    void persist;
     const readers = [
       W?.H2O?.inline?.getStore,
       W?.H2OInline?.getStore,
@@ -850,7 +919,7 @@
             out.then((store) => {
               try {
                 const map = dotMapFromHighlightStore(store);
-                const changed = mergeInlineDotsMap(map, { persist });
+                const changed = mergeInlineDotsMap(map, { persist: false });
                 if (changed) scheduleRepaintDotsForAllMiniBtns();
               } catch {}
             }).catch(() => {});
@@ -858,7 +927,7 @@
           continue;
         }
         const map = dotMapFromHighlightStore(out);
-        const changed = mergeInlineDotsMap(map, { persist });
+        const changed = mergeInlineDotsMap(map, { persist: false });
         if (changed) return changed;
       } catch {}
     }
@@ -866,25 +935,7 @@
   }
 
   function saveInlineDots() {
-    try {
-      UTIL_storage.setStr(KEY_INLINE_DOTS, JSON.stringify(inlineDotMap || {}));
-      try {
-        TOPW.dispatchEvent(new CustomEvent(EV_LIVE_CHANGED, {
-          detail: {
-            domain: DsID,
-            source: 'dots',
-            keys: [KEY_INLINE_DOTS],
-            at: Date.now(),
-          }
-        }));
-      } catch {}
-    } catch {}
-  }
-
-  if (STATE_INLINE_DOTS_LOADED_FROM_COMPAT && hasOwnKeys(inlineDotMap)) {
-    setTimeout(() => {
-      try { saveInlineDots(); } catch {}
-    }, 0);
+    return false;
   }
 
   try {
@@ -1443,6 +1494,7 @@ ${dotSel}{
     const questionId = String(ctx?.questionId || '').trim();
     if (!questionId) return [];
     const turnId = String(ctx?.turnId || '').trim();
+    if (!isTurnOnCurrentPaginationPage(turnId, '', questionId)) return [];
     const live = getLiveDotColorsForSurface(resolveQuestionElInTurn(turnId, questionId), 'question', questionId);
     const stored = getDotColorsForId(questionId, qBtn || btn, { roleHint: 'question' });
     return preferLiveOrStoredDotColors(live, stored);
@@ -1452,6 +1504,7 @@ ${dotSel}{
     const answerId = resolveDotPrimaryId('', btn);
     if (!answerId) return [];
     const turnId = String(btn?.dataset?.turnId || btn?.dataset?.id || '').trim();
+    if (!isTurnOnCurrentPaginationPage(turnId, answerId, '')) return [];
     const live = getLiveDotColorsForSurface(resolveAnswerElInTurn(turnId, answerId), 'answer', answerId);
     const stored = getDotColorsForId(answerId, btn, { roleHint: 'answer' });
     return preferLiveOrStoredDotColors(live, stored);
@@ -2073,6 +2126,56 @@ ${dotSel}{
     return false;
   }
 
+  function collectRemountRecoveryIds(rawId = '') {
+    const ids = new Set();
+    const add = (value, roleHint = '') => {
+      const raw = String(value || '').trim();
+      if (!raw) return;
+      ids.add(raw);
+      const normalized = normalizeDotId(raw);
+      if (normalized) ids.add(normalized);
+      const storageKey = String(resolveDotStorageKey(raw, null, roleHint) || '').trim();
+      if (storageKey) ids.add(storageKey);
+    };
+
+    const base = String(rawId || '').trim();
+    if (!base) return ids;
+
+    const surface = resolveDotSurfaceMeta(base);
+    const turnRecord = resolveDotTurnRecord(base);
+    const turnId = String(turnRecord?.turnId || surface?.turnId || '').trim();
+    const answerId = String(
+      turnRecord?.answerId ||
+      turnRecord?.primaryAId ||
+      surface?.answerId ||
+      canonicalizeDotAnswerId(base) ||
+      ''
+    ).trim();
+    let questionId = String(
+      turnRecord?.questionId ||
+      turnRecord?.qId ||
+      surface?.questionId ||
+      ''
+    ).trim();
+    if (!questionId && turnId) questionId = String(resolveQuestionIdForTurn(turnId, '') || '').trim();
+
+    add(base, surface?.surfaceRole || '');
+    add(turnId);
+    add(answerId, 'answer');
+    add(questionId, 'question');
+    return ids;
+  }
+
+  function isRemountRecoveryId(id = '') {
+    const key = String(id || '').trim();
+    if (!key) return false;
+    if (STATE_REMOUNT_RECOVERY.has(key)) return true;
+
+    const restoringUid = String(W.H2O_UM_RESTORING_UID || '').trim();
+    if (!restoringUid) return false;
+    return collectRemountRecoveryIds(restoringUid).has(key);
+  }
+
   /* ───────────────────────── 10) Inline → dots bridge ───────────────────────── */
   function onInlineChanged(e) {
     const detail = e?.detail || {};
@@ -2092,7 +2195,7 @@ ${dotSel}{
       const nextColors = hasSpecific ? colorsById[answerId] : globalColors;
       const hasContent = Array.isArray(nextColors) && nextColors.length > 0;
       const inRestoreWindow = Array.isArray(nextColors) && nextColors.length === 0
-        && (W.H2O_UM_RESTORING_UID === answerId || STATE_REMOUNT_RECOVERY.has(answerId));
+        && isRemountRecoveryId(answerId);
       if (hasContent) STATE_REMOUNT_RECOVERY.delete(answerId);
       const effectiveColors = inRestoreWindow ? null : nextColors;
       const persist = effectiveColors != null;
@@ -2177,8 +2280,12 @@ ${dotSel}{
         ''
       ).trim();
       if (!uid) return;
-      STATE_REMOUNT_RECOVERY.add(uid);
-      setTimeout(() => STATE_REMOUNT_RECOVERY.delete(uid), 3000);
+      const recoveryIds = Array.from(collectRemountRecoveryIds(uid));
+      if (!recoveryIds.length) return;
+      recoveryIds.forEach((id) => STATE_REMOUNT_RECOVERY.add(id));
+      setTimeout(() => {
+        recoveryIds.forEach((id) => STATE_REMOUNT_RECOVERY.delete(id));
+      }, 3000);
     });
 
     // ── View-only: pagination — repaint only, no storage work ──
@@ -2381,7 +2488,35 @@ ${dotSel}{
       const t = W?.H2O?.MM?.core?.getTurnById?.(key);
       if (t) return t;
     } catch {}
+    try {
+      const rt = TOPW?.H2O?.turnRuntime || W?.H2O?.turnRuntime || null;
+      const t =
+        rt?.getTurnRecordByTurnId?.(key)
+        || rt?.getTurnRecordByAId?.(key)
+        || rt?.getTurnRecordByQId?.(key)
+        || null;
+      if (t) return t;
+    } catch {}
+    try {
+      const t = resolveDotTurnRecord(key);
+      if (t) return t;
+    } catch {}
     return null;
+  }
+
+  function isPaginationWindowingEnabled() {
+    try {
+      return !!W?.H2O_Pagination?.getPageInfo?.()?.enabled;
+    } catch {
+      return false;
+    }
+  }
+
+  function isTurnOnCurrentPaginationPage(turnId = '', answerId = '', questionId = '') {
+    if (!isPaginationWindowingEnabled()) return true;
+    const record = resolveTurnObj(turnId || answerId || questionId);
+    const inCurrent = record?.page?.inCurrentPage;
+    return (typeof inCurrent === 'boolean') ? inCurrent : true;
   }
 
   function resolveAnswerIdForTurn(turnId = '', answerIdHint = '') {

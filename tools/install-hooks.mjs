@@ -30,7 +30,16 @@ function ensureGitRepo() {
 }
 
 function installPreCommitHook() {
-  const hooksDir = path.join(REPO_ROOT, ".git", "hooks");
+  const gitCommonDirRes = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (gitCommonDirRes.error || gitCommonDirRes.status !== 0) {
+    throw new Error("[hooks] Could not determine git common dir.");
+  }
+  const gitCommonDir = String(gitCommonDirRes.stdout || "").trim();
+  const hooksDir = path.resolve(REPO_ROOT, gitCommonDir, "hooks");
   fs.mkdirSync(hooksDir, { recursive: true });
   const hookPath = path.join(hooksDir, "pre-commit");
   const body = [

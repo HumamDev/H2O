@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.hide.disclaimer
 // @author             HumamDev
 // @version            1.1.0
-// @revision           001
-// @build              260304-102754
+// @revision           005
+// @build              260328-002627
 // @description        Hide the "ChatGPT can make mistakes..." text using CSS only (keep layout intact)
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -26,3 +26,5 @@
   `;
   document.head.appendChild(style);
 })();
+
+// watcher-test

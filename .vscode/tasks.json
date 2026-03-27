@@ -275,6 +275,8 @@
       "label": "H2O: DASHBOARD / Watch (Auto, 5s debounce)",
       "type": "shell",
       "command": "npm run dashboard:watch:fast",
+      "isBackground": true,
+      "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     }
   ],

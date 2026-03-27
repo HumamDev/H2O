@@ -125,6 +125,20 @@ async function main() {
   }
 
   console.log(`[release] done (${planned.length} script${planned.length === 1 ? "" : "s"})`);
+  rebuildDashboard();
+}
+
+function rebuildDashboard() {
+  const dashboardScript = path.join(TOOL_DIR, "versions-dashboard.mjs");
+  if (!fs.existsSync(dashboardScript)) return;
+  const result = spawnSync(process.execPath, [dashboardScript], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    stdio: "inherit",
+  });
+  if (result.error || result.status !== 0) {
+    console.warn("[release] dashboard rebuild failed (non-fatal)");
+  }
 }
 
 function parseArgs(argv) {

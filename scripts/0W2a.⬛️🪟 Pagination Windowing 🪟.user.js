@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.pagination.windowing
 // @author             HumamDev
 // @version            1.0.0
-// @revision           001
-// @build              260304-102754
+// @revision           002
+// @build              260328-002627
 // @description        Client-side answer pagination/windowing for long ChatGPT threads (no network fetch).
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -442,6 +442,10 @@ Self-check:
     } catch (_) {
       return false;
     }
+  }
+
+  function mutationAffectsConversationStructure(node) {
+    return nodeLooksLikeConversationMutation(node);
   }
 
   function isElementNode(node) {
@@ -1011,6 +1015,136 @@ Self-check:
     S.visibleTurnIndices = S.viewTurnIndices;
   }
 
+  function getTurnRuntimeApi() {
+    try {
+      return W?.H2O?.turnRuntime || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncSharedTurnRuntimeCanonical() {
+    const api = getTurnRuntimeApi();
+    if (!api || typeof api._reconcilePaginationSnapshot !== 'function') return false;
+
+    const rows = Array.isArray(S.masterTurns) ? S.masterTurns.filter(Boolean) : [];
+    const sig = rows.map((turn, idx) => {
+      const gid = Math.max(1, Number(turn?.gid || idx + 1) || idx + 1);
+      return [
+        gid,
+        String(turn?.role || '').trim(),
+        String(turn?.uid || '').trim(),
+        String(turn?.answerId || '').trim(),
+        String(turn?.turnId || '').trim(),
+      ].join(':');
+    }).join('|');
+
+    if (sig && sig === String(S.turnRuntimeCanonicalSig || '')) return false;
+
+    try {
+      api._reconcilePaginationSnapshot(rows);
+      S.turnRuntimeCanonicalSig = sig;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function clearSharedTurnRuntimeCanonical() {
+    S.turnRuntimeCanonicalSig = '';
+    S.turnRuntimePageStateSig = '';
+
+    const api = getTurnRuntimeApi();
+    if (!api || typeof api._clearPaginationSnapshot !== 'function') return false;
+    try {
+      api._clearPaginationSnapshot();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function resolveCurrentPageTurnBounds(win) {
+    const turns = S.masterTurns;
+    const answers = S.masterAnswers;
+    if (!win || !turns.length || !answers.length) return { start: -1, end: -1 };
+
+    const first = answers[win.answerStartIndex] || null;
+    const last = answers[win.answerEndIndex] || null;
+    if (!first || !last) return { start: -1, end: -1 };
+
+    const start = resolveAnswerWindowStartTurnIndex(first);
+    const end = resolveAnswerWindowEndTurnIndex(last);
+    if (start < 0 || end < 0) return { start: -1, end: -1 };
+    return { start, end };
+  }
+
+  function syncSharedTurnRuntimePageState(win) {
+    const api = getTurnRuntimeApi();
+    if (!api || typeof api.listTurnRecords !== 'function' || typeof api.patchTurnPageState !== 'function') return false;
+
+    const records = api.listTurnRecords() || [];
+    if (!Array.isArray(records) || !records.length) return false;
+
+    const currentBounds = resolveCurrentPageTurnBounds(win);
+    const sig = [
+      Number(S.pageIndex || 0),
+      Number(S.pageCount || 0),
+      Number(win?.answerStartIndex ?? -1),
+      Number(win?.answerEndIndex ?? -1),
+      Number(win?.bufferedAnswerStartIndex ?? -1),
+      Number(win?.bufferedAnswerEndIndex ?? -1),
+      Number(currentBounds.start ?? -1),
+      Number(currentBounds.end ?? -1),
+      Number(win?.turnStart ?? -1),
+      Number(win?.turnEnd ?? -1),
+      Number(records.length || 0),
+    ].join(':');
+    if (sig === String(S.turnRuntimePageStateSig || '')) return false;
+
+    const pageSize = getPageSize();
+    const bufferAnswers = getBufferAnswers();
+    const pageIndex = Number(S.pageIndex || 0) || 0;
+    const pageCount = Number(S.pageCount || 1) || 1;
+    const bufferedTurnStart = Number(win?.turnStart ?? -1);
+    const bufferedTurnEnd = Number(win?.turnEnd ?? -1);
+
+    for (const record of records) {
+      const turnNo = Math.max(1, Number(record?.turnNo || record?.idx || 0) || 0);
+      const turnIndex0 = turnNo - 1;
+      const sourceTurn = S.masterTurns[turnIndex0] || null;
+      const answerNumber = Math.max(0, Number(sourceTurn?.answerIndex || 0) || 0);
+      const inCurrentPage = currentBounds.start >= 0 && currentBounds.end >= currentBounds.start
+        ? (turnIndex0 >= currentBounds.start && turnIndex0 <= currentBounds.end)
+        : false;
+      const inBufferedWindow = bufferedTurnStart >= 0 && bufferedTurnEnd >= bufferedTurnStart
+        ? (turnIndex0 >= bufferedTurnStart && turnIndex0 <= bufferedTurnEnd)
+        : false;
+
+      try {
+        api.patchTurnPageState(record.turnId, {
+          answerNumber: answerNumber > 0 ? answerNumber : null,
+          answerIndex0: answerNumber > 0 ? (answerNumber - 1) : null,
+          pageIndex,
+          pageCount,
+          pageSize,
+          bufferAnswers,
+          turnStart: currentBounds.start,
+          turnEnd: currentBounds.end,
+          answerStartIndex: Number(win?.answerStartIndex ?? -1),
+          answerEndIndex: Number(win?.answerEndIndex ?? -1),
+          bufferedAnswerStartIndex: Number(win?.bufferedAnswerStartIndex ?? -1),
+          bufferedAnswerEndIndex: Number(win?.bufferedAnswerEndIndex ?? -1),
+          inCurrentPage,
+          inBufferedWindow,
+        }, { owner: 'pagination' });
+      } catch (_) {}
+    }
+
+    S.turnRuntimePageStateSig = sig;
+    return true;
+  }
+
   function clearMasterState() {
     const emptyTurns = [];
     const emptyAnswers = [];
@@ -1036,6 +1170,7 @@ Self-check:
       clearTimeout(S.deferredRefreshTimer);
       S.deferredRefreshTimer = 0;
     }
+    clearSharedTurnRuntimeCanonical();
     syncLegacyRefs();
   }
 
@@ -1096,6 +1231,7 @@ Self-check:
     S.pageCount = Math.max(1, Math.ceil((S.masterAnswers.length || 0) / getPageSize()));
     S.pageIndex = clampInt(S.pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageCount - 1);
     syncLegacyRefs();
+    syncSharedTurnRuntimeCanonical();
   }
 
   function recomputeDerived() {
@@ -1145,6 +1281,30 @@ Self-check:
     }
   }
 
+  function collectStructuralTurnCandidates(node, outSet) {
+    if (!(outSet instanceof Set)) return false;
+    const before = outSet.size;
+    collectTurnCandidatesFromNode(node, outSet);
+    return outSet.size > before;
+  }
+
+  function isTrackedTurnNodeUnderRoot(node, root = getActiveRootContainer()) {
+    return !!(isElementNode(node) && node.isConnected && isElementNode(root) && root.contains(node));
+  }
+
+  function removedNodeTouchesTrackedTurnHost(node) {
+    if (!isElementNode(node)) return false;
+    if (!(S.masterTurnNodeSet instanceof Set) || !S.masterTurnNodeSet.size) return false;
+    if (S.masterTurnNodeSet.has(node)) return true;
+    for (const turnNode of S.masterTurnNodeSet) {
+      if (!isElementNode(turnNode)) continue;
+      try {
+        if (node.contains(turnNode)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
   function findInsertIndexByDomOrder(turns, node) {
     for (let i = 0; i < turns.length; i += 1) {
       const cur = turns[i];
@@ -1175,22 +1335,25 @@ Self-check:
       const uid = getPreferredUid(node, role, 0);
       const byUid = uid ? S.masterUidToTurn.get(uid) : null;
       if (byUid) {
-        const nextAnswerEl = findAssistantEl(node, role);
-        const nextIsAnswer = !!nextAnswerEl;
         const oldNode = byUid.node;
-        if (byUid.node !== node) {
-          byUid.node = node;
+        const keepExistingNode = oldNode !== node && isTrackedTurnNodeUnderRoot(oldNode, root);
+        const nextNode = keepExistingNode ? oldNode : node;
+        const nextRole = keepExistingNode ? byUid.role : role;
+        const nextAnswerEl = keepExistingNode ? byUid.answerEl : findAssistantEl(node, role);
+        const nextIsAnswer = keepExistingNode ? !!byUid.answerEl : !!nextAnswerEl;
+        if (byUid.node !== nextNode) {
+          byUid.node = nextNode;
           changed = true;
         }
-        if (byUid.role !== role || byUid.uid !== uid || byUid.answerEl !== nextAnswerEl || byUid.isAnswer !== nextIsAnswer) {
+        if (byUid.role !== nextRole || byUid.uid !== uid || byUid.answerEl !== nextAnswerEl || byUid.isAnswer !== nextIsAnswer) {
           changed = true;
         }
-        byUid.role = role;
+        byUid.role = nextRole;
         byUid.uid = uid;
         byUid.answerEl = nextAnswerEl;
         byUid.isAnswer = nextIsAnswer;
-        S.masterTurnNodeSet.add(node);
-        if (isElementNode(oldNode) && oldNode !== node) S.masterTurnNodeSet.delete(oldNode);
+        S.masterTurnNodeSet.add(nextNode);
+        if (isElementNode(oldNode) && oldNode !== nextNode) S.masterTurnNodeSet.delete(oldNode);
         continue;
       }
 
@@ -1295,20 +1458,17 @@ Self-check:
         if (m.addedNodes && m.addedNodes.length) {
           for (const n of Array.from(m.addedNodes)) {
             if (!isElementNode(n) || isInsideOwnedUi(n)) continue;
-            const before = S.pendingAddedTurnNodes.size;
-            collectTurnCandidatesFromNode(n, S.pendingAddedTurnNodes);
-            if (S.pendingAddedTurnNodes.size > before) hasRealMutation = true;
-            if (!hasRealMutation && nodeLooksLikeConversationMutation(n)) hasRealMutation = true;
+            if (!mutationAffectsConversationStructure(n)) continue;
+            if (collectStructuralTurnCandidates(n, S.pendingAddedTurnNodes)) hasRealMutation = true;
           }
         }
 
         if (m.removedNodes && m.removedNodes.length) {
           for (const n of Array.from(m.removedNodes)) {
             if (!isElementNode(n) || isInsideOwnedUi(n)) continue;
-            if (nodeLooksLikeConversationMutation(n)) {
-              hasRealMutation = true;
-              break;
-            }
+            if (!removedNodeTouchesTrackedTurnHost(n)) continue;
+            hasRealMutation = true;
+            break;
           }
         }
       }
@@ -1399,10 +1559,19 @@ Self-check:
       if (!payload?.conversationRelevant) return;
       if (S.isRendering) return;
 
+      const normalizedAddedTurnCandidates = new Set();
       if (payload.addedTurnCandidates instanceof Set) {
         for (const el of payload.addedTurnCandidates) {
-          if (isElementNode(el)) S.pendingAddedTurnNodes.add(el);
+          if (!isElementNode(el)) continue;
+          collectStructuralTurnCandidates(el, normalizedAddedTurnCandidates);
         }
+      }
+      const hasStructuralMutation =
+        !!(normalizedAddedTurnCandidates.size || payload.removedTurnLike);
+      if (!hasStructuralMutation) return;
+
+      for (const el of normalizedAddedTurnCandidates) {
+        S.pendingAddedTurnNodes.add(el);
       }
 
       if (payload.suppressActive) {
@@ -2355,6 +2524,7 @@ Self-check:
     S.visibleTurnEnd = nextVisibleIndices.length ? nextVisibleIndices[nextVisibleIndices.length - 1] : -1;
     S.renderedOnce = true;
     syncLegacyRefs();
+    syncSharedTurnRuntimePageState(win);
 
     updateSentinelState(win);
     maybeRestoreInlineOnInserted(inserted);
@@ -3139,6 +3309,7 @@ Self-check:
 
     restoreAllTurnsIntoRoot();
     removeSentinelsFromRoot(S.root);
+    clearSharedTurnRuntimeCanonical();
 
     try { document.getElementById(CSS_STYLE_ID)?.remove(); } catch (_) {}
 

@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.highlights.engine
 // @author             HumamDev
 // @version            3.2.11
-// @revision           001
-// @build              260304-102754
+// @revision           002
+// @build              260328-002627
 // @description        H2O Contract v2.0 refactor — Inline highlights (XPath + TextPosition + TextQuote) with configurable apply/remove shortcuts, popup trigger, editable palette, robust persistence, MiniMap sync, and Control Hub integration.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -384,6 +384,12 @@
     if (hint === 'user' || hint === 'question') return role === 'user' || role === 'question';
     return role === hint;
   };
+  const MSG_isQuestionRestoreReady = (el) => {
+    const msg = el?.matches?.(SEL_MSG) ? el : MSG_findContainer(el);
+    if (!msg || !MSG_roleMatches(msg, 'question')) return false;
+    if (msg.dataset?.hoQwrapDone === '1' || msg.dataset?.h2oQwrapDone === '1') return true;
+    return !!msg.querySelector?.('.cgxui-qswr');
+  };
 
   const MSG_isUnstableAnswerId = (id) => {
     if (!id) return true;
@@ -747,6 +753,57 @@
     };
     const _cloneObj = (v) => UTIL_safeParse(JSON.stringify(v || {}), {}) || {};
     const _asStoreObj = (v) => (_isPlainObject(v) ? v : {});
+    const _knownColorNames = new Set(
+      CFG_PALETTE_DEFAULTS
+        .map((entry) => String(entry?.title || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const _defaultImportedColor = () => {
+      const preferred = String(CFG_getUiConfig()?.defaultColor || CFG_DEFAULT_COLOR || '').trim().toLowerCase();
+      return _knownColorNames.has(preferred) ? preferred : CFG_DEFAULT_COLOR;
+    };
+    const _normalizeImportedColor = (raw) => {
+      const color = String(raw || '').trim().toLowerCase();
+      return _knownColorNames.has(color) ? color : _defaultImportedColor();
+    };
+    const _sanitizeImportedStore = (rawStore) => {
+      const store = _asStoreObj(rawStore);
+      const srcItems = _asStoreObj(store.itemsByAnswer);
+      if (!Object.keys(srcItems).length) return {};
+
+      const out = { itemsByAnswer: {} };
+      let total = 0;
+
+      for (const [answerIdRaw, srcList] of Object.entries(srcItems)) {
+        const answerId = String(answerIdRaw || '').trim();
+        if (!answerId || !Array.isArray(srcList) || !srcList.length) continue;
+
+        const cleanById = new Map();
+        for (const itemRaw of srcList) {
+          if (!_isPlainObject(itemRaw)) continue;
+          const item = _cloneObj(itemRaw);
+          const id = String(item?.id || '').trim();
+          if (!id) continue;
+          item.id = id;
+          item.color = _normalizeImportedColor(item.color);
+          const prev = cleanById.get(id);
+          const prevTs = Number(prev?.ts || 0);
+          const nextTs = Number(item?.ts || 0);
+          if (!prev || nextTs >= prevTs) cleanById.set(id, item);
+        }
+        const cleanList = Array.from(cleanById.values());
+        if (!cleanList.length) continue;
+        out.itemsByAnswer[answerId] = cleanList;
+        total += cleanList.length;
+      }
+
+      if (!total) return {};
+
+      const convoId = String(store.convoId || '').trim();
+      if (convoId) out.convoId = convoId;
+      out._meta = { currentColor: _normalizeImportedColor(_asStoreObj(store._meta).currentColor) };
+      return out;
+    };
     const _countStoreItems = (store) => {
       let total = 0;
       const byAnswer = _asStoreObj(_asStoreObj(store).itemsByAnswer);
@@ -899,11 +956,15 @@
         return Object.keys(_asStoreObj(canonMerged)).length ? canonMerged : {};
       }
 
+      let migrationDone = null;
+      try { migrationDone = await UTIL_mig_getFlag(KEY_MIG_DISK_V1); } catch {}
+      if (String(migrationDone || '').trim() === '1') return {};
+
       let merged = canonMerged;
       for (const key of LEGACY_DISK_KEYS) {
-        merged = _mergeStore(merged, await _readKey(key));
+        merged = _mergeStore(merged, _sanitizeImportedStore(await _readKey(key)));
         // Always also check localStorage mirror to survive backend flips (GM <-> LS).
-        merged = _mergeStore(merged, _readKeyLocal(key));
+        merged = _mergeStore(merged, _sanitizeImportedStore(_readKeyLocal(key)));
       }
       if (!_countStoreItems(merged) && !Object.keys(_asStoreObj(merged)).length) return {};
       return merged;
@@ -916,19 +977,19 @@
 
     const _writeRaw = async (obj) => {
       const safe = _asStoreObj(obj);
-      await _writeKey(KEY_DISK_CANON, safe);
       _writeLocalMirror(KEY_DISK_CANON, safe);
+      await _writeKey(KEY_DISK_CANON, safe);
 
       if (CFG_MIRROR_ALIAS_KEYS) {
-        await _writeKey(KEY_DISK_CANON_ALIAS_V3, safe);
-        await _writeKey(KEY_DISK_FUTURE_ALIAS_V2, safe);
         _writeLocalMirror(KEY_DISK_CANON_ALIAS_V3, safe);
         _writeLocalMirror(KEY_DISK_FUTURE_ALIAS_V2, safe);
+        await _writeKey(KEY_DISK_CANON_ALIAS_V3, safe);
+        await _writeKey(KEY_DISK_FUTURE_ALIAS_V2, safe);
       }
 
       if (CFG_MIRROR_LEGACY_KEYS) {
-        await _writeKey(KEY_DISK_LEGACY_HO_V2, safe);
         _writeLocalMirror(KEY_DISK_LEGACY_HO_V2, safe);
+        await _writeKey(KEY_DISK_LEGACY_HO_V2, safe);
       }
     };
 
@@ -1039,6 +1100,7 @@
       if (done === '1') return;
     } catch {}
 
+    let shouldMarkDone = false;
     try {
       const s0 = STORE_read() || {};
       if (s0 && Object.keys(s0).length) {
@@ -1048,7 +1110,10 @@
         });
         await UTIL_storage.saveNow();
       }
+      shouldMarkDone = true;
     } catch {}
+
+    if (!shouldMarkDone) return;
 
     // Keep legacy keys as read-aliases; never hard-delete automatically.
     try { await UTIL_mig_setFlag(KEY_MIG_DISK_V1, '1'); } catch {}
@@ -2312,6 +2377,9 @@
       HL_updateStoreColor(answerId, node.getAttribute(ATTR_HL_ID), colorTitle);
       touched.push(node);
     }
+    if (touched.length) {
+      try { void UTIL_storage.saveNow(); } catch {}
+    }
 
     // 2) new highlight if none touched
     if (!touched.length) {
@@ -2330,6 +2398,7 @@
           ts: Date.now(),
           pairNo
         });
+        try { void UTIL_storage.saveNow(); } catch {}
       }
     }
 
@@ -2491,6 +2560,13 @@ mark.${CSS_CLS_HL}:hover{
     STATE_unstableRetries.delete(el);
 
     clearTimeout(STATE_restoreTimers.get(id));
+    if (MSG_isQuestionRestoreReady(el)) {
+      STATE_restoreTimers.set(id, UTIL_setTimeout(() => {
+        STATE_restoreTimers.delete(id);
+        HL_restoreMessage(el);
+      }, 0));
+      return;
+    }
     STATE_restoreTimers.set(id, setTimeout(() => REST_tryWhenStable(el, id), CFG_RESTORE_DEBOUNCE_MS));
   };
 

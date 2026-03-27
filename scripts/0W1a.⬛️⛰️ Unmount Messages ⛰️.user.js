@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.unmount.messages
 // @author             HumamDev
 // @version            1.3.1
-// @revision           001
-// @build              260304-102754
+// @revision           002
+// @build              260328-002627
 // @description        Soft "virtual scrolling" for ChatGPT: unmount far-away messages (Q+A) to keep long pages light. Core-aware Turn numbering when available. Dock Panel compatible (remount + inline anchors). (h2o-* ➜ cgxui-*)
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -1444,12 +1444,12 @@
       delete el.dataset[ATTR_UNMOUNTM_H2O_UNMOUNTED];
 
       let hasMarks = !!body.querySelector(SEL_UNMOUNTM_MARK_HL);
-      if (!hasMarks && entry.role === STR_UNMOUNTM_ROLE_A) {
+      if (entry.role === STR_UNMOUNTM_ROLE_A) {
         const hadRestoringUid = Object.prototype.hasOwnProperty.call(W, 'H2O_UM_RESTORING_UID');
         const prevRestoringUid = W.H2O_UM_RESTORING_UID;
         try {
           if (entry.uid) W.H2O_UM_RESTORING_UID = entry.uid;
-          W.restoreInlineHighlights?.(el);
+          W.restoreInlineHighlights?.(entry.uid || el);
         } catch (_) {
         } finally {
           try {

@@ -11,5 +11,14 @@
     "**/dev-order.tsv": "plaintext",
     "**/dev-order.txt": "plaintext",
     "**/userscript-headers.tsv": "plaintext"
+  },
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": "^scripts\\/.*\\.user\\.js$",
+        "isAsync": false,
+        "cmd": "npm run rev:save -- \"${relativeFile}\""
+      }
+    ]
   }
 }
