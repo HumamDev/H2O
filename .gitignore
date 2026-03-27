@@ -20,3 +20,28 @@ meta/ledger/**
 # Local-only commit message input
 meta/notes/COMMIT_MESSAGE.txt
 meta/notes/COMMIT_QUEUE.txt
+
+# Local assistant workflow and scratch material (not for repo)
+.claude/
+s-files/
+CLAUDE.md
+"CLAUDE 2.md"
+assets/
+references/
+tasks-manual-*.md
+git-status.txt
+staged.txt
+unstaged.txt
+
+# Local-only test/scratch config files
+config/__codex-*.json
+config/userscript-headers.html
+config/userscript-headers.tsv
+
+# macOS Finder duplicate files (created by Cmd+D / "Duplicate")
+* 2.js
+* 2.mjs
+* 2.css
+* 2.html
+* 2.json
+* 2.md
