@@ -1,0 +1,179 @@
+<!--
+ * @version 1.0.0
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Desk</title>
+  <link rel="stylesheet" href="./desk.css" />
+</head>
+<body>
+  <main class="desk-app">
+    <header class="desk-header">
+      <h1 title="Phase 3 workspace">Desk</h1>
+      <div id="deskNotice" class="desk-notice" data-tone="info">
+        Desk loaded successfully.
+      </div>
+    </header>
+
+    <section class="desk-panel">
+      <div class="desk-panel-heading">
+        <div class="desk-title-row">
+          <h2 class="desk-panel-title">Input</h2>
+          <span
+            class="desk-info"
+            tabindex="0"
+            aria-label="Input info"
+            title="Visible user text only. Hidden role prompts stay separate."
+          >i</span>
+        </div>
+
+        <label for="deskRoleSelect" class="desk-inline-field">
+          <span class="desk-inline-label">Role</span>
+          <select id="deskRoleSelect" class="desk-select">
+            <option value="grammar">Grammar</option>
+            <option value="summary">Summary</option>
+          </select>
+        </label>
+      </div>
+
+      <textarea
+        id="deskInput"
+        class="desk-textarea"
+        placeholder="Type or paste text here..."
+      ></textarea>
+
+      <div class="desk-actions desk-actions-compact desk-actions-nowrap">
+        <button id="deskSendBtn" class="desk-button">Send to Grammar</button>
+        <button id="deskReadSelectionBtn" class="desk-button desk-button-secondary">Read Selection</button>
+        <button id="deskReadPageBtn" class="desk-button desk-button-secondary">Read Page</button>
+        <button id="deskClearBtn" class="desk-button desk-button-secondary">Clear</button>
+      </div>
+    </section>
+
+    <section class="desk-panel">
+      <div class="desk-panel-heading">
+        <div class="desk-title-row">
+          <h2 class="desk-panel-title">Output</h2>
+          <span
+            class="desk-info"
+            tabindex="0"
+            aria-label="Output info"
+            title="Copy or insert the currently displayed result."
+          >i</span>
+        </div>
+
+        <div class="desk-toggle-group" role="group" aria-label="Output view">
+          <button id="deskCleanViewBtn" class="desk-toggle is-active" aria-pressed="true">Clean</button>
+          <button id="deskRawViewBtn" class="desk-toggle" aria-pressed="false">Raw</button>
+        </div>
+      </div>
+
+      <div id="deskOutputMeta" class="desk-inline-note" title="No result yet.">No result</div>
+
+      <div id="deskOutput" class="desk-output" aria-live="polite" data-empty="true">
+        Output will appear here.
+      </div>
+
+      <div class="desk-actions">
+        <button id="deskCopyBtn" class="desk-button desk-button-secondary" disabled>Copy</button>
+        <button id="deskInsertBtn" class="desk-button desk-button-secondary" disabled>Insert to Main</button>
+      </div>
+    </section>
+
+    <section class="desk-panel">
+      <div class="desk-panel-heading">
+        <div class="desk-title-row">
+          <h2 class="desk-panel-title">Role / Chat</h2>
+          <span
+            class="desk-info"
+            tabindex="0"
+            aria-label="Role and chat info"
+            title="Role state and Grammar helper tab controls."
+          >i</span>
+        </div>
+
+        <span id="deskRoleCapabilityBadge" class="desk-badge" data-state="live" title="Live runner: Grammar helper tab.">
+          Grammar live
+        </span>
+      </div>
+
+      <div class="desk-kv-grid">
+        <div class="desk-kv-item">
+          <span class="desk-kv-key">Role</span>
+          <span id="deskCurrentRole" class="desk-kv-value">Grammar Chat</span>
+        </div>
+        <div class="desk-kv-item">
+          <span class="desk-kv-key">Grammar</span>
+          <span id="deskGrammarStatus" class="desk-kv-value">Unknown</span>
+        </div>
+        <div class="desk-kv-item">
+          <span class="desk-kv-key">Helper</span>
+          <span
+            id="deskGrammarHelperNote"
+            class="desk-kv-value"
+            title="These controls power the live Grammar workflow in Phase 3."
+          >Grammar only</span>
+        </div>
+        <div class="desk-kv-item">
+          <span class="desk-kv-key">Tab ID</span>
+          <span id="deskGrammarTabId" class="desk-kv-value">—</span>
+        </div>
+      </div>
+
+      <div class="desk-actions desk-actions-compact">
+        <button id="deskOpenGrammarBtn" class="desk-button">Open Grammar</button>
+        <button id="deskFocusGrammarBtn" class="desk-button desk-button-secondary">Focus Grammar</button>
+        <button id="deskRefreshGrammarBtn" class="desk-button desk-button-secondary">Refresh</button>
+        <button id="deskTogglePromptEditorBtn" class="desk-button desk-button-secondary" aria-expanded="false">
+          Prompt Editor
+        </button>
+      </div>
+    </section>
+
+    <section id="deskPromptSection" class="desk-panel desk-panel-collapsible" data-expanded="false">
+      <div class="desk-panel-heading">
+        <div class="desk-title-row">
+          <h2 class="desk-panel-title">Prompt Editor</h2>
+          <span
+            class="desk-info"
+            tabindex="0"
+            aria-label="Prompt editor info"
+            title="Edit the hidden role prompt without changing the visible input."
+          >i</span>
+        </div>
+      </div>
+
+      <div id="deskPromptPanelBody" class="desk-panel-body" hidden>
+        <div
+          id="deskPromptMeta"
+          class="desk-inline-note"
+          title="Using default hidden prompt for Grammar Chat. This text stays out of the visible input."
+        >
+          Default prompt
+        </div>
+
+        <label for="deskPromptEditor" id="deskPromptScopeLabel" class="desk-label">
+          Hidden Prompt — Grammar Chat
+        </label>
+        <textarea
+          id="deskPromptEditor"
+          class="desk-textarea desk-textarea-compact"
+          placeholder="Hidden prompt for the current role..."
+        ></textarea>
+
+        <div class="desk-actions">
+          <button id="deskResetPromptBtn" class="desk-button desk-button-secondary" disabled>
+            Reset Default
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./desk.js"></script>
+</body>
+</html>

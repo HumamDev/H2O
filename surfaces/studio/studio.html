@@ -1,0 +1,190 @@
+<!--
+ * @version 1.0.0
+-->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>H2O Studio vNext</title>
+  <link rel="stylesheet" href="./studio.css" />
+</head>
+<body>
+  <div class="wbShell">
+    <aside class="wbSide wbSide--rail" aria-label="Studio rail">
+      <div class="wbRailGroup">
+        <button class="wbRailBtn" id="sidebarToggleBtn" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 6.75h16M4 12h16M4 17.25h16" />
+            </svg>
+          </span>
+        </button>
+      </div>
+
+      <nav class="wbRailGroup wbRailNav" aria-label="Views">
+        <a class="wbRailBtn wbNavItem" href="#/saved" data-view="saved" aria-label="Saved" title="Saved">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M6.75 4.75h8.6l2.9 2.9v11.6a1 1 0 0 1-1 1H6.75a1 1 0 0 1-1-1v-13.5a1 1 0 0 1 1-1Z" />
+              <path d="M15.35 4.75v3.15h3.15" />
+            </svg>
+          </span>
+        </a>
+        <a class="wbRailBtn wbNavItem" href="#/pinned" data-view="pinned" aria-label="Pinned" title="Pinned">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M12 20.25v-5.5" />
+              <path d="m8.25 10.25 3.75-5.5 3.75 5.5" />
+              <path d="M8.5 10.25h7a1 1 0 0 1 .8 1.6l-1.8 2.4H9.5l-1.8-2.4a1 1 0 0 1 .8-1.6Z" />
+            </svg>
+          </span>
+        </a>
+        <a class="wbRailBtn wbNavItem" href="#/archive" data-view="archive" aria-label="Archive" title="Archive">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4.75 7.5h14.5v10.75a1 1 0 0 1-1 1H5.75a1 1 0 0 1-1-1Z" />
+              <path d="M4.25 4.75h15.5v2.75H4.25Z" />
+              <path d="M9 11.75h6" />
+            </svg>
+          </span>
+        </a>
+        <button class="wbRailBtn" id="focusSearchBtn" type="button" aria-label="Focus search" title="Search">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <circle cx="11" cy="11" r="5.25" />
+              <path d="m15.1 15.1 3.15 3.15" />
+            </svg>
+          </span>
+        </button>
+      </nav>
+
+      <div class="wbRailGroup wbRailGroup--end">
+        <button class="wbRailBtn" id="closeBtn" type="button" aria-label="Close window" title="Close window">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M6.75 6.75 17.25 17.25" />
+              <path d="M17.25 6.75 6.75 17.25" />
+            </svg>
+          </span>
+        </button>
+      </div>
+    </aside>
+
+    <aside class="wbSide wbSide--sidebar" aria-label="Studio sidebar">
+      <div class="wbSidebarHead">
+        <a class="wbSidebarHome" href="#/saved" aria-label="Saved chats">
+          <span class="wbSidebarHomeMark">H2O</span>
+          <span class="wbSidebarHomeBody">
+            <span class="wbSidebarHomeTitle">Studio</span>
+            <span class="wbSidebarHomeMeta">Saved ChatGPT archive</span>
+          </span>
+        </a>
+
+        <button class="wbIconBtn" id="sidebarCollapseBtn" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <span class="wbIco" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="m14.5 6.75-5.25 5.25 5.25 5.25" />
+            </svg>
+          </span>
+        </button>
+      </div>
+
+      <label class="wbSidebarSearch" for="q">
+        <span class="wbIco wbIco--search" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <circle cx="11" cy="11" r="5.25" />
+            <path d="m15.1 15.1 3.15 3.15" />
+          </svg>
+        </span>
+        <input id="q" class="wbSidebarSearchInput" placeholder="Search saved chats" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <section class="wbSidebarSection">
+        <div class="wbSideLabel">Library</div>
+        <nav class="wbSidebarNav" aria-label="Studio views">
+          <a class="wbNavItem" href="#/saved" data-view="saved">
+            <span class="wbNavGlyph">Saved</span>
+            <span class="wbNavCopy">Latest saved chats</span>
+          </a>
+          <a class="wbNavItem" href="#/pinned" data-view="pinned">
+            <span class="wbNavGlyph">Pinned</span>
+            <span class="wbNavCopy">Pinned snapshots</span>
+          </a>
+          <a class="wbNavItem" href="#/archive" data-view="archive">
+            <span class="wbNavGlyph">Archive</span>
+            <span class="wbNavCopy">Archived conversations</span>
+          </a>
+        </nav>
+      </section>
+
+      <section class="wbSidebarSection wbSidebarSection--folders">
+        <div class="wbSideLabel">Folders</div>
+        <div id="folderList" class="wbFolderList">
+          <div class="wbSideEmpty">Loading folder bindings…</div>
+        </div>
+      </section>
+
+      <section class="wbSidebarSection wbSidebarSection--recent">
+        <div class="wbSidebarSectionHead">
+          <div id="sidebarChatsLabel" class="wbSideLabel">Current View</div>
+          <div id="sidebarChatsMeta" class="wbSideMeta"></div>
+        </div>
+        <div id="sidebarChatList" class="wbSidebarChatList">
+          <div class="wbSideEmpty">Loading chats…</div>
+        </div>
+      </section>
+    </aside>
+
+    <div class="wbStage">
+      <header class="wbTop">
+        <div class="wbTopGroup wbTopGroup--meta">
+          <button class="wbIconBtn wbTopMenuBtn" id="topSidebarBtn" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
+            <span class="wbIco" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M4 6.75h16M4 12h16M4 17.25h16" />
+              </svg>
+            </span>
+          </button>
+
+          <div class="wbRouteMeta">
+            <div id="routeEyebrow" class="wbRouteEyebrow">Saved</div>
+            <div id="routeTitle" class="wbRouteTitle">Saved chats</div>
+            <div id="routeSummary" class="wbRouteSummary">Archive-backed ChatGPT frame</div>
+          </div>
+        </div>
+
+        <div class="wbTopGroup wbTopGroup--actions">
+          <label class="wbSelectWrap" id="folderAssignWrap" hidden>
+            <span class="wbSelectLabel">Folder</span>
+            <select id="folderAssignSelect" class="wbSelect" aria-label="Assign selected chat to folder"></select>
+          </label>
+
+          <button class="wbBtn" id="densityBtn" type="button" title="Toggle density">Cozy</button>
+          <button class="wbBtn" id="layoutBtn" type="button" title="Toggle reader width">Focused</button>
+          <button class="wbBtn" id="refreshBtn" type="button">Refresh</button>
+          <button class="wbBtn wbBtnPrimary" id="openReaderTabBtn" type="button" disabled>Open Reader</button>
+        </div>
+      </header>
+
+      <main class="wbMain">
+        <section id="viewListPanel" class="wbPanel wbPanel--list">
+          <header class="wbPanelHead">
+            <div class="wbPanelTitles">
+              <div id="listTitle" class="wbPanelTitle">Saved chats</div>
+              <div id="listSubtitle" class="wbPanelSubtitle">Loading…</div>
+            </div>
+            <div id="listFilters" class="wbFilterBar" aria-live="polite"></div>
+          </header>
+
+          <section id="viewList" class="wbHistory"></section>
+        </section>
+
+        <section id="viewReader" class="wbReader" hidden></section>
+      </main>
+    </div>
+  </div>
+
+  <script src="./studio.js"></script>
+</body>
+</html>
