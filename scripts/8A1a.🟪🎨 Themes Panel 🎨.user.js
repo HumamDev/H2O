@@ -1,15 +1,15 @@
 // ==UserScript==
-// @h2o-id      8a.themes.panel
-// @name         8A.🟪🎨 Themes Panel 🎨
-// @namespace    H2O.ChatGPT.Themes
-// @version      2.1.14
-// @rev        000001
-// @build      2026-02-28T17:33:34Z
-// @description  Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
-// @author       HumamDev
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             8a1a.themes.panel
+// @name               8A1a.🟪🎨 Themes Panel 🎨
+// @namespace          H2O.Premium.CGX.themes.panel
+// @author             HumamDev
+// @version            2.1.14
+// @revision           001
+// @build              260304-102754
+// @description        Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {

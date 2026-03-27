@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      u1.canvas.last-updated.timestamp
-// @name         u1.🔴👨🏻‍🏫 Canvas Last-Updated Timestamp 👨🏻‍🏫
-// @namespace    hobayda
-// @version      2.0
-// @description  Shows a centered "Last updated" timestamp at the top of the right-side canvas and keeps it in sync on edits
-// @match        https://chatgpt.com/*
-// @grant        none
-// @run-at       document-idle
+// @h2o-id             x1.canvas.last.updated.timestamp
+// @name               X1.🔴Canvas Last-Updated Timestamp
+// @namespace          H2O.Premium.CGX.canvas.last.updated.timestamp
+// @author             HumamDev
+// @version            2.0
+// @revision           001
+// @build              260304-102754
+// @description        Shows a centered "Last updated" timestamp at the top of the right-side canvas and keeps it in sync on edits
+// @match              https://chatgpt.com/*
+// @grant              none
+// @run-at             document-idle
 // ==/UserScript==
 
 (() => {

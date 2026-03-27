@@ -1,15 +1,15 @@
 // ==UserScript==
-// @h2o-id      1a1a.minimap.kernel
-// @name         1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️
-// @namespace    H2O.Prime.CGX.MiniMapKernel
-// @version      12.6.4
-// @rev        000001
-// @build      2026-02-28T17:33:34Z
-// @description  MiniMap Kernel: lifecycle + shared bridge + foundation ownership (Phase 1B)
-// @author       HumamDev
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             1a1a.minimap.kernel
+// @name               1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️
+// @namespace          H2O.Premium.CGX.minimap.kernel
+// @author             HumamDev
+// @version            12.6.4
+// @revision           001
+// @build              260304-102754
+// @description        MiniMap Kernel: lifecycle + shared bridge + foundation ownership (Phase 1B)
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 
 // ==/UserScript==
 

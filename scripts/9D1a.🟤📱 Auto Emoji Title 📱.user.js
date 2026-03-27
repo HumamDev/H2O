@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      9d.auto.emoji.title
-// @name         9d.🟤📱 Auto Emoji Title 📱
-// @namespace    ho.chatgpt.autoemoji
-// @version      2.3
-// @description  (Stable + Live Picker + 9c Sync) Auto-prefix emoji ONCE per chat using native rename. If emoji already exists -> never auto-change. Click emoji badge -> picker. Live update + event for 9c. Chats only (no folders/projects).
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             9d1a.auto.emoji.title
+// @name               9D1a.🟤📱 Auto Emoji Title 📱
+// @namespace          H2O.Premium.CGX.auto.emoji.title
+// @author             HumamDev
+// @version            2.3
+// @revision           001
+// @build              260304-102754
+// @description        (Stable + Live Picker + 9c Sync) Auto-prefix emoji ONCE per chat using native rename. If emoji already exists -> never auto-change. Click emoji badge -> picker. Live update + event for 9c. Chats only (no folders/projects).
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (function () {

@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      9e.keep.projects.open
-// @name         9e.🟤🧷 Keep Projects Open
-// @namespace    H2O.ChatGPT.Sidebar
-// @version      2.0.3
-// @description  Forces the Sidebar "Projects" section to stay expanded (auto-reopens after rerenders). Contract v2 Stage 1 mechanics (boot/dispose, vault+diag, no side-effect top-level).
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             9x1a.keep.projects.open
+// @name               9X1a.🟤🧷 Keep Projects Open
+// @namespace          H2O.Premium.CGX.keep.projects.open
+// @author             HumamDev
+// @version            2.0.3
+// @revision           001
+// @build              260304-102754
+// @description        Forces the Sidebar "Projects" section to stay expanded (auto-reopens after rerenders). Contract v2 Stage 1 mechanics (boot/dispose, vault+diag, no side-effect top-level).
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {

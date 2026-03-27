@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      x1.select.all.answer
-// @name         x1.🔴🧲 Select All Answer 🧲
-// @namespace    H2O.ChatGPT.toolbarInject
-// @version      0.6
-// @description  Adds a toolbar button under each assistant answer that selects the full answer text in a mouse-like way so the native “Ask ChatGPT” bubble can appear.
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             x2.select.all.answer
+// @name               X2.🔴🧲 Select All Answer 🧲
+// @namespace          H2O.Premium.CGX.select.all.answer
+// @author             HumamDev
+// @version            0.6
+// @revision           001
+// @build              260304-102754
+// @description        Adds a toolbar button under each assistant answer that selects the full answer text in a mouse-like way so the native “Ask ChatGPT” bubble can appear.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {

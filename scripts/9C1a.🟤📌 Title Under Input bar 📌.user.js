@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      9c.title.under.input.bar
-// @name         9c.🟤📌 Title Under Input bar 📌
-// @namespace    H2O.ChatGPT.TitleUnderInput
-// @version      2.8
-// @description  Full under-input title, auto-sync, native rename integration, and sidebar locate highlight.
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             9c1a.title.under.input.bar
+// @name               9C1a.🟤📌 Title Under Input bar 📌
+// @namespace          H2O.Premium.CGX.title.under.input.bar
+// @author             HumamDev
+// @version            2.8
+// @revision           001
+// @build              260304-102754
+// @description        Full under-input title, auto-sync, native rename integration, and sidebar locate highlight.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 // --- Extended Script Notes ---

@@ -1,11 +1,14 @@
 // ==UserScript==
-// @h2o-id      9a.interface.enhancer
-// @name         9a.🟫🖥️ Interface Enhancer 🖥️
-// @namespace    hobayda
-// @version      6.3
-// @description  Tiny color button beside each chat; choose dot + row color (toggle to clear), sidebar + project lists
-// @match        https://chatgpt.com/*
-// @grant        none
+// @h2o-id             9a1a.interface.enhancer
+// @name               9A1a.🟫🖥️ Interface Enhancer 🖥️
+// @namespace          H2O.Premium.CGX.interface.enhancer
+// @author             HumamDev
+// @version            6.3
+// @revision           001
+// @build              260304-102754
+// @description        Tiny color button beside each chat; choose dot + row color (toggle to clear), sidebar + project lists
+// @match              https://chatgpt.com/*
+// @grant              none
 // ==/UserScript==
 
 (() => {

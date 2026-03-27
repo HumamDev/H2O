@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      z1d.toolbar.palette.button
-// @name         1d.🔴🎨 Toolbar Palette Button 🎨
-// @namespace    H2O.ChatGPT.toolbarPaletteExact
-// @version      0.7.6
-// @description  ONE ▦ button only in the answer toolbar, placed right before ⋯. Opens MiniMap palette if available; otherwise opens a 1:1 clone. Same storage key + same glow classes. Also removes any non-toolbar duplicate ▦ buttons.
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             x3.toolbar.palette.button
+// @name               X3.🔴🎨 Toolbar Palette Button 🎨
+// @namespace          H2O.Premium.CGX.toolbar.palette.button
+// @author             HumamDev
+// @version            0.7.6
+// @revision           001
+// @build              260304-102754
+// @description        ONE ▦ button only in the answer toolbar, placed right before ⋯. Opens MiniMap palette if available; otherwise opens a 1:1 clone. Same storage key + same glow classes. Also removes any non-toolbar duplicate ▦ buttons.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {

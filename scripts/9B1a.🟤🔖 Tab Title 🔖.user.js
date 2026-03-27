@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      9b.tab.title
-// @name         9b.🟤🔖 Tab Title 🔖
-// @namespace    H2O.ChatGPT.TabTitle
-// @version      1.4.3
-// @description  Chat pages: tab = chat title only (no folder, no ChatGPT). Project list pages (/g/.../project): tab = project name only.
-// @match        https://chatgpt.com/*
-// @run-at       document-start
-// @grant        none
+// @h2o-id             9b1a.tab.title
+// @name               9B1a.🟤🔖 Tab Title 🔖
+// @namespace          H2O.Premium.CGX.tab.title
+// @author             HumamDev
+// @version            1.4.3
+// @revision           001
+// @build              260304-102754
+// @description        Chat pages: tab = chat title only (no folder, no ChatGPT). Project list pages (/g/.../project): tab = project name only.
+// @match              https://chatgpt.com/*
+// @run-at             document-start
+// @grant              none
 // ==/UserScript==
 
 (function () {
