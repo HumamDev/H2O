@@ -1,7 +1,7 @@
 {
   "//": "Opt-in setup. Requires VS Code extension: emeraldwalk.runonsave",
   "//1": "To enable: copy this block into .vscode/settings.json (do not rename this file in-place).",
-  "//2": "Keep save path fast: run rev:save only (stamp @rev/@build + append EDIT ledger row).",
+  "//2": "Keep save path fast: run rev:save only (stamp @revision/@build + append EDIT ledger row).",
   "//3": "Dashboard refresh should be manual OR watcher-based (recommended), not on every save.",
   "emeraldwalk.runonsave": {
     "commands": [

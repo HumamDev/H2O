@@ -16,17 +16,47 @@
       "problemMatcher": []
     },
     {
+      "label": "H2O: 1) 🟦 Common / C) Validate loader order (deps + pack + TSV)",
+      "detail": "Checks dependency manifest, critical group order, cycles, phase violations, and proxy-pack drift before extension build.",
+      "type": "shell",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/../h2o-dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/common/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
+      "problemMatcher": []
+    },
+    {
       "label": "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)",
       "detail": "Dev-only extension step: builds build/chrome-ext-dev-controls (popup toggles + live loader).",
-      "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_EXT_OUT_DIR=\"${workspaceFolder}/build/chrome-ext-dev-controls\" && export H2O_EXT_PROXY_PACK_URL=\"http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/ext/make-chrome-live-extension.mjs\" && echo \"\" && echo \"✅ H2O Dev Controls Extension Built\" && echo \"   Folder: ${workspaceFolder}/build/chrome-ext-dev-controls\"",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/ext/build-chrome-live-extension.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_SRC_DIR": "${workspaceFolder}",
+          "H2O_EXT_OUT_DIR": "${workspaceFolder}/build/chrome-ext-dev-controls",
+          "H2O_EXT_PROXY_PACK_URL": "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt"
+        }
+      },
       "problemMatcher": []
     },
     {
       "label": "H2O: 2) 🟩 DEV / B) 🔵 Lean Build Extension (unpacked, no controls)",
       "detail": "Lean dev extension step: builds build/chrome-ext-dev-lean (no popup toggles, slightly faster startup).",
-      "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_EXT_DEV_VARIANT=lean && export H2O_EXT_OUT_DIR=\"${workspaceFolder}/build/chrome-ext-dev-lean\" && export H2O_EXT_PROXY_PACK_URL=\"http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/ext/make-chrome-live-extension.mjs\" && echo \"\" && echo \"✅ H2O Lean Dev Loader Extension Built\" && echo \"   Folder: ${workspaceFolder}/build/chrome-ext-dev-lean\"",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/ext/build-chrome-live-extension.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_SRC_DIR": "${workspaceFolder}",
+          "H2O_EXT_DEV_VARIANT": "lean",
+          "H2O_EXT_OUT_DIR": "${workspaceFolder}/build/chrome-ext-dev-lean",
+          "H2O_EXT_PROXY_PACK_URL": "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt"
+        }
+      },
       "problemMatcher": []
     },
     {
@@ -37,31 +67,62 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 1) 🟦 Common / C) ⚡ QUICK Combined: Sync + Build (one click prerequisite)",
-      "detail": "⚡ Quick prerequisite: runs Common A then Common B.",
+      "label": "H2O: 3) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)",
+      "detail": "Desk extension step: builds build/chrome-ext-desk (MV3 side panel helper extension).",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/ext/pack-desk.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
+      "detail": "⚡ Quick prerequisite: runs the direct dev-rebuild entrypoint (sync + aliases + proxy + validation).",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/dev-rebuild.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_SRC_DIR": "${workspaceFolder}",
+          "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
+          "H2O_SERVER_DIR": "${workspaceFolder}/../h2o-dev-server"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 3) 🟫 DESK / B) ⚡ QUICK: Workflow for Desk Extension",
+      "detail": "⚡ Quick Desk workflow: runs the direct prerequisite rebuild, then DESK A.",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "H2O: 1) 🟦 Common / A) Sync dev-order (folder -> TSV + views)",
-        "H2O: 1) 🟦 Common / B) Build aliases + EXT proxy pack (uses TSV master)"
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
+        "H2O: 3) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)"
       ],
       "problemMatcher": []
     },
     {
       "label": "H2O: 2) 🟩 DEV / C) ⚡ 🟢 QUICK ✅ RECOMMENDED: Workflow for Dev Controls",
-      "detail": "⚡ Quick recommended dev workflow: runs Common C, then DEV A (🟢 Controls).",
+      "detail": "⚡ Quick recommended dev workflow: runs the direct prerequisite rebuild, then DEV A (🟢 Controls).",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "H2O: 1) 🟦 Common / C) ⚡ QUICK Combined: Sync + Build (one click prerequisite)",
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
         "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)"
       ],
       "problemMatcher": []
     },
     {
       "label": "H2O: 2) 🟩 DEV / D) ⚡ 🔵 QUICK FAST: Workflow for Lean Dev Loader",
-      "detail": "⚡ Quick faster dev workflow: runs Common C, then DEV B (🔵 Lean).",
+      "detail": "⚡ Quick faster dev workflow: runs the direct prerequisite rebuild, then DEV B (🔵 Lean).",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "H2O: 1) 🟦 Common / C) ⚡ QUICK Combined: Sync + Build (one click prerequisite)",
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
         "H2O: 2) 🟩 DEV / B) 🔵 Lean Build Extension (unpacked, no controls)"
       ],
       "problemMatcher": []
@@ -71,7 +132,7 @@
       "detail": "⚡ Quick combined outputs: runs Common C, then DEV A (🟢 Controls) + OPS PANEL A.",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "H2O: 1) 🟦 Common / C) ⚡ QUICK Combined: Sync + Build (one click prerequisite)",
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
         "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)",
         "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)"
       ],
@@ -82,17 +143,28 @@
       "detail": "⚡ Quick faster combined outputs: runs Common C, then DEV B (🔵 Lean) + OPS PANEL A.",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "H2O: 1) 🟦 Common / C) ⚡ QUICK Combined: Sync + Build (one click prerequisite)",
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
         "H2O: 2) 🟩 DEV / B) 🔵 Lean Build Extension (unpacked, no controls)",
         "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)"
       ],
       "problemMatcher": []
     },
     {
-      "label": "H2O: DEV / Z) ONE-BUTTON Rebuild Everything (scripts + aliases + proxy + controls + lean)",
+      "label": "H2O: #) 🟥 DEV / Z) ONE-BUTTON Rebuild Everything (scripts + aliases + proxy + controls + lean)",
       "detail": "One-button daily rebuild: common prereqs + Controls extension + Lean extension.",
-      "type": "shell",
-      "command": "npm run dev:all",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/dev-all.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_SRC_DIR": "${workspaceFolder}",
+          "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
+          "H2O_SERVER_DIR": "${workspaceFolder}/../h2o-dev-server"
+        }
+      },
       "problemMatcher": []
     },
     {
@@ -104,7 +176,7 @@
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
-      "detail": "Local archive utility: full snapshot of versioned tracked files into today's archive folder.",
+      "detail": "Local archive utility: full snapshot of tracked versioned files from scripts, tools, ui, and workspace archive targets into today's archive folder.",
       "type": "shell",
       "command": "node \"${workspaceFolder}/tools/ops/archive-snapshot.mjs\" \"${workspaceFolder}\" --all && echo \"\" && echo \"✅ H2O Local Full Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
       "problemMatcher": []
@@ -158,7 +230,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: REV / Stamp @rev+@build (changed scripts)",
+      "label": "H2O: REV / Stamp @revision+@build (changed scripts)",
       "type": "shell",
       "command": "npm run rev:stamp",
       "problemMatcher": []
@@ -211,7 +283,7 @@
       "id": "archiveFile",
       "type": "promptString",
       "description": "Relative userscript path (scripts/*.user.js)",
-      "default": "scripts/0Z1b.⚫️🌳 Control Hub Quick Tree.user.js"
+      "default": "scripts/0Z2a.⚫️🕹️ Control Hub Tab Tree 🌳.user.js"
     }
   ]
 }

@@ -7,7 +7,9 @@
   "files.associations": {
     "config/dev-order.tsv": "plaintext",
     "config/dev-order.txt": "plaintext",
+    "config/userscript-headers.tsv": "plaintext",
     "**/dev-order.tsv": "plaintext",
-    "**/dev-order.txt": "plaintext"
+    "**/dev-order.txt": "plaintext",
+    "**/userscript-headers.tsv": "plaintext"
   }
 }
