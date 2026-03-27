@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      0a1.h2o.core
-// @name         0A1a.⬛️🧠 H2O Core 🧠
-// @namespace    H2O.ChatGPT.Core
-// @version      1.0.0
-// @description  (Bus + Unified Q/A Index + Turn Index) One event bus + index + stable Turn(Q→A) grouping for MiniMap/Quotes.
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             0a1a.h2o.core
+// @name               0A1a.⬛️🧠 H2O Core 🧠
+// @namespace          H2O.Premium.CGX.h2o.core
+// @author             HumamDev
+// @version            1.0.0
+// @revision           001
+// @build              260304-102754
+// @description        (Bus + Unified Q/A Index + Turn Index) One event bus + index + stable Turn(Q→A) grouping for MiniMap/Quotes.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {
@@ -237,6 +240,7 @@
     return match ? match[1] : '';
   };
   H2O.util.safeParse = (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } };
+  H2O.runtime = H2O.runtime || {};
 
   H2O.emitCompat = (name, detail) => {
     try {
@@ -307,6 +311,85 @@
     H2O.time = { getCreateTime, format };
   })();
 
+  (() => {
+    if (H2O.runtime.schedule) return;
+    const tasks = new Map();
+
+    function getTaskEntry(key) {
+      const id = String(key || '');
+      if (!id) return null;
+      let entry = tasks.get(id);
+      if (!entry) {
+        entry = { raf: 0, timeout: 0 };
+        tasks.set(id, entry);
+      }
+      return { id, entry };
+    }
+
+    function pruneTaskEntry(id, entry) {
+      if (entry && !entry.raf && !entry.timeout) tasks.delete(id);
+    }
+
+    function cancel(key) {
+      const id = String(key || '');
+      if (!id) return false;
+      const entry = tasks.get(id);
+      if (!entry) return false;
+      if (entry.raf) {
+        try { W.cancelAnimationFrame(entry.raf); } catch {}
+        entry.raf = 0;
+      }
+      if (entry.timeout) {
+        try { W.clearTimeout(entry.timeout); } catch {}
+        entry.timeout = 0;
+      }
+      pruneTaskEntry(id, entry);
+      return true;
+    }
+
+    function isPending(key) {
+      const entry = tasks.get(String(key || ''));
+      return !!(entry && (entry.raf || entry.timeout));
+    }
+
+    function rafOnce(key, fn) {
+      if (typeof fn !== 'function') return 0;
+      const task = getTaskEntry(key);
+      if (!task) return 0;
+      const { id, entry } = task;
+      if (entry.raf) return entry.raf;
+      entry.raf = W.requestAnimationFrame(() => {
+        const next = tasks.get(id);
+        if (next) {
+          next.raf = 0;
+          pruneTaskEntry(id, next);
+        }
+        fn();
+      });
+      return entry.raf;
+    }
+
+    function timeoutOnce(key, ms, fn) {
+      if (typeof fn !== 'function') return 0;
+      const task = getTaskEntry(key);
+      if (!task) return 0;
+      const { id, entry } = task;
+      if (entry.timeout) return entry.timeout;
+      const delay = Math.max(0, Math.floor(Number(ms) || 0));
+      entry.timeout = W.setTimeout(() => {
+        const next = tasks.get(id);
+        if (next) {
+          next.timeout = 0;
+          pruneTaskEntry(id, next);
+        }
+        fn();
+      }, delay);
+      return entry.timeout;
+    }
+
+    H2O.runtime.schedule = { rafOnce, timeoutOnce, cancel, isPending };
+  })();
+
   /* ───────────────────────────── 🟥 6) STATE / INDEX DATA ───────────────────────────── */
   const state = {
     version: 0,
@@ -361,81 +444,492 @@
     version: 0,
     turns: [],
     byTurnId: new Map(),
+    byTurnNo: new Map(),
     byQId: new Map(),
     byAId: new Map(),
     aToPrimaryAId: new Map(),
+    aliasToTurnId: new Map(),
+    paginationDrafts: null,
   };
 
-  function buildTurns() {
-    const nodes = Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
-    const turns = [];
+  function createEmptyPageState() {
+    return {
+      answerNumber: null,
+      answerIndex0: null,
+      pageIndex: null,
+      pageCount: null,
+      pageSize: null,
+      bufferAnswers: null,
+      turnStart: null,
+      turnEnd: null,
+      answerStartIndex: null,
+      answerEndIndex: null,
+      bufferedAnswerStartIndex: null,
+      bufferedAnswerEndIndex: null,
+      inCurrentPage: false,
+      inBufferedWindow: false,
+    };
+  }
+
+  function createEmptyMountState() {
+    return {
+      mountState: 'mounted',
+      isMounted: true,
+      placeholderEl: null,
+      lastMountReason: null,
+      lastUnmountReason: null,
+    };
+  }
+
+  function createTurnRecord(turnId, turnNo) {
+    return {
+      turnId: String(turnId || ''),
+      turnNo: Math.max(1, Number(turnNo || 1) || 1),
+      qId: null,
+      answerIds: [],
+      primaryAId: null,
+      hasQuestion: false,
+      hasAssistant: false,
+      live: {
+        qEl: null,
+        primaryAEl: null,
+        answerEls: [],
+        connected: false,
+      },
+      page: createEmptyPageState(),
+      mount: createEmptyMountState(),
+      _aliasIds: [],
+    };
+  }
+
+  function refreshLegacyTurnCompat(record) {
+    if (!record || typeof record !== 'object') return record;
+    record.idx = record.turnNo;
+    record.index = record.turnNo;
+    record.id = record.turnId;
+    record.answerId = record.primaryAId || null;
+    record.qEl = record.live.qEl || null;
+    record.primaryAEl = record.live.primaryAEl || null;
+    record.answerEls = Array.isArray(record.live.answerEls) ? record.live.answerEls.slice() : [];
+    record.answers = record.answerIds.map((id, idx) => ({ id, el: record.answerEls[idx] || null }));
+    return record;
+  }
+
+  function normalizeTurnAlias(raw) {
+    return H2O.msg.normalizeId(raw);
+  }
+
+  function addTurnAlias(map, raw, turnId, opts = {}) {
+    if (!(map instanceof Map)) return;
+    const id = normalizeTurnAlias(raw);
+    const canonicalTurnId = String(turnId || '').trim();
+    if (!id || !canonicalTurnId) return;
+
+    map.set(id, canonicalTurnId);
+
+    if (id.startsWith('turn:a:')) {
+      const bare = normalizeTurnAlias(id.slice(7));
+      if (bare) {
+        map.set(bare, canonicalTurnId);
+        map.set(`turn:${bare}`, canonicalTurnId);
+      }
+      return;
+    }
+
+    if (id.startsWith('turn:')) {
+      const bare = normalizeTurnAlias(id.slice(5));
+      if (bare) map.set(bare, canonicalTurnId);
+      return;
+    }
+
+    if (opts.turnVariant) map.set(`turn:${id}`, canonicalTurnId);
+    if (opts.assistantTurnVariant) map.set(`turn:a:${id}`, canonicalTurnId);
+  }
+
+  function getRecordByTurnNoInternal(turnNo) {
+    const no = Math.max(1, Number(turnNo || 0) || 0);
+    return no > 0 ? (turnState.byTurnNo.get(no) || null) : null;
+  }
+
+  function getRecordByTurnIdInternal(turnId) {
+    const key = normalizeTurnAlias(turnId);
+    if (!key) return null;
+    const canonicalTurnId = turnState.byTurnId.has(key)
+      ? key
+      : (turnState.aliasToTurnId.get(key) || '');
+    return canonicalTurnId ? (turnState.byTurnId.get(canonicalTurnId) || null) : null;
+  }
+
+  function getRecordByQIdInternal(qId) {
+    const key = normalizeTurnAlias(qId);
+    if (!key) return null;
+    return getRecordByTurnNoInternal(turnState.byQId.get(key) || 0);
+  }
+
+  function getRecordByAIdInternal(aId) {
+    const key = normalizeTurnAlias(aId);
+    if (!key) return null;
+    return getRecordByTurnNoInternal(turnState.byAId.get(key) || 0);
+  }
+
+  function buildCanonicalTurnId(turn) {
+    const turnNo = Math.max(1, Number(turn?.turnNo || turn?.idx || 1) || 1);
+    const qId = normalizeTurnAlias(turn?.qId || '');
+    const primaryAId = normalizeTurnAlias(turn?.primaryAId || '');
+    if (qId) return `turn:${qId}`;
+    if (primaryAId) return `turn:a:${primaryAId}`;
+    return `turn:${turnNo}`;
+  }
+
+  function buildTurnDraftsFromEntries(entries = []) {
+    const drafts = [];
     let current = null;
     let idx = 0;
 
+    const finalize = (draft) => {
+      if (!draft) return null;
+      draft.qId = normalizeTurnAlias(draft.qId || '') || null;
+      draft.answerIds = draft.answerIds.map((id) => normalizeTurnAlias(id)).filter(Boolean);
+      draft.primaryAId = draft.answerIds.length ? draft.answerIds[draft.answerIds.length - 1] : null;
+      draft.hasQuestion = !!draft.qId;
+      draft.hasAssistant = !!draft.answerIds.length;
+      draft.live.answerEls = Array.isArray(draft.live.answerEls) ? draft.live.answerEls.filter(Boolean) : [];
+      if (!draft.live.primaryAEl && draft.live.answerEls.length) {
+        draft.live.primaryAEl = draft.live.answerEls[draft.live.answerEls.length - 1] || null;
+      }
+      draft.live.connected = !!(
+        (draft.live.qEl && draft.live.qEl.isConnected)
+        || (draft.live.primaryAEl && draft.live.primaryAEl.isConnected)
+        || draft.live.answerEls.some((el) => !!(el && el.isConnected))
+      );
+      draft.aliasIds = Array.from(new Set((draft.aliasIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+      return draft;
+    };
+
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const role = String(entry?.role || '').trim();
+      if (role === 'user') {
+        idx += 1;
+        current = {
+          turnNo: idx,
+          qId: entry?.qId || null,
+          answerIds: [],
+          aliasIds: Array.isArray(entry?.aliasIds) ? entry.aliasIds.slice() : [],
+          live: {
+            qEl: entry?.qEl?.isConnected ? entry.qEl : null,
+            primaryAEl: null,
+            answerEls: [],
+            connected: !!(entry?.qEl && entry.qEl.isConnected),
+          },
+        };
+        drafts.push(current);
+        continue;
+      }
+
+      if (role !== 'assistant') continue;
+      if (!current) {
+        idx += 1;
+        current = {
+          turnNo: idx,
+          qId: null,
+          answerIds: [],
+          aliasIds: [],
+          live: {
+            qEl: null,
+            primaryAEl: null,
+            answerEls: [],
+            connected: false,
+          },
+        };
+        drafts.push(current);
+      }
+
+      if (entry?.aId) current.answerIds.push(entry.aId);
+      if (Array.isArray(entry?.aliasIds) && entry.aliasIds.length) current.aliasIds.push(...entry.aliasIds);
+      if (entry?.aEl?.isConnected) {
+        current.live.answerEls.push(entry.aEl);
+        current.live.primaryAEl = entry.aEl;
+        current.live.connected = true;
+      }
+    }
+
+    return drafts.map(finalize).filter(Boolean);
+  }
+
+  function buildLiveTurnDrafts() {
+    const nodes = Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
+    const entries = [];
     for (const el of nodes) {
       const role = el.getAttribute(ATTR_MESSAGE_AUTHOR_ROLE);
       if (role === 'user') {
-        idx++;
-        const qId = getQId(el);
-        current = {
-          idx,
-          turnId: '',
+        entries.push({
+          role,
           qEl: el,
-          qId,
-          answers: [],
-          primaryAEl: null,
-          primaryAId: null,
-        };
-        turns.push(current);
+          qId: getQId(el),
+          aliasIds: [
+            getMsgIdAttr(el),
+            String(el?.dataset?.turnId || '').trim(),
+          ],
+        });
       } else if (role === 'assistant') {
-        if (!current) {
-          idx++;
-          current = { idx, turnId: '', qEl: null, qId: null, answers: [], primaryAEl: null, primaryAId: null };
-          turns.push(current);
-        }
-        const aId = getAId(el);
-        current.answers.push({ el, id: aId });
+        entries.push({
+          role,
+          aEl: el,
+          aId: getAId(el),
+          aliasIds: [
+            getMsgIdAttr(el),
+            String(el?.dataset?.turnId || '').trim(),
+          ],
+        });
       }
     }
+    return buildTurnDraftsFromEntries(entries);
+  }
 
-    for (const turn of turns) {
-      if (turn.answers.length) {
-        const last = turn.answers[turn.answers.length - 1];
-        turn.primaryAEl = last.el;
-        turn.primaryAId = last.id;
+  function buildPaginationTurnDrafts(rows = []) {
+    const entries = [];
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const role = String(row?.role || '').trim();
+      const node = row?.node || null;
+      const answerEl = row?.answerEl || row?.primaryAEl || null;
+      if (role === 'user') {
+        entries.push({
+          role,
+          qEl: node,
+          qId: node ? getQId(node) : null,
+          aliasIds: [
+            row?.turnId,
+            row?.uid,
+            node ? getMsgIdAttr(node) : '',
+            String(node?.dataset?.turnId || '').trim(),
+          ],
+        });
+      } else if (role === 'assistant') {
+        const aEl = answerEl || node || null;
+        entries.push({
+          role,
+          aEl,
+          aId: normalizeTurnAlias(row?.answerId || getMsgIdAttr(aEl)),
+          aliasIds: [
+            row?.turnId,
+            row?.uid,
+            row?.answerId,
+            String(aEl?.dataset?.turnId || '').trim(),
+            aEl ? getMsgIdAttr(aEl) : '',
+          ],
+        });
       }
-      turn.turnId =
-        turn.qId ? `turn:${turn.qId}` :
-        (turn.primaryAId ? `turn:a:${turn.primaryAId}` : `turn:${turn.idx}`);
     }
+    return buildTurnDraftsFromEntries(entries);
+  }
 
+  function findPreviousTurnRecord(draft, used = new Set()) {
+    const candidates = [];
+    const pushRecord = (record) => {
+      if (!record || used.has(record)) return;
+      candidates.push(record);
+    };
+
+    pushRecord(getRecordByTurnIdInternal(buildCanonicalTurnId(draft)));
+    if (draft?.qId) pushRecord(getRecordByQIdInternal(draft.qId));
+    if (draft?.primaryAId) pushRecord(getRecordByAIdInternal(draft.primaryAId));
+    for (const answerId of draft?.answerIds || []) pushRecord(getRecordByAIdInternal(answerId));
+    for (const aliasId of draft?.aliasIds || []) pushRecord(getRecordByTurnIdInternal(aliasId));
+    if (!candidates.length && !(turnState.paginationDrafts && turnState.paginationDrafts.length)) {
+      pushRecord(getRecordByTurnNoInternal(draft?.turnNo || 0));
+    }
+    return candidates[0] || null;
+  }
+
+  function applyCanonicalDraft(record, draft) {
+    const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
+    const answerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
+    const primaryAId = answerIds.length ? answerIds[answerIds.length - 1] : null;
+    record.turnNo = turnNo;
+    record.qId = draft?.qId || null;
+    record.answerIds = answerIds;
+    record.primaryAId = primaryAId;
+    record.turnId = buildCanonicalTurnId({
+      turnNo,
+      qId: record.qId,
+      primaryAId: record.primaryAId,
+    });
+    record.hasQuestion = !!record.qId;
+    record.hasAssistant = !!record.answerIds.length;
+    record._aliasIds = Array.from(new Set((draft?.aliasIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    if (!record.page || typeof record.page !== 'object') record.page = createEmptyPageState();
+    if (!record.mount || typeof record.mount !== 'object') record.mount = createEmptyMountState();
+    record.live = {
+      qEl: null,
+      primaryAEl: null,
+      answerEls: [],
+      connected: false,
+    };
+    return refreshLegacyTurnCompat(record);
+  }
+
+  function applyLiveDraft(record, draft) {
+    if (!record || !draft) return record;
+    let shouldRebuildTurnId = false;
+    record.live = {
+      qEl: draft?.live?.qEl || null,
+      primaryAEl: draft?.live?.primaryAEl || null,
+      answerEls: Array.isArray(draft?.live?.answerEls) ? draft.live.answerEls.filter(Boolean) : [],
+      connected: !!draft?.live?.connected,
+    };
+    if (!record.qId && draft?.qId) {
+      record.qId = draft.qId;
+      shouldRebuildTurnId = true;
+    }
+    if ((!record.answerIds || !record.answerIds.length) && Array.isArray(draft?.answerIds) && draft.answerIds.length) {
+      record.answerIds = draft.answerIds.slice();
+      record.primaryAId = draft.answerIds[draft.answerIds.length - 1] || null;
+      record.hasAssistant = !!record.answerIds.length;
+      shouldRebuildTurnId = true;
+    }
+    if (shouldRebuildTurnId) record.turnId = buildCanonicalTurnId(record);
+    return refreshLegacyTurnCompat(record);
+  }
+
+  function rebuildTurnMaps(records) {
     turnState.byTurnId.clear();
+    turnState.byTurnNo.clear();
     turnState.byQId.clear();
     turnState.byAId.clear();
     turnState.aToPrimaryAId.clear();
+    turnState.aliasToTurnId.clear();
 
-    for (const turn of turns) {
-      turnState.byTurnId.set(turn.turnId, turn);
-      if (turn.qId) turnState.byQId.set(turn.qId, turn.idx);
-      const primary = turn.primaryAId || null;
-      for (const answer of turn.answers) {
-        if (answer?.id) {
-          turnState.byAId.set(answer.id, turn.idx);
-          if (primary) turnState.aToPrimaryAId.set(answer.id, primary);
-        }
+    for (const record of Array.isArray(records) ? records : []) {
+      const turnId = String(record?.turnId || '').trim();
+      const turnNo = Math.max(1, Number(record?.turnNo || 0) || 0);
+      if (!turnId || !turnNo) continue;
+
+      turnState.byTurnId.set(turnId, record);
+      turnState.byTurnNo.set(turnNo, record);
+      addTurnAlias(turnState.aliasToTurnId, turnId, turnId, { turnVariant: true });
+      if (record.qId) {
+        turnState.byQId.set(record.qId, turnNo);
+        addTurnAlias(turnState.aliasToTurnId, record.qId, turnId, { turnVariant: true });
       }
-      if (turn.primaryAId) turnState.byAId.set(turn.primaryAId, turn.idx);
+      const primary = record.primaryAId || null;
+      for (const answerId of record.answerIds || []) {
+        if (!answerId) continue;
+        turnState.byAId.set(answerId, turnNo);
+        if (primary) turnState.aToPrimaryAId.set(answerId, primary);
+        addTurnAlias(turnState.aliasToTurnId, answerId, turnId, { turnVariant: true, assistantTurnVariant: true });
+      }
+      for (const aliasId of record._aliasIds || []) {
+        addTurnAlias(turnState.aliasToTurnId, aliasId, turnId, { turnVariant: true, assistantTurnVariant: true });
+      }
+    }
+  }
+
+  function commitTurnDrafts(canonicalDrafts, liveDrafts = canonicalDrafts) {
+    const nextRecords = [];
+    const used = new Set();
+
+    const sourceDrafts = Array.isArray(canonicalDrafts) ? canonicalDrafts : [];
+    for (let i = 0; i < sourceDrafts.length; i += 1) {
+      const draft = sourceDrafts[i] || {};
+      draft.turnNo = i + 1;
+      const existing = findPreviousTurnRecord(draft, used);
+      const record = existing || createTurnRecord('', draft.turnNo);
+      applyCanonicalDraft(record, draft);
+      used.add(record);
+      nextRecords.push(record);
     }
 
-    turnState.turns = turns;
+    rebuildTurnMaps(nextRecords);
+
+    const unmatchedLiveDrafts = [];
+    for (const draft of Array.isArray(liveDrafts) ? liveDrafts : []) {
+      const record =
+        getRecordByTurnIdInternal(buildCanonicalTurnId(draft))
+        || (draft?.qId ? getRecordByQIdInternal(draft.qId) : null)
+        || (draft?.primaryAId ? getRecordByAIdInternal(draft.primaryAId) : null)
+        || (draft?.answerIds || []).map((id) => getRecordByAIdInternal(id)).find(Boolean)
+        || (draft?.aliasIds || []).map((id) => getRecordByTurnIdInternal(id)).find(Boolean)
+        || null;
+
+      if (!record) {
+        unmatchedLiveDrafts.push(draft);
+        continue;
+      }
+      applyLiveDraft(record, draft);
+    }
+
+    for (const draft of unmatchedLiveDrafts) {
+      const record = createTurnRecord('', nextRecords.length + 1);
+      draft.turnNo = nextRecords.length + 1;
+      applyCanonicalDraft(record, draft);
+      applyLiveDraft(record, draft);
+      nextRecords.push(record);
+    }
+
+    for (const record of nextRecords) refreshLegacyTurnCompat(record);
+    turnState.turns = nextRecords;
+    rebuildTurnMaps(nextRecords);
     turnState.version++;
 
     const emitFn = H2O.events?.emit || H2O.bus?.emit || busEmit;
     emitFn(EV_CORE_TURN_UPDATED, {
       reason: 'refresh',
       version: turnState.version,
-      turnTotal: turns.length,
+      turnTotal: nextRecords.length,
     });
+  }
+
+  function buildTurns() {
+    const liveDrafts = buildLiveTurnDrafts();
+    const canonicalDrafts = Array.isArray(turnState.paginationDrafts) && turnState.paginationDrafts.length
+      ? turnState.paginationDrafts
+      : liveDrafts;
+    commitTurnDrafts(canonicalDrafts, liveDrafts);
+  }
+
+  function reconcileTurnRecordsFromPaginationSnapshot(rows = []) {
+    const drafts = buildPaginationTurnDrafts(rows);
+    turnState.paginationDrafts = drafts.length ? drafts : null;
+    commitTurnDrafts(turnState.paginationDrafts || buildLiveTurnDrafts(), buildLiveTurnDrafts());
+    return listTurnRecords();
+  }
+
+  function clearPaginationTurnSnapshot() {
+    for (const record of turnState.turns) {
+      record.page = createEmptyPageState();
+      refreshLegacyTurnCompat(record);
+    }
+    turnState.paginationDrafts = null;
+    buildTurns();
+    return listTurnRecords();
+  }
+
+  function patchTurnPageState(turnId, partialPageState, opts = {}) {
+    if (String(opts?.owner || '') !== 'pagination') {
+      console.warn('[H2O.Core] patchTurnPageState denied', { turnId, owner: opts?.owner || '' });
+      return null;
+    }
+    const record = getRecordByTurnIdInternal(turnId);
+    if (!record) return null;
+    record.page = Object.assign(record.page || createEmptyPageState(), partialPageState || {});
+    refreshLegacyTurnCompat(record);
+    return record;
+  }
+
+  function patchTurnMountState(turnId, partialMountState, opts = {}) {
+    if (String(opts?.owner || '') !== 'unmount') {
+      console.warn('[H2O.Core] patchTurnMountState denied', { turnId, owner: opts?.owner || '' });
+      return null;
+    }
+    const record = getRecordByTurnIdInternal(turnId);
+    if (!record) return null;
+    record.mount = Object.assign(record.mount || createEmptyMountState(), partialMountState || {});
+    refreshLegacyTurnCompat(record);
+    return record;
+  }
+
+  function listTurnRecords() {
+    return turnState.turns.slice();
   }
 
   function refresh(reason = 'manual') {
@@ -506,14 +1000,26 @@
     version: () => turnState.version,
     total: () => turnState.turns.length,
     getTurns: () => turnState.turns.slice(),
-    getTurnByIndex: (i) => (i > 0 ? turnState.turns[i - 1] || null : null),
-    getTurnIndexByQId: (qId) => turnState.byQId.get(qId) || 0,
+    getTurnByIndex: (i) => getRecordByTurnNoInternal(i),
+    getTurnIndexByQId: (qId) => turnState.byQId.get(normalizeTurnAlias(qId)) || 0,
     getTurnIndexByQEl: (qEl) => (qEl ? (turnState.byQId.get(getQId(qEl)) || 0) : 0),
-    getTurnIndexByAId: (aId) => turnState.byAId.get(aId) || 0,
+    getTurnIndexByAId: (aId) => turnState.byAId.get(normalizeTurnAlias(aId)) || 0,
     getTurnIndexByAEl: (aEl) => (aEl ? (turnState.byAId.get(getAId(aEl)) || 0) : 0),
-    getPrimaryAIdByAId: (aId) => turnState.aToPrimaryAId.get(aId) || aId || null,
-    getPrimaryAIdByTurnIndex: (i) => (i > 0 ? (turnState.turns[i - 1]?.primaryAId || null) : null),
-    getTurnIdByTurnIndex: (i) => (i > 0 ? (turnState.turns[i - 1]?.turnId || null) : null),
+    getPrimaryAIdByAId: (aId) => turnState.aToPrimaryAId.get(normalizeTurnAlias(aId)) || normalizeTurnAlias(aId) || null,
+    getPrimaryAIdByTurnIndex: (i) => getRecordByTurnNoInternal(i)?.primaryAId || null,
+    getTurnIdByTurnIndex: (i) => getRecordByTurnNoInternal(i)?.turnId || null,
+  };
+
+  H2O.turnRuntime = {
+    getTurnRecordByTurnId: (turnId) => getRecordByTurnIdInternal(turnId),
+    getTurnRecordByAId: (aId) => getRecordByAIdInternal(aId),
+    getTurnRecordByQId: (qId) => getRecordByQIdInternal(qId),
+    getTurnRecordByTurnNo: (turnNo) => getRecordByTurnNoInternal(turnNo),
+    listTurnRecords,
+    patchTurnPageState: (turnId, partialPageState, opts = {}) => patchTurnPageState(turnId, partialPageState, opts),
+    patchTurnMountState: (turnId, partialMountState, opts = {}) => patchTurnMountState(turnId, partialMountState, opts),
+    _reconcilePaginationSnapshot: (rows = []) => reconcileTurnRecordsFromPaginationSnapshot(rows),
+    _clearPaginationSnapshot: () => clearPaginationTurnSnapshot(),
   };
 
   /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */

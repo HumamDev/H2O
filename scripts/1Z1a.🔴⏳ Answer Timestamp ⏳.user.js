@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      1z.answer.timestamp
-// @name         1Z.🔴⏳ Answer Timestamp ⏳
-// @namespace    H2O.Prime.CGX.AnswerTimestamp
-// @version      2.0.0
-// @description  Timestamp under every assistant message (H2O Core aware) + " | #". Contract v2 Stage-1 spine, cgxui hooks, idempotent boot/dispose, legacy-safe.
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             1z1a.answer.timestamp
+// @name               1Z1a.🔴⏳ Answer Timestamp ⏳
+// @namespace          H2O.Premium.CGX.answer.timestamp
+// @author             HumamDev
+// @version            2.0.0
+// @revision           001
+// @build              260304-102754
+// @description        Timestamp under every assistant message (H2O Core aware) + " | #". Contract v2 Stage-1 spine, cgxui hooks, idempotent boot/dispose, legacy-safe.
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {
@@ -44,6 +47,9 @@
     ASSIST_MSG: 'div[data-message-author-role="assistant"]',
     STAMP_OURS: ':scope > .cgxui-ats-ts',
     STAMP_LEGACY: ':scope > .chatgpt-timestamp',
+    CONV_TURNS: '[data-testid="conversation-turns"]',
+    CONV_TURN: '[data-testid="conversation-turn"]',
+    MAIN: 'main',
   });
 
   const ATTR_ = Object.freeze({
@@ -69,11 +75,17 @@
     WIN_INDEX_UPDATED: 'h2o:index:updated',
     WIN_TURN_UPDATED:  'h2o:turn:updated',
     WIN_ANS_SCAN:      'h2o:answers:scan',
+    WIN_PW_CHANGED:    'evt:h2o:pagination:pagechanged',
+    WIN_PW_CHANGED_COMPAT: 'h2o:pagination:pagechanged',
   });
 
   const CFG_ = Object.freeze({
     // initial refresh delay (keeps old behavior)
     INITIAL_SCAN_DELAY_MS: 1200,
+    QUEUE_ALL_DEBOUNCE_MS: 250,
+    MO_MAX_NODE_CHILDREN: 24,
+    PERF_LOG_MS: 10000,
+    PERF_KEY: 'h2o:perf',
   });
 
   /* ───────────────────────────── 2) VAULT + BOUNDED DIAG ───────────────────────────── */
@@ -95,6 +107,72 @@
   W.H2O[TOK][BrID].diag = W.H2O[TOK][BrID].diag || MOD.diag;
 
   const DIAG = W.H2O[TOK][BrID].diag;
+
+  /* ───────────────────────────── 2.5) PERF + ROOT HELPERS ───────────────────────────── */
+
+  /** @helper */
+  function CORE_AT_perfEnabled() {
+    try { return W.localStorage?.getItem(CFG_.PERF_KEY) === '1'; } catch {}
+    return false;
+  }
+
+  /** @helper */
+  function CORE_AT_perfInc(key, n = 1) {
+    const perf = MOD.state.perf;
+    if (!perf?.enabled) return;
+    perf[key] = (perf[key] || 0) + n;
+  }
+
+  /** @helper */
+  function CORE_AT_startPerfTicker() {
+    const st = MOD.state;
+    st.perf = st.perf || {
+      enabled: false,
+      fullScans: 0,
+      deltaUpdates: 0,
+      labelsUpdated: 0,
+      cacheHits: 0,
+      timer: 0,
+    };
+
+    st.perf.enabled = CORE_AT_perfEnabled();
+    if (!st.perf.enabled || st.perf.timer) return;
+
+    st.perf.timer = W.setInterval(() => {
+      const p = MOD.state.perf;
+      if (!p?.enabled) return;
+      try {
+        console.log('[1Z1a][perf]', {
+          fullScans: p.fullScans || 0,
+          deltaUpdates: p.deltaUpdates || 0,
+          labelsUpdated: p.labelsUpdated || 0,
+          cacheHits: p.cacheHits || 0,
+        });
+      } catch {}
+      p.fullScans = 0;
+      p.deltaUpdates = 0;
+      p.labelsUpdated = 0;
+      p.cacheHits = 0;
+    }, CFG_.PERF_LOG_MS);
+  }
+
+  /** @helper */
+  function CORE_AT_stopPerfTicker() {
+    const st = MOD.state;
+    const p = st.perf;
+    if (!p?.timer) return;
+    try { W.clearInterval(p.timer); } catch {}
+    p.timer = 0;
+  }
+
+  /** @helper */
+  function DOM_AT_getConversationRoot() {
+    const turns = DOC.querySelector(SEL_.CONV_TURNS);
+    if (turns) return turns;
+    const turn = DOC.querySelector(SEL_.CONV_TURN);
+    if (turn?.parentElement) return turn.parentElement;
+    return DOC.querySelector(SEL_.MAIN) || null;
+  }
 
   /* ───────────────────────────── 3) UI — CSS (idempotent) ───────────────────────────── */
 
@@ -204,22 +282,78 @@
   }
 
   /** @helper */
+  function DOM_AT_getPaginationTurnOffset() {
+    const api = W.H2O_Pagination;
+    const H = W.H2O;
+    if (!api || typeof api.getPageInfo !== 'function') return 0;
+
+    let info = null;
+    try { info = api.getPageInfo(); } catch (_) { info = null; }
+    if (!info || info.enabled === false) return 0;
+
+    const totalCanonical = Math.max(
+      Number(info?.totalTurns || 0),
+      Number(info?.totalAnswers || 0),
+      Number(info?.answerRange?.total || 0),
+      Number(info?.bufferedAnswerRange?.total || 0),
+    );
+    const localTurns = Number(H?.turn?.total?.() || 0);
+    if (!Number.isFinite(totalCanonical) || totalCanonical <= 0) return 0;
+    if (!Number.isFinite(localTurns) || localTurns <= 0 || localTurns >= totalCanonical) return 0;
+
+    const start = Math.max(
+      0,
+      Number(info?.bufferedAnswerRange?.start || info?.answerRange?.start || 0) || 0,
+    );
+    return start > 1 ? (start - 1) : 0;
+  }
+
+  /** @helper */
   function DOM_AT_getTurnIndex(div) {
     const t0 = W.H2O?.turn?.getTurnIndexByAEl?.(div);
-    return (Number.isFinite(t0) && t0 > 0) ? t0 : null;
+    if (!Number.isFinite(t0) || t0 <= 0) return null;
+    return t0 + DOM_AT_getPaginationTurnOffset();
   }
 
   /** @helper */
   function DOM_AT_getAIndex(div) {
     const a0 = W.H2O?.index?.getAIndex?.(div);
-    return (Number.isFinite(a0) && a0 > 0) ? a0 : null;
+    if (Number.isFinite(a0) && a0 > 0) return a0;
+
+    const cached = MOD.state.domAIndexMap?.get?.(div);
+    if (Number.isFinite(cached) && cached > 0) {
+      CORE_AT_perfInc('cacheHits');
+      return cached;
+    }
+    return null;
   }
 
   /** @helper */
-  function DOM_AT_computeDomAIndex(div) {
-    const all = DOC.querySelectorAll(SEL_.ASSIST_MSG);
-    for (let i = 0; i < all.length; i++) if (all[i] === div) return i + 1;
-    return null;
+  function DOM_AT_rebuildDomAIndexMap(root) {
+    const map = new WeakMap();
+    if (!root) {
+      MOD.state.domAIndexMap = map;
+      MOD.state.domAIndexCounter = 0;
+      return;
+    }
+
+    const all = root.querySelectorAll?.(SEL_.ASSIST_MSG) || [];
+    let idx = 0;
+    for (const el of all) {
+      idx += 1;
+      map.set(el, idx);
+    }
+    MOD.state.domAIndexMap = map;
+    MOD.state.domAIndexCounter = idx;
+  }
+
+  /** @helper */
+  function DOM_AT_seedDomAIndexFromDelta(div) {
+    const st = MOD.state;
+    st.domAIndexMap = st.domAIndexMap || new WeakMap();
+    if (st.domAIndexMap.has(div)) return;
+    st.domAIndexCounter = (st.domAIndexCounter || 0) + 1;
+    st.domAIndexMap.set(div, st.domAIndexCounter);
   }
 
   /** @critical */
@@ -231,8 +365,7 @@
 
     // Prefer turn index to stay aligned with Turn(Q→A) system.
     const tIdx = DOM_AT_getTurnIndex(div);
-    let aIdx = DOM_AT_getAIndex(div);
-    if (!aIdx) aIdx = DOM_AT_computeDomAIndex(div);
+    const aIdx = DOM_AT_getAIndex(div);
 
     if (tIdx) return `${base} | ${tIdx}`;
     if (aIdx) return `${base} | ${aIdx}`;
@@ -270,6 +403,7 @@
     if (stamp.dataset.fullLabel !== fullLabel) {
       stamp.textContent = fullLabel;
       stamp.dataset.fullLabel = fullLabel;
+      CORE_AT_perfInc('labelsUpdated');
     }
   }
 
@@ -279,8 +413,13 @@
   let STORE_AT_rafQueued = false;
 
   /** @helper */
-  function DOM_AT_queueRoot(node) {
+  function DOM_AT_queueRoot(node, opts = null) {
     if (!node || node.nodeType !== 1) return;
+    if (opts?.full) MOD.state.pendingFullScan = true;
+    if (opts?.delta) {
+      CORE_AT_perfInc('deltaUpdates');
+      if (node.matches?.(SEL_.ASSIST_MSG)) DOM_AT_seedDomAIndexFromDelta(node);
+    }
     STORE_AT_pendingRoots.add(node);
     DOM_AT_scheduleFlush();
   }
@@ -297,8 +436,17 @@
 
   /** @critical */
   function DOM_AT_flush() {
-    const roots = Array.from(STORE_AT_pendingRoots);
+    const st = MOD.state;
+    let roots = Array.from(STORE_AT_pendingRoots);
     STORE_AT_pendingRoots.clear();
+
+    if (st.pendingFullScan) {
+      st.pendingFullScan = false;
+      const fullRoot = DOM_AT_getConversationRoot() || DOC.body;
+      DOM_AT_rebuildDomAIndexMap(fullRoot);
+      roots = [fullRoot];
+      CORE_AT_perfInc('fullScans');
+    }
 
     for (const root of roots) {
       if (root.matches?.(SEL_.ASSIST_MSG)) {
@@ -313,7 +461,24 @@
 
   /** @helper */
   function DOM_AT_queueAllAssistants() {
-    DOM_AT_queueRoot(DOC.body);
+    CORE_AT_attachFallbackMO();
+    const root = DOM_AT_getConversationRoot();
+    if (root) {
+      DOM_AT_queueRoot(root, { full: true });
+      return;
+    }
+    // fallback safety only when conversation container is unavailable
+    DOM_AT_queueRoot(DOC.body, { full: true });
+  }
+
+  /** @helper */
+  function DOM_AT_queueAllAssistantsDebounced() {
+    const st = MOD.state;
+    if (st.queueAllTimer) return;
+    st.queueAllTimer = W.setTimeout(() => {
+      st.queueAllTimer = 0;
+      DOM_AT_queueAllAssistants();
+    }, CFG_.QUEUE_ALL_DEBOUNCE_MS);
   }
 
   /* ───────────────────────────── 7) HOOKS (Core + fallback) ───────────────────────────── */
@@ -327,21 +492,26 @@
     if (!W.H2O?.bus && !W.H2O?.index) return;
 
     st.coreHooked = true;
+    const onCoreReindex = () => DOM_AT_queueAllAssistantsDebounced();
 
     // Bus topics (if present)
-    try { W.H2O?.bus?.on?.(EV_.BUS_INDEX_UPDATED, DOM_AT_queueAllAssistants); } catch {}
-    try { W.H2O?.bus?.on?.(EV_.BUS_TURN_UPDATED,  DOM_AT_queueAllAssistants); } catch {}
+    try { W.H2O?.bus?.on?.(EV_.BUS_INDEX_UPDATED, onCoreReindex); } catch {}
+    try { W.H2O?.bus?.on?.(EV_.BUS_TURN_UPDATED,  onCoreReindex); } catch {}
 
     // Window events (compat)
-    W.addEventListener(EV_.WIN_INDEX_UPDATED, DOM_AT_queueAllAssistants, { passive: true });
-    W.addEventListener(EV_.WIN_TURN_UPDATED,  DOM_AT_queueAllAssistants, { passive: true });
-    W.addEventListener(EV_.WIN_ANS_SCAN,      DOM_AT_queueAllAssistants, { passive: true });
+    W.addEventListener(EV_.WIN_INDEX_UPDATED, onCoreReindex, { passive: true });
+    W.addEventListener(EV_.WIN_TURN_UPDATED,  onCoreReindex, { passive: true });
+    W.addEventListener(EV_.WIN_ANS_SCAN,      onCoreReindex, { passive: true });
+    W.addEventListener(EV_.WIN_PW_CHANGED, onCoreReindex, { passive: true });
+    W.addEventListener(EV_.WIN_PW_CHANGED_COMPAT, onCoreReindex, { passive: true });
 
     st.cleanup = st.cleanup || [];
     st.cleanup.push(() => {
-      W.removeEventListener(EV_.WIN_INDEX_UPDATED, DOM_AT_queueAllAssistants);
-      W.removeEventListener(EV_.WIN_TURN_UPDATED,  DOM_AT_queueAllAssistants);
-      W.removeEventListener(EV_.WIN_ANS_SCAN,      DOM_AT_queueAllAssistants);
+      W.removeEventListener(EV_.WIN_INDEX_UPDATED, onCoreReindex);
+      W.removeEventListener(EV_.WIN_TURN_UPDATED,  onCoreReindex);
+      W.removeEventListener(EV_.WIN_ANS_SCAN,      onCoreReindex);
+      W.removeEventListener(EV_.WIN_PW_CHANGED, onCoreReindex);
+      W.removeEventListener(EV_.WIN_PW_CHANGED_COMPAT, onCoreReindex);
       st.coreHooked = false;
     });
 
@@ -349,26 +519,67 @@
   }
 
   /** @critical */
+  function CORE_AT_detachFallbackMO() {
+    const st = MOD.state;
+    if (!st.observer) return;
+    try { st.observer.disconnect(); } catch {}
+    st.observer = null;
+    st.observerRoot = null;
+  }
+
+  /** @helper */
+  function DOM_AT_collectAssistNodes(node, out) {
+    if (!node || node.nodeType !== 1) return false;
+    const el = /** @type {Element} */ (node);
+
+    if (el.matches?.(SEL_.ASSIST_MSG)) {
+      out.add(el);
+      return false;
+    }
+
+    const childCount = el.childElementCount || 0;
+    if (!childCount) return false;
+    if (childCount > CFG_.MO_MAX_NODE_CHILDREN) return true;
+
+    const first = el.querySelector?.(SEL_.ASSIST_MSG);
+    if (!first) return false;
+    out.add(first);
+
+    // small wrappers: capture all assistant nodes in one pass
+    if (childCount <= 6) {
+      const all = el.querySelectorAll?.(SEL_.ASSIST_MSG);
+      if (all?.length) all.forEach((a) => out.add(a));
+    }
+    return false;
+  }
+
+  /** @critical */
   function CORE_AT_attachFallbackMO() {
     const st = MOD.state;
-    if (st.observer) return;
+    const root = DOM_AT_getConversationRoot() || DOC.body;
+    if (st.observer && st.observerRoot === root) return;
+    CORE_AT_detachFallbackMO();
 
     const mo = new MutationObserver((muts) => {
+      const hit = new Set();
+      let needRepair = false;
+
       for (const m of muts) {
         const added = m.addedNodes;
         if (!added || !added.length) continue;
-        for (const n of added) DOM_AT_queueRoot(n);
+        for (const n of added) {
+          if (DOM_AT_collectAssistNodes(n, hit)) needRepair = true;
+        }
       }
+
+      if (hit.size) hit.forEach((n) => DOM_AT_queueRoot(n, { delta: true }));
+      if (needRepair) DOM_AT_queueAllAssistantsDebounced();
     });
 
-    mo.observe(DOC.body, { childList: true, subtree: true });
+    mo.observe(root, { childList: true, subtree: true });
 
     st.observer = mo;
-    st.cleanup = st.cleanup || [];
-    st.cleanup.push(() => {
-      try { mo.disconnect(); } catch {}
-      st.observer = null;
-    });
+    st.observerRoot = root;
   }
 
   /* ───────────────────────────── 8) BOOT / DISPOSE (idempotent + full cleanup) ───────────────────────────── */
@@ -380,6 +591,12 @@
     st.booted = true;
 
     st.cleanup = st.cleanup || [];
+    st.pendingFullScan = false;
+    st.domAIndexMap = new WeakMap();
+    st.domAIndexCounter = 0;
+    st.queueAllTimer = 0;
+
+    CORE_AT_startPerfTicker();
 
     UI_AT_injectCSSOnce();
 
@@ -390,6 +607,14 @@
     st.cleanup.push(() => {
       try { W.removeEventListener(EV_.WIN_CORE_READY, CORE_AT_hookCore); } catch {}
     });
+    st.cleanup.push(() => {
+      if (st.queueAllTimer) {
+        try { W.clearTimeout(st.queueAllTimer); } catch {}
+      }
+      st.queueAllTimer = 0;
+    });
+    st.cleanup.push(() => CORE_AT_detachFallbackMO());
+    st.cleanup.push(() => CORE_AT_stopPerfTicker());
 
     // initial scan (kept, but queued)
     const t = setTimeout(DOM_AT_queueAllAssistants, CFG_.INITIAL_SCAN_DELAY_MS);
@@ -410,6 +635,10 @@
       const fn = cleanup.pop();
       try { fn && fn(); } catch {}
     }
+
+    STORE_AT_pendingRoots.clear();
+    STORE_AT_rafQueued = false;
+    st.pendingFullScan = false;
 
     st.booted = false;
   }

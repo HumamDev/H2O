@@ -1,12 +1,15 @@
 // ==UserScript==
-// @h2o-id      1e.answer.title
-// @name         1E.🔴📛 Answer Title 📛
-// @namespace    h2o.prm.cgx.atitle
-// @version      2.0.0
-// @description  Auto-generate titles for ChatGPT answers + inline editable header; sync via shared titles store + events (Contract v2.0 Stage-1).
-// @match        https://chatgpt.com/*
-// @run-at       document-idle
-// @grant        none
+// @h2o-id             1e1a.answer.title
+// @name               1E1a.🔴📛 Answer Title 📛
+// @namespace          H2O.Premium.CGX.answer.title
+// @author             HumamDev
+// @version            2.0.0
+// @revision           001
+// @build              260304-102754
+// @description        Auto-generate titles for ChatGPT answers + inline editable header; sync via shared titles store + events (Contract v2.0 Stage-1).
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
 // ==/UserScript==
 
 (() => {
@@ -430,6 +433,8 @@ No quotes, no emojis, no numbering. Just the title text.`;
   /* [SEL] One selector registry block */
   const SEL_ = Object.freeze({
     ASSISTANT_MSG: `[${ATTR_.ROLE}="assistant"][${ATTR_.MSG_ID}]`,
+    TURN: '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]',
+    TURNS_ROOT: '[data-testid="conversation-turns"]',
     // owned UI (scoped by owner in builder/helper)
     OWNED_BAR_ANY: `[${ATTR_.CGXUI}="${UI_.BAR}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
     OWNED_TEXT_ANY:`[${ATTR_.CGXUI}="${UI_.TEXT}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
@@ -439,8 +444,100 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_getAnswerId = (msgEl) => UTIL_getAttr(msgEl, ATTR_.MSG_ID) || null;
 
+  const DOM_isPerfProbeLine = (line) => /__oai_(?:logHTML|logTTI|SSR_HTML|SSR_TTI)/.test(String(line || ''));
+
+  const DOM_sanitizeAnswerText = (rawText) => {
+    const lines = String(rawText || '')
+      .split(/\r?\n/)
+      .map(s => UTIL_textTrim(s))
+      .filter(Boolean)
+      .filter((line) => !DOM_isPerfProbeLine(line));
+    return UTIL_textTrim(lines.join('\n'));
+  };
+
+  const DOM_collectReadableText = (rootEl) => {
+    if (!rootEl) return '';
+    let NF = null;
+    try { NF = W.NodeFilter || NodeFilter; } catch {}
+    if (!NF) return '';
+
+    const chunks = [];
+    let walker = null;
+    try {
+      walker = D.createTreeWalker(rootEl, NF.SHOW_TEXT, {
+        acceptNode: (node) => {
+          const p = node?.parentElement;
+          if (!p) return NF.FILTER_REJECT;
+          const tag = String(p.tagName || '').toUpperCase();
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') return NF.FILTER_REJECT;
+          try { if (p.closest(SEL_.OWNED_BAR_ANY)) return NF.FILTER_REJECT; } catch {}
+          return UTIL_textTrim(node?.nodeValue || '') ? NF.FILTER_ACCEPT : NF.FILTER_REJECT;
+        }
+      });
+    } catch {
+      walker = null;
+    }
+    if (!walker) return '';
+
+    let n = null;
+    while ((n = walker.nextNode())) {
+      const t = UTIL_textTrim(n.nodeValue || '');
+      if (t) chunks.push(t);
+    }
+    return chunks.join('\n');
+  };
+
   const DOM_getAnswerText = (msgEl) => {
-    try { return (msgEl && msgEl.innerText ? msgEl.innerText.trim() : ''); } catch { return ''; }
+    if (!msgEl) return '';
+    try {
+      let roots = Array.from(msgEl.querySelectorAll('.markdown'));
+      if (!roots.length) roots = Array.from(msgEl.querySelectorAll('.prose'));
+      if (!roots.length) roots = [msgEl];
+
+      const chunks = [];
+      roots.forEach((rootEl) => {
+        const txt = DOM_collectReadableText(rootEl);
+        if (txt) chunks.push(txt);
+      });
+
+      const clean = DOM_sanitizeAnswerText(chunks.join('\n'));
+      if (clean) return clean;
+    } catch {}
+
+    try {
+      const fallback = msgEl.innerText ? msgEl.innerText.trim() : '';
+      return DOM_sanitizeAnswerText(fallback);
+    } catch {
+      return '';
+    }
+  };
+
+  const DOM_getTurnNumber = (msgEl) => {
+    try {
+      const tRaw = Number(W.H2O?.turn?.getTurnIndexByAEl?.(msgEl));
+      if (Number.isFinite(tRaw)) {
+        if (tRaw === 0) return 1;
+        if (tRaw > 0) return Math.floor(tRaw);
+      }
+    } catch {}
+
+    try {
+      const turnEl = msgEl?.closest?.(SEL_.TURN);
+      const turnsRoot = D.querySelector(SEL_.TURNS_ROOT) || turnEl?.parentElement;
+      if (turnEl && turnsRoot) {
+        const turns = Array.from(turnsRoot.querySelectorAll(SEL_.TURN));
+        const idx = turns.indexOf(turnEl);
+        if (idx >= 0) return idx + 1;
+      }
+    } catch {}
+
+    try {
+      const answers = DOM_getAssistantMessages();
+      const idx = answers.indexOf(msgEl);
+      if (idx >= 0) return idx + 1;
+    } catch {}
+
+    return 0;
   };
 
   const DOM_selScoped = (uiToken) => `[${ATTR_.CGXUI}="${uiToken}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`;
@@ -485,6 +582,10 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_setTitleOnAnswer = (msgEl, title) => {
     const bar = DOM_ensureTitleBar(msgEl);
+    const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
+    const turnNum = DOM_getTurnNumber(msgEl);
+    if (labelEl) labelEl.textContent = turnNum > 0 ? `TITLE ${turnNum}` : 'TITLE';
+
     const id = DOM_getAnswerId(msgEl);
     if (id) {
       UTIL_setAttr(bar, 'data-answer-id', id); // internal marker (owned node)

@@ -1,14 +1,14 @@
 // ==UserScript==
-// @h2o-id      1a2.answer.wash.engine.minimap.add-on
-// @name         1A2.🟥🎨 Answer Wash Engine (MiniMap Add-on) 🗺️
-// @namespace    H2O.Prime.CGX.MiniMap.Wash
-// @version      1.3.16
-// @rev        000001
-// @build      2026-02-28T17:33:34Z
-// @description  Answer Background Washer for H2O MiniMap: persistent wash map + middle-click palette + paints answer + paints minimap buttons (exported API only).
-// @author       HumamDev
-// @match        https://chatgpt.com/*
-// @grant        none
+// @h2o-id             1a2a.answer.wash.engine.minimap.add.on
+// @name               1A2a.🟥🎨 Answer Wash Engine (MiniMap Add-on) 🗺️
+// @namespace          H2O.Premium.CGX.answer.wash.engine.minimap.add.on
+// @author             HumamDev
+// @version            1.3.16
+// @revision           001
+// @build              260304-102754
+// @description        Answer Background Washer for H2O MiniMap: persistent wash map + middle-click palette + paints answer + paints minimap buttons (exported API only).
+// @match              https://chatgpt.com/*
+// @grant              none
 // ==/UserScript==
 
 (() => {
@@ -389,6 +389,20 @@
     applyAnswerWash(msgEl, colorName, !!colorName);
   }
 
+  function restoreWashedAnswerById(anyId) {
+    const id = resolvePrimaryAId(anyId);
+    if (!id) return false;
+    const rawColor = washMap?.[id];
+    const colorName = isValidWashName(rawColor) ? String(rawColor) : null;
+    if (rawColor && !colorName) {
+      try { delete washMap[id]; } catch {}
+      return false;
+    }
+    if (!colorName) return false;
+    repaintAnswerNow(id, colorName);
+    return true;
+  }
+
   let RESTORE_RAF = 0;
   function restoreAllWashedAnswers(reason = 'washer:restore') {
     void reason;
@@ -678,8 +692,8 @@
       .${CLS_.WASH_PREFIX}${name}::before {
         content: '';
         position: absolute;
-        top: -25px;
-        bottom: -50px;
+        top: var(--cgxui-mnmp-answer-wash-top, var(--cgxui-mnmp-answer-flash-top, -25px));
+        bottom: var(--cgxui-mnmp-answer-wash-bottom, var(--cgxui-mnmp-answer-flash-bottom, -50px));
         left: -100vw;
         right: -100vw;
         z-index: -1;
@@ -700,17 +714,26 @@
     .${CLS_.WASH_WRAP}[${ATTR_.CGXUI_FLASH}="1"]::after {
       content: '';
       position: absolute;
-      top: -25px;
-      bottom: -50px;
       left: -100vw;
       right: -100vw;
       background: color-mix(in srgb, gold 60%, transparent);
-      box-shadow: 0 0 22px rgba(255, 215, 0, 0.35);
+      box-shadow: 0 0 var(--cgxui-mnmp-flash-glow-blur, 22px) rgba(255, 215, 0, var(--cgxui-mnmp-flash-glow-alpha, 0.35));
       opacity: 0;
       z-index: 0;
       pointer-events: none;
-      border-radius: 12px;
-      animation: cgxui-mnmp-flash-fade 1.6s ease-in-out;
+      border-radius: var(--cgxui-mnmp-flash-radius, 12px);
+      animation: cgxui-mnmp-flash-fade var(--cgxui-mnmp-flash-ms, 1600ms) var(--cgxui-mnmp-flash-ease, ease-in-out);
+    }
+
+    .${CLS_.WASH_WRAP}[data-cgxui-flash-surface="question"]::after {
+      top: var(--cgxui-mnmp-question-flash-top, -12px);
+      bottom: var(--cgxui-mnmp-question-flash-bottom, -18px);
+    }
+
+    .${CLS_.WASH_WRAP}[data-cgxui-flash-surface="answer"]::after,
+    .${CLS_.WASH_WRAP}:not([data-cgxui-flash-surface])::after {
+      top: var(--cgxui-mnmp-answer-flash-top, -25px);
+      bottom: var(--cgxui-mnmp-answer-flash-bottom, -50px);
     }
   `;
   if (!style.isConnected) document.documentElement.appendChild(style);
@@ -765,8 +788,22 @@
     const onAnswersScan = () => {
       scheduleRestoreAllWashedAnswers('answers:scan');
     };
+    const onMmIndexHydrated = () => {
+      scheduleRestoreAllWashedAnswers('index:hydrated');
+    };
+    const onMmIndexAppended = (e) => {
+      const d = e?.detail || {};
+      const appendedId = String(d?.msgId || d?.answerId || d?.primaryAId || d?.id || '').trim();
+      if (!appendedId) {
+        scheduleRestoreAllWashedAnswers('index:appended:fallback');
+        return;
+      }
+      restoreWashedAnswerById(appendedId);
+    };
     UTIL_on(window, 'evt:h2o:answers:scan', onAnswersScan);
     UTIL_on(window, 'h2o:answers:scan', onAnswersScan);
+    UTIL_on(window, 'evt:h2o:minimap:index:hydrated', onMmIndexHydrated);
+    UTIL_on(window, 'evt:h2o:minimap:index:appended', onMmIndexAppended);
 
     scheduleRestoreAllWashedAnswers('boot');
     setTimeout(() => { scheduleRestoreAllWashedAnswers('boot:late'); }, 260);
