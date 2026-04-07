@@ -27,7 +27,7 @@ export function makeChromeLivePopupStorageSource() {
 
     for (const [aliasId, raw] of Object.entries(rawStats)) {
       if (!raw || typeof raw !== "object") continue;
-      const key = String(aliasId || "").trim();
+      const key = normalizeAliasId(aliasId);
       if (!key) continue;
 
       const loads = normalizeInt(raw.loads);
@@ -101,11 +101,8 @@ export function makeChromeLivePopupStorageSource() {
   }
 
   function groupDisplayTitle(group) {
-    const key = String(group && group.key || "").trim();
     const base = sanitizeGroupLabel(group && group.title || "", "");
-    if (!key) return base;
-    const custom = sanitizeGroupLabel(groupLabels[key], "");
-    return custom || base;
+    return base;
   }
 
   function storageGetState() {
@@ -149,7 +146,7 @@ export function makeChromeLivePopupStorageSource() {
           return;
         }
 
-        const map = res && typeof res[STORAGE_KEY] === "object" && res[STORAGE_KEY] ? res[STORAGE_KEY] : {};
+        const map = normalizeGlobalToggleMap(res ? res[STORAGE_KEY] : null);
         const sets = normalizeSets(res ? res[STORAGE_SETS_KEY] : null);
         const info = normalizeInfoPrefs(res ? res[STORAGE_INFO_KEY] : null);
         const runtime = normalizeRuntimeStats(res ? res[STORAGE_RUNTIME_KEY] : null);

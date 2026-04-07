@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-// @version 1.0.0
+// @version 1.0.2
 
 const SRC = process.argv[2]; // workspaceFolder (h2o-source)
 if (!SRC) throw new Error("Missing SRC arg");
@@ -100,6 +100,30 @@ function readVersionFromFile(fp) {
   return readVersionFromText(txt);
 }
 
+function toAliasName(filename) {
+  const base = String(filename || "").replace(/(\.user)?\.js$/i, "");
+  const firstDot = base.indexOf(".");
+  if (firstDot <= 0) return null;
+
+  const id = base.slice(0, firstDot).trim();
+  let title = base.slice(firstDot + 1);
+
+  title = stripEmojiAndInvisibles(title)
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!id || !title) return null;
+  return `${id}._${title}_.js`;
+}
+
+function isSourceScriptName(filename) {
+  const name = String(filename || "");
+  if (!/(\.user)?\.js$/i.test(name)) return false;
+  return toAliasName(name) !== null;
+}
+
 function withVersionInName(filename, version) {
   const USER_SUFFIX = ".user.js";
 
@@ -118,7 +142,7 @@ function pickUserScriptDir(srcRoot) {
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
-    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+    return entries.some((e) => e.isFile() && isSourceScriptName(e.name)) ? scriptsDir : srcRoot;
   } catch {
     return srcRoot;
   }
@@ -134,11 +158,22 @@ function collectUserScripts(srcDir) {
     if (!e.isFile()) continue;
     if (e.name === ".DS_Store") continue;
     if (e.name.startsWith(".")) continue;
-    if (!/\.user\.js$/i.test(e.name)) continue;
+    if (!isSourceScriptName(e.name)) continue;
     out.push(relPrefix && relPrefix !== "." ? path.join(relPrefix, e.name) : e.name);
   }
 
   return out;
+}
+
+function assertScriptArchiveCoverage(srcRoot, relPaths) {
+  const scriptsDir = path.join(srcRoot, "scripts");
+  try {
+    if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return;
+  } catch {
+    return;
+  }
+  if (Array.isArray(relPaths) && relPaths.length > 0) return;
+  throw new Error("[H2O] archive snapshot found scripts/ but discovered 0 archiveable source scripts");
 }
 
 function uniqueSorted(paths) {
@@ -158,9 +193,9 @@ function stripEmojiAndInvisibles(s) {
 
 function normalizeUserScriptTitleFromPath(relPath) {
   const key = normalizePathKey(relPath);
-  if (!/\.user\.js$/i.test(key)) return "";
+  if (!/(\.user)?\.js$/i.test(key)) return "";
 
-  const base = path.basename(key).replace(/\.user\.js$/i, "");
+  const base = path.basename(key).replace(/(\.user)?\.js$/i, "");
   const firstDot = base.indexOf(".");
   const title = firstDot >= 0 ? base.slice(firstDot + 1) : base;
 
@@ -175,7 +210,7 @@ function normalizeUserScriptTitleFromPath(relPath) {
 function buildCurrentUserScriptLookup(srcRoot) {
   const currentUserScripts = collectUserScripts(srcRoot)
     .map((p) => normalizePathKey(p))
-    .filter((p) => /\.user\.js$/i.test(p));
+    .filter((p) => isSourceScriptName(path.basename(p)));
 
   const scriptSet = new Set(currentUserScripts);
   const byTitle = new Map();
@@ -280,8 +315,11 @@ const state = maybeMigrateStatePaths(safeReadJSON(STATE_FILE, {}), SRC);
 const todayDir = path.join(ARCHIVE_ROOT, dayStamp());
 fs.mkdirSync(todayDir, { recursive: true });
 
+const trackedUserScripts = collectUserScripts(SRC);
+assertScriptArchiveCoverage(SRC, trackedUserScripts);
+
 const trackedRelPaths = uniqueSorted([
-  ...collectUserScripts(SRC),
+  ...trackedUserScripts,
   ...PIPELINE_TRACKED_FILES,
 ]);
 

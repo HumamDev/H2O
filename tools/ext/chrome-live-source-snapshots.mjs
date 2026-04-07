@@ -60,11 +60,13 @@ function readDevOrderSectionsSnapshot(orderFile) {
     if (parts.length < 2) continue;
     const enabledRaw = parseOrderEnabledToken(parts[0]);
     const file = parts.slice(1).join("\t").trim();
-    if (!/\.user\.js$/i.test(file)) continue;
+    if (!/(\.user)?\.js$/i.test(file)) continue;
+    const aliasFile = toAliasName(file);
+    if (!aliasFile) continue;
 
     if (!current) current = ensureSection("Other");
     current.items.push({
-      file,
+      file: aliasFile,
       enabled: enabledRaw === true,
     });
   }
@@ -92,7 +94,13 @@ function toAliasName(filename) {
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
   if (!id || !title) return null;
-  return `${id}._${title}_.user.js`;
+  return `${id}._${title}_.js`;
+}
+
+function isSourceScriptName(filename) {
+  const name = String(filename || "");
+  if (!/(\.user)?\.js$/i.test(name)) return false;
+  return toAliasName(name) !== null;
 }
 
 function readAliasFilenameMap(srcRoot) {
@@ -107,7 +115,7 @@ function readAliasFilenameMap(srcRoot) {
   }
   for (const entry of entries) {
     if (!entry || !entry.isFile || !entry.isFile()) continue;
-    if (!/\.user\.js$/i.test(entry.name || "")) continue;
+    if (!isSourceScriptName(entry.name)) continue;
     const alias = toAliasName(entry.name);
     if (!alias) continue;
     if (!Object.prototype.hasOwnProperty.call(out, alias)) {
@@ -130,10 +138,40 @@ function readHeaderTag(metaText, tag) {
   return m ? String(m[1]).trim() : "";
 }
 
+function stripScriptFilenameSuffix(filenameRaw) {
+  return String(filenameRaw || "").replace(/(\.user)?\.js$/i, "").trim();
+}
+
+function readRuntimeOrderMeta(srcRoot) {
+  const out = {};
+  const depsFile = path.join(srcRoot, "config", "loader-deps.json");
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(depsFile, "utf8"));
+  } catch {
+    return out;
+  }
+  const groups = manifest && typeof manifest === "object" ? manifest.groups : null;
+  if (!groups || typeof groups !== "object") return out;
+  for (const [groupName, meta] of Object.entries(groups)) {
+    const runtimeOrder = Array.isArray(meta && meta.runtimeOrder) ? meta.runtimeOrder : [];
+    for (let i = 0; i < runtimeOrder.length; i++) {
+      const aliasId = toAliasName(runtimeOrder[i]);
+      if (!aliasId || Object.prototype.hasOwnProperty.call(out, aliasId)) continue;
+      out[aliasId] = {
+        runtimeGroup: String(groupName || ""),
+        runtimeOrder: i,
+      };
+    }
+  }
+  return out;
+}
+
 function readScriptCatalog(srcRoot) {
   const out = {};
   const scriptsDir = path.join(srcRoot, "scripts");
   if (!fs.existsSync(scriptsDir)) return out;
+  const runtimeOrderMeta = readRuntimeOrderMeta(srcRoot);
 
   let entries = [];
   try {
@@ -144,7 +182,7 @@ function readScriptCatalog(srcRoot) {
 
   for (const entry of entries) {
     if (!entry || !entry.isFile || !entry.isFile()) continue;
-    if (!/\.user\.js$/i.test(entry.name || "")) continue;
+    if (!isSourceScriptName(entry.name)) continue;
 
     const alias = toAliasName(entry.name);
     if (!alias) continue;
@@ -159,12 +197,15 @@ function readScriptCatalog(srcRoot) {
 
     const metaMatch = String(srcText || "").match(/\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/m);
     const meta = metaMatch ? String(metaMatch[0] || "") : "";
-    const scriptName = String(readHeaderTag(meta, "name") || entry.name).trim() || entry.name;
+    const scriptName = stripScriptFilenameSuffix(entry.name) || String(readHeaderTag(meta, "name") || entry.name).trim() || entry.name;
     const runAt = normalizeRunAtTag(readHeaderTag(meta, "run-at") || "document-idle");
+    const runtimeMeta = runtimeOrderMeta[alias] || null;
 
     out[alias] = {
       name: scriptName,
       runAt,
+      runtimeGroup: runtimeMeta ? runtimeMeta.runtimeGroup : "",
+      runtimeOrder: runtimeMeta ? runtimeMeta.runtimeOrder : null,
     };
   }
 

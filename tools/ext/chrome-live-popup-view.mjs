@@ -117,6 +117,16 @@ export function makeChromeLivePopupViewPreludeSource() {
     return status >= 200 && status < 300;
   }
 
+  function orderFilenameMatchesAlias(fileRaw, aliasIdRaw) {
+    const file = String(fileRaw || "").trim();
+    const aliasId = String(aliasIdRaw || "").trim();
+    if (!file || !aliasId) return false;
+    if (file === aliasId) return true;
+    const sourceFile = String(aliasFilenameMap[aliasId] || "").trim();
+    if (sourceFile && file === sourceFile) return true;
+    return false;
+  }
+
   function replaceEnabledInTsv(textRaw, aliasIdRaw, enabledRaw) {
     const aliasId = String(aliasIdRaw || "").trim();
     if (!aliasId) return { found: 0, changed: false, text: String(textRaw || "") };
@@ -130,7 +140,7 @@ export function makeChromeLivePopupViewPreludeSource() {
       const parts = line.split("\\t");
       if (parts.length < 2) continue;
       const file = String(parts.slice(1).join("\\t") || "").trim();
-      if (file !== aliasId) continue;
+      if (!orderFilenameMatchesAlias(file, aliasId)) continue;
       found += 1;
       parts[0] = enabledRaw === true ? "🟢" : "🔴";
       const nextLine = parts.join("\\t");
@@ -154,8 +164,8 @@ export function makeChromeLivePopupViewPreludeSource() {
       if (!m) continue;
       const indent = m[1] || "";
       const file = String(m[3] || "").trim();
-      if (!/\\.user\\.js$/i.test(file)) continue;
-      if (file !== aliasId) continue;
+      if (!/(\\.user)?\\.js$/i.test(file)) continue;
+      if (!orderFilenameMatchesAlias(file, aliasId)) continue;
       found += 1;
       const nextLine = indent + (enabledRaw === true ? "" : "- ") + file;
       if (nextLine !== line) {
@@ -184,12 +194,120 @@ export function makeChromeLivePopupViewPreludeSource() {
       for (const row of items) {
         if (!row || typeof row !== "object") continue;
         const file = String(row.file || "").trim();
-        if (file !== aliasId) continue;
+        if (!orderFilenameMatchesAlias(file, aliasId)) continue;
         found += 1;
         if ((row.enabled === true) !== (enabledRaw === true)) {
           row.enabled = enabledRaw === true;
           changed = true;
         }
+      }
+    }
+    return { found, changed, text: JSON.stringify(obj, null, 2) + "\\n" };
+  }
+
+  function isSectionedOrderTitleLine(titleRaw) {
+    const title = String(titleRaw || "").trim();
+    if (!title) return false;
+    if (/^=+$/.test(title)) return false;
+    if (/^h2o dev order/i.test(title)) return false;
+    if (/^master\\b/i.test(title)) return false;
+    if (/^status<tab>filename/i.test(title)) return false;
+    if (/^on\\s*=/.test(title) || /^off\\s*=/.test(title)) return false;
+    return true;
+  }
+
+  function replaceSectionTitleInSectionedText(textRaw, groupKeyRaw, titleRaw, mode = "tsv") {
+    const groupKey = String(groupKeyRaw || "").trim();
+    const nextTitle = sanitizeGroupLabel(titleRaw, "");
+    if (!groupKey || !nextTitle) return { found: 0, changed: false, text: String(textRaw || "") };
+    const lines = String(textRaw || "").split(/\\r?\\n/);
+    let found = 0;
+    let changed = false;
+    let currentTitleLineIndex = -1;
+    let currentSectionFirstItemSeen = false;
+
+    const maybeReplaceForFile = (fileRaw) => {
+      if (currentSectionFirstItemSeen) return;
+      currentSectionFirstItemSeen = true;
+      const aliasId = toAliasName(String(fileRaw || "").trim());
+      if (!aliasId) return;
+      if (groupKeyForAlias(aliasId) !== groupKey) return;
+      found += 1;
+      if (currentTitleLineIndex < 0) return;
+      const nextLine = "# " + nextTitle;
+      if (lines[currentTitleLineIndex] !== nextLine) {
+        lines[currentTitleLineIndex] = nextLine;
+        changed = true;
+      }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = String(lines[i] || "");
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("#")) {
+        const title = trimmed.replace(/^#\\s*/, "").trim();
+        if (!isSectionedOrderTitleLine(title)) continue;
+        currentTitleLineIndex = i;
+        currentSectionFirstItemSeen = false;
+        continue;
+      }
+      if (mode === "tsv") {
+        const parts = line.split("\\t");
+        if (parts.length < 2) continue;
+        maybeReplaceForFile(parts.slice(1).join("\\t"));
+        continue;
+      }
+      const m = line.match(/^(\\s*)(-\\s*)?(.+?)\\s*$/);
+      if (!m) continue;
+      const file = String(m[3] || "").trim();
+      if (!/(\\.user)?\\.js$/i.test(file)) continue;
+      maybeReplaceForFile(file);
+    }
+
+    return { found, changed, text: lines.join("\\n") };
+  }
+
+  function replaceSectionTitleInTsv(textRaw, groupKeyRaw, titleRaw) {
+    return replaceSectionTitleInSectionedText(textRaw, groupKeyRaw, titleRaw, "tsv");
+  }
+
+  function replaceSectionTitleInTxt(textRaw, groupKeyRaw, titleRaw) {
+    return replaceSectionTitleInSectionedText(textRaw, groupKeyRaw, titleRaw, "txt");
+  }
+
+  function replaceSectionTitleInJson(textRaw, groupKeyRaw, titleRaw) {
+    const groupKey = String(groupKeyRaw || "").trim();
+    const nextTitle = sanitizeGroupLabel(titleRaw, "");
+    if (!groupKey || !nextTitle) return { found: 0, changed: false, text: String(textRaw || "") };
+    let obj = null;
+    try {
+      obj = JSON.parse(String(textRaw || ""));
+    } catch {
+      return { found: 0, changed: false, text: String(textRaw || "") };
+    }
+    if (!obj || typeof obj !== "object") return { found: 0, changed: false, text: String(textRaw || "") };
+    let found = 0;
+    let changed = false;
+    const sections = Array.isArray(obj.sections) ? obj.sections : [];
+    for (const sec of sections) {
+      if (!sec || typeof sec !== "object") continue;
+      let matched = String(sec.key || "").trim() === groupKey;
+      if (!matched) {
+        const items = Array.isArray(sec.items) ? sec.items : [];
+        for (const row of items) {
+          const file = String(row && row.file || "").trim();
+          if (!file) continue;
+          if (groupKeyForAlias(file) !== groupKey) continue;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
+      found += 1;
+      if (String(sec.title || "").trim() !== nextTitle) {
+        sec.title = nextTitle;
+        changed = true;
       }
     }
     return { found, changed, text: JSON.stringify(obj, null, 2) + "\\n" };
@@ -227,6 +345,68 @@ export function makeChromeLivePopupViewPreludeSource() {
       const found = Number.isFinite(Number(patched.found)) ? Number(patched.found) : 0;
       if (found <= 0) {
         errors.push(f.label + " alias not found (" + aliasId + ")");
+        continue;
+      }
+
+      if (!patched.changed) {
+        anyOk = true;
+        if (f.master) masterOk = true;
+        continue;
+      }
+
+      const putRes = await sendHttp({
+        method: "PUT",
+        url: f.url,
+        timeoutMs: 12000,
+        headers: { "content-type": f.contentType },
+        body: patched.text,
+      });
+      if (putRes && putRes.ok && isHttpOk(putRes)) {
+        anyOk = true;
+        if (f.master) masterOk = true;
+        updatedFiles.push(f.label);
+      } else {
+        errors.push(f.label + " PUT failed (" + String(putRes && putRes.status || 0) + ")");
+      }
+    }
+
+    return { anyOk, masterOk, updatedFiles, errors };
+  }
+
+  async function syncDevOrderSectionTitleFiles(groupKeyRaw, titleRaw) {
+    const groupKey = String(groupKeyRaw || "").trim();
+    const nextTitle = sanitizeGroupLabel(titleRaw, "");
+    if (!groupKey || !nextTitle) {
+      return { anyOk: false, masterOk: false, updatedFiles: [], errors: ["missing group title"] };
+    }
+
+    const files = [
+      { label: "dev-order.tsv", url: DEV_ORDER_TSV_URL, contentType: "text/tab-separated-values; charset=utf-8", patch: replaceSectionTitleInTsv, master: true },
+      { label: "dev-order.txt", url: DEV_ORDER_TXT_URL, contentType: "text/plain; charset=utf-8", patch: replaceSectionTitleInTxt, master: false },
+      { label: "dev-order.json", url: DEV_ORDER_JSON_URL, contentType: "application/json; charset=utf-8", patch: replaceSectionTitleInJson, master: false },
+    ];
+
+    const updatedFiles = [];
+    const errors = [];
+    let anyOk = false;
+    let masterOk = false;
+
+    for (const f of files) {
+      const getRes = await sendHttp({ method: "GET", url: f.url, timeoutMs: 12000 });
+      if (!getRes || !getRes.ok || !isHttpOk(getRes)) {
+        errors.push(f.label + " GET failed (" + String(getRes && getRes.status || 0) + ")");
+        continue;
+      }
+
+      const currentText = String(getRes.responseText || "");
+      const patched = f.patch(currentText, groupKey, nextTitle);
+      if (!patched || typeof patched.text !== "string") {
+        errors.push(f.label + " patch failed");
+        continue;
+      }
+      const found = Number.isFinite(Number(patched.found)) ? Number(patched.found) : 0;
+      if (found <= 0) {
+        errors.push(f.label + " section not found (" + groupKey + ")");
         continue;
       }
 
@@ -320,7 +500,9 @@ export function makeChromeLivePopupViewPreludeSource() {
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      out[String(k)] = v !== false;
+      const aliasId = normalizeAliasId(k);
+      if (!aliasId) continue;
+      out[aliasId] = v !== false;
     }
     return out;
   }
@@ -353,7 +535,7 @@ export function makeChromeLivePopupViewPreludeSource() {
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      const aliasId = String(k || "").trim();
+      const aliasId = normalizeAliasId(k);
       if (!aliasId || v !== false) continue;
       out[aliasId] = false;
     }
@@ -694,8 +876,12 @@ export function makeChromeLivePopupViewRenderSource() {
         const bv = Number(b.item.metrics && b.item.metrics.watchers) || 0;
         if (av !== bv) return bv - av;
       }
-      const ai = Number(a.item.packIndex) || 0;
-      const bi = Number(b.item.packIndex) || 0;
+      const ai = Number.isFinite(Number(a.item && a.item.displayIndex))
+        ? Number(a.item.displayIndex)
+        : (Number(a.item && a.item.packIndex) || 0);
+      const bi = Number.isFinite(Number(b.item && b.item.displayIndex))
+        ? Number(b.item.displayIndex)
+        : (Number(b.item && b.item.packIndex) || 0);
       return ai - bi;
     });
     return list;
@@ -1271,7 +1457,7 @@ export function makeChromeLivePopupViewRenderSource() {
     shell.style.setProperty("--metrics-table-min", totalWidth + "px");
 
     const sortInlineOptions = [
-      { value: "pack", label: "Pack" },
+      { value: "pack", label: "Display" },
       { value: "load_desc", label: "Load" },
       { value: "score_desc", label: "Score" },
       { value: "watchers_desc", label: "Watch" },
@@ -1859,19 +2045,34 @@ export function makeChromeLivePopupViewRenderSource() {
   async function setGroupLabel(groupKeyRaw, labelRaw, defaultTitleRaw = "") {
     const key = String(groupKeyRaw || "").trim();
     if (!key) return;
-    const defaultTitle = sanitizeGroupLabel(defaultTitleRaw, "");
-    const nextLabel = sanitizeGroupLabel(labelRaw, "");
-    const current = sanitizeGroupLabel(groupLabels[key], "");
-    if ((nextLabel || defaultTitle) === (current || defaultTitle)) return;
+    const fallbackTitle = groupTitleFromOrder(key, sanitizeGroupLabel(defaultTitleRaw, ""));
+    const nextTitle = sanitizeGroupLabel(labelRaw, fallbackTitle);
+    const currentTitle = sanitizeGroupLabel(groupTitleFromOrder(key, fallbackTitle), "");
+    if (!nextTitle || nextTitle === currentTitle) return;
 
-    const next = { ...groupLabels };
-    if (!nextLabel || (defaultTitle && nextLabel === defaultTitle)) delete next[key];
-    else next[key] = nextLabel;
+    elHint.textContent = "Saving group title...";
+    const syncRes = await syncDevOrderSectionTitleFiles(key, nextTitle);
+    if (syncRes.masterOk) {
+      const liveOrderSections = await fetchLiveDevOrderSections();
+      if (Array.isArray(liveOrderSections) && liveOrderSections.length) {
+        orderSectionsBase = cloneDevOrderSections(liveOrderSections);
+      } else {
+        setGroupTitleInBase(key, nextTitle);
+      }
+      applyCurrentOrderOverrides();
+      render();
+      elHint.textContent = "Group title saved.";
+      return;
+    }
 
-    groupLabels = normalizeGroupLabels(next);
-    await storageSetGroupLabels(groupLabels);
+    if (syncRes.anyOk) {
+      render();
+      const filesLabel = syncRes.updatedFiles.length ? (" (" + syncRes.updatedFiles.join(", ") + ")") : "";
+      throw new Error("dev-order.tsv not updated" + filesLabel);
+    }
+
     render();
-    elHint.textContent = "Group title saved.";
+    throw new Error(Array.isArray(syncRes.errors) && syncRes.errors.length ? syncRes.errors[0] : "write failed");
   }
 
 `;

@@ -25,6 +25,7 @@ const SRC =
   SRC_DEFAULT;
 
 const ORDER_FILE = process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
+const DEPS_FILE = process.env.H2O_DEPS_FILE || path.join(SRC, "config", "loader-deps.json");
 const DEV_DIR_NAME = process.env.H2O_DEV_DIR_NAME || "dev_output";
 const DEV_ORIGIN = String(process.env.H2O_DEV_ORIGIN || "http://127.0.0.1:5500").replace(/\/$/, "");
 const BUILD_TS = String(process.env.H2O_BUILD_TS || Date.now());
@@ -60,6 +61,49 @@ function parseBoolStatus(token) {
   return null;
 }
 
+function stripEmojiAndInvisibles(s) {
+  return String(s || "")
+    .replace(/[\u{1F3FB}-\u{1F3FF}]/gu, "")
+    .replace(/[\p{Extended_Pictographic}]/gu, "")
+    .replace(/[\uFE0E\uFE0F\u200D\u200B-\u200F\uFEFF\u2060\u00AD]/g, "")
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, "");
+}
+
+function toAliasName(filename) {
+  const base = String(filename || "").replace(/(\.user)?\.js$/i, "");
+  const firstDot = base.indexOf(".");
+  if (firstDot <= 0) return null;
+
+  const id = base.slice(0, firstDot).trim();
+  let title = base.slice(firstDot + 1);
+
+  title = stripEmojiAndInvisibles(title)
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!id || !title) return null;
+  return `${id}._${title}_.js`;
+}
+
+function normalizeAliasId(aliasRaw) {
+  const alias = toAliasName(aliasRaw);
+  if (alias) return alias;
+  const raw = String(aliasRaw || "").trim();
+  return raw ? raw.replace(/\.user\.js$/i, ".js") : "";
+}
+
+function stripScriptFilenameSuffix(filenameRaw) {
+  return String(filenameRaw || "").replace(/(\.user)?\.js$/i, "").trim();
+}
+
+function isSourceScriptName(filename) {
+  const name = String(filename || "");
+  if (!/(\.user)?\.js$/i.test(name)) return false;
+  return toAliasName(name) !== null;
+}
+
 function readOrderedAliasesFromTSV(txt) {
   const out = [];
   for (const rawLine of String(txt || "").split(/\r?\n/)) {
@@ -70,9 +114,9 @@ function readOrderedAliasesFromTSV(txt) {
     const parts = noInline.split("\t");
     if (parts.length < 2) continue;
     const enabled = parseBoolStatus(parts[0]);
-    const aliasFile = parts.slice(1).join("\t").trim();
+    const aliasFile = toAliasName(parts.slice(1).join("\t").trim());
     if (enabled !== true) continue;
-    if (!/\.user\.js$/i.test(aliasFile)) continue;
+    if (!aliasFile) continue;
     out.push(aliasFile);
   }
   return out;
@@ -85,8 +129,9 @@ function readOrderedAliasesFromTXT(txt) {
     if (!line || line.startsWith("#")) continue;
     const isOff = line.startsWith("- ") || line.startsWith("-");
     if (isOff) continue;
-    if (!/\.user\.js$/i.test(line)) continue;
-    out.push(line);
+    const aliasFile = toAliasName(line);
+    if (!aliasFile) continue;
+    out.push(aliasFile);
   }
   return out;
 }
@@ -103,10 +148,10 @@ function readOrderedAliasesFromJSON(txt) {
   for (const sec of sections) {
     const items = Array.isArray(sec?.items) ? sec.items : [];
     for (const it of items) {
-      const aliasFile = String(it?.file || "").trim();
+      const aliasFile = toAliasName(String(it?.file || "").trim());
       const enabled = !!it?.enabled;
       if (!enabled) continue;
-      if (!/\.user\.js$/i.test(aliasFile)) continue;
+      if (!aliasFile) continue;
       out.push(aliasFile);
     }
   }
@@ -121,13 +166,63 @@ function readOrderedAliases(orderFile) {
   return readOrderedAliasesFromTXT(txt);
 }
 
+function readCanonicalDisplayNameMap(srcRoot) {
+  const out = {};
+  const scriptsDir = path.join(srcRoot, "scripts");
+  if (!fs.existsSync(scriptsDir)) return out;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!entry || !entry.isFile || !entry.isFile()) continue;
+    if (!isSourceScriptName(entry.name)) continue;
+    const aliasId = toAliasName(entry.name);
+    if (!aliasId || Object.prototype.hasOwnProperty.call(out, aliasId)) continue;
+    out[aliasId] = stripScriptFilenameSuffix(entry.name);
+  }
+  return out;
+}
+
 function fallbackAliasList() {
   if (!fs.existsSync(ALIAS_DIR)) return [];
-  return fs
-    .readdirSync(ALIAS_DIR, { withFileTypes: true })
-    .filter((d) => (d.isFile() || d.isSymbolicLink()) && /\.user\.js$/i.test(d.name))
-    .map((d) => d.name)
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return uniqueKeepOrder(
+    fs
+      .readdirSync(ALIAS_DIR, { withFileTypes: true })
+      .filter((d) => d.isFile() || d.isSymbolicLink())
+      .map((d) => toAliasName(d.name))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  );
+}
+
+function resolveAliasPath(aliasFileRaw) {
+  const aliasFile = toAliasName(aliasFileRaw);
+  if (!aliasFile) return "";
+  const currentPath = path.join(ALIAS_DIR, aliasFile);
+  if (fs.existsSync(currentPath)) return currentPath;
+  const legacyPath = path.join(ALIAS_DIR, aliasFile.replace(/\.js$/i, ".user.js"));
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  return currentPath;
+}
+
+function readRuntimeGroupOrders(depsFile) {
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(depsFile, "utf8"));
+  } catch {
+    return [];
+  }
+  const groups = manifest && typeof manifest === "object" ? manifest.groups : null;
+  if (!groups || typeof groups !== "object") return [];
+  const out = [];
+  for (const meta of Object.values(groups)) {
+    const runtimeOrder = uniqueKeepOrder((meta && Array.isArray(meta.runtimeOrder) ? meta.runtimeOrder : []).map(normalizeAliasId).filter(Boolean));
+    if (runtimeOrder.length > 1) out.push(runtimeOrder);
+  }
+  return out;
 }
 
 function readHeaderBlock(fileText) {
@@ -189,13 +284,15 @@ function computeScriptMetrics(fileText) {
   };
 }
 
-function buildPackEntry(aliasFile) {
-  const aliasPath = path.join(ALIAS_DIR, aliasFile);
+function buildPackEntry(aliasFileRaw) {
+  const aliasFile = toAliasName(aliasFileRaw);
+  if (!aliasFile) return null;
+  const aliasPath = resolveAliasPath(aliasFile);
   if (!fs.existsSync(aliasPath)) return null;
 
   const txt = fs.readFileSync(aliasPath, "utf8");
   const header = readHeaderBlock(txt);
-  const name = readTag(header, "name") || aliasFile;
+  const name = DISPLAY_NAME_MAP[aliasFile] || stripScriptFilenameSuffix(readTag(header, "name") || aliasFile);
   const runAt = normalizeRunAt(readTag(header, "run-at") || "document-idle");
   const metrics = computeScriptMetrics(txt);
   const requireUrl = `${DEV_ORIGIN}/alias/${encodeURIComponent(aliasFile)}?v=${encodeURIComponent(BUILD_TS)}`;
@@ -248,8 +345,29 @@ function uniqueKeepOrder(list) {
   return out;
 }
 
+function applyRuntimeGroupOrder(list, runtimeGroupOrders) {
+  let ordered = uniqueKeepOrder(list);
+  for (const runtimeOrder of Array.isArray(runtimeGroupOrders) ? runtimeGroupOrders : []) {
+    const wanted = uniqueKeepOrder(runtimeOrder);
+    if (wanted.length < 2) continue;
+    const present = wanted.filter((aliasId) => ordered.includes(aliasId));
+    if (present.length < 2) continue;
+    const presentSet = new Set(present);
+    const insertAt = ordered.findIndex((aliasId) => presentSet.has(aliasId));
+    if (insertAt < 0) continue;
+    const rest = ordered.filter((aliasId) => !presentSet.has(aliasId));
+    ordered = [...rest.slice(0, insertAt), ...present, ...rest.slice(insertAt)];
+  }
+  return ordered;
+}
+
 const orderedFromConfig = readOrderedAliases(ORDER_FILE);
-const orderedAliases = uniqueKeepOrder(orderedFromConfig.length ? orderedFromConfig : fallbackAliasList());
+const DISPLAY_NAME_MAP = readCanonicalDisplayNameMap(SRC);
+const RUNTIME_GROUP_ORDERS = readRuntimeGroupOrders(DEPS_FILE);
+const orderedAliases = applyRuntimeGroupOrder(
+  uniqueKeepOrder(orderedFromConfig.length ? orderedFromConfig : fallbackAliasList()),
+  RUNTIME_GROUP_ORDERS
+);
 
 let missingAliases = 0;
 const chunks = [];

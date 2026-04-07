@@ -45,27 +45,16 @@ export function makeChromeLiveLoaderJs({
   const SCRIPT_SLOWLOAD_WARN_START_MS = 1200;
   const SCRIPT_SLOWLOAD_WARN_END_MS = 2500;
   const SCRIPT_SLOWLOAD_WARN_IDLE_MS = 6000;
-  const IDLE_SERIAL_ALIAS_SET = new Set([
-    "0A1a._H2O_Core_.user.js",
-    "0A1b._Observer_Hub_.user.js",
-    "0B1a._Data_Core_.user.js",
-    "0B2a._Data_Sync_.user.js",
-    "0B2b._Data_Sync_Providers_.user.js",
-    "0B3a._Data_Archive_.user.js",
-    "0B3c._Command_Bar_.user.js",
-    "0W1a._Unmount_Messages_.user.js",
-    "0W2a._Pagination_Windowing_.user.js",
-    "0Z1a._Control_Hub_.user.js",
-    "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js",
-    "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
-    "0Z2a._Control_Hub_Tab_Tree_.user.js",
-    "1A1a._MiniMap_Kernel_.user.js",
-    "1A1f._MiniMap_Skin_.user.js",
-    "1A1b._MiniMap_Core_.user.js",
-    "1A1c._MiniMap_Shell_.user.js",
-    "1A1d._MiniMap_Engine_.user.js",
-    "1A1e._MiniMap_Views_.user.js",
-  ]);
+  const IDLE_SERIAL_SECTION_TITLES = [
+    "🧠 CORE",
+    "🪟 CHAT FLOW",
+    "⚡ PERFORMANCE",
+    "🗄️ DATA",
+    "🎛️ SYSTEM SURFACES",
+    "🕹️ CONTROL HUB",
+    "🗺️ MINIMAP BASE",
+  ];
+  const IDLE_SERIAL_ALIAS_SET = new Set(collectSectionAliasIds(IDLE_SERIAL_SECTION_TITLES));
   const MSG_FETCH_TEXT = "h2o-ext-live:fetch-text";
   const MSG_HTTP = "h2o-ext-live:http";
   const MSG_PAGE_DISABLE_ONCE = "h2o-ext-live:page-disable-once";
@@ -672,6 +661,61 @@ export function makeChromeLiveLoaderJs({
     return "document-idle";
   }
 
+  function stripEmojiAndInvisibles(textRaw) {
+    return String(textRaw || "")
+      .replace(/[\\u{1F3FB}-\\u{1F3FF}]/gu, "")
+      .replace(/[\\p{Extended_Pictographic}]/gu, "")
+      .replace(/[\\uFE0E\\uFE0F\\u200D\\u200B-\\u200F\\uFEFF\\u2060\\u00AD]/g, "")
+      .replace(/[\\u202A-\\u202E\\u2066-\\u2069]/g, "");
+  }
+
+  function toAliasName(filenameRaw) {
+    const base = String(filenameRaw || "").replace(/(\\.user)?\\.js$/i, "");
+    const firstDot = base.indexOf(".");
+    if (firstDot <= 0) return "";
+    const id = base.slice(0, firstDot).trim();
+    let title = base.slice(firstDot + 1);
+    title = stripEmojiAndInvisibles(title)
+      .trim()
+      .replace(/\\s+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!id || !title) return "";
+    return id + "._" + title + "_.js";
+  }
+
+  function normalizeAliasId(aliasRaw) {
+    const alias = toAliasName(aliasRaw);
+    if (alias) return alias;
+    const raw = String(aliasRaw || "").trim();
+    return raw ? raw.replace(/\\.user\\.js$/i, ".js") : "";
+  }
+
+  function collectSectionAliasIds(sectionTitlesRaw) {
+    const wanted = new Set(
+      (Array.isArray(sectionTitlesRaw) ? sectionTitlesRaw : [sectionTitlesRaw])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    );
+    if (!wanted.size) return [];
+
+    const out = [];
+    const seen = new Set();
+    const sections = Array.isArray(DEV_ORDER_SECTIONS) ? DEV_ORDER_SECTIONS : [];
+    for (const sec of sections) {
+      const title = String(sec && sec.title || "").trim();
+      if (!wanted.has(title)) continue;
+      const items = Array.isArray(sec && sec.items) ? sec.items : [];
+      for (const row of items) {
+        const aliasId = normalizeAliasId(row && row.file || "");
+        if (!aliasId || seen.has(aliasId)) continue;
+        seen.add(aliasId);
+        out.push(aliasId);
+      }
+    }
+    return out;
+  }
+
   function aliasIdFromRequireUrl(urlStr) {
     const raw = String(urlStr || "").trim();
     if (!raw) return "";
@@ -680,13 +724,13 @@ export function makeChromeLiveLoaderJs({
       const parts = String(u.pathname || "").split("/").filter(Boolean);
       const idx = parts.lastIndexOf("alias");
       const tail = idx >= 0 ? parts.slice(idx + 1).join("/") : (parts[parts.length - 1] || "");
-      return decodeURIComponent(tail || "");
+      return normalizeAliasId(decodeURIComponent(tail || ""));
     } catch {}
     const m = raw.match(new RegExp("/alias/([^?#]+)", "i"));
     if (m) {
-      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+      try { return normalizeAliasId(decodeURIComponent(m[1])); } catch { return normalizeAliasId(m[1]); }
     }
-    return raw;
+    return normalizeAliasId(raw);
   }
 
   function stripDevCacheNoise(url) {
@@ -725,7 +769,7 @@ export function makeChromeLiveLoaderJs({
   }
 
   function aliasRequireUrl(aliasIdRaw) {
-    const aliasId = String(aliasIdRaw || "").trim();
+    const aliasId = normalizeAliasId(aliasIdRaw);
     if (!aliasId) return "";
     const enc = encodeURIComponent(aliasId);
     try {
@@ -740,12 +784,14 @@ export function makeChromeLiveLoaderJs({
     const order = [];
     if (!rawCatalog || typeof rawCatalog !== "object") return { map, order };
     for (const [k, v] of Object.entries(rawCatalog)) {
-      const aliasId = String(k || "").trim();
+      const aliasId = normalizeAliasId(k);
       if (!aliasId) continue;
       const meta = v && typeof v === "object" ? v : {};
       map[aliasId] = {
         name: String(meta.name || aliasId),
         runAt: normalizeRunAt(meta.runAt || "document-idle"),
+        runtimeGroup: String(meta.runtimeGroup || ""),
+        runtimeOrder: Number.isFinite(Number(meta.runtimeOrder)) ? Number(meta.runtimeOrder) : null,
       };
       order.push(aliasId);
     }
@@ -753,28 +799,37 @@ export function makeChromeLiveLoaderJs({
   }
 
   function applyRuntimeOrderFix(items) {
-    const wanted = [
-      "1A1a._MiniMap_Kernel_.user.js",
-      "1A1f._MiniMap_Skin_.user.js",
-      "1A1b._MiniMap_Core_.user.js",
-      "1A1c._MiniMap_Shell_.user.js",
-      "1A1d._MiniMap_Engine_.user.js",
-      "1A1e._MiniMap_Views_.user.js",
-    ];
-
     if (!Array.isArray(items) || !items.length) return items;
+    let next = items.slice();
+    const groups = new Map();
 
-    const byAlias = new Map(items.map((it) => [String((it && it.aliasId) || ""), it]));
-    const presentWanted = wanted.filter((id) => byAlias.has(id));
-    if (!presentWanted.length) return items;
+    for (const item of next) {
+      const group = String(item && item.runtimeGroup || "").trim();
+      const aliasId = String(item && item.aliasId || "").trim();
+      const order = Number(item && item.runtimeOrder);
+      if (!group || !aliasId || !Number.isFinite(order)) continue;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push({ aliasId, order });
+    }
 
-    const wantedSet = new Set(presentWanted);
-    const rest = items.filter((it) => !wantedSet.has(String((it && it.aliasId) || "")));
-    const insertAt = items.findIndex((it) => wantedSet.has(String((it && it.aliasId) || "")));
-    const reordered = presentWanted.map((id) => byAlias.get(id)).filter(Boolean);
+    for (const rows of groups.values()) {
+      const wanted = rows
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((row) => row.aliasId);
+      if (wanted.length < 2) continue;
+      const present = wanted.filter((aliasId) => next.some((item) => String(item && item.aliasId || "") === aliasId));
+      if (present.length < 2) continue;
+      const presentSet = new Set(present);
+      const insertAt = next.findIndex((item) => presentSet.has(String(item && item.aliasId || "")));
+      if (insertAt < 0) continue;
+      const byAlias = new Map(next.map((item) => [String(item && item.aliasId || ""), item]));
+      const rest = next.filter((item) => !presentSet.has(String(item && item.aliasId || "")));
+      const reordered = present.map((aliasId) => byAlias.get(aliasId)).filter(Boolean);
+      next = [...rest.slice(0, insertAt), ...reordered, ...rest.slice(insertAt)];
+    }
 
-    if (insertAt < 0) return items;
-    return [...rest.slice(0, insertAt), ...reordered, ...rest.slice(insertAt)];
+    return next;
   }
 
 
@@ -840,8 +895,8 @@ export function makeChromeLiveLoaderJs({
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      const aliasId = String(k || "").trim();
-      if (!aliasId || !/\\.user\\.js$/i.test(aliasId)) continue;
+      const aliasId = normalizeAliasId(k);
+      if (!aliasId) continue;
       out[aliasId] = v === true;
     }
     return out;
@@ -851,7 +906,7 @@ export function makeChromeLiveLoaderJs({
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      const aliasId = String(k || "").trim();
+      const aliasId = normalizeAliasId(k);
       if (!aliasId) continue;
       out[aliasId] = v !== false;
     }
@@ -903,8 +958,8 @@ export function makeChromeLiveLoaderJs({
     for (const sec of sections) {
       const items = Array.isArray(sec && sec.items) ? sec.items : [];
       for (const row of items) {
-        const aliasId = String(row && row.file || "").trim();
-        if (!aliasId || !/\\.user\\.js$/i.test(aliasId)) continue;
+        const aliasId = normalizeAliasId(row && row.file || "");
+        if (!aliasId) continue;
         out[aliasId] = row && row.enabled === true;
       }
     }
@@ -934,7 +989,11 @@ export function makeChromeLiveLoaderJs({
           const orderOverrideMap = res && typeof res[STORAGE_ORDER_OVERRIDES_KEY] === "object" && res[STORAGE_ORDER_OVERRIDES_KEY]
             ? res[STORAGE_ORDER_OVERRIDES_KEY]
             : {};
-          resolve({ toggleMap, toggleSets, orderOverrideMap });
+          resolve({
+            toggleMap: normalizeSetMap(toggleMap),
+            toggleSets: normalizeToggleSets(toggleSets),
+            orderOverrideMap: normalizeOrderOverrideMap(orderOverrideMap),
+          });
         });
       } catch (e) {
         warn("storage unavailable", e);

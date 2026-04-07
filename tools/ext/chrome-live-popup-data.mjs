@@ -13,6 +13,36 @@ export function makeChromeLivePopupDataSource() {
     return "document-idle";
   }
 
+  function stripEmojiAndInvisibles(textRaw) {
+    return String(textRaw || "")
+      .replace(/[\\u{1F3FB}-\\u{1F3FF}]/gu, "")
+      .replace(/[\\p{Extended_Pictographic}]/gu, "")
+      .replace(/[\\uFE0E\\uFE0F\\u200D\\u200B-\\u200F\\uFEFF\\u2060\\u00AD]/g, "")
+      .replace(/[\\u202A-\\u202E\\u2066-\\u2069]/g, "");
+  }
+
+  function toAliasName(filenameRaw) {
+    const base = String(filenameRaw || "").replace(/(\\.user)?\\.js$/i, "");
+    const firstDot = base.indexOf(".");
+    if (firstDot <= 0) return "";
+    const id = base.slice(0, firstDot).trim();
+    let title = base.slice(firstDot + 1);
+    title = stripEmojiAndInvisibles(title)
+      .trim()
+      .replace(/\\s+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!id || !title) return "";
+    return id + "._" + title + "_.js";
+  }
+
+  function normalizeAliasId(aliasRaw) {
+    const alias = toAliasName(aliasRaw);
+    if (alias) return alias;
+    const raw = String(aliasRaw || "").trim();
+    return raw ? raw.replace(/\\.user\\.js$/i, ".js") : "";
+  }
+
   function aliasIdFromRequireUrl(urlStr) {
     const raw = String(urlStr || "").trim();
     if (!raw) return "";
@@ -21,13 +51,13 @@ export function makeChromeLivePopupDataSource() {
       const parts = String(u.pathname || "").split("/").filter(Boolean);
       const idx = parts.lastIndexOf("alias");
       const tail = idx >= 0 ? parts.slice(idx + 1).join("/") : (parts[parts.length - 1] || "");
-      return decodeURIComponent(tail || "");
+      return normalizeAliasId(decodeURIComponent(tail || ""));
     } catch {}
     const m = raw.match(new RegExp("/alias/([^?#]+)", "i"));
     if (m) {
-      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+      try { return normalizeAliasId(decodeURIComponent(m[1])); } catch { return normalizeAliasId(m[1]); }
     }
-    return raw;
+    return normalizeAliasId(raw);
   }
 
   function normalizeInt(raw, fallback = 0) {
@@ -107,33 +137,84 @@ export function makeChromeLivePopupDataSource() {
 
   function groupInfoForAlias(aliasId) {
     const id = String(aliasId || "").split(".")[0].toUpperCase();
-    if (/^0A/.test(id)) return { key: "CORE", title: "🧠 Core", order: 10 };
-    if (/^0B/.test(id)) return { key: "DATA", title: "🗄️ Data", order: 20 };
-    if (/^0W/.test(id)) return { key: "UNMOUNT_PAGINATION", title: "🪟 Unmount + Pagination", order: 25 };
-    if (/^0Z/.test(id)) return { key: "CONTROL_HUB", title: "📍 Control Hub", order: 30 };
-    if (/^1A1/.test(id)) return { key: "MINIMAP_BASE", title: "🗺️ MiniMap Base", order: 40 };
-    if (/^1A/.test(id)) return { key: "MINIMAP_PLUGINS", title: "🧩 MiniMap Add-ons", order: 50 };
-    if (/^1/.test(id)) return { key: "ANSWERS_UI", title: "🧱 Answers UI", order: 60 };
-    if (/^2/.test(id)) return { key: "QUESTIONS_UI", title: "❓ Questions UI", order: 70 };
-    if (/^3X/.test(id)) return { key: "WORKSPACE", title: "🔶 Workspace", order: 85 };
-    if (/^(3|4)/.test(id)) return { key: "DOCK_ENGINES_TABS", title: "🧩 Dock + Engines + Tabs", order: 80 };
-    if (/^5/.test(id)) return { key: "EXPORT", title: "📤 Export", order: 90 };
-    if (/^6/.test(id)) return { key: "UTILITIES", title: "🧰 Utilities", order: 100 };
-    if (/^7/.test(id)) return { key: "PROMPTS", title: "📝 Prompts", order: 110 };
-    if (/^8/.test(id)) return { key: "THEMES_SKINS", title: "🎨 Themes + Skins + Input", order: 120 };
-    if (/^9/.test(id)) return { key: "INTERFACE", title: "🖥️ Interface", order: 130 };
-    if (/^X/.test(id)) return { key: "EXPERIMENTAL", title: "🧪 Experimental", order: 140 };
-    return { key: "OTHER", title: "📦 Other", order: 999 };
+    if (/^0A/.test(id)) return { key: "CORE", title: "🧠 CORE", order: 10 };
+    if (/^0B/.test(id) || /^0W/.test(id)) return { key: "UNMOUNT_PAGINATION", title: "🪟 CHAT FLOW", order: 20 };
+    if (/^0C/.test(id)) return { key: "PERFORMANCE", title: "⚡ PERFORMANCE", order: 30 };
+    if (/^0D/.test(id)) return { key: "DATA", title: "🗄️ DATA", order: 40 };
+    if (/^0X/.test(id)) return { key: "COMMAND_BAR_SIDE_ACTIONS", title: "🎛️ SYSTEM SURFACES", order: 50 };
+    if (/^0Z/.test(id)) return { key: "CONTROL_HUB", title: "🕹️ CONTROL HUB", order: 60 };
+    if (/^1A1/.test(id)) return { key: "MINIMAP_BASE", title: "🗺️ MINIMAP BASE", order: 70 };
+    if (/^1A/.test(id)) return { key: "MINIMAP_PLUGINS", title: "🧩 MM ADD-ONS + PLUGINS", order: 80 };
+    if (/^1B/.test(id)) return { key: "MM_FEATURE_UI", title: "🖱️ MM FEATURE UI", order: 90 };
+    if (/^1/.test(id)) return { key: "ANSWERS_UI", title: "🧱 ANSWER UI", order: 100 };
+    if (/^2/.test(id)) return { key: "QUESTIONS_UI", title: "❓ QUESTION UI", order: 110 };
+    if (/^3Z/.test(id) || /^4/.test(id)) return { key: "WORKSPACE", title: "🧱 WORKSPACE", order: 130 };
+    if (/^3/.test(id)) return { key: "DOCK_ENGINES_TABS", title: "🧱 DOCK", order: 120 };
+    if (/^5/.test(id)) return { key: "EXPORT", title: "📤 EXPORT", order: 140 };
+    if (/^6/.test(id)) return { key: "UTILITIES", title: "🧰 UTILITIES + PORTALS + SECTIONS", order: 150 };
+    if (/^7/.test(id)) return { key: "PROMPTS", title: "📝 PROMPTS", order: 160 };
+    if (/^8/.test(id)) return { key: "THEMES_SKINS", title: "🎨 THEMES + SKINS + INPUT", order: 170 };
+    if (/^9/.test(id)) return { key: "INTERFACE", title: "🖥️ INTERFACE", order: 180 };
+    if (/^X/.test(id)) return { key: "EXPERIMENTAL", title: "🧪 EXPERIMENTAL", order: 190 };
+    return { key: "OTHER", title: "📦 OTHER", order: 999 };
+  }
+
+  function currentOrderSections() {
+    return Array.isArray(orderSections) && orderSections.length ? orderSections : orderSectionsBase;
+  }
+
+  function groupKeyForAlias(aliasIdRaw) {
+    const info = groupInfoForAlias(aliasIdRaw);
+    return String(info && info.key || "").trim();
+  }
+
+  function findOrderSectionsByGroupKey(groupKeyRaw, sectionsRaw = null) {
+    const groupKey = String(groupKeyRaw || "").trim();
+    const sections = Array.isArray(sectionsRaw) ? sectionsRaw : currentOrderSections();
+    if (!groupKey || !Array.isArray(sections)) return [];
+    const out = [];
+    for (const sec of sections) {
+      const items = Array.isArray(sec && sec.items) ? sec.items : [];
+      let matched = false;
+      for (const row of items) {
+        const aliasId = String(row && row.file || "").trim();
+        if (!aliasId) continue;
+        if (groupKeyForAlias(aliasId) !== groupKey) continue;
+        matched = true;
+        break;
+      }
+      if (matched) out.push(sec);
+    }
+    return out;
+  }
+
+  function groupTitleFromOrder(groupKeyRaw, fallback = "") {
+    const sections = findOrderSectionsByGroupKey(groupKeyRaw);
+    const title = String(sections[0] && sections[0].title || "").trim();
+    return title || String(fallback || "").trim();
   }
 
   function groupScripts(list) {
+    const displayIndexMap = buildDisplayIndexMap(currentOrderSections());
+    const sorted = Array.isArray(list)
+      ? list.slice().sort((a, b) => compareScriptsByDisplayOrder(a, b, displayIndexMap))
+      : [];
     const byKey = new Map();
-    for (let i = 0; i < list.length; i++) {
-      const item = list[i];
+    for (let i = 0; i < sorted.length; i++) {
+      const item = sorted[i];
+      const aliasId = normalizeAliasId(item && item.aliasId || "");
+      if (aliasId) {
+        item.displayIndex = displayIndexMap.has(aliasId) ? Number(displayIndexMap.get(aliasId)) : i;
+      }
       const info = groupInfoForAlias(item.aliasId);
       let group = byKey.get(info.key);
       if (!group) {
-        group = { ...info, firstIndex: i, items: [] };
+        group = {
+          ...info,
+          title: groupTitleFromOrder(info.key, info.title),
+          firstIndex: i,
+          items: [],
+        };
         byKey.set(info.key, group);
       }
       group.items.push(item);
@@ -142,6 +223,34 @@ export function makeChromeLivePopupDataSource() {
       if (a.order !== b.order) return a.order - b.order;
       return a.firstIndex - b.firstIndex;
     });
+  }
+
+  function buildDisplayIndexMap(rawSections) {
+    const out = new Map();
+    const sections = Array.isArray(rawSections) ? rawSections : [];
+    let idx = 0;
+    for (const sec of sections) {
+      const items = Array.isArray(sec && sec.items) ? sec.items : [];
+      for (const row of items) {
+        const aliasId = normalizeAliasId(row && row.file || "");
+        if (!aliasId || out.has(aliasId)) continue;
+        out.set(aliasId, idx);
+        idx += 1;
+      }
+    }
+    return out;
+  }
+
+  function compareScriptsByDisplayOrder(a, b, displayIndexMap) {
+    const aAlias = normalizeAliasId(a && a.aliasId || "");
+    const bAlias = normalizeAliasId(b && b.aliasId || "");
+    const aIdx = displayIndexMap.has(aAlias) ? Number(displayIndexMap.get(aAlias)) : Number.MAX_SAFE_INTEGER;
+    const bIdx = displayIndexMap.has(bAlias) ? Number(displayIndexMap.get(bAlias)) : Number.MAX_SAFE_INTEGER;
+    if (aIdx !== bIdx) return aIdx - bIdx;
+    const aPack = normalizeInt(a && a.packIndex, Number.MAX_SAFE_INTEGER);
+    const bPack = normalizeInt(b && b.packIndex, Number.MAX_SAFE_INTEGER);
+    if (aPack !== bPack) return aPack - bPack;
+    return String(aAlias || "").localeCompare(String(bAlias || ""), undefined, { numeric: true });
   }
 
   function devConfigUrl(fileName) {
@@ -189,8 +298,8 @@ export function makeChromeLivePopupDataSource() {
       const items = [];
       for (const row of itemsRaw) {
         if (!row || typeof row !== "object") continue;
-        const file = String(row.file || "").trim();
-        if (!file || !/\\.user\\.js$/i.test(file)) continue;
+        const file = toAliasName(String(row.file || "").trim());
+        if (!file) continue;
         items.push({
           file,
           enabled: row.enabled === true,
@@ -210,7 +319,7 @@ export function makeChromeLivePopupDataSource() {
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      const aliasId = String(k || "").trim();
+      const aliasId = normalizeAliasId(k);
       const file = String(v || "").trim();
       if (!aliasId || !file) continue;
       out[aliasId] = file;
@@ -219,7 +328,7 @@ export function makeChromeLivePopupDataSource() {
   }
 
   function stripUserJsSuffix(raw) {
-    return String(raw || "").replace(/\\.user\\.js$/i, "").trim();
+    return String(raw || "").replace(/(\\.user)?\\.js$/i, "").trim();
   }
 
   function displayFilenameForAlias(aliasIdRaw) {
@@ -238,7 +347,7 @@ export function makeChromeLivePopupDataSource() {
   }
 
   function aliasRequireUrl(aliasIdRaw) {
-    const aliasId = String(aliasIdRaw || "").trim();
+    const aliasId = normalizeAliasId(aliasIdRaw);
     if (!aliasId) return "";
     const enc = encodeURIComponent(aliasId);
     try {
@@ -293,8 +402,8 @@ export function makeChromeLivePopupDataSource() {
     const out = {};
     if (!rawMap || typeof rawMap !== "object") return out;
     for (const [k, v] of Object.entries(rawMap)) {
-      const aliasId = String(k || "").trim();
-      if (!aliasId || !/\\.user\\.js$/i.test(aliasId)) continue;
+      const aliasId = normalizeAliasId(k);
+      if (!aliasId) continue;
       out[aliasId] = v === true;
     }
     return out;
@@ -331,6 +440,21 @@ export function makeChromeLivePopupDataSource() {
           row.enabled = nextEnabled;
           changed = true;
         }
+      }
+    }
+    return changed;
+  }
+
+  function setGroupTitleInBase(groupKeyRaw, titleRaw) {
+    const groupKey = String(groupKeyRaw || "").trim();
+    const nextTitle = String(titleRaw || "").trim();
+    if (!groupKey || !nextTitle) return false;
+    let changed = false;
+    for (const sections of [orderSectionsBase, orderSections]) {
+      for (const sec of findOrderSectionsByGroupKey(groupKey, sections)) {
+        if (String(sec && sec.title || "").trim() === nextTitle) continue;
+        sec.title = nextTitle;
+        changed = true;
       }
     }
     return changed;
@@ -401,8 +525,8 @@ export function makeChromeLivePopupDataSource() {
       const parts = line.split("\\t");
       if (parts.length < 2) continue;
       const enabled = parseDevOrderEnabledToken(parts[0]) === true;
-      const file = String(parts.slice(1).join("\\t") || "").trim();
-      if (!/\\.user\\.js$/i.test(file)) continue;
+      const file = toAliasName(String(parts.slice(1).join("\\t") || "").trim());
+      if (!file) continue;
       if (!current) current = ensureSection("Other");
       current.items.push({ file, enabled });
     }

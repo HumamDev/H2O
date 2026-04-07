@@ -169,7 +169,7 @@
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
-      "detail": "⚡ Quick local archive: saves version-changed files into h2o-workspace-ext/h2o-source/archive.",
+      "detail": "⚡ Quick local archive: saves version-changed files into the current workspace archive folder.",
       "type": "shell",
       "command": "node \"${workspaceFolder}/tools/ops/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
       "problemMatcher": []
@@ -177,8 +177,16 @@
     {
       "label": "H2O: 5) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
       "detail": "Local archive utility: full snapshot of tracked versioned files from scripts, tools, ui, and workspace archive targets into today's archive folder.",
-      "type": "shell",
-      "command": "node \"${workspaceFolder}/tools/ops/archive-snapshot.mjs\" \"${workspaceFolder}\" --all && echo \"\" && echo \"✅ H2O Local Full Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/ops/archive-snapshot.mjs",
+        "${workspaceFolder}",
+        "--all"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "problemMatcher": []
     },
     {
@@ -276,7 +284,16 @@
       "type": "shell",
       "command": "npm run dashboard:watch:fast",
       "isBackground": true,
-      "runOptions": { "runOn": "folderOpen" },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 0) ⬜ META / A) Generate File Lists (workspace + git + parent workspace)",
+      "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces.",
+      "type": "shell",
+      "command": "mkdir -p \"${workspaceFolder}/meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder incl. h2o-source + h2o-dev-server) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/meta/reports/file-list.txt'",
       "problemMatcher": []
     }
   ],

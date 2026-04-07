@@ -728,8 +728,7 @@ ${makeChromeLivePopupViewRenderSource()}  function commitGroupTitleInput(inputEl
       return;
     }
     if (ev.key === "Escape") {
-      const key = String(target.dataset.groupTitleEditKey || "").trim();
-      const fallback = sanitizeGroupLabel(groupLabels[key], target.dataset.groupDefaultTitle || "");
+      const fallback = sanitizeGroupLabel(target.dataset.groupDefaultTitle || "", "");
       target.value = fallback;
       target.blur();
     }
@@ -896,7 +895,7 @@ ${makeChromeLivePopupViewRenderSource()}  function commitGroupTitleInput(inputEl
       }
       if (Object.prototype.hasOwnProperty.call(changes, STORAGE_KEY)) {
         const nextMap = changes[STORAGE_KEY]?.newValue;
-        toggleMap = nextMap && typeof nextMap === "object" ? nextMap : {};
+        toggleMap = normalizeGlobalToggleMap(nextMap);
         shouldRender = true;
       }
       if (Object.prototype.hasOwnProperty.call(changes, STORAGE_SETS_KEY)) {
