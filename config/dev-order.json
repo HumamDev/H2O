@@ -5,7 +5,7 @@
   "notes": [
     "TSV is the master editable file.",
     "enabled=true means ON; enabled=false means OFF.",
-    "file is the alias filename, e.g. 0A1a._H2O_Core_.user.js",
+    "file is the real source filename from scripts/, not the derived alias filename.",
     "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally."
   ],
   "sections": [
@@ -14,11 +14,63 @@
       "title": "🧠 CORE",
       "items": [
         {
-          "file": "0A1a._H2O_Core_.user.js",
+          "file": "0A1a.⬛️🧠 H2O Core 🧠.js",
           "enabled": true
         },
         {
-          "file": "0A1b._Observer_Hub_.user.js",
+          "file": "0A2a.⬛️🛰 Observer Hub 🛰.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "UNMOUNT_PAGINATION",
+      "title": "🪟 CHAT FLOW",
+      "items": [
+        {
+          "file": "0B1a.⬛️⚡ Performance Governor 🧭⚡.js",
+          "enabled": true
+        },
+        {
+          "file": "0B1b.⬛️⚡ Performance Store 💾⚡.js",
+          "enabled": true
+        },
+        {
+          "file": "0B1c.⬛️⚡ Performance Adapters 🔄⚡.js",
+          "enabled": true
+        },
+        {
+          "file": "0B1d.⚫️🔀⚡ Chat Mechanisms Router (🤝 Integration)⚡.js",
+          "enabled": true
+        },
+        {
+          "file": "0B2a.⚫️📊⚡ Performance Monitor (🔌 Plugin) ⚡.js",
+          "enabled": true
+        },
+        {
+          "file": "0B2b.⚫️🔲⚡ Performance HUD (📟 Widget) ⚡.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "PERFORMANCE",
+      "title": "⚡ PERFORMANCE",
+      "items": [
+        {
+          "file": "0C1a.⬛️🪟 Pagination Windowing Engine 🪟.js",
+          "enabled": true
+        },
+        {
+          "file": "0C1b.⚫️🪟 Pagination Windowing (Chat 🔗 Adapter) 🪟.js",
+          "enabled": true
+        },
+        {
+          "file": "0C2a.⬛️⛰️ Unmount Messages Engine ⛰️.js",
+          "enabled": true
+        },
+        {
+          "file": "0C2b.⚫️⛰️ Unmount Messages (Chat 🔗 Adapter) ⛰️.js",
           "enabled": true
         }
       ]
@@ -28,353 +80,343 @@
       "title": "🗄️ DATA",
       "items": [
         {
-          "file": "0B1a._Data_Core_.user.js",
+          "file": "0D1a.⬛️🗄️ Data Core 🗄️.js",
           "enabled": true
         },
         {
-          "file": "0B2a._Data_Sync_.user.js",
+          "file": "0D2a.⬛️🗄️ Data Sync 🛜🗄️.js",
           "enabled": true
         },
         {
-          "file": "0B2b._Data_Sync_Providers_.user.js",
+          "file": "0D2b.⚫️🗄️ Data Sync Providers 🧩🛜🗄️.js",
           "enabled": true
         },
         {
-          "file": "0B3a._Data_Archive_.user.js",
+          "file": "0D3a.🗄️ Transcript Archive Engine 🗂️🗄️.js",
           "enabled": true
         },
         {
-          "file": "0B3c._Command_Bar_.user.js",
+          "file": "0D3b.🗄️ Transcript Extension Bridge 📡🗂️🗄️.js",
           "enabled": true
         },
         {
-          "file": "0B3d._Side_Actions_Panel_.user.js",
+          "file": "0D3c.🗄️ Transcript Layer Renderer 🧬🗂️🗄️.js",
           "enabled": true
         }
       ]
     },
     {
-      "key": "UNMOUNT_PAGINATION",
-      "title": "🪟 UNMOUNT + PAGINATION",
+      "key": "COMMAND_BAR_SIDE_ACTIONS",
+      "title": "🎛️ KEYS",
       "items": [
         {
-          "file": "0W1a._Unmount_Messages_.user.js",
+          "file": "0X1a.⬛️⌨️ Command Bar ⌨️.js",
           "enabled": true
         },
         {
-          "file": "0W2a._Pagination_Windowing_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "0W0a._Performance_Governor_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "0W0c._Performance_Store_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "0W0d._Executor_Adapters_.user.js",
+          "file": "0X2a.⬛️🎛️ Side Actions Panel 🎛️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "CONTROL_HUB",
-      "title": "📍 CONTROL HUB",
+      "title": "🕹️ CONTROL HUB",
       "items": [
         {
-          "file": "0Z1a._Control_Hub_.user.js",
+          "file": "0Z1a.⬛️🕹️ Control Hub 🕹️.js",
           "enabled": true
         },
         {
-          "file": "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z1b.⚫️🗄️🕹️ Data Tab (Control Hub 🔌 Plugin) 🕹️.js",
           "enabled": true
         },
         {
-          "file": "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
+          "file": "0Z1c.⚫️🗺️🕹️ MiniMap Tab (Control Hub 🔌 Plugin) 🕹️.js",
           "enabled": true
         },
         {
-          "file": "0Z2a._Control_Hub_Tab_Tree_.user.js",
+          "file": "0Z1d.⚫️⚡️🕹️ Performance Tab (Control Hub 🔌 Plugin) 🕹️.js",
+          "enabled": true
+        },
+        {
+          "file": "0Z2a.⚫️🌳🕹️ Control Hub Tab Tree (Control Hub ➕ Add-on) 🕹️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "MINIMAP_BASE",
-      "title": "🗺️ MINIMAP (base)",
+      "title": "🗺️ MINIMAP BASE",
       "items": [
         {
-          "file": "1A1a._MiniMap_Kernel_.user.js",
+          "file": "1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A1f._MiniMap_Skin_.user.js",
+          "file": "1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A1b._MiniMap_Core_.user.js",
+          "file": "1A1c.🟥🗺️ MiniMap Engine 🚀🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A1c._MiniMap_Shell_.user.js",
+          "file": "1A1d.🟥🗺️ MiniMap Shell 🐚🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A1d._MiniMap_Engine_.user.js",
+          "file": "1A1e.🟥🗺️ MiniMap Skin 🖐🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A1e._MiniMap_Views_.user.js",
+          "file": "1A1f.🟥🗺️ MiniMap Views 👁🗺️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "MINIMAP_PLUGINS",
-      "title": "🧩 MINIMAP (add-ons / plugins)",
+      "title": "🧩 MM PLUS",
       "items": [
         {
-          "file": "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js",
+          "file": "1A2a.🟥🎨🗺️ Answer Wash Engine (MiniMap ➕ Add-on) 🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A2b._Navigation_Controls_(MiniMap_Add-on)_.user.js",
+          "file": "1A2b.🟥💠🗺️ Navigation Controls (MiniMap ➕ Add-on) 🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js",
+          "file": "1A3a.🔴🌈🗺️ Highlight Dots (MiniMap 🔌 Plugin) 🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A3b._Quote_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A3b.🔴🗨️🗺️ Quote Badges (MiniMap 🔌 Plugin) 🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A4b._Revision_Badges_(MiniMap_Plugin)_.user.js",
+          "file": "1A4b.🔴🔁🗺️ Revision Badges (MiniMap 🔌 Plugin) 🗺️.js",
           "enabled": true
         },
         {
-          "file": "1A5a._Title_Labels_(MiniMap_Plugin)_.user.js",
+          "file": "1A5a.🔴🏷️🗺️ Title Labels (MiniMap 🔌 Plugin) 🗺️.js",
+          "enabled": true
+        },
+        {
+          "file": "1A2c.🟥📑🗺️ Chat Pages Controller (MiniMap ➕ Add-on) 🗺️.js",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "key": "MM_FEATURE_UI",
+      "title": "🖱️ MM FEATURE UI",
+      "items": [
+        {
+          "file": "1B1a.🟥🖲🗺️ Quick Controls (MiniMap 🔌 Plugin) 🗺️.js",
+          "enabled": true
+        },
+        {
+          "file": "1B2a.🟥🖱️🗺️ Context Menu (MiniMap 🔌 Plugin) 🗺️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "ANSWERS_UI",
-      "title": "🧱 ANSWERS (UI)",
+      "title": "🧱 ANSWER UI",
       "items": [
         {
-          "file": "1B1a._MiniMap_Quick_Controls_.user.js",
+          "file": "1U1a.🔴🖼️ Answer Background 🖼️.js",
           "enabled": true
         },
         {
-          "file": "1B2a._MiniMap_Context_Menu_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "1C1a._Color_Legend_.user.js",
+          "file": "1X1a.🔴🧮 Answer Numbers 🧮.js",
           "enabled": true
         },
         {
-          "file": "1D1a._Code_Line_Numbers_.user.js",
-          "enabled": false
-        },
-        {
-          "file": "1E1a._Answer_Title_.user.js",
+          "file": "1Z1a.🔴⏳ Answer Timestamp ⏳.js",
           "enabled": true
         },
         {
-          "file": "1U1a._Answer_Background_.user.js",
+          "file": "1C1a.🔴📛 Title Bar 📛.js",
           "enabled": true
         },
         {
-          "file": "1X1a._Answer_Numbers_.user.js",
+          "file": "1D1a.🟥🧭 Color Legend 🧭.js",
           "enabled": true
         },
         {
-          "file": "1Z1a._Answer_Timestamp_.user.js",
+          "file": "1E1a.🔴💻 Code Line Numbers 💻.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "QUESTIONS_UI",
-      "title": "❓ QUESTIONS (UI)",
+      "title": "❓ QUESTION UI",
       "items": [
         {
-          "file": "2A1a._Question_Wrapper_.user.js",
+          "file": "2A1a.🟨🧵 Question Wrapper 🧵.js",
           "enabled": true
         },
         {
-          "file": "2B1a._Quote_Tracker_.user.js",
+          "file": "2B1a.🟨💬 Quote Tracker 💬.js",
           "enabled": true
         },
         {
-          "file": "2C1a._Question_Wash_Engine_.user.js",
+          "file": "2C1a.🟡🧼 Question Wash Engine 🧼.js",
           "enabled": true
         },
         {
-          "file": "2U1a._Question_Background_.user.js",
+          "file": "2U1a.🟡🌆 Question Background 🌆.js",
           "enabled": true
         },
         {
-          "file": "2X1a._Question_Numbers_.user.js",
+          "file": "2X1a.🟡🔢 Question Numbers 🔢.js",
           "enabled": true
         },
         {
-          "file": "2Z1a._Question_Timestamp_.user.js",
+          "file": "2Z1a.🟡🕛 Question Timestamp 🕛.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "DOCK_ENGINES_TABS",
-      "title": "🧩 DOCK + ENGINES + TABS",
+      "title": "🧱 DOCK",
       "items": [
         {
-          "file": "3A1a._Dock_Panel_.user.js",
+          "file": "3A1a.🟧🎖️ Dock Panel 🎖️.js",
           "enabled": true
         },
         {
-          "file": "3B1a._Bookmarks_Engine_.user.js",
+          "file": "3B1a.🟧🌟 Bookmarks Engine 🌟.js",
           "enabled": true
         },
         {
-          "file": "3B2a._Bookmarks_Tab_.user.js",
+          "file": "3B2a.🟠⭐ Bookmarks Tab ⭐.js",
           "enabled": true
         },
         {
-          "file": "3H1a._Highlights_Engine_.user.js",
+          "file": "3H1a.🟧🖌️ Highlights Engine 🖌️.js",
           "enabled": true
         },
         {
-          "file": "3H2a._Highlights_Tab_.user.js",
+          "file": "3H2a.🟠🌈 Highlights Tab 🌈.js",
           "enabled": true
         },
         {
-          "file": "3H3a._Smart_Highlight_Engine_.user.js",
+          "file": "3H3a.✴️✨ Smart Highlight Engine 🚂✨.js",
           "enabled": true
         },
         {
-          "file": "3H3b._Smart_Highlight_Parser_.user.js",
+          "file": "3H3b.✴️✨ Smart Highlight Parser 🔬✨.js",
           "enabled": true
         },
         {
-          "file": "3H3c._Smart_Highlight_UI_.user.js",
+          "file": "3H3c.✴️✨ Smart Highlight UI 🖍️✨.js",
           "enabled": true
         },
         {
-          "file": "3H3d._Smart_Highlight_State_.user.js",
+          "file": "3H3d.✴️✨ Smart Highlight State 📊✨.js",
           "enabled": true
         },
         {
-          "file": "3N1a._Notes_Engine_.user.js",
+          "file": "3N1a.🟧🖋️Notes Engine🖋️.js",
           "enabled": true
         },
         {
-          "file": "3N2a._Notes_Tab_.user.js",
+          "file": "3N2a.🟠🗒️ Notes Tab 🗒️.js",
           "enabled": true
         },
         {
-          "file": "3T1a._Attachments_Tab_.user.js",
+          "file": "3T1a.🟠📎 Attachments Tab 📎.js",
           "enabled": true
         },
         {
-          "file": "3V1a._Navigator_Engine_.user.js",
+          "file": "3V1a.🟧🧭 Navigator Engine 🧭.js",
           "enabled": true
         },
         {
-          "file": "3V2a._Navigator_Tab_.user.js",
+          "file": "3V2a.🟠🧭 Navigator Tab 🧭.js",
           "enabled": true
         },
         {
-          "file": "3W1a._Context_Engine_.user.js",
+          "file": "3W1a.🟧🧠 Context Engine 🧠.js",
           "enabled": true
         },
         {
-          "file": "3W2a._Context_Tab_.user.js",
+          "file": "3W2a.🟠🧠 Context Tab 🧠.js",
           "enabled": true
         },
         {
-          "file": "3X1a._Capture_Engine_.user.js",
+          "file": "3X1a.🟧🧷 Capture Engine 🧷.js",
           "enabled": true
         },
         {
-          "file": "3X2a._Capture_Tab_.user.js",
+          "file": "3X2a.🟠🧷 Capture Tab 🧷.js",
           "enabled": true
         },
         {
-          "file": "3Y2a._Finder_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3Z1a._Workspace_Dock_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3Z2a._Workspace_Core_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3Z3a._Shelf_Panel_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "3Z4a._Drawer_Panel_.user.js",
-          "enabled": true
-        },
-        {
-          "file": "4L0a._Legal_Pack_.user.js",
+          "file": "3Y2a.🟠🔎 Finder 🔎.js",
           "enabled": true
         }
       ]
     },
     {
-      "key": "EXPORT",
-      "title": "📤 EXPORT",
+      "key": "WORKSPACE",
+      "title": "🧱 WORKSPACE",
       "items": [
         {
-          "file": "5A1a._Export_Chat_.user.js",
+          "file": "3Z1a.🔶🧱 Workspace Dock 🧱.js",
           "enabled": true
         },
         {
-          "file": "5B1a._Quick_Export_.user.js",
+          "file": "3Z2a.🔶🎯 Workspace Core 🎯.js",
           "enabled": true
         },
         {
-          "file": "5C1a._Folders_.user.js",
+          "file": "3Z3a.🔸📚 Shelf Panel 📚.js",
+          "enabled": true
+        },
+        {
+          "file": "3Z4a.🔸🗃️ Drawer Panel 🗃️.js",
+          "enabled": true
+        },
+        {
+          "file": "4L0a.⚖️ Legal Pack ⚖️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "UTILITIES",
-      "title": "🧰 UTILITIES / PORTALS",
+      "title": "🧰 PAPERS",
       "items": [
         {
-          "file": "6A1a._Margin_Anchor_.user.js",
+          "file": "6A1a.🟩📍 Margin Anchor 📍.js",
           "enabled": true
         },
         {
-          "file": "6B1a._Sticky_Notes_Portal_.user.js",
+          "file": "6B1a.🟢📝 Sticky Notes Portal 📝.js",
           "enabled": true
         },
         {
-          "file": "6C1a._Quote_Backrefs_.user.js",
+          "file": "6C1a.🟢↩️ Quote Backrefs ↩️.js",
           "enabled": true
         },
         {
-          "file": "6S1a._Section_Bands_.user.js",
+          "file": "6S1a.🟩🍰 Section Bands 🍰.js",
           "enabled": true
         },
         {
-          "file": "6S2a._Section_Collapser_.user.js",
+          "file": "6S2a.🟢🧩 Section Collapser 🧩.js",
           "enabled": true
         },
         {
-          "file": "6S2b._Heading_Colorizer_.user.js",
+          "file": "6S2b.🟢👒 Heading Colorizer 👒.js",
           "enabled": true
         }
       ]
@@ -384,26 +426,26 @@
       "title": "📝 PROMPTS",
       "items": [
         {
-          "file": "7A1a._Prompt_Manager_.user.js",
+          "file": "7A1a.⬜️✍️ Prompt Manager ✍️.js",
           "enabled": true
         }
       ]
     },
     {
       "key": "THEMES_SKINS",
-      "title": "🎨 THEMES + SKINS + INPUT",
+      "title": "🎨 APPEARANCE",
       "items": [
         {
-          "file": "8A1a._Themes_Panel_.user.js",
+          "file": "8A1a.🟪🎨 Themes Panel 🎨.js",
           "enabled": true
         },
         {
-          "file": "8A2a._H2O_Skins_Registry_.user.js",
+          "file": "8A2a.🟪🌸 H2O Skins Registry 🌸.js",
           "enabled": true
         },
         {
-          "file": "8Y1a._Input_Dock_(Keys_Rail)_.user.js",
-          "enabled": false
+          "file": "8Y1a.🟣🧊 Input Dock (Keys Rail).js",
+          "enabled": true
         }
       ]
     },
@@ -412,28 +454,28 @@
       "title": "🖥️ INTERFACE",
       "items": [
         {
-          "file": "9A1a._Interface_Enhancer_.user.js",
+          "file": "9A1a.🟫🖥️ Interface Enhancer 🖥️.js",
           "enabled": false
         },
         {
-          "file": "9B1a._Tab_Title_.user.js",
+          "file": "9B1a.🟤🔖 Tab Title 🔖.js",
           "enabled": false
         },
         {
-          "file": "9C1a._Title_Under_Input_bar_.user.js",
+          "file": "9C1a.🟤📌 Title Under Input bar 📌.js",
           "enabled": false
         },
         {
-          "file": "9D1a._Auto_Emoji_Title_.user.js",
+          "file": "9D1a.🟤📱 Auto Emoji Title 📱.js",
           "enabled": false
         },
         {
-          "file": "9X1a._Keep_Projects_Open_.user.js",
+          "file": "9X1a.🟤🧷 Keep Projects Open.js",
           "enabled": false
         },
         {
-          "file": "9Z1a._Hide_Disclaimer_.user.js",
-          "enabled": true
+          "file": "9Z1a.🟤🧼 Hide Disclaimer 🧼.js",
+          "enabled": false
         }
       ]
     },
@@ -442,20 +484,42 @@
       "title": "🧪 EXPERIMENTAL",
       "items": [
         {
-          "file": "X1._Canvas_Last-Updated_Timestamp_.user.js",
+          "file": "X1.🔴Canvas Last-Updated Timestamp.js",
           "enabled": false
         },
         {
-          "file": "X2._Select_All_Answer_.user.js",
+          "file": "X2.🔴🧲 Select All Answer 🧲.js",
           "enabled": false
         },
         {
-          "file": "X3._Toolbar_Palette_Button_.user.js",
+          "file": "X3.🔴🎨 Toolbar Palette Button 🎨.js",
           "enabled": false
         },
         {
-          "file": "X5._Highlight_Double-Click_.user.js",
+          "file": "X5.🟠✨ Highlight Double-Click ✨.js",
           "enabled": false
+        }
+      ]
+    },
+    {
+      "key": "OTHER",
+      "title": "📦 OTHER",
+      "items": [
+        {
+          "file": "0E1a.⬛️📀 Export Chat 📀.js",
+          "enabled": true
+        },
+        {
+          "file": "0E1b.⚫️📀 Export Formats 📝📀.js",
+          "enabled": true
+        },
+        {
+          "file": "0E2a.⚫️💿 Quick Export 💿.js",
+          "enabled": true
+        },
+        {
+          "file": "0F1a.⬛️🗂️ Folders 🗂️.js",
+          "enabled": true
         }
       ]
     }

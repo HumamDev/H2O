@@ -55,8 +55,44 @@ function normalizePhase(v) {
 function normalizeAlias(v) {
   return String(v || "").trim();
 }
+function stripEmojiAndInvisibles(s) {
+  return String(s || "")
+    .replace(/[\u{1F3FB}-\u{1F3FF}]/gu, "")
+    .replace(/[\p{Extended_Pictographic}]/gu, "")
+    .replace(/[\uFE0E\uFE0F\u200D\u200B-\u200F\uFEFF\u2060\u00AD]/g, "")
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, "");
+}
+function toAliasName(filename) {
+  const base = String(filename || "").replace(/(\.user)?\.js$/i, "");
+  const firstDot = base.indexOf(".");
+  if (firstDot <= 0) return "";
+  const id = base.slice(0, firstDot).trim();
+  let title = base.slice(firstDot + 1);
+  title = stripEmojiAndInvisibles(title)
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!id || !title) return "";
+  return `${id}._${title}_.js`;
+}
+function normalizeAliasId(v) {
+  const alias = toAliasName(v);
+  if (alias) return alias;
+  const raw = String(v || "").trim();
+  return raw ? raw.replace(/\.user\.js$/i, ".js") : "";
+}
 function uniq(arr) {
   return Array.from(new Set((Array.isArray(arr) ? arr : []).map(normalizeAlias).filter(Boolean)));
+}
+function uniqAliasIds(arr) {
+  return Array.from(new Set((Array.isArray(arr) ? arr : []).map(normalizeAliasId).filter(Boolean)));
+}
+function groupMemberOrder(groupMeta, mode = "display") {
+  if (mode === "runtime") {
+    return uniqAliasIds(groupMeta?.runtimeOrder || groupMeta?.members || []);
+  }
+  return uniqAliasIds(groupMeta?.members || []);
 }
 function formatList(items) {
   return items.map((x) => `  - ${x}`).join("\n");
@@ -87,7 +123,7 @@ function parseDevOrderTsv(txt) {
     if (parts.length < 2) continue;
 
     const statusEmoji = String(parts[0] || "").trim();
-    const alias = normalizeAlias(parts.slice(1).join("\t"));
+    const alias = normalizeAlias(normalizeAliasId(parts.slice(1).join("\t")));
     if (!alias) continue;
 
     enabled.set(alias, statusEmoji === "🟢");
@@ -97,9 +133,20 @@ function parseDevOrderTsv(txt) {
 }
 
 function aliasIdFromRequireUrl(url) {
-  const raw = String(url || "");
-  const m = raw.match(/\/alias\/([^/?#]+\.user\.js)(?:[?#]|$)/i);
-  return m ? m[1] : "";
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw, "http://127.0.0.1:5500/");
+    const parts = String(u.pathname || "").split("/").filter(Boolean);
+    const idx = parts.lastIndexOf("alias");
+    const tail = idx >= 0 ? parts.slice(idx + 1).join("/") : (parts[parts.length - 1] || "");
+    return normalizeAliasId(decodeURIComponent(tail || ""));
+  } catch {}
+  const m = raw.match(/\/alias\/([^?#]+)(?:[?#]|$)/i);
+  if (m) {
+    try { return normalizeAliasId(decodeURIComponent(m[1])); } catch { return normalizeAliasId(m[1]); }
+  }
+  return normalizeAliasId(raw);
 }
 
 function parseProxyPack(txt) {
@@ -180,13 +227,13 @@ function findHardCycle(manifestScripts, nodes) {
   return null;
 }
 
-function checkCriticalGroupOrder(orderName, sequence, groups, manifestScripts, errors, warnings) {
+function checkCriticalGroupOrder(orderName, sequence, groups, manifestScripts, errors, warnings, mode = "display") {
   if (!Array.isArray(sequence) || !sequence.length) {
     warnings.push(`${orderName}: no data available to verify critical groups.`);
     return;
   }
   for (const [groupName, groupMeta] of Object.entries(groups || {})) {
-    const members = uniq(groupMeta.members || []);
+    const members = groupMemberOrder(groupMeta, mode);
     if (!members.length) continue;
     const criticalMembers = members.filter((id) => !!manifestScripts[id]?.critical);
     const wanted = criticalMembers.length ? criticalMembers : members.filter((id) => !!manifestScripts[id]);
@@ -195,7 +242,7 @@ function checkCriticalGroupOrder(orderName, sequence, groups, manifestScripts, e
     if (present.length < 2) continue;
     const pos = subsequencePositions(sequence, present);
     if (!pos) {
-      errors.push(`${orderName}: critical group ${groupName} missing expected members in order scan.`);
+      errors.push(`${orderName}: critical group ${groupName} missing expected ${mode} members in order scan.`);
       continue;
     }
     let ok = true;
@@ -207,8 +254,8 @@ function checkCriticalGroupOrder(orderName, sequence, groups, manifestScripts, e
     }
     if (!ok) {
       errors.push(
-        `${orderName}: critical group ${groupName} order mismatch.\n` +
-          `Expected subsequence:\n${formatList(present)}`
+        `${orderName}: critical group ${groupName} ${mode} order mismatch.\n` +
+          `Expected ${mode} subsequence:\n${formatList(present)}`
       );
     }
   }
@@ -233,12 +280,14 @@ function main() {
   const manifestScriptsRaw = manifest.scripts || {};
   const groups = manifest.groups || {};
   const manifestScripts = {};
-  for (const [id, raw] of Object.entries(manifestScriptsRaw)) {
+  for (const [idRaw, raw] of Object.entries(manifestScriptsRaw)) {
+    const id = normalizeAliasId(idRaw);
+    if (!id) continue;
     manifestScripts[id] = {
       phase: normalizePhase(raw.phase),
-      dependsOn: uniq(raw.dependsOn),
-      optionalDependsOn: uniq(raw.optionalDependsOn),
-      after: uniq(raw.after),
+      dependsOn: uniqAliasIds(raw.dependsOn),
+      optionalDependsOn: uniqAliasIds(raw.optionalDependsOn),
+      after: uniqAliasIds(raw.after),
       group: String(raw.group || "").trim(),
       provides: uniq(raw.provides),
       critical: !!raw.critical,
@@ -295,7 +344,7 @@ function main() {
   }
 
   for (const [groupName, meta] of Object.entries(groups)) {
-    const members = uniq(meta.members || []);
+    const members = uniqAliasIds([...(meta.members || []), ...(meta.runtimeOrder || [])]);
     for (const id of members) {
       if (!ids.has(id)) warnings.push(`Group ${groupName} references unknown script: ${id}`);
     }
@@ -304,12 +353,12 @@ function main() {
   const devOrder = parseDevOrderTsv(readTextIfExists(ORDER_FILE));
   const proxyPack = parseProxyPack(readTextIfExists(PROXY_PACK_FILE));
   if (devOrder.order.length) {
-    checkCriticalGroupOrder(`dev-order (${rel(ORDER_FILE)})`, devOrder.order, groups, manifestScripts, errors, warnings);
+    checkCriticalGroupOrder(`dev-order (${rel(ORDER_FILE)})`, devOrder.order, groups, manifestScripts, errors, warnings, "display");
   } else {
     warnings.push(`No dev-order data found at ${rel(ORDER_FILE)}.`);
   }
   if (proxyPack.order.length) {
-    checkCriticalGroupOrder(`proxy-pack (${rel(PROXY_PACK_FILE)})`, proxyPack.order, groups, manifestScripts, errors, warnings);
+    checkCriticalGroupOrder(`proxy-pack (${rel(PROXY_PACK_FILE)})`, proxyPack.order, groups, manifestScripts, errors, warnings, "runtime");
   } else {
     warnings.push(`No proxy-pack data found at ${rel(PROXY_PACK_FILE)}.`);
   }

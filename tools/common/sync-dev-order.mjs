@@ -2,12 +2,12 @@
 // @version 1.1.0
 //
 // Purpose:
-// - Scan SRC for *.user.js
-// - Convert real filenames -> alias filenames (same rule as make-aliases.mjs)
-// - Maintain a sectioned, human-readable dev-order file
+// - Scan SRC for source script files (*.user.js or *.js)
+// - Maintain a sectioned, human-readable dev-order file using real source filenames
+// - Keep alias filenames as a derived compatibility layer for downstream tooling
 //
 // Master format: TSV (editable)
-//   STATUS<TAB>ALIAS_FILENAME
+//   STATUS<TAB>SOURCE_FILENAME
 //   STATUS = 🟢 / 🔴
 //   (Reader accepts: 🟢/🔴, ✅/❌, 🟩/🟥, ON/OFF, true/false, 1/0, yes/no)
 //
@@ -72,7 +72,7 @@ function pickUserScriptDir(srcRoot) {
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
-    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+    return entries.some((e) => e.isFile() && isSourceScriptName(e.name)) ? scriptsDir : srcRoot;
   } catch {
     return srcRoot;
   }
@@ -110,8 +110,19 @@ function toAliasName(filename) {
   return `${id}._${title}_.user.js`;
 }
 
-function isUserScriptName(n) {
-  return /\.user\.js$/i.test(String(n || ""));
+function isSourceScriptName(filename) {
+  const name = String(filename || "");
+  if (!/(\.user)?\.js$/i.test(name)) return false;
+  return toAliasName(name) !== null;
+}
+
+function normalizeOrderEntryToSourceName(file, sourceNames, aliasToSource) {
+  const raw = String(file || "").trim();
+  if (!raw) return "";
+  if (sourceNames.has(raw)) return raw;
+  const alias = toAliasName(raw);
+  if (!alias) return "";
+  return aliasToSource.get(alias) || "";
 }
 
 /* -----------------------------
@@ -151,20 +162,36 @@ function emojiToStatus(emojiOrToken) {
    Read existing TSV (preserve your choices)
 ------------------------------ */
 
-function readExistingTSV(fp) {
-  const statusMap = new Map(); // alias -> "ON" | "OFF"
+function readExistingTSV(fp, sourceNames, aliasToSource) {
+  const statusMap = new Map(); // source filename -> "ON" | "OFF"
   const sectionOrderMap = new Map();
+  const sectionTitleMap = new Map();
   for (const sec of SECTIONS) sectionOrderMap.set(sec.key, []);
-  if (!fs.existsSync(fp)) return { statusMap, sectionOrderMap };
+  if (!fs.existsSync(fp)) return { statusMap, sectionOrderMap, sectionTitleMap };
 
   const txt = fs.readFileSync(fp, "utf8");
   let currentSectionKey = "";
+  let currentSectionTitle = "";
   for (const rawLine of txt.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
     if (line.startsWith("#")) {
-      const section = SECTIONS.find((sec) => line === `# ${sec.title}`);
-      if (section) currentSectionKey = section.key;
+      const title = line.replace(/^#\s*/, "").trim();
+      if (!title) continue;
+      if (
+        /^=+$/.test(title) ||
+        /^h2o dev order/i.test(title) ||
+        /^master:/i.test(title) ||
+        /^status<tab>filename/i.test(title)
+      ) {
+        continue;
+      }
+      currentSectionTitle = title;
+      const section = SECTIONS.find((sec) => title === sec.title);
+      currentSectionKey = section ? section.key : "";
+      if (currentSectionKey && !sectionTitleMap.has(currentSectionKey)) {
+        sectionTitleMap.set(currentSectionKey, title);
+      }
       continue;
     }
 
@@ -176,46 +203,54 @@ function readExistingTSV(fp) {
     if (parts.length < 2) continue;
 
     const status = emojiToStatus(parts[0]);
-    const file = parts.slice(1).join("\t").trim();
-    if (!file || !/\.user\.js$/i.test(file)) continue;
+    const rawFile = parts.slice(1).join("\t").trim();
+    if (!rawFile || !/(\.user)?\.js$/i.test(rawFile)) continue;
+    const file = normalizeOrderEntryToSourceName(rawFile, sourceNames, aliasToSource);
+    if (!file) continue;
 
     if (status) statusMap.set(file, status);
     const sectionKey = currentSectionKey || groupOf(file);
+    if (currentSectionTitle && !sectionTitleMap.has(sectionKey)) {
+      sectionTitleMap.set(sectionKey, currentSectionTitle);
+    }
     const sectionList = sectionOrderMap.get(sectionKey) || [];
     if (!sectionList.includes(file)) sectionList.push(file);
     if (!sectionOrderMap.has(sectionKey)) sectionOrderMap.set(sectionKey, sectionList);
   }
 
-  return { statusMap, sectionOrderMap };
+  return { statusMap, sectionOrderMap, sectionTitleMap };
 }
 
 /* -----------------------------
    Sectioning / sorting
 ------------------------------ */
 
-function sortKey(alias) {
-  // alias like "0A1._Title_.user.js"
-  const id = String(alias || "").split(".")[0] || alias;
+function sortKey(filename) {
+  const id = String(filename || "").split(".")[0] || filename;
   const m = id.match(/^(\d+)(.*)$/);
   const num = m ? Number(m[1]) : 9999;
   const tail = m ? m[2] : id;
-  return `${String(num).padStart(4, "0")}:${tail}:${alias}`;
+  return `${String(num).padStart(4, "0")}:${tail}:${filename}`;
 }
 
-function groupOf(alias) {
-  const id = String(alias || "").split(".")[0] || "";
+function groupOf(filename) {
+  const id = String(filename || "").split(".")[0] || "";
 
   if (/^0A/i.test(id)) return "CORE";
-  if (/^0B/i.test(id)) return "DATA";
-  if (/^0W/i.test(id)) return "UNMOUNT_PAGINATION";
+  if (/^0B/i.test(id) || /^0W/i.test(id)) return "UNMOUNT_PAGINATION";
+  if (/^0C/i.test(id)) return "PERFORMANCE";
+  if (/^0D/i.test(id)) return "DATA";
+  if (/^0X/i.test(id)) return "COMMAND_BAR_SIDE_ACTIONS";
   if (/^0Z/i.test(id)) return "CONTROL_HUB";
 
   if (/^1A1/i.test(id)) return "MINIMAP_BASE";
   if (/^1A/i.test(id)) return "MINIMAP_PLUGINS";
+  if (/^1B/i.test(id)) return "MM_FEATURE_UI";
 
   if (/^1/i.test(id)) return "ANSWERS_UI";
   if (/^2/i.test(id)) return "QUESTIONS_UI";
-  if (/^(3|4)/i.test(id)) return "DOCK_ENGINES_TABS";
+  if (/^3Z/i.test(id) || /^4/i.test(id)) return "WORKSPACE";
+  if (/^3/i.test(id)) return "DOCK_ENGINES_TABS";
   if (/^5/i.test(id)) return "EXPORT";
   if (/^6/i.test(id)) return "UTILITIES";
   if (/^7/i.test(id)) return "PROMPTS";
@@ -233,56 +268,80 @@ const SECTIONS = [
     header: ["# =========================", "# 🧠 CORE", "# ========================="],
   },
   {
+    key: "UNMOUNT_PAGINATION",
+    title: "🪟 CHAT FLOW",
+    header: [
+      "# =========================",
+      "# 🪟 CHAT FLOW",
+      "# =========================",
+    ],
+  },
+  {
+    key: "PERFORMANCE",
+    title: "⚡ PERFORMANCE",
+    header: ["# =========================", "# ⚡ PERFORMANCE", "# ========================="],
+  },
+  {
     key: "DATA",
     title: "🗄️ DATA",
     header: ["# =========================", "# 🗄️ DATA", "# ========================="],
   },
   {
-    key: "UNMOUNT_PAGINATION",
-    title: "🪟 UNMOUNT + PAGINATION",
+    key: "COMMAND_BAR_SIDE_ACTIONS",
+    title: "🎛️ SYSTEM SURFACES",
     header: [
       "# =========================",
-      "# 🪟 UNMOUNT + PAGINATION",
+      "# 🎛️ SYSTEM SURFACES",
       "# =========================",
     ],
   },
   {
     key: "CONTROL_HUB",
-    title: "📍 CONTROL HUB",
-    header: ["# =========================", "# 📍 CONTROL HUB", "# ========================="],
+    title: "🕹️ CONTROL HUB",
+    header: ["# =========================", "# 🕹️ CONTROL HUB", "# ========================="],
   },
   {
     key: "MINIMAP_BASE",
-    title: "🗺️ MINIMAP (base)",
-    header: ["# =========================", "# 🗺️ MINIMAP (base)", "# ========================="],
+    title: "🗺️ MINIMAP BASE",
+    header: ["# =========================", "# 🗺️ MINIMAP BASE", "# ========================="],
   },
   {
     key: "MINIMAP_PLUGINS",
-    title: "🧩 MINIMAP (add-ons / plugins)",
+    title: "🧩 MM ADD-ONS + PLUGINS",
     header: [
       "# =========================",
-      "# 🧩 MINIMAP (add-ons / plugins)",
+      "# 🧩 MM ADD-ONS + PLUGINS",
       "# =========================",
     ],
+  },
+  {
+    key: "MM_FEATURE_UI",
+    title: "🖱️ MM FEATURE UI",
+    header: ["# =========================", "# 🖱️ MM FEATURE UI", "# ========================="],
   },
   {
     key: "ANSWERS_UI",
-    title: "🧱 ANSWERS (UI)",
-    header: ["# =========================", "# 🧱 ANSWERS (UI)", "# ========================="],
+    title: "🧱 ANSWER UI",
+    header: ["# =========================", "# 🧱 ANSWER UI", "# ========================="],
   },
   {
     key: "QUESTIONS_UI",
-    title: "❓ QUESTIONS (UI)",
-    header: ["# =========================", "# ❓ QUESTIONS (UI)", "# ========================="],
+    title: "❓ QUESTION UI",
+    header: ["# =========================", "# ❓ QUESTION UI", "# ========================="],
   },
   {
     key: "DOCK_ENGINES_TABS",
-    title: "🧩 DOCK + ENGINES + TABS",
+    title: "🧱 DOCK",
     header: [
       "# =========================",
-      "# 🧩 DOCK + ENGINES + TABS",
+      "# 🧱 DOCK",
       "# =========================",
     ],
+  },
+  {
+    key: "WORKSPACE",
+    title: "🧱 WORKSPACE",
+    header: ["# =========================", "# 🧱 WORKSPACE", "# ========================="],
   },
   {
     key: "EXPORT",
@@ -291,8 +350,12 @@ const SECTIONS = [
   },
   {
     key: "UTILITIES",
-    title: "🧰 UTILITIES / PORTALS",
-    header: ["# =========================", "# 🧰 UTILITIES / PORTALS", "# ========================="],
+    title: "🧰 UTILITIES + PORTALS + SECTIONS",
+    header: [
+      "# =========================",
+      "# 🧰 UTILITIES + PORTALS + SECTIONS",
+      "# =========================",
+    ],
   },
   {
     key: "PROMPTS",
@@ -329,25 +392,37 @@ function defaultStatusForGroup(groupKey) {
   return (groupKey === "INTERFACE" || groupKey === "EXPERIMENTAL") ? "OFF" : "ON";
 }
 
+function buildSectionHeader(titleRaw) {
+  const title = String(titleRaw || "").trim();
+  return ["# =========================", `# ${title}`, "# ========================="];
+}
+
+function resolveSections(sectionTitleMap) {
+  return SECTIONS.map((sec) => ({
+    key: sec.key,
+    title: String(sectionTitleMap?.get(sec.key) || sec.title || "").trim() || sec.title,
+  }));
+}
+
 /* -----------------------------
    Writers
 ------------------------------ */
 
-function writeTSV({ fp, sectioned, statusMap }) {
+function writeTSV({ fp, sections, sectioned, statusMap }) {
   const out = [];
 
-  out.push(`# H2O dev order (alias-only) — TSV (sectioned)`);
+  out.push(`# H2O dev order (source filenames) — TSV (sectioned)`);
   out.push(`# MASTER: ${path.basename(fp)}`);
   out.push(
     `# STATUS<TAB>FILENAME   (STATUS = 🟢/🔴; accepts ON/OFF, ✅/❌, 🟩/🟥 when reading)`
   );
   out.push("");
 
-  for (const sec of SECTIONS) {
+  for (const sec of sections) {
     const list = sectioned.get(sec.key) || [];
     if (!list.length) continue;
 
-    out.push(...sec.header);
+    out.push(...buildSectionHeader(sec.title));
 
     for (const file of list) {
       const st = statusMap.get(file) || "ON"; // internal ON/OFF
@@ -360,19 +435,19 @@ function writeTSV({ fp, sectioned, statusMap }) {
   writeTextFileAtomic(fp, out.join("\n") + "\n");
 }
 
-function writeTXT({ fp, sectioned, statusMap }) {
+function writeTXT({ fp, sections, sectioned, statusMap }) {
   const out = [];
-  out.push(`# H2O dev order (alias-only) — TXT (sectioned) — GENERATED`);
+  out.push(`# H2O dev order (source filenames) — TXT (sectioned) — GENERATED`);
   out.push(`# Master is ${path.basename(OUT_TSV)}`);
   out.push(`# ON  = normal line`);
   out.push(`# OFF = starts with "- " (dash + space)`);
   out.push("");
 
-  for (const sec of SECTIONS) {
+  for (const sec of sections) {
     const list = sectioned.get(sec.key) || [];
     if (!list.length) continue;
 
-    out.push(...sec.header);
+    out.push(...buildSectionHeader(sec.title));
 
     for (const file of list) {
       const st = statusMap.get(file) || "ON";
@@ -386,7 +461,7 @@ function writeTXT({ fp, sectioned, statusMap }) {
   writeTextFileAtomic(fp, out.join("\n") + "\n");
 }
 
-function writeJSON({ fp, sectioned, statusMap }) {
+function writeJSON({ fp, sections, sectioned, statusMap }) {
   const obj = {
     version: 1,
     format: "h2o-dev-order",
@@ -394,13 +469,13 @@ function writeJSON({ fp, sectioned, statusMap }) {
     notes: [
       "TSV is the master editable file.",
       "enabled=true means ON; enabled=false means OFF.",
-      "file is the alias filename, e.g. 0A1a._H2O_Core_.user.js",
+      "file is the real source filename from scripts/, not the derived alias filename.",
       "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally.",
     ],
     sections: [],
   };
 
-  for (const sec of SECTIONS) {
+  for (const sec of sections) {
     const list = sectioned.get(sec.key) || [];
     if (!list.length) continue;
 
@@ -644,30 +719,33 @@ logDebug(`start SRC_ROOT=${SRC_ROOT}`);
 logDebug(`start ORDER_FILE=${ORDER_FILE}`);
 logDebug(`start SCRIPT_SRC_DIR=${SCRIPT_SRC_DIR}`);
 
-// 1) Scan source folder for real scripts -> alias names
-const foundAliases = new Set();
+// 1) Scan source folder for real scripts
+const foundSourceNames = new Set();
 const rawScriptNames = new Set();
+const aliasToSource = new Map();
 for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   if (!entry.isFile()) continue;
   if (entry.name === ".DS_Store") continue;
-  if (!isUserScriptName(entry.name)) continue;
+  if (!isSourceScriptName(entry.name)) continue;
 
+  foundSourceNames.add(entry.name);
   rawScriptNames.add(entry.name);
 
   const alias = toAliasName(entry.name);
-  if (alias) foundAliases.add(alias);
+  if (alias && !aliasToSource.has(alias)) aliasToSource.set(alias, entry.name);
 }
-logDebug(`scan done: aliases=${foundAliases.size} rawScripts=${rawScriptNames.size}`);
+logDebug(`scan done: sourceFiles=${foundSourceNames.size} aliases=${aliasToSource.size}`);
 
 // 2) Read prior statuses + section order from existing TSV (master)
-const priorState = readExistingTSV(OUT_TSV);
+const priorState = readExistingTSV(OUT_TSV, foundSourceNames, aliasToSource);
 const priorStatus = priorState.statusMap;
 const priorSectionOrder = priorState.sectionOrderMap;
+const sectionDefs = resolveSections(priorState.sectionTitleMap);
 logDebug(`readExistingTSV done: statuses=${priorStatus.size}`);
 
-// 3) Build statusMap for current aliases, preserving previous where possible
+// 3) Build statusMap for current source filenames, preserving previous where possible
 const statusMap = new Map();
-for (const file of foundAliases) {
+for (const file of foundSourceNames) {
   const groupKey = groupOf(file);
   const prev = priorStatus.get(file);
   statusMap.set(file, prev || defaultStatusForGroup(groupKey));
@@ -675,19 +753,19 @@ for (const file of foundAliases) {
 
 // 4) Section + order
 const sectioned = new Map();
-for (const sec of SECTIONS) sectioned.set(sec.key, []);
+for (const sec of sectionDefs) sectioned.set(sec.key, []);
 
-const sorted = Array.from(foundAliases).sort((a, b) =>
+const sorted = Array.from(foundSourceNames).sort((a, b) =>
   sortKey(a).localeCompare(sortKey(b))
 );
 
 const sortedRawNames = Array.from(rawScriptNames).sort(sortScriptName);
 logDebug(`sort done: sortedAliases=${sorted.length} sortedRaw=${sortedRawNames.length}`);
 
-for (const sec of SECTIONS) {
+for (const sec of sectionDefs) {
   const secKey = sec.key;
   const priorList = (priorSectionOrder.get(secKey) || []).filter(
-    (file) => foundAliases.has(file) && groupOf(file) === secKey
+    (file) => foundSourceNames.has(file) && groupOf(file) === secKey
   );
   const seen = new Set(priorList);
   const appendedNew = sorted.filter(
@@ -705,11 +783,11 @@ for (const file of sorted) {
 
 // 5) Write master TSV + generated views
 logDebug("write phase: dev-order.tsv");
-writeTSV({ fp: OUT_TSV, sectioned, statusMap });
+writeTSV({ fp: OUT_TSV, sections: sectionDefs, sectioned, statusMap });
 logDebug("write phase: dev-order.txt");
-writeTXT({ fp: OUT_TXT, sectioned, statusMap });
+writeTXT({ fp: OUT_TXT, sections: sectionDefs, sectioned, statusMap });
 logDebug("write phase: dev-order.json");
-writeJSON({ fp: OUT_JSON, sectioned, statusMap });
+writeJSON({ fp: OUT_JSON, sections: sectionDefs, sectioned, statusMap });
 logDebug("write phase: scripts-list.tsv");
 writeScriptsListTSV({ fp: OUT_SCRIPTS_LIST_TSV, names: sortedRawNames });
 logDebug("write phase: userscript-headers.tsv");

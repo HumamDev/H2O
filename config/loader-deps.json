@@ -13,89 +13,99 @@
     "CORE_BASE": {
       "description": "Shared infrastructure required by many systems.",
       "members": [
-        "0A1a._H2O_Core_.user.js",
-        "0A1b._Observer_Hub_.user.js",
-        "0B1a._Data_Core_.user.js",
-        "0B3a._Data_Archive_.user.js",
-        "0B3c._Command_Bar_.user.js",
-        "0Z1a._Control_Hub_.user.js",
-        "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js",
-        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js",
-        "0Z2a._Control_Hub_Tab_Tree_.user.js"
+        "0A1a._H2O_Core_.js",
+        "0A2a._Observer_Hub_.js",
+        "0D1a._Data_Core_.js",
+        "0D3a._Transcript_Archive_Engine_.js",
+        "0D3b._Transcript_Extension_Bridge_.js",
+        "0D3c._Transcript_Layer_Renderer_.js",
+        "0X1a._Command_Bar_.js",
+        "0Z1a._Control_Hub_.js",
+        "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js",
+        "0Z2a._Control_Hub_Tab_Tree_.js"
       ]
     },
     "MINIMAP_BASE": {
-      "description": "Critical MiniMap boot chain.",
+      "description": "Critical MiniMap boot chain. members = developer-facing display order; runtimeOrder = enforced runtime load order.",
       "members": [
-        "1A1a._MiniMap_Kernel_.user.js",
-        "1A1f._MiniMap_Skin_.user.js",
-        "1A1b._MiniMap_Core_.user.js",
-        "1A1c._MiniMap_Shell_.user.js",
-        "1A1d._MiniMap_Engine_.user.js",
-        "1A1e._MiniMap_Views_.user.js"
+        "1A1a._MiniMap_Kernel_.js",
+        "1A1b._MiniMap_Core_.js",
+        "1A1c._MiniMap_Engine_.js",
+        "1A1d._MiniMap_Shell_.js",
+        "1A1e._MiniMap_Skin_.js",
+        "1A1f._MiniMap_Views_.js"
+      ],
+      "runtimeOrder": [
+        "1A1a._MiniMap_Kernel_.js",
+        "1A1e._MiniMap_Skin_.js",
+        "1A1b._MiniMap_Core_.js",
+        "1A1d._MiniMap_Shell_.js",
+        "1A1c._MiniMap_Engine_.js",
+        "1A1f._MiniMap_Views_.js"
       ]
     },
     "MINIMAP_EXTENSIONS": {
       "description": "MiniMap add-ons and plugins that should come after base runtime.",
       "members": [
-        "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js",
-        "1A2b._Navigation_Controls_(MiniMap_Add-on)_.user.js",
-        "1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js",
-        "1A3b._Quote_Badges_(MiniMap_Plugin)_.user.js",
-        "1A4b._Revision_Badges_(MiniMap_Plugin)_.user.js",
-        "1A5a._Title_Labels_(MiniMap_Plugin)_.user.js",
-        "1B1a._MiniMap_Quick_Controls_.user.js",
-        "1B2a._MiniMap_Context_Menu_.user.js",
-        "1C1a._Color_Legend_.user.js"
+        "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.js",
+        "1A2b._Navigation_Controls_(MiniMap_Add-on)_.js",
+        "1A3a._Highlight_Dots_(MiniMap_Plugin)_.js",
+        "1A3b._Quote_Badges_(MiniMap_Plugin)_.js",
+        "1A4b._Revision_Badges_(MiniMap_Plugin)_.js",
+        "1A5a._Title_Labels_(MiniMap_Plugin)_.js",
+        "1B1a._MiniMap_Quick_Controls_.js",
+        "1B2a._MiniMap_Context_Menu_.js",
+        "1C1a._Color_Legend_.js"
       ]
     },
     "QUESTION_UI": {
       "description": "Question-side UI enrichment.",
       "members": [
-        "2A1a._Question_Wrapper_.user.js",
-        "2B1a._Quote_Tracker_.user.js",
-        "2C1a._Question_Wash_Engine_.user.js",
-        "2U1a._Question_Background_.user.js",
-        "2X1a._Question_Numbers_.user.js",
-        "2Z1a._Question_Timestamp_.user.js"
+        "2A1a._Question_Wrapper_.js",
+        "2B1a._Quote_Tracker_.js",
+        "2C1a._Question_Wash_Engine_.js",
+        "2U1a._Question_Background_.js",
+        "2X1a._Question_Numbers_.js",
+        "2Z1a._Question_Timestamp_.js"
       ]
     },
     "DOCK_BASE": {
       "description": "Dock platform and principal tabs.",
       "members": [
-        "3A1a._Dock_Panel_.user.js",
-        "3B1a._Bookmarks_Engine_.user.js",
-        "3B2a._Bookmarks_Tab_.user.js",
-        "3H1a._Highlights_Engine_.user.js",
-        "3H2a._Highlights_Tab_.user.js",
-        "3H3a._Smart_Highlight_Engine_.user.js",
-        "3H3b._Smart_Highlight_Parser_.user.js",
-        "3H3c._Smart_Highlight_UI_.user.js",
-        "3H3d._Smart_Highlight_State_.user.js",
-        "3N1a._Notes_Engine_.user.js",
-        "3N2a._Notes_Tab_.user.js",
-        "3T1a._Attachments_Tab_.user.js",
-        "3V1a._Navigator_Engine_.user.js",
-        "3V2a._Navigator_Tab_.user.js",
-        "3W1a._Context_Engine_.user.js",
-        "3W2a._Context_Tab_.user.js",
-        "3X1a._Capture_Engine_.user.js",
-        "3X2a._Capture_Tab_.user.js",
-        "3Y2a._Finder_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3B1a._Bookmarks_Engine_.js",
+        "3B2a._Bookmarks_Tab_.js",
+        "3H1a._Highlights_Engine_.js",
+        "3H2a._Highlights_Tab_.js",
+        "3H3a._Smart_Highlight_Engine_.js",
+        "3H3b._Smart_Highlight_Parser_.js",
+        "3H3c._Smart_Highlight_UI_.js",
+        "3H3d._Smart_Highlight_State_.js",
+        "3N1a._Notes_Engine_.js",
+        "3N2a._Notes_Tab_.js",
+        "3T1a._Attachments_Tab_.js",
+        "3V1a._Navigator_Engine_.js",
+        "3V2a._Navigator_Tab_.js",
+        "3W1a._Context_Engine_.js",
+        "3W2a._Context_Tab_.js",
+        "3X1a._Capture_Engine_.js",
+        "3X2a._Capture_Tab_.js",
+        "3Y2a._Finder_.js"
       ]
     },
     "WORKSPACE_BASE": {
       "description": "Workspace shell after Dock platform.",
       "members": [
-        "3Z1a._Workspace_Dock_.user.js",
-        "3Z2a._Workspace_Core_.user.js",
-        "3Z3a._Shelf_Panel_.user.js",
-        "3Z4a._Drawer_Panel_.user.js"
+        "3Z1a._Workspace_Dock_.js",
+        "3Z2a._Workspace_Core_.js",
+        "3Z3a._Shelf_Panel_.js",
+        "3Z4a._Drawer_Panel_.js"
       ]
     }
   },
   "scripts": {
-    "0A1a._H2O_Core_.user.js": {
+    "0A1a._H2O_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [],
       "after": [],
@@ -103,51 +113,85 @@
       "provides": [
         "h2o.core"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "0A1b._Observer_Hub_.user.js": {
+    "0A2a._Observer_Hub_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js"
+        "0A1a._H2O_Core_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
       "provides": [
         "h2o.observerHub"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "0B1a._Data_Core_.user.js": {
+    "0D1a._Data_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js"
+        "0A1a._H2O_Core_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
       "provides": [
         "h2o.dataCore"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "0B3a._Data_Archive_.user.js": {
+    "0D3a._Transcript_Archive_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js",
-        "0B1a._Data_Core_.user.js"
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
       "provides": [
         "h2o.dataArchive"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "0B3c._Command_Bar_.user.js": {
+    "0D3b._Transcript_Extension_Bridge_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js"
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js",
+        "0D3a._Transcript_Archive_Engine_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.transcriptExtensionBridge"
+      ],
+      "optionalDependsOn": []
+    },
+    "0D3c._Transcript_Layer_Renderer_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js",
+        "0D3a._Transcript_Archive_Engine_.js"
+      ],
+      "after": [
+        "0D3b._Transcript_Extension_Bridge_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.snapshotHybrid"
+      ],
+      "optionalDependsOn": []
+    },
+    "0X1a._Command_Bar_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
       ],
       "optionalDependsOn": [
-        "0B1a._Data_Core_.user.js"
+        "0D1a._Data_Core_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
@@ -155,39 +199,41 @@
         "h2o.commandBar"
       ]
     },
-    "0Z1a._Control_Hub_.user.js": {
+    "0Z1a._Control_Hub_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js",
-        "0B1a._Data_Core_.user.js"
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js"
       ],
       "after": [
-        "0B3c._Command_Bar_.user.js"
+        "0X1a._Command_Bar_.js"
       ],
       "group": "CORE_BASE",
       "provides": [
         "h2o.controlHub"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js": {
+    "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0Z1a._Control_Hub_.user.js",
-        "0B1a._Data_Core_.user.js"
+        "0Z1a._Control_Hub_.js",
+        "0D1a._Data_Core_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
       "provides": [
         "h2o.controlHub.dataTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js": {
+    "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0Z1a._Control_Hub_.user.js"
+        "0Z1a._Control_Hub_.js"
       ],
       "optionalDependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "CORE_BASE",
@@ -195,276 +241,298 @@
         "h2o.controlHub.minimapTab"
       ]
     },
-    "0Z2a._Control_Hub_Tab_Tree_.user.js": {
+    "0Z2a._Control_Hub_Tab_Tree_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0Z1a._Control_Hub_.user.js"
+        "0Z1a._Control_Hub_.js"
       ],
       "after": [
-        "0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js",
-        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js"
+        "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js"
       ],
       "group": "CORE_BASE",
       "provides": [
         "h2o.controlHub.tabTree"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A1a._MiniMap_Kernel_.user.js": {
+    "1A1a._MiniMap_Kernel_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js"
+        "0A1a._H2O_Core_.js"
       ],
       "after": [
-        "0A1b._Observer_Hub_.user.js"
+        "0A2a._Observer_Hub_.js"
       ],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.kernel"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A1f._MiniMap_Skin_.user.js": {
+    "1A1e._MiniMap_Skin_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1a._MiniMap_Kernel_.user.js"
+        "1A1a._MiniMap_Kernel_.js"
       ],
       "after": [],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.skin"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A1b._MiniMap_Core_.user.js": {
+    "1A1b._MiniMap_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1a._MiniMap_Kernel_.user.js"
+        "1A1a._MiniMap_Kernel_.js"
       ],
       "after": [
-        "1A1f._MiniMap_Skin_.user.js"
+        "1A1e._MiniMap_Skin_.js"
       ],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.core"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A1c._MiniMap_Shell_.user.js": {
+    "1A1d._MiniMap_Shell_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1a._MiniMap_Kernel_.user.js",
-        "1A1f._MiniMap_Skin_.user.js",
-        "1A1b._MiniMap_Core_.user.js"
+        "1A1a._MiniMap_Kernel_.js",
+        "1A1e._MiniMap_Skin_.js",
+        "1A1b._MiniMap_Core_.js"
       ],
       "after": [],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.shell"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A1d._MiniMap_Engine_.user.js": {
+    "1A1c._MiniMap_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1c._MiniMap_Shell_.user.js"
+        "1A1d._MiniMap_Shell_.js"
       ],
       "after": [],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.engine"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A1e._MiniMap_Views_.user.js": {
+    "1A1f._MiniMap_Views_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.views"
       ],
-      "critical": true
+      "critical": true,
+      "optionalDependsOn": []
     },
-    "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js": {
+    "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.answerWash"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A2b._Navigation_Controls_(MiniMap_Add-on)_.user.js": {
+    "1A2b._Navigation_Controls_(MiniMap_Add-on)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [
-        "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js"
+        "1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.js"
       ],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.navControls"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js": {
+    "1A3a._Highlight_Dots_(MiniMap_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.highlightDots"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A3b._Quote_Badges_(MiniMap_Plugin)_.user.js": {
+    "1A3b._Quote_Badges_(MiniMap_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [
-        "1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js"
+        "1A3a._Highlight_Dots_(MiniMap_Plugin)_.js"
       ],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.quoteBadges"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A4b._Revision_Badges_(MiniMap_Plugin)_.user.js": {
+    "1A4b._Revision_Badges_(MiniMap_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.revisionBadges"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1A5a._Title_Labels_(MiniMap_Plugin)_.user.js": {
+    "1A5a._Title_Labels_(MiniMap_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.titleLabels"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1B1a._MiniMap_Quick_Controls_.user.js": {
+    "1B1a._MiniMap_Quick_Controls_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.quickControls"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1B2a._MiniMap_Context_Menu_.user.js": {
+    "1B2a._MiniMap_Context_Menu_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [
-        "1B1a._MiniMap_Quick_Controls_.user.js"
+        "1B1a._MiniMap_Quick_Controls_.js"
       ],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.contextMenu"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "1C1a._Color_Legend_.user.js": {
+    "1C1a._Color_Legend_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1d._MiniMap_Engine_.user.js"
+        "1A1c._MiniMap_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
         "minimap.colorLegend"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2A1a._Question_Wrapper_.user.js": {
+    "2A1a._Question_Wrapper_.js": {
       "phase": "document-start",
       "dependsOn": [],
       "after": [],
       "group": "QUESTION_UI",
       "provides": [
         "question.wrapper"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2B1a._Quote_Tracker_.user.js": {
+    "2B1a._Quote_Tracker_.js": {
       "phase": "document-start",
       "dependsOn": [
-        "2A1a._Question_Wrapper_.user.js"
+        "2A1a._Question_Wrapper_.js"
       ],
       "after": [],
       "group": "QUESTION_UI",
       "provides": [
         "question.quoteTracker"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2C1a._Question_Wash_Engine_.user.js": {
+    "2C1a._Question_Wash_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "2A1a._Question_Wrapper_.user.js"
+        "2A1a._Question_Wrapper_.js"
       ],
       "after": [],
       "group": "QUESTION_UI",
       "provides": [
         "question.washEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2U1a._Question_Background_.user.js": {
+    "2U1a._Question_Background_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "2A1a._Question_Wrapper_.user.js"
+        "2A1a._Question_Wrapper_.js"
       ],
       "after": [
-        "2C1a._Question_Wash_Engine_.user.js"
+        "2C1a._Question_Wash_Engine_.js"
       ],
       "group": "QUESTION_UI",
       "provides": [
         "question.background"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2X1a._Question_Numbers_.user.js": {
+    "2X1a._Question_Numbers_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "2A1a._Question_Wrapper_.user.js"
+        "2A1a._Question_Wrapper_.js"
       ],
       "after": [],
       "group": "QUESTION_UI",
       "provides": [
         "question.numbers"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "2Z1a._Question_Timestamp_.user.js": {
+    "2Z1a._Question_Timestamp_.js": {
       "phase": "document-end",
       "dependsOn": [
-        "2A1a._Question_Wrapper_.user.js"
+        "2A1a._Question_Wrapper_.js"
       ],
       "after": [],
       "group": "QUESTION_UI",
       "provides": [
         "question.timestamp"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3A1a._Dock_Panel_.user.js": {
+    "3A1a._Dock_Panel_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0A1a._H2O_Core_.user.js"
+        "0A1a._H2O_Core_.js"
       ],
       "optionalDependsOn": [
-        "0B3c._Command_Bar_.user.js"
+        "0X1a._Command_Bar_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
@@ -473,260 +541,282 @@
       ],
       "critical": true
     },
-    "3B1a._Bookmarks_Engine_.user.js": {
+    "3B1a._Bookmarks_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.bookmarksEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3B2a._Bookmarks_Tab_.user.js": {
+    "3B2a._Bookmarks_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3B1a._Bookmarks_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3B1a._Bookmarks_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.bookmarksTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H1a._Highlights_Engine_.user.js": {
+    "3H1a._Highlights_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.highlightsEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H2a._Highlights_Tab_.user.js": {
+    "3H2a._Highlights_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3H1a._Highlights_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3H1a._Highlights_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.highlightsTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H3a._Smart_Highlight_Engine_.user.js": {
+    "3H3a._Smart_Highlight_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3H1a._Highlights_Engine_.user.js"
+        "3H1a._Highlights_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.smartHighlight.engine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H3b._Smart_Highlight_Parser_.user.js": {
+    "3H3b._Smart_Highlight_Parser_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3H3a._Smart_Highlight_Engine_.user.js"
+        "3H3a._Smart_Highlight_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.smartHighlight.parser"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H3c._Smart_Highlight_UI_.user.js": {
+    "3H3c._Smart_Highlight_UI_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3H3a._Smart_Highlight_Engine_.user.js",
-        "3H3b._Smart_Highlight_Parser_.user.js"
+        "3H3a._Smart_Highlight_Engine_.js",
+        "3H3b._Smart_Highlight_Parser_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.smartHighlight.ui"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3H3d._Smart_Highlight_State_.user.js": {
+    "3H3d._Smart_Highlight_State_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3H3a._Smart_Highlight_Engine_.user.js"
+        "3H3a._Smart_Highlight_Engine_.js"
       ],
       "after": [
-        "3H3c._Smart_Highlight_UI_.user.js"
+        "3H3c._Smart_Highlight_UI_.js"
       ],
       "group": "DOCK_BASE",
       "provides": [
         "dock.smartHighlight.state"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3N1a._Notes_Engine_.user.js": {
+    "3N1a._Notes_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.notesEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3N2a._Notes_Tab_.user.js": {
+    "3N2a._Notes_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3N1a._Notes_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3N1a._Notes_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.notesTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3T1a._Attachments_Tab_.user.js": {
+    "3T1a._Attachments_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.attachmentsTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3V1a._Navigator_Engine_.user.js": {
+    "3V1a._Navigator_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.navigatorEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3V2a._Navigator_Tab_.user.js": {
+    "3V2a._Navigator_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3V1a._Navigator_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3V1a._Navigator_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.navigatorTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3W1a._Context_Engine_.user.js": {
+    "3W1a._Context_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.contextEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3W2a._Context_Tab_.user.js": {
+    "3W2a._Context_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3W1a._Context_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3W1a._Context_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.contextTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3X1a._Capture_Engine_.user.js": {
+    "3X1a._Capture_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.captureEngine"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3X2a._Capture_Tab_.user.js": {
+    "3X2a._Capture_Tab_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js",
-        "3X1a._Capture_Engine_.user.js"
+        "3A1a._Dock_Panel_.js",
+        "3X1a._Capture_Engine_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.captureTab"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3Y2a._Finder_.user.js": {
+    "3Y2a._Finder_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "DOCK_BASE",
       "provides": [
         "dock.finder"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3Z1a._Workspace_Dock_.user.js": {
+    "3Z1a._Workspace_Dock_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3A1a._Dock_Panel_.user.js"
+        "3A1a._Dock_Panel_.js"
       ],
       "after": [],
       "group": "WORKSPACE_BASE",
       "provides": [
         "workspace.dock"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3Z2a._Workspace_Core_.user.js": {
+    "3Z2a._Workspace_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3Z1a._Workspace_Dock_.user.js"
+        "3Z1a._Workspace_Dock_.js"
       ],
       "after": [],
       "group": "WORKSPACE_BASE",
       "provides": [
         "workspace.core"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3Z3a._Shelf_Panel_.user.js": {
+    "3Z3a._Shelf_Panel_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3Z1a._Workspace_Dock_.user.js",
-        "3Z2a._Workspace_Core_.user.js"
+        "3Z1a._Workspace_Dock_.js",
+        "3Z2a._Workspace_Core_.js"
       ],
       "after": [],
       "group": "WORKSPACE_BASE",
       "provides": [
         "workspace.shelf"
-      ]
+      ],
+      "optionalDependsOn": []
     },
-    "3Z4a._Drawer_Panel_.user.js": {
+    "3Z4a._Drawer_Panel_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "3Z1a._Workspace_Dock_.user.js",
-        "3Z2a._Workspace_Core_.user.js"
+        "3Z1a._Workspace_Dock_.js",
+        "3Z2a._Workspace_Core_.js"
       ],
       "after": [
-        "3Z3a._Shelf_Panel_.user.js"
+        "3Z3a._Shelf_Panel_.js"
       ],
       "group": "WORKSPACE_BASE",
       "provides": [
         "workspace.drawer"
-      ]
+      ],
+      "optionalDependsOn": []
     }
   }
 }

@@ -6,7 +6,7 @@
 // Master dev-order recommended: config/dev-order.tsv
 //
 // Supported order formats (read-only compatibility):
-// - .tsv : STATUS<TAB>ALIAS (STATUS = ON/OFF; also ✅/❌, 🟢/🔴, 🟩/🟥)
+// - .tsv : STATUS<TAB>SOURCE_OR_ALIAS (STATUS = ON/OFF; also ✅/❌, 🟢/🔴, 🟩/🟥)
 // - .txt : ON = normal line; OFF = starts with "- "
 // - .json: { sections:[{items:[{file, enabled}]}] }
 
@@ -38,7 +38,7 @@ function pickUserScriptDir(srcRoot) {
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
-    return entries.some((e) => e.isFile() && /\.user\.js$/i.test(e.name)) ? scriptsDir : srcRoot;
+    return entries.some((e) => e.isFile() && isSourceScriptName(e.name)) ? scriptsDir : srcRoot;
   } catch {
     return srcRoot;
   }
@@ -86,27 +86,53 @@ function toAliasName(filename) {
     .replace(/^_+|_+$/g, "");
 
   if (!id || !title) return null;
-  return `${id}._${title}_.user.js`;
+  return `${id}._${title}_.js`;
+}
+
+function isSourceScriptName(filename) {
+  const name = String(filename || "");
+  if (!/(\.user)?\.js$/i.test(name)) return false;
+  return toAliasName(name) !== null;
+}
+
+function normalizeOrderEntryToAliasName(filename) {
+  const raw = String(filename || "").trim();
+  if (!raw) return "";
+  return toAliasName(raw) || "";
+}
+
+function conflictCloneCanonicalName(filename) {
+  const name = String(filename || "").trim();
+  if (!name) return "";
+  const match = name.match(/^(.*?)(?:\.user)? \d+\.js$/i);
+  if (!match) return "";
+  const canonical = `${match[1]}.js`;
+  return toAliasName(canonical) ? canonical : "";
+}
+
+function isAliasArtifactName(filename) {
+  return !!toAliasName(filename) || !!conflictCloneCanonicalName(filename);
 }
 
 // iCloud/desktop sync can spawn conflict clones like:
 //   "0B1b._Data_Sync_.user 2.js"
-// Keep canonical ".user.js" and prune numbered conflict clones when canonical exists.
+// Keep canonical alias filenames and prune numbered conflict clones when a canonical alias exists.
 function pruneConflictCloneAliases(dir) {
   let removed = 0;
   const names = fs.readdirSync(dir);
-  const set = new Set(names);
+  const normalizedPresent = new Set(names.map((name) => toAliasName(name)).filter(Boolean));
 
   for (const name of names) {
-    if (!/\.user \d+\.js$/i.test(name)) continue;
+    const canonical = conflictCloneCanonicalName(name);
+    if (!canonical) continue;
 
     const fp = path.join(dir, name);
     let st = null;
     try { st = fs.lstatSync(fp); } catch { st = null; }
     if (!st || !(st.isFile() || st.isSymbolicLink())) continue;
 
-    const canonical = name.replace(/\.user \d+\.js$/i, ".user.js");
-    if (!set.has(canonical)) continue;
+    const normalizedCanonical = toAliasName(canonical);
+    if (!normalizedCanonical || !normalizedPresent.has(normalizedCanonical)) continue;
 
     try {
       fs.unlinkSync(fp);
@@ -151,9 +177,11 @@ function readOnSetFromTSV(txt) {
 
     const status = parseBoolStatus(parts[0]);
     const file = parts.slice(1).join("\t").trim();
-    if (!file || !/\.user\.js$/i.test(file)) continue;
+    if (!file || !/(\.user)?\.js$/i.test(file)) continue;
+    const alias = normalizeOrderEntryToAliasName(file);
+    if (!alias) continue;
 
-    if (status === true) on.add(file);
+    if (status === true) on.add(alias);
   }
   return on;
 }
@@ -168,9 +196,11 @@ function readOnSetFromTXT(txt) {
     // OFF marker is "- " (dash + space). Also accept old "-" prefix.
     const isOff = line.startsWith("- ") || line.startsWith("-");
     const name = isOff ? line.replace(/^-\s*/, "").trim() : line;
-    if (!name || !/\.user\.js$/i.test(name)) continue;
+    if (!name || !/(\.user)?\.js$/i.test(name)) continue;
+    const alias = normalizeOrderEntryToAliasName(name);
+    if (!alias) continue;
 
-    if (!isOff) on.add(name);
+    if (!isOff) on.add(alias);
   }
   return on;
 }
@@ -190,7 +220,8 @@ function readOnSetFromJSON(txt) {
     for (const it of items) {
       const file = String(it?.file || "").trim();
       const enabled = !!it?.enabled;
-      if (enabled && file) on.add(file);
+      const alias = normalizeOrderEntryToAliasName(file);
+      if (enabled && alias) on.add(alias);
     }
   }
   return on;
@@ -208,7 +239,7 @@ function readOnSet(orderFile) {
   return readOnSetFromTXT(txt);
 }
 
-// 1) Optional ON list from dev-order (alias-only)
+// 1) Optional ON list from dev-order (source or alias compatibility)
 const ON = readOnSet(ORDER_FILE);
 
 /* -----------------------------
@@ -216,11 +247,18 @@ const ON = readOnSet(ORDER_FILE);
 ------------------------------ */
 
 // 2) Clean alias folder (prevents ghost files)
+let cleanedAliasArtifacts = 0;
+let skippedAliasCleanup = 0;
 for (const entry of fs.readdirSync(ALIAS_DIR, { withFileTypes: true })) {
   if (!(entry.isFile() || entry.isSymbolicLink())) continue;
   if (entry.name === ".DS_Store") continue;
-  if (!/\.js$/i.test(entry.name)) continue;
-  fs.unlinkSync(path.join(ALIAS_DIR, entry.name));
+  if (!isAliasArtifactName(entry.name)) continue;
+  try {
+    fs.unlinkSync(path.join(ALIAS_DIR, entry.name));
+    cleanedAliasArtifacts++;
+  } catch {
+    skippedAliasCleanup++;
+  }
 }
 
 // 3) Write aliases from source scripts dir (scripts/ preferred, root fallback)
@@ -234,7 +272,7 @@ const filterOn = ALIAS_SCOPE === "on" && ON.size > 0;
 for (const entry of fs.readdirSync(SCRIPT_SRC_DIR, { withFileTypes: true })) {
   if (!entry.isFile()) continue;
   if (entry.name === ".DS_Store") continue;
-  if (!/\.user\.js$/i.test(entry.name)) continue;
+  if (!isSourceScriptName(entry.name)) continue;
 
   const aliasName = toAliasName(entry.name);
   if (!aliasName) continue;
@@ -286,6 +324,8 @@ if (REQUESTED_ALIAS_MODE === "symlink" && IS_ICLOUD_SERVER) {
 console.log("[H2O] order:", ORDER_FILE);
 console.log("[H2O] scripts dir:", SCRIPT_SRC_DIR);
 console.log("[H2O] ON entries:", ON.size);
+console.log("[H2O] cleaned alias artifacts:", cleanedAliasArtifacts);
+if (skippedAliasCleanup) console.warn("[H2O] skipped alias cleanup failures:", skippedAliasCleanup);
 console.log("[H2O] linked:", linked);
 console.log("[H2O] copied:", copied);
 console.log("[H2O] symlink fallback->copy:", linkFallbackToCopy);

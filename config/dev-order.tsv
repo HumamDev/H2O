@@ -1,154 +1,180 @@
-# H2O dev order (alias-only) — TSV (sectioned)
+# H2O dev order (source filenames) — TSV (sectioned)
 # MASTER: dev-order.tsv
 # STATUS<TAB>FILENAME   (STATUS = 🟢/🔴; accepts ON/OFF, ✅/❌, 🟩/🟥 when reading)
 
 # =========================
 # 🧠 CORE
 # =========================
-🟢	0A1a._H2O_Core_.user.js
-🟢	0A1b._Observer_Hub_.user.js
+🟢	0A1a.⬛️🧠 H2O Core 🧠.js
+🟢	0A2a.⬛️🛰 Observer Hub 🛰.js
+
+# =========================
+# 🪟 CHAT FLOW
+# =========================
+🟢	0B1a.⬛️⚡ Performance Governor 🧭⚡.js
+🟢	0B1b.⬛️⚡ Performance Store 💾⚡.js
+🟢	0B1c.⬛️⚡ Performance Adapters 🔄⚡.js
+🟢	0B1d.⚫️🔀⚡ Chat Mechanisms Router (🤝 Integration)⚡.js
+🟢	0B2a.⚫️📊⚡ Performance Monitor (🔌 Plugin) ⚡.js
+🟢	0B2b.⚫️🔲⚡ Performance HUD (📟 Widget) ⚡.js
+
+# =========================
+# ⚡ PERFORMANCE
+# =========================
+🟢	0C1a.⬛️🪟 Pagination Windowing Engine 🪟.js
+🟢	0C1b.⚫️🪟 Pagination Windowing (Chat 🔗 Adapter) 🪟.js
+🟢	0C2a.⬛️⛰️ Unmount Messages Engine ⛰️.js
+🟢	0C2b.⚫️⛰️ Unmount Messages (Chat 🔗 Adapter) ⛰️.js
 
 # =========================
 # 🗄️ DATA
 # =========================
-🟢	0B1a._Data_Core_.user.js
-🟢	0B2a._Data_Sync_.user.js
-🟢	0B2b._Data_Sync_Providers_.user.js
-🟢	0B3a._Data_Archive_.user.js
-🟢	0B3c._Command_Bar_.user.js
-🟢	0B3d._Side_Actions_Panel_.user.js
+🟢	0D1a.⬛️🗄️ Data Core 🗄️.js
+🟢	0D2a.⬛️🗄️ Data Sync 🛜🗄️.js
+🟢	0D2b.⚫️🗄️ Data Sync Providers 🧩🛜🗄️.js
+🟢	0D3a.🗄️ Transcript Archive Engine 🗂️🗄️.js
+🟢	0D3b.🗄️ Transcript Extension Bridge 📡🗂️🗄️.js
+🟢	0D3c.🗄️ Transcript Layer Renderer 🧬🗂️🗄️.js
 
 # =========================
-# 🪟 UNMOUNT + PAGINATION
+# 🎛️ KEYS
 # =========================
-🟢	0W1a._Unmount_Messages_.user.js
-🟢	0W2a._Pagination_Windowing_.user.js
-🟢	0W0a._Performance_Governor_.user.js
-🟢	0W0c._Performance_Store_.user.js
-🟢	0W0d._Executor_Adapters_.user.js
+🟢	0X1a.⬛️⌨️ Command Bar ⌨️.js
+🟢	0X2a.⬛️🎛️ Side Actions Panel 🎛️.js
 
 # =========================
-# 📍 CONTROL HUB
+# 🕹️ CONTROL HUB
 # =========================
-🟢	0Z1a._Control_Hub_.user.js
-🟢	0Z1b._Data_Tab_(Control_Hub_Plugin)_.user.js
-🟢	0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.user.js
-🟢	0Z2a._Control_Hub_Tab_Tree_.user.js
+🟢	0Z1a.⬛️🕹️ Control Hub 🕹️.js
+🟢	0Z1b.⚫️🗄️🕹️ Data Tab (Control Hub 🔌 Plugin) 🕹️.js
+🟢	0Z1c.⚫️🗺️🕹️ MiniMap Tab (Control Hub 🔌 Plugin) 🕹️.js
+🟢	0Z1d.⚫️⚡️🕹️ Performance Tab (Control Hub 🔌 Plugin) 🕹️.js
+🟢	0Z2a.⚫️🌳🕹️ Control Hub Tab Tree (Control Hub ➕ Add-on) 🕹️.js
 
 # =========================
-# 🗺️ MINIMAP (base)
+# 🗺️ MINIMAP BASE
 # =========================
-🟢	1A1a._MiniMap_Kernel_.user.js
-🟢	1A1f._MiniMap_Skin_.user.js
-🟢	1A1b._MiniMap_Core_.user.js
-🟢	1A1c._MiniMap_Shell_.user.js
-🟢	1A1d._MiniMap_Engine_.user.js
-🟢	1A1e._MiniMap_Views_.user.js
+🟢	1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️.js
+🟢	1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js
+🟢	1A1c.🟥🗺️ MiniMap Engine 🚀🗺️.js
+🟢	1A1d.🟥🗺️ MiniMap Shell 🐚🗺️.js
+🟢	1A1e.🟥🗺️ MiniMap Skin 🖐🗺️.js
+🟢	1A1f.🟥🗺️ MiniMap Views 👁🗺️.js
 
 # =========================
-# 🧩 MINIMAP (add-ons / plugins)
+# 🧩 MM PLUS
 # =========================
-🟢	1A2a._Answer_Wash_Engine_(MiniMap_Add-on)_.user.js
-🟢	1A2b._Navigation_Controls_(MiniMap_Add-on)_.user.js
-🟢	1A3a._Highlight_Dots_(MiniMap_Plugin)_.user.js
-🟢	1A3b._Quote_Badges_(MiniMap_Plugin)_.user.js
-🟢	1A4b._Revision_Badges_(MiniMap_Plugin)_.user.js
-🟢	1A5a._Title_Labels_(MiniMap_Plugin)_.user.js
+🟢	1A2a.🟥🎨🗺️ Answer Wash Engine (MiniMap ➕ Add-on) 🗺️.js
+🟢	1A2b.🟥💠🗺️ Navigation Controls (MiniMap ➕ Add-on) 🗺️.js
+🟢	1A3a.🔴🌈🗺️ Highlight Dots (MiniMap 🔌 Plugin) 🗺️.js
+🟢	1A3b.🔴🗨️🗺️ Quote Badges (MiniMap 🔌 Plugin) 🗺️.js
+🟢	1A4b.🔴🔁🗺️ Revision Badges (MiniMap 🔌 Plugin) 🗺️.js
+🟢	1A5a.🔴🏷️🗺️ Title Labels (MiniMap 🔌 Plugin) 🗺️.js
+🟢	1A2c.🟥📑🗺️ Chat Pages Controller (MiniMap ➕ Add-on) 🗺️.js
 
 # =========================
-# 🧱 ANSWERS (UI)
+# 🖱️ MM FEATURE UI
 # =========================
-🟢	1B1a._MiniMap_Quick_Controls_.user.js
-🔴	1B2a._MiniMap_Context_Menu_.user.js
-🟢	1C1a._Color_Legend_.user.js
-🔴	1D1a._Code_Line_Numbers_.user.js
-🟢	1E1a._Answer_Title_.user.js
-🟢	1U1a._Answer_Background_.user.js
-🟢	1X1a._Answer_Numbers_.user.js
-🟢	1Z1a._Answer_Timestamp_.user.js
+🟢	1B1a.🟥🖲🗺️ Quick Controls (MiniMap 🔌 Plugin) 🗺️.js
+🟢	1B2a.🟥🖱️🗺️ Context Menu (MiniMap 🔌 Plugin) 🗺️.js
 
 # =========================
-# ❓ QUESTIONS (UI)
+# 🧱 ANSWER UI
 # =========================
-🟢	2A1a._Question_Wrapper_.user.js
-🟢	2B1a._Quote_Tracker_.user.js
-🟢	2C1a._Question_Wash_Engine_.user.js
-🟢	2U1a._Question_Background_.user.js
-🟢	2X1a._Question_Numbers_.user.js
-🟢	2Z1a._Question_Timestamp_.user.js
+🟢	1U1a.🔴🖼️ Answer Background 🖼️.js
+🟢	1X1a.🔴🧮 Answer Numbers 🧮.js
+🟢	1Z1a.🔴⏳ Answer Timestamp ⏳.js
+🟢	1C1a.🔴📛 Title Bar 📛.js
+🟢	1D1a.🟥🧭 Color Legend 🧭.js
+🟢	1E1a.🔴💻 Code Line Numbers 💻.js
 
 # =========================
-# 🧩 DOCK + ENGINES + TABS
+# ❓ QUESTION UI
 # =========================
-🟢	3A1a._Dock_Panel_.user.js
-🟢	3B1a._Bookmarks_Engine_.user.js
-🟢	3B2a._Bookmarks_Tab_.user.js
-🟢	3H1a._Highlights_Engine_.user.js
-🟢	3H2a._Highlights_Tab_.user.js
-🟢	3H3a._Smart_Highlight_Engine_.user.js
-🟢	3H3b._Smart_Highlight_Parser_.user.js
-🟢	3H3c._Smart_Highlight_UI_.user.js
-🟢	3H3d._Smart_Highlight_State_.user.js
-🟢	3N1a._Notes_Engine_.user.js
-🟢	3N2a._Notes_Tab_.user.js
-🟢	3T1a._Attachments_Tab_.user.js
-🟢	3V1a._Navigator_Engine_.user.js
-🟢	3V2a._Navigator_Tab_.user.js
-🟢	3W1a._Context_Engine_.user.js
-🟢	3W2a._Context_Tab_.user.js
-🟢	3X1a._Capture_Engine_.user.js
-🟢	3X2a._Capture_Tab_.user.js
-🟢	3Y2a._Finder_.user.js
-🟢	3Z1a._Workspace_Dock_.user.js
-🟢	3Z2a._Workspace_Core_.user.js
-🟢	3Z3a._Shelf_Panel_.user.js
-🟢	3Z4a._Drawer_Panel_.user.js
-🟢	4L0a._Legal_Pack_.user.js
+🟢	2A1a.🟨🧵 Question Wrapper 🧵.js
+🟢	2B1a.🟨💬 Quote Tracker 💬.js
+🟢	2C1a.🟡🧼 Question Wash Engine 🧼.js
+🟢	2U1a.🟡🌆 Question Background 🌆.js
+🟢	2X1a.🟡🔢 Question Numbers 🔢.js
+🟢	2Z1a.🟡🕛 Question Timestamp 🕛.js
 
 # =========================
-# 📤 EXPORT
+# 🧱 DOCK
 # =========================
-🟢	5A1a._Export_Chat_.user.js
-🟢	5B1a._Quick_Export_.user.js
-🟢	5C1a._Folders_.user.js
+🟢	3A1a.🟧🎖️ Dock Panel 🎖️.js
+🟢	3B1a.🟧🌟 Bookmarks Engine 🌟.js
+🟢	3B2a.🟠⭐ Bookmarks Tab ⭐.js
+🟢	3H1a.🟧🖌️ Highlights Engine 🖌️.js
+🟢	3H2a.🟠🌈 Highlights Tab 🌈.js
+🟢	3H3a.✴️✨ Smart Highlight Engine 🚂✨.js
+🟢	3H3b.✴️✨ Smart Highlight Parser 🔬✨.js
+🟢	3H3c.✴️✨ Smart Highlight UI 🖍️✨.js
+🟢	3H3d.✴️✨ Smart Highlight State 📊✨.js
+🟢	3N1a.🟧🖋️Notes Engine🖋️.js
+🟢	3N2a.🟠🗒️ Notes Tab 🗒️.js
+🟢	3T1a.🟠📎 Attachments Tab 📎.js
+🟢	3V1a.🟧🧭 Navigator Engine 🧭.js
+🟢	3V2a.🟠🧭 Navigator Tab 🧭.js
+🟢	3W1a.🟧🧠 Context Engine 🧠.js
+🟢	3W2a.🟠🧠 Context Tab 🧠.js
+🟢	3X1a.🟧🧷 Capture Engine 🧷.js
+🟢	3X2a.🟠🧷 Capture Tab 🧷.js
+🟢	3Y2a.🟠🔎 Finder 🔎.js
 
 # =========================
-# 🧰 UTILITIES / PORTALS
+# 🧱 WORKSPACE
 # =========================
-🟢	6A1a._Margin_Anchor_.user.js
-🟢	6B1a._Sticky_Notes_Portal_.user.js
-🟢	6C1a._Quote_Backrefs_.user.js
-🟢	6S1a._Section_Bands_.user.js
-🟢	6S2a._Section_Collapser_.user.js
-🟢	6S2b._Heading_Colorizer_.user.js
+🟢	3Z1a.🔶🧱 Workspace Dock 🧱.js
+🟢	3Z2a.🔶🎯 Workspace Core 🎯.js
+🟢	3Z3a.🔸📚 Shelf Panel 📚.js
+🟢	3Z4a.🔸🗃️ Drawer Panel 🗃️.js
+🟢	4L0a.⚖️ Legal Pack ⚖️.js
+
+# =========================
+# 🧰 PAPERS
+# =========================
+🟢	6A1a.🟩📍 Margin Anchor 📍.js
+🟢	6B1a.🟢📝 Sticky Notes Portal 📝.js
+🟢	6C1a.🟢↩️ Quote Backrefs ↩️.js
+🟢	6S1a.🟩🍰 Section Bands 🍰.js
+🟢	6S2a.🟢🧩 Section Collapser 🧩.js
+🟢	6S2b.🟢👒 Heading Colorizer 👒.js
 
 # =========================
 # 📝 PROMPTS
 # =========================
-🟢	7A1a._Prompt_Manager_.user.js
+🟢	7A1a.⬜️✍️ Prompt Manager ✍️.js
 
 # =========================
-# 🎨 THEMES + SKINS + INPUT
+# 🎨 APPEARANCE
 # =========================
-🟢	8A1a._Themes_Panel_.user.js
-🟢	8A2a._H2O_Skins_Registry_.user.js
-🔴	8Y1a._Input_Dock_(Keys_Rail)_.user.js
+🟢	8A1a.🟪🎨 Themes Panel 🎨.js
+🟢	8A2a.🟪🌸 H2O Skins Registry 🌸.js
+🟢	8Y1a.🟣🧊 Input Dock (Keys Rail).js
 
 # =========================
 # 🖥️ INTERFACE
 # =========================
-🔴	9A1a._Interface_Enhancer_.user.js
-🔴	9B1a._Tab_Title_.user.js
-🔴	9C1a._Title_Under_Input_bar_.user.js
-🔴	9D1a._Auto_Emoji_Title_.user.js
-🔴	9X1a._Keep_Projects_Open_.user.js
-🟢	9Z1a._Hide_Disclaimer_.user.js
+🔴	9A1a.🟫🖥️ Interface Enhancer 🖥️.js
+🔴	9B1a.🟤🔖 Tab Title 🔖.js
+🔴	9C1a.🟤📌 Title Under Input bar 📌.js
+🔴	9D1a.🟤📱 Auto Emoji Title 📱.js
+🔴	9X1a.🟤🧷 Keep Projects Open.js
+🔴	9Z1a.🟤🧼 Hide Disclaimer 🧼.js
 
 # =========================
 # 🧪 EXPERIMENTAL
 # =========================
-🔴	X1._Canvas_Last-Updated_Timestamp_.user.js
-🔴	X2._Select_All_Answer_.user.js
-🔴	X3._Toolbar_Palette_Button_.user.js
-🔴	X5._Highlight_Double-Click_.user.js
+🔴	X1.🔴Canvas Last-Updated Timestamp.js
+🔴	X2.🔴🧲 Select All Answer 🧲.js
+🔴	X3.🔴🎨 Toolbar Palette Button 🎨.js
+🔴	X5.🟠✨ Highlight Double-Click ✨.js
+
+# =========================
+# 📦 OTHER
+# =========================
+🟢	0E1a.⬛️📀 Export Chat 📀.js
+🟢	0E1b.⚫️📀 Export Formats 📝📀.js
+🟢	0E2a.⚫️💿 Quick Export 💿.js
+🟢	0F1a.⬛️🗂️ Folders 🗂️.js
 
