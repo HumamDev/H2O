@@ -6,16 +6,18 @@ node_modules/
 
 # Archive snapshots and state outputs
 archive/**
-!archive/.gitkeep
+archive/.gitkeep
 
 # Generated local extension outputs
 build/**
 
 # Generated reports and ledgers (keep placeholders)
 meta/reports/**
-!meta/reports/.gitkeep
+meta/reports/.gitkeep
 meta/ledger/**
-!meta/ledger/.gitkeep
+meta/ledger/.gitkeep
+meta/notes/.gitkeep
+meta/README.md
 
 # Local-only commit message input
 meta/notes/COMMIT_MESSAGE.txt
