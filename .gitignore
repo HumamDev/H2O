@@ -37,6 +37,13 @@ unstaged.txt
 config/__codex-*.json
 config/userscript-headers.html
 config/userscript-headers.tsv
+config/dev-order.txt
+config/dev-order.json
+config/scripts-list.tsv
+
+# Local-only editor/workspace notes
+meta/notes/vscode-keybindings.json
+.vscode/*.local.json
 
 # macOS Finder duplicate files (created by Cmd+D / "Duplicate")
 * 2.js
