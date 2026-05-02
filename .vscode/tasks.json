@@ -169,14 +169,14 @@
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
-      "detail": "⚡ Quick local archive: saves version-changed files into the current workspace archive folder.",
+      "detail": "⚡ Quick local archive: saves version/hash-changed files, including the full tools tree, into the current workspace archive folder.",
       "type": "shell",
       "command": "node \"${workspaceFolder}/tools/archive/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
       "problemMatcher": []
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
-      "detail": "Local archive utility: full snapshot of tracked versioned files from scripts, tools, ui, and workspace archive targets into today's archive folder.",
+      "detail": "Local archive utility: full snapshot of scripts, UI targets, and the entire current tools tree into today's archive folder.",
       "type": "process",
       "command": "node",
       "args": [

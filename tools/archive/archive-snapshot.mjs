@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 // @version 1.0.2
 
 const SRC = process.argv[2]; // workspaceFolder (h2o-source)
@@ -13,47 +14,7 @@ const MIGRATE_PATHS = process.argv.includes("--migrate-paths");
 const ARCHIVE_ROOT = path.join(SRC, "archive");
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
-const PIPELINE_TRACKED_FILES = [
-  "tools/archive/archive-snapshot.mjs",
-
-  "tools/loader/make-aliases.mjs",
-  "tools/loader/sync-dev-order.mjs",
-  "tools/loader/validate-loader-order.mjs",
-
-  "tools/product/studio/pack-studio.mjs",
-  "tools/product/extension/chrome-live-background.mjs",
-  "tools/product/extension/chrome-live-build-context.mjs",
-  "tools/product/extension/chrome-live-folder-bridge.mjs",
-  "tools/product/extension/chrome-live-loader.mjs",
-  "tools/product/extension/chrome-live-manifest.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-css.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-data.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-html.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-js.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-storage.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-view.mjs",
-  "tools/product/extension/chrome-live-readme.mjs",
-  "tools/product/extension/chrome-live-source-snapshots.mjs",
-  "tools/product/desk/pack-desk.mjs",
-  "tools/product/extension/build-chrome-live-extension.mjs",
-  "tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs",
-  "tools/loader/make-ext-proxy-pack.mjs",
-  "tools/product/extension/write-extension-icons.mjs",
-
-  "tools/archive/archive-one.mjs",
-  "tools/git/commit-auto.mjs",
-  "tools/versioning/dashboard-watch.mjs",
-  "tools/dev/dev-all.mjs",
-  "tools/dev/dev-check.mjs",
-  "tools/dev/dev-rebuild.mjs",
-  "tools/versioning/edit-log.mjs",
-  "tools/git/install-hooks.mjs",
-  "tools/release/release-commit-helper.mjs",
-  "tools/release/release.mjs",
-  "tools/versioning/rev-stamp.mjs",
-  "tools/release/ship-commit.mjs",
-  "tools/versioning/versions-dashboard.mjs",
-
+const ADDITIONAL_TRACKED_FILES = [
   "surfaces/studio/studio.css",
   "surfaces/studio/studio.html",
   "surfaces/studio/studio.js",
@@ -65,6 +26,18 @@ const PIPELINE_TRACKED_FILES = [
 
   ".vscode/tasks.json",
 ];
+const TOOLS_REL = "tools";
+const EXCLUDED_ARCHIVE_NAMES = new Set([
+  ".DS_Store",
+]);
+const EXCLUDED_ARCHIVE_DIRS = new Set([
+  ".git",
+  "artifacts",
+  "build",
+  "cache",
+  "node_modules",
+  "tmp",
+]);
 const STUDIO_SURFACES_REL = path.join("surfaces", "studio");
 
 fs.mkdirSync(ARCHIVE_ROOT, { recursive: true });
@@ -99,6 +72,15 @@ function readVersionFromText(txt) {
 function readVersionFromFile(fp) {
   const txt = fs.readFileSync(fp, "utf8");
   return readVersionFromText(txt);
+}
+
+function readArchiveMarkerFromFile(fp, relPath) {
+  const txt = fs.readFileSync(fp, "utf8");
+  const version = readVersionFromText(txt);
+  if (version) return { marker: version, reason: "version change" };
+  if (!isToolsRelPath(relPath)) return null;
+  const digest = crypto.createHash("sha256").update(txt).digest("hex").slice(0, 12);
+  return { marker: `sha256-${digest}`, reason: "content hash change" };
 }
 
 function toAliasName(filename) {
@@ -182,6 +164,41 @@ function collectTopLevelFiles(srcRoot, relDir) {
   return out;
 }
 
+function collectRecursiveFiles(srcRoot, relDir) {
+  const out = [];
+  const absDir = path.join(srcRoot, relDir);
+
+  function walk(abs, rel) {
+    let entries = [];
+    try {
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) return;
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (EXCLUDED_ARCHIVE_NAMES.has(entry.name)) continue;
+      if (entry.name.endsWith(".local.json") || /\.local\./i.test(entry.name)) continue;
+      if (entry.name === ".env" || entry.name.startsWith(".env.")) continue;
+
+      const childRel = path.join(rel, entry.name);
+      const childAbs = path.join(abs, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (EXCLUDED_ARCHIVE_DIRS.has(entry.name)) continue;
+        walk(childAbs, childRel);
+        continue;
+      }
+      if (entry.isFile()) out.push(childRel);
+    }
+  }
+
+  walk(absDir, relDir);
+  return out;
+}
+
 function assertScriptArchiveCoverage(srcRoot, relPaths) {
   const scriptsDir = path.join(srcRoot, "scripts");
   try {
@@ -199,6 +216,11 @@ function uniqueSorted(paths) {
 
 function normalizePathKey(v) {
   return String(v || "").replace(/\\/g, "/");
+}
+
+function isToolsRelPath(relPath) {
+  const key = normalizePathKey(relPath);
+  return key === TOOLS_REL || key.startsWith(`${TOOLS_REL}/`);
 }
 
 function stripEmojiAndInvisibles(s) {
@@ -334,12 +356,14 @@ fs.mkdirSync(todayDir, { recursive: true });
 
 const trackedUserScripts = collectUserScripts(SRC);
 const trackedStudioSurfaceFiles = collectTopLevelFiles(SRC, STUDIO_SURFACES_REL);
+const trackedToolFiles = collectRecursiveFiles(SRC, TOOLS_REL);
 assertScriptArchiveCoverage(SRC, trackedUserScripts);
 
 const trackedRelPaths = uniqueSorted([
   ...trackedUserScripts,
   ...trackedStudioSurfaceFiles,
-  ...PIPELINE_TRACKED_FILES,
+  ...trackedToolFiles,
+  ...ADDITIONAL_TRACKED_FILES,
 ]);
 
 let archivedCount = 0;
@@ -359,8 +383,8 @@ for (const relPathRaw of trackedRelPaths) {
   try { st = fs.statSync(fp); } catch { st = null; }
   if (!st?.isFile()) continue;
 
-  const ver = readVersionFromFile(fp);
-  if (!ver) {
+  const marker = readArchiveMarkerFromFile(fp, relPath);
+  if (!marker) {
     skippedNoVersion.push(relPath);
     continue;
   }
@@ -368,9 +392,9 @@ for (const relPathRaw of trackedRelPaths) {
   const key = relPath;
   const last = state[key];
 
-  if (FORCE_ALL || last !== ver) {
+  if (FORCE_ALL || last !== marker.marker) {
     const relDir = path.dirname(relPath);
-    const outName = withVersionInName(path.basename(relPath), ver);
+    const outName = withVersionInName(path.basename(relPath), marker.marker);
     const outDir = (relDir === ".") ? todayDir : path.join(todayDir, relDir);
     const outRel = (relDir === ".") ? outName : path.join(relDir, outName);
     const outPath = path.join(outDir, outName);
@@ -378,9 +402,9 @@ for (const relPathRaw of trackedRelPaths) {
     fs.mkdirSync(outDir, { recursive: true });
     fs.copyFileSync(fp, outPath);
 
-    state[key] = ver;
+    state[key] = marker.marker;
     archivedCount++;
-    const reason = FORCE_ALL ? "full snapshot" : "version change";
+    const reason = FORCE_ALL ? "full snapshot" : marker.reason;
     console.log(`[H2O] archived (${reason}): ${relPath} -> ${outRel}`);
   }
 }
