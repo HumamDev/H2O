@@ -3,7 +3,7 @@
 // @name               1A3a.🔴🌈🗺️ Highlight Dots (MiniMap 🔌 Plugin) 🗺️
 // @namespace          H2O.Premium.CGX.highlight.dots.minimap.plugin
 // @author             HumamDev
-// @version            1.3.12
+// @version            1.4.0
 // @revision           003
 // @build              260330-174525
 // @description        Self-contained copy of the MiniMap left-side inline highlight dots (identical visuals + behavior)
@@ -344,6 +344,10 @@
     const aa = normalizeDotId(a);
     const bb = normalizeDotId(b);
     return !!aa && !!bb && aa === bb;
+  }
+
+  function isSyntheticNoAnswerId(raw) {
+    return /^no-answer:/i.test(String(raw || '').trim());
   }
 
   function resolveDotMessageEl(raw) {
@@ -868,6 +872,17 @@
     return obj;
   })();
 
+  function purgeSyntheticNoAnswerDotKeys({ persist = false } = {}) {
+    let changed = 0;
+    for (const key of Object.keys(inlineDotMap || {})) {
+      if (!isSyntheticNoAnswerId(key)) continue;
+      delete inlineDotMap[key];
+      changed += 1;
+    }
+    if (changed && persist) saveInlineDots();
+    return changed;
+  }
+
   function sameColorList(a, b) {
     const aa = Array.isArray(a) ? a : [];
     const bb = Array.isArray(b) ? b : [];
@@ -966,6 +981,8 @@
       return false;
     }
   }
+
+  purgeSyntheticNoAnswerDotKeys({ persist: true });
 
   try {
     W.H2O = W.H2O || {};
@@ -1429,6 +1446,26 @@ ${dotSel}{
     return row;
   }
 
+  function dotRowMatchesMeta(row, meta = {}) {
+    if (!row) return false;
+    const wantSurface = String(meta?.surface || 'combined').trim() || 'combined';
+    const gotSurface = String(row.getAttribute?.(ATTR_.DOT_SURFACE) || 'combined').trim() || 'combined';
+    if (wantSurface !== gotSurface) return false;
+
+    const checks = [
+      [ATTR_.TURN_ID, String(meta?.turnId || '').trim()],
+      [ATTR_.PRIMARY_A_ID, String(meta?.answerId || '').trim()],
+      [ATTR_.QUESTION_ID, String(meta?.questionId || '').trim()],
+    ];
+
+    for (const [attrName, expected] of checks) {
+      if (!expected) continue;
+      const got = String(row.getAttribute?.(attrName) || '').trim();
+      if (!got || !sameDotId(got, expected)) return false;
+    }
+    return true;
+  }
+
   function collectInlineColorsFromMessageEl(messageEl) {
     if (!messageEl) return [];
     const seen = new Set();
@@ -1593,7 +1630,7 @@ ${dotSel}{
 
   function getAnswerDotColors(btn) {
     const answerId = resolveDotPrimaryId('', btn);
-    if (!answerId) return [];
+    if (!answerId || isSyntheticNoAnswerId(answerId)) return [];
     const turnId = String(btn?.dataset?.turnId || btn?.dataset?.id || '').trim();
     if (!isTurnOnCurrentPaginationPage(turnId, answerId, '')) return [];
     const live = getLiveDotColorsForSurface(resolveAnswerElInTurn(turnId, answerId), 'answer', answerId);
@@ -1631,8 +1668,11 @@ ${dotSel}{
     let row = getDotRowForHost(host, surface);
 
     if (!names.length) {
-      if (preserveExistingOnEmpty && row) return;
-      row?.remove?.();
+      if (row) {
+        const sameTarget = dotRowMatchesMeta(row, { surface, turnId, answerId, questionId });
+        if (preserveExistingOnEmpty && sameTarget && !(surface === 'answer' && isSyntheticNoAnswerId(answerId))) return;
+        row?.remove?.();
+      }
       return;
     }
 
@@ -1791,12 +1831,17 @@ ${dotSel}{
     const key = String(anyId).trim();
     const inferredSurface = resolveDotSurfaceMeta(key, null, roleHint);
     const persistedRoleHint = String(inferredSurface?.surfaceRole || roleHint || '').trim().toLowerCase();
+    const suppressSyntheticAnswer = persistedRoleHint !== 'question' && isSyntheticNoAnswerId(key);
     if (persist) {
-      const arr = Array.isArray(colors) ? colors : (colors == null ? [] : [colors]);
-      const names = canonicalInlineColors(arr);
-      const valid = names.filter(isValidDotName);
-      if (valid.length) setDotColorsForId(key, valid, { roleHint: persistedRoleHint });
-      else clearDotColorsForId(key, null, { roleHint: persistedRoleHint });
+      if (suppressSyntheticAnswer) {
+        clearDotColorsForId(key, null, { roleHint: persistedRoleHint || 'answer' });
+      } else {
+        const arr = Array.isArray(colors) ? colors : (colors == null ? [] : [colors]);
+        const names = canonicalInlineColors(arr);
+        const valid = names.filter(isValidDotName);
+        if (valid.length) setDotColorsForId(key, valid, { roleHint: persistedRoleHint });
+        else clearDotColorsForId(key, null, { roleHint: persistedRoleHint });
+      }
       saveInlineDots();
     }
 
@@ -1843,6 +1888,7 @@ ${dotSel}{
     if (isQaMiniMapView() && (qaCtx?.qBtn || getQuestionBtnForWrap(host))) {
       const questionPayload = payload && typeof payload === 'object' ? payload.question || null : null;
       const answerPayload = payload && typeof payload === 'object' ? payload.answer || null : null;
+      const suppressAnswerSurface = isSyntheticNoAnswerId(primaryId);
       removeDotRowForHost(host, 'combined');
       applyMiniMapDots(host, btn, questionPayload?.explicit ? questionPayload.colors : getQuestionDotColors(host, btn), {
         surface: 'question',
@@ -1851,12 +1897,12 @@ ${dotSel}{
         questionId,
         preserveExistingOnEmpty: !questionPayload?.explicit
       });
-      applyMiniMapDots(host, btn, answerPayload?.explicit ? answerPayload.colors : getAnswerDotColors(btn), {
+      applyMiniMapDots(host, btn, suppressAnswerSurface ? [] : (answerPayload?.explicit ? answerPayload.colors : getAnswerDotColors(btn)), {
         surface: 'answer',
         turnId,
         answerId: primaryId,
         questionId,
-        preserveExistingOnEmpty: !answerPayload?.explicit
+        preserveExistingOnEmpty: !answerPayload?.explicit && !suppressAnswerSurface
       });
       return;
     }
@@ -1878,12 +1924,17 @@ ${dotSel}{
     if (!rawId) return;
     const meta = resolveDotSurfaceMeta(rawId);
     const surfaceRole = meta?.surfaceRole === 'question' ? 'question' : 'answer';
+    const suppressSyntheticAnswer = surfaceRole !== 'question' && isSyntheticNoAnswerId(rawId);
     if (persist) {
-      const arr = Array.isArray(colors) ? colors : (colors == null ? [] : [colors]);
-      const names = canonicalInlineColors(arr);
-      const valid = names.filter(isValidDotName);
-      if (valid.length) setDotColorsForId(rawId, valid, { roleHint: surfaceRole });
-      else clearDotColorsForId(rawId, null, { roleHint: surfaceRole });
+      if (suppressSyntheticAnswer) {
+        clearDotColorsForId(rawId, null, { roleHint: surfaceRole });
+      } else {
+        const arr = Array.isArray(colors) ? colors : (colors == null ? [] : [colors]);
+        const names = canonicalInlineColors(arr);
+        const valid = names.filter(isValidDotName);
+        if (valid.length) setDotColorsForId(rawId, valid, { roleHint: surfaceRole });
+        else clearDotColorsForId(rawId, null, { roleHint: surfaceRole });
+      }
       saveInlineDots();
     }
 
