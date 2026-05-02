@@ -165,8 +165,9 @@ assertNoTokenLeak("identity.js", identitySurfaceJs);
 assertNoTokenLeak("identity.html", identitySurfaceHtml);
 assertNoTokenLeak("Control Hub Account plugin", controlHubAccount);
 
+const controlHubAccountCopy = controlHubAccount.toLowerCase();
 assert(controlHubAccount.includes("Provider sessions and tokens stay background-owned") &&
-  controlHubAccount.includes("change password for password-backed accounts"),
+  controlHubAccountCopy.includes("change password for password-backed accounts"),
   "Control Hub Account plugin must keep account/security copy on background-owned identity and password-backed changes");
 assert(releaseRunner.includes("validate-identity-phase3_8a-password-auth.mjs"),
   "release runner must include the 3.8A password auth validator");

@@ -32,9 +32,24 @@
   let BILLING_UNSUB = null;
   let CLS = 'cgxui-cnhb';
   let PASSWORD_CHANGE_FEEDBACK = null;
+  let PROFILE_FEEDBACK = null;
+  let WORKSPACE_FEEDBACK = null;
   let ACCOUNT_SUBTAB = 'identity';
+  let IDENTITY_SUBTAB = 'overview';
   let BILLING_REFRESH_IN_FLIGHT = false;
   let BILLING_REFRESH_REQUESTED = false;
+  const ACCOUNT_TEXT_MAX = 64;
+  const ACCOUNT_AVATAR_MAX = 32;
+  const ACCOUNT_AVATAR_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+  const IDENTITY_SUBTABS = [
+    ['overview', 'Overview'],
+    ['profile', 'Profile'],
+    ['methods', 'Sign-in Methods'],
+    ['security', 'Security'],
+    ['session', 'Session'],
+    ['privacy', 'Privacy & Data'],
+    ['testing', 'Testing'],
+  ];
 
   function getApi() {
     try {
@@ -238,10 +253,10 @@
   async function signOutAction() {
     const api = identityApi();
     if (!api?.signOut) return { message: 'Sign out unavailable.' };
-    if (!W.confirm('Sign out of H2O Identity on this device?')) return { message: 'Canceled.' };
+    if (!W.confirm('Sign out of H2O Identity on this browser?')) return { message: 'Canceled.' };
     await safeCall('identity.signOut', () => api.signOut());
     invalidate();
-    return { message: 'Identity signed out and reset locally.' };
+    return { message: 'Signed out of this browser.' };
   }
 
   async function refreshBillingAction() {
@@ -325,6 +340,69 @@
     return { row, input: field.input };
   }
 
+  function normalizeAccountText(value) {
+    return String(value ?? '').trim();
+  }
+
+  function validateAccountName(label, value) {
+    const clean = normalizeAccountText(value);
+    if (!clean) return { ok: false, value: clean, message: `Enter a ${label}.` };
+    if (clean.length > ACCOUNT_TEXT_MAX) {
+      return { ok: false, value: clean, message: `${label[0].toUpperCase()}${label.slice(1)} must be 64 characters or fewer.` };
+    }
+    return { ok: true, value: clean, message: '' };
+  }
+
+  function validateAvatarColor(value) {
+    const clean = normalizeAccountText(value);
+    if (!clean) return { ok: false, value: clean, message: 'Enter an avatar color.' };
+    if (clean.length > ACCOUNT_AVATAR_MAX || !ACCOUNT_AVATAR_RE.test(clean)) {
+      return { ok: false, value: clean, message: 'Use a safe avatar color token.' };
+    }
+    return { ok: true, value: clean, message: '' };
+  }
+
+  function validateProfileForm(displayNameValue, avatarColorValue) {
+    const name = validateAccountName('display name', displayNameValue);
+    if (!name.ok) return { ok: false, displayName: name.value, avatarColor: normalizeAccountText(avatarColorValue), message: name.message };
+    const color = validateAvatarColor(avatarColorValue);
+    if (!color.ok) return { ok: false, displayName: name.value, avatarColor: color.value, message: color.message };
+    return { ok: true, displayName: name.value, avatarColor: color.value, message: '' };
+  }
+
+  function validateWorkspaceForm(workspaceNameValue) {
+    const name = validateAccountName('workspace name', workspaceNameValue);
+    return { ok: name.ok, workspaceName: name.value, message: name.message };
+  }
+
+  function setAccountFeedback(kind, message, tone = 'info') {
+    const text = String(message || '').trim();
+    const record = text ? { message: text, tone: String(tone || 'info') } : null;
+    if (kind === 'profile') PROFILE_FEEDBACK = record;
+    if (kind === 'workspace') WORKSPACE_FEEDBACK = record;
+  }
+
+  function getAccountFeedback(kind) {
+    return kind === 'workspace' ? WORKSPACE_FEEDBACK : PROFILE_FEEDBACK;
+  }
+
+  function applyAccountStatus(status, message, tone = '') {
+    if (!status) return;
+    const text = String(message || '').trim();
+    status.textContent = text;
+    if (text && tone) status.dataset.tone = tone;
+    else delete status.dataset.tone;
+  }
+
+  function applyAccountFeedback(status, kind) {
+    const feedback = getAccountFeedback(kind);
+    if (!feedback?.message) {
+      applyAccountStatus(status, '', '');
+      return;
+    }
+    applyAccountStatus(status, feedback.message, feedback.tone || 'info');
+  }
+
   function setPasswordChangeFeedback(message, tone = 'info') {
     const text = String(message || '').trim();
     PASSWORD_CHANGE_FEEDBACK = text ? { message: text, tone: String(tone || 'info') } : null;
@@ -336,67 +414,176 @@
     el.dataset.tone = PASSWORD_CHANGE_FEEDBACK.tone || 'info';
   }
 
-  function renderSecuritySettings() {
-    const api = identityApi();
+  function normalizeCredentialStateLabel(value) {
+    const state = String(value || 'unknown').trim().toLowerCase();
+    return state === 'complete' || state === 'required' ? state : 'unknown';
+  }
+
+  function normalizeCredentialProviderLabel(value) {
+    const provider = String(value || 'unknown').trim().toLowerCase();
+    return provider === 'password' || provider === 'google' || provider === 'multiple' ? provider : 'unknown';
+  }
+
+  function renderSignInMethods(credentialStateInput, credentialProviderInput) {
+    const credentialState = normalizeCredentialStateLabel(credentialStateInput);
+    const credentialProvider = normalizeCredentialProviderLabel(credentialProviderInput);
     const root = D.createElement('div');
-    root.className = `${CLS}-acctSecurity`;
-    if (!api) {
-      root.textContent = 'H2O.Identity is not available.';
-      return root;
+    root.className = `${CLS}-acctMethods`;
+
+    const rows = [];
+    if (credentialState === 'complete' && credentialProvider === 'multiple') {
+      rows.push({ label: 'Password', value: 'Password sign-in enabled.' });
+      rows.push({ label: 'Google', value: 'Google sign-in connected.' });
+      rows.push({ label: 'Summary', value: 'Password and Google sign-in enabled.' });
+    } else if (credentialState === 'complete' && credentialProvider === 'google') {
+      rows.push({ label: 'Google', value: 'Google sign-in connected.' });
+      rows.push({ label: 'Password', value: 'Add password is deferred.' });
+    } else if (credentialState === 'complete' && credentialProvider === 'password') {
+      rows.push({ label: 'Password', value: 'Password sign-in enabled.' });
+    } else if (credentialState === 'required') {
+      rows.push({ label: 'Password', value: 'Password setup required.' });
+    } else {
+      rows.push({ label: 'Credential', value: 'Sign-in method status is unknown.' });
     }
 
+    root.appendChild(renderInfoList(rows));
+    return root;
+  }
+
+  function getIdentityAccountContext() {
+    const api = identityApi();
+    if (!api) {
+      return {
+        api: null,
+        snap: {},
+        diag: {},
+        ready: false,
+        profile: null,
+        workspace: null,
+        credentialState: 'unknown',
+        credentialProvider: 'unknown',
+      };
+    }
     const snap = safeCall('identity.snapshot', () => api.getSnapshot?.()) || {};
     const diag = safeCall('identity.diag', () => api.diag?.()) || {};
     const ready = isProviderReady(snap, diag);
     const profile = safeCall('identity.profile', () => api.getProfile?.()) || snap.profile || null;
     const workspace = safeCall('identity.workspace', () => api.getWorkspace?.()) || snap.workspace || null;
-    const credentialProvider = String(diag.credentialProvider || snap.credentialProvider || 'unknown');
+    const credentialState = normalizeCredentialStateLabel(diag.credentialState || snap.credentialState);
+    const credentialProvider = normalizeCredentialProviderLabel(diag.credentialProvider || snap.credentialProvider);
+    return { api, snap, diag, ready, profile, workspace, credentialState, credentialProvider };
+  }
 
-    if (!ready) {
-      const note = D.createElement('div');
-      note.className = `${CLS}-acctNote`;
-      note.textContent = 'Sign in and complete onboarding to manage account and security settings.';
-      root.appendChild(note);
+  function renderAccountUnavailableNote(message) {
+    const note = D.createElement('div');
+    note.className = `${CLS}-acctNote`;
+    note.textContent = message || 'Sign in and complete onboarding to manage account and security settings.';
+    return note;
+  }
+
+  function renderProfileWorkspaceSettings(ctx = getIdentityAccountContext()) {
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctSecurity`;
+    const api = ctx.api;
+    if (!api) {
+      root.appendChild(renderAccountUnavailableNote('H2O.Identity is not available.'));
       return root;
     }
+
+    if (!ctx.ready) {
+      setAccountFeedback('profile', '');
+      setAccountFeedback('workspace', '');
+      root.appendChild(renderAccountUnavailableNote());
+      return root;
+    }
+
+    const profile = ctx.profile;
+    const workspace = ctx.workspace;
 
     if (profile) {
       const section = D.createElement('section');
       section.className = `${CLS}-acctSection`;
       const title = D.createElement('h4');
       title.textContent = 'Profile';
+      let originalDisplayName = normalizeAccountText(profile.displayName || '');
+      let originalAvatarColor = normalizeAccountText(profile.avatarColor || '');
       const displayName = makeTextField('Display name', profile.displayName || '', {
-        maxLength: 64,
+        maxLength: ACCOUNT_TEXT_MAX,
         autocomplete: 'name',
       });
       const avatarColor = makeTextField('Avatar color', profile.avatarColor || '', {
-        maxLength: 32,
+        maxLength: ACCOUNT_AVATAR_MAX,
       });
       const status = D.createElement('span');
       status.className = `${CLS}-acctStatus`;
+      status.setAttribute('aria-live', 'polite');
       const save = D.createElement('button');
       save.type = 'button';
       save.className = `${CLS}-actionBtn primary`;
       save.textContent = 'Save profile';
+      let inFlight = false;
+      const refreshProfileFormState = () => {
+        const validation = validateProfileForm(displayName.input.value, avatarColor.input.value);
+        const dirty = validation.displayName !== originalDisplayName || validation.avatarColor !== originalAvatarColor;
+        save.disabled = inFlight || !dirty || !validation.ok;
+        if (inFlight) return;
+        const feedback = getAccountFeedback('profile');
+        if (feedback?.message) {
+          applyAccountFeedback(status, 'profile');
+        } else if (dirty && !validation.ok) {
+          applyAccountStatus(status, validation.message, 'error');
+        } else {
+          applyAccountStatus(status, '', '');
+        }
+      };
+      const onProfileInput = () => {
+        setAccountFeedback('profile', '');
+        refreshProfileFormState();
+      };
+      displayName.input.addEventListener('input', onProfileInput, true);
+      avatarColor.input.addEventListener('input', onProfileInput, true);
       save.addEventListener('click', async (evt) => {
         evt.preventDefault();
+        if (inFlight) return;
+        const validation = validateProfileForm(displayName.input.value, avatarColor.input.value);
+        if (!validation.ok) {
+          setAccountFeedback('profile', validation.message, 'error');
+          refreshProfileFormState();
+          return;
+        }
+        if (validation.displayName === originalDisplayName && validation.avatarColor === originalAvatarColor) {
+          refreshProfileFormState();
+          return;
+        }
+        inFlight = true;
         save.disabled = true;
-        status.textContent = 'Saving profile...';
+        save.textContent = 'Saving...';
+        applyAccountStatus(status, 'Saving profile...', 'info');
         try {
           const result = await api.updateProfile?.({
-            displayName: displayName.input.value,
-            avatarColor: avatarColor.input.value,
+            displayName: validation.displayName,
+            avatarColor: validation.avatarColor,
           });
-          status.textContent = result?.status === 'auth_error'
-            ? 'Could not save profile.'
-            : 'Profile saved.';
+          const ok = result?.status !== 'auth_error' && result?.ok !== false;
+          if (ok) {
+            originalDisplayName = validation.displayName;
+            originalAvatarColor = validation.avatarColor;
+            displayName.input.value = validation.displayName;
+            avatarColor.input.value = validation.avatarColor;
+            setAccountFeedback('profile', 'Profile updated.', 'success');
+          } else {
+            setAccountFeedback('profile', 'Could not update profile.', 'error');
+          }
         } catch (_) {
-          status.textContent = 'Could not save profile.';
+          setAccountFeedback('profile', 'Could not update profile.', 'error');
         } finally {
-          save.disabled = false;
+          inFlight = false;
+          save.textContent = 'Save profile';
+          refreshProfileFormState();
           invalidate();
         }
       }, true);
+      refreshProfileFormState();
       const actions = D.createElement('div');
       actions.className = `${CLS}-acctActions`;
       actions.append(save, status);
@@ -409,37 +596,177 @@
       section.className = `${CLS}-acctSection`;
       const title = D.createElement('h4');
       title.textContent = 'Workspace';
+      let originalWorkspaceName = normalizeAccountText(workspace.name || '');
       const workspaceName = makeTextField('Workspace name', workspace.name || '', {
-        maxLength: 64,
+        maxLength: ACCOUNT_TEXT_MAX,
       });
       const status = D.createElement('span');
       status.className = `${CLS}-acctStatus`;
+      status.setAttribute('aria-live', 'polite');
       const save = D.createElement('button');
       save.type = 'button';
       save.className = `${CLS}-actionBtn primary`;
       save.textContent = 'Rename workspace';
+      let inFlight = false;
+      const refreshWorkspaceFormState = () => {
+        const validation = validateWorkspaceForm(workspaceName.input.value);
+        const dirty = validation.workspaceName !== originalWorkspaceName;
+        save.disabled = inFlight || !dirty || !validation.ok;
+        if (inFlight) return;
+        const feedback = getAccountFeedback('workspace');
+        if (feedback?.message) {
+          applyAccountFeedback(status, 'workspace');
+        } else if (dirty && !validation.ok) {
+          applyAccountStatus(status, validation.message, 'error');
+        } else {
+          applyAccountStatus(status, '', '');
+        }
+      };
+      workspaceName.input.addEventListener('input', () => {
+        setAccountFeedback('workspace', '');
+        refreshWorkspaceFormState();
+      }, true);
       save.addEventListener('click', async (evt) => {
         evt.preventDefault();
+        if (inFlight) return;
+        const validation = validateWorkspaceForm(workspaceName.input.value);
+        if (!validation.ok) {
+          setAccountFeedback('workspace', validation.message, 'error');
+          refreshWorkspaceFormState();
+          return;
+        }
+        if (validation.workspaceName === originalWorkspaceName) {
+          refreshWorkspaceFormState();
+          return;
+        }
+        inFlight = true;
         save.disabled = true;
-        status.textContent = 'Renaming workspace...';
+        save.textContent = 'Renaming...';
+        applyAccountStatus(status, 'Renaming workspace...', 'info');
         try {
-          const result = await api.renameWorkspace?.({ workspaceName: workspaceName.input.value });
-          status.textContent = result?.status === 'auth_error'
-            ? 'Could not rename workspace.'
-            : 'Workspace renamed.';
+          const result = await api.renameWorkspace?.({ workspaceName: validation.workspaceName });
+          const ok = result?.status !== 'auth_error' && result?.ok !== false;
+          if (ok) {
+            originalWorkspaceName = validation.workspaceName;
+            workspaceName.input.value = validation.workspaceName;
+            setAccountFeedback('workspace', 'Workspace renamed.', 'success');
+          } else {
+            setAccountFeedback('workspace', 'Could not rename workspace.', 'error');
+          }
         } catch (_) {
-          status.textContent = 'Could not rename workspace.';
+          setAccountFeedback('workspace', 'Could not rename workspace.', 'error');
         } finally {
-          save.disabled = false;
+          inFlight = false;
+          save.textContent = 'Rename workspace';
+          refreshWorkspaceFormState();
           invalidate();
         }
       }, true);
+      refreshWorkspaceFormState();
       const actions = D.createElement('div');
       actions.className = `${CLS}-acctActions`;
       actions.append(save, status);
       section.append(title, workspaceName.wrap, actions);
       root.appendChild(section);
     }
+
+    return root;
+  }
+
+  function renderSignInMethodsSettings(ctx = getIdentityAccountContext()) {
+    return renderAccountSection(
+      'Sign-in methods',
+      'Connected sign-in methods are shown from safe credential state only. Credential removal and add-password flows are not enabled in this phase.',
+      renderSignInMethods(ctx.credentialState, ctx.credentialProvider),
+    );
+  }
+
+  function renderSessionManagementSettings(ctx = getIdentityAccountContext()) {
+    const status = String(ctx.diag?.status || ctx.snap?.status || 'unknown');
+    const rows = [
+      { label: 'Browser', value: 'This browser' },
+      { label: 'Status', value: statusLabel(status) },
+      { label: 'State', value: statusHelp(status) },
+    ];
+    const mode = String(ctx.diag?.mode || ctx.snap?.mode || '').trim();
+    const provider = String(ctx.diag?.provider || ctx.snap?.provider || '').trim();
+    if (mode) rows.push({ label: 'Mode', value: mode });
+    if (provider) rows.push({ label: 'Provider', value: provider });
+    rows.push({
+      label: 'Credential',
+      value: `${normalizeCredentialStateLabel(ctx.credentialState)} / ${normalizeCredentialProviderLabel(ctx.credentialProvider)}`,
+    });
+    if (ctx.profile?.displayName) rows.push({ label: 'Profile', value: ctx.profile.displayName });
+    if (ctx.workspace?.name) rows.push({ label: 'Workspace', value: ctx.workspace.name });
+    if (ctx.snap?.updatedAt) {
+      try { rows.push({ label: 'Last updated', value: new Date(ctx.snap.updatedAt).toLocaleString() }); } catch {}
+    }
+    rows.push({
+      label: 'Persistent sign-in',
+      value: 'You stay signed in on this browser after restart until you sign out here or the provider session is revoked.',
+    });
+
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctStack`;
+    root.appendChild(renderAccountSection(
+      'This browser',
+      'Current-browser session controls. Provider sessions and credential material stay background-owned.',
+      renderInfoList(rows),
+    ));
+    root.appendChild(renderAccountActionSection('Session actions', 'Re-read the current background-owned identity state or clear this browser.', [
+      { label: 'Refresh Identity', primary: true, action: refreshAction },
+      { label: 'Sign out of this browser', action: signOutAction },
+    ]));
+    root.appendChild(renderAccountSection(
+      'Deferred session management',
+      'These controls are intentionally unavailable in this phase.',
+      renderInfoList([
+        { label: 'Sign out everywhere', value: 'Deferred. No cross-device sign-out action is implemented.' },
+        { label: 'Manage devices', value: 'Deferred. This release does not keep or display a device list.' },
+      ]),
+    ));
+    return root;
+  }
+
+  function renderPrivacyDataSettings() {
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctStack`;
+    root.appendChild(renderAccountSection(
+      'Privacy & Data',
+      'Account data, local browser data, and billing records are separate. No export or deletion action is enabled in this phase.',
+      renderInfoList([
+        { label: 'Sign out', value: 'Clears identity state on this browser only. It is not account deletion.' },
+        { label: 'Local H2O data', value: 'Remains in this browser unless a later approved export or delete flow is added.' },
+        { label: 'Cloud identity data', value: 'Profile and workspace records are managed separately from local browser data.' },
+        { label: 'Billing records', value: 'Subscription records are separate and may have retention requirements.' },
+      ]),
+    ));
+    root.appendChild(renderAccountSection(
+      'Deferred privacy actions',
+      'These rows are policy placeholders only and have no action handlers.',
+      renderInfoList([
+        { label: 'Export local data', value: 'Deferred. Local export is not implemented in this phase.' },
+        { label: 'Delete local data', value: 'Deferred. Local data deletion is not implemented in this phase.' },
+        { label: 'Export cloud account data', value: 'Deferred. Cloud account export is not implemented in this phase.' },
+        { label: 'Delete account', value: 'Deferred. Account deletion requires a separate approved design and implementation.' },
+      ]),
+    ));
+    return root;
+  }
+
+  function renderPasswordSecuritySettings(ctx = getIdentityAccountContext()) {
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctSecurity`;
+    const api = ctx.api;
+    if (!api) {
+      root.appendChild(renderAccountUnavailableNote('H2O.Identity is not available.'));
+      return root;
+    }
+    if (!ctx.ready) {
+      root.appendChild(renderAccountUnavailableNote());
+      return root;
+    }
+    const credentialProvider = ctx.credentialProvider;
 
     const security = D.createElement('section');
     security.className = `${CLS}-acctSection`;
@@ -531,6 +858,26 @@
     return root;
   }
 
+  function renderSecuritySettings() {
+    const ctx = getIdentityAccountContext();
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctSecurity`;
+    if (!ctx.api) {
+      root.appendChild(renderAccountUnavailableNote('H2O.Identity is not available.'));
+      return root;
+    }
+    if (!ctx.ready) {
+      root.appendChild(renderAccountUnavailableNote());
+      return root;
+    }
+    root.append(
+      renderProfileWorkspaceSettings(ctx),
+      renderSignInMethodsSettings(ctx),
+      renderPasswordSecuritySettings(ctx),
+    );
+    return root;
+  }
+
   function renderAccountSettings() {
     const root = D.createElement('div');
     root.className = `${CLS}-acctShell`;
@@ -578,25 +925,100 @@
     invalidate();
   }
 
-  function renderIdentitySubtab() {
+  function normalizeIdentitySubtab(key) {
+    const normalized = String(key || '').trim().toLowerCase();
+    return IDENTITY_SUBTABS.some(([tabKey]) => tabKey === normalized) ? normalized : 'overview';
+  }
+
+  function setIdentitySubtab(key) {
+    const next = normalizeIdentitySubtab(key);
+    if (next === IDENTITY_SUBTAB) return;
+    IDENTITY_SUBTAB = next;
+    invalidate();
+  }
+
+  function renderIdentitySectionTabs() {
+    const tabs = D.createElement('div');
+    tabs.className = `${CLS}-acctSubtabs ${CLS}-acctInnerSubtabs`;
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', 'Identity account sections');
+    IDENTITY_SUBTABS.forEach(([key, label]) => {
+      const btn = D.createElement('button');
+      btn.type = 'button';
+      btn.className = `${CLS}-acctSubtab`;
+      btn.textContent = label;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', IDENTITY_SUBTAB === key ? 'true' : 'false');
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        setIdentitySubtab(key);
+      }, true);
+      tabs.appendChild(btn);
+    });
+    return tabs;
+  }
+
+  function renderIdentitySectionBody() {
+    const key = normalizeIdentitySubtab(IDENTITY_SUBTAB);
+    IDENTITY_SUBTAB = key;
+    const ctx = getIdentityAccountContext();
     const root = D.createElement('div');
     root.className = `${CLS}-acctStack`;
+    root.setAttribute('role', 'tabpanel');
+
+    if (key === 'profile') {
+      root.appendChild(renderAccountSection(
+        'Profile & Workspace',
+        'Edit safe profile details and workspace name. Provider sessions and tokens stay background-owned.',
+        renderProfileWorkspaceSettings(ctx),
+      ));
+      return root;
+    }
+
+    if (key === 'methods') {
+      root.appendChild(renderSignInMethodsSettings(ctx));
+      return root;
+    }
+
+    if (key === 'security') {
+      root.appendChild(renderAccountSection(
+        'Account & Security',
+        'Change password for password-backed accounts. Add-password and credential removal are not enabled in this phase.',
+        renderPasswordSecuritySettings(ctx),
+      ));
+      return root;
+    }
+
+    if (key === 'session') {
+      root.appendChild(renderSessionManagementSettings(ctx));
+      return root;
+    }
+
+    if (key === 'privacy') {
+      root.appendChild(renderPrivacyDataSettings());
+      return root;
+    }
+
+    if (key === 'testing') {
+      root.appendChild(renderAccountActionSection('Testing', 'Force-show the soft first-run setup prompt for local/dev testing.', [
+        { label: 'Show Setup Prompt', action: showFirstRunPromptAction },
+      ]));
+      return root;
+    }
+
     root.append(
       renderAccountSection('Identity', 'Safe H2O identity state. Provider sessions and tokens stay background-owned.', renderStatus()),
       renderAccountActionSection('Onboarding', 'Open the onboarding page to set up or review your account profile.', [
         { label: 'Open Onboarding', primary: true, action: openOnboardingAction },
       ]),
-      renderAccountSection('Account & Security', 'Edit safe account details and change password for password-backed accounts.', renderSecuritySettings()),
-      renderAccountActionSection('Testing', 'Force-show the soft first-run setup prompt for local/dev testing.', [
-        { label: 'Show Setup Prompt', action: showFirstRunPromptAction },
-      ]),
-      renderAccountActionSection('Session', 'Re-read the current background-owned identity state from storage.', [
-        { label: 'Refresh Identity', action: refreshAction },
-      ]),
-      renderAccountActionSection('Reset', 'Signs out locally and clears background-owned provider session material when present.', [
-        { label: 'Sign Out', action: signOutAction },
-      ]),
     );
+    return root;
+  }
+
+  function renderIdentitySubtab() {
+    const root = D.createElement('div');
+    root.className = `${CLS}-acctStack`;
+    root.append(renderIdentitySectionTabs(), renderIdentitySectionBody());
     return root;
   }
 

@@ -3179,6 +3179,447 @@ Deferred after Phase 4.0B:
 | Account deletion and data export/privacy workflows. |
 | Microsoft/GitHub/Apple OAuth providers. |
 
+## 15.30 Phase 4.2B - Password Management Hardening
+
+Phase 4.2B is a password-management hardening and release-gate phase around the already working password system. It does not add reset-link completion, Google-only add-password, step-up email-code verification, credential unlinking, account deletion, new OAuth providers, SQL/RLS changes, page-side Supabase, service-role runtime usage, or provider-token persistence.
+
+Password-management decisions:
+
+| Area | Decision |
+|---|---|
+| Signed-in password change | Current-password verification through Supabase `client.auth.updateUser({ password, current_password })` is acceptable for the MVP for password-backed accounts. |
+| Password + Google accounts | Continue allowing signed-in password change with current password + new password. |
+| Google-only accounts | Continue showing `Add password is deferred.` No add-password flow is implemented in Phase 4.2B. |
+| Wrong-password recovery | Keep the existing recovery-code flow. Verified recovery sessions publish `password_update_required`, not `sync_ready`, and must set a new password before ready. |
+| Reset-link completion | Remains deferred. The extension still does not parse recovery links, redirect tokens, or recovery sessions. |
+| Step-up verification | Email-code confirmation before high-risk password/security changes remains deferred to a separate approved phase. |
+
+Required security invariants:
+
+| Invariant |
+|---|
+| Provider bundle/source owns the only Supabase `updateUser` password calls. |
+| The installed SDK casing is `current_password`; the provider must not call Supabase with a `currentPassword` field. |
+| Password values may exist only in transient UI form state and the single bridge request needed for the password operation. |
+| Password values must not enter localStorage, sessionStorage, chrome.storage, diagnostics, audit entries, logs, snapshots, or public bridge responses. |
+| Password fields are cleared after success and failure attempts. |
+| Failed password changes must not mutate credential state, public snapshot, active session, or persistent refresh record. |
+| Sign-out clears `h2oIdentityProviderSessionV1`, `h2oIdentityProviderPersistentRefreshV1`, and `h2oIdentityProviderPasswordUpdateRequiredV1`. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_2-password-management.mjs
+node --check tools/validation/identity/validate-identity-phase4_2-password-management.mjs
+```
+
+Manual Phase 4.2B checklist:
+
+1. Password account changes password with the correct current password.
+2. Wrong current password shows `Current password or new password was not accepted.` and leaves credential state unchanged.
+3. Old password fails after successful change.
+4. New password signs in.
+5. Password + Google account can change password.
+6. Google-only account does not show a password-change form and displays `Add password is deferred.`
+7. Wrong-password recovery code routes to `password_update_required`, not ready.
+8. Weak or mismatched recovery set-password is blocked locally.
+9. Strong recovery set-password clears the marker, marks credential state complete, and reaches `sync_ready`.
+10. Restart before recovery set-password still shows the set-password screen.
+11. Sign-out clears active session, persistent refresh, password marker, runtime, and snapshot.
+12. Public/page/storage leak checks show no password, access token, refresh token, provider token, raw session, raw user, raw email, `owner_user_id`, or `deleted_at`.
+
+## 15.31 Phase 4.3B - Connected Credentials Display + Policy Hardening
+
+Phase 4.3B formalizes connected sign-in method display in the Account tab. It is display/policy/validator only. It does not implement credential linking, credential unlink/removal, Google-only add-password, Microsoft/GitHub/Apple OAuth, account deletion, SQL/RLS changes, page-side Supabase, service-role runtime usage, provider-token persistence, or password/recovery behavior changes.
+
+Public sign-in method display must derive only from safe public fields:
+
+| Field | Allowed values |
+|---|---|
+| `credentialState` | `complete`, `required`, `unknown` |
+| `credentialProvider` | `password`, `google`, `multiple`, `unknown` |
+
+Account tab copy:
+
+| State | Account tab copy |
+|---|---|
+| Password account | `Password sign-in enabled.` |
+| Google account | `Google sign-in connected.` and `Add password is deferred.` |
+| Password + Google account | `Password and Google sign-in enabled.` |
+| Password setup required | `Password setup required.` |
+| Unknown | `Sign-in method status is unknown.` |
+
+Credential policy:
+
+| Action | Phase 4.3B policy |
+|---|---|
+| View password/Google sign-in method state | Allowed through safe Account tab display only. |
+| Add password to Google-only account | Deferred. No button or bridge action. |
+| Link Google to a password account | Deferred. Existing Google OAuth sign-in remains unchanged. |
+| Remove/unlink password or Google | Deferred. No button or bridge action. |
+| Microsoft/GitHub/Apple providers | Deferred and not shown unless a later provider phase adds them. |
+
+Future unlinking/removal must enforce a last-credential lockout rule server-side: removing a credential is forbidden if it would leave the account with no usable sign-in method. That rule must be enforced by authenticated, `auth.uid()`-owned provider/RPC paths, not by UI checks alone.
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_3-connected-credentials.mjs
+node --check tools/validation/identity/validate-identity-phase4_3-connected-credentials.mjs
+```
+
+Manual Phase 4.3B checklist:
+
+1. Password account shows `Password sign-in enabled.`
+2. Google-only account shows `Google sign-in connected.` and `Add password is deferred.`
+3. Password + Google account shows `Password and Google sign-in enabled.`
+4. No add-password, unlink, remove, Microsoft, GitHub, or Apple actions are shown.
+5. Sign out clears the displayed sign-in methods.
+6. Public/page/storage leak checks show no provider token, provider refresh token, raw provider identity, raw user, raw session, raw email, `owner_user_id`, or `deleted_at`.
+
+## 15.32 Phase 4.4B - Session UX + Release Gate
+
+Phase 4.4B polishes the Account tab Session section for current-browser controls only. It does not implement sign out everywhere, a device list, new bridge actions, SQL/RLS changes, provider/background auth behavior changes, or provider-token persistence.
+
+Current Session UI policy:
+
+| Control | Phase 4.4B policy |
+|---|---|
+| This browser | Shows safe current identity/session status from public snapshot fields only. |
+| Persistent sign-in | Explains that this browser stays signed in after restart until local sign-out or provider revocation. |
+| Refresh Identity | Allowed. Re-reads the current background-owned safe identity state. |
+| Sign out of this browser | Allowed. Uses the existing sign-out path and clears local/background identity material. |
+| Sign out everywhere | Deferred. No cross-device sign-out action is implemented. |
+| Manage devices | Deferred. This release does not keep or display a device list. |
+
+Required session invariants:
+
+| Invariant |
+|---|
+| Active raw Supabase session material remains background-owned in `chrome.storage.session[h2oIdentityProviderSessionV1]`. |
+| Persistent storage remains `h2oIdentityProviderPersistentRefreshV1` with `refresh_token` plus safe metadata only. |
+| UI/page/loader public state must not expose access tokens, refresh tokens, provider tokens, raw sessions, raw users, raw email, storage keys, `owner_user_id`, or `deleted_at`. |
+| Provider sign-out remains local-scope only in this phase: `client.auth.signOut({ scope: "local" })`. |
+| Sign-out clears active session, persistent refresh, password-update marker, OAuth transient flow state, runtime, snapshot, and broadcasts a reset. |
+| No device table, device RPC, sign-out-everywhere bridge action, or device-management bridge action is added. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_4-session-management.mjs
+node --check tools/validation/identity/validate-identity-phase4_4-session-management.mjs
+```
+
+Manual Phase 4.4B checklist:
+
+1. Sign in with password and Google, then open Account -> Identity -> Session.
+2. Confirm `This browser` and persistent sign-in explanation are visible.
+3. Confirm `Refresh Identity` works and does not expose sensitive fields.
+4. Confirm `Sign out of this browser` signs out and updates all open identity surfaces.
+5. Confirm `Sign out everywhere` and `Manage devices` are visible only as deferred, inert items.
+6. Confirm restart restore still works before sign-out and does not restore after sign-out.
+7. Public/page/storage leak checks show no access token, refresh token, provider token, provider refresh token, raw session, raw user, raw email, storage keys, `owner_user_id`, or `deleted_at`.
+
+## 15.33 Phase 4.5B - Account Recovery Hardening Gate
+
+Phase 4.5B hardens the existing wrong-password recovery-code and mandatory set-password flow through documentation and static validation only. It does not implement reset-link completion, recovery-token parsing, Google-only add-password, OAuth expansion, SQL/RLS changes, or provider/background auth behavior changes.
+
+Recovery policy:
+
+| Area | Phase 4.5B policy |
+|---|---|
+| Recovery request | Uses the existing recovery bridge path and existing-user-only OTP request with `shouldCreateUser:false`. |
+| Recovery verify | Requires provider-owned `verifyOtp({ email, token: code, type: "email" })` and must route to `password_update_required`, not `sync_ready`. |
+| Mandatory set-password | Recovery set-password must succeed before ready/onboarding restore is allowed. |
+| Recovery marker | `h2oIdentityProviderPasswordUpdateRequiredV1` may contain only `version`, `provider`, `providerKind`, `projectOrigin`, `reason`, `createdAt`, and `updatedAt`. |
+| Marker exclusions | The marker must not contain raw email, masked email, user id, password, code, token, raw session, raw user, or provider response data. |
+| Failure behavior | Recovery set-password failure keeps `password_update_required` and never mutates ready state. |
+| Success behavior | Successful recovery set-password marks password setup complete, clears the marker, and then allows safe identity restore. |
+| Sign-out | Sign-out clears active session, persistent refresh, password-update marker, OAuth transient state, runtime, snapshot, and broadcasts reset. |
+| Reset-link completion | Deferred. The extension still does not parse recovery links, redirect tokens, or recovery sessions. |
+
+Required recovery invariants:
+
+| Invariant |
+|---|
+| Recovery code verification remains separate from normal email-code sign-in. |
+| Password/code values may exist only in transient form state and the one bridge request needed for the operation. |
+| Password/code values must not enter storage, diagnostics, snapshots, logs, or public bridge responses. |
+| UI/page/loader public state must not expose access tokens, refresh tokens, provider tokens, raw sessions, raw users, raw email, `owner_user_id`, or `deleted_at`. |
+| Provider bundle/source owns Supabase `signInWithOtp`, `verifyOtp`, and recovery `updateUser` calls. |
+| Background owns active session, persistent refresh, recovery marker, runtime/snapshot cleanup, and safe bridge responses. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_5-account-recovery-hardening.mjs
+node --check tools/validation/identity/validate-identity-phase4_5-account-recovery-hardening.mjs
+```
+
+Manual Phase 4.5B checklist:
+
+1. Existing user enters wrong password and sees a safe error plus recovery action.
+2. Recovery code request shows recovery-code entry, not normal password sign-in.
+3. Invalid or expired recovery code fails safely and does not reach ready.
+4. Valid recovery code routes to `password_update_required`, not `sync_ready`.
+5. Restart before set-password still shows set-password required.
+6. Weak or mismatched recovery password is blocked locally.
+7. Strong recovery password clears marker, marks credential complete, and reaches `sync_ready`.
+8. Provider failure during recovery set-password keeps `password_update_required`.
+9. Sign-out from recovery-required state clears active session, persistent refresh, password marker, OAuth transient state, runtime, and snapshot.
+10. Public/page/storage leak checks show no password, code, access token, refresh token, provider token, provider refresh token, raw session, raw user, raw email, `owner_user_id`, or `deleted_at`.
+
+## 15.34 Phase 4.6B - Privacy/Data Visibility Gate
+
+Phase 4.6B adds visibility and policy copy for privacy, data export, local deletion, cloud export, and account deletion. It is display and validation only. It does not implement export, local delete, cloud delete, account deletion, Edge Functions, SQL/RLS changes, billing cancellation/deletion, provider/background auth changes, or new bridge actions.
+
+Privacy/Data UI policy:
+
+| Area | Phase 4.6B policy |
+|---|---|
+| Sign out | Explains that sign-out clears this browser only and is not account deletion. |
+| Local H2O data | Explains that local browser data remains local unless a later approved export/delete flow is added. |
+| Cloud identity data | Explains that profile and workspace records are separate from local browser data. |
+| Billing records | Explains that subscription records are separate and may have retention requirements. |
+| Export local data | Deferred and inert. No action handler, bridge action, or export API is added. |
+| Delete local data | Deferred and inert. No local destructive data clear is added. |
+| Export cloud account data | Deferred and inert. No cloud export RPC, bridge action, or Edge Function is added. |
+| Delete account | Deferred and inert. Account deletion requires a separate approved design and implementation. |
+
+Required privacy/data invariants:
+
+| Invariant |
+|---|
+| UI/page/loader public state must not expose access tokens, refresh tokens, provider tokens, raw sessions, raw users, raw email, `owner_user_id`, or `deleted_at`. |
+| Account deletion must not be implemented through `deleteUser`, admin APIs, service-role runtime code, account deletion RPCs, or destructive bridge actions. |
+| Export actions must not be implemented in this phase. |
+| Billing cancellation, billing deletion, Stripe customer deletion, and subscription deletion must not be silently wired to identity deletion. |
+| Sign-out remains current-browser cleanup only and does not imply cloud data deletion. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_6-privacy-data-lifecycle.mjs
+node --check tools/validation/identity/validate-identity-phase4_6-privacy-data-lifecycle.mjs
+```
+
+Manual Phase 4.6B checklist:
+
+1. Open Account -> Identity -> Privacy & Data.
+2. Confirm sign-out is described as clearing this browser only and not deleting the account.
+3. Confirm local H2O data, cloud identity data, and billing records are described as separate categories.
+4. Confirm `Export local data`, `Delete local data`, `Export cloud account data`, and `Delete account` are visible only as deferred, inert rows.
+5. Confirm no export, delete, account deletion, or billing cancellation action is clickable from this section.
+6. Confirm public/page/storage leak checks show no access token, refresh token, provider token, provider refresh token, raw session, raw user, raw email, `owner_user_id`, or `deleted_at`.
+
+## 15.35 Phase 4.7B - Production Deployment Gate
+
+Phase 4.7B defines the production deployment gate for the current identity stack. It is documentation and static validation only. It does not deploy production, rotate secrets, change runtime auth behavior, change SQL/RLS, change billing behavior, add OAuth providers, implement reset-link completion, implement export/deletion, or alter extension permissions.
+
+Production Supabase project checklist:
+
+| Requirement |
+|---|
+| A dedicated production Supabase project exists; dev/staging credentials are not reused. |
+| All approved identity and billing migrations are applied in order. |
+| Live RLS validation passes against the staging or production-like project before release. |
+| `load_identity_state`, `complete_onboarding`, `mark_password_setup_completed`, `mark_oauth_credential_completed`, `update_identity_profile`, and `rename_identity_workspace` return only safe DTOs. |
+| Direct table writes to credential-status tables remain blocked; approved authenticated SECURITY DEFINER RPCs remain the only update path. |
+
+Supabase Auth settings checklist:
+
+| Area | Production gate |
+|---|---|
+| Email/password | Enabled intentionally. Password sign-up, sign-in, and signed-in password change remain the supported password flows. |
+| Email confirmation | The confirmation policy is explicitly chosen and manually tested. |
+| Email OTP / recovery code | Existing-user-only sign-in remains `shouldCreateUser:false`; recovery-code verification must route to `password_update_required`. |
+| OTP expiry and resend limits | Configured for production abuse resistance and tested manually. |
+| SMTP sender | Production SMTP sender/domain is configured and verified before rollout. |
+| Reset-link completion | Deferred. Recovery-token parsing remains disabled until an approved phase. |
+| Extra providers | Microsoft, GitHub, Apple, and unapproved providers remain disabled. |
+
+Google OAuth production redirect checklist:
+
+| Requirement |
+|---|
+| Chrome Web Store production extension ID is stable before production OAuth rollout. |
+| Background uses `chrome.identity.getRedirectURL("identity/oauth/google")`. |
+| Supabase Auth Redirect URLs include the exact production URL `https://<production-extension-id>.chromiumapp.org/identity/oauth/google`. |
+| Production Supabase redirect URLs do not use wildcards. |
+| Google Cloud OAuth client type is `Web application`, and Google’s authorized redirect URI is the Supabase callback URL, not the chromiumapp URL. |
+| Google provider tokens remain discarded; only the Supabase session is used for identity. |
+
+Chrome extension and manifest checklist:
+
+| Requirement |
+|---|
+| Production manifest host permissions remain narrow: `https://chatgpt.com/*` plus only explicitly approved exact optional Supabase host permission logic. |
+| Production manifest must not contain `*://*/*`. |
+| Production manifest must not contain wildcard `externally_connectable`. |
+| The Chrome `"identity"` permission appears only in explicitly OAuth-enabled builds. |
+| Web-accessible resources remain minimal and do not expose provider config, tokens, raw sessions, or raw users. |
+| Dev controls permissions and dev-only warnings remain unacceptable for production release artifacts. |
+
+Provider config and secret hygiene:
+
+| Requirement |
+|---|
+| `config/local/identity-provider.local.json` remains ignored and local-only. |
+| `.env`, `.env.*`, local config, Supabase service-role keys, Stripe secrets, Google client secrets, provider tokens, and raw sessions are never committed. |
+| Production extension runtime never contains service-role keys, admin APIs, raw provider config objects, or raw provider responses. |
+| Production build output must not contain `provider/identity-provider-private-config.js` unless a future approved production config path explicitly changes this gate. |
+| If any dev/staging key was pasted into a browser build or diagnostics surface, rotate it before production. |
+
+Live RLS gate command:
+
+```sh
+H2O_SUPABASE_RLS_LIVE=1 \
+H2O_SUPABASE_RLS_LIVE_REQUIRED=1 \
+H2O_SUPABASE_TEST_URL=... \
+H2O_SUPABASE_TEST_ANON_KEY=... \
+H2O_SUPABASE_TEST_SERVICE_ROLE_KEY=... \
+node tools/validation/identity/validate-identity-phase3_2c-rls-live.mjs
+```
+
+The service-role key is allowed only in the local live RLS validator environment for disposable setup/cleanup. It must never appear in extension source, generated extension output, provider runtime, loader, UI, public snapshots, committed config, or browser storage.
+
+Billing/Stripe production readiness boundary:
+
+| Requirement |
+|---|
+| Stripe mode is explicitly chosen: test for staging, live for production. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, price IDs, checkout redirect URLs, customer portal return URL, and allowed origins are deployed only as Supabase Edge Function environment secrets/config. |
+| Billing service-role usage remains Edge Function only and never extension runtime. |
+| Stripe webhook signature verification is enabled and manually tested. |
+| Billing cancellation/deletion remains separate from identity account deletion. |
+
+Rollback plan:
+
+| Failure | Rollback action |
+|---|---|
+| Extension build failure | Revert to the previous packaged extension artifact. |
+| OAuth redirect mismatch | Disable Google provider or remove the bad Supabase Redirect URL until the extension ID/redirect is corrected. |
+| RLS validation failure | Stop rollout; fix migrations/policies in staging before production. |
+| Secret exposure | Revoke and rotate the exposed key before any release. |
+| Billing checkout/webhook failure | Disable checkout/portal entry points or roll back Edge Function deployment; keep identity sign-in unaffected. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_7-production-deployment-gate.mjs
+node --check tools/validation/identity/validate-identity-phase4_7-production-deployment-gate.mjs
+```
+
+Manual Phase 4.7B production-like checklist:
+
+1. Build production extension and confirm production manifest has no wildcard host permissions or wildcard externally-connectable.
+2. Run the full identity release gate.
+3. Run live RLS with `H2O_SUPABASE_RLS_LIVE_REQUIRED=1` against staging/prod-like Supabase.
+4. Verify Supabase Auth email/password, email confirmation, OTP/recovery expiry, resend limits, and SMTP sender.
+5. Verify Google OAuth exact production extension redirect if OAuth is enabled for the release.
+6. Verify sign-up/sign-in, email-code sign-in, wrong-password recovery, set-password, Google OAuth, profile/workspace edit, password change, persistent restore, and sign-out cleanup.
+7. Verify public/page/storage leak checks show no access token, refresh token, provider token, provider refresh token, raw session, raw user, raw email, service-role material, `owner_user_id`, or `deleted_at`.
+8. Verify billing Edge Function secrets, webhook signature verification, checkout, portal, and allowed origins in the intended Stripe mode.
+
+## 15.36 Phase 4.8B - Observability / Support Diagnostics Policy Gate
+
+Phase 4.8B defines the diagnostics policy for identity support. It is documentation and static validation only. It does not implement support bundle UI, add bridge actions, change auth behavior, change SQL/RLS, change provider/background behavior, change billing behavior, or alter password/recovery/OAuth flows.
+
+Public-safe diagnostics:
+
+| Field class | Public policy |
+|---|---|
+| Identity state | Safe status, mode, provider, onboarding completion, credential state, and credential provider may be shown. |
+| Profile/workspace | Display name, workspace name, and already-public safe summary fields may be shown. Private database fields must not be shown. |
+| Email | Raw email is not public. Diagnostics may show masked email only when the existing public facade already masks it. |
+| Errors | Diagnostics may expose normalized safe error codes and generic user-facing messages. Raw provider, SQL, network, or auth exceptions stay internal. |
+| Provider config | Public diagnostics may show safe readiness booleans or safe status categories, never provider secrets, client secrets, service-role keys, or private config objects. |
+| Storage/session | Public diagnostics may describe whether this browser is signed in. They must not expose storage values, access tokens, refresh tokens, raw sessions, or raw users. |
+
+Dev-only/internal diagnostics:
+
+| Diagnostic class | Policy |
+|---|---|
+| Background cleanup diagnostics | Cleanup booleans for active session, persistent refresh, password marker, OAuth transient state, runtime, and snapshot are background/dev-only unless converted into a safe support DTO later. |
+| Provider bundle probes | Bundle import probes, client smoke states, private config errors, and network probe details stay dev-only or are reduced to safe status codes. |
+| Live RLS diagnostics | Service-role setup/cleanup details are local validator-only and must never enter extension runtime, public state, UI, or browser storage. |
+| Provider/raw errors | Raw Supabase, OAuth, Stripe, SQL, fetch, or browser extension exceptions are not returned to page/UI diagnostics. |
+
+Never-expose fields:
+
+| Field |
+|---|
+| `access_token` |
+| `refresh_token` |
+| `provider_token` |
+| `provider_refresh_token` |
+| raw session objects |
+| raw user objects |
+| raw email |
+| passwords, `currentPassword`, `current_password`, password setup values |
+| OTP/code/recovery token values |
+| service-role keys, admin keys, or admin API results |
+| `owner_user_id` |
+| `deleted_at` |
+| private billing, customer, payment, checkout, portal, or Stripe identifiers |
+| provider responses, raw OAuth callback data, or raw database rows |
+
+Support bundle allowlist principle:
+
+| Rule |
+|---|
+| A support bundle must be built from an explicit allowlist of safe DTO fields. |
+| Support bundle construction must not serialize arbitrary snapshots, bridge responses, raw provider responses, storage records, exceptions, or request payloads. |
+| Support bundle fields should be enough to identify the failure class: extension build/version, identity status, safe provider readiness category, credential state/provider, normalized error code, public self-check booleans, and timestamps. |
+| If support bundle UI is added later, it must use facade/bridge safe DTOs only and must pass the identity release gate before release. |
+
+Redaction policy:
+
+| Rule |
+|---|
+| Prefer allowlisting over redacting arbitrary objects. |
+| When redaction is needed, remove keys matching token, secret, password, code, OTP, recovery, session, raw user, raw email, provider response, service-role, customer, payment, checkout, portal, `owner_user_id`, and `deleted_at`. |
+| Masked email may be shown only through the existing safe identity facade policy. |
+| Error `detail`, stack traces, request payloads, response payloads, and raw exception objects are not public diagnostics. |
+
+Safe error taxonomy:
+
+| Category | Examples |
+|---|---|
+| `identity/config/*` | provider not configured, local config invalid, client not ready |
+| `identity/permission/*` | optional Supabase host permission missing, permission request denied |
+| `identity/oauth/*` | OAuth canceled, redirect mismatch, callback missing code, exchange failed |
+| `identity/network/*` | network unavailable, provider request failed, timeout |
+| `identity/session/*` | refresh failed, session revoked, restore failed, sign-out in progress |
+| `identity/cloud/*` | identity load failed, RLS denied, profile/workspace update failed |
+| `identity/password/*` | password invalid, password change rejected, password setup required |
+| `identity/recovery/*` | recovery code rejected, recovery setup required |
+| `identity/storage/*` | safe local cleanup failed, browser storage unavailable |
+
+Logging policy:
+
+| Rule |
+|---|
+| Identity bridge, background, provider, UI, and diagnostics code must not log full request payloads or bridge/provider responses. |
+| Password, current password, OTP/code, recovery token, access token, refresh token, provider token, raw session, raw user, raw email, service-role material, and private billing identifiers must never be logged. |
+| Logs may include static component labels, safe normalized error codes, and safe high-level status categories. |
+| Provider/background exceptions may be caught for control flow, but raw exception details must not be reflected into public state, diagnostics, snapshots, or bridge responses. |
+
+The static validator for this phase:
+
+```sh
+node tools/validation/identity/validate-identity-phase4_8-observability-support-diagnostics.mjs
+node --check tools/validation/identity/validate-identity-phase4_8-observability-support-diagnostics.mjs
+```
+
+Manual Phase 4.8B checklist:
+
+1. Open Account -> Identity and confirm status fields show only safe public identity data.
+2. Open onboarding diagnostics and confirm it renders `H2O.Identity.diag()` only.
+3. Force a safe auth/config error and confirm only a normalized code/generic message appears.
+4. Sign out and confirm cleanup resets public state without exposing cleanup internals.
+5. Public/page/storage leak checks show no access token, refresh token, provider token, provider refresh token, raw session, raw user, raw email, password, OTP/code, recovery token, service-role key, `owner_user_id`, `deleted_at`, or private billing identifiers.
+
 ## 16. Do-Not-Do Rules
 
 | Rule |
