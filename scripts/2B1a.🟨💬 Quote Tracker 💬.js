@@ -130,6 +130,8 @@
 
   });
 
+  const RETRY_QT_DELAYS_ = Object.freeze([120, 300, 700, 1400]);
+
   /* ───────────────────────────── 2) VAULT + BOUNDED DIAG ───────────────────────────── */
 
   /** @core */
@@ -353,6 +355,17 @@
     if (!stableId) return null;
     const esc = UTIL_cssEscape(stableId);
     return document.querySelector(SEL_QT_.WRAP_BY_ID(esc));
+  }
+
+  /** @helper */
+  function DOM_QT_findQuoteBoxByStableId(stableId) {
+    if (!stableId) return null;
+    const sidEsc = UTIL_cssEscape(stableId);
+    return (
+      document.querySelector(`${SEL_QT_.QBOX}[data-ho-qwrap-for="${sidEsc}"]`) ||
+      document.querySelector(`${SEL_QT_.QBOX}[data-h2o-qwrap-for="${sidEsc}"]`) ||
+      null
+    );
   }
 
   /** @helper */
@@ -804,10 +817,7 @@
     if (!sid) return null;
 
     // Already have a quote box for this stable id?
-    let existing =
-      document.querySelector(`${SEL_QT_.QBOX}[data-ho-qwrap-for="${UTIL_cssEscape(sid)}"]`) ||
-      document.querySelector(`${SEL_QT_.QBOX}[data-h2o-qwrap-for="${UTIL_cssEscape(sid)}"]`) ||
-      null;
+    let existing = DOM_QT_findQuoteBoxByStableId(sid);
 
     if (existing) {
       // Force it inside wrapper unless user chose outside.
@@ -1046,8 +1056,8 @@
     DOM_QT_refreshQuoteTitles();
   }
 
-  /** @critical */
-  function DOM_QT_refreshQuoteTitles() {
+  /** @helper */
+  function DOM_QT_buildQuoteTitleContext() {
     const msgs = [...document.querySelectorAll(SEL_QT_.ANY_MSG)];
 
     const aIndex = new Map();
@@ -1059,89 +1069,237 @@
       }
     }
 
-    const maxNow = DOM_QT_turnTotal() || ai || document.querySelectorAll(SEL_QT_.USER_MSG).length || 0;
-    const pos = new Map(msgs.map((el, i) => [el, i]));
+    return {
+      msgs,
+      aIndex,
+      maxNow: DOM_QT_turnTotal() || ai || document.querySelectorAll(SEL_QT_.USER_MSG).length || 0,
+      pos: new Map(msgs.map((el, i) => [el, i])),
+    };
+  }
 
-    document.querySelectorAll(SEL_QT_.QBOX).forEach(qb => {
-      const titleEl = qb.querySelector(SEL_QT_.QTITLE);
+  /** @helper */
+  function DOM_QT_refreshQuoteTitleForBox(qb, ctx = null) {
+    if (!qb?.matches?.(SEL_QT_.QBOX)) return null;
 
-      if (qb.dataset.hoQuoteConf === '1' && qb.dataset.hoQuoteFrom && qb.dataset.hoQuoteFrom !== '?') {
-        const n = Number(qb.dataset.hoQuoteFrom);
-        if (n >= 1 && n <= maxNow) {
-          if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${n})`;
-          qb.dataset.hoQuoteAmb = '0';
-          return;
-        }
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteFrom = '?';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = 'conf-invalid';
+    const titleEl = qb.querySelector(SEL_QT_.QTITLE);
+    const data = ctx || DOM_QT_buildQuoteTitleContext();
+    const msgs = data.msgs || [];
+    const aIndex = data.aIndex || new Map();
+    const maxNow = Number(data.maxNow || 0);
+    const pos = data.pos || new Map();
+
+    if (qb.dataset.hoQuoteConf === '1' && qb.dataset.hoQuoteFrom && qb.dataset.hoQuoteFrom !== '?') {
+      const n = Number(qb.dataset.hoQuoteFrom);
+      if (n >= 1 && n <= maxNow) {
+        if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${n})`;
+        qb.dataset.hoQuoteAmb = '0';
+        return qb;
       }
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteFrom = '?';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = 'conf-invalid';
+    }
 
-      const curRaw = qb.dataset.hoQuoteFrom;
-      const curNum = curRaw && curRaw !== '?' ? Number(curRaw) : NaN;
+    const curRaw = qb.dataset.hoQuoteFrom;
+    const curNum = curRaw && curRaw !== '?' ? Number(curRaw) : NaN;
 
-      if (!Number.isNaN(curNum) && curNum >= 1 && curNum <= maxNow) {
-        if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${curNum})`;
-        return;
-      }
+    if (!Number.isNaN(curNum) && curNum >= 1 && curNum <= maxNow) {
+      if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${curNum})`;
+      return qb;
+    }
 
-      const wrapId = qb.dataset.hoQwrapFor || qb.dataset.h2oQwrapFor;
-      if (!wrapId) {
-        if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
-        qb.dataset.hoQuoteFrom = '?';
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-wrapId';
-        return;
-      }
+    const wrapId = qb.dataset.hoQwrapFor || qb.dataset.h2oQwrapFor;
+    if (!wrapId) {
+      if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
+      qb.dataset.hoQuoteFrom = '?';
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-wrapId';
+      return qb;
+    }
 
-      const wrapper = DOM_QT_findWrapperByStableId(wrapId);
-      const userMsg = wrapper?.closest?.(SEL_QT_.USER_MSG);
+    const wrapper = DOM_QT_findWrapperByStableId(wrapId);
+    const userMsg = wrapper?.closest?.(SEL_QT_.USER_MSG);
 
-      if (!userMsg) {
-        if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
-        qb.dataset.hoQuoteFrom = '?';
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-userMsg';
-        return;
-      }
+    if (!userMsg) {
+      if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
+      qb.dataset.hoQuoteFrom = '?';
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-userMsg';
+      return qb;
+    }
 
-      const i = pos.get(userMsg);
-      if (i == null || i < 0) {
-        if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
-        qb.dataset.hoQuoteFrom = '?';
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-pos';
-        return;
-      }
+    const i = pos.get(userMsg);
+    if (i == null || i < 0) {
+      if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
+      qb.dataset.hoQuoteFrom = '?';
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'no-pos';
+      return qb;
+    }
 
-      let prevA = null;
-      for (let k = i - 1; k >= 0; k--) {
-        if (msgs[k].getAttribute('data-message-author-role') === 'assistant') { prevA = msgs[k]; break; }
-      }
+    let prevA = null;
+    for (let k = i - 1; k >= 0; k--) {
+      if (msgs[k].getAttribute('data-message-author-role') === 'assistant') { prevA = msgs[k]; break; }
+    }
 
-      const idx = prevA ? (DOM_QT_turnIdxFromAEl(prevA) || aIndex.get(prevA) || 0) : 0;
+    const idx = prevA ? (DOM_QT_turnIdxFromAEl(prevA) || aIndex.get(prevA) || 0) : 0;
 
-      if (idx && idx >= 1 && idx <= maxNow) {
-        if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${idx})`;
-        qb.dataset.hoQuoteFrom = String(idx);
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'struct_refresh';
-      } else {
-        if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
-        qb.dataset.hoQuoteFrom = '?';
-        qb.dataset.hoQuoteConf = '0';
-        qb.dataset.hoQuoteAmb  = '1';
-        qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'struct_none';
-      }
-    });
+    if (idx && idx >= 1 && idx <= maxNow) {
+      if (titleEl) titleEl.textContent = `QUOTE (ANSWER ${idx})`;
+      qb.dataset.hoQuoteFrom = String(idx);
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'struct_refresh';
+    } else {
+      if (titleEl) titleEl.textContent = 'QUOTE (ANSWER ?)';
+      qb.dataset.hoQuoteFrom = '?';
+      qb.dataset.hoQuoteConf = '0';
+      qb.dataset.hoQuoteAmb  = '1';
+      qb.dataset.hoQuoteVia  = qb.dataset.hoQuoteVia || 'struct_none';
+    }
+
+    return qb;
+  }
+
+  /** @helper */
+  function DOM_QT_reconcileQuoteTarget(target, ctx = null) {
+    const rec = (target && typeof target === 'object') ? target : {};
+    const stableId =
+      rec.stableId ||
+      rec.quoteBoxEl?.dataset?.hoQwrapFor ||
+      rec.quoteBoxEl?.dataset?.h2oQwrapFor ||
+      null;
+
+    let wrapper = stableId ? DOM_QT_findWrapperByStableId(stableId) : null;
+    let userMsgEl =
+      rec.userMsgEl ||
+      wrapper?.closest?.(SEL_QT_.USER_MSG) ||
+      rec.quoteBoxEl?.closest?.(SEL_QT_.USER_MSG) ||
+      null;
+
+    if (!wrapper && userMsgEl) wrapper = DOM_QT_findWrapperForUserMsg(userMsgEl);
+    if (!userMsgEl && wrapper) userMsgEl = wrapper.closest?.(SEL_QT_.USER_MSG) || null;
+
+    let qb = null;
+    if (wrapper && userMsgEl) qb = DOM_QT_ensureQuoteBoxInsideWrapper(userMsgEl, stableId, wrapper);
+
+    if (!qb) {
+      const payloadQb = rec.quoteBoxEl?.matches?.(SEL_QT_.QBOX)
+        ? rec.quoteBoxEl
+        : rec.quoteBoxEl?.closest?.(SEL_QT_.QBOX);
+      qb = (payloadQb && payloadQb.isConnected) ? payloadQb : DOM_QT_findQuoteBoxByStableId(stableId);
+    }
+
+    if (!qb) {
+      return {
+        ok: false,
+        retryable: !!stableId,
+        stableId,
+        target: stableId ? { stableId, userMsgEl: userMsgEl || null } : null,
+      };
+    }
+
+    DOM_QT_refreshQuoteTitleForBox(qb, ctx);
+
+    if (qb.dataset.hoQuoteConf !== '1') MOD.state.pendingSet?.add?.(qb);
+    else MOD.state.pendingSet?.delete?.(qb);
+
+    return { ok: true, qb, stableId };
+  }
+
+  /** @critical */
+  function DOM_QT_refreshQuoteTitles() {
+    const ctx = DOM_QT_buildQuoteTitleContext();
+    document.querySelectorAll(SEL_QT_.QBOX).forEach(qb => DOM_QT_refreshQuoteTitleForBox(qb, ctx));
   }
 
   /* ───────────────────────────── 12) SCAN + RESOLVE (idle schedulers) ───────────────────────────── */
+
+  /** @helper */
+  function DOM_QT_cancelLateRetry(clearTargets = false) {
+    const st = MOD.state;
+    if (st.lateRetryHandle) {
+      clearTimeout(st.lateRetryHandle);
+      st.lateRetryHandle = 0;
+    }
+    st.lateRetryAttempt = 0;
+    st.lateRetryUntil = 0;
+    if (clearTargets && st.lateTargetMap) st.lateTargetMap.clear();
+  }
+
+  /** @helper */
+  function DOM_QT_queueLateTarget(target) {
+    const st = MOD.state;
+    const stableId = target?.stableId || null;
+    if (!stableId) return false;
+
+    const prev = st.lateTargetMap?.get?.(stableId) || { stableId };
+    const next = { ...prev, stableId };
+    if (target?.userMsgEl) next.userMsgEl = target.userMsgEl;
+    if (target?.quoteBoxEl) next.quoteBoxEl = target.quoteBoxEl;
+
+    st.lateTargetMap?.set?.(stableId, next);
+    DOM_QT_scheduleLateRetry();
+    return true;
+  }
+
+  /** @helper */
+  function DOM_QT_scheduleLateRetry(reason = 'late-target-retry') {
+    const st = MOD.state;
+    if (!st.lateTargetMap?.size) {
+      DOM_QT_cancelLateRetry(false);
+      return;
+    }
+    if (st.lateRetryHandle) return;
+
+    const now = Date.now();
+    if (!st.lateRetryUntil || now > st.lateRetryUntil) {
+      st.lateRetryAttempt = 0;
+      st.lateRetryUntil = now + RETRY_QT_DELAYS_.reduce((sum, ms) => sum + ms, 0) + 250;
+    }
+
+    if (st.lateRetryAttempt >= RETRY_QT_DELAYS_.length) return;
+
+    const delay = RETRY_QT_DELAYS_[st.lateRetryAttempt++];
+    st.lateRetryHandle = setTimeout(() => {
+      st.lateRetryHandle = 0;
+      if (!st.lateTargetMap?.size) {
+        DOM_QT_cancelLateRetry(false);
+        return;
+      }
+
+      if (st.scanRunning || st.resolveRunning) {
+        st.scanQueued = true;
+        st.resolveQueued = true;
+        return;
+      }
+
+      scheduleScan(reason);
+    }, delay);
+  }
+
+  /** @helper */
+  function DOM_QT_drainLateTargets() {
+    const st = MOD.state;
+    if (!st.lateTargetMap?.size) {
+      DOM_QT_cancelLateRetry(false);
+      return;
+    }
+
+    const ctx = DOM_QT_buildQuoteTitleContext();
+
+    for (const [stableId, target] of Array.from(st.lateTargetMap.entries())) {
+      const res = DOM_QT_reconcileQuoteTarget(target, ctx);
+      if (res.ok) st.lateTargetMap.delete(stableId);
+    }
+
+    if (st.lateTargetMap.size) DOM_QT_scheduleLateRetry();
+    else DOM_QT_cancelLateRetry(false);
+  }
 
   /** @critical */
   function DOM_QT_scanEnsureQuoteBoxes() {
@@ -1197,6 +1355,7 @@
     st.scanQueued = false;
 
     try {
+      DOM_QT_drainLateTargets();
       DOM_QT_scanEnsureQuoteBoxes();
       scheduleResolve('scan:' + reason);
     } catch (e) {
@@ -1291,13 +1450,29 @@
     st.eventsInstalled = true;
 
     const offA = BUS_on(EV_QT_.WRAPPED, (payload) => {
-      // payload may include stableId; we still do a cheap scan (safe).
+      const res = DOM_QT_reconcileQuoteTarget(payload);
+      if (res.ok) {
+        if (res.stableId) st.lateTargetMap?.delete?.(res.stableId);
+        if (!st.lateTargetMap?.size) DOM_QT_cancelLateRetry(false);
+        scheduleResolve('wrapped:target');
+        return;
+      }
+
+      if (res.retryable && DOM_QT_queueLateTarget(res.target || payload)) return;
       scheduleScan('wrapped');
-      scheduleResolve('wrapped');
     });
 
-    const offB = BUS_on(EV_QT_.QUOTE_PENDING, () => {
-      scheduleResolve('quote_pending');
+    const offB = BUS_on(EV_QT_.QUOTE_PENDING, (payload) => {
+      const res = DOM_QT_reconcileQuoteTarget(payload);
+      if (res.ok) {
+        if (res.stableId) st.lateTargetMap?.delete?.(res.stableId);
+        if (!st.lateTargetMap?.size) DOM_QT_cancelLateRetry(false);
+        scheduleResolve('quote_pending:target');
+        return;
+      }
+
+      if (res.retryable && DOM_QT_queueLateTarget(res.target || payload)) return;
+      scheduleScan('quote_pending');
     });
 
     const offC = BUS_on(EV_QT_.CHIP_CHANGED, () => {
@@ -1319,10 +1494,14 @@ function CORE_QT_boot() {
   const st = (MOD.state = MOD.state || {});
   st.cleanup = st.cleanup || [];
   st.pendingSet = st.pendingSet || new Set();
+  st.lateTargetMap = st.lateTargetMap || new Map();
 
   st.scanRunning = false; st.scanQueued = false; st.scanHandle = 0; st.scanIsIdle = false;
   st.resolveRunning = false; st.resolveQueued = false; st.resolveHandle = 0; st.resolveIsIdle = false;
   st.resolveForceFull = false;
+  st.lateRetryHandle = 0;
+  st.lateRetryAttempt = 0;
+  st.lateRetryUntil = 0;
   st.hubMutOff = (typeof st.hubMutOff === 'function') ? st.hubMutOff : null;
 
   let hubCleanupBound = false;
@@ -1446,6 +1625,8 @@ function CORE_QT_boot() {
       st.resolveHandle = 0;
     }
 
+    DOM_QT_cancelLateRetry(true);
+
     const cleanup = st.cleanup || [];
     while (cleanup.length) {
       const fn = cleanup.pop();
@@ -1454,6 +1635,9 @@ function CORE_QT_boot() {
 
     st.scanRunning = st.scanQueued = false;
     st.resolveRunning = st.resolveQueued = false;
+    st.lateRetryHandle = 0;
+    st.lateRetryAttempt = 0;
+    st.lateRetryUntil = 0;
 
     W[KEY_QT_.INIT_BOOT] = false;
   }

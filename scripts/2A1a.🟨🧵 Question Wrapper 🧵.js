@@ -116,6 +116,8 @@
     QUOTE_MODE_OUTSIDE: 'outside',
   });
 
+  const RETRY_QWRAP_DELAYS_ = Object.freeze([120, 300, 700, 1400]);
+
 
   /* ───────────────────────────── 2) VAULT + BOUNDED DIAG ───────────────────────────── */
 
@@ -1062,6 +1064,57 @@ function DOM_extractChatGPTQuoteNode(msgEl) {
     _PS.retry.cancelledCount++;
   }
 
+  /** @helper */
+  function DOM_cancelRetryScan() {
+    const st = MOD.state;
+    if (st.retryHandle) {
+      clearTimeout(st.retryHandle);
+      st.retryHandle = 0;
+      _PS.retry.cancelledCount++;
+    }
+    st.retryAttempt = 0;
+    st.retryUntil = 0;
+  }
+
+  /** @helper */
+  function DOM_hasUnwrappedUsers() {
+    return !!document.querySelector?.(SEL_QWRAP_.NOT_WRAPPED_USER);
+  }
+
+  /** @helper */
+  function DOM_scheduleRetryScan(reason = 'retry') {
+    const st = MOD.state;
+    if (st.retryHandle) return;
+
+    const delays = RETRY_QWRAP_DELAYS_;
+    if (!Array.isArray(delays) || !delays.length) return;
+
+    const now = Date.now();
+    if (!st.retryUntil || now > st.retryUntil) {
+      st.retryAttempt = 0;
+      st.retryUntil = now + delays.reduce((sum, ms) => sum + ms, 0) + 250;
+    }
+
+    if (st.retryAttempt >= delays.length) return;
+
+    const delay = delays[st.retryAttempt++];
+    st.retryHandle = setTimeout(() => {
+      st.retryHandle = 0;
+
+      if (!DOM_hasUnwrappedUsers()) {
+        DOM_cancelRetryScan();
+        return;
+      }
+
+      if (st.scanRunning || st.scrolling) {
+        st.scanQueued = true;
+        return;
+      }
+
+      DOM_scheduleScan(reason);
+    }, delay);
+  }
+
   /** @critical */
   function DOM_scheduleScan(reason = '') {
     const st = MOD.state;
@@ -1131,6 +1184,7 @@ function DOM_runScan(reason = '') {
 
   st.scanRunning = true;
   st.scanQueued  = false;
+  let unresolvedAfter = 0;
 
   try {
     // ── perf: scan phase ──
@@ -1161,6 +1215,8 @@ function DOM_runScan(reason = '') {
       else          _PS.workPhases.wrap.beforeBootCount++;
     }
 
+    unresolvedAfter = UTIL_qsa(SEL_QWRAP_.NOT_WRAPPED_USER).length;
+
     _PS.nodeWork.wrapAttempts  += wrapped;
     _PS.nodeWork.confirmedWraps += confirmedWraps;
     if (_scanned > 0 && confirmedWraps === 0) _PS.nodeWork.noOp++;
@@ -1183,6 +1239,9 @@ function DOM_runScan(reason = '') {
       // ✅ disable mask immediately once we have styled content
       try { UI_maskDisable?.(); } catch {}
     }
+
+    if (unresolvedAfter > 0) DOM_scheduleRetryScan('retry');
+    else DOM_cancelRetryScan();
 
   } catch (e) {
     console.warn('[QWRAP] scan error:', reason, e);
@@ -1552,6 +1611,9 @@ function CORE_boot() {
   st.scanQueued  = false;
   st.scanHandle  = 0;
   st.scanIsIdle  = false;
+  st.retryHandle = 0;
+  st.retryAttempt = 0;
+  st.retryUntil = 0;
 
   st.scrolling = false;
   st.scrollT   = 0;
@@ -1602,7 +1664,21 @@ function CORE_boot() {
 
   // 6) MutationObserver: just flag (chip/msg) then pick fast vs scheduled scan
   const isEl = (n) => n && n.nodeType === 1;
-  const touchesMsg  = (n) => !!(n.matches?.(SEL_QWRAP_.ANY_MSG) || n.querySelector?.(SEL_QWRAP_.ANY_MSG));
+  const nodeToEl = (n) => {
+    if (!n) return null;
+    if (n.nodeType === 1) return n;
+    if (n.nodeType === 3) return n.parentElement || null;
+    return null;
+  };
+  const touchesMsg = (n) => {
+    const el = nodeToEl(n);
+    if (!el) return false;
+    return !!(
+      el.matches?.(SEL_QWRAP_.NOT_WRAPPED_USER) ||
+      el.querySelector?.(SEL_QWRAP_.NOT_WRAPPED_USER) ||
+      el.closest?.(SEL_QWRAP_.NOT_WRAPPED_USER)
+    );
+  };
   const touchesChip = (n) => !!(n.closest?.(SEL_QWRAP_.CHIP_AREA_HINT) || n.querySelector?.(SEL_QWRAP_.CHIP_AREA_HINT));
   let hubCleanupBound = false;
   let chipCleanupBound = false;
@@ -1613,17 +1689,21 @@ function CORE_boot() {
     let needChip = false;
 
     for (const m of muts) {
+      if (!needScan && touchesMsg(m.target)) needScan = true;
+
       for (const n of (m.addedNodes || [])) {
-        if (!isEl(n)) continue;
+        const el = nodeToEl(n);
+        if (!el) continue;
         if (!needChip && touchesChip(n)) needChip = true;
-        if (!needScan && touchesMsg(n))  needScan = true;
+        if (!needScan && touchesMsg(el)) needScan = true;
         if (needScan && needChip) break;
       }
       if (needScan && needChip) break;
 
       for (const n of (m.removedNodes || [])) {
-        if (!isEl(n)) continue;
-        if (!needScan && touchesMsg(n)) needScan = true;
+        const el = nodeToEl(n);
+        if (!el) continue;
+        if (!needScan && touchesMsg(el)) needScan = true;
         if (needScan && needChip) break;
       }
       if (needScan && needChip) break;
@@ -1788,6 +1868,7 @@ function CORE_boot() {
     if (!W[KEY_QWRAP_.INIT_BOOT]) return;
 
     DOM_cancelScheduledScan();
+    DOM_cancelRetryScan();
 
     const cleanup = MOD.state.cleanup || [];
     while (cleanup.length) {
@@ -1799,6 +1880,9 @@ function CORE_boot() {
     MOD.state.scanQueued = false;
     MOD.state.scanHandle = 0;
     MOD.state.scanIsIdle = false;
+    MOD.state.retryHandle = 0;
+    MOD.state.retryAttempt = 0;
+    MOD.state.retryUntil = 0;
 
     W[KEY_QWRAP_.INIT_BOOT] = false;
   }

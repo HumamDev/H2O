@@ -91,6 +91,7 @@
   const EV_MANCHOR_NOTE_TOGGLE_V1 = `${NS_EV}:note:toggle:v1`;
   const EV_MANCHOR_NOTE_CLOSE_V1  = `${NS_EV}:note:close:v1`;
   const EV_MANCHOR_NOTE_STATE_V1  = `${NS_EV}:note:state:v1`; // notes -> core (open/closed)
+  const EV_MANCHOR_STORE_CHANGED_V1 = `${NS_EV}:store:changed:v1`;
   const EV_MANCHOR_SYMBOLS_CHANGED = 'evt:h2o:margin:symbols:changed';
   const EV_MANCHOR_SYMBOL_THEME_CHANGED_V1 = `${NS_EV}:symbol-theme:changed:v1`;
 
@@ -1035,6 +1036,11 @@ const UI_MANCHOR_POP_V        = `${SkID}-pop-v`;
   function STATE_saveStoreV1(store) {
     const safe = STORE_MA_normalizeStore(store || {});
     UTIL_storage.setJSON(KEY_MANCHOR_STATE_PINS_V1, safe);
+    try {
+      W.dispatchEvent(new CustomEvent(EV_MANCHOR_STORE_CHANGED_V1, {
+        detail: { key: KEY_MANCHOR_STATE_PINS_V1 },
+      }));
+    } catch (_) {}
     return safe;
   }
 

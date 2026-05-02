@@ -76,6 +76,7 @@
   /** @core Events (new + legacy). */
   const EV_DPANEL_TABS           = 'h2o-dock:tabs';
   const EV_DPANEL_READY          = 'h2o:dpanel:ready';
+  const EV_DPANEL_BG_CHANGED_V1  = 'h2o.ev:prm:cgx:dckpnl:bg:changed:v1';
 
   const EV_H2O_INDEX_UPDATED     = 'h2o:index:updated';
   const EV_H2O_BOOKMARKS_CHANGED = 'h2o:bookmarks:changed';
@@ -868,6 +869,11 @@ function UI_DP_nativeClose_sync() {
     });
 
     STORE_DP_savePanelState({ bg: S.bg });
+    try {
+      W.dispatchEvent(new CustomEvent(EV_DPANEL_BG_CHANGED_V1, {
+        detail: { bg: S.bg },
+      }));
+    } catch (_) {}
   }
 
   /** @helper Ensure panel. */

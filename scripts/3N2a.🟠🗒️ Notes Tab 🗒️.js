@@ -66,6 +66,8 @@
 
   // Sticky store key (from Margin Anchor)
   const KEY_STICKY_STORE = 'h2o:prm:cgx:mrgnnchr:state:pins:v1';
+  const EV_MANCHOR_STORE_CHANGED_V1 = 'h2o.ev:prm:cgx:mrgnnchr:store:changed:v1';
+  const EV_DPANEL_BG_CHANGED_V1 = 'h2o.ev:prm:cgx:dckpnl:bg:changed:v1';
 
   const STR_ = Object.freeze({
     tabId: 'notes',
@@ -555,7 +557,7 @@
 
   /* ───────────────────────────── 4) Sticky notes (from Margin Anchor) ───────────────────────────── */
 
-  VAULT.sticky = VAULT.sticky || { installed: false, renderTimer: 0, origSet: null, origRemove: null };
+  VAULT.sticky = VAULT.sticky || { installed: false, renderTimer: 0, unsubs: [] };
 
   function collectStickyNotes() {
     // Prefer Margin Anchor loader if present, but fall back to localStorage parse
@@ -637,34 +639,31 @@
   function watchStickyStore() {
     const SW = VAULT.sticky;
     if (SW.installed) return;
-    const storage = W.localStorage;
-    if (!storage) return;
-
-    try { SW.origSet = storage.setItem; SW.origRemove = storage.removeItem; } catch (_) { return; }
-
-    const wrap = (orig) => function(key, value) {
-      const res = orig?.call(this, key, value);
-      if (String(key) === KEY_STICKY_STORE) scheduleStickyRerender();
-      if (String(key) === KEY_DPANEL_STATE_PANEL_V1) scheduleStickyRerender();
-      return res;
+    const onStickyChanged = (e) => {
+      const key = String(e?.detail?.key || '');
+      if (key && key !== KEY_STICKY_STORE) return;
+      scheduleStickyRerender();
     };
+    const onDockBgChanged = () => scheduleStickyRerender();
 
     try {
-      storage.setItem = wrap(SW.origSet);
-      storage.removeItem = wrap(SW.origRemove);
+      W.addEventListener(EV_MANCHOR_STORE_CHANGED_V1, onStickyChanged);
+      W.addEventListener(EV_DPANEL_BG_CHANGED_V1, onDockBgChanged);
+      SW.unsubs = [
+        () => { try { W.removeEventListener(EV_MANCHOR_STORE_CHANGED_V1, onStickyChanged); } catch (_) {} },
+        () => { try { W.removeEventListener(EV_DPANEL_BG_CHANGED_V1, onDockBgChanged); } catch (_) {} },
+      ];
       SW.installed = true;
     } catch (_) {
+      SW.unsubs = [];
       SW.installed = false;
     }
   }
 
   function unwatchStickyStore() {
     const SW = VAULT.sticky;
-    const storage = W.localStorage;
-    if (storage && SW.installed) {
-      if (typeof SW.origSet === 'function') storage.setItem = SW.origSet;
-      if (typeof SW.origRemove === 'function') storage.removeItem = SW.origRemove;
-    }
+    (Array.isArray(SW.unsubs) ? SW.unsubs : []).forEach((fn) => { try { fn(); } catch (_) {} });
+    SW.unsubs = [];
     SW.installed = false;
     if (SW.renderTimer) { clearTimeout(SW.renderTimer); SW.renderTimer = 0; }
   }

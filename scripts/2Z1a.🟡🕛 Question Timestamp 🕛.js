@@ -111,6 +111,8 @@
     Q_SCAN: 'h2o:questions:scan',
     BUS_INDEX_UPDATED: 'index:updated',
     BUS_TURN_UPDATED: 'turn:updated',
+    ROUTE_CHANGED: 'evt:h2o:route:changed',
+    QWRAP_WRAPPED: 'h2o:qwrap:wrapped',
   });
 
   const KEY_QTIMESTAMP_PERF = 'h2o:perf';
@@ -522,15 +524,21 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
   /* ───────────────────────────── 10) CORE HOOK + FALLBACK MO ───────────────────────────── */
 
   /** @critical */
+  function CORE_QT_detachFallbackMO() {
+    const st = MOD.state;
+    if (st.mo) {
+      try { st.mo.disconnect(); } catch {}
+      st.mo = null;
+    }
+    st.moRoot = null;
+  }
+
+  /** @critical */
   function CORE_QT_attachFallbackMO() {
     const st = MOD.state;
     const root = DOM_QT_getConversationRoot() || document.body;
     if (st.mo && st.moRoot === root) return;
-    if (st.mo) {
-      try { st.mo.disconnect(); } catch {}
-      st.mo = null;
-      st.moRoot = null;
-    }
+    CORE_QT_detachFallbackMO();
 
     st.mo = new MutationObserver((mutations) => {
       const dirty = new Set();
@@ -547,10 +555,85 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
     st.moRoot = root;
     st.cleanup = st.cleanup || [];
     st.cleanup.push(() => {
-      try { st.mo && st.mo.disconnect(); } catch {}
-      st.mo = null;
-      st.moRoot = null;
+      CORE_QT_detachFallbackMO();
     });
+  }
+
+  /** @critical */
+  function CORE_QT_getObserverHub() {
+    const hub = W.H2O?.obs;
+    if (!hub || typeof hub !== 'object') return null;
+    for (const key of ['ensureRoot', 'onReady', 'onMutations']) {
+      if (typeof hub[key] !== 'function') return null;
+    }
+    return hub;
+  }
+
+  /** @critical */
+  function CORE_QT_unbindObserverHub() {
+    const st = MOD.state;
+    const hub = CORE_QT_getObserverHub();
+
+    if (typeof st.obsOffReady === 'function') {
+      const off = st.obsOffReady;
+      st.obsOffReady = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-timestamp:ready'); } catch {}
+    } else {
+      st.obsOffReady = null;
+    }
+
+    if (typeof st.obsOffMut === 'function') {
+      const off = st.obsOffMut;
+      st.obsOffMut = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-timestamp:mut'); } catch {}
+    } else {
+      st.obsOffMut = null;
+    }
+  }
+
+  /** @critical */
+  function CORE_QT_hasHubBinding() {
+    const st = MOD.state;
+    return (typeof st.obsOffReady === 'function') || (typeof st.obsOffMut === 'function');
+  }
+
+  /** @critical */
+  function CORE_QT_bindObserverHub(reason = 'bind') {
+    const st = MOD.state;
+    const hub = CORE_QT_getObserverHub();
+    if (!hub) {
+      CORE_QT_unbindObserverHub();
+      return false;
+    }
+
+    try { hub.ensureRoot(`question-timestamp:${String(reason || 'bind')}`); } catch {}
+
+    if (!CORE_QT_hasHubBinding()) {
+      st.obsOffReady = hub.onReady('question-timestamp:ready', () => {
+        CORE_QT_detachFallbackMO();
+        CORE_QT_schedule('hub:ready', { full: true });
+      }, { immediate: true });
+
+      st.obsOffMut = hub.onMutations('question-timestamp:mut', (payload) => {
+        if (!payload?.conversationRelevant) return;
+
+        const dirty = new Set();
+        let needFull = !!(payload.hasRemoved || payload.removedTurnLike || payload.removedAnswerLike);
+
+        for (const node of Array.isArray(payload.addedElements) ? payload.addedElements : []) {
+          if (DOM_QT_collectDirtyUsersFromNode(node, dirty)) needFull = true;
+        }
+
+        CORE_QT_schedule('hub:mut', { users: Array.from(dirty), full: needFull });
+      });
+    }
+
+    CORE_QT_detachFallbackMO();
+    return true;
   }
 
   /** @critical */
@@ -572,7 +655,7 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
     W.addEventListener(EV_QTIMESTAMP_.Q_SCAN, st.onQScan, { passive: true });
 
     // Core is the single source of truth → disconnect fallback MO
-    if (st.mo) { try { st.mo.disconnect(); } catch {} st.mo = null; }
+    CORE_QT_detachFallbackMO();
 
     MOD.state.cleanup = MOD.state.cleanup || [];
     MOD.state.cleanup.push(() => {
@@ -603,6 +686,10 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
     MOD.state.dirtyUsers = MOD.state.dirtyUsers || new Set();
     MOD.state.runTimer = 0;
     MOD.state.runRaf = 0;
+    MOD.state.mo = MOD.state.mo || null;
+    MOD.state.moRoot = MOD.state.moRoot || null;
+    MOD.state.obsOffReady = (typeof MOD.state.obsOffReady === 'function') ? MOD.state.obsOffReady : null;
+    MOD.state.obsOffMut = (typeof MOD.state.obsOffMut === 'function') ? MOD.state.obsOffMut : null;
     try { MOD.state.perfEnabled = (String(localStorage.getItem(KEY_QTIMESTAMP_PERF) || '') === '1'); } catch { MOD.state.perfEnabled = false; }
     MOD.state.perfWindowStartAt = 0;
     MOD.state.perfRunsInWindow = 0;
@@ -616,9 +703,29 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
       MOD.state.onResize = null;
     });
 
-    CORE_QT_attachFallbackMO();
+    if (!CORE_QT_bindObserverHub('bind')) CORE_QT_attachFallbackMO();
+    MOD.state.cleanup.push(() => CORE_QT_unbindObserverHub());
     CORE_QT_hookCoreIfReady();
     W.addEventListener(EV_QTIMESTAMP_.CORE_READY, CORE_QT_hookCoreIfReady, { once: true });
+
+    const onRouteChanged = () => {
+      if (!CORE_QT_bindObserverHub('route')) CORE_QT_attachFallbackMO();
+      CORE_QT_schedule('route', { full: true });
+    };
+    W.addEventListener(EV_QTIMESTAMP_.ROUTE_CHANGED, onRouteChanged, true);
+    W.addEventListener('popstate', onRouteChanged, true);
+    W.addEventListener('hashchange', onRouteChanged, true);
+    MOD.state.cleanup.push(() => W.removeEventListener(EV_QTIMESTAMP_.ROUTE_CHANGED, onRouteChanged, true));
+    MOD.state.cleanup.push(() => W.removeEventListener('popstate', onRouteChanged, true));
+    MOD.state.cleanup.push(() => W.removeEventListener('hashchange', onRouteChanged, true));
+
+    const onQwrapWrapped = (ev) => {
+      const userMsgEl = ev?.detail?.userMsgEl;
+      if (!userMsgEl || !userMsgEl.matches?.(SEL_QTIMESTAMP_.USER_MSG)) return;
+      CORE_QT_schedule('evt:qwrap:wrapped', { users: [userMsgEl] });
+    };
+    W.addEventListener(EV_QTIMESTAMP_.QWRAP_WRAPPED, onQwrapWrapped, { passive: true });
+    MOD.state.cleanup.push(() => W.removeEventListener(EV_QTIMESTAMP_.QWRAP_WRAPPED, onQwrapWrapped));
 
     // Prime scan + safety rescan (same behavior as old)
     DOM_QT_scan();
@@ -648,6 +755,8 @@ ${SEL_QTIMESTAMP_.TURN_ROOT_B}.${CSS_QTIMESTAMP_.CLS_SHORT}.${CSS_QTIMESTAMP_.CL
       try { cancelAnimationFrame(MOD.state.runRaf); } catch {}
       MOD.state.runRaf = 0;
     }
+    CORE_QT_detachFallbackMO();
+    CORE_QT_unbindObserverHub();
     MOD.state.pendingFullScan = false;
     try { MOD.state.dirtyUsers?.clear?.(); } catch {}
     MOD.state.coreHooked = false;

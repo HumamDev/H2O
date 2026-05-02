@@ -253,6 +253,78 @@ ${SEL.USER_MSG}.${UI.HOST_CLASS} ${SEL.BUBBLE}{
     S.moRoot = null;
   }
 
+  function getObserverHub() {
+    const hub = W.H2O?.obs;
+    if (!hub || typeof hub !== 'object') return null;
+    for (const key of ['ensureRoot', 'onReady', 'onMutations']) {
+      if (typeof hub[key] !== 'function') return null;
+    }
+    return hub;
+  }
+
+  function unbindObserverHub() {
+    const hub = getObserverHub();
+    if (typeof S.obsOffReady === 'function') {
+      const off = S.obsOffReady;
+      S.obsOffReady = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-background:ready'); } catch {}
+    } else {
+      S.obsOffReady = null;
+    }
+
+    if (typeof S.obsOffMut === 'function') {
+      const off = S.obsOffMut;
+      S.obsOffMut = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-background:mut'); } catch {}
+    } else {
+      S.obsOffMut = null;
+    }
+  }
+
+  function hasHubBinding() {
+    return (typeof S.obsOffReady === 'function') || (typeof S.obsOffMut === 'function');
+  }
+
+  function bindObserverHub(reason = 'bind') {
+    const hub = getObserverHub();
+    if (!hub) {
+      unbindObserverHub();
+      return false;
+    }
+
+    try { hub.ensureRoot(`question-background:${String(reason || 'bind')}`); } catch {}
+
+    if (!hasHubBinding()) {
+      S.obsOffReady = hub.onReady('question-background:ready', () => {
+        detachMO();
+        scheduleFullScan();
+      }, { immediate: true });
+
+      S.obsOffMut = hub.onMutations('question-background:mut', (payload) => {
+        if (!payload?.conversationRelevant) return;
+
+        const hit = new Set();
+        let needRepair = !!(payload.hasRemoved || payload.removedTurnLike || payload.removedAnswerLike);
+
+        for (const node of Array.isArray(payload.addedElements) ? payload.addedElements : []) {
+          if (collectUserCandidate(node, hit)) needRepair = true;
+        }
+
+        if (hit.size) {
+          for (const el of hit) scheduleUser(el);
+        }
+        if (needRepair) scheduleFullScanDebounced();
+      });
+    }
+
+    detachMO();
+    return true;
+  }
+
   function hookCore() {
     if (S.coreHooked) return;
     if (!W.H2O?.bus) return;
@@ -271,6 +343,10 @@ ${SEL.USER_MSG}.${UI.HOST_CLASS} ${SEL.BUBBLE}{
   }
 
   function onRouteChanged() {
+    if (bindObserverHub('route')) {
+      scheduleFullScanDebounced();
+      return;
+    }
     attachMO();
     scheduleFullScanDebounced();
   }
@@ -286,9 +362,12 @@ ${SEL.USER_MSG}.${UI.HOST_CLASS} ${SEL.BUBBLE}{
     S.mo = null;
     S.moRoot = null;
     S.coreHooked = false;
+    S.obsOffReady = (typeof S.obsOffReady === 'function') ? S.obsOffReady : null;
+    S.obsOffMut = (typeof S.obsOffMut === 'function') ? S.obsOffMut : null;
 
     injectCSSOnce();
-    attachMO();
+    if (!bindObserverHub('bind')) attachMO();
+    S.cleanup.push(() => unbindObserverHub());
 
     hookCore();
     W.addEventListener(EV.CORE_READY, hookCore, { once: true });
@@ -317,6 +396,7 @@ ${SEL.USER_MSG}.${UI.HOST_CLASS} ${SEL.BUBBLE}{
     S.fullDebounceT = 0;
 
     detachMO();
+    unbindObserverHub();
 
     W[KEY_INIT_BOOT] = false;
   }
@@ -324,6 +404,7 @@ ${SEL.USER_MSG}.${UI.HOST_CLASS} ${SEL.BUBBLE}{
   MOD.api.boot = boot;
   MOD.api.dispose = dispose;
   MOD.api.rescan = scheduleFullScan;
+  MOD.api.applyHost = applyHost;
 
   boot();
 })();

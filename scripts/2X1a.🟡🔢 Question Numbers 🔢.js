@@ -3,9 +3,9 @@
 // @name               2X1a.🟡🔢 Question Numbers 🔢
 // @namespace          H2O.Premium.CGX.question.numbers
 // @author             HumamDev
-// @version            1.0.2
+// @version            1.0.3
 // @revision           002
-// @build              260402-000001
+// @build              260412-190500
 // @description        Big faded question numbers + edit counter (split from 2X Question Numbers & Style) with delta processing and visible-only repositioning.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -61,6 +61,7 @@
     BUS_INDEX_UPDATED: 'index:updated',
     BUS_TURN_UPDATED: 'turn:updated',
     ROUTE_CHANGED: 'evt:h2o:route:changed',
+    QWRAP_WRAPPED: 'h2o:qwrap:wrapped',
   });
 
   const ATTR = Object.freeze({
@@ -121,6 +122,17 @@
     PERF_LOG_MS: 10000,
   });
 
+  const UI_CFG = Object.freeze({
+    KEY: 'h2o:prm:cgx:qbig:cfg:ui:v1',
+    DEFAULTS: Object.freeze({
+      opacity: 0.12,
+      leftOffsetPx: 14,
+      scale: 0.75,
+      rightFadeStartPct: 60,
+      rightFadeEndOpacity: 0.18,
+    }),
+  });
+
   const KEY_INIT_BOOT = `H2O:${TOK}:${PID}:booted`;
 
   const PERF = {
@@ -158,6 +170,46 @@
     try { return root.querySelector(sel); } catch { return null; }
   }
 
+  function UI_normalizeCfg(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const clamp = (v, min, max, fallback) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+    };
+    return {
+      opacity: clamp(src.opacity, 0.02, 0.35, UI_CFG.DEFAULTS.opacity),
+      leftOffsetPx: clamp(src.leftOffsetPx, 0, 120, UI_CFG.DEFAULTS.leftOffsetPx),
+      scale: clamp(src.scale, 0.35, 1.35, UI_CFG.DEFAULTS.scale),
+      rightFadeStartPct: clamp(src.rightFadeStartPct, 20, 100, UI_CFG.DEFAULTS.rightFadeStartPct),
+      rightFadeEndOpacity: clamp(src.rightFadeEndOpacity, 0.0, 1.0, UI_CFG.DEFAULTS.rightFadeEndOpacity),
+    };
+  }
+
+  function UI_readCfg() {
+    try {
+      return UI_normalizeCfg(JSON.parse(W.localStorage?.getItem(UI_CFG.KEY) || '{}') || {});
+    } catch {
+      return { ...UI_CFG.DEFAULTS };
+    }
+  }
+
+  function UI_writeCfg(next) {
+    const cfg = UI_normalizeCfg(next);
+    try { W.localStorage?.setItem(UI_CFG.KEY, JSON.stringify(cfg)); } catch {}
+    return cfg;
+  }
+
+  function UI_applyCfgVars() {
+    const cfg = UI_readCfg();
+    const root = D.documentElement?.style;
+    if (!root) return cfg;
+    root.setProperty('--cgxui-qbig-opacity', String(cfg.opacity));
+    root.setProperty('--cgxui-qbig-scale', String(cfg.scale));
+    root.setProperty('--cgxui-qbig-fade-start', `${Number(cfg.rightFadeStartPct).toFixed(2)}%`);
+    root.setProperty('--cgxui-qbig-fade-end-alpha', Number(cfg.rightFadeEndOpacity).toFixed(3));
+    return cfg;
+  }
+
   function qsa(sel, root = D) {
     try { return Array.from(root.querySelectorAll(sel)); } catch { return []; }
   }
@@ -180,6 +232,13 @@
     const style = D.createElement('style');
     style.id = CSS.STYLE_ID;
     style.textContent = `
+:root{
+  --cgxui-qbig-opacity: 0.12;
+  --cgxui-qbig-scale: 0.75;
+  --cgxui-qbig-fade-start: 60%;
+  --cgxui-qbig-fade-end-alpha: 0.18;
+}
+
 /* fallback host support when background script is disabled */
 ${SEL.USER_MSG}.${UI.HOST_FB_CLASS}{
   position: relative !important;
@@ -213,11 +272,21 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   font-feature-settings: 'onum' 1;
   display: inline-block;
 
-  color: ${CFG.COLOR};
+  color: rgba(128, 128, 128, var(--cgxui-qbig-opacity));
   mix-blend-mode: multiply;
 
-  -webkit-mask-image: linear-gradient(to right, black 0%, rgba(0,0,0,0.85) 40%, transparent 100%);
-  mask-image: linear-gradient(to right, black 0%, rgba(0,0,0,0.85) 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black 0%,
+    black var(--cgxui-qbig-fade-start, 60%),
+    rgba(0,0,0,var(--cgxui-qbig-fade-end-alpha, 0.18)) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    black 0%,
+    black var(--cgxui-qbig-fade-start, 60%),
+    rgba(0,0,0,var(--cgxui-qbig-fade-end-alpha, 0.18)) 100%
+  );
 }
 
 /* EDITS: same visual family as question number, only smaller */
@@ -229,7 +298,7 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   display: inline-block;
   margin-left: 10px;
 
-  color: ${CFG.COLOR};
+  color: rgba(128, 128, 128, var(--cgxui-qbig-opacity));
   mix-blend-mode: multiply;
 
   transform: translateY(-10%);
@@ -272,6 +341,8 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
 
   function ensureHostFallback(hostEl) {
     if (!hostEl || !(hostEl instanceof HTMLElement)) return;
+
+    try { W.H2O?.QN?.qbigbg?.api?.applyHost?.(hostEl); } catch {}
 
     if (hostEl.classList.contains(UI.HOST_CLASS)) {
       if (!hostEl.classList.contains(UI.ALLOW_OVERFLOW_CLASS)) {
@@ -703,6 +774,7 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     const hostRect = hostEl.getBoundingClientRect();
     const anchor = getAnchor(hostEl);
     const anchorRect = anchor.getBoundingClientRect();
+    const uiCfg = UI_readCfg();
 
     let left = '';
     let right = '';
@@ -710,7 +782,7 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     let transform = '';
 
     if (CFG.X_MODE === 'bubble') {
-      const targetRightEdgeX = anchorRect.left - CFG.BUBBLE_GAP_PX;
+      const targetRightEdgeX = anchorRect.left - Number(uiCfg.leftOffsetPx || CFG.BUBBLE_GAP_PX);
       const rightPx = Math.max(0, Math.round(hostRect.right - targetRightEdgeX));
       right = `${rightPx}px`;
     } else if (CFG.X_MODE === 'rail') {
@@ -724,13 +796,13 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     if (CFG.Y_MODE === 'bubble-center') {
       const centerY = (anchorRect.top + (anchorRect.height / 2)) - hostRect.top + CFG.BUBBLE_CENTER_Y_OFFSET_PX;
       top = `${Math.round(centerY)}px`;
-      transform = `translateY(-50%) scale(${CFG.SCALE})`;
+      transform = `translateY(-50%) scale(${Number(uiCfg.scale || CFG.SCALE)})`;
     } else if (CFG.Y_MODE === 'host-center') {
       top = '50%';
-      transform = `translateY(-50%) scale(${CFG.SCALE})`;
+      transform = `translateY(-50%) scale(${Number(uiCfg.scale || CFG.SCALE)})`;
     } else {
       top = `${CFG.TOP_PX + CFG.TOP_EXTRA_PX}px`;
-      transform = `scale(${CFG.SCALE})`;
+      transform = `scale(${Number(uiCfg.scale || CFG.SCALE)})`;
     }
 
     return { left, right, top, transform };
@@ -877,7 +949,7 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
       st.needFull = false;
       st.pendingUsers.clear();
       st.pendingPos.clear();
-      attachMO();
+      if (!bindObserverHub('full')) attachMO();
       fullScanUsers();
     }
 
@@ -1056,6 +1128,99 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     st.moRoot = null;
   }
 
+  function getObserverHub() {
+    const hub = W.H2O?.obs;
+    if (!hub || typeof hub !== 'object') return null;
+    for (const key of ['ensureRoot', 'onReady', 'onMutations']) {
+      if (typeof hub[key] !== 'function') return null;
+    }
+    return hub;
+  }
+
+  function unbindObserverHub() {
+    const st = MOD.state;
+    const hub = getObserverHub();
+
+    if (typeof st.obsOffReady === 'function') {
+      const off = st.obsOffReady;
+      st.obsOffReady = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-numbers:ready'); } catch {}
+    } else {
+      st.obsOffReady = null;
+    }
+
+    if (typeof st.obsOffMut === 'function') {
+      const off = st.obsOffMut;
+      st.obsOffMut = null;
+      try { off(); } catch {}
+    } else if (hub && typeof hub.off === 'function') {
+      try { hub.off('question-numbers:mut'); } catch {}
+    } else {
+      st.obsOffMut = null;
+    }
+  }
+
+  function hasHubBinding() {
+    const st = MOD.state;
+    return (typeof st.obsOffReady === 'function') || (typeof st.obsOffMut === 'function');
+  }
+
+  function bindObserverHub(reason = 'bind') {
+    const st = MOD.state;
+    const hub = getObserverHub();
+    if (!hub) {
+      unbindObserverHub();
+      return false;
+    }
+
+    try { hub.ensureRoot(`question-numbers:${String(reason || 'bind')}`); } catch {}
+
+    if (!hasHubBinding()) {
+      st.obsOffReady = hub.onReady('question-numbers:ready', () => {
+        detachMO();
+        scheduleFullScan();
+      }, { immediate: true });
+
+      st.obsOffMut = hub.onMutations('question-numbers:mut', (payload) => {
+        if (!payload?.conversationRelevant) return;
+
+        const hit = new Set();
+        let needRepair = !!(payload.hasRemoved || payload.removedTurnLike || payload.removedAnswerLike);
+
+        for (const node of Array.isArray(payload.addedElements) ? payload.addedElements : []) {
+          markTurnDirtyByNode(node);
+          if (collectUserCandidate(node, hit)) needRepair = true;
+        }
+
+        for (const node of Array.isArray(payload.removedElements) ? payload.removedElements : []) {
+          markTurnDirtyByNode(node);
+        }
+
+        if (hit.size) {
+          for (const host of hit) {
+            if (!st.scanIndexByHost.has(host)) {
+              st.scanIndexCounter = (st.scanIndexCounter || 0) + 1;
+              st.scanIndexByHost.set(host, st.scanIndexCounter);
+              st.orderDirty = true;
+              needRepair = true;
+            }
+            scheduleUser(host);
+          }
+        }
+
+        if (st.orderDirty || needRepair) {
+          st.orderDirty = false;
+          scheduleFullScanDebounced();
+        }
+      });
+    }
+
+    detachMO();
+    return true;
+  }
+
   function hookCore() {
     const st = MOD.state;
     if (st.coreHooked) return;
@@ -1086,6 +1251,10 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     st.pendingPos.clear();
 
     disconnectVisibleIO();
+    if (bindObserverHub('route')) {
+      scheduleFullScanDebounced();
+      return;
+    }
     attachMO();
     scheduleFullScanDebounced();
   }
@@ -1116,11 +1285,15 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     st.moRoot = null;
     st.io = null;
     st.coreHooked = false;
+    st.obsOffReady = (typeof st.obsOffReady === 'function') ? st.obsOffReady : null;
+    st.obsOffMut = (typeof st.obsOffMut === 'function') ? st.obsOffMut : null;
 
     initPerf();
     injectCSSOnce();
+    UI_applyCfgVars();
 
-    attachMO();
+    if (!bindObserverHub('bind')) attachMO();
+    st.cleanup.push(() => unbindObserverHub());
     hookCore();
     W.addEventListener(EV.CORE_READY, hookCore, { once: true });
     st.cleanup.push(() => W.removeEventListener(EV.CORE_READY, hookCore));
@@ -1154,6 +1327,14 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     st.cleanup.push(() => W.removeEventListener('resize', onResize));
     st.cleanup.push(() => D.removeEventListener('click', onClick, true));
 
+    const onQwrapWrapped = (ev) => {
+      const host = ev?.detail?.userMsgEl;
+      if (!host || !host.matches?.(SEL.USER_MSG)) return;
+      scheduleUser(host);
+    };
+    W.addEventListener(EV.QWRAP_WRAPPED, onQwrapWrapped, { passive: true });
+    st.cleanup.push(() => W.removeEventListener(EV.QWRAP_WRAPPED, onQwrapWrapped));
+
     scheduleFullScan();
   }
 
@@ -1174,6 +1355,7 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     st.posTimer = 0;
 
     detachMO();
+    unbindObserverHub();
     disconnectVisibleIO();
 
     if (PERF.ticker) {
@@ -1187,6 +1369,15 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   MOD.api.boot = boot;
   MOD.api.dispose = dispose;
   MOD.api.rescan = scheduleFullScan;
+  MOD.api.getConfig = UI_readCfg;
+  MOD.api.applySetting = (key, value) => {
+    const current = UI_readCfg();
+    const next = UI_writeCfg({ ...current, [String(key || '')]: value });
+    UI_applyCfgVars();
+    scheduleVisibleReposition();
+    scheduleFullScanDebounced();
+    return next;
+  };
 
   boot();
 })();
