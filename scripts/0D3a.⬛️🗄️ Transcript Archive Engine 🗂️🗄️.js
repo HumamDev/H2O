@@ -3,9 +3,9 @@
 // @name               0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.archive.engine
 // @author             HumamDev
-// @version            1.3.0
+// @version            1.5.1
 // @revision           001
-// @build              260304-102754
+// @build              260420-000001
 // @description        Transcript archive engine: canonical public archiveBoot owner, orchestration, compatibility, and local fallback runtime.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -39,7 +39,42 @@
   const DOCK_BG_BAR = "bar";
   const DOCK_BG_SIDE = "side";
   const RETENTION_DEFAULT = Object.freeze({ keepLatest: 30 });
+  const LABEL_CATALOG_CREATED_AT = "2026-01-01T00:00:00.000Z";
+  const DEFAULT_LABEL_CATALOG = Object.freeze([
+    { id: "wf_draft", name: "Draft", type: "workflow_status", color: "#64748b", sortOrder: 10, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "wf_in_progress", name: "In Progress", type: "workflow_status", color: "#2563eb", sortOrder: 20, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "wf_waiting", name: "Waiting", type: "workflow_status", color: "#ca8a04", sortOrder: 30, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "wf_done", name: "Done", type: "workflow_status", color: "#16a34a", sortOrder: 40, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "wf_blocked", name: "Blocked", type: "workflow_status", color: "#dc2626", sortOrder: 50, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "wf_needs_review", name: "Needs Review", type: "workflow_status", color: "#7c3aed", sortOrder: 60, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "pr_urgent", name: "Urgent", type: "priority", color: "#dc2626", sortOrder: 110, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "pr_important", name: "Important", type: "priority", color: "#ca8a04", sortOrder: 120, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "pr_low", name: "Low Priority", type: "priority", color: "#64748b", sortOrder: 130, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ac_read_later", name: "Read Later", type: "action", color: "#0d9488", sortOrder: 210, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ac_come_back", name: "Come Back", type: "action", color: "#0891b2", sortOrder: 220, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ac_follow_up", name: "Follow Up", type: "action", color: "#db2777", sortOrder: 230, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ct_reference", name: "Reference", type: "context", color: "#475569", sortOrder: 310, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ct_decision", name: "Decision", type: "context", color: "#059669", sortOrder: 320, createdAt: LABEL_CATALOG_CREATED_AT },
+    { id: "ct_research", name: "Research", type: "context", color: "#4f46e5", sortOrder: 330, createdAt: LABEL_CATALOG_CREATED_AT },
+  ]);
+  const LABEL_TYPES = Object.freeze(["workflow_status", "priority", "action", "context", "custom"]);
+  const CATEGORY_CATALOG_CREATED_AT = "2026-04-21T00:00:00.000Z";
+  const DEFAULT_CATEGORY_CATALOG = Object.freeze([
+    { id: "cat_software_development", name: "Software Development", description: "Programming, debugging, architecture, developer tools, infrastructure, and code workflows.", color: "#2563eb", sortOrder: 10, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["software", "development", "programming", "coding", "code"] },
+    { id: "cat_product_ux_design", name: "Product & UX Design", description: "Product thinking, user experience, interface design, prototyping, and usability decisions.", color: "#7c3aed", sortOrder: 20, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["product", "ux", "ui", "design", "product design"] },
+    { id: "cat_writing_communication", name: "Writing & Communication", description: "Drafting, editing, messaging, documentation, summaries, and communication planning.", color: "#db2777", sortOrder: 30, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["writing", "communication", "email", "copywriting", "docs"] },
+    { id: "cat_research_analysis", name: "Research & Analysis", description: "Research, synthesis, investigation, comparison, data analysis, and evidence review.", color: "#4f46e5", sortOrder: 40, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["research", "analysis", "analytics", "investigation"] },
+    { id: "cat_learning_study", name: "Learning & Study", description: "Teaching, tutoring, study support, explanations, practice, and educational planning.", color: "#0891b2", sortOrder: 50, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["learning", "study", "education", "course"] },
+    { id: "cat_engineering_science", name: "Engineering & Science", description: "Technical engineering, science, mathematics, experiments, systems, and applied problem solving.", color: "#0d9488", sortOrder: 60, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["engineering", "science", "math", "physics"] },
+    { id: "cat_legal_administrative", name: "Legal & Administrative", description: "Legal, policy, compliance, forms, administrative processes, and procedural records.", color: "#475569", sortOrder: 70, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["legal", "administrative", "admin", "compliance"] },
+    { id: "cat_business_operations", name: "Business & Operations", description: "Business planning, operations, sales, finance, strategy, workflows, and organizational work.", color: "#059669", sortOrder: 80, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["business", "operations", "ops", "strategy"] },
+    { id: "cat_personal_planning", name: "Personal Planning", description: "Personal organization, scheduling, decisions, travel planning, goals, and life administration.", color: "#ca8a04", sortOrder: 90, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["personal", "planning", "life admin", "schedule"] },
+    { id: "cat_health_fitness", name: "Health & Fitness", description: "Health, fitness, wellness, nutrition, habits, and non-diagnostic personal care topics.", color: "#16a34a", sortOrder: 100, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["health", "fitness", "wellness", "nutrition"] },
+    { id: "cat_shopping_products", name: "Shopping & Products", description: "Shopping, product research, comparisons, buying decisions, reviews, and recommendations.", color: "#ea580c", sortOrder: 110, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["shopping", "products", "buying", "reviews"] },
+    { id: "cat_general_misc", name: "General / Misc", description: "Broad, mixed, casual, or uncategorized conversations that do not fit another stable category.", color: "#64748b", sortOrder: 120, createdAt: CATEGORY_CATALOG_CREATED_AT, updatedAt: CATEGORY_CATALOG_CREATED_AT, status: "active", replacementCategoryId: null, aliases: ["general", "misc", "miscellaneous", "other"] },
+  ]);
   const BRIDGE_TIMEOUT_MS = 12000;
+  const BRIDGE_IMPORT_BUNDLE_TIMEOUT_MS = 120000;
   const WORKBENCH_LOCAL_ONLY_WARNING = "Saved in local fallback mode — the extension workbench cannot see this until the archive bridge connects.";
   const FOLDER_FILTER_NONE = "__none__";
   const SAVE_MODE_SILENT = "silent";
@@ -85,8 +120,9 @@
   const DOCK_FOLD_TAB_BOTTOM_PX = 60;
 
   const ATTR_MESSAGE_AUTHOR_ROLE = "data-message-author-role";
+  const ATTR_MESSAGE_ID = "data-message-id";
   const SEL_MESSAGE_NODES = `[${ATTR_MESSAGE_AUTHOR_ROLE}="user"],[${ATTR_MESSAGE_AUTHOR_ROLE}="assistant"]`;
-  const SEL_TURN_PRIMARY = 'article[data-testid="conversation-turn"],div[data-testid="conversation-turn"]';
+  const SEL_TURN_PRIMARY = '[data-testid="conversation-turn"],[data-testid^="conversation-turn-"]';
 
   const services = (archiveBoot._services = archiveBoot._services || {});
   const serviceBootState = (archiveBoot._serviceBootState = archiveBoot._serviceBootState || {
@@ -150,6 +186,34 @@
 
   function toChatId(raw) {
     return String(raw || "").trim();
+  }
+
+  function setDockWarning(chatIdRaw, message = "") {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return;
+    const text = String(message || "").trim();
+    if (text) state.dockWarnByChat.set(chatId, text);
+    else state.dockWarnByChat.delete(chatId);
+  }
+
+  function getDockWarning(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return "";
+    return String(state.dockWarnByChat.get(chatId) || "");
+  }
+
+  function setDockStatusText(chatIdRaw, message = "") {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return;
+    const text = String(message || "").trim();
+    if (text) state.dockStatusTextByChat.set(chatId, text);
+    else state.dockStatusTextByChat.delete(chatId);
+  }
+
+  function getDockStatusText(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return "";
+    return String(state.dockStatusTextByChat.get(chatId) || "");
   }
 
   function stableHash(raw) {
@@ -326,6 +390,28 @@
     return String(first?.text || "").replace(/\s+/g, " ").trim().slice(0, 220);
   }
 
+  function countAssistantTurns(messages, endExclusiveRaw = null) {
+    const rows = Array.isArray(messages) ? messages : [];
+    if (!rows.length) return 0;
+    const endExclusive = endExclusiveRaw == null
+      ? rows.length
+      : Math.max(0, Math.min(rows.length, Math.floor(Number(endExclusiveRaw) || 0)));
+    let turns = 0;
+    for (let i = 0; i < endExclusive; i += 1) {
+      if (String(rows[i]?.role || "").toLowerCase() === "assistant") turns += 1;
+    }
+    return turns;
+  }
+
+  function countAssistantInNativeNodes(nodes) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    let turns = 0;
+    for (let i = 0; i < list.length; i += 1) {
+      if (normalizeRole(list[i]?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "") === "assistant") turns += 1;
+    }
+    return turns;
+  }
+
   function buildSnapshotMetaHints(messages) {
     const rows = normalizeMessages(messages);
     return {
@@ -336,15 +422,92 @@
     };
   }
 
+  const CAPTURE_STRIP_SUBTREE_SELECTORS = [
+    ".h2o-cold-layer",
+    ".h2o-archive-native-detached-bin",
+    '[data-h2o-cold="1"]',
+    '[data-cgxui-chat-page-divider="1"]',
+    ".cgxui-chat-page-divider",
+    '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]',
+    ".cgxui-atns-answer-title",
+    ".cgxui-atns-answer-title-text",
+    ".cgxui-atns-answer-title-label",
+    ".cgxui-atns-answer-title-badge",
+    ".cgxui-atns-answer-title-icon",
+    '[data-cgxui="ats-stamp"][data-cgxui-owner="ats"]',
+    ".cgxui-ats-ts",
+    ".chatgpt-timestamp",
+    "[data-cgxui-qts-bar]",
+    "[data-cgxui-qts-inline]",
+    ".cgxui-qswr-quoteBox",
+    ".cgxui-qswr-toggle",
+    ".cgxui-qswr-toggle-top",
+    ".cgxui-qswr-toggle-row",
+    '[data-cgxui="qbig-num"][data-cgxui-owner="qbig"]',
+    ".cgxui-qbig-number",
+    '[data-cgxui="ansn-abig"][data-cgxui-owner="ansn"]',
+    ".cgxui-ansn-big-number",
+    '[data-cgxui="mrnc-marks"][data-cgxui-owner="mrnc"]',
+    '[data-cgxui="mrnc-gutter"][data-cgxui-owner="mrnc"]',
+    '[data-cgxui="mrnc-gutlane"][data-cgxui-owner="mrnc"]',
+  ];
+
+  function scrubCaptureClone(root) {
+    if (!(root instanceof Element)) return root;
+    root.querySelectorAll("script,style,iframe,object,embed").forEach((node) => {
+      try { node.remove(); } catch {}
+    });
+    root.querySelectorAll(CAPTURE_STRIP_SUBTREE_SELECTORS.join(",")).forEach((node) => {
+      try { node.remove(); } catch {}
+    });
+    return root;
+  }
+
+  function cloneCaptureNode(rootEl) {
+    if (!(rootEl instanceof Element)) return null;
+    const clone = rootEl.cloneNode(true);
+    return scrubCaptureClone(clone);
+  }
+
+  function extractCaptureText(rootEl) {
+    if (!(rootEl instanceof Element)) return "";
+    const host = D.body || D.documentElement;
+    if (!host) return String(rootEl.textContent || "");
+    const probe = D.createElement("div");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText = "position:fixed;left:-99999px;top:0;visibility:hidden;pointer-events:none;contain:content;";
+    probe.appendChild(rootEl);
+    host.appendChild(probe);
+    try {
+      return String(probe.innerText || probe.textContent || "");
+    } finally {
+      try { probe.remove(); } catch {}
+    }
+  }
+
+  function normalizeCapturedText(raw) {
+    return String(raw || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\u200b/g, "")
+      .replace(/\r/g, "")
+      .trim();
+  }
+
+  function captureCleanMessageText(messageEl) {
+    const cleanNode = cloneCaptureNode(messageEl);
+    if (!cleanNode) return "";
+    return normalizeCapturedText(extractCaptureText(cleanNode));
+  }
+
   function captureDomNormalizedMessages() {
     const nodes = collectNativeMessageNodes(D);
     const out = [];
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
       const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
-      const text = String(el?.innerText || el?.textContent || "").trim();
+      const text = captureCleanMessageText(el);
       if (!text) continue;
-      const createdAt = normalizeCreatedAt(H2O.time?.getCreateTime?.(el));
+      const createdAt = normalizeCreatedAt(readCreateTimeFromNode(el));
       out.push({ role, text, order: out.length, createdAt });
     }
     return out;
@@ -513,6 +676,100 @@
     return `/${view}${suffix ? `?${suffix}` : ""}`;
   }
 
+  function getReactHandleArchive(el) {
+    const key = Object.keys(el || {}).find((x) => x.startsWith('__reactFiber$') || x.startsWith('__reactProps$'));
+    return key ? { key, value: el[key] } : null;
+  }
+
+  function findCreateTimeFromReactArchive(el) {
+    const h = getReactHandleArchive(el);
+    if (!h) return 0;
+
+    if (h.key.startsWith('__reactProps$')) {
+      const p = h.value;
+      const t = p?.messages?.[0]?.create_time ?? p?.message?.create_time ?? null;
+      return (typeof t === 'number' && isFinite(t) && t > 0) ? t : 0;
+    }
+
+    let f = h.value;
+    for (let i = 0; i < 18 && f; i += 1) {
+      const mp = f.memoizedProps;
+      const t =
+        mp?.messages?.[0]?.create_time ??
+        mp?.message?.create_time ??
+        mp?.children?.props?.messages?.[0]?.create_time ??
+        mp?.children?.props?.message?.create_time ??
+        null;
+      if (typeof t === 'number' && isFinite(t) && t > 0) return t;
+      f = f.return;
+    }
+    return 0;
+  }
+
+  function readCreateTimeFromNode(el) {
+    if (!el) return 0;
+
+    try {
+      const coreTs = Number(H2O?.time?.getCreateTime?.(el) || 0);
+      if (Number.isFinite(coreTs) && coreTs > 0) return coreTs;
+    } catch {}
+
+    const reactTs = Number(findCreateTimeFromReactArchive(el) || 0);
+    if (Number.isFinite(reactTs) && reactTs > 0) return reactTs;
+
+    return 0;
+  }
+
+  function getRoleMessageEl(turnEl, role) {
+    if (!turnEl) return null;
+    try {
+      if (turnEl.matches?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="${role}"]`)) return turnEl;
+    } catch {}
+    try {
+      return turnEl.querySelector?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="${role}"]`) || null;
+    } catch {}
+    return null;
+  }
+
+  function getRoleMessageId(el) {
+    if (!el) return '';
+    return String(
+      el.getAttribute?.(ATTR_MESSAGE_ID) ||
+      el.dataset?.messageId ||
+      el.getAttribute?.('data-turn-id') ||
+      el.dataset?.turnId ||
+      ''
+    ).trim();
+  }
+
+  function collectTurnTimeMeta(turnEl) {
+    const userEl = getRoleMessageEl(turnEl, 'user');
+    const assistantEl = getRoleMessageEl(turnEl, 'assistant');
+
+    const userCreateTime = readCreateTimeFromNode(userEl);
+    const assistantCreateTime = readCreateTimeFromNode(assistantEl);
+
+    const userMessageId = getRoleMessageId(userEl);
+    const assistantMessageId = getRoleMessageId(assistantEl);
+
+    const createTime = assistantCreateTime || userCreateTime || 0;
+
+    const messageTimes = {};
+    if (userCreateTime > 0) messageTimes.user = userCreateTime;
+    if (assistantCreateTime > 0) messageTimes.assistant = assistantCreateTime;
+    if (userMessageId && userCreateTime > 0) messageTimes[userMessageId] = userCreateTime;
+    if (assistantMessageId && assistantCreateTime > 0) messageTimes[assistantMessageId] = assistantCreateTime;
+
+    return {
+      createTime,
+      userCreateTime,
+      assistantCreateTime,
+      userMessageId,
+      assistantMessageId,
+      messageTimes,
+    };
+  }
+
   function normalizeRichTurns(raw) {
     const src = Array.isArray(raw) ? raw : [];
     const out = [];
@@ -522,7 +779,29 @@
       const role = normalizeRole(row.role || row.author || "assistant");
       const outerHTML = String(row.outerHTML || row.html || "").trim();
       if (!outerHTML) continue;
-      out.push({ turnIdx, role, outerHTML, html: outerHTML });
+
+      const createTime = Number(row.createTime ?? row.create_time ?? 0);
+      const userCreateTime = Number(row.userCreateTime ?? row.user_create_time ?? 0);
+      const assistantCreateTime = Number(row.assistantCreateTime ?? row.assistant_create_time ?? 0);
+      const userMessageId = String(row.userMessageId || row.user_message_id || '').trim();
+      const assistantMessageId = String(row.assistantMessageId || row.assistant_message_id || '').trim();
+      const messageTimesRaw = isObj(row.messageTimes) ? row.messageTimes : {};
+      const messageTimes = {};
+      for (const [k, v] of Object.entries(messageTimesRaw)) {
+        const key = String(k || '').trim();
+        const num = Number(v);
+        if (!key || !Number.isFinite(num) || num <= 0) continue;
+        messageTimes[key] = num;
+      }
+
+      const item = { turnIdx, role, outerHTML, html: outerHTML };
+      if (Number.isFinite(createTime) && createTime > 0) item.createTime = createTime;
+      if (Number.isFinite(userCreateTime) && userCreateTime > 0) item.userCreateTime = userCreateTime;
+      if (Number.isFinite(assistantCreateTime) && assistantCreateTime > 0) item.assistantCreateTime = assistantCreateTime;
+      if (userMessageId) item.userMessageId = userMessageId;
+      if (assistantMessageId) item.assistantMessageId = assistantMessageId;
+      if (Object.keys(messageTimes).length) item.messageTimes = messageTimes;
+      out.push(item);
     }
     out.sort((a, b) => Number(a.turnIdx) - Number(b.turnIdx));
     return out;
@@ -542,6 +821,397 @@
     return out;
   }
 
+  function normalizeOriginSource(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (value === "mobile") return "mobile";
+    if (value === "browser") return "browser";
+    return "unknown";
+  }
+
+  function normalizeProjectRef(raw) {
+    const src = isObj(raw) ? raw : {};
+    const id = String(src.id || src.projectId || "").trim();
+    if (!id) return null;
+    const name = String(src.name || src.projectName || id).trim() || id;
+    return { id, name };
+  }
+
+  function normalizeCategoryAssignment(raw) {
+    return normalizeCategoryRecord(raw, getCategoriesCatalog());
+  }
+
+  function normalizeCategoryStatus(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (value === "deprecated" || value === "retired") return value;
+    return "active";
+  }
+
+  function normalizeCategoryCatalogRecord(raw) {
+    const src = isObj(raw) ? raw : {};
+    const id = String(src.id || "").trim();
+    if (!id) return null;
+    const sortOrderRaw = Number(src.sortOrder);
+    const replacementCategoryId = String(src.replacementCategoryId || "").trim();
+    const description = String(src.description || "").trim();
+    const color = String(src.color || "").trim();
+    const updatedAt = String(src.updatedAt || "").trim();
+    return {
+      ...src,
+      id,
+      name: String(src.name || src.title || id).trim() || id,
+      ...(description ? { description } : {}),
+      ...(color ? { color } : {}),
+      sortOrder: Number.isFinite(sortOrderRaw) ? Math.floor(sortOrderRaw) : 0,
+      createdAt: String(src.createdAt || CATEGORY_CATALOG_CREATED_AT).trim() || CATEGORY_CATALOG_CREATED_AT,
+      ...(updatedAt ? { updatedAt } : {}),
+      status: normalizeCategoryStatus(src.status),
+      replacementCategoryId: replacementCategoryId || null,
+      aliases: normalizeStringArray(src.aliases),
+    };
+  }
+
+  function normalizeCategoryCatalog(raw) {
+    const src = Array.isArray(raw) ? raw : [];
+    const out = [];
+    const seen = new Set();
+    for (const item of src) {
+      const record = normalizeCategoryCatalogRecord(item);
+      if (!record || seen.has(record.id)) continue;
+      seen.add(record.id);
+      out.push(record);
+    }
+    out.sort((a, b) => (
+      Number(a.sortOrder || 0) - Number(b.sortOrder || 0)
+      || String(a.name || a.id).localeCompare(String(b.name || b.id))
+      || String(a.id).localeCompare(String(b.id))
+    ));
+    return out;
+  }
+
+  function mergeCategoryCatalogs(...catalogs) {
+    const out = [];
+    const seen = new Set();
+    for (const catalog of catalogs) {
+      for (const record of normalizeCategoryCatalog(catalog)) {
+        if (seen.has(record.id)) continue;
+        seen.add(record.id);
+        out.push(record);
+      }
+    }
+    return normalizeCategoryCatalog(out);
+  }
+
+  function seedDefaultCategoryCatalog(records) {
+    return mergeCategoryCatalogs(records, DEFAULT_CATEGORY_CATALOG);
+  }
+
+  function categoryCatalogIndex(catalogRaw) {
+    const records = seedDefaultCategoryCatalog(catalogRaw);
+    const byId = new Map();
+    const aliasToId = new Map();
+    for (const record of records) {
+      byId.set(record.id, record);
+      for (const alias of record.aliases || []) {
+        const key = String(alias || "").trim().toLowerCase();
+        if (key && !aliasToId.has(key)) aliasToId.set(key, record.id);
+      }
+    }
+    return { records, byId, aliasToId };
+  }
+
+  function resolveCategoryAlias(raw, catalogRaw) {
+    const id = String(raw || "").trim();
+    if (!id) return "";
+    const index = categoryCatalogIndex(catalogRaw);
+    if (index.byId.has(id)) return id;
+    return index.aliasToId.get(id.toLowerCase()) || "";
+  }
+
+  function resolveActiveCategoryId(raw, index, seen = new Set()) {
+    const resolved = resolveCategoryAlias(raw, index.records);
+    if (!resolved || seen.has(resolved)) return null;
+    seen.add(resolved);
+    const record = index.byId.get(resolved);
+    if (!record) return null;
+    if (record.status === "active") return record.id;
+    if (record.status === "deprecated" && record.replacementCategoryId) {
+      return resolveActiveCategoryId(record.replacementCategoryId, index, seen);
+    }
+    return null;
+  }
+
+  function isRetiredUserPrimaryCategoryRecord(raw, catalogRaw = DEFAULT_CATEGORY_CATALOG) {
+    const src = isObj(raw) ? raw : {};
+    if (normalizeCategorySource(src.source) !== "user") return false;
+    const index = categoryCatalogIndex(catalogRaw);
+    const primary = resolveCategoryAlias(src.primaryCategoryId || src.primary, index.records);
+    return !!(primary && index.byId.get(primary) && index.byId.get(primary).status === "retired");
+  }
+
+  function normalizeCategorySource(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (value === "user" || value === "manual_override") return "user";
+    if (value === "system" || value === "auto") return "system";
+    return "";
+  }
+
+  function normalizeCategoryConfidence(raw) {
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+  }
+
+  function normalizeCategoryRecord(raw, catalogRaw = DEFAULT_CATEGORY_CATALOG) {
+    const src = isObj(raw) ? raw : {};
+    const index = categoryCatalogIndex(catalogRaw);
+    const primaryCategoryId = resolveActiveCategoryId(src.primaryCategoryId || src.primary, index);
+    if (!primaryCategoryId) return null;
+    const secondaryRaw = String(src.secondaryCategoryId || src.secondary || "").trim();
+    const secondaryCategoryId = secondaryRaw ? resolveActiveCategoryId(secondaryRaw, index) : null;
+    if (secondaryRaw && !secondaryCategoryId) return null;
+    if (secondaryCategoryId && secondaryCategoryId === primaryCategoryId) return null;
+    const rawSource = normalizeCategorySource(src.source);
+    // Backward-compat: old stored records have no `source` field. Infer from presence of
+    // algorithmVersion+classifiedAt (system classification) or fall back to "user".
+    const source = rawSource || (String(src.algorithmVersion || "").trim() && String(src.classifiedAt || "").trim() ? "system" : "user");
+    if (source === "user") {
+      return {
+        primaryCategoryId,
+        secondaryCategoryId,
+        source,
+        algorithmVersion: null,
+        classifiedAt: null,
+        overriddenAt: String(src.overriddenAt || src.classifiedAt || "").trim() || null,
+        confidence: null,
+      };
+    }
+    const algorithmVersion = String(src.algorithmVersion || "").trim();
+    const classifiedAt = String(src.classifiedAt || "").trim();
+    if (!algorithmVersion || !classifiedAt) return null;
+    return {
+      primaryCategoryId,
+      secondaryCategoryId,
+      source,
+      algorithmVersion,
+      classifiedAt,
+      overriddenAt: null,
+      confidence: normalizeCategoryConfidence(src.confidence),
+    };
+  }
+
+  function mergeCategoryRecords(localRaw, incomingRaw, catalogRaw = DEFAULT_CATEGORY_CATALOG) {
+    const local = normalizeCategoryRecord(localRaw, catalogRaw);
+    const incoming = normalizeCategoryRecord(incomingRaw, catalogRaw);
+    if (!local && isRetiredUserPrimaryCategoryRecord(localRaw, catalogRaw)) return null;
+    if (!local) return incoming;
+    if (!incoming) return local;
+    if (local.source === "user" && incoming.source === "system") return local;
+    if (local.source === "system" && incoming.source === "user") return incoming;
+    if (local.source === "system" && incoming.source === "system") return local;
+    const localOverriddenAt = String(local.overriddenAt || "").trim();
+    const incomingOverriddenAt = String(incoming.overriddenAt || "").trim();
+    return incomingOverriddenAt && incomingOverriddenAt > localOverriddenAt ? incoming : local;
+  }
+
+  function normalizeStringArray(raw) {
+    return uniqStringList(Array.isArray(raw) ? raw : []);
+  }
+
+  function normalizeLabelAssignments(raw) {
+    const src = isObj(raw) ? raw : {};
+    return {
+      workflowStatusLabelId: String(src.workflowStatusLabelId || "").trim(),
+      priorityLabelId: String(src.priorityLabelId || "").trim(),
+      actionLabelIds: normalizeStringArray(src.actionLabelIds),
+      contextLabelIds: normalizeStringArray(src.contextLabelIds),
+      customLabelIds: normalizeStringArray(src.customLabelIds),
+    };
+  }
+
+  function normalizeKeywords(raw) {
+    return normalizeStringArray(raw);
+  }
+
+  function normalizeTags(raw) {
+    return normalizeStringArray(raw);
+  }
+
+
+  function normalizeTurnRefs(raw) {
+    const src = Array.isArray(raw) ? raw : [];
+    return src.map((item) => {
+      const r = isObj(item) ? item : {};
+      const answerId = String(r.answerId || '').trim();
+      const turnKey = String(r.turnKey || '').trim();
+      if (!answerId && !turnKey) return null;
+      const ref = { answerId, turnKey };
+      const ordinal = Number(r.ordinal);
+      if (Number.isFinite(ordinal) && ordinal > 0) ref.ordinal = Math.floor(ordinal);
+      const snippet = String(r.snippet || '').trim();
+      if (snippet) ref.snippet = snippet.slice(0, 160);
+      return ref;
+    }).filter(Boolean);
+  }
+
+  function normalizeTagCatalog(raw) {
+    const src = Array.isArray(raw) ? raw : [];
+    const out = [];
+    const seen = new Set();
+    for (const item of src) {
+      const row = isObj(item) ? item : {};
+      const id = String(row.id || row.tagId || row.label || '').trim();
+      const label = String(row.label || row.name || id).trim();
+      const color = String(row.color || '').trim().toUpperCase();
+      if (!id || !label || seen.has(id)) continue;
+      seen.add(id);
+      const entry = {
+        id,
+        label,
+        color: /^#[0-9A-F]{6}$/.test(color) ? color : '',
+        usageCount: Math.max(0, Number(row.usageCount || 0) || 0),
+        source: String(row.source || '').trim() || 'auto',
+        createdAt: Number(row.createdAt || 0) || 0,
+        updatedAt: Number(row.updatedAt || 0) || 0,
+      };
+      const turnRefs = normalizeTurnRefs(row.turnRefs);
+      if (turnRefs.length) entry.turnRefs = turnRefs;
+      out.push(entry);
+    }
+    return out.sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
+  }
+
+  function normalizeLabelType(raw) {
+    const value = String(raw || "").trim();
+    return LABEL_TYPES.includes(value) ? value : "custom";
+  }
+
+  function normalizeLabelRecord(raw) {
+    const src = isObj(raw) ? raw : {};
+    const id = String(src.id || "").trim();
+    if (!id) return null;
+    const sortOrderRaw = Number(src.sortOrder);
+    return {
+      ...src,
+      id,
+      name: String(src.name || src.title || id).trim() || id,
+      type: normalizeLabelType(src.type),
+      color: String(src.color || "").trim(),
+      sortOrder: Number.isFinite(sortOrderRaw) ? Math.floor(sortOrderRaw) : 0,
+      createdAt: String(src.createdAt || LABEL_CATALOG_CREATED_AT).trim() || LABEL_CATALOG_CREATED_AT,
+    };
+  }
+
+  function normalizeLabelCatalog(raw) {
+    const src = Array.isArray(raw) ? raw : [];
+    const out = [];
+    const seen = new Set();
+    for (const item of src) {
+      const record = normalizeLabelRecord(item);
+      if (!record || seen.has(record.id)) continue;
+      seen.add(record.id);
+      out.push(record);
+    }
+    out.sort((a, b) => (
+      String(a.type || "").localeCompare(String(b.type || ""))
+      || Number(a.sortOrder || 0) - Number(b.sortOrder || 0)
+      || String(a.name || a.id).localeCompare(String(b.name || b.id))
+      || String(a.id).localeCompare(String(b.id))
+    ));
+    return out;
+  }
+
+  function mergeLabelCatalogs(...catalogs) {
+    const out = [];
+    const seen = new Set();
+    for (const catalog of catalogs) {
+      for (const record of normalizeLabelCatalog(catalog)) {
+        if (seen.has(record.id)) continue;
+        seen.add(record.id);
+        out.push(record);
+      }
+    }
+    return normalizeLabelCatalog(out);
+  }
+
+  function seedDefaultLabelCatalog(records) {
+    return mergeLabelCatalogs(records, DEFAULT_LABEL_CATALOG);
+  }
+
+  function keyLabelCatalog() {
+    return `${dataNs()}:labelCatalog:v1`;
+  }
+
+  function keyCategoryCatalog() {
+    return `${dataNs()}:categoryCatalog:v1`;
+  }
+
+  function getLabelsCatalog() {
+    const key = keyLabelCatalog();
+    const raw = lsGetJson(key, null);
+    const labels = seedDefaultLabelCatalog(isObj(raw) && Array.isArray(raw.labels) ? raw.labels : raw);
+    lsSetJson(key, { labels, updatedAt: nowIso() });
+    return labels;
+  }
+
+  function getCategoriesCatalog() {
+    const key = keyCategoryCatalog();
+    const raw = lsGetJson(key, null);
+    const categories = seedDefaultCategoryCatalog(isObj(raw) && Array.isArray(raw.categories) ? raw.categories : raw);
+    lsSetJson(key, { categories, updatedAt: nowIso() });
+    return categories;
+  }
+
+  function mergeCategoriesCatalog(categories) {
+    const merged = seedDefaultCategoryCatalog([
+      ...getCategoriesCatalog(),
+      ...(Array.isArray(categories) ? categories : []),
+    ]);
+    lsSetJson(keyCategoryCatalog(), { categories: merged, updatedAt: nowIso() });
+    return merged;
+  }
+
+  function createCategory(nameRaw, opts = {}) {
+    const name = String(nameRaw || "").trim();
+    if (!name) return null;
+    const current = getCategoriesCatalog();
+    const existing = current.find((item) => String(item?.name || "").trim().toLowerCase() === name.toLowerCase());
+    if (existing) return existing;
+
+    const base = name.toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 48) || "custom";
+    const ids = new Set(current.map((item) => String(item?.id || "")));
+    let id = `cat_custom_${base}`;
+    let suffix = 2;
+    while (ids.has(id)) id = `cat_custom_${base}_${suffix++}`;
+
+    const maxSort = current.reduce((max, item) => Math.max(max, Number(item?.sortOrder) || 0), 0);
+    const now = nowIso();
+    const record = {
+      id,
+      name,
+      description: String(opts.description || "").trim(),
+      color: String(opts.color || "#64748b").trim(),
+      sortOrder: Number.isFinite(Number(opts.sortOrder)) ? Math.floor(Number(opts.sortOrder)) : maxSort + 10,
+      createdAt: now,
+      updatedAt: now,
+      status: "active",
+      custom: true,
+      replacementCategoryId: null,
+      aliases: [],
+    };
+    return mergeCategoriesCatalog([record]).find((item) => item.id === id) || record;
+  }
+
+  function mergeLabelsCatalog(labels) {
+    const merged = seedDefaultLabelCatalog([
+      ...getLabelsCatalog(),
+      ...(Array.isArray(labels) ? labels : []),
+    ]);
+    lsSetJson(keyLabelCatalog(), { labels: merged, updatedAt: nowIso() });
+    return merged;
+  }
+
   function normalizeSnapshotMeta(metaRaw) {
     const src = isObj(metaRaw) ? metaRaw : {};
     const out = { ...src };
@@ -557,6 +1227,13 @@
     const folderName = String(src.folderName || "").trim();
     if (folderName) out.folderName = folderName;
     else delete out.folderName;
+    out.originSource = normalizeOriginSource(src.originSource);
+    out.originProjectRef = normalizeProjectRef(src.originProjectRef);
+    out.category = normalizeCategoryAssignment(src.category);
+    out.labels = normalizeLabelAssignments(src.labels);
+    out.tags = normalizeTags(src.tags);
+    out.keywords = normalizeKeywords(src.keywords);
+    out.tagCatalog = normalizeTagCatalog(src.tagCatalog);
     return out;
   }
 
@@ -570,13 +1247,18 @@
       const hasAssistant = !!turnEl.querySelector?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="assistant"]`);
       const hasUser = !!turnEl.querySelector?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="user"]`);
       const role = hasAssistant ? "assistant" : (hasUser ? "user" : "assistant");
-      const outerHTML = String(turnEl.outerHTML || "").trim();
+      const cleanTurn = cloneCaptureNode(turnEl);
+      const outerHTML = String(cleanTurn?.outerHTML || turnEl.outerHTML || "").trim();
       if (!outerHTML) continue;
-      out.push({
-        turnIdx: i + 1,
-        role,
-        outerHTML,
-      });
+      const timeMeta = collectTurnTimeMeta(turnEl);
+      const item = { turnIdx: i + 1, role, outerHTML };
+      if (timeMeta.createTime > 0) item.createTime = timeMeta.createTime;
+      if (timeMeta.userCreateTime > 0) item.userCreateTime = timeMeta.userCreateTime;
+      if (timeMeta.assistantCreateTime > 0) item.assistantCreateTime = timeMeta.assistantCreateTime;
+      if (timeMeta.userMessageId) item.userMessageId = timeMeta.userMessageId;
+      if (timeMeta.assistantMessageId) item.assistantMessageId = timeMeta.assistantMessageId;
+      if (timeMeta.messageTimes && Object.keys(timeMeta.messageTimes).length) item.messageTimes = timeMeta.messageTimes;
+      out.push(item);
     }
     return out;
   }
@@ -981,11 +1663,31 @@
     setLocalViewMode(chatId, legacyViewModeForStrategy(strategy));
     return strategy;
   }
-  // getLocalHotStart — moved to 0D3c
+  function getLocalHotStart(chatId, fallback = 0) {
+    const renderer = getRenderer();
+    if (renderer && typeof renderer.getLocalHotStart === "function") {
+      try { return renderer.getLocalHotStart(chatId, fallback); } catch {}
+    }
+    return normalizeHotStart(lsGetStr(keyHotStart(chatId), null), fallback);
+  }
 
-  // setLocalHotStart — moved to 0D3c
+  function setLocalHotStart(chatId, idxRaw) {
+    const renderer = getRenderer();
+    if (renderer && typeof renderer.setLocalHotStart === "function") {
+      try { return renderer.setLocalHotStart(chatId, idxRaw); } catch {}
+    }
+    const idx = normalizeHotStart(idxRaw, 0);
+    lsSetStr(keyHotStart(chatId), String(idx));
+    return idx;
+  }
 
-  // delLocalHotStart — moved to 0D3c
+  function delLocalHotStart(chatId) {
+    const renderer = getRenderer();
+    if (renderer && typeof renderer.delLocalHotStart === "function") {
+      try { return renderer.delLocalHotStart(chatId); } catch {}
+    }
+    return lsDel(keyHotStart(chatId));
+  }
 
   function getLocalBaseline(chatId) {
     return normalizeBaseline(lsGetJson(keyBaseline(chatId), null), null);
@@ -1333,7 +2035,41 @@
     };
   }
 
-  async function captureNow(chatIdRaw) {
+  function buildCaptureMeta(chatIdRaw, messages, opts = {}) {
+    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    const rows = Array.isArray(messages) ? messages : [];
+    const hints = buildSnapshotMetaHints(rows);
+    const folderMeta = resolveFolderBinding(chatId);
+    const richTurns = Array.isArray(opts.richTurns) ? opts.richTurns : [];
+    const turnHighlights = Array.isArray(opts.turnHighlights) ? opts.turnHighlights : [];
+    const baseMeta = {
+      href: W.location.href,
+      title: D.title || "",
+      source: "dom",
+      baselineTurns: countAssistantTurns(rows),
+      richTurns,
+      excerpt: hints.excerpt,
+      answerCount: hints.answerCount,
+      messageCount: hints.messageCount,
+      updatedAt: hints.updatedAt,
+    };
+    if (turnHighlights.length) baseMeta.turnHighlights = turnHighlights;
+    if (folderMeta.folderId) baseMeta.folderId = folderMeta.folderId;
+    if (folderMeta.folderName) baseMeta.folderName = folderMeta.folderName;
+
+    const merged = { ...baseMeta };
+    for (const [key, value] of Object.entries(isObj(opts) ? opts : {})) {
+      if (key === "richTurns" || key === "turnHighlights") continue;
+      if (value === undefined) continue;
+      merged[key] = value;
+    }
+    if (Array.isArray(opts.richTurns)) merged.richTurns = opts.richTurns;
+    if (Array.isArray(opts.turnHighlights)) merged.turnHighlights = opts.turnHighlights;
+
+    return normalizeSnapshotMeta(merged);
+  }
+
+  async function captureNow(chatIdRaw, captureOpts = {}) {
     const chatId = toChatId(chatIdRaw || getCurrentChatId());
     if (!chatId) throw new Error("missing chatId");
     const messages = captureDomNormalizedMessages();
@@ -1343,22 +2079,11 @@
     const nativeTurns = collectNativeTurnNodes(D);
     const richTurns = captureDomRichTurns(nativeTurns);
     const turnHighlights = captureAssistantTurnHighlights(nativeTurns);
-    const folderMeta = resolveFolderBinding(chatId);
-    const hints = buildSnapshotMetaHints(messages);
-    const meta = {
-      href: W.location.href,
-      title: D.title || "",
-      source: "dom",
-      baselineTurns: countAssistantTurns(messages),
+    const meta = buildCaptureMeta(chatId, messages, {
+      ...(isObj(captureOpts) ? captureOpts : {}),
       richTurns,
-      excerpt: hints.excerpt,
-      answerCount: hints.answerCount,
-      messageCount: hints.messageCount,
-      updatedAt: hints.updatedAt,
-    };
-    if (turnHighlights.length) meta.turnHighlights = turnHighlights;
-    if (folderMeta.folderId) meta.folderId = folderMeta.folderId;
-    if (folderMeta.folderName) meta.folderName = folderMeta.folderName;
+      turnHighlights,
+    });
     if (await ensureExtensionBacked()) {
       try {
         const out = await bridgeCall("captureSnapshot", { chatId, messages, meta });
@@ -1366,6 +2091,7 @@
         if (latest) {
           cacheSnapshot(latest);
           await afterSnapshotCaptured(chatId, latest, "capture-now");
+          showCaptureSaveStrip(chatId, latest);
         }
         return {
           ...(isObj(out) ? out : {}),
@@ -1382,7 +2108,10 @@
     }
     const out = await saveLegacyNormalized(chatId, messages, meta, {});
     const latest = state.latestByChat.get(chatId) || (await loadLatestSnapshotInternal(chatId));
-    if (latest) await afterSnapshotCaptured(chatId, latest, "capture-now");
+    if (latest) {
+      await afterSnapshotCaptured(chatId, latest, "capture-now");
+      showCaptureSaveStrip(chatId, latest);
+    }
     return {
       ...(isObj(out) ? out : {}),
       ok: out?.ok !== false,
@@ -1528,26 +2257,88 @@
     return legacyChatIds();
   }
 
+
+  function normalizeSnapshotMetaPatch(raw = {}) {
+    const src = isObj(raw) ? raw : {};
+    const out = {};
+    if (Object.prototype.hasOwnProperty.call(src, 'tags')) out.tags = normalizeTags(src.tags);
+    if (Object.prototype.hasOwnProperty.call(src, 'keywords')) out.keywords = normalizeKeywords(src.keywords);
+    if (Object.prototype.hasOwnProperty.call(src, 'category')) out.category = normalizeCategoryAssignment(src.category);
+    if (Object.prototype.hasOwnProperty.call(src, 'labels')) out.labels = normalizeLabelAssignments(src.labels);
+    if (Object.prototype.hasOwnProperty.call(src, 'tagCatalog')) out.tagCatalog = normalizeTagCatalog(src.tagCatalog);
+    return out;
+  }
+
+  function mergeTagCatalog(baseCatalogRaw = [], patchCatalogRaw = []) {
+    const map = new Map();
+    for (const row of normalizeTagCatalog(baseCatalogRaw)) map.set(row.id, row);
+    for (const row of normalizeTagCatalog(patchCatalogRaw)) map.set(row.id, { ...(map.get(row.id) || {}), ...row });
+    return Array.from(map.values()).sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
+  }
+
+  function mergeSnapshotMetaPatch(baseMetaRaw, patchRaw = {}, opts = {}) {
+    const base = normalizeSnapshotMeta(baseMetaRaw);
+    const patch = normalizeSnapshotMetaPatch(patchRaw);
+    const next = { ...base, ...patch, updatedAt: nowIso() };
+    if (Object.prototype.hasOwnProperty.call(patch, 'tagCatalog')) next.tagCatalog = mergeTagCatalog(base.tagCatalog, patch.tagCatalog);
+    const source = String(opts?.source || '').trim();
+    if (source) next.source = source;
+    return normalizeSnapshotMeta(next);
+  }
+
+  async function upsertLatestSnapshotMetaInternal(chatIdRaw, patchRaw = {}, opts = {}) {
+    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    if (!chatId) throw new Error('missing chatId');
+    const patch = normalizeSnapshotMetaPatch(patchRaw);
+    if (!Object.keys(patch).length) return { ok: false, status: 'empty-patch', chatId, patch: {} };
+    if (await ensureExtensionBacked()) {
+      try {
+        const out = await bridgeCall('upsertLatestSnapshotMeta', { chatId, patch, opts: { source: String(opts?.source || '').trim() } });
+        const latest = await loadLatestSnapshotInternal(chatId);
+        const row = latest ? buildWorkbenchRow(latest) : null;
+        return { ...(isObj(out) ? out : {}), ok: out?.ok !== false, status: String(out?.status || 'ok'), chatId, patch, snapshot: latest, row, storage: 'extension' };
+      } catch (e) {
+        return { ok: false, status: 'bridge-method-missing', chatId, patch, error: String(e?.message || e || ''), storage: 'extension' };
+      }
+    }
+    const latest = await loadLatestSnapshotInternal(chatId);
+    if (!latest) return { ok: false, status: 'snapshot-not-found', chatId, patch, storage: 'legacy' };
+    const mergedMeta = mergeSnapshotMetaPatch(latest.meta, patch, opts);
+    const out = await saveLegacyNormalized(chatId, latest.messages, mergedMeta, {});
+    const next = state.latestByChat.get(chatId) || (await loadLatestSnapshotInternal(chatId));
+    const row = next ? buildWorkbenchRow(next) : null;
+    return { ...(isObj(out) ? out : {}), ok: out?.ok !== false, status: 'ok', chatId, patch, snapshot: next, row, storage: 'legacy', legacy: true };
+  }
+
   function buildWorkbenchRow(snapshot, overrides = {}) {
     const canonical = canonicalSnapshot(snapshot);
     if (!canonical) return null;
+    const meta = normalizeSnapshotMeta(canonical.meta);
     const hints = buildSnapshotMetaHints(canonical.messages);
     const index = getLocalChatIndex(canonical.chatId);
     const pinnedSnapshotIds = new Set(uniqStringList(index.pinnedSnapshotIds));
     return {
       snapshotId: canonical.snapshotId,
       chatId: canonical.chatId,
-      createdAt: String(overrides.createdAt || canonical.createdAt || canonical.meta?.updatedAt || ""),
-      updatedAt: String(overrides.updatedAt || canonical.meta?.updatedAt || canonical.createdAt || ""),
-      title: String(overrides.title || canonical.meta?.title || canonical.chatId),
-      excerpt: String(overrides.excerpt || canonical.meta?.excerpt || hints.excerpt),
+      createdAt: String(overrides.createdAt || canonical.createdAt || meta.updatedAt || ""),
+      updatedAt: String(overrides.updatedAt || meta.updatedAt || canonical.createdAt || ""),
+      title: String(overrides.title || meta.title || canonical.chatId),
+      excerpt: String(overrides.excerpt || meta.excerpt || hints.excerpt),
       messageCount: Number(overrides.messageCount || canonical.messageCount || hints.messageCount),
-      answerCount: Number(overrides.answerCount || canonical.meta?.answerCount || hints.answerCount),
+      answerCount: Number(overrides.answerCount || meta.answerCount || hints.answerCount),
       pinned: typeof overrides.pinned === "boolean" ? overrides.pinned : pinnedSnapshotIds.has(canonical.snapshotId),
-      archived: !!overrides.archived,
-      folderId: String(overrides.folderId || canonical.meta?.folderId || ""),
-      folderName: String(overrides.folderName || canonical.meta?.folderName || ""),
-      tags: Array.isArray(overrides.tags) ? overrides.tags.slice() : [],
+      archived: typeof overrides.archived === "boolean"
+        ? overrides.archived
+        : !!(meta.archived || meta.state === "archived"),
+      folderId: String(overrides.folderId || meta.folderId || ""),
+      folderName: String(overrides.folderName || meta.folderName || ""),
+      tags: normalizeTags(overrides.tags ?? meta.tags),
+      originSource: normalizeOriginSource(overrides.originSource ?? meta.originSource),
+      originProjectRef: normalizeProjectRef(overrides.originProjectRef ?? meta.originProjectRef),
+      category: normalizeCategoryAssignment(overrides.category ?? meta.category),
+      labels: normalizeLabelAssignments(overrides.labels ?? meta.labels),
+      keywords: normalizeKeywords(overrides.keywords ?? meta.keywords),
+      tagCatalog: normalizeTagCatalog(overrides.tagCatalog ?? meta.tagCatalog),
     };
   }
 
@@ -1606,12 +2397,23 @@
       if (!matchesWorkbenchView(row, view)) return false;
       if (!matchesWorkbenchFolder(row, folderId)) return false;
       if (!query) return true;
+      const labels = row?.labels || {};
       const hay = [
         row?.title,
         row?.excerpt,
         row?.chatId,
         row?.folderId,
         row?.folderName,
+        row?.originSource,
+        row?.category?.primaryCategoryId,
+        row?.category?.secondaryCategoryId,
+        labels.workflowStatusLabelId,
+        labels.priorityLabelId,
+        ...(labels.actionLabelIds || []),
+        ...(labels.contextLabelIds || []),
+        ...(labels.customLabelIds || []),
+        ...(row?.tags || []),
+        ...(row?.keywords || []),
       ].join(" ").toLowerCase();
       return hay.includes(query);
     }));
@@ -1679,11 +2481,62 @@
     }
   }
 
+  async function openLatestSnapshotInWorkbench(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    if (!chatId) return openWorkbench('/saved');
+    let snapshotId = '';
+    try {
+      const latest = await loadLatestSnapshotInternal(chatId);
+      snapshotId = String(latest?.snapshotId || '').trim();
+    } catch {}
+    if (!snapshotId) return openSavedChats({ view: 'saved', chatId, source: 'latest-snapshot-fallback' });
+    return openWorkbench(`/read/${encodeURIComponent(snapshotId)}`);
+  }
+
   function buildDockCaptureStatus(res, countOverride = null) {
     const count = Number((countOverride ?? res?.messageCount) || 0);
     const storage = String(res?.storage || (res?.workbenchVisible ? "extension" : "legacy")).toLowerCase();
     const suffix = storage === "extension" ? "• workbench ready" : "• local only";
     return res?.deduped ? `No change (${count} msg) ${suffix}` : `Captured ${count} msg ${suffix}`;
+  }
+
+  function showCaptureSaveStrip(chatIdRaw, snapshot) {
+    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    const latest = canonicalSnapshot(snapshot);
+    if (!chatId || !latest) return false;
+
+    const api = H2O.archiveSaveStrip;
+    const payload = {
+      chatId,
+      snapshotId: String(latest.snapshotId || ""),
+      title: String(latest.meta?.title || D.title || ""),
+      folderId: String(latest.meta?.folderId || ""),
+      folderName: String(latest.meta?.folderName || ""),
+    };
+
+    // Try to include the freshest folder binding
+    try {
+      const binding = resolveFolderBinding(chatId);
+      if (binding.folderId) {
+        payload.folderId = binding.folderId;
+        payload.folderName = binding.folderName || payload.folderName;
+      }
+    } catch {}
+
+    if (!api || typeof api.show !== "function") {
+      // 0D3d hasn't registered yet — queue the call; 0D3d will flush it on boot.
+      warn("save strip not ready yet — queuing show call");
+      (H2O._saveStripQueue = H2O._saveStripQueue || []).push(payload);
+      return false;
+    }
+
+    try {
+      api.show(payload);
+      return true;
+    } catch (e) {
+      warn("save strip show failed", e);
+      return false;
+    }
   }
 
   async function captureWithOptions(opts = {}) {
@@ -1692,11 +2545,20 @@
     const folderResult = setFolderBinding(chatId, opts.folderId);
     const mode = normalizeAfterSaveMode(opts.mode || SAVE_MODE_SILENT);
     setDockAfterSaveMode(mode);
-    const res = await captureNow(chatId);
+    const captureMetaOverrides = {
+      originSource: opts.originSource,
+      originProjectRef: opts.originProjectRef,
+      category: opts.category,
+      labels: opts.labels,
+      tags: opts.tags,
+      keywords: opts.keywords,
+    };
+    const res = await captureNow(chatId, captureMetaOverrides);
     const snapshotId = String(res?.snapshotId || "");
     let afterOpen = null;
-    if (mode === SAVE_MODE_READER || mode === SAVE_MODE_LIBRARY) {
-      // Reader removed — SAVE_MODE_READER now falls through to library view
+    if (mode === SAVE_MODE_READER) {
+      afterOpen = await openLatestSnapshotInWorkbench(chatId);
+    } else if (mode === SAVE_MODE_LIBRARY) {
       afterOpen = await openSavedChats({
         view: normalizeArchiveView(opts.view || "saved"),
         folderId: folderResult.folderId,
@@ -1797,6 +2659,10 @@
       scope,
       chatCount: chats.length,
       chats,
+      catalogs: {
+        categories: getCategoriesCatalog(),
+        labels: getLabelsCatalog(),
+      },
       source: "legacy",
     };
   }
@@ -1816,6 +2682,16 @@
     let importedChats = 0;
     let importedSnapshots = 0;
 
+    const categoryCatalog = isObj(bundle.catalogs) && Array.isArray(bundle.catalogs.categories)
+      ? mergeCategoriesCatalog(bundle.catalogs.categories)
+      : getCategoriesCatalog();
+
+    if (isObj(bundle.catalogs) && Array.isArray(bundle.catalogs.labels)) {
+      mergeLabelsCatalog(bundle.catalogs.labels);
+    } else {
+      getLabelsCatalog();
+    }
+
     for (const chat of bundle.chats) {
       const chatId = toChatId(chat?.chatId);
       if (!chatId) continue;
@@ -1832,10 +2708,14 @@
       for (const snap of snaps) {
         const messages = normalizeMessages(snap?.messages);
         if (!messages.length) continue;
+        const existing = loadLegacyLatestRaw(chatId);
         const importedMeta = normalizeSnapshotMeta({
           ...(isObj(snap?.meta) ? snap.meta : {}),
           importedAt: nowIso(),
         });
+        if (isObj(existing?.meta)) {
+          importedMeta.category = mergeCategoryRecords(existing.meta.category, importedMeta.category, categoryCatalog);
+        }
         await saveLegacyNormalized(chatId, messages, importedMeta, {
           forceNew: true,
           snapshotId: String(snap?.snapshotId || ""),
@@ -1851,9 +2731,9 @@
     return { ok: true, mode, importedChats, importedSnapshots, source: "legacy" };
   }
 
-  async function importBundle({ bundle, mode = "merge" } = {}) {
+  async function importBundle({ bundle, mode = "merge", timeoutMs = BRIDGE_IMPORT_BUNDLE_TIMEOUT_MS } = {}) {
     if (await ensureExtensionBacked()) {
-      return bridgeCall("importBundle", { bundle, mode: String(mode || "merge") });
+      return bridgeCall("importBundle", { bundle, mode: String(mode || "merge") }, timeoutMs);
     }
     return importLegacyBundle(bundle, mode);
   }
@@ -2737,6 +3617,7 @@
       const chatId = toChatId(chatIdRaw || getCurrentChatId());
       return chatId ? (state.latestByChat.get(chatId) || null) : null;
     },
+    upsertLatestSnapshotMeta: (chatId, patch = {}, opts = {}) => upsertLatestSnapshotMetaInternal(chatId, patch, opts),
     listSnapshots: (chatId) => listSnapshots(chatId),
     loadSnapshot: (snapshotId) => loadSnapshot(snapshotId),
     pinSnapshot: (snapshotId, pinned) => pinSnapshot(snapshotId, pinned),
@@ -2754,6 +3635,9 @@
     refreshDockState: (chatId) => refreshDockState(chatId),
     getFoldersList,
     resolveFolderBinding,
+    getLabelsCatalog,
+    getCategoriesCatalog,
+    createCategory: (name, opts = {}) => createCategory(name, opts),
     getArchiveAdvancedSettings: () => getArchiveAdvancedSettings(),
   };
 
@@ -2766,7 +3650,8 @@
     getLocalViewMode, setLocalViewMode,
     getLocalLoadStrategy, setLocalLoadStrategy,
     setDockWarning, getDockWarning, setDockStatusText, getDockStatusText, refreshDockState,
-    getFoldersList, resolveFolderBinding, setFolderBinding,
+    getFoldersList, resolveFolderBinding, setFolderBinding, getLabelsCatalog, getCategoriesCatalog,
+    createCategory,
     migrateLocalChatKeysIfNeeded, migrateLegacyIfNeeded,
     getArchiveAdvancedSettings: () => getArchiveAdvancedSettings(),
     getCurrentChatId, toChatId,
@@ -2778,6 +3663,7 @@
   archiveBoot.ARCH_VIEW_REBUILD_FIRST = ARCH_VIEW_REBUILD_FIRST;
   archiveBoot.LOAD_STRATEGY_AUTO = LOAD_STRATEGY_AUTO;
   archiveBoot.isExtensionBacked = () => isExtensionBacked();
+  archiveBoot.upsertLatestSnapshotMeta = (chatId, patch = {}, opts = {}) => upsertLatestSnapshotMetaInternal(chatId, patch, opts);
   archiveBoot.getPageMode = (chatId) => getPageMode(chatId);
   archiveBoot.setPageMode = (chatId, mode) => setPageMode(chatId, mode);
   archiveBoot.getLoadStrategy = (chatId) => getLoadStrategy(chatId);
@@ -2816,6 +3702,9 @@
   archiveBoot.deleteSnapshot = (snapshotId) => deleteSnapshot(snapshotId);
   archiveBoot.getFolderBinding = (chatId) => resolveFolderBinding(chatId);
   archiveBoot.setFolderBinding = (chatId, folderId) => setFolderBinding(chatId, folderId);
+  archiveBoot.getLabelsCatalog = () => getLabelsCatalog();
+  archiveBoot.getCategoriesCatalog = () => getCategoriesCatalog();
+  archiveBoot.createCategory = (name, opts = {}) => createCategory(name, opts);
   archiveBoot.exportBundle = (opts = {}) => exportBundle(opts);
   archiveBoot.importBundle = (opts = {}) => importBundle(opts);
 

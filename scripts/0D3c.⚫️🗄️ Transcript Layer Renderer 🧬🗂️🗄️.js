@@ -3,7 +3,7 @@
 // @name               0D3c.⚫️🗄️ Transcript Layer Renderer 🧬🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.layer.renderer
 // @author             HumamDev
-// @version            1.0.0
+// @version            1.1.0
 // @revision           001
 // @build              260404-000000
 // @description        Transcript renderer: hybrid cold/hot rendering, archive page surface, local saved chats panel, and renderer-local listeners.
@@ -110,7 +110,7 @@
   const ARCHIVE_ADVANCED_DEFAULTS = Object.freeze({autoCaptureWhenSnapshotMissing:false,allowStaleSnapshotBoot:false,keepPreviewUntilNativeStable:true,forceFallbackOnMountFailure:true,forceFallbackOnHostFailure:true,showFallbackReason:true,showSnapshotMeta:false,debugArchiveEvents:false});
   const ATTR_MESSAGE_AUTHOR_ROLE="data-message-author-role";
   const SEL_MESSAGE_NODES=`[${ATTR_MESSAGE_AUTHOR_ROLE}="user"],[${ATTR_MESSAGE_AUTHOR_ROLE}="assistant"]`;
-  const SEL_TURN_PRIMARY='article[data-testid="conversation-turn"],div[data-testid="conversation-turn"]';
+  const SEL_TURN_PRIMARY='[data-testid="conversation-turn"],[data-testid^="conversation-turn-"]';
 
   /* ─── State ─── */
   const state = {
@@ -136,6 +136,96 @@
    * ═══════════════════════════════════════════════════════════════════ */
 
   /* --- Scattered helpers --- */
+  function normalizeMode(raw) {
+    const v = String(raw || "").trim().toLowerCase();
+    if (v === MODE_ARCHIVE_FIRST) return MODE_ARCHIVE_FIRST;
+    if (v === MODE_ARCHIVE_ONLY) return MODE_ARCHIVE_ONLY;
+    return MODE_LIVE_FIRST;
+  }
+
+  function normalizePageMode(raw) {
+    return normalizeMode(raw);
+  }
+
+  function normalizeLoadStrategy(raw) {
+    const v = String(raw || "").trim().toLowerCase();
+    if (v === LOAD_STRATEGY_AUTO) return LOAD_STRATEGY_AUTO;
+    if (v === ARCH_VIEW_CACHE_FIRST || v === "fast") return ARCH_VIEW_CACHE_FIRST;
+    return ARCH_VIEW_REBUILD_FIRST;
+  }
+
+  function loadStrategyLabel(strategyRaw) {
+    const strategy = normalizeLoadStrategy(strategyRaw);
+    if (strategy === LOAD_STRATEGY_AUTO) return "Auto";
+    if (strategy === ARCH_VIEW_CACHE_FIRST) return "Fast";
+    return "Safe";
+  }
+
+  function activeSourceLabel(sourceRaw) {
+    const source = String(sourceRaw || "").trim().toLowerCase();
+    if (source === ACTIVE_SOURCE_SNAPSHOT) return "Snapshot";
+    if (source === ACTIVE_SOURCE_ARCHIVE) return "Archive";
+    return "Native";
+  }
+
+  function normalizeFallbackReason(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (!value || value === FALLBACK_REASON_NONE) return FALLBACK_REASON_NONE;
+    if (value === FALLBACK_REASON_SNAPSHOT_MISSING) return FALLBACK_REASON_SNAPSHOT_MISSING;
+    if (value === FALLBACK_REASON_LIVE_SINGLE_VIEW) return FALLBACK_REASON_LIVE_SINGLE_VIEW;
+    if (value === FALLBACK_REASON_HOST_FAILED) return FALLBACK_REASON_HOST_FAILED;
+    if (value === FALLBACK_REASON_MOUNT_FAILED) return FALLBACK_REASON_MOUNT_FAILED;
+    if (/snapshot/.test(value) && /missing/.test(value)) return FALLBACK_REASON_SNAPSHOT_MISSING;
+    if (/host/.test(value) && /fail/.test(value)) return FALLBACK_REASON_HOST_FAILED;
+    if (/mount/.test(value) && /fail/.test(value)) return FALLBACK_REASON_MOUNT_FAILED;
+    if (/live/.test(value) && /single/.test(value)) return FALLBACK_REASON_LIVE_SINGLE_VIEW;
+    return value;
+  }
+
+  function fallbackReasonLabel(reasonRaw) {
+    const reason = normalizeFallbackReason(reasonRaw);
+    if (reason === FALLBACK_REASON_SNAPSHOT_MISSING) return "Snapshot Missing";
+    if (reason === FALLBACK_REASON_LIVE_SINGLE_VIEW) return "Live Keeps Native View";
+    if (reason === FALLBACK_REASON_HOST_FAILED) return "Host Failed";
+    if (reason === FALLBACK_REASON_MOUNT_FAILED) return "Mount Failed";
+    if (reason === FALLBACK_REASON_NONE) return "None";
+    return String(reason || "None");
+  }
+
+  function normalizeArchiveAdvancedSettings(raw) {
+    const src = isObj(raw) ? raw : {};
+    return {
+      autoCaptureWhenSnapshotMissing: src.autoCaptureWhenSnapshotMissing === true,
+      allowStaleSnapshotBoot: src.allowStaleSnapshotBoot === true,
+      keepPreviewUntilNativeStable: src.keepPreviewUntilNativeStable !== false,
+      forceFallbackOnMountFailure: src.forceFallbackOnMountFailure !== false,
+      forceFallbackOnHostFailure: src.forceFallbackOnHostFailure !== false,
+      showFallbackReason: src.showFallbackReason !== false,
+      showSnapshotMeta: src.showSnapshotMeta === true,
+      debugArchiveEvents: src.debugArchiveEvents === true,
+    };
+  }
+
+  function buildArchiveHelpText(pageModeRaw) {
+    const pageMode = normalizePageMode(pageModeRaw);
+    if (pageMode === MODE_ARCHIVE_FIRST) return "Archive Preview shows one archive-first transcript in a controlled single-view surface.";
+    if (pageMode === MODE_ARCHIVE_ONLY) return "Archive Only hides the live page and shows archive content only.";
+    return "Live shows the normal native chat only, even when archive data is used internally.";
+  }
+
+  function normalizeFolderFilter(raw) {
+    return String(raw || "").trim();
+  }
+
+  function normalizeBaseline(raw, fallback = null) {
+    const src = isObj(raw) ? raw : {};
+    const snapshotId = String(src.snapshotId || "");
+    const baselineCount = normalizeHotStart(src.baselineCount, 0);
+    const capturedAt = String(src.capturedAt || "");
+    if (!snapshotId && !baselineCount) return fallback;
+    return { snapshotId, baselineCount, capturedAt };
+  }
+
   function pageModeLabel(modeRaw) {
     const mode = normalizePageMode(modeRaw);
     if (mode === MODE_ARCHIVE_FIRST) return "Archive Preview";
@@ -143,10 +233,37 @@
     return "Live";
   }
 
+  function isArchiveInjectedNode(el) {
+    if (!el || el.nodeType !== 1) return true;
+    if (!el.isConnected) return true;
+    try {
+      return !!(
+        el.closest(".h2o-cold-layer")
+        || el.closest(".h2o-archive-native-detached-bin")
+        || el.closest('[data-h2o-cold="1"]')
+      );
+    } catch {
+      return true;
+    }
+  }
+
+  function isConversationTurnNode(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const testid = String(el.getAttribute?.("data-testid") || "").trim();
+    return testid === "conversation-turn" || testid.startsWith("conversation-turn-");
+  }
+
   function collectNativeTurnNodes(rootEl = null) {
     const root = rootEl && rootEl.querySelectorAll ? rootEl : D;
-    const nodes = Array.from(root.querySelectorAll(SEL_TURN_PRIMARY));
-    return nodes.filter((el) => !isArchiveInjectedNode(el));
+    const nodes = [];
+    if (isConversationTurnNode(root)) nodes.push(root);
+    nodes.push(...Array.from(root.querySelectorAll(SEL_TURN_PRIMARY)));
+    const seen = new Set();
+    return nodes.filter((el) => {
+      if (!el || seen.has(el) || isArchiveInjectedNode(el)) return false;
+      seen.add(el);
+      return true;
+    });
   }
 
   function getLocalHotStart(chatId, fallback = 0) {

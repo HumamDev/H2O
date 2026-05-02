@@ -3,7 +3,7 @@
 // @name               0Z1b.⚫️🗄️🕹️ Data Tab (Control Hub 🔌 Plugin) 🕹️
 // @namespace          H2O.Premium.CGX.data.tab.control.hub.plugin
 // @author             HumamDev
-// @version            1.1.0
+// @version            1.1.6
 // @revision           001
 // @build              260304-102754
 // @description        Adds the Data tab (Archive / Backup / WebDAV / Vault) to H2O Control Hub via plugin registry.
@@ -804,16 +804,18 @@ function boot(api){
       { id:'B', label:'B', title:'Backup' },
       { id:'C', label:'C', title:'Versions' },
       { id:'D', label:'D', title:'Sync' },
+      { id:'E', label:'E', title:'Connect' },
     ];
+    const DATA_SUBTAB_IDS = new Set(DATA_SUBTABS.map(t => t.id));
 
     function DATA_getSubtab(){
-      return (DATA_ACTIVE_SUBTAB === 'A' || DATA_ACTIVE_SUBTAB === 'B' || DATA_ACTIVE_SUBTAB === 'C' || DATA_ACTIVE_SUBTAB === 'D')
+      return DATA_SUBTAB_IDS.has(DATA_ACTIVE_SUBTAB)
         ? DATA_ACTIVE_SUBTAB
         : 'D';
     }
 
     function DATA_setSubtab(v){
-      DATA_ACTIVE_SUBTAB = (v === 'A' || v === 'B' || v === 'C' || v === 'D') ? v : 'D';
+      DATA_ACTIVE_SUBTAB = DATA_SUBTAB_IDS.has(v) ? v : 'D';
     }
 
     function DATA_mountSubtabs(panel){
@@ -866,7 +868,7 @@ function boot(api){
     function DATA_getControlsFiltered(all){
       const active = DATA_getSubtab();
       const prefix = `(${active})`;
-      // show only the selected group (A/B/C/D)
+      // show only the selected group (A/B/C/D/E)
       return all.filter(def => {
         const g = def?.group || '';
         return typeof g === 'string' && g.startsWith(prefix);
@@ -880,15 +882,72 @@ function boot(api){
         key:'dataSync',
         group:'(D) Sync (WebDAV / Manual + LiveSync)',
         label:'Sync ☁️',
-        help:'Off-device safety. Manual = copy/paste JSON. WebDAV = remote PUT/GET (app password). LiveSync = near-realtime auto push/pull.',
+        help:'Off-device runtime actions. Configure cloud storage in Connect before using WebDAV push/pull.',
         buttons:[
           { label:'Use Manual (copy/paste)', primary:false, action: DATA_setSyncTargetManualAction },
-          { label:'WebDAV Portal…', primary:false, action: DATA_setSyncTargetWebDAVAction },
-        { label:'Sync Monitor…', primary:false, action: DATA_openSyncMonitorAction },
+          { label:'Sync Monitor…', primary:false, action: DATA_openSyncMonitorAction },
           { label:'Sync — Push (Backup)', primary:true, action: DATA_syncPushBackupAction },
           { label:'Sync — Pull (Backup)', primary:false, action: DATA_syncPullBackupAction },
           { label:'Sync — Push (Versions) ⚠️ deprecated', primary:false, action: DATA_syncPushVaultAction },
           { label:'Sync — Pull (Versions) ⚠️ deprecated', primary:false, action: DATA_syncPullVaultAction },
+        ],
+      },
+      {
+        type:'toggle',
+        key:'accountLiveEnabled',
+        group:'(D) Sync Runtime',
+        label:'Live Sync',
+        help:'Automatically push and poll linked cloud storage in the background.',
+        def:false,
+        getLive() { return !!DATA_getLiveSyncCfg()?.enabled; },
+        setLive(v) { DATA_setLiveSyncEnabled(!!v); },
+      },
+      {
+        type:'range',
+        key:'accountLivePollMs',
+        group:'(D) Sync Runtime',
+        label:'Poll Interval',
+        help:'How often the sync runtime checks for remote changes.',
+        def:2000,
+        min:500,
+        max:15000,
+        step:250,
+        unit:'ms',
+        getLive() { return Number(DATA_getLiveSyncCfg()?.pollMs || 2000); },
+        setLive(v) { DATA_setLiveSyncCfg({ pollMs: v }); },
+      },
+      {
+        type:'range',
+        key:'accountLiveDebounceMs',
+        group:'(D) Sync Runtime',
+        label:'Push Debounce',
+        help:'Delay before batched local changes are pushed upstream.',
+        def:650,
+        min:120,
+        max:5000,
+        step:50,
+        unit:'ms',
+        getLive() { return Number(DATA_getLiveSyncCfg()?.debounceMs || 650); },
+        setLive(v) { DATA_setLiveSyncCfg({ debounceMs: v }); },
+      },
+      {
+        type:'action',
+        key:'dataArchiveSyncPush',
+        group:'(D) Sync (Archive)',
+        label:'Archive Sync — Push ☁️📤',
+        help:'Push the full local archive to the configured WebDAV remote as h2o-archive.json. Requires WebDAV configured in Connect tab.',
+        buttons:[
+          { label:'Push Archive to Remote', primary:true, statusLoading:'Pushing…', action: DATA_syncArchivePushAction },
+        ],
+      },
+      {
+        type:'action',
+        key:'dataArchiveSyncPull',
+        group:'(D) Sync (Archive)',
+        label:'Archive Sync — Pull ☁️📥',
+        help:'Pull the remote h2o-archive.json and merge it into the local archive. Safe to run multiple times because merge is idempotent.',
+        buttons:[
+          { label:'Pull Archive from Remote', primary:true, statusLoading:'Pulling…', action: DATA_syncArchivePullAction },
         ],
       },
       {
@@ -908,7 +967,7 @@ function boot(api){
         label:'Archive Page & Status 🧭',
         help:'Page Mode decides what transcript is visible. Load Strategy decides how that mode loads.',
         buttons:[
-          { label:'Open Studio (Reader deprecated)', primary:false, action: DATA_openArchiveReaderAction },
+          { label:'Open Latest Snapshot', primary:false, action: DATA_openArchiveReaderAction },
           { label:'Open Saved Chats', primary:false, action: DATA_openArchiveSavedChatsAction },
           { label:'Refresh Snapshot', primary:false, action: DATA_refreshArchiveSnapshotAction },
           { label:'Reload Page', primary:false, action: DATA_reloadPageAction },
@@ -916,27 +975,24 @@ function boot(api){
       },
       {
         type:'action',
-        key:'dataArchiveExport',
-        group:'(A) Snapshot / Archive',
-        label:'Export — Archive Latest 📤',
-        help:'Export from Archive Latest (what you captured). For live/selection export, use Export Chat.',
+        key:'dataArchiveBundleExport',
+        group:'(A) Archive Bundle',
+        label:'Archive Bundle — Export 🗂️📦',
+        help:'Export archive as a portable h2o.chatArchive.bundle.v1 JSON bundle for cross-device sync with the mobile app.',
         buttons:[
-          { label:'Markdown', action: () => DATA_exportLatestArchive('markdown') },
-          { label:'HTML', action: () => DATA_exportLatestArchive('html') },
-          { label:'PDF', action: () => DATA_exportLatestArchive2('pdf') },
-          { label:'DOCX', action: () => DATA_exportLatestArchive2('docx') },
-          { label:'DOC (legacy)', action: () => DATA_exportLatestArchive2('doc') },
-          { label:'JSON', action: () => DATA_exportLatestArchive('json') },
+          { label:'Export Bundle — This Chat', primary:true, statusLoading:'Exporting…', action: () => DATA_exportArchiveBundleAction('chat') },
+          { label:'Export Bundle — All Chats', primary:false, statusLoading:'Exporting…', action: () => DATA_exportArchiveBundleAction('all') },
         ],
       },
       {
         type:'action',
-        key:'dataExportChat',
-        group:'(A) Snapshot / Archive',
-        label:'Export Chat (shortcut) 📀',
-        help:'Shortcut to open the dedicated Export Chat tool (exports the current live chat or selected messages).',
+        key:'dataArchiveBundleImport',
+        group:'(A) Archive Bundle',
+        label:'Archive Bundle — Import 🗂️📥',
+        help:'Import an archive bundle from mobile or another browser. Merge = keep existing data, add new. Overwrite = replace existing.',
         buttons:[
-          { label:'Open Export Chat', primary:true, action: DATA_openExportChatAction },
+          { label:'Import Bundle (Merge)', primary:true, statusLoading:'Importing…', action: () => DATA_importArchiveBundleAction('merge') },
+          { label:'Import Bundle (Overwrite)', primary:false, statusLoading:'Importing…', action: () => DATA_importArchiveBundleAction('overwrite') },
         ],
       },
       {
@@ -971,6 +1027,54 @@ function boot(api){
           { label:'List Versions', primary:false, action: DATA_vaultList },
         ],
       },
+      {
+        type:'custom',
+        key:'dataConnectStatus',
+        group:'(E) Connect (Cloud / Storage Link)',
+        label:'Connection Status',
+        help:'Shows the current WebDAV link state, identity, and endpoint preview.',
+        render(ctx) { return DATA_renderConnectStatus(ctx); },
+      },
+      {
+        type:'action',
+        key:'dataConnectWebDAV',
+        group:'(E) Connect (Cloud / Storage Link)',
+        label:'WebDAV Portal / Link',
+        help:'Configure, link, test, or unlink the WebDAV storage connection used by sync actions.',
+        buttons:[
+          { label:'WebDAV Portal / Link / Update', primary:true, action: DATA_setSyncTargetWebDAVAction },
+          { label:'Test Connection', primary:false, statusLoading:'Testing…', action: DATA_testWebDAVConnectionAction },
+          { label:'Unlink', primary:false, statusLoading:'Unlinking…', action: DATA_unlinkWebDAVAction },
+        ],
+      },
+    ];
+
+    const DATA_EXPORT_CONTROLS = [
+      {
+        type:'action',
+        key:'dataArchiveExport',
+        group:'Archive Latest',
+        label:'Export — Archive Latest 📤',
+        help:'Export from Archive Latest (what you captured). For live/selection export, use Export Chat.',
+        buttons:[
+          { label:'Markdown', action: () => DATA_exportLatestArchive('markdown') },
+          { label:'HTML', action: () => DATA_exportLatestArchive('html') },
+          { label:'PDF', action: () => DATA_exportLatestArchive2('pdf') },
+          { label:'DOCX', action: () => DATA_exportLatestArchive2('docx') },
+          { label:'DOC (legacy)', action: () => DATA_exportLatestArchive2('doc') },
+          { label:'JSON', action: () => DATA_exportLatestArchive('json') },
+        ],
+      },
+      {
+        type:'action',
+        key:'dataExportChat',
+        group:'Export Chat',
+        label:'Export Chat (shortcut) 📀',
+        help:'Shortcut to open the dedicated Export Chat tool (exports the current live chat or selected messages).',
+        buttons:[
+          { label:'Open Export Chat', primary:true, action: DATA_openExportChatAction },
+        ],
+      },
     ];
 
     function DATA_renderActiveSubtabSurface(panel){
@@ -993,6 +1097,12 @@ function boot(api){
       getControls: () => DATA_getControlsFiltered(DATA_CONTROLS),
       detailHook: ({ panel }) => SAFE_call('detailHook', () => { DATA_scrollBodyTop(panel); DATA_mountSubtabs(panel); DATA_renderActiveSubtabSurface(panel); DATA_renderSummary(panel); }),
       afterAction: ({ panel }) => SAFE_call('afterAction', () => { DATA_mountSubtabs(panel); DATA_renderActiveSubtabSurface(panel); DATA_renderSummary(panel); }),
+    });
+
+    api.registerPlugin({
+      key: 'saveExport',
+      title: 'Export',
+      getControls: () => DATA_EXPORT_CONTROLS,
     });
 
     if (typeof api.invalidate === 'function') api.invalidate();
@@ -1060,6 +1170,23 @@ function boot(api){
 
   function DATA_archiveChatId(){
     return String(H2O.util?.getChatId?.() || '');
+  }
+
+
+  async function DATA_openLatestArchiveSnapshotAction(){
+    const ab = DATA_getArchiveBootApi();
+    if (!ab || typeof ab.openWorkbench !== 'function') return { message: DATA_archiveModuleMissingMessage() };
+    const chatId = DATA_archiveChatId();
+    let snapshotId = '';
+    if (typeof ab.loadLatestSnapshot === 'function' && chatId) {
+      try {
+        const latest = await ab.loadLatestSnapshot(chatId);
+        snapshotId = String(latest?.snapshotId || '').trim();
+      } catch {}
+    }
+    const route = snapshotId ? `/read/${encodeURIComponent(snapshotId)}` : '/saved';
+    try { await ab.openWorkbench(route); } catch {}
+    return { ok: true, message: snapshotId ? 'Latest snapshot opened in Studio.' : 'Studio opened.' };
   }
 
   function DATA_invalidate(){
@@ -1196,7 +1323,7 @@ function boot(api){
       ['Capture Snapshot Now', 'primary', async () => DATA_captureArchiveAction()],
       ['Refresh Snapshot', '', async () => DATA_refreshArchiveSnapshotAction()],
       ['Open Saved Chats', '', async () => DATA_openArchiveSavedChatsAction()],
-      ['Open Studio', '', async () => DATA_openArchiveReaderAction()],
+      ['Open Latest Snapshot', '', async () => DATA_openArchiveReaderAction()],
     ];
 
     const refreshUi = async () => {
@@ -1404,13 +1531,7 @@ function boot(api){
   }
 
   async function DATA_openArchiveReaderAction(){
-    // Reader removed (v1.1.0) — redirect to Studio workbench or show deprecation notice.
-    const ab = DATA_getArchiveBootApi();
-    if (ab && typeof ab.openWorkbench === 'function') {
-      try { await ab.openWorkbench('/saved'); } catch {}
-      return { ok: true, message: 'Opened Studio (Reader deprecated — use Studio or hybrid view).' };
-    }
-    return { message: 'Reader has been replaced by hybrid in-page loading and Studio workbench.' };
+    return DATA_openLatestArchiveSnapshotAction();
   }
 
   function DATA_reloadPageAction(){
@@ -1481,6 +1602,40 @@ function boot(api){
     if (!btn) return { message: 'Export Chat button not found (is Export Chat script enabled?).' };
     try { btn.click(); } catch {}
     return { ok: true, message: 'Opened Export Chat.' };
+  }
+
+  async function DATA_exportArchiveBundleAction(scope){
+    const ab = DATA_getArchiveBootApi();
+    if (!ab) return { message: DATA_archiveModuleMissingMessage() };
+    const chatId = DATA_archiveChatId();
+    const bundle = await ab.exportBundle({ scope: scope || 'all', chatId });
+    if (!bundle || bundle.schema !== 'h2o.chatArchive.bundle.v1') {
+      return { message: 'Export failed: archive engine returned an invalid bundle.' };
+    }
+    const json = JSON.stringify(bundle, null, 2);
+    const fname = `h2o_archive_bundle_${Date.now()}.json`;
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = D.createElement('a');
+    a.href = url; a.download = fname; a.style.display = 'none';
+    D.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    return { ok: true, message: `Exported ${bundle.chatCount} chat(s) → ${fname}` };
+  }
+
+  async function DATA_importArchiveBundleAction(mode){
+    const ab = DATA_getArchiveBootApi();
+    if (!ab) return { message: DATA_archiveModuleMissingMessage() };
+    const raw = await DATA_pickJSONFile();
+    if (!raw) return { message: 'No file selected.' };
+    let bundle;
+    try { bundle = JSON.parse(raw); } catch { return { message: 'Invalid JSON — could not parse file.' }; }
+    if (!bundle || bundle.schema !== 'h2o.chatArchive.bundle.v1') {
+      return { message: 'Not a valid H2O archive bundle (expected schema h2o.chatArchive.bundle.v1).' };
+    }
+    const result = await ab.importBundle({ bundle, mode: mode || 'merge' });
+    if (!result?.ok) return { message: 'Import failed — archive engine returned an error.' };
+    return { ok: true, message: `Imported ${result.importedChats} chat(s), ${result.importedSnapshots} snapshot(s) [${result.mode}].` };
   }
 
   async function DATA_exportLatestArchive2(kind){
@@ -1565,7 +1720,160 @@ function boot(api){
 /* ───────────────────────────── 🟦 Data: Sync (Manual + WebDAV) ───────────────────────────── */
 
 function DATA_getSyncApi() {
-  return H2O?.sync || null;
+  return H2O?.sync || H2O?.data?.sync || null;
+}
+
+function DATA_getLiveSyncApi() {
+  const api = DATA_getSyncApi();
+  return api?.live || H2O?.data?.sync?.live || null;
+}
+
+function DATA_getLiveSyncCfg() {
+  try { return DATA_getLiveSyncApi()?.getCfg?.() || null; } catch {}
+  return null;
+}
+
+function DATA_setLiveSyncCfg(patch) {
+  const live = DATA_getLiveSyncApi();
+  if (!live?.setCfg) return null;
+  const current = DATA_getLiveSyncCfg() || {};
+  const next = { ...current, ...(patch || {}) };
+  try {
+    live.setCfg(next);
+    DATA_invalidate();
+    return next;
+  } catch {}
+  return null;
+}
+
+function DATA_setLiveSyncEnabled(on) {
+  return DATA_setLiveSyncCfg({ enabled: !!on });
+}
+
+const DATA_SYNC_ARCHIVE_FILE = 'h2o-archive.json';
+const DATA_SYNC_LAST_KEY = 'h2o:prm:cgx:h2odata:sync:last:v1';
+const DATA_SYNC_CREDS_KEY = 'h2o:prm:cgx:h2odata:sync:webdav:creds:v1';
+const DATA_ARCHIVE_IMPORT_TIMEOUT_MS = 120000;
+
+function DATA_syncNowIso() { return new Date().toISOString(); }
+
+async function DATA_syncSha256(str) {
+  try {
+    const enc = new TextEncoder();
+    const buf = enc.encode(String(str || ''));
+    const dig = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(dig)).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    let h = 0;
+    const s = String(str || '');
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h) + s.charCodeAt(i), h |= 0;
+    return `weak:${Math.abs(h)}`;
+  }
+}
+
+function DATA_syncSerializePayload(payload) {
+  return JSON.stringify(payload);
+}
+
+function DATA_syncLoadLast() {
+  try {
+    const raw = localStorage.getItem(DATA_SYNC_LAST_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {}
+  return {
+    schema: 'H2O.sync.last.v1',
+    backup: { push: null, pull: null, remoteHash: null, conflict: null },
+    vault: { push: null, pull: null, remoteHash: null, conflict: null },
+    live: { push: null, pull: null, remoteHash: null, conflict: null, enabled: false, polling: false },
+  };
+}
+
+function DATA_syncSaveLast(obj) {
+  try { localStorage.setItem(DATA_SYNC_LAST_KEY, JSON.stringify(obj)); } catch {}
+  return obj;
+}
+
+function DATA_getWebDavTransport(api) {
+  const P = api?.providers?.webdav || null;
+  const T = (P && typeof P.transport === 'object') ? P.transport : P;
+  if (!T || typeof T !== 'object') return { ok: false, error: 'provider missing' };
+
+  const transport = {
+    fileUrl: T.fileUrl,
+    test: T.test,
+    putText: T.putText,
+    putJSON: T.putJSON,
+    getJSON: T.getJSON,
+  };
+
+  const bad = [];
+  const sw = api?.webdav || {};
+  const isLegacySurface = (T === P);
+  if (isLegacySurface) {
+    if (typeof transport.test === 'function' && (transport.test === sw.test || transport.test.length < 1)) bad.push('test');
+    if (typeof transport.putJSON === 'function' && transport.putJSON.length < 3) bad.push('putJSON');
+    if (typeof transport.getJSON === 'function' && transport.getJSON.length < 2) bad.push('getJSON');
+  }
+  if (bad.length) return { ok: false, error: `provider recursion guard (${bad.join(', ')})` };
+
+  return { ok: true, transport };
+}
+
+function DATA_getWebDavReady(api) {
+  const webdav = api?.webdav || null;
+  if (!webdav?.getState) return { ok: false, message: 'H2O Data API missing ❌' };
+  const snap = webdav.getState();
+  const st = snap?.state || {};
+  if (!st.linked) return { ok: false, message: 'WebDAV is not linked. Configure and link WebDAV in the Connect tab first.' };
+
+  const c = snap?.creds || {};
+  const sessionPass = (() => {
+    try { return sessionStorage.getItem(`${DATA_SYNC_CREDS_KEY}:sessionPass`) || ''; } catch { return ''; }
+  })();
+  const creds = {
+    ...c,
+    url: c.url || c.baseUrl || '',
+    root: c.root || c.folder || 'H2O',
+    username: c.username || c.user || '',
+    password: c.password || c.pass || sessionPass || '',
+  };
+  if (!creds.url || !creds.username || !creds.password) {
+    return { ok: false, message: 'WebDAV credentials are incomplete. Open the Connect tab WebDAV Portal and link again.' };
+  }
+
+  const tx = DATA_getWebDavTransport(api);
+  if (!tx.ok) return { ok: false, message: tx.error || 'provider missing' };
+
+  return { ok: true, creds, transport: tx.transport };
+}
+
+function DATA_archiveBundleChatCount(bundle) {
+  const n = Number(bundle?.chatCount);
+  if (Number.isFinite(n)) return n;
+  return Array.isArray(bundle?.chats) ? bundle.chats.length : 0;
+}
+
+function DATA_archiveBundleSnapshotCount(bundle) {
+  if (!Array.isArray(bundle?.chats)) return 0;
+  return bundle.chats.reduce((sum, chat) => sum + (Array.isArray(chat?.snapshots) ? chat.snapshots.length : 0), 0);
+}
+
+function DATA_archiveStableForHash(value, depth = 0) {
+  if (Array.isArray(value)) return value.map(item => DATA_archiveStableForHash(item, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    if (depth === 0 && key === 'exportedAt') continue;
+    out[key] = DATA_archiveStableForHash(value[key], depth + 1);
+  }
+  return out;
+}
+
+async function DATA_archiveContentHash(bundle) {
+  return DATA_syncSha256(JSON.stringify(DATA_archiveStableForHash(bundle)));
 }
 
 // ───────────────────────────── 📊 Report formatting ─────────────────────────────
@@ -1826,18 +2134,73 @@ function DATA_openTextModal(title, initialText, opts = {}) {
     mountRoot.appendChild(pill);
   }
 
+  function DATA_renderConnectStatus(){
+    const api = DATA_getSyncApi()?.webdav || null;
+    const snap = api?.getState?.() || {};
+    const st = snap?.state || {};
+    const creds = snap?.creds || {};
+    const url = creds.baseUrl || creds.url || '';
+    const folder = creds.folder || creds.root || 'H2O';
+    const username = creds.username || creds.user || '';
+    const endpoint = url
+      ? [String(url).replace(/\/+$/, ''), String(folder || 'H2O').replace(/^\/+|\/+$/g, '')].filter(Boolean).join('/')
+      : 'No URL set';
+
+    const pill = document.createElement('div');
+    pill.className = 'h2o-sync-pill';
+    pill.setAttribute(ATTR_CHUB_ART,'1');
+
+    const row = document.createElement('div');
+    row.className = 'h2o-sync-pill-row';
+
+    const title = document.createElement('div');
+    title.className = 'h2o-sync-pill-title';
+    title.textContent = api ? 'WebDAV' : 'WebDAV (missing H2O Data)';
+
+    const right = document.createElement('div');
+    right.className = 'h2o-sync-pill-right';
+    right.textContent = st.linked ? 'Linked ✅' : 'Unlinked ⚪️';
+
+    const identity = document.createElement('div');
+    identity.className = 'h2o-sync-pill-sub';
+    identity.textContent = username ? `Identity: ${username}` : 'Identity: Not linked';
+
+    const preview = document.createElement('div');
+    preview.className = 'h2o-sync-pill-sub';
+    preview.textContent = `Endpoint: ${endpoint}`;
+
+    row.append(title, right);
+    pill.append(row, identity, preview);
+    return pill;
+  }
+
+  async function DATA_testWebDAVConnectionAction(){
+    const api = DATA_getSyncApi()?.webdav || null;
+    if (!api?.test) return { message: 'WebDAV test is unavailable.' };
+    const res = await api.test();
+    DATA_invalidate();
+    if (res?.ok) return { ok: true, message: 'WebDAV connection verified.' };
+    return { message: String(res?.message || res?.error || res?.reason || 'WebDAV test failed.') };
+  }
+
+  async function DATA_unlinkWebDAVAction(){
+    const api = DATA_getSyncApi()?.webdav || null;
+    if (!api?.clearCreds) return { message: 'WebDAV unlink is unavailable.' };
+    await Promise.resolve(api.clearCreds());
+    DATA_invalidate();
+    return { ok: true, message: 'WebDAV unlinked.' };
+  }
+
 
 function DATA_renderSyncOverview(ctx){
   const panel = ctx?.panel || ctx;
   const mountRoot = DATA_getBodyMount(panel);
   if (!panel || !mountRoot) return;
-  // ✅ Minimal sync overview (no inline portal). Open the portal only via the button.
-  try { DATA_renderWebDAVStatusPill(ctx); } catch {}
 
   // 🔁 LiveSync toggle (near-instant sync via auto-push + polling pull)
   // Canonical surface: H2O.sync.live (H2O Data v1.1.0+). We also accept H2O.data.sync.live via compat.
   try {
-    const live = window.H2O?.sync?.live || window.H2O?.data?.sync?.live || null;
+    const live = DATA_getLiveSyncApi();
     const wrap = document.createElement('div');
     wrap.className = 'h2o-chub-syncbox-note';
     wrap.setAttribute(ATTR_CHUB_ART,'1');
@@ -1906,7 +2269,7 @@ function DATA_renderSyncOverview(ctx){
   note.className = 'h2o-chub-syncbox-note';
   note.setAttribute(ATTR_CHUB_ART,'1');
   note.setAttribute('data-h2o-data-subtab-surface', '1');
-  note.textContent = 'Open the WebDAV portal only when needed: click “WebDAV Portal…” below to configure / link / test.';
+  note.textContent = 'Use Connect for WebDAV linking. This Sync tab is for live sync and push/pull runtime actions.';
   mountRoot.appendChild(note);
 }
 
@@ -2575,6 +2938,127 @@ Applied: ${rep.applied ?? 0}
 Skipped: ${rep.skipped ?? 0}
 Failed: ${rep.failed ?? 0}`);
   return { message: `Pull OK ✅ (overwrite, applied ${rep.applied ?? 0})` };
+}
+
+async function DATA_syncArchivePushAction() {
+  const api = DATA_getSyncApi();
+  const ready = DATA_getWebDavReady(api);
+  if (!ready.ok) { alert(ready.message); return { message: ready.message }; }
+
+  const ab = DATA_getArchiveBootApi();
+  if (!ab) return { message: DATA_archiveModuleMissingMessage() };
+
+  const bundle = await ab.exportBundle({ scope: 'all', chatId: DATA_archiveChatId() });
+  if (!bundle || bundle.schema !== 'h2o.chatArchive.bundle.v1') {
+    return { message: 'Export failed: archive engine returned an invalid bundle.' };
+  }
+
+  const last = DATA_syncLoadLast();
+  const payloadText = DATA_syncSerializePayload(bundle);
+  const localHash = await DATA_archiveContentHash(bundle);
+  let remoteHash = null;
+
+  if (typeof ready.transport.getJSON === 'function') {
+    try {
+      const remote = await ready.transport.getJSON(ready.creds, DATA_SYNC_ARCHIVE_FILE);
+      if (remote?.obj?.schema === 'h2o.chatArchive.bundle.v1') {
+        remoteHash = await DATA_archiveContentHash(remote.obj);
+      } else {
+        remoteHash = remote?.hash || null;
+      }
+    } catch {}
+  }
+
+  if (remoteHash && remoteHash !== localHash) {
+    last.archive = last.archive || {};
+    last.archive.conflict = { at: DATA_syncNowIso(), remoteHash, localHash };
+    DATA_syncSaveLast(last);
+
+    const ok = confirm(`Archive conflict detected ⚠️
+
+Remote archive is different from your local archive.
+
+• Recommended: click “Pull Archive from Remote” first on this system, review, then push again.
+• If you want to overwrite remote with THIS system now: click OK to Force Push.
+`);
+    if (!ok) { alert('Push cancelled (conflict)'); return { message: 'Push cancelled (conflict).' }; }
+  }
+
+  const putText = ready.transport.putText;
+  const putJSON = ready.transport.putJSON;
+  if (typeof putText !== 'function' && typeof putJSON !== 'function') {
+    alert('Push Archive failed ❌\nprovider missing');
+    return { message: 'Push Archive failed: provider missing.' };
+  }
+
+  let put = null;
+  try {
+    put = await (typeof putText === 'function'
+      ? putText(ready.creds, DATA_SYNC_ARCHIVE_FILE, payloadText)
+      : putJSON(ready.creds, DATA_SYNC_ARCHIVE_FILE, bundle));
+  } catch (e) {
+    alert(`Push Archive failed ❌
+${(e && e.message) ? e.message : String(e)}`);
+    return;
+  }
+
+  last.archive = last.archive || {};
+  last.archive.push = { at: DATA_syncNowIso(), hash: localHash, fileHash: put?.hash || null };
+  last.archive.remoteHash = localHash;
+  last.archive.conflict = null;
+  DATA_syncSaveLast(last);
+
+  const chatCount = DATA_archiveBundleChatCount(bundle);
+  alert(`Push Archive done ✅
+Chats: ${chatCount}
+Remote: ${DATA_SYNC_ARCHIVE_FILE}`);
+  return { ok: true, message: `Archive Push OK ✅ (${chatCount} chat(s))` };
+}
+
+async function DATA_syncArchivePullAction() {
+  const api = DATA_getSyncApi();
+  const ready = DATA_getWebDavReady(api);
+  if (!ready.ok) { alert(ready.message); return { message: ready.message }; }
+
+  const ab = DATA_getArchiveBootApi();
+  if (!ab) return { message: DATA_archiveModuleMissingMessage() };
+
+  if (typeof ready.transport.getJSON !== 'function') {
+    alert('Pull Archive failed ❌\nprovider missing');
+    return { message: 'Pull Archive failed: provider missing.' };
+  }
+
+  let remote = null;
+  try {
+    remote = await ready.transport.getJSON(ready.creds, DATA_SYNC_ARCHIVE_FILE);
+  } catch (e) {
+    alert(`Pull Archive failed ❌
+${(e && e.message) ? e.message : String(e)}`);
+    return;
+  }
+
+  const bundle = remote?.obj;
+  if (!bundle || bundle.schema !== 'h2o.chatArchive.bundle.v1') {
+    return { message: 'Remote h2o-archive.json is not a valid H2O archive bundle (expected schema h2o.chatArchive.bundle.v1).' };
+  }
+
+  const result = await ab.importBundle({ bundle, mode: 'merge', timeoutMs: DATA_ARCHIVE_IMPORT_TIMEOUT_MS });
+  if (!result?.ok) return { message: 'Pull failed — archive engine returned an error.' };
+
+  const remoteHash = await DATA_archiveContentHash(bundle);
+  const last = DATA_syncLoadLast();
+  last.archive = last.archive || {};
+  last.archive.pull = { at: DATA_syncNowIso(), hash: remoteHash, fileHash: remote?.hash || null, mode: 'merge' };
+  last.archive.remoteHash = remoteHash;
+  last.archive.conflict = null;
+  DATA_syncSaveLast(last);
+
+  const importedChats = Number(result.importedChats ?? DATA_archiveBundleChatCount(bundle)) || 0;
+  const importedSnapshots = Number(result.importedSnapshots ?? DATA_archiveBundleSnapshotCount(bundle)) || 0;
+  alert(`Pull Archive done ✅ (merge)
+Imported chats: ${importedChats}
+Imported snapshots: ${importedSnapshots}`);
+  return { ok: true, message: `Archive Pull OK ✅ (${importedChats} chat(s), ${importedSnapshots} snapshot(s))` };
 }
 
 async function DATA_syncPushVaultAction() {

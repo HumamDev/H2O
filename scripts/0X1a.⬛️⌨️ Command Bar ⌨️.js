@@ -3,7 +3,7 @@
 // @name               0B3c.⬛️⌨️ Command Bar ⌨️
 // @namespace          H2O.Premium.CGX.command.bar
 // @author             HumamDev
-// @version            1.3.4
+// @version            1.3.5
 // @revision           004
 // @build              260331-230500
 // @description        Archive command bar shell: standalone dock owner with pass-1 control registration API.
@@ -1861,11 +1861,11 @@ html.h2o-commandbar-resizing-panel *{
   <span class="saveFieldLabel">After save</span>
   <select class="saveMode">
     <option value="${SAVE_MODE_SILENT}">Stay here</option>
-    <option value="${SAVE_MODE_READER}">Open Reader</option>
+    <option value="${SAVE_MODE_READER}">Open Latest Snapshot</option>
     <option value="${SAVE_MODE_LIBRARY}">Open Saved Chats</option>
   </select>
 </label>
-<div class="saveHint">Use the menu when you want folder binding or an after-save action. Plain capture stays immediate.</div>
+<div class="saveHint">Use the menu when you want folder binding or an after-save action. “Latest Snapshot” opens the newest saved snapshot in Studio; plain capture stays immediate.</div>
 <div class="saveActions">
   <button type="button" class="saveApply">Save</button>
   <button type="button" class="saveCancel">Cancel</button>

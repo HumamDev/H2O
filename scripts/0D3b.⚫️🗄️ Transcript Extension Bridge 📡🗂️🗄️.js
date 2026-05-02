@@ -239,6 +239,7 @@
     },
     listAllChatIds: () => call("listAllChatIds", {}),
     listWorkbenchRows: () => call("listWorkbenchRows", {}),
+    getLabelsCatalog: () => call("getLabelsCatalog", {}),
     exportBundle: (opts = {}) => call("exportBundle", opts),
     importBundle: (opts = {}) => call("importBundle", opts),
     getMigratedFlag: (chatId) => call("getMigratedFlag", { chatId }),
