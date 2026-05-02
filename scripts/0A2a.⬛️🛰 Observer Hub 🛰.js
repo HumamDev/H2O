@@ -3,7 +3,7 @@
 // @name               0A2a.⬛️🛰 Observer Hub 🛰
 // @namespace          H2O.Premium.CGX.observer.hub
 // @author             HumamDev
-// @version            0.2.0
+// @version            1.0.0
 // @revision           001
 // @build              260312-000001
 // @description        Shared conversation observer hub (root resolve + start MO + root MO + suppression + coalesced fan-out).
