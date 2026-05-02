@@ -5,21 +5,21 @@
       "label": "H2O: 1) 🟦 Common / A) Sync dev-order (folder -> TSV + views)",
       "detail": "EXT workspace prerequisite: sync config/dev-order.tsv and views from current folder/script order.",
       "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && node \"${workspaceFolder}/tools/common/sync-dev-order.mjs\"",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && node \"${workspaceFolder}/tools/loader/sync-dev-order.mjs\"",
       "problemMatcher": []
     },
     {
       "label": "H2O: 1) 🟦 Common / B) Build aliases + EXT proxy pack (uses TSV master)",
       "detail": "EXT workspace prerequisite: builds aliases + EXT proxy pack directly (no TM loader generation).",
       "type": "shell",
-      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/../h2o-dev-server\" && node \"${workspaceFolder}/tools/common/make-aliases.mjs\" && node \"${workspaceFolder}/tools/ext/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (sibling h2o-dev-server): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Dev builds: ${workspaceFolder}/build/chrome-ext-dev-controls | ${workspaceFolder}/build/chrome-ext-dev-lean\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
+      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/../h2o-dev-server\" && node \"${workspaceFolder}/tools/loader/make-aliases.mjs\" && node \"${workspaceFolder}/tools/loader/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (sibling h2o-dev-server): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Dev builds: ${workspaceFolder}/build/chrome-ext-dev-controls | ${workspaceFolder}/build/chrome-ext-dev-lean\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
       "problemMatcher": []
     },
     {
       "label": "H2O: 1) 🟦 Common / C) Validate loader order (deps + pack + TSV)",
       "detail": "Checks dependency manifest, critical group order, cycles, phase violations, and proxy-pack drift before extension build.",
       "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/../h2o-dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/common/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/../h2o-dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/loader/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
       "problemMatcher": []
     },
     {
@@ -28,7 +28,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/ext/build-chrome-live-extension.mjs"
+        "${workspaceFolder}/tools/product/extension/build-chrome-live-extension.mjs"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -46,7 +46,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/ext/build-chrome-live-extension.mjs"
+        "${workspaceFolder}/tools/product/extension/build-chrome-live-extension.mjs"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -63,7 +63,7 @@
       "label": "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)",
       "detail": "Ops Panel preview step: builds build/chrome-ext-ops-panel (separate extension icon scaffold).",
       "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_PANEL_OUT_DIR=\"${workspaceFolder}/build/chrome-ext-ops-panel\" && node \"${workspaceFolder}/tools/ext/make-chrome-ops-panel-extension.mjs\" && echo \"\" && echo \"✅ H2O Ops Panel Preview Extension Built\" && echo \"   Folder: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_PANEL_OUT_DIR=\"${workspaceFolder}/build/chrome-ext-ops-panel\" && node \"${workspaceFolder}/tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs\" && echo \"\" && echo \"✅ H2O Ops Panel Preview Extension Built\" && echo \"   Folder: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
       "problemMatcher": []
     },
     {
@@ -72,7 +72,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/ext/pack-desk.mjs"
+        "${workspaceFolder}/tools/product/desk/pack-desk.mjs"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -85,7 +85,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/dev-rebuild.mjs"
+        "${workspaceFolder}/tools/dev/dev-rebuild.mjs"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -155,7 +155,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/dev-all.mjs"
+        "${workspaceFolder}/tools/dev/dev-all.mjs"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -171,7 +171,7 @@
       "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
       "detail": "⚡ Quick local archive: saves version-changed files into the current workspace archive folder.",
       "type": "shell",
-      "command": "node \"${workspaceFolder}/tools/ops/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
+      "command": "node \"${workspaceFolder}/tools/archive/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
       "problemMatcher": []
     },
     {
@@ -180,7 +180,7 @@
       "type": "process",
       "command": "node",
       "args": [
-        "${workspaceFolder}/tools/ops/archive-snapshot.mjs",
+        "${workspaceFolder}/tools/archive/archive-snapshot.mjs",
         "${workspaceFolder}",
         "--all"
       ],

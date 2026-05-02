@@ -42,6 +42,7 @@ config/userscript-headers.tsv
 config/dev-order.txt
 config/dev-order.json
 config/scripts-list.tsv
+config/local/identity-provider.local.json
 
 # Local-only editor/workspace notes
 meta/notes/vscode-keybindings.json

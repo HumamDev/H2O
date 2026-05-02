@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-h2o-surface="identity">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>H2O Identity Setup</title>
+  <link rel="stylesheet" href="./identity.css" />
+</head>
+<body>
+  <main class="h2oi-shell" aria-labelledby="h2oi-title">
+    <section class="h2oi-hero" aria-label="Identity setup overview">
+      <div class="h2oi-orb" aria-hidden="true">
+        <span></span>
+      </div>
+
+      <p class="h2oi-kicker">H2O Identity</p>
+      <h1 id="h2oi-title">Create your H2O identity foundation.</h1>
+	      <p class="h2oi-copy">
+	        Set up email verification, profile details, and a workspace through the extension-owned
+	        identity bridge. Provider sessions and tokens never enter this page. You stay signed in
+	        on this browser until you sign out or your session is revoked.
+	      </p>
+
+      <div class="h2oi-pill-row" aria-label="Scope badges">
+        <span class="h2oi-pill">Bridge-owned auth</span>
+        <span class="h2oi-pill">No tokens</span>
+        <span class="h2oi-pill">Dev safe</span>
+      </div>
+    </section>
+
+    <section class="h2oi-card" aria-live="polite">
+      <header class="h2oi-card-head">
+        <div>
+          <p class="h2oi-eyebrow">First-run onboarding</p>
+          <h2 id="h2oi-step-title">Loading identity state…</h2>
+        </div>
+        <output id="h2oi-state-badge" class="h2oi-state-badge">booting</output>
+      </header>
+
+      <ol class="h2oi-steps" aria-label="Onboarding steps">
+        <li data-step="anonymous_local"><span>1</span>Email</li>
+        <li data-step="email_pending"><span>2</span>Verify</li>
+        <li data-step="verified_no_profile"><span>3</span>Profile</li>
+        <li data-step="profile_ready"><span>4</span>Ready</li>
+      </ol>
+
+      <section id="h2oi-alert" class="h2oi-alert" hidden></section>
+
+      <div id="h2oi-auth-modes" class="h2oi-mode-tabs" aria-label="Authentication path">
+        <button id="h2oi-auth-sign-in" class="h2oi-mode-tab is-active" type="button">Sign in</button>
+        <button id="h2oi-auth-create" class="h2oi-mode-tab" type="button">Create account</button>
+      </div>
+
+      <form id="h2oi-signin-form" class="h2oi-panel" autocomplete="on">
+        <p class="h2oi-panel-copy">
+          Sign in with your H2O email and password, or request an email code for an existing account.
+        </p>
+        <label class="h2oi-field">
+          <span>Email</span>
+          <input id="h2oi-signin-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+        </label>
+        <label class="h2oi-field">
+          <span>Password</span>
+          <span class="h2oi-input-action">
+            <input id="h2oi-signin-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="1024" />
+            <button id="h2oi-signin-password-toggle" class="h2oi-input-button" type="button" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <div class="h2oi-actions">
+          <button id="h2oi-google-sign-in" class="h2oi-button" type="button">Continue with Google</button>
+          <button id="h2oi-password-sign-in" class="h2oi-button h2oi-button-primary" type="submit">Sign in</button>
+          <button id="h2oi-send" class="h2oi-button" type="button">Send email code</button>
+          <button id="h2oi-recovery-send" class="h2oi-link-button" type="button" hidden>Send sign-in code to recover access</button>
+          <button id="h2oi-reset-tab-link" class="h2oi-link-button" type="button">Reset password</button>
+        </div>
+        <section id="h2oi-reset-panel" class="h2oi-inline-panel" hidden>
+          <p class="h2oi-panel-copy">
+            Request a reset email. If an account exists, the provider will send reset instructions.
+          </p>
+          <label class="h2oi-field">
+            <span>Email</span>
+            <input id="h2oi-reset-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" />
+          </label>
+          <button id="h2oi-password-reset" class="h2oi-button h2oi-button-primary" type="button">Send reset email</button>
+        </section>
+      </form>
+
+      <form id="h2oi-create-form" class="h2oi-panel" autocomplete="on" hidden>
+        <p class="h2oi-panel-copy">
+          Create an account with a password. Email-code sign-in is only for existing accounts.
+        </p>
+        <label class="h2oi-field">
+          <span>Email</span>
+          <input id="h2oi-create-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+        </label>
+        <label class="h2oi-field">
+          <span>Password</span>
+          <span class="h2oi-input-action">
+            <input id="h2oi-create-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required />
+            <button id="h2oi-create-password-toggle" class="h2oi-input-button" type="button" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <label class="h2oi-field">
+          <span>Confirm password</span>
+          <span class="h2oi-input-action">
+            <input id="h2oi-create-confirm" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required />
+            <button id="h2oi-create-confirm-toggle" class="h2oi-input-button" type="button" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <div id="h2oi-password-strength" class="h2oi-strength" aria-live="polite">
+          <div class="h2oi-strength-track" aria-hidden="true"><span></span></div>
+          <ul>
+            <li data-rule="length">At least 12 characters</li>
+            <li data-rule="email">Different from your email</li>
+            <li data-rule="common">Not a common password</li>
+            <li data-rule="variety">Uses a mix of character types</li>
+          </ul>
+        </div>
+        <div class="h2oi-actions">
+          <button id="h2oi-google-create" class="h2oi-button" type="button">Continue with Google</button>
+          <button id="h2oi-password-sign-up" class="h2oi-button h2oi-button-primary" type="submit">Create account</button>
+        </div>
+      </form>
+
+      <section id="h2oi-confirmation-panel" class="h2oi-panel" hidden>
+        <p class="h2oi-panel-copy">
+          Check your email and enter the confirmation code. If your provider email uses a confirmation link instead, confirm the link, then return here to sign in.
+        </p>
+        <label class="h2oi-field">
+          <span>Confirmation code</span>
+          <input id="h2oi-confirmation-code" name="signupConfirmationCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="12345678" maxlength="10" />
+        </label>
+        <div class="h2oi-actions">
+          <button id="h2oi-confirmation-verify" class="h2oi-button h2oi-button-primary" type="button">Confirm email</button>
+          <button id="h2oi-confirmation-resend" class="h2oi-button" type="button">Resend code</button>
+        </div>
+      </section>
+
+      <section id="h2oi-pending-panel" class="h2oi-panel" hidden>
+        <h3 id="h2oi-pending-title" class="h2oi-panel-title">Enter your email code.</h3>
+        <p id="h2oi-pending-copy" class="h2oi-panel-copy">
+          Enter the verification code from your email. Local-only setup accepts a non-empty code when provider mode is not active.
+        </p>
+        <label class="h2oi-field">
+          <span id="h2oi-pending-code-label">Verification code</span>
+          <input id="h2oi-otp-code" name="otpCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="12345678" maxlength="10" />
+        </label>
+        <div class="h2oi-actions">
+          <button id="h2oi-verify" class="h2oi-button h2oi-button-primary" type="button">Verify email</button>
+          <button id="h2oi-resend" class="h2oi-button" type="button">Reset pending email</button>
+          <button id="h2oi-pending-back" class="h2oi-button" type="button">Back to sign in</button>
+        </div>
+      </section>
+
+      <form id="h2oi-set-password-form" class="h2oi-panel" autocomplete="on" hidden>
+        <p class="h2oi-panel-copy">
+          Set a new password for future sign-ins. Passwords never leave this form except for the provider-owned update request.
+        </p>
+        <label class="h2oi-field">
+          <span>New password</span>
+          <span class="h2oi-input-action">
+            <input id="h2oi-set-password" name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required />
+            <button id="h2oi-set-password-toggle" class="h2oi-input-button" type="button" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <label class="h2oi-field">
+          <span>Confirm new password</span>
+          <span class="h2oi-input-action">
+            <input id="h2oi-set-confirm" name="confirmNewPassword" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required />
+            <button id="h2oi-set-confirm-toggle" class="h2oi-input-button" type="button" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <div id="h2oi-set-password-strength" class="h2oi-strength" aria-live="polite">
+          <div class="h2oi-strength-track" aria-hidden="true"><span></span></div>
+          <ul>
+            <li data-rule="length">At least 12 characters</li>
+            <li data-rule="email">Different from your email</li>
+            <li data-rule="common">Not a common password</li>
+            <li data-rule="variety">Uses a mix of character types</li>
+          </ul>
+        </div>
+        <div class="h2oi-actions">
+          <button id="h2oi-set-password-submit" class="h2oi-button h2oi-button-primary" type="submit">Set new password</button>
+          <button id="h2oi-set-password-back" class="h2oi-button" type="button">Back to sign in</button>
+          <button id="h2oi-set-password-start-over" class="h2oi-button h2oi-button-danger" type="button">Start over</button>
+        </div>
+      </form>
+
+      <form id="h2oi-profile-form" class="h2oi-panel" autocomplete="on" hidden>
+        <label class="h2oi-field">
+          <span>Display name</span>
+          <input id="h2oi-display-name" name="displayName" type="text" placeholder="Your name" autocomplete="name" maxlength="80" />
+        </label>
+        <label class="h2oi-field">
+          <span>Workspace name</span>
+          <input id="h2oi-workspace-name" name="workspaceName" type="text" placeholder="H2O Workspace" maxlength="80" />
+        </label>
+        <label class="h2oi-field">
+          <span>Avatar color</span>
+          <input id="h2oi-avatar-color" name="avatarColor" type="text" value="slate" placeholder="slate" maxlength="32" pattern="[a-z0-9][a-z0-9_-]{0,31}" />
+        </label>
+        <button id="h2oi-complete" class="h2oi-button h2oi-button-primary" type="submit">Create profile and workspace</button>
+      </form>
+
+      <section id="h2oi-ready-panel" class="h2oi-panel h2oi-ready" hidden>
+        <div class="h2oi-check" aria-hidden="true">✓</div>
+        <div>
+          <h3>Identity foundation is ready.</h3>
+          <p id="h2oi-ready-copy">Your local profile and workspace were created.</p>
+        </div>
+        <div class="h2oi-actions">
+          <button id="h2oi-close" class="h2oi-button h2oi-button-primary" type="button">Close</button>
+          <button id="h2oi-reset" class="h2oi-button h2oi-button-danger" type="button">Sign out / reset identity</button>
+        </div>
+      </section>
+
+      <footer class="h2oi-footer">
+        <button id="h2oi-local-mode" class="h2oi-link-button" type="button">Create local-only profile instead</button>
+        <button id="h2oi-start-over" class="h2oi-link-button" type="button" hidden>Start over</button>
+        <button id="h2oi-diag-toggle" class="h2oi-link-button" type="button" aria-expanded="false">Diagnostics</button>
+      </footer>
+
+      <pre id="h2oi-diag" class="h2oi-diag" hidden></pre>
+    </section>
+  </main>
+
+  <script src="../../scripts/0D4a.⬛️🔐 Identity Core 🔐.js"></script>
+  <script src="./identity.js"></script>
+</body>
+</html>

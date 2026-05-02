@@ -35,6 +35,8 @@
 🟢	0D3a.🗄️ Transcript Archive Engine 🗂️🗄️.js
 🟢	0D3b.🗄️ Transcript Extension Bridge 📡🗂️🗄️.js
 🟢	0D3c.🗄️ Transcript Layer Renderer 🧬🗂️🗄️.js
+🟢	0D4a.⬛️🔐 Identity Core 🔐.js
+🟢	0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐.js
 
 # =========================
 # 🎛️ KEYS
@@ -49,6 +51,7 @@
 🟢	0Z1b.⚫️🗄️🕹️ Data Tab (Control Hub 🔌 Plugin) 🕹️.js
 🟢	0Z1c.⚫️🗺️🕹️ MiniMap Tab (Control Hub 🔌 Plugin) 🕹️.js
 🟢	0Z1d.⚫️⚡️🕹️ Performance Tab (Control Hub 🔌 Plugin) 🕹️.js
+🟢	0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js
 🟢	0Z2a.⚫️🌳🕹️ Control Hub Tab Tree (Control Hub ➕ Add-on) 🕹️.js
 
 # =========================
