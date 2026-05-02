@@ -3,9 +3,9 @@
 // @name               1X1a.🔴🧮 Answer Numbers 🧮
 // @namespace          H2O.Premium.CGX.answer.numbers
 // @author             HumamDev
-// @version            1.0.1
+// @version            1.1.3
 // @revision           002
-// @build              260402-000102
+// @build              260412-190500
 // @description        Big left answer numbers extracted from Answer Numbers & Style, with incremental updates and lower layout churn.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -92,6 +92,22 @@
     PERF_LOG_MS: 10000,
   });
 
+  const UI_CFG = Object.freeze({
+    KEY: 'h2o:prm:cgx:ansn:cfg:ui:v1',
+    DEFAULTS: Object.freeze({
+      normalOpacity: 0.12,
+      normalLeftPx: -140,
+      normalScale: 1,
+      normalRightFadeStartPct: 56,
+      normalRightFadeEndOpacity: 0.12,
+      collapsedOpacity: 0.09,
+      collapsedLeftPx: -132,
+      collapsedScale: 0.42,
+      collapsedRightFadeStartPct: 70,
+      collapsedRightFadeEndOpacity: 0.18,
+    }),
+  });
+
   const PERF = {
     enabled: false,
     processed: 0,
@@ -125,6 +141,69 @@
     try { return root.querySelector(sel); } catch { return null; }
   }
 
+  function UI_readCfg() {
+    try {
+      const raw = JSON.parse(W.localStorage?.getItem(UI_CFG.KEY) || '{}') || {};
+      return UI_normalizeCfg(raw);
+    } catch {
+      return { ...UI_CFG.DEFAULTS };
+    }
+  }
+
+  function UI_writeCfg(next) {
+    const cfg = UI_normalizeCfg(next);
+    try { W.localStorage?.setItem(UI_CFG.KEY, JSON.stringify(cfg)); } catch {}
+    return cfg;
+  }
+
+  function UI_normalizeCfg(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const clamp = (v, min, max, fallback) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+    };
+    const legacyFadeStrength = clamp(src.rightFadeStrength, 0.0, 1.0, 0.65);
+    const legacyFadeStartPct = 68 - (50 * legacyFadeStrength);
+    const legacyFadeEndOpacity = clamp(src.rightFadeEndOpacity, 0.0, 1.0, 0.0);
+    return {
+      normalOpacity: clamp(src.normalOpacity, 0.02, 0.35, UI_CFG.DEFAULTS.normalOpacity),
+      normalLeftPx: clamp(src.normalLeftPx, -260, -20, UI_CFG.DEFAULTS.normalLeftPx),
+      normalScale: clamp(src.normalScale, 0.55, 1.35, UI_CFG.DEFAULTS.normalScale),
+      normalRightFadeStartPct: clamp(src.normalRightFadeStartPct, 20, 100, legacyFadeStartPct),
+      normalRightFadeEndOpacity: clamp(src.normalRightFadeEndOpacity, 0.0, 1.0, legacyFadeEndOpacity),
+      collapsedOpacity: clamp(src.collapsedOpacity, 0.02, 0.35, UI_CFG.DEFAULTS.collapsedOpacity),
+      collapsedLeftPx: clamp(src.collapsedLeftPx, -260, -20, UI_CFG.DEFAULTS.collapsedLeftPx),
+      collapsedScale: clamp(src.collapsedScale, 0.20, 1.10, UI_CFG.DEFAULTS.collapsedScale),
+      collapsedRightFadeStartPct: clamp(src.collapsedRightFadeStartPct, 20, 100, legacyFadeStartPct),
+      collapsedRightFadeEndOpacity: clamp(src.collapsedRightFadeEndOpacity, 0.0, 1.0, legacyFadeEndOpacity),
+    };
+  }
+
+  function UI_applyCfgVars() {
+    const cfg = UI_readCfg();
+    const root = D.documentElement?.style;
+    if (!root) return cfg;
+
+    const collapsedRowMinPx = Math.round(Math.max(46, 24 + (150 * cfg.collapsedScale * 0.72)));
+    const columnWidthPx = 136;
+
+    root.setProperty('--cgxui-ansn-normal-opacity', String(cfg.normalOpacity));
+    root.setProperty('--cgxui-ansn-normal-left', `${Math.round(cfg.normalLeftPx)}px`);
+    root.setProperty('--cgxui-ansn-normal-scale', String(cfg.normalScale));
+    root.setProperty('--cgxui-ansn-normal-fade-start', `${Number(cfg.normalRightFadeStartPct).toFixed(2)}%`);
+    root.setProperty('--cgxui-ansn-normal-fade-end-alpha', Number(cfg.normalRightFadeEndOpacity).toFixed(3));
+
+    root.setProperty('--cgxui-ansn-collapsed-opacity', String(cfg.collapsedOpacity));
+    root.setProperty('--cgxui-ansn-collapsed-left', `${Math.round(cfg.collapsedLeftPx)}px`);
+    root.setProperty('--cgxui-ansn-collapsed-scale', String(cfg.collapsedScale));
+    root.setProperty('--cgxui-ansn-collapsed-fade-start', `${Number(cfg.collapsedRightFadeStartPct).toFixed(2)}%`);
+    root.setProperty('--cgxui-ansn-collapsed-fade-end-alpha', Number(cfg.collapsedRightFadeEndOpacity).toFixed(3));
+
+    root.setProperty('--cgxui-ansn-column-width', `${columnWidthPx}px`);
+    root.setProperty('--cgxui-ansn-collapsed-row-min-h', `${collapsedRowMinPx}px`);
+    return cfg;
+  }
+
   function CSS_ensure() {
     if (D.getElementById(CSS.STYLE_ID)) return;
 
@@ -134,6 +213,18 @@
 :root{
   ${CSS.VAR_FADE_TOP}: 28px;
   ${CSS.VAR_FADE_BOT}: 52px;
+  --cgxui-ansn-normal-opacity: 0.12;
+  --cgxui-ansn-normal-left: -140px;
+  --cgxui-ansn-normal-scale: 1;
+  --cgxui-ansn-normal-fade-start: 56%;
+  --cgxui-ansn-normal-fade-end-alpha: 0.12;
+  --cgxui-ansn-collapsed-opacity: 0.09;
+  --cgxui-ansn-collapsed-left: -132px;
+  --cgxui-ansn-collapsed-scale: 0.42;
+  --cgxui-ansn-collapsed-fade-start: 70%;
+  --cgxui-ansn-collapsed-fade-end-alpha: 0.18;
+  --cgxui-ansn-column-width: 136px;
+  --cgxui-ansn-collapsed-row-min-h: 70px;
 }
 
 .${CLS.UNCLIP}{
@@ -157,15 +248,29 @@ ${SEL.TURN}{ overflow: visible !important; }
 }
 
 .${CLS.BIG}{
+  --cgxui-ansn-current-opacity: var(--cgxui-ansn-normal-opacity);
+  --cgxui-ansn-current-left: var(--cgxui-ansn-normal-left);
+  --cgxui-ansn-current-scale: var(--cgxui-ansn-normal-scale);
+  --cgxui-ansn-current-fade-start: var(--cgxui-ansn-normal-fade-start);
+  --cgxui-ansn-current-fade-end-alpha: var(--cgxui-ansn-normal-fade-end-alpha);
+
   position: absolute;
-  left: -140px;
+  left: var(--cgxui-ansn-current-left);
   top: 50%;
-  transform: translateY(-50%);
+  width: var(--cgxui-ansn-column-width);
+  transform: translateY(-50%) scale(var(--cgxui-ansn-current-scale));
+  transform-origin: right center;
+  transition: transform 180ms ease, left 180ms ease, opacity 180ms ease;
+
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
 
   font-weight: 700;
   font-family: Georgia, serif;
   font-feature-settings: 'onum' 1;
-  color: rgba(128, 128, 128, 0.12);
+  color: rgba(128, 128, 128, var(--cgxui-ansn-current-opacity));
 
   pointer-events: none;
   z-index: 1;
@@ -173,7 +278,7 @@ ${SEL.TURN}{ overflow: visible !important; }
   white-space: nowrap;
   user-select: none;
   mix-blend-mode: multiply;
-  text-align: left;
+  text-align: right;
   overflow: visible;
 
   -webkit-mask-image: linear-gradient(
@@ -186,12 +291,22 @@ ${SEL.TURN}{ overflow: visible !important; }
     transparent 100%
   );
 
-  mask-image: linear-gradient(to right, black 0%, rgba(0,0,0,0.8) 40%, transparent 100%);
+  mask-image: linear-gradient(
+    to right,
+    black 0%,
+    black var(--cgxui-ansn-current-fade-start, 56%),
+    rgba(0,0,0,var(--cgxui-ansn-current-fade-end-alpha, 0.12)) 100%
+  );
 }
 
 .${CLS.BIG}.${CLS.VFADE}{
   -webkit-mask-image:
-    linear-gradient(to right, black 0%, rgba(0,0,0,0.8) 40%, transparent 100%),
+    linear-gradient(
+      to right,
+      black 0%,
+      black var(--cgxui-ansn-current-fade-start, 56%),
+      rgba(0,0,0,var(--cgxui-ansn-current-fade-end-alpha, 0.12)) 100%
+    ),
     linear-gradient(
       to bottom,
       transparent 0%,
@@ -205,22 +320,33 @@ ${SEL.TURN}{ overflow: visible !important; }
 }
 
 .${CLS.BIG} .${CLS.MAIN}{
+  display: block;
+  width: 100%;
+  text-align: right;
   font-weight: 700;
   font-family: Georgia, serif;
   font-feature-settings: 'onum' 1;
-  display: inline-block;
-
-  color: rgba(128, 128, 128, 0.12);
+  color: rgba(128, 128, 128, var(--cgxui-ansn-current-opacity));
   mix-blend-mode: multiply;
 
-  -webkit-mask-image: linear-gradient(to right, black 0%, rgba(0,0,0,0.8) 40%, transparent 100%);
-  mask-image: linear-gradient(to right, black 0%, rgba(0,0,0,0.8) 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black 0%,
+    black var(--cgxui-ansn-current-fade-start, 56%),
+    rgba(0,0,0,var(--cgxui-ansn-current-fade-end-alpha, 0.12)) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    black 0%,
+    black var(--cgxui-ansn-current-fade-start, 56%),
+    rgba(0,0,0,var(--cgxui-ansn-current-fade-end-alpha, 0.12)) 100%
+  );
 }
 
 .${CLS.BIG} .${CLS.REGEN}{
   display: block;
   width: 100%;
-  text-align: center;
+  text-align: right;
   margin: 10px 0 0 0;
 
   font-family: Georgia, serif;
@@ -230,12 +356,28 @@ ${SEL.TURN}{ overflow: visible !important; }
   font-size: 34px;
   line-height: 1;
 
-  color: rgba(128, 128, 128, 0.12);
+  color: rgba(128, 128, 128, var(--cgxui-ansn-current-opacity));
   mix-blend-mode: multiply;
 
   pointer-events: none;
   white-space: nowrap;
   text-shadow: none;
+}
+
+${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP}{
+  min-height: var(--cgxui-ansn-collapsed-row-min-h);
+}
+
+${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG}{
+  --cgxui-ansn-current-opacity: var(--cgxui-ansn-collapsed-opacity);
+  --cgxui-ansn-current-left: var(--cgxui-ansn-collapsed-left);
+  --cgxui-ansn-current-scale: var(--cgxui-ansn-collapsed-scale);
+  --cgxui-ansn-current-fade-start: var(--cgxui-ansn-collapsed-fade-start);
+  --cgxui-ansn-current-fade-end-alpha: var(--cgxui-ansn-collapsed-fade-end-alpha);
+}
+
+${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
+  display: none;
 }
 
 .${CLS.DIGIT_1} { font-size: 150px; }
@@ -653,6 +795,7 @@ ${SEL.TURN}{ overflow: visible !important; }
 
     PERF_init();
     CSS_ensure();
+    UI_applyCfgVars();
     OBS_attachMO();
 
     CORE_hookCore();
@@ -698,6 +841,14 @@ ${SEL.TURN}{ overflow: visible !important; }
   H2O[PID].api.boot = CORE_ANSNUM_boot;
   H2O[PID].api.dispose = CORE_ANSNUM_dispose;
   H2O[PID].api.rescan = CORE_scheduleFullScan;
+  H2O[PID].api.getConfig = UI_readCfg;
+  H2O[PID].api.applySetting = (key, value) => {
+    const current = UI_readCfg();
+    const next = UI_writeCfg({ ...current, [String(key || '')]: value });
+    UI_applyCfgVars();
+    CORE_scheduleFullScanDebounced();
+    return next;
+  };
 
   CORE_ANSNUM_boot();
 })();

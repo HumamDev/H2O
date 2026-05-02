@@ -3,9 +3,9 @@
 // @name               1A1b.🟥🗺️ MiniMap Core 🧱🗺️
 // @namespace          H2O.Premium.CGX.minimap.core
 // @author             HumamDev
-// @version            12.7.4
+// @version            12.7.11
 // @revision           007
-// @build              260329-012900
+// @build              260412-000003
 // @description        MiniMap Core: state/index/rebuild/registry authority
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -151,8 +151,8 @@ function UM_PUBLIC() {
     collapsedMiniMapPagesByChat: new Map(),
     collapsedChatPagesByChat: new Map(),
     titleListChatPagesByChat: new Map(),
-    chatPageDividerBridgeBound: false,
-    chatPageDividerBridgeOff: null,
+    chatPageStatusCardEl: null,
+    chatPageStatusCardAnchor: null,
   };
 
   const PERF_SCOPE = {
@@ -1566,147 +1566,6 @@ function UM_PUBLIC() {
     try { S.viewBridgeOff?.(); } catch {}
     S.viewBridgeOff = null;
     S.viewBridgeBound = false;
-  }
-
-  function coreFallback_bindChatPageDividerBridge(force = false) {
-    if (!force && S.chatPageDividerBridgeBound) return true;
-
-    // Always do a clean unbind first so we never stack duplicate listeners.
-    try { unbindChatPageDividerBridge(); } catch {}
-
-    // Build a fresh handler every time — mirrors the working manual console bridge exactly.
-    // Resolves core at call time via the shared bridge rather than closing over a local
-    // function reference, which proved more reliable in practice.
-    const onChatPageDividerDblClick = (ev) => {
-      const divider = ev?.target?.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
-      if (!divider) return;
-      const isChatDiv =
-        divider.getAttribute?.('data-cgxui-chat-page-divider') === '1' ||
-        divider.classList?.contains?.('cgxui-chat-page-divider') ||
-        divider.classList?.contains?.('cgxui-pgnw-page-divider');
-      if (!isChatDiv) return;
-      const pageNum = Math.max(1, Number(
-        divider.getAttribute?.('data-page-num') ||
-        divider.getAttribute?.('data-cgxui-chat-page-num') ||
-        0
-      ) || 0);
-      ev.preventDefault();
-      ev.stopPropagation();
-      try {
-        const _core = (TOPW.H2O_MM_SHARED?.get?.()?.util?.mm?.core?.()) || null;
-        const _r = _core
-          ? _core.toggleChatPageCollapsed(pageNum, '', 'chat-page-divider:dblclick')
-          : coreFallback_toggleChatPageCollapsed(pageNum, resolveChatId(), 'chat-page-divider:dblclick');
-        if (_r && !_r.ok) console.warn('[H2O] chat-page-divider collapse:', _r.status, _r);
-      } catch (_e) {
-        console.warn('[H2O] chat-page-divider collapse threw:', _e);
-      }
-    };
-
-    const onMiniMapTogglePageCollapsed = (ev) => {
-      const pageNum = Math.max(1, Number(ev?.detail?.pageNum || 0) || 0);
-      if (!pageNum) return;
-      const source = String(ev?.detail?.source || 'minimap-local').trim() || 'minimap-local';
-      try {
-        const _core = (TOPW.H2O_MM_SHARED?.get?.()?.util?.mm?.core?.()) || null;
-        if (_core?.toggleMiniMapPageCollapsed) {
-          _core.toggleMiniMapPageCollapsed(pageNum, '', { source, propagate: false });
-        } else {
-          toggleMiniMapPageCollapsed(pageNum, resolveChatId(), { source, propagate: false });
-        }
-      } catch {}
-    };
-
-    const onPaginationPageChanged = () => {
-      try { renderChatPageDividers(resolveChatId()); } catch {}
-    };
-
-    const onAnswerTitleCollapse = (ev) => {
-      const answerId = String(ev?.detail?.answerId || '').trim();
-      if (!answerId) return;
-      const row = findChatPageRowByAnswerId(answerId);
-      if (!row) return;
-      if (isChatPageTitleListActive(row.pageNum, resolveChatId())) {
-        if (row.noAnswer) {
-          // row.questionHost === row.answerHost for no-answer rows.
-          // setQuestionHostTitleListHidden would hide the WHOLE host including the bar.
-          // applyNoAnswerTitleCollapsedDom only hides the inner user-message child.
-          applyNoAnswerTitleCollapsedDom(row.answerHost, !!ev?.detail?.collapsed, { animate: false });
-        } else {
-          setQuestionHostTitleListHidden(row.questionHost, !!ev?.detail?.collapsed);
-        }
-        // compact AFTER collapse state is set so isChatPageRowCollapsed() returns correctly
-        applyChatPageTitleListCompactDom(row, true);
-      }
-      try { renderChatPageDividers(resolveChatId()); } catch {}
-    };
-
-    const onTitleListDotClick = (ev) => {
-      const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
-      if (!dot) return;
-      const divider = dot.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
-      if (!divider) return;
-      const pageNum = getChatPageDividerPageNum(divider);
-      if (!pageNum) return;
-      try { ev.preventDefault(); ev.stopPropagation(); } catch {}
-      try { coreFallback_toggleChatPageTitleListMode(pageNum, resolveChatId(), 'chat-page-divider:dot'); } catch {}
-    };
-
-    // When pagination is toggled on or off, the MiniMap canonical turn list and
-    // button indices must be rebuilt immediately so they reflect the new state.
-    // Without this, turning pagination off leaves stale button turnIdx values,
-    // causing click-25-goes-to-26 and a wrong counter until a page reload.
-    const onPaginationConfigChanged = (ev) => {
-      try {
-        // Schedule a full rebuild. Use a short delay so teardownRuntimeSession
-        // in Pagination (which calls clearPaginationTurnSnapshot + buildTurns)
-        // finishes updating H2O Core before MiniMap re-reads canonical turns.
-        setTimeout(() => {
-          try { scheduleRebuild('pagination:config-changed'); } catch {}
-        }, 80);
-      } catch {}
-    };
-
-    window.addEventListener('evt:h2o:pagination:configchanged', onPaginationConfigChanged);
-
-    // Register on both window and document capture to maximise event coverage.
-    window.addEventListener('dblclick', onChatPageDividerDblClick, true);
-    document.addEventListener('dblclick', onChatPageDividerDblClick, true);
-    window.addEventListener('click', onTitleListDotClick, true);
-    window.addEventListener(EV_PAGE_CHANGED, onPaginationPageChanged);
-    window.addEventListener(EV_ANSWER_COLLAPSE, onAnswerTitleCollapse);
-    window.addEventListener('evt:h2o:minimap:toggle-page-collapsed', onMiniMapTogglePageCollapsed);
-    if (EV_PAGE_CHANGED.startsWith('evt:')) {
-      window.addEventListener(EV_PAGE_CHANGED.slice(4), onPaginationPageChanged);
-    }
-
-    S.chatPageDividerBridgeOff = () => {
-      try { window.removeEventListener('dblclick', onChatPageDividerDblClick, true); } catch {}
-      try { document.removeEventListener('dblclick', onChatPageDividerDblClick, true); } catch {}
-      try { window.removeEventListener('click', onTitleListDotClick, true); } catch {}
-      try { window.removeEventListener(EV_PAGE_CHANGED, onPaginationPageChanged); } catch {}
-      try { window.removeEventListener(EV_ANSWER_COLLAPSE, onAnswerTitleCollapse); } catch {}
-      try { window.removeEventListener('evt:h2o:minimap:toggle-page-collapsed', onMiniMapTogglePageCollapsed); } catch {}
-      try { window.removeEventListener('evt:h2o:pagination:configchanged', onPaginationConfigChanged); } catch {}
-      if (EV_PAGE_CHANGED.startsWith('evt:')) {
-        try { window.removeEventListener(EV_PAGE_CHANGED.slice(4), onPaginationPageChanged); } catch {}
-      }
-    };
-    S.chatPageDividerBridgeBound = true;
-    return true;
-  }
-
-  function coreFallback_ensureChatPageDividerBridge(force = false) {
-    if (!force && S.chatPageDividerBridgeBound && typeof S.chatPageDividerBridgeOff === 'function') {
-      return true;
-    }
-    return coreFallback_bindChatPageDividerBridge(true);
-  }
-
-  function coreFallback_unbindChatPageDividerBridge() {
-    try { S.chatPageDividerBridgeOff?.(); } catch {}
-    S.chatPageDividerBridgeOff = null;
-    S.chatPageDividerBridgeBound = false;
   }
 
   function getUiRefs() {
@@ -5404,6 +5263,8 @@ function UM_PUBLIC() {
 
   // localStorage key for persisting which pages are in title-list mode (per chat)
   const KEY_TITLE_LIST_PAGES = 'h2o:prm:cgx:mnmp:state:titlelist:pages:v1';
+  const CHAT_PAGE_STATUS_CARD_ID = 'cgxui-chat-page-status-card';
+  const ATTR_CHAT_PAGE_STATUS_BOUND = 'data-cgxui-chat-page-status-bound';
 
   function getChatPageDividerDotEl(divider = null) {
     if (!divider?.querySelector) return null;
@@ -5439,6 +5300,151 @@ function UM_PUBLIC() {
     } else {
       textEl.textContent = `Page ${String(pageNum || 1)}`;
     }
+    return divider;
+  }
+
+  function ensureChatPageStatusCard() {
+    let card = S.chatPageStatusCardEl;
+    if (card?.isConnected) return card;
+    try { card = document.getElementById(CHAT_PAGE_STATUS_CARD_ID); } catch {}
+    if (!(card instanceof HTMLElement)) {
+      try {
+        card = document.createElement('div');
+        card.id = CHAT_PAGE_STATUS_CARD_ID;
+        card.setAttribute('role', 'tooltip');
+        card.setAttribute('aria-hidden', 'true');
+        card.setAttribute('data-cgxui-owner', UI_TOK.OWNER);
+        card.style.position = 'fixed';
+        card.style.left = '-9999px';
+        card.style.top = '-9999px';
+        card.style.zIndex = '2147483646';
+        card.style.pointerEvents = 'none';
+        card.style.maxWidth = '320px';
+        card.style.padding = '10px 12px';
+        card.style.borderRadius = '10px';
+        card.style.border = '1px solid rgba(148, 163, 184, 0.32)';
+        card.style.background = 'rgba(15, 23, 42, 0.96)';
+        card.style.color = '#e5eefc';
+        card.style.boxShadow = '0 12px 32px rgba(0, 0, 0, 0.34)';
+        card.style.font = '12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        card.style.whiteSpace = 'pre';
+        card.style.opacity = '0';
+        card.style.visibility = 'hidden';
+        card.style.transform = 'translateY(4px)';
+        card.style.transition = 'opacity 120ms ease, transform 120ms ease';
+        document.body.appendChild(card);
+      } catch {
+        card = null;
+      }
+    }
+    S.chatPageStatusCardEl = card instanceof HTMLElement ? card : null;
+    return S.chatPageStatusCardEl;
+  }
+
+  function formatChatPageStatusCardText(state = null) {
+    const pageNum = Math.max(1, Number(state?.pageNum || 0) || 1);
+    const titleBarRoute = String(state?.titleBarRoute || 'unknown').trim() || 'unknown';
+    const dividerDotRoute = String(state?.dividerDotRoute || 'unknown').trim() || 'unknown';
+    const dividerDblClickRoute = String(state?.dividerDblClickRoute || 'unknown').trim() || 'unknown';
+    const mode = String(state?.mode || 'normal').trim() || 'normal';
+    const pageCollapsed = !!state?.pageCollapsed ? 'on' : 'off';
+    const pageCollapseDriverRaw = String(state?.pageCollapseDriver || 'legacy').trim() || 'legacy';
+    const pageCollapseMode = String(state?.pageCollapseMode || '').trim() || 'off';
+    const titleList = !!state?.titleListActive ? 'on' : 'off';
+    const titleState = String(state?.titleState || 'expanded').trim() || 'expanded';
+    const collapsedRows = Math.max(0, Number(state?.collapsedRows || 0) || 0);
+    const totalRows = Math.max(0, Number(state?.totalRows || 0) || 0);
+    const detachedHosts = Math.max(0, Number(state?.detachedHosts || 0) || 0);
+    const hiddenQuestionHosts = Math.max(0, Number(state?.hiddenQuestionHosts || 0) || 0);
+    const pageCollapseDriver = !state?.pageCollapsed && pageCollapseDriverRaw === 'legacy'
+      ? 'none (legacy fallback)'
+      : pageCollapseDriverRaw;
+    return [
+      `Page ${pageNum}`,
+      ``,
+      `Configured routes:`,
+      `- title-bar: ${titleBarRoute}`,
+      `- divider-dot: ${dividerDotRoute}`,
+      `- divider-dblclick: ${dividerDblClickRoute}`,
+      ``,
+      `Current page state:`,
+      `- mode: ${mode}`,
+      `- page-collapse: ${pageCollapsed}`,
+      `- page-collapse-driver: ${pageCollapseDriver}`,
+      `- page-collapse-mode: ${pageCollapseMode}`,
+      `- title-list: ${titleList}`,
+      `- title-state: ${titleState}`,
+      `- rows: ${collapsedRows}/${totalRows} collapsed`,
+      `- detached-hosts: ${detachedHosts}`,
+      `- hidden-question-hosts: ${hiddenQuestionHosts}`,
+    ].join('\n');
+  }
+
+  function hideChatPageStatusCard(anchor = null) {
+    const card = S.chatPageStatusCardEl;
+    if (!(card instanceof HTMLElement)) return false;
+    if (anchor && S.chatPageStatusCardAnchor && anchor !== S.chatPageStatusCardAnchor) return false;
+    S.chatPageStatusCardAnchor = null;
+    try { card.setAttribute('aria-hidden', 'true'); } catch {}
+    try { card.style.opacity = '0'; } catch {}
+    try { card.style.visibility = 'hidden'; } catch {}
+    try { card.style.transform = 'translateY(4px)'; } catch {}
+    return true;
+  }
+
+  function showChatPageStatusCard(divider = null) {
+    if (!(divider instanceof HTMLElement)) return false;
+    const card = ensureChatPageStatusCard();
+    if (!(card instanceof HTMLElement)) return false;
+    const pageNum = getChatPageDividerPageNum(divider);
+    const chatId = String(resolveChatId() || '').trim();
+    const state = getChatPageDividerDebugState(pageNum, chatId) || passiveGetChatPageDividerDebugState(pageNum, chatId);
+    card.textContent = formatChatPageStatusCardText(state);
+
+    try { card.style.left = '-9999px'; } catch {}
+    try { card.style.top = '-9999px'; } catch {}
+    try { card.style.visibility = 'hidden'; } catch {}
+    try { card.style.opacity = '0'; } catch {}
+    try { card.style.transform = 'translateY(4px)'; } catch {}
+
+    const rect = divider.getBoundingClientRect();
+    const viewportW = Math.max(0, Number(window.innerWidth || document.documentElement?.clientWidth || 0) || 0);
+    const viewportH = Math.max(0, Number(window.innerHeight || document.documentElement?.clientHeight || 0) || 0);
+    const margin = 10;
+    const width = Math.max(0, Number(card.offsetWidth || 0) || 0);
+    const height = Math.max(0, Number(card.offsetHeight || 0) || 0);
+    let left = rect.left + (rect.width / 2) - (width / 2);
+    let top = rect.top - height - margin;
+    if (top < margin) top = rect.bottom + margin;
+    left = Math.max(margin, Math.min(left, Math.max(margin, viewportW - width - margin)));
+    top = Math.max(margin, Math.min(top, Math.max(margin, viewportH - height - margin)));
+
+    try { card.style.left = `${Math.round(left)}px`; } catch {}
+    try { card.style.top = `${Math.round(top)}px`; } catch {}
+    try { card.style.visibility = 'visible'; } catch {}
+    try { card.style.opacity = '1'; } catch {}
+    try { card.style.transform = 'translateY(0)'; } catch {}
+    try { card.setAttribute('aria-hidden', 'false'); } catch {}
+    S.chatPageStatusCardAnchor = divider;
+    return true;
+  }
+
+  function bindChatPageDividerStatusCard(divider = null) {
+    if (!(divider instanceof HTMLElement)) return divider;
+    if (divider.getAttribute?.(ATTR_CHAT_PAGE_STATUS_BOUND) === '1') return divider;
+    try { divider.setAttribute(ATTR_CHAT_PAGE_STATUS_BOUND, '1'); } catch {}
+
+    const open = () => { try { showChatPageStatusCard(divider); } catch {} };
+    const close = (ev) => {
+      const next = ev?.relatedTarget;
+      if (next instanceof Node && divider.contains?.(next)) return;
+      try { hideChatPageStatusCard(divider); } catch {}
+    };
+
+    divider.addEventListener('pointerenter', open);
+    divider.addEventListener('pointerleave', close);
+    divider.addEventListener('focusin', open);
+    divider.addEventListener('focusout', close);
     return divider;
   }
 
@@ -5595,9 +5601,10 @@ function UM_PUBLIC() {
       || ''
     ).trim();
     if (qId) return `no-answer:${qId}`;
+    const chatId = String(resolveChatId?.() || '').trim().replace(/^c\//i, '');
     const turns = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
     const idx = Math.max(0, turns.indexOf(host));
-    return `no-answer:dom:${idx + 1}`;
+    return `no-answer:${chatId || 'chat'}:dom:${idx + 1}`;
   }
 
   function getChatPageTurnDisplayNumber(host = null) {
@@ -6187,10 +6194,16 @@ function UM_PUBLIC() {
     // where S.turnList hasn't been populated yet).
     try {
       const allTurnEls = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
-      for (const host of allTurnEls) {
+      for (let i = 0; i < allTurnEls.length; i += 1) {
+        const host = allTurnEls[i];
         const role = getChatPageTurnRole(host);
         if (role !== 'user') continue;
-        if (pickAssistantMessageEl(host)) continue; // has assistant reply → skip
+        if (pickAssistantMessageEl(host)) continue; // has assistant reply inside → skip
+        // Lookahead: if the next turn element is an assistant turn, this user
+        // turn is part of a normal Q+A pair — do NOT create a NO ANSWER bar.
+        // This mirrors the same lookahead logic buildChatPageAnswerRows uses.
+        const nextTurn = allTurnEls[i + 1] || null;
+        if (nextTurn && getChatPageTurnRole(nextTurn) === 'assistant') continue;
         // Ensure the NO ANSWER bar is present in this orphaned turn
         const bar = ensureNoAnswerTitleBar(host);
         if (bar) ensured += 1;
@@ -6325,6 +6338,30 @@ function passiveGetChatPageTitleState() {
   return 'expanded';
 }
 
+function passiveGetChatPageDividerDebugState(pageNum = 0, chatId = '') {
+  const id = String(chatId || resolveChatId() || '').trim();
+  const num = Math.max(1, Number(pageNum || 0) || 0);
+  return {
+    ok: false,
+    status: 'chat-pages-controller-unavailable',
+    pageNum: num,
+    chatId: id,
+    titleBarRoute: 'unknown',
+    dividerDotRoute: 'unknown',
+    dividerDblClickRoute: 'unknown',
+    mode: 'normal',
+    pageCollapsed: false,
+    pageCollapseDriver: 'legacy',
+    pageCollapseMode: '',
+    titleListActive: false,
+    titleState: 'expanded',
+    collapsedRows: 0,
+    totalRows: 0,
+    detachedHosts: 0,
+    hiddenQuestionHosts: 0,
+  };
+}
+
 function passiveChatPagesWriteResult(pageNum = 0, extra = {}) {
   const chatId = String(extra?.chatId || '').trim();
   const source = String(extra?.source || 'core-passive').trim() || 'core-passive';
@@ -6412,6 +6449,21 @@ function getChatPageTitleState(pageNum = 0, chatId = '') {
   return callChatPagesCtl('getTitleState', [pageNum, chatId], passiveGetChatPageTitleState);
 }
 
+function getChatPageDividerUiMode(pageNum = 0, chatId = '', opts = {}) {
+  const num = Math.max(1, Number(pageNum || 0) || 0);
+  const id = String(chatId || resolveChatId() || '').trim();
+  const fallbackMode = !!opts?.pageCollapsed
+    ? 'page_collapsed'
+    : (coreFallback_isChatPageTitleListActive(num, id) ? 'title_list' : 'normal');
+  const mode = callChatPagesCtl('getDividerUiMode', [num, id], () => fallbackMode);
+  const raw = String(mode || fallbackMode).trim();
+  return raw === 'page_collapsed' || raw === 'title_list' ? raw : 'normal';
+}
+
+function getChatPageDividerDebugState(pageNum = 0, chatId = '') {
+  return callChatPagesCtl('getPageDividerDebugState', [pageNum, chatId], passiveGetChatPageDividerDebugState);
+}
+
 function setChatPageTitleListMode(pageNum = 0, enabled = true, chatId = '', source = 'core') {
   return callChatPagesCtl(
     'setTitleListMode',
@@ -6443,6 +6495,15 @@ function applyChatPageTitleListPageVisuals(pageNum = 0, chatId = '') {
       chatId: String(opts?.chatId || chatId || '').trim(),
       source: String(opts?.source || 'core-passive').trim() || 'core-passive',
     })
+  );
+}
+
+function applyChatPageDividerVisuals(divider = null, pageNum = 0, chatId = '') {
+  if (!(divider instanceof HTMLElement)) return false;
+  return callChatPagesCtl(
+    'applyDividerVisualsToDivider',
+    [divider, { pageNum, chatId }],
+    () => false
   );
 }
 
@@ -6835,6 +6896,10 @@ function unbindChatPageDividerBridge() {
     if (!divider) return null;
     const num = Math.max(1, Number(pageNum || getChatPageDividerPageNum(divider) || 0) || 1);
     const id = String(chatId || resolveChatId() || '').trim();
+    const uiMode = getChatPageDividerUiMode(num, id, { pageCollapsed: !!collapsed });
+    const effectiveCollapsed = uiMode === 'page_collapsed';
+    const effectiveTitleListActive = uiMode === 'title_list';
+    const effectiveTitleState = effectiveTitleListActive ? 'collapsed' : 'expanded';
     divider.setAttribute(ATTR_CHAT_PAGE_DIVIDER, '1');
     divider.setAttribute(ATTR_CHAT_PAGE_NUM, String(num));
     if (divider.classList?.contains('cgxui-chat-page-divider')) {
@@ -6842,27 +6907,24 @@ function unbindChatPageDividerBridge() {
       divider.setAttribute('data-page-band', String(band || 'normal'));
     }
     ensureChatPageDividerMarkup(divider, num);
-    if (collapsed) divider.setAttribute(ATTR_CHAT_PAGE_COLLAPSED, '1');
+    bindChatPageDividerStatusCard(divider);
+    if (effectiveCollapsed) divider.setAttribute(ATTR_CHAT_PAGE_COLLAPSED, '1');
     else divider.removeAttribute(ATTR_CHAT_PAGE_COLLAPSED);
 
-    const titleListActive = isChatPageTitleListActive(num, id);
-    if (titleListActive) divider.setAttribute(ATTR_CHAT_PAGE_TITLE_LIST, '1');
+    if (effectiveTitleListActive) divider.setAttribute(ATTR_CHAT_PAGE_TITLE_LIST, '1');
     else divider.removeAttribute(ATTR_CHAT_PAGE_TITLE_LIST);
 
-    const titleState = getChatPageTitleState(num, id);
-    divider.setAttribute(ATTR_CHAT_PAGE_TITLE_STATE, titleState);
+    divider.setAttribute(ATTR_CHAT_PAGE_TITLE_STATE, effectiveTitleState);
     const dot = getChatPageDividerDotEl(divider);
     if (dot) {
-      try { dot.setAttribute('data-page-title-state', titleState); } catch {}
-      try { dot.title = titleState === 'collapsed' ? `Show compact list for page ${num} (active). Click to expand all.` : `Show compact list for page ${num}.`; } catch {}
+      try { dot.setAttribute('data-page-title-state', effectiveTitleState); } catch {}
+      try { dot.removeAttribute('title'); } catch {}
     }
 
-    const title = collapsed
-      ? `Chat Page ${num} collapsed. Double-click to expand.`
-      : `Chat Page ${num}. Double-click to collapse.`;
+    const title = `Page ${num}`;
     const label = getChatPageDividerLabelEl(divider);
     if (label) {
-      try { label.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); } catch {}
+      try { label.setAttribute('aria-expanded', effectiveCollapsed ? 'false' : 'true'); } catch {}
       try { label.title = title; } catch {}
     }
     try { divider.title = title; } catch {}
@@ -6949,10 +7011,12 @@ function unbindChatPageDividerBridge() {
           try {
             const prevHost = getPreviousChatPageAnchorHost(startHost);
             applyChatPageDividerGeometry(divider, prevHost, startHost);
+            applyChatPageDividerVisuals(divider, pageNum, id);
             requestAnimationFrame(() => {
               try {
                 const livePrevHost = getPreviousChatPageAnchorHost(startHost);
                 applyChatPageDividerGeometry(divider, livePrevHost, startHost);
+                applyChatPageDividerVisuals(divider, pageNum, id);
               } catch {}
             });
           } catch {}

@@ -1,11 +1,11 @@
 // ==UserScript==
 // @h2o-id             1c1a.answer.title
-// @name               1C1a.🔴📛 Title Bar 📛
+// @name               1C1a.🟥📛 Turn Title Bar 📛
 // @namespace          H2O.Premium.CGX.answer.title
 // @author             HumamDev
-// @version            2.5.0
+// @version            3.0.2
 // @revision           001
-// @build              260403-000000
+// @build              260412-235902
 // @description        Auto-generate titles for ChatGPT answers + inline editable header; collapse/expand on double-click; sync via shared titles store + events (Contract v2.0 Stage-1).
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -141,6 +141,14 @@
     COLLAPSED_V1: `${NS_.DISK}:collapsed:v1`,   // NEW: persist collapse state
   });
 
+  const UI_CFG_ = Object.freeze({
+    KEY: `${NS_.DISK}:cfg:ui:v1`,
+    DEFAULTS: Object.freeze({
+      collapsedTextMode: 'adaptive', // adaptive = per-wash black/white, consistent = fixed text color
+    }),
+    COLLAPSED_TEXT_MODES: Object.freeze(['adaptive', 'consistent']),
+  });
+
   // Extend shared registries (first-wins)
   UTIL_extendRegistry(H2O.KEYS, { MNMP_STATE_TITLES_V1: KEY_.MNMP_STATE_TITLES_V1 }, `[${MODTAG}]`);
   UTIL_extendRegistry(H2O.EV,   { TITLE_SET: EV_.TITLE_SET }, `[${MODTAG}]`);
@@ -184,6 +192,34 @@
 
   const UTIL_dispatch = (topic, detail) => {
     try { W.dispatchEvent(new CustomEvent(topic, { detail })); } catch (e) { DIAG_err('ev:dispatch', e); }
+  };
+
+  const UI_AT_normalizeCfg = (raw) => {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    const collapsedTextMode = String(src.collapsedTextMode || UI_CFG_.DEFAULTS.collapsedTextMode).trim().toLowerCase();
+    return {
+      collapsedTextMode: UI_CFG_.COLLAPSED_TEXT_MODES.includes(collapsedTextMode)
+        ? collapsedTextMode
+        : UI_CFG_.DEFAULTS.collapsedTextMode,
+    };
+  };
+
+  const UI_AT_readCfg = () => {
+    try { return UI_AT_normalizeCfg(JSON.parse(localStorage.getItem(UI_CFG_.KEY) || '{}') || {}); } catch { return UI_AT_normalizeCfg(null); }
+  };
+
+  const UI_AT_writeCfg = (next) => {
+    const cfg = UI_AT_normalizeCfg(next);
+    try { localStorage.setItem(UI_CFG_.KEY, JSON.stringify(cfg)); } catch {}
+    return cfg;
+  };
+
+  const UI_AT_applyCfg = () => {
+    const cfg = UI_AT_readCfg();
+    try {
+      D.documentElement?.setAttribute?.('data-cgxui-at-collapsed-text-mode', cfg.collapsedTextMode || UI_CFG_.DEFAULTS.collapsedTextMode);
+    } catch {}
+    return cfg;
   };
 
   /* ───────────────────────────── 🔴 STATE — REGISTRIES / CACHES 📄🔓💧 ───────────────────────────── */
@@ -258,7 +294,61 @@
     catch (e) { DIAG_err('store:saveTitles', e); }
   };
 
+  const ENGINE_isUnmountEngineMode = () => {
+    try {
+      const router = W.top?.H2O?.CM?.chtmech?.api || W.H2O?.CM?.chtmech?.api || null;
+      return !!router?.isEngineGestureBackend?.();
+    } catch { return false; }
+  };
+
+
+  const ENGINE_getUnmountApi = () => {
+    try { return W.top?.H2O?.UM?.nmntmssgs?.api || W.H2O?.UM?.nmntmssgs?.api || null; } catch { return null; }
+  };
+
+  const ENGINE_readUnmountCollapsed = (answerId, fallback = null, opts = {}) => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return fallback;
+    const api = ENGINE_getUnmountApi();
+    const requestedSources = Array.isArray(opts?.sources)
+      ? opts.sources.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    if (requestedSources.length && typeof api?.getManualCollapsedIds === 'function') {
+      let anyRead = false;
+      for (const source of requestedSources) {
+        try {
+          const ids = api.getManualCollapsedIds({ source });
+          if (!Array.isArray(ids)) continue;
+          anyRead = true;
+          if (ids.includes(id)) return true;
+        } catch {}
+      }
+      return anyRead ? false : fallback;
+    }
+
+    try {
+      if (typeof api?.isCollapsedById === 'function') return !!api.isCollapsedById(id);
+    } catch {}
+    try {
+      if (typeof api?.getManualCollapsedIds === 'function') {
+        const ids = api.getManualCollapsedIds();
+        if (Array.isArray(ids)) return ids.includes(id);
+      }
+    } catch {}
+    return fallback;
+  };
+
+  const ENGINE_readUnmountTitleShellCollapsed = (answerId, fallback = null) => {
+    return ENGINE_readUnmountCollapsed(answerId, fallback, {
+      sources: ['answer-title', 'title-list-row'],
+    });
+  };
+
   const ENGINE_loadCollapsed = () => {
+    // In engine mode, the Unmount adapter is the sole owner of collapse state.
+    // Title Bar must not independently persist/restore collapse to avoid dual-truth conflicts.
+    if (ENGINE_isUnmountEngineMode()) return new Set();
     try {
       const raw = UTIL_storage.getStr(KEY_.COLLAPSED_V1, null);
       if (!raw) return new Set();
@@ -268,6 +358,7 @@
   };
 
   const ENGINE_saveCollapsed = () => {
+    if (ENGINE_isUnmountEngineMode()) return;
     try { UTIL_storage.setJSON(KEY_.COLLAPSED_V1, Array.from(STATE_.collapsed)); }
     catch (e) { DIAG_err('store:saveCollapsed', e); }
   };
@@ -742,10 +833,9 @@ No quotes, no emojis, no numbering. Just the title text.`;
     const textEl = bar.querySelector(DOM_selScoped(UI_.TEXT));
     if (textEl && title) textEl.textContent = title;
 
-    // NEW: restore persisted collapsed state
-    if (id && STATE_.collapsed.has(id)) {
-      DOM_applyCollapseState(msgEl, bar, true, false);
-    }
+    // Reconcile newly hydrated same-turn fragments against the current live
+    // collapsed state without mutating ownership or persistence.
+    if (id) DOM_reconcileCollapsedDom(id);
 
     return bar;
   };
@@ -758,15 +848,29 @@ No quotes, no emojis, no numbering. Just the title text.`;
     const span = bar.querySelector(DOM_selScoped(UI_.TEXT));
     if (!span) return;
 
-    // CHANGED: single-click no longer triggers edit (reserved for double-click collapse on bar)
-    // Edit now triggered by clicking the text span directly (not the bar)
+    const clearPendingEdit = () => {
+      const timer = Number(bar?._titleEditTimer || 0) || 0;
+      if (!timer) return;
+      try { clearTimeout(timer); } catch {}
+      bar._titleEditTimer = 0;
+    };
+
+    // Delay edit-start slightly so a bar dblclick can cancel it cleanly.
     const onClick = (e) => {
       try { e.stopPropagation(); } catch {}
-      DOM_startTitleEdit(span, answerId);
+      clearPendingEdit();
+      bar._titleEditTimer = setTimeout(() => {
+        bar._titleEditTimer = 0;
+        if (span.isContentEditable) return;
+        DOM_startTitleEdit(span, answerId);
+      }, 260);
     };
 
     span.addEventListener('click', onClick);
-    STATE_.clean.listeners.push(() => span.removeEventListener('click', onClick));
+    STATE_.clean.listeners.push(() => {
+      clearPendingEdit();
+      span.removeEventListener('click', onClick);
+    });
   };
 
   // ─── NEW: collapse / expand ───────────────────────────────────────────────
@@ -775,13 +879,18 @@ No quotes, no emojis, no numbering. Just the title text.`;
     if (bar._collapseWired) return;  // idempotent
     bar._collapseWired = true;
 
-    let lastClick = 0;
-    const DBLCLICK_MS = 350;
+    const clearPendingEdit = () => {
+      const timer = Number(bar?._titleEditTimer || 0) || 0;
+      if (!timer) return;
+      try { clearTimeout(timer); } catch {}
+      bar._titleEditTimer = 0;
+    };
 
     const onBarDblClick = (e) => {
-      // Ignore double-clicks that originate on the editable text span
       const textEl = bar.querySelector(DOM_selScoped(UI_.TEXT));
-      if (textEl && textEl.contains(e.target)) return;
+      // Allow dblclick on the title text unless the span is already in edit mode.
+      if (textEl?.isContentEditable) return;
+      clearPendingEdit();
       try { e.stopPropagation(); e.preventDefault(); } catch {}
       const router = W.top?.H2O?.CM?.chtmech?.api || W.H2O?.CM?.chtmech?.api || null;
       const routed = router?.routeAnswerTitleDblClick?.({
@@ -795,7 +904,10 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
     // Use native dblclick (most reliable cross-browser)
     bar.addEventListener('dblclick', onBarDblClick);
-    STATE_.clean.listeners.push(() => bar.removeEventListener('dblclick', onBarDblClick));
+    STATE_.clean.listeners.push(() => {
+      clearPendingEdit();
+      bar.removeEventListener('dblclick', onBarDblClick);
+    });
   };
 
   const DOM_getAnswerBody = (msgEl) => {
@@ -889,6 +1001,89 @@ No quotes, no emojis, no numbering. Just the title text.`;
     return out;
   };
 
+  const DOM_hasCollapsedDomResidue = (msgEl = null, bar = null) => {
+    if (!msgEl) return false;
+    const liveBar = bar || null;
+
+    if (UTIL_getAttr(msgEl, ATTR_.COLLAPSED) === '1') return true;
+
+    const barState = String(UTIL_getAttr(liveBar, ATTR_.CGXUI_STATE) || '').trim();
+    if (barState.split(/\s+/).includes('collapsed')) return true;
+
+    const managedEls = DOM_getAnswerBody(msgEl)
+      .concat(DOM_getAnswerTurnSiblings(msgEl))
+      .concat(DOM_getAnswerToolbars(msgEl));
+    if (managedEls.some((el) => UTIL_getAttr(el, 'data-cgxui-at-hidden') === '1')) return true;
+
+    const questionHost = DOM_getQuestionTurnHost(msgEl);
+    if (UTIL_getAttr(questionHost, 'data-at-question-hidden') === '1') return true;
+
+    return false;
+  };
+
+  const DOM_isAnswerCurrentlyCollapsed = (answerId, msgEl = null, bar = null) => {
+    const id = API_AT_normalizeAnswerId(answerId || DOM_getAnswerId(msgEl));
+    if (!id) return false;
+
+    const liveMsgEl = msgEl || API_AT_getMessageEl(id);
+    if (!liveMsgEl) return false;
+    const liveBar = bar || API_AT_getBar(id);
+
+    // In engine mode, Unmount adapter is the sole collapse authority whenever it can answer.
+    // DOM residue must not override an engine-reported expand state.
+    if (ENGINE_isUnmountEngineMode()) {
+      const engineCollapsed = ENGINE_readUnmountTitleShellCollapsed(id, null);
+      if (engineCollapsed !== null) return !!engineCollapsed;
+    }
+
+    if (STATE_.collapsed.has(id)) return true;
+    return DOM_hasCollapsedDomResidue(liveMsgEl, liveBar);
+  };
+
+  function DOM_reconcileCollapsedDom(answerId) {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return false;
+
+    const msgEl = API_AT_getMessageEl(id);
+    const bar = API_AT_getBar(id);
+    if (!msgEl || !bar) return false;
+
+    if (ENGINE_isUnmountEngineMode()) {
+      const engineCollapsed = ENGINE_readUnmountTitleShellCollapsed(id, null);
+      if (engineCollapsed === true) {
+        DOM_applyCollapseState(msgEl, bar, true, false);
+        return true;
+      }
+      if (engineCollapsed === false && DOM_hasCollapsedDomResidue(msgEl, bar)) {
+        DOM_applyCollapseState(msgEl, bar, false, false);
+        return true;
+      }
+    }
+
+    if (!DOM_isAnswerCurrentlyCollapsed(id, msgEl, bar)) return false;
+
+    DOM_applyCollapseState(msgEl, bar, true, false);
+    return true;
+  }
+
+  const DOM_findCollapsedAnswerIdForMutationTarget = (node) => {
+    const workEl = node instanceof HTMLElement ? node : node?.parentElement || null;
+    if (!workEl) return '';
+    if (UTIL_getAttr(workEl, ATTR_.CGXUI) || UTIL_getAttr(workEl, ATTR_.CGXUI_OWNER)) return '';
+    if (workEl.closest?.(SEL_.OWNED_BAR_ANY)) return '';
+
+    const turnHost = workEl.closest?.(SEL_.TURN);
+    if (!turnHost) return '';
+
+    let msgEl = null;
+    try { msgEl = turnHost.querySelector?.(SEL_.ASSISTANT_MSG) || null; } catch {}
+    if (!msgEl) return '';
+
+    const answerId = DOM_getAnswerId(msgEl);
+    if (!answerId) return '';
+    return DOM_isAnswerCurrentlyCollapsed(answerId, msgEl, API_AT_getBar(answerId)) ? answerId : '';
+  };
+
   const DOM_applyCollapseState = (msgEl, bar, collapsed, animate = true) => {
     const bodyEls = DOM_getAnswerBody(msgEl);
     const siblingEls = DOM_getAnswerTurnSiblings(msgEl);
@@ -919,9 +1114,6 @@ No quotes, no emojis, no numbering. Just the title text.`;
         el.style.borderBottomWidth = '0px';
         el.style.opacity = '0';
         el.style.pointerEvents = 'none';
-      });
-      // Stamp React-resistant CSS attribute on sibling/toolbar elements
-      siblingEls.concat(toolbarEls).forEach(el => {
         try { el.setAttribute('data-cgxui-at-hidden', '1'); } catch {}
       });
       // Hide the question turn (the user message before this answer)
@@ -959,13 +1151,11 @@ No quotes, no emojis, no numbering. Just the title text.`;
         el.style.borderBottomWidth = '';
         el.style.opacity = '';
         el.style.pointerEvents = '';
+        try { el.removeAttribute('data-cgxui-at-hidden'); } catch {}
+        try { el.style.removeProperty('display'); } catch { el.style.display = ''; }
         if (animate) {
           setTimeout(() => { el.style.transition = ''; }, CFG_.COLLAPSE_TRANSITION_MS + 50);
         }
-      });
-      // Remove React-resistant CSS attribute from sibling/toolbar elements
-      siblingEls.concat(toolbarEls).forEach(el => {
-        try { el.removeAttribute('data-cgxui-at-hidden'); } catch {}
       });
       // Restore the question turn
       if (questionHost) {
@@ -1105,6 +1295,7 @@ ${S_BAR_COLLAPSED}{
 }
 
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}{
+  --h2o-at-collapsed-text-resolved: var(--h2o-at-wash-text, inherit);
   background: linear-gradient(
     90deg,
     color-mix(in srgb, var(--h2o-at-wash-color, rgba(255,255,255,0.14)) 26%, rgba(255,255,255,0.10)),
@@ -1114,13 +1305,17 @@ ${S_BAR_COLLAPSED}{
   box-shadow: 0 0 10px color-mix(in srgb, var(--h2o-at-wash-glow, transparent) 16%, transparent);
 }
 
+html[data-cgxui-at-collapsed-text-mode="consistent"] [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}{
+  --h2o-at-collapsed-text-resolved: var(--h2o-at-collapsed-consistent-text, rgba(242, 246, 255, 0.95));
+}
+
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_TEXT}{
-  color: var(--h2o-at-wash-text, inherit) !important;
+  color: var(--h2o-at-collapsed-text-resolved, inherit) !important;
 }
 
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_LABEL},
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_ICON}{
-  color: color-mix(in srgb, var(--h2o-at-wash-text, currentColor) 72%, transparent) !important;
+  color: color-mix(in srgb, var(--h2o-at-collapsed-text-resolved, currentColor) 72%, transparent) !important;
 }
 
 ${S_LABEL}{
@@ -1148,8 +1343,8 @@ ${S_BADGE}{
 }
 
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_BADGE}{
-  background: var(--h2o-at-wash-color, #facc15) !important;
-  box-shadow: 0 0 6px color-mix(in srgb, var(--h2o-at-wash-glow, #facc15) 44%, transparent) !important;
+  background: #facc15 !important;
+  box-shadow: 0 0 6px rgba(250, 204, 21, 0.8) !important;
 }
 
 /* NEW: Collapse chevron icon */
@@ -1237,18 +1432,30 @@ ${S_BAR}:active{
     const mo = new MutationObserver((muts) => {
       try {
         for (const m of muts) {
+          if (m.type === 'characterData') {
+            const relatedAnswerId = DOM_findCollapsedAnswerIdForMutationTarget(m.target);
+            if (relatedAnswerId) DOM_reconcileCollapsedDom(relatedAnswerId);
+            continue;
+          }
           if (!m.addedNodes || !m.addedNodes.length) continue;
           m.addedNodes.forEach(node => {
-            if (!(node instanceof HTMLElement)) return;
-            if (node.matches?.(SEL_.ASSISTANT_MSG)) TIME_queueProcessAnswer(node, 0);
-            const inner = node.querySelectorAll?.(SEL_.ASSISTANT_MSG);
-            if (inner && inner.length) inner.forEach(el => TIME_queueProcessAnswer(el, 0));
+            if (node instanceof HTMLElement) {
+              if (node.matches?.(SEL_.ASSISTANT_MSG)) {
+                TIME_queueProcessAnswer(node, 0);
+              }
+              const inner = node.querySelectorAll?.(SEL_.ASSISTANT_MSG);
+              if (inner && inner.length) {
+                inner.forEach(el => TIME_queueProcessAnswer(el, 0));
+              }
+            }
+            const relatedAnswerId = DOM_findCollapsedAnswerIdForMutationTarget(node);
+            if (relatedAnswerId) DOM_reconcileCollapsedDom(relatedAnswerId);
           });
         }
       } catch (e) { DIAG_err('mo:cb', e); }
     });
 
-    mo.observe(root, { childList: true, subtree: true });
+    mo.observe(root, { childList: true, subtree: true, characterData: true });
     STATE_.clean.mo = mo;
   };
 
@@ -1341,7 +1548,14 @@ function API_AT_getTitles() {
 
 function API_AT_isCollapsed(answerId) {
   const id = API_AT_normalizeAnswerId(answerId);
-  return !!(id && STATE_.collapsed.has(id));
+  if (!id) return false;
+  if (ENGINE_isUnmountEngineMode()) {
+    const engineCollapsed = ENGINE_readUnmountTitleShellCollapsed(id, null);
+    if (engineCollapsed !== null) return !!engineCollapsed;
+  }
+  const msgEl = API_AT_getMessageEl(id);
+  const bar = API_AT_getBar(id);
+  return DOM_isAnswerCurrentlyCollapsed(id, msgEl, bar);
 }
 
 function API_AT_getCollapsedIds() {
@@ -1374,6 +1588,53 @@ function API_AT_toggleCollapsed(answerId, opts = {}) {
   const id = API_AT_normalizeAnswerId(answerId);
   if (!id) return { ok: false, status: 'invalid-id', answerId: id, collapsed: false };
   return API_AT_setCollapsed(id, !API_AT_isCollapsed(id), opts);
+}
+
+function API_AT_resetCollapsedForCurrentChat(opts = {}) {
+  const answerEls = DOM_getAssistantMessages();
+  const ids = new Set();
+  let changed = 0;
+  const explicitIds = Array.isArray(opts?.answerIds) ? opts.answerIds : [];
+
+  for (const msgEl of answerEls) {
+    const id = API_AT_normalizeAnswerId(DOM_getAnswerId(msgEl));
+    if (id) ids.add(id);
+  }
+  for (const raw of explicitIds) {
+    const id = API_AT_normalizeAnswerId(raw);
+    if (id) ids.add(id);
+  }
+
+  for (const id of ids) {
+    API_AT_setCollapsed(id, false, { animate: opts?.animate === true, source: 'reset-current-chat' });
+    if (id && STATE_.collapsed.delete(id)) changed += 1;
+  }
+
+  // Best-effort residue cleanup for currently mounted nodes.
+  for (const msgEl of answerEls) {
+    UTIL_delAttr(msgEl, ATTR_.COLLAPSED);
+    const managed = DOM_getAnswerBody(msgEl)
+      .concat(DOM_getAnswerTurnSiblings(msgEl))
+      .concat(DOM_getAnswerToolbars(msgEl));
+    managed.forEach((el) => {
+      try { el.removeAttribute('data-cgxui-at-hidden'); } catch {}
+      try { el.style.removeProperty('display'); } catch {}
+    });
+    const qHost = DOM_getQuestionTurnHost(msgEl);
+    if (qHost) {
+      UTIL_delAttr(qHost, 'data-at-question-hidden');
+      UTIL_delAttr(qHost, 'data-cgxui-chat-page-question-hidden');
+      try { qHost.style.removeProperty('display'); } catch {}
+    }
+  }
+
+  ENGINE_saveCollapsed();
+  return {
+    ok: true,
+    status: 'ok',
+    answers: ids.size,
+    changed,
+  };
 }
 
 function API_AT_setTitle(answerId, title, opts = {}) {
@@ -1409,14 +1670,35 @@ function API_AT_sync(answerId, opts = {}) {
     DOM_tryUpdateMiniMap(id, title);
     titleApplied = true;
   }
-  if (bar && STATE_.collapsed.has(id)) {
-    DOM_applyCollapseState(msgEl, bar, true, opts?.animate === true);
-    collapseApplied = true;
+  if (bar) {
+    const shouldBeCollapsed = ENGINE_isUnmountEngineMode()
+      ? !!ENGINE_readUnmountTitleShellCollapsed(id, false)
+      : STATE_.collapsed.has(id);
+    if (shouldBeCollapsed) {
+      DOM_applyCollapseState(msgEl, bar, true, opts?.animate === true);
+      collapseApplied = true;
+    } else if (ENGINE_isUnmountEngineMode() && DOM_hasCollapsedDomResidue(msgEl, bar)) {
+      DOM_applyCollapseState(msgEl, bar, false, false);
+      collapseApplied = true;
+    }
   }
   return { ok: true, status: 'ok', answerId: id, titleApplied, collapseApplied };
 }
 
+function API_AT_getConfig() {
+  return UI_AT_readCfg();
+}
+
+function API_AT_applySetting(key, value) {
+  const current = UI_AT_readCfg();
+  const next = UI_AT_writeCfg({ ...current, [String(key || '')]: value });
+  UI_AT_applyCfg();
+  return next;
+}
+
 MOD_OBJ.api = MOD_OBJ.api || Object.create(null);
+MOD_OBJ.api.getConfig = API_AT_getConfig;
+MOD_OBJ.api.applySetting = API_AT_applySetting;
 MOD_OBJ.api.public = Object.freeze({
   ver: '1.0.0',
   getTitle: API_AT_getTitle,
@@ -1426,10 +1708,13 @@ MOD_OBJ.api.public = Object.freeze({
   getCollapsedIds: API_AT_getCollapsedIds,
   setCollapsed: API_AT_setCollapsed,
   toggleCollapsed: API_AT_toggleCollapsed,
+  resetCollapsedForCurrentChat: API_AT_resetCollapsedForCurrentChat,
   getMessageEl: API_AT_getMessageEl,
   getBar: API_AT_getBar,
   ensureBar: API_AT_ensureBar,
   sync: API_AT_sync,
+  getConfig: API_AT_getConfig,
+  applySetting: API_AT_applySetting,
 });
   /* ───────────────────────────── ⚫️ LIFECYCLE — INIT / WIRING / STARTUP 📝🔓💥 ───────────────────────────── */
 
@@ -1445,6 +1730,7 @@ MOD_OBJ.api.public = Object.freeze({
     DIAG_step('boot:start', { ver: '2.1.0', pid: PID });
 
     UI_ensureStyle();
+    UI_AT_applyCfg();
 
     ENGINE_migrateTitlesOnce();
     STATE_.titles = ENGINE_loadTitles();
@@ -1477,10 +1763,30 @@ MOD_OBJ.api.public = Object.freeze({
       } catch (err) { DIAG_err('ev:title:handler', err); }
     };
 
+    const onAnswerCollapse = (e) => {
+      try {
+        if (!ENGINE_isUnmountEngineMode()) return;
+        const d = e && e.detail ? e.detail : {};
+        const answerId = API_AT_normalizeAnswerId(d.answerId);
+        if (!answerId) return;
+        const msgEl = API_AT_getMessageEl(answerId);
+        if (!msgEl) return;
+        const ensured = API_AT_ensureBar(answerId);
+        const bar = ensured?.bar || API_AT_getBar(answerId);
+        if (!bar) return;
+        const collapsed = !!d.collapsed;
+        if (collapsed) STATE_.collapsed.add(answerId);
+        else STATE_.collapsed.delete(answerId);
+        DOM_applyCollapseState(msgEl, bar, collapsed, false);
+      } catch (err) { DIAG_err('ev:collapse:handler', err); }
+    };
+
     W.addEventListener(EV_.TITLE_SET_LEG, onTitle);
     W.addEventListener(EV_.TITLE_SET, onTitle);
+    W.addEventListener(EV_.ANSWER_COLLAPSE, onAnswerCollapse);
     STATE_.clean.listeners.push(() => W.removeEventListener(EV_.TITLE_SET_LEG, onTitle));
     STATE_.clean.listeners.push(() => W.removeEventListener(EV_.TITLE_SET, onTitle));
+    STATE_.clean.listeners.push(() => W.removeEventListener(EV_.ANSWER_COLLAPSE, onAnswerCollapse));
 
     TIME_initialScan();
     TIME_startObserver();

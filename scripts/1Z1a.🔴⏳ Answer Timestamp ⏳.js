@@ -3,7 +3,7 @@
 // @name               1Z1a.🔴⏳ Answer Timestamp ⏳
 // @namespace          H2O.Premium.CGX.answer.timestamp
 // @author             HumamDev
-// @version            2.0.0
+// @version            2.1.1
 // @revision           002
 // @build              260328-002627
 // @description        Timestamp under every assistant message (H2O Core aware) + " | #". Contract v2 Stage-1 spine, cgxui hooks, idempotent boot/dispose, legacy-safe.
@@ -86,6 +86,28 @@
     MO_MAX_NODE_CHILDREN: 24,
     PERF_LOG_MS: 10000,
     PERF_KEY: 'h2o:perf',
+  });
+
+  const UI_CFG_ = Object.freeze({
+    KEY: `h2o:${SUITE}:${HOST}:${DsID}:cfg:ui:v1`,
+    DEFAULTS: Object.freeze({
+      collapsedHoverMode: 'under',
+    }),
+    MODES: Object.freeze(['under', 'tooltip', 'title-right']),
+  });
+
+
+  const TITLE_BAR_SEL_ = '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]';
+
+  const CSS_VAR_ = Object.freeze({
+    ANCHOR_LEFT: '--cgxui-ats-anchor-left',
+    ANCHOR_TOP: '--cgxui-ats-anchor-top',
+    ANCHOR_WIDTH: '--cgxui-ats-anchor-width',
+    ANCHOR_HEIGHT: '--cgxui-ats-anchor-height',
+    UNDER_TOP: '--cgxui-ats-under-top',
+    UNDER_MAX: '--cgxui-ats-under-max',
+    RIGHT_LEFT: '--cgxui-ats-right-left',
+    RIGHT_MAX: '--cgxui-ats-right-max',
   });
 
   /* ───────────────────────────── 2) VAULT + BOUNDED DIAG ───────────────────────────── */
@@ -174,6 +196,114 @@
     return DOC.querySelector(SEL_.MAIN) || null;
   }
 
+
+  /** @helper */
+  function UI_AT_normalizeCfg(raw) {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    const mode = String(src.collapsedHoverMode || UI_CFG_.DEFAULTS.collapsedHoverMode).trim().toLowerCase();
+    return {
+      collapsedHoverMode: UI_CFG_.MODES.includes(mode) ? mode : UI_CFG_.DEFAULTS.collapsedHoverMode,
+    };
+  }
+
+  /** @helper */
+  function UI_AT_readCfg() {
+    try {
+      return UI_AT_normalizeCfg(JSON.parse(W.localStorage?.getItem(UI_CFG_.KEY) || '{}') || {});
+    } catch {
+      return { ...UI_CFG_.DEFAULTS };
+    }
+  }
+
+  /** @helper */
+  function UI_AT_writeCfg(next) {
+    const cfg = UI_AT_normalizeCfg(next);
+    try { W.localStorage?.setItem(UI_CFG_.KEY, JSON.stringify(cfg)); } catch {}
+    return cfg;
+  }
+
+  /** @helper */
+  function UI_AT_applyCfg() {
+    const cfg = UI_AT_readCfg();
+    try { DOC.documentElement?.setAttribute?.('data-cgxui-ats-collapsed-hover-mode', cfg.collapsedHoverMode); } catch {}
+    MOD.state.uiCfg = cfg;
+    return cfg;
+  }
+
+  /** @helper */
+  function DOM_AT_clearAnchorVars(msgEl) {
+    if (!msgEl?.style) return;
+    for (const key of Object.values(CSS_VAR_)) {
+      try { msgEl.style.removeProperty(key); } catch {}
+    }
+  }
+
+  /** @helper */
+  function DOM_AT_syncAnchorVars(msgEl, titleEl) {
+    if (!msgEl || !titleEl) return;
+    const mr = msgEl.getBoundingClientRect?.();
+    const tr = titleEl.getBoundingClientRect?.();
+    if (!mr || !tr) return;
+
+    const left = Math.max(0, Math.round(tr.left - mr.left));
+    const top = Math.max(0, Math.round(tr.top - mr.top));
+    const width = Math.max(0, Math.round(tr.width));
+    const height = Math.max(0, Math.round(tr.height));
+    const gap = 8;
+
+    const underTop = top + height + 6;
+    const underMax = Math.max(160, Math.round(mr.width - left - 12));
+    const rightLeft = left + width + gap;
+    const rightMax = Math.max(120, Math.round(mr.width - rightLeft - 12));
+
+    msgEl.style.setProperty(CSS_VAR_.ANCHOR_LEFT, `${left}px`);
+    msgEl.style.setProperty(CSS_VAR_.ANCHOR_TOP, `${top}px`);
+    msgEl.style.setProperty(CSS_VAR_.ANCHOR_WIDTH, `${width}px`);
+    msgEl.style.setProperty(CSS_VAR_.ANCHOR_HEIGHT, `${height}px`);
+    msgEl.style.setProperty(CSS_VAR_.UNDER_TOP, `${underTop}px`);
+    msgEl.style.setProperty(CSS_VAR_.UNDER_MAX, `${underMax}px`);
+    msgEl.style.setProperty(CSS_VAR_.RIGHT_LEFT, `${rightLeft}px`);
+    msgEl.style.setProperty(CSS_VAR_.RIGHT_MAX, `${rightMax}px`);
+  }
+
+  /** @helper */
+  function DOM_AT_syncAnchorFromNode(node) {
+    const titleEl = node?.closest?.(TITLE_BAR_SEL_) || null;
+    const msgEl = titleEl?.closest?.(SEL_.ASSIST_MSG) || null;
+    if (!titleEl || !msgEl) return;
+    if (String(msgEl.getAttribute('data-at-collapsed') || '') !== '1') return;
+    DOM_AT_syncAnchorVars(msgEl, titleEl);
+  }
+
+  /** @helper */
+  function CORE_AT_bindTitleHoverAnchors() {
+    const st = MOD.state;
+
+    const onPointer = (evt) => DOM_AT_syncAnchorFromNode(evt.target);
+    const onResize = () => {
+      DOC.querySelectorAll(`${SEL_.ASSIST_MSG}[data-at-collapsed="1"] ${TITLE_BAR_SEL_}`).forEach((titleEl) => {
+        const msgEl = titleEl.closest(SEL_.ASSIST_MSG);
+        if (msgEl) DOM_AT_syncAnchorVars(msgEl, titleEl);
+      });
+    };
+
+    W.addEventListener('pointerover', onPointer, true);
+    W.addEventListener('pointermove', onPointer, true);
+    W.addEventListener('mouseover', onPointer, true);
+    W.addEventListener('mousemove', onPointer, true);
+    W.addEventListener('focusin', onPointer, true);
+    W.addEventListener('resize', onResize, true);
+    W.addEventListener('scroll', onResize, true);
+
+    st.cleanup.push(() => W.removeEventListener('pointerover', onPointer, true));
+    st.cleanup.push(() => W.removeEventListener('pointermove', onPointer, true));
+    st.cleanup.push(() => W.removeEventListener('mouseover', onPointer, true));
+    st.cleanup.push(() => W.removeEventListener('mousemove', onPointer, true));
+    st.cleanup.push(() => W.removeEventListener('focusin', onPointer, true));
+    st.cleanup.push(() => W.removeEventListener('resize', onResize, true));
+    st.cleanup.push(() => W.removeEventListener('scroll', onResize, true));
+  }
+
   /* ───────────────────────────── 3) UI — CSS (idempotent) ───────────────────────────── */
 
   /** @critical */
@@ -198,6 +328,93 @@
   max-width: 100vw;
   display: block;
   font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  transition: opacity 160ms ease, visibility 0s linear 160ms, transform 160ms ease;
+}
+
+${SEL_.ASSIST_MSG}{
+  position: relative;
+}
+
+${SEL_.ASSIST_MSG}[data-at-collapsed="1"] > .${CSS_.STAMP_CLASS_OURS},
+${SEL_.ASSIST_MSG}[data-at-collapsed="1"] > .${CSS_.STAMP_CLASS_LEGACY}{
+  opacity: 0;
+  visibility: hidden;
+  margin: 0;
+  pointer-events: none;
+  position: absolute;
+  left: var(${CSS_VAR_.ANCHOR_LEFT}, 10px);
+  top: var(${CSS_VAR_.UNDER_TOP}, 42px);
+  width: max-content;
+  max-width: min(var(${CSS_VAR_.UNDER_MAX}, 320px), calc(100% - 12px));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 6;
+}
+
+html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"] > .${CSS_.STAMP_CLASS_OURS},
+html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"] > .${CSS_.STAMP_CLASS_LEGACY}{
+  top: calc(var(${CSS_VAR_.ANCHOR_TOP}, 9px) + (var(${CSS_VAR_.ANCHOR_HEIGHT}, 28px) / 2));
+  left: var(${CSS_VAR_.RIGHT_LEFT}, 220px);
+  width: max-content;
+  max-width: min(var(${CSS_VAR_.RIGHT_MAX}, 320px), calc(100% - 12px));
+  transform: translateY(-50%);
+}
+
+html[data-cgxui-ats-collapsed-hover-mode="under"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_OURS},
+html[data-cgxui-ats-collapsed-hover-mode="under"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_LEGACY}{
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+  top: var(${CSS_VAR_.UNDER_TOP}, 42px);
+  left: var(${CSS_VAR_.ANCHOR_LEFT}, 10px);
+  width: max-content;
+  max-width: min(var(${CSS_VAR_.UNDER_MAX}, 320px), calc(100% - 12px));
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  color: #999;
+  text-align: left;
+  transform: none;
+}
+
+html[data-cgxui-ats-collapsed-hover-mode="tooltip"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_OURS},
+html[data-cgxui-ats-collapsed-hover-mode="tooltip"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_LEGACY}{
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+  top: var(${CSS_VAR_.UNDER_TOP}, 42px);
+  left: var(${CSS_VAR_.ANCHOR_LEFT}, 10px);
+  width: max-content;
+  max-width: min(var(${CSS_VAR_.UNDER_MAX}, 420px), calc(100% - 20px));
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(18, 20, 26, 0.92);
+  border: 1px solid rgba(255,255,255,0.16);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.34);
+  color: rgba(233,236,243,0.96);
+  transform: none;
+}
+
+html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_OURS},
+html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-at-collapsed="1"]:has(${TITLE_BAR_SEL_}:hover) > .${CSS_.STAMP_CLASS_LEGACY}{
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+  top: calc(var(${CSS_VAR_.ANCHOR_TOP}, 9px) + (var(${CSS_VAR_.ANCHOR_HEIGHT}, 28px) / 2));
+  left: var(${CSS_VAR_.RIGHT_LEFT}, 220px);
+  right: auto;
+  width: max-content;
+  max-width: min(var(${CSS_VAR_.RIGHT_MAX}, 320px), calc(100% - 12px));
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.05);
+  color: rgba(214,219,229,0.92);
+  font-size: 11px;
+  text-align: left;
+  transform: translateY(-50%);
 }
     `.trim();
 
@@ -430,6 +647,13 @@
       stamp.dataset.fullLabel = fullLabel;
       CORE_AT_perfInc('labelsUpdated');
     }
+
+    const titleEl = div.querySelector?.(TITLE_BAR_SEL_) || null;
+    if (String(div.getAttribute('data-at-collapsed') || '') === '1' && titleEl) {
+      DOM_AT_syncAnchorVars(div, titleEl);
+    } else {
+      DOM_AT_clearAnchorVars(div);
+    }
   }
 
   /* ───────────────────────────── 6) SCHEDULER (no spam) ───────────────────────────── */
@@ -624,6 +848,8 @@
     CORE_AT_startPerfTicker();
 
     UI_AT_injectCSSOnce();
+    UI_AT_applyCfg();
+    CORE_AT_bindTitleHoverAnchors();
 
     CORE_AT_attachFallbackMO();
     CORE_AT_hookCore();
@@ -648,6 +874,15 @@
     // Expose
     MOD.api.boot = CORE_AT_boot;
     MOD.api.dispose = CORE_AT_dispose;
+    MOD.api.rescan = DOM_AT_queueAllAssistantsDebounced;
+    MOD.api.getConfig = UI_AT_readCfg;
+    MOD.api.applySetting = (key, value) => {
+      const current = UI_AT_readCfg();
+      const next = UI_AT_writeCfg({ ...current, [String(key || '')]: value });
+      UI_AT_applyCfg();
+      DOM_AT_queueAllAssistantsDebounced();
+      return next;
+    };
   }
 
   /** @critical */

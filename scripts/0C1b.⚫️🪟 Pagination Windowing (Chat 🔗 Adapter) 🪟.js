@@ -184,6 +184,11 @@ Self-check:
   S.offObsReady = (typeof S.offObsReady === 'function') ? S.offObsReady : null;
   S.offObsMut = (typeof S.offObsMut === 'function') ? S.offObsMut : null;
   S.diagConfig = null;
+  S.transientWindowingActive = !!S.transientWindowingActive;
+  S.dividerPagination = (S.dividerPagination && typeof S.dividerPagination === 'object') ? S.dividerPagination : {};
+  S.dividerPagination.active = !!S.dividerPagination.active;
+  S.dividerPagination.chatId = String(S.dividerPagination.chatId || '');
+  S.dividerPagination.pageIndex = Number.isFinite(S.dividerPagination.pageIndex) ? S.dividerPagination.pageIndex : -1;
 
   function normalizeRuntimeConfig(input, base = RUNTIME_DEFAULT) {
     const src = (input && typeof input === 'object') ? input : {};
@@ -299,6 +304,37 @@ Self-check:
 
   function isFeatureEnabled() {
     return getRuntimeConfigCopy().enabled !== false;
+  }
+
+  function isWindowingActive() {
+    return isFeatureEnabled() || !!S.transientWindowingActive;
+  }
+
+  function clearDividerPaginationState() {
+    S.dividerPagination.active = false;
+    S.dividerPagination.chatId = '';
+    S.dividerPagination.pageIndex = -1;
+  }
+
+  function isDividerPaginationStateActive() {
+    return !!S.dividerPagination.active
+      && !!String(S.dividerPagination.chatId || '').trim()
+      && Number.isFinite(S.dividerPagination.pageIndex)
+      && S.dividerPagination.pageIndex >= 0;
+  }
+
+  function setDividerPaginationState(chatId, pageIndex) {
+    S.dividerPagination.active = true;
+    S.dividerPagination.chatId = String(chatId || S.chatId || getChatId()).trim();
+    S.dividerPagination.pageIndex = clampInt(pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageIndex);
+    return { ...S.dividerPagination };
+  }
+
+  function isDividerPaginationStateFor(pageIndex, chatId = (S.chatId || getChatId())) {
+    if (!isDividerPaginationStateActive()) return false;
+    const targetChatId = String(chatId || '').trim();
+    const targetPageIndex = clampInt(pageIndex, 0, Math.max(0, S.pageCount - 1), 0);
+    return S.dividerPagination.chatId === targetChatId && S.dividerPagination.pageIndex === targetPageIndex;
   }
 
   function safeLogWarn(msg, extra) {
@@ -1213,6 +1249,7 @@ Self-check:
   function clearMasterState() {
     const emptyTurns = [];
     const emptyAnswers = [];
+    clearDividerPaginationState();
     S.hasMaster = false;
     S.fullRoot = null;
     S.masterTurns = emptyTurns;
@@ -2170,17 +2207,17 @@ Self-check:
     return div;
   }
 
-  function emitPageChanged(win, reason) {
-    const turns = S.masterTurns;
-    const detail = {
+  function buildPageChangedDetail(win, reason, opts = {}) {
+    const turns = Array.isArray(opts?.turns) ? opts.turns : S.masterTurns;
+    return {
       source: 'pagination-windowing',
       reason: String(reason || ''),
-      pageIndex: S.pageIndex,
-      pageCount: S.pageCount,
+      pageIndex: Number.isFinite(opts?.pageIndex) ? opts.pageIndex : S.pageIndex,
+      pageCount: Number.isFinite(opts?.pageCount) ? opts.pageCount : S.pageCount,
       pageSize: getPageSize(),
-      bufferAnswers: getBufferAnswers(),
-      totalTurns: turns.length,
-      totalAnswers: S.masterAnswers.length,
+      bufferAnswers: Number.isFinite(opts?.bufferAnswers) ? Math.max(0, Number(opts.bufferAnswers) || 0) : resolveWindowBufferAnswers(win),
+      totalTurns: Number.isFinite(opts?.totalTurns) ? Math.max(0, Number(opts.totalTurns) || 0) : turns.length,
+      totalAnswers: Number.isFinite(opts?.totalAnswers) ? Math.max(0, Number(opts.totalAnswers) || 0) : S.masterAnswers.length,
       answerRange: buildAnswerRangePayload(win),
       bufferedAnswerRange: buildBufferedAnswerRangePayload(win),
       turnRange: {
@@ -2189,25 +2226,32 @@ Self-check:
       },
       ts: Date.now(),
     };
+  }
 
+  function dispatchPageChangedDetail(detail) {
     debugLog('page-changed', {
-      reason: detail.reason,
-      pageIndex: detail.pageIndex,
-      pageCount: detail.pageCount,
-      answerRange: detail.answerRange,
-      bufferedAnswerRange: detail.bufferedAnswerRange,
+      reason: detail?.reason,
+      pageIndex: detail?.pageIndex,
+      pageCount: detail?.pageCount,
+      answerRange: detail?.answerRange,
+      bufferedAnswerRange: detail?.bufferedAnswerRange,
     });
     safeDispatch(EV_PAGE_CHANGED, detail);
     syncCommandBarControls();
+    return detail;
   }
 
-  function computePageWindow(pageIndex) {
+  function emitPageChanged(win, reason, opts = {}) {
+    return dispatchPageChangedDetail(buildPageChangedDetail(win, reason, opts));
+  }
+
+  function computePageWindow(pageIndex, opts = {}) {
     const turns = S.masterTurns;
     const answers = S.masterAnswers;
     if (!turns.length) return null;
 
     const pageSize = getPageSize();
-    const bufferAnswers = getBufferAnswers();
+    const bufferAnswers = opts?.exactPage === true ? 0 : getBufferAnswers();
     const pageCount = Math.max(1, Math.ceil((answers.length || 0) / pageSize));
     const idx = clampInt(pageIndex, 0, Math.max(0, pageCount - 1), 0);
 
@@ -2248,6 +2292,17 @@ Self-check:
       turnStart,
       turnEnd,
     };
+  }
+
+  function resolveWindowBufferAnswers(win) {
+    if (!win) return getBufferAnswers();
+    const left = Number.isFinite(win.answerStartIndex) && Number.isFinite(win.bufferedAnswerStartIndex)
+      ? Math.max(0, win.answerStartIndex - win.bufferedAnswerStartIndex)
+      : 0;
+    const right = Number.isFinite(win.answerEndIndex) && Number.isFinite(win.bufferedAnswerEndIndex)
+      ? Math.max(0, win.bufferedAnswerEndIndex - win.answerEndIndex)
+      : 0;
+    return Math.max(left, right);
   }
 
   function findAssistantForTurn(turn) {
@@ -2587,12 +2642,12 @@ Self-check:
   }
 
   function renderPage(nextPageIndex, reason, opts = {}) {
-    if (!isFeatureEnabled()) return false;
+    if (!isWindowingActive()) return false;
     const turns = S.masterTurns;
     if (!S.booted) return false;
     if (!isElementNode(S.root) || !turns.length) return false;
 
-    const win = computePageWindow(nextPageIndex);
+    const win = computePageWindow(nextPageIndex, { exactPage: opts?.exactPage === true });
     if (!win) return false;
 
     installStyleOnce();
@@ -2687,6 +2742,8 @@ Self-check:
     S.renderedOnce = true;
     syncLegacyRefs();
     syncSharedTurnRuntimePageState(win);
+    if (opts?.dividerToggle === true) setDividerPaginationState(S.chatId || getChatId(), win.pageIndex);
+    else clearDividerPaginationState();
 
     updateSentinelState(win);
     maybeRestoreInlineOnInserted(inserted);
@@ -2729,14 +2786,25 @@ Self-check:
     try { S.root.replaceChildren(frag); } catch (_) {}
   }
 
+  function restoreDividerPaginationToFullChat(reason = 'divider-toggle:restore-full') {
+    const win = S.lastWindow || computePageWindow(S.pageIndex, { exactPage: true });
+    const detail = buildPageChangedDetail(win, reason);
+    const result = teardownRuntimeSession(reason, { preserveApi: true });
+    dispatchPageChangedDetail(detail);
+    return result?.ok !== false;
+  }
+
   function rebuildIndex(reason) {
-    if (!isFeatureEnabled()) return false;
+    if (!isWindowingActive()) return false;
     if (S.isRebuilding) return false;
     S.isRebuilding = true;
     debugLog('rebuild-index', { reason: String(reason || '') });
     try {
       const currentChatId = getChatId();
       const chatChanged = (S.chatId && S.chatId !== currentChatId);
+      if (isDividerPaginationStateActive() && S.dividerPagination.chatId !== currentChatId) {
+        clearDividerPaginationState();
+      }
       if (chatChanged) {
         removeSentinelsFromRoot(S.root);
         clearMasterState();
@@ -2804,7 +2872,7 @@ Self-check:
   }
 
   function ensureIndexFresh(reason) {
-    if (!isFeatureEnabled()) return false;
+    if (!isWindowingActive()) return false;
     if (!S.booted) return false;
     if (!isElementNode(S.root) || !S.root.isConnected || !S.hasMaster || !S.masterTurns.length) {
       return rebuildIndex(`${reason}:rebuild`);
@@ -2822,7 +2890,7 @@ Self-check:
   }
 
   function scheduleRefresh(reason) {
-    if (!isFeatureEnabled()) return 0;
+    if (!isWindowingActive()) return 0;
     S.pendingRefreshReason = String(reason || 'refresh');
     if (S.refreshTimer) clearTimeout(S.refreshTimer);
     S.refreshTimer = setTimeout(() => {
@@ -2850,7 +2918,7 @@ Self-check:
     if (!ensureIndexFresh('goToPage')) return false;
     const target = clampInt(pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageIndex);
 
-    if (target === S.pageIndex && S.renderedOnce) {
+    if (target === S.pageIndex && S.renderedOnce && !isDividerPaginationStateActive()) {
       const win = computePageWindow(S.pageIndex);
       updateSentinelState(win);
       return true;
@@ -2861,31 +2929,106 @@ Self-check:
   }
 
   function goToPageStart(pageIndex, reason = 'api:goToPageStart', opts = {}) {
-    if (!isFeatureEnabled()) return false;
-    if (!ensureIndexFresh('goToPageStart')) return false;
+    const commitWindowing = opts?.commitWindowing === true;
+    const requestedNextCollapsed = (typeof opts?.nextCollapsed === 'boolean') ? opts.nextCollapsed : null;
+    const exactPage = requestedNextCollapsed === false
+      ? false
+      : (commitWindowing || opts?.exactPage === true);
+    const activatedTransient = !!(commitWindowing && !isFeatureEnabled() && !S.transientWindowingActive);
+    const rollbackTransient = () => {
+      if (!activatedTransient) return;
+      S.transientWindowingActive = false;
+      if (!isFeatureEnabled()) {
+        try { teardownRuntimeSession(`${String(reason || 'api:goToPageStart')}:transient-windowing-failed`, { preserveApi: true }); } catch (_) {}
+      }
+    };
+    if (activatedTransient) S.transientWindowingActive = true;
+    try {
+      if (commitWindowing && !S.booted) {
+        const booted = boot(reason, { skipInitialRender: true });
+        if (!booted) {
+          rollbackTransient();
+          return false;
+        }
+      }
+      if (!isWindowingActive()) {
+        rollbackTransient();
+        return false;
+      }
+      if (!ensureIndexFresh('goToPageStart')) {
+        rollbackTransient();
+        return false;
+      }
 
-    const prevPageIndex = S.pageIndex;
-    const target = clampInt(pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageIndex);
-    const smooth = opts?.smooth !== false;
+      const currentChatId = String(opts?.chatId || S.chatId || getChatId()).trim();
+      if (commitWindowing && isDividerPaginationStateActive() && S.dividerPagination.chatId !== currentChatId) {
+        clearDividerPaginationState();
+      }
 
-    let win = computePageWindow(target);
-    if (!win) return false;
+      const prevPageIndex = S.pageIndex;
+      const target = clampInt(pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageIndex);
+      const smooth = opts?.smooth !== false;
+      const forceRender = commitWindowing;
+      const explicitDividerStateForTarget = !!(commitWindowing && isDividerPaginationStateFor(target, currentChatId));
+      const shouldRestore = !!(commitWindowing && requestedNextCollapsed === false && explicitDividerStateForTarget);
 
-    if (target !== S.pageIndex || !S.renderedOnce) {
-      const rendered = renderPageWithHub(target, reason, { restoreAnchor: false });
-      if (!rendered) return false;
-      win = S.lastWindow || computePageWindow(target);
-      if (!win) return false;
-    } else {
-      updateSentinelState(win);
+      if (shouldRestore) {
+        clearDividerPaginationState();
+        if (!isFeatureEnabled()) {
+          return restoreDividerPaginationToFullChat(`${String(reason || 'api:goToPageStart')}:restore-full`);
+        }
+        const anchor = captureScrollAnchor();
+        const ok = renderPageWithHub(target, `${String(reason || 'api:goToPageStart')}:restore-global`, {
+          anchor,
+          restoreAnchor: true,
+          exactPage: false,
+        });
+        if (!ok) {
+          rollbackTransient();
+          return false;
+        }
+        return true;
+      }
+
+      let win = computePageWindow(target, { exactPage });
+      if (!win) {
+        rollbackTransient();
+        return false;
+      }
+
+      if (forceRender || target !== S.pageIndex || !S.renderedOnce || isDividerPaginationStateActive()) {
+        const rendered = renderPageWithHub(target, reason, {
+          restoreAnchor: false,
+          exactPage,
+          dividerToggle: commitWindowing && requestedNextCollapsed !== false,
+        });
+        if (!rendered) {
+          rollbackTransient();
+          return false;
+        }
+        if (commitWindowing && requestedNextCollapsed !== false) {
+          setDividerPaginationState(currentChatId, target);
+        }
+        win = S.lastWindow || computePageWindow(target, { exactPage });
+        if (!win) {
+          rollbackTransient();
+          return false;
+        }
+      } else {
+        updateSentinelState(win);
+      }
+
+      if (!commitWindowing) {
+        const direction = Math.sign(target - prevPageIndex);
+        if (smooth && direction) stageViewportForPageJumpDirection(direction);
+
+        const startTarget = resolvePageStartTarget(win);
+        if (startTarget) scrollToPageStartTarget(startTarget, smooth);
+      }
+      return true;
+    } finally {
+      if (activatedTransient) S.transientWindowingActive = false;
     }
-
-    const direction = Math.sign(target - prevPageIndex);
-    if (smooth && direction) stageViewportForPageJumpDirection(direction);
-
-    const startTarget = resolvePageStartTarget(win);
-    if (startTarget) scrollToPageStartTarget(startTarget, smooth);
-    return true;
   }
 
   function goOlder(reason = 'api:goOlder') {
@@ -3054,14 +3197,14 @@ Self-check:
 
   function getPageInfo() {
     const turns = S.masterTurns;
-    const win = computePageWindow(S.pageIndex);
+    const win = S.lastWindow || computePageWindow(S.pageIndex, { exactPage: isDividerPaginationStateActive() });
     return {
       chatId: S.chatId || getChatId(),
       pageIndex: S.pageIndex,
       pageCount: S.pageCount,
       enabled: isFeatureEnabled(),
       pageSize: getPageSize(),
-      bufferAnswers: getBufferAnswers(),
+      bufferAnswers: resolveWindowBufferAnswers(win),
       autoLoadSentinel: isAutoLoadSentinelEnabled(),
       shortcutsEnabled: areShortcutsEnabled(),
       totalTurns: turns.length,
@@ -3095,8 +3238,14 @@ Self-check:
   }
 
   function getSummary() {
-    if (!isFeatureEnabled()) return 'Disabled • all turns stay visible';
     const info = getPageInfo();
+    if (isDividerPaginationStateActive()) {
+      const prefix = info.enabled ? 'Enabled' : 'Focused page only';
+      return `${prefix} • page ${info.pageIndex + 1}/${info.pageCount} • exact page window`;
+    }
+    if (!info.enabled) {
+      return 'Disabled • all turns stay visible';
+    }
     if (!info.totalAnswers) return `Enabled • ${info.pageSize} answers/page • waiting for answers`;
     return `Enabled • page ${info.pageIndex + 1}/${info.pageCount} • ${info.pageSize} answers/page`;
   }
@@ -3115,7 +3264,7 @@ Self-check:
   }
 
   function refreshWindowing(reason = 'cfg:refresh') {
-    if (!isFeatureEnabled()) return false;
+    if (!isWindowingActive()) return false;
     if (!S.booted) return false;
     const anchor = captureScrollAnchor();
     const ok = rebuildIndex(reason);
@@ -3127,7 +3276,7 @@ Self-check:
   }
 
   function applyDiagConfig(reason = 'diag:apply') {
-    if (!isFeatureEnabled()) {
+    if (!isWindowingActive()) {
       try { document.getElementById(CSS_STYLE_ID)?.remove(); } catch (_) {}
       return true;
     }
@@ -3232,8 +3381,30 @@ Self-check:
     writeRuntimeConfig(clean);
 
     if (key === 'pwEnabled') {
-      if (clean.enabled) boot(`cfg:${key}`);
-      else teardownRuntimeSession(`cfg:${key}`, { preserveApi: true });
+      const dividerActive = isDividerPaginationStateActive();
+      const dividerPageIndex = dividerActive
+        ? clampInt(S.dividerPagination.pageIndex, 0, Math.max(0, S.pageCount - 1), S.pageIndex)
+        : S.pageIndex;
+      if (clean.enabled) {
+        if (dividerActive && S.booted) {
+          const anchor = captureScrollAnchor();
+          const refreshed = rebuildIndex(`cfg:${key}:restore-global`);
+          if (refreshed) {
+            const rendered = renderPageWithHub(dividerPageIndex, `cfg:${key}:restore-global`, {
+              anchor,
+              restoreAnchor: true,
+              exactPage: false,
+            });
+            if (!rendered) scheduleRefresh(`cfg:${key}:restore-global`);
+          } else {
+            scheduleRefresh(`cfg:${key}:restore-global`);
+          }
+        } else {
+          boot(`cfg:${key}`);
+        }
+      } else {
+        teardownRuntimeSession(`cfg:${key}`, { preserveApi: true });
+      }
     } else if (key === 'pwPageSize' || key === 'pwBufferAnswers') {
       refreshWindowing(`cfg:${key}`);
     } else if (key === 'pwAutoLoadSentinel') {
@@ -3546,6 +3717,8 @@ Self-check:
     S.lastAppliedSwapMode = '';
     S.offObsReady = null;
     S.offObsMut = null;
+    S.transientWindowingActive = false;
+    clearDividerPaginationState();
 
     try { delete W[KEY_BOOT]; } catch (_) {}
     clearCommandBarBindTimer();
@@ -3561,10 +3734,11 @@ Self-check:
     return teardownRuntimeSession(reason, { preserveApi: false });
   }
 
-  function boot(reason = 'boot') {
-    if (!isFeatureEnabled()) return false;
+  function boot(reason = 'boot', opts = {}) {
+    if (!isWindowingActive()) return false;
     if (S.booted) return true;
     if (W[KEY_BOOT]) return true;
+    const skipInitialRender = opts?.skipInitialRender === true;
     W[KEY_BOOT] = 1;
     S.booted = true;
     S.chatId = getChatId();
@@ -3595,14 +3769,14 @@ Self-check:
       disconnectRootObserver();
       ok = rebuildIndex(reason);
       if (ok) {
-        renderPageWithHub(S.pageIndex, reason, { restoreAnchor: false });
+        if (!skipInitialRender) renderPageWithHub(S.pageIndex, reason, { restoreAnchor: false });
       } else {
         try { getObserverHub()?.ensureRoot?.('pagination:boot'); } catch (_) {}
       }
     } else {
       ok = rebuildIndex(reason);
       if (ok) {
-        renderPageWithHub(S.pageIndex, reason, { restoreAnchor: false });
+        if (!skipInitialRender) renderPageWithHub(S.pageIndex, reason, { restoreAnchor: false });
         disconnectStartObserver();
       } else {
         installStartObserver();

@@ -3,7 +3,7 @@
 // @name               0C2b.⬛️⛰️ Unmount Messages (Chat Adapter) ⛰️
 // @namespace          H2O.Premium.CGX.unmount.messages.chat.adapter
 // @author             HumamDev
-// @version            1.3.2
+// @version            1.3.4
 // @revision           002
 // @build              260328-002627
 // @description        Chat adapter for Unmount Messages. Owns ChatGPT DOM discovery, observers, styles, placeholders, command-bar surfaces, and mount helper installation while preserving the existing engine contract.
@@ -207,6 +207,7 @@
   // Config
   const NS_DISK_UNMOUNTM = `h2o:${SUITE}:${HOST}:${DsID}`;
   const KEY_UNMOUNTM_CFG_V1 = `${NS_DISK_UNMOUNTM}:cfg:runtime:v1`;
+  const KEY_UNMOUNTM_MANUAL_ANSWER_TITLE_BY_CHAT_V1 = `${NS_DISK_UNMOUNTM}:state:manual-answer-title:chat`;
   const CFG_UNMOUNTM_DEFAULT_ENABLED = true;
   const CFG_UNMOUNTM_DEFAULT_MIN_MSGS_FOR_UNMOUNT = 25;  /* 👈👈👈  ↑ Num. messages → automatic soft-unmount */
   const CFG_UNMOUNTM_DEFAULT_UNMOUNT_MARGIN_PX = 2000;
@@ -230,6 +231,8 @@
   const CFG_UNMOUNTM_MOUNT_PROTECT_MAX = 8000;
   const CFG_UNMOUNTM_UID_ALIAS_MAX = 4000;
   const CFG_UNMOUNTM_DIAG_STEPS_MAX = 120;
+  const CFG_UNMOUNTM_MANUAL_RESTORE_RETRY_MS = 420;
+  const CFG_UNMOUNTM_MANUAL_RESTORE_RETRY_MAX = 8;
   const CFG_UNMOUNTM_RESTORE_MODES = Object.freeze(['scroll', 'click', 'both']);
   const PERF_ASSERT_ON = (() => {
     try { return String(W.localStorage?.getItem?.('h2o:perf') || '') === '1'; } catch (_) { return false; }
@@ -301,6 +304,7 @@
     // uid -> untilMs (protect from immediate re-unmount after a mount request)
     protectUntil: new Map(),
     clickRestoreViewportToken: 0,
+    manualRestoreTimer: 0,
   };
 
   const S = VAULT.state;
@@ -619,6 +623,170 @@
   /** @helper Normalize ids (strip conversation-turn-). */
   function UTIL_UM_normalizeId(id) {
     return String(id || '').replace(/^conversation-turn-/, '').trim();
+  }
+
+  function CORE_UM_resolveChatId() {
+    try {
+      const path = String(W.location?.pathname || '/');
+      const m = path.match(/\/c\/([^/?#]+)/i) || path.match(/\/g\/([^/?#]+)/i);
+      if (m && m[1]) return decodeURIComponent(m[1]);
+      return path || '/';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function CORE_UM_safeChatKeyPart(chatId = '') {
+    return String(chatId || '').trim().replace(/[^a-z0-9_-]/gi, '_');
+  }
+
+  function CORE_UM_getManualAnswerTitleStoreKey(chatId = '') {
+    const id = CORE_UM_safeChatKeyPart(chatId || CORE_UM_resolveChatId());
+    return id ? `${KEY_UNMOUNTM_MANUAL_ANSWER_TITLE_BY_CHAT_V1}:${id}:v1` : '';
+  }
+
+  function CORE_UM_normalizeManualCollapsedIdList(raw) {
+    const src = Array.isArray(raw) ? raw : [];
+    const seen = new Set();
+    const out = [];
+    for (const item of src) {
+      const id = UTIL_UM_normalizeId(item);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+
+  function CORE_UM_readManualAnswerTitleCollapsedIds(chatId = '') {
+    const key = CORE_UM_getManualAnswerTitleStoreKey(chatId);
+    if (!key) return { answerTitleIds: [], titleListRowIds: [] };
+    try {
+      const raw = W.localStorage?.getItem?.(key);
+      if (!raw) return { answerTitleIds: [], titleListRowIds: [] };
+      const parsed = JSON.parse(raw);
+      // Backward compatibility: legacy payload was a plain array of answer-title ids.
+      if (Array.isArray(parsed)) {
+        return { answerTitleIds: CORE_UM_normalizeManualCollapsedIdList(parsed), titleListRowIds: [] };
+      }
+      const model = (parsed && typeof parsed === 'object') ? parsed : {};
+      const directAnswerTitleIds = CORE_UM_normalizeManualCollapsedIdList(
+        model.answerTitleIds || model.answerTitle || model['answer-title'] || []
+      );
+      const legacyTitleListRowIds = CORE_UM_normalizeManualCollapsedIdList(
+        model.titleListRowIds || model.titleListRow || model['title-list-row'] || []
+      );
+      return {
+        answerTitleIds: CORE_UM_normalizeManualCollapsedIdList([
+          ...directAnswerTitleIds,
+          ...legacyTitleListRowIds,
+        ]),
+        titleListRowIds: legacyTitleListRowIds,
+      };
+    } catch (_) {
+      return { answerTitleIds: [], titleListRowIds: [] };
+    }
+  }
+
+  function CORE_UM_writeManualAnswerTitleCollapsedIds(state = {}, chatId = '') {
+    const key = CORE_UM_getManualAnswerTitleStoreKey(chatId);
+    if (!key) return false;
+    try {
+      const mergedAnswerTitleIds = CORE_UM_normalizeManualCollapsedIdList([
+        ...CORE_UM_normalizeManualCollapsedIdList(state?.answerTitleIds || []),
+        ...CORE_UM_normalizeManualCollapsedIdList(state?.titleListRowIds || []),
+      ]);
+      const payload = {
+        v: 2,
+        answerTitleIds: mergedAnswerTitleIds,
+        titleListRowIds: [],
+      };
+      W.localStorage?.setItem?.(key, JSON.stringify(payload));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function CORE_UM_collectManualAnswerTitleCollapsedIds() {
+    const answerTitleIds = [];
+    for (const [id, record] of S.manualCollapseById.entries()) {
+      if (!id || !record?.sources?.size) continue;
+      if (record.sources.has('answer-title') || record.sources.has('title-list-row')) {
+        answerTitleIds.push(id);
+      }
+    }
+    return {
+      answerTitleIds: CORE_UM_normalizeManualCollapsedIdList(answerTitleIds),
+      titleListRowIds: [],
+    };
+  }
+
+  function CORE_UM_syncManualAnswerTitleCollapsedDisk() {
+    CORE_UM_writeManualAnswerTitleCollapsedIds(CORE_UM_collectManualAnswerTitleCollapsedIds());
+  }
+
+  function CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(attempt = 0) {
+    const model = CORE_UM_readManualAnswerTitleCollapsedIds();
+    const answerTitleIds = Array.isArray(model?.answerTitleIds) ? model.answerTitleIds : [];
+    const legacyTitleListRowIds = Array.isArray(model?.titleListRowIds) ? model.titleListRowIds : [];
+    const needsLegacyMigration = legacyTitleListRowIds.length > 0;
+    if (!answerTitleIds.length) {
+      if (needsLegacyMigration) {
+        CORE_UM_writeManualAnswerTitleCollapsedIds({ answerTitleIds: [], titleListRowIds: [] });
+      }
+      return { ok: true, status: 'empty', changed: 0, pending: 0 };
+    }
+
+    let changed = 0;
+    let pending = 0;
+    const applyRestore = (id, opts) => {
+      if (CORE_UM_isManualCollapsedById(id, { source: 'answer-title' })) return;
+      const msgEl = CORE_UM_findAssistantMessageByUid(id);
+      if (!msgEl) {
+        pending += 1;
+        return;
+      }
+      if (CORE_UM_shouldPreserveTitleShell(opts?.preserveShell) && !CORE_UM_getAnswerTitleBar(msgEl)) {
+        pending += 1;
+        return;
+      }
+      const result = CORE_UM_applyManualCollapseById(id, opts);
+      if (result?.ok !== false) {
+        changed += 1;
+        return;
+      }
+      const status = String(result?.status || '');
+      if (status === 'answer-missing' || status === 'background-unmounted' || status === 'manual-takeover-failed') {
+        pending += 1;
+      }
+    };
+
+    for (const id of answerTitleIds) {
+      applyRestore(id, {
+        source: 'answer-title',
+        preserveShell: 'answer-title',
+        emitLegacyAnswerCollapse: false,
+      });
+    }
+
+    if (changed > 0) {
+      CORE_UM_requestMiniMapSync('manual-collapse-restore', { changed, attempt });
+      CORE_UM_scheduleUpdate('manual-collapse-restore');
+    }
+    if (needsLegacyMigration && pending === 0) {
+      CORE_UM_writeManualAnswerTitleCollapsedIds({ answerTitleIds, titleListRowIds: [] });
+    }
+    if (pending > 0 && attempt < CFG_UNMOUNTM_MANUAL_RESTORE_RETRY_MAX) {
+      if (S.manualRestoreTimer) {
+        try { W.clearTimeout(S.manualRestoreTimer); } catch (_) {}
+      }
+      S.manualRestoreTimer = W.setTimeout(() => {
+        S.manualRestoreTimer = 0;
+        CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(attempt + 1);
+      }, CFG_UNMOUNTM_MANUAL_RESTORE_RETRY_MS);
+    }
+    return { ok: true, status: pending > 0 ? 'partial' : 'ok', changed, pending };
   }
 
   function CORE_UM_addAliasId(set, raw, opts = {}) {
@@ -1374,7 +1542,28 @@
   }
 
   function CORE_UM_getAnswerTitleBar(msgEl) {
-    try { return msgEl?.querySelector?.(SEL_UNMOUNTM_ANSWER_TITLE_BAR) || null; } catch (_) { return null; }
+    try {
+      const local = msgEl?.querySelector?.(SEL_UNMOUNTM_ANSWER_TITLE_BAR) || null;
+      if (local) return local;
+    } catch (_) {}
+    const turnHost = CORE_UM_getAnswerTurnHost(msgEl);
+    if (!turnHost?.querySelectorAll) return null;
+    try {
+      const bars = Array.from(turnHost.querySelectorAll(SEL_UNMOUNTM_ANSWER_TITLE_BAR));
+      if (!bars.length) return null;
+      const id = UTIL_UM_normalizeId(msgEl?.dataset?.[ATTR_UNMOUNTM_H2O_UID] || '');
+      if (id) {
+        const byId = bars.find((bar) => UTIL_UM_normalizeId(bar?.getAttribute?.('data-answer-id') || '') === id) || null;
+        if (byId) return byId;
+      }
+      for (const bar of bars) {
+        const hostMsg = bar.closest?.(SEL_UNMOUNTM_MSG_A) || null;
+        if (hostMsg === msgEl) return bar;
+      }
+      return bars[0] || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   function CORE_UM_getAnswerTurnHost(msgEl) {
@@ -1444,9 +1633,24 @@
     return { bar, icon };
   }
 
+  function CORE_UM_getManualOutsideBodyChildren(msgEl, body) {
+    if (!msgEl || !body || body === msgEl || !msgEl.children?.length) return [];
+    const out = [];
+    for (const child of Array.from(msgEl.children)) {
+      if (child === body) continue;
+      out.push(child);
+    }
+    return out;
+  }
+
   function CORE_UM_hideManualNode(el) {
     if (!el?.style || !el.isConnected) return null;
-    const snapshot = { el, displayBefore: String(el.style.display || '') };
+    const snapshot = {
+      el,
+      displayBefore: String(el.style.display || ''),
+      atHiddenBefore: String(el.getAttribute?.('data-cgxui-at-hidden') || '').trim() === '1',
+    };
+    try { el.setAttribute('data-cgxui-at-hidden', '1'); } catch (_) {}
     try { el.style.setProperty('display', 'none', 'important'); } catch (_) { el.style.display = 'none'; }
     return snapshot;
   }
@@ -1459,6 +1663,11 @@
       el.style.display = prev;
     } else {
       try { el.style.removeProperty('display'); } catch (_) { el.style.display = ''; }
+    }
+    if (snapshot?.atHiddenBefore) {
+      try { el.setAttribute('data-cgxui-at-hidden', '1'); } catch (_) {}
+    } else {
+      try { el.removeAttribute('data-cgxui-at-hidden'); } catch (_) {}
     }
     return true;
   }
@@ -1479,6 +1688,27 @@
   function CORE_UM_normalizeManualSourceFilter(source) {
     const raw = CORE_UM_normalizeManualSource(source);
     return raw === 'default' && String(source || '').trim() ? null : raw;
+  }
+
+  function CORE_UM_shouldPreserveTitleShell(preserveShell) {
+    const mode = CORE_UM_normalizeManualSource(preserveShell);
+    return mode === 'answer-title' || mode === 'title-list-row';
+  }
+
+  function CORE_UM_getManualPreservedBodySubtree(body, msgEl, preserveShell) {
+    if (!body || !CORE_UM_shouldPreserveTitleShell(preserveShell)) return null;
+    const bar = CORE_UM_getAnswerTitleBar(msgEl);
+    if (!bar) return null;
+    let cur = bar;
+    while (cur && cur.parentElement && cur.parentElement !== body) cur = cur.parentElement;
+    return cur?.parentElement === body ? cur : null;
+  }
+
+  function CORE_UM_shouldSkipManualHideForShell(el, msgEl, preserveShell) {
+    if (!el || !CORE_UM_shouldPreserveTitleShell(preserveShell)) return false;
+    const bar = CORE_UM_getAnswerTitleBar(msgEl);
+    if (!bar) return false;
+    return el === bar || !!el.contains?.(bar);
   }
 
   function CORE_UM_findAssistantMessageByUid(uid) {
@@ -1538,12 +1768,17 @@
   function CORE_UM_createManualRecord(answerId, msgEl, opts = {}) {
     const body = DOM_UM_getMessageBody(msgEl);
     if (!msgEl || !body) return null;
+    const preservedBodySubtree = CORE_UM_getManualPreservedBodySubtree(body, msgEl, opts?.preserveShell);
+    const bodyChildren = Array.from(body.childNodes || []);
+    const preservedBodyIndex = preservedBodySubtree ? bodyChildren.indexOf(preservedBodySubtree) : -1;
 
     const record = {
       id: answerId,
       msgEl,
       body,
       bodyFrag: document.createDocumentFragment(),
+      preservedBodySubtree: preservedBodySubtree || null,
+      preservedBodyIndex,
       hiddenNodes: [],
       sources: new Set(),
       sourceMeta: new Map(),
@@ -1552,10 +1787,13 @@
       returnToBackgroundUnmount: false,
     };
 
-    while (body.firstChild) record.bodyFrag.appendChild(body.firstChild);
-    body.replaceChildren();
+    for (const node of bodyChildren) {
+      if (node === preservedBodySubtree) continue;
+      record.bodyFrag.appendChild(node);
+    }
 
     const extras = [
+      ...CORE_UM_getManualOutsideBodyChildren(msgEl, body),
       ...CORE_UM_getAnswerTurnSiblings(msgEl),
       ...CORE_UM_getAnswerToolbars(msgEl),
     ];
@@ -1563,6 +1801,7 @@
     for (const el of extras) {
       if (!el || seen.has(el)) continue;
       seen.add(el);
+      if (CORE_UM_shouldSkipManualHideForShell(el, msgEl, opts?.preserveShell)) continue;
       const snapshot = CORE_UM_hideManualNode(el);
       if (snapshot) record.hiddenNodes.push(snapshot);
     }
@@ -1584,8 +1823,18 @@
     if (!record) return { ok: false, status: 'missing-record' };
 
     try {
-      record.body?.replaceChildren?.();
-      if (record.bodyFrag) record.body.appendChild(record.bodyFrag);
+      const body = record.body;
+      const moved = Array.from(record.bodyFrag?.childNodes || []);
+      const preserved = record.preservedBodySubtree || null;
+      const hasPreserved = !!(preserved && record.preservedBodyIndex >= 0);
+      if (body?.replaceChildren && hasPreserved) {
+        const insertAt = Math.max(0, Math.min(Number(record.preservedBodyIndex) || 0, moved.length));
+        moved.splice(insertAt, 0, preserved);
+        body.replaceChildren(...moved);
+      } else {
+        body?.replaceChildren?.();
+        if (record.bodyFrag) body?.appendChild?.(record.bodyFrag);
+      }
     } catch (_) {}
 
     for (const snapshot of record.hiddenNodes || []) {
@@ -1643,6 +1892,7 @@
     });
 
     const legacyAnswerCollapseChanged = !hadSource && opts?.emitLegacyAnswerCollapse === true && record.sources.size === 1;
+    CORE_UM_syncManualAnswerTitleCollapsedDisk();
     if (legacyAnswerCollapseChanged) {
       CORE_UM_emitLegacyAnswerCollapse(answerId, true);
     }
@@ -1674,29 +1924,27 @@
     }
 
     if (record.sources.size > 0) {
+      CORE_UM_syncManualAnswerTitleCollapsedDisk();
       return { ok: true, status: hadSource ? 'source-cleared' : 'unchanged', id: answerId, collapsed: true, remainingSources: Array.from(record.sources) };
     }
 
     S.manualCollapseById.delete(answerId);
     const restored = CORE_UM_restoreManualRecord(record);
-    let releasedToBackground = false;
     if (restored.ok && record.returnToBackgroundUnmount && C.enabled !== false) {
-      const group = CORE_UM_getTurnGroupByUid(answerId, CORE_UM_getMessages());
-      if (group?.primaryEl) {
-        CORE_UM_softUnmount(group, 'manual-release-to-background');
-        releasedToBackground = true;
-      }
+      API_UM_requestMountByUid(answerId, STR_UNMOUNTM_MOUNT_REQUEST_REASON);
+      record.returnToBackgroundUnmount = false;
     }
-    const legacyAnswerCollapseChanged = !!(restored.ok && !releasedToBackground && opts?.emitLegacyAnswerCollapse === true);
+    const legacyAnswerCollapseChanged = !!(restored.ok && opts?.emitLegacyAnswerCollapse === true);
     if (legacyAnswerCollapseChanged) {
       CORE_UM_emitLegacyAnswerCollapse(answerId, false);
     }
+    CORE_UM_syncManualAnswerTitleCollapsedDisk();
     return {
       ok: !!restored.ok,
-      status: releasedToBackground ? 'released-to-background' : (restored.status || 'expanded'),
+      status: restored.status || 'expanded',
       id: answerId,
       collapsed: false,
-      backgroundUnmounted: releasedToBackground,
+      backgroundUnmounted: false,
       legacyAnswerCollapseChanged,
     };
   }
@@ -2028,6 +2276,7 @@
       const onPageChanged = () => {
         if (!C.enabled) return;
         CORE_UM_scheduleUpdate('pagechanged');
+        CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(0);
       };
       W.addEventListener(EV_PG, onPageChanged);
       S.offPageChanged = () => {
@@ -2315,8 +2564,16 @@
 
     document.addEventListener('click', UI_UM_handlePlaceholderClick, true);
 
-    S.onIndexUpdated = () => { CORE_UM_markMsgsDirty(STR_UNMOUNTM_REASON_CORE_INDEX); CORE_UM_scheduleUpdate(STR_UNMOUNTM_REASON_CORE_INDEX); };
-    S.onTurnUpdated = () => { CORE_UM_markMsgsDirty(STR_UNMOUNTM_REASON_CORE_TURN); CORE_UM_scheduleUpdate(STR_UNMOUNTM_REASON_CORE_TURN); };
+    S.onIndexUpdated = () => {
+      CORE_UM_markMsgsDirty(STR_UNMOUNTM_REASON_CORE_INDEX);
+      CORE_UM_scheduleUpdate(STR_UNMOUNTM_REASON_CORE_INDEX);
+      CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(0);
+    };
+    S.onTurnUpdated = () => {
+      CORE_UM_markMsgsDirty(STR_UNMOUNTM_REASON_CORE_TURN);
+      CORE_UM_scheduleUpdate(STR_UNMOUNTM_REASON_CORE_TURN);
+      CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(0);
+    };
 
     W.addEventListener(EV_UNMOUNTM_INDEX_UPDATED, S.onIndexUpdated);
     W.addEventListener(EV_UNMOUNTM_TURN_UPDATED, S.onTurnUpdated);
@@ -2777,6 +3034,7 @@
       CORE_UM_installRootMO();
 
       CORE_UM_scheduleUpdate(STR_UNMOUNTM_REASON_BOOT);
+      CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(0);
       DIAG_UM_safe('boot:done', { ok: true, url: location.href });
 
     } catch (err) {
@@ -2823,6 +3081,10 @@
       if (S.startMO) { try { S.startMO.disconnect(); } catch (_) {} S.startMO = null; }
 
       if (S.intervalT) { clearInterval(S.intervalT); S.intervalT = 0; }
+      if (S.manualRestoreTimer) {
+        try { W.clearTimeout(S.manualRestoreTimer); } catch (_) {}
+        S.manualRestoreTimer = 0;
+      }
       if (typeof S.offPageChanged === 'function') {
         try { S.offPageChanged(); } catch (_) {}
         S.offPageChanged = null;

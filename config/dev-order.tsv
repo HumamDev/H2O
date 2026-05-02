@@ -14,7 +14,6 @@
 🟢	0B1a.⬛️⚡ Performance Governor 🧭⚡.js
 🟢	0B1b.⬛️⚡ Performance Store 💾⚡.js
 🟢	0B1c.⬛️⚡ Performance Adapters 🔄⚡.js
-🟢	0B1d.⚫️🔀⚡ Chat Mechanisms Router (🤝 Integration)⚡.js
 🟢	0B2a.⚫️📊⚡ Performance Monitor (🔌 Plugin) ⚡.js
 🟢	0B2b.⚫️🔲⚡ Performance HUD (📟 Widget) ⚡.js
 
@@ -77,7 +76,6 @@
 🟢	1A3b.🔴🗨️🗺️ Quote Badges (MiniMap 🔌 Plugin) 🗺️.js
 🟢	1A4b.🔴🔁🗺️ Revision Badges (MiniMap 🔌 Plugin) 🗺️.js
 🟢	1A5a.🔴🏷️🗺️ Title Labels (MiniMap 🔌 Plugin) 🗺️.js
-🟢	1A2c.🟥📑🗺️ Chat Pages Controller (MiniMap ➕ Add-on) 🗺️.js
 
 # =========================
 # 🖱️ MM FEATURE UI
@@ -91,9 +89,11 @@
 🟢	1U1a.🔴🖼️ Answer Background 🖼️.js
 🟢	1X1a.🔴🧮 Answer Numbers 🧮.js
 🟢	1Z1a.🔴⏳ Answer Timestamp ⏳.js
-🟢	1C1a.🔴📛 Title Bar 📛.js
 🟢	1D1a.🟥🧭 Color Legend 🧭.js
 🟢	1E1a.🔴💻 Code Line Numbers 💻.js
+🟢	1C1a.🟥📛 Turn Title Bar 📛.js
+🟢	1C1b.🔴📑 Thread Pages Controller 📑.js
+🟢	1C1c.🔴🔀 Outline Mechanisms Router (🤝 Unmount & Pagination Integration) 🔀.js
 
 # =========================
 # ❓ QUESTION UI

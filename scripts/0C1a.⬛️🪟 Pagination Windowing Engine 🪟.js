@@ -472,7 +472,12 @@
     const usePageNumber = opts?.pageNumber !== false;
     const pageIndex = Math.max(0, Math.trunc(usePageNumber ? (raw - 1) : raw));
     const reason = String(opts?.reason || opts?.source || 'api:focusPage');
-    return goToPageStart(pageIndex, reason, { smooth: opts?.smooth !== false });
+    return goToPageStart(pageIndex, reason, {
+      smooth: opts?.smooth !== false,
+      commitWindowing: String(opts?.source || '') === 'chat-pages-controller:divider-dblclick',
+      nextCollapsed: opts?.nextCollapsed,
+      chatId: opts?.chatId,
+    });
   }
   function goOlder(reason = 'api:goOlder') { return delegate('goOlder', [reason], false); }
   function goNewer(reason = 'api:goNewer') { return delegate('goNewer', [reason], false); }

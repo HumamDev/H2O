@@ -3,9 +3,9 @@
 // @name               0Z1d.⚫️⚡️🕹️ Performance Tab (Control Hub 🔌 Plugin) 🕹️
 // @namespace          H2O.Premium.CGX.performance.tab.control.hub.plugin
 // @author             HumamDev
-// @version            0.2.0
-// @revision           001
-// @build              260405-000000
+// @version            0.2.2
+// @revision           002
+// @build              260412-235900-resetfix
 // @description        Registers the Performance subtab controls into Control Hub via plugin API.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -33,6 +33,8 @@
   const CHAT_MECH_DEFAULT = Object.freeze({
     version: 1,
     gestureBackend: 'legacy',
+    answerTitleDblClickMode: 'local-dom',
+    dividerDotClickMode: 'local-dom',
     dividerDblClickMode: 'pagination-focus-page',
     coordination: Object.freeze({
       manualWinsOverGlobal: true,
@@ -224,9 +226,23 @@
 
   function normalizeGestureBackend(raw, globals = readLiveGlobals()) {
     const val = String(raw || 'legacy').trim().toLowerCase();
-    let next = (val === 'legacy' || val === 'engine' || val === 'off') ? val : 'legacy';
-    if (next === 'off' && !globals.globalUnmount && !globals.globalPagination) next = 'legacy';
-    return next;
+    return (val === 'legacy' || val === 'engine' || val === 'off') ? val : 'legacy';
+  }
+
+  function defaultEngineActionMode(gestureBackend) {
+    return gestureBackend === 'engine' ? 'unmount-engine' : 'local-dom';
+  }
+
+  function normalizeAnswerTitleMode(raw, gestureBackend) {
+    const fallback = defaultEngineActionMode(gestureBackend);
+    const val = String(raw || fallback).trim().toLowerCase();
+    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
+  }
+
+  function normalizeDividerDotMode(raw, gestureBackend) {
+    const fallback = defaultEngineActionMode(gestureBackend);
+    const val = String(raw || fallback).trim().toLowerCase();
+    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
   }
 
   function normalizeDividerMode(raw) {
@@ -236,9 +252,12 @@
 
   function normalizeChatMechanismsConfig(input, globals = readLiveGlobals()) {
     const src = (input && typeof input === 'object') ? input : {};
+    const gestureBackend = normalizeGestureBackend(src.gestureBackend, globals);
     return {
       version: 1,
-      gestureBackend: normalizeGestureBackend(src.gestureBackend, globals),
+      gestureBackend,
+      answerTitleDblClickMode: normalizeAnswerTitleMode(src.answerTitleDblClickMode, gestureBackend),
+      dividerDotClickMode: normalizeDividerDotMode(src.dividerDotClickMode, gestureBackend),
       dividerDblClickMode: normalizeDividerMode(src.dividerDblClickMode),
       coordination: {
         manualWinsOverGlobal: src?.coordination?.manualWinsOverGlobal !== false,
@@ -306,97 +325,317 @@
     };
   }
 
-  function renderResolvedModeInfo() {
-    const resolved = getResolvedModeModel();
+  function getTitleBarApi() {
+    return TOPW.H2O?.AT?.tnswrttl?.api?.public || W.H2O?.AT?.tnswrttl?.api?.public || null;
+  }
+
+  function getChatPagesCtlApi() {
+    try { return TOPW.H2O_MM_SHARED?.get?.()?.api?.mm?.chatPagesCtl || null; } catch { return null; }
+  }
+
+  function resetAllMechanismsCurrentChat() {
+    let result = null;
+    let fallbackTitleResult = null;
+    let ok = false;
+
+    try {
+      const pages = getChatPagesCtlApi();
+      if (typeof pages?.resetAllMechanisms === 'function') {
+        result = pages.resetAllMechanisms() || null;
+        ok = ok || (result?.ok !== false);
+      } else if (typeof pages?.resetCurrentChatOutline === 'function') {
+        result = pages.resetCurrentChatOutline() || null;
+        ok = ok || (result?.ok !== false);
+      } else if (typeof pages?.resetPageTitleStateForCurrentChat === 'function') {
+        result = pages.resetPageTitleStateForCurrentChat() || null;
+        ok = ok || (result?.ok !== false);
+      }
+    } catch {}
+
+    // Compatibility fallback only if the page controller reset path is unavailable.
+    if (!ok) {
+      try {
+        const at = getTitleBarApi();
+        if (typeof at?.resetCollapsedForCurrentChat === 'function') {
+          fallbackTitleResult = at.resetCollapsedForCurrentChat({ animate: false }) || null;
+          ok = ok || (fallbackTitleResult?.ok !== false);
+        }
+      } catch {}
+    }
+
+    invalidateHub();
+    if (!ok) return { message: 'Reset 3 mechanisms unavailable for current chat.' };
+    if (result?.ok === false || fallbackTitleResult?.ok === false) return { message: 'Reset 3 mechanisms completed with partial fallback.' };
+    return { message: 'Reset 3 mechanisms for current chat.' };
+  }
+
+  function getMechanismsUiState() {
+    const cfg = getChatMechanismsConfig();
+    const master = String(cfg?.gestureBackend || 'legacy');
+    return {
+      cfg,
+      master,
+      isLocalRouting: master === 'legacy',
+      isEngineRouting: master === 'engine',
+      isActionsOff: master === 'off',
+      globalUnmount: getUnmountSetting('umEnabled', false),
+      globalPagination: getPaginationSetting('pwEnabled', false),
+    };
+  }
+
+  function invalidateHubSoon() {
+    try { W.requestAnimationFrame(() => invalidateHub()); } catch { invalidateHub(); }
+  }
+
+  function markMechanismRowDisabled(row, disabled) {
+    if (!row) return;
+    row.style.opacity = disabled ? '0.55' : '';
+    row.style.filter = disabled ? 'grayscale(0.18)' : '';
+  }
+
+  function buildMechanismsNote(text) {
+    if (!text) return null;
+    const note = document.createElement('div');
+    note.style.fontSize = '11px';
+    note.style.lineHeight = '1.4';
+    note.style.opacity = '0.72';
+    note.style.color = 'rgba(255,255,255,0.82)';
+    note.textContent = text;
+    return note;
+  }
+
+  function buildMechanismsSelect({
+    value,
+    options = [],
+    onChange = null,
+    disabled = false,
+    disabledValues = [],
+    note = '',
+  } = {}) {
     const wrap = document.createElement('div');
     wrap.style.display = 'grid';
     wrap.style.gap = '6px';
-    wrap.style.width = '100%';
+    wrap.style.minWidth = '220px';
+    wrap.style.width = 'min(100%, 320px)';
 
-    const lines = [
-      ['Resolved', resolved.label || 'Unavailable'],
-      ['Gesture Backend', resolved.gestureBackend || 'legacy'],
-      ['Global Unmount', resolved.globalUnmount ? 'On' : 'Off'],
-      ['Global Pagination', resolved.globalPagination ? 'On' : 'Off'],
-      ['Divider Dblclick', resolved.dividerDblClickMode || 'pagination-focus-page'],
-    ];
+    const sel = document.createElement('select');
+    sel.style.fontSize = '12px';
+    sel.style.color = '#f4f6fb';
+    sel.style.background = 'rgba(255,255,255,.06)';
+    sel.style.border = '1px solid rgba(255,255,255,.12)';
+    sel.style.padding = '5px 8px';
+    sel.style.borderRadius = '10px';
+    sel.style.outline = 'none';
+    sel.style.maxWidth = '100%';
+    sel.disabled = !!disabled;
 
-    for (const [label, value] of lines) {
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.justifyContent = 'space-between';
-      row.style.gap = '12px';
-      row.style.fontSize = '12px';
-
-      const left = document.createElement('span');
-      left.style.opacity = '0.72';
-      left.textContent = label;
-
-      const right = document.createElement('span');
-      right.style.fontWeight = '600';
-      right.style.textAlign = 'right';
-      right.textContent = value;
-
-      row.append(left, right);
-      wrap.appendChild(row);
+    const disabledSet = new Set((Array.isArray(disabledValues) ? disabledValues : []).map((item) => String(item || '')));
+    for (const [optValue, optLabel] of options) {
+      const option = document.createElement('option');
+      option.value = String(optValue || '');
+      option.textContent = String(optLabel || '');
+      option.disabled = disabledSet.has(option.value);
+      sel.appendChild(option);
+    }
+    sel.value = String(value ?? options?.[0]?.[0] ?? '');
+    if (typeof onChange === 'function') {
+      sel.addEventListener('change', () => {
+        onChange(sel.value);
+        invalidateHubSoon();
+      }, true);
     }
 
+    wrap.appendChild(sel);
+    const noteEl = buildMechanismsNote(note);
+    if (noteEl) wrap.appendChild(noteEl);
     return wrap;
+  }
+
+  function buildMechanismsToggle({
+    enabled = false,
+    onToggle = null,
+    disabled = false,
+    note = '',
+  } = {}) {
+    return buildMechanismsSelect({
+      value: enabled ? 'on' : 'off',
+      options: [
+        ['off', 'Off'],
+        ['on', 'On'],
+      ],
+      disabled,
+      note,
+      onChange(value) {
+        if (typeof onToggle === 'function') onToggle(value === 'on');
+      },
+    });
+  }
+
+  function renderMasterRoutingControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, false);
+    const note = state.isLocalRouting
+      ? 'Engine options are unavailable while Master Action Routing is set to Local DOM handlers.'
+      : (state.isActionsOff
+        ? 'Click and double-click actions are disabled by Master Action Routing. Global optimization settings still work.'
+        : '');
+    return buildMechanismsSelect({
+      value: state.master,
+      options: [
+        ['legacy', 'Use Local DOM handlers'],
+        ['engine', 'Use Engine handlers'],
+        ['off', 'Turn action handlers off'],
+      ],
+      note,
+      onChange(value) {
+        setChatMechanismsConfig({ gestureBackend: value });
+      },
+    });
+  }
+
+  function renderAnswerTitleModeControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, state.isActionsOff);
+    return buildMechanismsSelect({
+      value: state.cfg.answerTitleDblClickMode || 'local-dom',
+      disabled: state.isActionsOff,
+      disabledValues: state.isLocalRouting ? ['unmount-engine'] : [],
+      options: [
+        ['local-dom', 'Collapse/Expand Current Title Bar using Local DOM'],
+        ['unmount-engine', 'Collapse/Expand Current Title Bar using Unmount Engine'],
+      ],
+      onChange(value) {
+        setChatMechanismsConfig({ answerTitleDblClickMode: value });
+      },
+    });
+  }
+
+  function renderDividerDotModeControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, state.isActionsOff);
+    return buildMechanismsSelect({
+      value: state.cfg.dividerDotClickMode || 'local-dom',
+      disabled: state.isActionsOff,
+      disabledValues: state.isLocalRouting ? ['unmount-engine'] : [],
+      options: [
+        ['local-dom', 'Mass Collapse/Expand Page Title Bars using Local DOM'],
+        ['unmount-engine', 'Mass Collapse/Expand Page Title Bars using Unmount Engine'],
+      ],
+      onChange(value) {
+        setChatMechanismsConfig({ dividerDotClickMode: value });
+      },
+    });
+  }
+
+  function renderDividerDblClickModeControl({ row }) {
+    const state = getMechanismsUiState();
+    const disabled = state.isLocalRouting || state.isActionsOff;
+    markMechanismRowDisabled(row, disabled);
+    const note = state.cfg.dividerDblClickMode === 'pagination-focus-page'
+      ? 'Keeps only this page attached to the DOM until toggled again.'
+      : '';
+    return buildMechanismsSelect({
+      value: state.cfg.dividerDblClickMode || 'pagination-focus-page',
+      disabled,
+      options: [
+        ['unmount-page-collapse', 'Collapse/Expand Page using Unmount Engine'],
+        ['pagination-focus-page', 'Collapse/Expand Page using Pagination Engine'],
+      ],
+      note,
+      onChange(value) {
+        setChatMechanismsConfig({ dividerDblClickMode: value });
+      },
+    });
+  }
+
+  function renderGlobalUnmountControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, state.isLocalRouting);
+    return buildMechanismsToggle({
+      enabled: !!state.globalUnmount,
+      disabled: state.isLocalRouting,
+      onToggle(next) {
+        setUnmountSetting('umEnabled', !!next);
+      },
+    });
+  }
+
+  function renderGlobalPaginationControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, state.isLocalRouting);
+    return buildMechanismsToggle({
+      enabled: !!state.globalPagination,
+      disabled: state.isLocalRouting,
+      onToggle(next) {
+        setPaginationSetting('pwEnabled', !!next);
+      },
+    });
   }
 
   const CHAT_MECHANISMS_CONTROLS = [
     {
       type: 'custom',
-      key: 'cmResolvedMode',
-      label: 'Resolved Runtime Mode',
-      group: 'Mode',
-      stackBelowLabel: true,
-      render() { return renderResolvedModeInfo(); },
-    },
-    {
-      type: 'select',
       key: 'cmGestureBackend',
-      label: 'Gesture Backend',
-      group: 'Mode',
-      def: 'legacy',
-      opts: [
-        ['legacy', 'Method 1 — Legacy'],
-        ['engine', 'Method 2 — Engine-backed'],
-        ['off', 'Off — No Gesture Backend'],
-      ],
-      getLive() { return String(getChatMechanismsConfig().gestureBackend || 'legacy'); },
-      setLive(v) { setChatMechanismsConfig({ gestureBackend: v }); },
+      stackBelowLabel: true,
+      label: 'Master Action Routing',
+      group: 'Backend Mechanisms',
+      render(ctx) { return renderMasterRoutingControl(ctx); },
     },
     {
-      type: 'toggle',
-      key: 'cmGlobalUnmount',
-      label: 'Method 3 — Global Unmount',
-      group: 'Global Chat Optimization',
-      def: false,
-      getLive() { return getUnmountSetting('umEnabled', false); },
-      setLive(v) { setUnmountSetting('umEnabled', !!v); },
+      type: 'custom',
+      key: 'cmAnswerTitleMode',
+      stackBelowLabel: true,
+      label: 'Title Bar (Double-Click)',
+      group: 'Backend Mechanisms',
+      render(ctx) { return renderAnswerTitleModeControl(ctx); },
     },
     {
-      type: 'toggle',
-      key: 'cmGlobalPagination',
-      label: 'Method 3 — Global Pagination',
-      group: 'Global Chat Optimization',
-      def: false,
-      getLive() { return getPaginationSetting('pwEnabled', false); },
-      setLive(v) { setPaginationSetting('pwEnabled', !!v); },
+      type: 'custom',
+      key: 'cmDividerDotClickMode',
+      stackBelowLabel: true,
+      label: 'Chat Page Divider Circle (Click)',
+      group: 'Backend Mechanisms',
+      render(ctx) { return renderDividerDotModeControl(ctx); },
     },
     {
-      type: 'select',
+      type: 'custom',
       key: 'cmDividerDblClickMode',
-      label: 'Divider Double-click Meaning',
-      group: 'Engine Semantics',
-      def: 'pagination-focus-page',
-      opts: [
-        ['pagination-focus-page', 'Focus Page With Pagination'],
-        ['unmount-page-collapse', 'Collapse Page With Unmount'],
+      stackBelowLabel: true,
+      label: 'Chat Page Divider Button (Double-Click)',
+      group: 'Backend Mechanisms',
+      render(ctx) { return renderDividerDblClickModeControl(ctx); },
+    },
+    {
+      type: 'custom',
+      key: 'cmGlobalUnmount',
+      stackBelowLabel: true,
+      label: 'Global Unmount',
+      group: 'Global Chat Optimization',
+      render(ctx) { return renderGlobalUnmountControl(ctx); },
+    },
+    {
+      type: 'custom',
+      key: 'cmGlobalPagination',
+      stackBelowLabel: true,
+      label: 'Global Pagination',
+      group: 'Global Chat Optimization',
+      render(ctx) { return renderGlobalPaginationControl(ctx); },
+    },
+    {
+      type: 'action',
+      key: 'cmResetAllMechanismsCurrentChat',
+      label: 'Reset 3 Mechanisms (This Chat)',
+      group: 'Actions',
+      statusText: '',
+      buttons: [
+        {
+          label: 'Reset 3 Mechanisms (This Chat)',
+          primary: true,
+          action: () => resetAllMechanismsCurrentChat(),
+          successText: 'Reset 3 mechanisms for current chat.',
+          errorText: 'Reset 3 mechanisms failed.',
+        },
       ],
-      getLive() { return String(getChatMechanismsConfig().dividerDblClickMode || 'pagination-focus-page'); },
-      setLive(v) { setChatMechanismsConfig({ dividerDblClickMode: v }); },
     },
   ];
 
