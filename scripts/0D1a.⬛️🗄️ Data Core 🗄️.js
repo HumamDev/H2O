@@ -104,7 +104,12 @@
       try { return JSON.parse(s); } catch { return fallback; }
     },
     setJSON(key, obj) {
-      try { localStorage.setItem(key, JSON.stringify(obj)); return true; } catch { return false; }
+      try { localStorage.setItem(key, JSON.stringify(obj)); return true; } catch (e) {
+        if (e?.name === 'QuotaExceededError' || e?.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+          try { W.H2O?.compress?.emergencyPrune?.(); localStorage.setItem(key, JSON.stringify(obj)); return true; } catch {}
+        }
+        return false;
+      }
     },
     keys() {
       try { return Object.keys(localStorage); } catch { return []; }
@@ -232,6 +237,15 @@ store.registerKey = (key) => {
     if (ok) {
       STORE_emitChange('setJSON', [key]);
       LIVE_trackLocalWrite(key, 'setJSON');
+    } else {
+      // Attempt recovery: ask DataStore (0D1b) to free space then retry once
+      try { W.H2O?.compress?.emergencyPrune?.(); } catch {}
+      const retry = UTIL_storage.setJSON(key, obj);
+      if (retry) {
+        STORE_emitChange('setJSON', [key]);
+        LIVE_trackLocalWrite(key, 'setJSON');
+        return retry;
+      }
     }
     return ok;
   };
