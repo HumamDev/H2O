@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Cockpit Pro">
+  <rect width="64" height="64" rx="10" fill="#071012"/>
+  <path d="M18 12h24c5.5 0 10 4.5 10 10v2h-8v-2c0-1.1-.9-2-2-2H20v24h22c1.1 0 2-.9 2-2v-2h8v2c0 5.5-4.5 10-10 10H18c-5.5 0-10-4.5-10-10V22c0-5.5 4.5-10 10-10Z" fill="#21d4e8"/>
+  <path d="M26 27h17v10H26z" fill="#0b171a" stroke="#8df5ff" stroke-width="2"/>
+  <path d="M18 25h5v14h-5zM46 28h6v8h-6z" fill="#8df5ff"/>
+</svg>
