@@ -87,21 +87,24 @@ Mobile uses `@supabase/supabase-js` directly inside a single `MobileSupabaseProv
 | Confirm signup | `verifyOtp({ email, token, type:'signup' })` | `email_confirmation_pending → verified_no_profile` | Profile/workspace creation follows |
 | Password sign-in | `signInWithPassword({ email, password })` | `anonymous_local → sync_ready` | Wrong password emits safe `identity/invalid-credentials` |
 | Email-code sign-in (existing user) | `signInWithOtp({ email, options:{ shouldCreateUser:false } })` then `verifyOtp({ type:'email' })` | `anonymous_local → email_pending → sync_ready` | `shouldCreateUser:false` mirrors Phase 4.5 invariant |
-| Recovery request | **see verification note below** | `anonymous_local → recovery_code_pending` | Browser contract is OTP-code, not link |
-| Recovery verify | **see verification note below** | `recovery_code_pending → password_update_required` | Marker persists across app restarts |
+| Recovery request | `signInWithOtp({ email, options:{ shouldCreateUser:false } })` | `anonymous_local → recovery_code_pending` | Mirrors browser; `type:'recovery'` banned by Phase 4.5 validator; `resetPasswordForEmail` / reset-link path is deferred |
+| Recovery verify | `verifyOtp({ email, token: code, type:'email' })` | `recovery_code_pending → password_update_required` | Same OTP type as email-code sign-in; `type:'recovery'` forbidden — see D3 note |
 | Set password (recovery) | `updateUser({ password })` | `password_update_required → sync_ready` | Old password rejected after this |
 | Signed-in change password | `updateUser({ password })` (with current-password reverify) | `sync_ready → sync_ready` | Wrong current emits safe error, fields cleared |
 | Sign-out | `signOut({ scope:'local' })` | `* → anonymous_local` | SecureStore + AsyncStorage cleanup; mock fallback resumes |
 | Restart restore | `setSession({ refresh_token })` from SecureStore | `anonymous_local (idle) → sync_ready` if refresh ok | If refresh fails, discard the SecureStore key and stay mock |
 
-**Recovery-flow verification required before 5.0B implementation.** The browser contract is OTP-code-based recovery: `recovery_code_pending → user enters 6-digit code → password_update_required → mandatory set-password → sync_ready`. Supabase v2 SDK's `resetPasswordForEmail()` is configured at the project level — depending on the project's email-template settings, it can issue either a recovery **link** (the common default) or an OTP **code**. **5.0B work must not begin its recovery implementation until both of these are verified:**
+**Recovery-flow source-path verified; live inbox test pending (see Appendix B).** The browser recovery contract is: `recovery_code_pending → user enters 6-digit code → password_update_required → mandatory set-password → sync_ready`. Source-path inspection (pre-5.0B) confirmed the following:
 
-1. The pinned `@supabase/supabase-js` version in mobile supports an OTP-code path for password recovery.
-2. The target Supabase project's "Reset Password" email template is configured to issue an OTP code, not a link.
+- Recovery **request** uses `signInWithOtp({ email, options:{ shouldCreateUser:false } })`, not `resetPasswordForEmail`. The `resetPasswordForEmail`-based path (`requestPasswordReset`) exists in the provider but is wired only to the deferred `identity:request-password-reset` bridge action — it is **not** the active recovery UI path.
+- Recovery **verify** uses `verifyOtp({ email, token: code, type: 'email' })`. The Phase 4.5 validator **explicitly bans** `type: 'recovery'` across all identity source (validator line 247). This ban extends to any future mobile implementation: **5.0B must not introduce `type: 'recovery'` without opening a new amendment that revises the Phase 4.5 ban.**
+- Mobile recovery must mirror browser recovery exactly: same `signInWithOtp` call, same `type:'email'` verify, same `updateUser` call.
 
-**If verification fails** (Supabase or project is link-only in this configuration), the correct response is **explicit escalation**: open a 4.x or 5.0B design amendment with one of three options — (a) reconfigure the Supabase project's email template to OTP, (b) change the cross-platform contract to allow link-based recovery on mobile while browser keeps OTP, (c) change both platforms to link-based recovery. Each option has follow-on consequences (universal-link wiring, deep-link return, set-password screen entry path) that need explicit approval. **Do not silently substitute link-for-code.**
+**What remains open — live inbox test (PENDING).** Source inspection confirms the SDK call path. It cannot confirm whether the dev Supabase project's Magic Link email template delivers a 6-digit OTP code to the inbox. That step requires manual verification (Appendix B, Part 2) by the repo owner. It is **recommended before writing or merging recovery-flow UI code in 5.0B**. Non-recovery flows (sign-up, password sign-in, email-code sign-in, restart-restore, profile edits, sign-out) may proceed without it.
 
-**Verification ownership (locked).** Claude Code owns the verification plan and checklist (see Appendix B). The repo owner runs the actual email/OTP inbox test step manually because it requires inbox access. The verification result gates 5.0B recovery implementation.
+**If live inbox verification fails** (the project's Magic Link template delivers a link, not a 6-digit code), the correct response is **explicit escalation**: open a 4.x or 5.0B design amendment with one of three options — (a) reconfigure the Supabase project's Magic Link email template to deliver OTP codes, (b) change the cross-platform contract to allow link-based recovery on mobile while browser keeps OTP, (c) change both platforms to link-based recovery. Each option has follow-on consequences (universal-link wiring, deep-link return, set-password screen entry path) that need explicit approval. **Do not silently substitute link-for-code, and do not introduce `type:'recovery'` without an explicit amendment.**
+
+**Verification ownership (locked).** Claude Code owns the source-path inspection (complete — Appendix B Part 1). The repo owner runs the actual email/OTP inbox test step manually because it requires inbox access (Appendix B Part 2). Source-path results gate writing recovery code; live inbox results gate merging/releasing recovery UI.
 
 ### D4 — Google OAuth on mobile (deferred to 5.0C)
 
@@ -301,7 +304,7 @@ Already given in D8. The implementation contract for 5.0B:
 | **A** Account creation + email confirmation | identity HTML surface, OTP entry | RN screen with email/password + OTP entry | Same Supabase project, same `auth.users` row |
 | **B** Password sign-in | identity HTML surface | RN sign-in screen | Wrong password offers recovery (D / mobile) |
 | **C** Existing-user email-code | identity HTML surface | RN existing-user OTP screen | `shouldCreateUser:false` enforced (Phase 4.5 invariant) |
-| **D** Wrong-password recovery → set-password | identity HTML surface, multi-step | RN multi-step screen with persisted `password_update_required` marker | **Subject to D3 verification (Appendix B) — recovery flow may need amendment** |
+| **D** Wrong-password recovery → set-password | identity HTML surface, multi-step | RN multi-step screen with persisted `password_update_required` marker | API confirmed: `signInWithOtp({shouldCreateUser:false})` → `verifyOtp({type:'email'})` → `updateUser`; `type:'recovery'` banned by Phase 4.5 validator; live inbox test PENDING (Appendix B Part 2) |
 | **E** Signed-in password change | Account → Identity → Security | Account screen → Security section | Wrong current emits safe error, fields cleared |
 | **F** Google OAuth | Account → Identity → Sign-in Methods + popup | **Deferred to 5.0C.** First-cut 5.0B has no OAuth button | When 5.0C ships, uses `expo-auth-session` PKCE |
 | **G** Persistent restart restore | bg refresh-token + restore on boot | SecureStore refresh-token + restore on app boot, gated splash (D8) | Identical invariant: no token visible to UI tier |
@@ -381,7 +384,10 @@ Before 5.0B work begins, the following must be true:
 
 1. This 5.0A spec is approved and committed to `docs/identity/`.
 2. **Amendment 4.X.A3 is landed as a small standalone amendment** (required for D6 `diag().runtime` and D10's diag-shape parity). If A3 is rejected/delayed, 5.0B ships diag without `.runtime` per D6's fallback, and the validator's runtime-metadata assert is conditionally skipped.
-3. **D3 recovery-flow verification is complete** (Appendix B checklist filled): the pinned `@supabase/supabase-js` version + the target Supabase project's "Reset Password" email template are confirmed to issue an OTP code (not a link). If verification fails, an explicit amendment is opened before any recovery code is written.
+3. **D3 recovery-flow verification — source-path DONE, live inbox test PENDING** (Appendix B).
+   - Source-path verification complete: mobile recovery must use `signInWithOtp({ email, options:{ shouldCreateUser:false } })` → `verifyOtp({ email, token: code, type:'email' })` → `updateUser({ password })`. `type:'recovery'` is banned by the Phase 4.5 validator (line 247) and must not appear in any 5.0B mobile source. `resetPasswordForEmail` is a deferred, inactive recovery path.
+   - Live inbox test pending: the dev Supabase project's Magic Link email template must be confirmed to deliver a 6-digit OTP code (not a link-only email). Recommended before writing or merging recovery-flow UI code in 5.0B. Non-recovery flows may proceed without it.
+   - If the live inbox test fails, an explicit amendment is opened before any recovery code is written.
 4. **Supabase project decision (locked):** dev work uses the same Supabase project as browser dev. Production launch uses a fresh production Supabase project, isolated from dev. Production project provisioning is part of the pre-launch work, not a 5.0B blocker for development.
 5. SDK selection recorded: `@supabase/supabase-js` v2.x (the same major as browser bundle). Pin a specific minor version in 5.0B opening work.
 6. The 5.0B implementation phase has its own plan file with its own decisions, builds, and validators.
@@ -403,7 +409,7 @@ Before 5.0B work begins, the following must be true:
 - [ ] The deferred-feature surface (§2) mirrors 4.9's exactly, plus mobile-specific deferrals (Google OAuth → 5.0C, MS/GH/Apple → indefinite).
 - [ ] The mock-fallback invariant (D5) is explicitly carried forward.
 - [ ] The mobile Supabase config policy (D11) is explicit about service-role-key prohibition and the dev-shared / prod-fresh project decision.
-- [ ] Recovery-flow verification ownership is explicit: Claude Code owns plan + checklist (Appendix B); repo owner runs the inbox test step.
+- [ ] D3 source-path verification is PASS (Appendix B Part 1 complete). Live inbox verification (Appendix B Part 2) is PASS, or explicitly acknowledged as the only remaining gate before writing recovery-flow UI code.
 - [ ] The disposable-account QA roadmap follow-up from 4.9 is acknowledged as still pending and is not consumed by 5.0A.
 
 If any checkbox cannot be ticked, 5.0A stays open and 5.0B does not begin.
@@ -466,30 +472,65 @@ Identity 4.9 froze `0.1.0`. Phase 5.0B may bump to `0.2.0` if mobile alignment r
 
 ## Appendix B — Recovery-flow verification plan and checklist
 
-**Purpose.** Verify that the pinned Supabase SDK + target Supabase project's email-template configuration deliver an OTP code (not a recovery link) for password reset, so that the cross-platform recovery contract from Identity 4.9 (`recovery_code_pending → user enters 6-digit code → password_update_required → set-password → sync_ready`) holds on mobile.
+**Purpose.** Confirm that (a) the SDK call path for recovery matches the browser contract, and (b) the dev Supabase project's email template delivers a 6-digit OTP code to the inbox for that call path.
 
-**Ownership.** Claude Code owns the plan, the checklist, and the result-recording document shape. The repo owner runs step 4 (the actual inbox test) because it requires manual inbox access and a real Supabase email send.
+**Background.** Source-path inspection completed pre-5.0B confirmed the active browser recovery path:
 
-**Outcome gate.** A passing checklist is a 5.0B prerequisite for any code that touches the recovery flow. If the checklist fails, an explicit amendment must be opened before 5.0B recovery implementation begins.
+1. `signInWithOtp({ email, options:{ shouldCreateUser:false } })` — sends the recovery code (same Supabase call as email-code sign-in; routed to the recovery path by bridge action `identity:request-password-recovery-code`).
+2. `verifyOtp({ email, token: code, type: 'email' })` — verifies the code, seeds ephemeral session, writes `password_update_required` marker.
+3. `updateUser({ password })` — sets new password, clears marker, publishes `sync_ready`.
 
-### Verification checklist
+`resetPasswordForEmail` exists in the provider (`requestPasswordReset`) and is wired to a separate deferred bridge action (`identity:request-password-reset`) — it is **not** the active recovery path. The Phase 4.5 validator (line 247) explicitly bans `type: 'recovery'` from all identity source. **Mobile must not introduce `type: 'recovery'` without opening a new amendment that revises the Phase 4.5 ban.**
 
-For each item, record one of: **PASS**, **FAIL**, **N/A** (with a one-line note). Capture the result in the 5.0B opening commit's verification ledger.
+**Ownership.** Claude Code owns Part 1 (source-path, complete). Repo owner runs Part 2 (live inbox, pending).
 
-1. **SDK version pinned.** `apps/studio-mobile/package.json` (when 5.0B starts) declares `@supabase/supabase-js` at a specific `^2.x.y` minor. Record the exact version string. Owner: Claude Code (review during 5.0B kickoff).
-2. **SDK source supports OTP recovery.** Read the pinned SDK's `auth/GoTrueAdminApi`/`GoTrueClient` source for `resetPasswordForEmail` and `verifyOtp` to confirm `type: 'recovery'` is supported and that the response shape (on `verifyOtp`) returns a usable session for `updateUser({ password })`. Owner: Claude Code.
-3. **Target project email template inspected.** Open the dev Supabase project's Auth → Email Templates → "Reset Password". Confirm the template body contains the `{{ .Token }}` (or equivalent OTP-code) placeholder rather than a `{{ .ConfirmationURL }}` link-only template. If the template is link-only, this step is a FAIL. Owner: repo owner (project dashboard access required).
-4. **Live recovery email test.** Trigger `resetPasswordForEmail({ email: <test address> })` against the dev project (test address can be a disposable address; do not use the live `h.obayda@gmail.com` account). Inspect the inbox content. Expected: a 6-digit OTP code in the email body. If only a link is present, this step is a FAIL. Owner: repo owner (inbox access required).
-5. **OTP verifies and reaches `password_update_required`.** Using a small one-off harness (or the mobile dev build once 5.0B starts), call `verifyOtp({ email, token, type: 'recovery' })` with the code from step 4. Expected: the call returns a session, and the resulting state machine transitions to `password_update_required`. Owner: Claude Code drafts the harness; repo owner runs it if the harness needs network access on a real device.
-6. **`updateUser({ password })` clears the marker.** From the `password_update_required` state, call `updateUser({ password: <new strong password> })`. Expected: success, state transitions to `sync_ready`, `password_update_required` marker is cleared. Owner: Claude Code (validator coverage) + repo owner (one-time live confirmation).
-7. **Old password rejected after recovery.** Sign out. Sign in with the **old** password. Expected: safe failure (`identity/invalid-credentials`). Sign in with the **new** password. Expected: success. Owner: repo owner (manual sign-in test).
-8. **Verification ledger committed.** The 5.0B opening commit (or a small companion commit) records the per-step results with the date and SDK/project versions. The validator's `RECOVERY_FLOW_VERIFIED` flag (assert 16 in §9) is flipped to `true` only when steps 1–7 are all PASS.
+**Outcome gate.** Part 1 must be PASS before writing mobile recovery code. Part 2 is recommended before merging or releasing recovery-flow UI in 5.0B.
 
-### If any step fails
+---
+
+### Part 1 — Source-path verification (complete)
+
+| # | Check | Result | Evidence |
+|---|---|---|---|
+| 1 | SDK version recorded | **PASS** | Root `package.json`: `@supabase/supabase-js: "^2.105.1"` |
+| 2 | Recovery request uses `signInWithOtp({shouldCreateUser:false})`, not `resetPasswordForEmail` | **PASS** | `chrome-live-background.mjs:7079`; Phase 4.5 validator line 104 asserts this |
+| 3 | Recovery verify uses `verifyOtp({type:'email'})` | **PASS** | `identity-provider-supabase.entry.mjs:786`; Phase 4.5 validator lines 106–107 assert this |
+| 4 | `type:'recovery'` absent from all identity source | **PASS** | Phase 4.5 validator line 247 hard-bans it; confirmed absent by source inspection |
+| 5 | `resetPasswordForEmail` is deferred, not the active recovery path | **PASS** | Provider `requestPasswordReset` wired to `identity:request-password-reset` only; no recovery-UI path routes through it |
+
+---
+
+### Part 2 — Live inbox verification (PENDING — repo owner)
+
+Complete these steps before writing or merging recovery-flow UI code in 5.0B. Use a disposable email address for steps 2–5; do not use `h.obayda@gmail.com`.
+
+| # | Step | Status |
+|---|---|---|
+| 6 | Supabase dashboard → Auth → Email Templates → **Magic Link**. Confirm template body contains `{{ .Token }}` OTP-code placeholder (not a `{{ .ConfirmationURL }}` link-only template). | PENDING |
+| 7 | Request a recovery code for a disposable existing account: trigger `signInWithOtp({ email: <disposable>, options:{ shouldCreateUser:false } })` against the dev project. Inspect the inbox. Expected: a 6-digit code in the email body. If only a link arrives, this is a FAIL. | PENDING |
+| 8 | Verify code and check state: call `verifyOtp({ email: <disposable>, token: <6-digit code>, type: 'email' })`. Expected: call succeeds, state machine reaches `password_update_required`, `h2oIdentityProviderPasswordUpdateRequiredV1` marker is written. | PENDING |
+| 9 | Set new password: from `password_update_required`, call `updateUser({ password: <new strong password> })`. Expected: success, state reaches `sync_ready`, marker is cleared. | PENDING |
+| 10 | Old password rejected: sign out, sign in with old password (expect `identity/invalid-credentials`). Sign in with new password (expect `sync_ready`). | PENDING |
+
+---
+
+### Part 3 — Verification ledger
+
+Record per-step results here (or in the 5.0B opening commit) with the date and SDK/project versions. The mobile validator's `RECOVERY_FLOW_VERIFIED` flag (§9 assert 16) is set to `true` only when all Part 1 and Part 2 steps are PASS.
+
+| Part | Status | Date | SDK version | Notes |
+|---|---|---|---|---|
+| 1 — Source-path | PASS | 2026-05-03 | `^2.105.1` | Browser path confirmed; `type:'recovery'` banned by Phase 4.5 validator |
+| 2 — Live inbox | PENDING | — | — | Manual inbox test required before merging recovery-flow UI |
+
+---
+
+### If any live step fails
 
 Stop. Do not write recovery-flow code in 5.0B. Open one of the three amendment options listed in D3:
-- (a) Reconfigure the Supabase project's email template to OTP — usually the cheapest path. Re-run the checklist.
-- (b) Cross-platform contract change: allow link-based recovery on mobile while browser keeps OTP. Requires universal-link wiring + deep-link return + a different set-password screen entry path.
-- (c) Cross-platform contract change: both platforms move to link-based recovery. Largest blast radius; requires browser RC re-validation.
 
-Each option lands as its own amendment with its own approval before 5.0B recovery implementation resumes.
+- **(a)** Reconfigure the Supabase project's Magic Link email template to deliver OTP codes — usually the cheapest path. Re-run Part 2.
+- **(b)** Cross-platform contract change: allow link-based recovery on mobile while browser keeps OTP. Requires universal-link wiring, deep-link return, and a different set-password screen entry path.
+- **(c)** Cross-platform contract change: both platforms move to link-based recovery. Largest blast radius; requires browser RC re-validation.
+
+**Do not introduce `type: 'recovery'` without explicitly amending the Phase 4.5 ban.** Each option lands as its own amendment with its own approval before 5.0B recovery implementation resumes.
