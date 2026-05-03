@@ -38,8 +38,7 @@ yarn-error.*
 
 app-example
 
-# generated native folders
-/ios
+# generated native folders (Option B: /ios curated tracking; /android still ignored)
 /android
 
 # Local-only superseded icon backups (kept on disk, not tracked)
