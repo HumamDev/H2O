@@ -28,7 +28,7 @@ meta/notes/COMMIT_QUEUE.txt
 s-files/
 CLAUDE.md
 "CLAUDE 2.md"
-assets/
+/assets/
 references/
 tasks-manual-*.md
 git-status.txt
@@ -43,6 +43,7 @@ config/dev-order.txt
 config/dev-order.json
 config/scripts-list.tsv
 config/local/identity-provider.local.json
+/identity-provider.local.json
 
 # Local-only editor/workspace notes
 meta/notes/vscode-keybindings.json
@@ -57,3 +58,20 @@ meta/notes/vscode-keybindings.json
 * 2.md
 
 AGENTS.md
+
+# Mobile app generated artifacts (defense in depth; nested .gitignore is the primary)
+apps/**/node_modules/
+apps/**/.expo/
+apps/**/dist/
+apps/**/web-build/
+apps/**/expo-env.d.ts
+apps/**/*.tsbuildinfo
+apps/**/.env*.local
+apps/**/ios/Pods/
+apps/**/ios/build/
+apps/**/ios/.xcode.env.local
+apps/**/ios/**/xcuserdata/
+apps/**/ios/**/*.xcuserstate
+apps/**/android/build/
+apps/**/android/.gradle/
+apps/**/android/app/build/
