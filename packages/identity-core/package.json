@@ -1,0 +1,20 @@
+{
+  "name": "@h2o/identity-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure contracts, state machine, and mock provider interfaces for the H2O Identity foundation.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.ts"
+  },
+  "keywords": [
+    "h2o",
+    "identity",
+    "onboarding",
+    "state-machine"
+  ],
+  "license": "UNLICENSED"
+}
