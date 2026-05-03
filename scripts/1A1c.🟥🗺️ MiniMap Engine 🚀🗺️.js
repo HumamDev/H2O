@@ -2878,7 +2878,7 @@
     const c2 = c1?.firstElementChild || null;
     if (c2?.matches?.(answerSel)) return c2;
     const shouldScanDeep = (el.childElementCount || 0) <= 12
-      || el.matches?.('[data-testid="conversation-turn"], [data-testid="conversation-turns"], main');
+      || el.matches?.('[data-testid^="conversation-turn"], [data-testid="conversation-turns"], main');
     if (!shouldScanDeep || !el.querySelector) return null;
     return el.querySelector(answerSel);
   }
@@ -2894,10 +2894,10 @@
       if (role === 'assistant' || role === 'user') return true;
     } catch {}
     try {
-      if (el.matches?.('[data-testid="conversation-turn"], [data-testid="conversation-turns"]')) return true;
+      if (el.matches?.('[data-testid^="conversation-turn"], [data-testid="conversation-turns"]')) return true;
     } catch {}
     try {
-      if (el.querySelector?.(`${answerSel}, [data-message-author-role="assistant"], [data-message-author-role="user"], [data-testid="conversation-turn"], [data-testid="conversation-turns"]`)) return true;
+      if (el.querySelector?.(`${answerSel}, [data-message-author-role="assistant"], [data-message-author-role="user"], [data-testid^="conversation-turn"], [data-testid="conversation-turns"]`)) return true;
     } catch {}
     return false;
   }
@@ -2936,7 +2936,7 @@
           break;
         }
         const childCount = Number(el.childElementCount || 0);
-        const isTurnLike = !!el.matches?.('[data-testid="conversation-turn"], [data-testid="conversation-turns"], main');
+        const isTurnLike = !!el.matches?.('[data-testid^="conversation-turn"], [data-testid="conversation-turns"], main');
         if (isTurnLike && childCount <= 12 && el.querySelector?.(answerSel)) {
           rebuildHit = true;
           break;
@@ -3002,6 +3002,36 @@
     PERF.structureRecovery.recoveryTriggeredRebuildCount = Number(PERF.structureRecovery.recoveryTriggeredRebuildCount || 0) + 1;
     scheduleRebuild(reason);
     return true;
+  }
+
+  function startStaleStateWatchdog(tag = 'watchdog') {
+    try { clearInterval(S.routeRebuildPoller); } catch {}
+    const startedAt = Date.now();
+    const POLL_MS = 300;
+    const MAX_MS = 30000;
+    let stableTicks = 0;
+    let lastDomCount = -1;
+    const countDomAnswers = () => {
+      try { return document.querySelectorAll(answersSelector()).length; } catch { return 0; }
+    };
+    const tick = () => {
+      if (!S.running) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > MAX_MS) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
+      const domCount = countDomAnswers();
+      if (domCount === 0) { stableTicks = 0; lastDomCount = -1; return; }
+      if (domCount === lastDomCount) stableTicks += 1; else { stableTicks = 0; lastDomCount = domCount; }
+      let stale = false;
+      try {
+        stale = buildMissing() || paginationCoverageNeedsRebuild(`${tag}:poll`);
+      } catch {}
+      if (!stale) return;
+      if (stableTicks < 1) return;
+      S.moRebuildCooldownUntil = 0;
+      try { rebuildNow(`${tag}:poll`); } catch { scheduleRebuild(`${tag}:poll`); }
+    };
+    tick();
+    S.routeRebuildPoller = setInterval(tick, POLL_MS);
   }
 
   function bindObservers() {
@@ -3086,10 +3116,11 @@
     }
     bindMiniMapScrollGuards();
 
-    const onRouteChanged = () => {
+    const onRouteChanged = (tag = 'route') => {
       if (!S.running) return;
       resetVisibleAnswersObserver();
-      scheduleFirstPaintRebuild('route');
+      S.moRebuildCooldownUntil = 0;
+      startStaleStateWatchdog(tag);
     };
     try {
       window.addEventListener(EVT_ROUTE_CHANGED, onRouteChanged, true);
@@ -3098,6 +3129,41 @@
         try { window.removeEventListener(EVT_ROUTE_CHANGED, onRouteChanged, true); } catch {}
         try { window.removeEventListener(EVT_ROUTE_CHANGED.replace(/^evt:/, ''), onRouteChanged, true); } catch {}
       };
+    } catch {}
+
+    try {
+      window.addEventListener('popstate', onRouteChanged, true);
+      const _offPopState = S.offRouteChanged;
+      S.offRouteChanged = () => {
+        try { _offPopState?.(); } catch {}
+        try { window.removeEventListener('popstate', onRouteChanged, true); } catch {}
+      };
+    } catch {}
+
+    try {
+      if (!W.__H2O_MM_HISTORY_PATCHED__) {
+        W.__H2O_MM_HISTORY_PATCHED__ = true;
+        let lastPath = String(location.pathname || '');
+        const dispatchRouteChange = () => {
+          const newPath = String(location.pathname || '');
+          if (newPath === lastPath) return;
+          lastPath = newPath;
+          try { window.dispatchEvent(new CustomEvent(EVT_ROUTE_CHANGED, { detail: { url: newPath } })); } catch {}
+          try { window.dispatchEvent(new CustomEvent(EVT_ROUTE_CHANGED.replace(/^evt:/, ''), { detail: { url: newPath } })); } catch {}
+        };
+        const origPushState = history.pushState;
+        const origReplaceState = history.replaceState;
+        history.pushState = function (...args) {
+          const r = origPushState.apply(this, args);
+          try { dispatchRouteChange(); } catch {}
+          return r;
+        };
+        history.replaceState = function (...args) {
+          const r = origReplaceState.apply(this, args);
+          try { dispatchRouteChange(); } catch {}
+          return r;
+        };
+      }
     } catch {}
 
     const onPaginationChanged = () => {
@@ -3241,7 +3307,23 @@
 
   function buildMissing() {
     const core = MM_core();
-    const turns = Number(core?.getTurnList?.()?.length || 0);
+    const turnList = core?.getTurnList?.() || [];
+    const turns = Number(turnList.length || 0);
+    const domEls = (() => { try { return Array.from(document.querySelectorAll(answersSelector())); } catch { return []; } })();
+    const domAnswers = domEls.length;
+    if (domAnswers > 0 && domAnswers !== turns) return true;
+    if (domAnswers > 0 && turns > 0) {
+      try {
+        const firstId = String(domEls[0]?.getAttribute?.('data-message-id') || domEls[0]?.dataset?.messageId || '').trim();
+        if (firstId) {
+          const found = turnList.some((t) => {
+            const tid = String(t?.answerId || t?.primaryAId || t?.aId || t?.id || '').replace(/^turn:/, '');
+            return tid === firstId;
+          });
+          if (!found) return true;
+        }
+      } catch {}
+    }
     let btns = 0;
     const scope = minimapCol() || minimapPanel() || null;
     if (scope) {
@@ -3347,6 +3429,7 @@
     } else if (hasAnswersInDom()) rebuildNow(`boot:answers-present:${reason}`);
     else scheduleRebuild(`boot:${reason}`);
     scheduleFirstPaintRebuild(reason);
+    try { startStaleStateWatchdog('boot'); } catch (e) { derr('start:startStaleStateWatchdog', e); }
 
     dlog('engine:start', {
       reason,
