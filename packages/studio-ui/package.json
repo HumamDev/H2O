@@ -1,0 +1,8 @@
+{
+  "name": "@h2o-studio/ui",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "description": "Shared design tokens and UI primitives for H2O Studio"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@h2o-studio/types",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "description": "Shared TypeScript types for H2O Studio (snapshot schema, domain models)"
+}

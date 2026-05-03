@@ -1,0 +1,8 @@
+{
+  "name": "@h2o-studio/core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "description": "Platform-agnostic business logic for H2O Studio (parsers, normalizers, search, migrations)"
+}
