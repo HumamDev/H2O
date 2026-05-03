@@ -263,8 +263,9 @@ export default function SettingsScreen() {
             {renderRow({
               icon: { ios: 'key.fill', android: 'vpn_key', web: 'key' },
               title: 'Identity & Sign-in',
-              subtitle: identity.isSignedIn ? safeEmail : 'Provider-backed sign-in is available from Identity Debug.',
+              subtitle: identity.isSignedIn ? safeEmail : 'Sign in to sync your account.',
               trailing: signedInLabel,
+              onPress: () => router.push('/account-identity'),
             })}
             <View style={styles.separator} />
             {renderRow({

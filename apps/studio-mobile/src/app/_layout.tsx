@@ -24,6 +24,7 @@ function getTopBarConfig(pathname: string): { title: string; leftAction: TopBarL
   if (pathname === '/archived') return { title: 'Archived', leftAction: 'back' };
   if (pathname === '/settings') return { title: 'Settings', leftAction: 'back' };
   if (pathname === '/identity-debug') return { title: 'Identity Debug', leftAction: 'back' };
+  if (pathname === '/account-identity') return { title: 'Identity & Sign-in', leftAction: 'back' };
   if (pathname === '/import-export') return { title: 'Import / Export', leftAction: 'back' };
   if (pathname === '/import-chatgpt-link') return { title: 'Import ChatGPT Link', leftAction: 'back' };
   if (pathname === '/menu') return { title: 'H2O Studio', leftAction: 'back' };
@@ -67,6 +68,7 @@ export default function RootLayout() {
             <Stack.Screen name="chat" options={{ title: 'Chat', headerShown: false }} />
             <Stack.Screen name="settings" options={{ headerShown: false }} />
             <Stack.Screen name="identity-debug" options={{ headerShown: false }} />
+            <Stack.Screen name="account-identity" options={{ headerShown: false }} />
             <Stack.Screen name="import-export" options={{ headerShown: false }} />
             <Stack.Screen name="import-chatgpt-link" options={{ headerShown: false }} />
             <Stack.Screen name="imported-chat" options={{ title: 'Imported Chat', headerShown: false }} />
