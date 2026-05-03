@@ -1,7 +1,9 @@
 import { SymbolView } from 'expo-symbols';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -74,6 +76,7 @@ export default function AccountIdentityScreen() {
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const passwordRef = useRef<TextInput>(null);
 
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
@@ -97,6 +100,7 @@ export default function AccountIdentityScreen() {
     () =>
       StyleSheet.create({
         safe: { flex: 1, backgroundColor: th.background },
+        kav: { flex: 1 },
         content: { padding: spacing.md, gap: spacing.lg },
         centered: {
           flex: 1,
@@ -116,18 +120,17 @@ export default function AccountIdentityScreen() {
         },
         accountTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
         avatar: {
-          width: 56,
-          height: 56,
-          borderRadius: 28,
+          width: 64,
+          height: 64,
+          borderRadius: 32,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: th.scheme === 'light' ? '#fff' : th.backgroundSelected,
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: th.backgroundSelected,
         },
-        avatarInitials: { color: th.text, fontSize: 20, fontWeight: '700' },
+        avatarInitials: { fontSize: 22, fontWeight: '700' },
         accountText: { flex: 1, gap: 3 },
-        accountTitle: { ...typography.title, color: th.text, fontSize: 22 },
+        accountTitle: { ...typography.title, color: th.text },
         accountSubtitle: { ...typography.body, color: th.textSecondary },
         statusPill: {
           paddingHorizontal: 10,
@@ -190,6 +193,14 @@ export default function AccountIdentityScreen() {
           marginLeft: spacing.md,
         },
 
+        activePill: {
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: 999,
+          backgroundColor: PRIMARY,
+        },
+        activePillText: { ...typography.caption, color: '#fff', fontWeight: '700' },
+
         hero: { gap: spacing.xs },
         heroTitle: { ...typography.title, color: th.text, fontSize: 26 },
         heroSubtitle: { ...typography.body, color: th.textSecondary, lineHeight: 21 },
@@ -202,6 +213,7 @@ export default function AccountIdentityScreen() {
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: th.backgroundSelected,
         },
+        tabsBusy: { opacity: 0.5 },
         tabButton: {
           flex: 1,
           alignItems: 'center',
@@ -211,6 +223,13 @@ export default function AccountIdentityScreen() {
         },
         tabButtonActive: {
           backgroundColor: th.scheme === 'light' ? '#fff' : th.backgroundSelected,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: th.backgroundSelected,
+          shadowColor: '#000',
+          shadowOpacity: 0.08,
+          shadowRadius: 4,
+          shadowOffset: { width: 0, height: 1 },
+          elevation: 1,
         },
         tabButtonText: { ...typography.body, color: th.textSecondary, fontWeight: '600' },
         tabButtonTextActive: { color: th.text },
@@ -238,7 +257,7 @@ export default function AccountIdentityScreen() {
           borderColor: th.backgroundSelected,
           borderRadius: 10,
           paddingHorizontal: spacing.md,
-          paddingVertical: 12,
+          paddingVertical: 14,
         },
         pendingEmail: { ...typography.body, color: th.text },
 
@@ -251,10 +270,15 @@ export default function AccountIdentityScreen() {
           paddingHorizontal: spacing.md,
           paddingVertical: 12,
         },
-        primaryButtonDisabled: { opacity: 0.5 },
+        buttonDisabled: { opacity: 0.5 },
         primaryButtonText: { ...typography.body, color: '#fff', fontWeight: '700' },
         linkButton: { paddingVertical: 6, alignItems: 'center' },
         linkButtonText: { ...typography.caption, color: PRIMARY, fontWeight: '600' },
+        linkButtonTextNeutral: {
+          ...typography.caption,
+          color: th.textSecondary,
+          fontWeight: '600',
+        },
 
         errorBanner: {
           backgroundColor: th.scheme === 'light' ? '#FDECEC' : '#3A1E1E',
@@ -296,7 +320,6 @@ export default function AccountIdentityScreen() {
           textAlign: 'center',
           paddingHorizontal: spacing.md,
         },
-        chevron: { fontSize: 20, color: th.textSecondary, lineHeight: 24 },
       }),
     [th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]
   );
@@ -316,11 +339,21 @@ export default function AccountIdentityScreen() {
     title: string;
     subtitle?: string;
     trailing?: string;
+    trailingNode?: React.ReactNode;
     value?: string;
     disabled?: boolean;
     isLast?: boolean;
   }) {
-    const { icon, title, subtitle, trailing, value, disabled = false, isLast = false } = opts;
+    const {
+      icon,
+      title,
+      subtitle,
+      trailing,
+      trailingNode,
+      value,
+      disabled = false,
+      isLast = false,
+    } = opts;
     return (
       <React.Fragment>
         <View style={[styles.row, disabled && styles.rowDisabled]}>
@@ -346,7 +379,11 @@ export default function AccountIdentityScreen() {
                 {value}
               </Text>
             ) : null}
-            {trailing ? <Text style={styles.rowTrailingText}>{trailing}</Text> : null}
+            {trailingNode
+              ? trailingNode
+              : trailing
+                ? <Text style={styles.rowTrailingText}>{trailing}</Text>
+                : null}
           </View>
         </View>
         {!isLast && <View style={styles.separator} />}
@@ -379,6 +416,9 @@ export default function AccountIdentityScreen() {
     const displayName = profile?.displayName || 'Your account';
     const realEmail = profile?.email || snapshot.pendingEmail || '';
     const initials = initialsOf(profile?.displayName, realEmail);
+    const avatarColor = profile?.avatarColor && profile.avatarColor.trim() ? profile.avatarColor : null;
+    const avatarBg = avatarColor ?? (th.scheme === 'light' ? '#fff' : th.backgroundSelected);
+    const avatarInitialsColor = avatarColor ? '#fff' : th.text;
 
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
@@ -389,8 +429,10 @@ export default function AccountIdentityScreen() {
           ]}>
           <View style={styles.accountPanel}>
             <View style={styles.accountTop}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarInitials}>{initials}</Text>
+              <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
+                <Text style={[styles.avatarInitials, { color: avatarInitialsColor }]}>
+                  {initials}
+                </Text>
               </View>
               <View style={styles.accountText}>
                 <Text style={styles.accountTitle} numberOfLines={1}>
@@ -409,22 +451,37 @@ export default function AccountIdentityScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>PROFILE</Text>
             <View style={styles.card}>
-              {renderRow({
-                icon: { ios: 'person.fill', android: 'person', web: 'person' },
-                title: 'Display Name',
-                value: profile?.displayName || '—',
-              })}
-              {renderRow({
-                icon: { ios: 'envelope.fill', android: 'mail', web: 'mail' },
-                title: 'Email',
-                value: realEmail || '—',
-              })}
-              {renderRow({
-                icon: { ios: 'square.stack.3d.up.fill', android: 'workspaces', web: 'workspaces' },
-                title: 'Workspace',
-                value: workspace?.name || 'Personal',
-                isLast: true,
-              })}
+              {profile ? (
+                <>
+                  {renderRow({
+                    icon: { ios: 'person.fill', android: 'person', web: 'person' },
+                    title: 'Display Name',
+                    value: profile.displayName || '—',
+                  })}
+                  {renderRow({
+                    icon: { ios: 'envelope.fill', android: 'mail', web: 'mail' },
+                    title: 'Email',
+                    value: realEmail || '—',
+                  })}
+                  {renderRow({
+                    icon: { ios: 'square.stack.3d.up.fill', android: 'workspaces', web: 'workspaces' },
+                    title: 'Workspace',
+                    value: workspace?.name || 'Personal',
+                    isLast: true,
+                  })}
+                </>
+              ) : (
+                renderRow({
+                  icon: {
+                    ios: 'person.crop.circle.badge.questionmark',
+                    android: 'help_outline',
+                    web: 'help_outline',
+                  },
+                  title: 'Profile setup pending',
+                  subtitle: 'Your profile will appear here once setup completes.',
+                  isLast: true,
+                })
+              )}
             </View>
           </View>
 
@@ -434,8 +491,12 @@ export default function AccountIdentityScreen() {
               {renderRow({
                 icon: { ios: 'key.fill', android: 'vpn_key', web: 'key' },
                 title: 'Email + Password',
-                subtitle: 'Active sign-in method',
-                trailing: '✓',
+                subtitle: 'Currently in use',
+                trailingNode: (
+                  <View style={styles.activePill}>
+                    <Text style={styles.activePillText}>Active</Text>
+                  </View>
+                ),
               })}
               {renderRow({
                 icon: { ios: 'plus.circle', android: 'add_circle', web: 'add_circle' },
@@ -454,7 +515,7 @@ export default function AccountIdentityScreen() {
               {renderRow({
                 icon: { ios: 'lock.rotation', android: 'lock_reset', web: 'lock' },
                 title: 'Change password',
-                subtitle: 'Available in a future update.',
+                subtitle: 'Coming in a future update.',
                 trailing: 'Soon',
                 disabled: true,
                 isLast: true,
@@ -463,10 +524,11 @@ export default function AccountIdentityScreen() {
           </View>
 
           <View style={styles.noticeCard}>
-            <Text style={styles.noticeTitle}>Account recovery</Text>
+            <Text style={styles.noticeTitle}>Account recovery — coming soon</Text>
             <Text style={styles.noticeBody}>
-              Recovery isn't available yet. Keep your password safe — when recovery ships,
-              we'll send a reset code to {realEmail || 'your account email'}.
+              We're still building account recovery. For now, please save your password
+              somewhere safe. When it ships, we'll send a reset code to{' '}
+              {realEmail || 'your account email'}.
             </Text>
           </View>
 
@@ -477,7 +539,7 @@ export default function AccountIdentityScreen() {
           ) : null}
 
           <TouchableOpacity
-            style={[styles.signOutButton, busy === 'signOut' && styles.primaryButtonDisabled]}
+            style={[styles.signOutButton, busy === 'signOut' && styles.buttonDisabled]}
             onPress={() => runAction('signOut', () => identity.signOut())}
             activeOpacity={0.7}
             disabled={Boolean(busy)}>
@@ -502,6 +564,11 @@ export default function AccountIdentityScreen() {
         ? identity.verifySignupCode({ email: targetEmail, code })
         : identity.verifyEmailCode({ email: targetEmail, code });
 
+    function trySubmitVerify() {
+      if (busy || !code.trim()) return;
+      runAction('verify', verifyAction);
+    }
+
     async function cancelPending() {
       setEmail('');
       setPassword('');
@@ -511,74 +578,83 @@ export default function AccountIdentityScreen() {
 
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.content,
-            { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
-          ]}>
-          <View style={styles.hero}>
-            <Text style={styles.heroTitle}>Check your email</Text>
-            <Text style={styles.heroSubtitle}>
-              We sent a verification code to {targetEmail || 'your email'}. Enter it below to{' '}
-              {pendingCodeKind === 'sign_up' ? 'finish creating your account' : 'sign in'}.
-            </Text>
-          </View>
-
-          <View style={styles.formCard}>
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>EMAIL</Text>
-              <Text style={styles.pendingEmail}>{targetEmail || '—'}</Text>
-            </View>
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>CODE</Text>
-              <TextInput
-                style={styles.input}
-                value={code}
-                onChangeText={setCode}
-                placeholder="6-digit code"
-                placeholderTextColor={th.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="number-pad"
-                textContentType="oneTimeCode"
-                editable={!busy}
-              />
+        <KeyboardAvoidingView
+          style={styles.kav}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={contentTopPadding}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.content,
+              { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+            ]}
+            keyboardShouldPersistTaps="handled">
+            <View style={styles.hero}>
+              <Text style={styles.heroTitle}>Check your email</Text>
+              <Text style={styles.heroSubtitle}>
+                We sent a verification code to {targetEmail || 'your email'}. Enter it below to{' '}
+                {pendingCodeKind === 'sign_up' ? 'finish creating your account' : 'sign in'}.
+              </Text>
             </View>
 
-            {errorCopy ? (
-              <View style={styles.errorBanner}>
-                <Text style={styles.errorBannerText}>{errorCopy}</Text>
+            <View style={styles.formCard}>
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>EMAIL</Text>
+                <Text style={styles.pendingEmail}>{targetEmail || '—'}</Text>
               </View>
-            ) : null}
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>CODE</Text>
+                <TextInput
+                  style={styles.input}
+                  value={code}
+                  onChangeText={setCode}
+                  placeholder="6-digit code"
+                  placeholderTextColor={th.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="number-pad"
+                  textContentType="oneTimeCode"
+                  editable={!busy}
+                  accessibilityLabel="Verification code"
+                  returnKeyType="go"
+                  onSubmitEditing={trySubmitVerify}
+                />
+              </View>
 
-            <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                (Boolean(busy) || !code.trim()) && styles.primaryButtonDisabled,
-              ]}
-              onPress={() => runAction('verify', verifyAction)}
-              activeOpacity={0.7}
-              disabled={Boolean(busy) || !code.trim()}>
-              {busy === 'verify' ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>{verifyLabel}</Text>
-              )}
-            </TouchableOpacity>
+              {errorCopy ? (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorBannerText}>{errorCopy}</Text>
+                </View>
+              ) : null}
 
-            <TouchableOpacity
-              style={styles.linkButton}
-              onPress={cancelPending}
-              activeOpacity={0.6}
-              disabled={Boolean(busy)}>
-              <Text style={styles.linkButtonText}>Use a different email</Text>
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  (Boolean(busy) || !code.trim()) && styles.buttonDisabled,
+                ]}
+                onPress={trySubmitVerify}
+                activeOpacity={0.7}
+                disabled={Boolean(busy) || !code.trim()}>
+                {busy === 'verify' ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>{verifyLabel}</Text>
+                )}
+              </TouchableOpacity>
 
-          <Text style={styles.footerText}>
-            The code may take a moment to arrive. Check your spam folder if needed.
-          </Text>
-        </ScrollView>
+              <TouchableOpacity
+                style={styles.linkButton}
+                onPress={cancelPending}
+                activeOpacity={0.6}
+                disabled={Boolean(busy)}>
+                <Text style={styles.linkButtonTextNeutral}>Use a different email</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.footerText}>
+              The code may take a moment to arrive. Check your spam folder if needed.
+            </Text>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }
@@ -605,127 +681,153 @@ export default function AccountIdentityScreen() {
     return identity.signUpWithPassword({ email, password });
   };
 
+  function trySubmitPrimary() {
+    if (busy || !canSubmit) return;
+    runAction('primary', primaryAction);
+  }
+
   function selectTab(next: SignInTab) {
     setTab(next);
     setMode('password');
     setCode('');
   }
 
+  function handleEmailSubmitEditing() {
+    if (showPasswordField) {
+      passwordRef.current?.focus();
+    } else {
+      trySubmitPrimary();
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
-        ]}>
-        <View style={styles.hero}>
-          <Text style={styles.heroTitle}>Sign in to H2O Studio</Text>
-          <Text style={styles.heroSubtitle}>
-            Sync your account across devices and keep your conversations safe.
-          </Text>
-        </View>
-
-        <View style={styles.tabs}>
-          <TouchableOpacity
-            style={[styles.tabButton, isSignInTab && styles.tabButtonActive]}
-            onPress={() => selectTab('sign_in')}
-            activeOpacity={0.7}
-            disabled={Boolean(busy)}>
-            <Text style={[styles.tabButtonText, isSignInTab && styles.tabButtonTextActive]}>
-              Sign in
+      <KeyboardAvoidingView
+        style={styles.kav}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={contentTopPadding}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+          ]}
+          keyboardShouldPersistTaps="handled">
+          <View style={styles.hero}>
+            <Text style={styles.heroTitle}>Sign in to H2O Studio</Text>
+            <Text style={styles.heroSubtitle}>
+              Sync your account across devices and keep your conversations safe.
             </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabButton, !isSignInTab && styles.tabButtonActive]}
-            onPress={() => selectTab('create_account')}
-            activeOpacity={0.7}
-            disabled={Boolean(busy)}>
-            <Text style={[styles.tabButtonText, !isSignInTab && styles.tabButtonTextActive]}>
-              Create account
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.formCard}>
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>EMAIL</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="you@example.com"
-              placeholderTextColor={th.textSecondary}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              textContentType="emailAddress"
-              editable={!busy}
-            />
           </View>
 
-          {showPasswordField ? (
+          <View style={[styles.tabs, busy && styles.tabsBusy]}>
+            <TouchableOpacity
+              style={[styles.tabButton, isSignInTab && styles.tabButtonActive]}
+              onPress={() => selectTab('sign_in')}
+              activeOpacity={0.7}
+              disabled={Boolean(busy)}>
+              <Text style={[styles.tabButtonText, isSignInTab && styles.tabButtonTextActive]}>
+                Sign in
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabButton, !isSignInTab && styles.tabButtonActive]}
+              onPress={() => selectTab('create_account')}
+              activeOpacity={0.7}
+              disabled={Boolean(busy)}>
+              <Text style={[styles.tabButtonText, !isSignInTab && styles.tabButtonTextActive]}>
+                Create account
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.formCard}>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>PASSWORD</Text>
+              <Text style={styles.fieldLabel}>EMAIL</Text>
               <TextInput
                 style={styles.input}
-                value={password}
-                onChangeText={setPassword}
-                placeholder={isSignInTab ? 'Your password' : 'At least 8 characters'}
+                value={email}
+                onChangeText={setEmail}
+                placeholder="you@example.com"
                 placeholderTextColor={th.textSecondary}
                 autoCapitalize="none"
                 autoCorrect={false}
-                secureTextEntry
-                textContentType={isSignInTab ? 'password' : 'newPassword'}
+                keyboardType="email-address"
+                textContentType="emailAddress"
                 editable={!busy}
+                accessibilityLabel="Email address"
+                returnKeyType={showPasswordField ? 'next' : 'go'}
+                onSubmitEditing={handleEmailSubmitEditing}
               />
             </View>
-          ) : null}
 
-          {errorCopy ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerText}>{errorCopy}</Text>
-            </View>
-          ) : null}
+            {showPasswordField ? (
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>PASSWORD</Text>
+                <TextInput
+                  ref={passwordRef}
+                  style={styles.input}
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder={isSignInTab ? 'Your password' : 'At least 8 characters'}
+                  placeholderTextColor={th.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry
+                  textContentType={isSignInTab ? 'password' : 'newPassword'}
+                  editable={!busy}
+                  accessibilityLabel="Password"
+                  returnKeyType="go"
+                  onSubmitEditing={trySubmitPrimary}
+                />
+              </View>
+            ) : null}
 
-          <TouchableOpacity
-            style={[
-              styles.primaryButton,
-              (!canSubmit || Boolean(busy)) && styles.primaryButtonDisabled,
-            ]}
-            onPress={() => runAction('primary', primaryAction)}
-            activeOpacity={0.7}
-            disabled={!canSubmit || Boolean(busy)}>
-            {busy === 'primary' ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
-            )}
-          </TouchableOpacity>
+            {errorCopy ? (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorBannerText}>{errorCopy}</Text>
+              </View>
+            ) : null}
 
-          {isSignInTab ? (
             <TouchableOpacity
-              style={styles.linkButton}
-              onPress={() => {
-                setMode(isPasswordMode ? 'code' : 'password');
-                setCode('');
-              }}
-              activeOpacity={0.6}
-              disabled={Boolean(busy)}>
-              <Text style={styles.linkButtonText}>
-                {isPasswordMode ? 'Use email code instead' : 'Use password instead'}
-              </Text>
+              style={[
+                styles.primaryButton,
+                (!canSubmit || Boolean(busy)) && styles.buttonDisabled,
+              ]}
+              onPress={trySubmitPrimary}
+              activeOpacity={0.7}
+              disabled={!canSubmit || Boolean(busy)}>
+              {busy === 'primary' ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
+              )}
             </TouchableOpacity>
-          ) : null}
-        </View>
 
-        <View style={styles.noticeCard}>
-          <Text style={styles.noticeTitle}>Trouble signing in?</Text>
-          <Text style={styles.noticeBody}>
-            Account recovery isn't available yet. Keep your password safe — there's no in-app
-            reset for now.
-          </Text>
-        </View>
-      </ScrollView>
+            {isSignInTab ? (
+              <TouchableOpacity
+                style={styles.linkButton}
+                onPress={() => {
+                  setMode(isPasswordMode ? 'code' : 'password');
+                  setCode('');
+                }}
+                activeOpacity={0.6}
+                disabled={Boolean(busy)}>
+                <Text style={styles.linkButtonText}>
+                  {isPasswordMode ? 'Use email code instead' : 'Use password instead'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          <View style={styles.noticeCard}>
+            <Text style={styles.noticeTitle}>Trouble signing in?</Text>
+            <Text style={styles.noticeBody}>
+              Account recovery is on its way. Until then, please save your password somewhere
+              safe.
+            </Text>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
