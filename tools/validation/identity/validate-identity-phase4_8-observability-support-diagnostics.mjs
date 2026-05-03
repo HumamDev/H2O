@@ -18,6 +18,7 @@ const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
 const BILLING_CORE_REL = "scripts/0D5a.⬛️💳 Billing Core 💳.js";
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";
 const VALIDATOR_REL = "tools/validation/identity/validate-identity-phase4_8-observability-support-diagnostics.mjs";
+const A3_AMENDMENT_DOC_REL = "docs/identity/IDENTITY_AMENDMENT_4_X_A3_DIAG_RUNTIME.md";
 
 function read(rel) {
   return fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
@@ -97,6 +98,7 @@ const provider = read(PROVIDER_REL);
 const loader = read(LOADER_REL);
 const billingCore = read(BILLING_CORE_REL);
 const releaseRunner = read(RELEASE_RUNNER_REL);
+const a3AmendmentDoc = read(A3_AMENDMENT_DOC_REL);
 
 assert(docs.includes("Phase 4.8B - Observability / Support Diagnostics Policy Gate") &&
   docs.includes("Public-safe diagnostics") &&
@@ -140,6 +142,143 @@ assert(selfCheck.includes("noTokenSurface") &&
   selfCheck.includes("diag: diag()") &&
   !/\b(access_token|refresh_token|provider_token|provider_refresh_token|rawSession|rawUser|rawOAuth|owner_user_id|deleted_at)\b/.test(selfCheck),
   "H2O.Identity.selfCheck() must rely on safe diag and token-surface check");
+
+// Amendment 4.X.A3 — diag().runtime safe-metadata allowance.
+// The amendment doc must exist and define the four allowed keys.
+assert(a3AmendmentDoc.includes("Amendment 4.X.A3") &&
+  a3AmendmentDoc.includes("diag().runtime") &&
+  a3AmendmentDoc.includes("platform") &&
+  a3AmendmentDoc.includes("runtimeKind") &&
+  a3AmendmentDoc.includes("appVersion") &&
+  a3AmendmentDoc.includes("identityCoreVersion"),
+  "Amendment 4.X.A3 doc must define the safe diag().runtime shape (platform, runtimeKind, appVersion, identityCoreVersion)");
+
+// Forward-compatible shape enforcement: if diag() declares a `runtime` property in any form
+// (explicit `runtime: { ... }`, shorthand `{ runtime }`, function-call assignment, identifier
+// assignment), the validator must be able to verify the safe shape statically. Therefore the
+// declaration MUST be an inline object literal. Anything else fails fast with a clear message.
+// The runtime currently does not emit `diag().runtime`, so all checks below are no-ops until
+// 5.0B (or a future change) opts in.
+const A3_DIAG_RUNTIME_REQUIRED_KEYS = ["platform", "runtimeKind", "appVersion", "identityCoreVersion"];
+const A3_DIAG_RUNTIME_VALUE_RULES = {
+  platform: { kind: "enum", values: ["browser-extension", "studio-mobile"] },
+  runtimeKind: { kind: "enum", values: ["chrome-mv3", "expo-ios", "expo-android"] },
+  appVersion: { kind: "nonEmptyString" },
+  identityCoreVersion: { kind: "nonEmptyString" },
+};
+// Property-key context for `runtime`: line-start indentation, or immediately following `{` or
+// `,` (with optional whitespace). Excludes member-access cases like `chrome.runtime`.
+const A3_RUNTIME_PROP_KEY_REGEX = /(?:^[ \t]*|[{,]\s*)runtime\b/gm;
+const a3RuntimeKeyHits = [...diag.matchAll(A3_RUNTIME_PROP_KEY_REGEX)];
+
+if (a3RuntimeKeyHits.length > 0) {
+  // At most one `runtime` property declaration. JS object literals tolerate duplicate keys
+  // outside strict mode (last-wins); the validator must NOT silently accept that, because a
+  // second declaration could be a non-literal that bypasses shape enforcement.
+  assert(a3RuntimeKeyHits.length === 1,
+    "Amendment 4.X.A3: diag() must not declare more than one runtime property.");
+
+  // The single declaration must be `runtime: { ... }` — explicit colon, then `{`.
+  for (const hit of a3RuntimeKeyHits) {
+    const afterRuntime = diag.slice(hit.index + hit[0].length);
+    const sepMatch = afterRuntime.match(/^\s*(\S)/);
+    assert(sepMatch && sepMatch[1] === ':',
+      "Amendment 4.X.A3: diag().runtime must be an inline object literal so the validator can enforce its safe shape.");
+    const afterColon = afterRuntime.slice(afterRuntime.indexOf(':') + 1);
+    const valStartMatch = afterColon.match(/^\s*(\S)/);
+    assert(valStartMatch && valStartMatch[1] === '{',
+      "Amendment 4.X.A3: diag().runtime must be an inline object literal so the validator can enforce its safe shape.");
+  }
+
+  // Brace-match the single occurrence to extract the literal body. (The single-occurrence
+  // contract was asserted above, so we know there is exactly one hit to inspect.)
+  const firstHit = a3RuntimeKeyHits[0];
+  const a3OpenIdx = diag.indexOf('{', firstHit.index + firstHit[0].length);
+  let a3Depth = 0;
+  let a3CloseIdx = -1;
+  for (let i = a3OpenIdx; i < diag.length; i += 1) {
+    if (diag[i] === '{') a3Depth += 1;
+    else if (diag[i] === '}') {
+      a3Depth -= 1;
+      if (a3Depth === 0) { a3CloseIdx = i; break; }
+    }
+  }
+  assert(a3CloseIdx > a3OpenIdx,
+    "Amendment 4.X.A3: diag().runtime inline literal has unmatched braces");
+  const a3RuntimeBody = diag.slice(a3OpenIdx + 1, a3CloseIdx);
+
+  // Collect top-level keys.
+  const a3ObservedKeys = [...a3RuntimeBody.matchAll(/(?:^|[,\n])\s*([A-Za-z_$][\w$]*)\s*:/g)].map(match => match[1]);
+
+  // No extra keys.
+  for (const key of a3ObservedKeys) {
+    assert(A3_DIAG_RUNTIME_REQUIRED_KEYS.includes(key),
+      `Amendment 4.X.A3: diag().runtime may only contain ${A3_DIAG_RUNTIME_REQUIRED_KEYS.join(", ")}; found unauthorized key "${key}"`);
+  }
+
+  // No duplicate keys.
+  const a3DuplicateKeys = a3ObservedKeys.filter((key, idx) => a3ObservedKeys.indexOf(key) !== idx);
+  assert(a3DuplicateKeys.length === 0,
+    `Amendment 4.X.A3: diag().runtime must not declare duplicate keys; found duplicates: ${[...new Set(a3DuplicateKeys)].join(", ")}`);
+
+  // All four required keys present.
+  const a3ObservedKeySet = new Set(a3ObservedKeys);
+  const a3MissingKeys = A3_DIAG_RUNTIME_REQUIRED_KEYS.filter(key => !a3ObservedKeySet.has(key));
+  assert(a3MissingKeys.length === 0,
+    `Amendment 4.X.A3: diag().runtime must contain all four keys (${A3_DIAG_RUNTIME_REQUIRED_KEYS.join(", ")}); missing: ${a3MissingKeys.join(", ")}`);
+
+  // No nested object literals, no arrays, no spread, no computed keys.
+  assert(!/[A-Za-z_$][\w$]*\s*:\s*\{/.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not contain nested objects");
+  assert(!/[A-Za-z_$][\w$]*\s*:\s*\[/.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not contain arrays");
+  assert(!/\.\.\./.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not use spread syntax");
+  assert(!/^\s*\[/m.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not use computed property keys");
+
+  // Per-property value check:
+  //   - must be a plain quoted string literal (no template literals, identifiers, calls,
+  //     concatenation, fallbacks)
+  //   - platform / runtimeKind values must match their enum
+  //   - appVersion / identityCoreVersion must be non-empty strings
+  // Split into property declarations, handling both multi-line and single-line literals.
+  // String values in valid inputs (platform / runtimeKind enums, version numbers) do not
+  // contain `,` or `\n`, so a top-level split is safe. Pathological values containing those
+  // characters would fail the per-key string-literal check below.
+  for (const propLine of a3RuntimeBody.split(/[\n,]/).map(s => s.trim()).filter(Boolean)) {
+    const cleaned = propLine;
+    const colonIdx = cleaned.indexOf(':');
+    if (colonIdx < 0) continue;
+    const keyName = cleaned.slice(0, colonIdx).trim();
+    if (!A3_DIAG_RUNTIME_REQUIRED_KEYS.includes(keyName)) continue;
+    const valueExpr = cleaned.slice(colonIdx + 1).trim();
+    const isQuotedLiteral =
+      (valueExpr.startsWith("'") && valueExpr.endsWith("'") && valueExpr.length >= 2) ||
+      (valueExpr.startsWith('"') && valueExpr.endsWith('"') && valueExpr.length >= 2);
+    assert(isQuotedLiteral,
+      `Amendment 4.X.A3: diag().runtime values must be quoted string literals; property "${keyName}" has non-literal value`);
+    assert(!valueExpr.includes('`'),
+      `Amendment 4.X.A3: diag().runtime values must be plain string literals (no template literals); property "${keyName}" appears to use template literal`);
+    assert(!/[+]/.test(valueExpr.slice(1, -1)),
+      `Amendment 4.X.A3: diag().runtime values must be plain string literals (no concatenation); property "${keyName}" contains "+" outside the literal`);
+    const innerValue = valueExpr.slice(1, -1);
+    const rule = A3_DIAG_RUNTIME_VALUE_RULES[keyName];
+    if (rule.kind === "enum") {
+      assert(rule.values.includes(innerValue),
+        `Amendment 4.X.A3: diag().runtime."${keyName}" must be one of ${rule.values.map(v => `'${v}'`).join(", ")}; found '${innerValue}'`);
+    } else if (rule.kind === "nonEmptyString") {
+      assert(innerValue.length > 0,
+        `Amendment 4.X.A3: diag().runtime."${keyName}" must be a non-empty string literal`);
+    }
+  }
+
+  // No token / secret / password / credential / raw-auth-shaped substrings within the body.
+  assert(!/\b(access_token|refresh_token|provider_token|provider_refresh_token|rawSession|rawUser|rawEmail|rawOAuth|providerIdentity|identity_data|owner_user_id|deleted_at|service_role|service-role|serviceRoleKey|SERVICE_ROLE|SUPABASE_SERVICE_ROLE_KEY|recoveryToken|recovery_token|currentPassword|current_password|newPassword|confirmPassword)\b/i.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not contain token/session/raw/recovery/password-shaped key names");
+  assert(!/\b(secret|credential)\b/i.test(a3RuntimeBody),
+    "Amendment 4.X.A3: diag().runtime must not contain secret-/credential-shaped key names");
+}
 assert(recordAudit.includes("sanitizeAuditMeta(meta)") &&
   sanitizeAuditMeta.includes("/token|secret|password|refresh/i") &&
   !/console\.(?:log|warn|error|info|debug)/.test(recordAudit + "\n" + sanitizeAuditMeta),
@@ -241,6 +380,7 @@ for (const [label, source] of [
 
 console.log("  diagnostics policy docs are present");
 console.log("  H2O.Identity.diag/selfCheck expose safe masked/status fields only");
+console.log("  Amendment 4.X.A3: diag().runtime shape contract enforced (forward-compatible; no runtime emission today)");
 console.log("  onboarding diagnostics render api.diag() only");
 console.log("  Account tab status uses public snapshot/diag fields only");
 console.log("  background cleanup diagnostics stay out of public sign-out responses");
