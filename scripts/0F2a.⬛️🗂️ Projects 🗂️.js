@@ -91,6 +91,7 @@
   const CFG_PROJECTS_NATIVE_HARVEST_MS = 2200;
   const CFG_PROJECTS_NATIVE_HARVEST_COOLDOWN_MS = 30 * 1000;
   const CFG_PROJECTS_NATIVE_AUTH_COOLDOWN_MS = 5 * 60 * 1000;
+  const CFG_PROJECTS_OBSERVED_HEADERS_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 h
   const CFG_PROJECTS_MANUAL_REFRESH_TIMEOUT_MS = 7000;
   const CFG_PROJECTS_DEFERRED_RECONCILE_MS = 120;
   const CFG_PROJECTS_STARTUP_RERENDER_DEFER_MS = 900;
@@ -1188,8 +1189,17 @@
     return remaining;
   }
 
+  function PROJECTS_hasObservedHeaders() {
+    const observed = PROJECTS_readObservedNativeHeaders();
+    if (!observed['oai-device-id'] && !observed['oai-session-id']) return false;
+    const age = Date.now() - Number(observed.observedAt || 0);
+    return age < CFG_PROJECTS_OBSERVED_HEADERS_MAX_AGE_MS;
+  }
+
   function PROJECTS_shouldSkipNativeRefresh(reason = '') {
-    return !PROJECTS_isExplicitRefreshReason(reason) && PROJECTS_nativeAuthCooldownRemainingMs() > 0;
+    if (!PROJECTS_isExplicitRefreshReason(reason) && PROJECTS_nativeAuthCooldownRemainingMs() > 0) return true;
+    if (!PROJECTS_isExplicitRefreshReason(reason) && !PROJECTS_hasObservedHeaders()) return true;
+    return false;
   }
 
   function PROJECTS_recordNativeFetchSuccess(status = 200) {
@@ -1582,7 +1592,11 @@
       })
       .catch((error) => {
         PROJECTS_recordNativeFetchFailure(error, reason);
-        err('projectsRefresh', error);
+        if (Number(error?.status) === 401) {
+          step('projects-refresh-auth-401', `reason:${reason}`); // expected before headers observed — cooldown active
+        } else {
+          err('projectsRefresh', error);
+        }
         const fallback = PROJECTS_writeStore({
           ...previous,
           lastAttemptAt: attemptedAt,
