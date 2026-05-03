@@ -150,8 +150,11 @@
     SEND_CLICK_DELAY_MS: 20,
     QUICK_TRAY_SHOW_ON_BOOT: true,
     HISTORY_MAX: 50,
+    HISTORY_BYTE_CAP: 80_000,
     DRAFTS_MAX: 50,
+    DRAFTS_BYTE_CAP: 60_000,
     PASTED_MAX: 50,
+    PASTED_BYTE_CAP: 80_000,
     TOOLTIP_PAD: 12,
     // 🎨 Aurora Glass panel skin (tweak freely)
     GLASS_TEXT: '#f4f6fb',
@@ -1326,6 +1329,12 @@ ${PANEL} ${SORT_GHOST}{
           changed = true;
           out.splice(0, out.length - CFG_PM.HISTORY_MAX);
         }
+        // Byte-level cap: trim oldest entries until serialised size is within budget
+        let byteLen = JSON.stringify(out).length;
+        while (byteLen > CFG_PM.HISTORY_BYTE_CAP && out.length > 1) {
+          out.shift(); changed = true;
+          byteLen = JSON.stringify(out).length;
+        }
         if (changed) UTIL_storage.setJSON(KEY_PM_STATE_HISTORY_V1, out);
         return out;
       }, []);
@@ -1370,6 +1379,11 @@ ${PANEL} ${SORT_GHOST}{
           changed = true;
           out.splice(0, out.length - CFG_PM.DRAFTS_MAX);
         }
+        let byteLen = JSON.stringify(out).length;
+        while (byteLen > CFG_PM.DRAFTS_BYTE_CAP && out.length > 1) {
+          out.shift(); changed = true;
+          byteLen = JSON.stringify(out).length;
+        }
         if (changed) UTIL_storage.setJSON(KEY_PM_STATE_DRAFTS_V1, out);
         return out;
       }, []);
@@ -1410,6 +1424,11 @@ ${PANEL} ${SORT_GHOST}{
         if (out.length > CFG_PM.PASTED_MAX) {
           changed = true;
           out.splice(0, out.length - CFG_PM.PASTED_MAX);
+        }
+        let byteLen = JSON.stringify(out).length;
+        while (byteLen > CFG_PM.PASTED_BYTE_CAP && out.length > 1) {
+          out.shift(); changed = true;
+          byteLen = JSON.stringify(out).length;
         }
         if (changed) UTIL_storage.setJSON(KEY_PM_STATE_PASTED_V1, out);
         return out;
