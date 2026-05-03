@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Cockpit Pro transcript instrument icon">
+  <defs>
+    <clipPath id="clip"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <linearGradient id="bg" x1="120" y1="80" x2="900" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#152039"/>
+      <stop offset=".5" stop-color="#0A3F50"/>
+      <stop offset="1" stop-color="#090E16"/>
+    </linearGradient>
+    <linearGradient id="card" x1="300" y1="230" x2="720" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FFFF"/>
+      <stop offset="1" stop-color="#BFE5EA"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity=".42"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="512" r="390" fill="none" stroke="#8EEFFF" stroke-width="3" opacity=".22"/>
+    <circle cx="512" cy="512" r="308" fill="none" stroke="#FFFFFF" stroke-width="2" opacity=".12"/>
+    <g filter="url(#shadow)">
+      <rect x="312" y="210" width="430" height="560" rx="72" fill="#193143" opacity=".88"/>
+      <rect x="282" y="254" width="430" height="560" rx="72" fill="#244B5D" opacity=".92"/>
+      <rect x="242" y="306" width="430" height="500" rx="72" fill="url(#card)"/>
+    </g>
+    <path d="M332 438h250M332 526h250M332 614h176" stroke="#163548" stroke-width="28" stroke-linecap="round" opacity=".86"/>
+    <path d="M332 704h250" stroke="#15B9C4" stroke-width="28" stroke-linecap="round" opacity=".82"/>
+    <path d="M692 272c60 66 96 153 96 248 0 115-53 218-136 286" fill="none" stroke="#FFC457" stroke-width="22" stroke-linecap="round" filter="url(#glow)"/>
+    <path d="M274 280c-58 64-92 149-92 240 0 108 48 205 124 272" fill="none" stroke="#60E7EF" stroke-width="22" stroke-linecap="round" filter="url(#glow)"/>
+    <circle cx="690" cy="684" r="54" fill="#071722" stroke="#FFFFFF" stroke-width="10"/>
+    <path d="M666 684h48M690 660v48" stroke="#FFC457" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>

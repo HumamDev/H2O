@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="clip">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="60%" y2="100%">
+      <stop offset="0%" stop-color="#0B1929"/>
+      <stop offset="100%" stop-color="#050D18"/>
+    </linearGradient>
+    <linearGradient id="blue-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5BB8FF"/>
+      <stop offset="100%" stop-color="#0A72D4"/>
+    </linearGradient>
+    <linearGradient id="ring-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2E88E8"/>
+      <stop offset="100%" stop-color="#0A4FA0"/>
+    </linearGradient>
+    <filter id="letter-glow">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="ring-glow">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#clip)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- Subtle scan-line texture -->
+    <rect width="1024" height="1024" fill="url(#bg)" opacity="0.3"/>
+
+    <!-- Outer instrument ring -->
+    <circle cx="512" cy="512" r="430" fill="none" stroke="#0D2840" stroke-width="32"/>
+    <circle cx="512" cy="512" r="430" fill="none" stroke="url(#ring-grad)" stroke-width="2.5" opacity="0.8" filter="url(#ring-glow)"/>
+    <circle cx="512" cy="512" r="415" fill="none" stroke="#0D2840" stroke-width="2"/>
+
+    <!-- Tick marks on ring -->
+    <g stroke="#1A6AAA" stroke-width="2.5" opacity="0.6">
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(0,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(22.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(45,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(67.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(90,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(112.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(135,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(157.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(180,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(202.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(225,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(247.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(270,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(292.5,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="115" transform="rotate(315,512,512)"/>
+      <line x1="512" y1="82" x2="512" y2="100" transform="rotate(337.5,512,512)"/>
+    </g>
+
+    <!-- Inner ring -->
+    <circle cx="512" cy="512" r="340" fill="none" stroke="#0D2840" stroke-width="3" opacity="0.6"/>
+
+    <!-- "CP" custom lettermark -->
+    <!-- C — large arc opening right -->
+    <path d="
+      M 420,268
+      C 280,268 172,378 172,512
+      C 172,646 280,756 420,756
+      L 420,680
+      C 322,680 248,604 248,512
+      C 248,420 322,344 420,344
+      Z
+    " fill="url(#blue-grad)" filter="url(#letter-glow)"/>
+
+    <!-- P — right half -->
+    <!-- Vertical stem -->
+    <rect x="460" y="268" width="72" height="488" rx="8" fill="url(#blue-grad)" filter="url(#letter-glow)"/>
+    <!-- P bowl (top bowl) -->
+    <path d="
+      M 532,268
+      L 620,268
+      C 720,268 780,330 780,420
+      C 780,510 720,572 620,572
+      L 532,572
+      Z
+    " fill="url(#blue-grad)" filter="url(#letter-glow)"/>
+    <!-- P bowl inner cutout -->
+    <path d="
+      M 540,344
+      L 615,344
+      C 692,344 706,378 706,420
+      C 706,462 692,496 615,496
+      L 540,496
+      Z
+    " fill="#050D18"/>
+
+    <!-- Thin accent line under lettermark -->
+    <rect x="172" y="790" width="680" height="6" rx="3" fill="#1A72CC" opacity="0.5"/>
+
+    <!-- Center glow dot -->
+    <circle cx="512" cy="512" r="8" fill="#2A8AFF" opacity="0.4"/>
+  </g>
+</svg>

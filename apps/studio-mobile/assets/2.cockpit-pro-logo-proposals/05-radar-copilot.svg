@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Cockpit Pro radar copilot icon">
+  <defs>
+    <clipPath id="clip"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <radialGradient id="bg" cx="50%" cy="44%" r="70%">
+      <stop offset="0" stop-color="#123C4C"/>
+      <stop offset=".55" stop-color="#09202B"/>
+      <stop offset="1" stop-color="#05090F"/>
+    </radialGradient>
+    <linearGradient id="sweep" x1="512" y1="512" x2="840" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6FFFF1" stop-opacity=".72"/>
+      <stop offset=".62" stop-color="#6FFFF1" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#6FFFF1" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="512" r="382" fill="#07121A" stroke="#194B57" stroke-width="28"/>
+    <path d="M512 512 842 250A422 422 0 0 1 930 512z" fill="url(#sweep)" filter="url(#glow)"/>
+    <g fill="none" stroke="#A8FFF5" opacity=".28">
+      <circle cx="512" cy="512" r="306" stroke-width="4"/>
+      <circle cx="512" cy="512" r="218" stroke-width="3"/>
+      <circle cx="512" cy="512" r="130" stroke-width="3"/>
+    </g>
+    <path d="M512 176v672M176 512h672" stroke="#A8FFF5" stroke-width="3" opacity=".2"/>
+    <path d="M512 512 778 302" stroke="#6FFFF1" stroke-width="14" stroke-linecap="round" filter="url(#glow)"/>
+    <circle cx="512" cy="512" r="60" fill="#F9FFFF" filter="url(#glow)"/>
+    <circle cx="512" cy="512" r="28" fill="#07121A"/>
+    <path d="M390 390c42-41 94-61 154-61s112 20 154 61" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round"/>
+    <path d="M366 632c36 54 87 82 146 82s110-28 146-82" fill="none" stroke="#FFC34F" stroke-width="20" stroke-linecap="round" filter="url(#glow)"/>
+    <g fill="#FFC34F" filter="url(#glow)">
+      <circle cx="706" cy="374" r="17"/>
+      <circle cx="330" cy="594" r="13"/>
+      <circle cx="648" cy="704" r="11"/>
+    </g>
+  </g>
+</svg>

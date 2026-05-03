@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="icon-clip"><rect width="1024" height="1024" rx="224" ry="224"/></clipPath>
+    <radialGradient id="sky-radial" cx="48%" cy="32%" r="68%">
+      <stop offset="0%" stop-color="#36C7FF"/>
+      <stop offset="58%" stop-color="#1766D8"/>
+      <stop offset="100%" stop-color="#092257"/>
+    </radialGradient>
+    <radialGradient id="earth-radial" cx="50%" cy="78%" r="58%">
+      <stop offset="0%" stop-color="#A76B35"/>
+      <stop offset="58%" stop-color="#573015"/>
+      <stop offset="100%" stop-color="#170B04"/>
+    </radialGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="soft-glow"><feGaussianBlur stdDeviation="8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g clip-path="url(#icon-clip)">
+    <rect width="1024" height="512" fill="url(#sky-radial)"/>
+    <rect y="512" width="1024" height="512" fill="url(#earth-radial)"/>
+    <circle cx="512" cy="512" r="440" fill="none" stroke="#071827" stroke-width="30"/>
+    <circle cx="512" cy="512" r="441" fill="none" stroke="#64E8FF" stroke-width="3" opacity="0.5"/>
+    <g stroke="#9DEEFF" stroke-width="3" opacity="0.7">
+      <line x1="512" y1="72" x2="512" y2="110" transform="rotate(0 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(30 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(60 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(90 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(120 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(150 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(180 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(210 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(240 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(270 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(300 512 512)"/><line x1="512" y1="72" x2="512" y2="110" transform="rotate(330 512 512)"/>
+    </g>
+    <rect x="60" y="503" width="904" height="18" rx="9" fill="#FFFFFF" filter="url(#glow)" opacity="0.97"/>
+    <polygon points="512,92 489,132 535,132" fill="#FFFFFF" opacity="0.95"/>
+    <rect x="188" y="497" width="220" height="30" rx="15" fill="#FFC84A" filter="url(#soft-glow)"/>
+    <rect x="616" y="497" width="220" height="30" rx="15" fill="#FFC84A" filter="url(#soft-glow)"/>
+    <circle cx="512" cy="512" r="22" fill="#FFFFFF" filter="url(#glow)"/>
+    <circle cx="512" cy="512" r="10" fill="#061828"/>
+    <g stroke="#FFFFFF" stroke-width="4" opacity="0.52" stroke-linecap="round"><line x1="372" y1="440" x2="652" y2="440"/><line x1="412" y1="376" x2="612" y2="376"/><line x1="432" y1="312" x2="592" y2="312"/></g>
+    <g stroke="#FFB26B" stroke-width="4" opacity="0.52" stroke-linecap="round"><line x1="372" y1="584" x2="652" y2="584"/><line x1="412" y1="648" x2="612" y2="648"/><line x1="432" y1="712" x2="592" y2="712"/></g>
+    <circle cx="512" cy="512" r="450" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.14"/>
+  </g>
+</svg>

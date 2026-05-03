@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Cockpit Pro precision wing icon">
+  <defs>
+    <clipPath id="clip"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F7FBFF"/>
+      <stop offset=".48" stop-color="#C9EEF4"/>
+      <stop offset="1" stop-color="#102331"/>
+    </linearGradient>
+    <linearGradient id="wing" x1="184" y1="398" x2="840" y2="626" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E2537"/>
+      <stop offset=".46" stop-color="#14566B"/>
+      <stop offset="1" stop-color="#0A1722"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="28" stdDeviation="26" flood-color="#00101A" flood-opacity=".38"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#clip)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="512" r="380" fill="none" stroke="#0C2E42" stroke-width="18" opacity=".8"/>
+    <circle cx="512" cy="512" r="304" fill="none" stroke="#FFFFFF" stroke-width="5" opacity=".42"/>
+    <path d="M166 530c104-72 225-116 346-116s242 44 346 116c-104 72-225 116-346 116S270 602 166 530z" fill="url(#wing)" filter="url(#shadow)"/>
+    <path d="M238 530c86-42 179-64 274-64s188 22 274 64c-86 42-179 64-274 64s-188-22-274-64z" fill="#F8FFFF" opacity=".96"/>
+    <path d="M512 244 576 530 512 780 448 530z" fill="#0D283B"/>
+    <path d="M512 244 576 530H448z" fill="#28C4D2" filter="url(#glow)"/>
+    <path d="M576 530 512 780 448 530z" fill="#F0A93F"/>
+    <circle cx="512" cy="530" r="42" fill="#FFFFFF"/>
+    <circle cx="512" cy="530" r="18" fill="#0D283B"/>
+    <path d="M322 326c116-74 264-78 390 0" fill="none" stroke="#0D283B" stroke-width="14" opacity=".34" stroke-linecap="round"/>
+    <path d="M322 738c116 74 264 78 390 0" fill="none" stroke="#FFFFFF" stroke-width="14" opacity=".38" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="clip">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#071A10"/>
+      <stop offset="100%" stop-color="#020B06"/>
+    </radialGradient>
+    <radialGradient id="sweep-grad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E87A" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#00E87A" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="green-glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft-glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="blip-glow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#clip)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- Concentric radar rings -->
+    <circle cx="512" cy="512" r="390" fill="none" stroke="#00E87A" stroke-width="1.5" opacity="0.2"/>
+    <circle cx="512" cy="512" r="292" fill="none" stroke="#00E87A" stroke-width="1.5" opacity="0.2"/>
+    <circle cx="512" cy="512" r="195" fill="none" stroke="#00E87A" stroke-width="1.5" opacity="0.2"/>
+    <circle cx="512" cy="512" r="97" fill="none" stroke="#00E87A" stroke-width="1.5" opacity="0.2"/>
+
+    <!-- Crosshairs -->
+    <line x1="112" y1="512" x2="912" y2="512" stroke="#00E87A" stroke-width="1" opacity="0.18"/>
+    <line x1="512" y1="112" x2="512" y2="912" stroke="#00E87A" stroke-width="1" opacity="0.18"/>
+    <!-- 45° cross -->
+    <line x1="230" y1="230" x2="794" y2="794" stroke="#00E87A" stroke-width="1" opacity="0.1"/>
+    <line x1="794" y1="230" x2="230" y2="794" stroke="#00E87A" stroke-width="1" opacity="0.1"/>
+
+    <!-- Sweep wedge — ~60° filled sector pointing ~330° (up-right) -->
+    <path d="
+      M 512 512
+      L 512 122
+      A 390 390 0 0 1 849 695
+      Z
+    " fill="#00E87A" opacity="0.07"/>
+    <!-- Sweep leading edge line -->
+    <line x1="512" y1="512" x2="849" y2="695" stroke="#00E87A" stroke-width="3" opacity="0.9" filter="url(#green-glow)" stroke-linecap="round"/>
+    <!-- Sweep trailing edge fade -->
+    <line x1="512" y1="512" x2="512" y2="122" stroke="#00E87A" stroke-width="1.5" opacity="0.3" stroke-linecap="round"/>
+
+    <!-- Radar blips (targets on screen) -->
+    <!-- Blip 1 — upper-right quadrant -->
+    <circle cx="668" cy="318" r="12" fill="#00E87A" filter="url(#blip-glow)" opacity="0.9"/>
+    <circle cx="668" cy="318" r="4" fill="white" opacity="0.9"/>
+    <!-- Blip tail -->
+    <circle cx="668" cy="318" r="22" fill="none" stroke="#00E87A" stroke-width="1.5" opacity="0.4"/>
+
+    <!-- Blip 2 — right -->
+    <circle cx="764" cy="545" r="8" fill="#00E87A" filter="url(#blip-glow)" opacity="0.7"/>
+    <circle cx="764" cy="545" r="3" fill="white" opacity="0.7"/>
+
+    <!-- Blip 3 — lower middle -->
+    <circle cx="560" cy="670" r="6" fill="#00E87A" filter="url(#soft-glow)" opacity="0.5"/>
+
+    <!-- Outer ring border -->
+    <circle cx="512" cy="512" r="440" fill="none" stroke="#00E87A" stroke-width="3" opacity="0.55" filter="url(#soft-glow)"/>
+    <circle cx="512" cy="512" r="440" fill="none" stroke="#012208" stroke-width="20"/>
+    <circle cx="512" cy="512" r="440" fill="none" stroke="#00E87A" stroke-width="2" opacity="0.45"/>
+
+    <!-- Center dot -->
+    <circle cx="512" cy="512" r="14" fill="#00E87A" filter="url(#green-glow)" opacity="0.9"/>
+    <circle cx="512" cy="512" r="5" fill="white"/>
+  </g>
+</svg>
