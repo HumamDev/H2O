@@ -17,7 +17,7 @@ import type { DeviceSession, DeviceSessionSurface } from '@h2o/identity-core';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
-import { RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
+import { GOOGLE_OAUTH_VERIFIED, RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
@@ -101,6 +101,13 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   // Workspace rename specific:
   'identity/missing-workspace-name': 'Enter a workspace name.',
   'identity/rename-workspace-failed': "Couldn't update workspace name. Try again.",
+  // Google OAuth (5.0F) specific:
+  'identity/oauth-cancelled': 'Google sign-in was cancelled.',
+  'identity/oauth-failed': "Couldn't sign in with Google. Try again.",
+  'identity/oauth-exchange-failed': "Google sign-in didn't complete. Try again.",
+  'identity/oauth-callback-invalid': 'Google sign-in returned an invalid response.',
+  'identity/oauth-provider-unavailable': 'Google sign-in is not available right now.',
+  'identity/oauth-not-supported': 'Google sign-in is not available in this build.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -499,6 +506,48 @@ export default function AccountIdentityScreen() {
         },
         buttonDisabled: { opacity: 0.5 },
         primaryButtonText: { ...typography.body, color: '#fff', fontWeight: '700' },
+        oauthButton: {
+          minHeight: 46,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'row',
+          gap: spacing.sm,
+          backgroundColor: th.scheme === 'light' ? '#fff' : th.backgroundElement,
+          borderRadius: 10,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: th.backgroundSelected,
+          paddingHorizontal: spacing.md,
+          paddingVertical: 12,
+        },
+        oauthButtonText: { ...typography.body, color: th.text, fontWeight: '700' },
+        oauthGlyphCircle: {
+          width: 22,
+          height: 22,
+          borderRadius: 11,
+          backgroundColor: th.backgroundSelected,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        oauthGlyphLetter: {
+          fontSize: 13,
+          fontWeight: '800',
+          color: th.text,
+        },
+        oauthDivider: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+          paddingVertical: spacing.xs,
+        },
+        oauthDividerLine: {
+          flex: 1,
+          height: StyleSheet.hairlineWidth,
+          backgroundColor: th.backgroundSelected,
+        },
+        oauthDividerText: {
+          ...typography.caption,
+          color: th.textSecondary,
+        },
         linkButton: { paddingVertical: 6, alignItems: 'center' },
         linkButtonText: { ...typography.caption, color: PRIMARY, fontWeight: '600' },
         linkButtonTextNeutral: {
@@ -1961,6 +2010,32 @@ export default function AccountIdentityScreen() {
           </View>
 
           <View style={styles.formCard}>
+            {GOOGLE_OAUTH_VERIFIED ? (
+              <>
+                <TouchableOpacity
+                  style={[styles.oauthButton, Boolean(busy) && styles.buttonDisabled]}
+                  onPress={() => runAction('google_oauth', () => identity.signInWithGoogle())}
+                  activeOpacity={0.7}
+                  disabled={Boolean(busy)}
+                  accessibilityLabel="Continue with Google">
+                  {busy === 'google_oauth' ? (
+                    <ActivityIndicator color={th.text} />
+                  ) : (
+                    <>
+                      <View style={styles.oauthGlyphCircle}>
+                        <Text style={styles.oauthGlyphLetter}>G</Text>
+                      </View>
+                      <Text style={styles.oauthButtonText}>Continue with Google</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <View style={styles.oauthDivider}>
+                  <View style={styles.oauthDividerLine} />
+                  <Text style={styles.oauthDividerText}>or use email</Text>
+                  <View style={styles.oauthDividerLine} />
+                </View>
+              </>
+            ) : null}
             <View style={styles.field}>
               <Text style={styles.fieldLabel}>EMAIL</Text>
               <TextInput

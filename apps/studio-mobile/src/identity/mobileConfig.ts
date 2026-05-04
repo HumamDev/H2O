@@ -2,6 +2,12 @@ export const BOOT_RESTORE_TIMEOUT_MS = 4000;
 
 export const RECOVERY_FLOW_VERIFIED = true;
 
+// Phase 5.0F mobile Google OAuth — dormant by default. Flip to true ONLY after
+// the live-iPhone QA matrix passes (see Phase 5.0F closeout doc, future commit).
+// While false, the "Continue with Google" button is hidden in the signed-out
+// view; the provider method exists but is unreachable from the UI.
+export const GOOGLE_OAUTH_VERIFIED = false;
+
 const _url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const _anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 

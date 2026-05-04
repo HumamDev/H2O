@@ -1,4 +1,5 @@
 import * as Crypto from 'expo-crypto';
+import * as WebBrowser from 'expo-web-browser';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type {
   ChangePasswordInput,
@@ -53,6 +54,28 @@ const ALLOWED_DEVICE_SURFACES: ReadonlyArray<DeviceSessionSurface> = [
 ];
 const DEFAULT_MOBILE_SURFACE: DeviceSessionSurface = 'ios_app';
 const DEFAULT_MOBILE_LABEL = 'iPhone — Cockpit Pro';
+
+// Phase 5.0F mobile Google OAuth — fixed redirect URI matching app.json's
+// `scheme: "studiomobile"`. Must be present in the Supabase project's
+// Authentication → URL Configuration → Redirect URLs allow-list before live QA.
+const MOBILE_OAUTH_REDIRECT_URI = 'studiomobile://identity/oauth/google';
+
+function mapMobileOAuthErrorCode(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { status?: number; statusCode?: number; message?: string })
+      : {};
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  if (/access_denied|cancel|dismiss|closed/.test(message)) return 'identity/oauth-cancelled';
+  if (/fetch|network|timeout|failed to fetch/.test(message)) return 'identity/provider-network-failed';
+  if (/redirect|callback|code\s*verifier|pkce|invalid\s*code/.test(message)) return 'identity/oauth-callback-invalid';
+  if (/provider.*disabled|unsupported|not\s*enabled/.test(message)) return 'identity/oauth-provider-unavailable';
+  if (status === 429 || /rate|too many|cooldown/.test(message)) return 'identity/provider-rate-limited';
+  if (status === 400 || status === 401 || /invalid|rejected/.test(message)) return 'identity/oauth-exchange-failed';
+  if (status === 403 || /forbidden/.test(message)) return 'identity/provider-rejected';
+  return 'identity/oauth-failed';
+}
 
 // ─── module-private helpers ───────────────────────────────────────────────────
 
@@ -1284,6 +1307,98 @@ export class MobileSupabaseProvider implements IdentityProvider {
       return session;
     } catch {
       return null;
+    }
+  }
+
+  // ─── Google OAuth (Phase 5.0F, gated on GOOGLE_OAUTH_VERIFIED in mobileConfig) ─
+  // PKCE flow via Supabase JS + ASWebAuthenticationSession (iOS) /
+  // CustomTabs (Android) through expo-web-browser. All sensitive material
+  // (auth code, OAuth state, access/refresh tokens) is held in local
+  // variables only; nothing is logged, persisted to AsyncStorage/audit, or
+  // surfaced to the snapshot. Refresh token graduates to SecureStore via
+  // the existing storeSession path; access token remains memory-only.
+  async signInWithGoogle(): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.fail(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured',
+        { persist: false, clearSession: true }
+      );
+    }
+    try {
+      const client = this.getClient(config);
+      const { data, error } = await client.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: MOBILE_OAUTH_REDIRECT_URI,
+          skipBrowserRedirect: true,
+        },
+      });
+      if (error || !data || typeof data.url !== 'string' || !data.url) {
+        throw createIdentityError(
+          mapMobileOAuthErrorCode(error),
+          'Google sign-in could not be initialized.'
+        );
+      }
+
+      const browserResult = await WebBrowser.openAuthSessionAsync(data.url, MOBILE_OAUTH_REDIRECT_URI);
+      if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
+        return this.failSoft(
+          createIdentityError('identity/oauth-cancelled', 'Google sign-in was cancelled.'),
+          'identity/oauth-cancelled'
+        );
+      }
+      if (browserResult.type !== 'success' || typeof browserResult.url !== 'string') {
+        throw createIdentityError('identity/oauth-failed', 'Google sign-in did not complete.');
+      }
+
+      // Parse the authorization code from the redirect URL. Supabase sends back
+      // `?code=…&…` (PKCE flow). The URL is held only in this local variable
+      // and the parsed code is consumed immediately by exchangeCodeForSession.
+      let code = '';
+      try {
+        const parsed = new URL(browserResult.url);
+        code = String(parsed.searchParams.get('code') || '').trim();
+      } catch {
+        throw createIdentityError(
+          'identity/oauth-callback-invalid',
+          'Google sign-in returned an invalid response.'
+        );
+      }
+      if (!code) {
+        throw createIdentityError(
+          'identity/oauth-callback-invalid',
+          'Google sign-in returned an invalid response.'
+        );
+      }
+
+      const exchange = await client.auth.exchangeCodeForSession(code);
+      if (exchange.error || !exchange.data?.session) {
+        throw createIdentityError(
+          mapMobileOAuthErrorCode(exchange.error),
+          'Google sign-in could not complete.'
+        );
+      }
+
+      await this.storeSession(exchange.data.session);
+      this.fireAndForgetRegisterDevice();
+
+      const authedClient = this.getAuthedClient(config);
+      const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
+      if (rpcError) throw rpcError;
+
+      const snap = this.buildSnapshotFromRpc(
+        rpcData as RpcIdentityState | null,
+        this.normalizedEmailCandidate(
+          exchange.data.session.user?.email,
+          this.snapshot.profile?.email,
+          this.snapshot.pendingEmail
+        )
+      );
+      return this.commitSnapshot(snap);
+    } catch (error) {
+      return this.failSoft(error, 'identity/oauth-failed');
     }
   }
 

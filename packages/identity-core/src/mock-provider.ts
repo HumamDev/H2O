@@ -243,6 +243,13 @@ export class MockLocalIdentityProvider implements IdentityProvider {
     };
   }
 
+  async signInWithGoogle(): Promise<IdentitySnapshot> {
+    return this.fail(
+      createIdentityError('identity/oauth-not-supported', 'Google sign-in is not available in the local mock provider.'),
+      'identity/oauth-not-supported'
+    );
+  }
+
   async renameWorkspace(name: string): Promise<IdentitySnapshot> {
     try {
       if (!this.snapshot.workspace) throw createIdentityError('identity/no-workspace', 'No workspace exists to rename.');
