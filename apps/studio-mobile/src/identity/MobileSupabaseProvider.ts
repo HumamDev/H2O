@@ -1228,35 +1228,13 @@ export class MobileSupabaseProvider implements IdentityProvider {
 
   async registerDeviceSession(input: RegisterDeviceSessionInput): Promise<DeviceSession | null> {
     const config = getMobileSupabaseConfig();
-    // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
-    const webCrypto = (globalThis as {
-      crypto?: { subtle?: { digest?: unknown }; getRandomValues?: unknown };
-    }).crypto;
-    console.info(
-      `[H2O mobile identity] deviceSessions register start ` +
-      `surface=${input.surface} labelLength=${String(input.label || '').length} ` +
-      `hasConfig=${Boolean(config)} hasAccessToken=${Boolean(this.accessToken)} ` +
-      `hasWebCrypto=${typeof webCrypto !== 'undefined'} ` +
-      `hasWebSubtle=${typeof webCrypto?.subtle !== 'undefined'} ` +
-      `hasWebDigest=${typeof webCrypto?.subtle?.digest === 'function'} ` +
-      `hasWebGetRandomValues=${typeof webCrypto?.getRandomValues === 'function'} ` +
-      `hasExpoDigest=${typeof Crypto.digestStringAsync === 'function'} ` +
-      `hasExpoGetRandomBytes=${typeof Crypto.getRandomBytesAsync === 'function'}`
-    );
-    if (!config || !this.accessToken) {
-      console.warn('[H2O mobile identity] deviceSessions register skipped (no config or no session)');
-      return null;
-    }
+    if (!config || !this.accessToken) return null;
     try {
       const cleanLabel = String(input.label || '').trim().replace(/\s+/g, ' ').slice(0, 64);
       if (!cleanLabel) return null;
       if (!ALLOWED_DEVICE_SURFACES.includes(input.surface)) return null;
 
       const { hashHex } = await this.ensureDeviceTokenAndHash();
-      console.info(
-        `[H2O mobile identity] deviceSessions hash ready ` +
-        `hashLength=${hashHex.length} hashPrefix6=${hashHex.slice(0, 6)}`
-      );
 
       const authedClient = this.getAuthedClient(config);
       const { data, error } = await authedClient.rpc('register_device_session', {
@@ -1264,15 +1242,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
         p_label: cleanLabel,
         p_device_token_hash: hashHex,
       });
-      if (error) {
-        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
-        console.warn(
-          `[H2O mobile identity] deviceSessions register RPC error ` +
-          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
-          `details=${e?.details} hint=${e?.hint}`
-        );
-        return null;
-      }
+      if (error) return null;
 
       const session = this.parseDeviceSessionPayload(
         (data as { session?: unknown } | null)?.session
@@ -1280,18 +1250,8 @@ export class MobileSupabaseProvider implements IdentityProvider {
       if (session) {
         this.deviceSessionId = session.id;
       }
-      console.info(
-        `[H2O mobile identity] deviceSessions register ok ` +
-        `hasSession=${Boolean(session)} hasId=${Boolean(session?.id)} ` +
-        `surface=${session?.surface}`
-      );
       return session;
-    } catch (caught) {
-      const e = caught as { code?: string; message?: string; status?: number };
-      console.warn(
-        `[H2O mobile identity] deviceSessions register threw ` +
-        `code=${e?.code} message=${e?.message} status=${e?.status}`
-      );
+    } catch {
       return null;
     }
   }
@@ -1305,12 +1265,6 @@ export class MobileSupabaseProvider implements IdentityProvider {
 
     try {
       const tokenHex = await readDeviceToken();
-      // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
-      console.info(
-        `[H2O mobile identity] deviceSessions touch start ` +
-        `hasStoredHex=${Boolean(tokenHex)} ` +
-        `msSinceLastTouch=${this.lastDeviceTouchAt === 0 ? 'first' : now - this.lastDeviceTouchAt}`
-      );
       if (!tokenHex || !/^[0-9a-f]{64}$/.test(tokenHex)) return null;
       const hashHex = await this.hashDeviceTokenHex(tokenHex);
 
@@ -1318,15 +1272,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       const { data, error } = await authedClient.rpc('touch_device_session', {
         p_device_token_hash: hashHex,
       });
-      if (error) {
-        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
-        console.warn(
-          `[H2O mobile identity] deviceSessions touch RPC error ` +
-          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
-          `details=${e?.details} hint=${e?.hint}`
-        );
-        return null;
-      }
+      if (error) return null;
 
       this.lastDeviceTouchAt = now;
       const session = this.parseDeviceSessionPayload(
@@ -1335,17 +1281,8 @@ export class MobileSupabaseProvider implements IdentityProvider {
       if (session) {
         this.deviceSessionId = session.id;
       }
-      console.info(
-        `[H2O mobile identity] deviceSessions touch ok ` +
-        `hasSession=${Boolean(session)} hasId=${Boolean(session?.id)}`
-      );
       return session;
-    } catch (caught) {
-      const e = caught as { code?: string; message?: string; status?: number };
-      console.warn(
-        `[H2O mobile identity] deviceSessions touch threw ` +
-        `code=${e?.code} message=${e?.message} status=${e?.status}`
-      );
+    } catch {
       return null;
     }
   }
@@ -1353,51 +1290,24 @@ export class MobileSupabaseProvider implements IdentityProvider {
   async listDeviceSessions(): Promise<ListDeviceSessionsResult> {
     const empty: ListDeviceSessionsResult = { sessions: [], currentSessionId: null };
     const config = getMobileSupabaseConfig();
-    // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
-    console.info(
-      `[H2O mobile identity] deviceSessions list start ` +
-      `hasConfig=${Boolean(config)} hasAccessToken=${Boolean(this.accessToken)} ` +
-      `hasKnownSessionId=${Boolean(this.deviceSessionId)}`
-    );
-    if (!config || !this.accessToken) {
-      console.warn('[H2O mobile identity] deviceSessions list skipped (no config or no session)');
-      return empty;
-    }
+    if (!config || !this.accessToken) return empty;
     try {
       // Lazy fallback: if the auto-register hooks haven't yet populated
       // deviceSessionId (e.g., user opens /account-identity right after a
       // fresh refresh), do a best-effort register first so the
       // current-device pill resolves correctly on first paint.
       if (!this.deviceSessionId) {
-        console.info('[H2O mobile identity] deviceSessions list lazy register');
         await this.registerDeviceSession({
           surface: DEFAULT_MOBILE_SURFACE,
           label: DEFAULT_MOBILE_LABEL,
         });
-        console.info(
-          `[H2O mobile identity] deviceSessions list lazy register outcome ` +
-          `hasKnownSessionId=${Boolean(this.deviceSessionId)}`
-        );
       }
 
       const authedClient = this.getAuthedClient(config);
       const { data, error } = await authedClient.rpc('list_my_device_sessions');
-      if (error) {
-        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
-        console.warn(
-          `[H2O mobile identity] deviceSessions list RPC error ` +
-          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
-          `details=${e?.details} hint=${e?.hint}`
-        );
-        return empty;
-      }
+      if (error) return empty;
 
       const rawList = (data as { sessions?: unknown } | null)?.sessions;
-      console.info(
-        `[H2O mobile identity] deviceSessions list raw ` +
-        `hasData=${Boolean(data)} hasSessionsArray=${Array.isArray(rawList)} ` +
-        `rawCount=${Array.isArray(rawList) ? rawList.length : 0}`
-      );
       if (!Array.isArray(rawList)) return empty;
 
       const sessions: DeviceSession[] = [];
@@ -1405,18 +1315,8 @@ export class MobileSupabaseProvider implements IdentityProvider {
         const parsed = this.parseDeviceSessionPayload(item);
         if (parsed) sessions.push(parsed);
       }
-      console.info(
-        `[H2O mobile identity] deviceSessions list result ` +
-        `sessionCount=${sessions.length} ` +
-        `hasCurrentSessionId=${Boolean(this.deviceSessionId)}`
-      );
       return { sessions, currentSessionId: this.deviceSessionId };
-    } catch (caught) {
-      const e = caught as { code?: string; message?: string; status?: number };
-      console.warn(
-        `[H2O mobile identity] deviceSessions list threw ` +
-        `code=${e?.code} message=${e?.message} status=${e?.status}`
-      );
+    } catch {
       return empty;
     }
   }
