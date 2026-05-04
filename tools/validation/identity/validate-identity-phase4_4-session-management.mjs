@@ -73,6 +73,19 @@ const migrationSources = fs.readdirSync(path.join(REPO_ROOT, MIGRATIONS_DIR_REL)
   .map((name) => read(path.join(MIGRATIONS_DIR_REL, name)))
   .join("\n");
 
+// Phase 4.4B forbade any device/session management table. Phase 5.0E
+// intentionally introduces public.device_sessions for the mobile sessions UX,
+// gated by its own dedicated validator (validate-identity-phase5_0e-device-sessions.mjs).
+// To let the 5.0E migration land while preserving Phase 4.4B's other walls,
+// we exclude only the 5.0E migration file from the line-115 device/session
+// table hard-wall check below. The browser runtime walls (lines 111-114)
+// remain closed until a future browser-registration phase ships its own spec.
+const migrationSourcesPre50E = fs.readdirSync(path.join(REPO_ROOT, MIGRATIONS_DIR_REL))
+  .filter((name) => name.endsWith(".sql"))
+  .filter((name) => !/identity_device_sessions/i.test(name))
+  .map((name) => read(path.join(MIGRATIONS_DIR_REL, name)))
+  .join("\n");
+
 assert(docs.includes("Phase 4.4B - Session UX + Release Gate") &&
   docs.includes("current-browser controls only") &&
   docs.includes("Sign out everywhere") &&
@@ -112,8 +125,8 @@ assert(!/\bidentity:(?:sign-out-everywhere|sign-out-all|list-devices|manage-devi
   "no sign-out-everywhere or device-management bridge action may be introduced");
 assert(!/\b(signOutEverywhere|signOutAll|listDevices|manageDevices|revokeDevice|revokeSession|deviceManagement)\b/.test(runtimeSources),
   "no sign-out-everywhere or device-management runtime helper may be introduced");
-assert(!/\b(identity_devices|identity_device_sessions|device_sessions|session_devices)\b/i.test(migrationSources + "\n" + runtimeSources),
-  "no device/session management table or runtime model may be introduced in Phase 4.4B");
+assert(!/\b(identity_devices|identity_device_sessions|device_sessions|session_devices)\b/i.test(migrationSourcesPre50E + "\n" + runtimeSources),
+  "no device/session management table or runtime model may be introduced outside the 5.0E spec");
 
 const providerSignOut = extractFunction(provider, "signOutProviderSession");
 assert(providerSignOut.includes('client.auth.signOut({ scope: "local" })') &&
