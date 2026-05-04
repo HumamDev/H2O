@@ -106,6 +106,9 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/oauth-failed': "Couldn't sign in with Google. Try again.",
   'identity/oauth-exchange-failed': "Google sign-in didn't complete. Try again.",
   'identity/oauth-callback-invalid': 'Google sign-in returned an invalid response.',
+  'identity/oauth-callback-parse-failed': 'Google callback could not be parsed.',
+  'identity/oauth-callback-error-without-code': 'Google returned an OAuth error.',
+  'identity/oauth-callback-no-code-no-error': 'Google callback had no code or error.',
   'identity/oauth-provider-unavailable': 'Google sign-in is not available right now.',
   'identity/oauth-not-supported': 'Google sign-in is not available in this build.',
 };

@@ -203,6 +203,13 @@ export class MobileSupabaseProvider implements IdentityProvider {
   private snapshot: IdentitySnapshot;
   private accessToken: string | null = null;
   private _client: SupabaseClient | null = null;
+  // Phase 5.0F: separate Supabase client for the Google OAuth code-exchange
+  // flow with explicit flowType: 'pkce'. Kept distinct from the main client so
+  // the existing email-OTP flows (signInWithOtp / verifyOtp for sign-in and
+  // recovery) continue to use the implicit-flow defaults — flipping the main
+  // client to PKCE would change signInWithOtp into a magic-link flow, which
+  // is incompatible with our manual-code-entry UX.
+  private _oauthClient: SupabaseClient | null = null;
 
   // Recovery scratch — held in memory only. Never persisted to SecureStore
   // until setPasswordAfterRecovery succeeds. Cleared on every requestRecoveryCode
@@ -252,6 +259,25 @@ export class MobileSupabaseProvider implements IdentityProvider {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
+  }
+
+  // PKCE-flow client used only by signInWithGoogle. The PKCE code verifier is
+  // stored in the client's in-memory storage between signInWithOAuth (which
+  // generates the verifier and returns the auth URL) and exchangeCodeForSession
+  // (which reads the verifier to complete the exchange). Same instance must be
+  // used for both calls — that's why this client is held on the provider.
+  private getOAuthClient(config: MobileSupabaseConfig): SupabaseClient {
+    if (!this._oauthClient) {
+      this._oauthClient = createClient(config.url, config.anonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+          flowType: 'pkce',
+        },
+      });
+    }
+    return this._oauthClient;
   }
 
   private async fail(
@@ -1327,7 +1353,11 @@ export class MobileSupabaseProvider implements IdentityProvider {
       );
     }
     try {
-      const client = this.getClient(config);
+      // PKCE-flow OAuth client. The same instance must serve both
+      // signInWithOAuth (generates the PKCE verifier, stores it in the
+      // client's in-memory storage) and exchangeCodeForSession (reads the
+      // verifier back to complete the exchange).
+      const client = this.getOAuthClient(config);
       const { data, error } = await client.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -1342,7 +1372,17 @@ export class MobileSupabaseProvider implements IdentityProvider {
         );
       }
 
-      const browserResult = await WebBrowser.openAuthSessionAsync(data.url, MOBILE_OAUTH_REDIRECT_URI);
+      // preferEphemeralSession: true asks iOS to use an ephemeral
+      // ASWebAuthenticationSession (no shared cookies with Safari). This
+      // suppresses the iOS "Wants to Use 'supabase.co' to Sign In" system
+      // cookie-sharing prompt — most native apps don't share Safari cookies
+      // anyway, and Google's own account chooser handles return-user UX.
+      const browserResult = await WebBrowser.openAuthSessionAsync(
+        data.url,
+        MOBILE_OAUTH_REDIRECT_URI,
+        { preferEphemeralSession: true }
+      );
+
       if (browserResult.type === 'cancel' || browserResult.type === 'dismiss') {
         return this.failSoft(
           createIdentityError('identity/oauth-cancelled', 'Google sign-in was cancelled.'),
@@ -1353,23 +1393,44 @@ export class MobileSupabaseProvider implements IdentityProvider {
         throw createIdentityError('identity/oauth-failed', 'Google sign-in did not complete.');
       }
 
-      // Parse the authorization code from the redirect URL. Supabase sends back
-      // `?code=…&…` (PKCE flow). The URL is held only in this local variable
-      // and the parsed code is consumed immediately by exchangeCodeForSession.
+      // Parse the authorization code from the redirect URL. Supabase normally
+      // returns `?code=…` (PKCE flow), but some configurations route it through
+      // the hash fragment instead. Check the query string first, then fall back
+      // to the hash. Any redirect-time `error` param surfaces as a precise
+      // OAuth code so the UI can show actionable copy. The full URL stays only
+      // in this local variable; only the parsed `code` is forwarded to
+      // exchangeCodeForSession and is discarded immediately after.
       let code = '';
+      let oauthErrorCode = '';
       try {
         const parsed = new URL(browserResult.url);
         code = String(parsed.searchParams.get('code') || '').trim();
+        oauthErrorCode = String(parsed.searchParams.get('error') || '').trim();
+        if (!code || !oauthErrorCode) {
+          const rawHash = parsed.hash || '';
+          if (rawHash) {
+            const hashStr = rawHash.startsWith('#') ? rawHash.slice(1) : rawHash;
+            const hashParams = new URLSearchParams(hashStr);
+            if (!code) code = String(hashParams.get('code') || '').trim();
+            if (!oauthErrorCode) oauthErrorCode = String(hashParams.get('error') || '').trim();
+          }
+        }
       } catch {
         throw createIdentityError(
-          'identity/oauth-callback-invalid',
-          'Google sign-in returned an invalid response.'
+          'identity/oauth-callback-parse-failed',
+          'Google callback could not be parsed.'
         );
       }
       if (!code) {
+        if (oauthErrorCode) {
+          throw createIdentityError(
+            'identity/oauth-callback-error-without-code',
+            'Google returned an OAuth error.'
+          );
+        }
         throw createIdentityError(
-          'identity/oauth-callback-invalid',
-          'Google sign-in returned an invalid response.'
+          'identity/oauth-callback-no-code-no-error',
+          'Google callback had no code or error.'
         );
       }
 
