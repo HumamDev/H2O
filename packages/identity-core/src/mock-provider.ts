@@ -198,6 +198,19 @@ export class MockLocalIdentityProvider implements IdentityProvider {
     }
   }
 
+  async renameWorkspace(name: string): Promise<IdentitySnapshot> {
+    try {
+      if (!this.snapshot.workspace) throw createIdentityError('identity/no-workspace', 'No workspace exists to rename.');
+      const cleanName = String(name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      if (!cleanName) throw createIdentityError('identity/missing-workspace-name', 'Enter a workspace name.');
+      const workspace = { ...this.snapshot.workspace, name: cleanName, updatedAt: nowIso() };
+      this.snapshot = transitionIdentity(this.snapshot, this.snapshot.status, { workspace });
+      return this.getSnapshot();
+    } catch (error) {
+      return this.fail(error, 'identity/mock-rename-workspace-failed');
+    }
+  }
+
   private fail(error: unknown, fallbackCode: string): IdentitySnapshot {
     const identityError = isIdentityError(error)
       ? error

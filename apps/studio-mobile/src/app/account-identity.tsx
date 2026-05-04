@@ -96,6 +96,9 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   // Profile edit specific:
   'identity/missing-display-name': 'Enter a display name.',
   'identity/update-profile-failed': "Couldn't update your profile. Try again.",
+  // Workspace rename specific:
+  'identity/missing-workspace-name': 'Enter a workspace name.',
+  'identity/rename-workspace-failed': "Couldn't update workspace name. Try again.",
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -136,6 +139,14 @@ export default function AccountIdentityScreen() {
   const newPasswordRef = useRef<TextInput>(null);
   const confirmPasswordRef = useRef<TextInput>(null);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Workspace edit state (signed-in only)
+  const [showEditWorkspace, setShowEditWorkspace] = useState(false);
+  const [editWorkspaceName, setEditWorkspaceName] = useState('');
+  const [localWorkspaceError, setLocalWorkspaceError] = useState<string | null>(null);
+  const [workspaceEditSuccess, setWorkspaceEditSuccess] = useState(false);
+  const editWorkspaceNameRef = useRef<TextInput>(null);
+  const workspaceSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Recovery form state (signed-out only; gated on RECOVERY_FLOW_VERIFIED)
   const [recoveryStage, setRecoveryStage] = useState<'request' | 'verify' | 'set_password' | null>(null);
@@ -193,6 +204,11 @@ export default function AccountIdentityScreen() {
       setEditAvatarColor('');
       setLocalProfileError(null);
       setProfileEditSuccess(false);
+      // also clear workspace-edit state on sign-out
+      setShowEditWorkspace(false);
+      setEditWorkspaceName('');
+      setLocalWorkspaceError(null);
+      setWorkspaceEditSuccess(false);
     }
   }, [identity.isSignedIn]);
 
@@ -205,6 +221,10 @@ export default function AccountIdentityScreen() {
       if (profileSuccessTimerRef.current) {
         clearTimeout(profileSuccessTimerRef.current);
         profileSuccessTimerRef.current = null;
+      }
+      if (workspaceSuccessTimerRef.current) {
+        clearTimeout(workspaceSuccessTimerRef.current);
+        workspaceSuccessTimerRef.current = null;
       }
     };
   }, []);
@@ -714,6 +734,54 @@ export default function AccountIdentityScreen() {
       if (localProfileError) setLocalProfileError(null);
     }
 
+    function toggleEditWorkspace() {
+      setShowEditWorkspace((prev) => {
+        const next = !prev;
+        if (next) {
+          setEditWorkspaceName(workspace?.name || '');
+          setLocalWorkspaceError(null);
+          setWorkspaceEditSuccess(false);
+        }
+        return next;
+      });
+    }
+
+    function cancelEditWorkspace() {
+      setShowEditWorkspace(false);
+      setEditWorkspaceName('');
+      setLocalWorkspaceError(null);
+    }
+
+    function onChangeAnyWorkspaceField() {
+      if (localWorkspaceError) setLocalWorkspaceError(null);
+    }
+
+    async function submitEditWorkspace() {
+      if (busy) return;
+
+      const trimmed = editWorkspaceName.trim();
+      if (!trimmed) {
+        setLocalWorkspaceError('identity/missing-workspace-name');
+        return;
+      }
+      const noChange = trimmed === (workspace?.name ?? '');
+      if (noChange) return;
+
+      setLocalWorkspaceError(null);
+      setBusy('edit_workspace');
+      try {
+        const result = await identity.renameWorkspace(trimmed);
+        if (result.lastError) return;
+        setShowEditWorkspace(false);
+        setEditWorkspaceName('');
+        setWorkspaceEditSuccess(true);
+        if (workspaceSuccessTimerRef.current) clearTimeout(workspaceSuccessTimerRef.current);
+        workspaceSuccessTimerRef.current = setTimeout(() => setWorkspaceEditSuccess(false), 4000);
+      } finally {
+        setBusy(null);
+      }
+    }
+
     async function submitEditProfile() {
       if (busy) return;
 
@@ -918,6 +986,91 @@ export default function AccountIdentityScreen() {
                       value: realEmail || '—',
                     })}
                     {renderRow({
+                      icon: { ios: 'pencil', android: 'edit', web: 'edit' },
+                      title: 'Edit workspace',
+                      subtitle: showEditWorkspace
+                        ? 'Update your workspace name.'
+                        : 'Change your workspace name.',
+                      trailingNode: (
+                        <SymbolView
+                          name={
+                            showEditWorkspace
+                              ? { ios: 'chevron.up', android: 'expand_less', web: 'expand_less' }
+                              : { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }
+                          }
+                          size={14}
+                          weight="semibold"
+                          tintColor={th.textSecondary}
+                        />
+                      ),
+                      onPress: toggleEditWorkspace,
+                    })}
+                    {showEditWorkspace ? (
+                      <View style={styles.securityForm}>
+                        <View style={styles.field}>
+                          <Text style={styles.fieldLabel}>WORKSPACE NAME</Text>
+                          <TextInput
+                            ref={editWorkspaceNameRef}
+                            style={styles.input}
+                            value={editWorkspaceName}
+                            onChangeText={(v) => {
+                              setEditWorkspaceName(v);
+                              onChangeAnyWorkspaceField();
+                            }}
+                            placeholder="Workspace name"
+                            placeholderTextColor={th.textSecondary}
+                            autoCapitalize="words"
+                            autoCorrect={false}
+                            maxLength={64}
+                            editable={!busy}
+                            accessibilityLabel="Workspace name"
+                            returnKeyType="done"
+                            onSubmitEditing={submitEditWorkspace}
+                          />
+                        </View>
+
+                        {(() => {
+                          const code = localWorkspaceError ?? identity.error?.code ?? null;
+                          const copy = friendlyErrorCopy(code);
+                          return copy ? (
+                            <View style={styles.errorBanner}>
+                              <Text style={styles.errorBannerText}>{copy}</Text>
+                            </View>
+                          ) : null;
+                        })()}
+
+                        {(() => {
+                          const trimmed = editWorkspaceName.trim();
+                          const noChange = trimmed === (workspace?.name ?? '');
+                          const canSubmitWorkspace = Boolean(trimmed) && !noChange;
+                          return (
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                (Boolean(busy) || !canSubmitWorkspace) && styles.buttonDisabled,
+                              ]}
+                              onPress={submitEditWorkspace}
+                              activeOpacity={0.7}
+                              disabled={Boolean(busy) || !canSubmitWorkspace}>
+                              {busy === 'edit_workspace' ? (
+                                <ActivityIndicator color="#fff" />
+                              ) : (
+                                <Text style={styles.primaryButtonText}>Update workspace</Text>
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })()}
+
+                        <TouchableOpacity
+                          style={styles.linkButton}
+                          onPress={cancelEditWorkspace}
+                          activeOpacity={0.6}
+                          disabled={Boolean(busy)}>
+                          <Text style={styles.linkButtonTextNeutral}>Cancel</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
+                    {renderRow({
                       icon: { ios: 'square.stack.3d.up.fill', android: 'workspaces', web: 'workspaces' },
                       title: 'Workspace',
                       value: workspace?.name || 'Personal',
@@ -1109,6 +1262,18 @@ export default function AccountIdentityScreen() {
                   tintColor={th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4'}
                 />
                 <Text style={styles.successBannerText}>Profile updated</Text>
+              </View>
+            ) : null}
+
+            {workspaceEditSuccess && !showEditWorkspace ? (
+              <View style={styles.successBanner}>
+                <SymbolView
+                  name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+                  size={18}
+                  weight="semibold"
+                  tintColor={th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4'}
+                />
+                <Text style={styles.successBannerText}>Workspace updated</Text>
               </View>
             ) : null}
 

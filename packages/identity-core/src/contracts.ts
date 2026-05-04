@@ -138,6 +138,7 @@ export interface IdentityProvider {
   verifyRecoveryCode(input: VerifyEmailCodeInput): Promise<IdentitySnapshot>;
   setPasswordAfterRecovery(password: string): Promise<IdentitySnapshot>;
   changePassword(input: ChangePasswordInput): Promise<IdentitySnapshot>;
+  renameWorkspace(name: string): Promise<IdentitySnapshot>;
 }
 
 export type IdentityChangeSource =
@@ -159,7 +160,8 @@ export type IdentityChangeSource =
   | 'requestRecoveryCode'
   | 'verifyRecoveryCode'
   | 'setPasswordAfterRecovery'
-  | 'changePassword';
+  | 'changePassword'
+  | 'renameWorkspace';
 
 export interface IdentityChangeEvent {
   source: IdentityChangeSource;

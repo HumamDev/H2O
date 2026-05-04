@@ -628,10 +628,13 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       const authedClient = this.getAuthedClient(config);
+      // Match SQL: complete_onboarding(p_display_name, p_avatar_color, p_workspace_name)
+      // PostgREST routes RPC by parameter name; unprefixed keys would fail the
+      // function-cache lookup. Same parameter-name fix as update_identity_profile.
       const { data: rpcData, error: rpcError } = await authedClient.rpc('complete_onboarding', {
-        display_name: input.displayName ?? null,
-        workspace_name: input.workspaceName ?? null,
-        avatar_color: input.avatarColor ?? null,
+        p_display_name: input.displayName ?? null,
+        p_avatar_color: input.avatarColor ?? null,
+        p_workspace_name: input.workspaceName ?? null,
       });
       if (rpcError) throw rpcError;
 
@@ -690,6 +693,75 @@ export class MobileSupabaseProvider implements IdentityProvider {
       // Use failSoft so a failed profile edit preserves signed-in status (would
       // otherwise flip to auth_error and effectively log the user out).
       return this.failSoft(error, 'identity/update-profile-failed');
+    }
+  }
+
+  async renameWorkspace(name: string): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      if (!this.accessToken) {
+        throw createIdentityError('identity/no-session', 'No active session. Sign in first.');
+      }
+      if (!this.snapshot.workspace) {
+        throw createIdentityError('identity/no-workspace', 'No workspace exists to rename.');
+      }
+
+      // Provider-local sanitization to match the live DB constraint:
+      //   workspaces.name CHECK (char_length(btrim(name)) between 1 and 64)
+      const cleanName =
+        typeof name === 'string'
+          ? name.trim().replace(/\s+/g, ' ').slice(0, 80)
+          : '';
+      if (!cleanName) {
+        throw createIdentityError('identity/missing-workspace-name', 'Enter a workspace name.');
+      }
+
+      const authedClient = this.getAuthedClient(config);
+      // Match SQL: rename_identity_workspace(p_workspace_name text)
+      const { data: rpcData, error: rpcError } = await authedClient.rpc('rename_identity_workspace', {
+        p_workspace_name: cleanName,
+      });
+      if (rpcError) throw rpcError;
+
+      // RPC returns { workspace: {id, name, created_at, updated_at}, role: 'owner' } —
+      // it omits owner_user_id and origin. Patch onto the existing snapshot.workspace
+      // to preserve those fields without requiring another round trip.
+      const responseWorkspace = (rpcData as { workspace?: unknown } | null)?.workspace;
+      const responseRecord = this.asRecord(responseWorkspace);
+      const newName = this.stringField(responseRecord, 'name');
+      const newId = this.stringField(responseRecord, 'id');
+      const newUpdatedAt = this.timestampField(responseRecord, 'updatedAt', 'updated_at');
+      if (!newId || !newName) {
+        throw createIdentityError(
+          'identity/rename-workspace-failed',
+          'Workspace update did not return a valid workspace.'
+        );
+      }
+      const existing = this.snapshot.workspace;
+      const patchedWorkspace = {
+        ...existing,
+        id: newId,
+        name: newName,
+        updatedAt: newUpdatedAt,
+      };
+
+      this.snapshot = {
+        ...this.snapshot,
+        workspace: patchedWorkspace,
+        lastError: null,
+        updatedAt: nowIso(),
+      };
+      try { await writeSnapshot(this.snapshot); } catch { /* non-fatal */ }
+      return this.getSnapshot();
+    } catch (error) {
+      // Use failSoft so a failed workspace rename preserves signed-in status.
+      return this.failSoft(error, 'identity/rename-workspace-failed');
     }
   }
 

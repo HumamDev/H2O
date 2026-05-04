@@ -49,6 +49,7 @@ export interface IdentityContextValue {
   requestRecoveryCode(email: string): Promise<IdentitySnapshot>;
   verifyRecoveryCode(input: VerifyEmailCodeInput): Promise<IdentitySnapshot>;
   setPasswordAfterRecovery(password: string): Promise<IdentitySnapshot>;
+  renameWorkspace(name: string): Promise<IdentitySnapshot>;
 }
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -225,6 +226,11 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     [runAction]
   );
 
+  const renameWorkspace = useCallback(
+    (name: string) => runAction((identityProvider) => identityProvider.renameWorkspace(name)),
+    [runAction]
+  );
+
   const normalizedBootMiss = bootMissNormalized && isExpectedBootMiss(snapshot);
   const value = useMemo<IdentityContextValue>(() => {
     const isReady = isTerminalBootStatus(bootStatus);
@@ -252,6 +258,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
       requestRecoveryCode,
       verifyRecoveryCode,
       setPasswordAfterRecovery,
+      renameWorkspace,
     };
   }, [
     bootStatus,
@@ -260,6 +267,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     normalizedBootMiss,
     provider.capabilities,
     refreshSession,
+    renameWorkspace,
     requestRecoveryCode,
     setPasswordAfterRecovery,
     signInWithEmail,
