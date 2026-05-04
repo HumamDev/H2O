@@ -52,10 +52,13 @@ plus a server-validated password update on the resulting session:
 1. User taps "Forgot password?" on the signed-out `/account-identity` form
    and enters their email.
 2. Mobile calls `signInWithOtp({ email, options: { shouldCreateUser: false } })`
-   on a Supabase client — the **same API** used by `signInWithEmail`. Supabase
-   sends an email-OTP code if the email exists. If it does not, no email is
-   sent and the API returns the same shape (Supabase's documented behavior
-   when `shouldCreateUser: false`).
+   on a Supabase client — the **same API** used by `signInWithEmail`. If the
+   email is registered, Supabase sends an email-OTP code. If the email is **not**
+   registered, Supabase returns an error (typically status 400/422 with a
+   "Signups not allowed for otp" / "User not found" message). v1 detects this
+   case and surfaces it explicitly to the UI via
+   `identity/recovery-email-not-registered` — see § Explicit-feedback policy.
+   The UI tells the user the email is not registered and suggests sign-up.
 3. User enters the code. Mobile calls
    `verifyOtp({ email, token, type: 'email' })` — **the same `type: 'email'`
    as normal sign-in**. There is no `type: 'recovery'`.
@@ -147,10 +150,20 @@ remain as-is; they are not part of the runtime path.
   on a fresh ephemeral client (`persistSession: false`,
   `autoRefreshToken: false`).
 - On success: `commitSnapshot` with `status: 'recovery_code_pending'`,
-  `pendingEmail: email`, `lastError: null`. **Does not write any token.**
-- On error: `failSoft` with mapped code. **Returns the same user-visible
-  result regardless of whether the email is registered**, per anti-enumeration
-  below.
+  `pendingEmail: email`, `lastError: null`. **Does not write any token.** UI
+  advances to the verify stage.
+- On Supabase error: `failSoft` with mapped code via
+  `mapRecoveryRequestErrorCode`. Per 5.0D v1 explicit-feedback policy, the
+  mapper classifies unregistered-email signals (HTTP 400/422, "Signups not
+  allowed", "User not found", 403/rejected/forbidden) as
+  `identity/recovery-email-not-registered`. UI **does not** advance to verify;
+  it shows: *"This email is not registered. Please enter a registered email or
+  sign up."* Other errors map to rate-limited / network-failed /
+  request-recovery-failed.
+- On any error path: **no token, no session, no SecureStore write, no
+  session-meta write.** Recovery scratch (`recoveryAccessToken`,
+  `recoveryRefreshToken`, `recoveryVerified`) is reset at the start of every
+  request and remains null on the error path.
 - **No `type: 'recovery'`. No `resetPasswordForEmail`.**
 
 ### `verifyRecoveryCode({ email, code })`
@@ -202,30 +215,59 @@ All three methods use the existing `failSoft` private helper introduced in
 argument when constructing `IdentityErrorShape`, so raw provider errors that
 might echo request payloads never land in `snapshot.lastError.detail`.
 
-## Anti-enumeration
+## Explicit-feedback policy (v1, mobile recovery only)
 
-The user-facing response to `requestRecoveryCode(email)` **must be identical
-whether the email is registered or not.** This is the standard
-anti-enumeration guarantee.
+**Anti-enumeration is intentionally NOT applied to the mobile recovery
+request surface in v1.** When a user submits an unregistered email to
+`requestRecoveryCode`, the UI tells them so and suggests they sign up.
 
-Mechanism:
+This is a deliberate product tradeoff:
 
-- `shouldCreateUser: false` causes Supabase to silently no-op when the email
-  is unknown — no error, no email sent.
-- The mobile provider treats both the "code sent" and "no such user" branches
-  identically: snapshot moves to `recovery_code_pending`, `pendingEmail` is
-  set, `lastError: null`.
-- UI copy after request: **"If that email is registered, we've sent a
-  recovery code. Check your inbox."** No "user not found" branch. No
-  separate spinner state.
-- Subsequent `verifyRecoveryCode` for an unregistered email will fail with
-  `identity/verify-recovery-failed` (Supabase rejects the OTP), surfaced as
-  the same friendly copy as a real wrong-code attempt: "That code didn't
-  work. Try requesting a new one."
+- **What we gain (UX):** users who mistyped an email, used the wrong account,
+  or never finished sign-up can recover the situation in one click instead of
+  waiting for a code that never arrives.
+- **What we accept (security):** a probe of the recovery endpoint can confirm
+  whether an email is registered. The threat model is similar to that of the
+  sign-in endpoint, which already returns distinguishable behavior on missing
+  vs wrong-password (Supabase default).
 
-The `requestRecoveryCode` method must not log, throw, or set any error code
-that distinguishes "no such user" from "code sent." The validator (below)
-will grep for any branch in the provider that does so.
+This applies **only to the mobile in-app recovery request**. Other surfaces
+keep stricter behavior:
+
+| Surface | Policy |
+|---|---|
+| Mobile recovery request (this phase, v1) | **Explicit** — tells user if email isn't registered |
+| Mobile sign-in (`signInWithEmail` / `signInWithPassword`) | **Generic** — "Sign in failed. Check your email and password." |
+| Mobile sign-up (`signUpWithPassword`) | May tell user if email is already registered and suggest sign-in |
+| Public website / marketing flows (future) | Reserved for stricter anti-enum copy if/when that surface ships |
+
+### Mechanism
+
+- `shouldCreateUser: false` causes Supabase to return an **error** for
+  unregistered emails — typically HTTP 400/422 with a message like
+  "Signups not allowed for otp" or "User not found".
+- `mapRecoveryRequestErrorCode` (in `MobileSupabaseProvider.ts`) detects
+  these signals plus 403/rejected/forbidden and classifies them as
+  `identity/recovery-email-not-registered`.
+- Other Supabase errors map to `identity/provider-rate-limited`,
+  `identity/provider-network-failed`, or `identity/request-recovery-failed`.
+- `failSoft` records the classified error in `snapshot.lastError`. The UI
+  reads `identity.error.code`, looks it up in `FRIENDLY_ERRORS`, and renders
+  the appropriate copy. The recovery panel stays on the `request` stage —
+  it does not advance to `verify`.
+
+### Future graduation path
+
+If audit/abuse telemetry later shows the recovery endpoint is being scanned
+for enumeration, the v1 policy can graduate to one of:
+
+1. **Custom Supabase Edge Function** with constant-time response and
+   per-email/IP rate caps (Option A from the original 5.0D plan).
+2. **Generic anti-enumeration copy** ("If that email is registered, we've
+   sent a recovery code") — a one-line UI change without backend work.
+
+Either path is a forward-only internal change. The activation flag and
+v1 explicit-feedback wiring stay; only the mapper/copy change.
 
 ## Friendly error mapping
 
@@ -236,6 +278,7 @@ To be added to `FRIENDLY_ERRORS` in
 |---|---|
 | `identity/recovery-flow-not-verified` | (suppressed; never user-facing once flag flips) |
 | `identity/recovery-state-invalid` | "Start the recovery flow again from your email." |
+| `identity/recovery-email-not-registered` | "This email is not registered. Please enter a registered email or sign up." |
 | `identity/request-recovery-failed` | "Couldn't request a code. Try again in a moment." |
 | `identity/verify-recovery-failed` | "That code didn't work. Try requesting a new one." |
 | `identity/recovery-code-expired` | "Your code expired. Request a new one." |
@@ -324,8 +367,10 @@ Asserts (each is a hard FAIL on miss):
 8. `account-identity.tsx` does not log, render, or otherwise surface raw
    `password`, `currentPassword`, or `newPassword` outside of `<TextInput>`
    `value` bindings.
-9. `MobileSupabaseProvider.ts` `requestRecoveryCode` does not branch its
-   public response on a "user not found" condition (anti-enumeration).
+9. `MobileSupabaseProvider.ts` includes the literal
+   `identity/recovery-email-not-registered` in the recovery-request mapper
+   (5.0D v1 explicit-feedback policy). The previous anti-enumeration assert is
+   intentionally removed — see § Explicit-feedback policy.
 10. `RECOVERY_FLOW_VERIFIED === true` requires this validator to PASS **and**
     requires the live-inbox QA ledger entry below to be PASS.
 
@@ -358,8 +403,8 @@ and Supabase project identifier. Failure of any row blocks promotion.
 
 | Scenario | Expected result |
 |---|---|
-| Request code with valid registered email | Email arrives within Supabase's documented OTP delivery window |
-| Request code with unregistered email | Same UI response; no email arrives; no error code shown |
+| Request code with valid registered email | Email arrives within Supabase's documented OTP delivery window; UI advances to `verify` stage |
+| Request code with unregistered email | UI **stays on `request` stage** with copy: "This email is not registered. Please enter a registered email or sign up." No email is sent. (5.0D v1 explicit-feedback policy.) |
 | Enter correct code in time | Advances to set-new-password stage |
 | Enter wrong code | Friendly error; stays on verify stage |
 | Enter expired code (≥ documented OTP TTL) | Friendly error; user can request a new code |
@@ -372,11 +417,10 @@ and Supabase project identifier. Failure of any row blocks promotion.
 | Sign out → sign in with NEW password | Succeeds |
 | Sign out → sign in with OLD password | Fails (Supabase server rejects) |
 | Identity Debug snapshot after success | `status: sync_ready` (or `profile_ready`); no leaked recovery scratch |
-| Anti-enumeration: timing of "code sent" response | No statistically obvious timing difference between registered and unregistered |
 
-The last row is a soft check; if the timing-side-channel difference is ever
-observed to be exploitable, graduate to Option A (custom Edge Functions with
-constant-time response).
+(The previous "anti-enumeration timing" QA row is dropped under the 5.0D v1
+explicit-feedback policy — there is no longer a code-vs-no-code distinction
+to time-measure on the request endpoint.)
 
 ## Promotion gate
 

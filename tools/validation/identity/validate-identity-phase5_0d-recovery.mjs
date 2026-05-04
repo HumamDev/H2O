@@ -176,18 +176,28 @@ assert(
   "MobileSupabaseProvider.ts must not console.* password or recovery-scratch values"
 );
 
-// ─── Assert 9: anti-enumeration — requestRecoveryCode must not branch on user existence ──
+// ─── Assert 9 (5.0D v1 explicit-feedback policy): requestRecoveryCode mapper
+//     must classify unregistered-email cases as a specific identity code so the
+//     UI can tell users to sign up. Anti-enumeration is intentionally NOT applied
+//     to the mobile recovery request surface — see 5.0D spec § Explicit-feedback
+//     policy. The previous anti-enumeration assert was removed by product decision.
 
+assert(
+  /identity\/recovery-email-not-registered/.test(provider),
+  "Provider must classify unregistered-email cases as identity/recovery-email-not-registered (5.0D v1 explicit-feedback policy)"
+);
 {
   const body = extractBlockByName(provider, "requestRecoveryCode");
-  // Strip comments before testing — comments may legitimately mention these terms
-  // when explaining the anti-enumeration property; we care about CODE branches.
-  const codeOnly = body
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/[^\n]*/g, "");
   assert(
-    !/user[\s_-]?not[\s_-]?found|email[\s_-]?not[\s_-]?registered|unknown[\s_-]?email|no[\s_-]?such[\s_-]?user/i.test(codeOnly),
-    "requestRecoveryCode must not branch on user-existence signals (anti-enumeration)"
+    body.length > 0,
+    "requestRecoveryCode body must be present for explicit-feedback policy check"
+  );
+  // requestRecoveryCode must call the recovery-request mapper (which contains
+  // the not-registered branch). It must NOT call the verify mapper or the
+  // password-update mapper.
+  assert(
+    /mapRecoveryRequestErrorCode\s*\(/.test(body),
+    "requestRecoveryCode must route Supabase errors through mapRecoveryRequestErrorCode"
   );
 }
 

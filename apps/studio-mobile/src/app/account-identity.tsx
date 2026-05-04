@@ -69,6 +69,7 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/request-recovery-failed': "Couldn't request a code. Try again in a moment.",
   'identity/verify-recovery-failed': "That code didn't work. Try requesting a new one.",
   'identity/recovery-code-expired': 'Your code expired. Request a new one.',
+  'identity/recovery-email-not-registered': 'This email is not registered. Please enter a registered email or sign up.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {

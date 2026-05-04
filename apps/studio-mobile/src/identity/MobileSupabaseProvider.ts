@@ -96,7 +96,24 @@ function mapRecoveryRequestErrorCode(error: unknown): string {
   const message = String(src.message || '').toLowerCase();
   if (status === 429 || /rate|too many|cooldown/.test(message)) return 'identity/provider-rate-limited';
   if (/fetch|network|timeout|failed to fetch/.test(message)) return 'identity/provider-network-failed';
-  if (status === 403 || /rejected|not allowed|forbidden/.test(message)) return 'identity/provider-rejected';
+  // 5.0D v1 explicit-feedback policy: surface unregistered-email cases as a
+  // distinct identity code so the recovery UI can guide the user to sign up.
+  // This is an intentional product tradeoff against anti-enumeration on the
+  // mobile recovery surface only — see Phase 5.0D spec § Explicit-feedback policy.
+  // Detected signals: signups-not-allowed / user-not-found / generic 4xx with
+  // shouldCreateUser:false (most common cause is unregistered email) /
+  // forbidden / rejected (per product decision, also surfaced as unregistered).
+  if (
+    /signups?\s*not\s*allowed|user[\s_-]?not[\s_-]?found|email[\s_-]?not[\s_-]?registered|not\s*registered|user.*does\s*not\s*exist/.test(message)
+  ) {
+    return 'identity/recovery-email-not-registered';
+  }
+  if (status === 422 || status === 400) {
+    return 'identity/recovery-email-not-registered';
+  }
+  if (status === 403 || /rejected|not\s*allowed|forbidden/.test(message)) {
+    return 'identity/recovery-email-not-registered';
+  }
   return 'identity/request-recovery-failed';
 }
 
