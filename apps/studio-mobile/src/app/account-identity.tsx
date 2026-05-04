@@ -352,6 +352,13 @@ export default function AccountIdentityScreen() {
           color: th.textSecondary,
           paddingHorizontal: spacing.xs,
         },
+        sectionHelp: {
+          fontSize: 12,
+          lineHeight: 17,
+          color: th.textSecondary,
+          paddingHorizontal: spacing.xs,
+          marginTop: -2,
+        },
         card: {
           backgroundColor: th.backgroundElement,
           borderRadius: 16,
@@ -1330,6 +1337,7 @@ export default function AccountIdentityScreen() {
 
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>ACTIVE SESSIONS</Text>
+              <Text style={styles.sectionHelp}>Where you're signed in.</Text>
               <View style={styles.card}>
                 {!sessionsLoadedOnce && sessionsLoading ? (
                   <View style={styles.row}>
@@ -1344,16 +1352,16 @@ export default function AccountIdentityScreen() {
                   <View style={styles.row}>
                     <View style={styles.rowIconWrap}>
                       <SymbolView
-                        name={{ ios: 'iphone', android: 'phone_iphone', web: 'phone_iphone' }}
+                        name={{ ios: 'exclamationmark.triangle', android: 'error_outline', web: 'error_outline' }}
                         size={20}
                         weight="semibold"
                         tintColor={th.textSecondary}
                       />
                     </View>
                     <View style={styles.rowBody}>
-                      <Text style={styles.rowTitle}>No active sessions yet</Text>
+                      <Text style={styles.rowTitle}>Couldn't load active sessions</Text>
                       <Text style={styles.rowSubtitle}>
-                        This list shows where you're signed in. Tap refresh to retry.
+                        We couldn't reach the server. Tap refresh to try again.
                       </Text>
                     </View>
                   </View>
@@ -1392,11 +1400,6 @@ export default function AccountIdentityScreen() {
                   })
                 )}
               </View>
-              {sessionsError ? (
-                <View style={styles.errorBanner}>
-                  <Text style={styles.errorBannerText}>{sessionsError}</Text>
-                </View>
-              ) : null}
               <TouchableOpacity
                 style={styles.sessionsRefreshButton}
                 onPress={() => {
@@ -1453,15 +1456,6 @@ export default function AccountIdentityScreen() {
                 <Text style={styles.successBannerText}>Workspace updated</Text>
               </View>
             ) : null}
-
-            <View style={styles.noticeCard}>
-              <Text style={styles.noticeTitle}>Account recovery — coming soon</Text>
-              <Text style={styles.noticeBody}>
-                We're still building account recovery. For now, please save your password
-                somewhere safe. When it ships, we'll send a reset code to{' '}
-                {realEmail || 'your account email'}.
-              </Text>
-            </View>
 
             {!showChangePassword && errorCopy ? (
               <View style={styles.errorBanner}>
