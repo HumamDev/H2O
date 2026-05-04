@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
+import { RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
@@ -63,6 +64,11 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/provider-rate-limited': 'Too many attempts. Wait a moment, then try again.',
   'identity/provider-network-failed': 'Network error. Check your connection.',
   'identity/provider-rejected': 'Request rejected. Try again later.',
+  // Recovery (5.0D) specific:
+  'identity/recovery-state-invalid': 'Start the recovery flow again from your email.',
+  'identity/request-recovery-failed': "Couldn't request a code. Try again in a moment.",
+  'identity/verify-recovery-failed': "That code didn't work. Try requesting a new one.",
+  'identity/recovery-code-expired': 'Your code expired. Request a new one.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -104,6 +110,16 @@ export default function AccountIdentityScreen() {
   const confirmPasswordRef = useRef<TextInput>(null);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Recovery form state (signed-out only; gated on RECOVERY_FLOW_VERIFIED)
+  const [recoveryStage, setRecoveryStage] = useState<'request' | 'verify' | 'set_password' | null>(null);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [localRecoveryError, setLocalRecoveryError] = useState<string | null>(null);
+  const recoveryNewPasswordRef = useRef<TextInput>(null);
+  const recoveryConfirmPasswordRef = useRef<TextInput>(null);
+
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
     snapshot.status === 'email_pending'
@@ -128,6 +144,13 @@ export default function AccountIdentityScreen() {
       setLocalChangePasswordError(null);
       setChangePasswordSubmitted(false);
       setChangePasswordSuccess(false);
+      // also clear recovery state on sign-out
+      setRecoveryStage(null);
+      setRecoveryEmail('');
+      setRecoveryCode('');
+      setRecoveryNewPassword('');
+      setRecoveryConfirmPassword('');
+      setLocalRecoveryError(null);
     }
   }, [identity.isSignedIn]);
 
@@ -876,6 +899,9 @@ export default function AccountIdentityScreen() {
       await runAction('cancel', () => identity.signOut());
     }
 
+    // (Recovery panel handlers + render branch are defined at component scope below;
+    // verify-code panel cannot reach them but doesn't need to.)
+
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
         <KeyboardAvoidingView
@@ -953,6 +979,297 @@ export default function AccountIdentityScreen() {
             <Text style={styles.footerText}>
               The code may take a moment to arrive. Check your spam folder if needed.
             </Text>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Signed-out: recovery panel (3 stages, gated on RECOVERY_FLOW_VERIFIED) ─
+
+  function openRecoveryRequest() {
+    setRecoveryStage('request');
+    setRecoveryEmail(email);
+    setRecoveryCode('');
+    setRecoveryNewPassword('');
+    setRecoveryConfirmPassword('');
+    setLocalRecoveryError(null);
+  }
+
+  async function cancelRecovery() {
+    const wasInRecoveryState = snapshot.status === 'recovery_code_pending';
+    setRecoveryStage(null);
+    setRecoveryEmail('');
+    setRecoveryCode('');
+    setRecoveryNewPassword('');
+    setRecoveryConfirmPassword('');
+    setLocalRecoveryError(null);
+    if (wasInRecoveryState) {
+      await runAction('cancel_recovery', () => identity.signOut());
+    }
+  }
+
+  function onChangeAnyRecoveryField() {
+    if (localRecoveryError) setLocalRecoveryError(null);
+  }
+
+  async function submitRecoveryRequest() {
+    if (busy) return;
+    setLocalRecoveryError(null);
+    if (!recoveryEmail.trim()) {
+      setLocalRecoveryError('identity/missing-email');
+      return;
+    }
+    setBusy('recovery_request');
+    try {
+      const result = await identity.requestRecoveryCode(recoveryEmail);
+      if (result.lastError) return;
+      setRecoveryStage('verify');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitRecoveryVerify() {
+    if (busy) return;
+    setLocalRecoveryError(null);
+    if (!recoveryCode.trim()) {
+      setLocalRecoveryError('identity/missing-code');
+      return;
+    }
+    setBusy('recovery_verify');
+    try {
+      const result = await identity.verifyRecoveryCode({ email: recoveryEmail, code: recoveryCode });
+      if (result.lastError) return;
+      setRecoveryStage('set_password');
+      setRecoveryCode('');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitRecoverySetPassword() {
+    if (busy) return;
+    setLocalRecoveryError(null);
+    if (!recoveryNewPassword.trim()) {
+      setLocalRecoveryError('identity/missing-new-password');
+      return;
+    }
+    if (recoveryNewPassword.length < 8) {
+      setLocalRecoveryError('identity/password-too-short');
+      return;
+    }
+    if (recoveryNewPassword !== recoveryConfirmPassword) {
+      setLocalRecoveryError('identity/password-mismatch');
+      return;
+    }
+    setBusy('recovery_set_password');
+    try {
+      const result = await identity.setPasswordAfterRecovery(recoveryNewPassword);
+      if (result.lastError) return;
+      // Success: snapshot transitions to signed-in; useEffect resets recovery state.
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (recoveryStage !== null) {
+    const recoveryFormErrorCode = localRecoveryError ?? identity.error?.code ?? null;
+    const recoveryFormErrorCopy = friendlyErrorCopy(recoveryFormErrorCode);
+
+    const heroNode = recoveryStage === 'request' ? (
+      <View style={styles.hero}>
+        <Text style={styles.heroTitle}>Reset your password</Text>
+        <Text style={styles.heroSubtitle}>
+          Enter the email associated with your account.
+        </Text>
+      </View>
+    ) : recoveryStage === 'verify' ? (
+      <View style={styles.hero}>
+        <Text style={styles.heroTitle}>Check your email</Text>
+        <Text style={styles.heroSubtitle}>
+          If that email is registered, we've sent a recovery code. Enter it below.
+        </Text>
+      </View>
+    ) : (
+      <View style={styles.hero}>
+        <Text style={styles.heroTitle}>Set a new password</Text>
+        <Text style={styles.heroSubtitle}>
+          Choose a password you haven't used before.
+        </Text>
+      </View>
+    );
+
+    const primaryRecoveryLabel =
+      recoveryStage === 'request' ? 'Send recovery code' :
+      recoveryStage === 'verify' ? 'Verify code' :
+      'Update password';
+    const primaryRecoveryAction =
+      recoveryStage === 'request' ? submitRecoveryRequest :
+      recoveryStage === 'verify' ? submitRecoveryVerify :
+      submitRecoverySetPassword;
+    const primaryRecoveryBusy =
+      (recoveryStage === 'request' && busy === 'recovery_request') ||
+      (recoveryStage === 'verify' && busy === 'recovery_verify') ||
+      (recoveryStage === 'set_password' && busy === 'recovery_set_password');
+    const canSubmitRecovery =
+      recoveryStage === 'request' ? Boolean(recoveryEmail.trim()) :
+      recoveryStage === 'verify' ? Boolean(recoveryCode.trim()) :
+      Boolean(recoveryNewPassword.trim() && recoveryConfirmPassword.trim());
+
+    return (
+      <SafeAreaView style={styles.safe} edges={[]}>
+        <KeyboardAvoidingView
+          style={styles.kav}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={contentTopPadding}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.content,
+              { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+            ]}
+            keyboardShouldPersistTaps="handled">
+            {heroNode}
+
+            <View style={styles.formCard}>
+              {recoveryStage === 'request' ? (
+                <View style={styles.field}>
+                  <Text style={styles.fieldLabel}>EMAIL</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={recoveryEmail}
+                    onChangeText={(v) => {
+                      setRecoveryEmail(v);
+                      onChangeAnyRecoveryField();
+                    }}
+                    placeholder="you@example.com"
+                    placeholderTextColor={th.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    editable={!busy}
+                    accessibilityLabel="Recovery email"
+                    returnKeyType="go"
+                    onSubmitEditing={submitRecoveryRequest}
+                  />
+                </View>
+              ) : null}
+
+              {recoveryStage === 'verify' ? (
+                <>
+                  <View style={styles.field}>
+                    <Text style={styles.fieldLabel}>EMAIL</Text>
+                    <Text style={styles.pendingEmail}>{recoveryEmail || '—'}</Text>
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.fieldLabel}>CODE</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={recoveryCode}
+                      onChangeText={(v) => {
+                        setRecoveryCode(v);
+                        onChangeAnyRecoveryField();
+                      }}
+                      placeholder="6-digit code"
+                      placeholderTextColor={th.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="number-pad"
+                      textContentType="oneTimeCode"
+                      editable={!busy}
+                      accessibilityLabel="Recovery code"
+                      returnKeyType="go"
+                      onSubmitEditing={submitRecoveryVerify}
+                    />
+                  </View>
+                </>
+              ) : null}
+
+              {recoveryStage === 'set_password' ? (
+                <>
+                  <View style={styles.field}>
+                    <Text style={styles.fieldLabel}>NEW PASSWORD</Text>
+                    <TextInput
+                      ref={recoveryNewPasswordRef}
+                      style={styles.input}
+                      value={recoveryNewPassword}
+                      onChangeText={(v) => {
+                        setRecoveryNewPassword(v);
+                        onChangeAnyRecoveryField();
+                      }}
+                      placeholder="At least 8 characters"
+                      placeholderTextColor={th.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      textContentType="newPassword"
+                      editable={!busy}
+                      accessibilityLabel="New password"
+                      returnKeyType="next"
+                      onSubmitEditing={() => recoveryConfirmPasswordRef.current?.focus()}
+                    />
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.fieldLabel}>CONFIRM NEW PASSWORD</Text>
+                    <TextInput
+                      ref={recoveryConfirmPasswordRef}
+                      style={styles.input}
+                      value={recoveryConfirmPassword}
+                      onChangeText={(v) => {
+                        setRecoveryConfirmPassword(v);
+                        onChangeAnyRecoveryField();
+                      }}
+                      placeholder="Re-enter new password"
+                      placeholderTextColor={th.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                      textContentType="newPassword"
+                      editable={!busy}
+                      accessibilityLabel="Confirm new password"
+                      returnKeyType="go"
+                      onSubmitEditing={submitRecoverySetPassword}
+                    />
+                  </View>
+                </>
+              ) : null}
+
+              {recoveryFormErrorCopy ? (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorBannerText}>{recoveryFormErrorCopy}</Text>
+                </View>
+              ) : null}
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  (Boolean(busy) || !canSubmitRecovery) && styles.buttonDisabled,
+                ]}
+                onPress={primaryRecoveryAction}
+                activeOpacity={0.7}
+                disabled={Boolean(busy) || !canSubmitRecovery}>
+                {primaryRecoveryBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>{primaryRecoveryLabel}</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.linkButton}
+                onPress={cancelRecovery}
+                activeOpacity={0.6}
+                disabled={Boolean(busy)}>
+                <Text style={styles.linkButtonTextNeutral}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+
+            {recoveryStage === 'verify' ? (
+              <Text style={styles.footerText}>
+                The code may take a moment to arrive. Check your spam folder if needed.
+              </Text>
+            ) : null}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -1115,6 +1432,16 @@ export default function AccountIdentityScreen() {
                 <Text style={styles.linkButtonText}>
                   {isPasswordMode ? 'Use email code instead' : 'Use password instead'}
                 </Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {RECOVERY_FLOW_VERIFIED && isSignInTab && isPasswordMode ? (
+              <TouchableOpacity
+                style={styles.linkButton}
+                onPress={openRecoveryRequest}
+                activeOpacity={0.6}
+                disabled={Boolean(busy)}>
+                <Text style={styles.linkButtonTextNeutral}>Forgot password?</Text>
               </TouchableOpacity>
             ) : null}
           </View>

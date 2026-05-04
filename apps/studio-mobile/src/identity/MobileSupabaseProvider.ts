@@ -87,6 +87,33 @@ function mapPasswordUpdateErrorCode(error: unknown): string {
   return 'identity/password-update-failed';
 }
 
+function mapRecoveryRequestErrorCode(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { status?: number; statusCode?: number; message?: string })
+      : {};
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  if (status === 429 || /rate|too many|cooldown/.test(message)) return 'identity/provider-rate-limited';
+  if (/fetch|network|timeout|failed to fetch/.test(message)) return 'identity/provider-network-failed';
+  if (status === 403 || /rejected|not allowed|forbidden/.test(message)) return 'identity/provider-rejected';
+  return 'identity/request-recovery-failed';
+}
+
+function mapRecoveryVerifyErrorCode(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { status?: number; statusCode?: number; message?: string })
+      : {};
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  if (status === 429 || /rate|too many|cooldown/.test(message)) return 'identity/provider-rate-limited';
+  if (/fetch|network|timeout|failed to fetch/.test(message)) return 'identity/provider-network-failed';
+  if (/expired|expired token|expired otp/.test(message)) return 'identity/recovery-code-expired';
+  if (status === 403 || /rejected|not allowed|forbidden/.test(message)) return 'identity/provider-rejected';
+  return 'identity/verify-recovery-failed';
+}
+
 interface RpcIdentityState {
   profile?: unknown;
   workspace?: unknown;
@@ -113,6 +140,14 @@ export class MobileSupabaseProvider implements IdentityProvider {
   private snapshot: IdentitySnapshot;
   private accessToken: string | null = null;
   private _client: SupabaseClient | null = null;
+
+  // Recovery scratch — held in memory only. Never persisted to SecureStore
+  // until setPasswordAfterRecovery succeeds. Cleared on every requestRecoveryCode
+  // call and on signOut. If the app is killed mid-recovery, these are lost and
+  // the user must restart the recovery flow from email.
+  private recoveryVerified = false;
+  private recoveryAccessToken: string | null = null;
+  private recoveryRefreshToken: string | null = null;
 
   constructor() {
     this.snapshot = createInitialIdentitySnapshot({ provider: 'mock_local' });
@@ -675,6 +710,9 @@ export class MobileSupabaseProvider implements IdentityProvider {
     }
 
     this.accessToken = null;
+    this.recoveryVerified = false;
+    this.recoveryAccessToken = null;
+    this.recoveryRefreshToken = null;
     await deleteRefreshToken();
     await clearAllIdentityStorage();
 
@@ -683,39 +721,202 @@ export class MobileSupabaseProvider implements IdentityProvider {
     return this.getSnapshot();
   }
 
-  // ─── recovery stubs (gated — RECOVERY_FLOW_VERIFIED = false) ─────────────
+  // ─── recovery (v1: email-code recovery; gated by RECOVERY_FLOW_VERIFIED in UI) ─
 
-  async requestRecoveryCode(_email: string): Promise<IdentitySnapshot> {
-    return this.fail(
-      createIdentityError(
-        'identity/recovery-flow-not-verified',
-        'Recovery flow is pending live inbox verification.'
-      ),
-      'identity/recovery-flow-not-verified',
-      { persist: false }
-    );
+  async requestRecoveryCode(email: string): Promise<IdentitySnapshot> {
+    // Reset any prior recovery scratch — every request restarts the flow.
+    this.recoveryVerified = false;
+    this.recoveryAccessToken = null;
+    this.recoveryRefreshToken = null;
+
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      const normalized = normalizeEmail(email);
+      if (!isValidEmail(normalized)) {
+        throw createIdentityError('identity/invalid-email', 'Enter a valid email address.');
+      }
+
+      const client = this.getClient(config);
+      // Anti-enumeration: shouldCreateUser=false makes Supabase silently no-op
+      // for unknown emails. Both branches return the same shape — the provider
+      // treats them identically and the snapshot transition is unconditional.
+      const { error } = await client.auth.signInWithOtp({
+        email: normalized,
+        options: { shouldCreateUser: false },
+      });
+      if (error) {
+        throw createIdentityError(
+          mapRecoveryRequestErrorCode(error),
+          'Recovery request failed.'
+        );
+      }
+
+      const snap: IdentitySnapshot = {
+        version: H2O_IDENTITY_CORE_VERSION,
+        status: 'recovery_code_pending',
+        mode: 'provider_backed',
+        provider: 'supabase',
+        pendingEmail: normalized,
+        emailVerified: false,
+        profile: null,
+        workspace: null,
+        onboardingCompleted: false,
+        lastError: null,
+        updatedAt: nowIso(),
+      };
+      return this.commitSnapshot(snap);
+    } catch (error) {
+      return this.failSoft(error, 'identity/request-recovery-failed');
+    }
   }
 
-  async verifyRecoveryCode(_input: VerifyEmailCodeInput): Promise<IdentitySnapshot> {
-    return this.fail(
-      createIdentityError(
-        'identity/recovery-flow-not-verified',
-        'Recovery flow is pending live inbox verification.'
-      ),
-      'identity/recovery-flow-not-verified',
-      { persist: false }
-    );
+  async verifyRecoveryCode(input: VerifyEmailCodeInput): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      if (this.snapshot.status !== 'recovery_code_pending') {
+        throw createIdentityError(
+          'identity/recovery-state-invalid',
+          'Start the recovery flow again from your email.'
+        );
+      }
+      const email = normalizeEmail(input.email || this.snapshot.pendingEmail || '');
+      if (!email) {
+        throw createIdentityError(
+          'identity/recovery-state-invalid',
+          'Start the recovery flow again from your email.'
+        );
+      }
+      if (this.snapshot.pendingEmail && this.snapshot.pendingEmail !== email) {
+        throw createIdentityError(
+          'identity/recovery-state-invalid',
+          'Start the recovery flow again from your email.'
+        );
+      }
+      const code = String(input.code || '').trim();
+      if (!code) throw createIdentityError('identity/missing-code', 'Enter a verification code.');
+
+      const client = this.getClient(config);
+      const { data, error } = await client.auth.verifyOtp({
+        email,
+        token: code,
+        type: 'email',
+      });
+      if (error || !data.session) {
+        throw createIdentityError(
+          mapRecoveryVerifyErrorCode(error),
+          "That code didn't work. Try requesting a new one."
+        );
+      }
+
+      // Hold session tokens IN MEMORY ONLY. Refresh token is not written to
+      // SecureStore here, session metadata is not written, and the snapshot
+      // stays at recovery_code_pending. Tokens graduate to a normal persisted
+      // session only when setPasswordAfterRecovery succeeds.
+      this.recoveryAccessToken = data.session.access_token;
+      this.recoveryRefreshToken = data.session.refresh_token ?? null;
+      this.recoveryVerified = true;
+
+      this.snapshot = { ...this.snapshot, lastError: null, updatedAt: nowIso() };
+      try { await writeSnapshot(this.snapshot); } catch { /* non-fatal */ }
+      return this.getSnapshot();
+    } catch (error) {
+      return this.failSoft(error, 'identity/verify-recovery-failed');
+    }
   }
 
-  async setPasswordAfterRecovery(_password: string): Promise<IdentitySnapshot> {
-    return this.fail(
-      createIdentityError(
-        'identity/recovery-flow-not-verified',
-        'Recovery flow is pending live inbox verification.'
-      ),
-      'identity/recovery-flow-not-verified',
-      { persist: false }
-    );
+  async setPasswordAfterRecovery(newPassword: string): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      if (
+        this.snapshot.status !== 'recovery_code_pending' ||
+        !this.recoveryVerified ||
+        !this.recoveryAccessToken ||
+        !this.recoveryRefreshToken
+      ) {
+        throw createIdentityError(
+          'identity/recovery-state-invalid',
+          'Start the recovery flow again from your email.'
+        );
+      }
+      const password = String(newPassword || '').trim();
+      if (!password) {
+        throw createIdentityError('identity/missing-new-password', 'Enter a new password.');
+      }
+      if (password.length < 8) {
+        throw createIdentityError(
+          'identity/password-too-short',
+          'New password must be at least 8 characters.'
+        );
+      }
+
+      const ephemeral = createClient(config.url, config.anonKey, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const setRes = await ephemeral.auth.setSession({
+        access_token: this.recoveryAccessToken,
+        refresh_token: this.recoveryRefreshToken,
+      });
+      if (setRes.error) {
+        throw createIdentityError(
+          'identity/password-update-session-missing',
+          'Your session expired. Start the recovery flow again from your email.'
+        );
+      }
+
+      // Note: NO current_password — the recovery context cannot require the old
+      // password (the whole point of recovery is the old one is unknown).
+      const result = await ephemeral.auth.updateUser({ password });
+      if (result.error) {
+        throw createIdentityError(
+          mapPasswordUpdateErrorCode(result.error),
+          'Password update failed.'
+        );
+      }
+
+      // Promote the in-memory recovery scratch to a normal persisted session.
+      const sessionUser =
+        (setRes.data as { user?: { id?: string; email?: string | null } | null } | null)?.user ?? null;
+      const recoveryAccess = this.recoveryAccessToken;
+      const recoveryRefresh = this.recoveryRefreshToken;
+      this.recoveryVerified = false;
+      this.recoveryAccessToken = null;
+      this.recoveryRefreshToken = null;
+      await this.storeSession({
+        access_token: recoveryAccess,
+        refresh_token: recoveryRefresh,
+        user: sessionUser,
+      });
+
+      const authedClient = this.getAuthedClient(config);
+      const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
+      if (rpcError) throw rpcError;
+
+      const snap = this.buildSnapshotFromRpc(
+        rpcData as RpcIdentityState | null,
+        this.snapshot.pendingEmail
+      );
+      return this.commitSnapshot(snap);
+    } catch (error) {
+      return this.failSoft(error, 'identity/password-update-failed');
+    }
   }
 
   async changePassword(input: ChangePasswordInput): Promise<IdentitySnapshot> {

@@ -305,22 +305,25 @@ assert(selfCheck.includes("IDENTITY_NO_TOKEN_SURFACE_RE") &&
   /access_token\|refresh_token\|provider_token\|provider_refresh_token/.test(selfCheck),
   "selfCheck.ts must enforce token/session/private-key shaped key detection");
 
-// 8. Existing-user OTP path only; recovery must not contain signInWithOtp.
+// 8. Existing-user OTP path only; verify/setPassword recovery methods must not contain signInWithOtp.
+// Relaxed for 5.0D: requestRecoveryCode is now a permitted call site for signInWithOtp
+// because v1 recovery reuses the email-code transport (see 5.0D spec). The
+// shouldCreateUser:false constraint is still enforced for every call site.
 const signInOtpMatches = [...provider.matchAll(/signInWithOtp\s*\(/g)];
 assert(signInOtpMatches.length >= 1, "Mobile provider must include signInWithOtp for existing-user email-code path");
 for (const match of signInOtpMatches) {
   const before = provider.slice(0, match.index);
   const methodMatch = [...before.matchAll(/async\s+([A-Za-z_$][\w$]*)\s*\(/g)].at(-1);
   const methodName = methodMatch?.[1] ?? "unknown";
-  assert(["signInWithEmail", "resendVerification"].includes(methodName),
-    `signInWithOtp is only allowed in existing-user email-code paths; found in ${methodName}`);
+  assert(["signInWithEmail", "resendVerification", "requestRecoveryCode"].includes(methodName),
+    `signInWithOtp is only allowed in existing-user email-code or recovery-request paths; found in ${methodName}`);
   const callWindow = provider.slice(match.index, match.index + 260);
   assert(/shouldCreateUser\s*:\s*false/.test(callWindow),
     `${methodName} signInWithOtp call must set shouldCreateUser:false`);
 }
-for (const fnName of ["requestRecoveryCode", "verifyRecoveryCode", "setPasswordAfterRecovery"]) {
+for (const fnName of ["verifyRecoveryCode", "setPasswordAfterRecovery"]) {
   assert(!extractBlockByName(provider, fnName).includes("signInWithOtp"),
-    `${fnName} must not call signInWithOtp while recovery is gated`);
+    `${fnName} must not call signInWithOtp`);
 }
 
 // 9. SecureStore key.
@@ -370,27 +373,28 @@ const timeoutMs = Number(timeoutMatch[1]);
 assert(Number.isFinite(timeoutMs) && timeoutMs >= 3000 && timeoutMs <= 5000,
   `BOOT_RESTORE_TIMEOUT_MS must be in [3000, 5000]; found ${timeoutMs}`);
 
-// 16. Recovery gate.
+// 16. Recovery gate (relaxed for 5.0D — implementations may exist behind the
+// RECOVERY_FLOW_VERIFIED flag; flag=true requires the 5.0D Recovery Closeout
+// doc to record the live-inbox QA matrix as PASS. Source-level asserts on the
+// recovery implementation itself live in validate-identity-phase5_0d-recovery.mjs,
+// which runs alongside this validator in the identity release gate.)
 const recoveryFlagMatch = mobileConfig.match(/export\s+const\s+RECOVERY_FLOW_VERIFIED\s*=\s*(true|false)/);
 assert(recoveryFlagMatch, "mobileConfig.ts must export RECOVERY_FLOW_VERIFIED");
 const recoveryFlowVerified = recoveryFlagMatch[1] === "true";
 if (recoveryFlowVerified) {
-  assert(/Appendix B[\s\S]*Part 2[\s\S]*\bPASS\b/.test(docs),
-    "RECOVERY_FLOW_VERIFIED=true requires Appendix B Part 2 ledger to be PASS");
-  throw new Error("FAIL: RECOVERY_FLOW_VERIFIED must remain false for 5.0B-core");
+  assert(/Phase 5\.0D Recovery Closeout[\s\S]*Live[\-\s]?inbox QA[\s\S]*\bPASS\b/i.test(docs),
+    "RECOVERY_FLOW_VERIFIED=true requires Phase 5.0D Recovery Closeout doc to record live-inbox QA matrix as PASS");
 }
-assert(!recoveryFlowVerified, "RECOVERY_FLOW_VERIFIED must be false for 5.0B-core");
+// Universal forbids — apply regardless of flag state.
 assertNoMatches(srcFiles, /type\s*:\s*['"]recovery['"]|resetPasswordForEmail/g,
-  "active recovery primitives are forbidden in 5.0B-core");
-for (const fnName of ["requestRecoveryCode", "verifyRecoveryCode", "setPasswordAfterRecovery"]) {
-  const body = extractBlockByName(provider, fnName);
-  assert(body.includes("identity/recovery-flow-not-verified"),
-    `${fnName} must remain an inert stub returning identity/recovery-flow-not-verified`);
-}
+  "active recovery primitives forbidden in mobile source (resetPasswordForEmail, type:'recovery')");
+// identity-debug.tsx must remain inert with respect to recovery — even after the
+// 5.0D implementation lands. Recovery is exercised through /account-identity, not
+// through the QA debug surface.
 assert(identityDebug.includes("Recovery pending live inbox verification"),
   "identity-debug.tsx may expose only an inert recovery placeholder");
 assert(!/requestRecoveryCode\s*\(|verifyRecoveryCode\s*\(|setPasswordAfterRecovery\s*\(/.test(identityDebug),
-  "identity-debug.tsx must not call recovery actions while recovery is gated");
+  "identity-debug.tsx must not call recovery actions");
 
 // Extra 5.0B-core ownership checks.
 assert(!/@supabase\/supabase-js|expo-secure-store|@react-native-async-storage\/async-storage/.test(identityContext),
