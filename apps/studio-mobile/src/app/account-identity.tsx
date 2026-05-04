@@ -22,6 +22,29 @@ import { spacing, typography } from '@/theme';
 const PRIMARY = '#208AEF';
 const DANGER = '#E15554';
 
+// Local 6-swatch palette for the profile-edit avatar picker.
+// IMPORTANT: the Supabase profiles.avatar_color column is constrained to
+// slugs matching ^[a-z0-9][a-z0-9_-]{0,31}$ (see migration
+// 202604300001_identity_profile_workspace_rls.sql). The picker therefore
+// stores/sends the slug (entry.key) and renders the hex (entry.color) only
+// for visual purposes.
+const PROFILE_AVATAR_PALETTE = [
+  { key: 'violet', color: '#7C3AED' },
+  { key: 'blue',   color: '#2563EB' },
+  { key: 'cyan',   color: '#0891B2' },
+  { key: 'green',  color: '#059669' },
+  { key: 'amber',  color: '#D97706' },
+  { key: 'pink',   color: '#DB2777' },
+] as const;
+
+function resolveAvatarSwatch(slug: string | null | undefined): string | null {
+  if (!slug) return null;
+  const trimmed = slug.trim();
+  if (!trimmed) return null;
+  const entry = PROFILE_AVATAR_PALETTE.find((e) => e.key === trimmed);
+  return entry ? entry.color : null;
+}
+
 type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
 type SignInTab = 'sign_in' | 'create_account';
 type SignInMode = 'password' | 'code';
@@ -70,6 +93,9 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/verify-recovery-failed': "That code didn't work. Try requesting a new one.",
   'identity/recovery-code-expired': 'Your code expired. Request a new one.',
   'identity/recovery-email-not-registered': 'This email is not registered. Please enter a registered email or sign up.',
+  // Profile edit specific:
+  'identity/missing-display-name': 'Enter a display name.',
+  'identity/update-profile-failed': "Couldn't update your profile. Try again.",
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -121,6 +147,15 @@ export default function AccountIdentityScreen() {
   const recoveryNewPasswordRef = useRef<TextInput>(null);
   const recoveryConfirmPasswordRef = useRef<TextInput>(null);
 
+  // Profile edit state (signed-in only)
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [editAvatarColor, setEditAvatarColor] = useState<string>('');
+  const [localProfileError, setLocalProfileError] = useState<string | null>(null);
+  const [profileEditSuccess, setProfileEditSuccess] = useState(false);
+  const editDisplayNameRef = useRef<TextInput>(null);
+  const profileSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
     snapshot.status === 'email_pending'
@@ -152,6 +187,12 @@ export default function AccountIdentityScreen() {
       setRecoveryNewPassword('');
       setRecoveryConfirmPassword('');
       setLocalRecoveryError(null);
+      // also clear profile-edit state on sign-out
+      setShowEditProfile(false);
+      setEditDisplayName('');
+      setEditAvatarColor('');
+      setLocalProfileError(null);
+      setProfileEditSuccess(false);
     }
   }, [identity.isSignedIn]);
 
@@ -160,6 +201,10 @@ export default function AccountIdentityScreen() {
       if (successTimerRef.current) {
         clearTimeout(successTimerRef.current);
         successTimerRef.current = null;
+      }
+      if (profileSuccessTimerRef.current) {
+        clearTimeout(profileSuccessTimerRef.current);
+        profileSuccessTimerRef.current = null;
       }
     };
   }, []);
@@ -371,6 +416,23 @@ export default function AccountIdentityScreen() {
           fontWeight: '600',
         },
 
+        swatchRow: {
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          gap: spacing.sm,
+        },
+        swatch: {
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: th.backgroundSelected,
+        },
+        swatchSelected: {
+          borderWidth: 3,
+          borderColor: PRIMARY,
+        },
+
         noticeCard: {
           backgroundColor: th.backgroundElement,
           borderRadius: 12,
@@ -518,9 +580,12 @@ export default function AccountIdentityScreen() {
     const displayName = profile?.displayName || 'Your account';
     const realEmail = profile?.email || snapshot.pendingEmail || '';
     const initials = initialsOf(profile?.displayName, realEmail);
-    const avatarColor = profile?.avatarColor && profile.avatarColor.trim() ? profile.avatarColor : null;
-    const avatarBg = avatarColor ?? (th.scheme === 'light' ? '#fff' : th.backgroundSelected);
-    const avatarInitialsColor = avatarColor ? '#fff' : th.text;
+    // profile.avatarColor is a slug (per Supabase schema); map slug → hex for rendering.
+    // Unknown / missing slugs fall back to the scheme-aware neutral background so the
+    // header never renders an arbitrary CSS-color-name accidentally.
+    const avatarHex = resolveAvatarSwatch(profile?.avatarColor);
+    const avatarBg = avatarHex ?? (th.scheme === 'light' ? '#fff' : th.backgroundSelected);
+    const avatarInitialsColor = avatarHex ? '#fff' : th.text;
 
     const canSubmitChangePassword = Boolean(
       currentPassword.trim() && newPassword.trim() && confirmNewPassword.trim()
@@ -615,6 +680,83 @@ export default function AccountIdentityScreen() {
       }
     }
 
+    // ── Profile edit handlers ─────────────────────────────────────────────
+
+    function toggleEditProfile() {
+      setShowEditProfile((prev) => {
+        const next = !prev;
+        if (next) {
+          // Opening: pre-fill from current profile. The RPC requires a non-empty
+          // palette slug for avatar_color even on display-name-only edits, so we
+          // always seed editAvatarColor with a valid slug — either the user's
+          // current slug if it's in our palette, or the first palette entry as
+          // a safe default.
+          const currentSlug = (profile?.avatarColor || '').trim();
+          const inPalette = PROFILE_AVATAR_PALETTE.some((e) => e.key === currentSlug);
+          const seedSlug = inPalette ? currentSlug : PROFILE_AVATAR_PALETTE[0].key;
+          setEditDisplayName(profile?.displayName || '');
+          setEditAvatarColor(seedSlug);
+          setLocalProfileError(null);
+          setProfileEditSuccess(false);
+        }
+        return next;
+      });
+    }
+
+    function cancelEditProfile() {
+      setShowEditProfile(false);
+      setEditDisplayName('');
+      setEditAvatarColor('');
+      setLocalProfileError(null);
+    }
+
+    function onChangeAnyProfileField() {
+      if (localProfileError) setLocalProfileError(null);
+    }
+
+    async function submitEditProfile() {
+      if (busy) return;
+
+      const trimmed = editDisplayName.trim();
+      if (!trimmed) {
+        setLocalProfileError('identity/missing-display-name');
+        return;
+      }
+      // editAvatarColor is guaranteed to be a palette slug because toggleEditProfile
+      // seeds it from the palette and the picker only sets palette keys. Defensive
+      // fallback is the first palette entry (shouldn't be reachable in practice).
+      const slug = editAvatarColor || PROFILE_AVATAR_PALETTE[0].key;
+
+      // No-op guard — Save button disabled-state should also catch this.
+      const noChange =
+        trimmed === (profile?.displayName ?? '') &&
+        slug === (profile?.avatarColor ?? '');
+      if (noChange) return;
+
+      setLocalProfileError(null);
+      setBusy('edit_profile');
+      try {
+        const result = await identity.updateProfile({
+          displayName: trimmed,
+          avatarColor: slug,
+        });
+        if (result.lastError) {
+          // Provider failed; identity.error reflects it. Stay on the form;
+          // failSoft preserves signed-in status.
+          return;
+        }
+        // Success
+        setShowEditProfile(false);
+        setEditDisplayName('');
+        setEditAvatarColor('');
+        setProfileEditSuccess(true);
+        if (profileSuccessTimerRef.current) clearTimeout(profileSuccessTimerRef.current);
+        profileSuccessTimerRef.current = setTimeout(() => setProfileEditSuccess(false), 4000);
+      } finally {
+        setBusy(null);
+      }
+    }
+
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
         <KeyboardAvoidingView
@@ -653,6 +795,118 @@ export default function AccountIdentityScreen() {
               <View style={styles.card}>
                 {profile ? (
                   <>
+                    {renderRow({
+                      icon: { ios: 'pencil', android: 'edit', web: 'edit' },
+                      title: 'Edit profile',
+                      subtitle: showEditProfile
+                        ? 'Update your display name and avatar color.'
+                        : 'Change your display name or avatar color.',
+                      trailingNode: (
+                        <SymbolView
+                          name={
+                            showEditProfile
+                              ? { ios: 'chevron.up', android: 'expand_less', web: 'expand_less' }
+                              : { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }
+                          }
+                          size={14}
+                          weight="semibold"
+                          tintColor={th.textSecondary}
+                        />
+                      ),
+                      onPress: toggleEditProfile,
+                    })}
+                    {showEditProfile ? (
+                      <View style={styles.securityForm}>
+                        <View style={styles.field}>
+                          <Text style={styles.fieldLabel}>DISPLAY NAME</Text>
+                          <TextInput
+                            ref={editDisplayNameRef}
+                            style={styles.input}
+                            value={editDisplayName}
+                            onChangeText={(v) => {
+                              setEditDisplayName(v);
+                              onChangeAnyProfileField();
+                            }}
+                            placeholder="Your name"
+                            placeholderTextColor={th.textSecondary}
+                            autoCapitalize="words"
+                            autoCorrect={false}
+                            maxLength={80}
+                            editable={!busy}
+                            accessibilityLabel="Display name"
+                            returnKeyType="done"
+                            onSubmitEditing={submitEditProfile}
+                          />
+                        </View>
+                        <View style={styles.field}>
+                          <Text style={styles.fieldLabel}>AVATAR COLOR</Text>
+                          <View style={styles.swatchRow}>
+                            {PROFILE_AVATAR_PALETTE.map((entry) => (
+                              <TouchableOpacity
+                                key={entry.key}
+                                accessibilityLabel={`Avatar color ${entry.key}`}
+                                accessibilityRole="button"
+                                onPress={() => {
+                                  setEditAvatarColor(entry.key);
+                                  onChangeAnyProfileField();
+                                }}
+                                activeOpacity={0.7}
+                                disabled={Boolean(busy)}>
+                                <View
+                                  style={[
+                                    styles.swatch,
+                                    { backgroundColor: entry.color },
+                                    editAvatarColor === entry.key && styles.swatchSelected,
+                                  ]}
+                                />
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </View>
+
+                        {(() => {
+                          const code = localProfileError ?? identity.error?.code ?? null;
+                          const copy = friendlyErrorCopy(code);
+                          return copy ? (
+                            <View style={styles.errorBanner}>
+                              <Text style={styles.errorBannerText}>{copy}</Text>
+                            </View>
+                          ) : null;
+                        })()}
+
+                        {(() => {
+                          const trimmed = editDisplayName.trim();
+                          const noChange =
+                            trimmed === (profile?.displayName ?? '') &&
+                            editAvatarColor === (profile?.avatarColor ?? '');
+                          const canSubmitProfile = Boolean(trimmed) && !noChange;
+                          return (
+                            <TouchableOpacity
+                              style={[
+                                styles.primaryButton,
+                                (Boolean(busy) || !canSubmitProfile) && styles.buttonDisabled,
+                              ]}
+                              onPress={submitEditProfile}
+                              activeOpacity={0.7}
+                              disabled={Boolean(busy) || !canSubmitProfile}>
+                              {busy === 'edit_profile' ? (
+                                <ActivityIndicator color="#fff" />
+                              ) : (
+                                <Text style={styles.primaryButtonText}>Update profile</Text>
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })()}
+
+                        <TouchableOpacity
+                          style={styles.linkButton}
+                          onPress={cancelEditProfile}
+                          activeOpacity={0.6}
+                          disabled={Boolean(busy)}>
+                          <Text style={styles.linkButtonTextNeutral}>Cancel</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
                     {renderRow({
                       icon: { ios: 'person.fill', android: 'person', web: 'person' },
                       title: 'Display Name',
@@ -843,6 +1097,18 @@ export default function AccountIdentityScreen() {
                   tintColor={th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4'}
                 />
                 <Text style={styles.successBannerText}>Password updated</Text>
+              </View>
+            ) : null}
+
+            {profileEditSuccess && !showEditProfile ? (
+              <View style={styles.successBanner}>
+                <SymbolView
+                  name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+                  size={18}
+                  weight="semibold"
+                  tintColor={th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4'}
+                />
+                <Text style={styles.successBannerText}>Profile updated</Text>
               </View>
             ) : null}
 

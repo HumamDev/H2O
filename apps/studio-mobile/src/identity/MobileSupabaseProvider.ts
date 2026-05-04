@@ -23,7 +23,6 @@ import {
   isValidEmail,
   normalizeEmail,
   nowIso,
-  sanitizeProfilePatch,
   transitionIdentity,
 } from '@h2o/identity-core';
 import { getMobileSupabaseConfig, type MobileSupabaseConfig } from './mobileConfig';
@@ -646,10 +645,9 @@ export class MobileSupabaseProvider implements IdentityProvider {
   async updateProfile(patch: ProfilePatch): Promise<IdentitySnapshot> {
     const config = getMobileSupabaseConfig();
     if (!config) {
-      return this.fail(
+      return this.failSoft(
         createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
-        'identity/provider-not-configured',
-        { persist: false, clearSession: true }
+        'identity/provider-not-configured'
       );
     }
     try {
@@ -660,19 +658,38 @@ export class MobileSupabaseProvider implements IdentityProvider {
         throw createIdentityError('identity/no-profile', 'No profile exists to update.');
       }
 
-      const clean = sanitizeProfilePatch(patch);
+      // Provider-local sanitization that matches the live DB constraint:
+      //   profiles.avatar_color CHECK (avatar_color ~ '^[a-z0-9][a-z0-9_-]{0,31}$')
+      //   profiles.display_name CHECK (char_length(btrim(display_name)) between 1 and 64)
+      // identity-core's sanitizeProfilePatch only accepts hex avatar colors and
+      // would silently drop slugs, so it is intentionally bypassed here for the
+      // avatar field. Display name follows the same trim/collapse rule as
+      // sanitizeProfilePatch (max 80 chars; server enforces 64).
+      const cleanDisplayName =
+        typeof patch.displayName === 'string'
+          ? patch.displayName.trim().replace(/\s+/g, ' ').slice(0, 80)
+          : '';
+      const cleanAvatarColor =
+        typeof patch.avatarColor === 'string'
+        && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(patch.avatarColor.trim())
+          ? patch.avatarColor.trim()
+          : '';
+
       const authedClient = this.getAuthedClient(config);
+      // Match the SQL function signature exactly:
+      //   public.update_identity_profile(p_display_name text, p_avatar_color text)
       const { data: rpcData, error: rpcError } = await authedClient.rpc('update_identity_profile', {
-        display_name: clean.displayName ?? null,
-        avatar_color: clean.avatarColor ?? null,
-        onboarding_completed: clean.onboardingCompleted ?? null,
+        p_display_name: cleanDisplayName || null,
+        p_avatar_color: cleanAvatarColor || null,
       });
       if (rpcError) throw rpcError;
 
       const snap = this.buildSnapshotFromRpc(rpcData as RpcIdentityState | null, this.snapshotEmailFallback());
       return this.commitSnapshot(snap);
     } catch (error) {
-      return this.fail(error, 'identity/update-profile-failed');
+      // Use failSoft so a failed profile edit preserves signed-in status (would
+      // otherwise flip to auth_error and effectively log the user out).
+      return this.failSoft(error, 'identity/update-profile-failed');
     }
   }
 
