@@ -12,6 +12,7 @@ const MOBILE_SRC_REL = "apps/studio-mobile/src";
 const PACKAGE_REL = "apps/studio-mobile/package.json";
 const APP_JSON_REL = "apps/studio-mobile/app.json";
 const DOC_REL = "docs/identity/IDENTITY_PHASE_5_0A_MOBILE_ALIGNMENT.md";
+const RECOVERY_CLOSEOUT_REL = "docs/identity/IDENTITY_PHASE_5_0D_RECOVERY_CLOSEOUT.md";
 const MOBILE_CONFIG_REL = "apps/studio-mobile/src/identity/mobileConfig.ts";
 const SECURE_STORE_REL = "apps/studio-mobile/src/identity/secureStore.ts";
 const MOBILE_STORAGE_REL = "apps/studio-mobile/src/identity/mobileStorage.ts";
@@ -382,7 +383,12 @@ const recoveryFlagMatch = mobileConfig.match(/export\s+const\s+RECOVERY_FLOW_VER
 assert(recoveryFlagMatch, "mobileConfig.ts must export RECOVERY_FLOW_VERIFIED");
 const recoveryFlowVerified = recoveryFlagMatch[1] === "true";
 if (recoveryFlowVerified) {
-  assert(/Phase 5\.0D Recovery Closeout[\s\S]*Live[\-\s]?inbox QA[\s\S]*\bPASS\b/i.test(docs),
+  // Read the 5.0D closeout doc directly from its known path. (Earlier this
+  // gate tested against the `docs` variable, but `docs` is loaded from
+  // DOC_REL = 5.0A — so the regex never matched. Bug fixed here.)
+  let closeout = "";
+  try { closeout = read(RECOVERY_CLOSEOUT_REL); } catch { /* missing → fail below */ }
+  assert(/Phase 5\.0D Recovery Closeout[\s\S]*Live[\-\s]?inbox QA[\s\S]*\bPASS\b/i.test(closeout),
     "RECOVERY_FLOW_VERIFIED=true requires Phase 5.0D Recovery Closeout doc to record live-inbox QA matrix as PASS");
 }
 // Universal forbids — apply regardless of flag state.

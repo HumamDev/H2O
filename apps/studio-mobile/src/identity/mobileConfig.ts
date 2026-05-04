@@ -1,6 +1,6 @@
 export const BOOT_RESTORE_TIMEOUT_MS = 4000;
 
-export const RECOVERY_FLOW_VERIFIED = false;
+export const RECOVERY_FLOW_VERIFIED = true;
 
 const _url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const _anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
