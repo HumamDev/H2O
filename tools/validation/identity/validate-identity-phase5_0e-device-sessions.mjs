@@ -45,6 +45,8 @@ const MIGRATION_REL = "supabase/migrations/202605040001_identity_device_sessions
 const PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
 const ACCOUNT_REL = "apps/studio-mobile/src/app/account-identity.tsx";
 const SECURESTORE_REL = "apps/studio-mobile/src/identity/secureStore.ts";
+const BROWSER_PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
+const BROWSER_BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
 
 const migration = read(MIGRATION_REL);
 
@@ -207,19 +209,151 @@ assert(
   "v1 migration must NOT define revoke_other_device_sessions (deferred until signOut scope='others' verified)"
 );
 
-// ─── Mobile-source anti-leak guard (Phase A: best-effort; Phase B: tighten) ─
-// Even before Phase B lands, any handwritten code in the mobile tree must not
-// console.* a plaintext device-token identifier. The check is vacuously true
-// today (no such code yet) but locks the policy in.
+// ─── Client-bundle anti-leak guard (mobile + browser surfaces) ──────────────
+// Both the mobile and browser device-session paths must never console.* a
+// plaintext device-token identifier. Phase B (mobile) and Phase C (browser
+// extension) sources are bundled together for the check.
 
 const provider = readOptional(PROVIDER_REL);
 const accountIdentity = readOptional(ACCOUNT_REL);
 const secureStore = readOptional(SECURESTORE_REL);
-const mobileBundle = [provider, accountIdentity, secureStore].join("\n");
+const browserProvider = readOptional(BROWSER_PROVIDER_REL);
+const browserBackground = readOptional(BROWSER_BACKGROUND_REL);
+const clientBundle = [
+  provider, accountIdentity, secureStore,
+  browserProvider, browserBackground,
+].join("\n");
 
 assert(
-  !/console\.(log|warn|error|debug|info)\s*\([^)]*\b(deviceToken|tokenNonce|tokenPlain|device_token_plaintext)\b/.test(mobileBundle),
-  "mobile source must not console.* plaintext device-token identifiers"
+  !/console\.(log|warn|error|debug|info)\s*\([^)]*\b(deviceToken|tokenNonce|tokenPlain|device_token_plaintext)\b/.test(clientBundle),
+  "client source must not console.* plaintext device-token identifiers"
+);
+
+// ─── Phase C (browser): registerDeviceSession wiring assertions ─────────────
+// These run unconditionally; they require the browser provider + background to
+// expose the Phase C registration path. If browser sources are unreadable
+// (e.g., a fresh worktree), bail with a clear error rather than silently passing.
+
+assert(
+  browserProvider.length > 0,
+  `browser provider entry must be readable at ${BROWSER_PROVIDER_REL}`
+);
+assert(
+  browserBackground.length > 0,
+  `browser background must be readable at ${BROWSER_BACKGROUND_REL}`
+);
+
+// (1) Provider entry must define registerDeviceSession and call the singular
+// register_device_session RPC with the three p_-prefixed params matching the
+// migration's SECURITY DEFINER function signature.
+assert(
+  /async\s+function\s+registerDeviceSession\s*\(/.test(browserProvider),
+  "browser provider entry must define async function registerDeviceSession(...)"
+);
+assert(
+  /\.rpc\s*\(\s*["']register_device_session["']/.test(browserProvider),
+  "browser provider entry must call client.rpc('register_device_session', ...)"
+);
+for (const param of ["p_surface", "p_label", "p_device_token_hash"]) {
+  assert(
+    new RegExp(`\\b${param}\\s*:`).test(browserProvider),
+    `browser provider entry register_device_session call must include ${param}`
+  );
+}
+// Provider entry must be exported via the bundle probe so the background can
+// reach it. Both the supportedPlannedOps list and the exported probe object
+// need to mention registerDeviceSession.
+assert(
+  /supportedPlannedOps[\s\S]*?["']registerDeviceSession["']/.test(browserProvider),
+  "browser provider entry adapterProbe.supportedPlannedOps must include 'registerDeviceSession'"
+);
+assert(
+  /\bregisterDeviceSession\b\s*,?\s*\n[^}]*sdkImport/.test(browserProvider)
+    || /probe\s*=\s*Object\.freeze\s*\(\s*\{[\s\S]*?\bregisterDeviceSession\b[\s\S]*?\}\s*\)/.test(browserProvider),
+  "browser provider entry probe export must include registerDeviceSession"
+);
+
+// (2) Background must wire the runner, define the orchestrator, and hook into
+// publishSafeRuntime. It must use chrome.storage.local (NOT sync, NOT session)
+// for the device-token key.
+assert(
+  /\bregisterDeviceSessionRunner\b/.test(browserBackground),
+  "background must declare identityProviderBundleProbeState.registerDeviceSessionRunner"
+);
+assert(
+  /probe\.registerDeviceSession\b/.test(browserBackground),
+  "background must load registerDeviceSessionRunner from probe.registerDeviceSession"
+);
+assert(
+  /async\s+function\s+identityDeviceSession_register\s*\(/.test(browserBackground),
+  "background must define async function identityDeviceSession_register(...)"
+);
+assert(
+  /async\s+function\s+identityDeviceSession_ensureToken\s*\(/.test(browserBackground),
+  "background must define async function identityDeviceSession_ensureToken(...)"
+);
+assert(
+  /async\s+function\s+identityDeviceSession_hashToken\s*\(/.test(browserBackground),
+  "background must define async function identityDeviceSession_hashToken(...)"
+);
+assert(
+  /async\s+function\s+identityDeviceSession_deriveLabel\s*\(/.test(browserBackground),
+  "background must define async function identityDeviceSession_deriveLabel(...)"
+);
+
+// Storage area: device-token key must be read/written via chrome.storage.local.
+// Hard-block any reference to chrome.storage.sync or chrome.storage.session
+// against the IDENTITY_DEVICE_TOKEN_KEY identifier.
+const deviceTokenKeySource = browserBackground.match(
+  /IDENTITY_DEVICE_TOKEN_KEY\s*=\s*["']([^"']+)["']/
+);
+assert(
+  deviceTokenKeySource && deviceTokenKeySource[1] === "h2o.identity.device.token.v1",
+  "background must define IDENTITY_DEVICE_TOKEN_KEY = 'h2o.identity.device.token.v1'"
+);
+// Token-helper functions must use chrome.storage.local exclusively. Pull the
+// blocks for ensureToken + storage helpers and confirm they only mention
+// chrome.storage.local. (We allow other parts of the file to reference sync /
+// session for unrelated features — this is a scoped check.)
+const deviceStorageBlock = (() => {
+  const start = browserBackground.indexOf("// ─── Device sessions (Phase 5.0E browser registration)");
+  if (start < 0) return "";
+  // Take the next ~5000 chars as the device-session block. The block sits just
+  // before identityProviderSession_publishSafeRuntime, which is unique.
+  const end = browserBackground.indexOf("function identityProviderSession_publishSafeRuntime", start);
+  if (end < 0) return browserBackground.slice(start);
+  return browserBackground.slice(start, end);
+})();
+assert(
+  deviceStorageBlock.length > 0,
+  "background must contain a labelled device-session block"
+);
+assert(
+  /chrome\.storage\.local\b/.test(deviceStorageBlock),
+  "device-session block must use chrome.storage.local"
+);
+assert(
+  !/chrome\.storage\.sync\b/.test(deviceStorageBlock),
+  "device-session block must NOT use chrome.storage.sync"
+);
+assert(
+  !/chrome\.storage\.session\b/.test(deviceStorageBlock),
+  "device-session block must NOT use chrome.storage.session"
+);
+
+// Hook: identityDeviceSession_register must be called from publishSafeRuntime
+// (or some other auth-success converging point that runs on rawSession).
+const publishBlockIndex = browserBackground.indexOf(
+  "function identityProviderSession_publishSafeRuntime"
+);
+assert(
+  publishBlockIndex >= 0,
+  "background must define identityProviderSession_publishSafeRuntime"
+);
+const publishBlock = browserBackground.slice(publishBlockIndex, publishBlockIndex + 4000);
+assert(
+  /identityDeviceSession_register\s*\(\s*opts\.rawSession\s*\)/.test(publishBlock),
+  "publishSafeRuntime must invoke identityDeviceSession_register(opts.rawSession)"
 );
 
 console.log("PASS: Identity Phase 5.0E device sessions validator");

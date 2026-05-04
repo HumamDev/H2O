@@ -1577,6 +1577,91 @@ async function loadIdentityState(config, input = {}) {
   }
 }
 
+// Phase 5.0E (browser): authed RPC wrapper for the device-session upsert.
+// Pure SDK call with no side effects — the background owns token storage,
+// hashing, label derivation, and the post-auth hook.
+async function registerDeviceSession(config, accessToken, input = {}) {
+  const safeConfig = normalizeRealConfigSmokeInput(config);
+  const safeAccessToken = normalizeProviderAccessToken(accessToken);
+  const safeInput = input && typeof input === "object" ? input : {};
+  const surface = String(safeInput.surface || "").trim();
+  const label = String(safeInput.label || "").trim().replace(/\s+/g, " ").slice(0, 64);
+  const deviceTokenHash = String(safeInput.deviceTokenHash || "").trim();
+  if (!safeAccessToken) {
+    return { ok: false, errorCode: "identity/device-session-session-missing" };
+  }
+  // Match the migration's surface allow-list and CHECK constraints. Validate
+  // here so a malformed input never round-trips to the server.
+  if (!/^(ios_app|android_app|chrome_extension|firefox_extension|desktop_mac|desktop_windows|web)$/.test(surface)) {
+    return { ok: false, errorCode: "identity/device-session-invalid-input" };
+  }
+  if (!label) {
+    return { ok: false, errorCode: "identity/device-session-invalid-input" };
+  }
+  if (!/^[0-9a-f]{64}$/.test(deviceTokenHash)) {
+    return { ok: false, errorCode: "identity/device-session-invalid-input" };
+  }
+  if (!safeConfig || typeof ProviderSdk.createClient !== "function") {
+    return { ok: false, errorCode: "identity/device-session-provider-unavailable" };
+  }
+  try {
+    const client = ProviderSdk.createClient(safeConfig.projectUrl, safeConfig.publicClient, {
+      global: {
+        fetch: providerOtpFetch,
+        headers: {
+          Authorization: `Bearer ${safeAccessToken}`,
+        },
+      },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+    if (!client || typeof client.rpc !== "function") {
+      return { ok: false, errorCode: "identity/device-session-provider-unavailable" };
+    }
+    const result = await client.rpc("register_device_session", {
+      p_surface: surface,
+      p_label: label,
+      p_device_token_hash: deviceTokenHash,
+    });
+    if (result && result.error) {
+      const err = result.error;
+      const errorMessage = String(err && err.message || "").trim() || undefined;
+      return {
+        ok: false,
+        errorCode: "identity/device-session-rejected",
+        ...(errorMessage ? { errorMessage } : {}),
+      };
+    }
+    const data = result && result.data && typeof result.data === "object" ? result.data : null;
+    const session = data && data.session && typeof data.session === "object" ? data.session : null;
+    if (!session || typeof session.id !== "string" || !session.id) {
+      return { ok: false, errorCode: "identity/device-session-response-malformed" };
+    }
+    // Return only safe public fields. Do NOT echo the device_token_hash back.
+    return {
+      ok: true,
+      session: {
+        id: String(session.id),
+        surface: typeof session.surface === "string" ? session.surface : surface,
+        label: typeof session.label === "string" ? session.label : label,
+        createdAt: typeof session.created_at === "string" ? session.created_at : null,
+        lastSeenAt: typeof session.last_seen_at === "string" ? session.last_seen_at : null,
+        revokedAt: typeof session.revoked_at === "string" ? session.revoked_at : null,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : undefined;
+    return {
+      ok: false,
+      errorCode: "identity/device-session-rejected",
+      ...(errorMessage ? { errorMessage } : {}),
+    };
+  }
+}
+
 async function markPasswordSetupCompleted(config, input = {}) {
   const safeConfig = normalizeRealConfigSmokeInput(config);
   const rawSession = input && typeof input === "object" ? input.rawSession : null;
@@ -1703,6 +1788,7 @@ const adapterProbe = Object.freeze({
     "updateIdentityProfile",
     "renameIdentityWorkspace",
     "loadIdentityState",
+    "registerDeviceSession",
     "markPasswordSetupCompleted",
     "beginOAuthSignIn",
     "completeOAuthSignIn",
@@ -1738,6 +1824,7 @@ const probe = Object.freeze({
   updateIdentityProfile,
   renameIdentityWorkspace,
   loadIdentityState,
+  registerDeviceSession,
   markPasswordSetupCompleted,
   markOAuthCredentialCompleted,
   sdkImport: Object.freeze({

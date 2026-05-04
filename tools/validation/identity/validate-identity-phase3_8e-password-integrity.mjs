@@ -131,8 +131,9 @@ assert(providerMark.includes('client.rpc("mark_password_setup_completed"') &&
   "provider must own mark_password_setup_completed RPC and return no raw session/user");
 assert(extractFunction(provider, "normalizeProviderIdentityStateResult").includes("credentialState"),
   "provider identity restore sanitizer must include safe credentialState");
-assert((provider.match(/\.rpc\s*\(/g) || []).length === 6 &&
-  provider.includes('client.rpc("mark_oauth_credential_completed"'),
+assert((provider.match(/\.rpc\s*\(/g) || []).length === 7 &&
+  provider.includes('client.rpc("mark_oauth_credential_completed"') &&
+  provider.includes('client.rpc("register_device_session"'),
   "provider source must have only approved identity RPC helpers, including Google OAuth credential completion");
 assert(provider.includes('client.rpc("update_identity_profile"') &&
   provider.includes('client.rpc("rename_identity_workspace"'),

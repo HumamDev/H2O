@@ -153,6 +153,7 @@ const identityProviderBundleProbeState = {
   updateIdentityProfileRunner: null,
   renameIdentityWorkspaceRunner: null,
   loadIdentityStateRunner: null,
+  registerDeviceSessionRunner: null,
   markPasswordSetupCompletedRunner: null,
   beginOAuthSignInRunner: null,
   completeOAuthSignInRunner: null,
@@ -195,6 +196,7 @@ const IDENTITY_PROVIDER_BUNDLE_ALLOWED_OPS = Object.freeze([
   "updateIdentityProfile",
   "renameIdentityWorkspace",
   "loadIdentityState",
+  "registerDeviceSession",
   "markPasswordSetupCompleted",
   "beginOAuthSignIn",
   "completeOAuthSignIn",
@@ -339,6 +341,7 @@ function identityProviderBundle_markSkipped(reason = "provider_config_inactive")
   identityProviderBundleProbeState.updateIdentityProfileRunner = null;
   identityProviderBundleProbeState.renameIdentityWorkspaceRunner = null;
   identityProviderBundleProbeState.loadIdentityStateRunner = null;
+  identityProviderBundleProbeState.registerDeviceSessionRunner = null;
   identityProviderBundleProbeState.markPasswordSetupCompletedRunner = null;
   identityProviderBundleProbeState.beginOAuthSignInRunner = null;
   identityProviderBundleProbeState.completeOAuthSignInRunner = null;
@@ -566,6 +569,9 @@ function identityProviderBundle_loadProbe() {
       : null;
     identityProviderBundleProbeState.loadIdentityStateRunner = loaded && typeof probe.loadIdentityState === "function"
       ? probe.loadIdentityState
+      : null;
+    identityProviderBundleProbeState.registerDeviceSessionRunner = loaded && typeof probe.registerDeviceSession === "function"
+      ? probe.registerDeviceSession
       : null;
     identityProviderBundleProbeState.markPasswordSetupCompletedRunner = loaded && typeof probe.markPasswordSetupCompleted === "function"
       ? probe.markPasswordSetupCompleted
@@ -5436,8 +5442,149 @@ async function identityProviderSession_tryCloudIdentityRestore(runtime, rawSessi
   };
 }
 
+// ─── Device sessions (Phase 5.0E browser registration) ─────────────────────
+// The plain device token lives ONLY in chrome.storage.local under
+// IDENTITY_DEVICE_TOKEN_KEY and is never sent to the server. The server stores
+// only its SHA-256 hash. Helpers below never console.* the plain token or the
+// full hash. signOut intentionally leaves the token in place so the same row
+// is upserted on the next sign-in (idempotent register).
+
+const IDENTITY_DEVICE_TOKEN_KEY = "h2o.identity.device.token.v1";
+const IDENTITY_DEVICE_LABEL_KEY = "h2o.identity.device.label.v1";
+
+function identityDeviceSession_bytesToHex(bytes) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += bytes[i].toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+function identityDeviceSession_storageGetLocal(keys) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(keys, (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        resolve(data && typeof data === "object" ? data : null);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+function identityDeviceSession_storageSetLocal(items) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set(items || {}, () => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+        resolve(true);
+      });
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function identityDeviceSession_ensureToken() {
+  // Read from chrome.storage.local. If absent or malformed, generate a fresh
+  // 64-char hex token and persist. Same token reused across sign-ins so the
+  // server-side row is upserted, not duplicated.
+  const stored = await identityDeviceSession_storageGetLocal([IDENTITY_DEVICE_TOKEN_KEY]);
+  const existing = stored && typeof stored[IDENTITY_DEVICE_TOKEN_KEY] === "string"
+    ? stored[IDENTITY_DEVICE_TOKEN_KEY]
+    : "";
+  if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+  const buf = new Uint8Array(32);
+  crypto.getRandomValues(buf);
+  const fresh = identityDeviceSession_bytesToHex(buf);
+  await identityDeviceSession_storageSetLocal({ [IDENTITY_DEVICE_TOKEN_KEY]: fresh });
+  return fresh;
+}
+
+async function identityDeviceSession_hashToken(tokenHex) {
+  // SHA-256 of UTF-8 bytes of the hex string. Matches mobile's hashing strategy.
+  const utf8 = new TextEncoder().encode(tokenHex);
+  const digest = await crypto.subtle.digest("SHA-256", utf8);
+  return identityDeviceSession_bytesToHex(new Uint8Array(digest));
+}
+
+async function identityDeviceSession_deriveLabel() {
+  // Cached label is preferred so it stays stable even if Chrome relaunches
+  // under a different OS user. First call derives a coarse platform tag.
+  const cached = await identityDeviceSession_storageGetLocal([IDENTITY_DEVICE_LABEL_KEY]);
+  const cachedLabel = cached && typeof cached[IDENTITY_DEVICE_LABEL_KEY] === "string"
+    ? cached[IDENTITY_DEVICE_LABEL_KEY].trim()
+    : "";
+  if (cachedLabel.length > 0 && cachedLabel.length <= 64) return cachedLabel;
+  let platformCoarse = "Browser";
+  try {
+    const uad = (typeof navigator !== "undefined" && navigator) ? navigator.userAgentData : null;
+    const platform = uad && typeof uad.platform === "string" ? uad.platform : "";
+    if (platform) {
+      if (/mac/i.test(platform)) platformCoarse = "Mac";
+      else if (/win/i.test(platform)) platformCoarse = "Windows";
+      else if (/linux|chromeos|cros/i.test(platform)) platformCoarse = "Linux";
+    } else if (typeof navigator !== "undefined" && typeof navigator.userAgent === "string") {
+      const ua = navigator.userAgent;
+      if (/mac/i.test(ua)) platformCoarse = "Mac";
+      else if (/win/i.test(ua)) platformCoarse = "Windows";
+      else if (/linux|cros/i.test(ua)) platformCoarse = "Linux";
+    }
+  } catch (_) {
+    // Fall through to default "Browser".
+  }
+  // Plain string concat. This emitted bg.js source lives inside the build-time
+  // template literal at the top of makeChromeLiveBackgroundJs, so a runtime
+  // template literal here would close the outer one early. Same reason no
+  // dollar-brace interpolations appear in the rest of this block.
+  const label = platformCoarse + " — Chrome";
+  await identityDeviceSession_storageSetLocal({ [IDENTITY_DEVICE_LABEL_KEY]: label });
+  return label;
+}
+
+async function identityDeviceSession_register(rawSession) {
+  // Best-effort: never throws, never blocks auth flow, never logs sensitive data.
+  // Idempotent server-side via the (user_id, device_token_hash) UNIQUE upsert.
+  try {
+    if (!rawSession || typeof rawSession !== "object") return;
+    const accessToken = typeof rawSession.access_token === "string" ? rawSession.access_token : "";
+    if (!accessToken) return;
+    identityProviderBundle_ensureProbeLoaded();
+    if (identityProviderBundleProbeState.loaded !== true
+      || typeof identityProviderBundleProbeState.registerDeviceSessionRunner !== "function") {
+      return;
+    }
+    const loadedPrivateConfig = identityProviderBundle_loadPrivateConfig();
+    if (!loadedPrivateConfig.ok) return;
+    const tokenHex = await identityDeviceSession_ensureToken();
+    if (!/^[0-9a-f]{64}$/.test(tokenHex)) return;
+    const deviceTokenHash = await identityDeviceSession_hashToken(tokenHex);
+    const label = await identityDeviceSession_deriveLabel();
+    await identityProviderBundleProbeState.registerDeviceSessionRunner(
+      loadedPrivateConfig.privateConfig,
+      accessToken,
+      { surface: "chrome_extension", label, deviceTokenHash }
+    );
+  } catch (_) {
+    // Best-effort — never raise.
+  }
+}
+
 async function identityProviderSession_publishSafeRuntime(safeRuntime, shouldBroadcast = true, options = {}) {
   const opts = options && typeof options === "object" ? options : {};
+  // Phase 5.0E (browser): fire-and-forget device-session registration whenever
+  // a fresh rawSession is being published. Runs concurrent with cloud-load /
+  // snapshot persistence; idempotent server-side; failures swallowed.
+  if (opts.rawSession) {
+    void identityDeviceSession_register(opts.rawSession);
+  }
   let runtime = await identityProviderSession_preserveReadyRuntime(safeRuntime);
   if (opts.honorPasswordUpdateRequired !== false && opts.rawSession) {
     const markerActive = await identityProviderPasswordUpdateRequired_isActive();

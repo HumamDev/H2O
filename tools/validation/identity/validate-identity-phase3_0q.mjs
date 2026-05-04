@@ -935,6 +935,7 @@ function assertProviderSourceSafe() {
     ["updateIdentityProfile", "async function updateIdentityProfile(config, input = {})"],
     ["renameIdentityWorkspace", "async function renameIdentityWorkspace(config, input = {})"],
     ["loadIdentityState", "async function loadIdentityState(config, input = {})"],
+    ["registerDeviceSession", "async function registerDeviceSession(config, accessToken, input = {})"],
     ["markPasswordSetupCompleted", "async function markPasswordSetupCompleted(config, input = {})"],
     ["markOAuthCredentialCompleted", "async function markOAuthCredentialCompleted(config, input = {})"],
   ];
@@ -973,6 +974,7 @@ function assertProviderSourceSafe() {
   const loadIdentityStateIndex = source.indexOf("async function loadIdentityState(config, input = {})");
   const markPasswordSetupCompletedIndex = source.indexOf("async function markPasswordSetupCompleted(config, input = {})");
   const markOAuthCredentialCompletedIndex = source.indexOf("async function markOAuthCredentialCompleted(config, input = {})");
+  const registerDeviceSessionIndex = source.indexOf("async function registerDeviceSession(config, accessToken, input = {})");
   const verifyOtpMatches = source.match(/\bverifyOtp\s*\(/g) || [];
   const verifyOtpCall = 'client.auth.verifyOtp({ email, token: code, type: "email" })';
   assert(verifyOtpMatches.length === 2 &&
@@ -1012,13 +1014,14 @@ function assertProviderSourceSafe() {
   assert(signOutMatches.length === 1 && source.indexOf("client.auth.signOut") > signOutProviderSessionIndex,
     "signOut call must appear exactly once inside signOutProviderSession");
   const rpcMatches = source.match(/\.rpc\s*\(/g) || [];
-  assert(rpcMatches.length === 6
+  assert(rpcMatches.length === 7
       && source.indexOf('client.rpc("complete_onboarding"') > completeOnboardingIndex
       && source.indexOf('client.rpc("update_identity_profile"') > updateIdentityProfileIndex
       && source.indexOf('client.rpc("rename_identity_workspace"') > renameIdentityWorkspaceIndex
       && source.indexOf('client.rpc("load_identity_state"') > loadIdentityStateIndex
       && source.indexOf('client.rpc("mark_password_setup_completed"') > markPasswordSetupCompletedIndex
-      && source.indexOf('client.rpc("mark_oauth_credential_completed"') > markOAuthCredentialCompletedIndex,
+      && source.indexOf('client.rpc("mark_oauth_credential_completed"') > markOAuthCredentialCompletedIndex
+      && source.indexOf('client.rpc("register_device_session"') > registerDeviceSessionIndex,
     "RPC calls must appear exactly once inside approved identity provider RPC helpers");
   assert(!/\bglobalThis\.fetch\s*=|\bself\.fetch\s*=|\bwindow\.fetch\s*=/.test(source),
     "provider source must not patch global fetch");

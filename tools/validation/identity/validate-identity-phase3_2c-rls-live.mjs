@@ -165,7 +165,8 @@ function assertNoExtensionSecretOrDbLeak() {
       const markOAuthMatches = source.match(/\bmark_oauth_credential_completed\b/g) || [];
       const updateProfileMatches = source.match(/\bupdate_identity_profile\b/g) || [];
       const renameWorkspaceMatches = source.match(/\brename_identity_workspace\b/g) || [];
-      assert(rpcMatches.length === 6,
+      const registerDeviceSessionMatches = source.match(/\bregister_device_session\b/g) || [];
+      assert(rpcMatches.length === 7,
         `${rel}: only approved identity provider RPC helpers may call .rpc()`);
       assert(onboardingRpcMatches.length === 1 && source.includes('client.rpc("complete_onboarding"'),
         `${rel}: approved provider RPC helper must call only complete_onboarding`);
@@ -179,6 +180,8 @@ function assertNoExtensionSecretOrDbLeak() {
         `${rel}: approved provider account helper must call only update_identity_profile`);
       assert(renameWorkspaceMatches.length === 1 && source.includes('client.rpc("rename_identity_workspace"'),
         `${rel}: approved provider account helper must call only rename_identity_workspace`);
+      assert(registerDeviceSessionMatches.length === 1 && source.includes('client.rpc("register_device_session"'),
+        `${rel}: approved provider device-session helper must call only register_device_session`);
       for (const [label, pattern] of sourceChecks.filter(([label]) => !/RPC/i.test(label))) {
         assert(!pattern.test(source), `${rel} contains forbidden Phase 3.2D extension leak: ${label}`);
       }

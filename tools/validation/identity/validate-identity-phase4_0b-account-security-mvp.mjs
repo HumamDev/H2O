@@ -192,7 +192,7 @@ assert(renameWorkspaceProvider.includes('client.rpc("rename_identity_workspace"'
   !/return\s+\{[\s\S]*rawSession\s*:/.test(renameWorkspaceProvider) &&
   !/return\s+\{[\s\S]*rawUser\s*:/.test(renameWorkspaceProvider),
   "provider renameIdentityWorkspace must call only the approved RPC and return a safe workspace DTO");
-assert((provider.match(/\.rpc\s*\(/g) || []).length === 6,
+assert((provider.match(/\.rpc\s*\(/g) || []).length === 7,
   "provider source must keep RPC calls limited to the approved identity helpers");
 assert(!/\.from\s*\(/.test(provider), "provider must not use direct table access");
 
