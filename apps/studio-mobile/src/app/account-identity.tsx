@@ -49,6 +49,20 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/no-session': 'Please sign in to continue.',
   'identity/no-profile': 'Profile is unavailable.',
   'identity/snapshot-leak': 'Session is invalid. Please sign in again.',
+  // Change-password specific:
+  'identity/missing-current-password': 'Enter your current password.',
+  'identity/missing-new-password': 'Enter a new password.',
+  'identity/password-too-short': 'New password must be at least 8 characters.',
+  'identity/password-mismatch': "New password and confirmation don't match.",
+  'identity/password-same-as-current': 'New password must be different from current.',
+  'identity/password-current-invalid': 'Your current password is incorrect.',
+  'identity/password-weak': 'New password is too weak. Try a longer one.',
+  'identity/password-update-requires-recent-code': 'For security, sign in again and try once more.',
+  'identity/password-update-session-missing': 'Your session expired. Please sign in again.',
+  'identity/password-update-failed': "Couldn't update password. Try again.",
+  'identity/provider-rate-limited': 'Too many attempts. Wait a moment, then try again.',
+  'identity/provider-network-failed': 'Network error. Check your connection.',
+  'identity/provider-rejected': 'Request rejected. Try again later.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -78,6 +92,18 @@ export default function AccountIdentityScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const passwordRef = useRef<TextInput>(null);
 
+  // Change-password form state (signed-in only)
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [localChangePasswordError, setLocalChangePasswordError] = useState<string | null>(null);
+  const [changePasswordSubmitted, setChangePasswordSubmitted] = useState(false);
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState(false);
+  const newPasswordRef = useRef<TextInput>(null);
+  const confirmPasswordRef = useRef<TextInput>(null);
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
     snapshot.status === 'email_pending'
@@ -93,8 +119,26 @@ export default function AccountIdentityScreen() {
       setCode('');
       setMode('password');
       setTab('sign_in');
+    } else {
+      // signed out — clear change-password state too
+      setShowChangePassword(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setLocalChangePasswordError(null);
+      setChangePasswordSubmitted(false);
+      setChangePasswordSuccess(false);
     }
   }, [identity.isSignedIn]);
+
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) {
+        clearTimeout(successTimerRef.current);
+        successTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const styles = useMemo(
     () =>
@@ -289,6 +333,19 @@ export default function AccountIdentityScreen() {
           ...typography.body,
           color: th.scheme === 'light' ? '#A12727' : '#F4B4B4',
         },
+        successBanner: {
+          backgroundColor: th.scheme === 'light' ? '#E5F8E9' : '#1F3A23',
+          borderRadius: 10,
+          padding: spacing.md,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.sm,
+        },
+        successBannerText: {
+          ...typography.body,
+          color: th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4',
+          fontWeight: '600',
+        },
 
         noticeCard: {
           backgroundColor: th.backgroundElement,
@@ -320,6 +377,12 @@ export default function AccountIdentityScreen() {
           textAlign: 'center',
           paddingHorizontal: spacing.md,
         },
+
+        securityForm: {
+          padding: spacing.md,
+          gap: spacing.md,
+          backgroundColor: th.background,
+        },
       }),
     [th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]
   );
@@ -341,6 +404,7 @@ export default function AccountIdentityScreen() {
     trailing?: string;
     trailingNode?: React.ReactNode;
     value?: string;
+    onPress?: () => void;
     disabled?: boolean;
     isLast?: boolean;
   }) {
@@ -351,41 +415,55 @@ export default function AccountIdentityScreen() {
       trailing,
       trailingNode,
       value,
+      onPress,
       disabled = false,
       isLast = false,
     } = opts;
+    const inner = (
+      <>
+        <View style={styles.rowIconWrap}>
+          <SymbolView
+            name={icon}
+            size={20}
+            weight="semibold"
+            tintColor={disabled ? th.textSecondary : th.text}
+          />
+        </View>
+        <View style={styles.rowBody}>
+          <Text style={styles.rowTitle}>{title}</Text>
+          {subtitle ? (
+            <Text style={styles.rowSubtitle} numberOfLines={2}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        <View style={styles.rowTrailing}>
+          {value ? (
+            <Text style={styles.rowValue} numberOfLines={1}>
+              {value}
+            </Text>
+          ) : null}
+          {trailingNode
+            ? trailingNode
+            : trailing
+              ? <Text style={styles.rowTrailingText}>{trailing}</Text>
+              : null}
+        </View>
+      </>
+    );
     return (
       <React.Fragment>
-        <View style={[styles.row, disabled && styles.rowDisabled]}>
-          <View style={styles.rowIconWrap}>
-            <SymbolView
-              name={icon}
-              size={20}
-              weight="semibold"
-              tintColor={disabled ? th.textSecondary : th.text}
-            />
-          </View>
-          <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>{title}</Text>
-            {subtitle ? (
-              <Text style={styles.rowSubtitle} numberOfLines={2}>
-                {subtitle}
-              </Text>
-            ) : null}
-          </View>
-          <View style={styles.rowTrailing}>
-            {value ? (
-              <Text style={styles.rowValue} numberOfLines={1}>
-                {value}
-              </Text>
-            ) : null}
-            {trailingNode
-              ? trailingNode
-              : trailing
-                ? <Text style={styles.rowTrailingText}>{trailing}</Text>
-                : null}
-          </View>
-        </View>
+        {onPress ? (
+          <TouchableOpacity
+            style={[styles.row, disabled && styles.rowDisabled]}
+            onPress={onPress}
+            activeOpacity={0.6}
+            disabled={disabled}>
+            {inner}
+          </TouchableOpacity>
+        ) : (
+          <View style={[styles.row, disabled && styles.rowDisabled]}>{inner}</View>
+        )}
         {!isLast && <View style={styles.separator} />}
       </React.Fragment>
     );
@@ -420,136 +498,358 @@ export default function AccountIdentityScreen() {
     const avatarBg = avatarColor ?? (th.scheme === 'light' ? '#fff' : th.backgroundSelected);
     const avatarInitialsColor = avatarColor ? '#fff' : th.text;
 
+    const canSubmitChangePassword = Boolean(
+      currentPassword.trim() && newPassword.trim() && confirmNewPassword.trim()
+    );
+    const formErrorCode =
+      localChangePasswordError ?? (changePasswordSubmitted ? identity.error?.code ?? null : null);
+    const formErrorCopy = friendlyErrorCopy(formErrorCode);
+
+    function toggleChangePassword() {
+      setShowChangePassword((prev) => {
+        const next = !prev;
+        if (next) {
+          // opening — fresh slate
+          setCurrentPassword('');
+          setNewPassword('');
+          setConfirmNewPassword('');
+          setLocalChangePasswordError(null);
+          setChangePasswordSubmitted(false);
+          setChangePasswordSuccess(false);
+        }
+        return next;
+      });
+    }
+
+    function cancelChangePassword() {
+      setShowChangePassword(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setLocalChangePasswordError(null);
+      setChangePasswordSubmitted(false);
+    }
+
+    function onChangeAnyPasswordField() {
+      if (localChangePasswordError) setLocalChangePasswordError(null);
+      if (changePasswordSubmitted) setChangePasswordSubmitted(false);
+    }
+
+    async function submitChangePassword() {
+      if (busy) return;
+
+      // Client-side validation — fail fast without a provider call.
+      if (!currentPassword.trim()) {
+        setLocalChangePasswordError('identity/missing-current-password');
+        setChangePasswordSubmitted(true);
+        return;
+      }
+      if (!newPassword.trim()) {
+        setLocalChangePasswordError('identity/missing-new-password');
+        setChangePasswordSubmitted(true);
+        return;
+      }
+      if (newPassword.length < 8) {
+        setLocalChangePasswordError('identity/password-too-short');
+        setChangePasswordSubmitted(true);
+        return;
+      }
+      if (newPassword === currentPassword) {
+        setLocalChangePasswordError('identity/password-same-as-current');
+        setChangePasswordSubmitted(true);
+        return;
+      }
+      if (newPassword !== confirmNewPassword) {
+        setLocalChangePasswordError('identity/password-mismatch');
+        setChangePasswordSubmitted(true);
+        return;
+      }
+
+      setLocalChangePasswordError(null);
+      setChangePasswordSubmitted(true);
+      setBusy('change_password');
+      try {
+        const result = await identity.changePassword({
+          currentPassword,
+          newPassword,
+        });
+        if (result.lastError) {
+          // Provider failed; identity.error reflects it. Stay on the form.
+          return;
+        }
+        // Success
+        setShowChangePassword(false);
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmNewPassword('');
+        setChangePasswordSubmitted(false);
+        setChangePasswordSuccess(true);
+        if (successTimerRef.current) clearTimeout(successTimerRef.current);
+        successTimerRef.current = setTimeout(() => setChangePasswordSuccess(false), 4000);
+      } finally {
+        setBusy(null);
+      }
+    }
+
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.content,
-            { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
-          ]}>
-          <View style={styles.accountPanel}>
-            <View style={styles.accountTop}>
-              <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
-                <Text style={[styles.avatarInitials, { color: avatarInitialsColor }]}>
-                  {initials}
-                </Text>
+        <KeyboardAvoidingView
+          style={styles.kav}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={contentTopPadding}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.content,
+              { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+            ]}
+            keyboardShouldPersistTaps="handled">
+            <View style={styles.accountPanel}>
+              <View style={styles.accountTop}>
+                <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
+                  <Text style={[styles.avatarInitials, { color: avatarInitialsColor }]}>
+                    {initials}
+                  </Text>
+                </View>
+                <View style={styles.accountText}>
+                  <Text style={styles.accountTitle} numberOfLines={1}>
+                    {displayName}
+                  </Text>
+                  <Text style={styles.accountSubtitle} numberOfLines={1}>
+                    {realEmail || 'No email on file'}
+                  </Text>
+                </View>
               </View>
-              <View style={styles.accountText}>
-                <Text style={styles.accountTitle} numberOfLines={1}>
-                  {displayName}
-                </Text>
-                <Text style={styles.accountSubtitle} numberOfLines={1}>
-                  {realEmail || 'No email on file'}
-                </Text>
+              <View style={styles.statusPill}>
+                <Text style={styles.statusPillText}>Signed in</Text>
               </View>
             </View>
-            <View style={styles.statusPill}>
-              <Text style={styles.statusPillText}>Signed in</Text>
-            </View>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>PROFILE</Text>
-            <View style={styles.card}>
-              {profile ? (
-                <>
-                  {renderRow({
-                    icon: { ios: 'person.fill', android: 'person', web: 'person' },
-                    title: 'Display Name',
-                    value: profile.displayName || '—',
-                  })}
-                  {renderRow({
-                    icon: { ios: 'envelope.fill', android: 'mail', web: 'mail' },
-                    title: 'Email',
-                    value: realEmail || '—',
-                  })}
-                  {renderRow({
-                    icon: { ios: 'square.stack.3d.up.fill', android: 'workspaces', web: 'workspaces' },
-                    title: 'Workspace',
-                    value: workspace?.name || 'Personal',
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>PROFILE</Text>
+              <View style={styles.card}>
+                {profile ? (
+                  <>
+                    {renderRow({
+                      icon: { ios: 'person.fill', android: 'person', web: 'person' },
+                      title: 'Display Name',
+                      value: profile.displayName || '—',
+                    })}
+                    {renderRow({
+                      icon: { ios: 'envelope.fill', android: 'mail', web: 'mail' },
+                      title: 'Email',
+                      value: realEmail || '—',
+                    })}
+                    {renderRow({
+                      icon: { ios: 'square.stack.3d.up.fill', android: 'workspaces', web: 'workspaces' },
+                      title: 'Workspace',
+                      value: workspace?.name || 'Personal',
+                      isLast: true,
+                    })}
+                  </>
+                ) : (
+                  renderRow({
+                    icon: {
+                      ios: 'person.crop.circle.badge.questionmark',
+                      android: 'help_outline',
+                      web: 'help_outline',
+                    },
+                    title: 'Profile setup pending',
+                    subtitle: 'Your profile will appear here once setup completes.',
                     isLast: true,
-                  })}
-                </>
-              ) : (
-                renderRow({
-                  icon: {
-                    ios: 'person.crop.circle.badge.questionmark',
-                    android: 'help_outline',
-                    web: 'help_outline',
-                  },
-                  title: 'Profile setup pending',
-                  subtitle: 'Your profile will appear here once setup completes.',
+                  })
+                )}
+              </View>
+            </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>SIGN-IN METHOD</Text>
+              <View style={styles.card}>
+                {renderRow({
+                  icon: { ios: 'key.fill', android: 'vpn_key', web: 'key' },
+                  title: 'Email + Password',
+                  subtitle: 'Currently in use',
+                  trailingNode: (
+                    <View style={styles.activePill}>
+                      <Text style={styles.activePillText}>Active</Text>
+                    </View>
+                  ),
+                })}
+                {renderRow({
+                  icon: { ios: 'plus.circle', android: 'add_circle', web: 'add_circle' },
+                  title: 'Other sign-in methods',
+                  subtitle: 'Coming later',
+                  trailing: 'Soon',
+                  disabled: true,
                   isLast: true,
-                })
-              )}
+                })}
+              </View>
             </View>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>SIGN-IN METHOD</Text>
-            <View style={styles.card}>
-              {renderRow({
-                icon: { ios: 'key.fill', android: 'vpn_key', web: 'key' },
-                title: 'Email + Password',
-                subtitle: 'Currently in use',
-                trailingNode: (
-                  <View style={styles.activePill}>
-                    <Text style={styles.activePillText}>Active</Text>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>SECURITY</Text>
+              <View style={styles.card}>
+                {renderRow({
+                  icon: { ios: 'lock.rotation', android: 'lock_reset', web: 'lock' },
+                  title: 'Change password',
+                  subtitle: showChangePassword
+                    ? 'Enter your current and new password.'
+                    : 'Keep your account secure.',
+                  trailingNode: (
+                    <SymbolView
+                      name={
+                        showChangePassword
+                          ? { ios: 'chevron.up', android: 'expand_less', web: 'expand_less' }
+                          : { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }
+                      }
+                      size={14}
+                      weight="semibold"
+                      tintColor={th.textSecondary}
+                    />
+                  ),
+                  onPress: toggleChangePassword,
+                  isLast: !showChangePassword,
+                })}
+                {showChangePassword ? (
+                  <View style={styles.securityForm}>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>CURRENT PASSWORD</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={currentPassword}
+                        onChangeText={(v) => {
+                          setCurrentPassword(v);
+                          onChangeAnyPasswordField();
+                        }}
+                        placeholder="Your current password"
+                        placeholderTextColor={th.textSecondary}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        secureTextEntry
+                        textContentType="password"
+                        editable={!busy}
+                        accessibilityLabel="Current password"
+                        returnKeyType="next"
+                        onSubmitEditing={() => newPasswordRef.current?.focus()}
+                      />
+                    </View>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>NEW PASSWORD</Text>
+                      <TextInput
+                        ref={newPasswordRef}
+                        style={styles.input}
+                        value={newPassword}
+                        onChangeText={(v) => {
+                          setNewPassword(v);
+                          onChangeAnyPasswordField();
+                        }}
+                        placeholder="At least 8 characters"
+                        placeholderTextColor={th.textSecondary}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        secureTextEntry
+                        textContentType="newPassword"
+                        editable={!busy}
+                        accessibilityLabel="New password"
+                        returnKeyType="next"
+                        onSubmitEditing={() => confirmPasswordRef.current?.focus()}
+                      />
+                    </View>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>CONFIRM NEW PASSWORD</Text>
+                      <TextInput
+                        ref={confirmPasswordRef}
+                        style={styles.input}
+                        value={confirmNewPassword}
+                        onChangeText={(v) => {
+                          setConfirmNewPassword(v);
+                          onChangeAnyPasswordField();
+                        }}
+                        placeholder="Re-enter new password"
+                        placeholderTextColor={th.textSecondary}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        secureTextEntry
+                        textContentType="newPassword"
+                        editable={!busy}
+                        accessibilityLabel="Confirm new password"
+                        returnKeyType="go"
+                        onSubmitEditing={submitChangePassword}
+                      />
+                    </View>
+
+                    {formErrorCopy ? (
+                      <View style={styles.errorBanner}>
+                        <Text style={styles.errorBannerText}>{formErrorCopy}</Text>
+                      </View>
+                    ) : null}
+
+                    <TouchableOpacity
+                      style={[
+                        styles.primaryButton,
+                        (Boolean(busy) || !canSubmitChangePassword) && styles.buttonDisabled,
+                      ]}
+                      onPress={submitChangePassword}
+                      activeOpacity={0.7}
+                      disabled={Boolean(busy) || !canSubmitChangePassword}>
+                      {busy === 'change_password' ? (
+                        <ActivityIndicator color="#fff" />
+                      ) : (
+                        <Text style={styles.primaryButtonText}>Update password</Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.linkButton}
+                      onPress={cancelChangePassword}
+                      activeOpacity={0.6}
+                      disabled={Boolean(busy)}>
+                      <Text style={styles.linkButtonTextNeutral}>Cancel</Text>
+                    </TouchableOpacity>
                   </View>
-                ),
-              })}
-              {renderRow({
-                icon: { ios: 'plus.circle', android: 'add_circle', web: 'add_circle' },
-                title: 'Other sign-in methods',
-                subtitle: 'Coming later',
-                trailing: 'Soon',
-                disabled: true,
-                isLast: true,
-              })}
+                ) : null}
+              </View>
             </View>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>SECURITY</Text>
-            <View style={styles.card}>
-              {renderRow({
-                icon: { ios: 'lock.rotation', android: 'lock_reset', web: 'lock' },
-                title: 'Change password',
-                subtitle: 'Coming in a future update.',
-                trailing: 'Soon',
-                disabled: true,
-                isLast: true,
-              })}
+            {changePasswordSuccess && !showChangePassword ? (
+              <View style={styles.successBanner}>
+                <SymbolView
+                  name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+                  size={18}
+                  weight="semibold"
+                  tintColor={th.scheme === 'light' ? '#0F7B2C' : '#9AD8A4'}
+                />
+                <Text style={styles.successBannerText}>Password updated</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.noticeCard}>
+              <Text style={styles.noticeTitle}>Account recovery — coming soon</Text>
+              <Text style={styles.noticeBody}>
+                We're still building account recovery. For now, please save your password
+                somewhere safe. When it ships, we'll send a reset code to{' '}
+                {realEmail || 'your account email'}.
+              </Text>
             </View>
-          </View>
 
-          <View style={styles.noticeCard}>
-            <Text style={styles.noticeTitle}>Account recovery — coming soon</Text>
-            <Text style={styles.noticeBody}>
-              We're still building account recovery. For now, please save your password
-              somewhere safe. When it ships, we'll send a reset code to{' '}
-              {realEmail || 'your account email'}.
-            </Text>
-          </View>
+            {!showChangePassword && errorCopy ? (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorBannerText}>{errorCopy}</Text>
+              </View>
+            ) : null}
 
-          {errorCopy ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerText}>{errorCopy}</Text>
-            </View>
-          ) : null}
-
-          <TouchableOpacity
-            style={[styles.signOutButton, busy === 'signOut' && styles.buttonDisabled]}
-            onPress={() => runAction('signOut', () => identity.signOut())}
-            activeOpacity={0.7}
-            disabled={Boolean(busy)}>
-            {busy === 'signOut' ? (
-              <ActivityIndicator color={DANGER} />
-            ) : (
-              <Text style={styles.signOutButtonText}>Sign out</Text>
-            )}
-          </TouchableOpacity>
-        </ScrollView>
+            <TouchableOpacity
+              style={[styles.signOutButton, busy === 'signOut' && styles.buttonDisabled]}
+              onPress={() => runAction('signOut', () => identity.signOut())}
+              activeOpacity={0.7}
+              disabled={Boolean(busy)}>
+              {busy === 'signOut' ? (
+                <ActivityIndicator color={DANGER} />
+              ) : (
+                <Text style={styles.signOutButtonText}>Sign out</Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }

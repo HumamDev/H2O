@@ -64,6 +64,29 @@ function makeAuthErrorSnapshot(
   };
 }
 
+function mapPasswordUpdateErrorCode(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { status?: number; statusCode?: number; message?: string })
+      : {};
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  if (status === 429 || /rate|too many|cooldown/.test(message)) return 'identity/provider-rate-limited';
+  if (/fetch|network|timeout|failed to fetch/.test(message)) return 'identity/provider-network-failed';
+  if (/weak|password should be|at least|minimum|short/.test(message)) return 'identity/password-weak';
+  if (/current password|invalid.*password|password.*incorrect|wrong password|credentials/.test(message)) {
+    return 'identity/password-current-invalid';
+  }
+  if (/recent|reauth|nonce|same password/.test(message)) {
+    return 'identity/password-update-requires-recent-code';
+  }
+  if (status === 400 || status === 401 || /session|jwt|token|auth/.test(message)) {
+    return 'identity/password-update-session-missing';
+  }
+  if (status === 403 || /rejected|not allowed|forbidden/.test(message)) return 'identity/provider-rejected';
+  return 'identity/password-update-failed';
+}
+
 interface RpcIdentityState {
   profile?: unknown;
   workspace?: unknown;
@@ -146,6 +169,20 @@ export class MobileSupabaseProvider implements IdentityProvider {
     if (opts.persist !== false) {
       try { await writeSnapshot(snap); } catch { /* non-fatal */ }
     }
+    return this.getSnapshot();
+  }
+
+  private async failSoft(error: unknown, fallbackCode: string): Promise<IdentitySnapshot> {
+    const identityError = isIdentityError(error)
+      ? error
+      : createIdentityError(
+          fallbackCode,
+          error instanceof Error ? error.message : 'Identity operation failed.'
+        );
+    // Deliberately omitting `detail` argument — for password operations the raw
+    // provider error could echo request payload. Keep it out of snapshot/storage.
+    this.snapshot = { ...this.snapshot, lastError: identityError, updatedAt: nowIso() };
+    try { await writeSnapshot(this.snapshot); } catch { /* non-fatal */ }
     return this.getSnapshot();
   }
 
@@ -681,14 +718,86 @@ export class MobileSupabaseProvider implements IdentityProvider {
     );
   }
 
-  async changePassword(_input: ChangePasswordInput): Promise<IdentitySnapshot> {
-    return this.fail(
-      createIdentityError(
-        'identity/change-password-deferred',
-        'Password change is not yet available on mobile.'
-      ),
-      'identity/change-password-deferred',
-      { persist: false }
-    );
+  async changePassword(input: ChangePasswordInput): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      const currentPassword = String(input.currentPassword || '').trim();
+      const newPassword = String(input.newPassword || '').trim();
+      if (!currentPassword) {
+        throw createIdentityError('identity/missing-current-password', 'Enter your current password.');
+      }
+      if (!newPassword) {
+        throw createIdentityError('identity/missing-new-password', 'Enter a new password.');
+      }
+      if (newPassword.length < 8) {
+        throw createIdentityError('identity/password-too-short', 'New password must be at least 8 characters.');
+      }
+      if (newPassword === currentPassword) {
+        throw createIdentityError('identity/password-same-as-current', 'New password must be different from current.');
+      }
+      if (!this.accessToken) {
+        throw createIdentityError('identity/password-update-session-missing', 'Your session expired. Please sign in again.');
+      }
+      const refreshToken = await readRefreshToken();
+      if (!refreshToken) {
+        throw createIdentityError('identity/password-update-session-missing', 'Your session expired. Please sign in again.');
+      }
+
+      const ephemeral = createClient(config.url, config.anonKey, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const setRes = await ephemeral.auth.setSession({
+        access_token: this.accessToken,
+        refresh_token: refreshToken,
+      });
+      if (setRes.error) {
+        throw createIdentityError('identity/password-update-session-missing', 'Your session expired. Please sign in again.');
+      }
+
+      // current_password is honored server-side; SDK type defs may omit it.
+      const updatePayload = {
+        password: newPassword,
+        current_password: currentPassword,
+      } as Parameters<typeof ephemeral.auth.updateUser>[0];
+      const result = await ephemeral.auth.updateUser(updatePayload);
+      if (result.error) {
+        throw createIdentityError(
+          mapPasswordUpdateErrorCode(result.error),
+          'Password update failed.'
+        );
+      }
+
+      // Conservative token rotation: only act if updateUser returned a fresh session.
+      const data = (result.data ?? {}) as {
+        session?: {
+          access_token?: string;
+          refresh_token?: string;
+          expires_at?: number;
+          user?: { id?: string; email?: string | null } | null;
+        } | null;
+      };
+      const newSession = data.session;
+      if (newSession && typeof newSession.access_token === 'string') {
+        await this.storeSession({
+          access_token: newSession.access_token,
+          refresh_token: newSession.refresh_token,
+          expires_at: newSession.expires_at,
+          user: newSession.user ?? null,
+        });
+      }
+
+      // Success: keep snapshot status, clear lastError, bump updatedAt.
+      this.snapshot = { ...this.snapshot, lastError: null, updatedAt: nowIso() };
+      try { await writeSnapshot(this.snapshot); } catch { /* non-fatal */ }
+      return this.getSnapshot();
+    } catch (error) {
+      return this.failSoft(error, 'identity/password-update-failed');
+    }
   }
 }
