@@ -1,5 +1,5 @@
 import { SymbolView } from 'expo-symbols';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -12,6 +12,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+import type { DeviceSession, DeviceSessionSurface } from '@h2o/identity-core';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
@@ -107,6 +109,36 @@ function friendlyErrorCopy(code: string | null | undefined): string | null {
   return FRIENDLY_ERRORS[code] ?? 'Something went wrong. Try again.';
 }
 
+function surfaceIcon(surface: DeviceSessionSurface): SymbolName {
+  switch (surface) {
+    case 'ios_app':
+      return { ios: 'iphone', android: 'phone_iphone', web: 'phone_iphone' };
+    case 'android_app':
+      return { ios: 'iphone', android: 'phone_android', web: 'phone_android' };
+    case 'chrome_extension':
+    case 'firefox_extension':
+    case 'web':
+      return { ios: 'globe', android: 'public', web: 'public' };
+    case 'desktop_mac':
+      return { ios: 'desktopcomputer', android: 'computer', web: 'computer' };
+    case 'desktop_windows':
+      return { ios: 'pc', android: 'computer', web: 'computer' };
+    default:
+      return { ios: 'iphone', android: 'phone_iphone', web: 'phone_iphone' };
+  }
+}
+
+function formatLastActive(iso: string): string {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return 'Just now';
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) return 'Just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
 function initialsOf(displayName?: string | null, email?: string | null): string {
   const source = (displayName?.trim() || email?.trim() || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim();
   if (!source) return '•';
@@ -167,6 +199,13 @@ export default function AccountIdentityScreen() {
   const editDisplayNameRef = useRef<TextInput>(null);
   const profileSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Active sessions state (signed-in only).
+  const [sessions, setSessions] = useState<DeviceSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [sessionsLoadedOnce, setSessionsLoadedOnce] = useState(false);
+
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
     snapshot.status === 'email_pending'
@@ -209,6 +248,12 @@ export default function AccountIdentityScreen() {
       setEditWorkspaceName('');
       setLocalWorkspaceError(null);
       setWorkspaceEditSuccess(false);
+      // also clear active-sessions state on sign-out
+      setSessions([]);
+      setCurrentSessionId(null);
+      setSessionsLoading(false);
+      setSessionsError(null);
+      setSessionsLoadedOnce(false);
     }
   }, [identity.isSignedIn]);
 
@@ -228,6 +273,31 @@ export default function AccountIdentityScreen() {
       }
     };
   }, []);
+
+  const { listDeviceSessions, isSignedIn: identityIsSignedIn } = identity;
+
+  const refreshSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    setSessionsError(null);
+    try {
+      const result = await listDeviceSessions();
+      setSessions(result.sessions);
+      setCurrentSessionId(result.currentSessionId);
+      if (result.sessions.length === 0) {
+        setSessionsError("Couldn't load active sessions. Tap refresh to retry.");
+      }
+    } catch {
+      setSessionsError("Couldn't load active sessions. Tap refresh to retry.");
+    } finally {
+      setSessionsLoading(false);
+      setSessionsLoadedOnce(true);
+    }
+  }, [listDeviceSessions]);
+
+  useEffect(() => {
+    if (!identityIsSignedIn) return;
+    void refreshSessions();
+  }, [identityIsSignedIn, refreshSessions]);
 
   const styles = useMemo(
     () =>
@@ -333,6 +403,23 @@ export default function AccountIdentityScreen() {
           backgroundColor: PRIMARY,
         },
         activePillText: { ...typography.caption, color: '#fff', fontWeight: '700' },
+
+        currentDevicePill: {
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: 999,
+          backgroundColor: th.scheme === 'light' ? '#E5F0FF' : 'rgba(32,138,239,0.18)',
+        },
+        currentDevicePillText: { ...typography.caption, color: PRIMARY, fontWeight: '700' },
+        sessionsRefreshButton: {
+          alignSelf: 'flex-start',
+          paddingHorizontal: spacing.md,
+          paddingVertical: 8,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: spacing.xs,
+        },
+        sessionsRefreshText: { ...typography.caption, color: PRIMARY, fontWeight: '600' },
 
         hero: { gap: spacing.xs },
         heroTitle: { ...typography.title, color: th.text, fontSize: 26 },
@@ -1239,6 +1326,96 @@ export default function AccountIdentityScreen() {
                   </View>
                 ) : null}
               </View>
+            </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>ACTIVE SESSIONS</Text>
+              <View style={styles.card}>
+                {!sessionsLoadedOnce && sessionsLoading ? (
+                  <View style={styles.row}>
+                    <View style={styles.rowIconWrap}>
+                      <ActivityIndicator color={th.text} />
+                    </View>
+                    <View style={styles.rowBody}>
+                      <Text style={styles.rowSubtitle}>Loading active sessions…</Text>
+                    </View>
+                  </View>
+                ) : sessions.length === 0 ? (
+                  <View style={styles.row}>
+                    <View style={styles.rowIconWrap}>
+                      <SymbolView
+                        name={{ ios: 'iphone', android: 'phone_iphone', web: 'phone_iphone' }}
+                        size={20}
+                        weight="semibold"
+                        tintColor={th.textSecondary}
+                      />
+                    </View>
+                    <View style={styles.rowBody}>
+                      <Text style={styles.rowTitle}>No active sessions yet</Text>
+                      <Text style={styles.rowSubtitle}>
+                        This list shows where you're signed in. Tap refresh to retry.
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                  sessions.map((session, index) => {
+                    const isLast = index === sessions.length - 1;
+                    const isCurrent = currentSessionId === session.id;
+                    return (
+                      <React.Fragment key={session.id}>
+                        <View style={styles.row}>
+                          <View style={styles.rowIconWrap}>
+                            <SymbolView
+                              name={surfaceIcon(session.surface)}
+                              size={20}
+                              weight="semibold"
+                              tintColor={th.text}
+                            />
+                          </View>
+                          <View style={styles.rowBody}>
+                            <Text style={styles.rowTitle}>{session.label}</Text>
+                            <Text style={styles.rowSubtitle}>
+                              Last active {formatLastActive(session.lastSeenAt)}
+                            </Text>
+                          </View>
+                          <View style={styles.rowTrailing}>
+                            {isCurrent ? (
+                              <View style={styles.currentDevicePill}>
+                                <Text style={styles.currentDevicePillText}>This device</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </View>
+                        {!isLast && <View style={styles.separator} />}
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </View>
+              {sessionsError ? (
+                <View style={styles.errorBanner}>
+                  <Text style={styles.errorBannerText}>{sessionsError}</Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={styles.sessionsRefreshButton}
+                onPress={() => {
+                  void refreshSessions();
+                }}
+                activeOpacity={0.6}
+                disabled={sessionsLoading}>
+                {sessionsLoading ? (
+                  <ActivityIndicator size="small" color={PRIMARY} />
+                ) : (
+                  <SymbolView
+                    name={{ ios: 'arrow.clockwise', android: 'refresh', web: 'refresh' }}
+                    size={14}
+                    weight="semibold"
+                    tintColor={PRIMARY}
+                  />
+                )}
+                <Text style={styles.sessionsRefreshText}>Refresh</Text>
+              </TouchableOpacity>
             </View>
 
             {changePasswordSuccess && !showChangePassword ? (

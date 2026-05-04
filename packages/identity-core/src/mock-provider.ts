@@ -1,9 +1,12 @@
 import type {
   ChangePasswordInput,
+  DeviceSession,
   IdentityProvider,
   IdentitySnapshot,
   InitialWorkspaceInput,
+  ListDeviceSessionsResult,
   ProfilePatch,
+  RegisterDeviceSessionInput,
   SignInEmailInput,
   SignInPasswordInput,
   SignUpPasswordInput,
@@ -27,6 +30,8 @@ export class MockLocalIdentityProvider implements IdentityProvider {
   readonly capabilities = MOCK_LOCAL_CAPABILITIES;
 
   private snapshot: IdentitySnapshot;
+  private mockDeviceSessions: DeviceSession[] = [];
+  private mockCurrentSessionId: string | null = null;
 
   constructor(initial?: Partial<IdentitySnapshot>) {
     this.snapshot = { ...createInitialIdentitySnapshot({ provider: 'mock_local' }), ...initial, updatedAt: nowIso() };
@@ -116,6 +121,8 @@ export class MockLocalIdentityProvider implements IdentityProvider {
 
   async signOut(): Promise<IdentitySnapshot> {
     this.snapshot = transitionIdentity(this.snapshot, 'anonymous_local');
+    this.mockDeviceSessions = [];
+    this.mockCurrentSessionId = null;
     return this.getSnapshot();
   }
 
@@ -196,6 +203,44 @@ export class MockLocalIdentityProvider implements IdentityProvider {
     } catch (error) {
       return this.fail(error, 'identity/mock-change-password-failed');
     }
+  }
+
+  async registerDeviceSession(input: RegisterDeviceSessionInput): Promise<DeviceSession | null> {
+    if (!this.snapshot.profile) return null;
+    const now = nowIso();
+    const existing = this.mockDeviceSessions.find((s) => s.surface === input.surface && s.label === input.label);
+    if (existing) {
+      existing.lastSeenAt = now;
+      existing.revokedAt = null;
+      this.mockCurrentSessionId = existing.id;
+      return { ...existing };
+    }
+    const session: DeviceSession = {
+      id: `mock-session-${this.mockDeviceSessions.length + 1}`,
+      surface: input.surface,
+      label: input.label,
+      createdAt: now,
+      lastSeenAt: now,
+      revokedAt: null,
+    };
+    this.mockDeviceSessions.push(session);
+    this.mockCurrentSessionId = session.id;
+    return { ...session };
+  }
+
+  async touchDeviceSession(): Promise<DeviceSession | null> {
+    if (!this.mockCurrentSessionId) return null;
+    const session = this.mockDeviceSessions.find((s) => s.id === this.mockCurrentSessionId);
+    if (!session) return null;
+    session.lastSeenAt = nowIso();
+    return { ...session };
+  }
+
+  async listDeviceSessions(): Promise<ListDeviceSessionsResult> {
+    return {
+      sessions: this.mockDeviceSessions.filter((s) => !s.revokedAt).map((s) => ({ ...s })),
+      currentSessionId: this.mockCurrentSessionId,
+    };
   }
 
   async renameWorkspace(name: string): Promise<IdentitySnapshot> {

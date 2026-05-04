@@ -1,12 +1,15 @@
 import type {
   ChangePasswordInput,
+  DeviceSession,
   IdentityErrorShape,
   IdentityProvider as IdentityProviderContract,
   IdentityPublicState,
   IdentitySnapshot,
   InitialWorkspaceInput,
+  ListDeviceSessionsResult,
   ProfilePatch,
   ProviderCapabilities,
+  RegisterDeviceSessionInput,
   SignInEmailInput,
   SignInPasswordInput,
   SignUpPasswordInput,
@@ -22,6 +25,7 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 
 import { BOOT_RESTORE_TIMEOUT_MS } from './mobileConfig';
 import { MobileSupabaseProvider } from './MobileSupabaseProvider';
@@ -50,6 +54,9 @@ export interface IdentityContextValue {
   verifyRecoveryCode(input: VerifyEmailCodeInput): Promise<IdentitySnapshot>;
   setPasswordAfterRecovery(password: string): Promise<IdentitySnapshot>;
   renameWorkspace(name: string): Promise<IdentitySnapshot>;
+  registerDeviceSession(input: RegisterDeviceSessionInput): Promise<DeviceSession | null>;
+  touchDeviceSession(): Promise<DeviceSession | null>;
+  listDeviceSessions(): Promise<ListDeviceSessionsResult>;
 }
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -231,6 +238,44 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     [runAction]
   );
 
+  // Device-session passthroughs. These return domain types rather than
+  // IdentitySnapshot, so they bypass the runAction snapshot-commit wrapper.
+  // All three are best-effort on the provider side (resolve to null / empty).
+  const registerDeviceSession = useCallback(
+    async (input: RegisterDeviceSessionInput): Promise<DeviceSession | null> => {
+      const identityProvider = providerRef.current;
+      if (!identityProvider) return null;
+      return identityProvider.registerDeviceSession(input);
+    },
+    []
+  );
+
+  const touchDeviceSession = useCallback(async (): Promise<DeviceSession | null> => {
+    const identityProvider = providerRef.current;
+    if (!identityProvider) return null;
+    return identityProvider.touchDeviceSession();
+  }, []);
+
+  const listDeviceSessions = useCallback(async (): Promise<ListDeviceSessionsResult> => {
+    const identityProvider = providerRef.current;
+    if (!identityProvider) return { sessions: [], currentSessionId: null };
+    return identityProvider.listDeviceSessions();
+  }, []);
+
+  // AppState foreground touch — when the app returns to active, ping the
+  // server so last_seen_at on this device's row stays current. The provider
+  // rate-limits (10 min) so this is cheap on rapid backgrounding cycles.
+  useEffect(() => {
+    const handleChange = (next: AppStateStatus) => {
+      if (next !== 'active') return;
+      void touchDeviceSession();
+    };
+    const sub = AppState.addEventListener('change', handleChange);
+    return () => {
+      sub.remove();
+    };
+  }, [touchDeviceSession]);
+
   const normalizedBootMiss = bootMissNormalized && isExpectedBootMiss(snapshot);
   const value = useMemo<IdentityContextValue>(() => {
     const isReady = isTerminalBootStatus(bootStatus);
@@ -259,14 +304,19 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
       verifyRecoveryCode,
       setPasswordAfterRecovery,
       renameWorkspace,
+      registerDeviceSession,
+      touchDeviceSession,
+      listDeviceSessions,
     };
   }, [
     bootStatus,
     changePassword,
     createInitialWorkspace,
+    listDeviceSessions,
     normalizedBootMiss,
     provider.capabilities,
     refreshSession,
+    registerDeviceSession,
     renameWorkspace,
     requestRecoveryCode,
     setPasswordAfterRecovery,
@@ -275,6 +325,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     signOut,
     signUpWithPassword,
     snapshot,
+    touchDeviceSession,
     updateProfile,
     verifyEmailCode,
     verifyRecoveryCode,

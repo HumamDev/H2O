@@ -1,4 +1,5 @@
 const REFRESH_TOKEN_KEY = 'h2o.identity.provider.refresh.v1';
+const DEVICE_TOKEN_KEY = 'h2o.identity.device.token.v1';
 
 interface SecureStoreModule {
   getItemAsync(key: string): Promise<string | null>;
@@ -46,6 +47,36 @@ export async function deleteRefreshToken(): Promise<void> {
   if (!secureStore) return;
   try {
     await secureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+  } catch {
+    // Key already absent; safe to ignore.
+  }
+}
+
+export async function readDeviceToken(): Promise<string | null> {
+  const secureStore = await getSecureStore();
+  if (!secureStore) return null;
+  try {
+    return await secureStore.getItemAsync(DEVICE_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function writeDeviceToken(value: string): Promise<void> {
+  const secureStore = await getSecureStore();
+  if (!secureStore) return;
+  try {
+    await secureStore.setItemAsync(DEVICE_TOKEN_KEY, value);
+  } catch {
+    // SecureStore unavailable or locked; safe no-op for Expo Go fallback.
+  }
+}
+
+export async function deleteDeviceToken(): Promise<void> {
+  const secureStore = await getSecureStore();
+  if (!secureStore) return;
+  try {
+    await secureStore.deleteItemAsync(DEVICE_TOKEN_KEY);
   } catch {
     // Key already absent; safe to ignore.
   }

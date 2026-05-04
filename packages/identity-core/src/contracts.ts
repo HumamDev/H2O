@@ -109,6 +109,34 @@ export interface InitialWorkspaceInput {
 
 export type ProfilePatch = Partial<Pick<H2OProfile, 'displayName' | 'avatarColor' | 'onboardingCompleted'>>;
 
+export type DeviceSessionSurface =
+  | 'ios_app'
+  | 'android_app'
+  | 'chrome_extension'
+  | 'firefox_extension'
+  | 'desktop_mac'
+  | 'desktop_windows'
+  | 'web';
+
+export interface DeviceSession {
+  id: string;
+  surface: DeviceSessionSurface;
+  label: string;
+  createdAt: string;
+  lastSeenAt: string;
+  revokedAt: string | null;
+}
+
+export interface RegisterDeviceSessionInput {
+  surface: DeviceSessionSurface;
+  label: string;
+}
+
+export interface ListDeviceSessionsResult {
+  sessions: DeviceSession[];
+  currentSessionId: string | null;
+}
+
 export interface ProviderCapabilities {
   emailMagicLink: boolean;
   emailOtp: boolean;
@@ -139,6 +167,9 @@ export interface IdentityProvider {
   setPasswordAfterRecovery(password: string): Promise<IdentitySnapshot>;
   changePassword(input: ChangePasswordInput): Promise<IdentitySnapshot>;
   renameWorkspace(name: string): Promise<IdentitySnapshot>;
+  registerDeviceSession(input: RegisterDeviceSessionInput): Promise<DeviceSession | null>;
+  touchDeviceSession(): Promise<DeviceSession | null>;
+  listDeviceSessions(): Promise<ListDeviceSessionsResult>;
 }
 
 export type IdentityChangeSource =

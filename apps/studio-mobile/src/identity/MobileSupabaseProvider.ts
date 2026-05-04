@@ -1,6 +1,9 @@
+import * as Crypto from 'expo-crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type {
   ChangePasswordInput,
+  DeviceSession,
+  DeviceSessionSurface,
   H2OProfile,
   H2OWorkspace,
   IdentityErrorShape,
@@ -9,8 +12,10 @@ import type {
   IdentityPublicState,
   IdentitySnapshot,
   InitialWorkspaceInput,
+  ListDeviceSessionsResult,
   ProfilePatch,
   ProviderCapabilities,
+  RegisterDeviceSessionInput,
   SignInEmailInput,
   SignInPasswordInput,
   SignUpPasswordInput,
@@ -26,9 +31,28 @@ import {
   transitionIdentity,
 } from '@h2o/identity-core';
 import { getMobileSupabaseConfig, type MobileSupabaseConfig } from './mobileConfig';
-import { deleteRefreshToken, readRefreshToken, writeRefreshToken } from './secureStore';
+import {
+  deleteRefreshToken,
+  readDeviceToken,
+  readRefreshToken,
+  writeDeviceToken,
+  writeRefreshToken,
+} from './secureStore';
 import { clearAllIdentityStorage, writeSessionMeta, writeSnapshot } from './mobileStorage';
 import { selfCheckIdentitySnapshot } from './selfCheck';
+
+const DEVICE_TOUCH_INTERVAL_MS = 10 * 60 * 1000;
+const ALLOWED_DEVICE_SURFACES: ReadonlyArray<DeviceSessionSurface> = [
+  'ios_app',
+  'android_app',
+  'chrome_extension',
+  'firefox_extension',
+  'desktop_mac',
+  'desktop_windows',
+  'web',
+];
+const DEFAULT_MOBILE_SURFACE: DeviceSessionSurface = 'ios_app';
+const DEFAULT_MOBILE_LABEL = 'iPhone — Cockpit Pro';
 
 // ─── module-private helpers ───────────────────────────────────────────────────
 
@@ -164,6 +188,16 @@ export class MobileSupabaseProvider implements IdentityProvider {
   private recoveryVerified = false;
   private recoveryAccessToken: string | null = null;
   private recoveryRefreshToken: string | null = null;
+
+  // Device-session scratch — held in memory only.
+  // - deviceSessionId: server-issued row id from register/touch; used to mark
+  //   "this device" in the active-sessions list. Lost on app restart, but the
+  //   auto-register hook on every successful refresh / sign-in repopulates it.
+  // - lastDeviceTouchAt: epoch ms of the last touch RPC call; touch is
+  //   rate-limited to once every DEVICE_TOUCH_INTERVAL_MS to avoid pointless
+  //   round-trips on AppState foreground events.
+  private deviceSessionId: string | null = null;
+  private lastDeviceTouchAt = 0;
 
   constructor() {
     this.snapshot = createInitialIdentitySnapshot({ provider: 'mock_local' });
@@ -399,6 +433,75 @@ export class MobileSupabaseProvider implements IdentityProvider {
     });
   }
 
+  // ─── device-session helpers ───────────────────────────────────────────────
+  // Device-session token plaintext lives on-device only (SecureStore). The
+  // server stores its SHA-256 in public.device_sessions.device_token_hash. The
+  // plain value is never sent to the server, never logged, and never persisted
+  // outside SecureStore.
+
+  private async generateDeviceTokenHex(): Promise<string> {
+    // Expo Crypto routes to native iOS SecRandomCopyBytes / Android SecureRandom.
+    // No WebCrypto fallback: Hermes does not expose globalThis.crypto on mobile,
+    // and this provider only ever runs in the React Native app.
+    const bytes = await Crypto.getRandomBytesAsync(32);
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 1) {
+      out += bytes[i].toString(16).padStart(2, '0');
+    }
+    return out;
+  }
+
+  private async hashDeviceTokenHex(value: string): Promise<string> {
+    // Expo Crypto's HEX encoding is documented as lowercase; .toLowerCase() is
+    // defensive to satisfy the DB CHECK constraint device_token_hash ~ '^[0-9a-f]{64}$'.
+    const hex = await Crypto.digestStringAsync(
+      Crypto.CryptoDigestAlgorithm.SHA256,
+      value,
+      { encoding: Crypto.CryptoEncoding.HEX }
+    );
+    return hex.toLowerCase();
+  }
+
+  private async ensureDeviceTokenAndHash(): Promise<{ tokenHex: string; hashHex: string }> {
+    let tokenHex = await readDeviceToken();
+    if (!tokenHex || !/^[0-9a-f]{64}$/.test(tokenHex)) {
+      tokenHex = await this.generateDeviceTokenHex();
+      await writeDeviceToken(tokenHex);
+    }
+    const hashHex = await this.hashDeviceTokenHex(tokenHex);
+    return { tokenHex, hashHex };
+  }
+
+  private parseDeviceSessionPayload(value: unknown): DeviceSession | null {
+    const record = this.asRecord(value);
+    if (!record) return null;
+    const id = this.stringField(record, 'id');
+    const surface = this.stringField(record, 'surface');
+    const label = this.stringField(record, 'label');
+    if (!id || !surface || !label) return null;
+    if (!ALLOWED_DEVICE_SURFACES.includes(surface as DeviceSessionSurface)) return null;
+    const revokedRaw = record.revoked_at ?? record.revokedAt;
+    const revokedParsed = typeof revokedRaw === 'string' ? Date.parse(revokedRaw) : NaN;
+    const revokedAt = Number.isFinite(revokedParsed) ? new Date(revokedParsed).toISOString() : null;
+    return {
+      id,
+      surface: surface as DeviceSessionSurface,
+      label,
+      createdAt: this.timestampField(record, 'createdAt', 'created_at'),
+      lastSeenAt: this.timestampField(record, 'lastSeenAt', 'last_seen_at'),
+      revokedAt,
+    };
+  }
+
+  private fireAndForgetRegisterDevice(): void {
+    this.registerDeviceSession({
+      surface: DEFAULT_MOBILE_SURFACE,
+      label: DEFAULT_MOBILE_LABEL,
+    }).catch(() => {
+      /* best-effort; failure must never block auth flow */
+    });
+  }
+
   // ─── public methods ───────────────────────────────────────────────────────
 
   async signInWithEmail(input: SignInEmailInput): Promise<IdentitySnapshot> {
@@ -489,6 +592,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       await this.storeSession(data.session);
+      this.fireAndForgetRegisterDevice();
 
       const authedClient = this.getAuthedClient(config);
       const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
@@ -565,6 +669,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       await this.storeSession(data.session);
+      this.fireAndForgetRegisterDevice();
 
       const authedClient = this.getAuthedClient(config);
       const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
@@ -598,6 +703,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       await this.storeSession(data.session);
+      this.fireAndForgetRegisterDevice();
 
       const authedClient = this.getAuthedClient(config);
       const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
@@ -787,6 +893,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       await this.storeSession(data.session);
+      this.fireAndForgetRegisterDevice();
 
       const authedClient = this.getAuthedClient(config);
       const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
@@ -819,6 +926,11 @@ export class MobileSupabaseProvider implements IdentityProvider {
     this.recoveryVerified = false;
     this.recoveryAccessToken = null;
     this.recoveryRefreshToken = null;
+    // Phase 5.0E v1: keep the SecureStore device token across sign-outs so the
+    // same device row is reused on next sign-in (idempotent register). Only
+    // the in-memory id + touch timestamp are reset.
+    this.deviceSessionId = null;
+    this.lastDeviceTouchAt = 0;
     await deleteRefreshToken();
     await clearAllIdentityStorage();
 
@@ -1010,6 +1122,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
         refresh_token: recoveryRefresh,
         user: sessionUser,
       });
+      this.fireAndForgetRegisterDevice();
 
       const authedClient = this.getAuthedClient(config);
       const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
@@ -1105,6 +1218,206 @@ export class MobileSupabaseProvider implements IdentityProvider {
       return this.getSnapshot();
     } catch (error) {
       return this.failSoft(error, 'identity/password-update-failed');
+    }
+  }
+
+  // ─── device sessions (Phase 5.0E) ─────────────────────────────────────────
+  // None of these methods mutate the public IdentitySnapshot — device-session
+  // data is queried fresh on demand and cached in component state. All three
+  // are best-effort: failures resolve to null / empty list and never raise.
+
+  async registerDeviceSession(input: RegisterDeviceSessionInput): Promise<DeviceSession | null> {
+    const config = getMobileSupabaseConfig();
+    // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
+    const webCrypto = (globalThis as {
+      crypto?: { subtle?: { digest?: unknown }; getRandomValues?: unknown };
+    }).crypto;
+    console.info(
+      `[H2O mobile identity] deviceSessions register start ` +
+      `surface=${input.surface} labelLength=${String(input.label || '').length} ` +
+      `hasConfig=${Boolean(config)} hasAccessToken=${Boolean(this.accessToken)} ` +
+      `hasWebCrypto=${typeof webCrypto !== 'undefined'} ` +
+      `hasWebSubtle=${typeof webCrypto?.subtle !== 'undefined'} ` +
+      `hasWebDigest=${typeof webCrypto?.subtle?.digest === 'function'} ` +
+      `hasWebGetRandomValues=${typeof webCrypto?.getRandomValues === 'function'} ` +
+      `hasExpoDigest=${typeof Crypto.digestStringAsync === 'function'} ` +
+      `hasExpoGetRandomBytes=${typeof Crypto.getRandomBytesAsync === 'function'}`
+    );
+    if (!config || !this.accessToken) {
+      console.warn('[H2O mobile identity] deviceSessions register skipped (no config or no session)');
+      return null;
+    }
+    try {
+      const cleanLabel = String(input.label || '').trim().replace(/\s+/g, ' ').slice(0, 64);
+      if (!cleanLabel) return null;
+      if (!ALLOWED_DEVICE_SURFACES.includes(input.surface)) return null;
+
+      const { hashHex } = await this.ensureDeviceTokenAndHash();
+      console.info(
+        `[H2O mobile identity] deviceSessions hash ready ` +
+        `hashLength=${hashHex.length} hashPrefix6=${hashHex.slice(0, 6)}`
+      );
+
+      const authedClient = this.getAuthedClient(config);
+      const { data, error } = await authedClient.rpc('register_device_session', {
+        p_surface: input.surface,
+        p_label: cleanLabel,
+        p_device_token_hash: hashHex,
+      });
+      if (error) {
+        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
+        console.warn(
+          `[H2O mobile identity] deviceSessions register RPC error ` +
+          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
+          `details=${e?.details} hint=${e?.hint}`
+        );
+        return null;
+      }
+
+      const session = this.parseDeviceSessionPayload(
+        (data as { session?: unknown } | null)?.session
+      );
+      if (session) {
+        this.deviceSessionId = session.id;
+      }
+      console.info(
+        `[H2O mobile identity] deviceSessions register ok ` +
+        `hasSession=${Boolean(session)} hasId=${Boolean(session?.id)} ` +
+        `surface=${session?.surface}`
+      );
+      return session;
+    } catch (caught) {
+      const e = caught as { code?: string; message?: string; status?: number };
+      console.warn(
+        `[H2O mobile identity] deviceSessions register threw ` +
+        `code=${e?.code} message=${e?.message} status=${e?.status}`
+      );
+      return null;
+    }
+  }
+
+  async touchDeviceSession(): Promise<DeviceSession | null> {
+    const config = getMobileSupabaseConfig();
+    if (!config || !this.accessToken) return null;
+
+    const now = Date.now();
+    if (now - this.lastDeviceTouchAt < DEVICE_TOUCH_INTERVAL_MS) return null;
+
+    try {
+      const tokenHex = await readDeviceToken();
+      // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
+      console.info(
+        `[H2O mobile identity] deviceSessions touch start ` +
+        `hasStoredHex=${Boolean(tokenHex)} ` +
+        `msSinceLastTouch=${this.lastDeviceTouchAt === 0 ? 'first' : now - this.lastDeviceTouchAt}`
+      );
+      if (!tokenHex || !/^[0-9a-f]{64}$/.test(tokenHex)) return null;
+      const hashHex = await this.hashDeviceTokenHex(tokenHex);
+
+      const authedClient = this.getAuthedClient(config);
+      const { data, error } = await authedClient.rpc('touch_device_session', {
+        p_device_token_hash: hashHex,
+      });
+      if (error) {
+        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
+        console.warn(
+          `[H2O mobile identity] deviceSessions touch RPC error ` +
+          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
+          `details=${e?.details} hint=${e?.hint}`
+        );
+        return null;
+      }
+
+      this.lastDeviceTouchAt = now;
+      const session = this.parseDeviceSessionPayload(
+        (data as { session?: unknown } | null)?.session
+      );
+      if (session) {
+        this.deviceSessionId = session.id;
+      }
+      console.info(
+        `[H2O mobile identity] deviceSessions touch ok ` +
+        `hasSession=${Boolean(session)} hasId=${Boolean(session?.id)}`
+      );
+      return session;
+    } catch (caught) {
+      const e = caught as { code?: string; message?: string; status?: number };
+      console.warn(
+        `[H2O mobile identity] deviceSessions touch threw ` +
+        `code=${e?.code} message=${e?.message} status=${e?.status}`
+      );
+      return null;
+    }
+  }
+
+  async listDeviceSessions(): Promise<ListDeviceSessionsResult> {
+    const empty: ListDeviceSessionsResult = { sessions: [], currentSessionId: null };
+    const config = getMobileSupabaseConfig();
+    // TODO(5.0E-phase-b-debug): remove temporary diagnostics once root cause confirmed.
+    console.info(
+      `[H2O mobile identity] deviceSessions list start ` +
+      `hasConfig=${Boolean(config)} hasAccessToken=${Boolean(this.accessToken)} ` +
+      `hasKnownSessionId=${Boolean(this.deviceSessionId)}`
+    );
+    if (!config || !this.accessToken) {
+      console.warn('[H2O mobile identity] deviceSessions list skipped (no config or no session)');
+      return empty;
+    }
+    try {
+      // Lazy fallback: if the auto-register hooks haven't yet populated
+      // deviceSessionId (e.g., user opens /account-identity right after a
+      // fresh refresh), do a best-effort register first so the
+      // current-device pill resolves correctly on first paint.
+      if (!this.deviceSessionId) {
+        console.info('[H2O mobile identity] deviceSessions list lazy register');
+        await this.registerDeviceSession({
+          surface: DEFAULT_MOBILE_SURFACE,
+          label: DEFAULT_MOBILE_LABEL,
+        });
+        console.info(
+          `[H2O mobile identity] deviceSessions list lazy register outcome ` +
+          `hasKnownSessionId=${Boolean(this.deviceSessionId)}`
+        );
+      }
+
+      const authedClient = this.getAuthedClient(config);
+      const { data, error } = await authedClient.rpc('list_my_device_sessions');
+      if (error) {
+        const e = error as { code?: string; message?: string; details?: string; hint?: string; status?: number };
+        console.warn(
+          `[H2O mobile identity] deviceSessions list RPC error ` +
+          `code=${e?.code} message=${e?.message} status=${e?.status} ` +
+          `details=${e?.details} hint=${e?.hint}`
+        );
+        return empty;
+      }
+
+      const rawList = (data as { sessions?: unknown } | null)?.sessions;
+      console.info(
+        `[H2O mobile identity] deviceSessions list raw ` +
+        `hasData=${Boolean(data)} hasSessionsArray=${Array.isArray(rawList)} ` +
+        `rawCount=${Array.isArray(rawList) ? rawList.length : 0}`
+      );
+      if (!Array.isArray(rawList)) return empty;
+
+      const sessions: DeviceSession[] = [];
+      for (const item of rawList) {
+        const parsed = this.parseDeviceSessionPayload(item);
+        if (parsed) sessions.push(parsed);
+      }
+      console.info(
+        `[H2O mobile identity] deviceSessions list result ` +
+        `sessionCount=${sessions.length} ` +
+        `hasCurrentSessionId=${Boolean(this.deviceSessionId)}`
+      );
+      return { sessions, currentSessionId: this.deviceSessionId };
+    } catch (caught) {
+      const e = caught as { code?: string; message?: string; status?: number };
+      console.warn(
+        `[H2O mobile identity] deviceSessions list threw ` +
+        `code=${e?.code} message=${e?.message} status=${e?.status}`
+      );
+      return empty;
     }
   }
 }
