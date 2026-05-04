@@ -6,7 +6,7 @@ export const RECOVERY_FLOW_VERIFIED = true;
 // the live-iPhone QA matrix passes (see Phase 5.0F closeout doc, future commit).
 // While false, the "Continue with Google" button is hidden in the signed-out
 // view; the provider method exists but is unreachable from the UI.
-export const GOOGLE_OAUTH_VERIFIED = false;
+export const GOOGLE_OAUTH_VERIFIED = true;
 
 const _url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const _anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
