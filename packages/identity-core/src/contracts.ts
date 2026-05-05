@@ -171,6 +171,7 @@ export interface IdentityProvider {
   touchDeviceSession(): Promise<DeviceSession | null>;
   listDeviceSessions(): Promise<ListDeviceSessionsResult>;
   signInWithGoogle(): Promise<IdentitySnapshot>;
+  signInWithApple(): Promise<IdentitySnapshot>;
 }
 
 export type IdentityChangeSource =
@@ -194,7 +195,8 @@ export type IdentityChangeSource =
   | 'setPasswordAfterRecovery'
   | 'changePassword'
   | 'renameWorkspace'
-  | 'signInWithGoogle';
+  | 'signInWithGoogle'
+  | 'signInWithApple';
 
 export interface IdentityChangeEvent {
   source: IdentityChangeSource;

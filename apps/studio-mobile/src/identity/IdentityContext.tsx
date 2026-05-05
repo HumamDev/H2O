@@ -58,6 +58,7 @@ export interface IdentityContextValue {
   touchDeviceSession(): Promise<DeviceSession | null>;
   listDeviceSessions(): Promise<ListDeviceSessionsResult>;
   signInWithGoogle(): Promise<IdentitySnapshot>;
+  signInWithApple(): Promise<IdentitySnapshot>;
 }
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -244,6 +245,11 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     [runAction]
   );
 
+  const signInWithApple = useCallback(
+    () => runAction((identityProvider) => identityProvider.signInWithApple()),
+    [runAction]
+  );
+
   // Device-session passthroughs. These return domain types rather than
   // IdentitySnapshot, so they bypass the runAction snapshot-commit wrapper.
   // All three are best-effort on the provider side (resolve to null / empty).
@@ -314,6 +320,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
       touchDeviceSession,
       listDeviceSessions,
       signInWithGoogle,
+      signInWithApple,
     };
   }, [
     bootStatus,
@@ -327,6 +334,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     renameWorkspace,
     requestRecoveryCode,
     setPasswordAfterRecovery,
+    signInWithApple,
     signInWithEmail,
     signInWithGoogle,
     signInWithPassword,

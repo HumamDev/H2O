@@ -32,7 +32,7 @@ import {
 } from '@/components/cockpit/tokens';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
-import { GOOGLE_OAUTH_VERIFIED, RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
+import { APPLE_OAUTH_VERIFIED, GOOGLE_OAUTH_VERIFIED, RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
@@ -127,6 +127,12 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/oauth-callback-no-code-no-error': 'Google callback had no code or error.',
   'identity/oauth-provider-unavailable': 'Google sign-in is not available right now.',
   'identity/oauth-not-supported': 'Google sign-in is not available in this build.',
+  // Apple Sign-In (5.0G) specific:
+  'identity/apple-cancelled': 'Apple sign-in was cancelled.',
+  'identity/apple-failed': "Couldn't sign in with Apple. Try again.",
+  'identity/apple-token-invalid': 'Apple sign-in returned an invalid response.',
+  'identity/apple-not-available': 'Apple sign-in is not available on this device.',
+  'identity/apple-not-supported': 'Apple sign-in is not available in this build.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -564,6 +570,13 @@ export default function AccountIdentityScreen() {
           paddingVertical: 12,
         },
         oauthButtonText: { ...typography.body, color: th.text, fontWeight: '700' },
+        // Phase 5.0G: Apple HIG button — black background, white logo + label.
+        // Apple's review guidelines accept black, white, or white-with-outline.
+        // We pick black for parity with the cockpit dark theme; the explicit
+        // border color matches the background so the same `oauthButton` shape
+        // continues to render cleanly without the cockpit hair-line outline.
+        appleOauthButton: { backgroundColor: '#000000', borderColor: '#000000' },
+        appleOauthButtonText: { color: '#FFFFFF' },
         oauthGlyphCircle: {
           width: 22,
           height: 22,
@@ -2145,53 +2158,81 @@ export default function AccountIdentityScreen() {
               styles.formCard,
               { backgroundColor: COCKPIT_BG_RAISED, borderColor: COCKPIT_HAIR },
             ]}>
+            {APPLE_OAUTH_VERIFIED && Platform.OS === 'ios' ? (
+              <TouchableOpacity
+                style={[
+                  styles.oauthButton,
+                  styles.appleOauthButton,
+                  Boolean(busy) && styles.buttonDisabled,
+                ]}
+                onPress={() => runAction('apple_oauth', () => identity.signInWithApple())}
+                activeOpacity={0.7}
+                disabled={Boolean(busy)}
+                accessibilityLabel="Continue with Apple">
+                {busy === 'apple_oauth' ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <>
+                    <SymbolView
+                      name="apple.logo"
+                      size={18}
+                      weight="semibold"
+                      tintColor="#FFFFFF"
+                    />
+                    <Text style={[styles.oauthButtonText, styles.appleOauthButtonText]}>
+                      Continue with Apple
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            ) : null}
             {GOOGLE_OAUTH_VERIFIED ? (
-              <>
-                <TouchableOpacity
-                  style={[
-                    styles.oauthButton,
-                    {
-                      backgroundColor: COCKPIT_BG_HOVER,
-                      borderColor: COCKPIT_HAIR_STRONG,
-                    },
-                    Boolean(busy) && styles.buttonDisabled,
-                  ]}
-                  onPress={() => runAction('google_oauth', () => identity.signInWithGoogle())}
-                  activeOpacity={0.7}
-                  disabled={Boolean(busy)}
-                  accessibilityLabel="Continue with Google">
-                  {busy === 'google_oauth' ? (
-                    <ActivityIndicator color={COCKPIT_INK} />
-                  ) : (
-                    <>
-                      <View
-                        style={[
-                          styles.oauthGlyphCircle,
-                          {
-                            backgroundColor: COCKPIT_BG_RAISED,
-                            borderColor: COCKPIT_HAIR_STRONG,
-                          },
-                        ]}>
-                        <Text style={[styles.oauthGlyphLetter, { color: COCKPIT_INK }]}>G</Text>
-                      </View>
-                      <Text style={[styles.oauthButtonText, { color: COCKPIT_INK }]}>
-                        Continue with Google
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-                <View style={styles.oauthDivider}>
-                  <View
-                    style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
-                  />
-                  <Text style={[styles.oauthDividerText, { color: COCKPIT_INK_DIM }]}>
-                    or use email
-                  </Text>
-                  <View
-                    style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
-                  />
-                </View>
-              </>
+              <TouchableOpacity
+                style={[
+                  styles.oauthButton,
+                  {
+                    backgroundColor: COCKPIT_BG_HOVER,
+                    borderColor: COCKPIT_HAIR_STRONG,
+                  },
+                  Boolean(busy) && styles.buttonDisabled,
+                ]}
+                onPress={() => runAction('google_oauth', () => identity.signInWithGoogle())}
+                activeOpacity={0.7}
+                disabled={Boolean(busy)}
+                accessibilityLabel="Continue with Google">
+                {busy === 'google_oauth' ? (
+                  <ActivityIndicator color={COCKPIT_INK} />
+                ) : (
+                  <>
+                    <View
+                      style={[
+                        styles.oauthGlyphCircle,
+                        {
+                          backgroundColor: COCKPIT_BG_RAISED,
+                          borderColor: COCKPIT_HAIR_STRONG,
+                        },
+                      ]}>
+                      <Text style={[styles.oauthGlyphLetter, { color: COCKPIT_INK }]}>G</Text>
+                    </View>
+                    <Text style={[styles.oauthButtonText, { color: COCKPIT_INK }]}>
+                      Continue with Google
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            ) : null}
+            {(APPLE_OAUTH_VERIFIED && Platform.OS === 'ios') || GOOGLE_OAUTH_VERIFIED ? (
+              <View style={styles.oauthDivider}>
+                <View
+                  style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
+                />
+                <Text style={[styles.oauthDividerText, { color: COCKPIT_INK_DIM }]}>
+                  or use email
+                </Text>
+                <View
+                  style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
+                />
+              </View>
             ) : null}
             <View style={styles.field}>
               <Text style={[styles.fieldLabel, { color: COCKPIT_INK_DIM }]}>EMAIL</Text>

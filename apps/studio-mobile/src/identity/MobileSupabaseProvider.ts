@@ -1,3 +1,4 @@
+import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -59,6 +60,41 @@ const DEFAULT_MOBILE_LABEL = 'iPhone — Cockpit Pro';
 // `scheme: "studiomobile"`. Must be present in the Supabase project's
 // Authentication → URL Configuration → Redirect URLs allow-list before live QA.
 const MOBILE_OAUTH_REDIRECT_URI = 'studiomobile://identity/oauth/google';
+
+// Phase 5.0G Apple Sign-In error mapper. Apple's expo-apple-authentication
+// surface returns codes like ERR_REQUEST_CANCELED, ERR_REQUEST_NOT_HANDLED,
+// ERR_REQUEST_INVALID_RESPONSE, ERR_REQUEST_FAILED, ERR_REQUEST_NOT_INTERACTIVE,
+// ERR_REQUEST_UNKNOWN. Supabase signInWithIdToken returns standard PostgREST
+// auth errors. Both surfaces are normalized into the identity/apple-* family
+// here so the UI's FRIENDLY_ERRORS table can render actionable copy.
+function mapAppleSignInErrorCode(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { code?: string; status?: number; statusCode?: number; message?: string })
+      : {};
+  const code = String(src.code || '').toUpperCase();
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  if (code === 'ERR_REQUEST_CANCELED' || /cancel|dismiss|closed/.test(message)) {
+    return 'identity/apple-cancelled';
+  }
+  if (code === 'ERR_REQUEST_NOT_HANDLED' || /not\s*available|not\s*supported/.test(message)) {
+    return 'identity/apple-not-available';
+  }
+  if (code === 'ERR_REQUEST_INVALID_RESPONSE' || /invalid\s*response|malformed|missing\s*token/.test(message)) {
+    return 'identity/apple-token-invalid';
+  }
+  if (status === 429 || /rate|too many|cooldown/.test(message)) {
+    return 'identity/provider-rate-limited';
+  }
+  if (/fetch|network|timeout|failed to fetch/.test(message)) {
+    return 'identity/provider-network-failed';
+  }
+  if (status === 403 || /forbidden|rejected/.test(message)) {
+    return 'identity/provider-rejected';
+  }
+  return 'identity/apple-failed';
+}
 
 function mapMobileOAuthErrorCode(error: unknown): string {
   const src =
@@ -261,6 +297,16 @@ export class MobileSupabaseProvider implements IdentityProvider {
   //   round-trips on AppState foreground events.
   private deviceSessionId: string | null = null;
   private lastDeviceTouchAt = 0;
+
+  // Phase 5.0G Apple-first-sign-in scratch — held in memory only.
+  // Apple returns the user's full name only on the very first sign-in for a
+  // given Apple ID + bundle ID pair; subsequent sign-ins return null. If the
+  // user has no profile yet (first sign-in for this account), this stash
+  // survives long enough for createInitialWorkspace() during onboarding to
+  // forward it as p_display_name to complete_onboarding. Cleared on
+  // signOut and after a successful createInitialWorkspace. Never persisted to
+  // SecureStore, AsyncStorage, snapshot, or audit.
+  private appleFirstSignInDisplayName: string | null = null;
 
   constructor() {
     this.snapshot = createInitialIdentitySnapshot({ provider: 'mock_local' });
@@ -818,15 +864,29 @@ export class MobileSupabaseProvider implements IdentityProvider {
       }
 
       const authedClient = this.getAuthedClient(config);
+      // Phase 5.0G: if the user just signed in with Apple and Apple returned
+      // a fullName on first sign-in (stashed on appleFirstSignInDisplayName),
+      // use it as the display-name fallback when the onboarding form did not
+      // supply one. Apple only returns fullName on the very first sign-in
+      // for a given Apple ID + bundle ID, so this is the only window to
+      // capture it. Onboarding-supplied input still wins.
+      const trimmedDisplayInput =
+        typeof input.displayName === 'string' ? input.displayName.trim() : '';
+      const finalDisplayName =
+        trimmedDisplayInput || this.appleFirstSignInDisplayName || null;
       // Match SQL: complete_onboarding(p_display_name, p_avatar_color, p_workspace_name)
       // PostgREST routes RPC by parameter name; unprefixed keys would fail the
       // function-cache lookup. Same parameter-name fix as update_identity_profile.
       const { data: rpcData, error: rpcError } = await authedClient.rpc('complete_onboarding', {
-        p_display_name: input.displayName ?? null,
+        p_display_name: finalDisplayName,
         p_avatar_color: input.avatarColor ?? null,
         p_workspace_name: input.workspaceName ?? null,
       });
       if (rpcError) throw rpcError;
+
+      // Apple first-sign-in fallback has been forwarded (if applicable);
+      // clear so it doesn't leak into a later onboarding attempt.
+      this.appleFirstSignInDisplayName = null;
 
       const snap = this.buildSnapshotFromRpc(rpcData as RpcIdentityState | null, this.snapshotEmailFallback());
       return this.commitSnapshot(snap);
@@ -1015,6 +1075,10 @@ export class MobileSupabaseProvider implements IdentityProvider {
     // the in-memory id + touch timestamp are reset.
     this.deviceSessionId = null;
     this.lastDeviceTouchAt = 0;
+    // Phase 5.0G: clear any pending Apple first-sign-in display-name stash.
+    // It is meaningless across a sign-out boundary; the next Apple sign-in
+    // (rare for the same Apple ID after revoke) repopulates it.
+    this.appleFirstSignInDisplayName = null;
     await deleteRefreshToken();
     await clearAllIdentityStorage();
 
@@ -1495,6 +1559,134 @@ export class MobileSupabaseProvider implements IdentityProvider {
       return this.commitSnapshot(snap);
     } catch (error) {
       return this.failSoft(error, 'identity/oauth-failed');
+    }
+  }
+
+  // ─── Apple Sign-In (Phase 5.0G, gated on APPLE_OAUTH_VERIFIED in mobileConfig) ─
+  // Native iOS flow via expo-apple-authentication. Apple returns a JWT-shaped
+  // identityToken signed by Apple; Supabase signInWithIdToken verifies the
+  // signature, the audience claim (= bundle ID), and that SHA-256 of the
+  // supplied plain nonce matches the JWT's `nonce` claim. Sensitive material
+  // (identityToken, authorizationCode, plainNonceHex, hashedNonceHex,
+  // appleResponse.email) is held in local variables only; nothing is logged,
+  // surfaced to the snapshot, or persisted to AsyncStorage/audit. Refresh
+  // token graduates to SecureStore via the existing storeSession path; access
+  // token remains memory-only. No PKCE: Apple's flow uses the nonce dance
+  // instead, and the shared main client is sufficient (the Google PKCE
+  // _oauthClient is unused here).
+  async signInWithApple(): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.fail(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured',
+        { persist: false, clearSession: true }
+      );
+    }
+    try {
+      // Apple Sign-In is iOS-only. isAvailableAsync() returns false on
+      // Android/web and on iOS versions that don't support Sign in with
+      // Apple (iOS 13+ universally supports it, so this path is rare on
+      // shipped iOS hardware). The UI also gates the button on
+      // Platform.OS === 'ios' — this is the safety net.
+      const available = await AppleAuthentication.isAvailableAsync();
+      if (!available) {
+        return this.failSoft(
+          createIdentityError('identity/apple-not-available', 'Apple sign-in is not available on this device.'),
+          'identity/apple-not-available'
+        );
+      }
+
+      // Nonce dance: Apple includes SHA-256(plainNonceHex) in the identity
+      // token's `nonce` claim. Supabase verifies that SHA-256(supplied plain
+      // nonce) matches that claim. plainNonceHex flows to
+      // client.auth.signInWithIdToken; hashedNonceHex flows to
+      // AppleAuthentication.signInAsync. Both stay in local variables only.
+      const plainNonceBytes = await Crypto.getRandomBytesAsync(32);
+      let plainNonceHex = '';
+      for (let i = 0; i < plainNonceBytes.length; i += 1) {
+        plainNonceHex += plainNonceBytes[i].toString(16).padStart(2, '0');
+      }
+      const hashedNonceHex = (
+        await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          plainNonceHex,
+          { encoding: Crypto.CryptoEncoding.HEX }
+        )
+      ).toLowerCase();
+
+      const appleResponse = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonceHex,
+      });
+
+      const identityToken = appleResponse.identityToken;
+      if (!identityToken) {
+        throw createIdentityError(
+          'identity/apple-token-invalid',
+          'Apple sign-in returned no identity token.'
+        );
+      }
+
+      // First-sign-in capture: Apple returns fullName + email only on the
+      // very first sign-in for a given Apple ID + bundle ID pair; subsequent
+      // sign-ins return null. The composed full name is stashed on the
+      // private appleFirstSignInDisplayName field (memory only) so that
+      // createInitialWorkspace() during onboarding can forward it as
+      // p_display_name. Apple's email is verified by Supabase via the
+      // identity token's email claim and persists on auth.users
+      // automatically — no separate forward needed for email.
+      const givenName = String(appleResponse.fullName?.givenName ?? '').trim();
+      const familyName = String(appleResponse.fullName?.familyName ?? '').trim();
+      const composedFullName = [givenName, familyName].filter(Boolean).join(' ').trim();
+
+      const client = this.getClient(config);
+      const { data, error } = await client.auth.signInWithIdToken({
+        provider: 'apple',
+        token: identityToken,
+        nonce: plainNonceHex,
+      });
+      if (error || !data.session) {
+        throw createIdentityError(
+          mapAppleSignInErrorCode(error),
+          'Apple sign-in could not complete.'
+        );
+      }
+
+      await this.storeSession(data.session);
+      this.fireAndForgetRegisterDevice();
+
+      const authedClient = this.getAuthedClient(config);
+      const { data: rpcData, error: rpcError } = await authedClient.rpc('load_identity_state');
+      if (rpcError) throw rpcError;
+
+      const snap = this.buildSnapshotFromRpc(
+        rpcData as RpcIdentityState | null,
+        this.normalizedEmailCandidate(
+          data.session.user?.email,
+          this.snapshot.profile?.email,
+          this.snapshot.pendingEmail
+        )
+      );
+
+      // Stash the composed full name only if a profile does not yet exist
+      // with a non-empty displayName. Returning users with an existing
+      // profile keep their previously chosen display name — Apple only
+      // returns fullName on first sign-in anyway, so this branch is rare.
+      if (composedFullName && !snap.profile?.displayName) {
+        this.appleFirstSignInDisplayName = composedFullName;
+      }
+
+      return this.commitSnapshot(snap);
+    } catch (error) {
+      const code = mapAppleSignInErrorCode(error);
+      if (code === 'identity/apple-cancelled' || code === 'identity/apple-not-available') {
+        return this.failSoft(error, code);
+      }
+      return this.failSoft(error, 'identity/apple-failed');
     }
   }
 

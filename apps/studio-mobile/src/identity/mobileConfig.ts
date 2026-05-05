@@ -8,6 +8,14 @@ export const RECOVERY_FLOW_VERIFIED = true;
 // view; the provider method exists but is unreachable from the UI.
 export const GOOGLE_OAUTH_VERIFIED = true;
 
+// Phase 5.0G mobile Apple Sign-In — dormant by default. Flip to true ONLY after
+// the live-iPhone QA matrix passes (see Phase 5.0G closeout doc, future commit).
+// While false, the "Continue with Apple" button is hidden in the signed-out
+// view; the provider method exists but is unreachable from the UI. The button
+// is additionally gated on Platform.OS === 'ios' since expo-apple-authentication
+// is iOS-only.
+export const APPLE_OAUTH_VERIFIED = false;
+
 const _url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const _anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 

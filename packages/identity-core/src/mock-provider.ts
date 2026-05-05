@@ -250,6 +250,13 @@ export class MockLocalIdentityProvider implements IdentityProvider {
     );
   }
 
+  async signInWithApple(): Promise<IdentitySnapshot> {
+    return this.fail(
+      createIdentityError('identity/apple-not-supported', 'Apple sign-in is not available in the local mock provider.'),
+      'identity/apple-not-supported'
+    );
+  }
+
   async renameWorkspace(name: string): Promise<IdentitySnapshot> {
     try {
       if (!this.snapshot.workspace) throw createIdentityError('identity/no-workspace', 'No workspace exists to rename.');

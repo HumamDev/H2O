@@ -9,7 +9,8 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/images/icon.png",
-      "bundleIdentifier": "com.anonymous.studio-mobile"
+      "bundleIdentifier": "com.anonymous.studio-mobile",
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
