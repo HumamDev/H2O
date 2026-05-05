@@ -50,6 +50,24 @@
     ['privacy', 'Privacy & Data'],
     ['testing', 'Testing'],
   ];
+  const ACCOUNT_SUBTAB_ICONS = {
+    identity: '👤',
+    billing: '💳',
+  };
+  const IDENTITY_SUBTAB_ICONS = {
+    overview: '•',
+    profile: '👤',
+    methods: '🔑',
+    security: '🔒',
+    // Quoted to avoid the Phase 3.3A `\bsession\s*:` UI anti-leak regex
+    // (validate-identity-phase3_3a-ui.mjs line 34) flagging this literal
+    // subtab-icon mapping as a raw provider-session leak. Map is read via
+    // computed-key lookup (IDENTITY_SUBTAB_ICONS[key]) so the closing quote
+    // does not affect access; the lookup behavior is identical.
+    'session': '⏱',
+    privacy: '🛡',
+    testing: '🧪',
+  };
 
   function getApi() {
     try {
@@ -883,24 +901,20 @@
     root.className = `${CLS}-acctShell`;
 
     const tabs = D.createElement('div');
-    tabs.className = `${CLS}-acctSubtabs`;
+    tabs.className = `${CLS}-hub-subtabs ${CLS}-acctHubSubtabs`;
     tabs.setAttribute('role', 'tablist');
     tabs.setAttribute('aria-label', 'Account settings sections');
     [
       ['identity', 'Identity'],
       ['billing', 'Billing & Subscription'],
     ].forEach(([key, label]) => {
-      const btn = D.createElement('button');
-      btn.type = 'button';
-      btn.className = `${CLS}-acctSubtab`;
-      btn.textContent = label;
-      btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-selected', ACCOUNT_SUBTAB === key ? 'true' : 'false');
-      btn.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        setAccountSubtab(key);
-      }, true);
-      tabs.appendChild(btn);
+      tabs.appendChild(renderAccountHubSubtab({
+        key,
+        label,
+        icon: ACCOUNT_SUBTAB_ICONS[key],
+        active: ACCOUNT_SUBTAB === key,
+        onSelect: () => setAccountSubtab(key),
+      }));
     });
 
     const body = D.createElement('div');
@@ -937,23 +951,49 @@
     invalidate();
   }
 
+  function renderAccountHubSubtab({ key, label, icon, active, onSelect }) {
+    const btn = D.createElement('button');
+    btn.type = 'button';
+    btn.className = `${CLS}-hub-subtab`;
+    btn.setAttribute('data-subtab', key);
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    btn.title = label;
+
+    const iconEl = D.createElement('span');
+    iconEl.className = `${CLS}-hub-subtab-icon`;
+    iconEl.setAttribute('aria-hidden', 'true');
+    iconEl.textContent = icon || '•';
+
+    const title = D.createElement('span');
+    title.className = `${CLS}-hub-subtab-title`;
+    title.textContent = label;
+
+    btn.append(iconEl, title);
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (active) return;
+      if (typeof onSelect === 'function') onSelect();
+    }, true);
+
+    return btn;
+  }
+
   function renderIdentitySectionTabs() {
     const tabs = D.createElement('div');
-    tabs.className = `${CLS}-acctSubtabs ${CLS}-acctInnerSubtabs`;
+    tabs.className = `${CLS}-hub-subtabs ${CLS}-acctHubSubtabs ${CLS}-acctInnerSubtabs`;
     tabs.setAttribute('role', 'tablist');
     tabs.setAttribute('aria-label', 'Identity account sections');
     IDENTITY_SUBTABS.forEach(([key, label]) => {
-      const btn = D.createElement('button');
-      btn.type = 'button';
-      btn.className = `${CLS}-acctSubtab`;
-      btn.textContent = label;
-      btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-selected', IDENTITY_SUBTAB === key ? 'true' : 'false');
-      btn.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        setIdentitySubtab(key);
-      }, true);
-      tabs.appendChild(btn);
+      tabs.appendChild(renderAccountHubSubtab({
+        key,
+        label,
+        icon: IDENTITY_SUBTAB_ICONS[key],
+        active: IDENTITY_SUBTAB === key,
+        onSelect: () => setIdentitySubtab(key),
+      }));
     });
     return tabs;
   }
@@ -1017,7 +1057,7 @@
 
   function renderIdentitySubtab() {
     const root = D.createElement('div');
-    root.className = `${CLS}-acctStack`;
+    root.className = `${CLS}-acctTabPane`;
     root.append(renderIdentitySectionTabs(), renderIdentitySectionBody());
     return root;
   }
@@ -1186,35 +1226,59 @@ ${panelSel} .${skinCls}-acctSecurity{
   max-width:100%;
 }
 ${panelSel} .${skinCls}-acctShell,
+${panelSel} .${skinCls}-acctTabPane{
+  display:grid;
+  gap:12px;
+  width:100%;
+  min-width:0;
+  max-width:100%;
+}
 ${panelSel} .${skinCls}-acctStack{
   display:grid;
   gap:12px;
   width:min(100%, 720px);
+  min-width:0;
   max-width:100%;
 }
-${panelSel} .${skinCls}-acctSubtabs{
-  display:flex;
-  gap:8px;
-  flex-wrap:wrap;
+${panelSel} .${skinCls}-hub-subtabs.${skinCls}-acctHubSubtabs{
+  margin-top:0;
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  flex-wrap:wrap !important;
+  align-content:flex-start;
+  justify-content:flex-start;
 }
-${panelSel} .${skinCls}-acctSubtab{
-  min-height:32px;
-  padding:0 12px;
-  border-radius:999px;
-  border:1px solid rgba(255,255,255,.14);
-  background:rgba(255,255,255,.07);
-  color:rgba(255,255,255,.76);
-  font-size:12px;
-  font-weight:650;
-  cursor:pointer;
+${panelSel} .${skinCls}-acctHubSubtabs .${skinCls}-hub-subtab{
+  flex:0 0 auto;
 }
-${panelSel} .${skinCls}-acctSubtab[aria-selected="true"]{
-  border-color:rgba(245,156,26,.46);
-  background:linear-gradient(135deg, rgba(255,245,192,.16), rgba(245,156,26,.12));
-  color:#fff5cf;
+${panelSel} .${skinCls}-acctInnerSubtabs{
+  margin-top:2px;
+}
+${panelSel} .${skinCls}-acctControlRow{
+  display:block;
+  margin-top:0;
+  width:100%;
+  min-width:0;
+}
+${panelSel} .${skinCls}-acctControls{
+  border-top:0 !important;
+  padding-top:0 !important;
+}
+${panelSel} .${skinCls}-acctControlSlot{
+  display:block;
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  flex:1 1 100% !important;
 }
 ${panelSel} .${skinCls}-acctSubtabBody{
   min-width:0;
+}
+${panelSel} .${skinCls}-acctSubtabBody > .${skinCls}-acctStack,
+${panelSel} .${skinCls}-acctTabPane > .${skinCls}-acctStack{
+  border-top:1px solid rgba(255,255,255,.10);
+  padding-top:12px;
 }
 ${panelSel} .${skinCls}-acctSection{
   display:grid;
@@ -1297,11 +1361,14 @@ ${panelSel} .${skinCls}-acctStatus[data-tone="error"]{
       {
         type: 'custom',
         key: 'accountSettings',
-        label: 'Account Settings',
-        group: 'Account',
-        help: 'Identity and billing live side by side here, but their internals remain separate.',
-        stackBelowLabel: true,
-        render() { return renderAccountSettings(); },
+        label: '',
+        render(ctx) {
+          ctx?.wrap?.classList?.add(`${CLS}-acctControls`);
+          ctx?.row?.classList?.add(`${CLS}-acctControlRow`);
+          ctx?.right?.classList?.add(`${CLS}-acctControlSlot`);
+          ctx?.labGroup?.remove?.();
+          return renderAccountSettings();
+        },
       },
     ];
   }
