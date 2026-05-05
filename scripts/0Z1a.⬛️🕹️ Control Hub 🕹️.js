@@ -212,6 +212,10 @@ const CFG_CH = {
   const KEY_CHUB_LIBRARY_SUBTAB_V1 = `${NS_DISK}:state:library:subtab:v1`;
   const KEY_CHUB_LIBRARY_SIDEBAR_LAYOUT_V1 = 'h2o:prm:cgx:library-workspace:sidebar-layout:v1';
   const KEY_CHUB_MAIN_TAB_ORDER_V1 = `${NS_DISK}:state:main-tab-order:v1`;
+  const KEY_CHUB_ACCENT_V1 = `${NS_DISK}:state:accent:v1`;
+  const KEY_CHUB_BUTTON_ACCENT_V1 = `${NS_DISK}:state:accent:buttons:v1`;
+  const KEY_CHUB_NAV_ACCENT_V1 = `${NS_DISK}:state:accent:navigation:v1`;
+  const KEY_CHUB_SURFACE_ACCENT_V1 = `${NS_DISK}:state:accent:surface:v1`;
 
   const FEATURE_KEY_ACCOUNT = 'account';
   const FEATURE_KEY_CONTROL = 'control';
@@ -2784,6 +2788,104 @@ const CFG_CH = {
     return S;
   }
 
+  function CHUB_ACCENT_normalize(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'orange') return 'orange';
+    if (value === 'logo-blue' || value === 'logoblue' || value === 'logo_blue') return 'logo-blue';
+    return 'default';
+  }
+
+  function CHUB_SURFACE_ACCENT_normalize(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'logo-blue' || value === 'logoblue' || value === 'logo_blue') return 'logo-blue';
+    return 'default';
+  }
+
+  function CHUB_BUTTON_ACCENT_opts() {
+    return [
+      ['default', 'Default Gold'],
+      ['orange', 'Orange'],
+      ['logo-blue', 'Logo Blue'],
+    ];
+  }
+
+  function CHUB_NAV_ACCENT_opts() {
+    return [
+      ['default', 'Default Mixed'],
+      ['orange', 'Orange'],
+      ['logo-blue', 'Logo Blue'],
+    ];
+  }
+
+  function CHUB_SURFACE_ACCENT_opts() {
+    return [
+      ['default', 'Default Dark'],
+      ['logo-blue', 'Logo Blue'],
+    ];
+  }
+
+  function CHUB_ACCENT_getLegacy() {
+    return CHUB_ACCENT_normalize(UTIL_storage.getStr(KEY_CHUB_ACCENT_V1, 'default'));
+  }
+
+  function CHUB_BUTTON_ACCENT_get() {
+    const raw = UTIL_storage.getStr(KEY_CHUB_BUTTON_ACCENT_V1, null);
+    return raw == null ? CHUB_ACCENT_getLegacy() : CHUB_ACCENT_normalize(raw);
+  }
+
+  function CHUB_NAV_ACCENT_get() {
+    const raw = UTIL_storage.getStr(KEY_CHUB_NAV_ACCENT_V1, null);
+    return raw == null ? CHUB_ACCENT_getLegacy() : CHUB_ACCENT_normalize(raw);
+  }
+
+  function CHUB_SURFACE_ACCENT_get() {
+    const raw = UTIL_storage.getStr(KEY_CHUB_SURFACE_ACCENT_V1, null);
+    if (raw != null) return CHUB_SURFACE_ACCENT_normalize(raw);
+    return CHUB_ACCENT_getLegacy() === 'logo-blue' ? 'logo-blue' : 'default';
+  }
+
+  function CHUB_ACCENT_setRootAttr(name, value) {
+    if (!D.documentElement) return value;
+    if (value === 'default') D.documentElement.removeAttribute(name);
+    else D.documentElement.setAttribute(name, value);
+    return value;
+  }
+
+  function CHUB_ACCENT_apply() {
+    const buttons = CHUB_BUTTON_ACCENT_get();
+    const navigation = CHUB_NAV_ACCENT_get();
+    const surface = CHUB_SURFACE_ACCENT_get();
+    if (D.documentElement) D.documentElement.removeAttribute('data-h2o-chub-accent');
+    CHUB_ACCENT_setRootAttr('data-h2o-chub-button-accent', buttons);
+    CHUB_ACCENT_setRootAttr('data-h2o-chub-nav-accent', navigation);
+    CHUB_ACCENT_setRootAttr('data-h2o-chub-surface-accent', surface);
+    return { buttons, navigation, surface };
+  }
+
+  function CHUB_BUTTON_ACCENT_set(value) {
+    const next = CHUB_ACCENT_normalize(value);
+    try { UTIL_storage.setStr(KEY_CHUB_BUTTON_ACCENT_V1, next); } catch {}
+    CHUB_ACCENT_apply();
+    CHUB_invalidateSoon();
+    return next;
+  }
+
+  function CHUB_NAV_ACCENT_set(value) {
+    const next = CHUB_ACCENT_normalize(value);
+    try { UTIL_storage.setStr(KEY_CHUB_NAV_ACCENT_V1, next); } catch {}
+    CHUB_ACCENT_apply();
+    CHUB_invalidateSoon();
+    return next;
+  }
+
+  function CHUB_SURFACE_ACCENT_set(value) {
+    const next = CHUB_SURFACE_ACCENT_normalize(value);
+    try { UTIL_storage.setStr(KEY_CHUB_SURFACE_ACCENT_V1, next); } catch {}
+    CHUB_ACCENT_apply();
+    CHUB_invalidateSoon();
+    return next;
+  }
+
   const CHUB_VISIBILITY = Object.freeze({
     [FEATURE_KEY_CHAT_NAVIGATION]: Object.freeze({
       selectors: [
@@ -4055,7 +4157,40 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     ],
 
     themesPanel: [
-      { type:'select', key:'thPreset', label:'Preset', def:'system', opts:[ ['system','System'], ['darkMatte','Dark Matte'], ['neon','Neon'] ]},
+      {
+        type:'select',
+        key:'chubButtonAccent',
+        label:'Button Accent',
+        group:'Control Hub Colors',
+        help:'Changes the Control Hub action buttons and on-state switches.',
+        def:'default',
+        opts: CHUB_BUTTON_ACCENT_opts,
+        getLive() { return CHUB_BUTTON_ACCENT_get(); },
+        setLive(v) { return CHUB_BUTTON_ACCENT_set(v); },
+      },
+      {
+        type:'select',
+        key:'chubNavAccent',
+        label:'Tab/List Accent',
+        group:'Control Hub Colors',
+        help:'Changes main tabs, feature list selection, category rail, and subtabs.',
+        def:'default',
+        opts: CHUB_NAV_ACCENT_opts,
+        getLive() { return CHUB_NAV_ACCENT_get(); },
+        setLive(v) { return CHUB_NAV_ACCENT_set(v); },
+      },
+      {
+        type:'select',
+        key:'chubSurfaceAccent',
+        label:'Detail Background',
+        group:'Control Hub Colors',
+        help:'Changes the Control Hub panel and right detail column background.',
+        def:'default',
+        opts: CHUB_SURFACE_ACCENT_opts,
+        getLive() { return CHUB_SURFACE_ACCENT_get(); },
+        setLive(v) { return CHUB_SURFACE_ACCENT_set(v); },
+      },
+      { type:'select', key:'thPreset', label:'Preset', group:'Themes Panel', def:'system', opts:[ ['system','System'], ['darkMatte','Dark Matte'], ['neon','Neon'] ]},
     ],
 
     saveExport: [
@@ -6434,6 +6569,106 @@ ${P} .${CLS}-band-toggle:disabled{
   cursor:not-allowed;
 }
 
+html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-band-toggle[${ATTR_CGXUI_STATE}="on"]{
+  background:linear-gradient(135deg,#ffb24a,#f97316 68%,#d95b0a);
+  border-color:rgba(255,194,128,.92);
+  box-shadow:0 0 0 1px rgba(255,236,214,.50), 0 0 14px rgba(249,115,22,.48);
+}
+html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-actionBtn.primary{
+  background:linear-gradient(135deg, rgba(255,210,140,.98), rgba(249,115,22,.98));
+  color:#1f1005;
+  box-shadow:0 10px 26px rgba(249,115,22,.24), inset 0 1px 0 rgba(255,255,255,.30);
+}
+
+html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-band-toggle[${ATTR_CGXUI_STATE}="on"]{
+  background:linear-gradient(135deg,#28e4df,#078bd5 70%,#075ba8);
+  border-color:rgba(165,241,255,.80);
+  box-shadow:0 0 0 1px rgba(185,247,255,.45), 0 0 14px rgba(0,154,220,.42);
+}
+html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-actionBtn.primary{
+  background:linear-gradient(135deg, rgba(63,239,232,.98), rgba(7,139,213,.98) 66%, rgba(6,72,143,.98));
+  color:#f5fdff;
+  box-shadow:0 10px 26px rgba(0,142,220,.24), inset 0 1px 0 rgba(255,255,255,.24);
+}
+
+html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
+  background:radial-gradient(circle at 50% 0%, #ffd08a, #f97316 70%, #b9470c);
+  color:#231005;
+  box-shadow:0 0 0 1px rgba(255,232,202,.92), 0 8px 22px rgba(249,115,22,.32);
+}
+html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-item:hover{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,165,64,.14), transparent 45%),
+    linear-gradient(135deg, rgba(18,14,12,.96), rgba(9,9,17,.98));
+}
+html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-item[${ATTR_CGXUI_STATE}="active"]{
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255,185,94,.30), transparent 44%),
+    linear-gradient(135deg, rgba(210,90,12,.34), rgba(14,12,20,.98));
+  box-shadow:0 0 0 1px rgba(255,196,128,.16) inset;
+}
+html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
+  background:linear-gradient(135deg, rgba(255,165,64,.30), rgba(249,115,22,.22));
+  border-color:rgba(255,196,128,.46);
+  box-shadow:0 0 0 1px rgba(255,220,185,.16) inset;
+  color:#fff7ed;
+}
+
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
+  background:radial-gradient(circle at 35% 0%, #52f0e7, #078bd5 58%, #06488f);
+  color:#031524;
+  box-shadow:0 0 0 1px rgba(179,243,255,.86), 0 8px 24px rgba(0,145,220,.34);
+}
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(38,231,224,.10), transparent 45%),
+    linear-gradient(135deg, rgba(5,24,43,.96), rgba(3,8,22,.98));
+  border-color:rgba(85,178,230,.10);
+}
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item:hover{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(38,231,224,.16), transparent 45%),
+    linear-gradient(135deg, rgba(6,35,60,.98), rgba(3,12,30,.99));
+}
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item[${ATTR_CGXUI_STATE}="active"]{
+  background:
+    radial-gradient(circle at 12% 0%, rgba(41,238,228,.30), transparent 44%),
+    linear-gradient(135deg, rgba(0,133,208,.42), rgba(3,17,40,.98));
+  box-shadow:0 0 0 1px rgba(112,217,255,.18) inset;
+}
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
+  background:linear-gradient(135deg, rgba(35,230,220,.24), rgba(0,112,210,.24));
+  border-color:rgba(116,216,255,.42);
+  color:#f4fbff;
+}
+
+html[data-h2o-chub-surface-accent="logo-blue"] ${P}{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(31,229,223,.16), transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(0,88,170,.22), transparent 55%),
+    linear-gradient(135deg, rgba(4,20,36,.97), rgba(1,7,19,.99));
+}
+html[data-h2o-chub-surface-accent="logo-blue"] ${P}::before{
+  background:
+    radial-gradient(60% 70% at 0% 0%, rgba(104,226,255,.17), transparent 45%),
+    radial-gradient(42% 44% at 100% 100%, rgba(0,120,220,.14), transparent 56%);
+}
+html[data-h2o-chub-surface-accent="logo-blue"] ${P} .${CLS}-detail{
+  background:
+    radial-gradient(circle at 8% 0%, rgba(35,230,220,.14), transparent 42%),
+    radial-gradient(circle at 98% 62%, rgba(0,128,220,.18), transparent 48%),
+    linear-gradient(135deg, rgba(3,18,34,.98), rgba(1,7,19,.985));
+  box-shadow:0 0 0 1px rgba(86,170,226,.16), 0 14px 38px rgba(0,0,0,.82);
+}
+
 ${P} .${CLS}-detailInner > .${CLS}-body,
 ${P} .${CLS}-detailInner > .${CLS}-controls,
 ${P} .${CLS}-detailInner > .${CLS}-theme-action,
@@ -7205,6 +7440,7 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 
       // css (defensive)
       SAFE_call('ensureStyle', () => CSS_CH_ensureStyle());
+      SAFE_call('applyAccentSkin', () => CHUB_ACCENT_apply());
       SAFE_call('bindResizeReflow', () => {
         const onViewportResize = () => CHUB_RESIZE_reflowOpenPanel();
         W.addEventListener('resize', onViewportResize, true);
