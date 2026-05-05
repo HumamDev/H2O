@@ -59,6 +59,13 @@ export interface IdentityContextValue {
   listDeviceSessions(): Promise<ListDeviceSessionsResult>;
   signInWithGoogle(): Promise<IdentitySnapshot>;
   signInWithApple(): Promise<IdentitySnapshot>;
+  /**
+   * Returns the current access token at call time (or null if signed out).
+   * Provided so adjacent surfaces (e.g., billing) can authenticate against
+   * Supabase RPCs / Edge Functions without re-implementing session
+   * management. NOT a method on the identity-core IdentityProvider contract.
+   */
+  getAccessToken(): string | null;
 }
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -250,6 +257,12 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     [runAction]
   );
 
+  // Read at call time via the providerRef (not captured at render time) so
+  // post-refresh tokens are visible to consumers without re-rendering.
+  const getAccessToken = useCallback((): string | null => {
+    return providerRef.current?.getAccessToken() ?? null;
+  }, []);
+
   // Device-session passthroughs. These return domain types rather than
   // IdentitySnapshot, so they bypass the runAction snapshot-commit wrapper.
   // All three are best-effort on the provider side (resolve to null / empty).
@@ -321,11 +334,13 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
       listDeviceSessions,
       signInWithGoogle,
       signInWithApple,
+      getAccessToken,
     };
   }, [
     bootStatus,
     changePassword,
     createInitialWorkspace,
+    getAccessToken,
     listDeviceSessions,
     normalizedBootMiss,
     provider.capabilities,

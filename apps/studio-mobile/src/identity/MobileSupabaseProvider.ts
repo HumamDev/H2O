@@ -316,6 +316,18 @@ export class MobileSupabaseProvider implements IdentityProvider {
     return structuredCloneSafe(this.snapshot);
   }
 
+  /**
+   * Returns the current Supabase access token, or null if signed out. Used by
+   * adjacent surfaces that need to call authenticated Supabase RPCs / Edge
+   * Functions without re-implementing session management — read at call time
+   * so post-refresh tokens are visible without consumer re-instantiation.
+   * Intentionally NOT part of the IdentityProvider contract in identity-core
+   * (this is a mobile-runtime-only concession; contracts stay surface-clean).
+   */
+  getAccessToken(): string | null {
+    return this.accessToken;
+  }
+
   // ─── private helpers ──────────────────────────────────────────────────────
 
   private getClient(config: MobileSupabaseConfig): SupabaseClient {

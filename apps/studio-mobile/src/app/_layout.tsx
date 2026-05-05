@@ -5,6 +5,7 @@ import { useColorScheme, View } from 'react-native';
 
 import { AppTopBar, type TopBarLeftAction, type TopBarRightAction } from '../components/navigation/AppTopBar';
 import { Sidebar } from '../components/navigation/Sidebar';
+import { BillingProvider } from '@/billing/BillingContext';
 import { IdentityProvider, useIdentity } from '@/identity/IdentityContext';
 import { initArchiveStore } from '@/state/archive';
 import { initImportedChatsStore } from '@/state/imported-chats';
@@ -25,6 +26,7 @@ function getTopBarConfig(pathname: string): { title: string; leftAction: TopBarL
   if (pathname === '/settings') return { title: 'Settings', leftAction: 'back' };
   if (pathname === '/identity-debug') return { title: 'Identity Debug', leftAction: 'back' };
   if (pathname === '/account-identity') return { title: 'Identity & Sign-in', leftAction: 'back' };
+  if (pathname === '/account-billing') return { title: 'Subscription', leftAction: 'back' };
   if (pathname === '/import-export') return { title: 'Import / Export', leftAction: 'back' };
   if (pathname === '/import-chatgpt-link') return { title: 'Import ChatGPT Link', leftAction: 'back' };
   if (pathname === '/menu') return { title: 'H2O Studio', leftAction: 'back' };
@@ -65,28 +67,31 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={navScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <IdentityProvider>
-        <View style={{ flex: 1 }}>
-          <Stack>
-            <Stack.Screen name="index" options={{ headerShown: false }} />
-            <Stack.Screen name="library" options={{ headerShown: false }} />
-            <Stack.Screen name="pinned" options={{ headerShown: false }} />
-            <Stack.Screen name="search" options={{ headerShown: false }} />
-            <Stack.Screen name="tags" options={{ headerShown: false }} />
-            <Stack.Screen name="archived" options={{ headerShown: false }} />
-            <Stack.Screen name="folders" options={{ title: 'Folders', headerShown: false }} />
-            <Stack.Screen name="chat" options={{ title: 'Chat', headerShown: false }} />
-            <Stack.Screen name="settings" options={{ headerShown: false }} />
-            <Stack.Screen name="identity-debug" options={{ headerShown: false }} />
-            <Stack.Screen name="account-identity" options={{ headerShown: false }} />
-            <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-            <Stack.Screen name="import-export" options={{ headerShown: false }} />
-            <Stack.Screen name="import-chatgpt-link" options={{ headerShown: false }} />
-            <Stack.Screen name="imported-chat" options={{ title: 'Imported Chat', headerShown: false }} />
-            <Stack.Screen name="menu" options={{ headerShown: false }} />
-            <Stack.Screen name="debug" options={{ headerShown: false }} />
-          </Stack>
-          <RootChromeOverlay pathname={pathname} topBarConfig={topBarConfig} sidebarOpen={sidebarOpen} />
-        </View>
+        <BillingProvider>
+          <View style={{ flex: 1 }}>
+            <Stack>
+              <Stack.Screen name="index" options={{ headerShown: false }} />
+              <Stack.Screen name="library" options={{ headerShown: false }} />
+              <Stack.Screen name="pinned" options={{ headerShown: false }} />
+              <Stack.Screen name="search" options={{ headerShown: false }} />
+              <Stack.Screen name="tags" options={{ headerShown: false }} />
+              <Stack.Screen name="archived" options={{ headerShown: false }} />
+              <Stack.Screen name="folders" options={{ title: 'Folders', headerShown: false }} />
+              <Stack.Screen name="chat" options={{ title: 'Chat', headerShown: false }} />
+              <Stack.Screen name="settings" options={{ headerShown: false }} />
+              <Stack.Screen name="identity-debug" options={{ headerShown: false }} />
+              <Stack.Screen name="account-identity" options={{ headerShown: false }} />
+              <Stack.Screen name="account-billing" options={{ headerShown: false }} />
+              <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+              <Stack.Screen name="import-export" options={{ headerShown: false }} />
+              <Stack.Screen name="import-chatgpt-link" options={{ headerShown: false }} />
+              <Stack.Screen name="imported-chat" options={{ title: 'Imported Chat', headerShown: false }} />
+              <Stack.Screen name="menu" options={{ headerShown: false }} />
+              <Stack.Screen name="debug" options={{ headerShown: false }} />
+            </Stack>
+            <RootChromeOverlay pathname={pathname} topBarConfig={topBarConfig} sidebarOpen={sidebarOpen} />
+          </View>
+        </BillingProvider>
       </IdentityProvider>
     </ThemeProvider>
   );

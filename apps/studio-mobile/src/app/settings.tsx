@@ -4,6 +4,8 @@ import React, { useMemo, useSyncExternalStore } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useBilling } from '@/billing/BillingContext';
+import { MOBILE_BILLING_VERIFIED } from '@/billing/billingConfig';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
 import { useTheme } from '@/hooks/use-theme';
@@ -53,6 +55,7 @@ function maskEmail(email?: string | null): string {
 export default function SettingsScreen() {
   const th = useTheme();
   const identity = useIdentity();
+  const billing = useBilling();
   const mode = useSyncExternalStore(subscribeAppearance, getAppearanceMode);
   const topBarPos = useSyncExternalStore(subscribeTopBarPosition, getTopBarPosition);
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
@@ -266,13 +269,40 @@ export default function SettingsScreen() {
               onPress: () => router.push('/account-identity'),
             })}
             <View style={styles.separator} />
-            {renderRow({
-              icon: { ios: 'creditcard.fill', android: 'credit_card', web: 'credit_card' },
-              title: 'Subscription/Billing',
-              subtitle: 'Plan management is not active in 5.0B-core.',
-              trailing: 'Soon',
-              disabled: true,
-            })}
+            {(() => {
+              // Phase 5.0I — Subscription/Billing row.
+              // While MOBILE_BILLING_VERIFIED is false, the row stays disabled
+              // and shows the "Soon" affordance. Once activated (separate
+              // commit), it routes to /account-billing and surfaces a
+              // tier-aware trailing label + subtitle when the user is signed in.
+              const billingActive = MOBILE_BILLING_VERIFIED && identity.isSignedIn;
+              const tier = billing.entitlement?.tier ?? null;
+              const cancelAtPeriodEnd = billing.entitlement?.cancelAtPeriodEnd === true;
+              const trailingLabel = billingActive
+                ? tier === 'pro'
+                  ? cancelAtPeriodEnd ? 'ENDING' : 'PRO'
+                  : tier === 'free'
+                    ? 'FREE'
+                    : ''
+                : 'Soon';
+              const subtitle = billingActive
+                ? tier === 'pro'
+                  ? cancelAtPeriodEnd
+                    ? 'Subscription ending at period end.'
+                    : 'Manage your subscription.'
+                  : tier === 'free'
+                    ? 'Upgrade to unlock all features.'
+                    : 'Loading subscription status…'
+                : 'Plan management is not active in this build.';
+              return renderRow({
+                icon: { ios: 'creditcard.fill', android: 'credit_card', web: 'credit_card' },
+                title: 'Subscription/Billing',
+                subtitle,
+                trailing: trailingLabel,
+                onPress: billingActive ? () => router.push('/account-billing') : undefined,
+                disabled: !billingActive,
+              });
+            })()}
           </View>
         </View>
 
