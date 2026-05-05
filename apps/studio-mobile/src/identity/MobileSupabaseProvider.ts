@@ -1682,11 +1682,14 @@ export class MobileSupabaseProvider implements IdentityProvider {
 
       return this.commitSnapshot(snap);
     } catch (error) {
-      const code = mapAppleSignInErrorCode(error);
-      if (code === 'identity/apple-cancelled' || code === 'identity/apple-not-available') {
-        return this.failSoft(error, code);
-      }
-      return this.failSoft(error, 'identity/apple-failed');
+      // Apple SDK errors (signInAsync throws instead of returning {error}) and
+      // Supabase signInWithIdToken errors both flow here. Map first, then let
+      // failSoft preserve the original code if the thrown value was already an
+      // IdentityError (e.g., the explicit identity/apple-token-invalid path
+      // when Apple returns no identityToken). The mapper's rate-limit /
+      // network / rejected branches are now reachable as user-facing codes
+      // instead of being flattened to identity/apple-failed.
+      return this.failSoft(error, mapAppleSignInErrorCode(error));
     }
   }
 
