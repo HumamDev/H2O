@@ -27,8 +27,6 @@
      - EV_CHUB_NAV_CANON       = "evt:h2o:navigate"
      - EV_CHUB_NAV_LEG         = "ho:navigate"
      - EV_CHUB_READY_V1        = "h2o.ev:prm:cgx:cntrlhb:ready:v1"
-     - EV_PM_READY_V1          = "evt:h2o:pm:ready:v1"
-     - EV_SECTION_BANDS_AUTO   = "h2o:section-bands:auto-mode"
 
    Selectors — SEL_:
      - SEL_CHUB_BACKDROP       = "[data-cgxui=\"cnhb-backdrop\"][data-cgxui-owner=\"cnhb\"]"
@@ -145,6 +143,10 @@ const CFG_CH = {
 
   MAIN_MAX_H_VH: 88,          // vh: inner grid max height (keep <= PANEL_MAX_H_VH)
   LIST_PAD_RIGHT_PX: 12,      // px: right padding so scrollbar doesn’t overlay content 👈
+  HEADER_TO_MODE_GAP_PX: 18,   // px: space between "Control Hub Cockpit" title row and mode pills 👈
+  USER_PILL_W_PX: 140,        // px: user pill card width 👈
+  USER_PILL_H_PX: 35,         // px: user pill card height 👈
+  USER_PILL_X_OFFSET_PX: 80,   // px: negative moves pill left, positive moves it right 👈
 
   // ── Width / Height fine tuning (advanced) ─────────────────
   PANEL_W_PX: 900,            // px: hard width cap before vw applies 👈            // px: hard width cap before vw applies 👈
@@ -162,24 +164,6 @@ const CFG_CH = {
   BUTTON_REPAIR_MS: 900,
 };
 
-
-  const EV_SECTION_BANDS_AUTO = 'h2o:section-bands:auto-mode';
-  const FEATURE_KEY_SECTION_BANDS = 'sectionBands';
-  const KEY_SECTION_BANDS_BINDINGS_V1 = 'h2o:prm:cgx:sctnbnds:cfg:bindings:v1';
-  const KEY_SECTION_BANDS_PALETTE_V1 = 'h2o:prm:cgx:sctnbnds:cfg:palette:v1';
-  const CHUB_SB_PALETTE_DEFAULTS = Object.freeze([
-    Object.freeze({ key: 'olive',  label: 'Color 1', hex: '#78866b' }),
-    Object.freeze({ key: 'gold',   label: 'Color 2', hex: '#ebc86e' }),
-    Object.freeze({ key: 'red',    label: 'Color 3', hex: '#cd5a5a' }),
-    Object.freeze({ key: 'blue',   label: 'Color 4', hex: '#5c91c8' }),
-    Object.freeze({ key: 'purple', label: 'Color 5', hex: '#9273c8' }),
-  ]);
-  const CHUB_SB_APPLY_START_DEFAULT = 'default';
-  const CHUB_SB_APPLY_START_MODES = Object.freeze([
-    ['default', 'Default Color'],
-    ['same_last', 'Same As Last Used'],
-    ['next_after_last', 'Next After Last Used'],
-  ]);
 
   // ATTR_ (real attribute-name strings)
   const ATTR_TESTID     = 'data-testid';
@@ -204,18 +188,9 @@ const CFG_CH = {
   const KEY_CHUB_TAB_VIS_V1   = `${NS_DISK}:state:tab-visibility:v1`;
   const KEY_CHUB_CHAT_PERFORMANCE_SUBTAB_V1 = `${NS_DISK}:state:chat-performance:subtab:v1`;
   const KEY_CHUB_CHAT_NAVIGATION_SUBTAB_V1 = `${NS_DISK}:state:chat-navigation:subtab:v1`;
-  const KEY_CHUB_MARKUP_SUBTAB_V1 = `${NS_DISK}:state:markup:subtab:v1`;
-  const KEY_CHUB_ANNOTATIONS_SUBTAB_V1 = `${NS_DISK}:state:annotations:subtab:v1`;
-  const KEY_CHUB_WORKSPACE_SUBTAB_V1 = `${NS_DISK}:state:workspace:subtab:v1`;
-  const KEY_CHUB_INTERFACE_SUBTAB_V1 = `${NS_DISK}:state:interface:subtab:v1`;
   const KEY_CHUB_CONTROL_SUBTAB_V1 = `${NS_DISK}:state:control:subtab:v1`;
   const KEY_CHUB_LIBRARY_SUBTAB_V1 = `${NS_DISK}:state:library:subtab:v1`;
-  const KEY_CHUB_LIBRARY_SIDEBAR_LAYOUT_V1 = 'h2o:prm:cgx:library-workspace:sidebar-layout:v1';
   const KEY_CHUB_MAIN_TAB_ORDER_V1 = `${NS_DISK}:state:main-tab-order:v1`;
-  const KEY_CHUB_ACCENT_V1 = `${NS_DISK}:state:accent:v1`;
-  const KEY_CHUB_BUTTON_ACCENT_V1 = `${NS_DISK}:state:accent:buttons:v1`;
-  const KEY_CHUB_NAV_ACCENT_V1 = `${NS_DISK}:state:accent:navigation:v1`;
-  const KEY_CHUB_SURFACE_ACCENT_V1 = `${NS_DISK}:state:accent:surface:v1`;
 
   const FEATURE_KEY_ACCOUNT = 'account';
   const FEATURE_KEY_CONTROL = 'control';
@@ -225,13 +200,9 @@ const CFG_CH = {
   const FEATURE_KEY_CHAT_PERFORMANCE = 'chatPerformance';
   const FEATURE_KEY_CHAT_NAVIGATION = 'chatNavigation';
   const FEATURE_KEY_CHAT_ANSWERS = 'chatAnswers';
-  const FEATURE_KEY_MARKUP = 'markup';
   const FEATURE_KEY_ANNOTATIONS = 'annotations';
   const FEATURE_KEY_NOTES = 'notes';
   const FEATURE_KEY_PROMPT_MANAGER = 'promptManager';
-  const FEATURE_KEY_WORKSPACE = 'workspace';
-  const FEATURE_KEY_WORKSPACE_SHELF = 'workspaceShelf';
-  const FEATURE_KEY_WORKSPACE_DRAWER = 'workspaceDrawer';
   const FEATURE_KEY_DATA_BACKUP = 'dataBackup';
   const FEATURE_KEY_EXPORT = 'export';
   const FEATURE_KEY_STUDIO = 'studio';
@@ -253,7 +224,7 @@ const CFG_CH = {
   const EV_CHUB_NAV_CANON  = 'evt:h2o:navigate';
   const EV_CHUB_OPEN_REQ   = 'h2o-ext:control-hub-open:req';
   const EV_CHUB_OPEN_RES   = 'h2o-ext:control-hub-open:res';
-  const EV_PM_READY_V1      = 'evt:h2o:pm:ready:v1';
+  const EV_ACCOUNT_OPEN_PROFILE = 'h2o.ev:prm:cgx:cntrlhb:account:open-profile:v1';
 
   // UI tokens (SkID-based values)
   const UI_CHUB_TOPBTN   = `${SkID}-topbtn`;
@@ -356,22 +327,6 @@ const CFG_CH = {
       subtitle:'Question bubble tools (QWrap, etc).',
       description:{default:'Control question UI behaviors (quote bubble position).', focus:'Keep questions compact and readable.', review:'Make quoted context easier to scan.', performance:'Minimal DOM changes for speed.'},
       hidden:true},
-    { key:FEATURE_KEY_MARKUP, label:'Markup', icon:'🖌️',
-      subtitle:'Highlighting + section band controls in one place.',
-      description:{
-        default:'Keep the main reading markup tools together under one tab.',
-        focus:'Switch between inline highlights and section bands without leaving the markup area.',
-        review:'Tune marking tools side by side while reviewing long answers.',
-        performance:'Consolidate markup controls so the hub stays organized while features stay unchanged.',
-      }},
-    { key:'inlineHighlighter', label:'Highlighter',        icon:'🖌️',
-      subtitle:'Sentence-level highlights and inline tools.',
-      description:{default:'Standard palette + shortcuts.', focus:'Stronger emphasis colors.', review:'Mark summary sentences.', performance:'Minimal DOM / animations.'},
-      hidden:true},
-    { key:'sectionBands',      label:'Section Bands',      icon:'🧱',
-      subtitle:'Colored bands grouping answer sections.',
-      description:{default:'Soft, readable bands.', focus:'High-contrast focus blocks.', review:'Clear big-chunk separation.', performance:'Subtle, low-cost bands.'},
-      hidden:true},
     { key:FEATURE_KEY_ANNOTATIONS, label:'Annotations', icon:'📍',
       subtitle:'Margin anchors + notes surfaces grouped together.',
       description:{
@@ -379,51 +334,7 @@ const CFG_CH = {
         focus:'Switch between margin anchors and notes without hunting across separate hub areas.',
         review:'Use anchors and notes together while reviewing longer chats.',
         performance:'Keep annotation tools grouped while the underlying features stay unchanged.',
-      }},
-    { key:'marginAnchor',      label:'Margin Anchor',      icon:'📍',
-      subtitle:'Left-margin pins, notes, and status dots.',
-      description:{default:'Quickly jump to any margin pin.', focus:'Surface active notes and anchors.', review:'Keep reference marks visible during longer reads.', performance:'Keep anchors lightweight.'},
-      hidden:true},
-    { key:FEATURE_KEY_NOTES, label:'Notes', icon:'🗒️',
-      subtitle:'Open and refresh the Dock Notes surface from Control Hub.',
-      description:{
-        default:'Launch the existing Notes tab from Dock Panel and keep note actions nearby.',
-        focus:'Jump into Notes quickly while staying in the annotations area.',
-        review:'Open Notes and refresh side notes without leaving the review flow.',
-        performance:'Bridge into the current Notes surface instead of duplicating another notes system.',
       },
-      hidden:true},
-    { key:FEATURE_KEY_PROMPT_MANAGER, label:'Prompt Manager', icon:'✍️',
-      subtitle:'Prompt library, search, tray, and quick prompt actions.',
-      description:{
-        default:'Open Prompt Manager, focus its search, and control the quick prompt tray from one place.',
-        focus:'Keep prompt lookup close without digging through the composer area.',
-        review:'Jump between saved prompts and quick tray tools while reviewing long chats.',
-        performance:'Use prompt tooling directly without keeping extra panels open longer than needed.',
-      }},
-    { key:'dockPanel',         label:'Chat Dock',          icon:'🎖️',
-      subtitle:'Docked sidebar with tabs + side-panel controls.',
-      description:{
-        default:'Dock context, tabs, and side-panel controls.',
-        focus:'Lean dock layouts with minimal side-panel clutter.',
-        review:'Highlight nav tabs while keeping the side panel tidy.',
-        performance:'Lazy tab rendering and light side-panel updates.',
-      }},
-    { key:FEATURE_KEY_WORKSPACE, label:'Workspace', icon:'🧱',
-      subtitle:'Shelf and Drawer controls for the right-side workspace.',
-      description:{
-        default:'Control Shelf and Drawer behavior from one workspace tab.',
-        focus:'Keep the active workspace pane easy to switch while you stay in the current chat.',
-        review:'Move between Shelf and Drawer without hunting for shell buttons.',
-        performance:'Choose the lighter workspace presentation mode when the chat UI feels crowded.',
-      }},
-    { key:FEATURE_KEY_WORKSPACE_SHELF, label:'Shelf', icon:'📚',
-      subtitle:'Open and configure the Shelf workspace pane.',
-      description:{default:'Open the Shelf and adjust how the workspace shell is presented.', focus:'Keep saved context visible in the Shelf.', review:'Return to the Shelf quickly while checking artifacts.', performance:'Use the lightest shell mode for Shelf work.'},
-      hidden:true},
-    { key:FEATURE_KEY_WORKSPACE_DRAWER, label:'Drawer', icon:'🧰',
-      subtitle:'Open and configure the Drawer workspace pane.',
-      description:{default:'Open the Drawer and adjust how the workspace shell is presented.', focus:'Keep artifact editing one click away.', review:'Use the Drawer while inspecting notes and prompt capsules.', performance:'Switch Drawer presentation without overloading the viewport.'},
       hidden:true},
     { key:FEATURE_KEY_DATA_BACKUP, label:'Data & Backup', icon:'🗄️',
       subtitle:'Sync, backup, archive, and restore utilities.',
@@ -438,28 +349,6 @@ const CFG_CH = {
       subtitle:'Store, backup, and archive utilities.',
       description:{default:'Browse and export H2O Data backups.', focus:'Keep the latest snapshot close while reviewing.', review:'Snapshot long chats for later reference.', performance:'Lightweight exports that stay out of the way.'},
       hidden:true},
-    { key:FEATURE_KEY_EXPORT,  label:'Export',             icon:'📀',
-      subtitle:'Markdown / HTML / package export controls.',
-      description:{
-        default:'Keep export defaults and output behavior in one dedicated export tab.',
-        focus:'Preset export settings before capturing focused review bundles.',
-        review:'Prepare clean handoff exports without mixing them into backup tools.',
-        performance:'Use the smallest export path that still preserves what you need.',
-      },
-      toggleHidden:true},
-    { key:'saveExport',        label:'Export Chat',        icon:'📀',
-      subtitle:'Save to Markdown / HTML / OneNote.',
-      description:{default:'Standard exports.', focus:'Export selected focus items.', review:'Bundle summaries.', performance:'Fast/minimal processing.'},
-      hidden:true},
-    { key:FEATURE_KEY_STUDIO,  label:'Studio',             icon:'🧪',
-      subtitle:'Workbench / Studio entry points for saved snapshots.',
-      description:{
-        default:'Open the saved-chat studio, snapshot reader, and workbench surfaces.',
-        focus:'Jump straight into captured material while keeping the live chat uncluttered.',
-        review:'Inspect saved chat snapshots and workbench rows from one studio tab.',
-        performance:'Use reader and workbench surfaces only when you need them, not all the time.',
-      },
-      toggleHidden:true},
     { key:FEATURE_KEY_LIBRARY, label:'Library',            icon:'🗂️',
       subtitle:'Browse, organize, and retrieve chats through folders.',
       description:{
@@ -513,62 +402,91 @@ const CFG_CH = {
       subtitle:'Page long chats into answer windows.',
       description:{default:'Split long threads into page-sized answer windows.', focus:'Keep attention on one window at a time.', review:'Jump across large answer sets quickly.', performance:'Window the thread before DOM weight spikes.'},
       hidden:true},
-    { key:FEATURE_KEY_INTERFACE, label:'Interface', icon:'🖥️',
-      subtitle:'Chat list styling plus title helper surfaces.',
+    { key:FEATURE_KEY_THEMES,  label:'Appearance',         icon:'🎨',
+      subtitle:'Visual theme, Control Hub accents, and surface tuning.',
       description:{
-        default:'Keep interface styling and title helpers under one interface tab.',
-        focus:'Switch between chat-list indicators and title helpers without leaving interface controls.',
-        review:'Use interface sub-tabs to tune labels and sidebar cues separately.',
-        performance:'Keep lightweight interface helpers grouped so UI tuning stays predictable.',
+        default:'Tune visual themes, Control Hub accent colors, and panel surfaces from one Appearance tab.',
+        focus:'Keep reading contrast and Control Hub surfaces aligned for focused sessions.',
+        review:'Adjust long-session colors and Control Hub accents without leaving appearance controls.',
+        performance:'Keep visual tuning grouped while the theme engine and Control Hub shell stay unchanged.',
       }},
-    { key:'interfaceEnhancer', label:'Interface Enhancer', icon:'🖥️',
-      subtitle:'Sidebar + project list color dots.',
-      description:{default:'Heatmap-style indicators for chats.', focus:'Spot recent chats faster.', review:'Quick color toggles near chat links.', performance:'Small DOM footprint.'},
-      hidden:true},
-    { key:'titles',            label:'Titles',             icon:'🏷️',
-      subtitle:'Title helpers for answers + chats.',
-      description:{default:'Sync titles with MiniMap + cards.', focus:'Keep labels legible.', review:'Badge + tooltip helpers.', performance:'Lightweight updates.'},
-      hidden:true},
-    { key:'numbers',           label:'Numbers',            icon:'🧮',
-      subtitle:'Answer + question number surfaces.',
-      description:{default:'Tune answer and question number overlays from one place.', focus:'Keep large number helpers readable without leaving interface controls.', review:'Adjust fade, offset, and size for title/number helpers while scanning long chats.', performance:'Keep number overlays legible while controlling how strong their visual footprint is.'},
-      hidden:true},
-    { key:FEATURE_KEY_THEMES,  label:'Themes',             icon:'🎨',
-      subtitle:'Color themes and layout tweaks.',
-      description:{
-        default:'Open the themes surface and keep theme defaults together in one tab.',
-        focus:'Use theme controls to keep reading contrast consistent.',
-        review:'Adjust long-session colors without mixing them into unrelated interface tools.',
-        performance:'Simplify theme changes when you want the lightest UI setup.',
-      }},
-    { key:'themesPanel',       label:'Themes Panel',       icon:'🎨',
-      subtitle:'Color themes and layout tweaks.',
-      description:{default:'Normal dark theme controls.', focus:'Focus-friendly contrast.', review:'Long-reading colors.', performance:'Simplified theme.'},
-      hidden:true},
 	  ];
 
+  function FEATURE_mergePluginMainMeta(baseList, pluginMeta){
+    const list = Array.isArray(baseList) ? baseList.slice() : [];
+    const meta = pluginMeta && typeof pluginMeta === 'object' ? pluginMeta : null;
+    const key = FEATURE_getCanonicalKey(meta?.key);
+    if (!key) return list;
+
+    const existingIdx = list.findIndex((item) => FEATURE_getCanonicalKey(item?.key) === key);
+    if (existingIdx >= 0) {
+      list[existingIdx] = { ...list[existingIdx], ...meta, key };
+      return list;
+    }
+
+    const beforeKey = FEATURE_getCanonicalKey(meta.insertBefore || meta.before || '');
+    const afterKey = FEATURE_getCanonicalKey(meta.insertAfter || meta.after || '');
+    let insertIdx = -1;
+    if (beforeKey) insertIdx = list.findIndex((item) => FEATURE_getCanonicalKey(item?.key) === beforeKey);
+    if (insertIdx < 0 && afterKey) {
+      const afterIdx = list.findIndex((item) => FEATURE_getCanonicalKey(item?.key) === afterKey);
+      if (afterIdx >= 0) insertIdx = afterIdx + 1;
+    }
+
+    if (insertIdx >= 0) list.splice(insertIdx, 0, meta);
+    else list.push(meta);
+    return list;
+  }
+
+  function FEATURE_getMainMetaList(){
+    let list = FEATURE_META.slice();
+    for (const meta of PLUG_getMainMetaList()) list = FEATURE_mergePluginMainMeta(list, meta);
+    return list;
+  }
+
+  function FEATURE_findMeta(key){
+    const canonical = FEATURE_getCanonicalKey(key);
+    if (!canonical) return null;
+    return FEATURE_getMainMetaList().find((meta) => FEATURE_getCanonicalKey(meta?.key) === canonical)
+      || PLUG_getSubtabMetaByKey(canonical)
+      || FEATURE_META.find((meta) => FEATURE_getCanonicalKey(meta?.key) === canonical)
+      || null;
+  }
+
   function CHUB_MAIN_TAB_defaultOrder(){
-    return FEATURE_META
+    return FEATURE_getMainMetaList()
       .filter((meta) => !meta.hidden)
       .map((meta) => FEATURE_getCanonicalKey(meta.key))
       .filter((key, idx, arr) => key && arr.indexOf(key) === idx);
   }
 
-  function CHUB_MAIN_TAB_normalize(raw){
+  function CHUB_MAIN_TAB_normalize(raw, { preserveUnknown = true } = {}){
     const defaults = CHUB_MAIN_TAB_defaultOrder();
+    const defaultIndex = new Map(defaults.map((key, idx) => [key, idx]));
     const input = Array.isArray(raw) ? raw.map((key) => FEATURE_getCanonicalKey(key)).filter(Boolean) : [];
     const seen = new Set();
     const out = [];
 
     for (const key of input){
-      if (!defaults.includes(key) || seen.has(key)) continue;
+      if (seen.has(key)) continue;
+      if (!defaults.includes(key) && !preserveUnknown) continue;
       seen.add(key);
       out.push(key);
     }
     for (const key of defaults){
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(key);
+      const pos = defaultIndex.get(key);
+      let insertIdx = -1;
+      for (let i = 0; i < out.length; i += 1) {
+        const otherPos = defaultIndex.get(out[i]);
+        if (Number.isFinite(otherPos) && otherPos > pos) {
+          insertIdx = i;
+          break;
+        }
+      }
+      if (insertIdx >= 0) out.splice(insertIdx, 0, key);
+      else out.push(key);
     }
     return out;
   }
@@ -577,8 +495,8 @@ const CFG_CH = {
     return CHUB_MAIN_TAB_normalize(UTIL_storage.getJSON(KEY_CHUB_MAIN_TAB_ORDER_V1, null));
   }
 
-  function CHUB_MAIN_TAB_save(next){
-    const normalized = CHUB_MAIN_TAB_normalize(next);
+  function CHUB_MAIN_TAB_save(next, opts){
+    const normalized = CHUB_MAIN_TAB_normalize(next, opts);
     UTIL_storage.setJSON(KEY_CHUB_MAIN_TAB_ORDER_V1, normalized);
     return normalized;
   }
@@ -588,7 +506,7 @@ const CFG_CH = {
   }
 
   function CHUB_MAIN_TAB_getMetaList(category = CAT_ALL){
-    const byKey = new Map(FEATURE_META.filter((meta) => !meta.hidden).map((meta) => [FEATURE_getCanonicalKey(meta.key), meta]));
+    const byKey = new Map(FEATURE_getMainMetaList().filter((meta) => !meta.hidden).map((meta) => [FEATURE_getCanonicalKey(meta.key), meta]));
     return CHUB_MAIN_TAB_getOrder()
       .map((key) => byKey.get(key))
       .filter((meta) => !!meta)
@@ -608,7 +526,7 @@ const CFG_CH = {
   }
 
   function CHUB_MAIN_TAB_reset(){
-    return CHUB_MAIN_TAB_save(CHUB_MAIN_TAB_defaultOrder());
+    return CHUB_MAIN_TAB_save(CHUB_MAIN_TAB_defaultOrder(), { preserveUnknown: false });
   }
 
   function CHUB_MAIN_TAB_renderEditor(panel){
@@ -764,785 +682,6 @@ const CFG_CH = {
   const CHUB_STATE_SCOPE_HUB = '__hub__';
   const CHUB_STATE_LAST_MAIN_TAB_KEY = 'lastMainTabKey';
 
-  function CHUB_SB_bindingsApi(){
-    return W.H2O?.SB?.sctnbnds?.api?.bindings || null;
-  }
-
-  function CHUB_SB_paletteApi(){
-    return W.H2O?.SB?.sctnbnds?.api?.paletteConfig || null;
-  }
-
-  function CHUB_SB_readBindingsStore(){
-    try { return JSON.parse(localStorage.getItem(KEY_SECTION_BANDS_BINDINGS_V1) || '{}') || {}; } catch { return {}; }
-  }
-
-  function CHUB_SB_writeBindingsStore(next){
-    try { localStorage.setItem(KEY_SECTION_BANDS_BINDINGS_V1, JSON.stringify(next || {})); } catch {}
-  }
-
-  function CHUB_SB_getBinding(key, fallback){
-    const api = CHUB_SB_bindingsApi();
-    if (api && typeof api.getBinding === 'function') {
-      const live = api.getBinding(key);
-      if (live != null) return live;
-    }
-    const raw = CHUB_SB_readBindingsStore();
-    return String(raw?.[key] ?? fallback ?? 'none');
-  }
-
-  function CHUB_SB_setBinding(key, value){
-    const api = CHUB_SB_bindingsApi();
-    if (api && typeof api.setBinding === 'function') {
-      api.setBinding(key, value);
-      return;
-    }
-    const raw = CHUB_SB_readBindingsStore();
-    raw[key] = value;
-    CHUB_SB_writeBindingsStore(raw);
-  }
-
-  function CHUB_SB_normalizeHexColor(raw, fallback = null){
-    const base = String(raw || '').trim().replace(/^#/, '');
-    const expanded = /^[\da-f]{3}$/i.test(base)
-      ? base.split('').map((ch) => ch + ch).join('')
-      : base;
-    if (!/^[\da-f]{6}$/i.test(expanded)) return fallback;
-    return `#${expanded.toLowerCase()}`;
-  }
-
-  function CHUB_SB_normalizePaletteConfig(raw){
-    const colors = CHUB_SB_PALETTE_DEFAULTS.map((fallback, idx) => {
-      const incoming = Array.isArray(raw?.colors) ? raw.colors[idx] : null;
-      return {
-        key: fallback.key,
-        label: `Color ${idx + 1}`,
-        hex: CHUB_SB_normalizeHexColor(incoming?.hex, fallback.hex),
-      };
-    });
-    const keys = colors.map((color) => color.key);
-    const defaultKey = keys.includes(raw?.defaultKey) ? raw.defaultKey : CHUB_SB_PALETTE_DEFAULTS[0].key;
-    const applyStartMode = CHUB_SB_APPLY_START_MODES.some(([value]) => value === raw?.applyStartMode)
-      ? raw.applyStartMode
-      : CHUB_SB_APPLY_START_DEFAULT;
-    const lastUsedKey = keys.includes(raw?.lastUsedKey) ? raw.lastUsedKey : null;
-    return { colors, defaultKey, applyStartMode, lastUsedKey };
-  }
-
-  function CHUB_SB_readPaletteStore(){
-    try {
-      return CHUB_SB_normalizePaletteConfig(JSON.parse(localStorage.getItem(KEY_SECTION_BANDS_PALETTE_V1) || '{}') || {});
-    } catch {
-      return CHUB_SB_normalizePaletteConfig(null);
-    }
-  }
-
-  function CHUB_SB_writePaletteStore(next){
-    try { localStorage.setItem(KEY_SECTION_BANDS_PALETTE_V1, JSON.stringify(CHUB_SB_normalizePaletteConfig(next))); } catch {}
-  }
-
-  function CHUB_SB_getPaletteConfig(){
-    const api = CHUB_SB_paletteApi();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_SB_normalizePaletteConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_SB_readPaletteStore();
-  }
-
-  function CHUB_SB_setPaletteConfig(next){
-    const api = CHUB_SB_paletteApi();
-    if (api && typeof api.setConfig === 'function') {
-      try { return CHUB_SB_normalizePaletteConfig(api.setConfig(next || {})); } catch {}
-    }
-    const current = CHUB_SB_readPaletteStore();
-    const merged = CHUB_SB_normalizePaletteConfig({
-      colors: Array.isArray(next?.colors) ? next.colors : current.colors,
-      defaultKey: next?.defaultKey ?? current.defaultKey,
-      applyStartMode: next?.applyStartMode ?? current.applyStartMode,
-      lastUsedKey: next?.lastUsedKey ?? current.lastUsedKey,
-    });
-    CHUB_SB_writePaletteStore(merged);
-    return merged;
-  }
-
-  function CHUB_SB_resetPaletteConfig(){
-    const api = CHUB_SB_paletteApi();
-    if (api && typeof api.resetConfig === 'function') {
-      try { return CHUB_SB_normalizePaletteConfig(api.resetConfig()); } catch {}
-    }
-    const reset = CHUB_SB_normalizePaletteConfig(null);
-    CHUB_SB_writePaletteStore(reset);
-    return reset;
-  }
-
-  function CHUB_SB_defaultColorOpts(){
-    const cfg = CHUB_SB_getPaletteConfig();
-    return cfg.colors.map((color, idx) => [
-      color.key,
-      `Color ${idx + 1} (${String(color.hex || '').toUpperCase()})`,
-    ]);
-  }
-
-  function CHUB_SB_applyStartOpts(){
-    return CHUB_SB_APPLY_START_MODES.slice();
-  }
-
-  function CHUB_SB_popupMouseOpts(){
-    return [
-      ['left_click','Left click'],
-      ['middle_click','Middle click'],
-      ['right_click','Right click'],
-      ['left_double','Double-left'],
-      ['middle_double','Double-middle'],
-      ['right_double','Double-right'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_applyKeyOpts(){
-    return [
-      ['space','Space'],
-      ['enter','Enter'],
-      ['meta_1','Cmd+1'],
-      ['meta_h','Cmd+H'],
-      ['ctrl_1','Ctrl+1'],
-      ['ctrl_h','Ctrl+H'],
-      ['meta_or_ctrl_1','Cmd/Ctrl+1'],
-      ['meta_or_ctrl_h','Cmd/Ctrl+H'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_clearKeyOpts(){
-    return [
-      ['meta_z','Cmd+Z'],
-      ['ctrl_z','Ctrl+Z'],
-      ['meta_or_ctrl_z','Cmd/Ctrl+Z'],
-      ['escape','Escape'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_repeatOpts(){
-    return [
-      ['space','Space'],
-      ['enter','Enter'],
-      ['enter_backspace','Enter / Backspace'],
-      ['arrow_lr','Arrow Left / Right'],
-      ['arrow_ud','Arrow Up / Down'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_modeOpts(){
-    return [
-      ['space','Space'],
-      ['enter','Enter'],
-      ['arrow_lr','Arrow Left / Right'],
-      ['arrow_ud','Arrow Up / Down'],
-      ['meta_x','Cmd+X'],
-      ['ctrl_x','Ctrl+X'],
-      ['meta_or_ctrl_x','Cmd/Ctrl+X'],
-      ['meta_v','Cmd+V'],
-      ['ctrl_v','Ctrl+V'],
-      ['meta_or_ctrl_v','Cmd/Ctrl+V'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_patternPickOpts(){
-    return [
-      ['space','Space'],
-      ['enter','Enter'],
-      ['meta_x','Cmd+X'],
-      ['ctrl_x','Ctrl+X'],
-      ['meta_or_ctrl_x','Cmd/Ctrl+X'],
-      ['meta_v','Cmd+V'],
-      ['ctrl_v','Ctrl+V'],
-      ['meta_or_ctrl_v','Cmd/Ctrl+V'],
-      ['escape','Escape'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_patternRotateOpts(){
-    return [
-      ['space','Space'],
-      ['enter','Enter'],
-      ['enter_backspace','Enter / Backspace'],
-      ['arrow_lr','Arrow Left / Right'],
-      ['arrow_ud','Arrow Up / Down'],
-      ['meta_x','Cmd+X'],
-      ['ctrl_x','Ctrl+X'],
-      ['meta_or_ctrl_x','Cmd/Ctrl+X'],
-      ['escape','Escape'],
-      ['none','None'],
-    ];
-  }
-
-  function CHUB_SB_refreshSectionBandControls(panel){
-    if (!panel || STATE_CH.curKey !== FEATURE_KEY_SECTION_BANDS) return;
-    ENGINE_renderControls(panel);
-  }
-
-  function CHUB_SB_movePaletteColor(colors, fromIdx, toIdx){
-    const list = Array.isArray(colors) ? colors.slice() : [];
-    if (fromIdx < 0 || fromIdx >= list.length || toIdx < 0 || toIdx >= list.length || fromIdx === toIdx) return list;
-    const [item] = list.splice(fromIdx, 1);
-    list.splice(toIdx, 0, item);
-    return list.map((color, idx) => ({
-      key: CHUB_SB_PALETTE_DEFAULTS[idx]?.key || color?.key || `color_${idx + 1}`,
-      label: `Color ${idx + 1}`,
-      hex: CHUB_SB_normalizeHexColor(color?.hex, CHUB_SB_PALETTE_DEFAULTS[idx]?.hex || '#888888'),
-    }));
-  }
-
-  function CHUB_SB_renderPaletteEditor({ panel }){
-    const cfg = CHUB_SB_getPaletteConfig();
-    const root = D.createElement('div');
-    root.className = `${CLS}-sbPaletteEditor`;
-
-    const tip = D.createElement('div');
-    tip.className = `${CLS}-ctrlHint ${CLS}-sbPaletteHint`;
-    tip.textContent = 'Edit the 5 loop colors here. Existing section bands update when you apply.';
-    root.appendChild(tip);
-
-    let draftColors = cfg.colors.map((color, idx) => ({
-      key: CHUB_SB_PALETTE_DEFAULTS[idx]?.key || color?.key || `color_${idx + 1}`,
-      label: `Color ${idx + 1}`,
-      hex: CHUB_SB_normalizeHexColor(color?.hex, CHUB_SB_PALETTE_DEFAULTS[idx]?.hex || '#888888'),
-    }));
-
-    const list = D.createElement('div');
-    list.className = `${CLS}-sbPaletteList`;
-    root.appendChild(list);
-
-    const actionRow = D.createElement('div');
-    actionRow.className = `${CLS}-sbPaletteActions`;
-
-    const applyBtn = D.createElement('button');
-    applyBtn.type = 'button';
-    applyBtn.className = `${CLS}-actionBtn primary`;
-    applyBtn.textContent = 'Apply';
-
-    const resetBtn = D.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.className = `${CLS}-actionBtn`;
-    resetBtn.textContent = 'Reset';
-
-    const status = D.createElement('span');
-    status.className = `${CLS}-ctrlActionStatus`;
-    status.style.textAlign = 'left';
-    status.style.minWidth = '0';
-    status.textContent = '';
-
-    const renderRows = () => {
-      list.textContent = '';
-
-      draftColors.forEach((color, idx) => {
-        const row = D.createElement('div');
-        row.className = `${CLS}-sbPaletteRow`;
-
-        const lead = D.createElement('div');
-        lead.className = `${CLS}-sbPaletteLead`;
-
-        const index = D.createElement('span');
-        index.className = `${CLS}-sbPaletteIndex`;
-        index.textContent = String(idx + 1);
-
-        const picker = D.createElement('input');
-        picker.type = 'color';
-        picker.className = `${CLS}-sbPalettePickerHidden`;
-        picker.value = CHUB_SB_normalizeHexColor(color.hex, CHUB_SB_PALETTE_DEFAULTS[idx]?.hex || '#888888');
-
-        const swatch = D.createElement('button');
-        swatch.type = 'button';
-        swatch.className = `${CLS}-sbPaletteSwatch`;
-        swatch.title = `Pick Color ${idx + 1}`;
-        swatch.style.background = picker.value;
-
-        const code = D.createElement('input');
-        code.type = 'text';
-        code.value = String(picker.value || '').toUpperCase();
-        code.maxLength = 7;
-        code.spellcheck = false;
-        code.autocomplete = 'off';
-        code.className = `${CLS}-select2 ${CLS}-sbPaletteHex`;
-
-        const pos = D.createElement('select');
-        pos.className = `${CLS}-select2 ${CLS}-sbPalettePos`;
-        for (let slot = 1; slot <= CHUB_SB_PALETTE_DEFAULTS.length; slot++) {
-          const opt = D.createElement('option');
-          opt.value = String(slot - 1);
-          opt.textContent = String(slot);
-          pos.appendChild(opt);
-        }
-        pos.value = String(idx);
-
-        const tail = D.createElement('div');
-        tail.className = `${CLS}-sbPaletteTail`;
-
-        const moveWrap = D.createElement('div');
-        moveWrap.className = `${CLS}-sbPaletteMoves`;
-
-        const mkMoveBtn = (txt, title, disabled, onClick) => {
-          const btn = D.createElement('button');
-          btn.type = 'button';
-          btn.className = `${CLS}-sbPaletteMoveBtn`;
-          btn.textContent = txt;
-          btn.title = title;
-          btn.disabled = disabled;
-          btn.addEventListener('click', onClick, true);
-          return btn;
-        };
-
-        const moveLeftBtn = mkMoveBtn('←', 'Move earlier in the loop', idx === 0, () => {
-          draftColors = CHUB_SB_movePaletteColor(draftColors, idx, idx - 1);
-          renderRows();
-        });
-        const moveRightBtn = mkMoveBtn('→', 'Move later in the loop', idx === (draftColors.length - 1), () => {
-          draftColors = CHUB_SB_movePaletteColor(draftColors, idx, idx + 1);
-          renderRows();
-        });
-
-        swatch.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          picker.click();
-        }, true);
-
-        picker.addEventListener('input', () => {
-          const nextHex = CHUB_SB_normalizeHexColor(picker.value, draftColors[idx]?.hex || picker.value);
-          draftColors[idx] = Object.assign({}, draftColors[idx], { hex: nextHex });
-          swatch.style.background = nextHex;
-          code.value = String(nextHex || '').toUpperCase();
-        }, true);
-
-        code.addEventListener('input', () => {
-          const normalized = CHUB_SB_normalizeHexColor(code.value, null);
-          if (!normalized) return;
-          draftColors[idx] = Object.assign({}, draftColors[idx], { hex: normalized });
-          picker.value = normalized;
-          swatch.style.background = normalized;
-        }, true);
-
-        code.addEventListener('blur', () => {
-          const normalized = CHUB_SB_normalizeHexColor(code.value, draftColors[idx]?.hex || picker.value);
-          draftColors[idx] = Object.assign({}, draftColors[idx], { hex: normalized });
-          picker.value = normalized;
-          swatch.style.background = normalized;
-          code.value = String(normalized || '').toUpperCase();
-        }, true);
-
-        pos.addEventListener('change', () => {
-          draftColors = CHUB_SB_movePaletteColor(draftColors, idx, parseInt(pos.value, 10));
-          renderRows();
-        }, true);
-
-        lead.append(index, swatch, picker);
-        moveWrap.append(moveLeftBtn, moveRightBtn);
-        tail.append(pos, moveWrap);
-        row.append(lead, code, tail);
-        list.appendChild(row);
-      });
-    };
-
-    applyBtn.addEventListener('click', () => {
-      const colors = draftColors.map((color, idx) => ({
-        key: CHUB_SB_PALETTE_DEFAULTS[idx]?.key || color?.key || `color_${idx + 1}`,
-        label: `Color ${idx + 1}`,
-        hex: CHUB_SB_normalizeHexColor(color?.hex, CHUB_SB_PALETTE_DEFAULTS[idx]?.hex || '#888888'),
-      }));
-      CHUB_SB_setPaletteConfig({ colors });
-      status.textContent = 'Palette updated.';
-      CHUB_SB_refreshSectionBandControls(panel);
-    }, true);
-
-    resetBtn.addEventListener('click', () => {
-      CHUB_SB_resetPaletteConfig();
-      status.textContent = 'Palette reset.';
-      CHUB_SB_refreshSectionBandControls(panel);
-    }, true);
-
-    renderRows();
-    actionRow.append(applyBtn, resetBtn, status);
-    root.appendChild(actionRow);
-    return root;
-  }
-
-  const KEY_INLINE_HL_CFG_UI_V1 = 'h2o:prm:cgx:nlnhghlghtr:cfg:ui:v1';
-  const CHUB_HL_PALETTE_DEFAULTS = Object.freeze([
-    Object.freeze({ title: 'blue',   label: 'Blue',   group: 'primary',   pair: 'sky',    color: '#3B82F6' }),
-    Object.freeze({ title: 'red',    label: 'Red',    group: 'primary',   pair: 'pink',   color: '#FF4C4C' }),
-    Object.freeze({ title: 'green',  label: 'Green',  group: 'primary',   pair: 'purple', color: '#22C55E' }),
-    Object.freeze({ title: 'gold',   label: 'Gold',   group: 'primary',   pair: 'orange', color: '#FFD54F' }),
-    Object.freeze({ title: 'sky',    label: 'Sky',    group: 'secondary', pair: 'blue',   color: '#7DD3FC' }),
-    Object.freeze({ title: 'pink',   label: 'Pink',   group: 'secondary', pair: 'red',    color: '#F472B6' }),
-    Object.freeze({ title: 'purple', label: 'Purple', group: 'secondary', pair: 'green',  color: '#A855F7' }),
-    Object.freeze({ title: 'orange', label: 'Orange', group: 'secondary', pair: 'gold',   color: '#FF914D' }),
-  ]);
-  const CHUB_HL_DEFAULTS = Object.freeze({
-    applyShortcut: 'meta_or_ctrl_1',
-    clearShortcut: 'meta_or_ctrl_z',
-    popupTrigger: 'middle_click',
-    shortcutColorMode: 'current_color',
-    defaultColor: 'gold',
-  });
-  const CHUB_HL_APPLY_SHORTCUTS = Object.freeze(['meta_or_ctrl_1', 'meta_1', 'ctrl_1', 'meta_or_ctrl_shift_1', 'none']);
-  const CHUB_HL_CLEAR_SHORTCUTS = Object.freeze(['meta_or_ctrl_z', 'meta_z', 'ctrl_z', 'escape', 'backspace', 'delete', 'none']);
-  const CHUB_HL_POPUP_TRIGGERS = Object.freeze(['hover', 'click', 'middle_click', 'right_click', 'none']);
-  const CHUB_HL_START_MODES = Object.freeze(['default_color', 'first_primary', 'current_color', 'next_primary', 'paired_secondary', 'random']);
-
-  function CHUB_HL_api() {
-    return W.H2O?.HE?.nlnhghlghtr?.api || W.H2OInline || null;
-  }
-
-  function CHUB_HL_normalizeHexColor(raw, fallback = null) {
-    const base = String(raw || '').trim().replace(/^#/, '');
-    const expanded = /^[\da-f]{3}$/i.test(base)
-      ? base.split('').map((ch) => ch + ch).join('')
-      : base;
-    if (!/^[\da-f]{6}$/i.test(expanded)) return fallback;
-    return `#${expanded.toLowerCase()}`;
-  }
-
-  function CHUB_HL_findPaletteEntry(rawPalette, title, idx) {
-    if (!Array.isArray(rawPalette)) return null;
-    const byTitle = rawPalette.find((entry) => String(entry?.title || entry?.key || '').trim().toLowerCase() === title);
-    if (byTitle) return byTitle;
-    return rawPalette[idx] || null;
-  }
-
-  function CHUB_HL_normalizeConfig(raw) {
-    const src = raw && typeof raw === 'object' ? raw : {};
-    const palette = CHUB_HL_PALETTE_DEFAULTS.map((fallback, idx) => {
-      const incoming = CHUB_HL_findPaletteEntry(src.palette, fallback.title, idx);
-      return {
-        title: fallback.title,
-        label: fallback.label,
-        group: fallback.group,
-        pair: fallback.pair,
-        color: CHUB_HL_normalizeHexColor(incoming?.color || incoming?.hex, fallback.color),
-      };
-    });
-    const names = palette.map((entry) => entry.title);
-    return {
-      applyShortcut: CHUB_HL_APPLY_SHORTCUTS.includes(src.applyShortcut) ? src.applyShortcut : CHUB_HL_DEFAULTS.applyShortcut,
-      clearShortcut: CHUB_HL_CLEAR_SHORTCUTS.includes(src.clearShortcut) ? src.clearShortcut : CHUB_HL_DEFAULTS.clearShortcut,
-      popupTrigger: CHUB_HL_POPUP_TRIGGERS.includes(src.popupTrigger) ? src.popupTrigger : CHUB_HL_DEFAULTS.popupTrigger,
-      shortcutColorMode: CHUB_HL_START_MODES.includes(src.shortcutColorMode) ? src.shortcutColorMode : CHUB_HL_DEFAULTS.shortcutColorMode,
-      defaultColor: names.includes(String(src.defaultColor || '').trim().toLowerCase()) ? String(src.defaultColor).trim().toLowerCase() : CHUB_HL_DEFAULTS.defaultColor,
-      palette,
-    };
-  }
-
-  function CHUB_HL_readStore() {
-    try {
-      return CHUB_HL_normalizeConfig(JSON.parse(localStorage.getItem(KEY_INLINE_HL_CFG_UI_V1) || '{}') || {});
-    } catch {
-      return CHUB_HL_normalizeConfig(null);
-    }
-  }
-
-  function CHUB_HL_writeStore(next) {
-    try { localStorage.setItem(KEY_INLINE_HL_CFG_UI_V1, JSON.stringify(CHUB_HL_normalizeConfig(next))); } catch {}
-  }
-
-  function CHUB_HL_getConfig() {
-    const api = CHUB_HL_api();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_HL_normalizeConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_HL_readStore();
-  }
-
-  function CHUB_HL_applySetting(key, value) {
-    const api = CHUB_HL_api();
-    if (api && typeof api.applySetting === 'function') {
-      try { return CHUB_HL_normalizeConfig(api.applySetting(key, value)); } catch {}
-    }
-    const merged = CHUB_HL_normalizeConfig({ ...CHUB_HL_readStore(), [key]: value });
-    CHUB_HL_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_HL_getPaletteConfig() {
-    const api = CHUB_HL_api();
-    const paletteApi = api?.paletteConfig || null;
-    if (paletteApi && typeof paletteApi.getConfig === 'function') {
-      try {
-        const current = CHUB_HL_getConfig();
-        return CHUB_HL_normalizeConfig({ ...current, ...paletteApi.getConfig() });
-      } catch {}
-    }
-    return CHUB_HL_readStore();
-  }
-
-  function CHUB_HL_setPaletteConfig(next) {
-    const api = CHUB_HL_api();
-    const paletteApi = api?.paletteConfig || null;
-    if (paletteApi && typeof paletteApi.setConfig === 'function') {
-      try {
-        const current = CHUB_HL_getConfig();
-        return CHUB_HL_normalizeConfig({ ...current, ...paletteApi.setConfig(next || {}) });
-      } catch {}
-    }
-    const current = CHUB_HL_readStore();
-    const merged = CHUB_HL_normalizeConfig({
-      ...current,
-      defaultColor: next?.defaultColor ?? current.defaultColor,
-      palette: Array.isArray(next?.palette) ? next.palette : current.palette,
-    });
-    CHUB_HL_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_HL_resetPaletteConfig() {
-    const api = CHUB_HL_api();
-    const paletteApi = api?.paletteConfig || null;
-    if (paletteApi && typeof paletteApi.resetConfig === 'function') {
-      try {
-        const current = CHUB_HL_getConfig();
-        return CHUB_HL_normalizeConfig({ ...current, ...paletteApi.resetConfig() });
-      } catch {}
-    }
-    const current = CHUB_HL_readStore();
-    const reset = CHUB_HL_normalizeConfig({
-      ...current,
-      palette: CHUB_HL_PALETTE_DEFAULTS.map((entry) => ({ title: entry.title, color: entry.color })),
-      defaultColor: CHUB_HL_DEFAULTS.defaultColor,
-    });
-    CHUB_HL_writeStore(reset);
-    return reset;
-  }
-
-  function CHUB_HL_applyKeyOpts() {
-    return [
-      ['meta_or_ctrl_1', 'Cmd/Ctrl+1'],
-      ['meta_1', 'Cmd+1'],
-      ['ctrl_1', 'Ctrl+1'],
-      ['meta_or_ctrl_shift_1', 'Cmd/Ctrl+Shift+1'],
-      ['none', 'None'],
-    ];
-  }
-
-  function CHUB_HL_clearKeyOpts() {
-    return [
-      ['meta_or_ctrl_z', 'Cmd/Ctrl+Z'],
-      ['meta_z', 'Cmd+Z'],
-      ['ctrl_z', 'Ctrl+Z'],
-      ['escape', 'Escape'],
-      ['backspace', 'Backspace'],
-      ['delete', 'Delete'],
-      ['none', 'None'],
-    ];
-  }
-
-  function CHUB_HL_popupTriggerOpts() {
-    return [
-      ['hover', 'Hover'],
-      ['click', 'Mouse click'],
-      ['middle_click', 'Middle click'],
-      ['right_click', 'Right click'],
-      ['none', 'None'],
-    ];
-  }
-
-  function CHUB_HL_startColorOpts() {
-    return [
-      ['default_color', 'Default Color'],
-      ['first_primary', 'First Primary Color'],
-      ['current_color', 'Last Used Color'],
-      ['next_primary', 'Next Primary After Last Used'],
-      ['paired_secondary', 'Matching Secondary To Last Used'],
-      ['random', 'Random Color'],
-    ];
-  }
-
-  function CHUB_HL_defaultColorOpts() {
-    return CHUB_HL_getPaletteConfig().palette.map((entry) => [
-      entry.title,
-      `${entry.label} (${String(entry.color || '').toUpperCase()})`,
-    ]);
-  }
-
-  function CHUB_HL_clearCurrentChat() {
-    const api = CHUB_HL_api();
-    if (api && typeof api.clearCurrentChat === 'function') {
-      return Promise.resolve(api.clearCurrentChat());
-    }
-    return Promise.resolve({ message: 'Highlighter module unavailable.' });
-  }
-
-  function CHUB_HL_renderPaletteEditor() {
-    const cfg = CHUB_HL_getPaletteConfig();
-    const root = D.createElement('div');
-    root.className = `${CLS}-sbPaletteEditor ${CLS}-hlPaletteEditor`;
-
-    const tip = D.createElement('div');
-    tip.className = `${CLS}-ctrlHint ${CLS}-sbPaletteHint`;
-    tip.textContent = 'Primary colors are the main loop. Secondary colors are the paired alternates. Set each color with the picker or by typing a hex code.';
-    root.appendChild(tip);
-
-    const list = D.createElement('div');
-    list.className = `${CLS}-sbPaletteList`;
-    root.appendChild(list);
-
-    const actionRow = D.createElement('div');
-    actionRow.className = `${CLS}-sbPaletteActions`;
-
-    const applyBtn = D.createElement('button');
-    applyBtn.type = 'button';
-    applyBtn.className = `${CLS}-actionBtn primary`;
-    applyBtn.textContent = 'Apply';
-
-    const resetBtn = D.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.className = `${CLS}-actionBtn`;
-    resetBtn.textContent = 'Reset';
-
-    const status = D.createElement('span');
-    status.className = `${CLS}-ctrlActionStatus`;
-    status.style.textAlign = 'left';
-    status.style.minWidth = '0';
-
-    let draft = cfg.palette.map((entry) => ({
-      title: entry.title,
-      label: entry.label,
-      group: entry.group,
-      pair: entry.pair,
-      color: CHUB_HL_normalizeHexColor(entry.color, '#888888'),
-    }));
-
-    const renderRows = () => {
-      list.textContent = '';
-      [['primary', 'Primary Colors'], ['secondary', 'Secondary Colors']].forEach(([groupKey, groupLabel]) => {
-        const title = D.createElement('div');
-        title.className = `${CLS}-hlPaletteGroupTitle`;
-        title.textContent = groupLabel;
-        list.appendChild(title);
-
-        draft.filter((entry) => entry.group === groupKey).forEach((entry) => {
-          const row = D.createElement('div');
-          row.className = `${CLS}-sbPaletteRow`;
-
-          const lead = D.createElement('div');
-          lead.className = `${CLS}-sbPaletteLead`;
-
-          const picker = D.createElement('input');
-          picker.type = 'color';
-          picker.className = `${CLS}-hlPalettePicker`;
-          picker.value = entry.color;
-          picker.title = `Pick ${entry.label}`;
-
-          const label = D.createElement('span');
-          label.className = `${CLS}-hlPaletteLabel`;
-          label.textContent = entry.label;
-
-          const code = D.createElement('input');
-          code.type = 'text';
-          code.value = String(entry.color || '').toUpperCase();
-          code.maxLength = 7;
-          code.spellcheck = false;
-          code.autocomplete = 'off';
-          code.className = `${CLS}-select2 ${CLS}-sbPaletteHex`;
-
-          const setColor = (raw, fallback) => {
-            const nextHex = CHUB_HL_normalizeHexColor(raw, fallback);
-            entry.color = nextHex;
-            picker.value = nextHex;
-            code.value = String(nextHex || '').toUpperCase();
-          };
-
-          picker.addEventListener('input', () => setColor(picker.value, entry.color), true);
-          code.addEventListener('input', () => {
-            const normalized = CHUB_HL_normalizeHexColor(code.value, null);
-            if (normalized) setColor(normalized, entry.color);
-          }, true);
-          code.addEventListener('blur', () => setColor(code.value, entry.color), true);
-
-          lead.append(picker, label);
-          row.append(lead, code);
-          list.appendChild(row);
-        });
-      });
-    };
-
-    applyBtn.addEventListener('click', () => {
-      draft = CHUB_HL_setPaletteConfig({ palette: draft }).palette.map((entry) => ({
-        title: entry.title,
-        label: entry.label,
-        group: entry.group,
-        pair: entry.pair,
-        color: entry.color,
-      }));
-      renderRows();
-      status.textContent = 'Palette updated.';
-    }, true);
-
-    resetBtn.addEventListener('click', () => {
-      draft = CHUB_HL_resetPaletteConfig().palette.map((entry) => ({
-        title: entry.title,
-        label: entry.label,
-        group: entry.group,
-        pair: entry.pair,
-        color: entry.color,
-      }));
-      renderRows();
-      status.textContent = 'Palette reset.';
-    }, true);
-
-    renderRows();
-    actionRow.append(applyBtn, resetBtn, status);
-    root.appendChild(actionRow);
-    return root;
-  }
-
-  function CHUB_NOTES_dockApi() {
-    return CHUB_DOCK_api();
-  }
-
-  function CHUB_NOTES_notesApi() {
-    return W.H2ONotes || W.HoNotes || null;
-  }
-
-  function CHUB_NOTES_emitChanged() {
-    try { W.dispatchEvent(new Event('h2o:notes:changed')); } catch {}
-    try { W.dispatchEvent(new Event('h2o-notes:changed')); } catch {}
-  }
-
-  function CHUB_NOTES_openPanel(reason = 'control-hub:notes:open') {
-    const api = CHUB_NOTES_dockApi();
-    if (!api) return { message: 'Dock Panel is unavailable.' };
-
-    SAFE_call(`notes.open:${reason}`, () => {
-      api.ensurePanel?.();
-      api.open?.();
-      api.setView?.('notes');
-      api.requestRender?.();
-    });
-    return { message: 'Notes tab opened.' };
-  }
-
-  function CHUB_NOTES_refreshPanel(reason = 'control-hub:notes:refresh') {
-    const api = CHUB_NOTES_dockApi();
-    if (!api) return { message: 'Dock Panel is unavailable.' };
-
-    SAFE_call(`notes.refresh:${reason}`, () => {
-      api.setView?.('notes');
-      api.requestRender?.();
-    });
-    return { message: 'Notes refreshed.' };
-  }
-
-  function CHUB_NOTES_clearScratch() {
-    const api = CHUB_NOTES_notesApi();
-    if (!api?.scratchSet) return { message: 'Notes Engine is unavailable.' };
-
-    SAFE_call('notes.clearScratch', () => api.scratchSet(''));
-    CHUB_NOTES_emitChanged();
-    CHUB_NOTES_refreshPanel('control-hub:notes:clear-scratch');
-    return { message: 'Scratchpad cleared.' };
-  }
-
   function CHUB_invalidateSoon() {
     try { W.setTimeout(() => CORE_CH_invalidate(), 0); } catch {}
   }
@@ -1571,248 +710,8 @@ const CFG_CH = {
     return root;
   }
 
-  const CHUB_THEME_SETTINGS_KEY_V2 = 'h2o:prm:cgx:thmspnl:ui:settings:v2';
-  const CHUB_THEME_SETTINGS_KEY_LEGACY = 'ho:gpthemeSettings';
-  const CHUB_THEME_SETTINGS_EVENT = 'evt:h2o:themes:settings_changed';
   const CHUB_VIS_STYLE_ID = `cgxui-${SkID}-tab-visibility-style`;
   const CHUB_VIS_CLASS_PREFIX = `cgxui-${SkID}-hide-`;
-  const CHUB_THEME_DEFAULTS = Object.freeze({
-    enabled: true,
-    mode: 'dark',
-    accentLight: '270, 80%, 75%',
-    accentDark: '265, 70%, 62%',
-    accentUserBubble: false,
-    fontFamily: 'system',
-    fontSize: 16,
-    lineHeight: 28,
-    letterSpace: 0,
-    chatWidth: 48,
-    promptWidth: 48,
-    chatFullWidth: false,
-    syncPromptWidth: true,
-    hideHeader: false,
-    hideFooter: false,
-    expandChatbox: false,
-    bubblesUser: true,
-    bubblesGpt: true,
-    scrollAlign: 'right',
-  });
-
-
-  const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
-  const KEY_ATS_CFG_UI_V1 = 'h2o:prm:cgx:answrts:cfg:ui:v1';
-  const KEY_AT_CFG_UI_V1 = 'h2o:prm:cgx:tnswrttl:cfg:ui:v1';
-
-  function CHUB_ANSN_api() {
-    return W.H2O?.AnsNums?.api || null;
-  }
-
-  function CHUB_ANSN_normalizeConfig(raw) {
-    const src = (raw && typeof raw === 'object') ? raw : {};
-    const clamp = (v, min, max, fallback) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
-    };
-    const legacyFadeStrength = clamp(src.rightFadeStrength, 0.0, 1.0, 0.65);
-    const legacyFadeStartPct = 68 - (50 * legacyFadeStrength);
-    const legacyFadeEndOpacity = clamp(src.rightFadeEndOpacity, 0.0, 1.0, 0.0);
-    return {
-      normalOpacity: clamp(src.normalOpacity, 0.02, 0.35, 0.12),
-      normalLeftPx: clamp(src.normalLeftPx, -260, -20, -140),
-      normalScale: clamp(src.normalScale, 0.55, 1.35, 1.0),
-      normalRightFadeStartPct: clamp(src.normalRightFadeStartPct, 20, 100, legacyFadeStartPct),
-      normalRightFadeEndOpacity: clamp(src.normalRightFadeEndOpacity, 0.0, 1.0, legacyFadeEndOpacity),
-      collapsedOpacity: clamp(src.collapsedOpacity, 0.02, 0.35, 0.09),
-      collapsedScale: clamp(src.collapsedScale, 0.2, 1.1, 0.42),
-      collapsedLeftPx: clamp(src.collapsedLeftPx, -260, -20, -132),
-      collapsedRightFadeStartPct: clamp(src.collapsedRightFadeStartPct, 20, 100, legacyFadeStartPct),
-      collapsedRightFadeEndOpacity: clamp(src.collapsedRightFadeEndOpacity, 0.0, 1.0, legacyFadeEndOpacity),
-    };
-  }
-
-  function CHUB_ANSN_readStore() {
-    try { return CHUB_ANSN_normalizeConfig(JSON.parse(localStorage.getItem(KEY_ANSN_CFG_UI_V1) || '{}') || {}); } catch { return CHUB_ANSN_normalizeConfig(null); }
-  }
-
-  function CHUB_ANSN_writeStore(next) {
-    const cfg = CHUB_ANSN_normalizeConfig(next);
-    try { localStorage.setItem(KEY_ANSN_CFG_UI_V1, JSON.stringify(cfg)); } catch {}
-    return cfg;
-  }
-
-  function CHUB_ANSN_getConfig() {
-    const api = CHUB_ANSN_api();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_ANSN_normalizeConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_ANSN_readStore();
-  }
-
-  function CHUB_ANSN_applySetting(key, value) {
-    const api = CHUB_ANSN_api();
-    if (api && typeof api.applySetting === 'function') {
-      try { return CHUB_ANSN_normalizeConfig(api.applySetting(key, value)); } catch {}
-    }
-    const merged = CHUB_ANSN_normalizeConfig({ ...CHUB_ANSN_readStore(), [key]: value });
-    CHUB_ANSN_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_ANSN_rescan() {
-    return SAFE_call('answerNumbers.rescan', () => CHUB_ANSN_api()?.rescan?.());
-  }
-
-  const KEY_QN_CFG_UI_V1 = 'h2o:prm:cgx:qbig:cfg:ui:v1';
-
-  function CHUB_QN_api() {
-    return W.H2O?.QN?.qbigindex?.api || null;
-  }
-
-  function CHUB_QN_normalizeConfig(raw) {
-    const src = (raw && typeof raw === 'object') ? raw : {};
-    const clamp = (v, min, max, fallback) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
-    };
-    return {
-      opacity: clamp(src.opacity, 0.02, 0.35, 0.12),
-      leftOffsetPx: clamp(src.leftOffsetPx, 0, 120, 14),
-      scale: clamp(src.scale, 0.35, 1.35, 0.75),
-      rightFadeStartPct: clamp(src.rightFadeStartPct, 20, 100, 60),
-      rightFadeEndOpacity: clamp(src.rightFadeEndOpacity, 0.0, 1.0, 0.18),
-    };
-  }
-
-  function CHUB_QN_readStore() {
-    try { return CHUB_QN_normalizeConfig(JSON.parse(localStorage.getItem(KEY_QN_CFG_UI_V1) || '{}') || {}); } catch { return CHUB_QN_normalizeConfig(null); }
-  }
-
-  function CHUB_QN_writeStore(next) {
-    const cfg = CHUB_QN_normalizeConfig(next);
-    try { localStorage.setItem(KEY_QN_CFG_UI_V1, JSON.stringify(cfg)); } catch {}
-    return cfg;
-  }
-
-  function CHUB_QN_getConfig() {
-    const api = CHUB_QN_api();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_QN_normalizeConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_QN_readStore();
-  }
-
-  function CHUB_QN_applySetting(key, value) {
-    const api = CHUB_QN_api();
-    if (api && typeof api.applySetting === 'function') {
-      try { return CHUB_QN_normalizeConfig(api.applySetting(key, value)); } catch {}
-    }
-    const merged = CHUB_QN_normalizeConfig({ ...CHUB_QN_readStore(), [key]: value });
-    CHUB_QN_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_QN_rescan() {
-    return SAFE_call('questionNumbers.rescan', () => CHUB_QN_api()?.rescan?.());
-  }
-
-  function CHUB_ATS_api() {
-    return W.H2O?.AT?.answrts?.api || null;
-  }
-
-  function CHUB_ATS_normalizeConfig(raw) {
-    const src = (raw && typeof raw === 'object') ? raw : {};
-    const mode = String(src.collapsedHoverMode || 'under').trim().toLowerCase();
-    return {
-      collapsedHoverMode: ['under', 'tooltip', 'title-right'].includes(mode) ? mode : 'under',
-    };
-  }
-
-  function CHUB_ATS_readStore() {
-    try { return CHUB_ATS_normalizeConfig(JSON.parse(localStorage.getItem(KEY_ATS_CFG_UI_V1) || '{}') || {}); } catch { return CHUB_ATS_normalizeConfig(null); }
-  }
-
-  function CHUB_ATS_writeStore(next) {
-    const cfg = CHUB_ATS_normalizeConfig(next);
-    try { localStorage.setItem(KEY_ATS_CFG_UI_V1, JSON.stringify(cfg)); } catch {}
-    return cfg;
-  }
-
-  function CHUB_ATS_getConfig() {
-    const api = CHUB_ATS_api();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_ATS_normalizeConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_ATS_readStore();
-  }
-
-  function CHUB_ATS_applySetting(key, value) {
-    const api = CHUB_ATS_api();
-    if (api && typeof api.applySetting === 'function') {
-      try { return CHUB_ATS_normalizeConfig(api.applySetting(key, value)); } catch {}
-    }
-    const merged = CHUB_ATS_normalizeConfig({ ...CHUB_ATS_readStore(), [key]: value });
-    CHUB_ATS_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_ATS_hoverModeOpts() {
-    return [
-      ['under', 'Under Title Bar'],
-      ['tooltip', 'Hover Info Box'],
-      ['title-right', 'Right Side Of Title Bar'],
-    ];
-  }
-
-  function CHUB_AT_api() {
-    return W.H2O?.AT?.tnswrttl?.api || null;
-  }
-
-  function CHUB_AT_normalizeConfig(raw) {
-    const src = (raw && typeof raw === 'object') ? raw : {};
-    const mode = String(src.collapsedTextMode || 'adaptive').trim().toLowerCase();
-    return {
-      collapsedTextMode: ['adaptive', 'consistent'].includes(mode) ? mode : 'adaptive',
-    };
-  }
-
-  function CHUB_AT_readStore() {
-    try { return CHUB_AT_normalizeConfig(JSON.parse(localStorage.getItem(KEY_AT_CFG_UI_V1) || '{}') || {}); } catch { return CHUB_AT_normalizeConfig(null); }
-  }
-
-  function CHUB_AT_writeStore(next) {
-    const cfg = CHUB_AT_normalizeConfig(next);
-    try { localStorage.setItem(KEY_AT_CFG_UI_V1, JSON.stringify(cfg)); } catch {}
-    return cfg;
-  }
-
-  function CHUB_AT_getConfig() {
-    const api = CHUB_AT_api();
-    if (api && typeof api.getConfig === 'function') {
-      try { return CHUB_AT_normalizeConfig(api.getConfig()); } catch {}
-    }
-    return CHUB_AT_readStore();
-  }
-
-  function CHUB_AT_applySetting(key, value) {
-    const api = CHUB_AT_api();
-    if (api && typeof api.applySetting === 'function') {
-      try { return CHUB_AT_normalizeConfig(api.applySetting(key, value)); } catch {}
-    }
-    const merged = CHUB_AT_normalizeConfig({ ...CHUB_AT_readStore(), [key]: value });
-    CHUB_AT_writeStore(merged);
-    return merged;
-  }
-
-  function CHUB_AT_collapsedTextModeOpts() {
-    return [
-      ['adaptive', 'Adaptive (Flip Black/White)'],
-      ['consistent', 'Consistent (Same Color)'],
-    ];
-  }
-
-  function CHUB_DOCK_api() {
-    return W.H2O?.DP?.dckpnl?.api || null;
-  }
 
   function CHUB_EDGE_dataNs() {
     return String(W.H2O?.data?.ready?.ns?.NS_DISK || 'h2o:prm:cgx:h2odata');
@@ -1970,922 +869,6 @@ const CFG_CH = {
     return { ok: true, message: 'Account unlinked.' };
   }
 
-  function CHUB_PM_api() {
-    return MOD_OBJ.state?.pmApi || W.H2O?.PromptManager || null;
-  }
-
-  function CHUB_PM_openAction() {
-    const ok = SAFE_call('promptManager.open', () => CHUB_PM_api()?.open?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Prompt Manager opened.' : 'Prompt Manager is unavailable.' };
-  }
-
-  function CHUB_PM_closeAction() {
-    const ok = SAFE_call('promptManager.close', () => CHUB_PM_api()?.close?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Prompt Manager closed.' : 'Prompt Manager is unavailable.' };
-  }
-
-  function CHUB_PM_focusSearchAction() {
-    const ok = SAFE_call('promptManager.focusSearch', () => CHUB_PM_api()?.focusSearch?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Prompt search focused.' : 'Prompt search is unavailable.' };
-  }
-
-  function CHUB_PM_toggleQuickTrayAction() {
-    const ok = SAFE_call('promptManager.toggleQuickTray', () => CHUB_PM_api()?.toggleQuickTray?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Quick tray toggled.' : 'Quick tray is unavailable.' };
-  }
-
-  function CHUB_PM_renderStatus() {
-    const api = CHUB_PM_api();
-    const isOpen = !!SAFE_call('promptManager.isOpen', () => api?.isOpen?.());
-    return CHUB_renderInfoList([
-      { label: 'Ready', value: api ? 'Yes' : 'No' },
-      { label: 'Panel', value: isOpen ? 'Open' : 'Closed' },
-    ]);
-  }
-
-  function CHUB_WS_api() {
-    return W.H2O?.Workspace || null;
-  }
-
-  function CHUB_WS_getState() {
-    return SAFE_call('workspace.getState', () => CHUB_WS_api()?.getRightState?.()) || { open: false, pane: 'shelf', dockMode: 'overlay' };
-  }
-
-  function CHUB_WS_openShelfAction() {
-    const ok = SAFE_call('workspace.openShelf', () => CHUB_WS_api()?.openShelf?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Shelf opened.' : 'Workspace Shelf is unavailable.' };
-  }
-
-  function CHUB_WS_openDrawerAction() {
-    const ok = SAFE_call('workspace.openDrawer', () => CHUB_WS_api()?.openDrawer?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Drawer opened.' : 'Workspace Drawer is unavailable.' };
-  }
-
-  function CHUB_WS_closeAction() {
-    const ok = SAFE_call('workspace.close', () => CHUB_WS_api()?.closeRightShell?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Workspace closed.' : 'Workspace shell is unavailable.' };
-  }
-
-  function CHUB_WS_renderStatus() {
-    const state = CHUB_WS_getState();
-    return CHUB_renderInfoList([
-      { label: 'Open', value: state.open ? 'Yes' : 'No' },
-      { label: 'Pane', value: String(state.pane || 'shelf') },
-      { label: 'Mode', value: String(state.dockMode || 'overlay') },
-    ]);
-  }
-
-  function CHUB_STUDIO_api() {
-    return W.H2O?.archiveBoot || null;
-  }
-
-  function CHUB_STUDIO_legacyApi() {
-    return W.H2O?.archive || null;
-  }
-
-  function CHUB_STUDIO_chatId() {
-    return String(W.H2O?.util?.getChatId?.() || '');
-  }
-
-
-  async function CHUB_STUDIO_openLatestSnapshot() {
-    const api = CHUB_STUDIO_api();
-    if (!api?.openWorkbench) return { ok: false, message: 'Studio workbench is unavailable.' };
-
-    const chatId = CHUB_STUDIO_chatId();
-    let snapshotId = '';
-    if (api?.loadLatestSnapshot && chatId) {
-      try {
-        const latest = await api.loadLatestSnapshot(chatId);
-        snapshotId = String(latest?.snapshotId || '').trim();
-      } catch {}
-    }
-
-    const route = snapshotId ? `/read/${encodeURIComponent(snapshotId)}` : '/saved';
-    SAFE_call('studio.openLatestSnapshot', () => api.openWorkbench(route));
-    return {
-      ok: true,
-      snapshotId,
-      message: snapshotId ? 'Latest snapshot opened in Studio.' : 'Studio opened.'
-    };
-  }
-
-  function CHUB_STUDIO_openWorkbenchAction() {
-    const api = CHUB_STUDIO_api();
-    if (!api?.openWorkbench) return { message: 'Studio workbench is unavailable.' };
-    SAFE_call('studio.openWorkbench', () => api.openWorkbench());
-    return { ok: true, message: 'Studio opened.' };
-  }
-
-  function CHUB_STUDIO_openSavedChatsAction() {
-    const api = CHUB_STUDIO_api();
-    if (!api?.openSavedChats) return { message: 'Saved chats are unavailable.' };
-    SAFE_call('studio.openSavedChats', () => api.openSavedChats({}));
-    return { ok: true, message: 'Saved chats opened.' };
-  }
-
-  async function CHUB_STUDIO_openReaderAction() {
-    const api = CHUB_STUDIO_api();
-    if (!api?.openWorkbench) return { message: 'Studio workbench is unavailable.' };
-    return CHUB_STUDIO_openLatestSnapshot();
-  }
-
-  async function CHUB_STUDIO_captureAction() {
-    const api = CHUB_STUDIO_api();
-    if (!api?.captureNow) return { message: 'Capture is unavailable.' };
-    const res = await api.captureNow(CHUB_STUDIO_chatId());
-    CHUB_invalidateSoon();
-    if (res?.ok === false) return { message: String(res?.message || res?.error || 'Capture failed.') };
-    return { ok: true, message: res?.deduped ? 'No new changes to capture.' : 'Snapshot captured.' };
-  }
-
-  function CHUB_STUDIO_renderStatus() {
-    const api = CHUB_STUDIO_api();
-    const latest = SAFE_call('studio.getLatest', () => CHUB_STUDIO_legacyApi()?.getLatest?.()) || null;
-    return CHUB_renderInfoList([
-      { label: 'Ready', value: api ? 'Yes' : 'No' },
-      { label: 'Workbench', value: api?.isExtensionBacked?.() ? 'Extension-backed' : 'Local / fallback' },
-      { label: 'Latest Snapshot', value: latest?.capturedAt ? new Date(latest.capturedAt).toLocaleString('en-US') : 'None yet' },
-    ]);
-  }
-
-  const CHUB_FOLDERS_SEL_ROOT = '[data-cgxui="flsc-root"][data-cgxui-owner="flsc"]';
-
-  function CHUB_FOLDERS_root() {
-    return D.querySelector(CHUB_FOLDERS_SEL_ROOT);
-  }
-
-  function CHUB_FOLDERS_headerButton() {
-    return CHUB_FOLDERS_root()?.querySelector(':scope > button') || null;
-  }
-
-  function CHUB_FOLDERS_findActionByText(text) {
-    const root = CHUB_FOLDERS_root();
-    if (!root) return null;
-    const target = String(text || '').trim().toLowerCase();
-    return Array.from(root.querySelectorAll('button, a, div')).find((el) => String(el.textContent || '').trim().toLowerCase() === target) || null;
-  }
-
-  function CHUB_FOLDERS_focusAction() {
-    const root = CHUB_FOLDERS_root();
-    if (!root) return { message: 'Folders section not found.' };
-    SAFE_call('folders.focus', () => root.scrollIntoView({ block: 'center', behavior: 'smooth' }));
-    return { ok: true, message: 'Folders section focused.' };
-  }
-
-  function CHUB_FOLDERS_setExpanded(open) {
-    const btn = CHUB_FOLDERS_headerButton();
-    if (!btn) return { message: 'Folders section not found.' };
-    const isOpen = btn.getAttribute('aria-expanded') !== 'false';
-    if (isOpen !== !!open) SAFE_call(`folders.setExpanded:${open ? 'open' : 'close'}`, () => btn.click());
-    CHUB_invalidateSoon();
-    return { ok: true, message: open ? 'Folders expanded.' : 'Folders collapsed.' };
-  }
-
-  function CHUB_FOLDERS_newFolderAction() {
-    const expand = CHUB_FOLDERS_setExpanded(true);
-    if (expand?.ok === false) return expand;
-    const btn = CHUB_FOLDERS_findActionByText('New folder');
-    if (!btn) return { message: 'New folder control not found.' };
-    SAFE_call('folders.newFolder', () => btn.click());
-    return { ok: true, message: 'New folder dialog opened.' };
-  }
-
-  function CHUB_FOLDERS_renderStatus() {
-    const root = CHUB_FOLDERS_root();
-    const headerBtn = CHUB_FOLDERS_headerButton();
-    const count = root ? root.querySelectorAll('[data-cgxui-state="folder-group"]').length : 0;
-    const expanded = headerBtn ? (headerBtn.getAttribute('aria-expanded') !== 'false') : false;
-    return CHUB_renderInfoList([
-      { label: 'Visible', value: root ? 'Yes' : 'No' },
-      { label: 'Expanded', value: root ? (expanded ? 'Yes' : 'No') : '' },
-      { label: 'Folders', value: root ? String(count) : '' },
-    ]);
-  }
-
-  function CHUB_CATEGORIES_openModeOpts() {
-    return [['page', 'Page'], ['panel', 'Panel']];
-  }
-
-  function CHUB_LIBRARY_moreOpenModeOpts() {
-    return [['page', 'Page'], ['dropdown', 'Dropdown']];
-  }
-
-  function CHUB_LIBRARY_inlinePreviewOpts() {
-    return [['enabled', 'Enabled'], ['disabled', 'Disabled']];
-  }
-
-  function CHUB_FOLDERS_getOpenMode() {
-    const mode = SAFE_call('folders.getOpenMode', () => W.H2O?.folders?.getFolderOpenMode?.()) || 'panel';
-    return String(mode || '').toLowerCase() === 'page' ? 'page' : 'panel';
-  }
-
-  function CHUB_FOLDERS_setOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'page' ? 'page' : 'panel';
-    SAFE_call('folders.setOpenMode', () => W.H2O?.folders?.setFolderOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_CATEGORIES_getOpenMode() {
-    const mode = SAFE_call('categories.getOpenMode', () => W.H2O?.folders?.getCategoryOpenMode?.()) || 'page';
-    return String(mode || '').toLowerCase() === 'panel' ? 'panel' : 'page';
-  }
-
-  function CHUB_CATEGORIES_setOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'panel' ? 'panel' : 'page';
-    SAFE_call('categories.setOpenMode', () => W.H2O?.folders?.setCategoryOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_FOLDERS_getMoreOpenMode() {
-    const mode = SAFE_call('folders.getMoreOpenMode', () => W.H2O?.folders?.getFolderMoreOpenMode?.()) || 'page';
-    return String(mode || '').toLowerCase() === 'dropdown' ? 'dropdown' : 'page';
-  }
-
-  function CHUB_FOLDERS_setMoreOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'dropdown' ? 'dropdown' : 'page';
-    SAFE_call('folders.setMoreOpenMode', () => W.H2O?.folders?.setFolderMoreOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_CATEGORIES_getMoreOpenMode() {
-    const mode = SAFE_call('categories.getMoreOpenMode', () => W.H2O?.folders?.getCategoryMoreOpenMode?.()) || 'page';
-    return String(mode || '').toLowerCase() === 'dropdown' ? 'dropdown' : 'page';
-  }
-
-  function CHUB_CATEGORIES_setMoreOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'dropdown' ? 'dropdown' : 'page';
-    SAFE_call('categories.setMoreOpenMode', () => W.H2O?.folders?.setCategoryMoreOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_PROJECTS_getMoreOpenMode() {
-    const mode = SAFE_call('projects.getMoreOpenMode', () => W.H2O?.folders?.getProjectMoreOpenMode?.()) || 'dropdown';
-    return String(mode || '').toLowerCase() === 'page' ? 'page' : 'dropdown';
-  }
-
-  function CHUB_PROJECTS_setMoreOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'page' ? 'page' : 'dropdown';
-    SAFE_call('projects.setMoreOpenMode', () => W.H2O?.folders?.setProjectMoreOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_FOLDERS_getInlinePreviewOnOpen() {
-    const enabled = SAFE_call('folders.getInlinePreviewOnOpen', () => W.H2O?.folders?.getFolderInlinePreviewOnOpen?.());
-    return enabled === false ? 'disabled' : 'enabled';
-  }
-
-  function CHUB_FOLDERS_setInlinePreviewOnOpen(value) {
-    const next = String(value || '').toLowerCase() === 'disabled' ? 'disabled' : 'enabled';
-    SAFE_call('folders.setInlinePreviewOnOpen', () => W.H2O?.folders?.setFolderInlinePreviewOnOpen?.(next === 'enabled'));
-    return next;
-  }
-
-  function CHUB_CATEGORIES_getInlinePreviewOnOpen() {
-    const enabled = SAFE_call('categories.getInlinePreviewOnOpen', () => W.H2O?.folders?.getCategoryInlinePreviewOnOpen?.());
-    return enabled === false ? 'disabled' : 'enabled';
-  }
-
-  function CHUB_CATEGORIES_setInlinePreviewOnOpen(value) {
-    const next = String(value || '').toLowerCase() === 'disabled' ? 'disabled' : 'enabled';
-    SAFE_call('categories.setInlinePreviewOnOpen', () => W.H2O?.folders?.setCategoryInlinePreviewOnOpen?.(next === 'enabled'));
-    return next;
-  }
-
-  function CHUB_PROJECTS_getInlinePreviewOnOpen() {
-    const enabled = SAFE_call('projects.getInlinePreviewOnOpen', () => W.H2O?.folders?.getProjectInlinePreviewOnOpen?.());
-    return enabled === false ? 'disabled' : 'enabled';
-  }
-
-  function CHUB_PROJECTS_setInlinePreviewOnOpen(value) {
-    const next = String(value || '').toLowerCase() === 'disabled' ? 'disabled' : 'enabled';
-    SAFE_call('projects.setInlinePreviewOnOpen', () => W.H2O?.folders?.setProjectInlinePreviewOnOpen?.(next === 'enabled'));
-    return next;
-  }
-
-  function CHUB_FOLDERS_getShowCounts() {
-    return SAFE_call('folders.getShowFolderCounts', () => W.H2O?.folders?.getShowFolderCounts?.()) !== false;
-  }
-
-  function CHUB_FOLDERS_setShowCounts(value) {
-    SAFE_call('folders.setShowFolderCounts', () => W.H2O?.folders?.setShowFolderCounts?.(value !== false));
-    return value !== false;
-  }
-
-  function CHUB_CATEGORIES_getShowCounts() {
-    return SAFE_call('categories.getShowCategoryCounts', () => W.H2O?.folders?.getShowCategoryCounts?.()) !== false;
-  }
-
-  function CHUB_CATEGORIES_setShowCounts(value) {
-    SAFE_call('categories.setShowCategoryCounts', () => W.H2O?.folders?.setShowCategoryCounts?.(value !== false));
-    return value !== false;
-  }
-
-  const CHUB_LABELS_SEL_ROOT = '[data-cgxui="lbsc-root"][data-cgxui-owner="lbsc"]';
-
-  function CHUB_LABELS_owner() {
-    return W.H2O?.Labels
-      || W.H2O?.LibraryCore?.getOwner?.('labels')
-      || W.H2O?.LibraryCore?.getService?.('labels')
-      || null;
-  }
-
-  function CHUB_LABELS_root() {
-    return D.querySelector(CHUB_LABELS_SEL_ROOT);
-  }
-
-  function CHUB_LABELS_headerButton() {
-    return CHUB_LABELS_root()?.querySelector(':scope > button') || null;
-  }
-
-  function CHUB_LABELS_focusAction() {
-    const root = CHUB_LABELS_root();
-    if (!root) return { message: 'Labels section not found.' };
-    SAFE_call('labels.focus', () => root.scrollIntoView({ block: 'center', behavior: 'smooth' }));
-    return { ok: true, message: 'Labels section focused.' };
-  }
-
-  function CHUB_LABELS_setExpanded(open) {
-    const owner = CHUB_LABELS_owner();
-    if (owner?.setSectionExpanded) {
-      SAFE_call(`labels.setExpanded:${open ? 'open' : 'close'}`, () => owner.setSectionExpanded(open === true));
-      CHUB_invalidateSoon();
-      return { ok: true, message: open ? 'Labels expanded.' : 'Labels collapsed.' };
-    }
-    const btn = CHUB_LABELS_headerButton();
-    if (!btn) return { message: 'Labels section not found.' };
-    const isOpen = btn.getAttribute('aria-expanded') !== 'false';
-    if (isOpen !== !!open) SAFE_call(`labels.headerClick:${open ? 'open' : 'close'}`, () => btn.click());
-    CHUB_invalidateSoon();
-    return { ok: true, message: open ? 'Labels expanded.' : 'Labels collapsed.' };
-  }
-
-  function CHUB_LABELS_renderStatus() {
-    const root = CHUB_LABELS_root();
-    const headerBtn = CHUB_LABELS_headerButton();
-    const owner = CHUB_LABELS_owner();
-    const count = owner?.listTypes ? Number((owner.listTypes() || []).length) : 0;
-    const expanded = headerBtn ? (headerBtn.getAttribute('aria-expanded') !== 'false') : false;
-    return CHUB_renderInfoList([
-      { label: 'Visible', value: root ? 'Yes' : 'No' },
-      { label: 'Expanded', value: root ? (expanded ? 'Yes' : 'No') : '' },
-      { label: 'Label Types', value: root ? String(count) : '' },
-    ]);
-  }
-
-  function CHUB_LABELS_getShowCounts() {
-    return SAFE_call('labels.getShowCounts', () => CHUB_LABELS_owner()?.getShowCounts?.()) !== false;
-  }
-
-  function CHUB_LABELS_setShowCounts(value) {
-    SAFE_call('labels.setShowCounts', () => CHUB_LABELS_owner()?.setShowCounts?.(value !== false));
-    return value !== false;
-  }
-
-  function CHUB_LABELS_getOpenMode() {
-    const mode = SAFE_call('labels.getOpenMode', () => CHUB_LABELS_owner()?.getOpenMode?.()) || 'page';
-    return String(mode || '').toLowerCase() === 'panel' ? 'panel' : 'page';
-  }
-
-  function CHUB_LABELS_setOpenMode(mode) {
-    const next = String(mode || '').toLowerCase() === 'panel' ? 'panel' : 'page';
-    SAFE_call('labels.setOpenMode', () => CHUB_LABELS_owner()?.setOpenMode?.(next));
-    return next;
-  }
-
-  function CHUB_LABELS_getInlinePreviewOnOpen() {
-    const enabled = SAFE_call('labels.getInlinePreviewOnOpen', () => CHUB_LABELS_owner()?.getInlinePreviewOnOpen?.());
-    return enabled === true ? 'enabled' : 'disabled';
-  }
-
-  function CHUB_LABELS_setInlinePreviewOnOpen(value) {
-    const next = String(value || '').toLowerCase() === 'enabled' ? 'enabled' : 'disabled';
-    SAFE_call('labels.setInlinePreviewOnOpen', () => CHUB_LABELS_owner()?.setInlinePreviewOnOpen?.(next === 'enabled'));
-    return next;
-  }
-
-  function CHUB_LABELS_typeExpandModeOpts() {
-    return [
-      ['all-open', 'All Expanded'],
-      ['all-closed', 'All Collapsed'],
-      ['remember', 'Remember Last Time'],
-    ];
-  }
-
-  function CHUB_LABELS_getTypeExpandMode() {
-    const mode = SAFE_call('labels.getTypeExpandMode', () => CHUB_LABELS_owner()?.getTypeExpandMode?.()) || 'remember';
-    if (String(mode || '').toLowerCase() === 'all-open') return 'all-open';
-    if (String(mode || '').toLowerCase() === 'all-closed') return 'all-closed';
-    return 'remember';
-  }
-
-  function CHUB_LABELS_setTypeExpandMode(mode) {
-    const next = CHUB_LABELS_typeExpandModeOpts().some(([value]) => value === mode) ? mode : 'remember';
-    SAFE_call('labels.setTypeExpandMode', () => CHUB_LABELS_owner()?.setTypeExpandMode?.(next));
-    return next;
-  }
-
-  function CHUB_LABELS_isTypeVisible(typeKey) {
-    return SAFE_call(`labels.isTypeVisible:${typeKey}`, () => CHUB_LABELS_owner()?.isTypeVisible?.(typeKey)) !== false;
-  }
-
-  function CHUB_LABELS_setTypeVisible(typeKey, value) {
-    SAFE_call(`labels.setTypeVisible:${typeKey}`, () => CHUB_LABELS_owner()?.setTypeVisible?.(typeKey, value !== false));
-    return value !== false;
-  }
-
-
-  function CHUB_TAGS_owner() {
-    return W.H2O?.Tags || W.H2O?.TG?.tags || W.H2O?.LibraryCore?.getOwner?.('tags') || W.H2O?.LibraryCore?.getService?.('tags') || null;
-  }
-
-  function CHUB_TAGS_getCurrentChatId() {
-    try {
-      const live = String(W.H2O?.archiveBoot?.getCurrentChatId?.() || W.H2O?.util?.getChatId?.() || '').trim();
-      if (live) return live;
-    } catch {}
-    return '';
-  }
-
-  function CHUB_TAGS_getMode() {
-    const chatId = CHUB_TAGS_getCurrentChatId();
-    const owner = CHUB_TAGS_owner();
-    if (!chatId || !owner?.getChatMode) return 'manual';
-    try { return String(owner.getChatMode(chatId) || 'manual'); } catch { return 'manual'; }
-  }
-
-  function CHUB_TAGS_setMode(mode) {
-    const chatId = CHUB_TAGS_getCurrentChatId();
-    const owner = CHUB_TAGS_owner();
-    if (!chatId || !owner?.setChatMode) return 'manual';
-    try { return String(owner.setChatMode(chatId, mode) || 'manual'); } catch { return 'manual'; }
-  }
-
-  function CHUB_TAGS_modeOpts() {
-    return [
-      ['manual', 'Manual'],
-      ['suggestion', 'Suggestion'],
-      ['auto', 'Automatic'],
-    ];
-  }
-
-  function CHUB_TAGS_renderStatus() {
-    const chatId = CHUB_TAGS_getCurrentChatId();
-    const owner = CHUB_TAGS_owner();
-    const tagCount = chatId && owner?.getChatTagCatalog ? Number((owner.getChatTagCatalog(chatId) || []).length) : 0;
-    return CHUB_renderInfoList([
-      { label:'Current Chat', value: chatId || 'No active chat remembered' },
-      { label:'Mode', value: CHUB_TAGS_getMode() },
-      { label:'Tags', value: chatId ? String(tagCount) : '' },
-    ]);
-  }
-
-  const CHUB_LW_SECTIONS = Object.freeze([
-    { id: 'library', label: 'Library' },
-    { id: 'labels', label: 'Labels' },
-    { id: 'folders', label: 'Folders' },
-    { id: 'categories', label: 'Categories' },
-    { id: 'projects', label: 'Projects' },
-    { id: 'recents', label: 'Recents', native: true },
-  ]);
-
-  function CHUB_LW_owner() {
-    return W.H2O?.LibraryWorkspace
-      || W.H2O?.LibraryCore?.getOwner?.('library-workspace')
-      || W.H2O?.LibraryCore?.getService?.('library-workspace')
-      || null;
-  }
-
-  function CHUB_LW_defaultLayout() {
-    const sections = {};
-    CHUB_LW_SECTIONS.forEach((section, idx) => { sections[section.id] = { visible: true, order: (idx + 1) * 10 }; });
-    return { sections, updatedAt: 0 };
-  }
-
-  function CHUB_LW_normalizeLayout(raw) {
-    const src = raw && typeof raw === 'object' ? raw : {};
-    const inSections = src.sections && typeof src.sections === 'object' ? src.sections : {};
-    const out = CHUB_LW_defaultLayout();
-    CHUB_LW_SECTIONS.forEach((section, idx) => {
-      const row = inSections[section.id] && typeof inSections[section.id] === 'object' ? inSections[section.id] : {};
-      const n = Number(row.order);
-      out.sections[section.id] = {
-        visible: row.visible !== false,
-        order: Number.isFinite(n) ? n : (idx + 1) * 10,
-      };
-    });
-    out.updatedAt = Number.isFinite(Number(src.updatedAt)) ? Number(src.updatedAt) : 0;
-    CHUB_LW_orderIds(out).forEach((id, idx) => { out.sections[id].order = (idx + 1) * 10; });
-    return out;
-  }
-
-  function CHUB_LW_orderIds(layoutRaw = null) {
-    const layout = layoutRaw && layoutRaw.sections ? layoutRaw : CHUB_LW_normalizeLayout(layoutRaw);
-    return CHUB_LW_SECTIONS.slice().sort((a, b) => {
-      const ao = Number(layout.sections?.[a.id]?.order);
-      const bo = Number(layout.sections?.[b.id]?.order);
-      return ((Number.isFinite(ao) ? ao : 999) - (Number.isFinite(bo) ? bo : 999));
-    }).map((section) => section.id);
-  }
-
-  function CHUB_LW_getLayout() {
-    const owner = CHUB_LW_owner();
-    if (owner?.getSidebarLayout) {
-      try { return CHUB_LW_normalizeLayout(owner.getSidebarLayout()); } catch {}
-    }
-    return CHUB_LW_normalizeLayout(UTIL_storage.getJSON(KEY_CHUB_LIBRARY_SIDEBAR_LAYOUT_V1, null));
-  }
-
-  function CHUB_LW_writeLayoutFallback(layout) {
-    const next = CHUB_LW_normalizeLayout({ ...(layout || {}), updatedAt: Date.now() });
-    UTIL_storage.setJSON(KEY_CHUB_LIBRARY_SIDEBAR_LAYOUT_V1, next);
-    return next;
-  }
-
-  function CHUB_LW_setSectionVisible(sectionId, visible) {
-    const id = String(sectionId || '').trim();
-    const owner = CHUB_LW_owner();
-    if (owner?.setSidebarSectionVisible) {
-      try { const next = owner.setSidebarSectionVisible(id, visible !== false); CHUB_invalidateSoon(); return CHUB_LW_normalizeLayout(next); } catch {}
-    }
-    const layout = CHUB_LW_getLayout();
-    if (layout.sections[id]) layout.sections[id].visible = visible !== false;
-    const next = CHUB_LW_writeLayoutFallback(layout);
-    CHUB_invalidateSoon();
-    return next;
-  }
-
-  function CHUB_LW_moveSection(sectionId, direction) {
-    const id = String(sectionId || '').trim();
-    const owner = CHUB_LW_owner();
-    if (owner?.moveSidebarSection) {
-      try { const next = owner.moveSidebarSection(id, direction); CHUB_invalidateSoon(); return CHUB_LW_normalizeLayout(next); } catch {}
-    }
-    const order = CHUB_LW_orderIds(CHUB_LW_getLayout());
-    const idx = order.indexOf(id);
-    if (idx < 0) return CHUB_LW_getLayout();
-    const delta = String(direction || '').toLowerCase() === 'down' ? 1 : -1;
-    const nextIdx = Math.max(0, Math.min(order.length - 1, idx + delta));
-    if (nextIdx !== idx) { const [item] = order.splice(idx, 1); order.splice(nextIdx, 0, item); }
-    return CHUB_LW_setOrder(order);
-  }
-
-  function CHUB_LW_setOrder(sectionIds) {
-    const owner = CHUB_LW_owner();
-    if (owner?.setSidebarOrder) {
-      try { const next = owner.setSidebarOrder(sectionIds); CHUB_invalidateSoon(); return CHUB_LW_normalizeLayout(next); } catch {}
-    }
-    const layout = CHUB_LW_getLayout();
-    const ids = Array.isArray(sectionIds) ? sectionIds.filter((id) => layout.sections[id]) : CHUB_LW_orderIds(layout);
-    ids.forEach((id, idx) => { layout.sections[id].order = (idx + 1) * 10; });
-    const next = CHUB_LW_writeLayoutFallback(layout);
-    CHUB_invalidateSoon();
-    return next;
-  }
-
-  function CHUB_LW_resetLayout() {
-    const owner = CHUB_LW_owner();
-    if (owner?.resetSidebarLayout) {
-      try { const next = owner.resetSidebarLayout(); CHUB_invalidateSoon(); return CHUB_LW_normalizeLayout(next); } catch {}
-    }
-    const next = CHUB_LW_writeLayoutFallback(CHUB_LW_defaultLayout());
-    CHUB_invalidateSoon();
-    return next;
-  }
-
-  function CHUB_LW_applyLayoutAction() {
-    const owner = CHUB_LW_owner();
-    const ok = SAFE_call('libraryWorkspace.applySidebarLayout', () => owner?.applySidebarLayout?.('control-hub'));
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Sidebar layout applied.' : 'Saved. Library Workspace will apply it when available.' };
-  }
-
-  function CHUB_LW_openAction() {
-    const ok = SAFE_call('libraryWorkspace.open', () => CHUB_LW_owner()?.openWorkspace?.({ source: 'control-hub' }));
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Library opened.' : 'Library Workspace is unavailable.' };
-  }
-
-  function CHUB_LW_refreshAction() {
-    const ok = SAFE_call('libraryWorkspace.refresh', () => CHUB_LW_owner()?.refresh?.('control-hub'));
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Library refreshed.' : 'Library Workspace is unavailable.' };
-  }
-
-  function CHUB_LW_resetUiAction() {
-    const ok = SAFE_call('libraryWorkspace.resetUi', () => CHUB_LW_owner()?.resetWorkspaceUiPrefs?.());
-    CHUB_invalidateSoon();
-    return { message: ok ? 'Library UI preferences reset.' : 'Library Workspace is unavailable.' };
-  }
-
-  function CHUB_LW_getLibraryButtonVisible() {
-    return CHUB_LW_getLayout().sections?.library?.visible !== false;
-  }
-
-  function CHUB_LW_setLibraryButtonVisible(value) {
-    CHUB_LW_setSectionVisible('library', value !== false);
-    return value !== false;
-  }
-
-  function CHUB_LW_renderStatus() {
-    const owner = CHUB_LW_owner();
-    const check = SAFE_call('libraryWorkspace.selfCheck', () => owner?.selfCheck?.()) || {};
-    const layout = CHUB_LW_getLayout();
-    return CHUB_renderInfoList([
-      { label: 'Workspace API', value: owner ? 'Ready' : 'Missing' },
-      { label: 'Sidebar Row', value: check.sidebarRowExists ? 'Visible' : 'Not found' },
-      { label: 'Page Mounted', value: check.pageMounted ? 'Yes' : 'No' },
-      { label: 'Route', value: check.registeredRoute ? 'Registered' : 'Not registered' },
-      { label: 'Order', value: CHUB_LW_orderIds(layout).join(' → ') },
-      { label: 'Storage', value: KEY_CHUB_LIBRARY_SIDEBAR_LAYOUT_V1 },
-    ]);
-  }
-
-  function CHUB_LW_renderDiagnostics() {
-    const owner = CHUB_LW_owner();
-    const core = W.H2O?.LibraryCore || null;
-    const check = SAFE_call('libraryWorkspace.selfCheck', () => owner?.selfCheck?.()) || null;
-    const routes = core?.listRoutes ? core.listRoutes().join(', ') : '';
-    const owners = core?.listOwners ? core.listOwners().join(', ') : '';
-    const services = core?.listServices ? core.listServices().join(', ') : '';
-    return CHUB_renderInfoList([
-      { label: 'Owners', value: owners },
-      { label: 'Services', value: services },
-      { label: 'Routes', value: routes },
-      { label: 'SelfCheck', value: check ? JSON.stringify({ ok: check.ok, sidebarRowCount: check.sidebarRowCount, pageMounted: check.pageMounted }) : 'Unavailable' },
-    ]);
-  }
-
-  function CHUB_LW_renderSidebarLayoutEditor() {
-    const root = D.createElement('div');
-    root.className = `${CLS}-tabOrderEditor ${CLS}-libraryLayoutEditor`;
-
-    const hint = D.createElement('div');
-    hint.className = `${CLS}-ctrlHint ${CLS}-tabOrderHint`;
-    hint.textContent = 'Show, hide, and reorder the Library-related sidebar sections. Control Hub edits settings; Library Workspace applies the actual sidebar layout.';
-    root.appendChild(hint);
-
-    const list = D.createElement('div');
-    list.className = `${CLS}-tabOrderList`;
-    root.appendChild(list);
-
-    const actionRow = D.createElement('div');
-    actionRow.className = `${CLS}-sbPaletteActions`;
-    const resetBtn = D.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.className = `${CLS}-actionBtn`;
-    resetBtn.textContent = 'Reset Default Order';
-    const showAllBtn = D.createElement('button');
-    showAllBtn.type = 'button';
-    showAllBtn.className = `${CLS}-actionBtn`;
-    showAllBtn.textContent = 'Show All';
-    const applyBtn = D.createElement('button');
-    applyBtn.type = 'button';
-    applyBtn.className = `${CLS}-actionBtn primary`;
-    applyBtn.textContent = 'Apply Now';
-    const status = D.createElement('span');
-    status.className = `${CLS}-ctrlActionStatus`;
-    status.style.textAlign = 'left';
-    status.style.minWidth = '0';
-
-    const renderRows = () => {
-      list.textContent = '';
-      const layout = CHUB_LW_getLayout();
-      const order = CHUB_LW_orderIds(layout);
-      order.forEach((id, idx) => {
-        const meta = CHUB_LW_SECTIONS.find((section) => section.id === id) || { id, label: id };
-        const cfg = layout.sections[id] || { visible: true, order: (idx + 1) * 10 };
-        const row = D.createElement('div');
-        row.className = `${CLS}-tabOrderRow`;
-        row.setAttribute(ATTR_CGXUI_KEY, id);
-        row.setAttribute(ATTR_CGXUI_ORDER, String(idx + 1));
-
-        const left = D.createElement('div');
-        left.className = `${CLS}-tabOrderLeft`;
-        const index = D.createElement('span');
-        index.className = `${CLS}-tabOrderIndex`;
-        index.textContent = String(idx + 1);
-        const sw = D.createElement('button');
-        sw.type = 'button';
-        sw.className = `${CLS}-miniSwitch`;
-        sw.innerHTML = '<i></i>';
-        sw.setAttribute(ATTR_CGXUI_STATE, cfg.visible !== false ? 'on' : 'off');
-        sw.title = cfg.visible !== false ? 'Hide section' : 'Show section';
-        const textWrap = D.createElement('div');
-        textWrap.className = `${CLS}-tabOrderText`;
-        const title = D.createElement('div');
-        title.className = `${CLS}-tabOrderTitle`;
-        title.textContent = meta.label;
-        const sub = D.createElement('div');
-        sub.className = `${CLS}-tabOrderSub`;
-        sub.textContent = meta.native ? 'Native / best-effort' : 'H2O-owned section';
-        textWrap.append(title, sub);
-        left.append(index, sw, textWrap);
-
-        const right = D.createElement('div');
-        right.className = `${CLS}-tabOrderMoves`;
-        const makeMoveBtn = (txt, direction, disabled) => {
-          const btn = D.createElement('button');
-          btn.type = 'button';
-          btn.className = `${CLS}-tabOrderMoveBtn`;
-          btn.textContent = txt;
-          btn.disabled = !!disabled;
-          btn.addEventListener('click', (evt) => {
-            evt.preventDefault();
-            CHUB_LW_moveSection(id, direction);
-            status.textContent = 'Sidebar order updated.';
-            renderRows();
-          }, true);
-          return btn;
-        };
-        right.append(makeMoveBtn('↑', 'up', idx === 0), makeMoveBtn('↓', 'down', idx === order.length - 1));
-
-        sw.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const nextVisible = sw.getAttribute(ATTR_CGXUI_STATE) !== 'on';
-          CHUB_LW_setSectionVisible(id, nextVisible);
-          status.textContent = `${meta.label} ${nextVisible ? 'shown' : 'hidden'}.`;
-          renderRows();
-        }, true);
-
-        row.append(left, right);
-        list.appendChild(row);
-      });
-    };
-
-    resetBtn.addEventListener('click', (evt) => { evt.preventDefault(); CHUB_LW_resetLayout(); status.textContent = 'Default sidebar layout restored.'; renderRows(); }, true);
-    showAllBtn.addEventListener('click', (evt) => {
-      evt.preventDefault();
-      CHUB_LW_SECTIONS.forEach((section) => CHUB_LW_setSectionVisible(section.id, true));
-      status.textContent = 'All sections shown.';
-      renderRows();
-    }, true);
-    applyBtn.addEventListener('click', (evt) => { evt.preventDefault(); const res = CHUB_LW_applyLayoutAction(); status.textContent = res.message || 'Applied.'; renderRows(); }, true);
-
-    renderRows();
-    actionRow.append(resetBtn, showAllBtn, applyBtn, status);
-    root.appendChild(actionRow);
-    return root;
-  }
-
-  function CHUB_THEME_loadSettings() {
-    const diskObj = UTIL_storage.getJSON(CHUB_THEME_SETTINGS_KEY_V2, null);
-    if (diskObj && typeof diskObj === 'object') return { ...CHUB_THEME_DEFAULTS, ...diskObj };
-    const legacyObj = UTIL_storage.getJSON(CHUB_THEME_SETTINGS_KEY_LEGACY, null);
-    if (legacyObj && typeof legacyObj === 'object') return { ...CHUB_THEME_DEFAULTS, ...legacyObj };
-    return { ...CHUB_THEME_DEFAULTS };
-  }
-
-  function CHUB_THEME_applySettings(settings) {
-    const S = { ...CHUB_THEME_DEFAULTS, ...(settings || {}) };
-    const rootStyle = D.documentElement?.style;
-    if (!D.body || !rootStyle) return S;
-
-    if (!S.enabled) {
-      D.body.removeAttribute('data-ho-theme-enabled');
-      D.documentElement.removeAttribute('data-ho-mode');
-      rootStyle.removeProperty('--ho-accent-light-hsl');
-      rootStyle.removeProperty('--ho-accent-dark-hsl');
-      rootStyle.removeProperty('--ho-font-size');
-      rootStyle.removeProperty('--ho-line-height');
-      rootStyle.removeProperty('--ho-letter-space');
-      rootStyle.removeProperty('--ho-chat-width-rem');
-      rootStyle.removeProperty('--ho-prompt-width-rem');
-      D.body.removeAttribute('data-ho-font');
-      return S;
-    }
-
-    D.body.setAttribute('data-ho-theme-enabled', 'true');
-    D.documentElement.setAttribute('data-ho-mode', String(S.mode || 'dark'));
-    rootStyle.setProperty('--ho-accent-light-hsl', String(S.accentLight || CHUB_THEME_DEFAULTS.accentLight));
-    rootStyle.setProperty('--ho-accent-dark-hsl', String(S.accentDark || CHUB_THEME_DEFAULTS.accentDark));
-
-    let fontFlag = String(S.fontFamily || 'system');
-    if (!['system', 'inter', 'mono'].includes(fontFlag)) fontFlag = 'system';
-    D.body.setAttribute('data-ho-font', fontFlag);
-
-    rootStyle.setProperty('--ho-font-size', `${Number(S.fontSize || CHUB_THEME_DEFAULTS.fontSize)}px`);
-    rootStyle.setProperty('--ho-line-height', `${Number(S.lineHeight || CHUB_THEME_DEFAULTS.lineHeight)}px`);
-    rootStyle.setProperty('--ho-letter-space', `${Number(S.letterSpace || CHUB_THEME_DEFAULTS.letterSpace)}px`);
-    rootStyle.setProperty('--ho-chat-width-rem', `${Number(S.chatWidth || CHUB_THEME_DEFAULTS.chatWidth)}rem`);
-    rootStyle.setProperty('--ho-prompt-width-rem', `${Number(S.promptWidth || CHUB_THEME_DEFAULTS.promptWidth)}rem`);
-
-    D.body.setAttribute('data-ho-chat-full', String(!!S.chatFullWidth));
-    D.body.setAttribute('data-ho-sync-prompt', String(!!S.syncPromptWidth));
-    D.body.setAttribute('data-ho-hide-header', String(!!S.hideHeader));
-    D.body.setAttribute('data-ho-hide-footer', String(!!S.hideFooter));
-    D.body.setAttribute('data-ho-expand-chatbox', String(!!S.expandChatbox));
-    D.body.setAttribute('data-ho-bubble-user', String(S.bubblesUser !== false));
-    D.body.setAttribute('data-ho-bubble-gpt', String(S.bubblesGpt !== false));
-    D.body.setAttribute('data-ho-accent-user-bubble', String(!!S.accentUserBubble));
-    return S;
-  }
-
-  function CHUB_ACCENT_normalize(raw) {
-    const value = String(raw || '').trim().toLowerCase();
-    if (value === 'orange') return 'orange';
-    if (value === 'logo-blue' || value === 'logoblue' || value === 'logo_blue') return 'logo-blue';
-    return 'default';
-  }
-
-  function CHUB_SURFACE_ACCENT_normalize(raw) {
-    const value = String(raw || '').trim().toLowerCase();
-    if (value === 'logo-blue' || value === 'logoblue' || value === 'logo_blue') return 'logo-blue';
-    return 'default';
-  }
-
-  function CHUB_BUTTON_ACCENT_opts() {
-    return [
-      ['default', 'Default Gold'],
-      ['orange', 'Orange'],
-      ['logo-blue', 'Logo Blue'],
-    ];
-  }
-
-  function CHUB_NAV_ACCENT_opts() {
-    return [
-      ['default', 'Default Mixed'],
-      ['orange', 'Orange'],
-      ['logo-blue', 'Logo Blue'],
-    ];
-  }
-
-  function CHUB_SURFACE_ACCENT_opts() {
-    return [
-      ['default', 'Default Dark'],
-      ['logo-blue', 'Logo Blue'],
-    ];
-  }
-
-  function CHUB_ACCENT_getLegacy() {
-    return CHUB_ACCENT_normalize(UTIL_storage.getStr(KEY_CHUB_ACCENT_V1, 'default'));
-  }
-
-  function CHUB_BUTTON_ACCENT_get() {
-    const raw = UTIL_storage.getStr(KEY_CHUB_BUTTON_ACCENT_V1, null);
-    return raw == null ? CHUB_ACCENT_getLegacy() : CHUB_ACCENT_normalize(raw);
-  }
-
-  function CHUB_NAV_ACCENT_get() {
-    const raw = UTIL_storage.getStr(KEY_CHUB_NAV_ACCENT_V1, null);
-    return raw == null ? CHUB_ACCENT_getLegacy() : CHUB_ACCENT_normalize(raw);
-  }
-
-  function CHUB_SURFACE_ACCENT_get() {
-    const raw = UTIL_storage.getStr(KEY_CHUB_SURFACE_ACCENT_V1, null);
-    if (raw != null) return CHUB_SURFACE_ACCENT_normalize(raw);
-    return CHUB_ACCENT_getLegacy() === 'logo-blue' ? 'logo-blue' : 'default';
-  }
-
-  function CHUB_ACCENT_setRootAttr(name, value) {
-    if (!D.documentElement) return value;
-    if (value === 'default') D.documentElement.removeAttribute(name);
-    else D.documentElement.setAttribute(name, value);
-    return value;
-  }
-
-  function CHUB_ACCENT_apply() {
-    const buttons = CHUB_BUTTON_ACCENT_get();
-    const navigation = CHUB_NAV_ACCENT_get();
-    const surface = CHUB_SURFACE_ACCENT_get();
-    if (D.documentElement) D.documentElement.removeAttribute('data-h2o-chub-accent');
-    CHUB_ACCENT_setRootAttr('data-h2o-chub-button-accent', buttons);
-    CHUB_ACCENT_setRootAttr('data-h2o-chub-nav-accent', navigation);
-    CHUB_ACCENT_setRootAttr('data-h2o-chub-surface-accent', surface);
-    return { buttons, navigation, surface };
-  }
-
-  function CHUB_BUTTON_ACCENT_set(value) {
-    const next = CHUB_ACCENT_normalize(value);
-    try { UTIL_storage.setStr(KEY_CHUB_BUTTON_ACCENT_V1, next); } catch {}
-    CHUB_ACCENT_apply();
-    CHUB_invalidateSoon();
-    return next;
-  }
-
-  function CHUB_NAV_ACCENT_set(value) {
-    const next = CHUB_ACCENT_normalize(value);
-    try { UTIL_storage.setStr(KEY_CHUB_NAV_ACCENT_V1, next); } catch {}
-    CHUB_ACCENT_apply();
-    CHUB_invalidateSoon();
-    return next;
-  }
-
-  function CHUB_SURFACE_ACCENT_set(value) {
-    const next = CHUB_SURFACE_ACCENT_normalize(value);
-    try { UTIL_storage.setStr(KEY_CHUB_SURFACE_ACCENT_V1, next); } catch {}
-    CHUB_ACCENT_apply();
-    CHUB_invalidateSoon();
-    return next;
-  }
-
   const CHUB_VISIBILITY = Object.freeze({
     [FEATURE_KEY_CHAT_NAVIGATION]: Object.freeze({
       selectors: [
@@ -2927,75 +910,10 @@ __ROOT__ .cgxui-qswr-bubble-short{
 }
 `,
     }),
-    [FEATURE_KEY_MARKUP]: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="scbn"]',
-      ],
-      hideCss: `
-__ROOT__ .cgxui-inhl-hl-tools,
-__ROOT__ .cgxui-inhl-hl-swatches,
-__ROOT__ .cgxui-inhl-hl-swatch{
-  display:none !important;
-}
-__ROOT__ .cgxui-inhl-inline-hl,
-__ROOT__ mark.cgxui-inhl-inline-hl{
-  background:transparent !important;
-  color:inherit !important;
-  border:0 !important;
-  box-shadow:none !important;
-  outline:none !important;
-  text-decoration:none !important;
-  padding:0 !important;
-  border-radius:0 !important;
-  filter:none !important;
-}
-`,
-    }),
-    [FEATURE_KEY_ANNOTATIONS]: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="mrnc"]',
-      ],
-    }),
-    [FEATURE_KEY_PROMPT_MANAGER]: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="prmn"]',
-      ],
-    }),
-    dockPanel: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="dcpn"]',
-      ],
-    }),
-    [FEATURE_KEY_WORKSPACE]: Object.freeze({
-      selectors: [
-        '#cgxui-wsdk-root',
-        '[data-cgxui-owner="wsdk"]',
-      ],
-      hideCss: `
-__ROOT__ body{
-  transform:none !important;
-}
-`,
-    }),
     [FEATURE_KEY_DATA_BACKUP]: Object.freeze({
       selectors: [
         '.h2o-cold-layer',
         '.h2o-archive-native-detached-bin',
-      ],
-    }),
-    [FEATURE_KEY_EXPORT]: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="xpch"]',
-        '[data-cgxui-owner="prmn"][data-cgxui="prmn-export-btn"]',
-        '[data-cgxui-owner="nvcn"][data-cgxui="nvcn-export-btn"]',
-        '.cgxui-xpch-export-btn',
-        '.cgxui-xpch-export-wrap',
-      ],
-    }),
-    [FEATURE_KEY_STUDIO]: Object.freeze({
-      selectors: [
-        '.h2o-archive-reader',
-        '.h2o-archive-saved',
       ],
     }),
     [FEATURE_KEY_LIBRARY]: Object.freeze({
@@ -3003,59 +921,13 @@ __ROOT__ body{
         '[data-cgxui-owner="flsc"]',
       ],
     }),
-    [FEATURE_KEY_CHAT_PERFORMANCE]: Object.freeze({
-      selectors: [
-        '.cgxui-pgnw-sentinel',
-        '.cgxui-pgnw-page-divider',
-      ],
-    }),
-    [FEATURE_KEY_INTERFACE]: Object.freeze({
-      hideCss: `
-__ROOT__ .ho-colorbtn,
-__ROOT__ .ho-palette,
-__ROOT__ .ho-meta-row,
-__ROOT__ .ho-meta-actions-right,
-__ROOT__ .ho-meta-action,
-__ROOT__ #ho-preview-tip,
-__ROOT__ .ho-tab-title-under-input,
-__ROOT__ .ho-sidebar-ring{
-  display:none !important;
-}
-__ROOT__ a.ho-has-colorbtn,
-__ROOT__ .ho-main-row,
-__ROOT__ nav a.ho-project-row,
-__ROOT__ :where(nav, aside) .ho-seeall{
-  background:none !important;
-  background-color:transparent !important;
-  box-shadow:none !important;
-  border-color:transparent !important;
-  filter:none !important;
-  backdrop-filter:none !important;
-  -webkit-backdrop-filter:none !important;
-}
-__ROOT__ a.ho-has-colorbtn::before,
-__ROOT__ a.ho-has-colorbtn::after,
-__ROOT__ .ho-main-row::before,
-__ROOT__ .ho-main-row::after,
-__ROOT__ nav a.ho-project-row::before,
-__ROOT__ nav a.ho-project-row::after,
-__ROOT__ :where(nav, aside) .ho-seeall::before,
-__ROOT__ :where(nav, aside) .ho-seeall::after{
-  content:none !important;
-  display:none !important;
-}
-`,
-    }),
-    [FEATURE_KEY_THEMES]: Object.freeze({
-      selectors: [
-        '[data-cgxui-owner="thpn"]',
-      ],
-      applyHidden(hidden) {
-        const saved = CHUB_THEME_loadSettings();
-        CHUB_THEME_applySettings(hidden ? { ...saved, enabled: false } : saved);
-      },
-    }),
-  });
+      [FEATURE_KEY_CHAT_PERFORMANCE]: Object.freeze({
+        selectors: [
+          '.cgxui-pgnw-sentinel',
+          '.cgxui-pgnw-page-divider',
+        ],
+      }),
+    });
 
   function CHUB_VIS_loadState() {
     return UTIL_storage.getJSON(KEY_CHUB_TAB_VIS_V1, {}) || {};
@@ -3069,8 +941,29 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     return FEATURE_getHubKey(FEATURE_getCanonicalKey(key));
   }
 
+  function CHUB_VIS_getPluginEntries() {
+    const out = {};
+    try {
+      const plugins = STATE_CH?.plugins;
+      if (!plugins || typeof plugins.forEach !== 'function') return out;
+      plugins.forEach((spec, key) => {
+        const raw = spec?.visibility;
+        if (!raw) return;
+        let entry = null;
+        try { entry = (typeof raw === 'function') ? raw({ key, mode: STATE_CH.curMode, skin: PLUG_skin() }) : raw; } catch {}
+        if (!entry || typeof entry !== 'object') return;
+        out[FEATURE_getHubKey(key)] = entry;
+      });
+    } catch {}
+    return out;
+  }
+
+  function CHUB_VIS_getEntries() {
+    return { ...CHUB_VISIBILITY, ...CHUB_VIS_getPluginEntries() };
+  }
+
   function CHUB_VIS_getEntry(key) {
-    return CHUB_VISIBILITY[CHUB_VIS_getKey(key)] || null;
+    return CHUB_VIS_getEntries()[CHUB_VIS_getKey(key)] || null;
   }
 
   function CHUB_VIS_slug(key) {
@@ -3087,7 +980,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function CHUB_VIS_buildCss() {
     const blocks = [];
-    for (const [key, entry] of Object.entries(CHUB_VISIBILITY)) {
+    for (const [key, entry] of Object.entries(CHUB_VIS_getEntries())) {
       const root = `html.${CHUB_VIS_className(key)}`;
       const selectors = Array.isArray(entry?.selectors) ? entry.selectors.filter(Boolean) : [];
       if (selectors.length) {
@@ -3119,7 +1012,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function CHUB_VIS_getLabel(key) {
     const hubKey = CHUB_VIS_getKey(key);
-    const meta = FEATURE_META.find((item) => FEATURE_getCanonicalKey(item.key) === hubKey) || null;
+    const meta = FEATURE_findMeta(hubKey);
     return meta?.label || hubKey || 'surface';
   }
 
@@ -3144,7 +1037,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function CHUB_VIS_applyAll() {
     CHUB_VIS_ensureStyle();
-    Object.keys(CHUB_VISIBILITY).forEach((key) => CHUB_VIS_applyKey(key));
+    Object.keys(CHUB_VIS_getEntries()).forEach((key) => CHUB_VIS_applyKey(key));
   }
 
   function CHUB_VIS_scheduleReapply(delays = [0, 400, 1200, 2400]) {
@@ -3168,1035 +1061,6 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   }
 
 			const FEATURE_CONTROLS = {
-
-    [FEATURE_KEY_PROMPT_MANAGER]: [
-      {
-        type:'custom',
-        key:'promptManagerStatus',
-        label:'Status',
-        group:'Prompt Manager',
-        render() { return CHUB_PM_renderStatus(); },
-      },
-      {
-        type:'action',
-        key:'promptManagerPanel',
-        label:'Panel',
-        group:'Prompt Manager',
-        statusText:'',
-        buttons:[
-          { label:'Open', primary:true, action: () => CHUB_PM_openAction() },
-          { label:'Focus Search', action: () => CHUB_PM_focusSearchAction() },
-          { label:'Close', action: () => CHUB_PM_closeAction() },
-        ],
-      },
-      {
-        type:'action',
-        key:'promptManagerQuickTray',
-        label:'Quick Tray',
-        group:'Quick Tools',
-        statusText:'',
-        buttons:[
-          { label:'Toggle Quick Tray', primary:true, action: () => CHUB_PM_toggleQuickTrayAction() },
-        ],
-      },
-    ],
-
-    inlineHighlighter: [
-      {
-        type:'select',
-        key:'hlApplyShortcut',
-        label:'Apply Highlight',
-        group:'Shortcuts',
-        help:'When text is selected, this shortcut applies a highlight using the configured start-color rule.',
-        def:'meta_or_ctrl_1',
-        opts: CHUB_HL_applyKeyOpts,
-        getLive() { return CHUB_HL_getConfig().applyShortcut || 'meta_or_ctrl_1'; },
-        setLive(v) { CHUB_HL_applySetting('applyShortcut', v); },
-      },
-      {
-        type:'select',
-        key:'hlClearShortcut',
-        label:'Remove Highlight',
-        group:'Shortcuts',
-        help:'Removes highlights in the current text selection, or the last clicked/active highlight.',
-        def:'meta_or_ctrl_z',
-        opts: CHUB_HL_clearKeyOpts,
-        getLive() { return CHUB_HL_getConfig().clearShortcut || 'meta_or_ctrl_z'; },
-        setLive(v) { CHUB_HL_applySetting('clearShortcut', v); },
-      },
-      {
-        type:'select',
-        key:'hlPopupTrigger',
-        label:'Popup On Highlight',
-        group:'Popup',
-        help:'Choose how the color popup opens when you interact with already-highlighted text.',
-        def:'middle_click',
-        opts: CHUB_HL_popupTriggerOpts,
-        getLive() { return CHUB_HL_getConfig().popupTrigger || 'middle_click'; },
-        setLive(v) { CHUB_HL_applySetting('popupTrigger', v); },
-      },
-      {
-        type:'select',
-        key:'hlShortcutColorMode',
-        label:'Key Start Color',
-        group:'Colors',
-        help:'Controls which color the keyboard apply shortcut uses before you manually pick from the popup.',
-        def:'current_color',
-        opts: CHUB_HL_startColorOpts,
-        getLive() { return CHUB_HL_getConfig().shortcutColorMode || 'current_color'; },
-        setLive(v) { CHUB_HL_applySetting('shortcutColorMode', v); },
-      },
-      {
-        type:'select',
-        key:'hlDefaultColor',
-        label:'Default Color',
-        group:'Colors',
-        help:'Used as the default starting color and as the fallback when the last-used color is unavailable.',
-        def:'gold',
-        opts: CHUB_HL_defaultColorOpts,
-        getLive() { return CHUB_HL_getPaletteConfig().defaultColor || 'gold'; },
-        setLive(v) { CHUB_HL_applySetting('defaultColor', v); },
-      },
-      {
-        type:'custom',
-        key:'hlPaletteEditor',
-        label:'Palette Colors',
-        group:'Colors',
-        help:'Edit the four primary colors and their four secondary partner colors.',
-        stackBelowLabel: true,
-        render() { return CHUB_HL_renderPaletteEditor(); },
-      },
-      {
-        type:'action',
-        key:'hlClearCurrentChat',
-        label:'Current Chat',
-        group:'Actions',
-        help:'Removes every inline highlight stored for the chat you have open right now.',
-        statusText:'',
-        buttons: [
-          {
-            label:'Clear All Highlights',
-            primary:true,
-            action: async () => {
-              if (!W.confirm('Remove all highlights from the current chat?')) return { message: 'Canceled.' };
-              return CHUB_HL_clearCurrentChat();
-            },
-            successText:'Highlights cleared.',
-            errorText:'Failed to clear highlights.',
-          },
-        ],
-      },
-    ],
-
-    sectionBands: [
-      {
-        type:'select',
-        key:'sbPopupMouse',
-        label:'Popup Mouse',
-        group:'Popup / Mouse',
-        help:'Only opens on the left side of assistant sections, never elsewhere on the page.',
-        def:'middle_double',
-        opts: CHUB_SB_popupMouseOpts(),
-        getLive() { return CHUB_SB_getBinding('popupMouse', 'middle_double'); },
-        setLive(v) { CHUB_SB_setBinding('popupMouse', v); },
-      },
-      {
-        type:'select',
-        key:'sbDefaultColor',
-        label:'Default Color',
-        group:'Colors / Palette',
-        help:'This is the first color in the loop and the default starting color.',
-        def:'olive',
-        opts: CHUB_SB_defaultColorOpts,
-        getLive() { return CHUB_SB_getPaletteConfig().defaultKey || 'olive'; },
-        setLive(v) { CHUB_SB_setPaletteConfig({ defaultKey: v }); },
-      },
-      {
-        type:'select',
-        key:'sbApplyStartMode',
-        label:'Key Start Color',
-        group:'Colors / Palette',
-        help:'When Apply Color is used on an uncolored section, choose how the first color is picked.',
-        def:'default',
-        opts: CHUB_SB_applyStartOpts,
-        getLive() { return CHUB_SB_getPaletteConfig().applyStartMode || 'default'; },
-        setLive(v) { CHUB_SB_setPaletteConfig({ applyStartMode: v }); },
-      },
-      {
-        type:'custom',
-        key:'sbPaletteColors',
-        label:'Palette Colors',
-        group:'Colors / Palette',
-        help:'Use the picker or type a hex code for each loop color.',
-        stackBelowLabel: true,
-        render(ctx) { return CHUB_SB_renderPaletteEditor(ctx); },
-      },
-      {
-        type:'select',
-        key:'sbApplyColor',
-        label:'Apply Color',
-        group:'Colors / Apply',
-        help:'Keyboard shortcuts only act over hovered or selected assistant sections.',
-        def:'space',
-        opts: CHUB_SB_applyKeyOpts(),
-        getLive() { return CHUB_SB_getBinding('applyColor', 'space'); },
-        setLive(v) { CHUB_SB_setBinding('applyColor', v); },
-      },
-      {
-        type:'select',
-        key:'sbClearColor',
-        label:'Clear Color',
-        group:'Colors / Clear',
-        def:'meta_or_ctrl_z',
-        opts: CHUB_SB_clearKeyOpts(),
-        getLive() { return CHUB_SB_getBinding('clearColor', 'meta_or_ctrl_z'); },
-        setLive(v) { CHUB_SB_setBinding('clearColor', v); },
-      },
-      {
-        type:'select',
-        key:'sbRotateColor',
-        label:'Rotate Colors',
-        group:'Colors / Edit',
-        def:'none',
-        opts: CHUB_SB_repeatOpts(),
-        getLive() { return CHUB_SB_getBinding('rotateColor', 'none'); },
-        setLive(v) { CHUB_SB_setBinding('rotateColor', v); },
-      },
-      {
-        type:'select',
-        key:'sbIntensity',
-        label:'Increase Intensity',
-        group:'Colors / Edit',
-        def:'arrow_ud',
-        opts: CHUB_SB_repeatOpts(),
-        getLive() { return CHUB_SB_getBinding('intensity', 'arrow_ud'); },
-        setLive(v) { CHUB_SB_setBinding('intensity', v); },
-      },
-      {
-        type:'select',
-        key:'sbMode',
-        label:'Fill / Frame',
-        group:'Colors / Edit',
-        def:'enter',
-        opts: CHUB_SB_modeOpts(),
-        getLive() { return CHUB_SB_getBinding('mode', 'enter'); },
-        setLive(v) { CHUB_SB_setBinding('mode', v); },
-      },
-      {
-        type:'select',
-        key:'sbPatternPick',
-        label:'Choose Pattern',
-        group:'Patterns',
-        def:'meta_or_ctrl_x',
-        opts: CHUB_SB_patternPickOpts(),
-        getLive() { return CHUB_SB_getBinding('choosePattern', 'meta_or_ctrl_x'); },
-        setLive(v) { CHUB_SB_setBinding('choosePattern', v); },
-      },
-      {
-        type:'select',
-        key:'sbPatternRotate',
-        label:'Rotate Pattern',
-        group:'Patterns',
-        def:'arrow_lr',
-        opts: CHUB_SB_patternRotateOpts(),
-        getLive() { return CHUB_SB_getBinding('rotatePattern', 'arrow_lr'); },
-        setLive(v) { CHUB_SB_setBinding('rotatePattern', v); },
-      },
-    ],
-
-    sidePanel: [
-      { type:'select', key:'spPos', label:'Position', def:'right', opts:[ ['right','Right'],['left','Left'] ]},
-      { type:'range', key:'spWidth', label:'Panel width', def:260, min:220, max:400, step:10, unit:'px' },
-    ],
-
-    [FEATURE_KEY_WORKSPACE_SHELF]: [
-      {
-        type:'custom',
-        key:'workspaceShelfStatus',
-        label:'Status',
-        group:'Shelf',
-        render() { return CHUB_WS_renderStatus(); },
-      },
-      {
-        type:'action',
-        key:'workspaceShelfActions',
-        label:'Shelf',
-        group:'Shelf',
-        statusText:'',
-        buttons:[
-          { label:'Open Shelf', primary:true, action: () => CHUB_WS_openShelfAction() },
-          { label:'Close', action: () => CHUB_WS_closeAction() },
-        ],
-      },
-      {
-        type:'select',
-        key:'workspaceShelfDockMode',
-        label:'Presentation',
-        group:'Shell Mode',
-        def:'overlay',
-        opts:[ ['overlay','Overlay'], ['dock','Dock'] ],
-        getLive() { return String(CHUB_WS_getState().dockMode || 'overlay'); },
-        setLive(v) { SAFE_call('workspace.setDockMode', () => CHUB_WS_api()?.setDockMode?.(v)); CHUB_invalidateSoon(); },
-      },
-    ],
-
-    [FEATURE_KEY_WORKSPACE_DRAWER]: [
-      {
-        type:'custom',
-        key:'workspaceDrawerStatus',
-        label:'Status',
-        group:'Drawer',
-        render() { return CHUB_WS_renderStatus(); },
-      },
-      {
-        type:'action',
-        key:'workspaceDrawerActions',
-        label:'Drawer',
-        group:'Drawer',
-        statusText:'',
-        buttons:[
-          { label:'Open Drawer', primary:true, action: () => CHUB_WS_openDrawerAction() },
-          { label:'Close', action: () => CHUB_WS_closeAction() },
-        ],
-      },
-      {
-        type:'select',
-        key:'workspaceDrawerDockMode',
-        label:'Presentation',
-        group:'Shell Mode',
-        def:'overlay',
-        opts:[ ['overlay','Overlay'], ['dock','Dock'] ],
-        getLive() { return String(CHUB_WS_getState().dockMode || 'overlay'); },
-        setLive(v) { SAFE_call('workspace.setDockMode', () => CHUB_WS_api()?.setDockMode?.(v)); CHUB_invalidateSoon(); },
-      },
-    ],
-
-    [FEATURE_KEY_NOTES]: [
-      {
-        type: 'action',
-        key: 'notesLaunch',
-        label: 'Notes Panel',
-        group: 'Launch',
-        statusText: '',
-        buttons: [
-          {
-            label: 'Open Notes',
-            primary: true,
-            action: () => CHUB_NOTES_openPanel(),
-            successText: 'Opened.',
-            errorText: 'Open failed.',
-          },
-          {
-            label: 'Refresh',
-            action: () => CHUB_NOTES_refreshPanel(),
-            successText: 'Refreshed.',
-            errorText: 'Refresh failed.',
-          },
-        ],
-      },
-      {
-        type: 'action',
-        key: 'notesScratch',
-        label: 'Scratchpad',
-        group: 'Notes',
-        statusText: '',
-        buttons: [
-          {
-            label: 'Clear Scratch',
-            primary: true,
-            action: () => CHUB_NOTES_clearScratch(),
-            successText: 'Cleared.',
-            errorText: 'Scratch unavailable.',
-          },
-        ],
-      },
-      { type:'select', key:'spPos', label:'Dock Position', group:'Dock Layout', def:'right', opts:[ ['right','Right'],['left','Left'] ]},
-      { type:'range', key:'spWidth', label:'Dock Width', group:'Dock Layout', def:260, min:220, max:400, step:10, unit:'px' },
-    ],
-
-    [FEATURE_KEY_STUDIO]: [
-      {
-        type:'custom',
-        key:'studioStatus',
-        label:'Status',
-        group:'Studio',
-        render() { return CHUB_STUDIO_renderStatus(); },
-      },
-      {
-        type:'action',
-        key:'studioOpeners',
-        label:'Studio Surfaces',
-        group:'Studio',
-        statusText:'',
-        buttons:[
-          { label:'Open Studio', primary:true, action: () => CHUB_STUDIO_openWorkbenchAction() },
-          { label:'Saved Chats', action: () => CHUB_STUDIO_openSavedChatsAction() },
-          { label:'Latest Snapshot', action: () => CHUB_STUDIO_openReaderAction() },
-        ],
-      },
-      {
-        type:'action',
-        key:'studioCapture',
-        label:'Snapshots',
-        group:'Snapshots',
-        statusText:'',
-        buttons:[
-          { label:'Capture Current Chat', primary:true, action: () => CHUB_STUDIO_captureAction() },
-        ],
-      },
-    ],
-
-    [FEATURE_KEY_LIBRARY]: [
-      {
-        type:'custom',
-        key:'libraryWorkspaceStatus',
-        label:'Status',
-        group:'Workspace',
-        render() { return CHUB_LW_renderStatus(); },
-      },
-      {
-        type:'toggle',
-        key:'librarySidebarButtonVisible',
-        label:'Show Library Button',
-        group:'Workspace',
-        help:'Show or hide the top-level Library button in the ChatGPT sidebar.',
-        def:true,
-        getLive() { return CHUB_LW_getLibraryButtonVisible(); },
-        setLive(v) { return CHUB_LW_setLibraryButtonVisible(v); },
-      },
-      {
-        type:'action',
-        key:'libraryWorkspaceActions',
-        label:'Library Workspace',
-        group:'Workspace',
-        statusText:'',
-        buttons:[
-          { label:'Open Library', primary:true, action: () => CHUB_LW_openAction() },
-          { label:'Refresh', action: () => CHUB_LW_refreshAction() },
-          { label:'Reset UI Prefs', action: () => CHUB_LW_resetUiAction() },
-        ],
-      },
-      {
-        type:'custom',
-        key:'librarySidebarLayout',
-        label:'Sidebar Sections',
-        group:'Sidebar Layout',
-        help:'Control which Library-related sections appear in the sidebar and the order they use.',
-        stackBelowLabel:true,
-        render() { return CHUB_LW_renderSidebarLayoutEditor(); },
-      },
-      {
-        type:'custom',
-        key:'libraryDiagnostics',
-        label:'Diagnostics',
-        group:'Diagnostics',
-        render() { return CHUB_LW_renderDiagnostics(); },
-      },
-    ],
-
-    projects: [      {
-        type:'custom',
-        key:'projectsLibraryStatus',
-        label:'Projects',
-        group:'Projects',
-        render() {
-          return CHUB_renderInfoList([
-            { label:'Source', value:'Native ChatGPT Projects' },
-            { label:'Library role', value:'Reference section' },
-          ]);
-        },
-      },
-      {
-        type:'select',
-        key:'projectInlinePreviewOnOpen',
-        label:'Inline Preview on Open',
-        group:'Projects',
-        help:'Allow native project rows to open their inline chat preview, or send project toggle opens directly to the project surface.',
-        def:'enabled',
-        opts: CHUB_LIBRARY_inlinePreviewOpts,
-        getLive() { return CHUB_PROJECTS_getInlinePreviewOnOpen(); },
-        setLive(v) { CHUB_PROJECTS_setInlinePreviewOnOpen(v); },
-      },
-      {
-        type:'select',
-        key:'projectMoreOpenMode',
-        label:'More Open Mode',
-        group:'Projects',
-        help:'Choose whether the native Projects More row opens the H2O projects page or keeps the native dropdown behavior.',
-        def:'dropdown',
-        opts: CHUB_LIBRARY_moreOpenModeOpts,
-        getLive() { return CHUB_PROJECTS_getMoreOpenMode(); },
-        setLive(v) { CHUB_PROJECTS_setMoreOpenMode(v); },
-      },
-    ],
-
-    folders: [
-      {
-        type:'custom',
-        key:'foldersStatus',
-        label:'Status',
-        group:'Folders',
-        render() { return CHUB_FOLDERS_renderStatus(); },
-      },
-      {
-        type:'toggle',
-        key:'showFolderCounts',
-        label:'Show Folder Counters',
-        group:'Folders',
-        help:'Show or hide the chat-count number displayed at the end of folder rows.',
-        def:true,
-        getLive() { return CHUB_FOLDERS_getShowCounts(); },
-        setLive(v) { CHUB_FOLDERS_setShowCounts(v); },
-      },
-      {
-        type:'select',
-        key:'folderOpenMode',
-        label:'Folder Open Mode',
-        group:'Folders',
-        help:'Choose whether folder rows open the full folder page view or a lighter internal panel.',
-        def:'panel',
-        opts: CHUB_CATEGORIES_openModeOpts,
-        getLive() { return CHUB_FOLDERS_getOpenMode(); },
-        setLive(v) { CHUB_FOLDERS_setOpenMode(v); },
-      },
-      {
-        type:'select',
-        key:'folderInlinePreviewOnOpen',
-        label:'Inline Preview on Open',
-        group:'Folders',
-        help:'Allow folder rows to expand their top chat preview in the sidebar, or send row opens directly to the configured folder surface.',
-        def:'enabled',
-        opts: CHUB_LIBRARY_inlinePreviewOpts,
-        getLive() { return CHUB_FOLDERS_getInlinePreviewOnOpen(); },
-        setLive(v) { CHUB_FOLDERS_setInlinePreviewOnOpen(v); },
-      },
-      {
-        type:'select',
-        key:'folderMoreOpenMode',
-        label:'More Open Mode',
-        group:'Folders',
-        help:'Choose whether the top-level More row opens hidden folders in a page or a dropdown.',
-        def:'page',
-        opts: CHUB_LIBRARY_moreOpenModeOpts,
-        getLive() { return CHUB_FOLDERS_getMoreOpenMode(); },
-        setLive(v) { CHUB_FOLDERS_setMoreOpenMode(v); },
-      },
-      {
-        type:'action',
-        key:'foldersActions',
-        label:'Folders',
-        group:'Folders',
-        statusText:'',
-        buttons:[
-          { label:'Focus Sidebar', primary:true, action: () => CHUB_FOLDERS_focusAction() },
-          { label:'Expand', action: () => CHUB_FOLDERS_setExpanded(true) },
-          { label:'Collapse', action: () => CHUB_FOLDERS_setExpanded(false) },
-          { label:'New Folder', action: () => CHUB_FOLDERS_newFolderAction() },
-        ],
-      },
-    ],
-
-    categories: [
-      {
-        type:'toggle',
-        key:'showCategoryCounts',
-        label:'Show Category Counters',
-        group:'Categories',
-        help:'Show or hide the chat-count number displayed at the end of category rows.',
-        def:true,
-        getLive() { return CHUB_CATEGORIES_getShowCounts(); },
-        setLive(v) { CHUB_CATEGORIES_setShowCounts(v); },
-      },
-      {
-        type:'select',
-        key:'categoryOpenMode',
-        label:'Category Open Mode',
-        group:'Categories',
-        help:'Choose whether category rows open the full category page view or a lighter internal panel.',
-        def:'page',
-        opts: CHUB_CATEGORIES_openModeOpts,
-        getLive() { return CHUB_CATEGORIES_getOpenMode(); },
-        setLive(v) { CHUB_CATEGORIES_setOpenMode(v); },
-      },
-      {
-        type:'select',
-        key:'categoryInlinePreviewOnOpen',
-        label:'Inline Preview on Open',
-        group:'Categories',
-        help:'Allow category rows to expand their top chat preview in the sidebar, or send row opens directly to the configured category surface.',
-        def:'enabled',
-        opts: CHUB_LIBRARY_inlinePreviewOpts,
-        getLive() { return CHUB_CATEGORIES_getInlinePreviewOnOpen(); },
-        setLive(v) { CHUB_CATEGORIES_setInlinePreviewOnOpen(v); },
-      },
-      {
-        type:'select',
-        key:'categoryMoreOpenMode',
-        label:'More Open Mode',
-        group:'Categories',
-        help:'Choose whether the top-level More row opens hidden categories in a page or a dropdown.',
-        def:'page',
-        opts: CHUB_LIBRARY_moreOpenModeOpts,
-        getLive() { return CHUB_CATEGORIES_getMoreOpenMode(); },
-        setLive(v) { CHUB_CATEGORIES_setMoreOpenMode(v); },
-      },
-    ],
-
-    labels: [
-      {
-        type:'custom',
-        key:'labelsStatus',
-        label:'Status',
-        group:'Labels',
-        render() { return CHUB_LABELS_renderStatus(); },
-      },
-      {
-        type:'toggle',
-        key:'showLabelCounts',
-        label:'Show Label Counters',
-        group:'Labels',
-        help:'Show or hide the chat-count number displayed at the end of label rows.',
-        def:true,
-        getLive() { return CHUB_LABELS_getShowCounts(); },
-        setLive(v) { CHUB_LABELS_setShowCounts(v); },
-      },
-      {
-        type:'select',
-        key:'labelOpenMode',
-        label:'Open Mode',
-        group:'Labels',
-        help:'Choose whether label rows open the full in-shell Labels page or a lighter floating panel.',
-        def:'page',
-        opts: CHUB_CATEGORIES_openModeOpts,
-        getLive() { return CHUB_LABELS_getOpenMode(); },
-        setLive(v) { CHUB_LABELS_setOpenMode(v); },
-      },
-      {
-        type:'select',
-        key:'labelInlinePreviewOnOpen',
-        label:'Inline Preview on Open',
-        group:'Labels',
-        help:'Allow label rows to toggle their top matching chats inline in the sidebar, or open directly into the configured Labels surface.',
-        def:'disabled',
-        opts: CHUB_LIBRARY_inlinePreviewOpts,
-        getLive() { return CHUB_LABELS_getInlinePreviewOnOpen(); },
-        setLive(v) { CHUB_LABELS_setInlinePreviewOnOpen(v); },
-      },
-      {
-        type:'select',
-        key:'labelTypeExpandMode',
-        label:'Subsection Open State',
-        group:'Labels',
-        help:'Choose whether Workflow, Priority, and the other Labels subsections open expanded, collapsed, or remember their previous state whenever the Labels section opens.',
-        def:'remember',
-        opts: CHUB_LABELS_typeExpandModeOpts,
-        getLive() { return CHUB_LABELS_getTypeExpandMode(); },
-        setLive(v) { CHUB_LABELS_setTypeExpandMode(v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionWorkflow',
-        label:'Show Workflow Section',
-        group:'Labels',
-        help:'Show or hide the Workflow subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('workflowStatus'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('workflowStatus', v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionPriority',
-        label:'Show Priority Section',
-        group:'Labels',
-        help:'Show or hide the Priority subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('priority'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('priority', v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionFollowUp',
-        label:'Show Follow-up Section',
-        group:'Labels',
-        help:'Show or hide the Follow-up subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('followUp'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('followUp', v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionContentType',
-        label:'Show Content Type Section',
-        group:'Labels',
-        help:'Show or hide the Content Type subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('contentType'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('contentType', v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionContext',
-        label:'Show Context Section',
-        group:'Labels',
-        help:'Show or hide the Context subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('context'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('context', v); },
-      },
-      {
-        type:'toggle',
-        key:'labelSectionCustom',
-        label:'Show Custom Section',
-        group:'Labels',
-        help:'Show or hide the Custom subsection in the Labels sidebar section.',
-        def:true,
-        getLive() { return CHUB_LABELS_isTypeVisible('custom'); },
-        setLive(v) { CHUB_LABELS_setTypeVisible('custom', v); },
-      },
-      {
-        type:'action',
-        key:'labelsActions',
-        label:'Labels',
-        group:'Labels',
-        statusText:'',
-        buttons:[
-          { label:'Focus Sidebar', primary:true, action: () => CHUB_LABELS_focusAction() },
-          { label:'Expand', action: () => CHUB_LABELS_setExpanded(true) },
-          { label:'Collapse', action: () => CHUB_LABELS_setExpanded(false) },
-        ],
-      },
-    ],
-
-
-    tags: [
-      {
-        type:'custom',
-        key:'tagsLibraryStatus',
-        label:'Tags',
-        group:'Tags',
-        render() { return CHUB_TAGS_renderStatus(); },
-      },
-      {
-        type:'select',
-        key:'currentChatTagMode',
-        label:'Current Chat Tag Mode',
-        group:'Tags',
-        help:'Switch the active chat between manual tagging and automatic tagging.',
-        def:'manual',
-        opts: CHUB_TAGS_modeOpts,
-        getLive() { return CHUB_TAGS_getMode(); },
-        setLive(v) { return CHUB_TAGS_setMode(v); },
-      },
-    ],
-
-    interfaceEnhancer: [
-      {
-        type:'custom',
-        key:'interfaceState',
-        label:'Interface Enhancer',
-        group:'Visibility',
-        render() {
-          const canToggle = CHUB_VIS_hasToggle(FEATURE_KEY_INTERFACE);
-          return CHUB_renderInfoList([
-            { label:'State', value: canToggle ? (CHUB_VIS_isVisible(FEATURE_KEY_INTERFACE) ? 'Visible' : 'Hidden') : 'Managed externally' },
-            { label:'Hint', value: canToggle ? 'Use the row switch to show or hide Interface surfaces on the page.' : 'This helper does not publish a safe page-visibility surface yet.' },
-          ]);
-        },
-      },
-    ],
-
-    titles: [
-      {
-        type:'custom',
-        key:'titlesState',
-        label:'Titles',
-        group:'Visibility',
-        render() {
-          const canToggle = CHUB_VIS_hasToggle(FEATURE_KEY_INTERFACE);
-          return CHUB_renderInfoList([
-            { label:'State', value: canToggle ? (CHUB_VIS_isVisible(FEATURE_KEY_INTERFACE) ? 'Visible' : 'Hidden') : 'Managed externally' },
-            { label:'Hint', value: canToggle ? 'Use the row switch to show or hide the active title helper surface.' : 'Title helpers stay managed by their standalone scripts for now.' },
-          ]);
-        },
-      },
-      {
-        type:'select',
-        key:'atCollapsedTextMode',
-        label:'Collapsed Title Text Color',
-        group:'Titles',
-        help:'Choose whether collapsed title text adapts per wash color or stays consistent across all collapsed title bars.',
-        def:'adaptive',
-        opts: CHUB_AT_collapsedTextModeOpts,
-        getLive() { return CHUB_AT_getConfig().collapsedTextMode || 'adaptive'; },
-        setLive(v) { CHUB_AT_applySetting('collapsedTextMode', v); },
-      },
-      {
-        type:'select',
-        key:'atsCollapsedHoverMode',
-        label:'Collapsed Hover Timestamp',
-        group:'Timestamps',
-        help:'When a title bar is collapsed, choose how the timestamp appears while hovering the title bar.',
-        def:'under',
-        opts: CHUB_ATS_hoverModeOpts,
-        getLive() { return CHUB_ATS_getConfig().collapsedHoverMode || 'under'; },
-        setLive(v) { CHUB_ATS_applySetting('collapsedHoverMode', v); },
-      },
-    ],
-
-    numbers: [
-      {
-        type:'range',
-        key:'ansnNormalOpacity',
-        label:'Big Number Fade',
-        group:'Answers Before Collapse',
-        help:'Controls how faded the expanded answer numbers look.',
-        def:0.12,
-        min:0.02,
-        max:0.35,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().normalOpacity || 0.12); },
-        setLive(v) { CHUB_ANSN_applySetting('normalOpacity', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnNormalLeftPx',
-        label:'Big Number Left Offset',
-        group:'Answers Before Collapse',
-        help:'Moves the expanded answer number farther left or closer to the answer block.',
-        def:-140,
-        min:-260,
-        max:-20,
-        step:2,
-        unit:'px',
-        getLive() { return Number(CHUB_ANSN_getConfig().normalLeftPx || -140); },
-        setLive(v) { CHUB_ANSN_applySetting('normalLeftPx', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnNormalScale',
-        label:'Big Number Size',
-        group:'Answers Before Collapse',
-        help:'Scales the expanded answer number without changing the answer content itself.',
-        def:1.00,
-        min:0.55,
-        max:1.35,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().normalScale || 1); },
-        setLive(v) { CHUB_ANSN_applySetting('normalScale', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnNormalRightFadeStartPct',
-        label:'Right Fade Cutoff',
-        group:'Answers Before Collapse',
-        help:'Moves where the right-side fade starts. Higher starts the fade later and keeps more of multi-digit values visible.',
-        def:56,
-        min:20,
-        max:100,
-        step:1,
-        unit:'%',
-        getLive() { return Number(CHUB_ANSN_getConfig().normalRightFadeStartPct || 56); },
-        setLive(v) { CHUB_ANSN_applySetting('normalRightFadeStartPct', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnNormalRightFadeEndOpacity',
-        label:'Right Fade End Opacity',
-        group:'Answers Before Collapse',
-        help:'Sets how visible the far-right edge remains after the fade.',
-        def:0.12,
-        min:0.00,
-        max:1.00,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().normalRightFadeEndOpacity || 0.12); },
-        setLive(v) { CHUB_ANSN_applySetting('normalRightFadeEndOpacity', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnCollapsedOpacity',
-        label:'Big Number Fade',
-        group:'Answers After Collapse',
-        help:'Controls how faded the collapsed answer numbers look.',
-        def:0.09,
-        min:0.02,
-        max:0.35,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().collapsedOpacity || 0.09); },
-        setLive(v) { CHUB_ANSN_applySetting('collapsedOpacity', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnCollapsedLeftPx',
-        label:'Big Number Left Offset',
-        group:'Answers After Collapse',
-        help:'Moves the collapsed answer number farther left or closer to the title list.',
-        def:-132,
-        min:-260,
-        max:-20,
-        step:2,
-        unit:'px',
-        getLive() { return Number(CHUB_ANSN_getConfig().collapsedLeftPx || -132); },
-        setLive(v) { CHUB_ANSN_applySetting('collapsedLeftPx', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnCollapsedScale',
-        label:'Big Number Size',
-        group:'Answers After Collapse',
-        help:'Adjusts how large the answer number remains after the title bar is collapsed.',
-        def:0.42,
-        min:0.20,
-        max:1.10,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().collapsedScale || 0.42); },
-        setLive(v) { CHUB_ANSN_applySetting('collapsedScale', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnCollapsedRightFadeStartPct',
-        label:'Right Fade Cutoff',
-        group:'Answers After Collapse',
-        help:'Moves where the right-side fade starts for collapsed answer numbers.',
-        def:70,
-        min:20,
-        max:100,
-        step:1,
-        unit:'%',
-        getLive() { return Number(CHUB_ANSN_getConfig().collapsedRightFadeStartPct || 70); },
-        setLive(v) { CHUB_ANSN_applySetting('collapsedRightFadeStartPct', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'ansnCollapsedRightFadeEndOpacity',
-        label:'Right Fade End Opacity',
-        group:'Answers After Collapse',
-        help:'Sets how visible the far-right edge remains for collapsed answer numbers.',
-        def:0.18,
-        min:0.00,
-        max:1.00,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_ANSN_getConfig().collapsedRightFadeEndOpacity || 0.18); },
-        setLive(v) { CHUB_ANSN_applySetting('collapsedRightFadeEndOpacity', v); CHUB_ANSN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'qnOpacity',
-        label:'Big Number Fade',
-        group:'Questions',
-        help:'Controls how faded the question numbers look.',
-        def:0.12,
-        min:0.02,
-        max:0.35,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_QN_getConfig().opacity || 0.12); },
-        setLive(v) { CHUB_QN_applySetting('opacity', v); CHUB_QN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'qnLeftOffsetPx',
-        label:'Big Number Left Offset',
-        group:'Questions',
-        help:'Moves the question number farther left from the question bubble or closer to it.',
-        def:14,
-        min:0,
-        max:120,
-        step:1,
-        unit:'px',
-        getLive() { return Number(CHUB_QN_getConfig().leftOffsetPx || 14); },
-        setLive(v) { CHUB_QN_applySetting('leftOffsetPx', v); CHUB_QN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'qnScale',
-        label:'Big Number Size',
-        group:'Questions',
-        help:'Scales the question number without changing the question bubble itself.',
-        def:0.75,
-        min:0.35,
-        max:1.35,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_QN_getConfig().scale || 0.75); },
-        setLive(v) { CHUB_QN_applySetting('scale', v); CHUB_QN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'qnRightFadeStartPct',
-        label:'Right Fade Cutoff',
-        group:'Questions',
-        help:'Moves where the right-side fade starts for question numbers.',
-        def:60,
-        min:20,
-        max:100,
-        step:1,
-        unit:'%',
-        getLive() { return Number(CHUB_QN_getConfig().rightFadeStartPct || 60); },
-        setLive(v) { CHUB_QN_applySetting('rightFadeStartPct', v); CHUB_QN_rescan(); },
-      },
-      {
-        type:'range',
-        key:'qnRightFadeEndOpacity',
-        label:'Right Fade End Opacity',
-        group:'Questions',
-        help:'Sets how visible the far-right edge remains for question numbers.',
-        def:0.18,
-        min:0.00,
-        max:1.00,
-        step:0.01,
-        unit:'',
-        getLive() { return Number(CHUB_QN_getConfig().rightFadeEndOpacity || 0.18); },
-        setLive(v) { CHUB_QN_applySetting('rightFadeEndOpacity', v); CHUB_QN_rescan(); },
-      },
-    ],
-
-    themesPanel: [
-      {
-        type:'select',
-        key:'chubButtonAccent',
-        label:'Button Accent',
-        group:'Control Hub Colors',
-        help:'Changes the Control Hub action buttons and on-state switches.',
-        def:'default',
-        opts: CHUB_BUTTON_ACCENT_opts,
-        getLive() { return CHUB_BUTTON_ACCENT_get(); },
-        setLive(v) { return CHUB_BUTTON_ACCENT_set(v); },
-      },
-      {
-        type:'select',
-        key:'chubNavAccent',
-        label:'Tab/List Accent',
-        group:'Control Hub Colors',
-        help:'Changes main tabs, feature list selection, category rail, and subtabs.',
-        def:'default',
-        opts: CHUB_NAV_ACCENT_opts,
-        getLive() { return CHUB_NAV_ACCENT_get(); },
-        setLive(v) { return CHUB_NAV_ACCENT_set(v); },
-      },
-      {
-        type:'select',
-        key:'chubSurfaceAccent',
-        label:'Detail Background',
-        group:'Control Hub Colors',
-        help:'Changes the Control Hub panel and right detail column background.',
-        def:'default',
-        opts: CHUB_SURFACE_ACCENT_opts,
-        getLive() { return CHUB_SURFACE_ACCENT_get(); },
-        setLive(v) { return CHUB_SURFACE_ACCENT_set(v); },
-      },
-      { type:'select', key:'thPreset', label:'Preset', group:'Themes Panel', def:'system', opts:[ ['system','System'], ['darkMatte','Dark Matte'], ['neon','Neon'] ]},
-    ],
-
-    saveExport: [
-      { type:'select', key:'svFormat', label:'Default format', def:'markdown', opts:[ ['markdown','Markdown'], ['html','HTML'], ['onenote','OneNote (future)'] ]},
-      { type:'toggle', key:'svAutoDl', label:'Auto-download', def:false },
-    ],
 
     commandBar: [
       {
@@ -4362,25 +1226,6 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	    'questions',
 	  ]);
 
-	  const FEATURE_ANNOTATIONS_SUBTABS = Object.freeze([
-	    'marginAnchor',
-	    FEATURE_KEY_NOTES,
-	  ]);
-
-	  const FEATURE_MARKUP_SUBTABS = Object.freeze([
-	    'inlineHighlighter',
-	    FEATURE_KEY_SECTION_BANDS,
-	  ]);
-
-	  const FEATURE_WORKSPACE_SUBTABS = Object.freeze([
-	    FEATURE_KEY_WORKSPACE_SHELF,
-	    FEATURE_KEY_WORKSPACE_DRAWER,
-	  ]);	  const FEATURE_INTERFACE_SUBTABS = Object.freeze([
-	    'interfaceEnhancer',
-	    'titles',
-	    'numbers',
-	  ]);
-
 	  const FEATURE_CHAT_PERFORMANCE_SUBTABS = Object.freeze([
 	    'chatMechanisms',
 	    'unmountMessages',
@@ -4402,14 +1247,21 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 		    FEATURE_KEY_LIBRARY_TAGS,
 		  ]);
 
+  function CHUB_LIBRARY_getSubtabs(){
+    const plugKeys = PLUG_getSubtabsForKey(FEATURE_KEY_LIBRARY);
+    return plugKeys.length ? plugKeys : FEATURE_LIBRARY_SUBTABS;
+  }
+
 	  function CAT_forFeatureKey(featureKey){
 	    const k = FEATURE_getCanonicalKey(featureKey);
+	    const plugCat = PLUG_getCategoryForKey(k);
+	    if (plugCat) return plugCat;
 	    // Navigate
 	    if (k === FEATURE_KEY_CHAT_NAVIGATION || k === FEATURE_KEY_ANNOTATIONS || k === 'minimap' || k === FEATURE_KEY_CHAT_ANSWERS || k === 'questions' || k === 'marginAnchor' || k === FEATURE_KEY_NOTES || k === 'dockPanel') return CAT_NAV;
 	    // Mark & Read
-	    if (k === FEATURE_KEY_MARKUP || k === FEATURE_KEY_PROMPT_MANAGER || k === FEATURE_KEY_INTERFACE || k === 'inlineHighlighter' || k === 'sectionBands' || k === 'interfaceEnhancer' || k === 'titles' || k === 'numbers') return CAT_MARK;
+	    if (k === FEATURE_KEY_PROMPT_MANAGER || k === FEATURE_KEY_INTERFACE || k === 'interfaceEnhancer' || k === 'titles' || k === 'numbers') return CAT_MARK;
 	    // Save & Sync
-    if (k === FEATURE_KEY_ACCOUNT || k === FEATURE_KEY_WORKSPACE || k === FEATURE_KEY_WORKSPACE_SHELF || k === FEATURE_KEY_WORKSPACE_DRAWER || k === FEATURE_KEY_DATA_BACKUP || k === FEATURE_KEY_EXPORT || k === FEATURE_KEY_STUDIO || k === FEATURE_KEY_LIBRARY || k === 'saveExport' || k === 'data' || k === FEATURE_KEY_LIBRARY_PROJECTS || k === 'folders' || k === FEATURE_KEY_LIBRARY_CATEGORIES || k === FEATURE_KEY_LIBRARY_LABELS || k === FEATURE_KEY_LIBRARY_TAGS) return CAT_SAVE;
+    if (k === FEATURE_KEY_ACCOUNT || k === FEATURE_KEY_DATA_BACKUP || k === FEATURE_KEY_EXPORT || k === FEATURE_KEY_STUDIO || k === FEATURE_KEY_LIBRARY || k === 'saveExport' || k === 'data' || k === FEATURE_KEY_LIBRARY_PROJECTS || k === 'folders' || k === FEATURE_KEY_LIBRARY_CATEGORIES || k === FEATURE_KEY_LIBRARY_LABELS || k === FEATURE_KEY_LIBRARY_TAGS) return CAT_SAVE;
 	    // Performance & Look
 	    if (k === FEATURE_KEY_CONTROL || k === FEATURE_KEY_CONTROL_HUB || k === FEATURE_KEY_COMMAND_BAR || k === FEATURE_KEY_ACTION_PANEL || k === FEATURE_KEY_CHAT_PERFORMANCE || k === FEATURE_KEY_THEMES || k === 'chatMechanisms' || k === 'unmountMessages' || k === 'paginationWindowing' || k === 'themesPanel') return CAT_PERF;
 	    return CAT_ALL;
@@ -4436,11 +1288,11 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	    if (FEATURE_CONTROL_SUBTABS.includes(canonical)) return FEATURE_KEY_CONTROL;
     if (FEATURE_CHAT_PERFORMANCE_SUBTABS.includes(canonical)) return FEATURE_KEY_CHAT_PERFORMANCE;
 	    if (FEATURE_CHAT_NAVIGATION_SUBTABS.includes(canonical)) return FEATURE_KEY_CHAT_NAVIGATION;
-	    if (FEATURE_ANNOTATIONS_SUBTABS.includes(canonical)) return FEATURE_KEY_ANNOTATIONS;
-		    if (FEATURE_MARKUP_SUBTABS.includes(canonical)) return FEATURE_KEY_MARKUP;
-		    if (FEATURE_WORKSPACE_SUBTABS.includes(canonical)) return FEATURE_KEY_WORKSPACE;
-		    if (FEATURE_INTERFACE_SUBTABS.includes(canonical)) return FEATURE_KEY_INTERFACE;
-		    if (FEATURE_LIBRARY_SUBTABS.includes(canonical)) return FEATURE_KEY_LIBRARY;
+		    if (CHUB_LIBRARY_getSubtabs().includes(canonical)) return FEATURE_KEY_LIBRARY;
+		    {
+		      const pluginParent = PLUG_getSubtabParentKey(canonical);
+		      if (pluginParent) return pluginParent;
+		    }
 		    if (canonical === 'data') return FEATURE_KEY_DATA_BACKUP;
 		    if (canonical === 'saveExport') return FEATURE_KEY_EXPORT;
 		    if (canonical === 'themesPanel') return FEATURE_KEY_THEMES;
@@ -4452,11 +1304,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	    if (canonical === FEATURE_KEY_CONTROL) return CHUB_CONTROL_getActiveFeatureKey();
     if (canonical === FEATURE_KEY_CHAT_PERFORMANCE) return CHUB_CHAT_PERF_getActiveFeatureKey();
 	    if (canonical === FEATURE_KEY_CHAT_NAVIGATION) return CHUB_CHAT_NAV_getActiveFeatureKey();
-	    if (canonical === FEATURE_KEY_ANNOTATIONS) return CHUB_ANNOTATIONS_getActiveFeatureKey();
-	    if (canonical === FEATURE_KEY_MARKUP) return CHUB_MARKUP_getActiveFeatureKey();
-		    if (canonical === FEATURE_KEY_WORKSPACE) return CHUB_WORKSPACE_getActiveFeatureKey();
-		    if (canonical === FEATURE_KEY_INTERFACE) return CHUB_INTERFACE_getActiveFeatureKey();
 		    if (canonical === FEATURE_KEY_LIBRARY) return CHUB_LIBRARY_getActiveFeatureKey();
+		    if (PLUG_getSubtabsForKey(canonical).length) return CHUB_PLUGIN_getActiveFeatureKey(canonical);
 		    if (canonical === FEATURE_KEY_DATA_BACKUP) return 'data';
 		    if (canonical === FEATURE_KEY_EXPORT) return 'saveExport';
 		    if (canonical === FEATURE_KEY_THEMES) return 'themesPanel';
@@ -4469,13 +1318,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     if (detailKey === FEATURE_KEY_COMMAND_BAR) return FEATURE_KEY_COMMAND_BAR;
     if (detailKey === FEATURE_KEY_ACTION_PANEL) return FEATURE_KEY_ACTION_PANEL;
 	    if (detailKey === FEATURE_KEY_NOTES) return 'dockPanel';
-	    if (detailKey === FEATURE_KEY_WORKSPACE_SHELF || detailKey === FEATURE_KEY_WORKSPACE_DRAWER) return FEATURE_KEY_WORKSPACE;
 	    return detailKey;
 	  }
 
 	  function FEATURE_getActiveMeta(key){
 	    const detailKey = FEATURE_getDetailKey(key);
-	    return FEATURE_META.find((meta) => meta.key === detailKey) || null;
+	    return FEATURE_findMeta(detailKey);
 	  }
 
 	  function FEATURE_hasSubtabs(key){
@@ -4483,11 +1331,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	    return canonical === FEATURE_KEY_CONTROL
       || canonical === FEATURE_KEY_CHAT_PERFORMANCE
 	      || canonical === FEATURE_KEY_CHAT_NAVIGATION
-	      || canonical === FEATURE_KEY_ANNOTATIONS
-		      || canonical === FEATURE_KEY_MARKUP
-		      || canonical === FEATURE_KEY_WORKSPACE
-		      || canonical === FEATURE_KEY_INTERFACE
-		      || canonical === FEATURE_KEY_LIBRARY;
+		      || canonical === FEATURE_KEY_LIBRARY
+		      || PLUG_getSubtabsForKey(canonical).length > 0;
 		  }
 
   function FEATURE_getAliasControlDefs(targetKey){
@@ -4504,11 +1349,13 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   function FEATURE_collectControlsForKey(canonical){
     const baseDefs = FEATURE_CONTROLS?.[canonical];
     const aliasDefs = FEATURE_getAliasControlDefs(canonical);
+    const keyedPlugDefs = PLUG_getControlsByKeyForKey(canonical);
     const plugDefs  = PLUG_getControlsForKey(canonical);
-    if ((!Array.isArray(baseDefs) || !baseDefs.length) && (!Array.isArray(aliasDefs) || !aliasDefs.length) && (!Array.isArray(plugDefs) || !plugDefs.length)) return [];
+    if ((!Array.isArray(baseDefs) || !baseDefs.length) && (!Array.isArray(aliasDefs) || !aliasDefs.length) && (!Array.isArray(keyedPlugDefs) || !keyedPlugDefs.length) && (!Array.isArray(plugDefs) || !plugDefs.length)) return [];
     return [
       ...(Array.isArray(baseDefs) ? baseDefs : []),
       ...(Array.isArray(aliasDefs) ? aliasDefs : []),
+      ...(Array.isArray(keyedPlugDefs) ? keyedPlugDefs : []),
       ...(Array.isArray(plugDefs) ? plugDefs : []),
     ];
   }
@@ -4724,16 +1571,20 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     curKey: FEATURE_KEY_CONTROL,
     curCat: CAT_ALL,
     cleanups: [],
-    sectionBandsBtn: null,
-    sectionBandsBtnListener: null,
     plugins: new Map(),
+    pluginControlContributors: [],
     buttonRepairTimer: null,
     uiCfg: null,
     topBtnGestureTimers: Object.create(null),
     panelResizeSize: null,
+    userPillBound: false,
+    userPillUnsub: null,
   };
   STATE_CH.plugins = STATE_CH.plugins || new Map();
+  STATE_CH.pluginControlContributors = Array.isArray(STATE_CH.pluginControlContributors) ? STATE_CH.pluginControlContributors : [];
   STATE_CH.topBtnGestureTimers = STATE_CH.topBtnGestureTimers || Object.create(null);
+  STATE_CH.userPillBound = !!STATE_CH.userPillBound;
+  STATE_CH.userPillUnsub = UTIL_isFn(STATE_CH.userPillUnsub) ? STATE_CH.userPillUnsub : null;
 
   function CLEAN_add(fn){
     if (!UTIL_isFn(fn)) return;
@@ -4751,6 +1602,177 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   function SAFE_call(label, fn){
     try { return fn(); } catch (e) { DIAG_err(label, e); return undefined; }
   }
+
+  const CHUB_USER_FALLBACK_NAME = 'Local User';
+  const CHUB_USER_FALLBACK_INITIALS = 'LU';
+  const CHUB_USER_AVATAR_DEFAULT =
+    'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #3b3935 0%, #24252a 48%, #101217 100%)';
+  const CHUB_USER_AVATAR_GRADIENTS = Object.freeze({
+    violet: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #6d47d6 0%, #47208f 52%, #1f123f 100%)',
+    blue: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #2f6dd9 0%, #1b459c 52%, #102247 100%)',
+    cyan: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #078da4 0%, #0a5f74 52%, #103542 100%)',
+    green: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #0e8f69 0%, #0a644d 52%, #0b352d 100%)',
+    amber: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.11), transparent 42%), linear-gradient(140deg, #c47913 0%, #864916 54%, #352011 100%)',
+    pink: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #c83882 0%, #842052 54%, #351426 100%)',
+    '#7c3aed': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #6d47d6 0%, #47208f 52%, #1f123f 100%)',
+    '#2563eb': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #2f6dd9 0%, #1b459c 52%, #102247 100%)',
+    '#0891b2': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #078da4 0%, #0a5f74 52%, #103542 100%)',
+    '#059669': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #0e8f69 0%, #0a644d 52%, #0b352d 100%)',
+    '#d97706': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.11), transparent 42%), linear-gradient(140deg, #c47913 0%, #864916 54%, #352011 100%)',
+    '#db2777': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #c83882 0%, #842052 54%, #351426 100%)',
+  });
+
+  function CHUB_USER_identityApi(){
+    return W.H2O?.Identity || null;
+  }
+
+  function CHUB_USER_getProfile(){
+    const api = CHUB_USER_identityApi();
+    if (!api) return null;
+
+    const direct = SAFE_call('userPill.getProfile', () => api.getProfile?.()) || null;
+    if (direct && typeof direct === 'object') return direct;
+
+    const snap = SAFE_call('userPill.getSnapshot', () => api.getSnapshot?.()) || null;
+    const profile = snap?.profile || null;
+    return profile && typeof profile === 'object' ? profile : null;
+  }
+
+  function CHUB_USER_displayName(profile){
+    const clean = String(profile?.displayName || '').trim().replace(/\s+/g, ' ').slice(0, 64);
+    return clean || CHUB_USER_FALLBACK_NAME;
+  }
+
+  function CHUB_USER_initialsFrom(name){
+    const clean = String(name || '').trim().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (!clean) return CHUB_USER_FALLBACK_INITIALS;
+
+    const parts = clean.split(' ').filter(Boolean);
+    const chars = parts.length > 1
+      ? [Array.from(parts[0])[0], Array.from(parts[1])[0]]
+      : Array.from(parts[0] || '').slice(0, 2);
+    const initials = chars.filter(Boolean).join('').toUpperCase().slice(0, 2);
+    return initials || CHUB_USER_FALLBACK_INITIALS;
+  }
+
+  function CHUB_USER_avatarGradient(token){
+    const key = String(token || '').trim().toLowerCase();
+    return CHUB_USER_AVATAR_GRADIENTS[key] || CHUB_USER_AVATAR_DEFAULT;
+  }
+
+  function CHUB_USER_ensurePill(panel){
+    if (!panel) return null;
+    const row = UTIL_q(`.${CLS}-toprow`, panel);
+    if (!row) return null;
+
+    let pill = UTIL_q(`.${CLS}-userpill`, row);
+    if (pill && pill.tagName !== 'BUTTON') {
+      try { pill.remove(); } catch {}
+      pill = null;
+    }
+    if (!pill) {
+      pill = D.createElement('button');
+      pill.type = 'button';
+      pill.className = `${CLS}-userpill`;
+      pill.setAttribute('aria-label', 'Open profile settings');
+      pill.setAttribute(ATTR_CGXUI_STATE, 'local');
+      pill.title = 'Open profile';
+
+      const avatar = D.createElement('span');
+      avatar.className = `${CLS}-useravatar`;
+      avatar.setAttribute('aria-hidden', 'true');
+
+      const avatarText = D.createElement('span');
+      avatarText.className = `${CLS}-useravatarText`;
+      avatarText.textContent = CHUB_USER_FALLBACK_INITIALS;
+      avatar.appendChild(avatarText);
+
+      const name = D.createElement('span');
+      name.className = `${CLS}-username`;
+      name.textContent = CHUB_USER_FALLBACK_NAME;
+
+      pill.append(avatar, name);
+      row.appendChild(pill);
+    }
+    const avatar = UTIL_q(`.${CLS}-useravatar`, pill);
+    if (avatar && !UTIL_q(`.${CLS}-useravatarText`, avatar)) {
+      const current = String(avatar.textContent || CHUB_USER_FALLBACK_INITIALS);
+      avatar.textContent = '';
+      const avatarText = D.createElement('span');
+      avatarText.className = `${CLS}-useravatarText`;
+      avatarText.textContent = current.trim() || CHUB_USER_FALLBACK_INITIALS;
+      avatar.appendChild(avatarText);
+    }
+    if (!pill.__h2oChubUserPillClickBound) {
+      pill.addEventListener('click', CHUB_USER_openProfileTab, true);
+      pill.__h2oChubUserPillClickBound = true;
+    }
+    return pill;
+  }
+
+  function CHUB_USER_updatePill(panel = UTIL_q(SEL_CHUB_PANEL)){
+    const pill = CHUB_USER_ensurePill(panel);
+    if (!pill) return;
+
+    const profile = CHUB_USER_getProfile();
+    const displayName = CHUB_USER_displayName(profile);
+    const initials = profile ? CHUB_USER_initialsFrom(displayName) : CHUB_USER_FALLBACK_INITIALS;
+    const avatar = UTIL_q(`.${CLS}-useravatar`, pill);
+    const avatarText = UTIL_q(`.${CLS}-useravatarText`, pill);
+    const name = UTIL_q(`.${CLS}-username`, pill);
+
+    pill.setAttribute(ATTR_CGXUI_STATE, profile ? 'profile' : 'local');
+    if (avatar) {
+      avatar.style.removeProperty('background');
+      avatar.style.setProperty('--h2o-chub-user-avatar-fill', CHUB_USER_avatarGradient(profile?.avatarColor));
+    }
+    if (avatarText) avatarText.textContent = initials;
+    if (name) name.textContent = displayName;
+  }
+
+  function CHUB_USER_openProfileTab(event){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    const panel = UTIL_q(SEL_CHUB_PANEL) || DOM_buildPanel();
+    STATE_CH.curCat = CAT_forFeatureKey(FEATURE_KEY_ACCOUNT) || CAT_ALL;
+    STATE_CH.curKey = FEATURE_KEY_ACCOUNT;
+    CHUB_STATE_setLastMainTab(FEATURE_KEY_ACCOUNT);
+    UTIL_emit(EV_ACCOUNT_OPEN_PROFILE, { source: 'control-hub-user-pill' });
+    if (panel) ENGINE_renderAll(panel);
+  }
+
+  function CHUB_USER_bindIdentity(){
+    if (STATE_CH.userPillBound) return;
+    STATE_CH.userPillBound = true;
+
+    const refresh = () => CHUB_USER_updatePill();
+    const subscribe = () => {
+      if (STATE_CH.userPillUnsub) return;
+      const api = CHUB_USER_identityApi();
+      if (UTIL_isFn(api?.onChange)) {
+        const unsub = SAFE_call('userPill.onChange', () => api.onChange(refresh));
+        if (UTIL_isFn(unsub)) STATE_CH.userPillUnsub = unsub;
+      }
+      refresh();
+    };
+    const onReady = () => subscribe();
+    const onChanged = () => refresh();
+
+    subscribe();
+    W.addEventListener('h2o:identity:ready', onReady, true);
+    W.addEventListener('h2o:identity:changed', onChanged, true);
+
+    CLEAN_add(() => {
+      try { W.removeEventListener('h2o:identity:ready', onReady, true); } catch {}
+      try { W.removeEventListener('h2o:identity:changed', onChanged, true); } catch {}
+      if (STATE_CH.userPillUnsub) {
+        try { STATE_CH.userPillUnsub(); } catch {}
+        STATE_CH.userPillUnsub = null;
+      }
+      STATE_CH.userPillBound = false;
+    });
+  }
   /* ───────────────────────────── 🔌 PLUGINS — REGISTRY / HOOKS ───────────────────────────── */
 
   function PLUG_skin(){
@@ -4759,6 +1781,9 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       CLS,
       ATTR_CGXUI,
       ATTR_CGXUI_OWNER,
+      ATTR_CGXUI_STATE,
+      ATTR_CGXUI_KEY,
+      ATTR_CGXUI_ORDER,
       UI_CHUB_PANEL,
       UI_CHUB_BTN,
       panelSel: SEL_CHUB_PANEL,
@@ -4771,10 +1796,176 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     return STATE_CH.plugins.get(canonical) || null;
   }
 
+  function PLUG_resolveMeta(spec, key){
+    if (!spec) return null;
+    const raw = spec.meta || spec.featureMeta || spec.tabMeta || null;
+    const meta = SAFE_call(`plugin.meta:${String(spec.key || key)}`, () => {
+      return (typeof raw === 'function') ? raw({ key, mode: STATE_CH.curMode, skin: PLUG_skin() }) : raw;
+    });
+    if (!meta || typeof meta !== 'object') return null;
+    return { ...meta, key: FEATURE_getCanonicalKey(meta.key || spec.key || key) };
+  }
+
+  function PLUG_getMainMetaList(){
+    const out = [];
+    try {
+      STATE_CH.plugins.forEach((spec, key) => {
+        const meta = PLUG_resolveMeta(spec, key);
+        if (meta) out.push(meta);
+      });
+    } catch {}
+    return out;
+  }
+
+  function PLUG_getSubtabsForKey(key){
+    const p = PLUG_get(key);
+    const src = p?.subtabs || p?.subTabs || null;
+    if (!src) return [];
+    return SAFE_call(`plugin.subtabs:${String(p.key || key)}`, () => {
+      const out = (typeof src === 'function') ? src({ key, mode: STATE_CH.curMode, skin: PLUG_skin() }) : src;
+      if (!Array.isArray(out)) return [];
+      return out
+        .map((item) => (typeof item === 'string' ? item : item?.key))
+        .map((subKey) => FEATURE_getCanonicalKey(subKey))
+        .filter(Boolean);
+    }) || [];
+  }
+
+  function PLUG_getSubtabMetaForKey(parentKey, subtabKey){
+    const p = PLUG_get(parentKey);
+    const src = p?.subtabs || p?.subTabs || null;
+    if (!src) return null;
+    return SAFE_call(`plugin.subtabMeta:${String(p.key || parentKey)}:${String(subtabKey)}`, () => {
+      const out = (typeof src === 'function') ? src({ key: parentKey, mode: STATE_CH.curMode, skin: PLUG_skin() }) : src;
+      if (!Array.isArray(out)) return null;
+      const canonical = FEATURE_getCanonicalKey(subtabKey);
+      const item = out.find((row) => row && typeof row === 'object' && FEATURE_getCanonicalKey(row.key) === canonical);
+      return item || null;
+    }) || null;
+  }
+
+  function PLUG_getSubtabMetaByKey(subtabKey){
+    const canonical = FEATURE_getCanonicalKey(subtabKey);
+    if (!canonical) return null;
+    let found = null;
+    try {
+      STATE_CH.plugins.forEach((spec, key) => {
+        if (found) return;
+        const meta = PLUG_getSubtabMetaForKey(key, canonical);
+        if (meta) found = meta;
+      });
+    } catch {}
+    return found;
+  }
+
+  function PLUG_getSubtabParentKey(subtabKey){
+    const canonical = FEATURE_getCanonicalKey(subtabKey);
+    if (!canonical) return '';
+    let parent = '';
+    try {
+      STATE_CH.plugins.forEach((_spec, key) => {
+        if (parent) return;
+        if (PLUG_getSubtabsForKey(key).includes(canonical)) parent = FEATURE_getCanonicalKey(key);
+      });
+    } catch {}
+    return parent;
+  }
+
+  function PLUG_getCategoryForKey(key){
+    const canonical = FEATURE_getCanonicalKey(key);
+    if (!canonical) return '';
+    const parent = PLUG_get(canonical) ? canonical : PLUG_getSubtabParentKey(canonical);
+    const spec = PLUG_get(parent || canonical);
+    if (!spec) return '';
+    const raw = spec.category || spec.cat || PLUG_resolveMeta(spec, parent || canonical)?.category || '';
+    return typeof raw === 'function'
+      ? (SAFE_call(`plugin.category:${String(spec.key || parent || canonical)}`, () => raw({ key: canonical, parentKey: parent, mode: STATE_CH.curMode, skin: PLUG_skin() })) || '')
+      : String(raw || '');
+  }
+
+  function PLUG_setControlsByKey(ownerKey, spec){
+    const canonical = FEATURE_getCanonicalKey(ownerKey);
+    const list = Array.isArray(STATE_CH.pluginControlContributors) ? STATE_CH.pluginControlContributors : [];
+    STATE_CH.pluginControlContributors = list.filter((entry) => FEATURE_getCanonicalKey(entry?.key) !== canonical);
+
+    const controlsByKey = spec?.controlsByKey;
+    if (!controlsByKey || typeof controlsByKey !== 'object' || Array.isArray(controlsByKey)) return;
+    STATE_CH.pluginControlContributors.push({ key: canonical, controlsByKey });
+  }
+
+  function PLUG_getControlsByKeyForKey(key){
+    const canonical = FEATURE_getCanonicalKey(key);
+    if (!canonical) return [];
+    const out = [];
+    const contributors = Array.isArray(STATE_CH.pluginControlContributors) ? STATE_CH.pluginControlContributors : [];
+
+    for (const entry of contributors) {
+      const controlsByKey = entry?.controlsByKey;
+      if (!controlsByKey || typeof controlsByKey !== 'object' || Array.isArray(controlsByKey)) continue;
+      const src = controlsByKey[canonical];
+      if (!src) continue;
+      const defs = SAFE_call(`plugin.controlsByKey:${String(entry.key || '')}:${canonical}`, () => {
+        const resolved = (typeof src === 'function') ? src({ key: canonical, mode: STATE_CH.curMode, skin: PLUG_skin() }) : src;
+        return Array.isArray(resolved) ? resolved : [];
+      }) || [];
+      if (Array.isArray(defs) && defs.length) out.push(...defs);
+    }
+
+    return out;
+  }
+
+  function CHUB_PLUGIN_getSubtabs(parentKey){
+    return PLUG_getSubtabsForKey(parentKey);
+  }
+
+  function CHUB_PLUGIN_getSubtabMeta(parentKey, subtabKey){
+    return PLUG_getSubtabMetaForKey(parentKey, subtabKey) || FEATURE_findMeta(subtabKey);
+  }
+
+  function CHUB_PLUGIN_getSubtabStorageKey(parentKey){
+    const canonical = FEATURE_getCanonicalKey(parentKey);
+    const spec = PLUG_get(canonical);
+    return String(spec?.subtabStorageKey || spec?.subTabStorageKey || `${NS_DISK}:state:${canonical}:subtab:v1`);
+  }
+
+  function CHUB_PLUGIN_getSubtab(parentKey){
+    const subtabs = CHUB_PLUGIN_getSubtabs(parentKey);
+    const fallback = subtabs[0] || '';
+    if (!fallback) return '';
+    const raw = UTIL_storage.getStr(CHUB_PLUGIN_getSubtabStorageKey(parentKey), fallback);
+    return subtabs.includes(raw) ? raw : fallback;
+  }
+
+  function CHUB_PLUGIN_setSubtab(parentKey, key){
+    const subtabs = CHUB_PLUGIN_getSubtabs(parentKey);
+    const next = subtabs.includes(key) ? key : (subtabs[0] || '');
+    if (!next) return '';
+    try { UTIL_storage.setStr(CHUB_PLUGIN_getSubtabStorageKey(parentKey), next); } catch {}
+    return next;
+  }
+
+  function CHUB_PLUGIN_getActiveFeatureKey(parentKey){
+    return CHUB_PLUGIN_getSubtab(parentKey);
+  }
+
+  function CHUB_PLUGIN_getActiveMeta(parentKey){
+    return CHUB_PLUGIN_getSubtabMeta(parentKey, CHUB_PLUGIN_getActiveFeatureKey(parentKey));
+  }
+
+  function CHUB_PLUGIN_mountSubtabs(panel, parentKey){
+    CHUB_mountFeatureSubtabs(panel, {
+      keys: CHUB_PLUGIN_getSubtabs(parentKey),
+      getSubtabMeta: (key) => CHUB_PLUGIN_getSubtabMeta(parentKey, key),
+      getActiveKey: () => CHUB_PLUGIN_getActiveFeatureKey(parentKey),
+      setActiveKey: (key) => CHUB_PLUGIN_setSubtab(parentKey, key),
+    });
+  }
+
   function PLUG_register(spec){
     if (!spec || !spec.key) return false;
     const canonical = FEATURE_getCanonicalKey(spec.key);
     STATE_CH.plugins.set(canonical, spec);
+    PLUG_setControlsByKey(canonical, spec);
 
     const cssText = (typeof spec.cssText === 'function') ? spec.cssText(PLUG_skin()) : spec.cssText;
     if (cssText && typeof cssText === 'string') {
@@ -4790,12 +1981,16 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       if (styleEl.textContent !== cssText) styleEl.textContent = cssText;
     }
 
+    if (spec.visibility) SAFE_call(`plugin.visibility:${canonical}`, () => CHUB_VIS_applyAll());
+    if (spec.subtabs || spec.subTabs || spec.meta || spec.controlsByKey) CHUB_invalidateSoon();
     return true;
   }
 
   function PLUG_unregister(key){
     const canonical = FEATURE_getCanonicalKey(key);
     STATE_CH.plugins.delete(canonical);
+    STATE_CH.pluginControlContributors = (Array.isArray(STATE_CH.pluginControlContributors) ? STATE_CH.pluginControlContributors : [])
+      .filter((entry) => FEATURE_getCanonicalKey(entry?.key) !== canonical);
     const styleId = `cgxui-${SkID}-plugin-${canonical}`;
     const s = D.getElementById(styleId);
     if (s) try { s.remove(); } catch {}
@@ -4889,8 +2084,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	      if (t) return String(t);
 	    }
 	    const meta = (canonicalKey !== resolvedKey && !FEATURE_hasSubtabs(canonicalKey))
-	      ? (FEATURE_META.find(x => x.key === canonicalKey) || FEATURE_META.find(x => x.key === resolvedKey))
-	      : (FEATURE_META.find(x => x.key === resolvedKey) || FEATURE_META.find(x => x.key === canonicalKey));
+	      ? (FEATURE_findMeta(canonicalKey) || FEATURE_findMeta(resolvedKey))
+	      : (FEATURE_findMeta(resolvedKey) || FEATURE_findMeta(canonicalKey));
 	    return (meta?.description?.[mode]) || '';
 	  }
 
@@ -4948,7 +2143,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function CHUB_CONTROL_getSubtabMeta(key) {
     if (!key) return null;
-    return FEATURE_META.find((meta) => meta.key === key) || null;
+    return FEATURE_findMeta(key);
   }
 
   function CHUB_CONTROL_getSubtab() {
@@ -4982,7 +2177,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function CHUB_CHAT_PERF_getSubtabMeta(key) {
     if (!key) return null;
-    return FEATURE_META.find((meta) => meta.key === key) || null;
+    return FEATURE_findMeta(key);
   }
 
   function CHUB_CHAT_PERF_getSubtab() {
@@ -5016,7 +2211,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
 	  function CHUB_CHAT_NAV_getSubtabMeta(key) {
 	    if (!key) return null;
-	    return FEATURE_META.find((meta) => meta.key === key) || null;
+	    return FEATURE_findMeta(key);
 	  }
 
 	  function CHUB_CHAT_NAV_getSubtab() {
@@ -5048,121 +2243,21 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 	    });
 	  }
 
-	  function CHUB_ANNOTATIONS_getSubtabMeta(key) {
-	    if (!key) return null;
-	    return FEATURE_META.find((meta) => meta.key === key) || null;
-	  }
-
-	  function CHUB_ANNOTATIONS_getSubtab() {
-	    const fallback = FEATURE_ANNOTATIONS_SUBTABS[0];
-	    const raw = UTIL_storage.getStr(KEY_CHUB_ANNOTATIONS_SUBTAB_V1, fallback);
-	    return FEATURE_ANNOTATIONS_SUBTABS.includes(raw) ? raw : fallback;
-	  }
-
-	  function CHUB_ANNOTATIONS_setSubtab(key) {
-	    const next = FEATURE_ANNOTATIONS_SUBTABS.includes(key) ? key : FEATURE_ANNOTATIONS_SUBTABS[0];
-	    try { UTIL_storage.setStr(KEY_CHUB_ANNOTATIONS_SUBTAB_V1, next); } catch {}
-	    return next;
-	  }
-
-	  function CHUB_ANNOTATIONS_getActiveFeatureKey() {
-	    return CHUB_ANNOTATIONS_getSubtab();
-	  }
-
-	  function CHUB_ANNOTATIONS_getActiveMeta() {
-	    return CHUB_ANNOTATIONS_getSubtabMeta(CHUB_ANNOTATIONS_getActiveFeatureKey());
-	  }
-
-	  function CHUB_ANNOTATIONS_mountSubtabs(panel) {
-	    CHUB_mountFeatureSubtabs(panel, {
-	      keys: FEATURE_ANNOTATIONS_SUBTABS,
-	      getSubtabMeta: CHUB_ANNOTATIONS_getSubtabMeta,
-	      getActiveKey: CHUB_ANNOTATIONS_getActiveFeatureKey,
-	      setActiveKey: CHUB_ANNOTATIONS_setSubtab,
-	    });
-	  }
-
-	  function CHUB_MARKUP_getSubtabMeta(key) {
-	    if (!key) return null;
-	    return FEATURE_META.find((meta) => meta.key === key) || null;
-	  }
-
-	  function CHUB_MARKUP_getSubtab() {
-	    const fallback = FEATURE_MARKUP_SUBTABS[0];
-	    const raw = UTIL_storage.getStr(KEY_CHUB_MARKUP_SUBTAB_V1, fallback);
-	    return FEATURE_MARKUP_SUBTABS.includes(raw) ? raw : fallback;
-	  }
-
-	  function CHUB_MARKUP_setSubtab(key) {
-	    const next = FEATURE_MARKUP_SUBTABS.includes(key) ? key : FEATURE_MARKUP_SUBTABS[0];
-	    try { UTIL_storage.setStr(KEY_CHUB_MARKUP_SUBTAB_V1, next); } catch {}
-	    return next;
-	  }
-
-	  function CHUB_MARKUP_getActiveFeatureKey() {
-	    return CHUB_MARKUP_getSubtab();
-	  }
-
-	  function CHUB_MARKUP_getActiveMeta() {
-	    return CHUB_MARKUP_getSubtabMeta(CHUB_MARKUP_getActiveFeatureKey());
-	  }
-
-	  function CHUB_MARKUP_mountSubtabs(panel) {
-	    CHUB_mountFeatureSubtabs(panel, {
-	      keys: FEATURE_MARKUP_SUBTABS,
-	      getSubtabMeta: CHUB_MARKUP_getSubtabMeta,
-	      getActiveKey: CHUB_MARKUP_getActiveFeatureKey,
-	      setActiveKey: CHUB_MARKUP_setSubtab,
-	    });
-	  }
-
-	  function CHUB_WORKSPACE_getSubtabMeta(key) {
-	    if (!key) return null;
-	    return FEATURE_META.find((meta) => meta.key === key) || null;
-	  }
-
-	  function CHUB_WORKSPACE_getSubtab() {
-	    const fallback = FEATURE_WORKSPACE_SUBTABS[0];
-	    const raw = UTIL_storage.getStr(KEY_CHUB_WORKSPACE_SUBTAB_V1, fallback);
-	    return FEATURE_WORKSPACE_SUBTABS.includes(raw) ? raw : fallback;
-	  }
-
-	  function CHUB_WORKSPACE_setSubtab(key) {
-	    const next = FEATURE_WORKSPACE_SUBTABS.includes(key) ? key : FEATURE_WORKSPACE_SUBTABS[0];
-	    try { UTIL_storage.setStr(KEY_CHUB_WORKSPACE_SUBTAB_V1, next); } catch {}
-	    return next;
-	  }
-
-	  function CHUB_WORKSPACE_getActiveFeatureKey() {
-	    return CHUB_WORKSPACE_getSubtab();
-	  }
-
-	  function CHUB_WORKSPACE_getActiveMeta() {
-	    return CHUB_WORKSPACE_getSubtabMeta(CHUB_WORKSPACE_getActiveFeatureKey());
-	  }
-
-		  function CHUB_WORKSPACE_mountSubtabs(panel) {
-		    CHUB_mountFeatureSubtabs(panel, {
-		      keys: FEATURE_WORKSPACE_SUBTABS,
-		      getSubtabMeta: CHUB_WORKSPACE_getSubtabMeta,
-		      getActiveKey: CHUB_WORKSPACE_getActiveFeatureKey,
-		      setActiveKey: CHUB_WORKSPACE_setSubtab,
-		    });
-		  }
-
 		  function CHUB_LIBRARY_getSubtabMeta(key) {
 		    if (!key) return null;
-		    return FEATURE_META.find((meta) => meta.key === key) || null;
+		    return PLUG_getSubtabMetaForKey(FEATURE_KEY_LIBRARY, key) || FEATURE_findMeta(key);
 		  }
 
 		  function CHUB_LIBRARY_getSubtab() {
-		    const fallback = FEATURE_LIBRARY_SUBTABS[0];
+		    const subtabs = CHUB_LIBRARY_getSubtabs();
+		    const fallback = subtabs[0] || FEATURE_KEY_LIBRARY;
 		    const raw = UTIL_storage.getStr(KEY_CHUB_LIBRARY_SUBTAB_V1, fallback);
-		    return FEATURE_LIBRARY_SUBTABS.includes(raw) ? raw : fallback;
+		    return subtabs.includes(raw) ? raw : fallback;
 		  }
 
 		  function CHUB_LIBRARY_setSubtab(key) {
-		    const next = FEATURE_LIBRARY_SUBTABS.includes(key) ? key : FEATURE_LIBRARY_SUBTABS[0];
+		    const subtabs = CHUB_LIBRARY_getSubtabs();
+		    const next = subtabs.includes(key) ? key : (subtabs[0] || FEATURE_KEY_LIBRARY);
 		    try { UTIL_storage.setStr(KEY_CHUB_LIBRARY_SUBTAB_V1, next); } catch {}
 		    return next;
 		  }
@@ -5177,46 +2272,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
 		  function CHUB_LIBRARY_mountSubtabs(panel) {
 		    CHUB_mountFeatureSubtabs(panel, {
-		      keys: FEATURE_LIBRARY_SUBTABS,
+		      keys: CHUB_LIBRARY_getSubtabs(),
 		      getSubtabMeta: CHUB_LIBRARY_getSubtabMeta,
 		      getActiveKey: CHUB_LIBRARY_getActiveFeatureKey,
 		      setActiveKey: CHUB_LIBRARY_setSubtab,
 		    });
 		  }
-
-		  function CHUB_INTERFACE_getSubtabMeta(key) {
-	    if (!key) return null;
-	    return FEATURE_META.find((meta) => meta.key === key) || null;
-	  }
-
-	  function CHUB_INTERFACE_getSubtab() {
-	    const fallback = FEATURE_INTERFACE_SUBTABS[0];
-	    const raw = UTIL_storage.getStr(KEY_CHUB_INTERFACE_SUBTAB_V1, fallback);
-	    return FEATURE_INTERFACE_SUBTABS.includes(raw) ? raw : fallback;
-	  }
-
-	  function CHUB_INTERFACE_setSubtab(key) {
-	    const next = FEATURE_INTERFACE_SUBTABS.includes(key) ? key : FEATURE_INTERFACE_SUBTABS[0];
-	    try { UTIL_storage.setStr(KEY_CHUB_INTERFACE_SUBTAB_V1, next); } catch {}
-	    return next;
-	  }
-
-	  function CHUB_INTERFACE_getActiveFeatureKey() {
-	    return CHUB_INTERFACE_getSubtab();
-	  }
-
-	  function CHUB_INTERFACE_getActiveMeta() {
-	    return CHUB_INTERFACE_getSubtabMeta(CHUB_INTERFACE_getActiveFeatureKey());
-	  }
-
-	  function CHUB_INTERFACE_mountSubtabs(panel) {
-	    CHUB_mountFeatureSubtabs(panel, {
-	      keys: FEATURE_INTERFACE_SUBTABS,
-	      getSubtabMeta: CHUB_INTERFACE_getSubtabMeta,
-	      getActiveKey: CHUB_INTERFACE_getActiveFeatureKey,
-	      setActiveKey: CHUB_INTERFACE_setSubtab,
-	    });
-	  }
 
 	  function CHUB_UM_api() {
 	    return W.H2O?.UM?.nmntmssgs?.api || null;
@@ -5588,6 +2649,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     let p = UTIL_q(SEL_CHUB_PANEL);
     if (p) {
       CHUB_RESIZE_ensureHandles(p);
+      CHUB_USER_ensurePill(p);
+      CHUB_USER_updatePill(p);
       return p;
     }
 
@@ -5604,6 +2667,10 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
       <div class="${CLS}-toprow">
         <div class="${CLS}-tabs"></div>
+        <button class="${CLS}-userpill" type="button" aria-label="Open profile settings" title="Open profile" ${ATTR_CGXUI_STATE}="local">
+          <span class="${CLS}-useravatar" aria-hidden="true"><span class="${CLS}-useravatarText">LU</span></span>
+          <span class="${CLS}-username">Local User</span>
+        </button>
       </div>
 
       <div class="${CLS}-main">
@@ -5631,6 +2698,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
     const x = UTIL_q(SEL_CHUB_XBTN);
     if (x) x.addEventListener('click', () => CORE_CH_hidePanel(), true);
+    CHUB_USER_ensurePill(p);
+    CHUB_USER_updatePill(p);
 
     return p;
   }
@@ -5852,6 +2921,8 @@ ${P}{
 
   color:#f4f6fb;
   z-index:${CFG_CH.PANEL_Z};
+  --h2o-chub-control-accent-rgb: 255, 217, 102;
+  --h2o-chub-control-accent-deep-rgb: 184, 125, 28;
   background:
     radial-gradient(circle at 0% 0%, ${CFG_CH.HUB_TINT_A}, transparent 45%), /* 👈 */
     radial-gradient(circle at 100% 100%, ${CFG_CH.HUB_TINT_B}, transparent 55%), /* 👈 */
@@ -5889,7 +2960,7 @@ ${P}::before{
 }
 
 /* Header */
-${P} .${CLS}-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+${P} .${CLS}-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:${CFG_CH.HEADER_TO_MODE_GAP_PX}px}
 ${P} .${CLS}-title{font-size:14px;font-weight:600;letter-spacing:.02em}
 ${P} .${CLS}-title small{opacity:.8;font-weight:400;margin-left:4px}
 ${P} .${CLS}-x{border:none;background:rgba(255,255,255,.12);color:#fff;width:22px;height:22px;border-radius:999px;display:inline-grid;place-items:center;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.55)}
@@ -5919,7 +2990,7 @@ ${DK} > button{
 
 /* Mode tabs + per-feature ON/OFF */
 ${P} .${CLS}-toprow{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px}
-${P} .${CLS}-tabs{display:flex;gap:8px}
+${P} .${CLS}-tabs{display:flex;gap:8px;min-width:0;flex:0 1 auto}
 ${P} .${CLS}-tab{padding:4px 18px;border-radius:999px;border:none;cursor:pointer;font-size:12px;
   background:rgba(6,10,18,.78);color:rgba(238,242,252,.88);
   box-shadow:0 0 0 1px rgba(255,255,255,.05), inset 0 4px 12px rgba(0,0,0,.55);
@@ -5929,6 +3000,119 @@ ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
   background:radial-gradient(circle at 50% 0%, #ffdf89, #b87d1c);
   color:#222;
   box-shadow:0 0 0 1px rgba(255,248,235,.9), 0 6px 18px rgba(0,0,0,.9)
+}
+${P} .${CLS}-userpill{
+  --h2o-chub-userpill-w:${CFG_CH.USER_PILL_W_PX}px;
+  --h2o-chub-userpill-h:${CFG_CH.USER_PILL_H_PX}px;
+  --h2o-chub-userpill-x:${CFG_CH.USER_PILL_X_OFFSET_PX}px;
+  margin-left:auto;
+  margin-right:clamp(18px, 7vw, 86px);
+  height:var(--h2o-chub-userpill-h);
+  width:var(--h2o-chub-userpill-w);
+  min-width:42px;
+  max-width:var(--h2o-chub-userpill-w);
+  flex:0 1 var(--h2o-chub-userpill-w);
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  padding:2px 10px 2px 2px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.13);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255,255,255,.18), transparent 40%),
+    linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.038));
+  box-shadow:
+    0 8px 18px rgba(0,0,0,.28),
+    inset 0 1px 0 rgba(255,255,255,.18),
+    inset 0 -1px 0 rgba(0,0,0,.26);
+  box-sizing:border-box;
+  overflow:hidden;
+  appearance:none;
+  -webkit-appearance:none;
+  cursor:pointer;
+  pointer-events:auto;
+  user-select:none;
+  transform:translateX(var(--h2o-chub-userpill-x));
+  transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+${P} .${CLS}-userpill:hover{
+  border-color:rgba(255,255,255,.22);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255,255,255,.22), transparent 40%),
+    linear-gradient(135deg, rgba(255,255,255,.15), rgba(255,255,255,.052));
+  box-shadow:
+    0 10px 22px rgba(0,0,0,.32),
+    inset 0 1px 0 rgba(255,255,255,.22),
+    inset 0 -1px 0 rgba(0,0,0,.26);
+}
+${P} .${CLS}-userpill:active{transform:translateX(var(--h2o-chub-userpill-x)) translateY(0.5px)}
+${P} .${CLS}-userpill:focus-visible{outline:2px solid rgba(var(--h2o-chub-control-accent-rgb), .42);outline-offset:2px}
+${P} .${CLS}-userpill[${ATTR_CGXUI_STATE}="local"]{opacity:.86}
+${P} .${CLS}-useravatar{
+  --h2o-chub-user-avatar-fill:
+    radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%),
+    linear-gradient(140deg, #3b3935 0%, #24252a 48%, #101217 100%);
+  position:relative;
+  isolation:isolate;
+  width:31px;
+  height:31px;
+  flex:0 0 31px;
+  border-radius:999px;
+  display:inline-grid;
+  place-items:center;
+  overflow:hidden;
+  color:#fff3dd;
+  font-size:11.25px;
+  font-weight:830;
+  line-height:1;
+  letter-spacing:0;
+  background:
+    linear-gradient(145deg, rgba(205,162,86,.62), rgba(84,61,32,.58) 52%, rgba(22,19,16,.76));
+  box-shadow:
+    0 0 0 1px rgba(255,229,178,.13) inset,
+    0 0 0 1px rgba(0,0,0,.34),
+    0 4px 9px rgba(0,0,0,.30);
+  text-shadow:0 1px 1px rgba(0,0,0,.68);
+}
+${P} .${CLS}-useravatar::before{
+  content:"";
+  position:absolute;
+  inset:1px;
+  border-radius:inherit;
+  background:var(--h2o-chub-user-avatar-fill);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.055),
+    inset 0 -6px 10px rgba(0,0,0,.22);
+  z-index:0;
+}
+${P} .${CLS}-useravatar::after{
+  content:"";
+  position:absolute;
+  inset:1px;
+  border-radius:inherit;
+  background:
+    radial-gradient(circle at 72% 82%, rgba(0,0,0,.24), transparent 48%),
+    linear-gradient(145deg, rgba(255,255,255,.055), transparent 44%);
+  opacity:.78;
+  z-index:1;
+  pointer-events:none;
+}
+${P} .${CLS}-useravatarText{
+  position:relative;
+  z-index:2;
+  display:block;
+  line-height:1;
+}
+${P} .${CLS}-username{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:rgba(247,248,252,.92);
+  font-size:11.5px;
+  font-weight:620;
+  letter-spacing:0;
+  line-height:1;
 }
 
 /* Main grid */
@@ -6033,9 +3217,14 @@ ${P} .${CLS}-item:hover{
 }
 ${P} .${CLS}-item[${ATTR_CGXUI_STATE}="active"]{
   background:
-    radial-gradient(circle at 18% 0%, rgba(255,255,255,.18), transparent 42%),
-    linear-gradient(135deg, rgba(86,128,255,.34), rgba(10,14,28,.97));
-  box-shadow:none;
+    radial-gradient(circle at 10% 0%, rgba(var(--h2o-chub-control-accent-rgb), .34), transparent 42%),
+    linear-gradient(135deg,
+      rgba(var(--h2o-chub-control-accent-rgb), .20),
+      rgba(var(--h2o-chub-control-accent-deep-rgb), .24) 48%,
+      rgba(8,10,18,.98));
+  box-shadow:
+    0 0 0 1px rgba(var(--h2o-chub-control-accent-rgb), .18) inset,
+    0 10px 22px rgba(0,0,0,.20);
 }
 ${P} .${CLS}-item-left{display:flex;align-items:center;gap:8px;min-width:0}
 ${P} .${CLS}-ico{width:22px;height:22px;border-radius:11px;display:grid;place-items:center;font-size:14px;
@@ -6300,125 +3489,11 @@ ${P} .${CLS}-infoVal{
   color:rgba(255,255,255,.92);
   word-break:break-word;
 }
-${P} .${CLS}-sbPaletteEditor{
-  display:grid;
-  gap:10px;
-  width:min(100%, 560px);
-  max-width:100%;
-}
-${P} .${CLS}-sbPaletteHint{max-width:680px}
-${P} .${CLS}-sbPaletteList{display:grid; gap:10px}
-${P} .${CLS}-sbPaletteRow{
-  display:grid;
-  grid-template-columns:92px minmax(0, 1fr) auto;
-  gap:8px;
-  align-items:center;
-  padding:8px 10px;
-  border-radius:14px;
-  border:1px solid rgba(255,255,255,.10);
-  background:linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 8px 20px rgba(0,0,0,.16);
-}
-${P} .${CLS}-sbPaletteLead{display:flex; align-items:center; gap:8px; min-width:0}
-${P} .${CLS}-sbPaletteIndex{
-  width:24px;
-  height:24px;
-  border-radius:999px;
-  display:grid;
-  place-items:center;
-  font-size:10px;
-  font-weight:700;
-  color:rgba(255,255,255,.96);
-  background:linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.06));
-  border:1px solid rgba(255,255,255,.14);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.08);
-}
-${P} .${CLS}-sbPaletteSwatch{
-  width:38px;
-  height:38px;
-  padding:0;
-  border-radius:11px;
-  border:1px solid rgba(255,255,255,.16);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 6px 16px rgba(0,0,0,.18);
-  cursor:pointer;
-  transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
-}
-${P} .${CLS}-sbPaletteSwatch:hover{
-  transform:translateY(-1px);
-  border-color:rgba(255,255,255,.26);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.24), 0 9px 18px rgba(0,0,0,.22);
-}
-${P} .${CLS}-sbPalettePickerHidden{
-  position:absolute;
-  width:0;
-  height:0;
-  opacity:0;
-  pointer-events:none;
-}
-${P} .${CLS}-sbPaletteHex{width:100%; min-width:0}
-${P} .${CLS}-sbPaletteTail{display:flex; align-items:center; gap:8px; justify-content:flex-end}
-${P} .${CLS}-sbPalettePos{
-  width:72px;
-  min-width:72px;
-  text-align:center;
-}
-${P} .${CLS}-sbPaletteMoves{display:flex; align-items:center; justify-content:flex-end; gap:8px}
-${P} .${CLS}-sbPaletteMoveBtn{
-  width:28px;
-  height:28px;
-  border-radius:9px;
-  border:1px solid rgba(255,255,255,.12);
-  background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
-  color:#f4f6fb;
-  font-size:14px;
-  line-height:1;
-  cursor:pointer;
-  transition:transform .18s ease, border-color .18s ease, background .18s ease;
-}
-${P} .${CLS}-sbPaletteMoveBtn:hover:not(:disabled){
-  transform:translateY(-1px);
-  border-color:rgba(255,255,255,.24);
-  background:linear-gradient(135deg, rgba(255,255,255,.16), rgba(255,255,255,.06));
-}
-${P} .${CLS}-sbPaletteMoveBtn:disabled{opacity:.38; cursor:not-allowed}
 ${P} .${CLS}-sbPaletteActions{
   display:flex;
   align-items:center;
   gap:10px;
   flex-wrap:wrap;
-}
-${P} .${CLS}-hlPaletteEditor .${CLS}-sbPaletteRow{
-  grid-template-columns:minmax(160px, 220px) minmax(0, 1fr);
-}
-${P} .${CLS}-hlPalettePicker{
-  width:42px;
-  height:38px;
-  padding:0;
-  border-radius:11px;
-  border:1px solid rgba(255,255,255,.16);
-  background:transparent;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 6px 16px rgba(0,0,0,.18);
-  cursor:pointer;
-}
-${P} .${CLS}-hlPalettePicker::-webkit-color-swatch-wrapper{
-  padding:0;
-  border-radius:10px;
-}
-${P} .${CLS}-hlPalettePicker::-webkit-color-swatch{
-  border:none;
-  border-radius:10px;
-}
-${P} .${CLS}-hlPaletteGroupTitle{
-  font-size:11px;
-  letter-spacing:.06em;
-  text-transform:uppercase;
-  opacity:.78;
-  margin-top:4px;
-}
-${P} .${CLS}-hlPaletteLabel{
-  font-size:12px;
-  font-weight:600;
-  color:rgba(255,255,255,.92);
 }
 ${P} .${CLS}-tabOrderEditor{
   display:grid;
@@ -6514,17 +3589,6 @@ ${P} .${CLS}-tabOrderMoveBtn:disabled{
   opacity:.38;
   cursor:not-allowed;
 }
-@media (max-width: 760px){
-${P} .${CLS}-sbPaletteRow{
-  grid-template-columns:1fr;
-}
-${P} .${CLS}-sbPaletteTail{
-  justify-content:flex-start;
-}
-${P} .${CLS}-sbPaletteMoves{
-  justify-content:flex-start;
-}
-}
 ${P} .${CLS}-miniSwitch{
   position:relative; width:34px; height:18px; border-radius:999px;
   border:1px solid rgba(255,255,255,.25);
@@ -6543,130 +3607,335 @@ ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"]{
 }
 ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"]>i{transform:translateX(15px)}
 
-${P} .${CLS}-band-toggle-row{margin-top:8px}
-${P} .${CLS}-band-toggle{
-  border:1px solid rgba(255,255,255,.25);
-  border-radius:999px;
-  padding:6px 16px;
-  min-width: 150px;
-  font-size:12px;
-  letter-spacing:.04em;
-  background:rgba(255,255,255,.06);
-  color:#fefefe;
-  cursor:pointer;
-  transition:all .18s ease;
-  box-shadow:0 2px 6px rgba(0,0,0,.35);
+html[data-h2o-chub-control-accent="orange"] ${P}{
+  --h2o-chub-control-accent-rgb: 249, 115, 22;
+  --h2o-chub-control-accent-deep-rgb: 142, 54, 10;
 }
-${P} .${CLS}-band-toggle[${ATTR_CGXUI_STATE}="on"]{
-  background:linear-gradient(135deg,#ffd966,#ffb347);
-  border-color:rgba(255,215,0,.9);
-  color:#2d1605;
-  box-shadow:0 10px 24px rgba(255,200,80,.45);
-}
-${P} .${CLS}-band-toggle:disabled{
-  opacity:.65;
-  filter:grayscale(.15);
-  cursor:not-allowed;
-}
-
-html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
-html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
-html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-band-toggle[${ATTR_CGXUI_STATE}="on"]{
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"]{
   background:linear-gradient(135deg,#ffb24a,#f97316 68%,#d95b0a);
   border-color:rgba(255,194,128,.92);
   box-shadow:0 0 0 1px rgba(255,236,214,.50), 0 0 14px rgba(249,115,22,.48);
 }
-html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-actionBtn,
-html[data-h2o-chub-button-accent="orange"] ${P} .${CLS}-actionBtn.primary{
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-actionBtn.primary{
   background:linear-gradient(135deg, rgba(255,210,140,.98), rgba(249,115,22,.98));
   color:#1f1005;
   box-shadow:0 10px 26px rgba(249,115,22,.24), inset 0 1px 0 rgba(255,255,255,.30);
 }
-
-html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
-html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
-html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-band-toggle[${ATTR_CGXUI_STATE}="on"]{
-  background:linear-gradient(135deg,#28e4df,#078bd5 70%,#075ba8);
-  border-color:rgba(165,241,255,.80);
-  box-shadow:0 0 0 1px rgba(185,247,255,.45), 0 0 14px rgba(0,154,220,.42);
-}
-html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-actionBtn,
-html[data-h2o-chub-button-accent="logo-blue"] ${P} .${CLS}-actionBtn.primary{
-  background:linear-gradient(135deg, rgba(63,239,232,.98), rgba(7,139,213,.98) 66%, rgba(6,72,143,.98));
-  color:#f5fdff;
-  box-shadow:0 10px 26px rgba(0,142,220,.24), inset 0 1px 0 rgba(255,255,255,.24);
-}
-
-html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
   background:radial-gradient(circle at 50% 0%, #ffd08a, #f97316 70%, #b9470c);
   color:#231005;
   box-shadow:0 0 0 1px rgba(255,232,202,.92), 0 8px 22px rgba(249,115,22,.32);
 }
-html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-item:hover{
-  background:
-    radial-gradient(circle at 0% 0%, rgba(255,165,64,.14), transparent 45%),
-    linear-gradient(135deg, rgba(18,14,12,.96), rgba(9,9,17,.98));
-}
-html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-item[${ATTR_CGXUI_STATE}="active"]{
-  background:
-    radial-gradient(circle at 12% 0%, rgba(255,185,94,.30), transparent 44%),
-    linear-gradient(135deg, rgba(210,90,12,.34), rgba(14,12,20,.98));
-  box-shadow:0 0 0 1px rgba(255,196,128,.16) inset;
-}
-html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
-html[data-h2o-chub-nav-accent="orange"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="orange"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
   background:linear-gradient(135deg, rgba(255,165,64,.30), rgba(249,115,22,.22));
   border-color:rgba(255,196,128,.46);
   box-shadow:0 0 0 1px rgba(255,220,185,.16) inset;
   color:#fff7ed;
 }
 
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
+html[data-h2o-chub-control-accent="logo-blue"] ${P}{
+  --h2o-chub-control-accent-rgb: 40, 228, 223;
+  --h2o-chub-control-accent-deep-rgb: 7, 91, 168;
+}
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"]{
+  background:linear-gradient(135deg,#28e4df,#078bd5 70%,#075ba8);
+  border-color:rgba(165,241,255,.80);
+  box-shadow:0 0 0 1px rgba(185,247,255,.45), 0 0 14px rgba(0,154,220,.42);
+}
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-actionBtn.primary{
+  background:linear-gradient(135deg, rgba(63,239,232,.98), rgba(7,139,213,.98) 66%, rgba(6,72,143,.98));
+  color:#f5fdff;
+  box-shadow:0 10px 26px rgba(0,142,220,.24), inset 0 1px 0 rgba(255,255,255,.24);
+}
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
   background:radial-gradient(circle at 35% 0%, #52f0e7, #078bd5 58%, #06488f);
   color:#031524;
   box-shadow:0 0 0 1px rgba(179,243,255,.86), 0 8px 24px rgba(0,145,220,.34);
 }
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item{
-  background:
-    radial-gradient(circle at 0% 0%, rgba(38,231,224,.10), transparent 45%),
-    linear-gradient(135deg, rgba(5,24,43,.96), rgba(3,8,22,.98));
-  border-color:rgba(85,178,230,.10);
-}
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item:hover{
-  background:
-    radial-gradient(circle at 0% 0%, rgba(38,231,224,.16), transparent 45%),
-    linear-gradient(135deg, rgba(6,35,60,.98), rgba(3,12,30,.99));
-}
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-item[${ATTR_CGXUI_STATE}="active"]{
-  background:
-    radial-gradient(circle at 12% 0%, rgba(41,238,228,.30), transparent 44%),
-    linear-gradient(135deg, rgba(0,133,208,.42), rgba(3,17,40,.98));
-  box-shadow:0 0 0 1px rgba(112,217,255,.18) inset;
-}
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
-html[data-h2o-chub-nav-accent="logo-blue"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="logo-blue"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
   background:linear-gradient(135deg, rgba(35,230,220,.24), rgba(0,112,210,.24));
   border-color:rgba(116,216,255,.42);
   color:#f4fbff;
 }
 
-html[data-h2o-chub-surface-accent="logo-blue"] ${P}{
+html[data-h2o-chub-control-accent="dark"] ${P}{
+  --h2o-chub-control-accent-rgb: 142, 137, 127;
+  --h2o-chub-control-accent-deep-rgb: 58, 57, 53;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(98,96,90,.92), rgba(51,51,48,.94));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(142,137,127,.18), rgba(58,57,53,.22));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(142,137,127,.10), rgba(255,255,255,.028));
+  --h2o-chub-control-accent-border: rgba(194,187,174,.22);
+  --h2o-chub-control-accent-text: #ece8df;
+  --h2o-chub-control-accent-button-text: #f0ece5;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(210,202,188,.08), 0 8px 18px rgba(0,0,0,.22);
+}
+html[data-h2o-chub-control-accent="soft-gold"] ${P}{
+  --h2o-chub-control-accent-rgb: 196, 153, 78;
+  --h2o-chub-control-accent-deep-rgb: 112, 82, 36;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(211,172,102,.90), rgba(148,111,58,.90));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(196,153,78,.23), rgba(112,82,36,.18));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(196,153,78,.13), rgba(255,255,255,.032));
+  --h2o-chub-control-accent-border: rgba(226,196,132,.32);
+  --h2o-chub-control-accent-text: #f3eee2;
+  --h2o-chub-control-accent-button-text: #241b0f;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(232,205,145,.12), 0 8px 18px rgba(0,0,0,.21);
+}
+html[data-h2o-chub-control-accent="soft-amber"] ${P}{
+  --h2o-chub-control-accent-rgb: 198, 119, 84;
+  --h2o-chub-control-accent-deep-rgb: 116, 72, 54;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(214,150,107,.92), rgba(152,92,68,.90));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(198,119,84,.24), rgba(116,72,54,.18));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(198,119,84,.14), rgba(255,255,255,.035));
+  --h2o-chub-control-accent-border: rgba(230,170,130,.34);
+  --h2o-chub-control-accent-text: #f4eee8;
+  --h2o-chub-control-accent-button-text: #261812;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(235,188,150,.14), 0 8px 18px rgba(0,0,0,.22);
+}
+html[data-h2o-chub-control-accent="deep-blue"] ${P}{
+  --h2o-chub-control-accent-rgb: 102, 132, 166;
+  --h2o-chub-control-accent-deep-rgb: 43, 63, 92;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(116,145,178,.90), rgba(59,80,112,.92));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(102,132,166,.23), rgba(43,63,92,.20));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(102,132,166,.13), rgba(255,255,255,.032));
+  --h2o-chub-control-accent-border: rgba(150,178,210,.30);
+  --h2o-chub-control-accent-text: #edf3f8;
+  --h2o-chub-control-accent-button-text: #101923;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(160,188,220,.13), 0 8px 18px rgba(0,0,0,.22);
+}
+html[data-h2o-chub-control-accent="neutral-glow"] ${P}{
+  --h2o-chub-control-accent-rgb: 174, 168, 154;
+  --h2o-chub-control-accent-deep-rgb: 83, 80, 74;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(188,181,166,.90), rgba(111,107,98,.90));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(174,168,154,.20), rgba(83,80,74,.18));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(174,168,154,.11), rgba(255,255,255,.030));
+  --h2o-chub-control-accent-border: rgba(208,202,188,.26);
+  --h2o-chub-control-accent-text: #eeeeea;
+  --h2o-chub-control-accent-button-text: #1d1c19;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(220,214,198,.11), 0 8px 18px rgba(0,0,0,.20);
+}
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P}{
+  --h2o-chub-control-accent-rgb: 145, 132, 164;
+  --h2o-chub-control-accent-deep-rgb: 67, 83, 111;
+  --h2o-chub-control-accent-button-bg: linear-gradient(135deg, rgba(156,143,174,.88), rgba(82,103,132,.90));
+  --h2o-chub-control-accent-fill-bg: linear-gradient(135deg, rgba(145,132,164,.20), rgba(67,83,111,.20));
+  --h2o-chub-control-accent-hover-bg: linear-gradient(135deg, rgba(145,132,164,.11), rgba(67,83,111,.08));
+  --h2o-chub-control-accent-border: rgba(184,174,205,.26);
+  --h2o-chub-control-accent-text: #f0eef5;
+  --h2o-chub-control-accent-button-text: #171820;
+  --h2o-chub-control-accent-shadow: 0 0 0 1px rgba(194,184,214,.11), 0 8px 18px rgba(0,0,0,.21);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-item-switch[${ATTR_CGXUI_STATE}="on"],
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-miniSwitch[${ATTR_CGXUI_STATE}="on"]{
+  background:var(--h2o-chub-control-accent-button-bg);
+  border-color:var(--h2o-chub-control-accent-border);
+  box-shadow:var(--h2o-chub-control-accent-shadow);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-actionBtn.primary,
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-actionBtn.primary,
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-actionBtn.primary,
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-actionBtn.primary,
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-actionBtn.primary,
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-actionBtn,
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-actionBtn.primary{
+  background:var(--h2o-chub-control-accent-button-bg);
+  border-color:var(--h2o-chub-control-accent-border);
+  color:var(--h2o-chub-control-accent-button-text);
+  box-shadow:var(--h2o-chub-control-accent-shadow), inset 0 1px 0 rgba(255,255,255,.16);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-actionBtn:hover:not(:disabled),
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-actionBtn:hover:not(:disabled),
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-actionBtn:hover:not(:disabled),
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-actionBtn:hover:not(:disabled),
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-actionBtn:hover:not(:disabled),
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-actionBtn:hover:not(:disabled){
+  filter:brightness(1.025) saturate(1.02);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-tab[${ATTR_CGXUI_STATE}="active"]{
+  background:var(--h2o-chub-control-accent-fill-bg);
+  color:var(--h2o-chub-control-accent-text);
+  box-shadow:0 0 0 1px var(--h2o-chub-control-accent-border), 0 8px 18px rgba(0,0,0,.20);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]),
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]),
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]),
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]),
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]),
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-tab:hover:not([${ATTR_CGXUI_STATE}="active"]){
+  box-shadow:0 0 0 1px var(--h2o-chub-control-accent-border), inset 0 8px 20px rgba(0,0,0,.58);
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-hub-subtab[aria-pressed="true"],
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-hub-subtab[aria-pressed="true"],
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-hub-subtab[aria-pressed="true"],
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-hub-subtab[aria-pressed="true"],
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-hub-subtab[aria-pressed="true"],
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-catbtn[${ATTR_CGXUI_STATE}="active"],
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-hub-subtab[aria-pressed="true"]{
+  background:var(--h2o-chub-control-accent-fill-bg);
+  border-color:var(--h2o-chub-control-accent-border);
+  color:var(--h2o-chub-control-accent-text);
+  box-shadow:0 0 0 1px rgba(var(--h2o-chub-control-accent-rgb), .10) inset;
+}
+html[data-h2o-chub-control-accent="dark"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]),
+html[data-h2o-chub-control-accent="soft-gold"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]),
+html[data-h2o-chub-control-accent="soft-amber"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]),
+html[data-h2o-chub-control-accent="deep-blue"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]),
+html[data-h2o-chub-control-accent="neutral-glow"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]),
+html[data-h2o-chub-control-accent="quiet-gradient"] ${P} .${CLS}-hub-subtab:hover:not([aria-pressed="true"]){
+  background:var(--h2o-chub-control-accent-hover-bg);
+  border-color:var(--h2o-chub-control-accent-border);
+}
+
+html[data-h2o-chub-panel-bg="logo-blue"] ${P}{
   background:
     radial-gradient(circle at 0% 0%, rgba(31,229,223,.16), transparent 45%),
     radial-gradient(circle at 100% 100%, rgba(0,88,170,.22), transparent 55%),
     linear-gradient(135deg, rgba(4,20,36,.97), rgba(1,7,19,.99));
 }
-html[data-h2o-chub-surface-accent="logo-blue"] ${P}::before{
+html[data-h2o-chub-panel-bg="logo-blue"] ${P}::before{
   background:
     radial-gradient(60% 70% at 0% 0%, rgba(104,226,255,.17), transparent 45%),
     radial-gradient(42% 44% at 100% 100%, rgba(0,120,220,.14), transparent 56%);
 }
-html[data-h2o-chub-surface-accent="logo-blue"] ${P} .${CLS}-detail{
+html[data-h2o-chub-panel-bg="dark"] ${P}{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,255,255,.055), transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(110,105,95,.08), transparent 55%),
+    linear-gradient(135deg, rgba(20,20,19,.97), rgba(9,9,10,.99));
+}
+html[data-h2o-chub-panel-bg="dark"] ${P}::before{
+  background:
+    radial-gradient(60% 70% at 0% 0%, rgba(255,255,255,.10), transparent 45%),
+    radial-gradient(42% 44% at 100% 100%, rgba(130,124,110,.07), transparent 56%);
+}
+html[data-h2o-chub-panel-bg="cockpit-ember"] ${P}{
+  background:
+    radial-gradient(circle at 4% 2%, rgba(217,119,87,.14), transparent 44%),
+    radial-gradient(circle at 100% 100%, rgba(91,123,201,.13), transparent 56%),
+    linear-gradient(135deg, rgba(27,27,25,.98), rgba(11,12,16,.99));
+}
+html[data-h2o-chub-panel-bg="cockpit-ember"] ${P}::before{
+  background:
+    radial-gradient(60% 70% at 0% 0%, rgba(217,119,87,.10), transparent 48%),
+    radial-gradient(48% 48% at 100% 100%, rgba(138,170,214,.10), transparent 58%);
+}
+
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-tab:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(4,26,46,.86), rgba(2,8,22,.96));
+  box-shadow:0 0 0 1px rgba(73,175,235,.12), inset 0 4px 12px rgba(0,0,0,.50);
+}
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(6,45,60,.72), rgba(3,12,30,.94));
+  box-shadow:none;
+}
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:linear-gradient(135deg, rgba(15,91,111,.74), rgba(4,21,42,.96));
+}
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]){
+  background:
+    radial-gradient(circle at 0% 0%, rgba(38,231,224,.10), transparent 45%),
+    linear-gradient(135deg, rgba(5,24,43,.96), rgba(3,8,22,.98));
+  border-color:rgba(85,178,230,.10);
+}
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(38,231,224,.16), transparent 45%),
+    linear-gradient(135deg, rgba(6,35,60,.98), rgba(3,12,30,.99));
+}
+html[data-h2o-chub-pane-bg="logo-blue"] ${P} .${CLS}-detail{
   background:
     radial-gradient(circle at 8% 0%, rgba(35,230,220,.14), transparent 42%),
     radial-gradient(circle at 98% 62%, rgba(0,128,220,.18), transparent 48%),
     linear-gradient(135deg, rgba(3,18,34,.98), rgba(1,7,19,.985));
   box-shadow:0 0 0 1px rgba(86,170,226,.16), 0 14px 38px rgba(0,0,0,.82);
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-tab:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(70,68,60,.74), rgba(12,13,18,.90));
+  box-shadow:0 0 0 1px rgba(255,235,195,.10), inset 0 4px 12px rgba(0,0,0,.42);
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(70,68,60,.64), rgba(12,13,18,.90));
+  box-shadow:none;
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:linear-gradient(135deg, rgba(95,88,72,.72), rgba(18,18,22,.92));
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]){
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,238,200,.08), transparent 45%),
+    linear-gradient(135deg, rgba(30,30,34,.94), rgba(8,8,16,.97));
+  border-color:rgba(255,235,195,.08);
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,238,200,.12), transparent 45%),
+    linear-gradient(135deg, rgba(38,37,38,.96), rgba(12,12,18,.98));
+}
+html[data-h2o-chub-pane-bg="sand-glass"] ${P} .${CLS}-detail{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,238,200,.10), transparent 44%),
+    radial-gradient(circle at 100% 100%, rgba(190,160,95,.08), transparent 54%),
+    linear-gradient(135deg, rgba(20,20,24,.96), rgba(7,7,14,.98));
+  box-shadow:0 0 0 1px rgba(255,235,195,.09), 0 14px 38px rgba(0,0,0,.80);
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-tab:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(38,38,36,.82), rgba(12,13,17,.94));
+  box-shadow:0 0 0 1px rgba(138,170,214,.10), inset 0 4px 12px rgba(0,0,0,.44);
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]){
+  background:linear-gradient(135deg, rgba(38,38,36,.76), rgba(12,13,17,.92));
+  box-shadow:none;
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-catbtn:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:linear-gradient(135deg, rgba(45,45,42,.82), rgba(18,20,25,.94));
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]){
+  background:
+    radial-gradient(circle at 0% 0%, rgba(217,119,87,.075), transparent 44%),
+    linear-gradient(135deg, rgba(30,30,28,.96), rgba(7,8,14,.98));
+  border-color:rgba(138,170,214,.085);
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-item:not([${ATTR_CGXUI_STATE}="active"]):hover{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(217,119,87,.11), transparent 44%),
+    linear-gradient(135deg, rgba(38,38,35,.97), rgba(11,12,17,.99));
+}
+html[data-h2o-chub-pane-bg="cockpit-ember"] ${P} .${CLS}-detail{
+  background:
+    radial-gradient(circle at 0% 0%, rgba(217,119,87,.10), transparent 44%),
+    radial-gradient(circle at 100% 100%, rgba(91,123,201,.12), transparent 54%),
+    linear-gradient(135deg, rgba(27,27,25,.97), rgba(8,9,14,.985));
+  box-shadow:0 0 0 1px rgba(138,170,214,.10), 0 14px 38px rgba(0,0,0,.80);
 }
 
 ${P} .${CLS}-detailInner > .${CLS}-body,
@@ -6767,48 +4036,6 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
   }
 
   /* ───────────────────────────── 🟥 ENGINE — RENDER / UI LOGIC 📝🔓💥 ───────────────────────────── */
-
-  function HO_sectionBandsApi(){
-    const mod = W.H2O?.SB?.sctnbnds?.api;
-    if (!mod) return null;
-    return mod.autoMode || mod;
-  }
-
-  function HO_sectionBandsAutoMode(){
-    const api = HO_sectionBandsApi();
-    if (!api) return null;
-    if (typeof api.isAutoModeOn === 'function') return !!api.isAutoModeOn();
-    return null;
-  }
-
-  function ENGINE_isSectionBandsActive(){
-    return FEATURE_getDetailKey(STATE_CH.curKey) === FEATURE_KEY_SECTION_BANDS;
-  }
-
-  function HO_toggleSectionBandsAutoMode(){
-    const api = HO_sectionBandsApi();
-    if (!api) return;
-    if (typeof api.toggleAutoMode === 'function') {
-      api.toggleAutoMode();
-    } else if (typeof api.setAutoMode === 'function') {
-      api.setAutoMode(!HO_sectionBandsAutoMode());
-    }
-  }
-
-  function ENGINE_updateSectionBandsButtonState(){
-    const btn = STATE_CH.sectionBandsBtn;
-    if (!btn) return;
-    const state = HO_sectionBandsAutoMode();
-    if (state === null) {
-      btn.disabled = true;
-      btn.removeAttribute(ATTR_CGXUI_STATE);
-      btn.textContent = 'Bands: Loading…';
-      return;
-    }
-    btn.disabled = false;
-    btn.setAttribute(ATTR_CGXUI_STATE, state ? 'on' : 'off');
-    btn.textContent = state ? 'Bands: ◉' : 'Bands: ◎';
-  }
 
   function ENGINE_renderTabs(panel){
     const el = UTIL_q(`.${CLS}-tabs`, panel);
@@ -7016,36 +4243,6 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
       else STORE_setOpt(controlStoreKey, def.key, v);
     };
 
-    const appendSectionBandsAutoRow = () => {
-      const row = D.createElement('div');
-      row.className = `${CLS}-ctrlrow ${CLS}-band-toggle-row`;
-
-      const lab = D.createElement('div');
-      lab.className = `${CLS}-ctrllab`;
-      lab.textContent = 'Bands auto-mode';
-
-      const right = D.createElement('div');
-      right.className = `${CLS}-ctrlui`;
-
-      const btn = D.createElement('button');
-      btn.type = 'button';
-      btn.className = `${CLS}-band-toggle`;
-      btn.setAttribute('aria-label', 'Toggle section bands auto-mode');
-      btn.addEventListener('click', () => {
-        HO_toggleSectionBandsAutoMode();
-      }, true);
-
-      right.appendChild(btn);
-      row.append(lab, right);
-      wrap.appendChild(row);
-
-      STATE_CH.sectionBandsBtn = btn;
-      ENGINE_updateSectionBandsButtonState();
-    };
-
-    if (ENGINE_isSectionBandsActive()) appendSectionBandsAutoRow();
-    else STATE_CH.sectionBandsBtn = null;
-
     let currentGroup = null;
     for (const def of defs){
       const groupLabel = def.group || null;
@@ -7247,12 +4444,24 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
     } catch {}
   }
 
+  function CHUB_DETAIL_resetHorizontalScroll(panel){
+    const detail = UTIL_q(`.${CLS}-detail`, panel);
+    if (!detail) return;
+    try { detail.scrollLeft = 0; } catch {}
+    try {
+      W.requestAnimationFrame(() => {
+        try { detail.scrollLeft = 0; } catch {}
+      });
+    } catch {}
+  }
+
 	function ENGINE_renderDetail(panel){
 		    const canonicalKey = FEATURE_getHubKey(STATE_CH.curKey);
 		    if (canonicalKey !== STATE_CH.curKey) STATE_CH.curKey = canonicalKey;
 
 		    PLUG_clearFeatureArtifacts(panel);
-		    const meta = FEATURE_META.find(f => f.key === canonicalKey) || FEATURE_META[0];
+	    CHUB_DETAIL_resetHorizontalScroll(panel);
+		    const meta = FEATURE_findMeta(canonicalKey) || FEATURE_META[0];
 		    const activeMeta = FEATURE_hasSubtabs(canonicalKey) ? FEATURE_getActiveMeta(canonicalKey) : null;
 		    const detailKey = FEATURE_getDetailKey(canonicalKey);
 		    const pill = UTIL_q(`.${CLS}-pill`, panel);
@@ -7267,15 +4476,12 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 	      : meta.subtitle;
 
 		    const bd = UTIL_q(`.${CLS}-body`, panel);
-		    if (bd) bd.textContent = SAFE_getDesc(canonicalKey, STATE_CH.curMode);
+	    if (bd) bd.textContent = SAFE_getDesc(canonicalKey, STATE_CH.curMode);
 		    if (canonicalKey === FEATURE_KEY_CONTROL) CHUB_CONTROL_mountSubtabs(panel);
 	    else if (canonicalKey === FEATURE_KEY_CHAT_PERFORMANCE) CHUB_CHAT_PERF_mountSubtabs(panel);
 		    else if (canonicalKey === FEATURE_KEY_CHAT_NAVIGATION) CHUB_CHAT_NAV_mountSubtabs(panel);
-		    else if (canonicalKey === FEATURE_KEY_ANNOTATIONS) CHUB_ANNOTATIONS_mountSubtabs(panel);
-		    else if (canonicalKey === FEATURE_KEY_MARKUP) CHUB_MARKUP_mountSubtabs(panel);
-		    else if (canonicalKey === FEATURE_KEY_WORKSPACE) CHUB_WORKSPACE_mountSubtabs(panel);
 		    else if (canonicalKey === FEATURE_KEY_LIBRARY) CHUB_LIBRARY_mountSubtabs(panel);
-		    else if (canonicalKey === FEATURE_KEY_INTERFACE) CHUB_INTERFACE_mountSubtabs(panel);
+		    else if (PLUG_getSubtabsForKey(canonicalKey).length) CHUB_PLUGIN_mountSubtabs(panel, canonicalKey);
 
 	    const existingDataSummary = UTIL_q(`.${CLS}-data-summary`, panel);
 	    if (existingDataSummary) {
@@ -7283,48 +4489,8 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 	    }
 	    PLUG_runDetailHook(detailKey, panel);
 
-    const existingThemeAction = UTIL_q(`.${CLS}-theme-action`, panel);
-    if (existingThemeAction) {
-      try { existingThemeAction.remove(); } catch {}
-    }
-
-	    if (detailKey === 'themesPanel') {
-      const action = D.createElement('div');
-      action.className = `${CLS}-theme-action`;
-      const btn = D.createElement('button');
-      btn.type = 'button';
-      btn.className = `${CLS}-themeBtn`;
-      btn.textContent = 'Open Themes Panel';
-
-      let retry = 0;
-      const checkReady = () => {
-        // ✅ Themes Panel module path adapter:
-        //    - legacy: H2O.TP.themes.api.open
-        //    - current: H2O.TP.thmspnl.api.open  (Themes Panel v2.1.5+)
-        const api = W.H2O?.TP?.thmspnl?.api || W.H2O?.TP?.themes?.api;
-        const ready = !!(api?.open);
-        btn.disabled = !ready;
-        btn.title = ready ? 'Launch the themes customization panel' : 'Themes panel is loading…';
-        if (!ready && retry < 6) {
-          retry += 1;
-          W.setTimeout(checkReady, 600);
-        }
-      };
-      checkReady();
-
-      btn.addEventListener('click', () => {
-        SAFE_call('open-theme-panel', () => {
-          (W.H2O?.TP?.thmspnl?.api || W.H2O?.TP?.themes?.api)?.open?.();
-          CORE_CH_hidePanel();
-        });
-      }, true);
-      action.appendChild(btn);
-
-      if (bd) bd.insertAdjacentElement('afterend', action);
-      else panel.appendChild(action);
-    }
-
     ENGINE_renderControls(panel);
+    CHUB_DETAIL_resetHorizontalScroll(panel);
   }
 
   function ENGINE_renderAll(panel){
@@ -7440,7 +4606,6 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 
       // css (defensive)
       SAFE_call('ensureStyle', () => CSS_CH_ensureStyle());
-      SAFE_call('applyAccentSkin', () => CHUB_ACCENT_apply());
       SAFE_call('bindResizeReflow', () => {
         const onViewportResize = () => CHUB_RESIZE_reflowOpenPanel();
         W.addEventListener('resize', onViewportResize, true);
@@ -7457,6 +4622,7 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 
       // ensure launcher (topbar/fixed fallback)
       DOM_placeTopButton();
+      SAFE_call('bindUserPillIdentity', () => CHUB_USER_bindIdentity());
 
       // self-heal: if another module or host rerender drops our launcher, restore it.
       if (!STATE_CH.buttonRepairTimer) {
@@ -7475,23 +4641,6 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
           }
         });
       }
-
-      // re-bind listener cleanly (avoid duplicates on repair boots)
-      if (STATE_CH.sectionBandsBtnListener) {
-        try { W.removeEventListener(EV_SECTION_BANDS_AUTO, STATE_CH.sectionBandsBtnListener, true); } catch {}
-        STATE_CH.sectionBandsBtnListener = null;
-      }
-
-      const bandAutoSync = () => ENGINE_updateSectionBandsButtonState();
-      STATE_CH.sectionBandsBtnListener = bandAutoSync;
-      W.addEventListener(EV_SECTION_BANDS_AUTO, bandAutoSync, true);
-      CLEAN_add(() => { try { W.removeEventListener(EV_SECTION_BANDS_AUTO, bandAutoSync, true); } catch {} });
-
-      if (!STATE_CH.themeVisListener) {
-        STATE_CH.themeVisListener = () => CHUB_VIS_applyKey(FEATURE_KEY_THEMES);
-      }
-      W.addEventListener(CHUB_THEME_SETTINGS_EVENT, STATE_CH.themeVisListener, true);
-      CLEAN_add(() => { try { W.removeEventListener(CHUB_THEME_SETTINGS_EVENT, STATE_CH.themeVisListener, true); } catch {} });
 
       if (!STATE_CH.externalOpenBridgeListener) {
         STATE_CH.externalOpenBridgeListener = (event) => CHUB_handleExternalOpenRequest(event);
@@ -7562,21 +4711,6 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 
     CLEAN_runAll();
   }
-
-
-    // [BRIDGE] Prompt Manager (v3.1.1+) ready handshake (defensive)
-    try {
-      if (!MOD_OBJ.state) MOD_OBJ.state = {};
-      if (!MOD_OBJ.state._pmReadyHooked) {
-        MOD_OBJ.state._pmReadyHooked = true;
-        W.addEventListener(EV_PM_READY_V1, (e) => {
-          try {
-            MOD_OBJ.state.pm = e?.detail || null;
-            MOD_OBJ.state.pmApi = e?.detail?.api || null;
-          } catch {}
-        });
-      }
-    } catch {}
 
 
   // Boot now (document-idle). Defensive: wait for DOM if needed.

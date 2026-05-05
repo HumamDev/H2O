@@ -23,6 +23,15 @@
         "0Z1a._Control_Hub_.js",
         "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js",
         "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1g._Markup_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1h._Interface_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1j._Workspaces_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1k._Appearance_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js",
         "0Z2a._Control_Hub_Tab_Tree_.js"
       ]
     },
@@ -241,6 +250,114 @@
         "h2o.controlHub.minimapTab"
       ]
     },
+    "0Z1g._Markup_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.markupTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1h._Interface_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.interfaceTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.studioTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1j._Workspaces_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.workspacesTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1k._Appearance_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.appearanceTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.annotationsTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.exportTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.dockPanelTab"
+      ],
+      "optionalDependsOn": []
+    },
+    "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.promptManagerTab"
+      ],
+      "optionalDependsOn": []
+    },
     "0Z2a._Control_Hub_Tab_Tree_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -248,7 +365,16 @@
       ],
       "after": [
         "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js"
+        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1g._Markup_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1h._Interface_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1j._Workspaces_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1k._Appearance_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js",
+        "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js"
       ],
       "group": "CORE_BASE",
       "provides": [

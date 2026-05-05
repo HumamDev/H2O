@@ -22,6 +22,7 @@
   if (W !== TOPW) W.H2O = H2O;
 
   const EV_CHUB_READY_V1 = 'h2o.ev:prm:cgx:cntrlhb:ready:v1';
+  const EV_ACCOUNT_OPEN_PROFILE = 'h2o.ev:prm:cgx:cntrlhb:account:open-profile:v1';
   const MARK = '__H2O_CHUB_ACCOUNT_TAB_PLUGIN_V010__';
 
   if (W[MARK]) return;
@@ -31,6 +32,7 @@
   let IDENTITY_UNSUB = null;
   let BILLING_UNSUB = null;
   let CLS = 'cgxui-cnhb';
+  let ATTR_CGXUI_STATE = 'data-cgxui-state';
   let PASSWORD_CHANGE_FEEDBACK = null;
   let PROFILE_FEEDBACK = null;
   let WORKSPACE_FEEDBACK = null;
@@ -41,6 +43,23 @@
   const ACCOUNT_TEXT_MAX = 64;
   const ACCOUNT_AVATAR_MAX = 32;
   const ACCOUNT_AVATAR_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+  const PROFILE_AVATAR_PALETTE = Object.freeze([
+    Object.freeze({ key: 'violet', color: '#7C3AED' }),
+    Object.freeze({ key: 'blue',   color: '#2563EB' }),
+    Object.freeze({ key: 'cyan',   color: '#0891B2' }),
+    Object.freeze({ key: 'green',  color: '#059669' }),
+    Object.freeze({ key: 'amber',  color: '#D97706' }),
+    Object.freeze({ key: 'pink',   color: '#DB2777' }),
+  ]);
+  const PROFILE_AVATAR_DEFAULT = PROFILE_AVATAR_PALETTE[0].key;
+  const PROFILE_AVATAR_HEX_TO_SLUG = Object.freeze({
+    '#7c3aed': 'violet',
+    '#2563eb': 'blue',
+    '#0891b2': 'cyan',
+    '#059669': 'green',
+    '#d97706': 'amber',
+    '#db2777': 'pink',
+  });
   const IDENTITY_SUBTABS = [
     ['overview', 'Overview'],
     ['profile', 'Profile'],
@@ -337,6 +356,74 @@
     return { wrap, input };
   }
 
+  function normalizeAvatarPaletteSlug(value) {
+    const clean = normalizeAccountText(value).toLowerCase();
+    if (!clean) return '';
+    const legacy = PROFILE_AVATAR_HEX_TO_SLUG[clean];
+    if (legacy) return legacy;
+    return PROFILE_AVATAR_PALETTE.some((entry) => entry.key === clean) ? clean : '';
+  }
+
+  function makeAvatarColorPicker(value) {
+    const wrap = D.createElement('div');
+    wrap.className = `${CLS}-acctAvatarField`;
+
+    const label = D.createElement('div');
+    label.className = `${CLS}-acctAvatarLabel`;
+    label.textContent = 'Avatar color';
+
+    const input = D.createElement('input');
+    input.type = 'hidden';
+    input.value = normalizeAvatarPaletteSlug(value) || PROFILE_AVATAR_DEFAULT;
+
+    const grid = D.createElement('div');
+    grid.className = `${CLS}-acctAvatarGrid`;
+    grid.setAttribute('role', 'radiogroup');
+    grid.setAttribute('aria-label', 'Avatar color');
+
+    const buttons = new Map();
+    const setValue = (next) => {
+      const normalized = normalizeAvatarPaletteSlug(next) || PROFILE_AVATAR_DEFAULT;
+      input.value = normalized;
+      for (const [key, btn] of buttons.entries()) {
+        const active = key === normalized;
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+        btn.setAttribute(ATTR_CGXUI_STATE, active ? 'active' : 'idle');
+      }
+    };
+
+    for (const entry of PROFILE_AVATAR_PALETTE) {
+      const btn = D.createElement('button');
+      btn.type = 'button';
+      btn.className = `${CLS}-acctAvatarSwatch`;
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-label', `Avatar color ${entry.key}`);
+      btn.setAttribute('data-avatar-color', entry.key);
+
+      const swatch = D.createElement('span');
+      swatch.className = `${CLS}-acctAvatarDot`;
+      swatch.style.background = entry.color;
+      swatch.setAttribute('aria-hidden', 'true');
+
+      const name = D.createElement('span');
+      name.className = `${CLS}-acctAvatarName`;
+      name.textContent = entry.key[0].toUpperCase() + entry.key.slice(1);
+
+      btn.append(swatch, name);
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        setValue(entry.key);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, true);
+      buttons.set(entry.key, btn);
+      grid.appendChild(btn);
+    }
+
+    setValue(input.value);
+    wrap.append(label, grid, input);
+    return { wrap, input, setValue };
+  }
+
   function makePasswordField(labelText, autocomplete) {
     const row = D.createElement('div');
     row.className = `${CLS}-acctPasswordRow`;
@@ -372,11 +459,8 @@
   }
 
   function validateAvatarColor(value) {
-    const clean = normalizeAccountText(value);
+    const clean = normalizeAvatarPaletteSlug(value);
     if (!clean) return { ok: false, value: clean, message: 'Enter an avatar color.' };
-    if (clean.length > ACCOUNT_AVATAR_MAX || !ACCOUNT_AVATAR_RE.test(clean)) {
-      return { ok: false, value: clean, message: 'Use a safe avatar color token.' };
-    }
     return { ok: true, value: clean, message: '' };
   }
 
@@ -529,9 +613,7 @@
         maxLength: ACCOUNT_TEXT_MAX,
         autocomplete: 'name',
       });
-      const avatarColor = makeTextField('Avatar color', profile.avatarColor || '', {
-        maxLength: ACCOUNT_AVATAR_MAX,
-      });
+      const avatarColor = makeAvatarColorPicker(profile.avatarColor || PROFILE_AVATAR_DEFAULT);
       const status = D.createElement('span');
       status.className = `${CLS}-acctStatus`;
       status.setAttribute('aria-live', 'polite');
@@ -587,7 +669,7 @@
             originalDisplayName = validation.displayName;
             originalAvatarColor = validation.avatarColor;
             displayName.input.value = validation.displayName;
-            avatarColor.input.value = validation.avatarColor;
+            avatarColor.setValue(validation.avatarColor);
             setAccountFeedback('profile', 'Profile updated.', 'success');
           } else {
             setAccountFeedback('profile', 'Could not update profile.', 'error');
@@ -951,6 +1033,12 @@
     invalidate();
   }
 
+  function openProfileSubtab() {
+    ACCOUNT_SUBTAB = 'identity';
+    IDENTITY_SUBTAB = 'profile';
+    invalidate();
+  }
+
   function renderAccountHubSubtab({ key, label, icon, active, onSelect }) {
     const btn = D.createElement('button');
     btn.type = 'button';
@@ -1218,6 +1306,7 @@
   function accountCssText(skin = {}) {
     const skinCls = skin.CLS || CLS || 'cgxui-cnhb';
     const panelSel = skin.panelSel || `[data-cgxui="${skin.UI_CHUB_PANEL || 'cnhb-panel'}"][data-cgxui-owner="${skin.SkID || 'cnhb'}"]`;
+    const stateAttr = skin.ATTR_CGXUI_STATE || ATTR_CGXUI_STATE || 'data-cgxui-state';
     return `
 ${panelSel} .${skinCls}-acctSecurity{
   display:grid;
@@ -1262,6 +1351,11 @@ ${panelSel} .${skinCls}-acctControlRow{
   min-width:0;
 }
 ${panelSel} .${skinCls}-acctControls{
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box;
+  overflow:visible;
   border-top:0 !important;
   padding-top:0 !important;
 }
@@ -1319,6 +1413,65 @@ ${panelSel} .${skinCls}-acctField input{
 ${panelSel} .${skinCls}-acctField input:focus{
   border-color:rgba(120,210,255,.62);
   box-shadow:0 0 0 2px rgba(56,189,248,.12);
+}
+${panelSel} .${skinCls}-acctAvatarField{
+  display:grid;
+  gap:7px;
+  min-width:0;
+}
+${panelSel} .${skinCls}-acctAvatarLabel{
+  font-size:11px;
+  color:rgba(255,255,255,.72);
+}
+${panelSel} .${skinCls}-acctAvatarGrid{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:8px;
+}
+${panelSel} .${skinCls}-acctAvatarSwatch{
+  min-width:0;
+  height:36px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-start;
+  gap:8px;
+  padding:6px 9px;
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.12);
+  background:linear-gradient(135deg, rgba(255,255,255,.07), rgba(255,255,255,.028));
+  color:#f4f6fb;
+  cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08);
+}
+${panelSel} .${skinCls}-acctAvatarSwatch:hover{
+  border-color:rgba(255,255,255,.22);
+  background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
+}
+${panelSel} .${skinCls}-acctAvatarSwatch[${stateAttr}="active"]{
+  border-color:rgba(255,220,150,.50);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255,224,160,.18), transparent 45%),
+    linear-gradient(135deg, rgba(255,255,255,.11), rgba(255,255,255,.035));
+  box-shadow:
+    0 0 0 1px rgba(255,220,150,.14) inset,
+    0 8px 18px rgba(0,0,0,.22);
+}
+${panelSel} .${skinCls}-acctAvatarDot{
+  width:18px;
+  height:18px;
+  flex:0 0 18px;
+  border-radius:999px;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.30) inset,
+    0 3px 8px rgba(0,0,0,.32);
+}
+${panelSel} .${skinCls}-acctAvatarName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:11px;
+  font-weight:620;
 }
 ${panelSel} .${skinCls}-acctPasswordRow{
   display:grid;
@@ -1407,6 +1560,7 @@ ${panelSel} .${skinCls}-acctStatus[data-tone="error"]{
       }
       const skin = typeof api.getSkin === 'function' ? api.getSkin() : null;
       CLS = skin?.CLS || CLS;
+      ATTR_CGXUI_STATE = skin?.ATTR_CGXUI_STATE || ATTR_CGXUI_STATE;
       api.registerPlugin({
         key: 'account',
         title: 'Account',
@@ -1426,6 +1580,7 @@ ${panelSel} .${skinCls}-acctStatus[data-tone="error"]{
 
   register();
   W.addEventListener(EV_CHUB_READY_V1, register, true);
+  W.addEventListener(EV_ACCOUNT_OPEN_PROFILE, () => openProfileSubtab(), true);
   W.addEventListener('billing:ready', () => {
     bindBillingInvalidation(LAST_API);
     if (ACCOUNT_SUBTAB === 'billing') BILLING_REFRESH_REQUESTED = false;
