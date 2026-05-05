@@ -59,6 +59,7 @@ export interface IdentityContextValue {
   listDeviceSessions(): Promise<ListDeviceSessionsResult>;
   signInWithGoogle(): Promise<IdentitySnapshot>;
   signInWithApple(): Promise<IdentitySnapshot>;
+  setAvatarPath(path: string | null): Promise<IdentitySnapshot>;
   /**
    * Returns the current access token at call time (or null if signed out).
    * Provided so adjacent surfaces (e.g., billing) can authenticate against
@@ -257,6 +258,11 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     [runAction]
   );
 
+  const setAvatarPath = useCallback(
+    (path: string | null) => runAction((identityProvider) => identityProvider.setAvatarPath(path)),
+    [runAction]
+  );
+
   // Read at call time via the providerRef (not captured at render time) so
   // post-refresh tokens are visible to consumers without re-rendering.
   const getAccessToken = useCallback((): string | null => {
@@ -334,6 +340,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
       listDeviceSessions,
       signInWithGoogle,
       signInWithApple,
+      setAvatarPath,
       getAccessToken,
     };
   }, [
@@ -348,6 +355,7 @@ export function IdentityProvider({ children }: IdentityProviderProps) {
     registerDeviceSession,
     renameWorkspace,
     requestRecoveryCode,
+    setAvatarPath,
     setPasswordAfterRecovery,
     signInWithApple,
     signInWithEmail,

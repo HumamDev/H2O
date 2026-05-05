@@ -16,6 +16,13 @@ export const GOOGLE_OAUTH_VERIFIED = true;
 // is iOS-only.
 export const APPLE_OAUTH_VERIFIED = false;
 
+// Phase 5.0M profile avatar upload — dormant by default. Flip to true ONLY after
+// the live-iPhone QA matrix passes (see Phase 5.0M closeout doc, future commit).
+// While false, the Change/Remove avatar controls are hidden on the account
+// screen; the provider method exists but is unreachable from the UI. Picker
+// uses NSPhotoLibraryUsageDescription; library only, no camera.
+export const AVATAR_UPLOAD_VERIFIED = false;
+
 const _url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const _anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 

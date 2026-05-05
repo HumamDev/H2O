@@ -257,6 +257,13 @@ export class MockLocalIdentityProvider implements IdentityProvider {
     );
   }
 
+  async setAvatarPath(_path: string | null): Promise<IdentitySnapshot> {
+    return this.fail(
+      createIdentityError('identity/avatar-not-supported', 'Avatar uploads are not available in the local mock provider.'),
+      'identity/avatar-not-supported'
+    );
+  }
+
   async renameWorkspace(name: string): Promise<IdentitySnapshot> {
     try {
       if (!this.snapshot.workspace) throw createIdentityError('identity/no-workspace', 'No workspace exists to rename.');

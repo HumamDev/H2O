@@ -505,6 +505,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
     const workspaceId =
       this.stringField(profile, 'workspaceId', 'workspace_id') || workspaceIdFallback;
     const avatarColor = this.stringField(profile, 'avatarColor', 'avatar_color');
+    const avatarPath = this.stringField(profile, 'avatarPath', 'avatar_path');
 
     return {
       id,
@@ -513,6 +514,7 @@ export class MobileSupabaseProvider implements IdentityProvider {
       emailVerified: true,
       displayName,
       ...(avatarColor ? { avatarColor } : {}),
+      avatarPath: avatarPath || null,
       workspaceId,
       onboardingCompleted: this.booleanField(profile, 'onboardingCompleted', 'onboarding_completed'),
       createdAt: this.timestampField(profile, 'createdAt', 'created_at'),
@@ -1024,6 +1026,56 @@ export class MobileSupabaseProvider implements IdentityProvider {
     } catch (error) {
       // Use failSoft so a failed workspace rename preserves signed-in status.
       return this.failSoft(error, 'identity/rename-workspace-failed');
+    }
+  }
+
+  async setAvatarPath(path: string | null): Promise<IdentitySnapshot> {
+    const config = getMobileSupabaseConfig();
+    if (!config) {
+      return this.failSoft(
+        createIdentityError('identity/provider-not-configured', 'Supabase config is not available.'),
+        'identity/provider-not-configured'
+      );
+    }
+    try {
+      if (!this.accessToken) {
+        throw createIdentityError('identity/no-session', 'No active session. Sign in first.');
+      }
+      if (!this.snapshot.profile) {
+        throw createIdentityError('identity/no-profile', 'No profile exists to update.');
+      }
+
+      const cleanPath = typeof path === 'string' ? path.trim() : '';
+      const sendValue = cleanPath || null;
+
+      const authedClient = this.getAuthedClient(config);
+      // Match SQL: update_identity_avatar_path(p_avatar_path text). The RPC
+      // returns { avatarPath } only — patch onto snapshot.profile rather than
+      // re-fetching full identity state.
+      const { data: rpcData, error: rpcError } = await authedClient.rpc('update_identity_avatar_path', {
+        p_avatar_path: sendValue,
+      });
+      if (rpcError) throw rpcError;
+
+      const responseRecord = this.asRecord(rpcData);
+      const newAvatarPath = this.stringField(responseRecord, 'avatarPath', 'avatar_path');
+      const patchedProfile: H2OProfile = {
+        ...this.snapshot.profile,
+        avatarPath: newAvatarPath || null,
+        updatedAt: nowIso(),
+      };
+
+      this.snapshot = {
+        ...this.snapshot,
+        profile: patchedProfile,
+        lastError: null,
+        updatedAt: nowIso(),
+      };
+      try { await writeSnapshot(this.snapshot); } catch { /* non-fatal */ }
+      return this.getSnapshot();
+    } catch (error) {
+      // failSoft so a failed avatar update preserves signed-in status.
+      return this.failSoft(error, 'identity/set-avatar-path-failed');
     }
   }
 

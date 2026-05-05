@@ -45,6 +45,7 @@ export interface H2OProfile {
   emailVerified: boolean;
   displayName: string;
   avatarColor?: string;
+  avatarPath?: string | null;
   workspaceId: string;
   onboardingCompleted: boolean;
   createdAt: string;
@@ -172,6 +173,7 @@ export interface IdentityProvider {
   listDeviceSessions(): Promise<ListDeviceSessionsResult>;
   signInWithGoogle(): Promise<IdentitySnapshot>;
   signInWithApple(): Promise<IdentitySnapshot>;
+  setAvatarPath(path: string | null): Promise<IdentitySnapshot>;
 }
 
 export type IdentityChangeSource =
@@ -196,7 +198,8 @@ export type IdentityChangeSource =
   | 'changePassword'
   | 'renameWorkspace'
   | 'signInWithGoogle'
-  | 'signInWithApple';
+  | 'signInWithApple'
+  | 'setAvatarPath';
 
 export interface IdentityChangeEvent {
   source: IdentityChangeSource;

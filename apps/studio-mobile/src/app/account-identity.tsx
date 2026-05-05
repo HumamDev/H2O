@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { SymbolView } from 'expo-symbols';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -30,9 +31,16 @@ import {
   COCKPIT_BG_HOVER,
   COCKPIT_BG_RAISED,
 } from '@/components/cockpit/tokens';
+import { UserAvatar } from '@/components/common';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
-import { APPLE_OAUTH_VERIFIED, GOOGLE_OAUTH_VERIFIED, RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
+import { uploadAvatarFromLocalUri, deleteAvatarObject, AvatarUploadError } from '@/identity/avatarUpload';
+import {
+  APPLE_OAUTH_VERIFIED,
+  AVATAR_UPLOAD_VERIFIED,
+  GOOGLE_OAUTH_VERIFIED,
+  RECOVERY_FLOW_VERIFIED,
+} from '@/identity/mobileConfig';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
@@ -52,14 +60,6 @@ const PROFILE_AVATAR_PALETTE = [
   { key: 'amber',  color: '#D97706' },
   { key: 'pink',   color: '#DB2777' },
 ] as const;
-
-function resolveAvatarSwatch(slug: string | null | undefined): string | null {
-  if (!slug) return null;
-  const trimmed = slug.trim();
-  if (!trimmed) return null;
-  const entry = PROFILE_AVATAR_PALETTE.find((e) => e.key === trimmed);
-  return entry ? entry.color : null;
-}
 
 type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
 type SignInTab = 'sign_in' | 'create_account';
@@ -133,6 +133,17 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/apple-token-invalid': 'Apple sign-in returned an invalid response.',
   'identity/apple-not-available': 'Apple sign-in is not available on this device.',
   'identity/apple-not-supported': 'Apple sign-in is not available in this build.',
+  // Avatar upload (5.0M) specific:
+  'avatar/permission-denied': 'Photo library access is required. Enable it in Settings → Cockpit Pro → Photos.',
+  'avatar/picker-failed': "Couldn't open the photo picker. Try again.",
+  'avatar/no-config': 'Avatar uploads are unavailable in this build.',
+  'avatar/no-user': 'Profile is unavailable.',
+  'avatar/no-session': 'Please sign in to update your avatar.',
+  'avatar/no-uri': 'Image could not be read. Try a different photo.',
+  'avatar/too-large': "That photo is too large after compression. Try a smaller image.",
+  'avatar/upload-failed': "Couldn't upload the photo. Check your connection and try again.",
+  'identity/set-avatar-path-failed': "Couldn't save your new avatar. Try again.",
+  'identity/avatar-not-supported': 'Avatar uploads are not available in this build.',
 };
 
 function friendlyErrorCopy(code: string | null | undefined): string | null {
@@ -169,14 +180,6 @@ function formatLastActive(iso: string): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)}d ago`;
   return new Date(ts).toLocaleDateString();
-}
-
-function initialsOf(displayName?: string | null, email?: string | null): string {
-  const source = (displayName?.trim() || email?.trim() || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim();
-  if (!source) return '•';
-  const parts = source.split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return source.slice(0, 2).toUpperCase();
 }
 
 export default function AccountIdentityScreen() {
@@ -242,6 +245,13 @@ export default function AccountIdentityScreen() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [sessionsLoadedOnce, setSessionsLoadedOnce] = useState(false);
+
+  // Avatar upload state (Phase 5.0M, signed-in only). pendingAvatarUri holds
+  // the picker output during the brief upload window so UserAvatar shows the
+  // local image instantly; cleared once setAvatarPath resolves (success or
+  // failure). avatarError is shown inline beneath the avatar block.
+  const [pendingAvatarUri, setPendingAvatarUri] = useState<string | null>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const snapshot = identity.snapshot;
   const pendingCodeKind: PendingCodeKind | null =
@@ -379,16 +389,30 @@ export default function AccountIdentityScreen() {
           gap: spacing.md,
         },
         accountTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-        avatar: {
-          width: 64,
-          height: 64,
-          borderRadius: 32,
+        avatarActions: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+        avatarButton: {
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          borderRadius: 999,
+          backgroundColor: th.backgroundSelected,
+          minHeight: 36,
           alignItems: 'center',
           justifyContent: 'center',
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: th.backgroundSelected,
+          minWidth: 96,
         },
-        avatarInitials: { fontSize: 22, fontWeight: '700' },
+        avatarButtonText: { ...typography.caption, color: th.text, fontWeight: '600' },
+        avatarButtonGhost: {
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.sm,
+          borderRadius: 999,
+          minHeight: 36,
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 96,
+        },
+        avatarButtonGhostText: { ...typography.caption, color: th.textSecondary, fontWeight: '600' },
+        avatarButtonDisabled: { opacity: 0.5 },
+        avatarError: { ...typography.caption, color: DANGER },
         accountText: { flex: 1, gap: 3 },
         accountTitle: { ...typography.title, color: th.text },
         accountSubtitle: { ...typography.body, color: th.textSecondary },
@@ -799,13 +823,6 @@ export default function AccountIdentityScreen() {
     const workspace = snapshot.workspace;
     const displayName = profile?.displayName || 'Your account';
     const realEmail = profile?.email || snapshot.pendingEmail || '';
-    const initials = initialsOf(profile?.displayName, realEmail);
-    // profile.avatarColor is a slug (per Supabase schema); map slug → hex for rendering.
-    // Unknown / missing slugs fall back to the scheme-aware neutral background so the
-    // header never renders an arbitrary CSS-color-name accidentally.
-    const avatarHex = resolveAvatarSwatch(profile?.avatarColor);
-    const avatarBg = avatarHex ?? (th.scheme === 'light' ? '#fff' : th.backgroundSelected);
-    const avatarInitialsColor = avatarHex ? '#fff' : th.text;
 
     const canSubmitChangePassword = Boolean(
       currentPassword.trim() && newPassword.trim() && confirmNewPassword.trim()
@@ -1025,6 +1042,99 @@ export default function AccountIdentityScreen() {
       }
     }
 
+    // ── Avatar handlers (Phase 5.0M) ─────────────────────────────────────
+    // Two-phase: pick → upload (Storage REST) → setAvatarPath (RPC).
+    // Best-effort delete of the previous file happens inside uploadAvatar.
+    async function handlePickAvatar() {
+      if (busy) return;
+      if (!profile?.userId) return;
+
+      setAvatarError(null);
+
+      // Permission gate. iOS shows the prompt the first time; subsequent
+      // refusals require the user to flip it in Settings.
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setAvatarError('avatar/permission-denied');
+        return;
+      }
+
+      let pickerResult: ImagePicker.ImagePickerResult;
+      try {
+        pickerResult = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 1,
+        });
+      } catch {
+        setAvatarError('avatar/picker-failed');
+        return;
+      }
+      if (pickerResult.canceled || !pickerResult.assets?.[0]?.uri) return;
+
+      const localUri = pickerResult.assets[0].uri;
+      setPendingAvatarUri(localUri);
+      setBusy('avatar_upload');
+      try {
+        const accessToken = identity.getAccessToken();
+        if (!accessToken) {
+          setAvatarError('avatar/no-session');
+          return;
+        }
+        const { path } = await uploadAvatarFromLocalUri({
+          uri: localUri,
+          userId: profile.userId,
+          accessToken,
+          previousPath: profile.avatarPath ?? null,
+        });
+        const result = await identity.setAvatarPath(path);
+        if (result.lastError) {
+          // failSoft preserved signed-in status; surface the friendly copy.
+          setAvatarError(result.lastError.code);
+          return;
+        }
+      } catch (err) {
+        const code = err instanceof AvatarUploadError ? err.code : 'avatar/upload-failed';
+        setAvatarError(code);
+      } finally {
+        setPendingAvatarUri(null);
+        setBusy(null);
+      }
+    }
+
+    async function handleRemoveAvatar() {
+      if (busy) return;
+      if (!profile?.avatarPath) return;
+      setAvatarError(null);
+      setBusy('avatar_remove');
+      // Capture BEFORE the metadata clear; once setAvatarPath(null) commits,
+      // snapshot.profile.avatarPath becomes null and we'd lose the orphan
+      // pointer otherwise.
+      const previousPath = profile.avatarPath;
+      const accessToken = identity.getAccessToken();
+      try {
+        const result = await identity.setAvatarPath(null);
+        if (result.lastError) {
+          setAvatarError(result.lastError.code);
+          return;
+        }
+        // DB metadata cleared. Best-effort delete the now-orphaned Storage
+        // object so the bucket doesn't accumulate dead files. Failure is
+        // intentionally swallowed inside deleteAvatarObject — the user-facing
+        // remove already succeeded.
+        if (previousPath && accessToken) {
+          await deleteAvatarObject({ path: previousPath, accessToken });
+        }
+      } finally {
+        setBusy(null);
+      }
+    }
+
+    const avatarErrorCopy = friendlyErrorCopy(avatarError);
+    const avatarBusy = busy === 'avatar_upload' || busy === 'avatar_remove';
+    const hasAvatarImage = Boolean(profile?.avatarPath);
+
     return (
       <SafeAreaView style={styles.safe} edges={[]}>
         <KeyboardAvoidingView
@@ -1039,11 +1149,12 @@ export default function AccountIdentityScreen() {
             keyboardShouldPersistTaps="handled">
             <View style={styles.accountPanel}>
               <View style={styles.accountTop}>
-                <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
-                  <Text style={[styles.avatarInitials, { color: avatarInitialsColor }]}>
-                    {initials}
-                  </Text>
-                </View>
+                <UserAvatar
+                  size={64}
+                  displayName={displayName}
+                  email={realEmail}
+                  pendingLocalUri={pendingAvatarUri}
+                />
                 <View style={styles.accountText}>
                   <Text style={styles.accountTitle} numberOfLines={1}>
                     {displayName}
@@ -1053,6 +1164,41 @@ export default function AccountIdentityScreen() {
                   </Text>
                 </View>
               </View>
+              {AVATAR_UPLOAD_VERIFIED ? (
+                <View style={styles.avatarActions}>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={hasAvatarImage ? 'Change profile picture' : 'Add profile picture'}
+                    style={[styles.avatarButton, avatarBusy && styles.avatarButtonDisabled]}
+                    onPress={handlePickAvatar}
+                    disabled={avatarBusy}>
+                    {avatarBusy && busy === 'avatar_upload' ? (
+                      <ActivityIndicator size="small" color={th.text} />
+                    ) : (
+                      <Text style={styles.avatarButtonText}>
+                        {hasAvatarImage ? 'Change' : 'Add photo'}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  {hasAvatarImage ? (
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Remove profile picture"
+                      style={[styles.avatarButtonGhost, avatarBusy && styles.avatarButtonDisabled]}
+                      onPress={handleRemoveAvatar}
+                      disabled={avatarBusy}>
+                      {avatarBusy && busy === 'avatar_remove' ? (
+                        <ActivityIndicator size="small" color={th.textSecondary} />
+                      ) : (
+                        <Text style={styles.avatarButtonGhostText}>Remove</Text>
+                      )}
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
+              {avatarErrorCopy ? (
+                <Text style={styles.avatarError}>{avatarErrorCopy}</Text>
+              ) : null}
               <View style={styles.statusPill}>
                 <Text style={styles.statusPillText}>Signed in</Text>
               </View>
