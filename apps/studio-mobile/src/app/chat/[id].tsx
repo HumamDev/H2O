@@ -24,11 +24,13 @@ import {
 import { useMiniMap } from '@/hooks/useMiniMap';
 import { useMiniMapTurns } from '@/hooks/useMiniMapTurns';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot } from '@/state/archive';
 import { closeMiniMap } from '@/state/minimap';
 import type { ArchiveMessage, CategoryCatalogRecord, CategoryRecord } from '@/types/archive';
 
 export default function ArchiveChatScreen() {
+  const guard = useRouteGuard('sync_ready');
   const { id } = useLocalSearchParams<{ id: string }>();
   const chatId = id ?? '';
   const state = useArchiveChat(chatId);
@@ -98,6 +100,7 @@ export default function ArchiveChatScreen() {
     });
   }
 
+  if (guard) return guard;
   if (state.status === 'hydrating') {
     return (
       <View style={[styles.centered, { backgroundColor: th.background }]}>

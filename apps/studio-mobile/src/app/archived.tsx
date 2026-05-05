@@ -9,6 +9,7 @@ import { filterChats } from '@/features/library';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
 import { unarchiveArchiveChat } from '@/features/library/mutations';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { spacing } from '@/theme';
 import type { Chat } from '@/types/library';
@@ -39,6 +40,7 @@ function openArchivedChatActions(chat: Chat): void {
 }
 
 export default function ArchivedScreen() {
+  const guard = useRouteGuard('sync_ready');
   const [query, setQuery] = useState('');
   const archiveStore = useSyncExternalStore(subscribeArchiveStore, getArchiveStoreSnapshot);
   const th = useTheme();
@@ -64,6 +66,7 @@ export default function ArchivedScreen() {
     },
   }), [th.background, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <View style={styles.safe}>
       <ScrollView

@@ -10,6 +10,7 @@ import { filterFolders } from '@/features/library';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
 import { createArchiveFolder } from '@/features/library/mutations';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { getFolderSortMode, setFolderSortMode, subscribeFolderSort } from '@/state/folders';
 import { spacing, typography } from '@/theme';
@@ -68,6 +69,7 @@ function openFolderActions(folderSortMode: FolderSortMode) {
 }
 
 export default function FoldersListScreen() {
+  const guard = useRouteGuard('sync_ready');
   const archiveStore = useSyncExternalStore(subscribeArchiveStore, getArchiveStoreSnapshot);
   const folderSortMode = useSyncExternalStore(subscribeFolderSort, getFolderSortMode);
   const [query, setQuery] = useState('');
@@ -141,6 +143,7 @@ export default function FoldersListScreen() {
     },
   }), [th.background, th.backgroundElement, th.text, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <ScrollView

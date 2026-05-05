@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
@@ -16,6 +17,7 @@ function maskEmail(email?: string | null): string {
 }
 
 export default function IdentityDebugScreen() {
+  const guard = useRouteGuard('signed_in');
   const th = useTheme();
   const identity = useIdentity();
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
@@ -154,6 +156,7 @@ export default function IdentityDebugScreen() {
     );
   }
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <ScrollView contentContainerStyle={[styles.content, { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding }]}>

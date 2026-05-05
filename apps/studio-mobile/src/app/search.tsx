@@ -1,7 +1,10 @@
 import React from 'react';
 import { PlaceholderScreen } from '@/components/common/PlaceholderScreen';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 
 export default function SearchScreen() {
+  const guard = useRouteGuard('sync_ready');
+  if (guard) return guard;
   return (
     <PlaceholderScreen
       title="Search"

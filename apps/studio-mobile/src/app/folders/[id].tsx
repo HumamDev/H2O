@@ -8,10 +8,12 @@ import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { deriveCanonicalFolders, getChatsForFolder, getUnfiledChats, isUnfiledFolderId, UNFILED_FOLDER_ID } from '@/features/folders';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { spacing, typography } from '@/theme';
 
 export default function FolderDetailScreen() {
+  const guard = useRouteGuard('sync_ready');
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
   const folderId = Array.isArray(id) ? (id[0] ?? '') : (id ?? '');
   const archiveStore = useSyncExternalStore(subscribeArchiveStore, getArchiveStoreSnapshot);
@@ -86,6 +88,7 @@ export default function FolderDetailScreen() {
     },
   }), [th.background, th.backgroundElement, th.text, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <ScrollView

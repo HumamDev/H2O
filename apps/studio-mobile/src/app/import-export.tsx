@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { exportArchiveBundle } from '@/exporters/archive-bundle';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { mergeArchiveBundleIntoStore, normalizeArchiveBundle } from '@/importers/archive-bundle';
 import { getArchiveStoreSnapshot, replaceArchiveStore } from '@/state/archive';
 import { loadWebDAVSyncSettings, type WebDAVSyncSettingsInput } from '@/storage/sync-creds';
@@ -47,6 +48,7 @@ interface WebDAVFormState {
 // ---------------------------------------------------------------------------
 
 export default function ImportExportScreen() {
+  const guard = useRouteGuard('sync_ready');
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
 
   const [jsonInput, setJsonInput] = useState('');
@@ -184,6 +186,7 @@ export default function ImportExportScreen() {
     }
   }, [webdavSettings]);
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <KeyboardAvoidingView

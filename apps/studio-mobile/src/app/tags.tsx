@@ -26,6 +26,7 @@ import {
   type CanonicalTagSummary,
 } from '@/features/tags';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { spacing, typography } from '@/theme';
 
@@ -113,6 +114,7 @@ function openTagActions(tag: string, existingTags: string[]): void {
 }
 
 export default function TagsScreen() {
+  const guard = useRouteGuard('sync_ready');
   const archiveStore = useSyncExternalStore(subscribeArchiveStore, getArchiveStoreSnapshot);
   const [query, setQuery] = useState('');
   const th = useTheme();
@@ -198,6 +200,7 @@ export default function TagsScreen() {
     },
   }), [th.accent, th.background, th.backgroundElement, th.backgroundSelected, th.text, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <ScrollView

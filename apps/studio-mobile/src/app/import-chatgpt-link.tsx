@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { promoteImportedChatToArchive } from '@/importers/imported-chat-archive';
 import { colors, spacing, typography } from '@/theme';
 import type { ImportedChat } from '@/types/import-chatgpt-link';
@@ -28,6 +29,7 @@ import {
 } from '@/utils/chatgpt-link';
 
 export default function ImportChatGPTLinkScreen() {
+  const guard = useRouteGuard('sync_ready');
   const router = useRouter();
   const { url: urlParam } = useLocalSearchParams<{ url?: string | string[] }>();
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
@@ -109,6 +111,7 @@ export default function ImportChatGPTLinkScreen() {
     void runImport(url);
   }
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <KeyboardAvoidingView

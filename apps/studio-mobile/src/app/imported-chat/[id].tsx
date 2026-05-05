@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getImportedChatById, subscribe, updateImportedChat } from '@/state/imported-chats';
 import { spacing, typography } from '@/theme';
 import type { ImportedChat, ImportedTurn } from '@/types/import-chatgpt-link';
@@ -29,6 +30,7 @@ import {
 type Th = ReturnType<typeof useTheme>;
 
 export default function ImportedChatScreen() {
+  const guard = useRouteGuard('sync_ready');
   const { id, autoFetch } = useLocalSearchParams<{ id: string; autoFetch?: string | string[] }>();
 
   const chat = useSyncExternalStore(subscribe, () => getImportedChatById(id));
@@ -166,6 +168,7 @@ export default function ImportedChatScreen() {
     </View>
   );
 
+  if (guard) return guard;
   if (hasTranscript) {
     return (
       <View style={styles.safe}>

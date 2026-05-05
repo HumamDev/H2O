@@ -8,6 +8,7 @@ import { useBilling } from '@/billing/BillingContext';
 import { MOBILE_BILLING_VERIFIED } from '@/billing/billingConfig';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { useTheme } from '@/hooks/use-theme';
 import {
   getAppearanceMode,
@@ -53,6 +54,7 @@ function maskEmail(email?: string | null): string {
 }
 
 export default function SettingsScreen() {
+  const guard = useRouteGuard('signed_in');
   const th = useTheme();
   const identity = useIdentity();
   const billing = useBilling();
@@ -227,6 +229,7 @@ export default function SettingsScreen() {
     );
   }
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
       <ScrollView contentContainerStyle={[styles.content, { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding }]}>

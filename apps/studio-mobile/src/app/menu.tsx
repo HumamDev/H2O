@@ -5,12 +5,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 
 export default function MenuScreen() {
+  const guard = useRouteGuard('signed_in');
   const router = useRouter();
   const th = useTheme();
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
 
+  if (guard) return guard;
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: th.background }]} edges={[]}>
       <View style={[styles.inner, { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding }]}>

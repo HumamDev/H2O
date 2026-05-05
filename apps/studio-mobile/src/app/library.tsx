@@ -19,6 +19,7 @@ import {
 } from '@/features/library/mutations';
 import { formatTagsForInput, parseTagInput } from '@/features/tags';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { getFolderSortMode, subscribeFolderSort } from '@/state/folders';
 import { spacing } from '@/theme';
@@ -113,6 +114,7 @@ function openChatActions(chat: Chat, folders: Folder[]): void {
 }
 
 export default function LibraryScreen() {
+  const guard = useRouteGuard('sync_ready');
   const [query, setQuery] = useState('');
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const { tag: tagParam } = useLocalSearchParams<{ tag?: string }>();
@@ -166,6 +168,7 @@ export default function LibraryScreen() {
     tagFilterClear: { fontSize: 13, color: th.textSecondary },
   }), [th.background, th.backgroundElement, th.text, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <View style={styles.safe}>
       <ScrollView

@@ -8,10 +8,12 @@ import { readLabelCatalogRecords } from '@/features/labels';
 import { filterChats } from '@/features/library';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
 import { useTheme } from '@/hooks/use-theme';
+import { useRouteGuard } from '@/identity/useRouteGuard';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { spacing } from '@/theme';
 
 export default function PinnedScreen() {
+  const guard = useRouteGuard('sync_ready');
   const [query, setQuery] = useState('');
   const archiveStore = useSyncExternalStore(subscribeArchiveStore, getArchiveStoreSnapshot);
   const th = useTheme();
@@ -37,6 +39,7 @@ export default function PinnedScreen() {
     },
   }), [th.background, th.textSecondary]);
 
+  if (guard) return guard;
   return (
     <View style={styles.safe}>
       <ScrollView
