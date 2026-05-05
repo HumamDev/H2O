@@ -5,7 +5,7 @@ import { useColorScheme, View } from 'react-native';
 
 import { AppTopBar, type TopBarLeftAction, type TopBarRightAction } from '../components/navigation/AppTopBar';
 import { Sidebar } from '../components/navigation/Sidebar';
-import { IdentityProvider } from '@/identity/IdentityContext';
+import { IdentityProvider, useIdentity } from '@/identity/IdentityContext';
 import { initArchiveStore } from '@/state/archive';
 import { initImportedChatsStore } from '@/state/imported-chats';
 import {
@@ -85,10 +85,43 @@ export default function RootLayout() {
             <Stack.Screen name="menu" options={{ headerShown: false }} />
             <Stack.Screen name="debug" options={{ headerShown: false }} />
           </Stack>
-          {topBarConfig ? <AppTopBar title={topBarConfig.title} leftAction={topBarConfig.leftAction} rightAction={topBarConfig.rightAction} /> : null}
-          <Sidebar visible={sidebarOpen} />
+          <RootChromeOverlay pathname={pathname} topBarConfig={topBarConfig} sidebarOpen={sidebarOpen} />
         </View>
       </IdentityProvider>
     </ThemeProvider>
+  );
+}
+
+// Renders the global shell (top bar + sidebar). Lives inside IdentityProvider
+// so it can read identity state. The sole identity-aware decision is to hide
+// the global header on the signed-out /account-identity entry — that screen is
+// a premium standalone landing/auth surface and renders its own brand header.
+// Signed-in /account-identity (account management opened from Settings) keeps
+// the header so users can navigate back.
+function RootChromeOverlay({
+  pathname,
+  topBarConfig,
+  sidebarOpen,
+}: {
+  pathname: string;
+  topBarConfig: ReturnType<typeof getTopBarConfig>;
+  sidebarOpen: boolean;
+}) {
+  const identity = useIdentity();
+  const suppressForSignedOutEntry =
+    pathname === '/account-identity' && !identity.isSignedIn;
+  const effectiveTopBar = suppressForSignedOutEntry ? null : topBarConfig;
+
+  return (
+    <>
+      {effectiveTopBar ? (
+        <AppTopBar
+          title={effectiveTopBar.title}
+          leftAction={effectiveTopBar.leftAction}
+          rightAction={effectiveTopBar.rightAction}
+        />
+      ) : null}
+      <Sidebar visible={sidebarOpen} />
+    </>
   );
 }

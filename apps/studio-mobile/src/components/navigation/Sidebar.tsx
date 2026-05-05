@@ -7,6 +7,7 @@ import { FolderIcon, openFolderActions } from '@/components/library';
 import { deriveCanonicalFolders } from '@/features/folders';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
 import { collectCanonicalTagSummaries } from '@/features/tags';
+import { useIdentity } from '@/identity/IdentityContext';
 import { useTheme } from '@/hooks/use-theme';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { getFolderSortMode, subscribeFolderSort } from '@/state/folders';
@@ -15,6 +16,26 @@ import { spacing } from '@/theme';
 
 const SIDEBAR_WIDTH = 304;
 const SIDEBAR_HIDDEN_OFFSET = SIDEBAR_WIDTH + 48;
+const ACCOUNT_PILL_RESERVE = 80;
+
+// Mirrors PROFILE_AVATAR_PALETTE in account-identity.tsx — slugs are the
+// canonical Supabase profile.avatar_color values; hex values are render-only.
+const SIDEBAR_AVATAR_PALETTE: Record<string, string> = {
+  violet: '#7C3AED',
+  blue: '#2563EB',
+  cyan: '#0891B2',
+  green: '#059669',
+  amber: '#D97706',
+  pink: '#DB2777',
+};
+
+function sidebarInitialsFrom(name?: string | null, email?: string | null): string {
+  const source = (name?.trim() || email?.trim() || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim();
+  if (!source) return '•';
+  const parts = source.split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return source.slice(0, 2).toUpperCase();
+}
 
 const NAV_ITEMS = [
   {
@@ -47,11 +68,8 @@ const NAV_ITEMS = [
     href: '/archived',
     icon: { ios: 'archivebox.fill', android: 'archive', web: 'archive' },
   },
-  {
-    label: 'Settings',
-    href: '/settings',
-    icon: { ios: 'gearshape.fill', android: 'settings', web: 'settings' },
-  },
+  // Settings has its own floating account pill in the lower-left of the sidebar
+  // (rendered only when signed-in). No nav row here to keep the list compact.
 ] as const;
 
 interface SidebarProps {
@@ -60,12 +78,24 @@ interface SidebarProps {
 
 export function Sidebar({ visible }: SidebarProps) {
   const th = useTheme();
+  const identity = useIdentity();
   const { top, bottom } = useSafeAreaInsets();
   const pathname = usePathname();
   const folderSortMode = useSyncExternalStore(subscribeFolderSort, getFolderSortMode);
   const translateX = useRef(new Animated.Value(-SIDEBAR_HIDDEN_OFFSET)).current;
   const opacity = useRef(new Animated.Value(0)).current;
-  const isDarkSurface = th.scheme !== 'light';
+
+  // Floating account pill — visible only when signed in. Falls back gracefully
+  // if profile hasn't synced yet (uses pendingEmail / "Account").
+  const profile = identity.snapshot.profile;
+  const accountEmail = profile?.email ?? identity.snapshot.pendingEmail ?? '';
+  const accountLocalPart = accountEmail.split('@')[0] ?? '';
+  const accountDisplayName =
+    profile?.displayName?.trim() || accountLocalPart || 'Account';
+  const accountInitials = sidebarInitialsFrom(profile?.displayName, accountEmail);
+  const accountAvatarHex = profile?.avatarColor
+    ? SIDEBAR_AVATAR_PALETTE[profile.avatarColor] ?? null
+    : null;
 
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const folderChevronAnim = useRef(new Animated.Value(0)).current;
@@ -146,13 +176,13 @@ export function Sidebar({ visible }: SidebarProps) {
       bottom: 0,
       left: 0,
       width: SIDEBAR_WIDTH,
-      backgroundColor: isDarkSurface ? '#1f1f21' : '#f6f7fa',
+      backgroundColor: th.background,
       borderTopRightRadius: 40,
       borderBottomRightRadius: 40,
       borderTopLeftRadius: 0,
       borderBottomLeftRadius: 0,
       borderRightWidth: StyleSheet.hairlineWidth,
-      borderRightColor: isDarkSurface ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)',
+      borderRightColor: th.hairline,
       overflow: 'hidden',
       paddingTop: top + spacing.lg + 6,
       paddingBottom: bottom + spacing.md,
@@ -166,14 +196,15 @@ export function Sidebar({ visible }: SidebarProps) {
     scrollContent: {
       gap: spacing.md,
       paddingHorizontal: spacing.md + 4,
-      paddingBottom: bottom + spacing.lg,
+      // Reserve room so the last nav item is never hidden behind the account pill.
+      paddingBottom: bottom + spacing.lg + (identity.isSignedIn ? ACCOUNT_PILL_RESERVE : 0),
     },
     brandWrap: {
       paddingHorizontal: spacing.sm,
       paddingBottom: spacing.md,
       marginBottom: spacing.sm,
       borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: isDarkSurface ? 'rgba(255,255,255,0.07)' : 'rgba(15,23,42,0.08)',
+      borderBottomColor: th.hairline,
     },
     drawerTitle: {
       fontSize: 30,
@@ -197,7 +228,7 @@ export function Sidebar({ visible }: SidebarProps) {
       borderRadius: 20,
     },
     itemActive: {
-      backgroundColor: isDarkSurface ? '#090909' : '#e8ebf3',
+      backgroundColor: th.accentSoft,
     },
     itemIconWrap: {
       width: 40,
@@ -205,12 +236,12 @@ export function Sidebar({ visible }: SidebarProps) {
       borderRadius: 20,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: isDarkSurface ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.04)',
+      backgroundColor: th.backgroundElement,
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: isDarkSurface ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.06)',
+      borderColor: th.hairline,
     },
     itemLabel: { fontSize: 18, lineHeight: 24, color: th.text, fontWeight: '500' },
-    itemLabelActive: { color: th.text, fontWeight: '600' },
+    itemLabelActive: { color: th.accent, fontWeight: '600' },
     folderChevron: {
       fontSize: 18,
       color: th.textSecondary,
@@ -258,7 +289,41 @@ export function Sidebar({ visible }: SidebarProps) {
       color: th.textSecondary,
       lineHeight: 20,
     },
-  }), [bottom, isDarkSurface, th.text, th.textSecondary, top]);
+    accountPill: {
+      position: 'absolute',
+      left: spacing.md + 4,
+      right: spacing.md + 4,
+      bottom: bottom + spacing.md,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm + 2,
+      paddingLeft: 8,
+      paddingRight: 14,
+      paddingVertical: 8,
+      backgroundColor: th.backgroundElement,
+      borderRadius: 26,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: th.hairline,
+      zIndex: 2,
+      // Subtle lift so it reads as floating above the scroll surface.
+      shadowColor: '#000',
+      shadowOpacity: 0.18,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 4,
+    },
+    accountAvatar: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    accountAvatarText: { fontSize: 14, fontWeight: '700' },
+    accountTextWrap: { flex: 1, gap: 1 },
+    accountName: { fontSize: 15, fontWeight: '600', color: th.text },
+    accountEmailLine: { fontSize: 11, color: th.textSecondary },
+  }), [bottom, identity.isSignedIn, th.accent, th.accentSoft, th.background, th.backgroundElement, th.hairline, th.text, th.textSecondary, top]);
 
   return (
     <View style={styles.overlay} pointerEvents={visible ? 'auto' : 'none'}>
@@ -288,7 +353,7 @@ export function Sidebar({ visible }: SidebarProps) {
                     onPress={toggleFolders}
                   >
                     <View style={styles.itemIconWrap}>
-                      <SymbolView name={item.icon} size={20} weight="semibold" tintColor={th.text} />
+                      <SymbolView name={item.icon} size={20} weight="semibold" tintColor={active ? th.accent : th.text} />
                     </View>
                     <Text style={[styles.itemLabel, active && styles.itemLabelActive, { flex: 1 }]}>
                       {item.label}
@@ -382,13 +447,53 @@ export function Sidebar({ visible }: SidebarProps) {
                 onPress={() => { closeSidebar(); router.push(item.href as any); }}
               >
                 <View style={styles.itemIconWrap}>
-                  <SymbolView name={item.icon} size={20} weight="semibold" tintColor={th.text} />
+                  <SymbolView name={item.icon} size={20} weight="semibold" tintColor={active ? th.accent : th.text} />
                 </View>
                 <Text style={[styles.itemLabel, active && styles.itemLabelActive]}>{item.label}</Text>
               </TouchableOpacity>
             );
           })}
         </ScrollView>
+        {identity.isSignedIn ? (
+          <TouchableOpacity
+            style={styles.accountPill}
+            activeOpacity={0.7}
+            onPress={() => { closeSidebar(); router.push('/settings'); }}
+            accessibilityLabel={`Open settings for ${accountDisplayName}`}
+          >
+            <View
+              style={[
+                styles.accountAvatar,
+                { backgroundColor: accountAvatarHex ?? th.accentSoft },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.accountAvatarText,
+                  { color: accountAvatarHex ? '#fff' : th.accent },
+                ]}
+              >
+                {accountInitials}
+              </Text>
+            </View>
+            <View style={styles.accountTextWrap}>
+              <Text style={styles.accountName} numberOfLines={1}>
+                {accountDisplayName}
+              </Text>
+              {accountEmail ? (
+                <Text style={styles.accountEmailLine} numberOfLines={1}>
+                  {accountEmail}
+                </Text>
+              ) : null}
+            </View>
+            <SymbolView
+              name={{ ios: 'gearshape.fill', android: 'settings', web: 'settings' }}
+              size={16}
+              weight="semibold"
+              tintColor={th.textSecondary}
+            />
+          </TouchableOpacity>
+        ) : null}
       </Animated.View>
     </View>
   );

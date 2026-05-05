@@ -65,35 +65,6 @@ export function AppTopBar({ title, leftAction = 'none', rightAction }: AppTopBar
       height: TOP_BAR_HEIGHT + TOP_BAR_FADE_HEIGHT + 10,
       zIndex: 80,
     },
-    fadeLayer: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-    },
-    fadeCore: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      height: 18,
-      backgroundColor: th.background,
-      opacity: th.scheme === 'light' ? 0.08 : 0.14,
-    },
-    fadeStrong: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      height: 26,
-      backgroundColor: th.background,
-      opacity: th.scheme === 'light' ? 0.05 : 0.1,
-    },
-    fadeSoft: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      height: 42,
-      backgroundColor: th.background,
-      opacity: th.scheme === 'light' ? 0.02 : 0.045,
-    },
     row: {
       position: 'absolute',
       left: spacing.md,
@@ -254,25 +225,6 @@ export function AppTopBar({ title, leftAction = 'none', rightAction }: AppTopBar
 
   return (
     <View pointerEvents="box-none" style={[styles.root, anchorStyle]}>
-      <View
-        pointerEvents="none"
-        style={[styles.fadeLayer, isReachable ? { bottom: 0 } : { top: 0 }]}
-      >
-        <View style={[styles.fadeCore, isReachable ? { bottom: TOP_BAR_HEIGHT - 2 } : { top: TOP_BAR_HEIGHT - 2 }]} />
-        <View
-          style={[
-            styles.fadeStrong,
-            isReachable ? { bottom: TOP_BAR_HEIGHT + 10 } : { top: TOP_BAR_HEIGHT + 10 },
-          ]}
-        />
-        <View
-          style={[
-            styles.fadeSoft,
-            isReachable ? { bottom: TOP_BAR_HEIGHT + 28 } : { top: TOP_BAR_HEIGHT + 28 },
-          ]}
-        />
-      </View>
-
       <View style={[styles.row, isReachable ? { bottom: 0 } : { top: 0 }]}>
         <View style={[styles.sideSlot, { width: sideWidth }]}>
           {renderLeftControl()}

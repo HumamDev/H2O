@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { DeviceSession, DeviceSessionSurface } from '@h2o/identity-core';
 
@@ -177,6 +177,11 @@ export default function AccountIdentityScreen() {
   const th = useTheme();
   const identity = useIdentity();
   const { contentTopPadding, contentBottomPadding } = useTopBarMetrics();
+  const safeAreaInsets = useSafeAreaInsets();
+  // Signed-out entry hides the global AppTopBar (handled in _layout). Without
+  // the bar, we shouldn't reserve space for it — use just the safe-area top
+  // plus a comfortable margin so the cockpit hero sits where the design wants.
+  const entryTopPadding = safeAreaInsets.top + spacing.md;
 
   const [tab, setTab] = useState<SignInTab>('sign_in');
   const [mode, setMode] = useState<SignInMode>('password');
@@ -239,6 +244,26 @@ export default function AccountIdentityScreen() {
       : snapshot.status === 'email_confirmation_pending'
         ? 'sign_up'
         : null;
+
+  // Post-auth redirect: only when the user transitions from signed-out → signed-in
+  // *on this page*. If they navigated here from Settings while already signed in
+  // (account management), no redirect happens. Fired once per mount so a later
+  // sign-out + sign-in cycle on the same page also redirects sensibly.
+  const prevSignedInRef = useRef<boolean>(identity.isSignedIn);
+  const didPostAuthRedirectRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (!identity.isReady) return;
+    if (didPostAuthRedirectRef.current) return;
+    const justSignedIn = prevSignedInRef.current === false && identity.isSignedIn === true;
+    prevSignedInRef.current = identity.isSignedIn;
+    if (!justSignedIn) return;
+    didPostAuthRedirectRef.current = true;
+    if (identity.snapshot.status === 'sync_ready') {
+      router.replace('/library');
+    } else {
+      router.replace('/onboarding');
+    }
+  }, [identity.isReady, identity.isSignedIn, identity.snapshot.status]);
 
   useEffect(() => {
     if (identity.isSignedIn) {
@@ -744,7 +769,7 @@ export default function AccountIdentityScreen() {
         <View
           style={[
             styles.centered,
-            { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+            { paddingTop: entryTopPadding, paddingBottom: contentBottomPadding },
           ]}>
           <ActivityIndicator color={th.text} />
           <Text style={styles.checkingLabel}>Checking sign-in…</Text>
@@ -1578,13 +1603,14 @@ export default function AccountIdentityScreen() {
         <KeyboardAvoidingView
           style={styles.kav}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={contentTopPadding}>
+          keyboardVerticalOffset={entryTopPadding}>
           <ScrollView
             contentContainerStyle={[
               styles.content,
-              { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+              { paddingTop: entryTopPadding, paddingBottom: contentBottomPadding },
             ]}
-            keyboardShouldPersistTaps="handled">
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
             <View style={styles.hero}>
               <Text style={styles.heroTitle}>Check your email</Text>
               <Text style={styles.heroSubtitle}>
@@ -1793,13 +1819,14 @@ export default function AccountIdentityScreen() {
         <KeyboardAvoidingView
           style={styles.kav}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={contentTopPadding}>
+          keyboardVerticalOffset={entryTopPadding}>
           <ScrollView
             contentContainerStyle={[
               styles.content,
-              { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+              { paddingTop: entryTopPadding, paddingBottom: contentBottomPadding },
             ]}
-            keyboardShouldPersistTaps="handled">
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
             {heroNode}
 
             <View style={styles.formCard}>
@@ -1993,17 +2020,18 @@ export default function AccountIdentityScreen() {
       <KeyboardAvoidingView
         style={styles.kav}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={contentTopPadding}>
+        keyboardVerticalOffset={entryTopPadding}>
         <ScrollView
           contentContainerStyle={[
             styles.content,
             {
-              paddingTop: contentTopPadding,
+              paddingTop: entryTopPadding,
               paddingBottom: contentBottomPadding,
               backgroundColor: COCKPIT_BG,
             },
           ]}
-          keyboardShouldPersistTaps="handled">
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
           {/* Cockpit Pro hero — brand mark + wordmark + tagline */}
           <View
             style={{
@@ -2211,7 +2239,12 @@ export default function AccountIdentityScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   secureTextEntry
-                  textContentType={isSignInTab ? 'password' : 'newPassword'}
+                  // iOS shows a yellow Strong-Password overlay on
+                  // textContentType="newPassword" that overrides the cockpit
+                  // dark fill. Use "password" for both tabs — secureTextEntry
+                  // and the autofill key-icon remain, only the yellow
+                  // suggestion overlay is suppressed.
+                  textContentType="password"
                   editable={!busy}
                   accessibilityLabel="Password"
                   returnKeyType="go"
