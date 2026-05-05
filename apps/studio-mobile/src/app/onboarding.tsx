@@ -31,7 +31,7 @@ import { useIdentity } from '@/identity/IdentityContext';
 
 type SymbolName = React.ComponentProps<typeof SymbolView>['name'];
 
-type OnboardingStep = 'welcome' | 'folders' | 'minimap' | 'getstarted';
+type OnboardingStep = 'welcome' | 'folders' | 'labels' | 'minimap' | 'capture' | 'sync' | 'getstarted';
 
 // Avatar slug palette — must match the live DB CHECK constraint
 // `profiles.avatar_color ~ '^[a-z0-9][a-z0-9_-]{0,31}$'`. The slug is sent
@@ -187,12 +187,24 @@ export default function OnboardingScreen() {
           {step === 'folders' ? (
             <FeatureStep
               icon={{ ios: 'folder.fill', android: 'folder', web: 'folder' }}
-              eyebrow="Step 1 of 3"
+              eyebrow="Step 1 of 5"
               heading="Organize chats into folders."
               subhead="Group related conversations into projects, drafts, or anything you choose. Folders keep your AI work findable as it scales."
               busy={busy}
-              onContinue={() => setStep('minimap')}
+              onContinue={() => setStep('labels')}
               onBack={() => setStep('welcome')}
+            />
+          ) : null}
+
+          {step === 'labels' ? (
+            <FeatureStep
+              icon={{ ios: 'tag.fill', android: 'label', web: 'label' }}
+              eyebrow="Step 2 of 5"
+              heading="Label everything that matters."
+              subhead="Color-code chats and folders with labels. Filter your entire workspace in one tap to surface the work that counts."
+              busy={busy}
+              onContinue={() => setStep('minimap')}
+              onBack={() => setStep('folders')}
             />
           ) : null}
 
@@ -203,12 +215,44 @@ export default function OnboardingScreen() {
                 android: 'format_list_bulleted',
                 web: 'format_list_bulleted',
               }}
-              eyebrow="Step 2 of 3"
+              eyebrow="Step 3 of 5"
               heading="Navigate long chats with the MiniMap."
               subhead="A side rail of every turn lets you jump anywhere in a long conversation, see highlights, and never lose your place."
               busy={busy}
+              onContinue={() => setStep('capture')}
+              onBack={() => setStep('labels')}
+            />
+          ) : null}
+
+          {step === 'capture' ? (
+            <FeatureStep
+              icon={{
+                ios: 'tray.and.arrow.down.fill',
+                android: 'move_to_inbox',
+                web: 'move_to_inbox',
+              }}
+              eyebrow="Step 4 of 5"
+              heading="Capture any conversation."
+              subhead="Import a ChatGPT chat with a single link. Your history, organized in your cockpit from day one."
+              busy={busy}
+              onContinue={() => setStep('sync')}
+              onBack={() => setStep('minimap')}
+            />
+          ) : null}
+
+          {step === 'sync' ? (
+            <FeatureStep
+              icon={{
+                ios: 'arrow.triangle.2.circlepath',
+                android: 'sync',
+                web: 'sync',
+              }}
+              eyebrow="Step 5 of 5"
+              heading="Your workspace travels with you."
+              subhead="Folders, labels, and chat history stay consistent across your devices. Pick up exactly where you left off."
+              busy={busy}
               onContinue={() => setStep('getstarted')}
-              onBack={() => setStep('folders')}
+              onBack={() => setStep('capture')}
             />
           ) : null}
 
@@ -230,7 +274,7 @@ export default function OnboardingScreen() {
               }}
               onChangeAvatarColor={setAvatarColor}
               onSubmit={submitGetStarted}
-              onBack={() => setStep('minimap')}
+              onBack={() => setStep('sync')}
             />
           ) : null}
 
