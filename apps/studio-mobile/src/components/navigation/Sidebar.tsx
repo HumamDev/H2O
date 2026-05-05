@@ -3,6 +3,7 @@ import { SymbolView } from 'expo-symbols';
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Animated, LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { UserAvatar } from '@/components/common';
 import { FolderIcon, openFolderActions } from '@/components/library';
 import { deriveCanonicalFolders } from '@/features/folders';
 import { deriveArchiveLibraryRows } from '@/features/library/archive-rows';
@@ -17,25 +18,6 @@ import { spacing } from '@/theme';
 const SIDEBAR_WIDTH = 304;
 const SIDEBAR_HIDDEN_OFFSET = SIDEBAR_WIDTH + 48;
 const ACCOUNT_PILL_RESERVE = 80;
-
-// Mirrors PROFILE_AVATAR_PALETTE in account-identity.tsx — slugs are the
-// canonical Supabase profile.avatar_color values; hex values are render-only.
-const SIDEBAR_AVATAR_PALETTE: Record<string, string> = {
-  violet: '#7C3AED',
-  blue: '#2563EB',
-  cyan: '#0891B2',
-  green: '#059669',
-  amber: '#D97706',
-  pink: '#DB2777',
-};
-
-function sidebarInitialsFrom(name?: string | null, email?: string | null): string {
-  const source = (name?.trim() || email?.trim() || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim();
-  if (!source) return '•';
-  const parts = source.split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return source.slice(0, 2).toUpperCase();
-}
 
 const NAV_ITEMS = [
   {
@@ -92,10 +74,6 @@ export function Sidebar({ visible }: SidebarProps) {
   const accountLocalPart = accountEmail.split('@')[0] ?? '';
   const accountDisplayName =
     profile?.displayName?.trim() || accountLocalPart || 'Account';
-  const accountInitials = sidebarInitialsFrom(profile?.displayName, accountEmail);
-  const accountAvatarHex = profile?.avatarColor
-    ? SIDEBAR_AVATAR_PALETTE[profile.avatarColor] ?? null
-    : null;
 
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const folderChevronAnim = useRef(new Animated.Value(0)).current;
@@ -312,14 +290,6 @@ export function Sidebar({ visible }: SidebarProps) {
       shadowOffset: { width: 0, height: 4 },
       elevation: 4,
     },
-    accountAvatar: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    accountAvatarText: { fontSize: 14, fontWeight: '700' },
     accountTextWrap: { flex: 1, gap: 1 },
     accountName: { fontSize: 15, fontWeight: '600', color: th.text },
     accountEmailLine: { fontSize: 11, color: th.textSecondary },
@@ -461,21 +431,11 @@ export function Sidebar({ visible }: SidebarProps) {
             onPress={() => { closeSidebar(); router.push('/settings'); }}
             accessibilityLabel={`Open settings for ${accountDisplayName}`}
           >
-            <View
-              style={[
-                styles.accountAvatar,
-                { backgroundColor: accountAvatarHex ?? th.accentSoft },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.accountAvatarText,
-                  { color: accountAvatarHex ? '#fff' : th.accent },
-                ]}
-              >
-                {accountInitials}
-              </Text>
-            </View>
+            <UserAvatar
+              size={40}
+              displayName={profile?.displayName ?? null}
+              email={accountEmail}
+            />
             <View style={styles.accountTextWrap}>
               <Text style={styles.accountName} numberOfLines={1}>
                 {accountDisplayName}

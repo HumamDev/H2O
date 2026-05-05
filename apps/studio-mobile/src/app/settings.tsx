@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useBilling } from '@/billing/BillingContext';
 import { MOBILE_BILLING_VERIFIED } from '@/billing/billingConfig';
+import { UserAvatar } from '@/components/common';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
 import { useRouteGuard } from '@/identity/useRouteGuard';
@@ -77,16 +78,6 @@ export default function SettingsScreen() {
       flexDirection: 'row',
       alignItems: 'center',
       gap: spacing.md,
-    },
-    accountIcon: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: th.scheme === 'light' ? '#fff' : th.backgroundSelected,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: th.backgroundSelected,
     },
     accountText: { flex: 1, gap: 3 },
     accountTitle: { ...typography.title, color: th.text, fontSize: 22 },
@@ -235,14 +226,11 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={[styles.content, { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding }]}>
         <View style={styles.accountPanel}>
           <View style={styles.accountTop}>
-            <View style={styles.accountIcon}>
-              <SymbolView
-                name={{ ios: 'person.crop.circle.fill', android: 'account_circle', web: 'account_circle' }}
-                size={32}
-                weight="semibold"
-                tintColor={th.text}
-              />
-            </View>
+            <UserAvatar
+              size={56}
+              displayName={snapshot.profile?.displayName ?? null}
+              email={safeEmail}
+            />
             <View style={styles.accountText}>
               <Text style={styles.accountTitle}>Account</Text>
               <Text style={styles.accountSubtitle} numberOfLines={2}>{accountSubtitle}</Text>
