@@ -82,6 +82,8 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   'identity/sign-in-email-failed': "Couldn't request a code. Try again.",
   'identity/verify-email-failed': "Couldn't verify the code. It may have expired.",
   'identity/sign-up-failed': "Couldn't create the account. Try a different email.",
+  'identity/email-already-registered': 'This email is already registered. Sign in instead.',
+  'identity/sign-up-password-too-short': 'Password must be at least 6 characters.',
   'identity/verify-signup-failed': "Couldn't verify the code. It may have expired.",
   'identity/sign-in-password-failed': 'Sign in failed. Check your email and password.',
   'identity/sign-in-failed': 'Sign in failed. Check your email and password.',

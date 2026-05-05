@@ -133,6 +133,39 @@ function mapPasswordUpdateErrorCode(error: unknown): string {
   return 'identity/password-update-failed';
 }
 
+function mapSupabaseSignUpError(error: unknown): string {
+  const src =
+    error && typeof error === 'object'
+      ? (error as { status?: number; statusCode?: number; message?: string; code?: string })
+      : {};
+  const status = Number(src.status || src.statusCode || 0);
+  const message = String(src.message || '').toLowerCase();
+  const code = String(src.code || '').toLowerCase();
+  if (
+    /already.*(registered|exist|signed up)|user.*already|email.*already|user_already_exists|email_exists/.test(message) ||
+    code === 'user_already_exists' ||
+    code === 'email_exists'
+  ) {
+    return 'identity/email-already-registered';
+  }
+  if (status === 429 || /rate|too many|cooldown/.test(message)) {
+    return 'identity/provider-rate-limited';
+  }
+  if (/fetch|network|timeout|failed to fetch/.test(message)) {
+    return 'identity/provider-network-failed';
+  }
+  if (/password/.test(message) && /(short|character|minimum|at least|weak)/.test(message)) {
+    return 'identity/sign-up-password-too-short';
+  }
+  if (/invalid.*email|email.*invalid/.test(message)) {
+    return 'identity/invalid-email';
+  }
+  if (status === 403 || /rejected|forbidden|not allowed|disabled|not_allowed|signups?\s*not\s*allowed/.test(message)) {
+    return 'identity/provider-rejected';
+  }
+  return 'identity/sign-up-failed';
+}
+
 function mapRecoveryRequestErrorCode(error: unknown): string {
   const src =
     error && typeof error === 'object'
@@ -683,7 +716,9 @@ export class MobileSupabaseProvider implements IdentityProvider {
 
       const client = this.getClient(config);
       const { error } = await client.auth.signUp({ email, password: input.password });
-      if (error) throw error;
+      if (error) {
+        throw createIdentityError(mapSupabaseSignUpError(error), 'Sign-up rejected by provider.');
+      }
 
       const snap = transitionIdentity(this.snapshot, 'email_confirmation_pending', {
         pendingEmail: email,
