@@ -173,6 +173,37 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     `;
 
+    const EVENT_IDENTITY_READY = 'h2o:identity:ready';
+    const EVENT_IDENTITY_CHANGED = 'h2o:identity:changed';
+    const USER_READY_STATUSES = new Set(['profile_ready', 'sync_ready']);
+    const USER_PENDING_STATUSES = new Set([
+      'anonymous_local',
+      'email_pending',
+      'email_confirmation_pending',
+      'recovery_code_pending',
+      'password_reset_email_sent',
+      'password_update_required',
+      'verified_no_profile',
+    ]);
+    const USER_FALLBACK_NAME = 'Account';
+    const USER_FALLBACK_INITIALS = 'AC';
+    const USER_AVATAR_DEFAULT =
+      'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #3b3935 0%, #24252a 48%, #101217 100%)';
+    const USER_AVATAR_GRADIENTS = Object.freeze({
+      violet: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #6d47d6 0%, #47208f 52%, #1f123f 100%)',
+      blue: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #2f6dd9 0%, #1b459c 52%, #102247 100%)',
+      cyan: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #078da4 0%, #0a5f74 52%, #103542 100%)',
+      green: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #0e8f69 0%, #0a644d 52%, #0b352d 100%)',
+      amber: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.11), transparent 42%), linear-gradient(140deg, #c47913 0%, #864916 54%, #352011 100%)',
+      pink: 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #c83882 0%, #842052 54%, #351426 100%)',
+      '#7c3aed': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #6d47d6 0%, #47208f 52%, #1f123f 100%)',
+      '#2563eb': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #2f6dd9 0%, #1b459c 52%, #102247 100%)',
+      '#0891b2': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #078da4 0%, #0a5f74 52%, #103542 100%)',
+      '#059669': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #0e8f69 0%, #0a644d 52%, #0b352d 100%)',
+      '#d97706': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.11), transparent 42%), linear-gradient(140deg, #c47913 0%, #864916 54%, #352011 100%)',
+      '#db2777': 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.10), transparent 42%), linear-gradient(140deg, #c83882 0%, #842052 54%, #351426 100%)',
+    });
+
     const SEL = {
       projectsLabelH2: 'h2.__menu-label',
       projectsSectionA: 'div.group\\/sidebar-expando-section',
@@ -288,6 +319,9 @@
       sidebarPrepaintObserver: null,
       sidebarPrepaintObservedRoot: null,
       sidebarPrepaintTimers: [],
+      identityEventsBound: false,
+      identityUnsub: null,
+      identitySubscribedApi: null,
       routeEventsBound: false,
       indexUpdateListenerBound: false,
       indexUpdateTimer: 0,
@@ -338,6 +372,225 @@
 
     function safeDispatch(name, detail = {}) {
       try { W.dispatchEvent(new CustomEvent(name, { detail })); } catch {}
+    }
+
+    function identityApi() {
+      return W.H2O?.Identity || null;
+    }
+
+    function readIdentitySnapshot(api = identityApi()) {
+      if (!api) return null;
+      try {
+        const snap = api.getSnapshot?.();
+        if (snap && typeof snap === 'object') return snap;
+      } catch (error) {
+        err('identity-snapshot', error);
+      }
+      try {
+        return {
+          status: api.getState?.() || '',
+          profile: api.getProfile?.() || null,
+          workspace: api.getWorkspace?.() || null,
+        };
+      } catch (error) {
+        err('identity-snapshot-fallback', error);
+        return null;
+      }
+    }
+
+    function readIdentityProfile(api = identityApi(), snapshot = null) {
+      const fromSnapshot = snapshot?.profile;
+      if (fromSnapshot && typeof fromSnapshot === 'object') return fromSnapshot;
+      try {
+        const profile = api?.getProfile?.();
+        return profile && typeof profile === 'object' ? profile : null;
+      } catch (error) {
+        err('identity-profile', error);
+        return null;
+      }
+    }
+
+    function isLoggedInProfile(snapshot, profile) {
+      if (!profile || typeof profile !== 'object') return false;
+      const status = normText(snapshot?.status || '');
+      if (status && !USER_READY_STATUSES.has(status) && USER_PENDING_STATUSES.has(status)) return false;
+      return Boolean(normText(profile.username || profile.userName || profile.handle || profile.displayName || profile.email || snapshot?.pendingEmail || ''));
+    }
+
+    function userDisplayName(profile, snapshot) {
+      const username = normText(profile?.username || profile?.userName || profile?.handle || '');
+      if (username) return username.slice(0, 80);
+      const displayName = normText(profile?.displayName || '');
+      if (displayName) return displayName.slice(0, 80);
+      const email = normText(profile?.email || snapshot?.pendingEmail || '');
+      const localPart = email.includes('@') ? email.split('@')[0] : email;
+      return normText(localPart || USER_FALLBACK_NAME).slice(0, 80) || USER_FALLBACK_NAME;
+    }
+
+    function userInitials(displayName, profile, snapshot) {
+      const email = normText(profile?.email || snapshot?.pendingEmail || '');
+      const source = normText(displayName || email || '').replace(/[^\p{L}\p{N}\s]+/gu, ' ');
+      const parts = normText(source).split(' ').filter(Boolean);
+      const chars = parts.length > 1
+        ? [Array.from(parts[0])[0], Array.from(parts[1])[0]]
+        : Array.from(parts[0] || '').slice(0, 2);
+      const initials = chars.filter(Boolean).join('').toUpperCase().slice(0, 2);
+      return initials || USER_FALLBACK_INITIALS;
+    }
+
+    function userAvatarGradient(token) {
+      const key = String(token || '').trim().toLowerCase();
+      return USER_AVATAR_GRADIENTS[key] || USER_AVATAR_DEFAULT;
+    }
+
+    function isRenderableAvatarUrl(raw = '') {
+      const value = String(raw || '').trim();
+      return /^(https?:\/\/|blob:|data:image\/)/i.test(value);
+    }
+
+    function userAvatarUrl(profile) {
+      const direct = [
+        profile?.avatarUrl,
+        profile?.avatarURL,
+        profile?.pictureUrl,
+        profile?.photoUrl,
+        profile?.imageUrl,
+      ].map((value) => String(value || '').trim()).find(isRenderableAvatarUrl);
+      if (direct) return direct;
+
+      const path = String(profile?.avatarPath || profile?.avatar_path || '').trim();
+      return isRenderableAvatarUrl(path) ? path : '';
+    }
+
+    function getUserCardData() {
+      const api = identityApi();
+      if (!api) return null;
+      const snapshot = readIdentitySnapshot(api);
+      const profile = readIdentityProfile(api, snapshot);
+      if (!isLoggedInProfile(snapshot, profile)) return null;
+      const displayName = userDisplayName(profile, snapshot);
+      return {
+        displayName,
+        initials: userInitials(displayName, profile, snapshot),
+        avatarGradient: userAvatarGradient(profile?.avatarColor),
+        avatarUrl: userAvatarUrl(profile),
+      };
+    }
+
+    function makeUserCard() {
+      const card = D.createElement('div');
+      card.setAttribute(ATTR_CGXUI_STATE, 'user-card');
+      card.setAttribute('aria-label', 'Signed-in user');
+      card.hidden = true;
+
+      const avatar = D.createElement('span');
+      avatar.setAttribute(ATTR_CGXUI_STATE, 'user-avatar');
+      avatar.setAttribute('aria-hidden', 'true');
+
+      const img = D.createElement('img');
+      img.setAttribute(ATTR_CGXUI_STATE, 'user-avatar-img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.hidden = true;
+
+      const avatarText = D.createElement('span');
+      avatarText.setAttribute(ATTR_CGXUI_STATE, 'user-avatar-text');
+      avatarText.textContent = USER_FALLBACK_INITIALS;
+
+      img.onerror = () => {
+        img.hidden = true;
+        img.removeAttribute('src');
+        avatarText.hidden = false;
+      };
+
+      avatar.append(img, avatarText);
+
+      const name = D.createElement('span');
+      name.setAttribute(ATTR_CGXUI_STATE, 'user-name');
+      name.textContent = USER_FALLBACK_NAME;
+
+      card.append(avatar, name);
+      return card;
+    }
+
+    function updateUserCard(card = null) {
+      const target = card || state.pageEl?.querySelector?.(`[${ATTR_CGXUI_STATE}="user-card"]`) || null;
+      if (!target) return;
+
+      const data = getUserCardData();
+      if (!data) {
+        target.hidden = true;
+        target.removeAttribute('title');
+        target.setAttribute('aria-label', 'Signed-in user');
+        return;
+      }
+
+      const avatar = target.querySelector?.(`[${ATTR_CGXUI_STATE}="user-avatar"]`);
+      const img = target.querySelector?.(`[${ATTR_CGXUI_STATE}="user-avatar-img"]`);
+      const avatarText = target.querySelector?.(`[${ATTR_CGXUI_STATE}="user-avatar-text"]`);
+      const name = target.querySelector?.(`[${ATTR_CGXUI_STATE}="user-name"]`);
+
+      target.hidden = false;
+      target.title = data.displayName;
+      target.setAttribute('aria-label', `Signed in as ${data.displayName}`);
+      if (avatar) avatar.style.setProperty('--h2o-lwsc-user-avatar-fill', data.avatarGradient);
+      if (avatarText) avatarText.textContent = data.initials;
+      if (name) name.textContent = data.displayName;
+
+      if (img && avatarText) {
+        if (data.avatarUrl) {
+          if (img.getAttribute('src') !== data.avatarUrl) img.setAttribute('src', data.avatarUrl);
+          img.hidden = false;
+          avatarText.hidden = true;
+        } else {
+          img.hidden = true;
+          img.removeAttribute('src');
+          avatarText.hidden = false;
+        }
+      }
+    }
+
+    function bindIdentityEventsOnce() {
+      if (state.identityEventsBound) return;
+      state.identityEventsBound = true;
+
+      const refresh = () => updateUserCard();
+      const subscribe = () => {
+        const api = identityApi();
+        if (state.identitySubscribedApi !== api) {
+          if (typeof state.identityUnsub === 'function') {
+            try { state.identityUnsub(); } catch {}
+          }
+          state.identityUnsub = null;
+          state.identitySubscribedApi = api || null;
+          if (api && typeof api.onChange === 'function') {
+            try {
+              const unsub = api.onChange(refresh);
+              if (typeof unsub === 'function') state.identityUnsub = unsub;
+            } catch (error) {
+              err('identity-onchange', error);
+            }
+          }
+        }
+        refresh();
+      };
+      const onReady = () => subscribe();
+      const onChanged = () => refresh();
+
+      subscribe();
+      W.addEventListener(EVENT_IDENTITY_READY, onReady, true);
+      W.addEventListener(EVENT_IDENTITY_CHANGED, onChanged, true);
+      state.clean.listeners.add(() => {
+        try { W.removeEventListener(EVENT_IDENTITY_READY, onReady, true); } catch {}
+        try { W.removeEventListener(EVENT_IDENTITY_CHANGED, onChanged, true); } catch {}
+        if (typeof state.identityUnsub === 'function') {
+          try { state.identityUnsub(); } catch {}
+        }
+        state.identityUnsub = null;
+        state.identitySubscribedApi = null;
+        state.identityEventsBound = false;
+      });
     }
 
     function utilSelScoped(token) {
@@ -2008,6 +2261,85 @@ ${PAGE} [${ATTR_CGXUI_STATE}="title-icon"] svg{ width:23px; height:23px; }
 ${PAGE} h1{ margin:0; min-width:0; font-size:30px; line-height:36px; font-weight:600; letter-spacing:-.02em; }
 ${PAGE} [${ATTR_CGXUI_STATE}="sub"]{ margin-top:6px; color:var(--text-secondary, rgba(255,255,255,.70)); font-size:13px; }
 ${PAGE} [${ATTR_CGXUI_STATE}="head-actions"]{ display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+${PAGE} [${ATTR_CGXUI_STATE}="user-card"]{
+  --h2o-lwsc-user-avatar-fill:${USER_AVATAR_DEFAULT};
+  min-height:34px;
+  max-width:220px;
+  display:inline-flex;
+  align-items:center;
+  gap:9px;
+  padding:4px 10px 4px 5px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:11px;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255,255,255,.15), transparent 42%),
+    linear-gradient(135deg, rgba(255,255,255,.085), rgba(255,255,255,.032));
+  color:var(--text-primary, #fff);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 8px 20px rgba(0,0,0,.16);
+  overflow:hidden;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-card"][hidden]{ display:none !important; }
+${PAGE} [${ATTR_CGXUI_STATE}="user-avatar"]{
+  position:relative;
+  isolation:isolate;
+  width:26px;
+  height:26px;
+  flex:0 0 26px;
+  border-radius:999px;
+  display:inline-grid;
+  place-items:center;
+  overflow:hidden;
+  color:#fff;
+  font-size:10.5px;
+  line-height:1;
+  font-weight:780;
+  letter-spacing:0;
+  background:rgba(255,255,255,.08);
+  box-shadow:0 0 0 1px rgba(255,255,255,.16) inset, 0 1px 6px rgba(0,0,0,.24);
+  text-shadow:0 1px 1px rgba(0,0,0,.62);
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-avatar"]::before{
+  content:"";
+  position:absolute;
+  inset:1px;
+  border-radius:inherit;
+  background:var(--h2o-lwsc-user-avatar-fill);
+  z-index:0;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-avatar"]::after{
+  content:"";
+  position:absolute;
+  inset:1px;
+  border-radius:inherit;
+  background:linear-gradient(145deg, rgba(255,255,255,.08), transparent 44%), radial-gradient(circle at 72% 82%, rgba(0,0,0,.24), transparent 48%);
+  z-index:2;
+  pointer-events:none;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-avatar-img"]{
+  position:absolute;
+  inset:1px;
+  width:calc(100% - 2px);
+  height:calc(100% - 2px);
+  border-radius:inherit;
+  object-fit:cover;
+  z-index:1;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-avatar-text"]{
+  position:relative;
+  z-index:3;
+  display:block;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{
+  min-width:0;
+  max-width:154px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:13px;
+  font-weight:610;
+  line-height:1;
+  color:rgba(255,255,255,.88);
+}
 ${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]{ width:34px; height:34px; border:1px solid rgba(255,255,255,.12); border-radius:11px; display:inline-flex; align-items:center; justify-content:center; background:rgba(255,255,255,.04); color:inherit; cursor:pointer; opacity:.86; }
 ${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]:hover{ background:rgba(255,255,255,.08); opacity:1; }
 ${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"] svg{ width:18px; height:18px; }
@@ -2050,10 +2382,17 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"]:hover{ background:rgba(255,255,255,
 ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rgba(125,211,252,.14); border-color:rgba(125,211,252,.28); color:#e5f8ff; }
 @media (max-width: 780px){
   ${PAGE}{ width:min(96cqw, 100%); padding:38px 12px 28px; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="head"]{ flex-wrap:wrap; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="head-actions"]{ width:100%; justify-content:flex-end; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{ max-width:min(44vw, 154px); }
   ${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{ grid-template-columns:1fr; }
   ${PAGE} [${ATTR_CGXUI_STATE}="card-grid"],
   ${PAGE} [${ATTR_CGXUI_STATE}="notice-grid"]{ grid-template-columns:1fr; }
   ${PAGE} [${ATTR_CGXUI_STATE}="pills"]{ display:none; }
+}
+@media (max-width: 520px){
+  ${PAGE} [${ATTR_CGXUI_STATE}="user-card"]{ padding-right:5px; gap:0; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{ display:none; }
 }
 `;
     }
@@ -2322,6 +2661,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
 
       const actions = D.createElement('div');
       actions.setAttribute(ATTR_CGXUI_STATE, 'head-actions');
+      const userCard = makeUserCard();
       const refresh = D.createElement('button');
       refresh.type = 'button';
       refresh.setAttribute(ATTR_CGXUI_STATE, 'icon-btn');
@@ -2329,7 +2669,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       refresh.title = 'Refresh Library';
       refresh.innerHTML = FRAG_SVG_REFRESH;
       refresh.onclick = () => loadAndRender('manual-refresh').catch((error) => err('refresh-click', error));
+      actions.appendChild(userCard);
       actions.appendChild(refresh);
+      updateUserCard(userCard);
 
       head.appendChild(titleWrap);
       head.appendChild(actions);
@@ -2393,6 +2735,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         state.pageEl = page;
       }
 
+      updateUserCard();
       if (!opts.fromRoute && !opts.skipHistory) commitLibraryRoute(opts);
       state.pageRoute = { view: 'library', id: '', baseHref: String(getSafeBaseHref()) };
       syncSidebarActiveState();
@@ -3539,6 +3882,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       bindRouteEventsOnce();
       bindPageExitEventsOnce();
       bindLibraryIndexEventsOnce();
+      bindIdentityEventsOnce();
       ensureSidebarPrepaint(`${bootReason}-sync`);
       scheduleSidebarPrepaint(bootReason);
       ensureSidebarPrepaintObserver(bootReason);
