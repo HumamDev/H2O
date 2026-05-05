@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,61 +16,27 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { DeviceSession, DeviceSessionSurface } from '@h2o/identity-core';
 
+import { CockpitMark } from '@/components/cockpit/CockpitMark';
+import {
+  COCKPIT_BG,
+  COCKPIT_CYAN,
+  COCKPIT_EMBER,
+  COCKPIT_HAIR,
+  COCKPIT_HAIR_STRONG,
+  COCKPIT_INK,
+  COCKPIT_INK_DIM,
+  COCKPIT_INK_FAINT,
+  COCKPIT_INK_MUTED,
+  COCKPIT_BG_HOVER,
+  COCKPIT_BG_RAISED,
+} from '@/components/cockpit/tokens';
 import { useTopBarMetrics } from '@/components/navigation/AppTopBar';
 import { useIdentity } from '@/identity/IdentityContext';
 import { GOOGLE_OAUTH_VERIFIED, RECOVERY_FLOW_VERIFIED } from '@/identity/mobileConfig';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
-const PRIMARY = '#208AEF';
 const DANGER = '#E15554';
-
-// Cockpit Pro signed-out palette — warm-charcoal premium dark, scoped to the
-// signed-out branch only. The signed-in branch keeps the existing system
-// theme colors via useTheme().
-const COCKPIT_BG = '#1B1B19';
-const COCKPIT_BG_RAISED = '#262624';
-const COCKPIT_BG_HOVER = '#2D2D2A';
-const COCKPIT_HAIR = 'rgba(255,255,255,0.09)';
-const COCKPIT_HAIR_STRONG = 'rgba(255,255,255,0.14)';
-const COCKPIT_INK = '#ECEAE3';
-const COCKPIT_INK_MUTED = '#C9C6BD';
-const COCKPIT_INK_DIM = '#8F8C82';
-const COCKPIT_INK_FAINT = '#5F5C54';
-const COCKPIT_COBALT = '#5B7BC9';
-const COCKPIT_CYAN = '#8AAAD6';
-const COCKPIT_CYAN_SOFT = 'rgba(138,170,214,0.12)';
-const COCKPIT_EMBER = '#D97757';
-const COCKPIT_EMBER_SOFT = 'rgba(217,119,87,0.14)';
-
-// Inline brand mark — composes a SymbolView (scope/crosshair) inside a tinted
-// circular medallion. Avoids a new react-native-svg dependency for v1.
-function CockpitMark({ size }: { size: number }) {
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: COCKPIT_BG_RAISED,
-        borderWidth: 1,
-        borderColor: 'rgba(138,170,214,0.32)',
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: COCKPIT_COBALT,
-        shadowOpacity: 0.28,
-        shadowRadius: 22,
-        shadowOffset: { width: 0, height: 0 },
-      }}>
-      <SymbolView
-        name={{ ios: 'scope', android: 'gps_fixed', web: 'gps_fixed' }}
-        size={Math.round(size * 0.5)}
-        weight="regular"
-        tintColor={COCKPIT_CYAN}
-      />
-    </View>
-  );
-}
 
 // Local 6-swatch palette for the profile-edit avatar picker.
 // IMPORTANT: the Supabase profiles.avatar_color column is constrained to
@@ -2301,6 +2268,19 @@ export default function AccountIdentityScreen() {
               </TouchableOpacity>
             ) : null}
           </View>
+
+          {__DEV__ ? (
+            <TouchableOpacity
+              style={[styles.linkButton, { paddingVertical: 14, alignItems: 'center' }]}
+              onPress={() => router.push('/onboarding?preview=1')}
+              activeOpacity={0.6}
+              disabled={Boolean(busy)}
+              accessibilityLabel="Preview onboarding">
+              <Text style={[styles.linkButtonTextNeutral, { color: COCKPIT_INK_FAINT }]}>
+                Preview onboarding
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

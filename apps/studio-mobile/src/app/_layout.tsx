@@ -78,6 +78,7 @@ export default function RootLayout() {
             <Stack.Screen name="settings" options={{ headerShown: false }} />
             <Stack.Screen name="identity-debug" options={{ headerShown: false }} />
             <Stack.Screen name="account-identity" options={{ headerShown: false }} />
+            <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             <Stack.Screen name="import-export" options={{ headerShown: false }} />
             <Stack.Screen name="import-chatgpt-link" options={{ headerShown: false }} />
             <Stack.Screen name="imported-chat" options={{ title: 'Imported Chat', headerShown: false }} />
