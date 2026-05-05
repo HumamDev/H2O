@@ -24,6 +24,53 @@ import { spacing, typography } from '@/theme';
 const PRIMARY = '#208AEF';
 const DANGER = '#E15554';
 
+// Cockpit Pro signed-out palette — warm-charcoal premium dark, scoped to the
+// signed-out branch only. The signed-in branch keeps the existing system
+// theme colors via useTheme().
+const COCKPIT_BG = '#1B1B19';
+const COCKPIT_BG_RAISED = '#262624';
+const COCKPIT_BG_HOVER = '#2D2D2A';
+const COCKPIT_HAIR = 'rgba(255,255,255,0.09)';
+const COCKPIT_HAIR_STRONG = 'rgba(255,255,255,0.14)';
+const COCKPIT_INK = '#ECEAE3';
+const COCKPIT_INK_MUTED = '#C9C6BD';
+const COCKPIT_INK_DIM = '#8F8C82';
+const COCKPIT_INK_FAINT = '#5F5C54';
+const COCKPIT_COBALT = '#5B7BC9';
+const COCKPIT_CYAN = '#8AAAD6';
+const COCKPIT_CYAN_SOFT = 'rgba(138,170,214,0.12)';
+const COCKPIT_EMBER = '#D97757';
+const COCKPIT_EMBER_SOFT = 'rgba(217,119,87,0.14)';
+
+// Inline brand mark — composes a SymbolView (scope/crosshair) inside a tinted
+// circular medallion. Avoids a new react-native-svg dependency for v1.
+function CockpitMark({ size }: { size: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: COCKPIT_BG_RAISED,
+        borderWidth: 1,
+        borderColor: 'rgba(138,170,214,0.32)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: COCKPIT_COBALT,
+        shadowOpacity: 0.28,
+        shadowRadius: 22,
+        shadowOffset: { width: 0, height: 0 },
+      }}>
+      <SymbolView
+        name={{ ios: 'scope', android: 'gps_fixed', web: 'gps_fixed' }}
+        size={Math.round(size * 0.5)}
+        weight="regular"
+        tintColor={COCKPIT_CYAN}
+      />
+    </View>
+  );
+}
+
 // Local 6-swatch palette for the profile-edit avatar picker.
 // IMPORTANT: the Supabase profiles.avatar_color column is constrained to
 // slugs matching ^[a-z0-9][a-z0-9_-]{0,31}$ (see migration
@@ -1973,7 +2020,7 @@ export default function AccountIdentityScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe} edges={[]}>
+    <SafeAreaView style={[styles.safe, { backgroundColor: COCKPIT_BG }]} edges={[]}>
       <KeyboardAvoidingView
         style={styles.kav}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -1981,72 +2028,189 @@ export default function AccountIdentityScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.content,
-            { paddingTop: contentTopPadding, paddingBottom: contentBottomPadding },
+            {
+              paddingTop: contentTopPadding,
+              paddingBottom: contentBottomPadding,
+              backgroundColor: COCKPIT_BG,
+            },
           ]}
           keyboardShouldPersistTaps="handled">
-          <View style={styles.hero}>
-            <Text style={styles.heroTitle}>Sign in to H2O Studio</Text>
-            <Text style={styles.heroSubtitle}>
-              Sync your account across devices and keep your conversations safe.
+          {/* Cockpit Pro hero — brand mark + wordmark + tagline */}
+          <View
+            style={{
+              alignItems: 'center',
+              gap: spacing.md,
+              paddingTop: spacing.lg,
+              paddingBottom: spacing.sm,
+            }}>
+            <CockpitMark size={84} />
+            <Text
+              style={{
+                color: COCKPIT_INK,
+                fontSize: 28,
+                fontWeight: '500',
+                letterSpacing: -0.5,
+              }}>
+              Cockpit <Text style={{ color: COCKPIT_EMBER }}>Pro</Text>
+            </Text>
+            <Text
+              style={{
+                color: COCKPIT_INK_MUTED,
+                fontSize: 17,
+                lineHeight: 23,
+                textAlign: 'center',
+                maxWidth: 300,
+                fontWeight: '400',
+              }}>
+              Your AI workspace,{'\n'}organized like a cockpit.
             </Text>
           </View>
 
-          <View style={[styles.tabs, busy && styles.tabsBusy]}>
+          {/* Eyebrow + heading + subhead */}
+          <View style={{ gap: spacing.xs, paddingHorizontal: spacing.xs }}>
+            <Text
+              style={{
+                color: COCKPIT_CYAN,
+                fontSize: 11,
+                fontWeight: '600',
+                letterSpacing: 1.4,
+                textTransform: 'uppercase',
+              }}>
+              {isSignInTab ? 'Welcome back' : 'Get started'}
+            </Text>
+            <Text
+              style={{
+                color: COCKPIT_INK,
+                fontSize: 24,
+                fontWeight: '500',
+                letterSpacing: -0.5,
+                lineHeight: 28,
+              }}>
+              {isSignInTab ? 'Sign in to your cockpit.' : 'Create your cockpit.'}
+            </Text>
+            <Text style={{ color: COCKPIT_INK_DIM, fontSize: 14, lineHeight: 20 }}>
+              {isSignInTab
+                ? 'Your conversations, projects, and folders are right where you left them.'
+                : 'Capture, structure, and navigate every conversation from one calm command center.'}
+            </Text>
+          </View>
+
+          <View
+            style={[
+              styles.tabs,
+              busy && styles.tabsBusy,
+              { backgroundColor: COCKPIT_BG_RAISED, borderColor: COCKPIT_HAIR },
+            ]}>
             <TouchableOpacity
-              style={[styles.tabButton, isSignInTab && styles.tabButtonActive]}
+              style={[
+                styles.tabButton,
+                isSignInTab && {
+                  backgroundColor: COCKPIT_BG_HOVER,
+                  borderWidth: 1,
+                  borderColor: COCKPIT_HAIR_STRONG,
+                },
+              ]}
               onPress={() => selectTab('sign_in')}
               activeOpacity={0.7}
               disabled={Boolean(busy)}>
-              <Text style={[styles.tabButtonText, isSignInTab && styles.tabButtonTextActive]}>
+              <Text
+                style={[
+                  styles.tabButtonText,
+                  { color: isSignInTab ? COCKPIT_INK : COCKPIT_INK_DIM },
+                ]}>
                 Sign in
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.tabButton, !isSignInTab && styles.tabButtonActive]}
+              style={[
+                styles.tabButton,
+                !isSignInTab && {
+                  backgroundColor: COCKPIT_BG_HOVER,
+                  borderWidth: 1,
+                  borderColor: COCKPIT_HAIR_STRONG,
+                },
+              ]}
               onPress={() => selectTab('create_account')}
               activeOpacity={0.7}
               disabled={Boolean(busy)}>
-              <Text style={[styles.tabButtonText, !isSignInTab && styles.tabButtonTextActive]}>
+              <Text
+                style={[
+                  styles.tabButtonText,
+                  { color: !isSignInTab ? COCKPIT_INK : COCKPIT_INK_DIM },
+                ]}>
                 Create account
               </Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.formCard}>
+          <View
+            style={[
+              styles.formCard,
+              { backgroundColor: COCKPIT_BG_RAISED, borderColor: COCKPIT_HAIR },
+            ]}>
             {GOOGLE_OAUTH_VERIFIED ? (
               <>
                 <TouchableOpacity
-                  style={[styles.oauthButton, Boolean(busy) && styles.buttonDisabled]}
+                  style={[
+                    styles.oauthButton,
+                    {
+                      backgroundColor: COCKPIT_BG_HOVER,
+                      borderColor: COCKPIT_HAIR_STRONG,
+                    },
+                    Boolean(busy) && styles.buttonDisabled,
+                  ]}
                   onPress={() => runAction('google_oauth', () => identity.signInWithGoogle())}
                   activeOpacity={0.7}
                   disabled={Boolean(busy)}
                   accessibilityLabel="Continue with Google">
                   {busy === 'google_oauth' ? (
-                    <ActivityIndicator color={th.text} />
+                    <ActivityIndicator color={COCKPIT_INK} />
                   ) : (
                     <>
-                      <View style={styles.oauthGlyphCircle}>
-                        <Text style={styles.oauthGlyphLetter}>G</Text>
+                      <View
+                        style={[
+                          styles.oauthGlyphCircle,
+                          {
+                            backgroundColor: COCKPIT_BG_RAISED,
+                            borderColor: COCKPIT_HAIR_STRONG,
+                          },
+                        ]}>
+                        <Text style={[styles.oauthGlyphLetter, { color: COCKPIT_INK }]}>G</Text>
                       </View>
-                      <Text style={styles.oauthButtonText}>Continue with Google</Text>
+                      <Text style={[styles.oauthButtonText, { color: COCKPIT_INK }]}>
+                        Continue with Google
+                      </Text>
                     </>
                   )}
                 </TouchableOpacity>
                 <View style={styles.oauthDivider}>
-                  <View style={styles.oauthDividerLine} />
-                  <Text style={styles.oauthDividerText}>or use email</Text>
-                  <View style={styles.oauthDividerLine} />
+                  <View
+                    style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
+                  />
+                  <Text style={[styles.oauthDividerText, { color: COCKPIT_INK_DIM }]}>
+                    or use email
+                  </Text>
+                  <View
+                    style={[styles.oauthDividerLine, { backgroundColor: COCKPIT_HAIR }]}
+                  />
                 </View>
               </>
             ) : null}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>EMAIL</Text>
+              <Text style={[styles.fieldLabel, { color: COCKPIT_INK_DIM }]}>EMAIL</Text>
               <TextInput
-                style={styles.input}
+                style={[
+                  styles.input,
+                  {
+                    backgroundColor: COCKPIT_BG,
+                    borderColor: COCKPIT_HAIR,
+                    color: COCKPIT_INK,
+                  },
+                ]}
                 value={email}
                 onChangeText={setEmail}
                 placeholder="you@example.com"
-                placeholderTextColor={th.textSecondary}
+                placeholderTextColor={COCKPIT_INK_FAINT}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
@@ -2060,14 +2224,21 @@ export default function AccountIdentityScreen() {
 
             {showPasswordField ? (
               <View style={styles.field}>
-                <Text style={styles.fieldLabel}>PASSWORD</Text>
+                <Text style={[styles.fieldLabel, { color: COCKPIT_INK_DIM }]}>PASSWORD</Text>
                 <TextInput
                   ref={passwordRef}
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: COCKPIT_BG,
+                      borderColor: COCKPIT_HAIR,
+                      color: COCKPIT_INK,
+                    },
+                  ]}
                   value={password}
                   onChangeText={setPassword}
                   placeholder={isSignInTab ? 'Your password' : 'At least 8 characters'}
-                  placeholderTextColor={th.textSecondary}
+                  placeholderTextColor={COCKPIT_INK_FAINT}
                   autoCapitalize="none"
                   autoCorrect={false}
                   secureTextEntry
@@ -2089,6 +2260,7 @@ export default function AccountIdentityScreen() {
             <TouchableOpacity
               style={[
                 styles.primaryButton,
+                { backgroundColor: COCKPIT_EMBER },
                 (!canSubmit || Boolean(busy)) && styles.buttonDisabled,
               ]}
               onPress={trySubmitPrimary}
@@ -2110,7 +2282,7 @@ export default function AccountIdentityScreen() {
                 }}
                 activeOpacity={0.6}
                 disabled={Boolean(busy)}>
-                <Text style={styles.linkButtonText}>
+                <Text style={[styles.linkButtonText, { color: COCKPIT_CYAN }]}>
                   {isPasswordMode ? 'Use email code instead' : 'Use password instead'}
                 </Text>
               </TouchableOpacity>
@@ -2122,17 +2294,12 @@ export default function AccountIdentityScreen() {
                 onPress={openRecoveryRequest}
                 activeOpacity={0.6}
                 disabled={Boolean(busy)}>
-                <Text style={styles.linkButtonTextNeutral}>Forgot password?</Text>
+                <Text
+                  style={[styles.linkButtonTextNeutral, { color: COCKPIT_INK_DIM }]}>
+                  Forgot password?
+                </Text>
               </TouchableOpacity>
             ) : null}
-          </View>
-
-          <View style={styles.noticeCard}>
-            <Text style={styles.noticeTitle}>Trouble signing in?</Text>
-            <Text style={styles.noticeBody}>
-              Account recovery is on its way. Until then, please save your password somewhere
-              safe.
-            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
