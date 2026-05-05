@@ -7,7 +7,11 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "eas:build:dev": "npx eas-cli build --platform ios --profile development",
+    "eas:build:internal": "npx eas-cli build --platform ios --profile internal",
+    "eas:build:production": "npx eas-cli build --platform ios --profile production",
+    "eas:submit:internal": "npx eas-cli submit --platform ios --latest"
   },
   "dependencies": {
     "@h2o/identity-core": "file:../../packages/identity-core",
