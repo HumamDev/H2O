@@ -3,9 +3,9 @@
 // @name               8A2a.🟪🌸 H2O Skins Registry 🌸
 // @namespace          H2O.Premium.CGX.h2o.skins.registry
 // @author             HumamDev
-// @version            0.2.3
-// @revision           004
-// @build              260322-173500
+// @version            0.2.4
+// @revision           005
+// @build              260505-210424
 // @description        Shared H2O skins registry: root CSS tokens + themed panel primitives for cgxui-owned UI.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -70,6 +70,7 @@
   const STR_SKIN_SAND_GLASS = 'Sand Glass';
   const STR_SKIN_AURORA_GLASS = 'Aurora Glass';
   const STR_SKIN_DARK_MATTE = 'Dark Matte';
+  const STR_SKIN_COCKPIT_EMBER = 'Cockpit Ember';
   const STR_SKIN_GRAPHITE_AMBER = 'Graphite Amber';
   const STR_SKIN_GRAPHITE_SIGNAL = 'Graphite Signal';
   const STR_SKIN_STEALTH_SIGNAL = 'Stealth Signal';
@@ -301,6 +302,41 @@
         [KEY_INPUT_BORDER]: 'rgba(255,255,255,0.08)',
         [KEY_SCROLLBAR_THUMB]: 'rgba(255,255,255,.16)',
         [KEY_SCROLLBAR_THUMB_HOVER]: 'rgba(255,255,255,.22)',
+      },
+    }),
+    skinPreset({
+      name: STR_SKIN_COCKPIT_EMBER,
+      aliases: ['Onboarding', 'Cockpit Pro', 'Entry Surface', 'Warm Charcoal'],
+      tokens: {
+        [KEY_GLASS_TEXT]: '#ECEAE3',
+        [KEY_GLASS_TEXT_MUTE]: '#C9C6BD',
+        [KEY_GLASS_BG_A]: '#262624',
+        [KEY_GLASS_BG_B]: '#1B1B19',
+        [KEY_GLASS_BLUR_PX]: 0,
+        [KEY_GLASS_SAT]: 1,
+        [KEY_GLASS_CONTRAST]: 1,
+        [KEY_GLASS_BRIGHT]: 1,
+        [KEY_GLASS_BORDER]: 'rgba(255,255,255,0.09)',
+        [KEY_GLASS_SHADOW]: 'none',
+        [KEY_BTN_BG]: '#262624',
+        [KEY_BTN_BG_HOVER]: '#2D2D2A',
+        [KEY_BTN_BG_ACTIVE]: '#D97757',
+        [KEY_SEL_BG]: 'rgba(217,119,87,0.14)',
+        [KEY_SEL_BORDER]: 'rgba(217,119,87,0.38)',
+        [KEY_FOCUS_RING]: 'rgba(138,170,214,0.40)',
+        [KEY_SCROLL_THIN]: true,
+        [KEY_PANEL_BG]: '#262624',
+        [KEY_PANEL_BORDER]: 'rgba(255,255,255,0.09)',
+        [KEY_PANEL_SHADOW]: 'none',
+        [KEY_PANEL_BACKDROP]: 'none',
+        [KEY_PANEL_FILTER]: 'none',
+        [KEY_BTN_BORDER]: 'rgba(255,255,255,0.09)',
+        [KEY_BTN_BORDER_ACTIVE]: 'rgba(217,119,87,0.44)',
+        [KEY_BTN_SHADOW_ACTIVE]: '0 0 0 1px rgba(217,119,87,0.28), 0 10px 24px rgba(217,119,87,0.12)',
+        [KEY_INPUT_BG]: '#1B1B19',
+        [KEY_INPUT_BORDER]: 'rgba(255,255,255,0.09)',
+        [KEY_SCROLLBAR_THUMB]: 'rgba(201,198,189,0.18)',
+        [KEY_SCROLLBAR_THUMB_HOVER]: 'rgba(201,198,189,0.28)',
       },
     }),
     skinPreset({
