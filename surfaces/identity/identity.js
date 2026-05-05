@@ -359,7 +359,7 @@
         return api.createInitialWorkspace({
           email: snapshot.pendingEmail || firstAuthEmail(),
           displayName: refs.displayName.value,
-          avatarColor: refs.avatarColor?.value || 'slate',
+          avatarColor: refs.avatarColor?.value || 'violet',
           workspaceName: refs.workspaceName.value
         });
       });
@@ -538,7 +538,7 @@
       if (refs.resetEmail && !refs.resetEmail.value) refs.resetEmail.value = snapshot.pendingEmail;
     }
     if (snapshot.profile && refs.displayName && !refs.displayName.value) refs.displayName.value = snapshot.profile.displayName || '';
-    if (snapshot.profile && refs.avatarColor && !refs.avatarColor.value) refs.avatarColor.value = snapshot.profile.avatarColor || 'slate';
+    if (snapshot.profile && refs.avatarColor && !refs.avatarColor.value) refs.avatarColor.value = snapshot.profile.avatarColor || 'violet';
     if (snapshot.workspace && refs.workspaceName && !refs.workspaceName.value) refs.workspaceName.value = snapshot.workspace.name || '';
     renderPendingPanel(status);
 

@@ -204,7 +204,7 @@ async function validateProviderSimulation() {
   assert(snap.status === "verified_no_profile", `provider simulation: expected verified_no_profile, got ${snap.status}`);
   assert(snap.emailVerified === true, "provider simulation: emailVerified must be true");
 
-  snap = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "slate", workspaceName: "Humam Workspace" });
+  snap = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "violet", workspaceName: "Humam Workspace" });
   assert(snap.status === "sync_ready", `provider simulation: expected sync_ready, got ${snap.status}`);
   assert(snap.profile?.displayName === "Humam", "provider simulation: safe profile summary must be applied");
   assert(snap.workspace?.name === "Humam Workspace", "provider simulation: safe workspace summary must be applied");
@@ -265,8 +265,8 @@ assert(identityCore.includes("applyProviderBridgeState"),
   "Identity Core must hydrate provider actions from sanitized background state");
 assert(identitySurfaceHtml.includes("h2oi-otp-code") && identitySurfaceJs.includes("refs.otpCode.value = ''"),
   "Onboarding UI must collect temporary OTP code and clear it after verification");
-assert(identitySurfaceHtml.includes("h2oi-avatar-color") && identitySurfaceHtml.includes('value="slate"'),
-  "Onboarding UI must collect avatar color slug with slate default");
+assert(identitySurfaceHtml.includes("h2oi-avatar-color") && identitySurfaceHtml.includes('value="violet"'),
+  "Onboarding UI must collect avatar color slug with violet default");
 assert(controlHubAccountSurface.includes("Provider sessions and tokens stay background-owned."),
   "Control Hub Account tab must describe provider session boundary");
 assert(controlHubAccountSurface.includes("Account ready / synced"),

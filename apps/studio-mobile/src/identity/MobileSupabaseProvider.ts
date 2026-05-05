@@ -28,6 +28,7 @@ import {
   createIdentityError,
   createInitialIdentitySnapshot,
   isValidEmail,
+  normalizeAvatarColor,
   normalizeEmail,
   nowIso,
   transitionIdentity,
@@ -55,6 +56,7 @@ const ALLOWED_DEVICE_SURFACES: ReadonlyArray<DeviceSessionSurface> = [
 ];
 const DEFAULT_MOBILE_SURFACE: DeviceSessionSurface = 'ios_app';
 const DEFAULT_MOBILE_LABEL = 'iPhone — Cockpit Pro';
+const DEFAULT_MOBILE_AVATAR_COLOR = 'violet';
 
 // Phase 5.0F mobile Google OAuth — fixed redirect URI matching app.json's
 // `scheme: "studiomobile"`. Must be present in the Supabase project's
@@ -888,12 +890,13 @@ export class MobileSupabaseProvider implements IdentityProvider {
         typeof input.displayName === 'string' ? input.displayName.trim() : '';
       const finalDisplayName =
         trimmedDisplayInput || this.appleFirstSignInDisplayName || null;
+      const cleanAvatarColor = normalizeAvatarColor(input.avatarColor) || DEFAULT_MOBILE_AVATAR_COLOR;
       // Match SQL: complete_onboarding(p_display_name, p_avatar_color, p_workspace_name)
       // PostgREST routes RPC by parameter name; unprefixed keys would fail the
       // function-cache lookup. Same parameter-name fix as update_identity_profile.
       const { data: rpcData, error: rpcError } = await authedClient.rpc('complete_onboarding', {
         p_display_name: finalDisplayName,
-        p_avatar_color: input.avatarColor ?? null,
+        p_avatar_color: cleanAvatarColor,
         p_workspace_name: input.workspaceName ?? null,
       });
       if (rpcError) throw rpcError;
@@ -925,22 +928,14 @@ export class MobileSupabaseProvider implements IdentityProvider {
         throw createIdentityError('identity/no-profile', 'No profile exists to update.');
       }
 
-      // Provider-local sanitization that matches the live DB constraint:
-      //   profiles.avatar_color CHECK (avatar_color ~ '^[a-z0-9][a-z0-9_-]{0,31}$')
-      //   profiles.display_name CHECK (char_length(btrim(display_name)) between 1 and 64)
-      // identity-core's sanitizeProfilePatch only accepts hex avatar colors and
-      // would silently drop slugs, so it is intentionally bypassed here for the
-      // avatar field. Display name follows the same trim/collapse rule as
-      // sanitizeProfilePatch (max 80 chars; server enforces 64).
+      // Provider-local sanitization matches the mobile/web palette contract.
+      // Display name follows the same trim/collapse rule as sanitizeProfilePatch
+      // (max 80 chars; server enforces 64).
       const cleanDisplayName =
         typeof patch.displayName === 'string'
           ? patch.displayName.trim().replace(/\s+/g, ' ').slice(0, 80)
           : '';
-      const cleanAvatarColor =
-        typeof patch.avatarColor === 'string'
-        && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(patch.avatarColor.trim())
-          ? patch.avatarColor.trim()
-          : '';
+      const cleanAvatarColor = normalizeAvatarColor(patch.avatarColor);
 
       const authedClient = this.getAuthedClient(config);
       // Match the SQL function signature exactly:

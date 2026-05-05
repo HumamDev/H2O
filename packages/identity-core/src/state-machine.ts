@@ -33,6 +33,23 @@ const ALLOWED_TRANSITIONS: Record<IdentityPublicState, readonly IdentityPublicSt
   auth_error: ['anonymous_local', 'email_pending', 'email_confirmation_pending', 'verified_no_profile', 'profile_ready', 'recovery_code_pending', 'auth_error']
 };
 
+const PROFILE_AVATAR_COLORS = ['violet', 'blue', 'cyan', 'green', 'amber', 'pink'] as const;
+const PROFILE_AVATAR_HEX_TO_SLUG: Record<string, typeof PROFILE_AVATAR_COLORS[number]> = {
+  '#7c3aed': 'violet',
+  '#2563eb': 'blue',
+  '#0891b2': 'cyan',
+  '#059669': 'green',
+  '#d97706': 'amber',
+  '#db2777': 'pink',
+};
+
+function normalizeProfileAvatarColor(input?: string): string {
+  const clean = String(input || '').trim().toLowerCase();
+  if (!clean) return '';
+  if ((PROFILE_AVATAR_COLORS as readonly string[]).includes(clean)) return clean;
+  return PROFILE_AVATAR_HEX_TO_SLUG[clean] || '';
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
 }
@@ -142,8 +159,8 @@ export function sanitizeProfilePatch(patch: ProfilePatch): ProfilePatch {
   }
 
   if (typeof patch.avatarColor === 'string') {
-    const avatarColor = patch.avatarColor.trim();
-    if (/^#[0-9a-f]{6}$/i.test(avatarColor)) clean.avatarColor = avatarColor;
+    const avatarColor = normalizeProfileAvatarColor(patch.avatarColor);
+    if (avatarColor) clean.avatarColor = avatarColor;
   }
 
   if (typeof patch.onboardingCompleted === 'boolean') {

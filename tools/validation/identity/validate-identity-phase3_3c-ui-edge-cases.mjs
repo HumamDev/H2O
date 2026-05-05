@@ -99,7 +99,7 @@ function safeProfileWorkspace(req = {}) {
   const profile = {
     id: "profile-c33d8a7f",
     displayName: req.displayName || "Humam",
-    avatarColor: req.avatarColor || "slate",
+    avatarColor: req.avatarColor || "violet",
     onboardingCompleted: true,
     createdAt: "2026-05-01T12:00:00.000Z",
     updatedAt: "2026-05-01T12:00:00.000Z",
@@ -332,8 +332,8 @@ async function validateRepeatOnboardingIdempotent() {
   await flush();
   await api.signInWithEmail("humam@example.invalid");
   await api.verifyEmailCode({ code: "12345678" });
-  const first = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "slate", workspaceName: "Humam Workspace" });
-  const second = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "slate", workspaceName: "Humam Workspace" });
+  const first = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "violet", workspaceName: "Humam Workspace" });
+  const second = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "violet", workspaceName: "Humam Workspace" });
   assert(first.status === "sync_ready" && second.status === "sync_ready", "repeat onboarding must stay sync_ready");
   assert(first.profile?.id === second.profile?.id, "repeat onboarding must keep same profile id in safe summary");
   assert(first.workspace?.id === second.workspace?.id, "repeat onboarding must keep same workspace id in safe summary");

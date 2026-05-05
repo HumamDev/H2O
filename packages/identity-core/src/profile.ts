@@ -1,7 +1,15 @@
 import type { H2OProfile, H2OWorkspace, InitialWorkspaceInput } from './contracts';
 import { assertValidEmail, nowIso } from './state-machine';
 
-const DEFAULT_AVATAR_COLORS = ['#7c3aed', '#2563eb', '#0891b2', '#059669', '#d97706', '#db2777'] as const;
+const DEFAULT_AVATAR_COLORS = ['violet', 'blue', 'cyan', 'green', 'amber', 'pink'] as const;
+const LEGACY_AVATAR_COLOR_MAP: Record<string, typeof DEFAULT_AVATAR_COLORS[number]> = {
+  '#7c3aed': 'violet',
+  '#2563eb': 'blue',
+  '#0891b2': 'cyan',
+  '#059669': 'green',
+  '#d97706': 'amber',
+  '#db2777': 'pink',
+};
 
 export function makeIdentityId(prefix: string): string {
   const safePrefix = String(prefix || 'id').replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'id';
@@ -45,6 +53,13 @@ export function pickAvatarColor(seed: string): string {
   return DEFAULT_AVATAR_COLORS[hash % DEFAULT_AVATAR_COLORS.length];
 }
 
+export function normalizeAvatarColor(input?: string): string {
+  const clean = String(input || '').trim().toLowerCase();
+  if (!clean) return '';
+  if ((DEFAULT_AVATAR_COLORS as readonly string[]).includes(clean)) return clean;
+  return LEGACY_AVATAR_COLOR_MAP[clean] || '';
+}
+
 export function createLocalProfileAndWorkspace(input: InitialWorkspaceInput): {
   profile: H2OProfile;
   workspace: H2OWorkspace;
@@ -70,7 +85,7 @@ export function createLocalProfileAndWorkspace(input: InitialWorkspaceInput): {
     email,
     emailVerified: true,
     displayName,
-    avatarColor: input.avatarColor || pickAvatarColor(email),
+    avatarColor: normalizeAvatarColor(input.avatarColor) || pickAvatarColor(email),
     workspaceId,
     onboardingCompleted: true,
     createdAt: timestamp,

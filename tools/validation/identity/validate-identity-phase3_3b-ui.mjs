@@ -212,7 +212,7 @@ async function validateProviderHappyPathNoOtpStorage() {
   await flush();
   await api.signInWithEmail("humam@example.invalid");
   await api.verifyEmailCode({ code: "87654321" });
-  const snap = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "slate", workspaceName: "Humam Workspace" });
+  const snap = await api.createInitialWorkspace({ displayName: "Humam", avatarColor: "violet", workspaceName: "Humam Workspace" });
   assert(snap.status === "sync_ready", "provider happy path must still reach sync_ready");
   const stored = JSON.stringify(storage).toLowerCase();
   for (const forbidden of ["87654321", "humam@example.invalid", "access_token", "refresh_token", "rawsession", "owner_user_id", "deleted_at"]) {

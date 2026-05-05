@@ -33,6 +33,16 @@
     AUTH_ERROR: 'auth_error'
   });
 
+  const PROFILE_AVATAR_PALETTE = Object.freeze(['violet', 'blue', 'cyan', 'green', 'amber', 'pink']);
+  const PROFILE_AVATAR_HEX_TO_SLUG = Object.freeze({
+    '#7c3aed': 'violet',
+    '#2563eb': 'blue',
+    '#0891b2': 'cyan',
+    '#059669': 'green',
+    '#d97706': 'amber',
+    '#db2777': 'pink',
+  });
+
   const BRIDGE_MSG_SW = 'h2o-ext-identity:v1';
   const BRIDGE_MSG_REQ = 'h2o-ext-identity:v1:req';
   const BRIDGE_MSG_RES = 'h2o-ext-identity:v1:res';
@@ -1198,18 +1208,18 @@
   function normalizeProviderOnboardingInput(input = {}) {
     const displayName = String(input.displayName || '').trim().replace(/\s+/g, ' ');
     const workspaceName = String(input.workspaceName || '').trim().replace(/\s+/g, ' ');
-    const avatarColor = String(input.avatarColor || '').trim().toLowerCase();
+    const avatarColor = normalizeAvatarColor(input.avatarColor);
     if (displayName.length < 1 || displayName.length > 64) return null;
     if (workspaceName.length < 1 || workspaceName.length > 64) return null;
-    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(avatarColor)) return null;
+    if (!avatarColor) return null;
     return { displayName, avatarColor, workspaceName };
   }
 
   function normalizeProviderProfileUpdateInput(input = {}) {
     const displayName = String(input.displayName || '').trim().replace(/\s+/g, ' ');
-    const avatarColor = String(input.avatarColor || '').trim().toLowerCase();
+    const avatarColor = normalizeAvatarColor(input.avatarColor);
     if (displayName.length < 1 || displayName.length > 64) return null;
-    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(avatarColor)) return null;
+    if (!avatarColor) return null;
     return { displayName, avatarColor };
   }
 
@@ -1219,17 +1229,18 @@
   }
 
   function normalizeAvatarColor(input) {
-    const clean = String(input || '').trim();
-    return /^#[0-9a-f]{6}$/i.test(clean) ? clean : '';
+    const clean = String(input || '').trim().toLowerCase();
+    if (!clean) return '';
+    if (PROFILE_AVATAR_PALETTE.includes(clean)) return clean;
+    return PROFILE_AVATAR_HEX_TO_SLUG[clean] || '';
   }
 
   function pickAvatarColor(seed) {
-    const colors = ['#7c3aed', '#2563eb', '#0891b2', '#059669', '#d97706', '#db2777'];
     let hash = 0;
     for (let index = 0; index < String(seed).length; index += 1) {
       hash = (hash * 31 + String(seed).charCodeAt(index)) >>> 0;
     }
-    return colors[hash % colors.length];
+    return PROFILE_AVATAR_PALETTE[hash % PROFILE_AVATAR_PALETTE.length];
   }
 
   function makeId(prefix) {

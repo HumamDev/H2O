@@ -6214,8 +6214,18 @@ function identityProviderOnboarding_normalizeWorkspaceName(input) {
 }
 
 function identityProviderOnboarding_normalizeAvatarColor(input) {
-  const text = String(input || "").trim();
-  return /^[a-z0-9][a-z0-9_-]{0,31}$/.test(text) ? text : "";
+  const text = String(input || "").trim().toLowerCase();
+  const palette = ["violet", "blue", "cyan", "green", "amber", "pink"];
+  const legacyHex = {
+    "#7c3aed": "violet",
+    "#2563eb": "blue",
+    "#0891b2": "cyan",
+    "#059669": "green",
+    "#d97706": "amber",
+    "#db2777": "pink",
+  };
+  if (palette.includes(text)) return text;
+  return legacyHex[text] || "";
 }
 
 function identityProviderOnboarding_normalizeInput(input = {}) {
@@ -6629,8 +6639,18 @@ function identitySnapshot_normalizeWorkspaceName(input) {
 }
 
 function identitySnapshot_normalizeAvatarColor(input) {
-  const avatarColor = String(input || "").trim();
-  return /^#[0-9a-f]{6}$/i.test(avatarColor) ? avatarColor : "#7c3aed";
+  const avatarColor = String(input || "").trim().toLowerCase();
+  const palette = ["violet", "blue", "cyan", "green", "amber", "pink"];
+  const legacyHex = {
+    "#7c3aed": "violet",
+    "#2563eb": "blue",
+    "#0891b2": "cyan",
+    "#059669": "green",
+    "#d97706": "amber",
+    "#db2777": "pink",
+  };
+  if (palette.includes(avatarColor)) return avatarColor;
+  return legacyHex[avatarColor] || "violet";
 }
 
 function identitySnapshot_isReadyStatus(status) {
