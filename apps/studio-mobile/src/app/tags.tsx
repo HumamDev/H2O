@@ -29,7 +29,6 @@ import { useTheme } from '@/hooks/use-theme';
 import { getArchiveStoreSnapshot, subscribeArchiveStore } from '@/state/archive';
 import { spacing, typography } from '@/theme';
 
-const PRIMARY = '#208AEF';
 const DANGER = '#FF3B30';
 
 interface TagRowStyles {
@@ -181,7 +180,7 @@ export default function TagsScreen() {
       backgroundColor: th.backgroundElement,
     },
     actionText: {
-      color: PRIMARY,
+      color: th.accent,
       fontSize: 18,
       lineHeight: 20,
       fontWeight: '700',
@@ -197,7 +196,7 @@ export default function TagsScreen() {
       fontSize: 12,
       lineHeight: 17,
     },
-  }), [th.background, th.backgroundElement, th.backgroundSelected, th.text, th.textSecondary]);
+  }), [th.accent, th.background, th.backgroundElement, th.backgroundSelected, th.text, th.textSecondary]);
 
   return (
     <SafeAreaView style={styles.safe} edges={[]}>

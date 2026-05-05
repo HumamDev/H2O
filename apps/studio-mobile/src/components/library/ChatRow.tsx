@@ -5,7 +5,6 @@ import { spacing, typography } from '@/theme';
 import { relativeTime } from '@/utils/date';
 import type { Chat } from '@/types/library';
 
-const PRIMARY = '#208AEF';
 const MOBILE = '#1a9e6e';
 const PINNED_RED = '#FF3B30';
 const MAX_TAGS = 2;
@@ -54,7 +53,7 @@ export function ChatRow({ chat, onPress, onLongPress, onTagPress }: ChatRowProps
   }), [th.backgroundSelected, th.backgroundElement, th.text, th.textSecondary]);
 
   const originSource = chat.originSource || chat.source || 'unknown';
-  const sourceColor = originSource === 'mobile' ? MOBILE : PRIMARY;
+  const sourceColor = originSource === 'mobile' ? MOBILE : th.accent;
   const sourceLabel = originSource === 'mobile' ? 'Mobile' : originSource === 'browser' ? 'Browser' : '';
   const folderLabel = chat.folderName || chat.folderId || '';
 

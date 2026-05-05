@@ -188,7 +188,7 @@ export function AppTopBar({ title, leftAction = 'none', rightAction }: AppTopBar
 
   function renderRightControl() {
     if (rightAction === 'minimap') {
-      const tintColor = miniMapOpen ? '#208AEF' : th.text;
+      const tintColor = miniMapOpen ? th.accent : th.text;
       return (
         <Pressable
           onPress={handleMiniMapToggle}
@@ -244,7 +244,7 @@ export function AppTopBar({ title, leftAction = 'none', rightAction }: AppTopBar
             name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }}
             size={18}
             weight="semibold"
-            tintColor="#208AEF"
+            tintColor={th.accent}
           />
         </Pressable>
       );

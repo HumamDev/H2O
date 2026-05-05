@@ -43,8 +43,17 @@ export default function RootLayout() {
   const sidebarOpen = useSyncExternalStore(subscribeSidebar, getSidebarOpen);
   const topBarConfig = getTopBarConfig(pathname);
 
+  // Mirror useTheme's resolution: cockpit → dark nav, system → cockpit-on-dark
+  // / light-on-light, explicit light/dark stay as-is. Any non-light scheme
+  // uses React Navigation's DarkTheme so headers/borders look right.
   const effectiveScheme =
-    appearanceMode === 'system' ? (systemScheme ?? 'light') : appearanceMode;
+    appearanceMode === 'cockpit'
+      ? 'cockpit'
+      : appearanceMode === 'system'
+        ? systemScheme === 'dark'
+          ? 'cockpit'
+          : 'light'
+        : appearanceMode;
   const navScheme: 'light' | 'dark' = effectiveScheme === 'light' ? 'light' : 'dark';
 
   useEffect(() => {

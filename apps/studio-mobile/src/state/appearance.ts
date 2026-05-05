@@ -5,7 +5,7 @@ import {
   writeAsStringAsync,
 } from 'expo-file-system/legacy';
 
-export type AppearanceMode = 'system' | 'light' | 'dark' | 'atmospheric';
+export type AppearanceMode = 'system' | 'light' | 'dark' | 'cockpit';
 export type TopBarPosition = 'standard' | 'reachable';
 
 const FILE_PATH = `${documentDirectory}h2o_appearance_v2.json`;
@@ -21,7 +21,7 @@ type StoreShape = {
 const g = global as Record<string, unknown>;
 if (!g.__h2o_appearance2) {
   g.__h2o_appearance2 = {
-    mode: 'system' as AppearanceMode,
+    mode: 'cockpit' as AppearanceMode,
     topBarPosition: 'standard' as TopBarPosition,
     modeListeners: new Set<() => void>(),
     posListeners: new Set<() => void>(),
@@ -75,7 +75,7 @@ export function setTopBarPosition(pos: TopBarPosition): void {
   _persist();
 }
 
-const VALID_MODES = new Set<AppearanceMode>(['system', 'light', 'dark', 'atmospheric']);
+const VALID_MODES = new Set<AppearanceMode>(['system', 'light', 'dark', 'cockpit']);
 const VALID_POSITIONS = new Set<TopBarPosition>(['standard', 'reachable']);
 
 /** Load persisted settings from disk. Safe to call multiple times — only runs once. */
@@ -86,8 +86,11 @@ export async function initAppearanceStore(): Promise<void> {
     const json = await readAsStringAsync(FILE_PATH, { encoding: EncodingType.UTF8 });
     const parsed = JSON.parse(json) as { mode?: unknown; topBarPosition?: unknown };
     let changed = false;
-    if (parsed.mode && VALID_MODES.has(parsed.mode as AppearanceMode)) {
-      _store.mode = parsed.mode as AppearanceMode;
+    // Legacy: persisted 'atmospheric' devices are migrated silently to cockpit
+    // — atmospheric was the prior premium-dark variant; cockpit supersedes it.
+    const rawMode = parsed.mode === 'atmospheric' ? 'cockpit' : parsed.mode;
+    if (rawMode && VALID_MODES.has(rawMode as AppearanceMode)) {
+      _store.mode = rawMode as AppearanceMode;
       changed = true;
     }
     if (parsed.topBarPosition && VALID_POSITIONS.has(parsed.topBarPosition as TopBarPosition)) {

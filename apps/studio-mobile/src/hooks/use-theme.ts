@@ -8,10 +8,12 @@ export function useTheme() {
   const appearanceMode = useSyncExternalStore(subscribeAppearance, getAppearanceMode);
 
   let scheme: ColorScheme;
-  if (appearanceMode === 'atmospheric') {
-    scheme = 'atmospheric';
+  if (appearanceMode === 'cockpit') {
+    scheme = 'cockpit';
   } else if (appearanceMode === 'system') {
-    scheme = (systemScheme ?? 'light') as 'light' | 'dark';
+    // System dark resolves to cockpit (the new premium dark);
+    // system light resolves to neutral light.
+    scheme = systemScheme === 'dark' ? 'cockpit' : 'light';
   } else {
     scheme = appearanceMode;
   }

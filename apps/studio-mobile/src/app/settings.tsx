@@ -19,13 +19,11 @@ import {
 } from '@/state/appearance';
 import { spacing, typography } from '@/theme';
 
-const PRIMARY = '#208AEF';
-
 const APPEARANCE_OPTIONS: { value: AppearanceMode; label: string; hint?: string }[] = [
+  { value: 'cockpit', label: 'Cockpit Pro', hint: 'Warm-charcoal premium dark' },
   { value: 'system', label: 'System' },
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
-  { value: 'atmospheric', label: 'Atmospheric', hint: 'Darker, translucent feel' },
 ];
 
 const TOP_BAR_OPTIONS: { value: TopBarPosition; label: string; hint?: string }[] = [
@@ -154,15 +152,15 @@ export default function SettingsScreen() {
     },
     optionLeft: { flex: 1, gap: 2 },
     optionLabel: { ...typography.body, color: th.text },
-    optionLabelSelected: { color: PRIMARY, fontWeight: '600' },
+    optionLabelSelected: { color: th.accent, fontWeight: '600' },
     optionHint: { fontSize: 12, color: th.textSecondary },
-    checkDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: PRIMARY },
+    checkDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: th.accent },
     separator: {
       height: StyleSheet.hairlineWidth,
       backgroundColor: th.backgroundSelected,
       marginLeft: spacing.md,
     },
-  }), [th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]);
+  }), [th.accent, th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]);
 
   const snapshot = identity.snapshot;
   const safeEmail = maskEmail(snapshot.profile?.email ?? snapshot.pendingEmail ?? null);

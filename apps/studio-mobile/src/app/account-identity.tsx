@@ -464,7 +464,7 @@ export default function AccountIdentityScreen() {
           paddingHorizontal: 10,
           paddingVertical: 4,
           borderRadius: 999,
-          backgroundColor: PRIMARY,
+          backgroundColor: th.accent,
         },
         activePillText: { ...typography.caption, color: '#fff', fontWeight: '700' },
 
@@ -472,9 +472,9 @@ export default function AccountIdentityScreen() {
           paddingHorizontal: 10,
           paddingVertical: 4,
           borderRadius: 999,
-          backgroundColor: th.scheme === 'light' ? '#E5F0FF' : 'rgba(32,138,239,0.18)',
+          backgroundColor: th.accentSoft,
         },
-        currentDevicePillText: { ...typography.caption, color: PRIMARY, fontWeight: '700' },
+        currentDevicePillText: { ...typography.caption, color: th.accent, fontWeight: '700' },
         sessionsRefreshButton: {
           alignSelf: 'flex-start',
           paddingHorizontal: spacing.md,
@@ -483,7 +483,7 @@ export default function AccountIdentityScreen() {
           alignItems: 'center',
           gap: spacing.xs,
         },
-        sessionsRefreshText: { ...typography.caption, color: PRIMARY, fontWeight: '600' },
+        sessionsRefreshText: { ...typography.caption, color: th.accent, fontWeight: '600' },
 
         hero: { gap: spacing.xs },
         heroTitle: { ...typography.title, color: th.text, fontSize: 26 },
@@ -549,7 +549,7 @@ export default function AccountIdentityScreen() {
           minHeight: 46,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: PRIMARY,
+          backgroundColor: th.accent,
           borderRadius: 10,
           paddingHorizontal: spacing.md,
           paddingVertical: 12,
@@ -599,7 +599,7 @@ export default function AccountIdentityScreen() {
           color: th.textSecondary,
         },
         linkButton: { paddingVertical: 6, alignItems: 'center' },
-        linkButtonText: { ...typography.caption, color: PRIMARY, fontWeight: '600' },
+        linkButtonText: { ...typography.caption, color: th.accent, fontWeight: '600' },
         linkButtonTextNeutral: {
           ...typography.caption,
           color: th.textSecondary,
@@ -643,7 +643,7 @@ export default function AccountIdentityScreen() {
         },
         swatchSelected: {
           borderWidth: 3,
-          borderColor: PRIMARY,
+          borderColor: th.accent,
         },
 
         noticeCard: {
@@ -683,7 +683,7 @@ export default function AccountIdentityScreen() {
           backgroundColor: th.background,
         },
       }),
-    [th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]
+    [th.accent, th.accentSoft, th.background, th.backgroundElement, th.backgroundSelected, th.scheme, th.text, th.textSecondary]
   );
 
   async function runAction(label: string, action: () => Promise<unknown>) {
@@ -1507,13 +1507,13 @@ export default function AccountIdentityScreen() {
                 activeOpacity={0.6}
                 disabled={sessionsLoading}>
                 {sessionsLoading ? (
-                  <ActivityIndicator size="small" color={PRIMARY} />
+                  <ActivityIndicator size="small" color={th.accent} />
                 ) : (
                   <SymbolView
                     name={{ ios: 'arrow.clockwise', android: 'refresh', web: 'refresh' }}
                     size={14}
                     weight="semibold"
-                    tintColor={PRIMARY}
+                    tintColor={th.accent}
                   />
                 )}
                 <Text style={styles.sessionsRefreshText}>Refresh</Text>

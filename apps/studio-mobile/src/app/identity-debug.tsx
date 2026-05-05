@@ -7,8 +7,6 @@ import { useIdentity } from '@/identity/IdentityContext';
 import { useTheme } from '@/hooks/use-theme';
 import { spacing, typography } from '@/theme';
 
-const PRIMARY = '#208AEF';
-
 function maskEmail(email?: string | null): string {
   if (!email) return 'None';
   const [name, domain] = String(email).trim().toLowerCase().split('@');
@@ -76,7 +74,7 @@ export default function IdentityDebugScreen() {
       minHeight: 42,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: PRIMARY,
+      backgroundColor: th.accent,
       borderRadius: 8,
       paddingHorizontal: spacing.md,
       paddingVertical: 11,
@@ -91,7 +89,7 @@ export default function IdentityDebugScreen() {
       paddingVertical: 13,
     },
     placeholderLabel: { ...typography.body, color: th.textSecondary },
-  }), [th.background, th.backgroundElement, th.backgroundSelected, th.text, th.textSecondary]);
+  }), [th.accent, th.background, th.backgroundElement, th.backgroundSelected, th.text, th.textSecondary]);
 
   const snapshot = identity.snapshot;
   const safeEmail = maskEmail(snapshot.profile?.email ?? snapshot.pendingEmail ?? null);
