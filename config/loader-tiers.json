@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "meta": {
+    "name": "H2O Loader Tier Metadata",
+    "purpose": "Per-script tier classification + optional on-demand openEvent. Read at build time by chrome-live-source-snapshots.mjs and embedded into DEV_SCRIPT_CATALOG.",
+    "notes": [
+      "Phase 4 Step 5a: this file ships tier metadata ONLY. The loader does NOT yet read the tier or openEvent fields. V1 behavior is unchanged.",
+      "tier values: L0 (BootKernel) | L1 (EarlyFoundation) | L2 (SurfaceCritical) | L3 (RouteAware) | L4 (IdleHydration default) | L5 (OnDemand) | L6 (Visibility/Gesture) | DebugOnly.",
+      "Any alias not listed in 'scripts' below defaults to L4 with no openEvent.",
+      "openEvent is only meaningful for L5 (and conceptually L6); listed here for forward compatibility. Empty/absent means no on-demand trigger.",
+      "L0/L1 must remain a small kernel allowlist. The validator may warn if a non-allowlisted alias appears at L0/L1."
+    ],
+    "kernelAllowlist": {
+      "L0": ["0A0a._Loader_Bridge_.js", "0A1a._H2O_Core_.js", "0A2a._Observer_Hub_.js"],
+      "L1": ["0B1a._Performance_Governor_.js", "0B1b._Performance_Store_.js", "0B1c._Performance_Adapters_.js", "0D1a._Data_Core_.js", "0D1b._Data_Store_.js", "0D4a._Identity_Core_.js"]
+    }
+  },
+  "scripts": {
+    "0A0a._Loader_Bridge_.js": { "tier": "L0" },
+    "0A1a._H2O_Core_.js":      { "tier": "L0" },
+    "0A2a._Observer_Hub_.js":  { "tier": "L0" },
+
+    "0B1a._Performance_Governor_.js": { "tier": "L1" },
+    "0B1b._Performance_Store_.js":    { "tier": "L1" },
+    "0B1c._Performance_Adapters_.js": { "tier": "L1" },
+    "0D1a._Data_Core_.js":            { "tier": "L1" },
+    "0D1b._Data_Store_.js":           { "tier": "L1" },
+    "0D4a._Identity_Core_.js":        { "tier": "L1" },
+
+    "1A1a._MiniMap_Kernel_.js":   { "tier": "L2" },
+    "1A1e._MiniMap_Skin_.js":     { "tier": "L2" },
+    "1A1b._MiniMap_Core_.js":     { "tier": "L2" },
+    "1A1d._MiniMap_Shell_.js":    { "tier": "L2" },
+    "1A1f._MiniMap_Views_.js":    { "tier": "L2" },
+    "2A1a._Question_Wrapper_.js": { "tier": "L2" },
+    "0X1a._Command_Bar_.js":      { "tier": "L2" },
+
+    "1A1c._MiniMap_Engine_.js":                                { "tier": "L3" },
+    "0C1a._Pagination_Windowing_Engine_.js":                   { "tier": "L3" },
+    "0C1b._Pagination_Windowing_(Chat_Adapter)_.js":           { "tier": "L3" },
+    "0C2a._Unmount_Messages_Engine_.js":                       { "tier": "L3" },
+    "0C2b._Unmount_Messages_(Chat_Adapter)_.js":               { "tier": "L3" },
+    "3H1a._Highlights_Engine_.js":                             { "tier": "L3" },
+    "3A1a._Dock_Panel_.js":                                    { "tier": "L3" },
+    "1C1a._Turn_Title_Bar_.js":                                { "tier": "L3" },
+    "1C1c._Outline_Mechanisms_Router_(_Unmount_&_Pagination_Integration)_.js": { "tier": "L3" },
+    "2B1a._Quote_Tracker_.js":                                 { "tier": "L3" },
+    "0D2a._Data_Sync_.js":                                     { "tier": "L3" },
+    "0D2b._Data_Sync_Providers_.js":                           { "tier": "L3" },
+    "0D3a._Transcript_Archive_Engine_.js":                     { "tier": "L3" },
+    "0D3b._Transcript_Extension_Bridge_.js":                   { "tier": "L3" },
+    "0D5a._Billing_Core_.js":                                  { "tier": "L3" },
+    "8A2a._H2O_Skins_Registry_.js":                            { "tier": "L3" },
+
+    "0B2a._Performance_Monitor_(_Plugin)_.js": { "tier": "DebugOnly" },
+    "0B2b._Performance_HUD_(_Widget)_.js":     { "tier": "DebugOnly" },
+
+    "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" }
+  }
+}

@@ -22,6 +22,8 @@
 
   const EV_CHUB_READY_V1 = 'h2o.ev:prm:cgx:cntrlhb:ready:v1';
   const MARK = '__H2O_CHUB_EXPORT_TAB_PLUGIN_V010__';
+  const ALIAS_ID = '0Z1m._Export_Tab_(Control_Hub_Plugin)_.js';
+  const OPEN_EVENT = 'evt:h2o:chub:open';
 
   if (W[MARK]) return;
   W[MARK] = true;
@@ -143,16 +145,32 @@
     }
   }
 
-  register();
-  W.addEventListener(EV_CHUB_READY_V1, register, true);
+  const __doInit = () => {
+    register();
+    W.addEventListener(EV_CHUB_READY_V1, register, true);
 
-  if (!LAST_API) {
-    let tries = 0;
-    const timer = W.setInterval(() => {
-      tries += 1;
-      if (register() || tries > 80) {
-        try { W.clearInterval(timer); } catch {}
-      }
-    }, 250);
+    if (!LAST_API) {
+      let tries = 0;
+      const timer = W.setInterval(() => {
+        tries += 1;
+        if (register() || tries > 80) {
+          try { W.clearInterval(timer); } catch {}
+        }
+      }, 250);
+    }
+  };
+
+  try {
+    const loaderApi = (W && W.H2O && W.H2O.loader) || null;
+    if (loaderApi && typeof loaderApi.registerOnDemand === 'function') {
+      loaderApi.registerOnDemand(ALIAS_ID, OPEN_EVENT);
+    }
+    if (loaderApi && typeof loaderApi.guard === 'function') {
+      loaderApi.guard(ALIAS_ID, __doInit);
+    } else {
+      __doInit();
+    }
+  } catch (_) {
+    try { __doInit(); } catch (_) {}
   }
 })();

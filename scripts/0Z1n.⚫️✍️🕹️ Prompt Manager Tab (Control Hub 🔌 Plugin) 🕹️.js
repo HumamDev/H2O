@@ -25,6 +25,12 @@
   const EV_PM_READY_V1 = 'evt:h2o:pm:ready:v1';
   const MARK = '__H2O_CHUB_PROMPT_MANAGER_TAB_PLUGIN_V010__';
 
+  // Phase 4 Step 5d (pilot): canonical alias-id for L5 on-demand wiring.
+  // Must match the catalog key in build/chrome-ext-prod/loader.js
+  // DEV_SCRIPT_CATALOG and the entry in config/loader-tiers.json.
+  const ALIAS_ID = '0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js';
+  const OPEN_EVENT = 'evt:h2o:chub:open';
+
   if (W[MARK]) return;
   W[MARK] = true;
 
@@ -239,18 +245,62 @@
     }
   }
 
-  W.addEventListener(EV_PM_READY_V1, capturePromptManagerReady, true);
+  // Phase 4 Step 5d (pilot): the script's existing MARK guard above protects
+  // against the IIFE running twice (the loader's content-script-injection
+  // could in principle re-inject — already prevented). H2O.loader.guard adds
+  // a second canonical layer keyed by ALIAS_ID so any future
+  // registerOnDemand-triggered re-load (e.g. on a second Control Hub open
+  // before MARK is set on the first load) is also a no-op.
+  //
+  // Functionally this block does what the original four init lines did:
+  //   - listen for EV_PM_READY_V1
+  //   - register() once immediately
+  //   - retry on EV_CHUB_READY_V1
+  //   - poll every 250ms × 80 as a last-resort fallback
+  // Wrapping in guard does NOT change V1 behavior — when V2 is OFF, the
+  // tab loads eagerly at boot, runs this init once, MARK + guard both set.
+  // When V2 is ON, the tab loads on-demand after Control Hub open, runs
+  // this init once (MARK + guard set), and re-fires of the open-event
+  // are no-ops at all three layers (loader dedup → MARK → guard).
+  const __doInit = () => {
+    W.addEventListener(EV_PM_READY_V1, capturePromptManagerReady, true);
 
-  register();
-  W.addEventListener(EV_CHUB_READY_V1, register, true);
+    register();
+    W.addEventListener(EV_CHUB_READY_V1, register, true);
 
-  if (!LAST_API) {
-    let tries = 0;
-    const timer = W.setInterval(() => {
-      tries += 1;
-      if (register() || tries > 80) {
-        try { W.clearInterval(timer); } catch {}
-      }
-    }, 250);
+    if (!LAST_API) {
+      let tries = 0;
+      const timer = W.setInterval(() => {
+        tries += 1;
+        if (register() || tries > 80) {
+          try { W.clearInterval(timer); } catch {}
+        }
+      }, 250);
+    }
+  };
+
+  // Register for on-demand loading (V2-aware; harmless under V1).
+  // When V2 is OFF: the Bridge subscribes to OPEN_EVENT but the loader's
+  // V2 listener is not installed, so any dispatch of
+  // evt:h2o:loader:on-demand-load is a no-op. When V2 is ON and this
+  // script is loaded eagerly (because tier metadata wasn't synced),
+  // the registerOnDemand call still records in the registry but the
+  // loader would have already loaded the script via phaseIdle.
+  try {
+    const loaderApi = (W && W.H2O && W.H2O.loader) || null;
+    if (loaderApi && typeof loaderApi.registerOnDemand === 'function') {
+      loaderApi.registerOnDemand(ALIAS_ID, OPEN_EVENT);
+    }
+    if (loaderApi && typeof loaderApi.guard === 'function') {
+      loaderApi.guard(ALIAS_ID, __doInit);
+    } else {
+      // Fallback: H2O.loader.guard not available (Bridge missing for some
+      // reason). MARK guard above already protects against double-IIFE,
+      // so just call init directly.
+      __doInit();
+    }
+  } catch (_) {
+    // Defensive: any throw in the loader-API path falls back to direct init.
+    try { __doInit(); } catch (_) {}
   }
 })();

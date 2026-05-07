@@ -802,6 +802,28 @@ export function makeChromeLiveLoaderJs({
 
       const op = String(req.op || "").trim();
       const payload = isPlainObj(req.payload) ? req.payload : {};
+      if (op === "__loaderRuntimeStats") {
+        readRuntimeStats().then((stats) => {
+          const safeStats = stats && typeof stats === "object" && !Array.isArray(stats) ? stats : {};
+          reply(id, {
+            ok: true,
+            result: {
+              ok: true,
+              source: "page-bridge-loader",
+              key: STORAGE_RUNTIME_KEY,
+              stats: safeStats,
+              count: Object.keys(safeStats).length,
+              at: Date.now(),
+            },
+          });
+        }).catch((e) => {
+          reply(id, {
+            ok: false,
+            error: String(e && (e.message || e) || "runtime stats read failed"),
+          });
+        });
+        return;
+      }
       if (!ALLOW_OPS.has(op)) {
         reply(id, { ok: false, error: "unsupported archive op: " + op });
         return;
@@ -1086,11 +1108,15 @@ export function makeChromeLiveLoaderJs({
       const aliasId = normalizeAliasId(k);
       if (!aliasId) continue;
       const meta = v && typeof v === "object" ? v : {};
+      const tier = String(meta.tier || "L4").trim() || "L4";
+      const openEvent = String(meta.openEvent || "").trim();
       map[aliasId] = {
         name: String(meta.name || aliasId),
         runAt: normalizeRunAt(meta.runAt || "document-idle"),
         runtimeGroup: String(meta.runtimeGroup || ""),
         runtimeOrder: Number.isFinite(Number(meta.runtimeOrder)) ? Number(meta.runtimeOrder) : null,
+        tier,
+        openEvent,
       };
       order.push(aliasId);
     }
@@ -1146,6 +1172,8 @@ export function makeChromeLiveLoaderJs({
         runAt: normalizeRunAt(meta.runAt || "document-idle"),
         requireUrl: aliasRequireUrl(aliasId),
         aliasId,
+        tier: String(meta.tier || "L4") || "L4",
+        openEvent: String(meta.openEvent || ""),
       };
     }
 
@@ -1159,6 +1187,8 @@ export function makeChromeLiveLoaderJs({
         runAt: "document-idle",
         requireUrl: aliasRequireUrl(aliasId),
         aliasId,
+        tier: "L4",
+        openEvent: "",
       };
       const merged = {
         ...base,
@@ -1167,6 +1197,8 @@ export function makeChromeLiveLoaderJs({
         name: String(item.name || base.name || aliasId),
         runAt: normalizeRunAt(item.runAt || base.runAt || "document-idle"),
         requireUrl: String(stripDevCacheNoise(item.requireUrl || base.requireUrl || aliasRequireUrl(aliasId))),
+        tier: String(item.tier || base.tier || "L4").trim() || "L4",
+        openEvent: String(item.openEvent || base.openEvent || "").trim(),
       };
 
       byAlias[aliasId] = merged;
@@ -1509,12 +1541,16 @@ export function makeChromeLiveLoaderJs({
       const host = scriptHost();
       if (!host) return reject(new Error("document host unavailable"));
 
+      const opts = options && typeof options === "object" ? options : null;
+      const aliasIdRaw = opts && opts.aliasId ? String(opts.aliasId) : "";
+
       const s = document.createElement("script");
       s.type = "text/javascript";
       s.async = false;
       s.src = withBuildAwareUrl(url);
-
-      const opts = options && typeof options === "object" ? options : null;
+      if (aliasIdRaw) {
+        try { s.dataset.h2oAlias = aliasIdRaw; } catch {}
+      }
       const timeoutMs = Math.max(1000, Number(opts?.timeoutMs) || timeoutForPhase(phase));
       const slowWarnMs = Math.max(250, Number(opts?.slowWarnMs) || slowWarnForPhase(phase));
 
@@ -1614,6 +1650,7 @@ export function makeChromeLiveLoaderJs({
       const loadedUrl = await loadExternalScript(it.requireUrl, phase, {
         timeoutMs: timeoutForPhase(phase),
         slowWarnMs: slowWarnForPhase(phase),
+        aliasId: it && it.aliasId ? String(it.aliasId) : "",
       });
       const t1 = (globalThis.performance && typeof performance.now === "function") ? performance.now() : Date.now();
       const heap1 = heapUsedBytes();
@@ -1678,6 +1715,12 @@ export function makeChromeLiveLoaderJs({
   }
 
   async function boot() {
+    let V2_ENABLED = false;
+    try {
+      V2_ENABLED = (typeof localStorage !== "undefined")
+        && (localStorage.getItem("H2O_LOADER_V2_ENABLED") === "1");
+    } catch (_) { V2_ENABLED = false; }
+
     setStatus(STATUS_LABEL + ": loading...");
     log("boot start", location.href);
     if (ENABLE_TOGGLES && await consumePageDisableOnce()) {
@@ -1734,10 +1777,26 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
+    const phaseOnDemand = [];
+    let phaseInputs = enabled;
+    if (V2_ENABLED) {
+      const eager = [];
+      for (const it of enabled) {
+        const tier = String(it && it.tier || "");
+        const openEvent = String(it && it.openEvent || "");
+        if (tier === "L5" && openEvent) {
+          phaseOnDemand.push(it);
+        } else {
+          eager.push(it);
+        }
+      }
+      phaseInputs = eager;
+    }
+
     const phaseStart = [];
     const phaseEnd = [];
     const phaseIdle = [];
-    for (const it of enabled) {
+    for (const it of phaseInputs) {
       if (it.runAt === "document-start") phaseStart.push(it);
       else if (it.runAt === "document-end") phaseEnd.push(it);
       else phaseIdle.push(it);
@@ -1765,6 +1824,58 @@ export function makeChromeLiveLoaderJs({
       warn("script host not ready");
       setStatus(STATUS_LABEL + ": script host missing", true);
       return;
+    }
+
+    if (V2_ENABLED && phaseOnDemand.length) {
+      const onDemandByAlias = new Map();
+      for (const it of phaseOnDemand) onDemandByAlias.set(String(it.aliasId), it);
+      const loadedOnDemand = new Set();
+      const loadingOnDemand = new Set();
+
+      const aliasesByOpenEvent = new Map();
+      for (const it of phaseOnDemand) {
+        const openEv = String(it && it.openEvent || "").trim();
+        if (!openEv) continue;
+        if (!aliasesByOpenEvent.has(openEv)) aliasesByOpenEvent.set(openEv, []);
+        aliasesByOpenEvent.get(openEv).push(String(it.aliasId));
+      }
+      for (const [openEv, aliases] of aliasesByOpenEvent) {
+        try {
+          window.addEventListener(openEv, () => {
+            for (const aliasId of aliases) {
+              try {
+                window.dispatchEvent(new CustomEvent("evt:h2o:loader:on-demand-load", {
+                  detail: { aliasId },
+                }));
+              } catch (_) {}
+            }
+          }, false);
+        } catch (_) {}
+      }
+
+      window.addEventListener("evt:h2o:loader:on-demand-load", async (evt) => {
+        const aliasId = String(evt && evt.detail && evt.detail.aliasId || "").trim();
+        if (!aliasId) return;
+        const it = onDemandByAlias.get(aliasId);
+        if (!it) {
+          warn("on-demand: unknown aliasId", aliasId);
+          return;
+        }
+        if (loadedOnDemand.has(aliasId) || loadingOnDemand.has(aliasId)) return;
+        loadingOnDemand.add(aliasId);
+        try {
+          const samples = [];
+          const ok = await loadOneScript(it, 0, 1, "document-idle", samples, null);
+          if (!ok) warn("on-demand: load failed; not retrying", aliasId);
+          loadedOnDemand.add(aliasId);
+          try { await flushRuntimeSamples(samples); } catch (_) {}
+        } catch (e) {
+          warn("on-demand: dispatch handler threw", aliasId, e);
+          loadedOnDemand.add(aliasId);
+        } finally {
+          loadingOnDemand.delete(aliasId);
+        }
+      }, false);
     }
 
     const runtimeSamples = [];

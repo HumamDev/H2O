@@ -167,11 +167,42 @@ function readRuntimeOrderMeta(srcRoot) {
   return out;
 }
 
+// Phase 4 Step 5a: read per-script tier classification + optional on-demand
+// openEvent from config/loader-tiers.json. The loader does NOT yet read these
+// fields — they are embedded into DEV_SCRIPT_CATALOG for forward compatibility
+// and diagnostic visibility. Any alias not listed defaults to L4 (handled in
+// readScriptCatalog by the `|| "L4"` / `|| ""` fallbacks).
+function readTierMeta(srcRoot) {
+  const out = {};
+  const tiersFile = path.join(srcRoot, "config", "loader-tiers.json");
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(tiersFile, "utf8"));
+  } catch {
+    return out;
+  }
+  const scripts = manifest && typeof manifest === "object" ? manifest.scripts : null;
+  if (!scripts || typeof scripts !== "object") return out;
+  for (const [aliasRaw, entry] of Object.entries(scripts)) {
+    const aliasId = String(aliasRaw || "").trim();
+    if (!aliasId) continue;
+    const tier = String((entry && entry.tier) || "").trim();
+    const openEvent = String((entry && entry.openEvent) || "").trim();
+    if (!tier && !openEvent) continue;
+    out[aliasId] = {
+      tier: tier || "L4",
+      openEvent,
+    };
+  }
+  return out;
+}
+
 function readScriptCatalog(srcRoot) {
   const out = {};
   const scriptsDir = path.join(srcRoot, "scripts");
   if (!fs.existsSync(scriptsDir)) return out;
   const runtimeOrderMeta = readRuntimeOrderMeta(srcRoot);
+  const tierMeta = readTierMeta(srcRoot);
 
   let entries = [];
   try {
@@ -200,12 +231,19 @@ function readScriptCatalog(srcRoot) {
     const scriptName = stripScriptFilenameSuffix(entry.name) || String(readHeaderTag(meta, "name") || entry.name).trim() || entry.name;
     const runAt = normalizeRunAtTag(readHeaderTag(meta, "run-at") || "document-idle");
     const runtimeMeta = runtimeOrderMeta[alias] || null;
+    const tierEntry = tierMeta[alias] || null;
 
     out[alias] = {
       name: scriptName,
       runAt,
       runtimeGroup: runtimeMeta ? runtimeMeta.runtimeGroup : "",
       runtimeOrder: runtimeMeta ? runtimeMeta.runtimeOrder : null,
+      // Phase 4 Step 5a: tier defaults to "L4" when not declared in
+      // config/loader-tiers.json. openEvent defaults to "" (empty string).
+      // These fields are metadata-only at this phase — the loader does NOT
+      // act on them yet.
+      tier: tierEntry ? tierEntry.tier : "L4",
+      openEvent: tierEntry ? tierEntry.openEvent : "",
     };
   }
 

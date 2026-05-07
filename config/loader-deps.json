@@ -13,6 +13,7 @@
     "CORE_BASE": {
       "description": "Shared infrastructure required by many systems.",
       "members": [
+        "0A0a._Loader_Bridge_.js",
         "0A1a._H2O_Core_.js",
         "0A2a._Observer_Hub_.js",
         "0D1a._Data_Core_.js",
@@ -117,7 +118,9 @@
     "0A1a._H2O_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [],
-      "after": [],
+      "after": [
+        "0A0a._Loader_Bridge_.js"
+      ],
       "group": "CORE_BASE",
       "provides": [
         "h2o.core"
@@ -942,6 +945,17 @@
       "provides": [
         "workspace.drawer"
       ],
+      "optionalDependsOn": []
+    },
+    "0A0a._Loader_Bridge_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.loader"
+      ],
+      "critical": true,
       "optionalDependsOn": []
     }
   }

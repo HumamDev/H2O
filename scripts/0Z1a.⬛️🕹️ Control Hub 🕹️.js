@@ -4549,6 +4549,7 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 	    ENGINE_renderAll(p);
 
     UTIL_emit(EV_CHUB_CHANGED_V1, { action: 'show' });
+    try { W.dispatchEvent(new CustomEvent('evt:h2o:chub:open', { detail: { ts: Date.now() } })); } catch (_) {}
   }
 
   function CORE_CH_hidePanel(){

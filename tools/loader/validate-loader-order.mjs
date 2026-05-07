@@ -363,10 +363,63 @@ function main() {
     warnings.push(`No proxy-pack data found at ${rel(PROXY_PACK_FILE)}.`);
   }
 
+  // Phase 4 Step 5a: tier-coverage report. Info + warnings only — never errors.
+  // Reads config/loader-tiers.json if present; otherwise prints a soft note.
+  // Cross-checks kernel allowlist (L0/L1) and flags drift between tiers.json
+  // and dev-order.tsv. Does NOT introduce a new failure path.
+  const TIERS_FILE = path.join(SRC_DIR, "config", "loader-tiers.json");
+  const tiersText = readTextIfExists(TIERS_FILE);
+  let tierLine = `[validate-loader-order] tiers: ${rel(TIERS_FILE)} (missing — using defaults)`;
+  if (tiersText) {
+    let tiersJson = null;
+    try { tiersJson = JSON.parse(tiersText); } catch (e) {
+      warnings.push(`Failed to parse ${rel(TIERS_FILE)}: ${e && e.message ? e.message : String(e)}`);
+    }
+    const scriptsMap = tiersJson && typeof tiersJson === "object" ? tiersJson.scripts : null;
+    if (scriptsMap && typeof scriptsMap === "object") {
+      const tierCounts = {};
+      const explicit = new Set();
+      for (const [aliasRaw, entry] of Object.entries(scriptsMap)) {
+        const alias = String(aliasRaw || "").trim();
+        if (!alias) continue;
+        const tier = String((entry && entry.tier) || "").trim() || "L4";
+        tierCounts[tier] = (tierCounts[tier] || 0) + 1;
+        explicit.add(alias);
+      }
+      // Kernel allowlist check (warning only)
+      const kernel = (tiersJson && tiersJson.meta && tiersJson.meta.kernelAllowlist) || {};
+      for (const tierName of ["L0", "L1"]) {
+        const allow = new Set((Array.isArray(kernel[tierName]) ? kernel[tierName] : []).map(String));
+        for (const [aliasRaw, entry] of Object.entries(scriptsMap)) {
+          const alias = String(aliasRaw || "").trim();
+          const t = String((entry && entry.tier) || "").trim();
+          if (t === tierName && allow.size && !allow.has(alias)) {
+            warnings.push(`Alias '${alias}' classified as ${tierName} but not in kernelAllowlist[${tierName}].`);
+          }
+        }
+      }
+      // Drift check: alias present in tiers but unknown to dev-order (warning only)
+      const devOrderSet = new Set(devOrder.order.map((alias) => String(alias || "").trim()).filter(Boolean));
+      if (devOrderSet.size) {
+        for (const alias of explicit) {
+          if (!devOrderSet.has(alias)) {
+            warnings.push(`Alias '${alias}' listed in ${rel(TIERS_FILE)} but not present in ${rel(ORDER_FILE)}.`);
+          }
+        }
+      }
+      // L4-default count = total dev-order entries minus explicit
+      const totalAliases = devOrderSet.size || explicit.size;
+      const defaultedToL4 = Math.max(0, totalAliases - explicit.size);
+      const summary = Object.keys(tierCounts).sort().map(k => `${k}=${tierCounts[k]}`).join(", ");
+      tierLine = `[validate-loader-order] tiers: ${rel(TIERS_FILE)} (explicit ${explicit.size}: ${summary || "none"}; default-L4 ${defaultedToL4})`;
+    }
+  }
+
   console.log([
     `[validate-loader-order] deps: ${rel(DEPS_FILE)}`,
     `[validate-loader-order] dev-order: ${rel(ORDER_FILE)} ${devOrder.order.length ? `(entries=${devOrder.order.length})` : "(missing/empty)"}`,
     `[validate-loader-order] proxy-pack: ${rel(PROXY_PACK_FILE)} ${proxyPack.order.length ? `(entries=${proxyPack.order.length})` : "(missing/empty)"}`,
+    tierLine,
   ].join("\n"));
 
   if (warnings.length) {

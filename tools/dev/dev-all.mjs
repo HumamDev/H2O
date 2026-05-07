@@ -68,30 +68,22 @@ function runNodeStep(label, scriptPath, extraEnv = {}) {
 
 async function main() {
   const { srcDir } = resolveEnvDefaults();
-  const controlsOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls");
-  const leanOutDir = path.join(srcDir, "build", "chrome-ext-dev-lean");
+  const oauthGoogleOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls-oauth-google");
 
-  await runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
+  await runNodeStep("1/2 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
 
-  await runNodeStep("2/3 Build Controls extension (unpacked)", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("2/2 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
-    H2O_EXT_OUT_DIR: controlsOutDir,
-  });
-
-  await runNodeStep("3/3 Build Lean extension (unpacked)", "tools/product/extension/build-chrome-live-extension.mjs", {
-    H2O_EXT_DEV_VARIANT: "lean",
-    H2O_EXT_OUT_DIR: leanOutDir,
+    H2O_EXT_OUT_DIR: oauthGoogleOutDir,
+    H2O_IDENTITY_PHASE_NETWORK: "request_otp",
+    H2O_IDENTITY_OAUTH_PROVIDER: "google",
   });
 
   console.log("\n[dev:all] done");
   console.log("[dev:all] Outputs:");
-  console.log(`[dev:all]   Controls EXT OUT_DIR: ${controlsOutDir}`);
-  console.log(`[dev:all]   Lean     EXT OUT_DIR: ${leanOutDir}`);
+  console.log(`[dev:all]   V3 armed oauth-google EXT OUT_DIR: ${oauthGoogleOutDir}`);
   console.log(
-    "[dev:all] Reminder: Open chrome://extensions and reload the extension that was loaded from the folder you are testing.",
-  );
-  console.log(
-    "Now go to chrome://extensions and reload the extension you’re testing (Controls or Lean), then refresh the page.",
+    "[dev:all] Reminder: Open chrome://extensions and reload the oauth-google dev controls extension, then refresh the page.",
   );
 }
 
