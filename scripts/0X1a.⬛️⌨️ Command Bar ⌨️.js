@@ -2940,6 +2940,36 @@ html.h2o-commandbar-resizing-panel *{
   API.syncPerfHudButton = syncPerfHudButton;
   API.togglePerfHud = togglePerfHud;
   API.getPerfHudState = () => readPerfHudState();
+  // Phase 11 (Library Maintenance bug-fix): tiny read-only inspection API. Returns
+  // whether a control id is currently registered in state.controls and the control's
+  // public def fields. Useful for diagnostics that want authoritative registration
+  // truth instead of guessing via DOM (the button element does not carry def.id as
+  // its DOM id, so DOM-based lookups by id-selector silently fail).
+  API.hasControl = (idRaw) => state.controls.has(String(idRaw || "").trim());
+  API.listControls = (opts = {}) => {
+    const ownerFilter = String(opts?.owner || "").trim();
+    const groupFilter = String(opts?.groupId || "").trim();
+    const out = [];
+    for (const rec of state.controls.values()) {
+      if (ownerFilter && rec.owner !== ownerFilter) continue;
+      if (groupFilter && rec.groupId !== groupFilter) continue;
+      out.push({
+        id: rec.id,
+        owner: rec.owner,
+        groupId: rec.groupId,
+        zone: rec.zone,
+        type: rec.def?.type || "",
+        text: rec.def?.text || "",
+        title: rec.def?.title || "",
+        order: Number(rec.def?.order) || 0,
+      });
+    }
+    return out;
+  };
+  API.hasGroup = (idRaw) => state.groups.has(String(idRaw || "").trim());
+  API.listGroups = () => Array.from(state.groups.values()).map((g) => ({
+    id: g.id, owner: g.owner, zone: g.zone, order: g.order, label: g.label,
+  }));
 
   if (D.readyState === "loading") {
     D.addEventListener("DOMContentLoaded", boot, { once: true });

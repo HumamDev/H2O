@@ -4268,24 +4268,138 @@ ${out.answerText}`);
     }
   }
 
-  // Phase 6: lazily-loaded chat-title cache shared by all candidate popups in this session.
-  // First popup pays for the workbench-row fetch; subsequent popups read from the cache.
-  // Reload the page to pick up new chat titles.
+  // Phase 6 (extended in Phase 7 fix): lazily-loaded chat-title cache shared by all
+  // candidate popups in this session. Three sources merged (last-write wins on real
+  // titles, never on chatId fallback):
+  //   1. workbench rows (extension archive) — has titles for every persisted chat.
+  //   2. LibraryIndex.listChats() — has titles for every chat the registry knows about
+  //      (covers recent chats, folders, projects). Important when workbench rows are
+  //      sparse / extension hasn't backfilled yet.
+  //   3. native ChatGPT sidebar anchors as a last-resort visible-only source.
   async function getCloudChatTitleCache() {
     if (state.cloudChatTitleCache instanceof Map) return state.cloudChatTitleCache;
     const map = new Map();
+    const setIfReal = (id, title) => {
+      const t = normalizeLabel(title || '').slice(0, 80);
+      if (id && t && t !== id) map.set(id, t);
+    };
+    // (1) workbench rows
     try {
       const rows = await Promise.resolve(safeListWorkbenchRows());
-      (Array.isArray(rows) ? rows : []).forEach((r) => {
-        const id = String(r?.chatId || '').trim();
-        if (!id) return;
-        const title = normalizeLabel(r?.title || r?.excerpt || id).slice(0, 80);
-        map.set(id, title);
+      (Array.isArray(rows) ? rows : []).forEach((r) => setIfReal(String(r?.chatId || '').trim(), r?.title || r?.excerpt || ''));
+    } catch (e) { err('cloud:title-cache:workbench', e); }
+    // (2) LibraryIndex active model
+    try {
+      const lib = W.H2O?.LibraryIndex;
+      const chats = lib?.listChats?.({}, { limit: 5000 }) || lib?.getModel?.()?.chats || [];
+      (Array.isArray(chats) ? chats : []).forEach((row) => setIfReal(String(row?.chatId || '').trim(), row?.title));
+    } catch (e) { err('cloud:title-cache:library-index', e); }
+    // (3) native sidebar anchors (cheap, picks up recent unsaved chats)
+    try {
+      D.querySelectorAll('nav a[href^="/c/"]').forEach((a) => {
+        const m = (a.getAttribute('href') || '').match(/\/c\/([^/?#]+)/);
+        if (!m) return;
+        const id = m[1];
+        if (map.has(id)) return; // don't overwrite higher-priority sources
+        setIfReal(id, (a.textContent || '').trim());
       });
-    } catch (e) { err('cloud:title-cache', e); }
+    } catch (e) { err('cloud:title-cache:sidebar', e); }
     state.cloudChatTitleCache = map;
     return map;
   }
+
+  // Phase 7 fix: resolve human-friendly metadata for a (chatId, turnId) pair so the
+  // candidate popup can show "Turn 3 · …" instead of "T1" + raw IDs. Sources we trust:
+  //
+  //   1. Per-chat tagCatalog stored in `tags:chat-cache:v2.chats[chatId].tagCatalog[i].turnRefs[]`
+  //      — each ref has { answerId, turnKey, ordinal, snippet }. ordinal is the canonical
+  //      "Turn N" number assigned by aggregateChat() while iterating the chat's turns.
+  //
+  //   2. Global title map persisted by 1C1a Turn Title Bar at
+  //      `h2o:prm:cgx:mnmp:state:titles:v1` → { [answerId]: titleString }.
+  //      We prefer the live in-memory titles via H2O.AT.tnswrttl.api.public.getTitle()
+  //      when available, falling back to the localStorage snapshot.
+  //
+  //   3. Per-popup memoization via state.cloudTurnMetaByChat (Map<chatId, Map<turnId, meta>>)
+  //      so we walk each chat-cache once per popup mount.
+  //
+  // Returns { ordinal:Number|null, title:String, snippet:String, label:String, raw:String }.
+  // `label` is the user-facing primary label; `raw` is the original turnId (used for
+  // openTurnByRef + NavTo.toTurn — we never change the underlying scroll target).
+  function getGlobalTurnTitlesMap() {
+    try {
+      const apiTitles = W.H2O?.AT?.tnswrttl?.api?.public?.getTitles?.();
+      if (apiTitles && typeof apiTitles === 'object' && Object.keys(apiTitles).length) return apiTitles;
+    } catch (_e) {}
+    try {
+      const raw = W.localStorage?.getItem('h2o:prm:cgx:mnmp:state:titles:v1');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (_e) { return {}; }
+  }
+
+  function getChatCacheTurnMap(chatId) {
+    const id = toChatId(chatId);
+    if (!id) return new Map();
+    if (!state.cloudTurnMetaByChat) state.cloudTurnMetaByChat = new Map();
+    if (state.cloudTurnMetaByChat.has(id)) return state.cloudTurnMetaByChat.get(id);
+    const out = new Map();
+    let summary = null;
+    try { summary = readChatSummary(id); } catch (e) { err('cloud:read-chat-summary', e); }
+    const tagCatalog = Array.isArray(summary?.tagCatalog) ? summary.tagCatalog : [];
+    tagCatalog.forEach((entry) => {
+      const refs = Array.isArray(entry?.turnRefs) ? entry.turnRefs : [];
+      refs.forEach((ref) => {
+        const aId = String(ref?.answerId || '').trim();
+        const tKey = String(ref?.turnKey || '').trim();
+        const meta = {
+          ordinal: Number.isFinite(Number(ref?.ordinal)) ? Number(ref.ordinal) : null,
+          snippet: String(ref?.snippet || '').trim(),
+          answerId: aId || null,
+          turnKey: tKey || null,
+        };
+        if (aId && !out.has(aId)) out.set(aId, meta);
+        if (tKey && !out.has(tKey)) out.set(tKey, meta);
+      });
+    });
+    state.cloudTurnMetaByChat.set(id, out);
+    return out;
+  }
+
+  function resolveTurnMeta(chatId, turnIdRaw) {
+    const id = toChatId(chatId);
+    const turnId = String(turnIdRaw || '').trim();
+    if (!turnId) return { ordinal: null, title: '', snippet: '', label: 'Turn ?', raw: turnId };
+    const reverseMap = id ? getChatCacheTurnMap(id) : new Map();
+    const fromCache = reverseMap.get(turnId) || null;
+    const ordinal = fromCache?.ordinal || null;
+    const snippet = fromCache?.snippet || '';
+    let title = '';
+    try {
+      const titles = getGlobalTurnTitlesMap();
+      title = String(titles[turnId] || '').trim();
+    } catch (_e) {}
+    // Preferred user-facing label: "Turn 3 · Some title". Fall back through snippet → just
+    // the ordinal → "Turn ?" if we have nothing useful. We never echo the raw ID into the
+    // primary label — IDs go on the tooltip only.
+    const ordPart = ordinal ? `Turn ${ordinal}` : 'Turn ?';
+    const subPart = title || snippet || '';
+    const label = subPart ? `${ordPart} · ${subPart.slice(0, 80)}` : ordPart;
+    return { ordinal, title, snippet, label, raw: turnId };
+  }
+
+  // Reset the per-popup turn-meta cache when the auto-pool / occ-index emits an update —
+  // both signal that aggregateChat has re-run and chat-cache may have new ordinals.
+  function invalidateCloudTurnMetaCache() {
+    try { state.cloudTurnMetaByChat = null; } catch (_e) {}
+  }
+  try {
+    W.addEventListener('evt:h2o:library:tag-occ-index-updated', invalidateCloudTurnMetaCache, true);
+    W.addEventListener('h2o:library:tag-occ-index-updated', invalidateCloudTurnMetaCache, true);
+    W.addEventListener('evt:h2o:tags:chat-analyzed', invalidateCloudTurnMetaCache, true);
+    W.addEventListener('h2o:tags:chat-analyzed', invalidateCloudTurnMetaCache, true);
+  } catch (_e) {}
 
   function renderCandidateTurnList(container, chatId, bubble, turnIds, isCurrentChat) {
     container.innerHTML = '';
@@ -4299,41 +4413,115 @@ ${out.answerText}`);
     }
     const MAX = 20;
     const visible = ids.slice(0, MAX);
-    visible.forEach((turnId, idx) => {
+
+    // Phase 7 fix: resolve each occurrence to {ordinal, title, snippet, label, raw} via
+    // resolveTurnMeta(), then sort by chat ordinal so the popup is naturally ordered by
+    // turn-in-chat instead of by raw insertion order. Raw IDs only show up in tooltips.
+    const decorated = visible.map((turnId) => ({
+      turnId: String(turnId || ''),
+      meta: resolveTurnMeta(chatId, turnId),
+    }));
+    decorated.sort((a, b) => {
+      const ao = a.meta.ordinal == null ? Number.POSITIVE_INFINITY : a.meta.ordinal;
+      const bo = b.meta.ordinal == null ? Number.POSITIVE_INFINITY : b.meta.ordinal;
+      return ao - bo;
+    });
+
+    decorated.forEach(({ turnId: tStr, meta }, idx) => {
       const turnRow = D.createElement('div');
       turnRow.setAttribute(CLOUD_ATTR, 'pop-turn-row');
+      // Phase 11 a11y: each row is a listitem inside the popup's chat-row, so screen
+      // readers can navigate the turn list cleanly.
+      turnRow.setAttribute('role', 'listitem');
 
-      const ordinal = D.createElement('span');
-      ordinal.setAttribute(CLOUD_ATTR, 'pop-turn-ordinal');
-      ordinal.textContent = `T${idx + 1}`;
-      turnRow.appendChild(ordinal);
+      // Primary "Turn N" badge — uses the chat ordinal (not popup-list position) so the
+      // same turn shows the same number every time. Falls back to "Turn ?" only when we
+      // have no chat-cache record for this turn (rare — happens when occ-index has a
+      // turnId that no aggregateChat() pass has visited yet).
+      const ordinalEl = D.createElement('span');
+      ordinalEl.setAttribute(CLOUD_ATTR, 'pop-turn-ordinal');
+      ordinalEl.textContent = meta.ordinal ? `Turn ${meta.ordinal}` : 'Turn ?';
+      ordinalEl.title = `${ordinalEl.textContent}\nID: ${tStr}`;
+      turnRow.appendChild(ordinalEl);
 
-      const idEl = D.createElement('span');
-      idEl.setAttribute(CLOUD_ATTR, 'pop-turn-id');
-      const tStr = String(turnId || '');
-      idEl.textContent = tStr.length > 22 ? `${tStr.slice(0, 12)}…${tStr.slice(-6)}` : tStr;
-      idEl.title = tStr;
-      turnRow.appendChild(idEl);
+      // Title from 1C1a Turn Title Bar (per-answerId, persisted at
+      // h2o:prm:cgx:mnmp:state:titles:v1). Snippet from chat-cache turnRefs is the
+      // fallback when no human-set title exists yet.
+      const titleEl = D.createElement('span');
+      titleEl.setAttribute(CLOUD_ATTR, 'pop-turn-id'); // existing CSS class — keeps layout stable
+      const subText = (meta.title || meta.snippet || '').slice(0, 90);
+      titleEl.textContent = subText || 'Untitled';
+      titleEl.title = `${ordinalEl.textContent}${subText ? ` · ${subText}` : ''}\nturnId: ${tStr}`;
+      turnRow.appendChild(titleEl);
 
       const openBtn = D.createElement('button');
       openBtn.type = 'button';
       openBtn.setAttribute(CLOUD_ATTR, 'pop-turn-open');
-      // Same-chat → existing openTurnByRef helper (reused, not new NavTo).
-      // Cross-chat → plain link navigation; deferred scroll-to-turn is Phase 7.
+      // Phase 7: same-chat keeps using openTurnByRef (DOM scroll + outline pulse).
+      // Cross-chat routes through H2O.Library.NavTo (Store-backed pending-nav + hash
+      // params + replay on engine-ready / hashchange / popstate).
       openBtn.textContent = isCurrentChat ? 'Scroll' : 'Open';
       openBtn.title = isCurrentChat
-        ? 'Scroll to this turn in the current chat'
-        : 'Open this chat (Phase 7 will deep-link to the turn)';
-      openBtn.onclick = (e) => {
+        ? `Scroll to ${ordinalEl.textContent} in the current chat`
+        : `Open this chat and scroll to ${ordinalEl.textContent}`;
+      // Phase 11 a11y: explicit aria-label so the button announces its action +
+      // target turn even when the surrounding row text isn't read.
+      const aTitle = subText || 'Untitled';
+      openBtn.setAttribute('aria-label', isCurrentChat
+        ? `Scroll to ${ordinalEl.textContent}, ${aTitle}, in the current chat`
+        : `Open chat and scroll to ${ordinalEl.textContent}, ${aTitle}`);
+      openBtn.onclick = async (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        const clickStamp = {
+          at: Date.now(),
+          source: isCurrentChat ? 'tag-popup-turn-scroll' : 'tag-popup-turn-open',
+          chatId,
+          turnId: tStr,
+          occurrenceIndex: idx,
+          isCurrentChat: !!isCurrentChat,
+          navToCalled: null,
+          navToReturned: null,
+          status: 'pending',
+        };
+        try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
         if (isCurrentChat) {
-          try { openTurnByRef(chatId, tStr); }
-          catch (e2) { err('cloud:open-turn-by-ref', e2); }
+          try {
+            const res = openTurnByRef(chatId, tStr);
+            clickStamp.navToCalled = 'same-chat:openTurnByRef';
+            clickStamp.navToReturned = res || null;
+            clickStamp.status = (res && res.ok) ? 'same-chat-scrolled' : `same-chat-fail:${res?.status || 'unknown'}`;
+            if (res && res.ok === false) {
+              // Surface a tiny inline diagnostic so the user knows scrolling failed.
+              try {
+                openBtn.textContent = 'Not found';
+                openBtn.disabled = true;
+                openBtn.title = `${openBtn.title}\n\nFailure: ${res.status || 'unknown'} (turnId: ${tStr})`;
+              } catch (_e) {}
+              try { err('cloud:scroll-failed', new Error(res.status || 'scroll-failed')); } catch (_e) {}
+            }
+          }
+          catch (e2) { err('cloud:open-turn-by-ref', e2); clickStamp.status = `error:${e2?.message || 'scroll'}`; }
         } else {
-          try { W.location.href = `/c/${encodeURIComponent(chatId)}`; }
-          catch (e2) { err('cloud:cross-chat-nav', e2); }
+          // Cross-chat deep-link via Library NavTo. AWAIT toTurn so the click stamp can
+          // record what it returned (status + sessionReadback). NavTo writes
+          // pending-nav synchronously inside toTurn before the await yields.
+          try {
+            const navTo = W.H2O?.Library?.NavTo;
+            if (navTo?.toTurn) {
+              const r = await navTo.toTurn(chatId, tStr, { occurrenceIndex: idx, source: 'tag-popup' });
+              clickStamp.navToCalled = 'toTurn';
+              clickStamp.navToReturned = r || null;
+              clickStamp.status = (r && r.ok) ? 'toTurn-fired' : `toTurn-${r?.status || 'unknown'}`;
+            } else {
+              W.location.href = `/c/${encodeURIComponent(chatId)}`;
+              clickStamp.status = 'navto-missing-fallback-redirect';
+            }
+          }
+          catch (e2) { err('cloud:cross-chat-nav', e2); clickStamp.status = `error:${e2?.message || 'toTurn'}`; }
         }
+        try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
       };
       turnRow.appendChild(openBtn);
       container.appendChild(turnRow);
@@ -4368,7 +4556,7 @@ ${out.answerText}`);
 
     const footer = D.createElement('div');
     footer.setAttribute(CLOUD_ATTR, 'pop-footer');
-    footer.textContent = 'Same-chat → scrolls. Cross-chat → opens (Phase 7 will deep-link).';
+    footer.textContent = 'Same-chat → scrolls. Cross-chat → opens and scrolls to the turn.';
     pop.appendChild(footer);
 
     // Position adjacent to the bubble; clamp inside viewport.
@@ -4446,6 +4634,11 @@ ${out.answerText}`);
         const title = titleMap.get(chatId) || chatId;
         titleEl.textContent = title;
         titleEl.title = `${title}\n${chatId}${chatId === here ? '\n(current chat)' : ''}`;
+        // Phase 11 a11y: make the action explicit. Plain anchor navigation is intercepted
+        // and routed through H2O.Library.NavTo for the deep-link to the first occurrence.
+        titleEl.setAttribute('aria-label', chatId === here
+          ? `Scroll to first occurrence of this tag in the current chat (${title})`
+          : `Open chat ${title} and scroll to first occurrence of this tag`);
         headerRow.appendChild(titleEl);
 
         if (chatId === here) {
@@ -4465,26 +4658,63 @@ ${out.answerText}`);
         const turnsContainer = D.createElement('div');
         turnsContainer.setAttribute(CLOUD_ATTR, 'pop-turns-container');
         turnsContainer.style.display = 'none';
+        // Phase 11 a11y: announce as a list so the inner pop-turn-row listitems form
+        // a proper accessible list when expanded.
+        turnsContainer.setAttribute('role', 'list');
         row.appendChild(turnsContainer);
 
-        let expanded = false;
+        // ─── Phase 7 fix: eagerly preload turnIds for THIS chat row ─────────────
+        // The chat title <a> is the most prominent click target in the popup. Until this
+        // fix, clicking it triggered plain anchor navigation (browser opens /c/<id>) and
+        // bypassed H2O.Library.NavTo entirely — which is exactly what the previous failed
+        // verification showed (no pending-nav written, no replay on destination).
+        //
+        // Now we kick off the occurrence-index fetch as soon as the row is built. Once
+        // turnIds are known, we cache them on row-local state so:
+        //   - Title click can deep-link to the FIRST turn for this bubble (writes
+        //     pending-nav via NavTo, replays on destination).
+        //   - Expand body uses the same cached turnIds — no re-fetch.
+        //
+        // While the eager fetch is in flight, the title is still clickable: if turnIds
+        // aren't yet ready, the click handler calls navTo.toChat (plain redirect, no
+        // turn target). When the fetch resolves we overwrite the click handler so the
+        // next click upgrades to a real toTurn deep-link.
+        let cachedTurnIds = null;        // null = not loaded; [] = loaded but empty
         let loaded = false;
+        let expanded = false;
+
+        const ensureTurnsLoaded = async () => {
+          if (loaded) return cachedTurnIds || [];
+          loaded = true;
+          try {
+            const occ = await getOccurrenceIndexForChat(chatId);
+            const ids = occ?.phrases?.[bubble.key]?.turnIds;
+            cachedTurnIds = Array.isArray(ids) ? ids.slice() : [];
+          } catch (e2) {
+            err('cloud:occ-fetch', e2);
+            cachedTurnIds = [];
+          }
+          return cachedTurnIds;
+        };
+
+        // Fire the eager fetch but do NOT block row rendering on it.
+        ensureTurnsLoaded().catch((e2) => err('cloud:eager-occ-fetch', e2));
+
         const toggleExpand = async (e) => {
           if (e) { e.preventDefault(); e.stopPropagation(); }
           expanded = !expanded;
           turnsContainer.style.display = expanded ? 'block' : 'none';
           chevron.style.transform = expanded ? 'rotate(180deg)' : '';
           chevron.setAttribute('aria-expanded', String(expanded));
-          if (expanded && !loaded) {
-            loaded = true;
+          if (expanded && !turnsContainer.dataset.h2oLoaded) {
             turnsContainer.innerHTML = '<div data-cgxui="pop-turns-loading">Loading turns…</div>';
             try {
-              const occ = await getOccurrenceIndexForChat(chatId);
+              const turnIds = await ensureTurnsLoaded();
               if (!pop.isConnected) return;
-              const turnIds = occ?.phrases?.[bubble.key]?.turnIds || [];
+              turnsContainer.dataset.h2oLoaded = '1';
               renderCandidateTurnList(turnsContainer, chatId, bubble, turnIds, chatId === here);
             } catch (e2) {
-              err('cloud:occ-fetch', e2);
+              err('cloud:occ-render', e2);
               if (!pop.isConnected) return;
               turnsContainer.innerHTML = '';
               const errEl = D.createElement('div');
@@ -4496,9 +4726,118 @@ ${out.answerText}`);
         };
 
         chevron.onclick = (e) => toggleExpand(e);
-        // Clicking the row (not the title link, not the chevron itself) also toggles.
+
+        // Phase 7 fix — chat title click handler.
+        //
+        // Per Phase-7 acceptance review: this MUST do four things in order, with no
+        // path that silently falls through to plain anchor navigation:
+        //   (1) preventDefault + stopPropagation + stopImmediatePropagation IMMEDIATELY
+        //       so the browser cannot race us to /c/<id>.
+        //   (2) Block (await) until cachedTurnIds is loaded so we have a real turn
+        //       target. The eager preload usually resolves before the click; if not,
+        //       this adds at most one bridge round-trip (~50–200 ms).
+        //   (3) Call NavTo.toTurn(chatId, firstTurn, …) which writes pending-nav SYNC
+        //       via sessionStorage and reads it back to verify before redirect.
+        //   (4) If no turnIds exist for this bubble + chat (data inconsistency between
+        //       auto-pool contribByChat and the per-chat occ-index Store record), do
+        //       NOT silently call toChat. Stamp 'no-turn-id-for-deeplink' diagnostic +
+        //       err() log + show a small inline indicator, then still navigate so the
+        //       user isn't stuck.
+        //
+        // Diagnostic stamps land on state.lastCloudPopupClick (exposed via
+        // H2O.Tags.debugLastCloudPopupNav()) so the user can prove which click path
+        // ran without enabling console logging.
+        const handleTitleClick = async (ev) => {
+          // (1) Stop the browser anchor navigation BEFORE any await.
+          if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
+            // Modifier-click — let the browser handle new-tab/new-window per spec.
+            try { state.lastCloudPopupClick = { at: Date.now(), source: 'tag-popup-title', via: 'native-modifier-click', chatId, bubbleKey: bubble.key }; } catch (_e) {}
+            return;
+          }
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+
+          const clickStamp = {
+            at: Date.now(),
+            source: 'tag-popup-title',
+            chatId,
+            bubbleKey: bubble.key,
+            isCurrentChat: chatId === here,
+            cachedReady: cachedTurnIds !== null,
+            cachedLength: (cachedTurnIds || []).length,
+            navToCalled: null,
+            navToReturned: null,
+            status: 'pending',
+          };
+          try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
+
+          const navTo = W.H2O?.Library?.NavTo;
+          if (!navTo) {
+            clickStamp.status = 'navto-missing-fallback-redirect';
+            try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
+            try { W.location.href = `/c/${encodeURIComponent(chatId)}`; } catch (_e) {}
+            return;
+          }
+
+          // (2) Block until turnIds are loaded.
+          let turnIds = [];
+          try { turnIds = await ensureTurnsLoaded(); }
+          catch (e2) { err('cloud:title-await-occ', e2); turnIds = []; }
+          clickStamp.cachedReady = true;
+          clickStamp.cachedLength = (turnIds || []).length;
+
+          // Same-chat: scroll to first occurrence using existing in-chat helper.
+          if (chatId === here) {
+            if (turnIds.length) {
+              try {
+                const r = openTurnByRef(chatId, String(turnIds[0]));
+                clickStamp.navToCalled = 'same-chat:openTurnByRef';
+                clickStamp.navToReturned = r || null;
+                clickStamp.status = 'same-chat-scrolled';
+              } catch (e2) { err('cloud:title-same-chat-scroll', e2); clickStamp.status = `error:${e2?.message || 'scroll'}`; }
+            } else {
+              clickStamp.status = 'same-chat-no-turn';
+            }
+            try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
+            return;
+          }
+
+          // (3) + (4) Cross-chat path. ALWAYS write pending-nav via NavTo.toTurn when
+          // we have a turnId. If we don't, log clearly and still navigate.
+          if (!turnIds.length) {
+            clickStamp.status = 'no-turn-id-for-deeplink';
+            err('cloud:title-no-turnids', new Error(`no occ-index turnIds for chat=${chatId} bubble.key=${bubble.key}`));
+            try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
+            // Do not silently call toChat (which doesn't write pending-nav). Surface the
+            // gap visibly: add a small "no-deep-link" hint to the title so the user can
+            // see why nothing was scrolled to, then still navigate them to the chat.
+            try { titleEl.title += '\n[no-turn-id-for-deeplink — opening chat without scroll]'; } catch (_e) {}
+            try {
+              const r = await navTo.toChat(chatId, { source: 'tag-popup-title-no-turn' });
+              clickStamp.navToCalled = 'toChat';
+              clickStamp.navToReturned = r || null;
+            } catch (e2) { err('cloud:title-toChat', e2); }
+            return;
+          }
+          try {
+            const r = await navTo.toTurn(chatId, String(turnIds[0]), { occurrenceIndex: 0, source: 'tag-popup-title' });
+            clickStamp.navToCalled = 'toTurn';
+            clickStamp.navToReturned = r || null;
+            clickStamp.status = (r && r.ok) ? 'toTurn-fired' : `toTurn-${r?.status || 'unknown'}`;
+          } catch (e2) {
+            err('cloud:title-toTurn', e2);
+            clickStamp.status = `error:${e2?.message || 'toTurn'}`;
+          }
+          try { state.lastCloudPopupClick = clickStamp; } catch (_e) {}
+        };
+        titleEl.addEventListener('click', handleTitleClick);
+
+        // Clicking the row outside the title or chevron toggles expand. Title click is
+        // already handled by handleTitleClick above (with stopPropagation), so the row
+        // click guard for `<a>` no longer matters but stays as defense-in-depth.
         headerRow.addEventListener('click', (e) => {
-          if (e.target.closest('a')) return;        // don't hijack the title link
+          if (e.target.closest('a')) return;        // title handles itself
           if (e.target.closest('button')) return;   // chevron handles itself
           toggleExpand(e);
         });
@@ -4668,6 +5007,11 @@ ${out.answerText}`);
         btn.style.setProperty('--bubble-color', color);
         btn.style.fontSize = `${bubbleFontSize(bubble.count)}px`;
         btn.title = buildBubbleTooltip(bubble);
+        // Phase 11 a11y: explicit aria-label so screen readers announce the bubble
+        // without relying on tooltip text (which is not exposed to AT consistently).
+        // Format: "<label> tag, <kind>, <count> occurrences" — short and scannable.
+        const kindLabel = bubble.kind === 'manual' ? 'manual' : bubble.kind === 'candidate' ? 'candidate' : bubble.kind;
+        btn.setAttribute('aria-label', `${bubble.label} tag, ${kindLabel}, ${bubble.count} occurrence${bubble.count === 1 ? '' : 's'}`);
 
         const labelEl = D.createElement('span');
         labelEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
@@ -4851,6 +5195,16 @@ ${out.answerText}`);
     // Phase 5.5: candidate-quality diagnostics. Display-time filter only — Store data
     // is never mutated by the cloud.
     async getTagBubbleCloudDiagnostics(opts = {}) { return getTagBubbleCloudDiagnostics(opts); },
+
+    // Phase 7 fix: returns the last popup click context so the user can verify which
+    // path actually ran (chat title vs. turn-row Open vs. modifier-click vs. fallback)
+    // without enabling console logging. Each click handler stamps state.lastCloudPopupClick
+    // with: at, source, chatId, turnId, isCurrentChat, cachedReady, cachedLength,
+    // navToCalled, navToReturned, status. NavTo._state() complements this with the
+    // server-side view (lastPendingWrite, lastToTurnCall, lastReplayStatus, ...).
+    debugLastCloudPopupNav() {
+      try { return state.lastCloudPopupClick || null; } catch (_e) { return null; }
+    },
   };
 
   MOD.owner = owner;
@@ -4937,6 +5291,7 @@ ${out.answerText}`);
   MOD.findTagOccurrences = (...args) => owner.findTagOccurrences(...args);
   // Phase 5.5
   MOD.getTagBubbleCloudDiagnostics = (...args) => owner.getTagBubbleCloudDiagnostics(...args);
+  MOD.debugLastCloudPopupNav = () => owner.debugLastCloudPopupNav();
 
   function bindCoreEvents() {
     const onIndexUpdated = () => {
@@ -5010,6 +5365,19 @@ ${out.answerText}`);
     } catch (e) {
       err('register-tags-owner', e);
     }
+
+    // Phase 7: register Tags' scrollToAnswerInDom as the canonical same-chat scroller for
+    // H2O.Library.NavTo. NavTo already has a default DOM scroller, but Tags' version
+    // includes the existing highlight-outline pulse + uses the same selector pattern Tag
+    // Viewer / Tag Popup rely on. This makes any future NavTo consumer (Categories,
+    // Labels, Search, Studio) get the same in-chat experience the popup gives today.
+    try {
+      const navTo = W.H2O?.Library?.NavTo;
+      if (navTo?.setScroller) {
+        navTo.setScroller((turnId, opts) => scrollToAnswerInDom(turnId, { highlight: opts?.highlight !== false }));
+        step('navto-scroller-registered');
+      }
+    } catch (e) { err('register-navto-scroller', e); }
 
     const timer = W.setTimeout(() => {
       state.clean.timers.delete(timer);

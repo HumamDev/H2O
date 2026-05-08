@@ -1045,6 +1045,1335 @@
     return section;
   }
 
+  /* ──────────────────────────────────────────────────────────────────────────
+   * Phase 8 — Category Candidate Pool
+   *
+   * Builds a durable, reviewable pool of suggested categories from existing
+   * Library data. Read-only side-input: title tokens from the registry +
+   * tag-auto-pool phrases + tag co-occurrence across chats. Hard duplicate
+   * guard against the existing categories catalog. Rejected/merged/created
+   * decisions are remembered across refreshes so the same candidate doesn't
+   * resurface immediately.
+   *
+   * Hard rules from the plan:
+   *   - Auto code never assigns chats to categories. Phase 8 ONLY surfaces
+   *     candidates; Phase 9 is responsible for any classification work.
+   *   - acceptCategoryCandidate() calls H2O.archiveBoot.createCategory(name,
+   *     opts) — the existing writable category-creation path — and ONLY
+   *     marks the candidate as 'created'. It does NOT touch any chat's
+   *     category assignment.
+   *   - All durable writes go through H2O.Library.Store. The pool refuses to
+   *     persist if Store.caps().durable !== true (legacy localStorage primary
+   *     is explicitly forbidden for Library Phase data).
+   *   - Generic / noisy candidates ('Chat', 'Question', 'Test', 'Title', etc.)
+   *     are dropped via a fixed blocklist before scoring.
+   *   - All candidate scoring is deterministic from the inputs; no ML.
+   * ──────────────────────────────────────────────────────────────────── */
+  const CATPOOL_KEY = 'h2o:prm:cgx:library:cat-candidate-pool:v1';
+  const CATPOOL_ALGO = 'cat-v1';
+  const CATPOOL_MAX = 30;                     // most candidates we keep in the pool
+  const CATPOOL_MIN_TITLE_FREQ = 3;           // a title token needs ≥ N chats to seed
+  const CATPOOL_MIN_TAG_CHATS = 3;            // an auto-pool tag needs ≥ N chats to seed
+  const CATPOOL_SAMPLE_LIMIT = 6;             // sampleChatIds / sampleTitles cap per candidate
+  const CATPOOL_TOKEN_MIN_LEN = 3;            // drop tokens shorter than this
+  const CATPOOL_TOKEN_MAX_LEN = 32;
+  const CATPOOL_GENERIC_BLOCKLIST = new Set([
+    // Generic chat-shape words user explicitly listed
+    'chat', 'question', 'questions', 'test', 'tests', 'title', 'titles', 'received',
+    'message', 'messages', 'conversation', 'conversations', 'reply', 'replies',
+    'response', 'responses', 'answer', 'answers', 'thread', 'threads', 'topic',
+    'topics', 'help', 'support', 'request', 'requests', 'task', 'tasks', 'note',
+    'notes', 'general', 'misc', 'miscellaneous', 'other', 'others', 'untitled',
+    'new', 'old', 'temp', 'temporary', 'draft', 'drafts', 'session', 'sessions',
+    'todo', 'todos', 'random',
+    // Common English stopwords that survive tokenization
+    'the', 'and', 'for', 'with', 'from', 'about', 'into', 'this', 'that',
+    'these', 'those', 'have', 'has', 'had', 'will', 'would', 'should', 'could',
+    'are', 'was', 'were', 'been', 'being', 'just', 'only', 'not', 'but',
+    'very', 'more', 'most', 'less', 'least', 'some', 'any', 'all', 'none',
+    'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'how', 'what', 'when', 'where', 'why', 'which', 'who', 'whom', 'whose',
+    'can', 'cannot', 'may', 'might', 'must', 'shall', 'than', 'then', 'them',
+    'their', 'theirs', 'they', 'your', 'yours', 'mine', 'ours', 'his', 'her', 'its',
+    // German + Arabic high-frequency stopwords carried over from 0F5a
+    'und', 'oder', 'aber', 'nicht', 'mit', 'für', 'auf', 'eine', 'ein',
+    'في', 'من', 'إلى', 'على', 'هذا', 'هذه', 'ذلك',
+  ]);
+
+  // Phase 8.5 — Soft blocklist applied at quality-assessment time (NOT at tokenization).
+  // These words can become category names ONLY when supported by a strong tag-overlap
+  // signal (≥2 tags co-occurring with this token across multiple chats). Without that
+  // support they are content-type / shape words rather than topical categories.
+  // Listed in the Phase 8.5 brief: system, explanation, guide, improvement, process,
+  // issue, question, answer, check, help, meaning, setup, usage, review, reply, prompt.
+  // Note: question/answer are also in CATPOOL_GENERIC_BLOCKLIST above, so they never
+  // reach this stage from the title-token path; included here too so tag-only
+  // candidates (which bypass title tokenization) get the same treatment.
+  const CATPOOL_WEAK_GENERIC = new Set([
+    'system', 'explanation', 'explanations', 'guide', 'guides', 'improvement',
+    'improvements', 'process', 'processes', 'issue', 'issues', 'question',
+    'questions', 'answer', 'answers', 'check', 'checks', 'help', 'meaning',
+    'meanings', 'setup', 'setups', 'usage', 'review', 'reviews', 'reply',
+    'replies', 'prompt', 'prompts', 'overview', 'summary', 'summaries',
+    'idea', 'ideas', 'plan', 'plans', 'tip', 'tips', 'example', 'examples',
+    'discussion', 'discussions', 'feedback', 'comment', 'comments', 'detail',
+    'details', 'note', 'notes', 'analysis', 'syntax', 'method', 'methods',
+    'option', 'options', 'choice', 'choices',
+    // Phase 8.6 — descriptive / generic adjectives the brief flagged. These are
+    // content-shape words ("Best …", "Final …", "Free …") rather than topical
+    // categories. Same rescue rule applies: if there are ≥2 supporting tags,
+    // they survive (e.g. an unusual chat about "Free Software" with a strong
+    // 'software' or 'gnu' tag overlap could still appear).
+    'explained', 'best', 'free', 'custom', 'final', 'complete', 'basic',
+    'advanced', 'current', 'latest', 'new', 'old', 'quick', 'simple', 'easy',
+    'hard', 'good', 'bad', 'better', 'worse', 'small', 'large', 'big', 'short',
+    'long', 'fast', 'slow',
+  ]);
+
+  // Phase 8.6 — display casing + rename map for the visible candidate name.
+  // The candidate ID is built from the original (lowercased) token so decision
+  // memory stays stable across refreshes; only the human-facing `name` is
+  // adjusted. Two layers:
+  //
+  //   CATPOOL_DISPLAY_CASING  → exact-match replacement when the lowercased
+  //                             token is well-known (iPhone, MV3, H2O, SDK …).
+  //                             We capitalize-by-default for everything else
+  //                             via titleCaseForCandidate().
+  //
+  //   CATPOOL_DISPLAY_RENAME  → soft singular→plural / canonical-form mapping
+  //                             for technical terms we have a clear preferred
+  //                             category name for. Kept tiny on purpose per the
+  //                             brief: do not overdo this yet.
+  const CATPOOL_DISPLAY_CASING = Object.freeze({
+    'iphone': 'iPhone',
+    'ipad': 'iPad',
+    'macbook': 'MacBook',
+    'ipod': 'iPod',
+    'ios': 'iOS',
+    'macos': 'macOS',
+    'tvos': 'tvOS',
+    'watchos': 'watchOS',
+    'ui': 'UI',
+    'ux': 'UX',
+    'api': 'API',
+    'mv3': 'MV3',
+    'sdk': 'SDK',
+    'sso': 'SSO',
+    'mfa': 'MFA',
+    'oauth': 'OAuth',
+    'h2o': 'H2O',
+    'cgx': 'CGX',
+    'dom': 'DOM',
+    'css': 'CSS',
+    'html': 'HTML',
+    'json': 'JSON',
+    'xml': 'XML',
+    'yaml': 'YAML',
+    'svg': 'SVG',
+    'pdf': 'PDF',
+    'http': 'HTTP',
+    'https': 'HTTPS',
+    'url': 'URL',
+    'sql': 'SQL',
+    'cli': 'CLI',
+    'npm': 'npm',
+    'macos-x': 'macOS',
+  });
+
+  const CATPOOL_DISPLAY_RENAME = Object.freeze({
+    // Singular technical term → preferred category form. Per the brief:
+    // "Script → Scripts or Development Scripts, if enough script/dev context exists.
+    //  Do not overdo this yet; just avoid bad display names."
+    'script': 'Scripts',
+  });
+
+  // Phase 8.5 — Domain boost terms. These produce real topical categories the user
+  // explicitly asked for in the Phase 8.5 brief (Codex / iPhone / Subscription /
+  // Library / Tags / Labels / Identity / Auth / Extension / MV3 / UI / Interface /
+  // Food / Cooking / Religion / Scripture / Legal / University / Health / Medication
+  // / Finance / Tax + a few obvious neighbors). When a candidate's normalized name is
+  // in this set, its score gets a 1.5× multiplier so meaningful domain candidates
+  // outrank weak-generic ones at the same raw-frequency level.
+  const CATPOOL_DOMAIN_BOOST = new Set([
+    'codex', 'iphone', 'ipad', 'macbook', 'android', 'chrome', 'firefox', 'safari',
+    'billing', 'subscription', 'invoice', 'payment',
+    'library', 'tags', 'labels', 'folders', 'projects', 'archive', 'workbench',
+    'identity', 'auth', 'authentication', 'login', 'signup', 'oauth', 'sso', 'mfa',
+    'extension', 'mv3', 'manifest', 'sdk', 'plugin',
+    'ui', 'interface', 'frontend', 'backend', 'database', 'api',
+    'food', 'cooking', 'recipe', 'recipes', 'cuisine', 'nutrition', 'diet',
+    'religion', 'scripture', 'quran', 'bible', 'torah', 'islam', 'christianity', 'judaism',
+    'legal', 'law', 'university', 'school', 'academic', 'thesis', 'research',
+    'health', 'medical', 'medication', 'doctor', 'fitness', 'symptom', 'symptoms',
+    'finance', 'tax', 'taxes', 'budget', 'investment', 'crypto', 'stocks',
+    'travel', 'flight', 'hotel', 'visa', 'passport', 'immigration',
+    'translation', 'german', 'arabic', 'english', 'spanish',
+  ]);
+
+  // In-memory cache; refreshed by refreshCategoryCandidatePool() and on first read.
+  let _catPoolCache = null;          // { version, updatedAt, ..., candidates: [...] }
+  let _catPoolDiag = {
+    lastRefreshAt: 0,
+    lastRefreshReason: '',
+    lastRefreshDurationMs: 0,
+    lastTitleTokenCount: 0,
+    lastTagPoolPhraseCount: 0,
+    lastRegistryRowCount: 0,
+    lastExistingCategoryCount: 0,
+    lastSkippedGeneric: 0,
+    lastSkippedDuplicate: 0,
+    lastFailureReason: '',
+    // Phase 8.5 quality-pass diagnostics:
+    lastTotalRaw: 0,            // candidates produced before quality filter
+    lastVisible: 0,             // candidates that passed quality (and got persisted)
+    lastHiddenWeakGeneric: 0,   // hidden because weak-generic w/ no tag support
+    lastHiddenLowSignal: 0,     // hidden because of low coverage + no tag support
+    lastTopRejectedByQuality: [], // [{ name, reason, score }, ...]
+    lastTopAcceptedByScore: [],   // [{ name, score, confidence, sourceSignals.titleClusterSize }, ...]
+  };
+
+  function getLibraryStore() {
+    try { return W.H2O?.Library?.Store || null; } catch { return null; }
+  }
+
+  function isStoreDurable() {
+    try {
+      const Store = getLibraryStore();
+      if (!Store?.caps) return false;
+      const caps = Store.caps();
+      return caps?.durable === true;
+    } catch { return false; }
+  }
+
+  function safeReadKnownChatRegistryRows() {
+    try {
+      const lib = W.H2O?.LibraryIndex;
+      if (lib?.readKnownChatRegistry) {
+        const payload = lib.readKnownChatRegistry();
+        return Array.isArray(payload?.rows) ? payload.rows : [];
+      }
+    } catch (e) { err('catpool:read-registry', e); }
+    return [];
+  }
+
+  function safeReadTagAutoPool() {
+    try {
+      const tags = W.H2O?.Tags;
+      const pool = tags?.getTagAutoPool ? tags.getTagAutoPool() : null;
+      return (pool && typeof pool === 'object' && pool.phrases) ? pool : null;
+    } catch (e) { err('catpool:read-tag-pool', e); return null; }
+  }
+
+  function tokenizeTitle(rawTitle) {
+    const t = String(rawTitle || '').toLowerCase()
+      .replace(/[^\p{L}\p{N}\s'-]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!t) return [];
+    const out = [];
+    t.split(' ').forEach((word) => {
+      const w = word.replace(/^['-]+|['-]+$/g, '');
+      if (!w) return;
+      if (w.length < CATPOOL_TOKEN_MIN_LEN || w.length > CATPOOL_TOKEN_MAX_LEN) return;
+      if (CATPOOL_GENERIC_BLOCKLIST.has(w)) return;
+      // Drop pure numbers ("2024", "123") — rarely useful as a category seed.
+      if (/^\d+$/.test(w)) return;
+      out.push(w);
+    });
+    return out;
+  }
+
+  function normalizeCategoryNameKey(raw) {
+    return String(raw || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function existingCategoryNameSet(catalogEntries) {
+    const set = new Set();
+    (Array.isArray(catalogEntries) ? catalogEntries : []).forEach((entry) => {
+      const name = normalizeCategoryNameKey(entry?.name || '');
+      if (name) set.add(name);
+      (entry?.aliases || []).forEach((alias) => {
+        const k = normalizeCategoryNameKey(alias);
+        if (k) set.add(k);
+      });
+    });
+    return set;
+  }
+
+  function titleCaseForCandidate(token) {
+    // Phase 8.6: layer (1) display rename for known canonical forms,
+    // (2) explicit casing override for known acronyms / brand names,
+    // (3) default Title-case for everything else; uppercase if very short.
+    const raw = String(token || '').trim();
+    if (!raw) return '';
+    const lower = raw.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(CATPOOL_DISPLAY_RENAME, lower)) {
+      return CATPOOL_DISPLAY_RENAME[lower];
+    }
+    if (Object.prototype.hasOwnProperty.call(CATPOOL_DISPLAY_CASING, lower)) {
+      return CATPOOL_DISPLAY_CASING[lower];
+    }
+    if (lower.length <= 2) return lower.toUpperCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+
+  function buildCandidateId(token) {
+    const slug = String(token || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return `cand_${slug || 'x'}`;
+  }
+
+  // ─── Phase 8.5 — quality assessment + score adjustment ──────────────────────
+  //
+  // assessCandidateQuality(): given a freshly-generated candidate, decide whether
+  // it is strong enough to surface as a real category suggestion.
+  //
+  // Reasons we hide a candidate:
+  //   - weak-generic: name is in CATPOOL_WEAK_GENERIC AND there is no supporting
+  //                   tag overlap (≥ 2 tags from the auto-pool co-occurring with
+  //                   this candidate's chats). These are content-type / shape
+  //                   words, not topical categories.
+  //   - low-signal:   title cluster < MIN AND tag overlap < MIN. Below the
+  //                   minimum confidence we won't show the bubble.
+  //
+  // Important "rescue" rule per the brief: words like Library / Tags / Labels /
+  // Subscription are NOT in CATPOOL_WEAK_GENERIC because they are useful as
+  // categories on their own. They ALSO get a boost from CATPOOL_DOMAIN_BOOST.
+  //
+  // applyDomainBoost(): multiplies the candidate's score by 1.5 when its
+  // normalized name matches CATPOOL_DOMAIN_BOOST. This raises strong topical
+  // candidates (Codex, iPhone, Subscription, Library, …) above borderline
+  // single-token candidates that share the same raw frequency.
+  function assessCandidateQuality(cand) {
+    const name = String(cand?.name || '').toLowerCase().trim();
+    const tagOverlap = Number(cand?.sourceSignals?.tagOverlap || 0) || 0;
+    const titleClusterSize = Number(cand?.sourceSignals?.titleClusterSize || 0) || 0;
+    const seedTags = Array.isArray(cand?.sourceSignals?.seedTags) ? cand.sourceSignals.seedTags.length : 0;
+    if (CATPOOL_WEAK_GENERIC.has(name) && tagOverlap < 2 && seedTags < 2) {
+      return { ok: false, reason: 'weak-generic' };
+    }
+    // Single-word low-coverage no-tag candidates are noise too.
+    if (titleClusterSize < CATPOOL_MIN_TITLE_FREQ && tagOverlap < CATPOOL_MIN_TAG_CHATS) {
+      return { ok: false, reason: 'low-signal' };
+    }
+    return { ok: true, reason: '' };
+  }
+
+  function applyDomainBoost(cand) {
+    if (!cand?.name) return cand;
+    const key = String(cand.name).toLowerCase().trim();
+    if (CATPOOL_DOMAIN_BOOST.has(key)) {
+      cand.score = Number((Number(cand.score || 0) * 1.5).toFixed(3));
+      cand._domainBoost = true;
+    }
+    return cand;
+  }
+
+  // Generate raw candidates from the three signal sources. Each candidate has:
+  //   { id, name, score, confidence, sourceSignals:{...}, status:'candidate', createdAt }
+  // Decision history is layered on AFTER generation in mergeWithExistingPool().
+  function generateRawCandidates() {
+    const t0 = performance.now();
+    const reg = safeReadKnownChatRegistryRows();
+    const auto = safeReadTagAutoPool();
+    const catalog = getCatalogEntries();
+    const existing = existingCategoryNameSet(catalog);
+
+    _catPoolDiag.lastRegistryRowCount = reg.length;
+    _catPoolDiag.lastTagPoolPhraseCount = auto?.phrases ? Object.keys(auto.phrases).length : 0;
+    _catPoolDiag.lastExistingCategoryCount = catalog.length;
+    _catPoolDiag.lastSkippedGeneric = 0;
+    _catPoolDiag.lastSkippedDuplicate = 0;
+
+    // ── 1. Title token frequency map: token → { count, chatIds:[], titles:[] }.
+    const tokenMap = new Map();
+    for (const row of reg) {
+      const chatId = String(row?.chatId || '').trim();
+      const title = String(row?.title || '').trim();
+      if (!chatId || !title) continue;
+      const seenInThisTitle = new Set();
+      tokenizeTitle(title).forEach((tok) => {
+        if (seenInThisTitle.has(tok)) return;
+        seenInThisTitle.add(tok);
+        let entry = tokenMap.get(tok);
+        if (!entry) {
+          entry = { token: tok, count: 0, chatIds: [], titles: [] };
+          tokenMap.set(tok, entry);
+        }
+        entry.count += 1;
+        if (entry.chatIds.length < CATPOOL_SAMPLE_LIMIT) entry.chatIds.push(chatId);
+        if (entry.titles.length < CATPOOL_SAMPLE_LIMIT) entry.titles.push(title);
+      });
+    }
+    _catPoolDiag.lastTitleTokenCount = tokenMap.size;
+
+    // ── 2. Tag-auto-pool: phraseKey → { phrase, totalCount, chatCount, contribByChat, score }.
+    //    Build a phrase→chatIds reverse for co-occurrence and a top-N tag set.
+    const tagPhraseToChats = new Map();
+    if (auto && auto.phrases) {
+      Object.entries(auto.phrases).forEach(([key, ent]) => {
+        if (!ent || ent.blocked || ent.status === 'rejected') return;
+        const chatCount = Number(ent.chatCount || 0) || 0;
+        if (chatCount < 1) return;
+        const chats = ent.contribByChat ? Object.keys(ent.contribByChat) : [];
+        if (!chats.length) return;
+        tagPhraseToChats.set(key, { phrase: String(ent.phrase || key), chats: new Set(chats), score: Number(ent.score || 0) || 0, chatCount });
+      });
+    }
+
+    // ── 3. Build candidates from title tokens (the dominant signal). For each token,
+    //    enrich with tag overlap (any tag-auto-pool phrase whose chats intersect the
+    //    token's chats counts as a "seedTag"). Score combines coverage × token rarity
+    //    × tag overlap.
+    const candidates = [];
+    for (const [token, entry] of tokenMap.entries()) {
+      if (entry.count < CATPOOL_MIN_TITLE_FREQ) continue;
+      const candidateName = titleCaseForCandidate(token);
+      if (existing.has(normalizeCategoryNameKey(candidateName))) {
+        _catPoolDiag.lastSkippedDuplicate += 1;
+        continue;
+      }
+      const id = buildCandidateId(token);
+      const tokenChatSet = new Set(entry.chatIds);
+      // Tag overlap: tags whose chat-set intersects the token's chat-set.
+      const seedTags = [];
+      let tagOverlapTotal = 0;
+      for (const [, tagInfo] of tagPhraseToChats.entries()) {
+        let overlap = 0;
+        for (const c of tokenChatSet) { if (tagInfo.chats.has(c)) overlap += 1; }
+        if (overlap >= 2) {
+          seedTags.push({ phrase: tagInfo.phrase, overlap });
+          tagOverlapTotal += overlap;
+        }
+      }
+      seedTags.sort((a, b) => b.overlap - a.overlap);
+      const seedTagPhrases = seedTags.slice(0, 5).map((s) => s.phrase);
+      // Coverage: title-frequency normalized against registry size.
+      const coverage = reg.length ? entry.count / reg.length : 0;
+      const score = (entry.count * 1.0) + (tagOverlapTotal * 0.5) + (token.length >= 5 ? 1.0 : 0);
+      const confidence = Math.min(1, coverage * 4 + Math.min(seedTags.length, 3) * 0.1);
+      candidates.push({
+        id,
+        name: candidateName,
+        score: Number(score.toFixed(3)),
+        confidence: Number(confidence.toFixed(3)),
+        sourceSignals: {
+          titleClusterSize: entry.count,
+          tagOverlap: tagOverlapTotal,
+          sampleChatIds: entry.chatIds.slice(0, CATPOOL_SAMPLE_LIMIT),
+          seedTags: seedTagPhrases,
+          sampleTitles: entry.titles.slice(0, CATPOOL_SAMPLE_LIMIT),
+        },
+      });
+    }
+
+    // ── 4. Tag-only candidates: for tags that appear in many chats but never as a
+    //    title token — useful when many chats share a topic without sharing words.
+    const candidateNameKeys = new Set(candidates.map((c) => normalizeCategoryNameKey(c.name)));
+    for (const [, tagInfo] of tagPhraseToChats.entries()) {
+      if (tagInfo.chatCount < CATPOOL_MIN_TAG_CHATS) continue;
+      const tagToken = String(tagInfo.phrase || '').toLowerCase().trim();
+      if (!tagToken) continue;
+      // Skip if the tag is itself a generic blocklisted term.
+      if (CATPOOL_GENERIC_BLOCKLIST.has(tagToken)) {
+        _catPoolDiag.lastSkippedGeneric += 1;
+        continue;
+      }
+      // Skip if a title-token candidate already covers it.
+      const candidateName = titleCaseForCandidate(tagToken);
+      const nk = normalizeCategoryNameKey(candidateName);
+      if (existing.has(nk)) { _catPoolDiag.lastSkippedDuplicate += 1; continue; }
+      if (candidateNameKeys.has(nk)) continue;
+      const sampleChatIds = Array.from(tagInfo.chats).slice(0, CATPOOL_SAMPLE_LIMIT);
+      // Pull titles for these chats from the registry where possible.
+      const titleByChat = new Map();
+      for (const r of reg) titleByChat.set(String(r?.chatId || ''), String(r?.title || ''));
+      const sampleTitles = sampleChatIds.map((c) => titleByChat.get(c) || '').filter(Boolean).slice(0, CATPOOL_SAMPLE_LIMIT);
+      const score = (tagInfo.chatCount * 0.7) + (Number(tagInfo.score || 0) * 0.1);
+      const confidence = Math.min(1, (tagInfo.chatCount / 20) + 0.05);
+      candidates.push({
+        id: buildCandidateId(`tag_${tagToken}`),
+        name: candidateName,
+        score: Number(score.toFixed(3)),
+        confidence: Number(confidence.toFixed(3)),
+        sourceSignals: {
+          titleClusterSize: 0,
+          tagOverlap: tagInfo.chatCount,
+          sampleChatIds,
+          seedTags: [tagInfo.phrase],
+          sampleTitles,
+        },
+      });
+      candidateNameKeys.add(nk);
+    }
+
+    // ── 5. Phase 8.6 — collapse candidates that map to the same display name.
+    //       Example: token "script" gets renamed to "Scripts" via
+    //       CATPOOL_DISPLAY_RENAME, while a separate token "scripts" naturally
+    //       title-cases to "Scripts". Both produce different IDs (cand_script,
+    //       cand_scripts) but the same user-facing name. Merge them so the
+    //       popup doesn't show two identical-looking entries — keep the one
+    //       with the higher score and accumulate sourceSignals.tagOverlap +
+    //       titleClusterSize so the survivor reflects the combined evidence.
+    const collapsedByName = new Map();
+    for (const c of candidates) {
+      const nk = normalizeCategoryNameKey(c.name);
+      const prev = collapsedByName.get(nk);
+      if (!prev) {
+        collapsedByName.set(nk, c);
+        continue;
+      }
+      // Merge into whichever side has the higher score; combine signals.
+      const winner = (Number(c.score || 0) >= Number(prev.score || 0)) ? c : prev;
+      const loser = winner === c ? prev : c;
+      const wsig = winner.sourceSignals || {};
+      const lsig = loser.sourceSignals || {};
+      winner.sourceSignals = {
+        titleClusterSize: Math.max(Number(wsig.titleClusterSize || 0), Number(lsig.titleClusterSize || 0)),
+        tagOverlap:       Number(wsig.tagOverlap || 0) + Number(lsig.tagOverlap || 0),
+        sampleChatIds:    Array.from(new Set([...(wsig.sampleChatIds || []), ...(lsig.sampleChatIds || [])])).slice(0, CATPOOL_SAMPLE_LIMIT),
+        seedTags:         Array.from(new Set([...(wsig.seedTags || []), ...(lsig.seedTags || [])])).slice(0, 5),
+        sampleTitles:     Array.from(new Set([...(wsig.sampleTitles || []), ...(lsig.sampleTitles || [])])).slice(0, CATPOOL_SAMPLE_LIMIT),
+      };
+      collapsedByName.set(nk, winner);
+    }
+    const dedupedCandidates = Array.from(collapsedByName.values());
+
+    // ── 6. Phase 8.5 — apply domain boost, then split into visible / rejected
+    //       buckets via the quality assessor. Visible candidates get persisted;
+    //       rejected ones land in diagnostics so the user can audit what was
+    //       hidden and why. The hard generic blocklist (CATPOOL_GENERIC_BLOCKLIST)
+    //       still removes terms at tokenization time, so this stage only sees
+    //       names that survived that filter.
+    dedupedCandidates.forEach(applyDomainBoost);
+    const visible = [];
+    const rejectedQuality = [];
+    let hiddenWeakGeneric = 0;
+    let hiddenLowSignal = 0;
+    for (const cand of dedupedCandidates) {
+      const verdict = assessCandidateQuality(cand);
+      if (verdict.ok) {
+        visible.push(cand);
+      } else {
+        rejectedQuality.push({
+          name: cand.name,
+          reason: verdict.reason,
+          score: cand.score,
+          titleClusterSize: cand.sourceSignals?.titleClusterSize || 0,
+          tagOverlap: cand.sourceSignals?.tagOverlap || 0,
+        });
+        if (verdict.reason === 'weak-generic') hiddenWeakGeneric += 1;
+        else if (verdict.reason === 'low-signal') hiddenLowSignal += 1;
+      }
+    }
+
+    _catPoolDiag.lastTotalRaw = dedupedCandidates.length;
+    _catPoolDiag.lastVisible = visible.length;
+    _catPoolDiag.lastHiddenWeakGeneric = hiddenWeakGeneric;
+    _catPoolDiag.lastHiddenLowSignal = hiddenLowSignal;
+    _catPoolDiag.lastTopRejectedByQuality = rejectedQuality
+      .sort((a, b) => (b.score - a.score))
+      .slice(0, 8);
+
+    // ── 6. Rank + cap visible candidates.
+    visible.sort((a, b) => (b.score - a.score) || String(a.name).localeCompare(String(b.name)));
+    const top = visible.slice(0, CATPOOL_MAX);
+
+    _catPoolDiag.lastTopAcceptedByScore = top.slice(0, 8).map((c) => ({
+      name: c.name,
+      score: c.score,
+      confidence: c.confidence,
+      titleClusterSize: c.sourceSignals?.titleClusterSize || 0,
+      tagOverlap: c.sourceSignals?.tagOverlap || 0,
+      seedTags: c.sourceSignals?.seedTags || [],
+      domainBoost: !!c._domainBoost,
+    }));
+    // _domainBoost is a transient flag — strip it before persistence so the
+    // stored pool stays clean.
+    top.forEach((c) => { if ('_domainBoost' in c) delete c._domainBoost; });
+
+    _catPoolDiag.lastRefreshDurationMs = Math.round(performance.now() - t0);
+    return top;
+  }
+
+  // Merge a freshly generated list with the stored pool so user decisions
+  // (rejected/created/merged) survive refresh. New candidates start as 'candidate';
+  // existing entries that are NOT in the new list AND have a final status are kept;
+  // existing 'candidate'-status entries that are NOT in the new list are dropped.
+  function mergeWithExistingPool(prev, fresh) {
+    const prevById = new Map();
+    if (prev?.candidates) prev.candidates.forEach((c) => { if (c?.id) prevById.set(c.id, c); });
+    const freshById = new Map();
+    fresh.forEach((c) => { if (c?.id) freshById.set(c.id, c); });
+
+    const out = [];
+    const seen = new Set();
+    // First pass: each fresh candidate, layered with existing decision if present.
+    for (const c of fresh) {
+      if (!c?.id || seen.has(c.id)) continue;
+      seen.add(c.id);
+      const old = prevById.get(c.id);
+      if (old && old.status && old.status !== 'candidate') {
+        // Preserve user decision; refresh sourceSignals + score for context.
+        out.push({
+          ...old,
+          score: c.score,
+          confidence: c.confidence,
+          sourceSignals: c.sourceSignals,
+        });
+      } else {
+        out.push({
+          id: c.id,
+          name: c.name,
+          score: c.score,
+          confidence: c.confidence,
+          status: 'candidate',
+          sourceSignals: c.sourceSignals,
+          createdAt: (old?.createdAt) || new Date().toISOString(),
+          decidedAt: '',
+        });
+      }
+    }
+    // Second pass: keep retired entries (rejected/created/merged) that are no longer
+    // generated by the fresh pass — so a once-rejected candidate doesn't immediately
+    // resurface even if title frequency drops below threshold.
+    for (const [id, old] of prevById.entries()) {
+      if (seen.has(id)) continue;
+      if (!old?.status || old.status === 'candidate') continue;
+      out.push(old);
+      seen.add(id);
+    }
+    return out;
+  }
+
+  async function loadCategoryCandidatePool() {
+    if (_catPoolCache) return _catPoolCache;
+    const Store = getLibraryStore();
+    if (!Store?.get) return null;
+    try {
+      const v = await Store.get(CATPOOL_KEY);
+      if (v && typeof v === 'object') {
+        _catPoolCache = v;
+        return v;
+      }
+    } catch (e) { err('catpool:load', e); }
+    return null;
+  }
+
+  async function persistCategoryCandidatePool(pool) {
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    const Store = getLibraryStore();
+    if (!Store?.set) return { ok: false, status: 'no-store' };
+    try {
+      await Store.set(CATPOOL_KEY, pool);
+      return { ok: true };
+    } catch (e) {
+      err('catpool:persist', e);
+      return { ok: false, status: `persist-failed:${e?.message || 'unknown'}` };
+    }
+  }
+
+  async function refreshCategoryCandidatePool(opts = {}) {
+    const reason = String(opts.reason || (opts.force ? 'force' : 'manual')).slice(0, 80);
+    _catPoolDiag.lastRefreshReason = reason;
+    if (!isStoreDurable()) {
+      _catPoolDiag.lastFailureReason = 'store-not-durable';
+      return { ok: false, status: 'store-not-durable' };
+    }
+    try {
+      const prev = await loadCategoryCandidatePool();
+      const fresh = generateRawCandidates();
+      const merged = mergeWithExistingPool(prev, fresh);
+      const now = Date.now();
+      const pool = {
+        version: 1,
+        updatedAt: now,
+        updatedAtIso: new Date(now).toISOString(),
+        algoVersion: CATPOOL_ALGO,
+        candidates: merged,
+      };
+      const persistRes = await persistCategoryCandidatePool(pool);
+      if (!persistRes.ok) {
+        _catPoolDiag.lastFailureReason = persistRes.status || 'persist-failed';
+        return { ok: false, status: persistRes.status || 'persist-failed' };
+      }
+      _catPoolCache = pool;
+      _catPoolDiag.lastRefreshAt = now;
+      _catPoolDiag.lastFailureReason = '';
+      try {
+        W.dispatchEvent(new CustomEvent('evt:h2o:library:cat-candidate-pool-updated', { detail: { count: merged.length, reason } }));
+        W.dispatchEvent(new CustomEvent('h2o:library:cat-candidate-pool-updated', { detail: { count: merged.length, reason } }));
+      } catch (_e) {}
+      return { ok: true, status: 'ok', candidateCount: merged.length, durable: true };
+    } catch (e) {
+      err('catpool:refresh', e);
+      _catPoolDiag.lastFailureReason = String(e?.message || e || 'unknown');
+      return { ok: false, status: 'error', error: String(e?.message || e || 'unknown') };
+    }
+  }
+
+  function getCategoryCandidatePool() {
+    return _catPoolCache;
+  }
+
+  function previewCategoryCandidate(candidateId) {
+    const id = String(candidateId || '').trim();
+    if (!id || !_catPoolCache?.candidates) return null;
+    const cand = _catPoolCache.candidates.find((c) => c?.id === id);
+    if (!cand) return null;
+    // Re-resolve titles for sample chats on preview so they reflect the current
+    // registry state (titles may have been edited since the pool was generated).
+    const reg = safeReadKnownChatRegistryRows();
+    const titleByChat = new Map();
+    for (const r of reg) titleByChat.set(String(r?.chatId || ''), String(r?.title || ''));
+    const sample = (cand.sourceSignals?.sampleChatIds || []).map((cid) => ({
+      chatId: cid,
+      title: titleByChat.get(cid) || cand.sourceSignals?.sampleTitles?.[0] || cid,
+    }));
+    return { ...cand, preview: { sample } };
+  }
+
+  async function acceptCategoryCandidate(candidateId, opts = {}) {
+    const id = String(candidateId || '').trim();
+    if (!id) return { ok: false, status: 'invalid-id' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    if (!_catPoolCache) await loadCategoryCandidatePool();
+    const cand = _catPoolCache?.candidates?.find((c) => c?.id === id);
+    if (!cand) return { ok: false, status: 'not-found' };
+    if (cand.status && cand.status !== 'candidate') return { ok: false, status: `already-${cand.status}` };
+    const finalName = String(opts.name || cand.name || '').trim();
+    if (!finalName) return { ok: false, status: 'invalid-name' };
+    const finalColor = normalizeHexColor(opts.color || '') || undefined;
+    if (typeof H2O.archiveBoot?.createCategory !== 'function') {
+      return { ok: false, status: 'create-api-unavailable' };
+    }
+    let created = null;
+    try {
+      // Use the existing writable category-creation path. Returns the created (or
+      // existing if the name collides) record. We do NOT touch any chat record.
+      created = H2O.archiveBoot.createCategory(finalName, finalColor ? { color: finalColor } : {});
+    } catch (e) { err('catpool:create-category', e); return { ok: false, status: `create-failed:${e?.message || 'unknown'}` }; }
+    if (!created?.id) return { ok: false, status: 'create-returned-null' };
+    cand.status = 'created';
+    cand.decidedAt = new Date().toISOString();
+    cand.createdCategoryId = String(created.id);
+    const persistRes = await persistCategoryCandidatePool(_catPoolCache);
+    if (!persistRes.ok) return { ok: false, status: `persist-failed:${persistRes.status}` };
+    return { ok: true, status: 'ok', createdCategoryId: cand.createdCategoryId, candidate: cand };
+  }
+
+  async function rejectCategoryCandidate(candidateId) {
+    const id = String(candidateId || '').trim();
+    if (!id) return { ok: false, status: 'invalid-id' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    if (!_catPoolCache) await loadCategoryCandidatePool();
+    const cand = _catPoolCache?.candidates?.find((c) => c?.id === id);
+    if (!cand) return { ok: false, status: 'not-found' };
+    if (cand.status === 'rejected') return { ok: true, status: 'already-rejected' };
+    cand.status = 'rejected';
+    cand.decidedAt = new Date().toISOString();
+    const persistRes = await persistCategoryCandidatePool(_catPoolCache);
+    if (!persistRes.ok) return { ok: false, status: `persist-failed:${persistRes.status}` };
+    return { ok: true, status: 'ok', candidate: cand };
+  }
+
+  async function mergeCategoryCandidate(candidateId, intoCategoryId) {
+    const id = String(candidateId || '').trim();
+    const into = String(intoCategoryId || '').trim();
+    if (!id || !into) return { ok: false, status: 'invalid-args' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    if (!_catPoolCache) await loadCategoryCandidatePool();
+    const cand = _catPoolCache?.candidates?.find((c) => c?.id === id);
+    if (!cand) return { ok: false, status: 'not-found' };
+    cand.status = 'merged';
+    cand.decidedAt = new Date().toISOString();
+    cand.mergedIntoCategoryId = into;
+    const persistRes = await persistCategoryCandidatePool(_catPoolCache);
+    if (!persistRes.ok) return { ok: false, status: `persist-failed:${persistRes.status}` };
+    return { ok: true, status: 'ok', candidate: cand };
+  }
+
+  function getCategoryCandidateDiagnostics() {
+    // Phase 11 polish: fire-and-forget hydration so subsequent calls reflect Store
+    // truth even if the boot-time hydration hasn't completed yet. The cache load is
+    // idempotent (`if (_catPoolCache) return _catPoolCache`), so repeated calls are
+    // cheap. cacheHydrated tells the caller whether this snapshot is from a populated
+    // cache or whether the cache is still warming up — Maintenance prefers Store
+    // read-through (`H2O.Library.Maintenance.inspectCategoryCandidates`) when an
+    // authoritative count is needed.
+    if (!_catPoolCache) loadCategoryCandidatePool().catch(() => {});
+    const Store = getLibraryStore();
+    let durable = false;
+    let backend = '';
+    try {
+      const caps = Store?.caps?.();
+      durable = !!caps?.durable;
+      backend = String(caps?.primary || Store?.backend?.() || '');
+    } catch (_e) {}
+    const total = Array.isArray(_catPoolCache?.candidates) ? _catPoolCache.candidates.length : 0;
+    const byStatus = { candidate: 0, created: 0, rejected: 0, merged: 0 };
+    if (_catPoolCache?.candidates) {
+      _catPoolCache.candidates.forEach((c) => {
+        const s = String(c?.status || 'candidate');
+        if (Object.prototype.hasOwnProperty.call(byStatus, s)) byStatus[s] += 1;
+      });
+    }
+    return {
+      key: CATPOOL_KEY,
+      algoVersion: CATPOOL_ALGO,
+      durable,
+      backend,
+      cacheHydrated: !!_catPoolCache,
+      total,
+      byStatus,
+      ...(_catPoolDiag),
+    };
+  }
+
+  // Boot-time hydration: try to load any previously persisted pool so callers that
+  // ask for getCategoryCandidatePool() before refresh see the cached snapshot.
+  // Non-blocking; if Store is degraded the pool stays null until a manual refresh.
+  loadCategoryCandidatePool().catch((e) => err('catpool:boot-load', e));
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * Phase 9 — Auto-classification Review Mode
+   *
+   * Uses the Phase 8 category candidate pool to suggest category assignments
+   * for chats. The plan's hard rule: precedence is
+   *
+   *     userOverride > acceptedSuggestion > autoSuggestion > extension-provided
+   *
+   * Auto code can ONLY write the autoSuggestion slot — and only in
+   * `apply-new` mode, only for chats with no existing acceptedSuggestion AND
+   * no existing userOverride. The user explicitly promotes via
+   * applyAutoClassSuggestion (acceptedSuggestion) or setUserCategoryOverride
+   * (userOverride).
+   *
+   * Three modes:
+   *   - off (default)  — runAutoClassReview is a noop.
+   *   - suggest        — generates suggestions in-memory (and persisted as
+   *                      autoSuggestion ONLY if apply-new). Suggest mode
+   *                      itself never writes; the user must explicitly accept
+   *                      or override.
+   *   - apply-new      — writes autoSuggestion slot for chats with no user
+   *                      override and no acceptedSuggestion. Never overwrites
+   *                      either of those.
+   *
+   * NOTE: Phase 9 does NOT change LibraryIndex read paths. Storage is a
+   * standalone overrides map; read-side merging is deferred to a future
+   * narrow phase (per the plan: "avoid broad 0F1c refactor unless
+   * necessary").
+   * ──────────────────────────────────────────────────────────────────── */
+  const OVERRIDES_KEY = 'h2o:prm:cgx:library:category-overrides:v1';
+  const AUTOCLASS_PREFS_KEY = 'h2o:prm:cgx:library:autoclass-prefs:v1'; // localStorage (UI pref)
+  const AUTOCLASS_MODES = Object.freeze(['off', 'suggest', 'apply-new']);
+  const AUTOCLASS_DEFAULT_MODE = 'off';
+  const AUTOCLASS_DEFAULT_THRESHOLD = 0.6;
+  const AUTOCLASS_MIN_THRESHOLD = 0.3;
+  const AUTOCLASS_MAX_THRESHOLD = 0.95;
+
+  let _overridesCache = null;     // { version, updatedAt, ..., rows: { [chatId]: { autoSuggestion?, acceptedSuggestion?, userOverride? } } }
+  let _autoClassPrefsCache = null;
+  let _lastSuggestions = [];      // [{ chatId, primaryCategoryId, primaryCategoryName, confidence, reason, signals }, ...]
+  let _autoClassDiag = {
+    mode: AUTOCLASS_DEFAULT_MODE,
+    threshold: AUTOCLASS_DEFAULT_THRESHOLD,
+    lastRunAt: 0,
+    lastRunReason: '',
+    lastRunDurationMs: 0,
+    totalChatsChecked: 0,
+    suggestionsGenerated: 0,
+    skippedExistingOverride: 0,
+    skippedAcceptedSuggestion: 0,
+    skippedNoMatch: 0,
+    skippedLowConfidence: 0,
+    appliedAutoSuggestions: 0,
+    lastFailureReason: '',
+  };
+
+  function clampThreshold(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return AUTOCLASS_DEFAULT_THRESHOLD;
+    return Math.min(AUTOCLASS_MAX_THRESHOLD, Math.max(AUTOCLASS_MIN_THRESHOLD, n));
+  }
+
+  function normalizeMode(raw) {
+    const v = String(raw || '').trim().toLowerCase();
+    return AUTOCLASS_MODES.includes(v) ? v : AUTOCLASS_DEFAULT_MODE;
+  }
+
+  function readAutoClassPrefsRaw() {
+    try {
+      const raw = W.localStorage?.getItem(AUTOCLASS_PREFS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch (e) { err('autoclass:read-prefs', e); return null; }
+  }
+
+  function getAutoClassPrefs() {
+    if (!_autoClassPrefsCache) {
+      const stored = readAutoClassPrefsRaw();
+      _autoClassPrefsCache = {
+        mode:      normalizeMode(stored?.mode),
+        threshold: clampThreshold(stored?.threshold),
+      };
+    }
+    return { ..._autoClassPrefsCache };
+  }
+
+  function setAutoClassPrefs(patch = {}) {
+    const cur = getAutoClassPrefs();
+    const next = {
+      mode: ('mode' in patch) ? normalizeMode(patch.mode) : cur.mode,
+      threshold: ('threshold' in patch) ? clampThreshold(patch.threshold) : cur.threshold,
+    };
+    _autoClassPrefsCache = next;
+    _autoClassDiag.mode = next.mode;
+    _autoClassDiag.threshold = next.threshold;
+    try { W.localStorage?.setItem(AUTOCLASS_PREFS_KEY, JSON.stringify(next)); } catch (e) { err('autoclass:write-prefs', e); }
+    try {
+      W.dispatchEvent(new CustomEvent('evt:h2o:library:autoclass-prefs-changed', { detail: { ...next } }));
+      W.dispatchEvent(new CustomEvent('h2o:library:autoclass-prefs-changed', { detail: { ...next } }));
+    } catch (_e) {}
+    return { ok: true, prefs: { ...next } };
+  }
+
+  function emptyOverrides() {
+    return {
+      version: 1,
+      updatedAt: 0,
+      updatedAtIso: '',
+      rows: {},
+    };
+  }
+
+  async function loadCategoryOverrides() {
+    if (_overridesCache) return _overridesCache;
+    const Store = getLibraryStore();
+    if (!Store?.get) return null;
+    try {
+      const v = await Store.get(OVERRIDES_KEY);
+      if (v && typeof v === 'object' && v.rows && typeof v.rows === 'object') {
+        _overridesCache = v;
+        return v;
+      }
+    } catch (e) { err('autoclass:load-overrides', e); }
+    _overridesCache = emptyOverrides();
+    return _overridesCache;
+  }
+
+  async function persistCategoryOverrides() {
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    const Store = getLibraryStore();
+    if (!Store?.set) return { ok: false, status: 'no-store' };
+    if (!_overridesCache) _overridesCache = emptyOverrides();
+    _overridesCache.updatedAt = Date.now();
+    _overridesCache.updatedAtIso = new Date(_overridesCache.updatedAt).toISOString();
+    try {
+      await Store.set(OVERRIDES_KEY, _overridesCache);
+      return { ok: true };
+    } catch (e) {
+      err('autoclass:persist-overrides', e);
+      return { ok: false, status: `persist-failed:${e?.message || 'unknown'}` };
+    }
+  }
+
+  function ensureRow(chatId) {
+    if (!_overridesCache) _overridesCache = emptyOverrides();
+    const id = String(chatId || '').trim();
+    if (!id) return null;
+    if (!_overridesCache.rows[id]) _overridesCache.rows[id] = {};
+    return _overridesCache.rows[id];
+  }
+
+  function getEffectiveCategoryFromRow(row) {
+    if (!row || typeof row !== 'object') return null;
+    if (row.userOverride?.primaryCategoryId)       return { source: 'userOverride',       ...row.userOverride };
+    if (row.acceptedSuggestion?.primaryCategoryId) return { source: 'acceptedSuggestion', ...row.acceptedSuggestion };
+    if (row.autoSuggestion?.primaryCategoryId)     return { source: 'autoSuggestion',     ...row.autoSuggestion };
+    return null;
+  }
+
+  // ── Suggestion algorithm ──
+  //
+  // For each chat in the registry, score every existing category by:
+  //   (a) Title-token / alias match: chat title contains the category name (or
+  //       any alias) as a whole token. Strongest signal.
+  //   (b) Sample-chat match: chatId appears in a created candidate's
+  //       sourceSignals.sampleChatIds where the candidate's createdCategoryId
+  //       maps to this category. Strong signal — these are the chats that
+  //       seeded the category in Phase 8.
+  //   (c) Seed-tag match: chat is in the auto-pool's contribByChat for any of
+  //       the candidate's seedTags. Medium signal — topical resonance.
+  //
+  // Confidence is derived from the total score, capped at 0.95. The chat is
+  // skipped (no suggestion) when it has an existing userOverride or
+  // acceptedSuggestion (those slots are sacred). Score must clear the user's
+  // configured threshold to be emitted.
+  function buildCreatedCandidateMap() {
+    // categoryId → { sampleChatIds:Set, seedTags:Set, candidate }
+    const map = new Map();
+    const pool = _catPoolCache;
+    if (!pool?.candidates) return map;
+    for (const c of pool.candidates) {
+      if (c?.status !== 'created' || !c?.createdCategoryId) continue;
+      const id = String(c.createdCategoryId);
+      const sigs = c.sourceSignals || {};
+      const entry = map.get(id) || {
+        sampleChatIds: new Set(),
+        seedTags: new Set(),
+        candidate: c,
+      };
+      (sigs.sampleChatIds || []).forEach((cid) => entry.sampleChatIds.add(String(cid)));
+      (sigs.seedTags || []).forEach((t) => entry.seedTags.add(String(t).toLowerCase()));
+      map.set(id, entry);
+    }
+    return map;
+  }
+
+  function buildAutoPoolChatTagMap() {
+    // chatId → Set<{ phraseKey, phrase }>. We index BOTH the phraseKey (the
+    // auto-pool's normalized form) AND the phrase string lowercased so
+    // seed-tag overlap matches whichever shape Phase 8 stored. The candidate
+    // pool's seedTags carries phrase strings; the auto-pool keys carry the
+    // normalizeTagKey() form. Including both eliminates the
+    // normalization-mismatch dead-zone.
+    const out = new Map();
+    const auto = safeReadTagAutoPool();
+    if (!auto?.phrases) return out;
+    Object.entries(auto.phrases).forEach(([key, ent]) => {
+      if (!ent || ent.blocked || ent.status === 'rejected') return;
+      const chats = ent.contribByChat ? Object.keys(ent.contribByChat) : [];
+      const phraseLower = String(ent.phrase || key || '').toLowerCase().trim();
+      const keyLower = String(key || '').toLowerCase().trim();
+      chats.forEach((cid) => {
+        let s = out.get(cid);
+        if (!s) { s = new Set(); out.set(cid, s); }
+        if (keyLower) s.add(keyLower);
+        if (phraseLower && phraseLower !== keyLower) s.add(phraseLower);
+      });
+    });
+    return out;
+  }
+
+  function scoreChatForCategory(chat, category, createdInfo, chatTagSet) {
+    const title = String(chat?.title || '').toLowerCase();
+    const titleTokens = new Set(tokenizeTitle(title));
+    const catNameKey = String(category?.name || '').toLowerCase().trim();
+    const aliasKeys = (category?.aliases || []).map((a) => String(a || '').toLowerCase().trim()).filter(Boolean);
+
+    let score = 0;
+    const reasons = [];
+
+    // (a) Title token / alias match.
+    if (catNameKey && titleTokens.has(catNameKey)) {
+      score += 0.7;
+      reasons.push(`title-token:${catNameKey}`);
+    } else {
+      for (const a of aliasKeys) {
+        if (titleTokens.has(a)) { score += 0.6; reasons.push(`alias:${a}`); break; }
+      }
+    }
+    // Substring fallback for multi-word category names that don't tokenize cleanly
+    // (e.g. "Web Dev" might appear as a phrase in a title even though we tokenize
+    // word-by-word). Lower confidence than a clean token match.
+    if (!reasons.length && catNameKey && catNameKey.length >= 3 && title.includes(catNameKey)) {
+      score += 0.45;
+      reasons.push(`title-substring:${catNameKey}`);
+    }
+
+    if (createdInfo) {
+      // (b) Sample-chat match — the chat literally seeded this category in Phase 8.
+      if (chat?.chatId && createdInfo.sampleChatIds.has(String(chat.chatId))) {
+        score += 0.85;
+        reasons.push('sample-chat');
+      }
+      // (c) Seed-tag overlap.
+      if (chatTagSet && createdInfo.seedTags.size) {
+        let tagHits = 0;
+        for (const t of createdInfo.seedTags) {
+          if (chatTagSet.has(t)) tagHits += 1;
+        }
+        if (tagHits > 0) {
+          // Each seed tag overlap adds 0.25, capped at 0.5 total contribution.
+          const inc = Math.min(0.5, tagHits * 0.25);
+          score += inc;
+          reasons.push(`seed-tags:${tagHits}`);
+        }
+      }
+    }
+
+    return { score: Number(score.toFixed(3)), reasons };
+  }
+
+  async function runAutoClassReview(opts = {}) {
+    const t0 = performance.now();
+    const prefs = getAutoClassPrefs();
+    _autoClassDiag.mode = prefs.mode;
+    _autoClassDiag.threshold = prefs.threshold;
+    _autoClassDiag.lastRunReason = String(opts.reason || (opts.force ? 'force' : 'manual')).slice(0, 80);
+    _autoClassDiag.totalChatsChecked = 0;
+    _autoClassDiag.suggestionsGenerated = 0;
+    _autoClassDiag.skippedExistingOverride = 0;
+    _autoClassDiag.skippedAcceptedSuggestion = 0;
+    _autoClassDiag.skippedNoMatch = 0;
+    _autoClassDiag.skippedLowConfidence = 0;
+    _autoClassDiag.appliedAutoSuggestions = 0;
+
+    if (prefs.mode === 'off') {
+      _lastSuggestions = [];
+      _autoClassDiag.lastRunAt = Date.now();
+      _autoClassDiag.lastRunDurationMs = 0;
+      return { ok: true, status: 'mode-off', mode: 'off', suggestionCount: 0, applied: 0 };
+    }
+    if (!isStoreDurable()) {
+      _autoClassDiag.lastFailureReason = 'store-not-durable';
+      return { ok: false, status: 'store-not-durable' };
+    }
+    await loadCategoryOverrides();
+    if (!_catPoolCache) await loadCategoryCandidatePool();
+
+    const reg = safeReadKnownChatRegistryRows();
+    const catalog = getCatalogEntries();
+    if (!reg.length || !catalog.length) {
+      _autoClassDiag.lastRunAt = Date.now();
+      _autoClassDiag.lastRunDurationMs = Math.round(performance.now() - t0);
+      _lastSuggestions = [];
+      return { ok: true, status: 'no-data', mode: prefs.mode, suggestionCount: 0, applied: 0 };
+    }
+
+    const createdMap = buildCreatedCandidateMap();
+    const chatTagsByChatId = buildAutoPoolChatTagMap();
+    const newSuggestions = [];
+
+    for (const chat of reg) {
+      const chatId = String(chat?.chatId || '').trim();
+      if (!chatId) continue;
+      _autoClassDiag.totalChatsChecked += 1;
+
+      // Sacred-slot guard: never re-suggest for a chat that has a userOverride
+      // OR acceptedSuggestion. The user has already decided; auto code respects
+      // that completely.
+      const row = _overridesCache?.rows?.[chatId] || null;
+      if (row?.userOverride?.primaryCategoryId) {
+        _autoClassDiag.skippedExistingOverride += 1;
+        continue;
+      }
+      if (row?.acceptedSuggestion?.primaryCategoryId) {
+        _autoClassDiag.skippedAcceptedSuggestion += 1;
+        continue;
+      }
+
+      // Score every existing category for this chat; pick the best.
+      let best = null;
+      const tagSet = chatTagsByChatId.get(chatId) || null;
+      for (const cat of catalog) {
+        if (!cat?.id) continue;
+        const createdInfo = createdMap.get(cat.id) || null;
+        const { score, reasons } = scoreChatForCategory(chat, cat, createdInfo, tagSet);
+        if (!score) continue;
+        if (!best || score > best.score) best = { categoryId: cat.id, categoryName: cat.name, score, reasons };
+      }
+      if (!best) {
+        _autoClassDiag.skippedNoMatch += 1;
+        continue;
+      }
+      const confidence = Math.min(0.95, best.score);
+      if (confidence < prefs.threshold) {
+        _autoClassDiag.skippedLowConfidence += 1;
+        continue;
+      }
+      const suggestion = {
+        chatId,
+        primaryCategoryId: best.categoryId,
+        primaryCategoryName: best.categoryName,
+        confidence: Number(confidence.toFixed(3)),
+        reason: best.reasons.join('+') || 'unknown',
+        signals: best.reasons,
+        at: new Date().toISOString(),
+      };
+      newSuggestions.push(suggestion);
+      _autoClassDiag.suggestionsGenerated += 1;
+
+      // apply-new mode: write the autoSuggestion slot inline. Never touches
+      // userOverride or acceptedSuggestion. Suggest mode does NOT write.
+      if (prefs.mode === 'apply-new') {
+        const r = ensureRow(chatId);
+        if (r) {
+          r.autoSuggestion = {
+            primaryCategoryId: best.categoryId,
+            primaryCategoryName: best.categoryName,
+            confidence: suggestion.confidence,
+            reason: suggestion.reason,
+            at: suggestion.at,
+            algoVersion: 'autoclass-v1',
+          };
+          _autoClassDiag.appliedAutoSuggestions += 1;
+        }
+      }
+    }
+
+    // Persist overrides only when apply-new actually wrote something (suggest
+    // mode does not mutate the durable map).
+    if (prefs.mode === 'apply-new' && _autoClassDiag.appliedAutoSuggestions > 0) {
+      const persistRes = await persistCategoryOverrides();
+      if (!persistRes.ok) {
+        _autoClassDiag.lastFailureReason = persistRes.status || 'persist-failed';
+        _lastSuggestions = newSuggestions;
+        return { ok: false, status: persistRes.status || 'persist-failed', mode: prefs.mode, suggestionCount: newSuggestions.length, applied: 0 };
+      }
+    }
+    _lastSuggestions = newSuggestions;
+    _autoClassDiag.lastRunAt = Date.now();
+    _autoClassDiag.lastRunDurationMs = Math.round(performance.now() - t0);
+    _autoClassDiag.lastFailureReason = '';
+    try {
+      const detail = { mode: prefs.mode, suggestionCount: newSuggestions.length, applied: _autoClassDiag.appliedAutoSuggestions };
+      W.dispatchEvent(new CustomEvent('evt:h2o:library:autoclass-review-completed', { detail }));
+      W.dispatchEvent(new CustomEvent('h2o:library:autoclass-review-completed', { detail }));
+    } catch (_e) {}
+    return {
+      ok: true,
+      status: 'ok',
+      mode: prefs.mode,
+      suggestionCount: newSuggestions.length,
+      applied: _autoClassDiag.appliedAutoSuggestions,
+      skippedExistingOverride: _autoClassDiag.skippedExistingOverride,
+      skippedAcceptedSuggestion: _autoClassDiag.skippedAcceptedSuggestion,
+      skippedNoMatch: _autoClassDiag.skippedNoMatch,
+      skippedLowConfidence: _autoClassDiag.skippedLowConfidence,
+    };
+  }
+
+  function getAutoClassSuggestions() {
+    return _lastSuggestions.slice();
+  }
+
+  async function applyAutoClassSuggestion(chatIdRaw, suggestion) {
+    const chatId = String(chatIdRaw || '').trim();
+    if (!chatId) return { ok: false, status: 'invalid-chat-id' };
+    if (!suggestion || !suggestion.primaryCategoryId) return { ok: false, status: 'invalid-suggestion' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    await loadCategoryOverrides();
+    const row = ensureRow(chatId);
+    if (!row) return { ok: false, status: 'invalid-chat-id' };
+    // Boundary: applyAutoClassSuggestion writes the acceptedSuggestion slot
+    // ONLY. It does NOT touch userOverride.
+    row.acceptedSuggestion = {
+      primaryCategoryId: String(suggestion.primaryCategoryId),
+      primaryCategoryName: String(suggestion.primaryCategoryName || ''),
+      confidence: Number.isFinite(Number(suggestion.confidence)) ? Number(suggestion.confidence) : null,
+      at: new Date().toISOString(),
+    };
+    const persistRes = await persistCategoryOverrides();
+    if (!persistRes.ok) return { ok: false, status: persistRes.status };
+    return { ok: true, status: 'ok', row: { ...row } };
+  }
+
+  async function rejectAutoClassSuggestion(chatIdRaw, suggestion) {
+    const chatId = String(chatIdRaw || '').trim();
+    if (!chatId) return { ok: false, status: 'invalid-chat-id' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    await loadCategoryOverrides();
+    const row = ensureRow(chatId);
+    if (!row) return { ok: false, status: 'invalid-chat-id' };
+    // Drop the autoSuggestion slot if it matches the rejected suggestion's category;
+    // record the rejection so a future apply-new run can skip re-suggesting the
+    // same category.
+    const targetCat = String(suggestion?.primaryCategoryId || '').trim();
+    if (row.autoSuggestion?.primaryCategoryId === targetCat) {
+      delete row.autoSuggestion;
+    }
+    if (!Array.isArray(row.rejectedSuggestions)) row.rejectedSuggestions = [];
+    if (targetCat && !row.rejectedSuggestions.includes(targetCat)) {
+      row.rejectedSuggestions.push(targetCat);
+    }
+    const persistRes = await persistCategoryOverrides();
+    if (!persistRes.ok) return { ok: false, status: persistRes.status };
+    return { ok: true, status: 'ok' };
+  }
+
+  async function setUserCategoryOverride(chatIdRaw, value, opts = {}) {
+    const chatId = String(chatIdRaw || '').trim();
+    if (!chatId) return { ok: false, status: 'invalid-chat-id' };
+    if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
+    await loadCategoryOverrides();
+    const row = ensureRow(chatId);
+    if (!row) return { ok: false, status: 'invalid-chat-id' };
+    const force = opts.force === true;
+    // value === null → clear the override
+    if (value === null) {
+      if (row.userOverride && !force) {
+        delete row.userOverride;
+      } else if (force) {
+        delete row.userOverride;
+      }
+      const persistRes = await persistCategoryOverrides();
+      if (!persistRes.ok) return { ok: false, status: persistRes.status };
+      return { ok: true, status: 'cleared' };
+    }
+    if (!value?.primaryCategoryId) return { ok: false, status: 'invalid-value' };
+    if (row.userOverride?.primaryCategoryId && !force) {
+      return { ok: false, status: 'override-exists' };
+    }
+    row.userOverride = {
+      primaryCategoryId: String(value.primaryCategoryId),
+      primaryCategoryName: String(value.primaryCategoryName || ''),
+      secondaryCategoryId: String(value.secondaryCategoryId || ''),
+      at: new Date().toISOString(),
+      reviewer: 'user',
+    };
+    const persistRes = await persistCategoryOverrides();
+    if (!persistRes.ok) return { ok: false, status: persistRes.status };
+    return { ok: true, status: 'ok', override: { ...row.userOverride } };
+  }
+
+  function getCategoryOverrides() {
+    return _overridesCache;
+  }
+
+  function getAutoClassDiagnostics() {
+    // Phase 11 polish: fire-and-forget hydration of the overrides cache so subsequent
+    // calls see Store truth. Same idempotency rule as the candidates diagnostics.
+    if (!_overridesCache) loadCategoryOverrides().catch(() => {});
+    const Store = getLibraryStore();
+    let durable = false;
+    let backend = '';
+    try {
+      const caps = Store?.caps?.();
+      durable = !!caps?.durable;
+      backend = String(caps?.primary || Store?.backend?.() || '');
+    } catch (_e) {}
+    const prefs = getAutoClassPrefs();
+    const totalRows = _overridesCache?.rows ? Object.keys(_overridesCache.rows).length : 0;
+    const slotCounts = { autoSuggestion: 0, acceptedSuggestion: 0, userOverride: 0 };
+    if (_overridesCache?.rows) {
+      for (const r of Object.values(_overridesCache.rows)) {
+        if (r?.autoSuggestion?.primaryCategoryId)     slotCounts.autoSuggestion += 1;
+        if (r?.acceptedSuggestion?.primaryCategoryId) slotCounts.acceptedSuggestion += 1;
+        if (r?.userOverride?.primaryCategoryId)       slotCounts.userOverride += 1;
+      }
+    }
+    return {
+      key:                       OVERRIDES_KEY,
+      prefsKey:                  AUTOCLASS_PREFS_KEY,
+      mode:                      prefs.mode,
+      threshold:                 prefs.threshold,
+      durable,
+      backend,
+      cacheHydrated:             !!_overridesCache,
+      totalRowsWithOverrides:    totalRows,
+      slotCounts,
+      ...(_autoClassDiag),
+      lastSuggestionCount:       _lastSuggestions.length,
+    };
+  }
+
+  // Boot-time hydration: best-effort load of any persisted overrides so callers
+  // that read getCategoryOverrides() before runAutoClassReview() see the cached
+  // snapshot. Non-blocking.
+  loadCategoryOverrides().catch((e) => err('autoclass:boot-load', e));
+
   const owner = {
     phase: 'phase-c6-owner-refresh-hooks',
     loadGroups() { return loadGroupsDirect(); },
@@ -1064,6 +2393,26 @@
     openCategoriesByMode(groupsRaw) { return openCategoriesByMode(groupsRaw); },
     buildSection(projectsSection, existingSection = null, reason = 'api') { return buildCategoriesSection(projectsSection, existingSection, reason); },
     refreshActivePageForAppearance(kind, id) { return refreshActivePageForAppearance(kind, id); },
+
+    // Phase 8 — Category Candidate Pool (read-only generation; no chat assignment).
+    getCategoryCandidatePool() { return getCategoryCandidatePool(); },
+    refreshCategoryCandidatePool(opts = {}) { return refreshCategoryCandidatePool(opts); },
+    previewCategoryCandidate(candidateId) { return previewCategoryCandidate(candidateId); },
+    acceptCategoryCandidate(candidateId, opts = {}) { return acceptCategoryCandidate(candidateId, opts); },
+    rejectCategoryCandidate(candidateId) { return rejectCategoryCandidate(candidateId); },
+    mergeCategoryCandidate(candidateId, intoCategoryId) { return mergeCategoryCandidate(candidateId, intoCategoryId); },
+    getCategoryCandidateDiagnostics() { return getCategoryCandidateDiagnostics(); },
+
+    // Phase 9 — Auto-classification Review Mode (off / suggest / apply-new).
+    getAutoClassPrefs() { return getAutoClassPrefs(); },
+    setAutoClassPrefs(patch = {}) { return setAutoClassPrefs(patch); },
+    runAutoClassReview(opts = {}) { return runAutoClassReview(opts); },
+    getAutoClassSuggestions() { return getAutoClassSuggestions(); },
+    applyAutoClassSuggestion(chatId, suggestion) { return applyAutoClassSuggestion(chatId, suggestion); },
+    rejectAutoClassSuggestion(chatId, suggestion) { return rejectAutoClassSuggestion(chatId, suggestion); },
+    setUserCategoryOverride(chatId, value, opts = {}) { return setUserCategoryOverride(chatId, value, opts); },
+    getCategoryOverrides() { return getCategoryOverrides(); },
+    getAutoClassDiagnostics() { return getAutoClassDiagnostics(); },
   };
 
   MOD.owner = owner;
@@ -1097,6 +2446,24 @@
   MOD.openCategoriesByMode = (...args) => owner.openCategoriesByMode(...args);
   MOD.buildSection = (...args) => owner.buildSection(...args);
   MOD.refreshActivePageForAppearance = (...args) => owner.refreshActivePageForAppearance(...args);
+  // Phase 8 — Category Candidate Pool. APIs only; no UI added in this phase.
+  MOD.getCategoryCandidatePool = (...args) => owner.getCategoryCandidatePool(...args);
+  MOD.refreshCategoryCandidatePool = (...args) => owner.refreshCategoryCandidatePool(...args);
+  MOD.previewCategoryCandidate = (...args) => owner.previewCategoryCandidate(...args);
+  MOD.acceptCategoryCandidate = (...args) => owner.acceptCategoryCandidate(...args);
+  MOD.rejectCategoryCandidate = (...args) => owner.rejectCategoryCandidate(...args);
+  MOD.mergeCategoryCandidate = (...args) => owner.mergeCategoryCandidate(...args);
+  MOD.getCategoryCandidateDiagnostics = (...args) => owner.getCategoryCandidateDiagnostics(...args);
+  // Phase 9 — Auto-classification Review Mode.
+  MOD.getAutoClassPrefs = (...args) => owner.getAutoClassPrefs(...args);
+  MOD.setAutoClassPrefs = (...args) => owner.setAutoClassPrefs(...args);
+  MOD.runAutoClassReview = (...args) => owner.runAutoClassReview(...args);
+  MOD.getAutoClassSuggestions = (...args) => owner.getAutoClassSuggestions(...args);
+  MOD.applyAutoClassSuggestion = (...args) => owner.applyAutoClassSuggestion(...args);
+  MOD.rejectAutoClassSuggestion = (...args) => owner.rejectAutoClassSuggestion(...args);
+  MOD.setUserCategoryOverride = (...args) => owner.setUserCategoryOverride(...args);
+  MOD.getCategoryOverrides = (...args) => owner.getCategoryOverrides(...args);
+  MOD.getAutoClassDiagnostics = (...args) => owner.getAutoClassDiagnostics(...args);
 
   try {
     core.registerOwner?.('categories', owner, { replace: true });

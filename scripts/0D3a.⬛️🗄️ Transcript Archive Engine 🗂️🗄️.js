@@ -85,6 +85,13 @@
   const HASH_K_CHAT = "chatId";
   const HASH_K_SNAPSHOT = "snapshotId";
   const HASH_K_VIEW = "view";
+  // Phase 7 (Library NavTo). Extend the Library hash convention so any module that wants
+  // to deep-link to a specific turn within a chat can encode the target through the same
+  // hash that powers the Library/Archive route. parseLibraryHashRequest exposes the
+  // optional fields; buildSavedChatsCompatUrl emits them when callers pass them in.
+  const HASH_K_TURN = "turn";
+  const HASH_K_OCC = "occ";
+  const HASH_K_NAV = "nav";
   const DOCK_COLLAPSE_KEY = "h2o:archive:dock:collapsed:v1";
   const EVT_ARCHIVE_REHYDRATE = "evt:h2o:archive:rehydrate";
   const EVT_ARCHIVE_SCROLL_TO_COLD = "evt:h2o:archive:scroll-to-cold";
@@ -638,11 +645,23 @@
     const hash = raw.startsWith("#") ? raw.slice(1) : raw;
     const params = new URLSearchParams(hash);
     if (String(params.get(HASH_K_LIB) || "") !== "1") return null;
+    // Phase 7 (Library NavTo). turn/occ/nav are optional — they have no effect on archive
+    // routing itself, they are read by H2O.Library.NavTo on the destination chat to scroll
+    // to the requested turn. parseInt is permissive so '0', '12', etc. all work; anything
+    // non-numeric drops to null, which means "no occurrence preference".
+    const rawOcc = String(params.get(HASH_K_OCC) || "").trim();
+    const occNum = rawOcc === "" ? null : Number.parseInt(rawOcc, 10);
+    const occ = Number.isFinite(occNum) && occNum >= 0 ? occNum : null;
+    const turnId = String(params.get(HASH_K_TURN) || "").trim() || null;
+    const nav = String(params.get(HASH_K_NAV) || "").trim() || null;
     return {
       view: normalizeArchiveView(params.get(HASH_K_VIEW) || "saved"),
       folderId: normalizeFolderFilter(params.get(HASH_K_FOLDER) || ""),
       chatId: toChatId(params.get(HASH_K_CHAT) || ""),
       snapshotId: String(params.get(HASH_K_SNAPSHOT) || "").trim(),
+      turnId,
+      occ,
+      nav,
       source: "hash",
     };
   }
@@ -659,6 +678,15 @@
     if (chatId) p.set(HASH_K_CHAT, chatId);
     const snapshotId = String(opts.snapshotId || "").trim();
     if (snapshotId) p.set(HASH_K_SNAPSHOT, snapshotId);
+    // Phase 7 (Library NavTo). Optional turn/occ/nav fields. Only emitted if caller passes
+    // a truthy value, so old callers that don't know about NavTo produce identical URLs.
+    const turnId = String(opts.turnId || "").trim();
+    if (turnId) p.set(HASH_K_TURN, turnId);
+    if (opts.occ !== undefined && opts.occ !== null && Number.isFinite(Number(opts.occ))) {
+      p.set(HASH_K_OCC, String(Number(opts.occ)));
+    }
+    const nav = String(opts.nav || "").trim();
+    if (nav) p.set(HASH_K_NAV, nav);
     u.hash = p.toString();
     return u.toString();
   }
@@ -3707,6 +3735,22 @@
   archiveBoot.createCategory = (name, opts = {}) => createCategory(name, opts);
   archiveBoot.exportBundle = (opts = {}) => exportBundle(opts);
   archiveBoot.importBundle = (opts = {}) => importBundle(opts);
+  // Phase 7 (Library NavTo). Expose the hash helpers + key constants so H2O.Library.NavTo
+  // (in 0F1a Library Core) can read/write the same Library hash convention without having
+  // to re-implement parseLibraryHashRequest. Cross-feature seams stay rendering/infra
+  // only — no business logic crosses this boundary.
+  archiveBoot.parseLibraryHashRequest = () => parseLibraryHashRequest();
+  archiveBoot.buildSavedChatsCompatUrl = (opts = {}) => buildSavedChatsCompatUrl(opts);
+  archiveBoot.LIBRARY_HASH_KEYS = Object.freeze({
+    LIB: HASH_K_LIB,
+    FOLDER: HASH_K_FOLDER,
+    CHAT: HASH_K_CHAT,
+    SNAPSHOT: HASH_K_SNAPSHOT,
+    VIEW: HASH_K_VIEW,
+    TURN: HASH_K_TURN,
+    OCC: HASH_K_OCC,
+    NAV: HASH_K_NAV,
+  });
 
   archiveBoot.captureLive = legacyCaptureLive;
   archiveBoot.saveLatest = legacySaveLatest;

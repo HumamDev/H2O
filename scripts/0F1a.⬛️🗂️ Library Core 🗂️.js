@@ -1598,5 +1598,637 @@ core.verifyOwnershipBoundaries = (() => {
   try { core.registerService('ui-shell', uiShellService, { replace: true }); } catch (e) { err('registerService:ui-shell', e); }
   try { core.registerService('native-sidebar', nativeSidebarService, { replace: true }); } catch (e) { err('registerService:native-sidebar', e); }
 
+  /* ──────────────────────────────────────────────────────────────────────
+   * Phase 7 — H2O.Library.NavTo (shared turn-jump service)
+   *
+   * Co-located in Library Core from day one as a shared service. Tags is the
+   * first consumer (Phase 6 popup); Categories, Labels, Search, Archive, and
+   * Studio will follow without re-implementing turn-jumping.
+   *
+   * Same-chat: prefer a caller-registered scroller (Tags registers its
+   *   scrollToAnswerInDom helper) — falls back to a built-in DOM scroller
+   *   that finds the message by data-message-id and scrolls it into view.
+   *
+   * Cross-chat: persist a small `pending-nav:v1` record (chatId, turnId,
+   *   occ, expiresAt = now+30s) across THREE independent carriers, all under
+   *   the same key `h2o:prm:cgx:library:pending-nav:v1`:
+   *     (1) sessionStorage  — synchronous, same-tab, primary transport.
+   *     (2) H2O.Library.Store — durable async mirror (cross-tab safe).
+   *     (3) URL hash         — bare `#turn=…&occ=…&nav=…` deep-link.
+   *   Then redirect to `/c/<chatId>#turn=…&occ=…&nav=…`. The destination
+   *   page reads back from any carrier; the first hit wins.
+   *
+   * Why sessionStorage primary: setItem is synchronous and returns BEFORE
+   *   the location.href change actually unloads the page. The Store/bridge
+   *   round-trip is async and may not commit before unload, which is what
+   *   caused the original Phase 7 bug where `pending: undefined` showed up
+   *   on the destination even though the click handler ran.
+   *
+   * Replay: a single boot listener watches `evt:h2o:minimap:engine-ready`,
+   *   `h2o:minimap:engine-ready`, `hashchange`, and `popstate`. When the
+   *   current chat matches the pending target, NavTo waits a short tick
+   *   then scrolls. The `lastJumpKey` dedupe prevents double-fire across
+   *   the dual-listener pattern + the 30 s pending-nav expiry guards stale
+   *   records. Pending-nav is cleared ONLY after a successful scroll
+   *   attempt — never before — so a page reload during the paint window
+   *   does not lose the target.
+   *
+   * Multi-occurrence cycling: per-(chatId, key) cursor in module memory.
+   *   Repeated cycle() with the same identity advances by one (mod length).
+   *
+   * Boundary: NavTo never writes to feature data (tags-manual, registry,
+   *   category overrides). It only reads chatId from the URL, persists its
+   *   own ephemeral pending-nav record, and calls a configured scroller.
+   * ──────────────────────────────────────────────────────────────────── */
+  const navToService = (() => {
+    // Phase 7 spec: pending-nav lives at the full namespaced key in Library Store. Other
+    // Library callers (LibraryIndex, Tags) construct the same `h2o:prm:cgx:library:<sub>:vN`
+    // shape and pass it to Store.get/set verbatim — the Store does not auto-prefix.
+    const NAV_KEY = 'h2o:prm:cgx:library:pending-nav:v1';
+    const NAV_FALLBACK_KEY = 'h2o:prm:cgx:library:pending-nav:v1'; // sessionStorage mirror (same shape)
+    const NAV_TTL_MS = 30_000;
+    const NAV_DEDUPE_TTL_MS = 5_000;
+
+    let scrollerFn = null;            // optional caller-registered same-chat scroller
+    let lastJumpKey = '';             // dedupe key for replay
+    let lastJumpAt = 0;
+    let listenersBound = false;
+    let installedRetry = false;
+    const cycleCursors = new Map();   // `${chatId}|${key}` → idx
+
+    // Phase-7-bugfix diagnostics (exposed via _state()). Every write/read/replay path
+    // updates these so we can answer "did the popup write pending? did replay see it?
+    // why did the scroll not fire?" without having to add console.logs in production.
+    let lastPendingWrite = null;      // { at, channels:['session','store','hash'], chatId, turnId, occ, nav, sessionReadback }
+    let lastPendingWriteError = null; // { at, message } — any throw caught inside writePendingNavSync
+    let lastReplayAttempt = null;     // { at, reason, here, hadPending, hadHash, hadBootHash }
+    let lastReplayStatus = null;      // 'no-pending' | 'expired' | 'wrong-chat' | 'duplicate' | 'replayed' | 'no-target' | …
+    let lastReplaySource = null;      // 'store' | 'session' | 'hash' | 'bootHash' | null
+    let lastScrollResult = null;      // { ok, status, source, turnId, at }
+    let lastToTurnCall = null;        // { at, chatId, turnId, opts, returnedStatus, sessionReadback, redirectUrl }
+    let lastToChatCall = null;        // { at, chatId, opts, redirectUrl }
+    let lastRedirectUrl = null;       // string — the final URL we set location.href to
+
+    // Boot-time URL hash snapshot. ChatGPT's SPA frequently rewrites the URL with
+    // history.replaceState() to clean the hash on route change, so by the time the
+    // engine-ready event fires and we look at W.location.hash we've already lost the
+    // deep-link target. Reading it once at module-load time is a robust workaround.
+    // Cleared after first successful replay so a subsequent same-tab navigation can
+    // re-populate it.
+    let bootHashSnapshot = (() => {
+      try { return String(W.location?.hash || ''); } catch { return ''; }
+    })();
+
+    function getStore() {
+      try { return W.H2O?.Library?.Store || null; } catch { return null; }
+    }
+
+    function getArchiveBoot() {
+      try { return W.H2O?.archiveBoot || null; } catch { return null; }
+    }
+
+    function safeCurrentChatId() {
+      try {
+        const m = String(W.location?.pathname || '').match(/\/c\/([^/?#]+)/);
+        return m ? m[1] : null;
+      } catch { return null; }
+    }
+
+    function safeMM() {
+      try {
+        const refs = W.H2O_MM_SHARED?.get?.();
+        const setActive = refs?.api?.rt?.setActiveTurnId;
+        return typeof setActive === 'function' ? setActive : null;
+      } catch { return null; }
+    }
+
+    // ── pending-nav storage ──
+    //
+    // Three-channel design (priority high→low):
+    //   1. sessionStorage  — synchronous, same-tab, survives ChatGPT SPA route change.
+    //                        This is the PRIMARY transport for cross-chat replay because
+    //                        sessionStorage.setItem is sync, returns before redirect, and
+    //                        cannot be lost to a Store/SW round-trip race.
+    //   2. H2O.Library.Store — durable, cross-tab, but async. Used as a mirror; useful
+    //                          when the user opens a turn in a different tab/window.
+    //   3. URL hash         — bare `#turn=…&occ=…&nav=…` carried on the redirect URL.
+    //                          Subject to SPA stripping, so consulted last.
+    //
+    // readPendingNav consults all three in priority order and returns the first hit.
+    // writePendingNav writes to (1) synchronously inside writePendingNavSync, then kicks
+    // off (2) as a fire-and-forget mirror. The redirect happens AFTER the sync write.
+    function writePendingNavSync(record) {
+      try {
+        const json = JSON.stringify(record);
+        W.sessionStorage?.setItem(NAV_FALLBACK_KEY, json);
+        // Sync readback verification per Phase 7 spec — proves sessionStorage actually
+        // accepted the write. If readback differs we record the failure and the caller
+        // can surface it to the user instead of silently navigating.
+        const readback = W.sessionStorage?.getItem(NAV_FALLBACK_KEY) || '';
+        const ok = readback === json;
+        if (!ok) {
+          lastPendingWriteError = { at: Date.now(), message: 'session-readback-mismatch' };
+        } else {
+          lastPendingWriteError = null;
+        }
+        return ok;
+      } catch (e) {
+        err('navto.writePending.session', e);
+        lastPendingWriteError = { at: Date.now(), message: String(e?.message || e) };
+        return false;
+      }
+    }
+
+    async function readPendingNav() {
+      // Sync source first — fastest, most reliable for same-tab redirects.
+      try {
+        const raw = W.sessionStorage?.getItem(NAV_FALLBACK_KEY);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') return { ...parsed, _via: 'session' };
+          } catch (_e) {}
+        }
+      } catch (e) { err('navto.readPending.session', e); }
+      // Async durable source second.
+      const store = getStore();
+      if (store?.get) {
+        try {
+          const v = await store.get(NAV_KEY);
+          if (v && typeof v === 'object') return { ...v, _via: 'store' };
+        } catch (e) { err('navto.readPending.store', e); }
+      }
+      return null;
+    }
+
+    async function writePendingNav(record) {
+      // Sync sessionStorage first — guaranteed to land before any subsequent
+      // location.href change, regardless of how Store.set behaves.
+      const okSync = writePendingNavSync(record);
+      // Mirror to durable Store in parallel. We do NOT await this — it's fire-and-forget
+      // because the redirect is going to fire immediately after we return. If the
+      // session-storage path holds, we don't need Store; if it doesn't (cross-tab),
+      // Store may or may not have committed in time, and that's fine.
+      const store = getStore();
+      if (store?.set) {
+        store.set(NAV_KEY, record).catch((e) => err('navto.writePending.store', e));
+      }
+      lastPendingWrite = {
+        at: Date.now(),
+        channels: [okSync ? 'session' : null, store?.set ? 'store' : null].filter(Boolean),
+        chatId: record?.chatId || null,
+        turnId: record?.turnId || null,
+        occ: record?.occurrenceIndex ?? null,
+        nav: record?.nav || null,
+      };
+      return okSync;
+    }
+
+    async function clearPendingNav() {
+      // Sync first so we definitely flip the sessionStorage flag before any subsequent
+      // engine-ready / hashchange burst tries to re-read.
+      try { W.sessionStorage?.removeItem(NAV_FALLBACK_KEY); } catch {}
+      const store = getStore();
+      if (store?.del) {
+        try { await store.del(NAV_KEY); } catch (e) { err('navto.clearPending.store', e); }
+      }
+    }
+
+    function isExpired(record) {
+      if (!record || typeof record !== 'object') return true;
+      const exp = Number(record.expiresAt || 0);
+      return !exp || Date.now() > exp;
+    }
+
+    // ── default DOM scroller (used when no scroller is registered) ──
+    function defaultDomScroller(turnId, opts = {}) {
+      const id = String(turnId || '').trim();
+      if (!id) return { ok: false, status: 'invalid-turn-id' };
+      let el = null;
+      try {
+        const esc = (W.CSS && typeof W.CSS.escape === 'function') ? W.CSS.escape(id) : id.replace(/"/g, '\\"');
+        el =
+          document.querySelector(`[data-message-id="${esc}"][data-message-author-role="assistant"]`) ||
+          document.querySelector(`[data-message-id="${esc}"]`) ||
+          document.querySelector(`[data-cgxui-uid="${esc}"]`) ||
+          null;
+      } catch (_e) {
+        try { el = document.getElementById(id) || null; } catch {}
+      }
+      if (!el) return { ok: false, status: 'element-not-found' };
+      try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+      if (opts.highlight !== false) {
+        try {
+          const prev = el.style.outline;
+          el.style.outline = '2px solid rgba(100,150,255,0.45)';
+          setTimeout(() => { try { el.style.outline = prev; } catch {} }, 2000);
+        } catch {}
+      }
+      return { ok: true, status: 'scrolled' };
+    }
+
+    function callScroller(turnId, opts = {}) {
+      const fn = (typeof scrollerFn === 'function') ? scrollerFn : null;
+      let res = null;
+      if (fn) {
+        try { res = fn(turnId, opts) || { ok: true, status: 'scrolled' }; }
+        catch (e) { err('navto.scroller', e); res = null; /* fall through to default */ }
+        if (res) {
+          lastScrollResult = { ...res, source: 'scroller', turnId, at: Date.now() };
+          return res;
+        }
+      }
+      // MM has its own setActiveTurnId — try it before the brute-force DOM scroller.
+      const mmSet = safeMM();
+      if (mmSet) {
+        try {
+          mmSet(turnId, opts.source || 'library-navto');
+          res = { ok: true, status: 'scrolled', source: 'mm', turnId, at: Date.now() };
+          lastScrollResult = res;
+          return res;
+        } catch (e) { err('navto.mm-set', e); }
+      }
+      res = defaultDomScroller(turnId, opts);
+      lastScrollResult = { ...res, source: 'dom', turnId, at: Date.now() };
+      return res;
+    }
+
+    // ── public API ──
+    function setScroller(fn) {
+      scrollerFn = (typeof fn === 'function') ? fn : null;
+    }
+
+    function buildHash(chatId, turnId, occ, nav) {
+      // Phase 7 spec: emit the bare deep-link form `#turn=<turnId>&occ=<n>&nav=<nav>`.
+      // The chatId is carried by the URL path (`/c/<chatId>`), so the hash itself does
+      // not include it. This is the form `parseHash` reads back on the destination chat.
+      // The Library/Archive long form is still supported by `parseHash` and remains
+      // available via `archiveBoot.buildSavedChatsCompatUrl` for callers that need it.
+      const p = new URLSearchParams();
+      if (turnId) p.set('turn', String(turnId));
+      if (occ !== undefined && occ !== null && Number.isFinite(Number(occ))) p.set('occ', String(Number(occ)));
+      if (nav) p.set('nav', String(nav));
+      const s = p.toString();
+      return s ? `#${s}` : '';
+    }
+
+    function parseHash(hash) {
+      const ab = getArchiveBoot();
+      // Two valid hash forms (NavTo accepts both):
+      //
+      //   (A) Bare turn-deep-link, used when the URL path already carries the chatId.
+      //       Example: /c/<chatId>#turn=<turnId>&occ=<n>&nav=tag
+      //       This is the cross-chat redirect format Phase 7 produces.
+      //
+      //   (B) Library/Archive long form, kept for forward compatibility with archiveBoot's
+      //       hash convention. Example: #h2o-archive-library=1&chatId=<id>&turn=...
+      //       parseLibraryHashRequest in 0D3a returns turnId/occ/nav for this form.
+      //
+      // Both forms read identically by callers — the return shape is normalized.
+      const raw = String(hash != null ? hash : (W.location?.hash || ''));
+      if (!raw) return null;
+      const trimmed = raw.startsWith('#') ? raw.slice(1) : raw;
+      const params = new URLSearchParams(trimmed);
+
+      // Long form ("h2o-archive-library=1" present): delegate to archive's parser when
+      // we're inspecting the live location, otherwise hand-parse the explicit string.
+      if (String(params.get('h2o-archive-library') || '') === '1') {
+        if ((hash === undefined || hash === null) && ab?.parseLibraryHashRequest) {
+          try {
+            const r = ab.parseLibraryHashRequest();
+            if (r) {
+              return {
+                chatId: r.chatId || null,
+                turnId: r.turnId || null,
+                occ: (r.occ === undefined || r.occ === null) ? null : r.occ,
+                nav: r.nav || null,
+              };
+            }
+          } catch (e) { err('navto.parseHash.archive', e); }
+        }
+        const occRawA = String(params.get('occ') || '').trim();
+        const occNA = occRawA === '' ? null : Number.parseInt(occRawA, 10);
+        return {
+          chatId: String(params.get('chatId') || '').trim() || null,
+          turnId: String(params.get('turn') || '').trim() || null,
+          occ: Number.isFinite(occNA) && occNA >= 0 ? occNA : null,
+          nav: String(params.get('nav') || '').trim() || null,
+        };
+      }
+
+      // Bare form: only meaningful if we can resolve a chatId from the URL path.
+      const turn = String(params.get('turn') || '').trim();
+      if (!turn) return null;
+      const occRawB = String(params.get('occ') || '').trim();
+      const occNB = occRawB === '' ? null : Number.parseInt(occRawB, 10);
+      return {
+        chatId: safeCurrentChatId(),
+        turnId: turn,
+        occ: Number.isFinite(occNB) && occNB >= 0 ? occNB : null,
+        nav: String(params.get('nav') || '').trim() || null,
+      };
+    }
+
+    function isReady() {
+      try {
+        const hereId = safeCurrentChatId();
+        if (!hereId) return false;
+        return !!safeMM() || !!scrollerFn || true; // built-in DOM fallback always works on chat route
+      } catch { return false; }
+    }
+
+    async function toTurn(chatId, turnId, opts = {}) {
+      const callAt = Date.now();
+      const target = String(chatId || '').trim();
+      const turn = String(turnId || '').trim();
+      if (!target || !turn) {
+        const r = { ok: false, status: 'invalid-ref' };
+        lastToTurnCall = { at: callAt, chatId: target, turnId: turn, opts, returnedStatus: r.status, sessionReadback: null, redirectUrl: null };
+        return r;
+      }
+      const here = safeCurrentChatId();
+      if (here && here === target) {
+        // dedupe rapid-fire same-target jumps within the same chat
+        const key = `${target}|${turn}|${opts.occurrenceIndex ?? 0}`;
+        if (key === lastJumpKey && (Date.now() - lastJumpAt) < NAV_DEDUPE_TTL_MS) {
+          const r = { ok: true, status: 'duplicate' };
+          lastToTurnCall = { at: callAt, chatId: target, turnId: turn, opts, returnedStatus: r.status, sessionReadback: null, redirectUrl: null };
+          return r;
+        }
+        lastJumpKey = key;
+        lastJumpAt = Date.now();
+        const r = callScroller(turn, opts) || { ok: true };
+        lastToTurnCall = { at: callAt, chatId: target, turnId: turn, opts, returnedStatus: r.status, sessionReadback: null, redirectUrl: null };
+        return r;
+      }
+      // Cross-chat: persist intent SYNCHRONOUSLY before redirect, then redirect.
+      const record = {
+        chatId: target,
+        turnId: turn,
+        occurrenceIndex: Number.isFinite(Number(opts.occurrenceIndex)) ? Number(opts.occurrenceIndex) : null,
+        nav: String(opts.source || opts.nav || 'library') || null,
+        expiresAt: Date.now() + NAV_TTL_MS,
+        ts: Date.now(),
+      };
+      // CRITICAL: writePendingNavSync is synchronous. By the time it returns, the record
+      // is in sessionStorage and will survive the location.href change. We don't await
+      // the Store mirror — it fires-and-forgets and may or may not commit before the
+      // page unloads, which is fine because sessionStorage is the authoritative carrier
+      // for same-tab cross-chat replay.
+      const sessionOk = writePendingNavSync(record);
+      // Mirror to Store async. Don't await — page is about to unload anyway.
+      const store = getStore();
+      if (store?.set) { store.set(NAV_KEY, record).catch((e) => err('navto.writePending.store', e)); }
+      lastPendingWrite = {
+        at: Date.now(),
+        channels: [sessionOk ? 'session' : null, store?.set ? 'store' : null].filter(Boolean),
+        chatId: target, turnId: turn,
+        occ: record.occurrenceIndex, nav: record.nav,
+        sessionReadback: sessionOk,
+      };
+      let redirectUrl = null;
+      try {
+        // Phase 7 spec: redirect to /c/<chatId>#turn=<turnId>&occ=<n>&nav=<nav>.
+        // Three independent carriers (sessionStorage, Store, URL hash) ensure the
+        // destination page can replay even if any one channel fails or is stripped.
+        const hash = buildHash(target, turn, record.occurrenceIndex, record.nav);
+        redirectUrl = `/c/${encodeURIComponent(target)}${hash}`;
+        lastRedirectUrl = redirectUrl;
+        W.location.href = redirectUrl;
+      } catch (e) { err('navto.redirect', e); }
+      const r = { ok: true, status: 'navigating', chatId: target, turnId: turn, sessionReadback: sessionOk };
+      lastToTurnCall = { at: callAt, chatId: target, turnId: turn, opts, returnedStatus: r.status, sessionReadback: sessionOk, redirectUrl };
+      return r;
+    }
+
+    async function toChat(chatId, opts = {}) {
+      const callAt = Date.now();
+      const target = String(chatId || '').trim();
+      if (!target) {
+        const r = { ok: false, status: 'invalid-chat' };
+        lastToChatCall = { at: callAt, chatId: target, opts, redirectUrl: null };
+        return r;
+      }
+      if (opts.turnId) return toTurn(target, opts.turnId, opts);
+      const here = safeCurrentChatId();
+      if (here === target) {
+        lastToChatCall = { at: callAt, chatId: target, opts, redirectUrl: null };
+        return { ok: true, status: 'already-here' };
+      }
+      let redirectUrl = null;
+      try {
+        redirectUrl = `/c/${encodeURIComponent(target)}`;
+        lastRedirectUrl = redirectUrl;
+        W.location.href = redirectUrl;
+      } catch (e) { err('navto.toChat', e); }
+      lastToChatCall = { at: callAt, chatId: target, opts, redirectUrl };
+      return { ok: true, status: 'navigating', chatId: target };
+    }
+
+    async function cycle(chatId, turnIds, opts = {}) {
+      const list = Array.isArray(turnIds) ? turnIds.filter((t) => !!t) : [];
+      const target = String(chatId || '').trim();
+      if (!target || !list.length) return { ok: false, status: 'invalid-cycle' };
+      const cursorKey = `${target}|${opts.key || ''}`;
+      const prev = cycleCursors.get(cursorKey);
+      const next = ((typeof prev === 'number') ? (prev + 1) : 0) % list.length;
+      cycleCursors.set(cursorKey, next);
+      const turn = list[next];
+      return toTurn(target, turn, { ...opts, occurrenceIndex: next });
+    }
+
+    // ── boot replay listener (single instance) ──
+    //
+    // Three replay channels checked in priority order on every engine-ready / hashchange
+    // / popstate fire (and once at boot-tick to catch the case where engine-ready already
+    // fired before our listeners bound):
+    //
+    //   1. Store/sessionStorage pending-nav record (the authoritative cross-chat carrier).
+    //   2. Live URL hash via parseHash(W.location.hash).
+    //   3. bootHashSnapshot — captured at module-load time before ChatGPT's SPA may have
+    //      stripped the hash via replaceState.
+    //
+    // Important behaviors per Phase-7 review:
+    //   - Pending-nav is NOT cleared until AFTER the scroll attempt has fired (we used to
+    //     clear before the 250 ms paint-window setTimeout, which meant a same-tab reload
+    //     during that window lost the target).
+    //   - Every path stamps lastReplayAttempt + lastReplayStatus + lastReplaySource so the
+    //     external diagnostic console can see exactly what happened.
+    //   - Dedupe via lastJumpKey + 5 s window prevents burst-fire across the three event
+    //     channels.
+    async function maybeReplay(reason = 'event') {
+      const here = safeCurrentChatId();
+      const liveHash = parseHash();
+      const snapHash = bootHashSnapshot ? parseHash(bootHashSnapshot) : null;
+      const liveHasTurn = !!liveHash?.turnId;
+      const snapHasTurn = !!snapHash?.turnId;
+      lastReplayAttempt = {
+        at: Date.now(),
+        reason,
+        here,
+        hadPending: false,         // filled in below if record found
+        hadHash: liveHasTurn,
+        hadBootHash: snapHasTurn,
+      };
+      if (!here) { lastReplayStatus = 'no-chat-route'; return; }
+
+      try {
+        const record = await readPendingNav();
+        const recordExpired = !!record && isExpired(record);
+        lastReplayAttempt.hadPending = !!record;
+
+        // Build the three candidate targets in priority order.
+        const candidates = [];
+        if (record && !recordExpired && record.chatId === here && record.turnId) {
+          candidates.push({
+            source: record._via || 'store',
+            turnId: record.turnId,
+            occ: record.occurrenceIndex ?? 0,
+            isPending: true,
+          });
+        }
+        if (liveHash?.turnId && (liveHash.chatId || here) === here) {
+          candidates.push({ source: 'hash', turnId: liveHash.turnId, occ: liveHash.occ ?? 0, isPending: false });
+        }
+        if (snapHash?.turnId && (snapHash.chatId || here) === here) {
+          candidates.push({ source: 'bootHash', turnId: snapHash.turnId, occ: snapHash.occ ?? 0, isPending: false });
+        }
+
+        // No usable target.
+        if (!candidates.length) {
+          if (recordExpired) {
+            lastReplayStatus = 'expired';
+            try { await clearPendingNav(); } catch {}
+          } else if (record && record.chatId !== here) {
+            // pending exists but for a different chat — leave it; might match next nav.
+            lastReplayStatus = 'wrong-chat';
+          } else {
+            lastReplayStatus = record ? 'no-target' : 'no-pending';
+          }
+          return;
+        }
+
+        const pick = candidates[0];
+        const key = `${here}|${pick.turnId}|${pick.occ}`;
+        if (key === lastJumpKey && (Date.now() - lastJumpAt) < NAV_DEDUPE_TTL_MS) {
+          lastReplayStatus = 'duplicate';
+          lastReplaySource = pick.source;
+          return;
+        }
+        // Mark the dedupe key BEFORE the paint-window setTimeout so a burst of
+        // engine-ready/hashchange/popstate within ~5 s won't fire the scroller again.
+        lastJumpKey = key;
+        lastJumpAt = Date.now();
+        lastReplaySource = pick.source;
+        lastReplayStatus = 'replayed';
+        // Clear bootHashSnapshot once we've decided to use any deep-link channel.
+        // Keeps the snapshot truthful: next same-tab nav can re-populate via
+        // parseHash(W.location.hash).
+        bootHashSnapshot = '';
+
+        // Defer the scroll a bit so the chat DOM has time to paint the target message,
+        // then clear pending-nav AFTER the scroll attempt — never before. If the page is
+        // reloaded during the 250 ms window, the pending record stays and replay re-fires
+        // on the next boot.
+        setTimeout(async () => {
+          let scrollRes = null;
+          try {
+            scrollRes = callScroller(pick.turnId, { source: `library-navto:${reason}:${pick.source}` });
+          } catch (e) {
+            err('navto.replay.scroll', e);
+            scrollRes = { ok: false, status: 'scroll-threw' };
+          }
+          // Update lastScrollResult is already done inside callScroller; mirror status here.
+          if (scrollRes && scrollRes.ok === false) {
+            // Don't clear pending — let the next engine-ready/hashchange take another shot.
+            lastReplayStatus = `replayed-but-scroll-failed:${scrollRes.status || 'unknown'}`;
+            // Reset the dedupe key so a subsequent, retryable replay isn't blocked by
+            // the previous failure within the dedupe window.
+            lastJumpKey = '';
+            lastJumpAt = 0;
+            return;
+          }
+          if (pick.isPending) {
+            try { await clearPendingNav(); } catch {}
+          }
+        }, 250);
+      } catch (e) {
+        err('navto.maybeReplay', e);
+        lastReplayStatus = `error:${e?.message || 'unknown'}`;
+      }
+    }
+
+    function bindListeners() {
+      if (listenersBound) return;
+      listenersBound = true;
+      try {
+        const onEngineReady = () => maybeReplay('engine-ready');
+        const onHashChange = () => maybeReplay('hashchange');
+        const onPopState = () => maybeReplay('popstate');
+        // Dual-listener pattern (CLAUDE.md): subscribe to both evt: and legacy variants.
+        W.addEventListener('evt:h2o:minimap:engine-ready', onEngineReady);
+        W.addEventListener('h2o:minimap:engine-ready', onEngineReady);
+        // hashchange covers same-document deep-link mutations.
+        W.addEventListener('hashchange', onHashChange);
+        // popstate covers SPA route changes (back/forward + history.replaceState in some
+        // SPAs that synthesize popstate). On chatgpt.com pushState/replaceState don't
+        // emit popstate natively, but evt:h2o:minimap:engine-ready already fires on the
+        // destination chat — popstate is here as a defensive third channel.
+        W.addEventListener('popstate', onPopState);
+        // First-shot replay: if engine-ready already fired before we bound, try once after
+        // a short tick. Idempotent thanks to lastJumpKey dedupe.
+        if (!installedRetry) {
+          installedRetry = true;
+          setTimeout(() => maybeReplay('boot-tick'), 600);
+        }
+      } catch (e) { err('navto.bindListeners', e); }
+    }
+
+    // Bind immediately at boot. Safe to call multiple times — second call is a no-op.
+    try { bindListeners(); } catch (e) { err('navto.bind', e); }
+
+    return {
+      toChat,
+      toTurn,
+      cycle,
+      buildHash,
+      parseHash,
+      isReady,
+      setScroller,
+      // Low-level helpers exposed for diagnostics / tests:
+      _readPendingNav: readPendingNav,
+      _writePendingNav: writePendingNav,
+      _clearPendingNav: clearPendingNav,
+      _maybeReplay: maybeReplay,
+      _state: () => ({
+        lastJumpKey,
+        lastJumpAt,
+        hasScroller: !!scrollerFn,
+        listenersBound,
+        cursors: cycleCursors.size,
+        bootHashSnapshot,
+        // Phase-7-bugfix diagnostics: exposed publicly via NavTo._state() so the
+        // verification console output can prove the cross-chat path actually ran.
+        lastPendingWrite,
+        lastPendingWriteError,
+        lastReplayAttempt,
+        lastReplayStatus,
+        lastReplaySource,
+        lastScrollResult,
+        lastToTurnCall,
+        lastToChatCall,
+        lastRedirectUrl,
+      }),
+      version: '7.0.0',
+    };
+  })();
+
+  try {
+    W.H2O = W.H2O || {};
+    W.H2O.Library = W.H2O.Library || {};
+    W.H2O.Library.NavTo = navToService;
+    core.registerService('nav-to', navToService, { replace: true });
+  } catch (e) { err('publish:NavTo', e); }
+
   step('boot', core.meta.phase);
 })();
