@@ -31,6 +31,15 @@
   let CLS = 'cgxui-cnhb';
 
   const FEATURE_KEY_INTERFACE = 'interface';
+  const FEATURE_KEY_CHAT_LIST = 'interfaceEnhancer';
+  const FEATURE_KEY_CHAT_META = 'chatMeta';
+  const KEY_CHAT_LIST_ACTIVITY_STYLE_V1 = 'ho:chat-list-activity-style';
+  const EV_CHAT_LIST_ACTIVITY_STYLE = 'h2o:interface:activity-style';
+  const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
+  const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
+    Object.freeze(['edge-strip', 'Thin Edge Strip']),
+    Object.freeze(['edge-wide', 'Wide Edge Strip']),
+  ]);
   const KEY_CHUB_INTERFACE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:interface:subtab:v1';
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
   const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
@@ -42,28 +51,40 @@
     key: FEATURE_KEY_INTERFACE,
     label: 'Interface',
     icon: '🖥️',
-    subtitle: 'Chat list styling plus title helper surfaces.',
+    subtitle: 'Chat list styling and sidebar cues.',
     category: 'mark',
     insertBefore: 'themes',
     description: Object.freeze({
-      default: 'Keep interface styling and title helpers under one interface tab.',
-      focus: 'Switch between chat-list indicators and title helpers without leaving interface controls.',
-      review: 'Use interface sub-tabs to tune labels and sidebar cues separately.',
+      default: 'Keep chat-list styling and sidebar cues under one interface tab.',
+      focus: 'Tune chat-list indicators without leaving interface controls.',
+      review: 'Use interface controls to tune sidebar and project-list cues.',
       performance: 'Keep lightweight interface helpers grouped so UI tuning stays predictable.',
     }),
   });
 
   const INTERFACE_SUBTABS = Object.freeze([
     Object.freeze({
-      key: 'interfaceEnhancer',
-      label: 'Interface Enhancer',
+      key: FEATURE_KEY_CHAT_LIST,
+      label: 'Chat List',
       icon: '🖥️',
-      subtitle: 'Sidebar + project list color dots.',
+      subtitle: 'Sidebar and project list color cues.',
       description: Object.freeze({
-        default: 'Heatmap-style indicators for chats.',
-        focus: 'Spot recent chats faster.',
-        review: 'Quick color toggles near chat links.',
-        performance: 'Small DOM footprint.',
+        default: 'Heat indicators, row colors, and active chat cues for chat lists.',
+        focus: 'Spot recent chats and active rows faster.',
+        review: 'Keep chat-list color cues separate from metadata and title helpers.',
+        performance: 'Keep list decoration controls lightweight.',
+      }),
+    }),
+    Object.freeze({
+      key: FEATURE_KEY_CHAT_META,
+      label: 'Chat Meta',
+      icon: '🧾',
+      subtitle: 'Created dates, answer counts, pin state, and previews.',
+      description: Object.freeze({
+        default: 'Review chat metadata enrichment state for list rows.',
+        focus: 'Check whether the current chat metadata cache is available.',
+        review: 'Keep list metadata, pinning, and preview status separate from list styling.',
+        performance: 'Inspect metadata counts without opening the full chat list surface.',
       }),
     }),
     Object.freeze({
@@ -232,6 +253,75 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   function CHUB_INTERFACE_isVisible() {
     const state = storage.getJSON(KEY_CHUB_TAB_VIS_V1, {}) || {};
     return state[FEATURE_KEY_INTERFACE] !== false;
+  }
+
+  function CHUB_INTERFACE_api() {
+    return TOPW.H2O?.interface || W.H2O?.interface || null;
+  }
+
+  function CHUB_CHAT_LIST_activityStyleOpts() {
+    return CHAT_LIST_ACTIVITY_STYLE_OPTIONS.map(([key, label]) => [key, label]);
+  }
+
+  function CHUB_CHAT_LIST_normalizeActivityStyle(value) {
+    const key = String(value || '').trim().toLowerCase();
+    return CHAT_LIST_ACTIVITY_STYLE_OPTIONS.some(([opt]) => opt === key) ? key : DEFAULT_CHAT_LIST_ACTIVITY_STYLE;
+  }
+
+  function CHUB_CHAT_LIST_activityStyleLabel(value) {
+    const key = CHUB_CHAT_LIST_normalizeActivityStyle(value);
+    return CHAT_LIST_ACTIVITY_STYLE_OPTIONS.find(([opt]) => opt === key)?.[1] || 'Thin Edge Strip';
+  }
+
+  function CHUB_CHAT_LIST_getActivityStyle() {
+    const api = CHUB_INTERFACE_api();
+    try {
+      if (typeof api?.store?.getActivityStyle === 'function') {
+        return CHUB_CHAT_LIST_normalizeActivityStyle(api.store.getActivityStyle());
+      }
+    } catch {}
+    return CHUB_CHAT_LIST_normalizeActivityStyle(storage.getStr(KEY_CHAT_LIST_ACTIVITY_STYLE_V1, DEFAULT_CHAT_LIST_ACTIVITY_STYLE));
+  }
+
+  function CHUB_CHAT_LIST_setActivityStyle(value) {
+    let next = CHUB_CHAT_LIST_normalizeActivityStyle(value);
+    const api = CHUB_INTERFACE_api();
+    try {
+      if (typeof api?.store?.setActivityStyle === 'function') {
+        next = CHUB_CHAT_LIST_normalizeActivityStyle(api.store.setActivityStyle(next));
+      } else {
+        const store = TOPW.localStorage || W.localStorage;
+        if (next === DEFAULT_CHAT_LIST_ACTIVITY_STYLE) store.removeItem(KEY_CHAT_LIST_ACTIVITY_STYLE_V1);
+        else store.setItem(KEY_CHAT_LIST_ACTIVITY_STYLE_V1, next);
+      }
+    } catch {}
+    try {
+      (TOPW.document || D).documentElement.setAttribute('data-ho-chat-list-activity-style', next);
+      TOPW.dispatchEvent(new CustomEvent(EV_CHAT_LIST_ACTIVITY_STYLE, { detail: { style: next, reason: 'control-hub' } }));
+      if (W !== TOPW) W.dispatchEvent(new CustomEvent(EV_CHAT_LIST_ACTIVITY_STYLE, { detail: { style: next, reason: 'control-hub' } }));
+    } catch {}
+    return next;
+  }
+
+  function CHUB_CHAT_META_summary() {
+    const api = CHUB_INTERFACE_api();
+    const store = api?.store || null;
+    let allMeta = null;
+    try { allMeta = typeof store?.getAllMeta === 'function' ? store.getAllMeta() : null; } catch {}
+    const rows = allMeta && typeof allMeta === 'object' ? Object.keys(allMeta) : [];
+    let pinnedCount = 0;
+    for (const id of rows) {
+      try { if (store?.isPinned?.(id)) pinnedCount += 1; } catch {}
+    }
+    let currentChatId = '';
+    try { currentChatId = api?.nav?.currentChatId?.() || ''; } catch {}
+    return {
+      available: !!api,
+      currentChatId,
+      metaRows: rows.length,
+      pinnedCount,
+      storeKey: api?.keys?.meta || '',
+    };
   }
 
   function CHUB_ANSN_api() {
@@ -439,16 +529,47 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     ];
   }
 
-  const INTERFACE_ENHANCER_CONTROLS = Object.freeze([
+  const CHAT_LIST_CONTROLS = Object.freeze([
     {
       type: 'custom',
       key: 'interfaceState',
-      label: 'Interface Enhancer',
+      label: 'Chat List',
       group: 'Visibility',
       render() {
         return renderInfoList([
           { label: 'State', value: CHUB_INTERFACE_isVisible() ? 'Visible' : 'Hidden' },
-          { label: 'Hint', value: 'Use the row switch to show or hide Interface surfaces on the page.' },
+          { label: 'Right Edge Control', value: CHUB_CHAT_LIST_activityStyleLabel(CHUB_CHAT_LIST_getActivityStyle()) },
+          { label: 'Hint', value: 'Use the row switch to show or hide chat-list decoration on the page.' },
+        ]);
+      },
+    },
+    {
+      type: 'select',
+      key: 'chatListActivityStyle',
+      label: 'Right Edge Control',
+      group: 'Style',
+      help: 'Choose between the thin edge strip and the wider edge strip. Both open the same chat-list controls.',
+      def: DEFAULT_CHAT_LIST_ACTIVITY_STYLE,
+      opts: CHUB_CHAT_LIST_activityStyleOpts,
+      getLive() { return CHUB_CHAT_LIST_getActivityStyle(); },
+      setLive(v) { CHUB_CHAT_LIST_setActivityStyle(v); invalidate(); },
+    },
+  ]);
+
+  const CHAT_META_CONTROLS = Object.freeze([
+    {
+      type: 'custom',
+      key: 'chatMetaState',
+      label: 'Chat Meta',
+      group: 'Runtime',
+      render() {
+        const summary = CHUB_CHAT_META_summary();
+        return renderInfoList([
+          { label: 'State', value: summary.available ? 'Available' : 'Unavailable' },
+          { label: 'Current Chat', value: summary.currentChatId || 'None' },
+          { label: 'Cached Chats', value: String(summary.metaRows) },
+          { label: 'Pinned Chats', value: String(summary.pinnedCount) },
+          { label: 'Store', value: summary.storeKey || 'Unavailable' },
         ]);
       },
     },
@@ -705,7 +826,8 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   ]);
 
   const CONTROLS_BY_KEY = Object.freeze({
-    interfaceEnhancer: INTERFACE_ENHANCER_CONTROLS,
+    [FEATURE_KEY_CHAT_LIST]: CHAT_LIST_CONTROLS,
+    [FEATURE_KEY_CHAT_META]: CHAT_META_CONTROLS,
     titles: TITLES_CONTROLS,
     numbers: NUMBERS_CONTROLS,
   });
@@ -727,9 +849,15 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
         visibility: INTERFACE_VISIBILITY,
       });
       api.registerPlugin({
-        key: 'interfaceEnhancer',
+        key: FEATURE_KEY_CHAT_LIST,
         getControls() {
-          return CONTROLS_BY_KEY.interfaceEnhancer;
+          return CONTROLS_BY_KEY[FEATURE_KEY_CHAT_LIST];
+        },
+      });
+      api.registerPlugin({
+        key: FEATURE_KEY_CHAT_META,
+        getControls() {
+          return CONTROLS_BY_KEY[FEATURE_KEY_CHAT_META];
         },
       });
       api.registerPlugin({

@@ -112,6 +112,14 @@
         "3Z3a._Shelf_Panel_.js",
         "3Z4a._Drawer_Panel_.js"
       ]
+    },
+    "INTERFACE": {
+      "description": "Interface family: Kernel + Decorator + Meta Enricher.",
+      "members": [
+        "9A1a._Interface_Kernel_.js",
+        "9A1b._Chat_List_Decorator_.js",
+        "9A1c._Chat_Meta_Enricher_.js"
+      ]
     }
   },
   "scripts": {
@@ -954,6 +962,48 @@
       "group": "CORE_BASE",
       "provides": [
         "h2o.loader"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "9A1a._Interface_Kernel_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.interface.kernel"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "9A1b._Chat_List_Decorator_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "9A1a._Interface_Kernel_.js"
+      ],
+      "after": [],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.interface.decorator"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "9A1c._Chat_Meta_Enricher_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "9A1a._Interface_Kernel_.js",
+        "9A1b._Chat_List_Decorator_.js"
+      ],
+      "after": [],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.interface.meta"
       ],
       "critical": true,
       "optionalDependsOn": []
