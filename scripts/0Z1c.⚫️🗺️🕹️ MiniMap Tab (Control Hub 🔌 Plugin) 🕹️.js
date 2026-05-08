@@ -25,6 +25,8 @@
   // IMPORTANT: keep this string aligned with Control Hub v3.4.x
   const EV_CHUB_READY_V1 = 'h2o.ev:prm:cgx:cntrlhb:ready:v1';
   const FEATURE_KEY_CHAT_ANSWERS = 'chatAnswers';
+  const ALIAS_ID = '0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js';
+  const OPEN_EVENT = 'evt:h2o:chub:open';
 
   // idempotence marker (avoid double-register when Tampermonkey re-injects)
   const MARK = '__H2O_CHUB_MM_TAB_PLUGIN_V010__';
@@ -654,23 +656,39 @@ ${P} .${CLS}-ctrlLabGroup{
     }
   }
 
-  // 1) Fast path: if CH already booted
-  if (register()) return;
+  const __doInit = () => {
+    // 1) Fast path: if CH already booted
+    if (register()) return;
 
-  // 2) Event path: wait for CH ready
-  const onReady = () => {
-    if (register()) {
-      try { W.removeEventListener(EV_CHUB_READY_V1, onReady, true); } catch {}
-    }
+    // 2) Event path: wait for CH ready
+    const onReady = () => {
+      if (register()) {
+        try { W.removeEventListener(EV_CHUB_READY_V1, onReady, true); } catch {}
+      }
+    };
+    W.addEventListener(EV_CHUB_READY_V1, onReady, true);
+
+    // 3) Fallback poll: in case the event fired before this script
+    let tries = 0;
+    const t = W.setInterval(() => {
+      tries++;
+      if (register() || tries > 80) {
+        try { W.clearInterval(t); } catch {}
+      }
+    }, 250);
   };
-  W.addEventListener(EV_CHUB_READY_V1, onReady, true);
 
-  // 3) Fallback poll: in case the event fired before this script
-  let tries = 0;
-  const t = W.setInterval(() => {
-    tries++;
-    if (register() || tries > 80) {
-      try { W.clearInterval(t); } catch {}
+  try {
+    const loaderApi = (W && W.H2O && W.H2O.loader) || null;
+    if (loaderApi && typeof loaderApi.registerOnDemand === 'function') {
+      loaderApi.registerOnDemand(ALIAS_ID, OPEN_EVENT);
     }
-  }, 250);
+    if (loaderApi && typeof loaderApi.guard === 'function') {
+      loaderApi.guard(ALIAS_ID, __doInit);
+    } else {
+      __doInit();
+    }
+  } catch (_) {
+    try { __doInit(); } catch (_) {}
+  }
 })();
