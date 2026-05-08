@@ -1356,6 +1356,38 @@
     // to call multiple times). Returns the migration record. Writes that happen during the
     // pre-publication window go to legacy v1 and are picked up by the v1 read inside this
     // routine — no data loss.
+    function resetLibraryStoreMigrationForRetry() {
+      const m = state.libraryStoreMigration;
+      state.v2MigrationPromise = null;
+      m.status = 'pending';
+      m.source = 'unknown';
+      m.rowsLoaded = 0;
+      m.startedAt = 0;
+      m.finishedAt = 0;
+      m.error = null;
+      m.legacyV1UpdatedAt = 0;
+      m.legacyV1UpdatedAtIso = '';
+      return m;
+    }
+
+    async function retryLibraryStoreMigration(reason = 'store-event') {
+      if (state.v2RegistryCache) return state.libraryStoreMigration;
+      const m = state.libraryStoreMigration || {};
+      if (m.status === 'store-v2' || m.status === 'migrated-v1-to-v2') return m;
+      if (m.status === 'pending' && state.v2MigrationPromise) return state.v2MigrationPromise;
+      const Store = W.H2O?.Library?.Store;
+      if (!Store) return m;
+      if (Store._readyPromise && typeof Store._readyPromise.then === 'function') {
+        try { await Store._readyPromise; } catch (_e) {}
+      }
+      const caps = (typeof Store.caps === 'function') ? Store.caps() : null;
+      if (!caps?.canMigrateLargeLibraryData) return m;
+      if (m.status !== 'aborted-no-durable' && m.status !== 'pending') return m;
+      resetLibraryStoreMigrationForRetry();
+      step('migration:retry', `${reason} primary=${caps?.primary || 'unknown'} durable=${caps?.durable === true}`);
+      return setupLibraryStoreMigration();
+    }
+
     async function setupLibraryStoreMigration() {
       if (state.v2MigrationPromise) return state.v2MigrationPromise;
       state.v2MigrationPromise = (async () => {
@@ -2355,6 +2387,7 @@
       if (state.refreshPromise && opts.force !== true) return state.refreshPromise;
       state.refreshPromise = Promise.resolve().then(async () => {
         step('refresh:start', reason);
+        await retryLibraryStoreMigration(`refresh:${reason}`);
         const model = await buildModel(reason);
         state.model = model;
         state.lastRefreshAt = Date.now();
@@ -2431,12 +2464,22 @@
       bind(W, 'evt:h2o:core:index:updated', () => scheduleRefresh('event:core-index-updated'), true);
       bind(W, 'popstate', () => scheduleRefresh('event:popstate'), true);
       bind(W, 'hashchange', () => scheduleRefresh('event:hashchange'), true);
+      bind(W, 'evt:h2o:library:store:tier-promoted', () => { retryLibraryStoreMigration('event:store-tier-promoted').catch((e) => err('migration:retry:store-tier-promoted', e)); }, true);
+      bind(W, 'h2o:library:store:tier-promoted', () => { retryLibraryStoreMigration('event:store-tier-promoted').catch((e) => err('migration:retry:store-tier-promoted', e)); }, true);
+      bind(W, 'evt:h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
+      bind(W, 'h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
       bind(W, 'storage', (event) => {
         const key = String(event?.key || '');
         if (/h2o:prm:cgx:(labels|fldrs|tags|library|library-index)|h2o:folders/i.test(key) || /\/conversation-history$/i.test(key)) {
           scheduleRefresh(`storage:${key.slice(0, 48)}`);
         }
       }, true);
+
+      const timer = W.setTimeout(() => {
+        state.clean.timers.delete(timer);
+        retryLibraryStoreMigration('bind:initial-check').catch((e) => err('migration:retry:bind-initial-check', e));
+      }, 0);
+      state.clean.timers.add(timer);
     }
 
     function registerWithCore() {
