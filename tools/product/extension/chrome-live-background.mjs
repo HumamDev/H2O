@@ -1001,6 +1001,11 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "deleteSnapshot",
   "applyRetention",
   "openWorkbench",
+  "libraryKvGet",
+  "libraryKvSet",
+  "libraryKvDel",
+  "libraryKvListKeys",
+  "libraryKvEstimate",
   "exportBundle",
   "importBundle",
 ]);
@@ -3216,11 +3221,210 @@ async function httpRequest(req) {
   }
 }
 
+// ─── Library KV (Phase 1.6 — durable backend for H2O.Library.Store) ─────────
+// A dedicated IndexedDB database isolated from the archive's h2o_chat_archive DB.
+// All keys MUST start with "h2o:prm:cgx:library:" (enforced by libraryKvValidateKey).
+// Errors are returned as structured { ok:false, error, code } — the bridge never throws.
+// Designed so a future move to chrome.storage.local or a different backend can happen
+// inside this section without changing the wire protocol or H2O.Library.Store callers.
+
+const LIBRARY_KV_DB = "h2o_library_kv";
+const LIBRARY_KV_DB_VERSION = 1;
+const LIBRARY_KV_STORE = "kv";
+const LIBRARY_KV_KEY_PREFIX = "h2o:prm:cgx:library:";
+const LIBRARY_KV_MAX_VALUE_BYTES = 5 * 1024 * 1024;
+const LIBRARY_KV_MAX_KEY_LENGTH = 512;
+const LIBRARY_KV_OP_SET = Object.freeze({
+  libraryKvGet: 1,
+  libraryKvSet: 1,
+  libraryKvDel: 1,
+  libraryKvListKeys: 1,
+  libraryKvEstimate: 1,
+});
+
+let _libraryKvDbPromise = null;
+
+function libraryKvOpenDb() {
+  if (_libraryKvDbPromise) return _libraryKvDbPromise;
+  _libraryKvDbPromise = new Promise((resolve, reject) => {
+    let req;
+    try { req = indexedDB.open(LIBRARY_KV_DB, LIBRARY_KV_DB_VERSION); }
+    catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(LIBRARY_KV_STORE)) {
+        db.createObjectStore(LIBRARY_KV_STORE);
+      }
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      // Allow reopen on next call if the connection closes (SW respawn, version bump, etc.).
+      db.onclose = () => { _libraryKvDbPromise = null; };
+      db.onversionchange = () => { try { db.close(); } catch (_e) {} _libraryKvDbPromise = null; };
+      resolve(db);
+    };
+    req.onerror = () => reject(req.error || new Error("library kv: open failed"));
+    req.onblocked = () => reject(new Error("library kv: open blocked"));
+  });
+  return _libraryKvDbPromise;
+}
+
+function libraryKvValidateKey(key) {
+  if (typeof key !== "string") return { ok: false, code: "INVALID_KEY_TYPE", error: "key must be a string" };
+  if (key.length === 0) return { ok: false, code: "INVALID_KEY_EMPTY", error: "key must not be empty" };
+  if (key.length > LIBRARY_KV_MAX_KEY_LENGTH) return { ok: false, code: "INVALID_KEY_LENGTH", error: "key exceeds max length " + LIBRARY_KV_MAX_KEY_LENGTH };
+  if (!key.startsWith(LIBRARY_KV_KEY_PREFIX)) return { ok: false, code: "INVALID_KEY_PREFIX", error: "key must start with " + LIBRARY_KV_KEY_PREFIX };
+  return { ok: true };
+}
+
+function libraryKvValidatePrefix(prefix) {
+  if (typeof prefix !== "string") return { ok: false, code: "INVALID_PREFIX_TYPE", error: "prefix must be a string" };
+  if (!prefix.startsWith(LIBRARY_KV_KEY_PREFIX)) return { ok: false, code: "INVALID_PREFIX", error: "prefix must start with " + LIBRARY_KV_KEY_PREFIX };
+  return { ok: true };
+}
+
+function libraryKvValidateValue(value) {
+  const t = typeof value;
+  if (t === "function" || t === "symbol") return { ok: false, code: "INVALID_VALUE_TYPE", error: "value type " + t + " not supported" };
+  if (t === "string" && value.length > LIBRARY_KV_MAX_VALUE_BYTES) {
+    return { ok: false, code: "OVERSIZE", error: "value exceeds " + LIBRARY_KV_MAX_VALUE_BYTES + " bytes" };
+  }
+  // Cyclic objects and other unsupported structured-clone types throw inside libraryKvSet
+  // (DataCloneError) and are reported as { code: "INVALID_VALUE" } by the handler.
+  return { ok: true };
+}
+
+async function libraryKvGet(key) {
+  const db = await libraryKvOpenDb();
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readonly"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("library kv: get failed"));
+  });
+}
+
+async function libraryKvSet(key, value) {
+  const db = await libraryKvOpenDb();
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readwrite"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    let req;
+    try { req = store.put(value, key); }
+    catch (e) { reject(e); return; }
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error || new Error("library kv: set failed"));
+  });
+}
+
+async function libraryKvDel(key) {
+  const db = await libraryKvOpenDb();
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readwrite"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    const req = store.delete(key);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error || new Error("library kv: del failed"));
+  });
+}
+
+async function libraryKvListKeys(prefix) {
+  const db = await libraryKvOpenDb();
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readonly"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      const all = Array.isArray(req.result) ? req.result : [];
+      resolve(all.filter((k) => typeof k === "string" && k.startsWith(prefix)));
+    };
+    req.onerror = () => reject(req.error || new Error("library kv: listKeys failed"));
+  });
+}
+
+async function libraryKvEstimate() {
+  try {
+    if (typeof navigator !== "undefined" && navigator.storage && typeof navigator.storage.estimate === "function") {
+      const e = await navigator.storage.estimate();
+      if (e && Number.isFinite(e.usage) && Number.isFinite(e.quota) && e.quota > 0) {
+        return { used: e.usage, quota: e.quota, percent: e.usage / e.quota, source: "navigator.storage" };
+      }
+    }
+  } catch (_e) {}
+  return { used: null, quota: null, percent: null, source: "unsupported" };
+}
+
+async function libraryKvHandle(op, payload) {
+  try {
+    const p = (payload && typeof payload === "object" && !Array.isArray(payload)) ? payload : {};
+    if (op === "libraryKvGet") {
+      const k = String(p.key != null ? p.key : "");
+      const v = libraryKvValidateKey(k);
+      if (!v.ok) return { ok: false, error: v.error, code: v.code };
+      const result = await libraryKvGet(k);
+      return { ok: true, result };
+    }
+    if (op === "libraryKvSet") {
+      const k = String(p.key != null ? p.key : "");
+      const v = libraryKvValidateKey(k);
+      if (!v.ok) return { ok: false, error: v.error, code: v.code };
+      const value = p.value;
+      const vv = libraryKvValidateValue(value);
+      if (!vv.ok) return { ok: false, error: vv.error, code: vv.code };
+      try {
+        await libraryKvSet(k, value);
+        return { ok: true, result: true };
+      } catch (e) {
+        const name = e && e.name ? String(e.name) : "Error";
+        const msg = e && (e.message || String(e)) || "library kv: set failed";
+        const code = (name === "QuotaExceededError") ? "QUOTA_EXCEEDED"
+                   : (name === "DataCloneError") ? "INVALID_VALUE"
+                   : "SET_FAILED";
+        return { ok: false, error: msg, code };
+      }
+    }
+    if (op === "libraryKvDel") {
+      const k = String(p.key != null ? p.key : "");
+      const v = libraryKvValidateKey(k);
+      if (!v.ok) return { ok: false, error: v.error, code: v.code };
+      await libraryKvDel(k);
+      return { ok: true, result: true };
+    }
+    if (op === "libraryKvListKeys") {
+      const prefix = String(p.prefix != null ? p.prefix : LIBRARY_KV_KEY_PREFIX);
+      const v = libraryKvValidatePrefix(prefix);
+      if (!v.ok) return { ok: false, error: v.error, code: v.code };
+      const keys = await libraryKvListKeys(prefix);
+      return { ok: true, result: keys };
+    }
+    if (op === "libraryKvEstimate") {
+      const est = await libraryKvEstimate();
+      return { ok: true, result: est };
+    }
+    return { ok: false, error: "unsupported library kv op", code: "UNSUPPORTED_OP" };
+  } catch (e) {
+    return { ok: false, error: String(e && (e.message || e)) || "library kv: handler error", code: "HANDLER_ERROR" };
+  }
+}
+
 async function handleArchiveMessage(msg) {
   const req = msg && msg.req && typeof msg.req === "object" ? msg.req : {};
   const op = String(req.op || "").trim();
   const payload = req.payload && typeof req.payload === "object" ? req.payload : {};
   const nsDisk = normalizeNsDisk(payload.nsDisk || req.nsDisk);
+
+  // Library KV ops are namespace-isolated from archive snapshots and skip the rest of
+  // the archive-specific routing (nsDisk, snapshot helpers, etc.). One-line dispatch.
+  if (LIBRARY_KV_OP_SET[op]) return libraryKvHandle(op, payload);
 
   if (op === "ping") {
     return {

@@ -247,6 +247,15 @@
   };
 
   function register() {
+    // Library KV: durable backend for H2O.Library.Store. Service worker validates that the
+    // key starts with "h2o:prm:cgx:library:" and stores values in a dedicated IndexedDB DB
+    // (h2o_library_kv) — isolated from the archive's h2o_chat_archive DB. Returns the raw
+    // value (or undefined) — no envelope. Errors reject as bridge errors with structured codes.
+    libraryKvGet: (key) => call("libraryKvGet", { key }),
+    libraryKvSet: (key, value) => call("libraryKvSet", { key, value }),
+    libraryKvDel: (key) => call("libraryKvDel", { key }),
+    libraryKvListKeys: (prefix) => call("libraryKvListKeys", { prefix }),
+    libraryKvEstimate: () => call("libraryKvEstimate", {}),
     const archiveBoot = H2O.archiveBoot;
     if (!archiveBoot || typeof archiveBoot._registerExtensionBridge !== "function") return false;
     archiveBoot._registerExtensionBridge(api);

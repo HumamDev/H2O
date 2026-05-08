@@ -1069,6 +1069,24 @@
       "optionalDependsOn": [
         "9A1a._Interface_Kernel_.js"
       ]
+    },
+    "0F1e._Library_Store_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0D3a._Transcript_Archive_Engine_.js",
+        "0D3b._Transcript_Extension_Bridge_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.store"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D3b._Transcript_Extension_Bridge_.js"
+      ]
     }
   }
 }

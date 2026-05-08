@@ -106,6 +106,22 @@
   const TAG_MODE_MANUAL = 'manual';
   const TAG_MODE_SUGGESTION = 'suggestion';
   const TAG_MODE_AUTO = 'auto';
+  // Phase 4 — Tag candidate pool + occurrence index. These live in the durable Library
+  // Store namespace (h2o:prm:cgx:library:*), NOT in the per-chat tag-pool/manual stores
+  // above. They're SIDE-OUTPUTS of aggregateChat — fire-and-forget writes through the
+  // bridge, never blocking existing tag/manual behavior. No UI consumes them yet (Phase 5+).
+  const NS_LIBRARY_STORE = `h2o:${SUITE}:${HOST}:library`;
+  const KEY_TAG_AUTO_POOL = `${NS_LIBRARY_STORE}:tag-auto-pool:v1`;
+  const KEY_TAG_OCC_INDEX_PREFIX = `${NS_LIBRARY_STORE}:tag-occ-index:v1:`;
+  const TAG_AUTO_POOL_ALGO_VERSION = 'kw-v1';
+  const TAG_AUTO_POOL_FLUSH_DEBOUNCE_MS = 200;
+  const TAG_AUTO_POOL_CHATS_PER_PHRASE_CAP = 50;
+  const TAG_AUTO_POOL_MAX_PHRASES = 10000;
+  const TAG_OCC_INDEX_TURNS_PER_PHRASE_CAP = 100;
+  const TAG_OCC_INDEX_MIN_FREQ_ON_SHRINK = 2;
+  const EV_TAG_AUTO_POOL_UPDATED = 'evt:h2o:library:tag-auto-pool-updated';
+  const EV_TAG_OCC_INDEX_UPDATED = 'evt:h2o:library:tag-occ-index-updated';
+  const EV_TAG_OCC_INDEX_OVERSIZE = 'evt:h2o:library:tag-occ-index-oversize';
 
   const TAG_COLOR_PALETTE = Object.freeze([
     '#3B82F6', '#22C55E', '#A855F7', '#F472B6', '#FF914D', '#FFD54F', '#7DD3FC', '#14B8A6', '#F97316', '#8B5CF6', '#84CC16', '#EF4444'
@@ -1826,6 +1842,14 @@ ${out.answerText}`);
             const ref = { answerId, turnKey, ordinal: turnOrdinal };
             if (snippet) ref.snippet = snippet;
             refs.push(ref);
+    // Phase 4 side-output accumulator: per-chat phrase data, built inside the existing
+    // turn loop so we don't iterate twice. phraseKey → { phrase, count, score, turnIds, lastSeenMs }.
+    // Independent of chat display mode (TAG_MODE_MANUAL/AUTO/SUGGESTION) — the auto-pool is
+    // a global candidate catalog and must populate even when buildTurnState skips
+    // extraction (the default, since chat mode defaults to MANUAL).
+    const phase4Phrases = new Map();
+    let phase4TurnsProcessed = 0;
+    let phase4KeywordCount = 0; // total keyword instances seen across all turns (pre-dedup)
             turnUsage.set(poolRow.id, refs);
           }
         });
@@ -1845,6 +1869,7 @@ ${out.answerText}`);
     const keywords = uniqKeywords(keywordRows).map((kw) => kw.term);
     const tagCatalog = Object.values(pool)
       .filter((row) => Number(row?.usageCount || 0) > 0)
+      phase4TurnsProcessed += 1;
       .map((row) => {
         const refs = turnUsage.get(row.id);
         return refs?.length ? { ...row, turnRefs: refs } : row;
@@ -1864,6 +1889,47 @@ ${out.answerText}`);
       },
     };
 
+      // Phase 4 candidate sources for this turn (mode-independent):
+      //   1. row.auto.keywords         — populated only when chat is in AUTO/SUGGESTION mode.
+      //   2. extractKeywordsFromText() — fallback ALWAYS run when (1) is empty so candidates
+      //                                   are produced even for MANUAL-mode chats.
+      //   3. attachedTags              — manual + auto tags actually surfaced on this turn.
+      // Combined, they form the candidate phrase set for this turn.
+      const turnIdForOcc = answerId || turnKey || '';
+      if (turnIdForOcc) {
+        const turnLastSeen = Number(row?.analyzedAt || 0) || Date.now();
+        let perTurnKeywords = Array.isArray(row.auto?.keywords) ? row.auto.keywords : [];
+        if (!perTurnKeywords.length) {
+          try {
+            const turnTexts = readTurnTexts(turn);
+            perTurnKeywords = extractKeywordsFromText(turnTexts?.mergedText || turnTexts?.answerText || '', opts) || [];
+          } catch (e) { err('phase4:extract-fallback', e); perTurnKeywords = []; }
+        }
+        const turnPhrases = [];
+        perTurnKeywords.forEach((kw) => {
+          const term = String(kw?.term || '').trim();
+          if (term) turnPhrases.push({ term, weight: Number(kw?.weight || 1) || 1 });
+        });
+        // Also include attached tag labels (manual + auto). Manual tags are first-class
+        // candidates — they're phrases the user already validated.
+        attachedTags.forEach((tag) => {
+          const term = String(tag?.label || tag?.id || '').trim();
+          if (term) turnPhrases.push({ term, weight: Number(tag?.score || 0) || 1.5 });
+        });
+        phase4KeywordCount += turnPhrases.length;
+        turnPhrases.forEach(({ term, weight }) => {
+          const phraseKey = normalizeTagKey(term);
+          if (!phraseKey) return;
+          const e = phase4Phrases.get(phraseKey) || { phrase: term, count: 0, score: 0, turnIds: [], lastSeenMs: turnLastSeen };
+          e.count += 1;
+          e.score += weight;
+          if (e.turnIds.length < TAG_OCC_INDEX_TURNS_PER_PHRASE_CAP && e.turnIds.indexOf(turnIdForOcc) < 0) {
+            e.turnIds.push(turnIdForOcc);
+          }
+          if (turnLastSeen > e.lastSeenMs) e.lastSeenMs = turnLastSeen;
+          phase4Phrases.set(phraseKey, e);
+        });
+      }
     writeChatSummary(chatId, summary);
 
     safeDispatch(EV_CHAT_ANALYZED, {
@@ -1946,6 +2012,504 @@ ${out.answerText}`);
     store[turnKey] = next;
     writeManualStore(chatId, store);
 
+    // Phase 4: emit side-outputs (occurrence index + auto-pool contribution). Returns a
+    // Promise so external callers (e.g., refreshTagAutoPool) can await the in-memory cache
+    // update; the actual Store flush remains debounced. Stats land synchronously on
+    // state.lastPhase4Stats[chatId] so even if the await is skipped, the diagnostic counts
+    // are present immediately.
+    try {
+      const promise = emitPhase4SideOutputs(chatId, phase4Phrases, {
+        turnsProcessed: phase4TurnsProcessed,
+        keywordCount: phase4KeywordCount,
+      });
+      state.lastPhase4Promise = state.lastPhase4Promise || new Map();
+      state.lastPhase4Promise.set(chatId, promise);
+      promise.catch((e) => err('phase4-side-output:promise', e));
+    } catch (e) { err('phase4-side-output:throw', e); }
+
+    return { ok: true, status: 'ok', summary };
+  }
+
+  // ─── Phase 4: Tag Candidate Pool + Occurrence Index ─────────────────────────
+  //
+  // Two side-outputs of aggregateChat that live in the durable Library Store namespace:
+  //
+  //   • h2o:prm:cgx:library:tag-occ-index:v1:${chatId}  — per-chat phrase → turnIds map.
+  //     Built fresh from each aggregateChat run; capped at TAG_OCC_INDEX_TURNS_PER_PHRASE_CAP
+  //     turnIds per phrase. Skipped via OVERSIZE shrink path if the payload exceeds the
+  //     Store's known-large-key guard (5 MB) — first by dropping low-frequency phrases,
+  //     then by emitting EV_TAG_OCC_INDEX_OVERSIZE if even the shrunk payload is too big.
+  //
+  //   • h2o:prm:cgx:library:tag-auto-pool:v1                — global, cross-chat phrase
+  //     candidate pool. Each phrase entry stores `contribByChat[chatId] = {count, score,
+  //     lastSeen}`, capped at TAG_AUTO_POOL_CHATS_PER_PHRASE_CAP (FIFO by lastSeen).
+  //     Re-aggregating a chat REPLACES that chat's slice — totals never drift from
+  //     repeated scans of the same chat.
+  //
+  // Both writes are debounced and fire-and-forget. The existing per-chat tag-pool /
+  // manual store / chat-summary stores are untouched.
+
+  function createEmptyAutoPool() {
+    return {
+      version: 1,
+      algoVersion: TAG_AUTO_POOL_ALGO_VERSION,
+      phrases: {},
+      updatedAt: 0,
+      updatedAtIso: '',
+    };
+  }
+
+  // Phase 4 hard gate: never persist auto-pool or occurrence-index data unless the Library
+  // Store has a verified durable backend (bridge / chrome.storage / IndexedDB-extension /
+  // IndexedDB-studio / GM). localStorage primary returns durable=false because it's the
+  // quota-limited tier we are explicitly trying to escape. Read at CALL TIME — never cached
+  // from boot — so Store recovery between calls promotes us automatically.
+  function isStoreDurableNow() {
+    try {
+      const Store = W.H2O?.Library?.Store;
+      if (!Store || typeof Store.caps !== 'function') return false;
+      const caps = Store.caps();
+      return !!(caps && caps.durable === true);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function ensureAutoPoolCacheLoaded() {
+    if (state.autoPoolCache) return Promise.resolve(state.autoPoolCache);
+    if (state.autoPoolLoadPromise) return state.autoPoolLoadPromise;
+    state.autoPoolLoadPromise = (async () => {
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (!Store) {
+          state.autoPoolCache = createEmptyAutoPool();
+          return state.autoPoolCache;
+        }
+        if (Store._readyPromise && typeof Store._readyPromise.then === 'function') {
+          try { await Store._readyPromise; } catch (_e) {}
+        }
+        const payload = await Store.get(KEY_TAG_AUTO_POOL);
+        if (payload && typeof payload === 'object' && payload.phrases && typeof payload.phrases === 'object') {
+          state.autoPoolCache = {
+            version: Number(payload.version || 1) || 1,
+            algoVersion: String(payload.algoVersion || TAG_AUTO_POOL_ALGO_VERSION),
+            phrases: payload.phrases,
+            updatedAt: Number(payload.updatedAt || 0) || 0,
+            updatedAtIso: String(payload.updatedAtIso || ''),
+          };
+        } else {
+          state.autoPoolCache = createEmptyAutoPool();
+        }
+        return state.autoPoolCache;
+      } catch (e) {
+        err('auto-pool:load', e);
+        state.autoPoolCache = createEmptyAutoPool();
+        return state.autoPoolCache;
+      }
+    })();
+    return state.autoPoolLoadPromise;
+  }
+
+  function shrinkOccIndex(payload) {
+    // Drop phrases observed only once in this chat — the cheapest signal we have.
+    const out = { ...payload, phrases: {} };
+    Object.entries(payload?.phrases || {}).forEach(([key, val]) => {
+      if (Number(val?.count || 0) >= TAG_OCC_INDEX_MIN_FREQ_ON_SHRINK) out.phrases[key] = val;
+    });
+    return out;
+  }
+
+  function shrinkAutoPool(cache) {
+    // If we exceed TAG_AUTO_POOL_MAX_PHRASES, keep the top by score then count.
+    const phrases = cache?.phrases || {};
+    const keys = Object.keys(phrases);
+    if (keys.length <= TAG_AUTO_POOL_MAX_PHRASES) return cache;
+    const sorted = keys
+      .map((k) => ({ k, p: phrases[k] }))
+      .sort((a, b) => (Number(b.p?.score || 0) - Number(a.p?.score || 0)) || (Number(b.p?.totalCount || 0) - Number(a.p?.totalCount || 0)));
+    const keep = new Set(sorted.slice(0, TAG_AUTO_POOL_MAX_PHRASES).map((x) => x.k));
+    const trimmed = {};
+    keys.forEach((k) => { if (keep.has(k)) trimmed[k] = phrases[k]; });
+    return { ...cache, phrases: trimmed };
+  }
+
+  function scheduleAutoPoolFlush(reason = '') {
+    if (!state.autoPoolCache) return;
+    // Hard gate: never persist to a non-durable Store. The in-memory cache stays usable
+    // for the current session, but we refuse to spill into localStorage.
+    if (!isStoreDurableNow()) {
+      try { W.dispatchEvent(new CustomEvent(EV_TAG_AUTO_POOL_UPDATED, { detail: { reason, persisted: false, blocked: 'store-not-durable' } })); } catch (_e) {}
+      return;
+    }
+    if (state.autoPoolFlushTimer) return;
+    const timer = W.setTimeout(async () => {
+      state.autoPoolFlushTimer = 0;
+      state.clean.timers.delete(timer);
+      // Re-check at flush time too — the Store could have degraded between schedule + fire.
+      if (!isStoreDurableNow()) {
+        try { W.dispatchEvent(new CustomEvent(EV_TAG_AUTO_POOL_UPDATED, { detail: { reason, persisted: false, blocked: 'store-not-durable' } })); } catch (_e) {}
+        return;
+      }
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (!Store || !state.autoPoolCache) return;
+        let toWrite = state.autoPoolCache;
+        try {
+          await Store.set(KEY_TAG_AUTO_POOL, toWrite);
+        } catch (e) {
+          if (e?.code === 'OVERSIZE') {
+            toWrite = shrinkAutoPool(toWrite);
+            try {
+              await Store.set(KEY_TAG_AUTO_POOL, toWrite);
+              state.autoPoolCache = toWrite; // adopt shrunk version locally too
+            } catch (e2) { err('auto-pool:flush:retry', e2); }
+          } else {
+            err('auto-pool:flush', e);
+          }
+        }
+        try { W.dispatchEvent(new CustomEvent(EV_TAG_AUTO_POOL_UPDATED, { detail: { reason, phraseCount: Object.keys(state.autoPoolCache?.phrases || {}).length } })); } catch (_e) {}
+      } catch (e) {
+        err('auto-pool:flush:outer', e);
+      }
+    }, TAG_AUTO_POOL_FLUSH_DEBOUNCE_MS);
+    state.autoPoolFlushTimer = timer;
+    state.clean.timers.add(timer);
+  }
+
+  function scheduleOccIndexFlush(chatId, payload) {
+    if (!chatId) return;
+    // Hard gate: refuse to schedule a flush when Store is not durable. The pending payload
+    // is dropped here on purpose — we never want stale or unpersisted occurrence indexes
+    // floating in memory while consumers think a flush is in flight.
+    if (!isStoreDurableNow()) {
+      try { W.dispatchEvent(new CustomEvent(EV_TAG_OCC_INDEX_UPDATED, { detail: { chatId, persisted: false, blocked: 'store-not-durable' } })); } catch (_e) {}
+      return;
+    }
+    if (!state.occIndexFlushTimers) state.occIndexFlushTimers = new Map();
+    if (!state.occIndexPending) state.occIndexPending = new Map();
+    state.occIndexPending.set(chatId, payload);
+    const existing = state.occIndexFlushTimers.get(chatId);
+    if (existing) {
+      try { W.clearTimeout(existing); } catch (_e) {}
+      state.clean.timers.delete(existing);
+    }
+    const timer = W.setTimeout(async () => {
+      state.occIndexFlushTimers.delete(chatId);
+      state.clean.timers.delete(timer);
+      const pending = state.occIndexPending.get(chatId);
+      state.occIndexPending.delete(chatId);
+      if (!pending) return;
+      // Re-check at flush time — Store may have degraded since the schedule call.
+      if (!isStoreDurableNow()) {
+        try { W.dispatchEvent(new CustomEvent(EV_TAG_OCC_INDEX_UPDATED, { detail: { chatId, persisted: false, blocked: 'store-not-durable' } })); } catch (_e) {}
+        return;
+      }
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (!Store) return;
+        const key = `${KEY_TAG_OCC_INDEX_PREFIX}${chatId}`;
+        try {
+          await Store.set(key, pending);
+        } catch (e) {
+          if (e?.code === 'OVERSIZE') {
+            const shrunk = shrinkOccIndex(pending);
+            try {
+              await Store.set(key, shrunk);
+            } catch (e2) {
+              if (e2?.code === 'OVERSIZE') {
+                try { W.dispatchEvent(new CustomEvent(EV_TAG_OCC_INDEX_OVERSIZE, { detail: { chatId, length: e2?.info?.length || 0 } })); } catch (_e) {}
+              } else {
+                err('occ-index:flush:retry', e2);
+              }
+              return;
+            }
+          } else {
+            err('occ-index:flush', e);
+            return;
+          }
+        }
+        try { W.dispatchEvent(new CustomEvent(EV_TAG_OCC_INDEX_UPDATED, { detail: { chatId, phraseCount: Object.keys(pending?.phrases || {}).length } })); } catch (_e) {}
+      } catch (e) {
+        err('occ-index:flush:outer', e);
+      }
+    }, TAG_AUTO_POOL_FLUSH_DEBOUNCE_MS);
+    state.occIndexFlushTimers.set(chatId, timer);
+    state.clean.timers.add(timer);
+  }
+
+  async function emitPhase4SideOutputs(chatId, phase4Phrases, stats = {}) {
+    if (!chatId) return null;
+    const phrasesMap = (phase4Phrases instanceof Map) ? phase4Phrases : new Map();
+    const turnsProcessed = Number(stats.turnsProcessed || 0) || 0;
+    const keywordCount = Number(stats.keywordCount || 0) || 0;
+    // Hard gate: when Store isn't durable we record stats so callers can see what would
+    // have been written, but we do NOT touch the in-memory cache or schedule any Store
+    // flushes. localStorage primary is explicitly forbidden for Phase 4 data.
+    if (!isStoreDurableNow()) {
+      const blockedRecord = {
+        chatId,
+        turnsProcessed,
+        keywordCount,
+        phraseCount: phrasesMap.size,
+        occPhraseCount: 0,
+        autoPoolPhraseCount: Object.keys(state.autoPoolCache?.phrases || {}).length,
+        ts: Date.now(),
+        blocked: 'store-not-durable',
+      };
+      state.lastPhase4Stats = state.lastPhase4Stats || new Map();
+      state.lastPhase4Stats.set(chatId, blockedRecord);
+      return blockedRecord;
+    }
+    try {
+      await ensureAutoPoolCacheLoaded();
+
+      const blocklist = (typeof getPriorityLabelTagBlocklist === 'function') ? getPriorityLabelTagBlocklist() : new Set();
+      const nowMs = Date.now();
+
+      // Build per-chat occurrence index payload — written even when empty so consumers see
+      // a fresh snapshot (e.g., a chat that just had all its tags removed should not show
+      // stale phrases from a previous aggregation).
+      const occPhrases = {};
+      phrasesMap.forEach((entry, key) => {
+        occPhrases[key] = {
+          turnIds: entry.turnIds.slice(0, TAG_OCC_INDEX_TURNS_PER_PHRASE_CAP),
+          count: entry.count,
+        };
+      });
+      const occPayload = {
+        version: 1,
+        chatId,
+        algoVersion: TAG_AUTO_POOL_ALGO_VERSION,
+        phrases: occPhrases,
+        updatedAt: nowMs,
+        updatedAtIso: new Date(nowMs).toISOString(),
+      };
+      scheduleOccIndexFlush(chatId, occPayload);
+
+      // Update in-memory auto-pool. Re-aggregating REPLACES this chat's contribByChat
+      // slice so totals never drift from repeat scans.
+      const cache = state.autoPoolCache || createEmptyAutoPool();
+      // Track which chat-slices we touched so we can still drop entries that no longer
+      // contain this chat's contribution (i.e., phrases the chat used to have but lost).
+      const seenInThisRun = new Set();
+      phrasesMap.forEach((entry, key) => {
+        seenInThisRun.add(key);
+        const existing = cache.phrases[key] || {
+          phrase: entry.phrase,
+          contribByChat: {},
+          totalCount: 0,
+          chatCount: 0,
+          score: 0,
+          firstSeen: entry.lastSeenMs || nowMs,
+          lastSeen: entry.lastSeenMs || nowMs,
+          status: 'candidate',
+          blocked: false,
+        };
+        existing.contribByChat = (existing.contribByChat && typeof existing.contribByChat === 'object') ? existing.contribByChat : {};
+        existing.contribByChat[chatId] = {
+          count: entry.count,
+          score: Math.round(entry.score * 100) / 100,
+          lastSeen: entry.lastSeenMs || nowMs,
+        };
+        const ids = Object.keys(existing.contribByChat);
+        if (ids.length > TAG_AUTO_POOL_CHATS_PER_PHRASE_CAP) {
+          const sorted = ids.sort((a, b) => Number(existing.contribByChat[b]?.lastSeen || 0) - Number(existing.contribByChat[a]?.lastSeen || 0));
+          sorted.slice(TAG_AUTO_POOL_CHATS_PER_PHRASE_CAP).forEach((c) => { delete existing.contribByChat[c]; });
+        }
+        let totalCount = 0;
+        let totalScore = 0;
+        let latest = 0;
+        let earliest = Infinity;
+        Object.values(existing.contribByChat).forEach((c) => {
+          totalCount += Number(c?.count || 0) || 0;
+          totalScore += Number(c?.score || 0) || 0;
+          const seen = Number(c?.lastSeen || 0) || 0;
+          if (seen > latest) latest = seen;
+          if (seen < earliest && seen > 0) earliest = seen;
+        });
+        existing.totalCount = totalCount;
+        existing.chatCount = Object.keys(existing.contribByChat).length;
+        existing.score = Math.round(totalScore * 100) / 100;
+        if (latest) existing.lastSeen = latest;
+        if (earliest !== Infinity) {
+          existing.firstSeen = (existing.firstSeen && Number(existing.firstSeen) <= earliest) ? existing.firstSeen : earliest;
+        } else if (!existing.firstSeen) {
+          existing.firstSeen = nowMs;
+        }
+        existing.blocked = blocklist.has(key);
+        if (existing.status !== 'approved' && existing.status !== 'rejected') existing.status = 'candidate';
+        cache.phrases[key] = existing;
+      });
+      // Drop this chat's contribution from any phrase that USED to have it but doesn't this run
+      // (so a re-aggregated chat that lost a phrase doesn't keep contributing to the pool).
+      Object.entries(cache.phrases || {}).forEach(([key, val]) => {
+        if (seenInThisRun.has(key)) return;
+        if (!val?.contribByChat || !val.contribByChat[chatId]) return;
+        delete val.contribByChat[chatId];
+        // Recompute aggregates after drop.
+        let totalCount = 0, totalScore = 0, latest = 0;
+        Object.values(val.contribByChat).forEach((c) => {
+          totalCount += Number(c?.count || 0) || 0;
+          totalScore += Number(c?.score || 0) || 0;
+          const seen = Number(c?.lastSeen || 0) || 0;
+          if (seen > latest) latest = seen;
+        });
+        val.totalCount = totalCount;
+        val.chatCount = Object.keys(val.contribByChat).length;
+        val.score = Math.round(totalScore * 100) / 100;
+        if (latest) val.lastSeen = latest;
+        // If the phrase has no contributors left and isn't approved/rejected, prune it.
+        if (val.chatCount === 0 && val.status === 'candidate') {
+          delete cache.phrases[key];
+        }
+      });
+      cache.updatedAt = nowMs;
+      cache.updatedAtIso = new Date(nowMs).toISOString();
+      cache.algoVersion = TAG_AUTO_POOL_ALGO_VERSION;
+      state.autoPoolCache = cache;
+      scheduleAutoPoolFlush('aggregate:' + chatId);
+
+      // Stats: synchronous in-memory record so refreshTagAutoPool can return real counts.
+      state.lastPhase4Stats = state.lastPhase4Stats || new Map();
+      const statsRecord = {
+        chatId,
+        turnsProcessed,
+        keywordCount,
+        phraseCount: phrasesMap.size,
+        occPhraseCount: Object.keys(occPhrases).length,
+        autoPoolPhraseCount: Object.keys(cache.phrases || {}).length,
+        ts: nowMs,
+      };
+      state.lastPhase4Stats.set(chatId, statsRecord);
+      return statsRecord;
+    } catch (e) {
+      err('phase4-side-output:async', e);
+      return null;
+    }
+  }
+
+  function getTagAutoPoolSnapshot() {
+    if (!state.autoPoolCache) return null;
+    try { return JSON.parse(JSON.stringify(state.autoPoolCache)); }
+    catch { return null; }
+  }
+
+  async function getOccurrenceIndexForChat(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return null;
+    try {
+      const Store = W.H2O?.Library?.Store;
+      if (!Store) return null;
+      return await Store.get(`${KEY_TAG_OCC_INDEX_PREFIX}${chatId}`);
+    } catch (e) {
+      err('occ-index:read', e);
+      return null;
+    }
+  }
+
+  async function findTagOccurrences(phraseRaw, opts = {}) {
+    const phraseKey = normalizeTagKey(String(phraseRaw || ''));
+    if (!phraseKey) return [];
+    await ensureAutoPoolCacheLoaded();
+    const entry = state.autoPoolCache?.phrases?.[phraseKey];
+    if (!entry || !entry.contribByChat) return [];
+    const filterChatId = opts?.chatId ? toChatId(opts.chatId) : '';
+    const chatIds = filterChatId ? [filterChatId] : Object.keys(entry.contribByChat);
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(1, Math.min(2000, Math.floor(Number(opts.limit)))) : 500;
+    const results = [];
+    const Store = W.H2O?.Library?.Store;
+    if (!Store) return results;
+    for (const cId of chatIds) {
+      if (results.length >= limit) break;
+      try {
+        const occ = await Store.get(`${KEY_TAG_OCC_INDEX_PREFIX}${cId}`);
+        const turnIds = occ?.phrases?.[phraseKey]?.turnIds || [];
+        for (let i = 0; i < turnIds.length && results.length < limit; i += 1) {
+          results.push({ chatId: cId, turnId: turnIds[i], occurrence: i });
+        }
+      } catch (e) { err('find-occurrences:chat', e); }
+    }
+    return results;
+  }
+
+  async function refreshTagAutoPoolForChat(chatIdRaw, opts = {}) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return { ok: false, status: 'missing-chat-id', chatId: '', turnsProcessed: 0, keywordCount: 0, phraseCount: 0, occPhraseCount: 0, autoPoolPhraseCount: 0 };
+    // Hard gate at the entry point: refuse to drive a Phase 4 refresh when Store is not
+    // durable. We don't run aggregateChat here either, so we don't pay the analysis cost
+    // for data we'd refuse to persist anyway.
+    if (!isStoreDurableNow()) {
+      const Store = W.H2O?.Library?.Store;
+      let backend = null;
+      try { backend = (typeof Store?.backend === 'function') ? Store.backend() : null; } catch (_e) {}
+      return {
+        ok: false,
+        status: 'store-not-durable',
+        chatId,
+        turnsProcessed: 0,
+        keywordCount: 0,
+        phraseCount: 0,
+        occPhraseCount: 0,
+        autoPoolPhraseCount: Object.keys(state.autoPoolCache?.phrases || {}).length,
+        backend,
+        hint: 'H2O.Library.Store.caps().durable !== true — likely the bridge sentinel failed at boot (SW cold start race) or no durable adapter is available. Reload the page to re-probe; if it persists, check H2O.Library.Store.caps() and the extension SW health.',
+      };
+    }
+    await ensureAutoPoolCacheLoaded();
+    const result = aggregateChat(chatId, { force: opts?.force === true });
+    // Wait for the side-output cache+stats to settle (in-memory only — Store flush is still
+    // debounced and continues in the background).
+    const sideOutputPromise = state.lastPhase4Promise && state.lastPhase4Promise.get(chatId);
+    if (sideOutputPromise && typeof sideOutputPromise.then === 'function') {
+      try { await sideOutputPromise; } catch (_e) {}
+    }
+    const stats = (state.lastPhase4Stats && state.lastPhase4Stats.get(chatId)) || {
+      turnsProcessed: 0, keywordCount: 0, phraseCount: 0, occPhraseCount: 0,
+      autoPoolPhraseCount: Object.keys(state.autoPoolCache?.phrases || {}).length,
+    };
+    let status = result?.status || (result?.ok ? 'ok' : 'error');
+    // Surface clearer status when the chat had no candidate signal at all, OR when the
+    // side-output emit re-discovered Store had degraded between entry and flush time.
+    if (stats.blocked === 'store-not-durable') status = 'store-not-durable';
+    else if (status === 'ok') {
+      if (stats.turnsProcessed === 0) status = 'no-turns';
+      else if (stats.keywordCount === 0) status = 'no-keywords';
+    }
+    return {
+      ok: !!result?.ok && status !== 'store-not-durable',
+      status,
+      chatId,
+      turnsProcessed: stats.turnsProcessed,
+      keywordCount: stats.keywordCount,
+      phraseCount: stats.phraseCount,
+      occPhraseCount: stats.occPhraseCount,
+      autoPoolPhraseCount: stats.autoPoolPhraseCount,
+    };
+  }
+
+  function getTagAutoPoolDiagnostics() {
+    const Store = W.H2O?.Library?.Store;
+    let backend = null;
+    let durable = null;
+    try {
+      backend = (typeof Store?.backend === 'function') ? Store.backend() : null;
+      const caps = (typeof Store?.caps === 'function') ? Store.caps() : null;
+      durable = !!caps?.durable;
+    } catch (_e) {}
+    const cache = state.autoPoolCache;
+    return {
+      cacheLoaded: !!cache,
+      phraseCount: cache ? Object.keys(cache.phrases || {}).length : 0,
+      algoVersion: cache?.algoVersion || TAG_AUTO_POOL_ALGO_VERSION,
+      backend,
+      durable,
+      autoPoolKey: KEY_TAG_AUTO_POOL,
+      occIndexKeyPrefix: KEY_TAG_OCC_INDEX_PREFIX,
+      pendingOccFlushes: state.occIndexPending ? state.occIndexPending.size : 0,
+      pendingPoolFlush: !!state.autoPoolFlushTimer,
+      lastUpdatedAtIso: cache?.updatedAtIso || '',
+    };
+  }
     const analyzed = analyzeTurn(chatId, runtimeTurn || turnIdOrAnswerId, { reason: 'manual-mutation' });
     const answerId = normalizeId(analyzed?.state?.answerId || runtimeTurn?.answerId || turnIdOrAnswerId);
     if (answerId) {
@@ -3443,3 +4007,44 @@ ${out.answerText}`);
 
   boot();
 })();
+    // ─── Phase 4: Tag candidate pool + occurrence index (read-side API) ───────
+    // Side-outputs of aggregateChat. Stored via H2O.Library.Store. No UI consumes these
+    // yet — Phase 5+ (Bubble Cloud, NavTo) will read them.
+    getTagAutoPool() { return getTagAutoPoolSnapshot(); },
+    getTagAutoPoolDiagnostics() { return getTagAutoPoolDiagnostics(); },
+    async refreshTagAutoPool(chatId, opts = {}) { return refreshTagAutoPoolForChat(chatId, opts); },
+    async getOccurrenceIndex(chatId) { return getOccurrenceIndexForChat(chatId); },
+    async findTagOccurrences(phrase, opts = {}) { return findTagOccurrences(phrase, opts); },
+  // Phase 4 aliases (so `H2O.Tags.getTagAutoPool()` etc. work just like every other public method).
+  MOD.getTagAutoPool = (...args) => owner.getTagAutoPool(...args);
+  MOD.getTagAutoPoolDiagnostics = (...args) => owner.getTagAutoPoolDiagnostics(...args);
+  MOD.refreshTagAutoPool = (...args) => owner.refreshTagAutoPool(...args);
+  MOD.getOccurrenceIndex = (...args) => owner.getOccurrenceIndex(...args);
+  MOD.findTagOccurrences = (...args) => owner.findTagOccurrences(...args);
+    // Phase 4: kick off the async auto-pool prefetch so the in-memory cache is warm by the
+    // time the first aggregateChat side-output runs. Non-blocking; if Store isn't ready
+    // (legacy/degraded), the cache initializes empty and side-outputs accumulate locally.
+    try { ensureAutoPoolCacheLoaded().catch((e) => err('boot:auto-pool-load', e)); }
+    catch (e) { err('boot:auto-pool-load:throw', e); }
+
+    // Phase 4 hardening: listen for Library Store tier promotion (e.g., MV3 SW cold-start
+    // race resolved by a boot-retry reprobe). When Store promotes from a non-durable
+    // backend (localStorage) to a durable one (bridge), drop the in-memory auto-pool cache
+    // so subsequent reads/writes flow through the now-durable backend. Without this, Tags
+    // would keep using the empty cache it loaded from localStorage at boot.
+    try {
+      const onStorePromoted = (e) => {
+        const detail = e?.detail || {};
+        if (!detail.durable) return;
+        // Reset cache + load promise so the next ensureAutoPoolCacheLoaded() reloads from
+        // the now-durable Store. In-flight flushes are still gated by isStoreDurableNow()
+        // and will succeed on the next aggregateChat / refreshTagAutoPool call.
+        state.autoPoolCache = null;
+        state.autoPoolLoadPromise = null;
+        ensureAutoPoolCacheLoaded().catch((er) => err('store-promoted:reload', er));
+      };
+      W.addEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true);
+      W.addEventListener('h2o:library:store:tier-promoted', onStorePromoted, true);
+      state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true));
+      state.clean.listeners.add(() => W.removeEventListener('h2o:library:store:tier-promoted', onStorePromoted, true));
+    } catch (e) { err('boot:store-promoted-listener', e); }

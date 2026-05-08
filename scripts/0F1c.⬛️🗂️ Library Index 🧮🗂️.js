@@ -135,8 +135,25 @@
     const KEY_PREFS_V1 = `${NS_DISK}:prefs:v1`;
     const KNOWN_REGISTRY_ROW_LIMIT = 6000;
 
+    // Phase 2: durable Library Store namespace (separate from this module's library-index
+    // legacy namespace). Reads/writes go through H2O.Library.Store, not direct localStorage.
+    // The v1 key above is preserved for migration-source reads and rollback safety.
+    const NS_LIBRARY_STORE = `h2o:${SUITE}:${HOST}:library`;
+    const KEY_REGISTRY_V2 = `${NS_LIBRARY_STORE}:registry:v2`;
+    const REGISTRY_BATCH_HISTORY_LIMIT = 10;
+    const REGISTRY_STORE_FLUSH_DEBOUNCE_MS = 120;
+
+    // Phase 3: scan batch ledger. One ledger per profile, capped FIFO. The ledger is the
+    // append-only log of each scan event (refresh) — its rows let the durability panel say
+    // "X chats vanished since the last scan", and they're the source of truth for the
+    // scanBatchId / visibleInLastScan / batchHistory fields stamped onto registry rows.
+    const KEY_SCAN_LEDGER_V1 = `${NS_LIBRARY_STORE}:scan-batches:v1`;
+    const SCAN_LEDGER_BATCH_LIMIT = 50;
+
     const EV_UPDATED = 'evt:h2o:library-index:updated';
     const EV_REFRESH_REQUEST = 'evt:h2o:library-index:refresh-request';
+    const EV_REGISTRY_MIGRATED = 'evt:h2o:library-index:registry-migrated';
+    const EV_SCAN_BATCH_COMMITTED = 'evt:h2o:library-index:scan-batch-committed';
 
     const ATTR_CGXUI = 'data-cgxui';
     const ATTR_CGXUI_OWNER = 'data-cgxui-owner';
@@ -179,6 +196,30 @@
       clean: { timers: new Set(), listeners: new Set() },
     });
     state.clean = state.clean || { timers: new Set(), listeners: new Set() };
+
+    // Phase 2: Library Store migration state. v2RegistryCache is null until migration
+    // completes; while null, all reads/writes use the legacy v1 localStorage path. Once
+    // populated, it becomes the source of truth and writes are flushed to Store async.
+    state.libraryStoreMigration = state.libraryStoreMigration || {
+      status: 'pending',          // 'pending' | 'aborted-no-durable' | 'store-v2' | 'legacy-v1' | 'migrated-v1-to-v2'
+      source: 'unknown',          // human-readable subtype: 'store-v2' | 'store-v2-empty' | 'migrated-v1-to-v2'
+      rowsLoaded: 0,
+      startedAt: 0,
+      finishedAt: 0,
+      error: null,
+      legacyV1UpdatedAt: 0,
+      legacyV1UpdatedAtIso: '',
+    };
+    state.v2RegistryCache = state.v2RegistryCache || null;
+    state.v2FlushTimer = state.v2FlushTimer || 0;
+    state.v2MigrationPromise = state.v2MigrationPromise || null;
+
+    // Phase 3: in-memory ledger mirror (newest-first list of batch records); flushed to Store
+    // through the bridge after each commit. activeScanBatch holds the in-progress batch (if
+    // any) — strictly one at a time; a second beginScanBatch implicitly aborts any stale one.
+    state.scanLedgerCache = state.scanLedgerCache || null;
+    state.ledgerFlushTimer = state.ledgerFlushTimer || 0;
+    state.activeScanBatch = state.activeScanBatch || null;
 
     const storage = {
       getJSON(key, fallback = null) {
@@ -286,6 +327,23 @@
       return ma >= mb ? a : b;
     }
 
+    // Phase 2: union of recent scan-batch ids, newest-first, capped. The merge prefers the
+    // `next` list (more recent batch) at the head — it's the "latest incoming wins" half of
+    // the ordering, while `prev` items fill the tail in their original order.
+    function mergeBatchHistory(prev, next) {
+      const out = [];
+      const seen = new Set();
+      const push = (s) => {
+        const v = normText(s);
+        if (!v || seen.has(v)) return;
+        seen.add(v);
+        out.push(v);
+      };
+      (Array.isArray(next) ? next : []).forEach(push);
+      (Array.isArray(prev) ? prev : []).forEach(push);
+      return out.slice(0, REGISTRY_BATCH_HISTORY_LIMIT);
+    }
+
     function compareDateDesc(a, b, field = 'sortAt') {
       const da = dateMs(readDateField(a, field));
       const db = dateMs(readDateField(b, field));
@@ -390,6 +448,18 @@
         keywords: uniqueStrings(Array.isArray(src.keywords) ? src.keywords : []),
         confidence: isSaved ? 'high' : isRecent ? 'medium' : 'low',
         evidence: normalizedSource === 'unknown' ? [] : [{ source: normalizedSource, at: Date.now() }],
+        // Phase 3 fix: preserve durability fields through normalization. Without these,
+        // compactKnownRegistryRows → mergeChatRecord(normalizeChatRow(prev), normalizeChatRow(row))
+        // strips the four fields before the merge runs, causing every persisted row to come
+        // out with empty/false durability — even when the input rows were correctly stamped
+        // by commitScanBatch. The Phase 2 merge rules in mergeChatRecord can only apply
+        // when these fields actually reach it.
+        firstSeenAt: isoOrEmpty(src.firstSeenAt || ''),
+        scanBatchId: normText(src.scanBatchId || ''),
+        visibleInLastScan: !!src.visibleInLastScan,
+        batchHistory: Array.isArray(src.batchHistory)
+          ? uniqueStrings(src.batchHistory.map((s) => normText(s))).slice(0, REGISTRY_BATCH_HISTORY_LIMIT)
+          : [],
       };
     }
 
@@ -452,6 +522,33 @@
       merged.projectId = prev.projectId || next.projectId || '';
       merged.projectName = prev.projectName || next.projectName || '';
       merged.sortAt = pickNewerDate(merged.updatedAt, pickNewerDate(merged.savedAt, pickNewerDate(merged.lastSeenAt, merged.observedAt)));
+      // Phase 2 durability merges. Rules:
+      //   firstSeenAt        — oldest wins (provenance must never move forward).
+      //   scanBatchId        — latest scan-context wins (current scan is authoritative).
+      //   visibleInLastScan  — latest scan-context wins (current scan flips it).
+      //   batchHistory       — union, newest-first, capped at REGISTRY_BATCH_HISTORY_LIMIT.
+      //
+      // Phase 3 fix: gate the last three rules on whether `next` actually has a non-empty
+      // scanBatchId. Without this gate, model-build merges that pull in raw source rows
+      // (normalizeChatRow defaults visibleInLastScan to false / scanBatchId to '' /
+      // batchHistory to []) silently overwrote the registry's batch context — visible as
+      // "28 reappeared on every refresh" because the 28 chats that show up in BOTH the
+      // registry AND native recents had their visibility reset to false during model build.
+      // Only batch-stamped rows (commitScanBatch sets scanBatchId to the current batch id)
+      // are authoritative for these three fields.
+      merged.firstSeenAt = pickOlderDate(prev.firstSeenAt, next.firstSeenAt);
+      const nextHasBatchContext = (typeof next.scanBatchId === 'string' && next.scanBatchId.length > 0);
+      if (nextHasBatchContext) {
+        merged.scanBatchId = next.scanBatchId;
+        merged.visibleInLastScan = !!next.visibleInLastScan;
+        merged.batchHistory = mergeBatchHistory(prev.batchHistory, next.batchHistory);
+      } else {
+        merged.scanBatchId = (typeof prev.scanBatchId === 'string') ? prev.scanBatchId : '';
+        merged.visibleInLastScan = !!prev.visibleInLastScan;
+        merged.batchHistory = Array.isArray(prev.batchHistory)
+          ? prev.batchHistory.slice(0, REGISTRY_BATCH_HISTORY_LIMIT)
+          : [];
+      }
       return merged;
     }
 
@@ -988,6 +1085,14 @@
         const source = raw?.source || raw?.originSource || fallbackSource;
         const normalized = normalizeChatRow(raw, source, { observedAt: raw?.observedAt || raw?.lastSeenAt || '' });
         if (!normalized?.id) return null;
+        // Phase 2 durability fields. firstSeenAt defaults to the chat's earliest known
+        // observation so v1 rows that never knew about this field still report a sensible
+        // origin. visibleInLastScan and scanBatchId default to neutral values; they're
+        // populated by the future scan ledger (Phase 3) and remain unmutated here.
+        const observedAt = normalized.observedAt || new Date().toISOString();
+        const firstSeenAt = isoOrEmpty(raw?.firstSeenAt || observedAt || normalized.lastSeenAt || '');
+        const batchHistorySrc = Array.isArray(raw?.batchHistory) ? raw.batchHistory : [];
+        const batchHistory = uniqueStrings(batchHistorySrc.map((s) => normText(s))).slice(0, REGISTRY_BATCH_HISTORY_LIMIT);
         return {
           id: normalized.id,
           chatId: normalized.chatId || '',
@@ -1004,7 +1109,11 @@
           updatedAt: normalized.updatedAt || '',
           savedAt: normalized.savedAt || '',
           lastSeenAt: normalized.lastSeenAt || '',
-          observedAt: normalized.observedAt || new Date().toISOString(),
+          observedAt,
+          firstSeenAt,
+          scanBatchId: normText(raw?.scanBatchId || ''),
+          visibleInLastScan: !!raw?.visibleInLastScan,
+          batchHistory,
           nativeOrder: Number.isFinite(Number(raw?.nativeOrder ?? normalized.nativeOrder)) ? Number(raw?.nativeOrder ?? normalized.nativeOrder) : null,
           nativeRecentsSource: normText(raw?.nativeRecentsSource || normalized.nativeRecentsSource || ''),
           projectId: normalized.projectId || '',
@@ -1014,6 +1123,22 @@
         err('known-registry:normalize', e);
         return null;
       }
+    }
+
+    // Phase 2: lift a v1 registry row to the v2 shape by stamping the new durability fields
+    // with safe defaults. Used during the lazy v1→v2 migration.
+    function upgradeRowV1ToV2(row) {
+      if (!row || typeof row !== 'object') return null;
+      const observedAt = isoOrEmpty(row.observedAt || row.lastSeenAt || '');
+      return {
+        ...row,
+        firstSeenAt: isoOrEmpty(row.firstSeenAt || observedAt || ''),
+        scanBatchId: normText(row.scanBatchId || ''),
+        visibleInLastScan: !!row.visibleInLastScan,
+        batchHistory: Array.isArray(row.batchHistory)
+          ? uniqueStrings(row.batchHistory.map((s) => normText(s))).slice(0, REGISTRY_BATCH_HISTORY_LIMIT)
+          : [],
+      };
     }
 
     function compactKnownRegistryRows(rows = []) {
@@ -1040,7 +1165,75 @@
         .slice(0, KNOWN_REGISTRY_ROW_LIMIT);
     }
 
+    // Phase 2: which storage key is currently authoritative for the registry. After a
+    // successful migration this returns KEY_REGISTRY_V2 (Library Store via the bridge);
+    // before migration / when migration aborts due to non-durable backend, it stays on the
+    // legacy KEY_KNOWN_REGISTRY_V1 (localStorage) so behavior is unchanged.
+    function activeStorageKey() {
+      return state.v2RegistryCache ? KEY_REGISTRY_V2 : KEY_KNOWN_REGISTRY_V1;
+    }
+
+    // Phase 2: debounced async flush of the in-memory v2 cache to H2O.Library.Store. Writes
+    // coalesce — many synchronous registerKnownChats calls become a single Store.set after
+    // the debounce window. Failures log but do NOT clear the cache; the next flush retries.
+    function scheduleStoreFlush(reason = '') {
+      if (!state.v2RegistryCache) return;
+      if (state.v2FlushTimer) return;
+      const timer = W.setTimeout(async () => {
+        state.v2FlushTimer = 0;
+        state.clean.timers.delete(timer);
+        try {
+          const Store = W.H2O?.Library?.Store;
+          if (Store && state.v2RegistryCache) {
+            await Store.set(KEY_REGISTRY_V2, state.v2RegistryCache);
+            step('store-flush:ok', `${state.v2RegistryCache.rows?.length || 0} rows | ${reason || ''}`);
+          }
+        } catch (e) {
+          err('store-flush', e);
+        }
+      }, REGISTRY_STORE_FLUSH_DEBOUNCE_MS);
+      state.v2FlushTimer = timer;
+      state.clean.timers.add(timer);
+    }
+
+    // Phase 3: same debounce pattern but for the ledger. Decoupled from registry flush so a
+    // burst of registry writes during a scan doesn't hold the ledger flush back, and vice
+    // versa. Both eventually land in the bridge's IndexedDB through H2O.Library.Store.
+    function scheduleLedgerFlush(reason = '') {
+      if (!state.scanLedgerCache) return;
+      if (state.ledgerFlushTimer) return;
+      const timer = W.setTimeout(async () => {
+        state.ledgerFlushTimer = 0;
+        state.clean.timers.delete(timer);
+        try {
+          const Store = W.H2O?.Library?.Store;
+          if (Store && state.scanLedgerCache) {
+            await Store.set(KEY_SCAN_LEDGER_V1, state.scanLedgerCache);
+            step('ledger-flush:ok', `${state.scanLedgerCache.batches?.length || 0} batches | ${reason || ''}`);
+          }
+        } catch (e) {
+          err('ledger-flush', e);
+        }
+      }, REGISTRY_STORE_FLUSH_DEBOUNCE_MS);
+      state.ledgerFlushTimer = timer;
+      state.clean.timers.add(timer);
+    }
+
     function readKnownChatRegistry() {
+      // Migrated mode: in-memory v2 cache is the source of truth. Sync read; no Store call.
+      if (state.v2RegistryCache) {
+        const c = state.v2RegistryCache;
+        return {
+          version: c.version || 2,
+          rows: Array.isArray(c.rows) ? c.rows : [],
+          updatedAt: Number(c.updatedAt || 0) || 0,
+          updatedAtIso: normText(c.updatedAtIso || ''),
+          reason: normText(c.reason || ''),
+          migrationSource: state.libraryStoreMigration?.source || 'store-v2',
+          storageKey: KEY_REGISTRY_V2,
+        };
+      }
+      // Legacy path: read directly from localStorage v1 (no Store dependency).
       const raw = storage.getJSON(KEY_KNOWN_REGISTRY_V1, null);
       if (!raw || typeof raw !== 'object') return null;
       const rows = compactKnownRegistryRows(raw.rows || []);
@@ -1050,6 +1243,8 @@
         updatedAt: Number(raw.updatedAt || 0) || 0,
         updatedAtIso: normText(raw.updatedAtIso || ''),
         reason: normText(raw.reason || ''),
+        migrationSource: state.libraryStoreMigration?.source || 'legacy-v1',
+        storageKey: KEY_KNOWN_REGISTRY_V1,
       };
     }
 
@@ -1062,13 +1257,22 @@
 
     function writeKnownChatRegistryRows(rows = [], meta = {}) {
       const compact = compactKnownRegistryRows(rows);
+      const inV2 = !!state.v2RegistryCache;
       const payload = {
-        version: 1,
+        version: inV2 ? 2 : 1,
         rows: compact,
         updatedAt: Date.now(),
         updatedAtIso: new Date().toISOString(),
         reason: normText(meta.reason || ''),
       };
+      if (inV2) {
+        // Sync update of the in-memory cache; async flush to Store via bridge.
+        state.v2RegistryCache = payload;
+        state.lastKnownRegistryCount = compact.length;
+        scheduleStoreFlush(meta.reason || 'write-rows');
+        return payload;
+      }
+      // Legacy fallback when migration is pending or aborted.
       const ok = storage.setJSON(KEY_KNOWN_REGISTRY_V1, payload);
       if (ok) state.lastKnownRegistryCount = compact.length;
       return ok ? payload : null;
@@ -1079,10 +1283,40 @@
       return writeKnownChatRegistryRows([...(Array.isArray(current) ? current : []), ...(Array.isArray(rows) ? rows : [])], meta);
     }
 
+    // Phase 3 fix: which refresh reasons warrant a fresh ledger batch. The 'storage:*'
+    // reasons come from a cross-tab `storage` event listener (line ~2390) that fires when
+    // ANOTHER tab writes to a watched key. The originating tab already produced the
+    // canonical batch — duplicating it here would override the user-facing batch reason
+    // and pollute the ledger. The merge still runs so the local view stays in sync; the
+    // existing durability fields on the registry rows are preserved by mergeChatRecord
+    // (Phase 2 rules) because the model rows don't carry batch context to overwrite them.
+    function shouldCreateBatchForReason(reason) {
+      const r = String(reason || '');
+      if (!r) return true;
+      if (r.startsWith('storage:')) return false;
+      return true;
+    }
+
     function persistKnownChatRegistryFromModel(model, reason = 'refresh') {
       const rows = Array.isArray(model?.chats) ? model.chats : (Array.isArray(model?.knownChats) ? model.knownChats : []);
       if (!rows.length) return null;
-      return mergeKnownChatRegistryRows(rows, { reason });
+      // Cross-tab sync trigger — merge without creating a duplicate batch.
+      if (!shouldCreateBatchForReason(reason)) {
+        return mergeKnownChatRegistryRows(rows, { reason });
+      }
+      // Phase 3: each user-facing / event-driven refresh wraps persistence in a scan batch
+      // so rows get real visibleInLastScan / scanBatchId / batchHistory context AND the
+      // ledger gets a committed entry. Boot-time seeds (seedKnownChatRegistryFromModel
+      // below) intentionally skip this — they're cache restores, not scans.
+      const handle = beginScanBatch({ reason, sources: inferSourcesFromModel(model) });
+      try {
+        const res = commitScanBatch(handle.batchId, { observedRows: rows });
+        return res?.registryPayload || null;
+      } catch (e) {
+        err('persist-with-batch', e);
+        try { handle.abort(); } catch (_e) {}
+        return null;
+      }
     }
 
     function seedKnownChatRegistryFromModel(model, reason = 'seed') {
@@ -1092,20 +1326,433 @@
     }
 
     function clearKnownChatRegistry() {
+      // Phase 2: clear the in-memory v2 cache, the durable v2 in Store (async fire-and-forget),
+      // AND the legacy v1 localStorage snapshot. After this, registerKnownChats will write
+      // through whichever tier becomes active again on next migration setup.
       state.lastKnownRegistryCount = 0;
+      state.v2RegistryCache = null;
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (Store) Store.del(KEY_REGISTRY_V2).catch((e) => err('store:clear-v2', e));
+      } catch (e) { err('store:clear-v2-sync', e); }
       return storage.del(KEY_KNOWN_REGISTRY_V1);
     }
 
     function registerKnownChats(rows, opts = {}) {
       const list = Array.isArray(rows) ? rows : (rows ? [rows] : []);
-      if (!list.length) return { ok: false, added: 0, count: state.lastKnownRegistryCount, storageKey: KEY_KNOWN_REGISTRY_V1 };
+      const storageKey = activeStorageKey();
+      if (!list.length) return { ok: false, added: 0, count: state.lastKnownRegistryCount, storageKey };
       const payload = mergeKnownChatRegistryRows(list, { reason: opts.reason || 'api-register-known-chats' });
       if (opts.refresh !== false) scheduleRefresh(opts.refreshReason || 'api:register-known-chats');
       return {
         ok: !!payload,
         added: list.length,
         count: Array.isArray(payload?.rows) ? payload.rows.length : state.lastKnownRegistryCount,
-        storageKey: KEY_KNOWN_REGISTRY_V1,
+        storageKey: activeStorageKey(),
+      };
+    }
+
+    // Phase 2: setup runner — gates on Store.canMigrateLargeLibraryData. Idempotent (safe
+    // to call multiple times). Returns the migration record. Writes that happen during the
+    // pre-publication window go to legacy v1 and are picked up by the v1 read inside this
+    // routine — no data loss.
+    async function setupLibraryStoreMigration() {
+      if (state.v2MigrationPromise) return state.v2MigrationPromise;
+      state.v2MigrationPromise = (async () => {
+        const m = state.libraryStoreMigration;
+        m.startedAt = Date.now();
+        try {
+          const Store = W.H2O?.Library?.Store;
+          if (!Store) {
+            m.status = 'aborted-no-durable';
+            m.error = 'H2O.Library.Store not available';
+            m.finishedAt = Date.now();
+            return m;
+          }
+          if (Store._readyPromise && typeof Store._readyPromise.then === 'function') {
+            try { await Store._readyPromise; } catch (_e) {}
+          }
+          const caps = (typeof Store.caps === 'function') ? Store.caps() : null;
+          if (!caps?.canMigrateLargeLibraryData) {
+            m.status = 'aborted-no-durable';
+            m.error = `Store not durable (primary=${caps?.primary || 'unknown'}, durable=${caps?.durable})`;
+            m.finishedAt = Date.now();
+            step('migration:aborted', m.error);
+            return m;
+          }
+
+          // Phase 3: load the scan ledger (independent of which registry path runs below).
+          // Failures here are non-fatal — we just start with an empty in-memory ledger.
+          try {
+            const lp = await Store.get(KEY_SCAN_LEDGER_V1);
+            state.scanLedgerCache = (lp && Array.isArray(lp.batches))
+              ? {
+                  version: Number(lp.version || 1) || 1,
+                  batches: lp.batches.slice(0, SCAN_LEDGER_BATCH_LIMIT),
+                  updatedAt: Number(lp.updatedAt || 0) || 0,
+                  updatedAtIso: normText(lp.updatedAtIso || ''),
+                }
+              : { version: 1, batches: [], updatedAt: 0, updatedAtIso: '' };
+            step('migration:ledger-loaded', `${state.scanLedgerCache.batches.length} batches`);
+          } catch (e) {
+            err('migration:ledger-load', e);
+            state.scanLedgerCache = { version: 1, batches: [], updatedAt: 0, updatedAtIso: '' };
+          }
+
+          // Path A: existing v2 in Store — load straight into the cache.
+          let v2Payload = null;
+          try { v2Payload = await Store.get(KEY_REGISTRY_V2); } catch (e) { err('migration:store-get', e); }
+          if (v2Payload && typeof v2Payload === 'object' && Array.isArray(v2Payload.rows)) {
+            state.v2RegistryCache = {
+              version: 2,
+              rows: compactKnownRegistryRows(v2Payload.rows),
+              updatedAt: Number(v2Payload.updatedAt || 0) || 0,
+              updatedAtIso: normText(v2Payload.updatedAtIso || ''),
+              reason: normText(v2Payload.reason || ''),
+            };
+            m.status = 'store-v2';
+            m.source = 'store-v2';
+            m.rowsLoaded = state.v2RegistryCache.rows.length;
+            m.finishedAt = Date.now();
+            state.lastKnownRegistryCount = m.rowsLoaded;
+            try { W.dispatchEvent(new CustomEvent(EV_REGISTRY_MIGRATED, { detail: { source: m.source, rows: m.rowsLoaded, status: m.status } })); } catch (_e) {}
+            step('migration:store-v2-loaded', `${m.rowsLoaded} rows`);
+            return m;
+          }
+
+          // Path B: legacy v1 in localStorage — upgrade to v2 shape and write to Store.
+          const v1Payload = storage.getJSON(KEY_KNOWN_REGISTRY_V1, null);
+          if (v1Payload && typeof v1Payload === 'object' && Array.isArray(v1Payload.rows)) {
+            const upgraded = v1Payload.rows.map(upgradeRowV1ToV2).filter(Boolean);
+            const compact = compactKnownRegistryRows(upgraded);
+            const newCache = {
+              version: 2,
+              rows: compact,
+              updatedAt: Date.now(),
+              updatedAtIso: new Date().toISOString(),
+              reason: 'migration:v1-to-v2',
+            };
+            try {
+              await Store.set(KEY_REGISTRY_V2, newCache);
+            } catch (e) {
+              err('migration:store-set', e);
+              m.status = 'aborted-no-durable';
+              m.error = `Store.set failed: ${e?.message || e}`;
+              m.finishedAt = Date.now();
+              return m;
+            }
+            // Publish cache only AFTER the Store write succeeded — any in-flight writes
+            // during the await landed in legacy v1, which we just snapshotted; from now on
+            // writes route through v2.
+            state.v2RegistryCache = newCache;
+            state.lastKnownRegistryCount = compact.length;
+            m.status = 'migrated-v1-to-v2';
+            m.source = 'migrated-v1-to-v2';
+            m.rowsLoaded = compact.length;
+            m.legacyV1UpdatedAt = Number(v1Payload.updatedAt || 0) || 0;
+            m.legacyV1UpdatedAtIso = normText(v1Payload.updatedAtIso || '');
+            m.finishedAt = Date.now();
+            try { W.dispatchEvent(new CustomEvent(EV_REGISTRY_MIGRATED, { detail: { source: m.source, rows: m.rowsLoaded, status: m.status } })); } catch (_e) {}
+            step('migration:v1-to-v2', `${compact.length} rows | legacy v1 preserved at ${KEY_KNOWN_REGISTRY_V1}`);
+            return m;
+          }
+
+          // Path C: nothing anywhere — start fresh in v2.
+          state.v2RegistryCache = {
+            version: 2,
+            rows: [],
+            updatedAt: 0,
+            updatedAtIso: '',
+            reason: '',
+          };
+          m.status = 'store-v2';
+          m.source = 'store-v2-empty';
+          m.rowsLoaded = 0;
+          m.finishedAt = Date.now();
+          try { W.dispatchEvent(new CustomEvent(EV_REGISTRY_MIGRATED, { detail: { source: m.source, rows: 0, status: m.status } })); } catch (_e) {}
+          step('migration:fresh-v2');
+          return m;
+        } catch (e) {
+          err('migration:setup', e);
+          m.status = 'aborted-no-durable';
+          m.error = String(e?.message || e);
+          m.finishedAt = Date.now();
+          return m;
+        }
+      })();
+      return state.v2MigrationPromise;
+    }
+
+    // ─── Phase 3: Scan Batch Ledger ─────────────────────────────────────────
+    // A "scan batch" is one logical scan event (a refresh) that observes some chats from
+    // some sources. Lifecycle: beginScanBatch() → (collect & merge sources) → commitScanBatch()
+    // (or handle.abort() on error). The ledger (capped FIFO of recent batches) is the
+    // append-only history; the registry rows carry the per-row scan context derived from it.
+    //
+    // Single-in-flight invariant: a second beginScanBatch implicitly aborts any stale active
+    // batch — practical for the existing refresh debouncer, where one batch overlaps another
+    // only in pathological error paths.
+
+    function newBatchId() {
+      return 'sb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+    }
+
+    function inferSourcesFromModel(model) {
+      if (!model || typeof model !== 'object') return [];
+      if (Array.isArray(model.sources)) return uniqueStrings(model.sources.map((s) => normText(s)));
+      const seen = new Set();
+      const rows = Array.isArray(model.chats) ? model.chats : (Array.isArray(model.knownChats) ? model.knownChats : []);
+      rows.forEach((chat) => {
+        const list = Array.isArray(chat?.sources) ? chat.sources : (chat?.source ? [chat.source] : []);
+        list.forEach((s) => { const v = normText(s); if (v && v !== 'indexed') seen.add(v); });
+      });
+      return Array.from(seen).sort();
+    }
+
+    function beginScanBatch(opts = {}) {
+      // Lazy init of the in-memory ledger so commits work even when the migration runner
+      // hasn't loaded the ledger yet (or aborted because the Store isn't durable). Persistence
+      // still requires Store; in-memory always works.
+      if (!state.scanLedgerCache) {
+        state.scanLedgerCache = { version: 1, batches: [], updatedAt: 0, updatedAtIso: '' };
+      }
+      const reason = normText(opts.reason || '');
+      const sources = Array.isArray(opts.sources)
+        ? uniqueStrings(opts.sources.map((s) => normText(s)))
+        : [];
+      if (state.activeScanBatch && !state.activeScanBatch.committed && !state.activeScanBatch.aborted) {
+        err('scan-batch:implicit-abort', `previous batch ${state.activeScanBatch.id} replaced by new one`);
+        state.activeScanBatch.aborted = true;
+      }
+      const id = newBatchId();
+      const startedAt = Date.now();
+      state.activeScanBatch = {
+        id,
+        startedAt,
+        startedAtIso: new Date(startedAt).toISOString(),
+        finishedAt: 0,
+        finishedAtIso: '',
+        durationMs: 0,
+        reason,
+        sources,
+        counts: { observed: 0, added: 0, reappeared: 0, vanished: 0 },
+        ok: false,
+        error: null,
+        aborted: false,
+        committed: false,
+      };
+      step('scan-batch:begin', `${id} reason=${reason || '-'} sources=${sources.join(',') || '-'}`);
+      return {
+        batchId: id,
+        abort() {
+          if (state.activeScanBatch?.id === id && !state.activeScanBatch.committed) {
+            state.activeScanBatch.aborted = true;
+            state.activeScanBatch = null;
+            step('scan-batch:abort', id);
+          }
+        },
+      };
+    }
+
+    function commitScanBatch(batchId, opts = {}) {
+      const batch = state.activeScanBatch;
+      if (!batch || batch.id !== batchId) {
+        return { ok: false, error: 'no-active-batch', batchId, counts: null, registryPayload: null };
+      }
+      if (batch.aborted) {
+        state.activeScanBatch = null;
+        return { ok: false, error: 'batch-aborted', batchId, counts: null, registryPayload: null };
+      }
+      if (batch.committed) {
+        return { ok: false, error: 'batch-already-committed', batchId, counts: batch.counts, registryPayload: null };
+      }
+      const finishedAt = Date.now();
+      batch.finishedAt = finishedAt;
+      batch.finishedAtIso = new Date(finishedAt).toISOString();
+      batch.durationMs = finishedAt - (batch.startedAt || finishedAt);
+      const errorParam = opts.error;
+      batch.error = errorParam ? String(errorParam?.message || errorParam) : null;
+
+      const observedInput = Array.isArray(opts.observedRows) ? opts.observedRows : [];
+      const currentRows = readKnownChatRegistryRows();
+      const currentByKey = new Map();
+      currentRows.forEach((row) => {
+        const k = row.chatId || row.href || row.id;
+        if (k) currentByKey.set(k, row);
+      });
+
+      // Stamp observed rows with batch context. Counts: added = wasn't in registry;
+      // reappeared = was in registry but visibleInLastScan was false.
+      let observed = 0;
+      let added = 0;
+      let reappeared = 0;
+      const observedKeys = new Set();
+      const stampedObserved = observedInput.map((rawRow) => {
+        const row = toKnownRegistryRow(rawRow, 'indexed');
+        if (!row) return null;
+        const key = row.chatId || row.href || row.id;
+        if (!key || observedKeys.has(key)) return null;
+        observedKeys.add(key);
+        observed += 1;
+        const prev = currentByKey.get(key);
+        if (!prev) added += 1;
+        else if (!prev.visibleInLastScan) reappeared += 1;
+        return {
+          ...row,
+          scanBatchId: batchId,
+          visibleInLastScan: true,
+          // mergeChatRecord unions this with prev.batchHistory, newest-first, capped 10.
+          batchHistory: [batchId],
+        };
+      }).filter(Boolean);
+
+      // Vanished rows: was visibleInLastScan=true, not in this batch's observed set.
+      // We deliberately leave scanBatchId (last visible batch) and batchHistory unchanged —
+      // only flip the visibility flag.
+      let vanished = 0;
+      const vanishedFlipped = currentRows.filter((row) => {
+        const k = row.chatId || row.href || row.id;
+        if (!k || observedKeys.has(k)) return false;
+        return !!row.visibleInLastScan;
+      }).map((row) => {
+        vanished += 1;
+        return { ...row, visibleInLastScan: false };
+      });
+
+      // Single merge: stamped+flipped merge with current via mergeChatRecord, which applies
+      // the Phase 2 rules (firstSeenAt = oldest, scanBatchId/visibleInLastScan = next wins,
+      // batchHistory = newest-first union capped at REGISTRY_BATCH_HISTORY_LIMIT).
+      const allNewRows = [...stampedObserved, ...vanishedFlipped];
+      const registryPayload = mergeKnownChatRegistryRows(allNewRows, {
+        reason: `scan-batch:${batch.reason || 'unknown'}`,
+      });
+
+      batch.counts = { observed, added, reappeared, vanished };
+      batch.ok = !errorParam;
+      batch.committed = true;
+      state.activeScanBatch = null;
+
+      appendBatchToLedger(batch);
+
+      try {
+        W.dispatchEvent(new CustomEvent(EV_SCAN_BATCH_COMMITTED, {
+          detail: { batchId, counts: batch.counts, ok: batch.ok, reason: batch.reason },
+        }));
+      } catch (_e) {}
+
+      step('scan-batch:commit', `${batchId} obs=${observed} +${added} ↺${reappeared} -${vanished} ok=${batch.ok}`);
+      return { ok: batch.ok, batchId, counts: batch.counts, registryPayload };
+    }
+
+    function appendBatchToLedger(batch) {
+      const cache = state.scanLedgerCache || { version: 1, batches: [], updatedAt: 0, updatedAtIso: '' };
+      const next = {
+        version: 1,
+        batches: [{ ...batch }, ...(Array.isArray(cache.batches) ? cache.batches : [])].slice(0, SCAN_LEDGER_BATCH_LIMIT),
+        updatedAt: Date.now(),
+        updatedAtIso: new Date().toISOString(),
+      };
+      state.scanLedgerCache = next;
+      scheduleLedgerFlush('append');
+    }
+
+    function listScanBatches(opts = {}) {
+      const cache = state.scanLedgerCache;
+      if (!cache || !Array.isArray(cache.batches)) return [];
+      const limitRaw = Number(opts && opts.limit != null ? opts.limit : 20);
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(SCAN_LEDGER_BATCH_LIMIT, Math.floor(limitRaw))) : 20;
+      return cache.batches.slice(0, limit).map((b) => ({ ...b }));
+    }
+
+    function getLastScanBatch() {
+      const cache = state.scanLedgerCache;
+      if (!cache || !Array.isArray(cache.batches) || !cache.batches.length) return null;
+      return { ...cache.batches[0] };
+    }
+
+    function getDurabilityStats() {
+      const rows = (state.v2RegistryCache && Array.isArray(state.v2RegistryCache.rows))
+        ? state.v2RegistryCache.rows
+        : readKnownChatRegistryRows();
+      let totalRows = 0;
+      let visibleInLastScan = 0;
+      let vanishedCount = 0;
+      let neverScanned = 0;
+      let oldestFirstSeenMs = Infinity;
+      let oldestFirstSeenAt = '';
+      rows.forEach((row) => {
+        totalRows += 1;
+        if (row.visibleInLastScan) visibleInLastScan += 1;
+        else if (row.scanBatchId) vanishedCount += 1;
+        else neverScanned += 1;
+        const ms = dateMs(row.firstSeenAt);
+        if (ms && ms < oldestFirstSeenMs) {
+          oldestFirstSeenMs = ms;
+          oldestFirstSeenAt = row.firstSeenAt || '';
+        }
+      });
+      const ledger = state.scanLedgerCache;
+      const last = (ledger && Array.isArray(ledger.batches) && ledger.batches[0]) || null;
+      return {
+        totalRows,
+        visibleInLastScan,
+        vanished: vanishedCount,
+        neverScanned,
+        oldestFirstSeenAt: oldestFirstSeenMs === Infinity ? '' : oldestFirstSeenAt,
+        batchCount: ledger?.batches?.length || 0,
+        lastBatchId: last?.id || '',
+        lastBatchAtIso: last?.finishedAtIso || '',
+        lastBatchReason: last?.reason || '',
+        lastBatchCounts: last?.counts || null,
+        storageKey: activeStorageKey(),
+        ledgerKey: KEY_SCAN_LEDGER_V1,
+      };
+    }
+
+    function findVanishedSince(iso) {
+      const sinceMs = dateMs(iso);
+      if (!sinceMs) return [];
+      const rows = (state.v2RegistryCache && Array.isArray(state.v2RegistryCache.rows))
+        ? state.v2RegistryCache.rows
+        : readKnownChatRegistryRows();
+      return rows
+        .filter((row) => {
+          if (row.visibleInLastScan) return false;
+          if (!row.scanBatchId) return false; // never scanned can't have "vanished since"
+          const observedMs = dateMs(row.observedAt || row.lastSeenAt || '');
+          if (!observedMs) return false;
+          return observedMs >= sinceMs;
+        })
+        .map((row) => ({ ...row }));
+    }
+
+    // Phase 2 diagnostics — read-only. Surfaces migration status, in-memory cache size, and
+    // the active Store backend so the durability/scan-stats UI can render it later.
+    function getMigrationStatus() {
+      const m = state.libraryStoreMigration || {};
+      const Store = W.H2O?.Library?.Store;
+      let backend = null;
+      let durable = null;
+      try {
+        backend = (typeof Store?.backend === 'function') ? Store.backend() : null;
+        const caps = (typeof Store?.caps === 'function') ? Store.caps() : null;
+        durable = !!caps?.durable;
+      } catch (_e) {}
+      return {
+        status: m.status || 'pending',
+        source: m.source || 'unknown',
+        rowsLoaded: Number(m.rowsLoaded || 0) || 0,
+        rowsCurrent: Array.isArray(state.v2RegistryCache?.rows) ? state.v2RegistryCache.rows.length : state.lastKnownRegistryCount,
+        backend,
+        durable,
+        storageKey: activeStorageKey(),
+        error: m.error || null,
+        startedAt: m.startedAt || 0,
+        finishedAt: m.finishedAt || 0,
+        legacyV1UpdatedAt: m.legacyV1UpdatedAt || 0,
+        legacyV1UpdatedAtIso: m.legacyV1UpdatedAtIso || '',
+        legacyKey: KEY_KNOWN_REGISTRY_V1,
+        v2Key: KEY_REGISTRY_V2,
       };
     }
 
@@ -1859,6 +2506,17 @@
       readKnownChatRegistry() { return readKnownChatRegistry(); },
       clearKnownChatRegistry() { return clearKnownChatRegistry(); },
       registerKnownChats(rows, opts = {}) { return registerKnownChats(rows, opts); },
+      // Phase 2: durability/migration diagnostics. Read-only.
+      getMigrationStatus() { return getMigrationStatus(); },
+      // Phase 3: scan batch ledger API. begin/commit are public so external code (e.g., a
+      // future "Force re-scan" repair command) can drive scans without going through the
+      // normal refresh path. list/last/stats/vanished are read-only diagnostics.
+      beginScanBatch(opts = {}) { return beginScanBatch(opts); },
+      commitScanBatch(batchId, opts = {}) { return commitScanBatch(batchId, opts); },
+      listScanBatches(opts = {}) { return listScanBatches(opts); },
+      getLastScanBatch() { return getLastScanBatch(); },
+      getDurabilityStats() { return getDurabilityStats(); },
+      findVanishedSince(iso) { return findVanishedSince(iso); },
       readCache() { return readCache(); },
       isCacheFresh() { return isCacheFresh(); },
       listNativeRecentChats(options = null) { return listNativeRecentChats(options); },
@@ -1874,8 +2532,18 @@
         KEY_CACHE_V1,
         KEY_KNOWN_REGISTRY_V1,
         KEY_PREFS_V1,
+        // Phase 2: durable Library Store key + migration event. Existing consumers that read
+        // KEY_KNOWN_REGISTRY_V1 keep working; new consumers can target KEY_REGISTRY_V2.
+        KEY_REGISTRY_V2,
+        NS_LIBRARY_STORE,
+        REGISTRY_BATCH_HISTORY_LIMIT,
+        // Phase 3: scan ledger key + batch cap + commit event.
+        KEY_SCAN_LEDGER_V1,
+        SCAN_LEDGER_BATCH_LIMIT,
         EV_UPDATED,
         EV_REFRESH_REQUEST,
+        EV_REGISTRY_MIGRATED,
+        EV_SCAN_BATCH_COMMITTED,
         TOK,
         PID,
         SkID,
@@ -1888,6 +2556,13 @@
       exposePublicApi();
       registerWithCore();
       bindEventsOnce();
+
+      // Phase 2: kick off the Library Store migration. Fire-and-forget — the boot path
+      // continues against legacy v1 storage until migration publishes the in-memory v2
+      // cache. Any seed/refresh writes during the window land in v1 and are picked up by
+      // the v1 read inside setupLibraryStoreMigration. After publication, all subsequent
+      // writes route through the v2 cache + bridge KV.
+      setupLibraryStoreMigration().catch((e) => err('boot:migration', e));
 
       const cached = readCache();
       if (cached?.ok) {
