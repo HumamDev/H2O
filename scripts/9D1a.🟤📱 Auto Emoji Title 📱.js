@@ -3,10 +3,10 @@
 // @name               9D1a.🟤📱 Auto Emoji Title 📱
 // @namespace          H2O.Premium.CGX.auto.emoji.title
 // @author             HumamDev
-// @version            2.3
+// @version            3.0
 // @revision           001
 // @build              260304-102754
-// @description        (Stable + Live Picker + 9c Sync) Auto-prefix emoji ONCE per chat using native rename. If emoji already exists -> never auto-change. Click emoji badge -> picker. Live update + event for 9c. Chats only (no folders/projects).
+// @description        Auto emoji native rename, live picker, sidebar/project badges, and H2O.ChatTitle sync.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
@@ -16,81 +16,395 @@
   'use strict';
 
   /**************************************************************
-   * Identity + storage namespace (Contract v2.0)
+   * Canonical emoji bridge
    **************************************************************/
-  const SUITE = 'prm';
-  const HOST  = 'cgx';
-  const TOK   = 'AE';
-  const PID   = 'tmjttl';
-  const DsID  = PID;
-
-  const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`;
-
+  const NS_DISK = 'h2o:prm:cgx:tmjttl';
   const UTIL_AE_safeId = (chatId) => String(chatId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
-
   const KEY_AE_ = Object.freeze({
     DONE:  (chatId) => `${NS_DISK}:state:done_${UTIL_AE_safeId(chatId)}:v1`,
     EMOJI: (chatId) => `${NS_DISK}:state:emoji_${UTIL_AE_safeId(chatId)}:v1`,
+    EMPTY_ICON: `${NS_DISK}:state:empty-badge-icon:v1`,
+    PICKER_GROUPING: `${NS_DISK}:state:picker-grouping:v1`,
     DONE_LEG:  (chatId) => `ho:autoemoji:done:${chatId}`,
     EMOJI_LEG: (chatId) => `ho:autoemoji:emoji:${chatId}`,
   });
 
   const EV_AE_CHANGED_CANON = 'evt:h2o:autoemoji:changed';
   const EV_AE_CHANGED_LEG   = 'ho:autoemoji:changed';
+  const EV_AE_SETTINGS_CANON = 'evt:h2o:autoemoji:settings-changed';
+  const EV_AE_SETTINGS_LEG = 'h2o:autoemoji:settings-changed';
+  const runtimeDone = Object.create(null);
+  const runtimePendingEmoji = Object.create(null);
+  const runtimeNativeRenamePending = Object.create(null);
+  const runtimeNativeRenameAttempts = Object.create(null);
+  const MAX_NATIVE_RENAME_ATTEMPTS = 3;
+  const DEFAULT_EMPTY_BADGE_ICON = 'chat-bubble-stack';
+  const DEFAULT_PICKER_GROUPING = 'os';
+  const EMPTY_BADGE_ICON_OPTIONS = Object.freeze([
+    Object.freeze(['message-circle', 'Message Circle']),
+    Object.freeze(['message-square', 'Message Square']),
+    Object.freeze(['chat-bubble-stack', 'Chat Stack']),
+  ]);
+  const EMPTY_BADGE_ICON_KEYS = Object.freeze(EMPTY_BADGE_ICON_OPTIONS.map(([icon]) => icon));
+  const EMPTY_BADGE_ICON_MASKS = Object.freeze({
+    'message-circle': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5Z'/%3E%3C/svg%3E",
+    'message-square': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z'/%3E%3C/svg%3E",
+    'chat-bubble-stack': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M8 15H6l-3 3V7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v4'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M10 19h5l4 2v-7a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3Z'/%3E%3C/svg%3E",
+  });
+  const PICKER_GROUPING_OPTIONS = Object.freeze([
+    Object.freeze(['os', 'OS Emoji Categories']),
+    Object.freeze(['internal', 'H2O Internal Groups']),
+  ]);
 
-  /**************************************************************
-   * Storage locks (per chat)
-   **************************************************************/
-  const DONE_KEY  = (chatId) => KEY_AE_.DONE(chatId);
-  const EMOJI_KEY = (chatId) => KEY_AE_.EMOJI(chatId);
+  function skinIconsApi(){
+    return window.H2O?.Skins || window.H2O?.SR?.h2oskins?.api || null;
+  }
 
-  const MIG_AE_keys = (chatId) => {
+  function listSkinChatTitleIcons(){
+    const api = skinIconsApi();
     try {
-      const newDone = DONE_KEY(chatId);
-      const oldDone = KEY_AE_.DONE_LEG(chatId);
-      const vNew = localStorage.getItem(newDone);
-      if (vNew == null || vNew === '') {
-        const vOld = localStorage.getItem(oldDone);
-        if (vOld != null && vOld !== '') localStorage.setItem(newDone, vOld);
-      }
-      localStorage.removeItem(oldDone);
-    } catch {}
+      const icons = api?.icons?.list?.('chatTitlePlaceholders') || api?.listIcons?.('chatTitlePlaceholders');
+      return Array.isArray(icons) ? icons : [];
+    } catch {
+      return [];
+    }
+  }
 
+  function getSkinIconMask(icon){
+    const key = norm(icon || '');
+    if (!key) return '';
+    const api = skinIconsApi();
     try {
-      const newEmoji = EMOJI_KEY(chatId);
-      const oldEmoji = KEY_AE_.EMOJI_LEG(chatId);
-      const vNew = localStorage.getItem(newEmoji);
-      if (vNew == null || vNew === '') {
-        const vOld = localStorage.getItem(oldEmoji);
-        if (vOld != null && vOld !== '') localStorage.setItem(newEmoji, vOld);
-      }
-      localStorage.removeItem(oldEmoji);
+      return String(api?.icons?.getMask?.(key) || api?.getIconMask?.(key) || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function getEmptyBadgeIconOptions(){
+    const labels = new Map(EMPTY_BADGE_ICON_OPTIONS.map(([icon, label]) => [icon, label]));
+    for (const icon of listSkinChatTitleIcons()) {
+      const key = norm(icon?.key || icon?.[0] || '');
+      const label = norm(icon?.label || icon?.[1] || '');
+      if (labels.has(key) && label) labels.set(key, label);
+    }
+    return EMPTY_BADGE_ICON_OPTIONS.map(([icon, label]) => [icon, labels.get(icon) || label]);
+  }
+
+  function normalizeEmptyBadgeIcon(value){
+    const raw = norm(value || '');
+    return EMPTY_BADGE_ICON_KEYS.includes(raw) ? raw : DEFAULT_EMPTY_BADGE_ICON;
+  }
+
+  function getEmptyBadgeIconMask(value){
+    const key = normalizeEmptyBadgeIcon(value);
+    return getSkinIconMask(key) || EMPTY_BADGE_ICON_MASKS[key] || EMPTY_BADGE_ICON_MASKS[DEFAULT_EMPTY_BADGE_ICON];
+  }
+
+  function getEmptyBadgeIcon(){
+    try { return normalizeEmptyBadgeIcon(localStorage.getItem(KEY_AE_.EMPTY_ICON) || DEFAULT_EMPTY_BADGE_ICON); }
+    catch { return DEFAULT_EMPTY_BADGE_ICON; }
+  }
+
+  function normalizePickerGrouping(value){
+    const raw = String(value || '').trim().toLowerCase();
+    return PICKER_GROUPING_OPTIONS.some(([key]) => key === raw) ? raw : DEFAULT_PICKER_GROUPING;
+  }
+
+  function getPickerGrouping(){
+    try { return normalizePickerGrouping(localStorage.getItem(KEY_AE_.PICKER_GROUPING) || DEFAULT_PICKER_GROUPING); }
+    catch { return DEFAULT_PICKER_GROUPING; }
+  }
+
+  function setEmptyBadgeIcon(value, options = {}){
+    const next = normalizeEmptyBadgeIcon(value);
+    try { localStorage.setItem(KEY_AE_.EMPTY_ICON, next); } catch {}
+    applyEmptyBadgeIconToBadges();
+    const detail = {
+      key: 'emptyBadgeIcon',
+      emptyBadgeIcon: next,
+      reason: options.reason || 'empty-badge-icon',
+    };
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail })); } catch {}
+    return getAutoEmojiConfig();
+  }
+
+  function setPickerGrouping(value, options = {}){
+    const next = normalizePickerGrouping(value);
+    try { localStorage.setItem(KEY_AE_.PICKER_GROUPING, next); } catch {}
+    const detail = {
+      key: 'pickerGrouping',
+      pickerGrouping: next,
+      reason: options.reason || 'picker-grouping',
+    };
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail })); } catch {}
+    return getAutoEmojiConfig();
+  }
+
+  function getAutoEmojiConfig(){
+    return {
+      emptyBadgeIcon: getEmptyBadgeIcon(),
+      emptyBadgeIconOptions: getEmptyBadgeIconOptions(),
+      pickerGrouping: getPickerGrouping(),
+      pickerGroupingOptions: PICKER_GROUPING_OPTIONS.map(([key, label]) => [key, label]),
+    };
+  }
+
+  function applyAutoEmojiSetting(key, value){
+    if (String(key || '') === 'emptyBadgeIcon') return setEmptyBadgeIcon(value, { reason: 'api-setting' });
+    if (String(key || '') === 'pickerGrouping') return setPickerGrouping(value, { reason: 'api-setting' });
+    return getAutoEmojiConfig();
+  }
+
+  function applyEmptyBadgeIconToBadges(root = document){
+    try {
+      const icon = getEmptyBadgeIcon();
+      const mask = getEmptyBadgeIconMask(icon);
+      root.querySelectorAll('.ho-emoji-badge.ho-emoji-empty').forEach((badge) => {
+        badge.dataset.hoEmptyIcon = icon;
+        if (mask) badge.style.setProperty('--ho-empty-badge-mask', `url("${mask}")`);
+      });
     } catch {}
-  };
+  }
+
+  function chatTitleApi(){
+    return window.H2O && window.H2O.ChatTitle;
+  }
+
+  function readLegacyEmoji(chatId){
+    if (!chatId) return '';
+    try {
+      return localStorage.getItem(KEY_AE_.EMOJI(chatId)) ||
+        localStorage.getItem(KEY_AE_.EMOJI_LEG(chatId)) ||
+        '';
+    } catch {
+      return '';
+    }
+  }
+
+  function MIG_AE_keys(chatId){
+    const emoji = readLegacyEmoji(chatId);
+    if (emoji) {
+      try {
+        chatTitleApi()?.setEmoji?.({
+          chatId,
+          emoji,
+          source: 'migration:autoemoji',
+          priority: 70,
+          confidence: 0.8,
+          reason: '9d-legacy-fallback',
+        }, { reason: '9d-legacy-fallback' });
+      } catch {}
+    }
+    try { localStorage.removeItem(KEY_AE_.DONE_LEG(chatId)); } catch {}
+    try { localStorage.removeItem(KEY_AE_.EMOJI_LEG(chatId)); } catch {}
+    return emoji;
+  }
+
+  function emitAutoEmojiChanged(chatId, emoji, reason){
+    const state = chatTitleApi()?.getState?.(chatId) || {};
+    const detail = {
+      chatId,
+      emoji,
+      displayTitle: state.displayTitle || '',
+      baseTitle: state.baseTitle || '',
+      reason: reason || 'emoji-metadata-updated',
+    };
+    window.dispatchEvent(new CustomEvent(EV_AE_CHANGED_LEG, { detail }));
+    window.dispatchEvent(new CustomEvent(EV_AE_CHANGED_CANON, { detail }));
+  }
+
+  function publishEmoji(chatId, emoji, source, priority, confidence, options){
+    if (!chatId || !emoji) return false;
+    const changed = !!chatTitleApi()?.setEmoji?.({
+      chatId,
+      emoji,
+      source: source || 'auto',
+      priority: priority == null ? 50 : priority,
+      confidence: confidence == null ? 0.75 : confidence,
+      reason: options?.reason || '9d-emoji-publish',
+    }, {
+      force: !!options?.force,
+      userInitiated: !!options?.userInitiated,
+      reason: options?.reason || '9d-emoji-publish',
+    });
+    runtimeDone[chatId] = 1;
+    if (changed || options?.emit) emitAutoEmojiChanged(chatId, emoji, options?.reason);
+    return changed;
+  }
 
   const isDone = (chatId) => {
     MIG_AE_keys(chatId);
-    try { return localStorage.getItem(DONE_KEY(chatId)) === '1'; } catch { return false; }
+    const state = chatTitleApi()?.getState?.(chatId);
+    const emojiSource = String(state?.emojiSource || '');
+    return !!(runtimeDone[chatId] || (state?.emoji && emojiSource && emojiSource !== 'auto'));
   };
+
   const setDone = (chatId) => {
-    MIG_AE_keys(chatId);
-    try { localStorage.setItem(DONE_KEY(chatId), '1'); } catch {}
+    if (chatId) runtimeDone[chatId] = 1;
   };
+
   const getSavedEmoji = (chatId) => {
     MIG_AE_keys(chatId);
-    try { return localStorage.getItem(EMOJI_KEY(chatId)) || ''; } catch { return ''; }
+    const state = chatTitleApi()?.getState?.(chatId);
+    return state?.emoji || readLegacyEmoji(chatId) || '';
   };
-  const setSavedEmoji = (chatId, e) => {
-    MIG_AE_keys(chatId);
-    try { localStorage.setItem(EMOJI_KEY(chatId), e); } catch {}
+
+  const setSavedEmoji = (chatId, emoji) => {
+    publishEmoji(chatId, emoji, 'native-title', 90, 0.9, { reason: '9d-existing-title-emoji' });
   };
+
+  const EMPTY_BADGE_TEXT = '';
+
+  function stopEmojiEvent(ev){
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    ev?.stopImmediatePropagation?.();
+  }
 
   /**************************************************************
    * Emoji pool (expanded, practical “titling set”)
    * Note: “all system emojis” can’t be enumerated reliably in JS,
    * but this is intentionally large + useful.
    **************************************************************/
-  const EMOJI_POOL = [
+  const emojiList = (line) => Object.freeze(String(line || '').trim().split(/\s+/).filter(Boolean));
+  const emojiGroup = (label, line) => Object.freeze({ label, emojis: emojiList(line) });
+
+  const OS_EMOJI_GROUPS = Object.freeze([
+    emojiGroup('Smileys & Emotion', `
+      😀 😃 😄 😁 😆 😅 😂 🤣 🥲 🥹 ☺️ 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚
+      😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🥸 🤩 🥳 🙂‍↕️ 🙂‍↔️ 🫩 😏 😒 😞 😔 😟 😕 🙁 ☹️
+      😣 😖 😫 😩 🥺 😢 😭 😮‍💨 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🫣
+      🤗 🫡 🤔 🫢 🤭 🤫 🤥 😶 😶‍🌫️ 😐 😑 😬 🫨 🫠 🙄 😯 😦 😧 😮 😲 🥱
+      😴 🤤 😪 😵 😵‍💫 🫥 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👿 👹 👺 🤡 💩
+      👻 💀 ☠️ 👽 👾 🤖 🎃 😺 😸 😹 😻 😼 😽 🙀 😿 😾 🙈 🙉 🙊 💌 💘 💝
+      💖 💗 💓 💞 💕 💟 ❣️ 💔 ❤️‍🔥 ❤️‍🩹 ❤️ 🩷 🧡 💛 💚 💙 🩵 💜 🤎 🖤 🩶
+      🤍 💋 💯 💢 💥 💫 💦 💨 🕳️ 💬 👁️‍🗨️ 🗨️ 🗯️ 💭 💤
+    `),
+    emojiGroup('People & Body', `
+      👋 🤚 🖐️ ✋ 🖖 🫱 🫲 🫳 🫴 🫷 🫸 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙
+      👈 👉 👆 🖕 👇 ☝️ 🫵 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 🫶 👐 🤲 🤝 🙏 ✍️
+      💅 🤳 💪 🦾 🦿 🦵 🦶 👂 🦻 👃 🧠 🫀 🫁 🦷 🦴 👀 👁️ 👅 👄 🫦
+      👶 🧒 👦 👧 🧑 👱 👨 🧔 🧔‍♂️ 🧔‍♀️ 👨‍🦰 👨‍🦱 👨‍🦳 👨‍🦲 👩 👩‍🦰
+      🧑‍🦰 👩‍🦱 🧑‍🦱 👩‍🦳 🧑‍🦳 👩‍🦲 🧑‍🦲 👱‍♀️ 👱‍♂️ 🧓 👴 👵 🙍 🙍‍♂️
+      🙍‍♀️ 🙎 🙎‍♂️ 🙎‍♀️ 🙅 🙅‍♂️ 🙅‍♀️ 🙆 🙆‍♂️ 🙆‍♀️ 💁 💁‍♂️ 💁‍♀️ 🙋
+      🙋‍♂️ 🙋‍♀️ 🧏 🧏‍♂️ 🧏‍♀️ 🙇 🙇‍♂️ 🙇‍♀️ 🤦 🤦‍♂️ 🤦‍♀️ 🤷 🤷‍♂️ 🤷‍♀️
+      🧑‍⚕️ 👨‍⚕️ 👩‍⚕️ 🧑‍🎓 👨‍🎓 👩‍🎓 🧑‍🏫 👨‍🏫 👩‍🏫 🧑‍⚖️ 👨‍⚖️ 👩‍⚖️
+      🧑‍🌾 👨‍🌾 👩‍🌾 🧑‍🍳 👨‍🍳 👩‍🍳 🧑‍🔧 👨‍🔧 👩‍🔧 🧑‍🏭 👨‍🏭 👩‍🏭
+      🧑‍💼 👨‍💼 👩‍💼 🧑‍🔬 👨‍🔬 👩‍🔬 🧑‍💻 👨‍💻 👩‍💻 🧑‍🎤 👨‍🎤 👩‍🎤
+      🧑‍🎨 👨‍🎨 👩‍🎨 🧑‍✈️ 👨‍✈️ 👩‍✈️ 🧑‍🚀 👨‍🚀 👩‍🚀 🧑‍🚒 👨‍🚒 👩‍🚒
+      👮 👮‍♂️ 👮‍♀️ 🕵️ 🕵️‍♂️ 🕵️‍♀️ 💂 💂‍♂️ 💂‍♀️ 🥷 👷 👷‍♂️ 👷‍♀️
+      🫅 🤴 👸 👳 👳‍♂️ 👳‍♀️ 👲 🧕 🤵 🤵‍♂️ 🤵‍♀️ 👰 👰‍♂️ 👰‍♀️ 🤰 🫃
+      🫄 🤱 👩‍🍼 👨‍🍼 🧑‍🍼 👼 🎅 🤶 🧑‍🎄 🦸 🦸‍♂️ 🦸‍♀️ 🦹 🦹‍♂️ 🦹‍♀️
+      🧙 🧙‍♂️ 🧙‍♀️ 🧚 🧚‍♂️ 🧚‍♀️ 🧛 🧛‍♂️ 🧛‍♀️ 🧜 🧜‍♂️ 🧜‍♀️ 🧝 🧝‍♂️
+      🧝‍♀️ 🧞 🧞‍♂️ 🧞‍♀️ 🧟 🧟‍♂️ 🧟‍♀️ 🧌 💆 💆‍♂️ 💆‍♀️ 💇 💇‍♂️ 💇‍♀️
+      🚶 🚶‍♂️ 🚶‍♀️ 🧍 🧍‍♂️ 🧍‍♀️ 🧎 🧎‍♂️ 🧎‍♀️ 🧑‍🦯 👨‍🦯 👩‍🦯 🧑‍🦼
+      👨‍🦼 👩‍🦼 🧑‍🦽 👨‍🦽 👩‍🦽 🏃 🏃‍♂️ 🏃‍♀️ 💃 🕺 🕴️ 👯 👯‍♂️ 👯‍♀️
+      🧖 🧖‍♂️ 🧖‍♀️ 🧗 🧗‍♂️ 🧗‍♀️ 🤺 🏇 ⛷️ 🏂 🏌️ 🏌️‍♂️ 🏌️‍♀️ 🏄 🏄‍♂️
+      🏄‍♀️ 🚣 🚣‍♂️ 🚣‍♀️ 🏊 🏊‍♂️ 🏊‍♀️ ⛹️ ⛹️‍♂️ ⛹️‍♀️ 🏋️ 🏋️‍♂️ 🏋️‍♀️
+      🚴 🚴‍♂️ 🚴‍♀️ 🚵 🚵‍♂️ 🚵‍♀️ 🤸 🤸‍♂️ 🤸‍♀️ 🤼 🤼‍♂️ 🤼‍♀️ 🤽 🤽‍♂️
+      🤽‍♀️ 🤾 🤾‍♂️ 🤾‍♀️ 🤹 🤹‍♂️ 🤹‍♀️ 🧘 🧘‍♂️ 🧘‍♀️ 🛀 🛌 🧑‍🤝‍🧑 👭
+      👫 👬 💏 👩‍❤️‍💋‍👨 👨‍❤️‍💋‍👨 👩‍❤️‍💋‍👩 💑 👩‍❤️‍👨 👨‍❤️‍👨 👩‍❤️‍👩 👪
+      👨‍👩‍👦 👨‍👩‍👧 👨‍👩‍👧‍👦 👨‍👩‍👦‍👦 👨‍👩‍👧‍👧 👨‍👨‍👦 👨‍👨‍👧 👨‍👨‍👧‍👦
+      👨‍👨‍👦‍👦 👨‍👨‍👧‍👧 👩‍👩‍👦 👩‍👩‍👧 👩‍👩‍👧‍👦 👩‍👩‍👦‍👦 👩‍👩‍👧‍👧
+      👨‍👦 👨‍👦‍👦 👨‍👧 👨‍👧‍👦 👨‍👧‍👧 👩‍👦 👩‍👦‍👦 👩‍👧 👩‍👧‍👦 👩‍👧‍👧
+      🗣️ 👤 👥 🫂 👣
+    `),
+    emojiGroup('Animals & Nature', `
+      🐵 🐒 🦍 🦧 🐶 🐕 🦮 🐕‍🦺 🐩 🐺 🦊 🦝 🐱 🐈 🐈‍⬛ 🦁 🐯 🐅 🐆
+      🐴 🫎 🫏 🐎 🦄 🦓 🦌 🦬 🐮 🐂 🐃 🐄 🐷 🐖 🐗 🐽 🐏 🐑 🐐 🐪
+      🐫 🦙 🦒 🐘 🦣 🦏 🦛 🐭 🐁 🐀 🐹 🐰 🐇 🐿️ 🦫 🦔 🦇 🐻 🐻‍❄️
+      🐨 🐼 🦥 🦦 🦨 🦘 🦡 🐾 🦃 🐔 🐓 🐣 🐤 🐥 🐦 🐧 🕊️ 🦅 🦆 🦢
+      🦉 🦤 🪶 🦩 🦚 🦜 🪽 🪿 🐦‍⬛ 🐦‍🔥 🪹 🪺 🐸 🐊 🐢 🦎 🐍 🐲 🐉 🦕 🦖
+      🐳 🐋 🐬 🦭 🐟 🐠 🐡 🦈 🐙 🐚 🪸 🪼 🐌 🦋 🐛 🐜 🐝 🪲 🐞 🦗
+      🪳 🕷️ 🕸️ 🦂 🦟 🪰 🪱 🦠 💐 🌸 💮 🪷 🏵️ 🌹 🥀 🌺 🌻 🌼 🌷 🪻
+      🌱 🪴 🌲 🌳 🌴 🌵 🌾 🌿 ☘️ 🍀 🍁 🍂 🍃 🪹 🪵 🪨 🪾 🍄 🍄‍🟫 🐚 🪸
+      🌍 🌎 🌏 🌐 🪐 🌑 🌒 🌓 🌔 🌕 🌖 🌗 🌘 🌙 🌚 🌛 🌜 ☀️ 🌝 🌞 ⭐
+      🌟 🌠 🌌 ☁️ ⛅ ⛈️ 🌤️ 🌥️ 🌦️ 🌧️ 🌨️ 🌩️ 🌪️ 🌫️ 🌬️ 🌀 🌈 🌂 ☂️
+      ☔ ⛱️ ⚡ ❄️ ☃️ ⛄ ☄️ 🔥 💧 🌊
+    `),
+    emojiGroup('Food & Drink', `
+      🍇 🍈 🍉 🍊 🍋 🍋‍🟩 🍌 🍍 🥭 🍎 🍏 🍐 🍑 🍒 🍓 🫐 🥝 🍅 🫒 🥥
+      🥑 🍆 🥔 🥕 🫜 🌽 🌶️ 🫑 🥒 🥬 🥦 🧄 🧅 🥜 🫘 🌰 🫚 🫛 🍄‍🟫 🍞 🥐
+      🥖 🫓 🥨 🥯 🥞 🧇 🧀 🍖 🍗 🥩 🥓 🍔 🍟 🍕 🌭 🥪 🌮 🌯 🫔 🥙 🧆
+      🥚 🍳 🥘 🍲 🫕 🥣 🥗 🍿 🧈 🧂 🥫 🍱 🍘 🍙 🍚 🍛 🍜 🍝 🍠 🍢 🍣
+      🍤 🍥 🥮 🍡 🥟 🥠 🥡 🦀 🦞 🦐 🦑 🦪 🍦 🍧 🍨 🍩 🍪 🎂 🍰 🧁 🥧
+      🍫 🍬 🍭 🍮 🍯 🍼 🥛 ☕ 🫖 🍵 🍶 🍾 🍷 🍸 🍹 🍺 🍻 🥂 🥃 🫗 🥤
+      🧋 🧃 🧉 🧊 🥢 🍽️ 🍴 🥄 🔪 🫙 🏺
+    `),
+    emojiGroup('Activities', `
+      🎃 🎄 🎆 🎇 🧨 ✨ 🎈 🎉 🎊 🎋 🎍 🎎 🎏 🎐 🎑 🧧 🎀 🎁 🎗️ 🎟️ 🎫
+      🎖️ 🏆 🏅 🥇 🥈 🥉 ⚽ ⚾ 🥎 🏀 🏐 🏈 🏉 🎾 🥏 🎳 🏏 🏑 🏒 🥍
+      🏓 🏸 🥊 🥋 🥅 ⛳ ⛸️ 🎣 🤿 🎽 🎿 🛷 🥌 🎯 🪀 🪁 🔫 🎱 🔮 🪄
+      🎮 🕹️ 🎰 🎲 🧩 🧸 🪅 🪩 🪆 ♠️ ♥️ ♦️ ♣️ ♟️ 🃏 🀄 🎴 🎭 🖼️ 🎨
+      🧵 🪡 🧶 🪢 👓 🕶️ 🥽 🥼 🦺 👔 👕 👖 🧣 🧤 🧥 🧦 👗 👘 🥻 🩱
+      🩲 🩳 👙 👚 🪭 👛 👜 👝 🛍️ 🎒 🩴 👞 👟 🥾 🥿 👠 👡 🩰 👢 🪮
+      👑 👒 🎩 🎓 🧢 🪖 ⛑️ 📿 💄 💍 💎 🔇 🔈 🔉 🔊 📢 📣 📯 🔔 🔕
+      🎼 🎵 🎶 🎙️ 🎚️ 🎛️ 🎤 🎧 📻 🎷 🪗 🎸 🎹 🎺 🎻 🪕 🪉 🥁 🪘 🪇
+    `),
+    emojiGroup('Travel & Places', `
+      🚗 🚕 🚙 🚌 🚎 🏎️ 🚓 🚑 🚒 🚐 🛻 🚚 🚛 🚜 🏍️ 🛵 🦽 🦼 🛺 🚲
+      🛴 🛹 🛼 🚏 🛣️ 🛤️ 🛢️ ⛽ 🛞 🚨 🚥 🚦 🛑 🚧 ⚓ 🛟 ⛵ 🛶 🚤 🛳️
+      ⛴️ 🛥️ 🚢 ✈️ 🛩️ 🛫 🛬 🪂 💺 🚁 🚟 🚠 🚡 🛰️ 🚀 🛸 🛎️ 🧳 ⌛
+      ⏳ ⌚ ⏰ ⏱️ ⏲️ 🕰️ 🕛 🕧 🕐 🕜 🕑 🕝 🕒 🕞 🕓 🕟 🕔 🕠 🕕
+      🕡 🕖 🕢 🕗 🕣 🕘 🕤 🕙 🕥 🕚 🕦 🌑 🌒 🌓 🌔 🌕 🌖 🌗 🌘 🌙
+      🌚 🌛 🌜 🌡️ ☀️ 🌝 🌞 🪐 ⭐ 🌟 🌠 🌌 ☁️ ⛅ ⛈️ 🌤️ 🌥️ 🌦️ 🌧️ 🌨️
+      🌩️ 🌪️ 🌫️ 🌬️ 🌀 🌈 🌂 ☂️ ☔ ⛱️ ⚡ ❄️ ☃️ ⛄ ☄️ 🔥 💧 🌊
+      🗺️ 🗾 🧭 🏔️ ⛰️ 🌋 🗻 🏕️ 🏖️ 🏜️ 🏝️ 🏞️ 🏟️ 🏛️ 🏗️ 🧱 🪨 🪵
+      🛖 🏘️ 🏚️ 🏠 🏡 🏢 🏣 🏤 🏥 🏦 🏨 🏩 🏪 🏫 🏬 🏭 🏯 🏰
+      💒 🗼 🗽 ⛪ 🕌 🛕 🕍 ⛩️ 🕋 ⛲ ⛺ 🌁 🌃 🏙️ 🌄 🌅 🌆 🌇 🌉
+      ♨️ 🎠 🛝 🎡 🎢 💈 🎪 🚂 🚃 🚄 🚅 🚆 🚇 🚈 🚉 🚊 🚝 🚞 🚋
+    `),
+    emojiGroup('Objects', `
+      📱 📲 ☎️ 📞 📟 📠 🔋 🪫 🔌 💻 🖥️ 🖨️ ⌨️ 🖱️ 🖲️ 💽 💾 💿 📀
+      🧮 🎥 🎞️ 📽️ 🎬 📺 📷 📸 📹 📼 🔍 🔎 🕯️ 💡 🔦 🏮 🪔 📔 📕 📖
+      📗 📘 📙 📚 📓 📒 📃 📜 📄 📰 🗞️ 📑 🔖 🏷️ 💰 🪙 💴 💵 💶
+      💷 💸 💳 🧾 💹 ✉️ 📧 📨 📩 📤 📥 📦 📫 📪 📬 📭 📮 🗳️ ✏️
+      ✒️ 🖋️ 🖊️ 🖌️ 🖍️ 📝 💼 📁 📂 🗂️ 📅 📆 🗒️ 🗓️ 📇 📈 📉 📊
+      📋 📌 📍 📎 🖇️ 📏 📐 ✂️ 🗃️ 🗄️ 🗑️ 🔒 🔓 🔏 🔐 🔑 🗝️ 🔨
+      🪓 ⛏️ ⚒️ 🛠️ 🗡️ ⚔️ 💣 🪃 🏹 🛡️ 🪚 🪏 🔧 🪛 🔩 ⚙️ 🗜️ ⚖️ 🦯
+      🔗 ⛓️‍💥 ⛓️ 🪝 🧰 🧲 🪜 ⚗️ 🧪 🧫 🧬 🔬 🔭 📡 🫆 💉 🩸 💊 🩹
+      🩼 🩺 🩻 🚪 🛗 🪞 🪟 🛏️ 🛋️ 🪑 🚽 🪠 🚿 🛁 🪤 🪒 🧴 🧷
+      🧹 🧺 🧻 🪣 🧼 🫧 🪥 🧽 🧯 🛒 🚬 ⚰️ 🪦 ⚱️ 🗿 🪧 🪪
+    `),
+    emojiGroup('Symbols', `
+      🏧 🚮 🚰 ♿ 🚹 🚺 🚻 🚼 🚾 🛂 🛃 🛄 🛅 ⚠️ 🚸 ⛔ 🚫 🚳 🚭 🚯
+      🚱 🚷 📵 🔞 ☢️ ☣️ ⬆️ ↗️ ➡️ ↘️ ⬇️ ↙️ ⬅️ ↖️ ↕️ ↔️ ↩️ ↪️
+      ⤴️ ⤵️ 🔃 🔄 🔙 🔚 🔛 🔜 🔝 🛐 ⚛️ 🕉️ ✡️ ☸️ ☯️ ✝️ ☦️ ☪️
+      ☮️ 🕎 🔯 🪯 ♈ ♉ ♊ ♋ ♌ ♍ ♎ ♏ ♐ ♑ ♒ ♓ ⛎ 🔀 🔁 🔂
+      ▶️ ⏩ ⏭️ ⏯️ ◀️ ⏪ ⏮️ 🔼 ⏫ 🔽 ⏬ ⏸️ ⏹️ ⏺️ ⏏️ 🎦 🔅 🔆
+      📶 🛜 📳 📴 ♀️ ♂️ ⚧️ ✖️ ➕ ➖ ➗ 🟰 ♾️ ‼️ ⁉️ ❓ ❔ ❕ ❗
+      〰️ 💱 💲 ⚕️ ♻️ ⚜️ 🔱 📛 🔰 ⭕ ✅ ☑️ ✔️ ❌ ❎ ➰ ➿ 〽️ ✳️
+      ✴️ ❇️ 🫟 ©️ ®️ ™️ #️⃣ *️⃣ 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 8️⃣ 9️⃣
+      🔟 🔠 🔡 🔢 🔣 🔤 🅰️ 🆎 🅱️ 🆑 🆒 🆓 ℹ️ 🆔 Ⓜ️ 🆕 🆖 🅾️
+      🆗 🅿️ 🆘 🆙 🆚 🈁 🈂️ 🈷️ 🈶 🈯 🉐 🈹 🈚 🈲 🉑 🈸 🈴 🈳
+      ㊗️ ㊙️ 🈺 🈵 🔴 🟠 🟡 🟢 🔵 🟣 🟤 ⚫ ⚪ 🟥 🟧 🟨 🟩 🟦
+      🟪 🟫 ⬛ ⬜ ◼️ ◻️ ◾ ◽ ▪️ ▫️ 🔶 🔷 🔸 🔹 🔺 🔻 💠 🔘 🔳 🔲
+    `),
+    emojiGroup('Flags', `
+      🏁 🚩 🎌 🏴 🏳️ 🏳️‍🌈 🏳️‍⚧️ 🏴‍☠️ 🇦🇨 🇦🇩 🇦🇪 🇦🇫 🇦🇬 🇦🇮 🇦🇱 🇦🇲 🇦🇴
+      🇦🇶 🇦🇷 🇦🇸 🇦🇹 🇦🇺 🇦🇼 🇦🇽 🇦🇿 🇧🇦 🇧🇧 🇧🇩 🇧🇪 🇧🇫 🇧🇬 🇧🇭 🇧🇮
+      🇧🇯 🇧🇱 🇧🇲 🇧🇳 🇧🇴 🇧🇶 🇧🇷 🇧🇸 🇧🇹 🇧🇻 🇧🇼 🇧🇾 🇧🇿 🇨🇦 🇨🇨 🇨🇩
+      🇨🇫 🇨🇬 🇨🇭 🇨🇮 🇨🇰 🇨🇱 🇨🇲 🇨🇳 🇨🇴 🇨🇵 🇨🇶 🇨🇷 🇨🇺 🇨🇻 🇨🇼 🇨🇽 🇨🇾
+      🇨🇿 🇩🇪 🇩🇬 🇩🇯 🇩🇰 🇩🇲 🇩🇴 🇩🇿 🇪🇦 🇪🇨 🇪🇪 🇪🇬 🇪🇭 🇪🇷 🇪🇸 🇪🇹
+      🇪🇺 🇫🇮 🇫🇯 🇫🇰 🇫🇲 🇫🇴 🇫🇷 🇬🇦 🇬🇧 🇬🇩 🇬🇪 🇬🇫 🇬🇬 🇬🇭 🇬🇮 🇬🇱
+      🇬🇲 🇬🇳 🇬🇵 🇬🇶 🇬🇷 🇬🇸 🇬🇹 🇬🇺 🇬🇼 🇬🇾 🇭🇰 🇭🇲 🇭🇳 🇭🇷 🇭🇹 🇭🇺
+      🇮🇨 🇮🇩 🇮🇪 🇮🇱 🇮🇲 🇮🇳 🇮🇴 🇮🇶 🇮🇷 🇮🇸 🇮🇹 🇯🇪 🇯🇲 🇯🇴 🇯🇵 🇰🇪
+      🇰🇬 🇰🇭 🇰🇮 🇰🇲 🇰🇳 🇰🇵 🇰🇷 🇰🇼 🇰🇾 🇰🇿 🇱🇦 🇱🇧 🇱🇨 🇱🇮 🇱🇰 🇱🇷
+      🇱🇸 🇱🇹 🇱🇺 🇱🇻 🇱🇾 🇲🇦 🇲🇨 🇲🇩 🇲🇪 🇲🇫 🇲🇬 🇲🇭 🇲🇰 🇲🇱 🇲🇲 🇲🇳
+      🇲🇴 🇲🇵 🇲🇶 🇲🇷 🇲🇸 🇲🇹 🇲🇺 🇲🇻 🇲🇼 🇲🇽 🇲🇾 🇲🇿 🇳🇦 🇳🇨 🇳🇪 🇳🇫
+      🇳🇬 🇳🇮 🇳🇱 🇳🇴 🇳🇵 🇳🇷 🇳🇺 🇳🇿 🇴🇲 🇵🇦 🇵🇪 🇵🇫 🇵🇬 🇵🇭 🇵🇰 🇵🇱
+      🇵🇲 🇵🇳 🇵🇷 🇵🇸 🇵🇹 🇵🇼 🇵🇾 🇶🇦 🇷🇪 🇷🇴 🇷🇸 🇷🇺 🇷🇼 🇸🇦 🇸🇧 🇸🇨
+      🇸🇩 🇸🇪 🇸🇬 🇸🇭 🇸🇮 🇸🇯 🇸🇰 🇸🇱 🇸🇲 🇸🇳 🇸🇴 🇸🇷 🇸🇸 🇸🇹 🇸🇻 🇸🇽
+      🇸🇾 🇸🇿 🇹🇦 🇹🇨 🇹🇩 🇹🇫 🇹🇬 🇹🇭 🇹🇯 🇹🇰 🇹🇱 🇹🇲 🇹🇳 🇹🇴 🇹🇷 🇹🇹
+      🇹🇻 🇹🇼 🇹🇿 🇺🇦 🇺🇬 🇺🇲 🇺🇳 🇺🇸 🇺🇾 🇺🇿 🇻🇦 🇻🇨 🇻🇪 🇻🇬 🇻🇮 🇻🇳
+      🇻🇺 🇼🇫 🇼🇸 🇽🇰 🇾🇪 🇾🇹 🇿🇦 🇿🇲 🇿🇼
+    `),
+  ]);
+
+  const TITLE_EMOJI_POOL = [
     // UI / status / markers
     '⭐','✨','⚡','🔥','💬','✅','❗','⚠️','🔁','🔒','🔓','📌','📍','🧭','🗺️','🧩','🧱','📦','📤','💾','🔋',
 
@@ -134,6 +448,51 @@
     // Flags (yours)
     '🇵🇸','🇩🇪','🇦🇹','🇪🇺','🇬🇧','🇺🇸','🇨🇦','🇨🇭','🇳🇱','🇸🇪','🇳🇴','🇫🇮','🇯🇵'
   ];
+  const EMOJI_POOL = TITLE_EMOJI_POOL;
+
+  const INTERNAL_EMOJI_GROUPS = (() => {
+    const sections = [
+      ['Signals', 21],
+      ['Library', 22],
+      ['Build', 24],
+      ['Orbit', 10],
+      ['Time', 8],
+      ['Wellness', 13],
+      ['Food', 10],
+      ['Messages', 11],
+      ['Creative', 12],
+      ['Faces', 19],
+      ['Roles', 16],
+      ['Civic', 5],
+      ['Direction', 12],
+      ['Flags', 13],
+    ];
+    let offset = 0;
+    const groups = sections.map(([label, count]) => {
+        const emojis = TITLE_EMOJI_POOL.slice(offset, offset + count);
+        offset += count;
+        return { label, emojis };
+      }).filter(group => group.emojis.length);
+    if (offset < TITLE_EMOJI_POOL.length) groups.push({ label: 'More', emojis: TITLE_EMOJI_POOL.slice(offset) });
+    return groups;
+  })();
+  const EMOJI_PICKER_GROUPS = INTERNAL_EMOJI_GROUPS;
+  const PICKER_EMOJI_POOL = Object.freeze(Array.from(new Set(
+    OS_EMOJI_GROUPS.flatMap(group => group.emojis || []).concat(TITLE_EMOJI_POOL)
+  )));
+
+  const EMOJI_PICKER_SEARCH_SECTIONS = Object.freeze([
+    Object.freeze({ label: 'Smileys & Emotion', keys: ['smile', 'face', 'emotion', 'heart', 'love', 'happy', 'sad'], emojis: OS_EMOJI_GROUPS[0].emojis }),
+    Object.freeze({ label: 'People & Body', keys: ['people', 'person', 'body', 'hand', 'gesture', 'role'], emojis: OS_EMOJI_GROUPS[1].emojis }),
+    Object.freeze({ label: 'Animals & Nature', keys: ['animal', 'nature', 'plant', 'weather', 'earth'], emojis: OS_EMOJI_GROUPS[2].emojis }),
+    Object.freeze({ label: 'Food & Drink', keys: ['food', 'drink', 'coffee', 'meal', 'fruit'], emojis: OS_EMOJI_GROUPS[3].emojis }),
+    Object.freeze({ label: 'Activities', keys: ['activity', 'sport', 'game', 'music', 'art', 'party'], emojis: OS_EMOJI_GROUPS[4].emojis }),
+    Object.freeze({ label: 'Travel & Places', keys: ['travel', 'place', 'space', 'time', 'car', 'plane', 'city'], emojis: OS_EMOJI_GROUPS[5].emojis }),
+    Object.freeze({ label: 'Objects', keys: ['object', 'work', 'tool', 'code', 'book', 'health', 'medical', 'money'], emojis: OS_EMOJI_GROUPS[6].emojis }),
+    Object.freeze({ label: 'Symbols', keys: ['symbol', 'arrow', 'shape', 'warning', 'status'], emojis: OS_EMOJI_GROUPS[7].emojis }),
+    Object.freeze({ label: 'Flags', keys: ['flag', 'country', 'nation'], emojis: OS_EMOJI_GROUPS[8].emojis }),
+    Object.freeze({ label: 'Legal', keys: ['law', 'legal', 'court', 'civic'], emojis: emojiList('⚖️ 🏛️ 📜 🧾 🗂️ 📝 ❗ ⚠️') }),
+  ]);
 
   const DEFAULT_EMOJI = '💬';
 
@@ -268,6 +627,63 @@
     return `${emoji} ${p}`;
   }
 
+  function finishAutoEmoji(chatId, emoji, source, reason, priority, confidence){
+    delete runtimePendingEmoji[chatId];
+    publishEmoji(chatId, emoji, source || 'auto-native-rename', priority == null ? 90 : priority, confidence == null ? 0.92 : confidence, {
+      force: true,
+      emit: true,
+      reason: reason || 'auto-emoji-native-rename',
+    });
+    setDone(chatId);
+    setTimeout(() => {
+      ensureBadgeForChat(chatId);
+      maybeAutoEmojiRename();
+    }, 80);
+  }
+
+  function applyNativeAutoEmoji(chatId, plainTitle, emoji, options = {}){
+    if (!chatId || !plainTitle || !emoji) return false;
+    if (runtimeNativeRenamePending[chatId]) return true;
+    if ((runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
+
+    const source = options.source || 'auto-native-rename';
+    const reason = options.reason || 'auto-emoji-native-rename';
+    const priority = options.priority == null ? 90 : options.priority;
+    const confidence = options.confidence == null ? 0.92 : options.confidence;
+    const api = chatTitleApi();
+    const nextTitle = formatTitleWithEmoji(plainTitle, emoji);
+    if (typeof api?.renameNative !== 'function') {
+      try { console.warn('[H2O.AutoEmojiTitle] native rename API missing'); } catch {}
+      return false;
+    }
+
+    runtimeNativeRenamePending[chatId] = 1;
+    Promise.resolve(api.renameNative(nextTitle, {
+      chatId,
+      userInitiated: true,
+      source: reason,
+    })).then((result) => {
+      if (result?.ok) {
+        finishAutoEmoji(chatId, emoji, source, reason, priority, confidence);
+        return;
+      }
+      runtimeNativeRenameAttempts[chatId] = (runtimeNativeRenameAttempts[chatId] || 0) + 1;
+      if (runtimeNativeRenameAttempts[chatId] >= MAX_NATIVE_RENAME_ATTEMPTS) {
+        try { console.warn('[H2O.AutoEmojiTitle] native rename did not submit', result?.status || 'unknown'); } catch {}
+      }
+    }).catch((err) => {
+      runtimeNativeRenameAttempts[chatId] = (runtimeNativeRenameAttempts[chatId] || 0) + 1;
+      try { console.warn('[H2O.AutoEmojiTitle] native rename failed', err); } catch {}
+    }).finally(() => {
+      delete runtimeNativeRenamePending[chatId];
+      setTimeout(() => {
+        ensureBadgeForChat(chatId);
+        maybeAutoEmojiRename();
+      }, 120);
+    });
+    return true;
+  }
+
   /**************************************************************
    * Chat-only guard (avoid folders/projects)
    **************************************************************/
@@ -289,6 +705,11 @@
       `aside a[href*="/c/${chatId}"], nav a[href*="/c/${chatId}"],` +
       `aside button[href*="/c/${chatId}"], nav button[href*="/c/${chatId}"]`;
     return document.querySelector(selector);
+  }
+
+  function findSidebarChatAnchors(){
+    return Array.from(document.querySelectorAll('aside a[href*="/c/"], nav a[href*="/c/"]'))
+      .filter(a => extractChatIdFromHref(a.getAttribute('href') || ''));
   }
 
   function findLeafTitleNode(entry){
@@ -360,62 +781,13 @@ function findProjectTitleNode(anchor){
 
 
 
-  /**************************************************************
-   * Native rename (persistent) + instant notify (for 9c)
-   **************************************************************/
-  function triggerNativeSidebarRename(chatId, newTitle){
-    const entry = findSidebarEntry(chatId);
-    if (!entry) return false;
-
-    entry.dispatchEvent(new MouseEvent('dblclick', { bubbles:true, cancelable:true }));
-
-    setTimeout(() => {
-      const input = entry.querySelector('input, textarea, [contenteditable="true"]');
-      if (!input) return;
-
-      const title = String(newTitle);
-
-      if (input.getAttribute && input.getAttribute('contenteditable') === 'true'){
-        input.focus();
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, title);
-      } else {
-        input.focus();
-        if (typeof input.setRangeText === 'function') input.setRangeText(title, 0, input.value.length, 'end');
-        else input.value = title;
-        input.dispatchEvent(new InputEvent('input', { bubbles:true }));
-      }
-
-      input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true }));
-      input.dispatchEvent(new KeyboardEvent('keyup',   { key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true }));
-      input.blur();
-
-      // Notify 9c NOW
-      window.dispatchEvent(new CustomEvent(EV_AE_CHANGED_LEG, {
-        detail: { chatId, newTitle: title }
-      }));
-      window.dispatchEvent(new CustomEvent(EV_AE_CHANGED_CANON, {
-        detail: { chatId, newTitle: title }
-      }));
-
-      // Also refresh our badge/text immediately (no refresh needed)
-      setTimeout(() => {
-        ensureBadgeForChat(chatId);
-      }, 80);
-
-    }, 95);
-
-    return true;
-  }
-
-
 /**************************************************************
  * UI: badge + picker (LIVE, no double emoji)
  * ✅ Sidebar (aside/nav): ABSOLUTE badge + reserved lane
  * ✅ Project list (main/section): INLINE badge (part of title flow)
  * ✅ NO global .ho-emoji-badge positioning (prevents “float above title” bug)
  **************************************************************/
-const STYLE_ID = 'ho-autoemoji-style-v13';
+const STYLE_ID = 'ho-autoemoji-style-v14';
 const CSS = `
 /* ============================================================
    0) BASE (safe defaults)
@@ -425,6 +797,61 @@ const CSS = `
 .ho-emoji-lane{
   user-select: none !important;
   cursor: pointer !important;
+}
+
+.ho-emoji-badge{
+  box-sizing: border-box !important;
+  width: 23px !important;
+  min-width: 23px !important;
+  height: 23px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: rgba(245,248,255,.96) !important;
+  line-height: 1 !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.32)) !important;
+  transition: transform .12s ease, opacity .12s ease, filter .12s ease !important;
+}
+
+.ho-emoji-badge.ho-emoji-empty{
+  --ho-empty-badge-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M8 15H6l-3 3V7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v4'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M10 19h5l4 2v-7a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3Z'/%3E%3C/svg%3E") !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: drop-shadow(0 0 8px rgba(132,198,255,.32)) !important;
+}
+
+.ho-emoji-badge.ho-emoji-empty::before{
+  content: "" !important;
+  display: block !important;
+  width: 15px !important;
+  height: 15px !important;
+  background: rgba(218,235,255,.96) !important;
+  -webkit-mask: var(--ho-empty-badge-mask) center / contain no-repeat !important;
+  mask: var(--ho-empty-badge-mask) center / contain no-repeat !important;
+  line-height: 1 !important;
+  filter: drop-shadow(0 0 8px rgba(132,198,255,.72)) !important;
+}
+
+.ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-circle"]{
+  --ho-empty-badge-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5Z'/%3E%3C/svg%3E") !important;
+}
+
+.ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-square"]{
+  --ho-empty-badge-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z'/%3E%3C/svg%3E") !important;
+}
+
+.ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="chat-bubble-stack"]{
+  --ho-empty-badge-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M8 15H6l-3 3V7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v4'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M10 19h5l4 2v-7a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3Z'/%3E%3C/svg%3E") !important;
+}
+
+.ho-emoji-badge:hover{
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 10px rgba(145,190,255,.36)) !important;
 }
 
 /* ============================================================
@@ -438,19 +865,25 @@ nav  .ho-emoji-row{
   padding-left: 30px !important; /* reserved emoji lane */
 }
 
+aside a.ho-emoji-row,
+nav  a.ho-emoji-row,
+aside a.ho-has-colorbtn-side.ho-emoji-row,
+nav  a.ho-has-colorbtn-side.ho-emoji-row{
+  padding-left: 40px !important;
+}
+
 /* Badge lives in the reserved lane (absolute) */
 aside .ho-emoji-row > .ho-emoji-badge,
 nav  .ho-emoji-row > .ho-emoji-badge{
   position: absolute !important;
-  left: 8px !important;
+  left: 12px !important;
   top: 50% !important;
   transform: translateY(-50%) !important;
-  width: 20px !important;
-  height: 20px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  z-index: 5 !important;
+  pointer-events: auto !important;
+  z-index: 25 !important;
 }
 
 aside a.ho-emoji-row > .ho-emoji-badge:hover,
@@ -466,8 +899,8 @@ nav  a.ho-emoji-row > .ho-emoji-lane{
   left: 0 !important;
   top: 0 !important;
   bottom: 0 !important;
-  width: 30px !important;
-  z-index: 4 !important;
+  width: 40px !important;
+  z-index: 24 !important;
 }
 
 /* ============================================================
@@ -490,8 +923,8 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
   align-items: center !important;
   justify-content: center !important;
 
-  width: auto !important;
-  height: auto !important;
+  width: 23px !important;
+  height: 23px !important;
   margin: 0 6px 0 0 !important; /* emoji spacing */
   padding: 0 !important;
 
@@ -523,6 +956,7 @@ section a.ho-emoji-proj-row .ho-emoji-titleline{
   align-items: center !important;
   gap: 6px !important;
   min-width: 0 !important;
+  max-width: 100% !important;
 }
 
 /* Project badge MUST be inline (never absolute) */
@@ -535,58 +969,479 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
   justify-content: center !important;
   margin: 0 !important;
   padding: 0 !important;
+  flex: 0 0 23px !important;
+  min-width: 23px !important;
+  width: 23px !important;
+  height: 23px !important;
+  line-height: 1 !important;
+  pointer-events: auto !important;
   z-index: 5 !important;
 }
 
 /* ============================================================
-   3) PICKER UI (unchanged)
+   3) PICKER UI - premium compact command surface
    ============================================================ */
 
+.ho-emoji-picker,
+.ho-emoji-picker *{
+  box-sizing: border-box !important;
+}
+
 .ho-emoji-picker{
+  --ho-picker-w: min(398px, calc(100vw - 24px));
+  --ho-picker-max-h: min(462px, calc(100vh - 24px));
+  --ho-sand-text: var(--h2o-glass-text, #f4f6fb);
+  --ho-sand-text-mute: var(--h2o-glass-text-mute, rgba(244,246,251,.70));
+  --ho-sand-bg-a: var(--h2o-glass-bg-a, rgba(255,255,255,0.045));
+  --ho-sand-bg-b: var(--h2o-glass-bg-b, rgba(255,255,255,0.030));
+  --ho-sand-panel-bg: var(--h2o-panel-bg, linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.030)));
+  --ho-sand-panel-border: var(--h2o-panel-border, rgba(255,255,255,.12));
+  --ho-sand-panel-shadow: var(--h2o-panel-shadow, 0 26px 80px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.10), inset 0 0 0 1px rgba(0,0,0,.25));
+  --ho-sand-panel-backdrop: var(--h2o-panel-backdrop, blur(14px) saturate(1.05) contrast(1.08) brightness(1.03));
+  --ho-sand-btn-bg: var(--h2o-btn-bg, rgba(255,255,255,.06));
+  --ho-sand-btn-bg-hover: var(--h2o-btn-bg-hover, rgba(255,255,255,.10));
+  --ho-sand-btn-bg-active: var(--h2o-btn-bg-active, rgba(255,255,255,.14));
+  --ho-sand-btn-border: var(--h2o-btn-border, rgba(255,255,255,.10));
+  --ho-sand-sel-bg: var(--h2o-sel-bg, rgba(147,197,253,.16));
+  --ho-sand-sel-border: var(--h2o-sel-border, rgba(147,197,253,.30));
+  --ho-sand-focus-ring: var(--h2o-focus-ring, rgba(147,197,253,.40));
+  --ho-sand-input-bg: var(--h2o-input-bg, rgba(0,0,0,.22));
+  --ho-sand-input-border: var(--h2o-input-border, rgba(255,255,255,.12));
+  --ho-sand-scroll: var(--h2o-scrollbar-thumb, rgba(255,255,255,.16));
+  --ho-sand-scroll-hover: var(--h2o-scrollbar-thumb-hover, rgba(255,255,255,.22));
   position: fixed !important;
   z-index: 999999 !important;
-  background: rgba(20,20,20,.95) !important;
-  border: 1px solid rgba(255,255,255,.12) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 12px 30px rgba(0,0,0,.45) !important;
-  padding: 10px !important;
-  width: 420px !important;
-  max-height: 520px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  width: var(--ho-picker-w) !important;
+  height: var(--ho-picker-max-h) !important;
+  max-height: var(--ho-picker-max-h) !important;
   overflow: hidden !important;
-  backdrop-filter: blur(8px) !important;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial !important;
-  color: #fff !important;
+  padding: 10px !important;
+  border: 1px solid var(--ho-sand-panel-border) !important;
+  border-radius: 18px !important;
+  background: var(--ho-sand-panel-bg) !important;
+  box-shadow: var(--ho-sand-panel-shadow) !important;
+  filter: none !important;
+  backdrop-filter: var(--ho-sand-panel-backdrop) !important;
+  -webkit-backdrop-filter: var(--ho-sand-panel-backdrop) !important;
+  color: var(--ho-sand-text) !important;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+  letter-spacing: 0 !important;
+  isolation: isolate !important;
 }
+
+.ho-emoji-picker::before{
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 0 auto 0 !important;
+  height: 1px !important;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.22), rgba(255,255,255,.10), transparent) !important;
+  pointer-events: none !important;
+  z-index: 1 !important;
+}
+
+.ho-emoji-picker-top{
+  position: relative !important;
+  z-index: 2 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  min-height: 28px !important;
+}
+
+.ho-emoji-picker-title{
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  color: var(--ho-sand-text) !important;
+  font-size: 13px !important;
+  font-weight: 680 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+}
+
+.ho-title-panel-icon{
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  border: 1px solid var(--ho-sand-btn-border) !important;
+  border-radius: 10px !important;
+  background: var(--ho-sand-btn-bg) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.08),
+    0 1px 2px rgba(0,0,0,.28) !important;
+  line-height: 1 !important;
+  color: var(--ho-sand-text) !important;
+}
+
+.ho-title-panel-icon svg{
+  width: 15px !important;
+  height: 15px !important;
+  display: block !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 1.85 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+.ho-emoji-close{
+  appearance: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: 1px solid var(--ho-sand-btn-border) !important;
+  border-radius: 10px !important;
+  background: var(--ho-sand-btn-bg) !important;
+  color: var(--ho-sand-text-mute) !important;
+  cursor: pointer !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+  transition:
+    transform .14s ease,
+    color .14s ease,
+    border-color .14s ease,
+    background .14s ease !important;
+}
+
+.ho-emoji-close:hover{
+  color: var(--ho-sand-text) !important;
+  border-color: var(--ho-sand-sel-border) !important;
+  background: var(--ho-sand-btn-bg-hover) !important;
+}
+
+.ho-emoji-close:active{
+  transform: scale(.96) !important;
+}
+
+.ho-emoji-search{
+  position: relative !important;
+  z-index: 2 !important;
+  display: block !important;
+  border: 1px solid var(--ho-sand-input-border) !important;
+  border-radius: 11px !important;
+  background: var(--ho-sand-input-bg) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.055),
+    0 1px 2px rgba(0,0,0,.22) !important;
+  transition:
+    border-color .16s ease,
+    box-shadow .16s ease,
+    background .16s ease !important;
+}
+
+.ho-emoji-search::before{
+  content: "" !important;
+  position: absolute !important;
+  left: 14px !important;
+  top: 50% !important;
+  width: 11px !important;
+  height: 11px !important;
+  border: 1.7px solid var(--ho-sand-text-mute) !important;
+  border-radius: 50% !important;
+  transform: translateY(-58%) !important;
+  pointer-events: none !important;
+}
+
+.ho-emoji-search::after{
+  content: "" !important;
+  position: absolute !important;
+  left: 24px !important;
+  top: 50% !important;
+  width: 7px !important;
+  height: 1.7px !important;
+  border-radius: 999px !important;
+  background: var(--ho-sand-text-mute) !important;
+  transform: translateY(4px) rotate(45deg) !important;
+  pointer-events: none !important;
+}
+
+.ho-emoji-search:focus-within{
+  border-color: var(--ho-sand-sel-border) !important;
+  background: var(--ho-sand-input-bg) !important;
+  box-shadow:
+    0 0 0 2px var(--ho-sand-focus-ring),
+    inset 0 1px 0 rgba(255,255,255,.07),
+    0 1px 2px rgba(0,0,0,.24) !important;
+}
+
 .ho-emoji-picker input{
   width: 100% !important;
-  box-sizing: border-box !important;
-  padding: 8px 10px !important;
-  border-radius: 10px !important;
-  border: 1px solid rgba(255,255,255,.15) !important;
-  background: rgba(255,255,255,.06) !important;
-  color: #fff !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 0 12px 0 37px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--ho-sand-text) !important;
   outline: none !important;
-  margin-bottom: 8px !important;
+  font: 600 13px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+  letter-spacing: 0 !important;
 }
-.ho-emoji-grid{
-  display: grid !important;
-  grid-template-columns: repeat(14, 1fr) !important;
-  gap: 6px !important;
-  overflow: auto !important;
-  max-height: 430px !important;
-  padding-right: 4px !important;
+
+.ho-emoji-picker input::placeholder{
+  color: var(--ho-sand-text-mute) !important;
+  font-weight: 560 !important;
 }
-.ho-emoji-btn{
+
+.ho-emoji-picker .ho-palette.ho-emoji-meta-palette{
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  z-index: 2 !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 6px 7px !important;
+  border: 1px solid var(--ho-sand-panel-border) !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, var(--ho-sand-bg-a), var(--ho-sand-bg-b)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.045),
+    0 1px 2px rgba(0,0,0,.18) !important;
+  opacity: 1 !important;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+  isolation: isolate !important;
+  white-space: nowrap !important;
+  pointer-events: auto !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-palette-row{
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  height: 28px !important;
-  border-radius: 9px !important;
-  cursor: pointer !important;
-  background: rgba(255,255,255,.06) !important;
+  gap: 5px !important;
 }
+
+.ho-emoji-meta-divider{
+  width: 1px !important;
+  height: 18px !important;
+  flex: 0 0 1px !important;
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,.18), transparent) !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-swatch{
+  appearance: none !important;
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+  transition:
+    transform .13s ease,
+    border-color .13s ease,
+    background .13s ease,
+    box-shadow .13s ease !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-swatch:hover{
+  transform: translateY(-1px) !important;
+  box-shadow: 0 5px 12px rgba(0,0,0,.22) !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-swatch.heat{
+  width: 25px !important;
+  height: 24px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--ho-sand-btn-border) !important;
+  background: var(--ho-sand-btn-bg) !important;
+  color: var(--ho-sand-text) !important;
+  font: 750 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-swatch.row{
+  width: 27px !important;
+  height: 11px !important;
+  border-radius: 999px !important;
+  border: 1px solid rgba(255,255,255,.24) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,.28),
+    0 1px 2px rgba(0,0,0,.25) !important;
+}
+
+.ho-emoji-picker .ho-emoji-meta-palette .ho-swatch.ho-meta-selected{
+  border-color: var(--ho-sand-sel-border) !important;
+  background: var(--ho-sand-btn-bg-active) !important;
+  box-shadow:
+    0 0 0 1px var(--ho-sand-sel-border),
+    0 10px 30px rgba(0,0,0,.35),
+    inset 0 1px 0 rgba(255,255,255,.1) !important;
+}
+
+.ho-emoji-grid{
+  position: relative !important;
+  z-index: 2 !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding: 1px 4px 5px 1px !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--ho-sand-scroll) transparent !important;
+}
+
+.ho-emoji-grid::-webkit-scrollbar{
+  width: 9px !important;
+}
+
+.ho-emoji-grid::-webkit-scrollbar-track{
+  background: transparent !important;
+}
+
+.ho-emoji-grid::-webkit-scrollbar-thumb{
+  border: 3px solid transparent !important;
+  border-radius: 999px !important;
+  background: var(--ho-sand-scroll) !important;
+  background-clip: padding-box !important;
+}
+
+.ho-emoji-section{
+  margin: 0 0 10px !important;
+}
+
+.ho-emoji-section:last-child{
+  margin-bottom: 0 !important;
+}
+
+.ho-emoji-section-title{
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 1px 2px 6px !important;
+  color: var(--ho-sand-text-mute) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+}
+
+.ho-emoji-section-title::after{
+  content: "" !important;
+  flex: 1 1 auto !important;
+  height: 1px !important;
+  background: linear-gradient(90deg, rgba(255,255,255,.14), transparent) !important;
+}
+
+.ho-emoji-section-grid{
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  column-gap: 2px !important;
+  row-gap: 4px !important;
+}
+
+.ho-emoji-btn{
+  appearance: none !important;
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  aspect-ratio: 1 / 1 !important;
+  min-height: 27px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  cursor: pointer !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: rgba(255,255,255,.96) !important;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", ui-sans-serif, system-ui !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  isolation: isolate !important;
+  transition:
+    transform .14s cubic-bezier(.2,.8,.2,1),
+    filter .14s ease !important;
+}
+
+.ho-emoji-btn::before{
+  content: "" !important;
+  position: absolute !important;
+  inset: 2px !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+  z-index: -1 !important;
+  transition:
+    opacity .14s ease,
+    background .14s ease,
+    box-shadow .14s ease,
+    transform .14s ease !important;
+}
+
 .ho-emoji-btn:hover{
-  background: rgba(255,255,255,.12) !important;
+  transform: translateY(-1px) !important;
+  filter: saturate(1.08) brightness(1.06) !important;
+}
+
+.ho-emoji-btn:hover::before{
+  opacity: 1 !important;
+  background: rgba(255,255,255,.075) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08) !important;
+}
+
+.ho-emoji-btn:active{
+  transform: translateY(0) scale(.97) !important;
+}
+
+.ho-emoji-btn:focus-visible{
+  outline: none !important;
+}
+
+.ho-emoji-btn:focus-visible::before{
+  opacity: 1 !important;
+  background: rgba(147,197,253,.10) !important;
+  box-shadow: 0 0 0 2px var(--ho-sand-focus-ring) !important;
+}
+
+.ho-emoji-btn.ho-emoji-selected{
+  filter: brightness(1.06) saturate(1.1) !important;
+}
+
+.ho-emoji-btn.ho-emoji-selected::before{
+  opacity: 1 !important;
+  background: var(--ho-sand-sel-bg) !important;
+  box-shadow:
+    0 0 0 1px var(--ho-sand-sel-border),
+    0 6px 18px rgba(0,0,0,.20),
+    inset 0 1px 0 rgba(255,255,255,.12) !important;
+}
+
+@media (max-width: 460px){
+  .ho-emoji-section-grid{
+    grid-template-columns: repeat(10, minmax(0, 1fr)) !important;
+  }
+
+  .ho-emoji-btn{
+    min-height: 27px !important;
+    font-size: 17px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .ho-emoji-picker *,
+  .ho-emoji-picker *::before,
+  .ho-emoji-picker *::after{
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
 }
 
 
@@ -612,92 +1467,503 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     if (pickerEl?.parentNode) pickerEl.parentNode.removeChild(pickerEl);
     pickerEl = null;
     document.removeEventListener('mousedown', onOutside, true);
+    document.removeEventListener('pointerdown', onOutside, true);
   }
 
   function onOutside(e){
+    if (e.target?.closest?.('.ho-emoji-badge, .ho-emoji-lane')) return;
     if (pickerEl && !pickerEl.contains(e.target)) closePicker();
   }
 
-  function openPicker({x,y, chatId, plainTitle, badgeEl}){
+  function getInterfaceApi(){
+    return window.H2O?.interface || null;
+  }
+
+  function findChatAnchorById(chatId, sourceEl){
+    const fromSource = sourceEl?.closest?.('a[href*="/c/"], a[href*="/chat/"]');
+    if (fromSource && extractChatIdFromHref(fromSource.getAttribute('href') || '') === chatId) return fromSource;
+    const direct = findSidebarEntry(chatId);
+    if (direct) return direct;
+    return Array.from(document.querySelectorAll('a[href*="/c/"], a[href*="/chat/"]'))
+      .find(a => extractChatIdFromHref(a.getAttribute('href') || '') === chatId) || null;
+  }
+
+  function findColorButtonById(chatId, sourceEl){
+    const fromSource = sourceEl?.closest?.('.ho-colorbtn');
+    if (fromSource?.dataset?.chatid === chatId) return fromSource;
+    return document.querySelector(`.ho-colorbtn[data-chatid="${CSS.escape(String(chatId || ''))}"]`);
+  }
+
+  function applyIntegratedRowByIndex(chatId, idx, sourceEl){
+    const api = getInterfaceApi();
+    const link = findChatAnchorById(chatId, sourceEl);
+    if (!api?.config?.COLORS || !link) return;
+
+    const rowEl = link.closest('.ho-main-row') || link;
+    api.config.COLORS.forEach((def) => {
+      const cls = `ho-row-${def.name}`;
+      rowEl.classList.remove(cls);
+      link.classList.remove(cls);
+    });
+
+    if (idx < 0 || idx >= api.config.COLORS.length) return;
+    rowEl.classList.add(`ho-row-${api.config.COLORS[idx].name}`);
+  }
+
+  function refreshIntegratedMetaPalette(palette, chatId){
+    const api = getInterfaceApi();
+    if (!palette || !api?.store) return;
+    const heat = api.store.getOverride?.(chatId) || 'auto';
+    const row = Number(api.store.getRow?.(chatId));
+
+    palette.querySelectorAll('.ho-swatch.heat').forEach(sw => {
+      sw.classList.toggle('ho-meta-selected', sw.dataset.level === heat);
+    });
+    palette.querySelectorAll('.ho-swatch.row').forEach(sw => {
+      sw.classList.toggle('ho-meta-selected', Number(sw.dataset.idx) === row);
+    });
+  }
+
+  function applyIntegratedMetaChoice(target, chatId, sourceEl, palette){
+    const api = getInterfaceApi();
+    if (!target || !api?.store || !chatId) return;
+    const mode = target.dataset.mode || '';
+    if (mode === 'heat') {
+      const level = target.dataset.level || 'auto';
+      api.store.setOverride?.(chatId, level);
+      const btn = findColorButtonById(chatId, sourceEl);
+      api.heat?.applyToBtn?.(btn, chatId);
+    } else if (mode === 'row') {
+      const idx = Number.parseInt(target.dataset.idx || '0', 10);
+      const current = Number(api.store.getRow?.(chatId));
+      const next = current === idx ? -1 : idx;
+      applyIntegratedRowByIndex(chatId, next, sourceEl);
+      api.store.setRow?.(chatId, next);
+    }
+    refreshIntegratedMetaPalette(palette, chatId);
+  }
+
+  function buildIntegratedMetaPalette(chatId, sourceEl){
+    const api = getInterfaceApi();
+    if (!chatId || !api?.store || !api?.config?.COLORS) return null;
+
+    const palette = document.createElement('div');
+    palette.className = 'ho-palette ho-emoji-meta-palette show';
+    palette.dataset.chatid = chatId;
+
+    const heatRow = document.createElement('div');
+    heatRow.className = 'ho-palette-row ho-emoji-heat-row';
+    [
+      ['auto', 'A'],
+      ['hot', 'H'],
+      ['warm', 'W'],
+      ['off', 'O'],
+    ].forEach(([level, label]) => {
+      const sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'ho-swatch heat';
+      sw.textContent = label;
+      sw.title = `Heat: ${level}`;
+      sw.setAttribute('aria-label', `Heat: ${level}`);
+      sw.dataset.mode = 'heat';
+      sw.dataset.level = level;
+      heatRow.appendChild(sw);
+    });
+
+    const divider = document.createElement('span');
+    divider.className = 'ho-emoji-meta-divider';
+    divider.setAttribute('aria-hidden', 'true');
+
+    const rowRow = document.createElement('div');
+    rowRow.className = 'ho-palette-row ho-emoji-row-tint-row';
+    api.config.COLORS.forEach((c, idx) => {
+      const sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'ho-swatch row';
+      sw.style.backgroundColor = String(c.value || '').replace(/,1\)/, ',0.5)');
+      sw.title = `Row: ${c.name}`;
+      sw.setAttribute('aria-label', `Row: ${c.name}`);
+      sw.dataset.mode = 'row';
+      sw.dataset.idx = String(idx);
+      rowRow.appendChild(sw);
+    });
+
+    palette.addEventListener('pointerdown', (ev) => {
+      if (ev.target?.closest?.('.ho-swatch')) stopEmojiEvent(ev);
+    }, true);
+    palette.addEventListener('click', (ev) => {
+      const sw = ev.target?.closest?.('.ho-swatch');
+      if (!sw) return;
+      stopEmojiEvent(ev);
+      applyIntegratedMetaChoice(sw, chatId, sourceEl, palette);
+    }, true);
+    palette.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      const sw = ev.target?.closest?.('.ho-swatch');
+      if (!sw) return;
+      stopEmojiEvent(ev);
+      applyIntegratedMetaChoice(sw, chatId, sourceEl, palette);
+    }, true);
+
+    palette.appendChild(heatRow);
+    palette.appendChild(divider);
+    palette.appendChild(rowRow);
+    refreshIntegratedMetaPalette(palette, chatId);
+    return palette;
+  }
+
+  function openPicker({x,y, chatId, plainTitle, badgeEl, sourceEl}){
     ensureStyle();
     closePicker();
 
+    const gutter = 12;
+    const pickerWidth = Math.min(398, Math.max(292, window.innerWidth - (gutter * 2)));
+    const pickerHeight = Math.min(462, Math.max(300, window.innerHeight - (gutter * 2)));
+    const left = Math.max(gutter, Math.min(x, window.innerWidth - pickerWidth - gutter));
+    const top = Math.max(gutter, Math.min(y, window.innerHeight - pickerHeight - gutter));
+    const selectedEmoji = norm(
+      (badgeEl && !badgeEl.classList.contains('ho-emoji-empty') ? badgeEl.textContent : '') ||
+      getSavedEmoji(chatId) ||
+      runtimePendingEmoji[chatId] ||
+      ''
+    );
+
     pickerEl = document.createElement('div');
     pickerEl.className = 'ho-emoji-picker';
-    pickerEl.style.left = Math.min(x, window.innerWidth - 440) + 'px';
-    pickerEl.style.top  = Math.min(y, window.innerHeight - 560) + 'px';
+    pickerEl.setAttribute('data-cgxui-owner', 'auto-title-palette');
+    pickerEl.setAttribute('data-h2o-glass', 'panel');
+    pickerEl.setAttribute('data-h2o-skin-surface', 'sand-glass');
+    pickerEl.style.setProperty('--ho-picker-w', pickerWidth + 'px');
+    pickerEl.style.setProperty('--ho-picker-max-h', pickerHeight + 'px');
+    pickerEl.style.left = left + 'px';
+    pickerEl.style.top  = top + 'px';
+
+    const topbar = document.createElement('div');
+    topbar.className = 'ho-emoji-picker-top';
+
+    const title = document.createElement('div');
+    title.className = 'ho-emoji-picker-title';
+
+    const icon = document.createElement('span');
+    icon.className = 'ho-title-panel-icon';
+    icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 7.5h8.75a3.25 3.25 0 0 1 0 6.5H9.2"/><path d="M6.5 7.5 4 5m2.5 2.5L4 10"/><path d="M17.5 16.5 20 19m-2.5-2.5L20 14"/><path d="M8 14.25h5.6"/></svg>';
+    icon.setAttribute('aria-hidden', 'true');
+
+    const titleText = document.createElement('span');
+    titleText.textContent = 'Title Palette';
+
+    title.appendChild(icon);
+    title.appendChild(titleText);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'ho-emoji-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close emoji picker');
+    close.addEventListener('pointerdown', (ev) => {
+      stopEmojiEvent(ev);
+      closePicker();
+    }, true);
+
+    topbar.appendChild(title);
+    topbar.appendChild(close);
 
     const input = document.createElement('input');
-    input.placeholder = 'Search… (law / space / code / health / food / time)';
+    input.placeholder = 'Search emoji, symbols, food, travel, flags';
+    input.setAttribute('aria-label', 'Search emoji');
+
+    const search = document.createElement('div');
+    search.className = 'ho-emoji-search';
+    search.appendChild(input);
 
     const grid = document.createElement('div');
     grid.className = 'ho-emoji-grid';
 
-    function render(list){
+    const metaPalette = buildIntegratedMetaPalette(chatId, sourceEl || badgeEl);
+
+    function getActivePickerSections(){
+      return getPickerGrouping() === 'internal' ? EMOJI_PICKER_GROUPS : OS_EMOJI_GROUPS;
+    }
+
+    function getSearchSections(q){
+      const query = String(q || '').trim().toLowerCase();
+      if (!query) return getActivePickerSections();
+
+      const sections = [];
+      EMOJI_PICKER_SEARCH_SECTIONS.forEach(section => {
+        const keys = Array.isArray(section.keys) ? section.keys : [];
+        const matches = keys.some(key => {
+          const k = String(key || '').toLowerCase();
+          return k && (query.includes(k) || k.includes(query));
+        });
+        if (matches) sections.push({ label: section.label, emojis: section.emojis });
+      });
+      if (sections.length) return sections;
+
+      getActivePickerSections().forEach(section => {
+        const label = String(section.label || '').toLowerCase();
+        if (label && (label.includes(query) || query.includes(label))) {
+          sections.push({ label: section.label, emojis: section.emojis });
+        }
+      });
+      if (sections.length) return sections;
+
+      const exact = PICKER_EMOJI_POOL.filter(e => String(e || '').includes(query));
+      if (exact.length) return [{ label: 'Exact', emojis: exact }];
+
+      const h = hashString(query);
+      const span = Math.min(180, PICKER_EMOJI_POOL.length);
+      const start = h % Math.max(1, (PICKER_EMOJI_POOL.length - span));
+      return [{ label: 'Results', emojis: PICKER_EMOJI_POOL.slice(start, start + span) }];
+    }
+
+    function selectEmoji(e, ev){
+      stopEmojiEvent(ev);
+
+      const nextPlainTitle = plainTitle || getPlainTitleForChatId(chatId, '');
+      runtimePendingEmoji[chatId] = e;
+      const submitted = applyNativeAutoEmoji(chatId, nextPlainTitle, e, {
+        source: 'user-picker-native-rename',
+        reason: 'emoji-picker-native-rename',
+        priority: 100,
+        confidence: 1,
+      });
+      if (!submitted) {
+        publishEmoji(chatId, e, 'user-picker', 100, 1, {
+          force: true,
+          emit: true,
+          userInitiated: true,
+          reason: 'emoji-picker-fallback',
+        });
+        delete runtimePendingEmoji[chatId];
+      }
+
+      // LIVE UI update immediately
+      if (badgeEl) {
+        setBadgeDisplay(badgeEl, e, badgeEl.dataset.hoEmojiCtx || '');
+        delete badgeEl.dataset.hoEmojiPending;
+      }
+
+      setTimeout(() => {
+        ensureBadgeForChat(chatId);
+        maybeAutoEmojiRename();
+      }, 80);
+
+      closePicker();
+    }
+
+    function makeEmojiButton(e){
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ho-emoji-btn';
+      if (selectedEmoji && e === selectedEmoji) b.classList.add('ho-emoji-selected');
+      b.textContent = e;
+      b.setAttribute('aria-label', `Use ${e}`);
+
+      b.addEventListener('pointerdown', (ev) => {
+        selectEmoji(e, ev);
+      }, true);
+
+      b.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        selectEmoji(e, ev);
+      }, true);
+
+      return b;
+    }
+
+    function renderSections(sections){
       grid.innerHTML = '';
-      list.forEach(e => {
-        const b = document.createElement('div');
-        b.className = 'ho-emoji-btn';
-        b.textContent = e;
+      const seen = new Set();
+      sections.forEach(section => {
+        const list = Array.from(new Set(section.emojis || []))
+          .filter(e => e && !seen.has(e));
+        if (!list.length) return;
 
-        b.addEventListener('pointerdown', (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
+        const wrap = document.createElement('section');
+        wrap.className = 'ho-emoji-section';
 
-          // Replace (never add): plainTitle is already emoji-stripped
-          const finalTitle = formatTitleWithEmoji(plainTitle, e);
+        const label = document.createElement('div');
+        label.className = 'ho-emoji-section-title';
+        label.textContent = section.label || 'Icons';
 
-          setSavedEmoji(chatId, e);
-          setDone(chatId);
+        const cells = document.createElement('div');
+        cells.className = 'ho-emoji-section-grid';
 
-          // LIVE UI update immediately
-          badgeEl.textContent = e;
+        list.forEach(e => {
+          seen.add(e);
+          cells.appendChild(makeEmojiButton(e));
+        });
 
-          triggerNativeSidebarRename(chatId, finalTitle);
-
-          closePicker();
-        }, true);
-
-        grid.appendChild(b);
+        wrap.appendChild(label);
+        wrap.appendChild(cells);
+        grid.appendChild(wrap);
       });
     }
 
-    // default render: full pool
-    render(EMOJI_POOL);
+    function renderFlat(list, label = 'Results'){
+      renderSections([{ label, emojis: Array.from(new Set(list)) }]);
+    }
+
+    // default render: OS-style categories; internal groups are available from Control Hub.
+    renderSections(getActivePickerSections());
 
     input.addEventListener('input', () => {
       const q = input.value.trim().toLowerCase();
-      if (!q) return render(EMOJI_POOL);
-
-      const quick = {
-        law:   ['⚖️','🏛️','📜','🧾','❗','⚠️'],
-        space: ['🚀','🛰️','🌍','🌌','🛸','☄️'],
-        code:  ['💻','⌨️','🧠','⚙️','🧰','🔧'],
-        health:['💊','🩺','❤️','💪','🧠','😴'],
-        food:  ['🍏','🥗','🍕','🍜','🍋','☕'],
-        time:  ['⏰','📆','🧭','✅','📌']
-      };
-
-      let list = [];
-      Object.keys(quick).forEach(k => { if (q.includes(k)) list = list.concat(quick[k]); });
-
-      if (!list.length){
-        // fallback: stable window slice
-        const h = hashString(q);
-        const span = 140;
-        const start = h % Math.max(1, (EMOJI_POOL.length - span));
-        list = EMOJI_POOL.slice(start, start + span);
-      }
-
-      render(Array.from(new Set(list)));
+      const sections = getSearchSections(q);
+      if (!sections.length) return renderFlat([]);
+      renderSections(sections);
     });
 
-    pickerEl.appendChild(input);
+    pickerEl.appendChild(topbar);
+    pickerEl.appendChild(search);
+    if (metaPalette) pickerEl.appendChild(metaPalette);
     pickerEl.appendChild(grid);
     document.body.appendChild(pickerEl);
 
     setTimeout(() => input.focus(), 0);
-    document.addEventListener('mousedown', onOutside, true);
+    setTimeout(() => document.addEventListener('pointerdown', onOutside, true), 0);
+  }
+
+  function setBadgeDisplay(badge, emoji, ctx){
+    if (!badge) return;
+    const value = norm(emoji || '');
+    badge.dataset.hoEmojiCtx = ctx || badge.dataset.hoEmojiCtx || '';
+    badge.textContent = value || EMPTY_BADGE_TEXT;
+    badge.classList.toggle('ho-emoji-empty', !value);
+    if (value) {
+      delete badge.dataset.hoEmptyIcon;
+      badge.style.removeProperty('--ho-empty-badge-mask');
+    } else {
+      const icon = getEmptyBadgeIcon();
+      const mask = getEmptyBadgeIconMask(icon);
+      badge.dataset.hoEmptyIcon = icon;
+      if (mask) badge.style.setProperty('--ho-empty-badge-mask', `url("${mask}")`);
+    }
+    badge.setAttribute('role', 'button');
+    badge.tabIndex = 0;
+    badge.title = value ? 'Chat emoji already set' : 'Add emoji to chat title';
+    badge.setAttribute('aria-label', value ? 'Chat emoji already set' : 'Add emoji to chat title');
+  }
+
+  function plainTitleFromAnchor(anchor, chatId){
+    if (!anchor) return '';
+    const inSidebar = !!anchor.closest('aside, nav') && !anchor.closest('main, section');
+    if (inSidebar){
+      const entry = findSidebarEntry(chatId) || anchor;
+      const raw = getTrueTitle(entry) || norm(anchor.textContent || '');
+      return stripEdgeEmoji(raw) || raw;
+    }
+    const leaf = findProjectTitleNode(anchor);
+    const raw = norm(leaf?.textContent || getFirstTextFromAnchor(anchor) || anchor.textContent || '');
+    return stripEdgeEmoji(raw) || raw;
+  }
+
+  function addSuggestedEmojiFromBadge(chatId, plainTitle, badge){
+    const plain = stripEdgeEmoji(norm(plainTitle || getPlainTitleForChatId(chatId, ''))) || norm(plainTitle || '');
+    const emoji = pickEmojiForTitle(plain) || DEFAULT_EMOJI;
+    runtimePendingEmoji[chatId] = emoji;
+    setBadgeDisplay(badge, emoji, badge?.dataset?.hoEmojiCtx || '');
+    badge.dataset.hoEmojiPending = '1';
+
+    const submitted = applyNativeAutoEmoji(chatId, plain || `Chat ${String(chatId || '').slice(0, 8)}`, emoji, {
+      source: 'user-badge-native-rename',
+      reason: 'emoji-badge-add-native-rename',
+      priority: 100,
+      confidence: 0.96,
+    });
+
+    if (!submitted) {
+      publishEmoji(chatId, emoji, 'user-badge', 100, 0.96, {
+        force: true,
+        emit: true,
+        userInitiated: true,
+        reason: 'emoji-badge-add-fallback',
+      });
+      delete runtimePendingEmoji[chatId];
+    }
+
+    setTimeout(() => {
+      ensureBadgeForChat(chatId);
+      maybeAutoEmojiRename();
+    }, 90);
+  }
+
+  function activateEmojiBadge(badge, ev){
+    if (!badge) return false;
+    stopEmojiEvent(ev);
+
+    const anchor = badge.closest('a[href*="/c/"]');
+    if (!anchor) return false;
+
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    if (!chatId) return false;
+
+    const plainTitle = plainTitleFromAnchor(anchor, chatId);
+    const savedEmoji = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
+    const visibleEmoji = badge.classList.contains('ho-emoji-empty') ? '' : norm(badge.textContent || '');
+
+    if (!savedEmoji && !visibleEmoji) {
+      addSuggestedEmojiFromBadge(chatId, plainTitle, badge);
+      return true;
+    }
+
+    // The unified Title Palette belongs to the chat pill. Once an emoji exists,
+    // the emoji badge only consumes the event so the chat row does not navigate.
+    return true;
+  }
+
+  function openUnifiedTitlePanel(options = {}){
+    const sourceEl = options.sourceEl || null;
+    const anchor = options.anchor ||
+      findChatAnchorById(options.chatId || extractChatIdFromHref(sourceEl?.closest?.('a[href]')?.getAttribute?.('href') || ''), sourceEl);
+    const chatId = options.chatId || extractChatIdFromHref(anchor?.getAttribute?.('href') || '');
+    if (!chatId) return false;
+
+    let badge = anchor?.querySelector?.('.ho-emoji-badge') || null;
+    if (!badge) {
+      try { ensureBadgeForChat(chatId); } catch {}
+      badge = anchor?.querySelector?.('.ho-emoji-badge') || findSidebarEntry(chatId)?.querySelector?.('.ho-emoji-badge') || null;
+    }
+    if (badge) {
+      const ctx = anchor?.closest?.('main, section') ? 'proj' : 'side';
+      setBadgeDisplay(badge, getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '', ctx);
+    }
+
+    const plainTitle = options.plainTitle ||
+      (anchor ? plainTitleFromAnchor(anchor, chatId) : getPlainTitleForChatId(chatId, ''));
+    const target = sourceEl || badge || anchor;
+    const r = target?.getBoundingClientRect?.();
+    const x = Number.isFinite(options.x) ? options.x : (r ? r.left : 24);
+    const y = Number.isFinite(options.y) ? options.y : (r ? r.bottom + 6 : 96);
+
+    openPicker({
+      x,
+      y,
+      chatId,
+      plainTitle,
+      badgeEl: badge,
+      sourceEl: target,
+    });
+    return true;
+  }
+
+  function installUnifiedTitlePanelApi(){
+    const root = (window.H2O = window.H2O || {});
+    const api = (root.AutoEmojiTitle = root.AutoEmojiTitle || {});
+    api.openPanel = openUnifiedTitlePanel;
+    api.openPicker = openUnifiedTitlePanel;
+    api.getConfig = getAutoEmojiConfig;
+    api.applySetting = applyAutoEmojiSetting;
+    api.getEmptyBadgeIcon = getEmptyBadgeIcon;
+    api.setEmptyBadgeIcon = (value) => setEmptyBadgeIcon(value, { reason: 'api-set-empty-badge-icon' });
+    api.getPickerGrouping = getPickerGrouping;
+    api.setPickerGrouping = (value) => setPickerGrouping(value, { reason: 'api-set-picker-grouping' });
+    api.rescan = () => {
+      maybeAutoEmojiRename();
+      return true;
+    };
+    window.H2O_AutoEmojiTitle_openPanel = openUnifiedTitlePanel;
   }
 
 
@@ -790,7 +2056,7 @@ function findFirstRealTextHost(anchor){
 
 
 /**************************************************************
- * 🖱️ Middle mouse (auxclick) opens picker reliably
+ * 🖱️ Emoji badge activation
  * - Works in sidebar + project list
  * - Uses capture to beat React handlers/overlays
  **************************************************************/
@@ -817,9 +2083,9 @@ function openPickerForAnchor(anchor, ev){
   if (!badge){
     badge = document.createElement('span');
     badge.className = 'ho-emoji-badge';
-    badge.textContent = getSavedEmoji(chatId) || DEFAULT_EMOJI;
     anchor.insertBefore(badge, anchor.firstChild);
   }
+  setBadgeDisplay(badge, getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '', anchor.closest('main, section') ? 'proj' : 'side');
 
   // title source: sidebar true title if possible, else first text node from this row
   const rawLocal = getFirstTextFromAnchor(anchor) || norm(anchor.textContent || '');
@@ -832,7 +2098,8 @@ function openPickerForAnchor(anchor, ev){
     y: r.bottom + 6,
     chatId,
     plainTitle,
-    badgeEl: badge
+    badgeEl: badge,
+    sourceEl: badge
   });
 
   return true;
@@ -847,38 +2114,9 @@ function openPickerForAnchor(anchor, ev){
     const badge = e.target?.closest?.('.ho-emoji-badge');
     if (!badge) return;
 
-    // Only hijack dblclicks ON the emoji
-    e.preventDefault();
-    e.stopPropagation();
-
-    const anchor = badge.closest('a[href*="/c/"]');
-    if (!anchor) return;
-
-    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
-    if (!chatId) return;
-
-    // Determine plain title at click-time (works even after React rerenders)
-    let plainTitle = '';
-    const inSidebar = !!anchor.closest('aside, nav') && !anchor.closest('main, section');
-
-    if (inSidebar){
-      const entry = findSidebarEntry(chatId);
-      const t = entry ? getTrueTitle(entry) : norm(anchor.textContent || '');
-      plainTitle = stripEdgeEmoji(t) || t;
-    } else {
-      const leaf = findProjectTitleNode(anchor);
-      const t = norm(leaf?.textContent || anchor.textContent || '');
-      plainTitle = stripEdgeEmoji(t) || t;
-    }
-
-    const r = badge.getBoundingClientRect();
-    openPicker({
-      x: r.left,
-      y: r.bottom + 6,
-      chatId,
-      plainTitle,
-      badgeEl: badge
-    });
+    // Only hijack dblclicks ON the emoji. It may create the first emoji, but it
+    // must never open the Title Palette.
+    activateEmojiBadge(badge, e);
   }, true); // ✅ capture phase beats ChatGPT handlers
 }
 
@@ -891,30 +2129,15 @@ function bindProjectEmojiClickOnce(){
     const badge = e.target?.closest?.('.ho-emoji-badge[data-ho-emoji-ctx="proj"]');
     if (!badge) return;
 
-    // Stop navigation EARLY
-    e.preventDefault();
-    e.stopPropagation();
+    // Stop navigation EARLY and run the badge action before the anchor row sees it.
+    activateEmojiBadge(badge, e);
   }, true);
 
   document.addEventListener('click', (e) => {
     const badge = e.target?.closest?.('.ho-emoji-badge[data-ho-emoji-ctx="proj"]');
     if (!badge) return;
 
-    e.preventDefault();
-    e.stopPropagation();
-
-    const anchor = badge.closest('a[href*="/c/"]');
-    if (!anchor) return;
-
-    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
-    if (!chatId) return;
-
-    const leaf = findProjectTitleNode(anchor);
-    const raw = norm(leaf?.textContent || anchor.textContent || '');
-    const plainTitle = stripEdgeEmoji(raw) || raw;
-
-    const r = badge.getBoundingClientRect();
-    openPicker({ x: r.left, y: r.bottom + 6, chatId, plainTitle, badgeEl: badge });
+    stopEmojiEvent(e);
   }, true);
 }
 
@@ -996,7 +2219,8 @@ function bindMiddleOpenOnce(){
       y: r.bottom + 6,
       chatId,
       plainTitle,
-      badgeEl
+      badgeEl,
+      sourceEl: badgeEl
     });
   }, true);
 }
@@ -1027,15 +2251,12 @@ function stripEdgeEmojiFromLeaf(leaf){
 function keepOnlyOneBadgeAny(root, preferNearEl = null){
   if (!root) return null;
 
-  let badges = Array.from(root.querySelectorAll('.ho-emoji-badge'));
-  if (!badges.length) return null;
-
-  // drop empty badges first
-  badges = badges.filter(b => (b.textContent || '').trim().length > 0);
+  const badges = Array.from(root.querySelectorAll('.ho-emoji-badge'));
   if (!badges.length) return null;
 
   // choose which to keep
-  let keep = badges[0];
+  const filledBadges = badges.filter(b => (b.textContent || '').trim().length > 0);
+  let keep = filledBadges[0] || badges[0];
 
   // If we know the title leaf (or its line), keep the badge closest to it
   if (preferNearEl){
@@ -1047,7 +2268,7 @@ function keepOnlyOneBadgeAny(root, preferNearEl = null){
       const dx = cx - tx, dy = cy - ty;
       return dx*dx + dy*dy;
     };
-    keep = badges.slice().sort((a,b) => dist2(a) - dist2(b))[0] || keep;
+    keep = (filledBadges.length ? filledBadges : badges).slice().sort((a,b) => dist2(a) - dist2(b))[0] || keep;
   }
 
   // remove all others
@@ -1091,9 +2312,8 @@ function ensureBadgeForProjectListEntry(anchor){
     setDone(chatId);
   }
 
-  const plain = stripEdgeEmoji(trueTitle) || trueTitle;
-  const saved = getSavedEmoji(chatId);
-  const badgeEmoji = existingEdge || saved || DEFAULT_EMOJI;
+  const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
+  const badgeEmoji = existingEdge || saved || '';
 
   // 4) Create/move badge so it lives INSIDE titleline, before the title leaf
   let badge = anchor.querySelector('.ho-emoji-badge');
@@ -1101,7 +2321,7 @@ function ensureBadgeForProjectListEntry(anchor){
     badge = document.createElement('span');
     badge.className = 'ho-emoji-badge';
   }
-  badge.textContent = badgeEmoji;
+  setBadgeDisplay(badge, badgeEmoji, 'proj');
 
   // Ensure badge is first in the title line
   if (badge.parentNode !== line) badge.remove();
@@ -1111,26 +2331,18 @@ function ensureBadgeForProjectListEntry(anchor){
   const cur = norm(leaf.textContent || '');
   if (getEdgeEmoji(cur)) leaf.textContent = stripEdgeEmoji(cur) || cur;
 
-  // 6) Make clicks on the badge ONLY open picker (fast + no navigation)
-  // 6) Bind ONCE (very important)
+  // 6) Bind ONCE: first click adds an emoji; later clicks are consumed.
   if (!badge.dataset.hoEmojiBound){
     badge.dataset.hoEmojiBound = '1';
 
-    const open = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      ev.stopImmediatePropagation?.();
-
-      const r = badge.getBoundingClientRect();
-      openPicker({ x: r.left, y: r.bottom + 6, chatId, plainTitle: plain, badgeEl: badge });
-    };
-
-    badge.addEventListener('pointerdown', open, true);
-    badge.addEventListener('dblclick', open, true);
+    badge.addEventListener('pointerdown', (ev) => activateEmojiBadge(badge, ev), true);
+    badge.addEventListener('dblclick', (ev) => activateEmojiBadge(badge, ev), true);
     badge.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation?.();
+      stopEmojiEvent(e);
+    }, true);
+    badge.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      activateEmojiBadge(badge, e);
     }, true);
   }
 
@@ -1172,8 +2384,8 @@ function ensureBadgeForChat(chatId){
     setDone(chatId);
   }
 
-  const saved = getSavedEmoji(chatId);
-  const badgeEmoji = existingEdge || saved || DEFAULT_EMOJI;
+  const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
+  const badgeEmoji = existingEdge || saved || '';
 
   // One badge only (remove duplicates created by rerenders)
   keepOnlyOneBadgeAny(entry, leaf);
@@ -1183,48 +2395,36 @@ function ensureBadgeForChat(chatId){
   if (!badge){
     badge = document.createElement('span');
     badge.className = 'ho-emoji-badge';
-    badge.textContent = badgeEmoji;
     entry.insertBefore(badge, entry.firstChild);
-  } else {
-    badge.textContent = badgeEmoji;
   }
+  setBadgeDisplay(badge, badgeEmoji, 'side');
 
-  // ✅ Bind picker open ONCE (prevents “click many times” + prevents navigation)
+  // Bind once so the emoji control does not trigger row navigation.
   if (!badge.dataset.hoEmojiBound){
     badge.dataset.hoEmojiBound = '1';
 
-    const plain = stripEdgeEmoji(trueTitle) || trueTitle;
-
     const open = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      ev.stopImmediatePropagation?.();
-
-      const r = badge.getBoundingClientRect();
-      openPicker({
-        x: r.left,
-        y: r.bottom + 6,
-        chatId,
-        plainTitle: plain,
-        badgeEl: badge
-      });
+      activateEmojiBadge(badge, ev);
     };
 
     // Use capture so we beat React/anchor handlers
     badge.addEventListener('pointerdown', open, true);
-    badge.addEventListener('dblclick', open, true);
+    badge.addEventListener('dblclick', (e) => activateEmojiBadge(badge, e), true);
 
     // Block normal click behavior on the emoji itself
     badge.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation?.();
+      stopEmojiEvent(e);
     }, true);
 
     // Block middle-click opening a new tab when clicking the emoji
     badge.addEventListener('auxclick', (e) => {
       if (e.button !== 1) return;
-      open(e);
+      activateEmojiBadge(badge, e);
+    }, true);
+
+    badge.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      activateEmojiBadge(badge, e);
     }, true);
   }
 
@@ -1233,11 +2433,19 @@ function ensureBadgeForChat(chatId){
   stripLeadingEmojiFromFirstText(entry);
 }
 
+function ensureVisibleSidebarBadges(){
+  findSidebarChatAnchors().forEach((anchor) => {
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    if (chatId) ensureBadgeForChat(chatId);
+  });
+}
+
 
 
 
 
 function maybeAutoEmojiRename(){
+  ensureVisibleSidebarBadges();
 
   // ✅ Project list mode (/g/...)
   if (!isInChatView() && isProjectsAreaPage()){
@@ -1253,23 +2461,35 @@ function maybeAutoEmojiRename(){
 
   ensureBadgeForChat(chatId);
 
-  // One-time only
-  if (isDone(chatId)) return;
-
   const entry = findSidebarEntry(chatId);
   if (!entry) return;
 
   const trueTitle = getTrueTitle(entry);
   if (!trueTitle) return;
 
-  // If title already has emoji -> lock, never auto-change
-  if (getEdgeEmoji(trueTitle)){
+  const existingEdge = getEdgeEmoji(trueTitle);
+  if (existingEdge){
     setDone(chatId);
     return;
   }
 
   const plain = stripEdgeEmoji(trueTitle);
   if (!plain || plain.length < MIN_TITLE_LENGTH) return;
+
+  const state = chatTitleApi()?.getState?.(chatId) || {};
+  const storedEmoji = state.emoji || getSavedEmoji(chatId) || runtimePendingEmoji[chatId];
+  if (storedEmoji) {
+    applyNativeAutoEmoji(chatId, plain, storedEmoji, {
+      source: /user|picker/i.test(String(state.emojiSource || '')) ? 'user-picker-native-rename' : 'stored-native-rename',
+      reason: 'stored-emoji-native-rename',
+      priority: Math.max(Number(state.emojiPriority || 0) || 0, 90),
+      confidence: Math.max(Number(state.emojiConfidence || 0) || 0, 0.9),
+    });
+    return;
+  }
+
+  // One-time only
+  if (isDone(chatId)) return;
 
   const st = (chatState[chatId] ||= { last:'', stable:0 });
   if (plain === st.last) st.stable++;
@@ -1278,14 +2498,12 @@ function maybeAutoEmojiRename(){
   if (st.stable < STABLE_RUNS_REQUIRED) return;
 
   const emoji = pickEmojiForTitle(plain);
-  setSavedEmoji(chatId, emoji);
-  setDone(chatId);
-
-  const finalTitle = formatTitleWithEmoji(plain, emoji);
-  triggerNativeSidebarRename(chatId, finalTitle);
-
-  // badge refresh instantly
-  ensureBadgeForChat(chatId);
+  applyNativeAutoEmoji(chatId, plain, emoji, {
+    source: 'auto-native-rename',
+    reason: 'auto-emoji-native-rename',
+    priority: 90,
+    confidence: 0.92,
+  });
 }
 
 
@@ -1299,11 +2517,12 @@ function maybeAutoEmojiRename(){
   }
 
 function init(){
+  installUnifiedTitlePanelApi();
   bindEmojiDblClickOnce();      // sidebar dblclick
   bindProjectEmojiClickOnce();  // project list click
 
   const mo = new MutationObserver(schedule);
-  mo.observe(document.body, { childList:true, subtree:true, characterData:true });
+  mo.observe(document.body, { childList:true, subtree:true });
 
   // ...your routing timer...
   schedule();

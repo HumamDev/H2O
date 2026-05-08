@@ -31,21 +31,44 @@
   let CLS = 'cgxui-cnhb';
 
   const FEATURE_KEY_INTERFACE = 'interface';
+  const FEATURE_KEY_CHAT_NAVIGATION = 'chatNavigation';
   const FEATURE_KEY_CHAT_LIST = 'interfaceEnhancer';
   const FEATURE_KEY_CHAT_META = 'chatMeta';
-  const KEY_CHAT_LIST_ACTIVITY_STYLE_V1 = 'ho:chat-list-activity-style';
-  const EV_CHAT_LIST_ACTIVITY_STYLE = 'h2o:interface:activity-style';
-  const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
-  const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
-    Object.freeze(['edge-strip', 'Thin Edge Strip']),
-    Object.freeze(['edge-wide', 'Wide Edge Strip']),
-  ]);
+  const FEATURE_KEY_CHAT_TITLE = 'chatTitle';
   const KEY_CHUB_INTERFACE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:interface:subtab:v1';
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
   const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
   const KEY_QN_CFG_UI_V1 = 'h2o:prm:cgx:qbig:cfg:ui:v1';
   const KEY_ATS_CFG_UI_V1 = 'h2o:prm:cgx:answrts:cfg:ui:v1';
   const KEY_AT_CFG_UI_V1 = 'h2o:prm:cgx:tnswrttl:cfg:ui:v1';
+  const KEY_AE_EMPTY_BADGE_ICON_V1 = 'h2o:prm:cgx:tmjttl:state:empty-badge-icon:v1';
+  const KEY_AE_PICKER_GROUPING_V1 = 'h2o:prm:cgx:tmjttl:state:picker-grouping:v1';
+  const KEY_CHAT_LIST_ACTIVITY_STYLE_V1 = 'ho:chat-list-activity-style';
+  const EV_AE_SETTINGS_CANON = 'evt:h2o:autoemoji:settings-changed';
+  const EV_AE_SETTINGS_LEG = 'h2o:autoemoji:settings-changed';
+  const EV_CHAT_LIST_ACTIVITY_STYLE = 'h2o:interface:activity-style';
+  const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
+  const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
+    Object.freeze(['edge-strip', 'Thin Edge Strip']),
+    Object.freeze(['edge-wide', 'Wide Edge Strip']),
+  ]);
+  const DEFAULT_AE_EMPTY_BADGE_ICON = 'chat-bubble-stack';
+  const DEFAULT_AE_PICKER_GROUPING = 'os';
+  const AE_EMPTY_BADGE_ICON_OPTIONS = Object.freeze([
+    Object.freeze(['message-circle', 'Message Circle']),
+    Object.freeze(['message-square', 'Message Square']),
+    Object.freeze(['chat-bubble-stack', 'Chat Stack']),
+  ]);
+  const AE_EMPTY_BADGE_ICON_KEYS = Object.freeze(AE_EMPTY_BADGE_ICON_OPTIONS.map(([icon]) => icon));
+  const AE_PICKER_GROUPING_OPTIONS = Object.freeze([
+    Object.freeze(['os', 'OS Emoji Categories']),
+    Object.freeze(['internal', 'H2O Internal Groups']),
+  ]);
+  const AE_EMPTY_BADGE_ICON_MASKS = Object.freeze({
+    'message-circle': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5Z'/%3E%3C/svg%3E",
+    'message-square': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z'/%3E%3C/svg%3E",
+    'chat-bubble-stack': "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M8 15H6l-3 3V7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v4'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M10 19h5l4 2v-7a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3Z'/%3E%3C/svg%3E",
+  });
 
   const INTERFACE_META = Object.freeze({
     key: FEATURE_KEY_INTERFACE,
@@ -71,7 +94,7 @@
       description: Object.freeze({
         default: 'Heat indicators, row colors, and active chat cues for chat lists.',
         focus: 'Spot recent chats and active rows faster.',
-        review: 'Keep chat-list color cues separate from metadata and title helpers.',
+        review: 'Keep chat-list color cues separate from metadata and title state.',
         performance: 'Keep list decoration controls lightweight.',
       }),
     }),
@@ -88,30 +111,48 @@
       }),
     }),
     Object.freeze({
-      key: 'titles',
-      label: 'Titles',
+      key: FEATURE_KEY_CHAT_TITLE,
+      label: 'Chat Title',
       icon: '🏷️',
-      subtitle: 'Title helpers for answers + chats.',
+      subtitle: 'Canonical title and emoji state for the current chat.',
       description: Object.freeze({
-        default: 'Sync titles with MiniMap + cards.',
-        focus: 'Keep labels legible.',
-        review: 'Badge + tooltip helpers.',
-        performance: 'Lightweight updates.',
-      }),
-    }),
-    Object.freeze({
-      key: 'numbers',
-      label: 'Numbers',
-      icon: '🧮',
-      subtitle: 'Answer + question number surfaces.',
-      description: Object.freeze({
-        default: 'Tune answer and question number overlays from one place.',
-        focus: 'Keep large number helpers readable without leaving interface controls.',
-        review: 'Adjust fade, offset, and size for title/number helpers while scanning long chats.',
-        performance: 'Keep number overlays legible while controlling how strong their visual footprint is.',
+        default: 'Inspect and refresh the canonical chat-title state owner.',
+        focus: 'Check the current chat title, emoji, and storage backend.',
+        review: 'Keep page title state separate from sidebar metadata and list decoration.',
+        performance: 'Refresh title state without rebuilding unrelated interface helpers.',
       }),
     }),
   ]);
+
+  const TITLES_META = Object.freeze({
+    key: 'titles',
+    label: 'Titles',
+    icon: '🏷️',
+    subtitle: 'Title helpers for answers + chats.',
+    category: 'nav',
+    hidden: true,
+    description: Object.freeze({
+      default: 'Sync titles with MiniMap + cards.',
+      focus: 'Keep labels legible.',
+      review: 'Badge + tooltip helpers.',
+      performance: 'Lightweight updates.',
+    }),
+  });
+
+  const NUMBERS_META = Object.freeze({
+    key: 'numbers',
+    label: 'Numbers',
+    icon: '🧮',
+    subtitle: 'Answer + question number surfaces.',
+    category: 'nav',
+    hidden: true,
+    description: Object.freeze({
+      default: 'Tune answer and question number overlays from one place.',
+      focus: 'Keep large number helpers readable without leaving navigation controls.',
+      review: 'Adjust fade, offset, and size for title/number helpers while scanning long chats.',
+      performance: 'Keep number overlays legible while controlling how strong their visual footprint is.',
+    }),
+  });
 
   const INTERFACE_VISIBILITY = Object.freeze({
     hideCss: `
@@ -120,9 +161,7 @@ __ROOT__ .ho-palette,
 __ROOT__ .ho-meta-row,
 __ROOT__ .ho-meta-actions-right,
 __ROOT__ .ho-meta-action,
-__ROOT__ #ho-preview-tip,
-__ROOT__ .ho-tab-title-under-input,
-__ROOT__ .ho-sidebar-ring{
+__ROOT__ #ho-preview-tip{
   display:none !important;
 }
 __ROOT__ a.ho-has-colorbtn,
@@ -195,6 +234,63 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     try { W.setTimeout(() => api.invalidate(), 0); } catch {}
   }
 
+  function interfaceCssText() {
+    return `
+.${CLS}-aeIconPicker{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(142px, 1fr));
+  gap:6px;
+  width:100%;
+  margin-top:8px;
+}
+.${CLS}-aeIconOption{
+  appearance:none;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-height:34px;
+  padding:7px 9px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:8px;
+  background:rgba(255,255,255,.045);
+  color:inherit;
+  cursor:pointer;
+  text-align:left;
+  font:600 12px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing:0;
+}
+.${CLS}-aeIconOption:hover{
+  background:rgba(255,255,255,.08);
+  border-color:rgba(255,255,255,.20);
+}
+.${CLS}-aeIconOption[aria-pressed="true"]{
+  background:rgba(132,198,255,.16);
+  border-color:rgba(132,198,255,.36);
+  box-shadow:0 0 0 1px rgba(132,198,255,.12), inset 0 1px 0 rgba(255,255,255,.10);
+}
+.${CLS}-aeIconOptionIcon{
+  display:inline-flex;
+  flex:0 0 18px;
+  width:18px;
+  height:18px;
+  background:rgba(230,240,255,.92);
+  -webkit-mask:var(--h2o-ae-icon-mask) center / contain no-repeat;
+  mask:var(--h2o-ae-icon-mask) center / contain no-repeat;
+  filter:drop-shadow(0 0 8px rgba(132,198,255,.32));
+}
+.${CLS}-aeIconOption[aria-pressed="true"] .${CLS}-aeIconOptionIcon{
+  background:rgba(255,255,255,.98);
+  filter:drop-shadow(0 0 10px rgba(132,198,255,.55));
+}
+.${CLS}-aeIconOptionLabel{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+`;
+  }
+
   function applySkin(api) {
     let skin = null;
     try { skin = typeof api?.getSkin === 'function' ? api.getSkin() : null; } catch {}
@@ -253,6 +349,11 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   function CHUB_INTERFACE_isVisible() {
     const state = storage.getJSON(KEY_CHUB_TAB_VIS_V1, {}) || {};
     return state[FEATURE_KEY_INTERFACE] !== false;
+  }
+
+  function CHUB_TITLES_isVisible() {
+    const state = storage.getJSON(KEY_CHUB_TAB_VIS_V1, {}) || {};
+    return state[FEATURE_KEY_CHAT_NAVIGATION] !== false;
   }
 
   function CHUB_INTERFACE_api() {
@@ -322,6 +423,212 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       pinnedCount,
       storeKey: api?.keys?.meta || '',
     };
+  }
+
+  function CHUB_CHAT_TITLE_api() {
+    return TOPW.H2O?.ChatTitle || W.H2O?.ChatTitle || null;
+  }
+
+  function CHUB_AE_api() {
+    return TOPW.H2O?.AutoEmojiTitle || W.H2O?.AutoEmojiTitle || null;
+  }
+
+  function CHUB_SKIN_api() {
+    return TOPW.H2O?.Skins || TOPW.H2O?.SR?.h2oskins?.api || W.H2O?.Skins || W.H2O?.SR?.h2oskins?.api || null;
+  }
+
+  function CHUB_SKIN_listChatTitleIcons() {
+    const api = CHUB_SKIN_api();
+    try {
+      const icons = api?.icons?.list?.('chatTitlePlaceholders') || api?.listIcons?.('chatTitlePlaceholders');
+      return Array.isArray(icons) ? icons : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function CHUB_SKIN_getIconMask(icon) {
+    const key = String(icon || '').trim();
+    if (!key) return '';
+    const api = CHUB_SKIN_api();
+    try {
+      return String(api?.icons?.getMask?.(key) || api?.getIconMask?.(key) || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function CHUB_AE_emptyBadgeIconOpts() {
+    const labels = new Map(AE_EMPTY_BADGE_ICON_OPTIONS.map(([icon, label]) => [icon, label]));
+    for (const icon of CHUB_SKIN_listChatTitleIcons()) {
+      const key = String(icon?.key || icon?.[0] || '').trim();
+      const label = String(icon?.label || icon?.[1] || '').trim();
+      if (labels.has(key) && label) labels.set(key, label);
+    }
+
+    const api = CHUB_AE_api();
+    let options = null;
+    try { options = api?.getConfig?.()?.emptyBadgeIconOptions; } catch {}
+    if (Array.isArray(options)) {
+      for (const [icon, label] of options) {
+        const key = String(icon || '').trim();
+        if (labels.has(key) && label) labels.set(key, String(label));
+      }
+    }
+    return AE_EMPTY_BADGE_ICON_OPTIONS.map(([icon, label]) => [icon, labels.get(icon) || label]);
+  }
+
+  function CHUB_AE_emptyBadgeIconLabel(value) {
+    const key = CHUB_AE_normalizeEmptyBadgeIcon(value);
+    const match = CHUB_AE_emptyBadgeIconOpts().find(([icon]) => icon === key);
+    return match?.[1] || key;
+  }
+
+  function CHUB_AE_normalizeEmptyBadgeIcon(value) {
+    const raw = String(value || '').trim();
+    return AE_EMPTY_BADGE_ICON_KEYS.includes(raw) ? raw : DEFAULT_AE_EMPTY_BADGE_ICON;
+  }
+
+  function CHUB_AE_emptyBadgeIconMask(value) {
+    const key = CHUB_AE_normalizeEmptyBadgeIcon(value);
+    return CHUB_SKIN_getIconMask(key) || AE_EMPTY_BADGE_ICON_MASKS[key] || AE_EMPTY_BADGE_ICON_MASKS[DEFAULT_AE_EMPTY_BADGE_ICON];
+  }
+
+  function CHUB_AE_getEmptyBadgeIcon() {
+    const api = CHUB_AE_api();
+    try {
+      const icon = api?.getConfig?.()?.emptyBadgeIcon || api?.getEmptyBadgeIcon?.();
+      if (icon) return CHUB_AE_normalizeEmptyBadgeIcon(icon);
+    } catch {}
+    return CHUB_AE_normalizeEmptyBadgeIcon(storage.getStr(KEY_AE_EMPTY_BADGE_ICON_V1, DEFAULT_AE_EMPTY_BADGE_ICON));
+  }
+
+  function CHUB_AE_setEmptyBadgeIcon(value) {
+    const next = CHUB_AE_normalizeEmptyBadgeIcon(value);
+    const api = CHUB_AE_api();
+    try {
+      if (typeof api?.applySetting === 'function') {
+        api.applySetting('emptyBadgeIcon', next);
+        return;
+      }
+      if (typeof api?.setEmptyBadgeIcon === 'function') {
+        api.setEmptyBadgeIcon(next);
+        return;
+      }
+    } catch {}
+    try {
+      const store = TOPW.localStorage || W.localStorage;
+      store.setItem(KEY_AE_EMPTY_BADGE_ICON_V1, next);
+    } catch {}
+    try {
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail: { key: 'emptyBadgeIcon', emptyBadgeIcon: next, reason: 'control-hub' } }));
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail: { key: 'emptyBadgeIcon', emptyBadgeIcon: next, reason: 'control-hub' } }));
+    } catch {}
+  }
+
+  function CHUB_AE_renderEmptyBadgeIconPicker() {
+    const root = D.createElement('div');
+    root.className = `${CLS}-aeIconPicker`;
+
+    const refreshPressed = (activeKey) => {
+      root.querySelectorAll(`.${CLS}-aeIconOption`).forEach((button) => {
+        button.setAttribute('aria-pressed', button.dataset.iconKey === activeKey ? 'true' : 'false');
+      });
+    };
+
+    for (const [icon, label] of CHUB_AE_emptyBadgeIconOpts()) {
+      const key = CHUB_AE_normalizeEmptyBadgeIcon(icon);
+      const button = D.createElement('button');
+      button.type = 'button';
+      button.className = `${CLS}-aeIconOption`;
+      button.dataset.iconKey = key;
+      button.title = label;
+      button.setAttribute('aria-pressed', key === CHUB_AE_getEmptyBadgeIcon() ? 'true' : 'false');
+
+      const mark = D.createElement('span');
+      mark.className = `${CLS}-aeIconOptionIcon`;
+      mark.setAttribute('aria-hidden', 'true');
+      mark.style.setProperty('--h2o-ae-icon-mask', `url("${CHUB_AE_emptyBadgeIconMask(key)}")`);
+
+      const text = D.createElement('span');
+      text.className = `${CLS}-aeIconOptionLabel`;
+      text.textContent = label;
+
+      button.append(mark, text);
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        CHUB_AE_setEmptyBadgeIcon(key);
+        refreshPressed(key);
+        invalidate();
+      }, true);
+
+      root.appendChild(button);
+    }
+
+    return root;
+  }
+
+  function CHUB_AE_pickerGroupingOpts() {
+    const api = CHUB_AE_api();
+    let options = null;
+    try { options = api?.getConfig?.()?.pickerGroupingOptions; } catch {}
+    const src = Array.isArray(options) && options.length ? options : AE_PICKER_GROUPING_OPTIONS;
+    return src.map(([key, label]) => [key, label]);
+  }
+
+  function CHUB_AE_normalizePickerGrouping(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    return AE_PICKER_GROUPING_OPTIONS.some(([key]) => key === raw) ? raw : DEFAULT_AE_PICKER_GROUPING;
+  }
+
+  function CHUB_AE_getPickerGrouping() {
+    const api = CHUB_AE_api();
+    try {
+      const grouping = api?.getConfig?.()?.pickerGrouping || api?.getPickerGrouping?.();
+      if (grouping) return CHUB_AE_normalizePickerGrouping(grouping);
+    } catch {}
+    return CHUB_AE_normalizePickerGrouping(storage.getStr(KEY_AE_PICKER_GROUPING_V1, DEFAULT_AE_PICKER_GROUPING));
+  }
+
+  function CHUB_AE_setPickerGrouping(value) {
+    const next = CHUB_AE_normalizePickerGrouping(value);
+    const api = CHUB_AE_api();
+    try {
+      if (typeof api?.applySetting === 'function') {
+        api.applySetting('pickerGrouping', next);
+        return;
+      }
+      if (typeof api?.setPickerGrouping === 'function') {
+        api.setPickerGrouping(next);
+        return;
+      }
+    } catch {}
+    try {
+      const store = TOPW.localStorage || W.localStorage;
+      store.setItem(KEY_AE_PICKER_GROUPING_V1, next);
+    } catch {}
+    try {
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail: { key: 'pickerGrouping', pickerGrouping: next, reason: 'control-hub' } }));
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail: { key: 'pickerGrouping', pickerGrouping: next, reason: 'control-hub' } }));
+    } catch {}
+  }
+
+  function CHUB_CHAT_TITLE_selfCheck() {
+    const api = CHUB_CHAT_TITLE_api();
+    if (!api) return null;
+    try {
+      if (typeof api.selfCheck === 'function') return api.selfCheck();
+      if (typeof api.getState === 'function') return api.getState();
+    } catch {}
+    return null;
+  }
+
+  function CHUB_CHAT_TITLE_refresh() {
+    const api = CHUB_CHAT_TITLE_api();
+    if (!api || typeof api.refresh !== 'function') return { message: 'Chat Title state owner unavailable.' };
+    const state = safeCall('chatTitle.refresh', () => api.refresh('control-hub'));
+    const title = state?.displayTitle || state?.currentTitle || state?.baseTitle || '';
+    return { message: title ? `Title refreshed: ${title}` : 'Title state refreshed.' };
   }
 
   function CHUB_ANSN_api() {
@@ -575,6 +882,58 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     },
   ]);
 
+  const CHAT_TITLE_CONTROLS = Object.freeze([
+    {
+      type: 'custom',
+      key: 'chatTitleState',
+      label: 'Chat Title',
+      group: 'Runtime',
+      render() {
+        const check = CHUB_CHAT_TITLE_selfCheck();
+        return renderInfoList([
+          { label: 'State', value: check ? 'Available' : 'Unavailable' },
+          { label: 'Title', value: check?.displayTitle || check?.currentTitle || check?.baseTitle || 'None' },
+          { label: 'Emoji', value: check?.currentEmoji || check?.emoji || 'None' },
+          { label: 'Pre-emoji Icon', value: CHUB_AE_emptyBadgeIconLabel(CHUB_AE_getEmptyBadgeIcon()) },
+          { label: 'Palette', value: CHUB_AE_getPickerGrouping() === 'internal' ? 'H2O Internal Groups' : 'OS Emoji Categories' },
+          { label: 'Route', value: check?.routeKind || 'Unknown' },
+          { label: 'Storage', value: check?.storageBackend || check?.durability?.backend || 'Unknown' },
+        ]);
+      },
+    },
+    {
+      type: 'custom',
+      key: 'chatTitleEmptyBadgeIcon',
+      label: 'Pre-emoji Chat Icon',
+      group: 'Badge',
+      help: 'Icon shown in the chat emoji slot before a chat has an emoji. Clicking it still assigns a suggested emoji.',
+      stackBelowLabel: true,
+      render() {
+        return CHUB_AE_renderEmptyBadgeIconPicker();
+      },
+    },
+    {
+      type: 'select',
+      key: 'chatTitlePickerGrouping',
+      label: 'Emoji Palette Grouping',
+      group: 'Palette',
+      help: 'Choose the default Title Palette grouping: OS-style emoji categories or the compact internal H2O title groups.',
+      def: DEFAULT_AE_PICKER_GROUPING,
+      opts: CHUB_AE_pickerGroupingOpts,
+      getLive() { return CHUB_AE_getPickerGrouping(); },
+      setLive(v) { CHUB_AE_setPickerGrouping(v); },
+    },
+    {
+      type: 'action',
+      key: 'chatTitleRefresh',
+      label: 'Refresh Chat Title',
+      group: 'Runtime',
+      help: 'Refreshes the canonical chat-title state owner for the current route.',
+      buttonLabel: 'Refresh',
+      action: CHUB_CHAT_TITLE_refresh,
+    },
+  ]);
+
   const TITLES_CONTROLS = Object.freeze([
     {
       type: 'custom',
@@ -583,7 +942,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       group: 'Visibility',
       render() {
         return renderInfoList([
-          { label: 'State', value: CHUB_INTERFACE_isVisible() ? 'Visible' : 'Hidden' },
+          { label: 'State', value: CHUB_TITLES_isVisible() ? 'Visible' : 'Hidden' },
           { label: 'Hint', value: 'Use the row switch to show or hide the active title helper surface.' },
         ]);
       },
@@ -828,6 +1187,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   const CONTROLS_BY_KEY = Object.freeze({
     [FEATURE_KEY_CHAT_LIST]: CHAT_LIST_CONTROLS,
     [FEATURE_KEY_CHAT_META]: CHAT_META_CONTROLS,
+    [FEATURE_KEY_CHAT_TITLE]: CHAT_TITLE_CONTROLS,
     titles: TITLES_CONTROLS,
     numbers: NUMBERS_CONTROLS,
   });
@@ -846,6 +1206,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
         category: 'mark',
         subtabs: INTERFACE_SUBTABS,
         subtabStorageKey: KEY_CHUB_INTERFACE_SUBTAB_V1,
+        cssText: interfaceCssText,
         visibility: INTERFACE_VISIBILITY,
       });
       api.registerPlugin({
@@ -861,13 +1222,23 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
         },
       });
       api.registerPlugin({
+        key: FEATURE_KEY_CHAT_TITLE,
+        getControls() {
+          return CONTROLS_BY_KEY[FEATURE_KEY_CHAT_TITLE];
+        },
+      });
+      api.registerPlugin({
         key: 'titles',
+        meta: TITLES_META,
+        category: 'nav',
         getControls() {
           return CONTROLS_BY_KEY.titles;
         },
       });
       api.registerPlugin({
         key: 'numbers',
+        meta: NUMBERS_META,
+        category: 'nav',
         getControls() {
           return CONTROLS_BY_KEY.numbers;
         },

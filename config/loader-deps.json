@@ -114,11 +114,15 @@
       ]
     },
     "INTERFACE": {
-      "description": "Interface family: Kernel + Decorator + Meta Enricher.",
+      "description": "Interface family: Kernel + Decorator + Meta Enricher + canonical chat title state.",
       "members": [
         "9A1a._Interface_Kernel_.js",
         "9A1b._Chat_List_Decorator_.js",
-        "9A1c._Chat_Meta_Enricher_.js"
+        "9A1c._Chat_Meta_Enricher_.js",
+        "9B0a._Chat_Title_State_.js",
+        "9B1a._Tab_Title_.js",
+        "9C1a._Title_Under_Input_bar_.js",
+        "9D1a._Auto_Emoji_Title_.js"
       ]
     }
   },
@@ -1007,6 +1011,64 @@
       ],
       "critical": true,
       "optionalDependsOn": []
+    },
+    "9B0a._Chat_Title_State_.js": {
+      "phase": "document-start",
+      "dependsOn": [],
+      "after": [],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.chatTitle"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "9B1a._Tab_Title_.js": {
+      "phase": "document-start",
+      "dependsOn": [
+        "9B0a._Chat_Title_State_.js"
+      ],
+      "after": [],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.chatTitle.tabRenderer"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "9C1a._Title_Under_Input_bar_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "9B0a._Chat_Title_State_.js"
+      ],
+      "after": [
+        "9B1a._Tab_Title_.js"
+      ],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.chatTitle.underInput"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "9A1a._Interface_Kernel_.js"
+      ]
+    },
+    "9D1a._Auto_Emoji_Title_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "9B0a._Chat_Title_State_.js"
+      ],
+      "after": [
+        "9C1a._Title_Under_Input_bar_.js"
+      ],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.chatTitle.autoEmoji"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "9A1a._Interface_Kernel_.js"
+      ]
     }
   }
 }

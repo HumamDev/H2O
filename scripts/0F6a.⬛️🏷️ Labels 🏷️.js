@@ -2244,6 +2244,7 @@
 
     const injectMenu = (menu) => {
       if (!(menu instanceof HTMLElement)) return;
+      if (menu.matches?.('.ho-title-action-menu,[data-ho-title-menu="1"]')) return;
       if (menu.querySelector?.(`[${ATTR_CGXUI}="${UI_LABELS_MENU_ITEM}"][${ATTR_CGXUI_OWNER}="${SkID}"]`)) return;
       const txt = normText(menu.innerText || '');
       if (!/pin chat|archive|delete|move to project|add to folder/i.test(txt)) return;
