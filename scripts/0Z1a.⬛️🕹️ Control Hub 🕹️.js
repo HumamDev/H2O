@@ -303,11 +303,11 @@ const CFG_CH = {
       },
       hidden:true},
     { key:FEATURE_KEY_CHAT_NAVIGATION, label:'Chat Navigation', icon:'🧭',
-      subtitle:'Mini Map + answer/question navigation controls.',
+      subtitle:'Mini Map, titles, numbers, and answer/question navigation controls.',
       description:{
-        default:'Group Mini Map, answer navigation, and question controls into one navigation workspace.',
-        focus:'Keep answer and question jumping together while staying inside one hub section.',
-        review:'Switch between Mini Map scanning, answer bindings, and question tools without leaving navigation.',
+        default:'Group Mini Map, titles, numbers, answer navigation, and question controls into one navigation workspace.',
+        focus:'Keep titles, numbers, and answer/question jumping together while staying inside one hub section.',
+        review:'Switch between Mini Map scanning, title helpers, number overlays, answer bindings, and question tools without leaving navigation.',
         performance:'Keep navigation controls consolidated so long-chat tuning stays predictable.',
       }},
     { key:'minimap',           label:'Mini Map',           icon:'🗺️',
@@ -908,6 +908,12 @@ __ROOT__ .cgxui-qswr-bubble,
 __ROOT__ .cgxui-qswr-bubble-short{
   max-width:none !important;
 }
+__ROOT__ .ho-tab-title-under-input,
+__ROOT__ .ho-sidebar-ring,
+__ROOT__ .cgxui-ansn-big-number,
+__ROOT__ .cgxui-qbig-number{
+  display:none !important;
+}
 `,
     }),
     [FEATURE_KEY_DATA_BACKUP]: Object.freeze({
@@ -1222,6 +1228,8 @@ __ROOT__ .cgxui-qswr-bubble-short{
 
 	  const FEATURE_CHAT_NAVIGATION_SUBTABS = Object.freeze([
 	    'minimap',
+	    'titles',
+	    'numbers',
 	    FEATURE_KEY_CHAT_ANSWERS,
 	    'questions',
 	  ]);
@@ -1257,9 +1265,9 @@ __ROOT__ .cgxui-qswr-bubble-short{
 	    const plugCat = PLUG_getCategoryForKey(k);
 	    if (plugCat) return plugCat;
 	    // Navigate
-	    if (k === FEATURE_KEY_CHAT_NAVIGATION || k === FEATURE_KEY_ANNOTATIONS || k === 'minimap' || k === FEATURE_KEY_CHAT_ANSWERS || k === 'questions' || k === 'marginAnchor' || k === FEATURE_KEY_NOTES || k === 'dockPanel') return CAT_NAV;
+	    if (k === FEATURE_KEY_CHAT_NAVIGATION || k === FEATURE_KEY_ANNOTATIONS || k === 'minimap' || k === 'titles' || k === 'numbers' || k === FEATURE_KEY_CHAT_ANSWERS || k === 'questions' || k === 'marginAnchor' || k === FEATURE_KEY_NOTES || k === 'dockPanel') return CAT_NAV;
 	    // Mark & Read
-	    if (k === FEATURE_KEY_PROMPT_MANAGER || k === FEATURE_KEY_INTERFACE || k === 'interfaceEnhancer' || k === 'titles' || k === 'numbers') return CAT_MARK;
+	    if (k === FEATURE_KEY_PROMPT_MANAGER || k === FEATURE_KEY_INTERFACE || k === 'interfaceEnhancer') return CAT_MARK;
 	    // Save & Sync
     if (k === FEATURE_KEY_ACCOUNT || k === FEATURE_KEY_DATA_BACKUP || k === FEATURE_KEY_EXPORT || k === FEATURE_KEY_STUDIO || k === FEATURE_KEY_LIBRARY || k === 'saveExport' || k === 'data' || k === FEATURE_KEY_LIBRARY_PROJECTS || k === 'folders' || k === FEATURE_KEY_LIBRARY_CATEGORIES || k === FEATURE_KEY_LIBRARY_LABELS || k === FEATURE_KEY_LIBRARY_TAGS) return CAT_SAVE;
 	    // Performance & Look
