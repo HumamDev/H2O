@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.loader.bridge
 // @author             HumamDev
 // @version            1.0.0
-// @revision           002
-// @build              260508-014523
+// @revision           003
+// @build              260509-012939
 // @description        Phase 1 measurement infrastructure. Establishes H2O.loader namespace + install-time counters (listeners/observers/intervals/styles) + performance marks. No behavioral changes.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -209,6 +209,14 @@
   let runtimeStatsCache = {};
   let runtimeStatsCacheAt = 0;
   let runtimeStatsLastError = "";
+  let loaderDiagCache = {
+    pageStartedAt: null,
+    phaseOnDemand: {},
+    onDemandState: {},
+    currentPageLoads: {},
+  };
+  let loaderDiagCacheAt = 0;
+  let loaderDiagLastError = "";
 
   function plainObject(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
@@ -269,6 +277,79 @@
     return Math.max(250, Math.min(10000, Math.floor(n)));
   }
 
+  function normalizeLoaderDiagSnapshot(raw) {
+    const src = plainObject(raw) ? raw : {};
+    const phaseOnDemand = {};
+    const onDemandState = {};
+    const currentPageLoads = {};
+    for (const entry of Object.entries(plainObject(src.phaseOnDemand) ? src.phaseOnDemand : {})) {
+      const aliasId = String(entry[0] || "").trim();
+      const meta = plainObject(entry[1]) ? entry[1] : {};
+      if (!aliasId) continue;
+      phaseOnDemand[aliasId] = {
+        tier: String(meta.tier || ""),
+        openEvent: String(meta.openEvent || ""),
+      };
+    }
+    for (const entry of Object.entries(plainObject(src.onDemandState) ? src.onDemandState : {})) {
+      const aliasId = String(entry[0] || "").trim();
+      if (!aliasId) continue;
+      onDemandState[aliasId] = String(entry[1] || "");
+    }
+    for (const entry of Object.entries(plainObject(src.currentPageLoads) ? src.currentPageLoads : {})) {
+      const aliasId = String(entry[0] || "").trim();
+      const meta = plainObject(entry[1]) ? entry[1] : {};
+      if (!aliasId) continue;
+      currentPageLoads[aliasId] = {
+        phase: String(meta.phase || ""),
+        ok: meta.ok === true ? true : (meta.ok === false ? false : null),
+        loadMs: Number.isFinite(Number(meta.loadMs)) ? Number(meta.loadMs) : null,
+        ts: Number.isFinite(Number(meta.ts)) ? Math.floor(Number(meta.ts)) : null,
+      };
+    }
+    return {
+      pageStartedAt: Number(src.pageStartedAt) || null,
+      phaseOnDemand,
+      onDemandState,
+      currentPageLoads,
+    };
+  }
+
+  function callLoaderDiag(timeoutMs) {
+    return new Promise((resolve) => {
+      const id = "h2o-loader-diag-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      let done = false;
+      let timer = 0;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        try { if (timer) W.clearTimeout(timer); } catch (_) {}
+        try { W.removeEventListener("message", onMessage, false); } catch (_) {}
+        resolve(value);
+      };
+      const onMessage = (ev) => {
+        if (ev.source !== W) return;
+        const data = ev.data;
+        if (!plainObject(data) || data.type !== ARCHIVE_RES || String(data.id || "") !== id) return;
+        finish(data);
+      };
+      try {
+        W.addEventListener("message", onMessage, false);
+        timer = W.setTimeout(() => {
+          finish({ ok: false, error: "refreshLoaderDiag timeout after " + timeoutMs + "ms" });
+        }, timeoutMs);
+        W.postMessage({
+          type: ARCHIVE_REQ,
+          id,
+          req: { op: "__loaderDiag", payload: {} },
+          timeoutMs,
+        }, "*");
+      } catch (e) {
+        finish({ ok: false, error: String((e && e.message) || e || "refreshLoaderDiag bridge failed") });
+      }
+    });
+  }
+
   function callLoaderRuntimeStats(timeoutMs) {
     return new Promise((resolve) => {
       const id = "h2o-loader-runtime-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
@@ -324,6 +405,33 @@
       error: runtimeStatsLastError,
       count: Object.keys(runtimeStatsCache).length,
       at: runtimeStatsCacheAt,
+    };
+  }
+
+  async function refreshLoaderDiag(options) {
+    const timeoutMs = runtimeRefreshTimeoutMs(plainObject(options) ? options.timeoutMs : options);
+    const res = await callLoaderDiag(timeoutMs);
+    const result = plainObject(res && res.result) ? res.result : {};
+    if (res && res.ok === true && result.ok === true && plainObject(result.diag)) {
+      loaderDiagCache = normalizeLoaderDiagSnapshot(result.diag);
+      loaderDiagCacheAt = Number(result.at) || Date.now();
+      loaderDiagLastError = "";
+      return {
+        ok: true,
+        at: loaderDiagCacheAt,
+        countPhaseOnDemand: Object.keys(loaderDiagCache.phaseOnDemand).length,
+        countOnDemandState: Object.keys(loaderDiagCache.onDemandState).length,
+        countCurrentPageLoads: Object.keys(loaderDiagCache.currentPageLoads).length,
+      };
+    }
+    loaderDiagLastError = String((res && (res.error || result.error)) || "refreshLoaderDiag failed");
+    return {
+      ok: false,
+      error: loaderDiagLastError,
+      at: loaderDiagCacheAt,
+      countPhaseOnDemand: Object.keys(loaderDiagCache.phaseOnDemand).length,
+      countOnDemandState: Object.keys(loaderDiagCache.onDemandState).length,
+      countCurrentPageLoads: Object.keys(loaderDiagCache.currentPageLoads).length,
     };
   }
 
@@ -521,6 +629,7 @@
     },
 
     refreshRuntimeStats,
+    refreshLoaderDiag,
 
     runtimeStatsCacheInfo() {
       return {
@@ -530,22 +639,50 @@
       };
     },
 
+    loaderDiagCacheInfo() {
+      return {
+        pageStartedAt: loaderDiagCache.pageStartedAt,
+        at: loaderDiagCacheAt,
+        lastError: loaderDiagLastError,
+        countPhaseOnDemand: Object.keys(loaderDiagCache.phaseOnDemand).length,
+        countOnDemandState: Object.keys(loaderDiagCache.onDemandState).length,
+        countCurrentPageLoads: Object.keys(loaderDiagCache.currentPageLoads).length,
+      };
+    },
+
     report() {
       const samples = readSamples();
       const latest = latestPerAlias(samples);
+      const loaderDiag = loaderDiagCache;
       const aliases = new Set();
       for (const a of latest.keys()) aliases.add(a);
       for (const a of Object.keys(runtimeStatsCache)) aliases.add(a);
       for (const a of counters.keys()) aliases.add(a);
       for (const a of mounted.keys()) aliases.add(a);
       for (const a of selfChecks.keys()) aliases.add(a);
+      for (const a of onDemand.keys()) aliases.add(a);
+      for (const a of Object.keys(loaderDiag.phaseOnDemand)) aliases.add(a);
+      for (const a of Object.keys(loaderDiag.onDemandState)) aliases.add(a);
+      for (const a of Object.keys(loaderDiag.currentPageLoads)) aliases.add(a);
 
       const out = [];
       for (const alias of aliases) {
         const cached = runtimeEntryToSample(runtimeStatsCache[alias]);
-        const s = cached || latest.get(alias) || {};
+        const historical = cached || latest.get(alias) || {};
+        const currentPage = plainObject(loaderDiag.currentPageLoads[alias]) ? loaderDiag.currentPageLoads[alias] : null;
+        const s = currentPage || historical;
         const c = counters.get(alias) || {};
         const m = mounted.get(alias) || null;
+        const bridgeOnDemandFor = onDemand.get(alias) || null;
+        const catalog = plainObject(loaderDiag.phaseOnDemand[alias]) ? loaderDiag.phaseOnDemand[alias] : null;
+        const currentPageOnDemandState = loaderDiag.onDemandState[alias] || null;
+        let sampleSource = "none";
+        if (currentPage) sampleSource = "current-page";
+        else if (historical && (
+          typeof historical.ok === "boolean"
+          || typeof historical.loadMs === "number"
+          || historical.ts
+        )) sampleSource = "historical";
         let sc = null;
         const fn = selfChecks.get(alias);
         if (typeof fn === "function") {
@@ -560,6 +697,19 @@
           heapDeltaBytes: typeof s.heapDeltaBytes === "number" ? s.heapDeltaBytes : 0,
           heapSupported: !!s.heapSupported,
           loadedAt: s.ts || null,
+          historicalOk: typeof historical.ok === "boolean" ? historical.ok : null,
+          historicalLoadMs: typeof historical.loadMs === "number" ? historical.loadMs : null,
+          historicalLoadedAt: historical.ts || null,
+          currentPageOk: currentPage && typeof currentPage.ok === "boolean" ? currentPage.ok : null,
+          currentPageLoadMs: currentPage && typeof currentPage.loadMs === "number" ? currentPage.loadMs : null,
+          currentPageLoadedAt: currentPage && currentPage.ts ? currentPage.ts : null,
+          currentPageLoaded: !!currentPage,
+          sampleSource,
+          catalogTier: catalog ? (catalog.tier || null) : null,
+          catalogOpenEvent: catalog ? (catalog.openEvent || null) : null,
+          catalogOnDemandEligible: !!catalog,
+          bridgeOnDemandFor,
+          currentPageOnDemandState,
           mountedMs: m ? m.ms : null,
           mountedAt: m ? m.ts : null,
           listeners: c.listeners || 0,
@@ -567,7 +717,7 @@
           intervals: c.intervals || 0,
           styles: c.styles || 0,
           selfCheck: sc,
-          onDemandFor: onDemand.get(alias) || null,
+          onDemandFor: bridgeOnDemandFor,
         });
       }
 

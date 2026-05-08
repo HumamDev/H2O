@@ -26,11 +26,19 @@ export function makeChromeLiveLoaderJs({
     try { console.info(TAG, "duplicate loader ignored", location.href); } catch {}
     return;
   }
+  const PAGE_STARTED_AT = Date.now();
+  const loaderDiagState = {
+    pageStartedAt: PAGE_STARTED_AT,
+    phaseOnDemand: {},
+    onDemandState: {},
+    currentPageLoads: {},
+  };
   try {
     globalThis[LOADER_INSTANCE_KEY] = {
       active: true,
       href: String(location.href || ""),
-      startedAt: Date.now(),
+      startedAt: PAGE_STARTED_AT,
+      pageStartedAt: PAGE_STARTED_AT,
     };
   } catch {}
   const ENABLE_TOGGLES = ${JSON.stringify(DEV_HAS_CONTROLS)};
@@ -105,6 +113,66 @@ export function makeChromeLiveLoaderJs({
 
   function err(...args) {
     try { console.error(TAG, ...args); } catch {}
+  }
+
+  function clearPlainObject(target) {
+    const obj = target && typeof target === "object" ? target : null;
+    if (!obj) return;
+    for (const key of Object.keys(obj)) {
+      try { delete obj[key]; } catch (_) {}
+    }
+  }
+
+  function cloneLoaderDiagState() {
+    const phaseOnDemand = {};
+    const onDemandState = {};
+    const currentPageLoads = {};
+
+    for (const entry of Object.entries(loaderDiagState.phaseOnDemand || {})) {
+      const aliasId = String(entry[0] || "").trim();
+      const src = entry[1] && typeof entry[1] === "object" ? entry[1] : {};
+      if (!aliasId) continue;
+      phaseOnDemand[aliasId] = {
+        tier: String(src.tier || ""),
+        openEvent: String(src.openEvent || ""),
+      };
+    }
+    for (const entry of Object.entries(loaderDiagState.onDemandState || {})) {
+      const aliasId = String(entry[0] || "").trim();
+      if (!aliasId) continue;
+      onDemandState[aliasId] = String(entry[1] || "");
+    }
+    for (const entry of Object.entries(loaderDiagState.currentPageLoads || {})) {
+      const aliasId = String(entry[0] || "").trim();
+      const src = entry[1] && typeof entry[1] === "object" ? entry[1] : {};
+      if (!aliasId) continue;
+      currentPageLoads[aliasId] = {
+        phase: String(src.phase || ""),
+        ok: src.ok === true ? true : (src.ok === false ? false : null),
+        loadMs: Number.isFinite(Number(src.loadMs)) ? Number(src.loadMs) : null,
+        ts: Number.isFinite(Number(src.ts)) ? Math.floor(Number(src.ts)) : null,
+      };
+    }
+    return {
+      pageStartedAt: Number(loaderDiagState.pageStartedAt) || PAGE_STARTED_AT,
+      phaseOnDemand,
+      onDemandState,
+      currentPageLoads,
+    };
+  }
+
+  function recordCurrentPageLoad(aliasIdRaw, sampleRaw) {
+    try {
+      const aliasId = String(aliasIdRaw || "").trim();
+      if (!aliasId) return;
+      const sample = sampleRaw && typeof sampleRaw === "object" ? sampleRaw : {};
+      loaderDiagState.currentPageLoads[aliasId] = {
+        phase: String(sample.phase || ""),
+        ok: sample.ok === true ? true : (sample.ok === false ? false : null),
+        loadMs: Number.isFinite(Number(sample.loadMs)) ? Number(sample.loadMs) : null,
+        ts: Number.isFinite(Number(sample.ts)) ? Math.floor(Number(sample.ts)) : Date.now(),
+      };
+    } catch (_) {}
   }
 
   function setStatus(msg, isError = false) {
@@ -856,6 +924,30 @@ export function makeChromeLiveLoaderJs({
             error: String(e && (e.message || e) || "runtime stats read failed"),
           });
         });
+        return;
+      }
+
+      if (op === "__loaderDiag") {
+        try {
+          const diag = cloneLoaderDiagState();
+          reply(id, {
+            ok: true,
+            result: {
+              ok: true,
+              source: "page-bridge-loader",
+              at: Date.now(),
+              diag,
+              countPhaseOnDemand: Object.keys(diag.phaseOnDemand).length,
+              countOnDemandState: Object.keys(diag.onDemandState).length,
+              countCurrentPageLoads: Object.keys(diag.currentPageLoads).length,
+            },
+          });
+        } catch (e) {
+          reply(id, {
+            ok: false,
+            error: String(e && (e.message || e) || "__loaderDiag failed"),
+          });
+        }
         return;
       }
 
@@ -1694,7 +1786,7 @@ export function makeChromeLiveLoaderJs({
       });
       const t1 = (globalThis.performance && typeof performance.now === "function") ? performance.now() : Date.now();
       const heap1 = heapUsedBytes();
-      runtimeSamples.push({
+      const sample = {
         aliasId: it.aliasId,
         phase,
         ok: true,
@@ -1702,13 +1794,15 @@ export function makeChromeLiveLoaderJs({
         heapDeltaBytes: heap1 && heap0 ? (heap1 - heap0) : 0,
         heapSupported,
         ts: Date.now(),
-      });
+      };
+      runtimeSamples.push(sample);
+      recordCurrentPageLoad(it && it.aliasId, sample);
       log(phase, "[" + (idx + 1) + "/" + total + "]", it.name, it.aliasId, "loaded", loadedUrl);
       return 1;
     } catch (e) {
       const t1 = (globalThis.performance && typeof performance.now === "function") ? performance.now() : Date.now();
       const heap1 = heapUsedBytes();
-      runtimeSamples.push({
+      const sample = {
         aliasId: it.aliasId,
         phase,
         ok: false,
@@ -1716,7 +1810,9 @@ export function makeChromeLiveLoaderJs({
         heapDeltaBytes: heap1 && heap0 ? (heap1 - heap0) : 0,
         heapSupported,
         ts: Date.now(),
-      });
+      };
+      runtimeSamples.push(sample);
+      recordCurrentPageLoad(it && it.aliasId, sample);
       err(phase, "[" + (idx + 1) + "/" + total + "]", it.name, it.aliasId, e);
       return 0;
     } finally {
@@ -1849,6 +1945,18 @@ export function makeChromeLiveLoaderJs({
       }
       phaseInputs = eager;
     }
+    {
+      clearPlainObject(loaderDiagState.phaseOnDemand);
+      for (const it of phaseOnDemand) {
+        const aliasId = String(it && it.aliasId || "").trim();
+        if (!aliasId) continue;
+        loaderDiagState.phaseOnDemand[aliasId] = {
+          tier: String(it && it.tier || ""),
+          openEvent: String(it && it.openEvent || ""),
+        };
+        if (!loaderDiagState.onDemandState[aliasId]) loaderDiagState.onDemandState[aliasId] = "eligible";
+      }
+    }
 
     const phaseStart = [];
     const phaseEnd = [];
@@ -1938,6 +2046,7 @@ export function makeChromeLiveLoaderJs({
         }
         if (loadedOnDemand.has(aliasId) || loadingOnDemand.has(aliasId)) return;
         loadingOnDemand.add(aliasId);
+        try { loaderDiagState.onDemandState[aliasId] = "loading"; } catch (_) {}
         try {
           const samples = [];
           const ok = await loadOneScript(it, 0, 1, "document-idle", samples, null);
@@ -1946,6 +2055,7 @@ export function makeChromeLiveLoaderJs({
           // on persistent failures. The runtime sample records the failure
           // for diagnostic visibility via H2O.loader.report().
           loadedOnDemand.add(aliasId);
+          try { loaderDiagState.onDemandState[aliasId] = "loaded"; } catch (_) {}
           try { await flushRuntimeSamples(samples); } catch (_) {}
         } catch (e) {
           // NOTE: do NOT call err(...) here — 'err' is the loader's error
@@ -1953,6 +2063,7 @@ export function makeChromeLiveLoaderJs({
           // shadowing/typeof bug.
           warn("on-demand: dispatch handler threw", aliasId, e);
           loadedOnDemand.add(aliasId);
+          try { loaderDiagState.onDemandState[aliasId] = "loaded"; } catch (_) {}
         } finally {
           loadingOnDemand.delete(aliasId);
         }
