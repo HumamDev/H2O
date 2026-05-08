@@ -685,71 +685,24 @@
   }
 
   // -------- CSS (wash + flash overlay) --------
+  // ✅ Phase 2 Batch C: this style injection has been consolidated into
+  // 1A1e MiniMap Skin (CSS_MM_text(), wash + flash section near lines
+  // 397-462). 1A1e already owned identical rules, and a duplicate <style>
+  // tag here was creating an ID-shadow with 1A1e's `cgxui-mnmp-style` and
+  // burning an extra boot-time CSS parse pass. The wash classes
+  // (.cgxui-mnmp-wash-*), the flash overlays, and the [data-at-collapsed]
+  // and [data-cgxui-flash-surface] variants are all rendered by 1A1e.
+  //
+  // The dedup-guarded shell is preserved (with no body) so any external
+  // caller that re-invokes this initialization path still gets a no-op
+  // instead of a TypeError. Per-element inline style.setProperty(...) calls
+  // (e.g. flash positioning) elsewhere in this file are unchanged.
   let style = document.getElementById(STYLE_ID);
-  if (!style) {
-    style = document.createElement('style');
-    style.id = STYLE_ID;
+  if (style && style.parentNode) {
+    // If a prior version of this script (or a hot-reload) created the
+    // duplicate <style>, remove it now so 1A1e is the sole owner.
+    try { style.parentNode.removeChild(style); } catch (_) {}
   }
-  style.setAttribute(ATTR_.CGXUI_OWNER, SkID);
-  style.textContent = `
-    .${CLS_.WASH_WRAP} {
-      position: relative;
-      z-index: 0;
-    }
-
-    ${COLORS.map(({ name, color }) => `
-      .${CLS_.WASH_PREFIX}${name}::before {
-        content: '';
-        position: absolute;
-        top: var(--cgxui-mnmp-answer-wash-top, var(--cgxui-mnmp-answer-flash-top, -25px));
-        bottom: var(--cgxui-mnmp-answer-wash-bottom, var(--cgxui-mnmp-answer-flash-bottom, -50px));
-        left: -100vw;
-        right: -100vw;
-        z-index: -1;
-        pointer-events: none;
-        background: color-mix(in srgb, ${color} 50%, transparent);
-        opacity: 0.08;
-      }
-    `).join('')}
-
-    .${CLS_.WASH_WRAP}[data-at-collapsed="1"]::before {
-      opacity: 0 !important;
-    }
-
-    @keyframes cgxui-mnmp-flash-fade {
-      0%   { opacity: 0; }
-      25%  { opacity: var(--cgxui-mnmp-flash-peak, 0.18); }
-      75%  { opacity: var(--cgxui-mnmp-flash-peak, 0.18); }
-      100% { opacity: 0; }
-    }
-
-    .${CLS_.WASH_WRAP}.${CLS_.FLASH}::after,
-    .${CLS_.WASH_WRAP}[${ATTR_.CGXUI_FLASH}="1"]::after {
-      content: '';
-      position: absolute;
-      left: -100vw;
-      right: -100vw;
-      background: color-mix(in srgb, gold 60%, transparent);
-      box-shadow: 0 0 var(--cgxui-mnmp-flash-glow-blur, 22px) rgba(255, 215, 0, var(--cgxui-mnmp-flash-glow-alpha, 0.35));
-      opacity: 0;
-      z-index: 0;
-      pointer-events: none;
-      border-radius: var(--cgxui-mnmp-flash-radius, 12px);
-      animation: cgxui-mnmp-flash-fade var(--cgxui-mnmp-flash-ms, 1600ms) var(--cgxui-mnmp-flash-ease, ease-in-out);
-    }
-
-    .${CLS_.WASH_WRAP}[data-cgxui-flash-surface="question"]::after {
-      top: var(--cgxui-mnmp-question-flash-top, -12px);
-      bottom: var(--cgxui-mnmp-question-flash-bottom, -18px);
-    }
-
-    .${CLS_.WASH_WRAP}[data-cgxui-flash-surface="answer"]::after,
-    .${CLS_.WASH_WRAP}:not([data-cgxui-flash-surface])::after {
-      top: var(--cgxui-mnmp-answer-flash-top, -25px);
-      bottom: var(--cgxui-mnmp-answer-flash-bottom, -50px);
-    }
-  `;
-  if (!style.isConnected) document.documentElement.appendChild(style);
 
   // -------- Optional bridge (kept minimal; no MiniMap internals) --------
   let BRIDGE_BOUND = false;

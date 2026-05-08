@@ -27,6 +27,19 @@
   const TOPW = W.top || W;
   const H2O = (TOPW.H2O = TOPW.H2O || {});
   if (W !== TOPW) W.H2O = H2O;
+
+  // ✅ Phase 2 idempotency guard: prevent double-init if this IIFE runs twice
+  // (e.g. duplicate loader, dev hot-reload). The IIFE installs three top-level
+  // window listeners (EV_SKIN_READY, EVT_MM_VIEW_CHANGED, pageshow) at the
+  // bottom of the file that have no removal path; without this guard a second
+  // invocation would double them. Per-button binders already use dataset flags
+  // (h2oShellBound / h2oDialCycleBound / h2oPinBound) so this only protects the
+  // top-level window/document hookups + perf-state initialization.
+  if (TOPW.H2O_MM_SHELL_PLUGIN === true) {
+    try { console.info('[1A1d MiniMap Shell] duplicate ignored'); } catch (_) {}
+    return;
+  }
+
   H2O.perf = H2O.perf || {};
   H2O.perf.modules = H2O.perf.modules || Object.create(null);
   const PERF_MODULE = (H2O.perf.modules.miniMapShell && typeof H2O.perf.modules.miniMapShell === 'object')

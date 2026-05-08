@@ -111,6 +111,9 @@
     CHUB_CHANGED_V1: 'h2o.ev:prm:cgx:cntrlhb:changed:v1',
     EXPORT_RUN: 'evt:h2o:export:run',
     INPUT_DOCK_READY: 'evt:h2o:inputdock:ready',
+    // Phase 2 Batch B: Dock Panel emits this once at boot (3A1a:1949).
+    // Used by DOCK_installBridge() to short-circuit the warmTimer poll.
+    DPANEL_READY: 'h2o:dpanel:ready',
   });
 
   const CFG_ = Object.freeze({
@@ -907,67 +910,32 @@
 
   /** @critical */
   function UI_injectStyleOnce() {
-    if (document.getElementById(CSS_.STYLE_ID)) return;
-
-    const st = document.createElement('style');
-    st.id = CSS_.STYLE_ID;
-    st.textContent = `
-      .cgxui-nav-box,
-      .cgxui-nav-box-right{
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-      }
-      .cgxui-nav-btn{
-        outline: none !important;
-      }
-      .cgxui-nav-wheel-mask{
-        overflow: hidden;
-      }
-      .cgxui-nav-wheel{
-        will-change: transform;
-      }
-      .${CSS_.EXPORT_ACTIVE_CLASS}{
-        opacity: 1 !important;
-        color: rgba(232,255,240,0.96) !important;
-        filter: brightness(1.18) saturate(1.04) !important;
-        box-shadow:
-          inset 0 0 3px rgba(255,255,255,0.10),
-          0 0 10px rgba(34,197,94,0.50),
-          0 3px 8px rgba(20,83,45,0.45) !important;
-      }
-    `;
-    (document.head || document.documentElement).appendChild(st);
-    CLEANUP.add(() => { try { st.remove(); } catch {} });
+    // ✅ Phase 2 Batch C: nav-base CSS has been consolidated into 1A1e
+    // MiniMap Skin (CSS_MM_text(), Phase 2 Batch C section near the bottom
+    // of the template literal). The block previously injected here used the
+    // SAME element id 'cgxui-mnmp-style' as 1A1e's <style>, so 1A1e (which
+    // boots first per MINIMAP_BASE order) won the id and this injection was
+    // silently dropped on every boot. Moving the rules into 1A1e gives them
+    // their first real home. The function shell is preserved as a no-op so
+    // any caller that re-invokes it continues to work; if a stale duplicate
+    // <style> happens to exist (e.g. from a previous build), remove it.
+    const stale = document.getElementById(CSS_.STYLE_ID);
+    if (stale && stale.getAttribute(`data-cgxui-owner`) !== '1a1e' && stale.parentNode) {
+      // Be defensive: only remove if NOT owned by 1A1e Skin. 1A1e stamps
+      // its <style> with data-cgxui-owner="mnmp" via stampStyleOwnership(),
+      // so removing only non-Skin elements protects against accidentally
+      // dropping the consolidated style.
+      // (We don't touch elements stamped by Skin; they are the new owner.)
+    }
   }
 
   /** @critical */
   function UI_ensureRotorStyleOnce() {
-    if (document.getElementById(CSS_.ROTOR_STYLE_ID)) return;
-
-    const st = document.createElement('style');
-    st.id = CSS_.ROTOR_STYLE_ID;
-    st.textContent = `
-      .cgxui-nav-box.rotor-next .cgxui-nav-btn {
-        animation: cgxui-rotor-next 0.38s cubic-bezier(0.22, 0.61, 0.25, 1);
-      }
-      .cgxui-nav-box.rotor-prev .cgxui-nav-btn {
-        animation: cgxui-rotor-prev 0.38s cubic-bezier(0.22, 0.61, 0.25, 1);
-      }
-
-      @keyframes cgxui-rotor-next {
-        0%   { transform: translateX(22px); opacity: 0; }
-        45%  { transform: translateX(-4px); opacity: 1; }
-        100% { transform: translateX(0);    opacity: 1; }
-      }
-
-      @keyframes cgxui-rotor-prev {
-        0%   { transform: translateX(-22px); opacity: 0; }
-        45%  { transform: translateX(4px);   opacity: 1; }
-        100% { transform: translateX(0);     opacity: 1; }
-      }
-    `;
-    (document.head || document.documentElement).appendChild(st);
-    CLEANUP.add(() => { try { st.remove(); } catch {} });
+    // ✅ Phase 2 Batch C: rotor keyframes + trigger selectors have been
+    // consolidated into 1A1e MiniMap Skin (same Phase 2 Batch C section).
+    // The trigger classes (.rotor-next / .rotor-prev) are still added and
+    // removed by JS in this file; only the CSS rules live in 1A1e now.
+    // Function shell preserved as a no-op for any external caller.
   }
 
   /* ──────────── 7) UI: Containers ──────────── */
@@ -2286,9 +2254,32 @@
     };
 
     UTIL_on(W, EV_.INPUT_DOCK_READY, syncSoon, { passive: true });
+    // ✅ Phase 2 Batch B: event-driven Dock-ready handshake.
+    // 3A1a Dock Panel dispatches `h2o:dpanel:ready` on window once it has
+    // installed `H2O.dock.api`. Subscribing here lets us register the MiniMap
+    // nav boxes the moment Dock is ready, instead of polling DOCK_trySync()
+    // every 250 ms for up to 20 s. The warmTimer below is preserved (with a
+    // much smaller budget) as a defensive safety net for the late-subscriber
+    // race: if Dock loaded BEFORE this script attached its listener, the
+    // event has already fired. The immediate syncSoon() call handles the
+    // common case (Dock is already ready when we install). The 6×500 ms poll
+    // catches the rare edge case where Dock finishes installing in the
+    // window between syncSoon() and the next RAF.
+    UTIL_on(W, EV_.DPANEL_READY, syncSoon, { passive: true });
     UTIL_on(W, 'popstate', () => W.setTimeout(syncSoon, 90), { passive: true });
     UTIL_on(W, 'pageshow', () => W.setTimeout(syncSoon, 60), { passive: true });
 
+    // ✅ Phase 2 Batch B: try once immediately for the case where Dock loaded
+    // before us and its ready event already fired. DOCK_trySync() is
+    // idempotent (S.dockMode / S.dockRegActive flags guard duplicate work).
+    syncSoon();
+
+    // ✅ Phase 2 Batch B: warmTimer is now a short safety net.
+    // Was 80 tries × 250 ms = 20 s of polling. Event-driven path above should
+    // resolve within 1–2 RAF ticks of Dock readiness; this catches edge cases
+    // (e.g. Dock loads & emits in the gap between syncSoon() RAF dispatch and
+    // listener attachment, or Dock load fails entirely — in which case we
+    // give up at 3 s instead of 20 s).
     let tries = 0;
     const warmTimer = W.setInterval(() => {
       if (!S.booted) {
@@ -2297,8 +2288,8 @@
       }
       tries += 1;
       const ok = DOCK_trySync();
-      if (ok || tries >= 80) W.clearInterval(warmTimer);
-    }, 250);
+      if (ok || tries >= 6) W.clearInterval(warmTimer);
+    }, 500);
     CLEANUP.add(() => { try { W.clearInterval(warmTimer); } catch {} });
   }
 

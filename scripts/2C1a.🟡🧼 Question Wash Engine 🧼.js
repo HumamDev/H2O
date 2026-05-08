@@ -27,6 +27,16 @@ How to use:
   const D = document;
   const TOPW = W.top || W;
 
+  // ✅ Phase 2 idempotency guard: prevent double-init if this IIFE runs twice
+  // (e.g. duplicate loader, dev hot-reload). All boot-time bind* calls below
+  // install document/window listeners that have no removal path; without this
+  // guard a second invocation would silently double the listener counts.
+  if (W.__H2O_QUESTION_WASH_BOOTED === true) {
+    try { console.info('[QuestionWash] duplicate ignored'); } catch (_) {}
+    return;
+  }
+  W.__H2O_QUESTION_WASH_BOOTED = true;
+
   const NS = 'cgxq-qwash';
   const STYLE_ID = `${NS}-style`;
   const STORAGE_KEY = 'h2o:qwash:map:v1';

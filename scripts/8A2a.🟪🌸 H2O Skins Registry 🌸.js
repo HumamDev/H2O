@@ -452,6 +452,42 @@
     SKIN_PRESETS.flatMap((p) => (p.aliases || []).map((alias) => [alias.toLowerCase(), p]))
   );
 
+  /* ───────────────────────────── 🧩 ICON REGISTRY ───────────────────────────── */
+  const ICON_SECTION_CHAT_TITLE_PLACEHOLDERS = 'chatTitlePlaceholders';
+  const ICON_SECTION_ALIASES = new Map([
+    ['chat-title-placeholders', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS],
+    ['chat_title_placeholders', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS],
+    ['chatplaceholders', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS],
+    ['chatplaceholdericons', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS],
+    ['chat-title-placeholder-icons', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS],
+  ]);
+
+  const ICON_REGISTRY = Object.freeze([
+    ICON_define('spark', 'Spark', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Zm7 13l.8 2.7 2.2.8-2.2.8L19 22l-.8-2.7-2.2-.8 2.2-.8L19 15ZM5 14l.9 3.1L9 18l-3.1.9L5 22l-.9-3.1L1 18l3.1-.9L5 14Z'/%3E%3C/svg%3E"),
+    ICON_define('message-circle', 'Message Circle', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5Z'/%3E%3C/svg%3E"),
+    ICON_define('message-square', 'Message Square', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z'/%3E%3C/svg%3E"),
+    ICON_define('chat-bubble-stack', 'Chat Stack', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M8 15H6l-3 3V7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v4'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M10 19h5l4 2v-7a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v2a3 3 0 0 0 3 3Z'/%3E%3C/svg%3E"),
+    ICON_define('tag', 'Tag', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M20 10.8 13.2 4H5v8.2L11.8 19a2.3 2.3 0 0 0 3.2 0l5-5a2.3 2.3 0 0 0 0-3.2Z'/%3E%3Ccircle cx='8.5' cy='7.5' r='1.2' fill='black'/%3E%3C/svg%3E"),
+    ICON_define('bookmark', 'Bookmark', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M6 4h12v17l-6-3.5L6 21V4Z'/%3E%3C/svg%3E"),
+    ICON_define('file-text', 'File Text', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M14 3v6h6M8 13h8M8 17h6'/%3E%3C/svg%3E"),
+    ICON_define('pin', 'Pin', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M14 2.6a1 1 0 0 1 1.4 0l6 6a1 1 0 0 1-.3 1.6l-2.4 1-3.6 3.6.8 4.1a1 1 0 0 1-1.7.9l-3.1-3.1-5.4 5.4-1.4-1.4 5.4-5.4-3.1-3.1a1 1 0 0 1 .9-1.7l4.1.8 3.6-3.6 1-2.4a1 1 0 0 1 .2-.4L14 2.6Z'/%3E%3C/svg%3E"),
+    ICON_define('star', 'Star', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z'/%3E%3C/svg%3E"),
+    ICON_define('lightbulb', 'Lightbulb', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M9 18h6M10 22h4M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 3H9c0-1 0-2-1-3Z'/%3E%3C/svg%3E"),
+    ICON_define('compass', 'Compass', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2'/%3E%3Cpath fill='black' d='m15.7 7.2-2 6.3a1 1 0 0 1-.6.6l-6.3 2 2-6.3a1 1 0 0 1 .6-.6l6.3-2Z'/%3E%3C/svg%3E"),
+    ICON_define('paperclip', 'Paperclip', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5'/%3E%3C/svg%3E"),
+    ICON_define('hash', 'Topic Hash', ICON_SECTION_CHAT_TITLE_PLACEHOLDERS, "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' d='M5 9h14M4 15h14M10 4 8 20M16 4l-2 16'/%3E%3C/svg%3E"),
+  ]);
+  const ICON_BY_KEY = new Map(ICON_REGISTRY.map((icon) => [icon.key, icon]));
+
+  function ICON_define(key, label, section, mask) {
+    return Object.freeze({
+      key: String(key || '').trim().toLowerCase(),
+      label: String(label || '').trim(),
+      section: String(section || '').trim(),
+      mask: String(mask || '').trim(),
+    });
+  }
+
   /* ───────────────────────────── 🟥 H2O VAULT + BOUNDED DIAG ───────────────────────────── */
   const H2O = (W.H2O = W.H2O || {});
   H2O[TOK] = H2O[TOK] || {};
@@ -674,6 +710,52 @@ ${CSS_buildScrollBlock(tokens)}
     return SKIN_NAME_LIST.slice();
   }
 
+  function ICON_normKey(key) {
+    return String(key ?? '').trim().toLowerCase();
+  }
+
+  function ICON_normSection(section) {
+    const raw = String(section ?? '').trim();
+    if (!raw) return '';
+    return ICON_SECTION_ALIASES.get(raw.toLowerCase()) || raw;
+  }
+
+  function ICON_export(icon) {
+    if (!icon) return null;
+    return {
+      key: icon.key,
+      label: icon.label,
+      section: icon.section,
+      mask: icon.mask,
+    };
+  }
+
+  function API_getIcon(key) {
+    return ICON_export(ICON_BY_KEY.get(ICON_normKey(key)) || null);
+  }
+
+  function API_getIconMask(key) {
+    return String(ICON_BY_KEY.get(ICON_normKey(key))?.mask || '');
+  }
+
+  function API_listIconSections() {
+    return Array.from(new Set(ICON_REGISTRY.map((icon) => icon.section))).filter(Boolean);
+  }
+
+  function API_listIcons(section = '') {
+    const normSection = ICON_normSection(section);
+    return ICON_REGISTRY
+      .filter((icon) => !normSection || icon.section === normSection)
+      .map(ICON_export);
+  }
+
+  const ICON_API = Object.freeze({
+    list: API_listIcons,
+    get: API_getIcon,
+    getMask: API_getIconMask,
+    sections: API_listIconSections,
+  });
+
   function API_installGlobalFns() {
     if (!S.prevGlobalApi) {
       S.prevGlobalApi = {
@@ -685,6 +767,11 @@ ${CSS_buildScrollBlock(tokens)}
     W.H2O_setSkin = API_setSkin;
     W.H2O_getSkin = API_getSkin;
     W.H2O_listSkins = API_listSkins;
+  }
+
+  function API_installNamedApi() {
+    if (!S.prevNamedApi) S.prevNamedApi = { skins: H2O.Skins };
+    H2O.Skins = API;
   }
 
   function API_restoreGlobalFns() {
@@ -714,12 +801,24 @@ ${CSS_buildScrollBlock(tokens)}
     S.prevGlobalApi = null;
   }
 
+  function API_restoreNamedApi() {
+    if (!S.prevNamedApi) return;
+    if (H2O.Skins === API) {
+      if (S.prevNamedApi.skins && S.prevNamedApi.skins !== API) H2O.Skins = S.prevNamedApi.skins;
+      else {
+        try { delete H2O.Skins; } catch (_) { H2O.Skins = undefined; }
+      }
+    }
+    S.prevNamedApi = null;
+  }
+
   function CORE_boot(reason = STR_REASON_BOOT) {
     if (S.booted) return true;
     S.booted = true;
     W[KEY_GUARD_BOOT] = 1;
 
     API_installGlobalFns();
+    API_installNamedApi();
 
     const savedName = UTIL_getStr(KEY_SKIN_ACTIVE_V1, '');
     const preset = SKIN_getByName(savedName) || SKIN_getDefault();
@@ -739,6 +838,7 @@ ${CSS_buildScrollBlock(tokens)}
 
     UI_clearRootVars();
     API_restoreGlobalFns();
+    API_restoreNamedApi();
 
     S.styleEl = null;
     S.activeName = '';
@@ -755,6 +855,11 @@ ${CSS_buildScrollBlock(tokens)}
     setSkin: API_setSkin,
     getSkin: API_getSkin,
     listSkins: API_listSkins,
+    icons: ICON_API,
+    getIcon: API_getIcon,
+    getIconMask: API_getIconMask,
+    listIconSections: API_listIconSections,
+    listIcons: API_listIcons,
   });
 
   const prevApi = VAULT.api;

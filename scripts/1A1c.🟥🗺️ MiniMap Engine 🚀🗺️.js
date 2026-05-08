@@ -3557,4 +3557,40 @@
   bindRetryHooks();
   bootAttempt('init');
   if (!S.bootDone) scheduleBootTick();
+
+  /* ─────────────── Phase 4 Step 1: chatRoot fast-path ───────────────
+   * Additive peer to the legacy scheduleBootTick polling and the
+   * EVT_SHELL_READY hook in bindRetryHooks(). When the conversation
+   * root appears (signalled by H2O.obs.chatRootObserved — a Phase 3
+   * API thinly wrapping the Observer Hub's existing onReady contract),
+   * we fire one immediate bootAttempt('chatRoot'). In the happy path
+   * this lets the engine boot ~50-200 ms earlier than the next 120 ms
+   * poll tick would have caught it.
+   *
+   * Fallback semantics are preserved exactly:
+   *   • scheduleBootTick (above) still runs on its own — full
+   *     BOOT_MAX_TRIES × BOOT_GAP_MS = 9600 ms budget.
+   *   • If the Hub API is unavailable, this block is skipped.
+   *   • If the Promise rejects or chatRootObserved() returns null
+   *     (e.g. timeoutMs expired on /settings or empty surface),
+   *     we still try one defensive bootAttempt and let the legacy
+   *     polling continue.
+   *   • routeRebuildPoller (line 3034) is untouched.
+   *   • No MutationObservers are migrated in this step.
+   *
+   * Reversible: deleting this block restores the prior boot behavior
+   * exactly. ──────────────────────────────────────────────────────── */
+  if (!S.bootDone) {
+    try {
+      const obsApi = (TOPW && TOPW.H2O && TOPW.H2O.obs) || (W && W.H2O && W.H2O.obs) || null;
+      if (obsApi && typeof obsApi.chatRootObserved === 'function') {
+        Promise.resolve(obsApi.chatRootObserved({ timeoutMs: BOOT_MAX_TRIES * BOOT_GAP_MS }))
+          .then((root) => {
+            if (S.bootDone) return;
+            try { bootAttempt(root ? 'chatRoot' : 'chatRoot:timeout'); } catch (_) {}
+          })
+          .catch(() => { /* legacy polling already covers this */ });
+      }
+    } catch (_) { /* swallow; legacy polling already covers this */ }
+  }
 })();

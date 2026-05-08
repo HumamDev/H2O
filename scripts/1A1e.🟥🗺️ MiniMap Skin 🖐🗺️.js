@@ -434,6 +434,13 @@ ${COLORS.map(({ name, color }) => `
   100% { opacity: 0; }
 }
 
+/* Phase 2 Batch C: hide wash on collapsed answer rows (was previously
+   contributed by 1A2a Answer Wash Engine; consolidated here when 1A2a's
+   duplicate <style> tag was removed). */
+.${CLS_.WASH_WRAP}[data-at-collapsed="1"]::before {
+  opacity: 0 !important;
+}
+
 .${CLS_.WASH_WRAP}.${CLS_.FLASH}::after,
 .${CLS_.WASH_WRAP}[${ATTR_.CGXUI_FLASH}="1"]::after {
   content: '';
@@ -445,7 +452,9 @@ ${COLORS.map(({ name, color }) => `
   box-shadow: 0 0 var(--cgxui-mnmp-flash-glow-blur) rgba(255, 215, 0, var(--cgxui-mnmp-flash-glow-alpha)); /* soft glow halo */
   opacity: 0;
   z-index: 0;
-  pointer-events: auto;
+  /* Phase 2 Batch C: was 'auto' here; 1A2a's duplicate (which won via late
+     inject) used 'none', so visual parity requires 'none'. */
+  pointer-events: none;
   border-radius: var(--cgxui-mnmp-flash-radius);
   animation: cgxui-mnmp-flash-fade var(--cgxui-mnmp-flash-ms) var(--cgxui-mnmp-flash-ease);
 }
@@ -1836,6 +1845,64 @@ ${S_MINIMAP} .cgxui-under-ui::after {
 }
 
 /* (moved) 🔢 Revision Badges CSS → 1a.🔴🔁 Revision Badges (MiniMap Plugin) */
+
+/* =========================================================================
+ * Phase 2 Batch C — Consolidated from 1A2b Navigation Controls.
+ *
+ * These rules previously lived in 1A2b's UI_injectStyleOnce() (nav base) and
+ * UI_ensureRotorStyleOnce() (rotor keyframes). They are pure-static MiniMap
+ * surface CSS, but 1A2b's nav-base style used the SAME id "cgxui-mnmp-style"
+ * as this Skin's <style> element, so dedup-on-id silently dropped 1A2b's CSS
+ * after Skin booted first. Moving them here gives nav controls visual parity
+ * with their original intent (font smoothing, outline reset, will-change
+ * hints, export-active glow) and makes Skin the single source of truth.
+ * ========================================================================= */
+
+.cgxui-nav-box,
+.cgxui-nav-box-right{
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.cgxui-nav-btn{
+  outline: none !important;
+}
+.cgxui-nav-wheel-mask{
+  overflow: hidden;
+}
+.cgxui-nav-wheel{
+  will-change: transform;
+}
+.cgxui-nav-export-active{
+  opacity: 1 !important;
+  color: rgba(232,255,240,0.96) !important;
+  filter: brightness(1.18) saturate(1.04) !important;
+  box-shadow:
+    inset 0 0 3px rgba(255,255,255,0.10),
+    0 0 10px rgba(34,197,94,0.50),
+    0 3px 8px rgba(20,83,45,0.45) !important;
+}
+
+/* Rotor (carousel) animation triggers + keyframes — moved from 1A2b
+ * UI_ensureRotorStyleOnce(). Trigger classes (.rotor-next / .rotor-prev) are
+ * still added/removed by 1A2b's JS; only the CSS lives here now. */
+.cgxui-nav-box.rotor-next .cgxui-nav-btn {
+  animation: cgxui-rotor-next 0.38s cubic-bezier(0.22, 0.61, 0.25, 1);
+}
+.cgxui-nav-box.rotor-prev .cgxui-nav-btn {
+  animation: cgxui-rotor-prev 0.38s cubic-bezier(0.22, 0.61, 0.25, 1);
+}
+
+@keyframes cgxui-rotor-next {
+  0%   { transform: translateX(22px); opacity: 0; }
+  45%  { transform: translateX(-4px); opacity: 1; }
+  100% { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes cgxui-rotor-prev {
+  0%   { transform: translateX(-22px); opacity: 0; }
+  45%  { transform: translateX(4px);   opacity: 1; }
+  100% { transform: translateX(0);     opacity: 1; }
+}
   `;
   return base;
 }
