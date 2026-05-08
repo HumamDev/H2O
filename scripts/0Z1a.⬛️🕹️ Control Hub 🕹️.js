@@ -4557,6 +4557,10 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 	    ENGINE_renderAll(p);
 
     UTIL_emit(EV_CHUB_CHANGED_V1, { action: 'show' });
+    // Phase 4 Step 5d: dispatch a dedicated open-event for L5 on-demand
+    // subscribers (the loader's V2 listener + Bridge registerOnDemand). Single
+    // line addition; does not replace or alter any existing emit. Independent
+    // of EV_CHUB_CHANGED_V1 which has 'show' / 'hide' actions.
     try { W.dispatchEvent(new CustomEvent('evt:h2o:chub:open', { detail: { ts: Date.now() } })); } catch (_) {}
   }
 

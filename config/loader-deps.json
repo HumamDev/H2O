@@ -127,6 +127,17 @@
     }
   },
   "scripts": {
+    "0A0a._Loader_Bridge_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.loader"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
     "0A1a._H2O_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [],
@@ -957,17 +968,6 @@
       "provides": [
         "workspace.drawer"
       ],
-      "optionalDependsOn": []
-    },
-    "0A0a._Loader_Bridge_.js": {
-      "phase": "document-idle",
-      "dependsOn": [],
-      "after": [],
-      "group": "CORE_BASE",
-      "provides": [
-        "h2o.loader"
-      ],
-      "critical": true,
       "optionalDependsOn": []
     },
     "9A1a._Interface_Kernel_.js": {

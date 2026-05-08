@@ -14,6 +14,12 @@ export function makeChromeLiveLoaderJs({
   "use strict";
 
   const TAG = ${JSON.stringify(DEV_TAG)};
+  // Loader build marker — interpolated at template build time so each rebuild gets a fresh
+  // timestamp. Use H2O.archiveBoot._getExtensionBridge().__loaderInfo() from a page console
+  // to confirm the active loader.js, or look at the page-archive-bridge ready log.
+  const LOADER_BUILD_TS = ${Date.now()};
+  const LOADER_BUILD_ISO = ${JSON.stringify(new Date().toISOString())};
+  const LOADER_LIBRARY_KV_OPS = true;
   const STATUS_LABEL = ${JSON.stringify(DEV_TITLE)};
   const LOADER_INSTANCE_KEY = "__H2O_EXT_DEV_CTRL_LOADER_V1__";
   if (globalThis[LOADER_INSTANCE_KEY]?.active) {
@@ -777,6 +783,14 @@ export function makeChromeLiveLoaderJs({
       "openWorkbench",
       "exportBundle",
       "importBundle",
+      // Library KV (Phase 1.6): durable backend for H2O.Library.Store via the SW's
+      // h2o_library_kv IndexedDB. Page → loader → SW. These ops go through the same
+      // session-auth check as snapshot ops (they are NOT in AUTH_FREE_OPS).
+      "libraryKvGet",
+      "libraryKvSet",
+      "libraryKvDel",
+      "libraryKvListKeys",
+      "libraryKvEstimate",
     ]);
     const makeToken = () => {
       const now = Date.now().toString(36);
@@ -802,6 +816,26 @@ export function makeChromeLiveLoaderJs({
 
       const op = String(req.op || "").trim();
       const payload = isPlainObj(req.payload) ? req.payload : {};
+
+      // Privileged diagnostic op handled entirely in the loader (does NOT reach the SW).
+      // Returns the loader's build info so callers can confirm which loader.js is active.
+      if (op === "__loaderInfo") {
+        reply(id, {
+          ok: true,
+          result: {
+            ok: true,
+            source: "page-bridge-loader",
+            loaderBuildTs: LOADER_BUILD_TS,
+            loaderBuildIso: LOADER_BUILD_ISO,
+            libraryKvOps: LOADER_LIBRARY_KV_OPS,
+            allowOps: Array.from(ALLOW_OPS).sort(),
+            allowOpsCount: ALLOW_OPS.size,
+            tag: TAG,
+          },
+        });
+        return;
+      }
+
       if (op === "__loaderRuntimeStats") {
         readRuntimeStats().then((stats) => {
           const safeStats = stats && typeof stats === "object" && !Array.isArray(stats) ? stats : {};
@@ -824,6 +858,7 @@ export function makeChromeLiveLoaderJs({
         });
         return;
       }
+
       if (!ALLOW_OPS.has(op)) {
         reply(id, { ok: false, error: "unsupported archive op: " + op });
         return;
@@ -867,7 +902,11 @@ export function makeChromeLiveLoaderJs({
         });
       });
     }, false);
-    log("page archive bridge ready (session hardening active)");
+    log(
+      "page archive bridge ready (session hardening active) | loaderBuildTs=" + LOADER_BUILD_TS +
+      " (" + LOADER_BUILD_ISO + ") | libraryKvOps=" + (LOADER_LIBRARY_KV_OPS ? "YES" : "NO") +
+      " | allowOps=" + ALLOW_OPS.size
+    );
   }
 
   function installPageIdentityBridge() {
@@ -1551,6 +1590,7 @@ export function makeChromeLiveLoaderJs({
       if (aliasIdRaw) {
         try { s.dataset.h2oAlias = aliasIdRaw; } catch {}
       }
+
       const timeoutMs = Math.max(1000, Number(opts?.timeoutMs) || timeoutForPhase(phase));
       const slowWarnMs = Math.max(250, Number(opts?.slowWarnMs) || slowWarnForPhase(phase));
 
@@ -1715,6 +1755,16 @@ export function makeChromeLiveLoaderJs({
   }
 
   async function boot() {
+    try {
+      if (typeof performance !== "undefined" && typeof performance.mark === "function") {
+        performance.mark("h2o:loader:boot:start");
+      }
+    } catch {}
+
+    // Phase 4 Step 5b: V2 flag — single source of truth, captured once at
+    // boot start. When OFF, every V2 branch below is dead code and the V1
+    // load path runs byte-identically. localStorage access is wrapped in
+    // try/catch because some sandboxed contexts can throw on access.
     let V2_ENABLED = false;
     try {
       V2_ENABLED = (typeof localStorage !== "undefined")
@@ -1777,6 +1827,13 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
+    // Phase 4 Step 5b: V2-flag-gated L5 routing. When V2 is OFF, phaseOnDemand
+    // stays empty and phaseInputs is the same 'enabled' array reference (no
+    // copy made), so the phase-splitting loop below iterates the exact same
+    // array as in V1. When V2 is ON, scripts with tier "L5" AND a non-empty
+    // openEvent are diverted to phaseOnDemand instead of phaseStart/End/Idle.
+    // Disabled scripts (already filtered by decideScriptState above) are
+    // unaffected — their off-state always wins over tier classification.
     const phaseOnDemand = [];
     let phaseInputs = enabled;
     if (V2_ENABLED) {
@@ -1800,6 +1857,10 @@ export function makeChromeLiveLoaderJs({
       if (it.runAt === "document-start") phaseStart.push(it);
       else if (it.runAt === "document-end") phaseEnd.push(it);
       else phaseIdle.push(it);
+    }
+
+    if (V2_ENABLED && phaseOnDemand.length) {
+      log("v2 phaseOnDemand", phaseOnDemand.length, phaseOnDemand.map((it) => it.aliasId));
     }
 
     log("scripts", {
@@ -1826,12 +1887,26 @@ export function makeChromeLiveLoaderJs({
       return;
     }
 
+    // Phase 4 Step 5b: install the on-demand load listener BEFORE any phase
+    // load runs, so an open-event dispatched by an early-loading script can't
+    // arrive before our subscription is in place. Listener is gated on V2 +
+    // non-empty phaseOnDemand so V1 (and V2-with-no-L5-scripts) installs no
+    // listener and pays no overhead. Loads use loadOneScript() so the timing
+    // sample / status panel / heap probe instrumentation matches eager loads.
     if (V2_ENABLED && phaseOnDemand.length) {
       const onDemandByAlias = new Map();
       for (const it of phaseOnDemand) onDemandByAlias.set(String(it.aliasId), it);
       const loadedOnDemand = new Set();
       const loadingOnDemand = new Set();
 
+      // Phase 4 Step 5d: auto-bridge openEvent → on-demand-load.
+      // The Bridge's registerOnDemand (5c) creates this same wiring when
+      // a script calls it — but L5 tabs can't call registerOnDemand until
+      // they're loaded, and they can't load until SOMETHING dispatches the
+      // on-demand-load event. The loader resolves the chicken-and-egg by
+      // installing per-openEvent listeners directly from the catalog.
+      // Group aliases by openEvent so each event installs ONE listener
+      // that loads all subscribed L5 scripts.
       const aliasesByOpenEvent = new Map();
       for (const it of phaseOnDemand) {
         const openEv = String(it && it.openEvent || "").trim();
@@ -1867,9 +1942,15 @@ export function makeChromeLiveLoaderJs({
           const samples = [];
           const ok = await loadOneScript(it, 0, 1, "document-idle", samples, null);
           if (!ok) warn("on-demand: load failed; not retrying", aliasId);
+          // Mark as completed regardless of success — prevents infinite retry
+          // on persistent failures. The runtime sample records the failure
+          // for diagnostic visibility via H2O.loader.report().
           loadedOnDemand.add(aliasId);
           try { await flushRuntimeSamples(samples); } catch (_) {}
         } catch (e) {
+          // NOTE: do NOT call err(...) here — 'err' is the loader's error
+          // logger but 'e' is the caught Error. Use warn() to avoid the
+          // shadowing/typeof bug.
           warn("on-demand: dispatch handler threw", aliasId, e);
           loadedOnDemand.add(aliasId);
         } finally {
@@ -1881,14 +1962,21 @@ export function makeChromeLiveLoaderJs({
     const runtimeSamples = [];
     let loadedTotal = 0;
     const progressState = { total: enabled.length, done: 0 };
+    try { performance.mark("h2o:phase:start:start"); } catch {}
     loadedTotal += await loadPhase(phaseStart, "document-start", runtimeSamples, progressState);
+    try { performance.mark("h2o:phase:start:end"); } catch {}
     await waitDomContentLoaded();
+    try { performance.mark("h2o:phase:end:start"); } catch {}
     loadedTotal += await loadPhase(phaseEnd, "document-end", runtimeSamples, progressState);
+    try { performance.mark("h2o:phase:end:end"); } catch {}
     await waitDomIdle();
+    try { performance.mark("h2o:phase:idle:start"); } catch {}
     loadedTotal += await loadPhase(phaseIdle, "document-idle", runtimeSamples, progressState);
+    try { performance.mark("h2o:phase:idle:end"); } catch {}
     await flushRuntimeSamples(runtimeSamples);
     await maybeAutoOpenControlHubFromUrl();
 
+    try { performance.mark("h2o:loader:boot:end"); } catch {}
     log("boot done");
     setStatus(
       STATUS_LABEL +

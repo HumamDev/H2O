@@ -192,6 +192,80 @@
     }
 
     H2O.emit = H2O.events.emit;
+
+    /* ─────────────────── *:ready replay buffer (Phase 4 Step 4) ───────────────────
+     * Bounded last-value cache for *:ready / *-ready events. Strictly additive:
+     * the existing emit / bus / dual-DOM-mirror topology is unchanged. Late
+     * subscribers can use H2O.events.onReady(name, fn) to receive the cached
+     * value once (microtask-deferred) and also subscribe to future emits via
+     * the DOM event path (which already auto-mirrors evt:h2o:* ↔ h2o:*).
+     *
+     * Migration is opt-in: only emitters that explicitly call emitReady()
+     * populate the cache. emit() is unchanged, so existing direct-dispatch
+     * emitters (W.dispatchEvent(...)) leave the cache empty until they
+     * migrate (or until a later batch decides to migrate them).
+     *
+     * Cache shape: Map<canonicalKey, { detail, ts }>. One entry per event
+     * name, last-value-wins on duplicate emits, no history list. Predicate-
+     * gated writes ensure non-ready events are never cached.
+     * ───────────────────────────────────────────────────────────────────────────── */
+
+    const READY_PREDICATE = (n) => typeof n === 'string'
+      && (n.endsWith(':ready') || n.endsWith('-ready'));
+
+    // Normalize so 'evt:h2o:foo:ready' and 'h2o:foo:ready' map to the same
+    // cache slot. Other event consumers still see whatever name was passed;
+    // only the cache key is normalized.
+    function readyCacheKey(ev) {
+      const s = String(ev || '');
+      if (s.startsWith('evt:')) return s;
+      if (EVENT_ALIAS[s]) return EVENT_ALIAS[s];
+      if (s.startsWith('h2o:')) return 'evt:' + s;
+      return s;
+    }
+
+    const readyCache = new Map();
+
+    H2O.events.emitReady = function emitReady(ev, detail, opts) {
+      // Always do everything emit() does — preserves bus + DOM dispatch +
+      // legacy mirrors exactly.
+      H2O.events.emit(ev, detail || {}, opts || {});
+      // Then, IFF this event is replayable, write to the bounded cache.
+      if (!READY_PREDICATE(ev)) return;
+      try {
+        readyCache.set(readyCacheKey(ev), { detail: detail || {}, ts: Date.now() });
+      } catch (_) {}
+    };
+
+    H2O.events.onReady = function onReady(ev, fn, _opts) {
+      if (typeof fn !== 'function' || typeof ev !== 'string' || !ev) {
+        return function noopOff() {};
+      }
+      // 1) Microtask-deferred replay if cached. Caller's setup completes first.
+      let cached = null;
+      try { cached = readyCache.get(readyCacheKey(ev)); } catch (_) {}
+      if (cached) {
+        Promise.resolve().then(() => {
+          try { fn(cached.detail); }
+          catch (err) { try { console.warn('[H2O.Core] onReady replay err ' + ev, err); } catch (_) {} }
+        });
+      }
+      // 2) Subscribe to future emits via DOM. Catches BOTH bus-routed and
+      //    direct W.dispatchEvent(...) calls — important since many existing
+      //    *:ready emitters use direct dispatch.
+      const wrapped = (e) => {
+        try { fn((e && e.detail) || {}); }
+        catch (err) { try { console.warn('[H2O.Core] onReady handler err ' + ev, err); } catch (_) {} }
+      };
+      try { W.addEventListener(ev, wrapped, false); } catch (_) {}
+      return function offReady() {
+        try { W.removeEventListener(ev, wrapped, false); } catch (_) {}
+      };
+    };
+
+    // Diagnostic exposure (read-only by convention; useful for devtools
+    // inspection and the proposed validation tests).
+    H2O.events.__readyCache = readyCache;
   }
 
   /* ───────────────────────────── 🟩 4) UTILITIES / MESSAGES ───────────────────────────── */
@@ -241,6 +315,99 @@
   };
   H2O.util.safeParse = (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } };
   H2O.runtime = H2O.runtime || {};
+
+  /* ───────────────────────────── 🟦 4b) H2O.surface ─────────────────────────────
+   * Phase 3 micro-batch: canonical surface classification + change events.
+   *
+   * Listens to existing route signals only — does NOT install a new
+   * history.pushState / replaceState wrapper (9 such wrappers already exist
+   * in this codebase). Relies on:
+   *   • popstate / hashchange (browser-native)
+   *   • evt:h2o:route:changed / h2o:route:changed (already dispatched by
+   *     1A1c MiniMap Engine and others when they detect SPA navigation)
+   *
+   * If routing changes are missed in practice, a guarded history wrapper
+   * can be added later as a follow-up micro-patch.
+   * ─────────────────────────────────────────────────────────────────────────── */
+  if (!H2O.surface) {
+    H2O.surface = (() => {
+      const RE_GPT_CHAT  = /^\/g\/[^/]+\/c\/([a-z0-9-]+)/i;
+      const RE_PROJECT   = /^\/g\/[^/]+\/project\b/i;
+      const RE_GPT_HUB   = /^\/g\/[^/]+(?:\/|$)/i;
+      const RE_CHAT      = /^\/c\/([a-z0-9-]+)/i;
+      const RE_SETTINGS  = /^\/(?:auth|settings|admin)(?:\/|$)/i;
+      const RE_LIBRARY   = /^\/library(?:\/|$)/i;
+      const RE_EXPLORE   = /^\/explore(?:\/|$)/i;
+      const RE_CANVAS    = /^\/canvas(?:\/|$)/i;
+      const RE_GPTS      = /^\/gpts(?:\/|$)/i;
+      const RE_HOME      = /^\/?$/;
+
+      function classify(pathnameRaw) {
+        const p = String(pathnameRaw || '');
+        if (RE_GPT_CHAT.test(p)) return 'project-chat';
+        if (RE_PROJECT.test(p))  return 'project';
+        if (RE_GPT_HUB.test(p))  return 'project';
+        if (RE_CHAT.test(p))     return 'chat';
+        if (RE_SETTINGS.test(p)) return 'settings';
+        if (RE_LIBRARY.test(p))  return 'library';
+        if (RE_EXPLORE.test(p))  return 'explore';
+        if (RE_CANVAS.test(p))   return 'canvas';
+        if (RE_GPTS.test(p))     return 'gpts';
+        if (RE_HOME.test(p))     return 'home';
+        return 'unknown';
+      }
+
+      let _last = classify(location.pathname);
+
+      function _maybeEmit() {
+        let cur;
+        try { cur = classify(location.pathname); }
+        catch (_) { return; }
+        if (cur === _last) return;
+        const detail = { from: _last, to: cur, pathname: location.pathname };
+        _last = cur;
+        try { H2O.events?.emit?.('surface:change', detail); } catch (_) {}
+        try { W.dispatchEvent(new CustomEvent('evt:h2o:surface:change', { detail })); } catch (_) {}
+        try { W.dispatchEvent(new CustomEvent('h2o:surface:change', { detail })); } catch (_) {}
+      }
+
+      // Subscribe to existing route signals. No history wrapper added in
+      // this batch — by design.
+      try { W.addEventListener('evt:h2o:route:changed', _maybeEmit, { passive: true }); } catch (_) {}
+      try { W.addEventListener('h2o:route:changed',     _maybeEmit, { passive: true }); } catch (_) {}
+      try { W.addEventListener('popstate',              _maybeEmit, { passive: true }); } catch (_) {}
+      try { W.addEventListener('hashchange',            _maybeEmit, { passive: true }); } catch (_) {}
+
+      function onChange(fn) {
+        if (typeof fn !== 'function') return () => {};
+        const wrapped = (e) => {
+          try {
+            fn(e && e.detail ? e.detail : { from: null, to: classify(location.pathname), pathname: location.pathname });
+          } catch (_) {}
+        };
+        try { W.addEventListener('evt:h2o:surface:change', wrapped, { passive: true }); } catch (_) {}
+        return () => {
+          try { W.removeEventListener('evt:h2o:surface:change', wrapped); } catch (_) {}
+        };
+      }
+
+      function onChangeImmediate(fn) {
+        if (typeof fn !== 'function') return () => {};
+        try { fn({ from: null, to: classify(location.pathname), pathname: location.pathname }); } catch (_) {}
+        return onChange(fn);
+      }
+
+      return Object.freeze({
+        current()    { return classify(location.pathname); },
+        classify,
+        isChat()     { const s = classify(location.pathname); return s === 'chat' || s === 'project-chat'; },
+        isProject()  { const s = classify(location.pathname); return s === 'project' || s === 'project-chat'; },
+        chatId()     { return H2O.util.getChatId() || null; },
+        onChange,
+        onChangeImmediate,
+      });
+    })();
+  }
 
   H2O.emitCompat = (name, detail) => {
     try {
@@ -656,8 +823,14 @@
     return drafts.map(finalize).filter(Boolean);
   }
 
-  function buildLiveTurnDrafts() {
-    const nodes = Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
+  // Phase 4 Step 2.2: optional `preScanned` parameter avoids a redundant DOM
+  // scan when refresh() has already collected the same node set. When omitted
+  // (e.g. called from reconcileTurnRecordsFromPaginationSnapshot), the function
+  // falls back to its original behavior of scanning the document itself.
+  function buildLiveTurnDrafts(preScanned) {
+    const nodes = Array.isArray(preScanned)
+      ? preScanned
+      : Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
     const entries = [];
     for (const el of nodes) {
       const role = el.getAttribute(ATTR_MESSAGE_AUTHOR_ROLE);
@@ -879,8 +1052,12 @@
     });
   }
 
-  function buildTurns() {
-    const liveDrafts = buildLiveTurnDrafts();
+  // Phase 4 Step 2.2: forwards the optional `preScanned` node list to
+  // buildLiveTurnDrafts() so refresh() can avoid a redundant scan. Other
+  // callers (e.g. boot retry paths) pass nothing and behave identically
+  // to the prior implementation.
+  function buildTurns(preScanned) {
+    const liveDrafts = buildLiveTurnDrafts(preScanned);
     const canonicalDrafts = Array.isArray(turnState.paginationDrafts) && turnState.paginationDrafts.length
       ? turnState.paginationDrafts
       : liveDrafts;
@@ -935,8 +1112,24 @@
   function refresh(reason = 'manual') {
     state.version++;
 
-    const userNodes = Array.from(D.querySelectorAll(SEL_CORE_USER));
-    const assistantNodes = Array.from(D.querySelectorAll(SEL_CORE_ASSISTANT));
+    // Phase 4 Step 2.2: consolidate three boot-time DOM scans into one.
+    // Previously: querySelectorAll(SEL_CORE_USER) + querySelectorAll(SEL_CORE_ASSISTANT)
+    // here, plus a third querySelectorAll(SEL_CORE_WITH_ROLE) inside
+    // buildLiveTurnDrafts() called by buildTurns() below. All three target
+    // the same `document` root with no DOM mutations between calls. Now:
+    // one querySelectorAll(SEL_CORE_WITH_ROLE), partitioned by role inline
+    // for state.qList/aList ordering, and the same array forwarded to
+    // buildTurns() so buildLiveTurnDrafts() can skip its scan. Output is
+    // byte-equivalent: DOM iteration order matches separate role-filtered
+    // scans because querySelectorAll always returns nodes in document order.
+    const allRoleNodes = Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
+    const userNodes = [];
+    const assistantNodes = [];
+    for (const el of allRoleNodes) {
+      const role = el.getAttribute(ATTR_MESSAGE_AUTHOR_ROLE);
+      if (role === 'user') userNodes.push(el);
+      else if (role === 'assistant') assistantNodes.push(el);
+    }
 
     state.qList = [];
     state.aList = [];
@@ -957,7 +1150,7 @@
       state.aById.set(id, idx);
     });
 
-    buildTurns();
+    buildTurns(allRoleNodes);
 
     const emitFn = H2O.events?.emit || H2O.bus?.emit || busEmit;
     emitFn(EV_CORE_INDEX_UPDATED, {

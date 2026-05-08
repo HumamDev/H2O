@@ -948,6 +948,35 @@
     S.booted = false;
   }
 
+  // Phase 3: thin Promise wrapper over API_OH_onReady({immediate:true}). Lets
+  // callers `await H2O.obs.chatRootObserved()` instead of subscribing-then-
+  // unsubscribing. Default behavior: never times out (resolves whenever the
+  // conversation root appears). With `{ timeoutMs: N }`: races the timeout,
+  // resolves with `null` if the root never appears within N ms (e.g. on
+  // /settings, /auth, or pre-content surfaces). Resolves with the root
+  // element on success.
+  function API_OH_chatRootObserved(opts) {
+    const timeoutMs = Math.max(0, Number(opts && opts.timeoutMs) || 0);
+    return new Promise((resolve) => {
+      let done = false;
+      let timer = 0;
+      let off = null;
+      const finish = (root) => {
+        if (done) return;
+        done = true;
+        if (timer) { try { clearTimeout(timer); } catch (_) {} }
+        try { if (typeof off === 'function') off(); } catch (_) {}
+        resolve(root || null);
+      };
+      off = API_OH_onReady('chatRootObserved', (info) => {
+        finish((info && info.root) || API_OH_getRoot());
+      }, { immediate: true });
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => finish(null), timeoutMs);
+      }
+    });
+  }
+
   /* ───────────────────────────── ⬜️ 11) EXPOSE ───────────────────────────── */
   const API = {
     ver: '0.1.0',
@@ -955,6 +984,7 @@
     getRoot: API_OH_getRoot,
     onReady: API_OH_onReady,
     onMutations: API_OH_onMutations,
+    chatRootObserved: API_OH_chatRootObserved,
     off: API_OH_off,
     suppress: API_OH_suppress,
     resume: API_OH_resume,

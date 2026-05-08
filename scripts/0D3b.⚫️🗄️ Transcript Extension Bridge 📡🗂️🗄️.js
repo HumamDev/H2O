@@ -52,7 +52,10 @@
 
   function bridgeNeedsSession(opRaw) {
     const op = String(opRaw || "").trim();
-    return !!op && op !== "ping" && op !== "initSession";
+    // __loaderInfo is a content-script-local diagnostic that never reaches the SW, so it
+    // doesn't need a session token attached. Keeps the diagnostic available even when the
+    // SW or session machinery is misbehaving.
+    return !!op && op !== "ping" && op !== "initSession" && op !== "__loaderInfo";
   }
 
   async function ensureSession(force = false) {
@@ -244,9 +247,6 @@
     importBundle: (opts = {}) => call("importBundle", opts),
     getMigratedFlag: (chatId) => call("getMigratedFlag", { chatId }),
     setMigratedFlag: (chatId, migrated) => call("setMigratedFlag", { chatId, migrated: !!migrated }),
-  };
-
-  function register() {
     // Library KV: durable backend for H2O.Library.Store. Service worker validates that the
     // key starts with "h2o:prm:cgx:library:" and stores values in a dedicated IndexedDB DB
     // (h2o_library_kv) — isolated from the archive's h2o_chat_archive DB. Returns the raw
@@ -256,6 +256,13 @@
     libraryKvDel: (key) => call("libraryKvDel", { key }),
     libraryKvListKeys: (prefix) => call("libraryKvListKeys", { prefix }),
     libraryKvEstimate: () => call("libraryKvEstimate", {}),
+    // Loader-side diagnostic — handled entirely inside the page content-script, never reaches
+    // the SW. Returns { loaderBuildTs, loaderBuildIso, libraryKvOps, allowOps, allowOpsCount, tag }
+    // so we can confirm which loader.js Chrome actually has active for this page.
+    __loaderInfo: () => call("__loaderInfo", {}, { timeoutMs: 1500 }),
+  };
+
+  function register() {
     const archiveBoot = H2O.archiveBoot;
     if (!archiveBoot || typeof archiveBoot._registerExtensionBridge !== "function") return false;
     archiveBoot._registerExtensionBridge(api);
