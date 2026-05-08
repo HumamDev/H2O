@@ -58,6 +58,7 @@
     "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1p._Interface_Controls_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1d._Performance_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },

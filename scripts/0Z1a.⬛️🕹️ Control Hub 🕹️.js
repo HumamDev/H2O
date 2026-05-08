@@ -2041,6 +2041,75 @@ __ROOT__ .cgxui-qbig-number{
     ENGINE_renderControls(panel);
   }
 
+  function CORE_CH_refreshControlsForKey(key){
+    const panel = UTIL_q(SEL_CHUB_PANEL);
+    if (!panel) return false;
+    const visible = panel.getAttribute('aria-hidden') !== 'true' && !panel.hasAttribute('hidden');
+    if (!visible) return false;
+
+    const requestedHubKey = FEATURE_getHubKey(key);
+    if (!requestedHubKey) return false;
+
+    const activeHubKey = FEATURE_getHubKey(STATE_CH.curKey);
+    if (!activeHubKey || activeHubKey !== requestedHubKey) return false;
+
+    ENGINE_renderControls(panel);
+    return true;
+  }
+
+  function CORE_CH_resolveReplayPanelContext(key){
+    const panel = UTIL_q(SEL_CHUB_PANEL);
+    if (!panel) return null;
+    const visible = panel.getAttribute('aria-hidden') !== 'true' && !panel.hasAttribute('hidden');
+    if (!visible) return null;
+
+    const requestedHubKey = FEATURE_getHubKey(key);
+    if (!requestedHubKey) return null;
+
+    const activeHubKey = FEATURE_getHubKey(STATE_CH.curKey);
+    if (!activeHubKey || activeHubKey !== requestedHubKey) return null;
+
+    let nextCat = STATE_CH.curCat || CAT_ALL;
+    let visibleKeys = CHUB_MAIN_TAB_getMetaList(nextCat).map((meta) => FEATURE_getCanonicalKey(meta.key));
+
+    if (!visibleKeys.includes(requestedHubKey)) {
+      nextCat = CAT_forFeatureKey(requestedHubKey) || CAT_ALL;
+      visibleKeys = CHUB_MAIN_TAB_getMetaList(nextCat).map((meta) => FEATURE_getCanonicalKey(meta.key));
+    }
+
+    if (!visibleKeys.length) {
+      nextCat = CAT_ALL;
+      visibleKeys = CHUB_MAIN_TAB_getMetaList(nextCat).map((meta) => FEATURE_getCanonicalKey(meta.key));
+    }
+
+    if (!visibleKeys.includes(requestedHubKey)) return null;
+
+    return { panel, nextCat, requestedHubKey };
+  }
+
+  function CORE_CH_replayActiveDetailForKey(key){
+    const ctx = CORE_CH_resolveReplayPanelContext(key);
+    if (!ctx) return false;
+
+    STATE_CH.curCat = ctx.nextCat;
+    STATE_CH.curKey = ctx.requestedHubKey;
+    CHUB_STATE_setLastMainTab(STATE_CH.curKey);
+    ENGINE_renderList(ctx.panel);
+    ENGINE_renderDetail(ctx.panel);
+    return true;
+  }
+
+  function CORE_CH_replayOpenPanelForKey(key){
+    const ctx = CORE_CH_resolveReplayPanelContext(key);
+    if (!ctx) return false;
+
+    STATE_CH.curCat = ctx.nextCat;
+    STATE_CH.curKey = ctx.requestedHubKey;
+    CHUB_STATE_setLastMainTab(STATE_CH.curKey);
+    ENGINE_renderAll(ctx.panel);
+    return true;
+  }
+
   function ENGINE_parseActionMessage(result, fallback=''){
     if (!result) return fallback || '';
     if (typeof result === 'string') return result;
@@ -4676,6 +4745,9 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
       MOD_OBJ.api.unregisterPlugin = PLUG_unregister;
       MOD_OBJ.api.getSkin = PLUG_skin;
       MOD_OBJ.api.invalidate = CORE_CH_invalidate;
+      MOD_OBJ.api.refreshControls = CORE_CH_refreshControlsForKey;
+      MOD_OBJ.api.replayActiveDetail = CORE_CH_replayActiveDetailForKey;
+      MOD_OBJ.api.replayOpenPanel = CORE_CH_replayOpenPanelForKey;
       MOD_OBJ.api.getUiConfig = CHUB_UI_getConfig;
       MOD_OBJ.api.getUiSetting = CHUB_UI_get;
       MOD_OBJ.api.applyUiSetting = CHUB_UI_set;
