@@ -57,6 +57,9 @@
 
     "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
     "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
-    "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" }
+    "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1j._Workspaces_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" },
+    "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js": { "tier": "L5", "openEvent": "evt:h2o:chub:open" }
   }
 }
