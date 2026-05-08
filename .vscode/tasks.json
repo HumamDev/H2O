@@ -12,7 +12,7 @@
       "label": "H2O: 1) 🟦 Common / B) Build aliases + EXT proxy pack (uses TSV master)",
       "detail": "EXT workspace prerequisite: builds aliases + EXT proxy pack directly (no TM loader generation).",
       "type": "shell",
-      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/../h2o-dev-server\" && node \"${workspaceFolder}/tools/loader/make-aliases.mjs\" && node \"${workspaceFolder}/tools/loader/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (sibling h2o-dev-server): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Dev builds: ${workspaceFolder}/build/chrome-ext-dev-controls | ${workspaceFolder}/build/chrome-ext-dev-lean\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
+      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/../h2o-dev-server\" && node \"${workspaceFolder}/tools/loader/make-aliases.mjs\" && node \"${workspaceFolder}/tools/loader/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (sibling h2o-dev-server): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Current Dev Controls build: ${workspaceFolder}/build/chrome-ext-dev-controls-oauth-google\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
       "problemMatcher": []
     },
     {
@@ -23,8 +23,8 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)",
-      "detail": "Dev-only extension step: builds build/chrome-ext-dev-controls (popup toggles + live loader).",
+      "label": "H2O: 2) 🟩 DEV / A) 🟢 V3 / armed / oauth-google Build (active path)",
+      "detail": "Dev-only extension step: builds V3 armed oauth-google controls into build/chrome-ext-dev-controls-oauth-google.",
       "type": "process",
       "command": "node",
       "args": [
@@ -34,7 +34,10 @@
         "cwd": "${workspaceFolder}",
         "env": {
           "H2O_SRC_DIR": "${workspaceFolder}",
-          "H2O_EXT_OUT_DIR": "${workspaceFolder}/build/chrome-ext-dev-controls",
+          "H2O_EXT_DEV_VARIANT": "controls",
+          "H2O_EXT_OUT_DIR": "${workspaceFolder}/build/chrome-ext-dev-controls-oauth-google",
+          "H2O_IDENTITY_PHASE_NETWORK": "request_otp",
+          "H2O_IDENTITY_OAUTH_PROVIDER": "google",
           "H2O_EXT_PROXY_PACK_URL": "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt"
         }
       },
@@ -108,12 +111,12 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 2) 🟩 DEV / C) ⚡ 🟢 QUICK ✅ RECOMMENDED: Workflow for Dev Controls",
-      "detail": "⚡ Quick recommended dev workflow: runs the direct prerequisite rebuild, then DEV A (🟢 Controls).",
+      "label": "H2O: 2) 🟩 DEV / C) ⚡ 🟢 QUICK ✅ RECOMMENDED: Workflow for V3 / armed / oauth-google",
+      "detail": "⚡ Quick recommended dev workflow: runs the direct prerequisite rebuild, then DEV A (V3 armed oauth-google active path).",
       "dependsOrder": "sequence",
       "dependsOn": [
         "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
-        "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)"
+        "H2O: 2) 🟩 DEV / A) 🟢 V3 / armed / oauth-google Build (active path)"
       ],
       "problemMatcher": []
     },
@@ -128,12 +131,12 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 4) 🟨 BOTH / A) ⚡ 🟢 QUICK Combined: Build Dev Controls + Ops Panel",
-      "detail": "⚡ Quick combined outputs: runs Common C, then DEV A (🟢 Controls) + OPS PANEL A.",
+      "label": "H2O: 4) 🟨 BOTH / A) ⚡ 🟢 QUICK Combined: Build V3 / armed / oauth-google + Ops Panel",
+      "detail": "⚡ Quick combined outputs: runs Common C, then DEV A (V3 armed oauth-google active path) + OPS PANEL A.",
       "dependsOrder": "sequence",
       "dependsOn": [
         "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
-        "H2O: 2) 🟩 DEV / A) 🟢 Controls Build Extension (unpacked)",
+        "H2O: 2) 🟩 DEV / A) 🟢 V3 / armed / oauth-google Build (active path)",
         "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)"
       ],
       "problemMatcher": []
@@ -150,8 +153,8 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: #) 🟥 DEV / Z) ONE-BUTTON Rebuild Everything (scripts + aliases + proxy + controls + lean)",
-      "detail": "One-button daily rebuild: common prereqs + Controls extension + Lean extension.",
+      "label": "H2O: #) 🟥 DEV / Z) ONE-BUTTON Rebuild V3 / armed / oauth-google (scripts + aliases + proxy + extension)",
+      "detail": "One-button daily rebuild: common prereqs + V3 armed oauth-google extension into build/chrome-ext-dev-controls-oauth-google.",
       "type": "process",
       "command": "node",
       "args": [
