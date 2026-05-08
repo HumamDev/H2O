@@ -72,6 +72,8 @@
   const UI_FSECTION_VIEWER = `${OWNER_SKID}-viewer`;
   const UI_FSECTION_PAGE_HOST = `${OWNER_SKID}-page-host`;
   const UI_FSECTION_PAGE = `${OWNER_SKID}-page`;
+  const UI_PROJECT_TITLE_STYLE_ID = 'h2o-project-title-container-style-v1';
+  const UI_PROJECT_TITLE_ROW_CLASS = 'ho-project-row';
   const CFG_H2O_PAGE_ROUTE_OWNER = `${OWNER_SKID}:page-route:v1`;
   const CFG_H2O_PAGE_ROUTE_PREFIX = 'h2o';
   const CFG_H2O_PAGE_QUERY_FLAG = `h2o_${OWNER_SKID}`;
@@ -1891,7 +1893,114 @@
     return false;
   }
 
+  function UI_installProjectTitleContainerStyle() {
+    if (D.getElementById(UI_PROJECT_TITLE_STYLE_ID)) return;
+    const style = D.createElement('style');
+    style.id = UI_PROJECT_TITLE_STYLE_ID;
+    style.textContent = `
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS} {
+  width: calc(100% - 3px) !important;
+  box-sizing: border-box !important;
+  padding: 8px 12px !important;
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+  margin-left: 3px !important;
+  margin-right: 0 !important;
+  transform: translateX(2px) !important;
+  position: relative !important;
+  border-radius: 10px !important;
+  background: rgba(0,0,0,0.18) !important;
+  background-color: rgba(0,0,0,0.18) !important;
+  z-index: 0 !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.07),
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    0 3px 10px rgba(0,0,0,0.32) !important;
+  transition: background .15s ease, box-shadow .15s ease;
+}
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  border-radius: inherit !important;
+  pointer-events: none !important;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0.045),
+    rgba(255,255,255,0.012) 40%,
+    rgba(0,0,0,0) 100%
+  ) !important;
+  opacity: 0.75 !important;
+}
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}:hover {
+  background: rgba(0,0,0,0.12) !important;
+  background-color: rgba(0,0,0,0.12) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.11),
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 5px 14px rgba(0,0,0,0.42) !important;
+}
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}[aria-current="page"],
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}.active,
+:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}[data-active] {
+  border-radius: 12px !important;
+  background: rgba(0,0,0,0.12) !important;
+  background-color: rgba(0,0,0,0.12) !important;
+  box-shadow:
+    inset 0 0 0 1.5px rgba(255,255,255,0.22),
+    0 0 0 1px rgba(0,0,0,0.65),
+    0 6px 16px rgba(0,0,0,0.44) !important;
+}
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > .sticky,
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"] {
+  isolation: isolate !important;
+  background: var(--sidebar-surface-primary, var(--bg-primary, #202123)) !important;
+  background-color: var(--sidebar-surface-primary, var(--bg-primary, #202123)) !important;
+}
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > .sticky:first-child {
+  z-index: 120 !important;
+}
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"] {
+  z-index: 110 !important;
+}
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"]::after {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: -14px !important;
+  height: 14px !important;
+  pointer-events: none !important;
+  background: linear-gradient(
+    to bottom,
+    var(--sidebar-surface-primary, var(--bg-primary, #202123)) 0%,
+    color-mix(in srgb, var(--sidebar-surface-primary, #202123) 72%, transparent) 58%,
+    transparent 100%
+  ) !important;
+  z-index: 1 !important;
+}
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) a.ho-has-colorbtn-side,
+:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) .${UI_PROJECT_TITLE_ROW_CLASS} {
+  z-index: 0 !important;
+}
+`;
+    (D.head || D.documentElement).appendChild(style);
+  }
+
+  function UI_markProjectTitleRows(projectsSection = DOM_findProjectsSection(DOM_findProjectsH2())) {
+    UI_installProjectTitleContainerStyle();
+    if (!(projectsSection instanceof HTMLElement)) return 0;
+    projectsSection.querySelectorAll(`.${UI_PROJECT_TITLE_ROW_CLASS}`).forEach((row) => {
+      if (!row.matches?.('a[href*="/g/"][href$="/project"]')) row.classList.remove(UI_PROJECT_TITLE_ROW_CLASS);
+    });
+    const rows = [...projectsSection.querySelectorAll('a.__menu-item[href*="/g/"][href$="/project"],a[data-sidebar-item="true"][href*="/g/"][href$="/project"]')]
+      .filter((row) => !DOM_isH2OOwnedNode(row));
+    rows.forEach((row) => row.classList.add(UI_PROJECT_TITLE_ROW_CLASS));
+    return rows.length;
+  }
+
   function UI_applyProjectsNativeControls(projectsSection = DOM_findProjectsSection(DOM_findProjectsH2())) {
+    UI_markProjectTitleRows(projectsSection);
     if (!projectsSection) return;
 
     const moreRow = DOM_getProjectsMoreRow(projectsSection);
@@ -2052,6 +2161,7 @@
 
     const mo = new MutationObserver((muts) => {
       if (!PROJECTS_mutationTouchesNativeRows(muts)) return;
+      UI_applyProjectsNativeControls();
       PROJECTS_reconcileDropdownRows('native-dom-mutation');
       PROJECTS_invalidateStore('native-project-dom-mutation');
     });
@@ -2081,8 +2191,16 @@
   };
 
   function PROJECTS_boot() {
-    if (STATE.projectsBooted) return;
+    if (STATE.projectsBooted) {
+      UI_applyProjectsNativeControls();
+      return;
+    }
     STATE.projectsBooted = true;
+    UI_applyProjectsNativeControls();
+    const timer = W.setTimeout(() => {
+      try { UI_applyProjectsNativeControls(); } catch (error) { err('projectsNativeControlsDeferred', error); }
+    }, CFG_PROJECTS_DEFERRED_RECONCILE_MS);
+    CLEAN.timers.add(timer);
     OBS_hookProjectsNativeFetchCaptureOnce();
     OBS_hookProjectsMorePageOverrideOnce();
     OBS_hookProjectsCanonicalStoreOnce();
