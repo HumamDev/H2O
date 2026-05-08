@@ -1821,6 +1821,15 @@ ${out.answerText}`);
     const turnUsage = new Map(); // tagId → [{answerId, turnKey, ordinal, snippet?}]
     let turnOrdinal = 0;
 
+    // Phase 4 side-output accumulator: per-chat phrase data, built inside the existing
+    // turn loop so we don't iterate twice. phraseKey → { phrase, count, score, turnIds, lastSeenMs }.
+    // Independent of chat display mode (TAG_MODE_MANUAL/AUTO/SUGGESTION) — the auto-pool is
+    // a global candidate catalog and must populate even when buildTurnState skips
+    // extraction (the default, since chat mode defaults to MANUAL).
+    const phase4Phrases = new Map();
+    let phase4TurnsProcessed = 0;
+    let phase4KeywordCount = 0; // total keyword instances seen across all turns (pre-dedup)
+
     for (const turn of turns) {
       turnOrdinal += 1;
       const turnKey = getTurnKey(turn);
@@ -1830,6 +1839,7 @@ ${out.answerText}`);
         row = analyzed.state || null;
       }
       if (!row) continue;
+      phase4TurnsProcessed += 1;
       const answerId = normalizeId(row.answerId || turn?.answerId || '');
       const attachedTags = getAttachedVisibleTags(chatId, turnKey, row).filter((tag) => tag.visible !== false);
       if (attachedTags.length) {
@@ -1842,52 +1852,12 @@ ${out.answerText}`);
             const ref = { answerId, turnKey, ordinal: turnOrdinal };
             if (snippet) ref.snippet = snippet;
             refs.push(ref);
-    // Phase 4 side-output accumulator: per-chat phrase data, built inside the existing
-    // turn loop so we don't iterate twice. phraseKey → { phrase, count, score, turnIds, lastSeenMs }.
-    // Independent of chat display mode (TAG_MODE_MANUAL/AUTO/SUGGESTION) — the auto-pool is
-    // a global candidate catalog and must populate even when buildTurnState skips
-    // extraction (the default, since chat mode defaults to MANUAL).
-    const phase4Phrases = new Map();
-    let phase4TurnsProcessed = 0;
-    let phase4KeywordCount = 0; // total keyword instances seen across all turns (pre-dedup)
             turnUsage.set(poolRow.id, refs);
           }
         });
       }
       tagRows.push(...attachedTags);
       keywordRows.push(...(row.auto?.keywords || []));
-    }
-
-    const pool = readTagPool(chatId);
-    Object.keys(pool).forEach((id) => {
-      pool[id].usageCount = usage.get(id) || 0;
-      pool[id].updatedAt = Date.now();
-    });
-    writeTagPool(chatId, pool);
-
-    const tags = uniqTags(tagRows).slice(0, getCfg().visibleTagsPerChat).map((tag) => tag.label);
-    const keywords = uniqKeywords(keywordRows).map((kw) => kw.term);
-    const tagCatalog = Object.values(pool)
-      .filter((row) => Number(row?.usageCount || 0) > 0)
-      phase4TurnsProcessed += 1;
-      .map((row) => {
-        const refs = turnUsage.get(row.id);
-        return refs?.length ? { ...row, turnRefs: refs } : row;
-      })
-      .sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0) || String(a.label || '').localeCompare(String(b.label || '')));
-
-    const summary = {
-      chatId,
-      updatedAt: Date.now(),
-      tags,
-      keywords,
-      tagCatalog,
-      categoryCandidate: {
-        primaryCategoryId: '',
-        secondaryCategoryId: '',
-        confidence: null,
-      },
-    };
 
       // Phase 4 candidate sources for this turn (mode-independent):
       //   1. row.auto.keywords         — populated only when chat is in AUTO/SUGGESTION mode.
@@ -1930,6 +1900,38 @@ ${out.answerText}`);
           phase4Phrases.set(phraseKey, e);
         });
       }
+    }
+
+    const pool = readTagPool(chatId);
+    Object.keys(pool).forEach((id) => {
+      pool[id].usageCount = usage.get(id) || 0;
+      pool[id].updatedAt = Date.now();
+    });
+    writeTagPool(chatId, pool);
+
+    const tags = uniqTags(tagRows).slice(0, getCfg().visibleTagsPerChat).map((tag) => tag.label);
+    const keywords = uniqKeywords(keywordRows).map((kw) => kw.term);
+    const tagCatalog = Object.values(pool)
+      .filter((row) => Number(row?.usageCount || 0) > 0)
+      .map((row) => {
+        const refs = turnUsage.get(row.id);
+        return refs?.length ? { ...row, turnRefs: refs } : row;
+      })
+      .sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0) || String(a.label || '').localeCompare(String(b.label || '')));
+
+    const summary = {
+      chatId,
+      updatedAt: Date.now(),
+      tags,
+      keywords,
+      tagCatalog,
+      categoryCandidate: {
+        primaryCategoryId: '',
+        secondaryCategoryId: '',
+        confidence: null,
+      },
+    };
+
     writeChatSummary(chatId, summary);
 
     safeDispatch(EV_CHAT_ANALYZED, {
@@ -1937,80 +1939,6 @@ ${out.answerText}`);
       summary,
       ts: Date.now(),
     });
-
-    return { ok: true, status: 'ok', summary };
-  }
-
-  async function projectChatMetadata(chatIdRaw, opts = {}) {
-    const chatId = toChatId(chatIdRaw);
-    if (!chatId) return { ok: false, status: 'missing-chat-id' };
-
-    const archive = getArchiveBoot();
-    // Use already-written summary (aggregateChat runs before us in refreshChatSummaryAndProject);
-    // only re-aggregate if the cache is genuinely missing.
-    const summary = readChatSummary(chatId) || aggregateChat(chatId, opts).summary || null;
-    if (!summary) return { ok: false, status: 'missing-summary' };
-
-    const patch = {
-      tags: Array.isArray(summary.tags) ? summary.tags : [],
-      keywords: Array.isArray(summary.keywords) ? summary.keywords : [],
-      tagCatalog: Array.isArray(summary.tagCatalog) ? summary.tagCatalog : [],
-    };
-
-    // IMPORTANT:
-    // archiveBoot.upsertLatestSnapshotMeta is available in newer archive engine builds.
-    // Keep the runtime guard below so this module still fails safely if load order or older builds
-    // temporarily leave the seam unavailable.
-    const upsert = archive?.upsertLatestSnapshotMeta || archive?._rendererHost?.upsertLatestSnapshotMeta || null;
-    if (typeof upsert !== 'function') {
-      return {
-        ok: false,
-        status: 'archive-meta-write-api-missing',
-        chatId,
-        patch,
-      };
-    }
-
-    try {
-      const res = await upsert(chatId, patch, { source: 'tags' });
-      safeDispatch(EV_TAGS_CHANGED, { chatId, patch, source: 'projectChatMetadata', ts: Date.now() });
-      return { ok: true, status: 'ok', chatId, patch, res };
-    } catch (e) {
-      err('projectChatMetadata', e);
-      return { ok: false, status: 'archive-meta-write-failed', chatId, patch, error: String(e?.message || e || '') };
-    }
-  }
-
-  function getTurnState(chatIdRaw, turnIdOrAnswerId) {
-    const chatId = toChatId(chatIdRaw);
-    const turnKey = getTurnKey(turnIdOrAnswerId);
-    if (!chatId || !turnKey) return null;
-    return readTurnCache(chatId).get(turnKey) || null;
-  }
-
-  function ensureTurnState(chatIdRaw, turnIdOrAnswerId, opts = {}) {
-    const existing = getTurnState(chatIdRaw, turnIdOrAnswerId);
-    if (existing && opts.force !== true) return { ok: true, status: 'cached', state: existing };
-    return analyzeTurn(chatIdRaw, turnIdOrAnswerId, opts);
-  }
-
-  function getChatSummary(chatIdRaw) {
-    return readChatSummary(chatIdRaw);
-  }
-
-  function mutateManual(chatIdRaw, turnIdOrAnswerId, mutateFn) {
-    const chatId = toChatId(chatIdRaw);
-    const runtimeTurn = (turnIdOrAnswerId && typeof turnIdOrAnswerId === 'object')
-      ? turnIdOrAnswerId
-      : getTurnRecordByAnyId(turnIdOrAnswerId);
-    const turnKey = getTurnKey(runtimeTurn || turnIdOrAnswerId);
-    if (!chatId || !turnKey) return { ok: false, status: 'invalid-target' };
-
-    const store = readManualStore(chatId);
-    const row = (store[turnKey] && typeof store[turnKey] === 'object') ? { ...store[turnKey] } : {};
-    const next = (typeof mutateFn === 'function' ? mutateFn(row) : row) || row;
-    store[turnKey] = next;
-    writeManualStore(chatId, store);
 
     // Phase 4: emit side-outputs (occurrence index + auto-pool contribution). Returns a
     // Promise so external callers (e.g., refreshTagAutoPool) can await the in-memory cache
@@ -2510,6 +2438,78 @@ ${out.answerText}`);
       lastUpdatedAtIso: cache?.updatedAtIso || '',
     };
   }
+
+  async function projectChatMetadata(chatIdRaw, opts = {}) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return { ok: false, status: 'missing-chat-id' };
+
+    const archive = getArchiveBoot();
+    // Use already-written summary (aggregateChat runs before us in refreshChatSummaryAndProject);
+    // only re-aggregate if the cache is genuinely missing.
+    const summary = readChatSummary(chatId) || aggregateChat(chatId, opts).summary || null;
+    if (!summary) return { ok: false, status: 'missing-summary' };
+
+    const patch = {
+      tags: Array.isArray(summary.tags) ? summary.tags : [],
+      keywords: Array.isArray(summary.keywords) ? summary.keywords : [],
+      tagCatalog: Array.isArray(summary.tagCatalog) ? summary.tagCatalog : [],
+    };
+
+    // IMPORTANT:
+    // archiveBoot.upsertLatestSnapshotMeta is available in newer archive engine builds.
+    // Keep the runtime guard below so this module still fails safely if load order or older builds
+    // temporarily leave the seam unavailable.
+    const upsert = archive?.upsertLatestSnapshotMeta || archive?._rendererHost?.upsertLatestSnapshotMeta || null;
+    if (typeof upsert !== 'function') {
+      return {
+        ok: false,
+        status: 'archive-meta-write-api-missing',
+        chatId,
+        patch,
+      };
+    }
+
+    try {
+      const res = await upsert(chatId, patch, { source: 'tags' });
+      safeDispatch(EV_TAGS_CHANGED, { chatId, patch, source: 'projectChatMetadata', ts: Date.now() });
+      return { ok: true, status: 'ok', chatId, patch, res };
+    } catch (e) {
+      err('projectChatMetadata', e);
+      return { ok: false, status: 'archive-meta-write-failed', chatId, patch, error: String(e?.message || e || '') };
+    }
+  }
+
+  function getTurnState(chatIdRaw, turnIdOrAnswerId) {
+    const chatId = toChatId(chatIdRaw);
+    const turnKey = getTurnKey(turnIdOrAnswerId);
+    if (!chatId || !turnKey) return null;
+    return readTurnCache(chatId).get(turnKey) || null;
+  }
+
+  function ensureTurnState(chatIdRaw, turnIdOrAnswerId, opts = {}) {
+    const existing = getTurnState(chatIdRaw, turnIdOrAnswerId);
+    if (existing && opts.force !== true) return { ok: true, status: 'cached', state: existing };
+    return analyzeTurn(chatIdRaw, turnIdOrAnswerId, opts);
+  }
+
+  function getChatSummary(chatIdRaw) {
+    return readChatSummary(chatIdRaw);
+  }
+
+  function mutateManual(chatIdRaw, turnIdOrAnswerId, mutateFn) {
+    const chatId = toChatId(chatIdRaw);
+    const runtimeTurn = (turnIdOrAnswerId && typeof turnIdOrAnswerId === 'object')
+      ? turnIdOrAnswerId
+      : getTurnRecordByAnyId(turnIdOrAnswerId);
+    const turnKey = getTurnKey(runtimeTurn || turnIdOrAnswerId);
+    if (!chatId || !turnKey) return { ok: false, status: 'invalid-target' };
+
+    const store = readManualStore(chatId);
+    const row = (store[turnKey] && typeof store[turnKey] === 'object') ? { ...store[turnKey] } : {};
+    const next = (typeof mutateFn === 'function' ? mutateFn(row) : row) || row;
+    store[turnKey] = next;
+    writeManualStore(chatId, store);
+
     const analyzed = analyzeTurn(chatId, runtimeTurn || turnIdOrAnswerId, { reason: 'manual-mutation' });
     const answerId = normalizeId(analyzed?.state?.answerId || runtimeTurn?.answerId || turnIdOrAnswerId);
     if (answerId) {
@@ -3695,77 +3695,1051 @@ ${out.answerText}`);
     return openTagUsageViewer(tag, opts);
   }
 
+  // ─── Phase 5: Tag Bubble Cloud ──────────────────────────────────────────────
+  // Replaces the vertical <li> list with a colorful, frequency-sized bubble cloud.
+  // Data sources (read-only): listAllChatTags() (existing per-chat tags) + Phase 4
+  // getTagAutoPoolSnapshot() (cross-chat candidates). Existing tags carry their
+  // openTagViewer wiring (which already navigates to turns via openTurnByRef);
+  // candidate-only bubbles open a non-navigating info popup pending Phase 6 NavTo.
+  // No mutation of tags:manual:v1 / tag-pool / auto-pool data — purely read-side UI.
+
+  const CLOUD_STYLE_ID = `cgxui-${SkID}-cloud-style`;
+  const CLOUD_ATTR = ATTR_CGXUI;
+  const CLOUD_OWNER = SkID;
+  const CLOUD_BUBBLE_FONT_MIN = 12;
+  const CLOUD_BUBBLE_FONT_MAX = 28;
+
+  // Phase 5.5 — Candidate quality filter (DISPLAY-TIME only).
+  // Auto-pool data in Store stays untouched; we just hide low-value candidates from the
+  // bubble cloud so the user-facing surface looks intelligent. Manual / in-use tags always
+  // pass — user-chosen tags are sacred even if they happen to look generic.
+  const CANDIDATE_NOISE_WORDS = new Set([
+    // Articles, conjunctions, prepositions
+    'a','an','the','and','or','but','nor','so','yet','for','as','at','by',
+    'in','on','of','to','up','down','out','off','over','under','through',
+    'around','across','behind','before','after','during','since','until',
+    'between','among','within','without','against','toward','towards',
+    'with','from','into','onto','upon','about','above','below','beside',
+    // Pronouns
+    'i','me','my','mine','myself','you','your','yours','yourself','yourselves',
+    'he','him','his','himself','she','her','hers','herself',
+    'it','its','itself','we','us','our','ours','ourselves',
+    'they','them','their','theirs','themselves',
+    'this','that','these','those','here','there','where','when','why','how',
+    'what','who','whom','whose','which','whether','if','unless','because',
+    'although','though','while','whereas','despite','however','therefore',
+    'thus','hence',
+    // Auxiliary / modal verbs + contractions
+    'am','is','are','was','were','be','been','being','do','does','did','doing',
+    'have','has','had','having','will','would','could','should','can','cannot','cant',
+    'may','might','must','shall','ought','wont','dont','doesnt','didnt','isnt','arent','wasnt','werent','hasnt','havent','hadnt',
+    // Common non-topical verbs (English)
+    'go','goes','going','went','gone','get','gets','got','gotten','getting',
+    'make','makes','made','making','take','takes','took','taking','taken',
+    'come','comes','came','coming','say','says','said','saying',
+    'see','sees','saw','seen','seeing','look','looks','looked','looking',
+    'know','knows','knew','known','knowing','think','thinks','thought',
+    'use','uses','used','using','find','finds','found','finding',
+    'give','gives','gave','given','giving','tell','tells','told','telling',
+    'work','works','worked','working','call','calls','called','calling',
+    'try','tries','tried','trying','ask','asks','asked','asking',
+    'need','needs','needed','want','wants','wanted','wanting',
+    'put','puts','putting','let','lets','letting','seem','seems','seemed','seeming',
+    'become','becomes','became','becoming','feel','feels','felt','feeling',
+    'leave','leaves','left','leaving','keep','keeps','kept','keeping',
+    'mean','means','meant','meaning','help','helps','helped','helping',
+    'show','shows','showed','shown','showing','hear','hears','heard','hearing',
+    'run','runs','ran','running','move','moves','moved','moving',
+    'believe','believes','believed','believing','hold','holds','held','holding',
+    'bring','brings','brought','bringing','happen','happens','happened',
+    'write','writes','wrote','written','writing','provide','provides','provided',
+    'sit','sits','sat','sitting','stand','stands','stood','standing',
+    'lose','loses','lost','losing','pay','pays','paid','paying',
+    'meet','meets','met','meeting','include','includes','included','including',
+    'continue','continues','continued','set','sets','setting',
+    'learn','learns','learned','learnt','learning','change','changes','changed','changing',
+    'lead','leads','led','leading','understand','understands','understood','understanding',
+    'watch','watches','watched','watching','follow','follows','followed','following',
+    'stop','stops','stopped','create','creates','created','creating',
+    'speak','speaks','spoke','spoken','speaking','spend','spends','spent','spending',
+    'read','reads','reading','allow','allows','allowed','allowing',
+    'add','adds','added','adding','open','opens','opened','opening',
+    'close','closes','closed','closing','reach','reaches','reached','reaching',
+    'build','builds','built','building','remain','remains','remained',
+    'suggest','suggests','suggested','remember','remembers','remembered',
+    'consider','considers','considered','appear','appears','appeared',
+    'wait','waits','waited','waiting','serve','serves','served','serving',
+    'send','sends','sent','sending','expect','expects','expected',
+    'live','lives','lived','living','play','plays','played','playing',
+    // Adverbs / qualifiers
+    'also','too','very','quite','rather','really','actually','especially',
+    'particularly','generally','usually','often','sometimes','always','never',
+    'already','still','yet','just','only','even','almost','enough',
+    'much','many','more','most','less','least','several','few',
+    'some','any','all','both','each','every','either','neither','none','one',
+    'two','first','last','next','same','other','others','another','such','own',
+    'right','left','full','half','little','big','small','large','long','short',
+    'high','low','new','old','good','better','best','bad','worse','worst',
+    'great','greater','greatest','simple','simpler','easy','easier','hard','harder',
+    'happy','sad','nice','fine','important','interesting','similar','different',
+    'difficult','clear','clearly','quick','quickly','slow','slowly',
+    'real','actual','specific','general','common','normal','regular','typical',
+    'obvious','obviously','possible','possibly','likely','probably',
+    'recent','recently','current','currently','past','present','future',
+    // Overly generic nouns
+    'thing','things','something','anything','everything','nothing',
+    'someone','anyone','everyone','nobody','somebody','anybody','noone',
+    'somewhere','anywhere','everywhere','nowhere','way','ways',
+    'time','times','day','days','year','years','week','weeks','month','months',
+    'hour','hours','minute','minutes','second','seconds','case','cases',
+    'point','points','part','parts','side','sides','place','places',
+    'kind','sort','number','numbers','example','examples',
+    'idea','ideas','question','questions','problem','problems','issue','issues',
+    'fact','facts','reason','reasons','result','results','difference','differences',
+    'matter','matters','effect','effects','answer','answers',
+    // Negation / conversational fragments
+    'not','no','never',
+    'okay','ok','yes','yeah','nope','sure','maybe','perhaps','please','thanks','thank',
+    'hello','hi','hey','goodbye','bye',
+    'lol','omg','btw','imo','tbh','idk','etc',
+    // German subset (mirrors existing STOPWORDS, expanded)
+    'und','oder','aber','nicht','eine','einer','einem','einen','dass','auch','noch','mehr','hier','dort','wenn','dann','wie','was',
+    'ich','du','er','sie','wir','ihr','das','der','die','den','dem','des','ein','sein','haben','werden','können','sollen','müssen','wollen','dürfen','mögen','machen','geben','gehen','kommen','sagen','sehen','wissen','denken','glauben','finden','nehmen','lassen',
+    'gut','schlecht','groß','klein','viele','viel','jetzt','heute','morgen','gestern','immer','nie','nur','schon','noch','sehr','etwas','nichts','alle','beide',
+  ]);
+
+  // Returns { ok, reason } where reason is one of:
+  //   'manual'        — bubble is a manual / in-use tag (always passes)
+  //   'stopword'      — matches the noise word list above
+  //   'numeric'       — starts with a digit (catches '100', '2026', '1best', '20x', '90-month')
+  //   'short'         — < 3 chars after trim
+  //   'low-alpha'     — < 2 alphabetic chars (mostly punctuation)
+  //   'empty'         — defensive: empty label
+  //   null / undefined — passes; ranked normally
+  function assessCandidateQuality(bubble) {
+    if (!bubble) return { ok: false, reason: 'empty' };
+    if (bubble.kind === 'manual') return { ok: true, reason: 'manual' };
+    const label = String(bubble.label || '').trim().toLowerCase();
+    const key   = String(bubble.key   || '').trim().toLowerCase();
+    if (!label) return { ok: false, reason: 'empty' };
+    if (CANDIDATE_NOISE_WORDS.has(label) || CANDIDATE_NOISE_WORDS.has(key)) {
+      return { ok: false, reason: 'stopword' };
+    }
+    // "Starts with a digit" catches: pure numbers (100, 2026), numeric-noise (1best, 1name),
+    // numeric measures (20x, 10x, 90-month). Real product names like 'gpt4', 'iphone15',
+    // 'ios17', 'react18', 'macos14' don't start with a digit, so they survive.
+    if (/^\d/.test(label)) {
+      return { ok: false, reason: 'numeric' };
+    }
+    if (label.length < 3) {
+      return { ok: false, reason: 'short' };
+    }
+    const alphaCount = (label.match(/[a-z؀-ۿ]/gi) || []).length;
+    if (alphaCount < 2) {
+      return { ok: false, reason: 'low-alpha' };
+    }
+    return { ok: true, reason: null };
+  }
+
+  function ensureBubbleCloudStyle() {
+    if (D.getElementById(CLOUD_STYLE_ID)) return;
+    const style = D.createElement('style');
+    style.id = CLOUD_STYLE_ID;
+    style.textContent = `
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-root"] {
+        display: flex; flex-direction: column; gap: 12px;
+        padding: 14px 12px; max-width: 100%;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-toolbar"] {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 8px; border-radius: 12px;
+        background: rgba(255,255,255,.04);
+        border: 1px solid rgba(255,255,255,.08);
+        backdrop-filter: blur(10px);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-search"] {
+        flex: 1 1 200px; min-width: 160px; box-sizing: border-box;
+        height: 30px; padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(0,0,0,.18);
+        color: rgba(255,255,255,.92);
+        font-size: 12px; outline: none;
+        transition: border-color 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-search"]:focus {
+        border-color: rgba(255,255,255,.32);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-sort"] {
+        box-sizing: border-box; height: 30px; padding: 0 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(0,0,0,.18);
+        color: rgba(255,255,255,.92);
+        font-size: 12px; cursor: pointer;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-toggle-candidates"] {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 0 10px; height: 30px;
+        border-radius: 8px;
+        background: rgba(255,255,255,.04);
+        border: 1px solid rgba(255,255,255,.08);
+        color: rgba(255,255,255,.78);
+        font-size: 11px; cursor: pointer; user-select: none;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-toggle-candidates"] input { margin: 0; cursor: pointer; }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-refresh"] {
+        all: unset; box-sizing: border-box;
+        width: 30px; height: 30px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(0,0,0,.18);
+        color: rgba(255,255,255,.78);
+        font-size: 14px; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-refresh"]:hover { background: rgba(255,255,255,.08); }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-status"] {
+        font-size: 10px; color: rgba(255,255,255,.42);
+        padding: 2px 6px; letter-spacing: .02em;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-canvas"] {
+        display: flex; flex-wrap: wrap; gap: 6px;
+        align-items: center; align-content: flex-start;
+        padding: 4px 0; min-height: 60px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-bubble"] {
+        all: unset; box-sizing: border-box;
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 12px; border-radius: 999px;
+        cursor: pointer; line-height: 1.15;
+        font-weight: 500; letter-spacing: .01em;
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 14%, transparent);
+        border: 1px solid color-mix(in srgb, var(--bubble-color, #64748B) 38%, transparent);
+        color: color-mix(in srgb, var(--bubble-color, #64748B) 70%, white);
+        transition: transform 200ms cubic-bezier(.2,.8,.2,1),
+                    box-shadow 200ms cubic-bezier(.2,.8,.2,1),
+                    background 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-bubble"]:hover {
+        transform: translateY(-1px);
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 22%, transparent);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--bubble-color, #64748B) 35%, transparent),
+                    0 8px 22px color-mix(in srgb, var(--bubble-color, #64748B) 22%, transparent);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-bubble"]:active { transform: translateY(0) scale(.97); }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-bubble"][${ATTR_CGXUI_STATE}="candidate"] {
+        border-style: dashed;
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 8%, transparent);
+        color: color-mix(in srgb, var(--bubble-color, #64748B) 60%, rgba(255,255,255,.65));
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="bubble-count"] {
+        font-size: 10px; opacity: .7;
+        padding: 1px 6px; border-radius: 999px;
+        background: rgba(255,255,255,.08);
+        font-weight: 600;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-empty"] {
+        padding: 28px 16px; text-align: center;
+        color: rgba(255,255,255,.55); font-size: 13px;
+        border-radius: 12px;
+        background: rgba(255,255,255,.02);
+        border: 1px dashed rgba(255,255,255,.10);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-loading"] {
+        padding: 16px; text-align: center;
+        color: rgba(255,255,255,.55); font-size: 12px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] {
+        position: fixed; width: 340px;
+        max-width: calc(100vw - 16px); max-height: 420px; overflow: auto;
+        padding: 12px; border-radius: 14px;
+        background: rgba(20,20,20,.98);
+        border: 1px solid rgba(255,255,255,.12);
+        box-shadow: 0 18px 60px rgba(0,0,0,.45);
+        backdrop-filter: blur(12px);
+        z-index: 2147483647;
+        color: rgba(255,255,255,.88); font-size: 12px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-header"] {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+        padding-bottom: 8px; margin-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-pill {
+        padding: 4px 10px; border-radius: 999px;
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 14%, transparent);
+        border: 1px dashed color-mix(in srgb, var(--bubble-color, #64748B) 38%, transparent);
+        color: color-mix(in srgb, var(--bubble-color, #64748B) 60%, rgba(255,255,255,.7));
+        font-weight: 500;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-meta {
+        font-size: 11px; color: rgba(255,255,255,.55);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-row"] {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 4px; border-radius: 6px; gap: 8px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-row"]:hover { background: rgba(255,255,255,.04); }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-link {
+        color: rgba(180,200,255,.85); text-decoration: none;
+        font-family: ui-monospace, monospace; font-size: 11px;
+        max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-link:hover { color: rgba(220,230,255,1); text-decoration: underline; }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-row-count { font-size: 11px; color: rgba(255,255,255,.55); flex-shrink: 0; }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-footer"] {
+        margin-top: 10px; padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,.08);
+        font-size: 10px; color: rgba(255,255,255,.45);
+        text-align: center; font-style: italic;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-empty"] {
+        padding: 16px 8px; text-align: center; color: rgba(255,255,255,.45);
+      }
+      /* Phase 6: expandable chat rows + lazy turn list */
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chats-loading"],
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turns-loading"] {
+        padding: 12px 8px; text-align: center; color: rgba(255,255,255,.55); font-size: 11px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turns-error"] {
+        padding: 8px; text-align: center; color: rgba(255,150,150,.75); font-size: 11px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turns-empty"] {
+        padding: 8px; text-align: center; color: rgba(255,255,255,.45); font-size: 11px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turns-more"] {
+        padding: 6px 8px; text-align: center; color: rgba(255,255,255,.45); font-size: 10px; font-style: italic;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-row"] {
+        border-radius: 8px; margin-bottom: 2px;
+        transition: background 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-row"]:hover {
+        background: rgba(255,255,255,.03);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-header"] {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 6px 6px 4px; border-radius: 6px; cursor: pointer;
+        min-height: 28px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-chevron"] {
+        all: unset; box-sizing: border-box;
+        width: 22px; height: 22px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 6px; cursor: pointer;
+        color: rgba(255,255,255,.55);
+        transition: transform 200ms cubic-bezier(.2,.8,.2,1), background 200ms cubic-bezier(.2,.8,.2,1);
+        flex-shrink: 0;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-chevron"]:hover {
+        background: rgba(255,255,255,.06); color: rgba(255,255,255,.85);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-chevron"] svg { display:block; width:14px; height:14px; }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-title"] {
+        flex: 1 1 auto; min-width: 0;
+        font-size: 12px; color: rgba(255,255,255,.88); text-decoration: none;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-title"]:hover {
+        color: rgba(220,230,255,1); text-decoration: underline;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-here"] {
+        flex-shrink: 0; padding: 1px 6px; border-radius: 999px;
+        font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 18%, transparent);
+        border: 1px solid color-mix(in srgb, var(--bubble-color, #64748B) 38%, transparent);
+        color: color-mix(in srgb, var(--bubble-color, #64748B) 70%, white);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-chat-count"] {
+        flex-shrink: 0; font-size: 11px; color: rgba(255,255,255,.55);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turns-container"] {
+        padding: 4px 8px 8px 28px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-row"] {
+        display: flex; align-items: center; gap: 8px;
+        padding: 5px 6px; border-radius: 6px;
+        margin-bottom: 2px;
+        border: 1px solid rgba(255,255,255,.04);
+        transition: background 200ms cubic-bezier(.2,.8,.2,1), border-color 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-row"]:hover {
+        background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.10);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-ordinal"] {
+        flex-shrink: 0; min-width: 26px; height: 18px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 5px; padding: 0 4px;
+        font-size: 10px; font-weight: 600;
+        background: rgba(255,255,255,.08); color: rgba(255,255,255,.62);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-id"] {
+        flex: 1 1 auto; min-width: 0;
+        font-family: ui-monospace, monospace; font-size: 10px;
+        color: rgba(255,255,255,.62);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-open"] {
+        all: unset; box-sizing: border-box;
+        flex-shrink: 0;
+        height: 22px; padding: 0 9px;
+        border-radius: 6px;
+        font-size: 10px; font-weight: 600; letter-spacing: .02em;
+        background: rgba(255,255,255,.06); color: rgba(255,255,255,.82);
+        border: 1px solid rgba(255,255,255,.10);
+        cursor: pointer;
+        transition: background 200ms cubic-bezier(.2,.8,.2,1), color 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-turn-open"]:hover {
+        background: color-mix(in srgb, var(--bubble-color, #64748B) 22%, rgba(255,255,255,.08));
+        color: rgba(255,255,255,1);
+      }
+    `;
+    D.documentElement.appendChild(style);
+    state.clean.nodes.add(style);
+  }
+
+  function bubbleEscapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+
+  function bubbleStableColorForKey(key) {
+    const palette = TAG_COLOR_PALETTE;
+    if (!palette || !palette.length) return '#64748B';
+    const s = String(key || '');
+    if (!s) return palette[0];
+    let h = 0;
+    for (let i = 0; i < s.length; i += 1) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return palette[Math.abs(h) % palette.length];
+  }
+
+  function bubbleFontSize(count) {
+    const n = Math.max(0, Number(count || 0));
+    const raw = CLOUD_BUBBLE_FONT_MIN + 4 * Math.log2(n + 1);
+    return Math.max(CLOUD_BUBBLE_FONT_MIN, Math.min(CLOUD_BUBBLE_FONT_MAX, Math.round(raw)));
+  }
+
+  function buildBubbleData(existingTags, autoPool, includeCandidates) {
+    // Existing tags from listAllChatTags(): { id, label, color, usageCount, chats[] }
+    // Auto-pool entries from getTagAutoPoolSnapshot(): { phrase, totalCount, chatCount,
+    //   score, status, blocked, contribByChat, lastSeen }
+    // Existing wins on key collision; we still augment with auto-pool score/lastSeen so
+    // 'recency' / 'score' sorts work uniformly across both flavors.
+    const map = new Map();
+    (Array.isArray(existingTags) ? existingTags : []).forEach((tag) => {
+      const key = String(tag?.id || normalizeTagKey(tag?.label || ''));
+      if (!key) return;
+      map.set(key, {
+        key,
+        label: String(tag?.label || tag?.id || key),
+        color: tag?.color || '',
+        count: Number(tag?.usageCount || 0) || 0,
+        score: 0,
+        kind: 'manual',
+        tagRecord: tag,
+        chatRefs: Array.isArray(tag?.chats) ? tag.chats.length : 0,
+        blocked: false,
+        lastSeen: 0,
+        contribByChat: null,
+      });
+    });
+    if (includeCandidates && autoPool && autoPool.phrases) {
+      Object.entries(autoPool.phrases).forEach(([key, c]) => {
+        if (!key || !c) return;
+        if (c.blocked) return;                  // priority-label collision — never surface
+        if (c.status === 'rejected') return;    // user-rejected candidate — hide
+        const existing = map.get(key);
+        if (existing) {
+          // Augment manual entry with score/recency so cross-source sorts behave correctly.
+          existing.score = Number(c.score || 0) || existing.score;
+          existing.lastSeen = Number(c.lastSeen || 0) || existing.lastSeen;
+          return;
+        }
+        map.set(key, {
+          key,
+          label: String(c.phrase || key),
+          color: '',
+          count: Number(c.totalCount || 0) || 0,
+          score: Number(c.score || 0) || 0,
+          kind: 'candidate',
+          tagRecord: null,
+          chatRefs: Number(c.chatCount || 0) || 0,
+          blocked: false,
+          lastSeen: Number(c.lastSeen || 0) || 0,
+          contribByChat: c.contribByChat || null,
+        });
+      });
+    }
+    const all = Array.from(map.values());
+    // Phase 5.5: stamp every bubble with quality info. Manual bubbles always pass.
+    all.forEach((b) => {
+      const assess = assessCandidateQuality(b);
+      b.qualityReason = assess.reason || null;
+      b.qualityOk = !!assess.ok;
+    });
+    return all;
+  }
+
+  // Diagnostic surface for the candidate quality filter. Returns the same kind of breakdown
+  // shown in the toolbar status, plus a small sample of hidden labels so consumers can
+  // tune the filter or expose an "audit" view later.
+  async function getTagBubbleCloudDiagnostics(opts = {}) {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    let tags = [];
+    try { tags = await Promise.resolve(listAllChatTags(o)); }
+    catch (e) { err('cloud-diag:list-all-chat-tags', e); }
+    let auto = null;
+    try { auto = getTagAutoPoolSnapshot(); }
+    catch (e) { err('cloud-diag:auto-pool-snapshot', e); }
+    const merged = buildBubbleData(Array.isArray(tags) ? tags : [], auto, true);
+    const totalManual    = merged.filter((b) => b.kind === 'manual').length;
+    const totalCandidate = merged.filter((b) => b.kind === 'candidate').length;
+    const visibleManual    = merged.filter((b) => b.kind === 'manual' && b.qualityOk).length;
+    const visibleCandidate = merged.filter((b) => b.kind === 'candidate' && b.qualityOk).length;
+    const hidden           = merged.filter((b) => !b.qualityOk);
+    const hiddenByReason   = hidden.reduce((acc, b) => {
+      const r = b.qualityReason || 'unknown';
+      acc[r] = (acc[r] || 0) + 1;
+      return acc;
+    }, {});
+    const sampleSize = Number.isFinite(Number(o.sampleSize)) ? Math.max(0, Math.min(50, Math.floor(Number(o.sampleSize)))) : 12;
+    return {
+      totalManual,
+      totalCandidates: totalCandidate,
+      visibleManual,
+      visibleCandidates: visibleCandidate,
+      visibleTotal: visibleManual + visibleCandidate,
+      hiddenTotal: hidden.length,
+      hiddenByReason,
+      sampleHidden: hidden.slice(0, sampleSize).map((b) => ({
+        label: b.label, key: b.key, count: b.count, reason: b.qualityReason, kind: b.kind,
+      })),
+      noiseWordCount: CANDIDATE_NOISE_WORDS.size,
+    };
+  }
+
+  function filterBubbleData(bubbles, query) {
+    if (!query) return bubbles;
+    const q = String(query).toLowerCase();
+    return bubbles.filter((b) => String(b.label || '').toLowerCase().includes(q) || String(b.key || '').toLowerCase().includes(q));
+  }
+
+  function sortBubbleData(bubbles, mode) {
+    const out = bubbles.slice();
+    if (mode === 'alpha') {
+      out.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    } else if (mode === 'recency') {
+      out.sort((a, b) => (Number(b.lastSeen || 0) - Number(a.lastSeen || 0)) || (Number(b.count || 0) - Number(a.count || 0)));
+    } else if (mode === 'score') {
+      out.sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.count || 0) - Number(a.count || 0)));
+    } else {
+      // 'count' — default
+      out.sort((a, b) => (Number(b.count || 0) - Number(a.count || 0)) || String(a.label).localeCompare(String(b.label)));
+    }
+    return out;
+  }
+
+  function buildBubbleTooltip(bubble) {
+    const parts = [bubble.label];
+    parts.push(`${bubble.count} ${bubble.count === 1 ? 'chat' : 'chats'}`);
+    if (bubble.kind === 'candidate') parts.push('candidate (auto)');
+    else parts.push('in use');
+    if (bubble.score) parts.push(`score ${bubble.score.toFixed(1)}`);
+    if (bubble.lastSeen) {
+      try { parts.push(`last seen ${new Date(bubble.lastSeen).toLocaleDateString()}`); }
+      catch (_e) {}
+    }
+    return parts.join(' · ');
+  }
+
+  function closeCloudCandidatePopup() {
+    const pop = state.cloudCandidatePopup;
+    if (pop && pop.isConnected) {
+      try { pop.remove(); } catch (_e) {}
+    }
+    state.cloudCandidatePopup = null;
+    if (state.cloudCandidatePopupDismiss) {
+      try { D.removeEventListener('click', state.cloudCandidatePopupDismiss, true); } catch (_e) {}
+      state.cloudCandidatePopupDismiss = null;
+    }
+  }
+
+  // Phase 6: lazily-loaded chat-title cache shared by all candidate popups in this session.
+  // First popup pays for the workbench-row fetch; subsequent popups read from the cache.
+  // Reload the page to pick up new chat titles.
+  async function getCloudChatTitleCache() {
+    if (state.cloudChatTitleCache instanceof Map) return state.cloudChatTitleCache;
+    const map = new Map();
+    try {
+      const rows = await Promise.resolve(safeListWorkbenchRows());
+      (Array.isArray(rows) ? rows : []).forEach((r) => {
+        const id = String(r?.chatId || '').trim();
+        if (!id) return;
+        const title = normalizeLabel(r?.title || r?.excerpt || id).slice(0, 80);
+        map.set(id, title);
+      });
+    } catch (e) { err('cloud:title-cache', e); }
+    state.cloudChatTitleCache = map;
+    return map;
+  }
+
+  function renderCandidateTurnList(container, chatId, bubble, turnIds, isCurrentChat) {
+    container.innerHTML = '';
+    const ids = Array.isArray(turnIds) ? turnIds : [];
+    if (!ids.length) {
+      const empty = D.createElement('div');
+      empty.setAttribute(CLOUD_ATTR, 'pop-turns-empty');
+      empty.textContent = 'No turn references in occurrence index.';
+      container.appendChild(empty);
+      return;
+    }
+    const MAX = 20;
+    const visible = ids.slice(0, MAX);
+    visible.forEach((turnId, idx) => {
+      const turnRow = D.createElement('div');
+      turnRow.setAttribute(CLOUD_ATTR, 'pop-turn-row');
+
+      const ordinal = D.createElement('span');
+      ordinal.setAttribute(CLOUD_ATTR, 'pop-turn-ordinal');
+      ordinal.textContent = `T${idx + 1}`;
+      turnRow.appendChild(ordinal);
+
+      const idEl = D.createElement('span');
+      idEl.setAttribute(CLOUD_ATTR, 'pop-turn-id');
+      const tStr = String(turnId || '');
+      idEl.textContent = tStr.length > 22 ? `${tStr.slice(0, 12)}…${tStr.slice(-6)}` : tStr;
+      idEl.title = tStr;
+      turnRow.appendChild(idEl);
+
+      const openBtn = D.createElement('button');
+      openBtn.type = 'button';
+      openBtn.setAttribute(CLOUD_ATTR, 'pop-turn-open');
+      // Same-chat → existing openTurnByRef helper (reused, not new NavTo).
+      // Cross-chat → plain link navigation; deferred scroll-to-turn is Phase 7.
+      openBtn.textContent = isCurrentChat ? 'Scroll' : 'Open';
+      openBtn.title = isCurrentChat
+        ? 'Scroll to this turn in the current chat'
+        : 'Open this chat (Phase 7 will deep-link to the turn)';
+      openBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (isCurrentChat) {
+          try { openTurnByRef(chatId, tStr); }
+          catch (e2) { err('cloud:open-turn-by-ref', e2); }
+        } else {
+          try { W.location.href = `/c/${encodeURIComponent(chatId)}`; }
+          catch (e2) { err('cloud:cross-chat-nav', e2); }
+        }
+      };
+      turnRow.appendChild(openBtn);
+      container.appendChild(turnRow);
+    });
+    if (ids.length > MAX) {
+      const more = D.createElement('div');
+      more.setAttribute(CLOUD_ATTR, 'pop-turns-more');
+      more.textContent = `+${ids.length - MAX} more turn${ids.length - MAX === 1 ? '' : 's'}`;
+      container.appendChild(more);
+    }
+  }
+
+  function openCloudCandidatePopup(anchorEl, bubble) {
+    closeCloudCandidatePopup();
+    if (!anchorEl || !bubble) return;
+
+    const pop = D.createElement('div');
+    pop.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    pop.setAttribute(CLOUD_ATTR, 'cloud-candidate-pop');
+    pop.style.setProperty('--bubble-color', bubbleStableColorForKey(bubble.key));
+
+    const header = D.createElement('div');
+    header.setAttribute(CLOUD_ATTR, 'pop-header');
+    header.innerHTML =
+      `<span class="pop-pill">${bubbleEscapeHtml(bubble.label)}</span>` +
+      `<span class="pop-meta">${bubble.count} ${bubble.count === 1 ? 'chat' : 'chats'} · candidate · score ${bubble.score ? bubble.score.toFixed(1) : '—'}</span>`;
+    pop.appendChild(header);
+
+    const list = D.createElement('div');
+    list.setAttribute(CLOUD_ATTR, 'pop-chats');
+    pop.appendChild(list);
+
+    const footer = D.createElement('div');
+    footer.setAttribute(CLOUD_ATTR, 'pop-footer');
+    footer.textContent = 'Same-chat → scrolls. Cross-chat → opens (Phase 7 will deep-link).';
+    pop.appendChild(footer);
+
+    // Position adjacent to the bubble; clamp inside viewport.
+    const rect = anchorEl.getBoundingClientRect();
+    const top = Math.max(8, Math.min(W.innerHeight - 440, rect.bottom + 6));
+    const left = Math.max(8, Math.min(W.innerWidth - 360, rect.left));
+    pop.style.top = `${top}px`;
+    pop.style.left = `${left}px`;
+    D.body.appendChild(pop);
+    state.cloudCandidatePopup = pop;
+    state.clean.nodes.add(pop);
+
+    const dismiss = (e) => {
+      if (pop.contains(e.target) || anchorEl.contains(e.target)) return;
+      closeCloudCandidatePopup();
+    };
+    state.cloudCandidatePopupDismiss = dismiss;
+    setTimeout(() => {
+      try { D.addEventListener('click', dismiss, true); } catch (_e) {}
+    }, 10);
+
+    // ─── Async chat-list build ─────────────────────────────────────────────
+    // Renders a loading placeholder synchronously, then resolves chat titles + sorts +
+    // builds expandable rows. Each row lazily fetches its occurrence index on expand.
+    list.innerHTML = '<div data-cgxui="pop-chats-loading">Loading chats…</div>';
+
+    const contribs = Object.entries(bubble.contribByChat || {})
+      .map(([chatId, c]) => ({
+        chatId,
+        count: Number(c?.count || 0) || 0,
+        lastSeen: Number(c?.lastSeen || 0) || 0,
+      }))
+      .filter((r) => r.chatId)
+      .sort((a, b) => (b.count - a.count) || (b.lastSeen - a.lastSeen))
+      .slice(0, 12);
+
+    if (!contribs.length) {
+      list.innerHTML = '';
+      const empty = D.createElement('div');
+      empty.setAttribute(CLOUD_ATTR, 'pop-empty');
+      empty.textContent = 'No chat data — try refreshing the auto-pool.';
+      list.appendChild(empty);
+      return;
+    }
+
+    (async () => {
+      const titleMap = await getCloudChatTitleCache();
+      // Same-chat detection uses the existing parseChatIdFromHref helper.
+      const here = String(parseChatIdFromHref(W.location?.pathname || '') || '').trim();
+
+      // If popup was dismissed during the await, bail out cleanly.
+      if (!pop.isConnected) return;
+
+      list.innerHTML = '';
+
+      contribs.forEach(({ chatId, count }) => {
+        const row = D.createElement('div');
+        row.setAttribute(CLOUD_ATTR, 'pop-chat-row');
+
+        const headerRow = D.createElement('div');
+        headerRow.setAttribute(CLOUD_ATTR, 'pop-chat-header');
+
+        const chevron = D.createElement('button');
+        chevron.type = 'button';
+        chevron.setAttribute(CLOUD_ATTR, 'pop-chat-chevron');
+        chevron.setAttribute('aria-label', 'Expand turns');
+        chevron.setAttribute('aria-expanded', 'false');
+        chevron.innerHTML = SVG_CHEVRON_DOWN;
+        headerRow.appendChild(chevron);
+
+        const titleEl = D.createElement('a');
+        titleEl.href = `/c/${encodeURIComponent(chatId)}`;
+        titleEl.target = '_self';
+        titleEl.setAttribute(CLOUD_ATTR, 'pop-chat-title');
+        const title = titleMap.get(chatId) || chatId;
+        titleEl.textContent = title;
+        titleEl.title = `${title}\n${chatId}${chatId === here ? '\n(current chat)' : ''}`;
+        headerRow.appendChild(titleEl);
+
+        if (chatId === here) {
+          const here_badge = D.createElement('span');
+          here_badge.setAttribute(CLOUD_ATTR, 'pop-chat-here');
+          here_badge.textContent = 'here';
+          headerRow.appendChild(here_badge);
+        }
+
+        const counter = D.createElement('span');
+        counter.setAttribute(CLOUD_ATTR, 'pop-chat-count');
+        counter.textContent = `${count} ${count === 1 ? 'hit' : 'hits'}`;
+        headerRow.appendChild(counter);
+
+        row.appendChild(headerRow);
+
+        const turnsContainer = D.createElement('div');
+        turnsContainer.setAttribute(CLOUD_ATTR, 'pop-turns-container');
+        turnsContainer.style.display = 'none';
+        row.appendChild(turnsContainer);
+
+        let expanded = false;
+        let loaded = false;
+        const toggleExpand = async (e) => {
+          if (e) { e.preventDefault(); e.stopPropagation(); }
+          expanded = !expanded;
+          turnsContainer.style.display = expanded ? 'block' : 'none';
+          chevron.style.transform = expanded ? 'rotate(180deg)' : '';
+          chevron.setAttribute('aria-expanded', String(expanded));
+          if (expanded && !loaded) {
+            loaded = true;
+            turnsContainer.innerHTML = '<div data-cgxui="pop-turns-loading">Loading turns…</div>';
+            try {
+              const occ = await getOccurrenceIndexForChat(chatId);
+              if (!pop.isConnected) return;
+              const turnIds = occ?.phrases?.[bubble.key]?.turnIds || [];
+              renderCandidateTurnList(turnsContainer, chatId, bubble, turnIds, chatId === here);
+            } catch (e2) {
+              err('cloud:occ-fetch', e2);
+              if (!pop.isConnected) return;
+              turnsContainer.innerHTML = '';
+              const errEl = D.createElement('div');
+              errEl.setAttribute(CLOUD_ATTR, 'pop-turns-error');
+              errEl.textContent = 'Could not load turns.';
+              turnsContainer.appendChild(errEl);
+            }
+          }
+        };
+
+        chevron.onclick = (e) => toggleExpand(e);
+        // Clicking the row (not the title link, not the chevron itself) also toggles.
+        headerRow.addEventListener('click', (e) => {
+          if (e.target.closest('a')) return;        // don't hijack the title link
+          if (e.target.closest('button')) return;   // chevron handles itself
+          toggleExpand(e);
+        });
+
+        list.appendChild(row);
+      });
+    })().catch((e) => err('cloud:popup-async', e));
+  }
+
   function renderTagsIntoList(listEl, opts = {}) {
     if (!listEl) return;
     const cfg = (typeof opts === 'function') ? { refreshFn: opts } : ((opts && typeof opts === 'object') ? opts : {});
     const refreshFn = cfg.refreshFn || cfg.refresh || cfg.onRefresh || null;
-    listEl.innerHTML = '';
 
-    const loading = D.createElement('li');
-    loading.textContent = 'Loading tags...';
-    loading.style.padding = '16px 12px';
-    loading.style.color = 'var(--text-secondary, rgba(255,255,255,.72))';
-    listEl.appendChild(loading);
+    ensureBubbleCloudStyle();
+    closeCloudCandidatePopup();
+
+    // Wipe the host container and reset list-like styling so the cloud sits cleanly inside.
+    listEl.innerHTML = '';
+    try { listEl.style.padding = '0'; listEl.style.margin = '0'; listEl.style.listStyle = 'none'; } catch (_e) {}
+
+    // ─── Build DOM scaffold ───
+    const root = D.createElement('div');
+    root.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    root.setAttribute(CLOUD_ATTR, 'cloud-root');
+
+    const toolbar = D.createElement('div');
+    toolbar.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    toolbar.setAttribute(CLOUD_ATTR, 'cloud-toolbar');
+
+    const search = D.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'Filter tags…';
+    search.spellcheck = false;
+    search.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    search.setAttribute(CLOUD_ATTR, 'cloud-search');
+    search.setAttribute('aria-label', 'Filter tags');
+
+    const sortSel = D.createElement('select');
+    sortSel.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    sortSel.setAttribute(CLOUD_ATTR, 'cloud-sort');
+    sortSel.setAttribute('aria-label', 'Sort tags');
+    [
+      ['count',   'Most used'],
+      ['alpha',   'A → Z'],
+      ['recency', 'Recent'],
+      ['score',   'Top score'],
+    ].forEach(([value, label]) => {
+      const o = D.createElement('option');
+      o.value = value; o.textContent = label;
+      sortSel.appendChild(o);
+    });
+
+    const toggleLabel = D.createElement('label');
+    toggleLabel.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    toggleLabel.setAttribute(CLOUD_ATTR, 'cloud-toggle-candidates');
+    toggleLabel.title = 'Show auto-pool candidate phrases (Phase 4)';
+    const toggleCb = D.createElement('input');
+    toggleCb.type = 'checkbox';
+    toggleCb.checked = true;
+    toggleLabel.appendChild(toggleCb);
+    toggleLabel.appendChild(D.createTextNode(' Suggestions'));
+
+    const refreshBtn = D.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    refreshBtn.setAttribute(CLOUD_ATTR, 'cloud-refresh');
+    refreshBtn.title = 'Refresh tag list';
+    refreshBtn.setAttribute('aria-label', 'Refresh tag list');
+    refreshBtn.textContent = '⟳';
+
+    const statusEl = D.createElement('div');
+    statusEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    statusEl.setAttribute(CLOUD_ATTR, 'cloud-status');
+
+    toolbar.appendChild(search);
+    toolbar.appendChild(sortSel);
+    toolbar.appendChild(toggleLabel);
+    toolbar.appendChild(refreshBtn);
+    toolbar.appendChild(statusEl);
+
+    const loading = D.createElement('div');
+    loading.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    loading.setAttribute(CLOUD_ATTR, 'cloud-loading');
+    loading.textContent = 'Loading tags…';
+
+    const canvas = D.createElement('div');
+    canvas.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    canvas.setAttribute(CLOUD_ATTR, 'cloud-canvas');
+    canvas.setAttribute('role', 'listbox');
+
+    const emptyEl = D.createElement('div');
+    emptyEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    emptyEl.setAttribute(CLOUD_ATTR, 'cloud-empty');
+    emptyEl.style.display = 'none';
+
+    root.appendChild(toolbar);
+    root.appendChild(loading);
+    root.appendChild(canvas);
+    root.appendChild(emptyEl);
+    listEl.appendChild(root);
 
     const nonce = String(Date.now() + Math.random());
     listEl.dataset.h2oTagsNonce = nonce;
 
-    Promise.resolve(listAllChatTags(cfg)).then((tags) => {
+    // Per-mount state (closure). Persisted across re-renders within one mount only.
+    const localState = {
+      query: '',
+      sortMode: 'count',
+      showCandidates: true,
+      data: { existing: [], autoPool: null },
+    };
+
+    const renderBubbles = () => {
       if (!listEl.isConnected || listEl.dataset.h2oTagsNonce !== nonce) return;
-      listEl.innerHTML = '';
-      if (!Array.isArray(tags) || !tags.length) {
-        const li = D.createElement('li');
-        li.textContent = 'No tags yet';
-        li.style.padding = '16px 12px';
-        li.style.color = 'var(--text-secondary, rgba(255,255,255,.72))';
-        listEl.appendChild(li);
+      const merged = buildBubbleData(localState.data.existing, localState.data.autoPool, localState.showCandidates);
+      // Phase 5.5: hide low-quality candidate bubbles from the cloud (manual tags always pass).
+      // Hidden counts are tracked and surfaced in the status line so the filter is observable.
+      const visibleBubbles = merged.filter((b) => b.qualityOk);
+      const hiddenByReason = merged.reduce((acc, b) => {
+        if (!b.qualityOk) acc[b.qualityReason || 'unknown'] = (acc[b.qualityReason || 'unknown'] || 0) + 1;
+        return acc;
+      }, {});
+      const filtered = filterBubbleData(visibleBubbles, localState.query);
+      const sorted = sortBubbleData(filtered, localState.sortMode);
+
+      const totalManual = merged.filter((b) => b.kind === 'manual').length;
+      const totalCandidate = merged.filter((b) => b.kind === 'candidate').length;
+      const totalHidden = Object.values(hiddenByReason).reduce((a, n) => a + n, 0);
+      const visibleCandidates = merged.filter((b) => b.kind === 'candidate' && b.qualityOk).length;
+      const breakdownParts = Object.entries(hiddenByReason).map(([r, n]) => `${n} ${r}`);
+      // Tooltip on the status text shows the per-reason breakdown so the user can see what
+      // was filtered without us needing a popup.
+      try {
+        statusEl.title = totalHidden
+          ? `Hidden (display-time noise filter): ${breakdownParts.join(', ')}\nManual / in-use tags always pass.`
+          : 'No candidates filtered';
+      } catch (_e) {}
+      statusEl.textContent = localState.showCandidates
+        ? `${sorted.length} shown · ${totalManual} in use · ${visibleCandidates}/${totalCandidate} candidates${totalHidden ? ` · ${totalHidden} hidden as noise` : ''}`
+        : `${sorted.length} shown · ${totalManual} in use`;
+
+      canvas.innerHTML = '';
+      if (!sorted.length) {
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = localState.query
+          ? `No tags match “${localState.query}”`
+          : (totalManual + totalCandidate === 0
+              ? 'No tags yet — open chats with the tag tray to discover them, or run a tag scan.'
+              : 'No tags match the current filters.');
         return;
       }
-      tags.forEach((tag) => {
-        const li = D.createElement('li');
-        li.style.borderBottom = '1px solid var(--border-default, rgba(255,255,255,.10))';
+      emptyEl.style.display = 'none';
+
+      // RAF-batch render for smoother interaction with very large pools (>150 bubbles).
+      const frag = D.createDocumentFragment();
+      sorted.forEach((bubble) => {
         const btn = D.createElement('button');
         btn.type = 'button';
-        btn.setAttribute(ATTR_CGXUI_STATE, 'category-button');
-        btn.style.display = 'flex';
-        btn.style.alignItems = 'center';
-        btn.style.justifyContent = 'space-between';
-        btn.style.width = '100%';
-        btn.style.padding = '14px 4px';
-        const chip = D.createElement('span');
-        chip.style.display = 'inline-flex';
-        chip.style.alignItems = 'center';
-        chip.style.height = '28px';
-        chip.style.padding = '0 10px';
-        chip.style.borderRadius = '999px';
-        chip.style.background = `${tag.color || '#64748B'}22`;
-        chip.style.border = `1px solid ${(tag.color || '#64748B')}66`;
-        chip.style.color = tag.color || '#CBD5E1';
-        chip.textContent = tag.label || tag.id;
-        const count = D.createElement('span');
-        count.style.color = 'var(--text-secondary, rgba(255,255,255,.72))';
-        const n = Number(tag.usageCount || 0);
-        count.textContent = `${n} ${n === 1 ? 'chat' : 'chats'}`;
-        btn.appendChild(chip);
-        btn.appendChild(count);
+        btn.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+        btn.setAttribute(CLOUD_ATTR, 'cloud-bubble');
+        btn.setAttribute(ATTR_CGXUI_STATE, bubble.kind);
+        btn.setAttribute('role', 'option');
+        const color = bubble.color && /^#[0-9a-f]{6}$/i.test(bubble.color)
+          ? bubble.color
+          : bubbleStableColorForKey(bubble.key);
+        btn.style.setProperty('--bubble-color', color);
+        btn.style.fontSize = `${bubbleFontSize(bubble.count)}px`;
+        btn.title = buildBubbleTooltip(bubble);
+
+        const labelEl = D.createElement('span');
+        labelEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+        labelEl.setAttribute(CLOUD_ATTR, 'bubble-label');
+        labelEl.textContent = bubble.label;
+        btn.appendChild(labelEl);
+
+        const countEl = D.createElement('span');
+        countEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+        countEl.setAttribute(CLOUD_ATTR, 'bubble-count');
+        countEl.textContent = String(bubble.count);
+        btn.appendChild(countEl);
+
         btn.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
-          openTagViewer(tag, { ...cfg, refreshFn }).catch((error) => err('open-tag-viewer', error));
+          if (bubble.kind === 'manual' && bubble.tagRecord) {
+            // Reuse the existing tag viewer (already wires per-chat list + turn navigation
+            // via openTurnByRef). No new NavTo behavior introduced here.
+            openTagViewer(bubble.tagRecord, { ...cfg, refreshFn }).catch((error) => err('open-tag-viewer', error));
+          } else {
+            // Phase 5 candidate path: non-navigating info popup. Phase 6 NavTo will
+            // upgrade this to expandable per-chat turn lists.
+            openCloudCandidatePopup(btn, bubble);
+          }
         };
-        li.appendChild(btn);
-        listEl.appendChild(li);
+
+        frag.appendChild(btn);
       });
-    }).catch((e) => {
-      err('render-tags-into-list', e);
-      if (!listEl.isConnected || listEl.dataset.h2oTagsNonce !== nonce) return;
-      listEl.innerHTML = '';
-      const li = D.createElement('li');
-      li.textContent = 'Could not load tags';
-      li.style.padding = '16px 12px';
-      li.style.color = 'var(--text-secondary, rgba(255,255,255,.72))';
-      listEl.appendChild(li);
+      // Single DOM write keeps layout thrash to one paint.
+      canvas.appendChild(frag);
+    };
+
+    // ─── Toolbar wiring ───
+    let searchTimer = 0;
+    search.addEventListener('input', () => {
+      localState.query = String(search.value || '').trim();
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = W.setTimeout(() => { searchTimer = 0; renderBubbles(); }, 80);
     });
+    sortSel.addEventListener('change', () => {
+      localState.sortMode = sortSel.value;
+      renderBubbles();
+    });
+    toggleCb.addEventListener('change', () => {
+      localState.showCandidates = !!toggleCb.checked;
+      renderBubbles();
+    });
+    refreshBtn.addEventListener('click', () => loadData());
+
+    // ─── Data load (re-runnable via refresh button) ───
+    const loadData = () => {
+      loading.style.display = 'block';
+      canvas.innerHTML = '';
+      emptyEl.style.display = 'none';
+      Promise.resolve(listAllChatTags(cfg)).then((tags) => {
+        if (!listEl.isConnected || listEl.dataset.h2oTagsNonce !== nonce) return;
+        localState.data.existing = Array.isArray(tags) ? tags : [];
+        try { localState.data.autoPool = getTagAutoPoolSnapshot(); }
+        catch (e) { err('cloud:auto-pool-snapshot', e); localState.data.autoPool = null; }
+        loading.style.display = 'none';
+        renderBubbles();
+      }).catch((e) => {
+        err('render-tags-cloud', e);
+        if (!listEl.isConnected || listEl.dataset.h2oTagsNonce !== nonce) return;
+        loading.style.display = 'none';
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = 'Could not load tags';
+      });
+    };
+
+    loadData();
   }
 
   function openTagsViewer(opts = {}) {
@@ -3864,6 +4838,19 @@ ${out.answerText}`);
     scrollToAnswerInDom(answerId, opts = {}) { return scrollToAnswerInDom(answerId, opts); },
     compactStorage(opts = {}) { return compactStorage(opts); },
     cleanupMigratedV1Storage(opts = {}) { return cleanupMigratedV1Storage(opts); },
+
+    // ─── Phase 4: Tag candidate pool + occurrence index (read-side API) ───────
+    // Side-outputs of aggregateChat. Stored via H2O.Library.Store. No UI consumes these
+    // yet — Phase 5+ (Bubble Cloud, NavTo) will read them.
+    getTagAutoPool() { return getTagAutoPoolSnapshot(); },
+    getTagAutoPoolDiagnostics() { return getTagAutoPoolDiagnostics(); },
+    async refreshTagAutoPool(chatId, opts = {}) { return refreshTagAutoPoolForChat(chatId, opts); },
+    async getOccurrenceIndex(chatId) { return getOccurrenceIndexForChat(chatId); },
+    async findTagOccurrences(phrase, opts = {}) { return findTagOccurrences(phrase, opts); },
+
+    // Phase 5.5: candidate-quality diagnostics. Display-time filter only — Store data
+    // is never mutated by the cloud.
+    async getTagBubbleCloudDiagnostics(opts = {}) { return getTagBubbleCloudDiagnostics(opts); },
   };
 
   MOD.owner = owner;
@@ -3942,6 +4929,14 @@ ${out.answerText}`);
   MOD.scrollToAnswerInDom = (...args) => owner.scrollToAnswerInDom(...args);
   MOD.compactStorage = (...args) => owner.compactStorage(...args);
   MOD.cleanupMigratedV1Storage = (...args) => owner.cleanupMigratedV1Storage(...args);
+  // Phase 4 aliases (so `H2O.Tags.getTagAutoPool()` etc. work just like every other public method).
+  MOD.getTagAutoPool = (...args) => owner.getTagAutoPool(...args);
+  MOD.getTagAutoPoolDiagnostics = (...args) => owner.getTagAutoPoolDiagnostics(...args);
+  MOD.refreshTagAutoPool = (...args) => owner.refreshTagAutoPool(...args);
+  MOD.getOccurrenceIndex = (...args) => owner.getOccurrenceIndex(...args);
+  MOD.findTagOccurrences = (...args) => owner.findTagOccurrences(...args);
+  // Phase 5.5
+  MOD.getTagBubbleCloudDiagnostics = (...args) => owner.getTagBubbleCloudDiagnostics(...args);
 
   function bindCoreEvents() {
     const onIndexUpdated = () => {
@@ -3978,6 +4973,34 @@ ${out.answerText}`);
     ensureCompactStorageState();
     bindCoreEvents();
 
+    // Phase 4: kick off the async auto-pool prefetch so the in-memory cache is warm by the
+    // time the first aggregateChat side-output runs. Non-blocking; if Store isn't ready
+    // (legacy/degraded), the cache initializes empty and side-outputs accumulate locally.
+    try { ensureAutoPoolCacheLoaded().catch((e) => err('boot:auto-pool-load', e)); }
+    catch (e) { err('boot:auto-pool-load:throw', e); }
+
+    // Phase 4 hardening: listen for Library Store tier promotion (e.g., MV3 SW cold-start
+    // race resolved by a boot-retry reprobe). When Store promotes from a non-durable
+    // backend (localStorage) to a durable one (bridge), drop the in-memory auto-pool cache
+    // so subsequent reads/writes flow through the now-durable backend. Without this, Tags
+    // would keep using the empty cache it loaded from localStorage at boot.
+    try {
+      const onStorePromoted = (e) => {
+        const detail = e?.detail || {};
+        if (!detail.durable) return;
+        // Reset cache + load promise so the next ensureAutoPoolCacheLoaded() reloads from
+        // the now-durable Store. In-flight flushes are still gated by isStoreDurableNow()
+        // and will succeed on the next aggregateChat / refreshTagAutoPool call.
+        state.autoPoolCache = null;
+        state.autoPoolLoadPromise = null;
+        ensureAutoPoolCacheLoaded().catch((er) => err('store-promoted:reload', er));
+      };
+      W.addEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true);
+      W.addEventListener('h2o:library:store:tier-promoted', onStorePromoted, true);
+      state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true));
+      state.clean.listeners.add(() => W.removeEventListener('h2o:library:store:tier-promoted', onStorePromoted, true));
+    } catch (e) { err('boot:store-promoted-listener', e); }
+
     try {
       core.registerOwner?.('tags', owner, { replace: true });
       core.registerService?.('tags', owner, { replace: true });
@@ -4007,44 +5030,3 @@ ${out.answerText}`);
 
   boot();
 })();
-    // ─── Phase 4: Tag candidate pool + occurrence index (read-side API) ───────
-    // Side-outputs of aggregateChat. Stored via H2O.Library.Store. No UI consumes these
-    // yet — Phase 5+ (Bubble Cloud, NavTo) will read them.
-    getTagAutoPool() { return getTagAutoPoolSnapshot(); },
-    getTagAutoPoolDiagnostics() { return getTagAutoPoolDiagnostics(); },
-    async refreshTagAutoPool(chatId, opts = {}) { return refreshTagAutoPoolForChat(chatId, opts); },
-    async getOccurrenceIndex(chatId) { return getOccurrenceIndexForChat(chatId); },
-    async findTagOccurrences(phrase, opts = {}) { return findTagOccurrences(phrase, opts); },
-  // Phase 4 aliases (so `H2O.Tags.getTagAutoPool()` etc. work just like every other public method).
-  MOD.getTagAutoPool = (...args) => owner.getTagAutoPool(...args);
-  MOD.getTagAutoPoolDiagnostics = (...args) => owner.getTagAutoPoolDiagnostics(...args);
-  MOD.refreshTagAutoPool = (...args) => owner.refreshTagAutoPool(...args);
-  MOD.getOccurrenceIndex = (...args) => owner.getOccurrenceIndex(...args);
-  MOD.findTagOccurrences = (...args) => owner.findTagOccurrences(...args);
-    // Phase 4: kick off the async auto-pool prefetch so the in-memory cache is warm by the
-    // time the first aggregateChat side-output runs. Non-blocking; if Store isn't ready
-    // (legacy/degraded), the cache initializes empty and side-outputs accumulate locally.
-    try { ensureAutoPoolCacheLoaded().catch((e) => err('boot:auto-pool-load', e)); }
-    catch (e) { err('boot:auto-pool-load:throw', e); }
-
-    // Phase 4 hardening: listen for Library Store tier promotion (e.g., MV3 SW cold-start
-    // race resolved by a boot-retry reprobe). When Store promotes from a non-durable
-    // backend (localStorage) to a durable one (bridge), drop the in-memory auto-pool cache
-    // so subsequent reads/writes flow through the now-durable backend. Without this, Tags
-    // would keep using the empty cache it loaded from localStorage at boot.
-    try {
-      const onStorePromoted = (e) => {
-        const detail = e?.detail || {};
-        if (!detail.durable) return;
-        // Reset cache + load promise so the next ensureAutoPoolCacheLoaded() reloads from
-        // the now-durable Store. In-flight flushes are still gated by isStoreDurableNow()
-        // and will succeed on the next aggregateChat / refreshTagAutoPool call.
-        state.autoPoolCache = null;
-        state.autoPoolLoadPromise = null;
-        ensureAutoPoolCacheLoaded().catch((er) => err('store-promoted:reload', er));
-      };
-      W.addEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true);
-      W.addEventListener('h2o:library:store:tier-promoted', onStorePromoted, true);
-      state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library:store:tier-promoted', onStorePromoted, true));
-      state.clean.listeners.add(() => W.removeEventListener('h2o:library:store:tier-promoted', onStorePromoted, true));
-    } catch (e) { err('boot:store-promoted-listener', e); }
