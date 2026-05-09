@@ -3,9 +3,9 @@
 // @name               8A1b.🟪🎨 Themes Panel 🎨
 // @namespace          H2O.Premium.CGX.themes.panel
 // @author             HumamDev
-// @version            2.1.14
-// @revision           001
-// @build              260304-102754
+// @version            2.1.15
+// @revision           002
+// @build              260509-220000
 // @description        Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -882,7 +882,7 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
           ${ATTR_CGXUI_OWNER}="${SkID}"
           data-tab="color"
           ${ATTR_CGXUI_STATE}="active"
-        >Color</button>
+        >Theme</button>
 
         <button type="button"
           ${ATTR_CGXUI}="${UI_TPANEL_TABBTN}"

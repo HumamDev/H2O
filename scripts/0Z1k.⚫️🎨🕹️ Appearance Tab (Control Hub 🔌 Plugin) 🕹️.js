@@ -3,10 +3,10 @@
 // @name               0Z1k.⚫️🎨🕹️ Appearance Tab (Control Hub 🔌 Plugin) 🕹️
 // @namespace          H2O.Premium.CGX.appearance.tab.control.hub.plugin
 // @author             HumamDev
-// @version            0.1.0
-// @revision           001
-// @build              260505-000000
-// @description        Registers the Appearance tab, Themes subtab, and Accents subtab into Control Hub via plugin API.
+// @version            0.2.1
+// @revision           003
+// @build              260509-220000
+// @description        Registers the Appearance tab with two strictly separated subtabs: ChatGPT Appearance (the original/base ChatGPT website theme via H2O.theme / Theme Core) and Cockpit Appearance (Cockpit Pro / H2O surface tuning via the existing Control Hub accent + background system). Base Theme is wired live to H2O.theme.setMode; Base Accent is deferred (read-only) until Theme Core ships accent application. Cockpit controls retain their existing storage keys. ARCHITECTURE RULE: ChatGPT/base page surfaces are owned by Theme Core / GPThemes; Cockpit/H2O modules (Library, Control Hub, MiniMap, Side Actions Panel, Command Bar, Dock, H2O cards/panels) are owned by Cockpit Appearance. The two systems must NOT cross-control each other.
 // @match       https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
@@ -74,39 +74,52 @@
     key: FEATURE_KEY_APPEARANCE,
     label: 'Appearance',
     icon: '🎨',
-    subtitle: 'Visual theme, Control Hub accents, and surface tuning.',
+    subtitle: 'ChatGPT/base website theme + Cockpit / H2O surface tuning.',
     category: 'perf',
     description: Object.freeze({
-      default: 'Tune visual themes, Control Hub accent colors, and panel surfaces from one Appearance tab.',
-      focus: 'Keep reading contrast and Control Hub surfaces aligned for focused sessions.',
-      review: 'Adjust long-session colors and Control Hub accents without leaving appearance controls.',
+      default: 'Tune the ChatGPT/base website theme and the Cockpit / H2O surfaces from one Appearance tab.',
+      focus: 'Keep ChatGPT reading contrast and Cockpit surfaces aligned for focused sessions.',
+      review: 'Adjust the ChatGPT page mode and Cockpit accents without leaving appearance controls.',
       performance: 'Keep visual tuning grouped while the theme engine and Control Hub shell stay unchanged.',
     }),
   });
 
+  // Two appearance categories — strictly separated by ownership:
+  //   • ChatGPT Appearance  → ORIGINAL/BASE ChatGPT website/page theme.
+  //                           Owned by H2O.theme (8A1a Theme Core) + GPThemes
+  //                           Customization (8A1b Themes Panel). Affects the
+  //                           ChatGPT page background, ChatGPT-native sidebar,
+  //                           main column, message bubbles, header, composer.
+  //                           MUST NOT control Cockpit/H2O modules.
+  //   • Cockpit Appearance  → Cockpit Pro / H2O-added modules and surfaces.
+  //                           Affects Control Hub, Library workspace, MiniMap,
+  //                           Side Actions Panel, Command Bar, Dock, H2O cards.
+  //                           MUST NOT be controlled by GPThemes Customization.
+  // Internal subtab keys are kept for storage-key compatibility (saved subtab
+  // selection persists). Visible labels reflect the user-facing meaning.
   const APPEARANCE_SUBTABS = Object.freeze([
     Object.freeze({
       key: FEATURE_KEY_THEMES_PANEL,
-      label: 'Themes',
+      label: 'ChatGPT Appearance',
       icon: '🎨',
-      subtitle: 'Color themes and layout tweaks.',
+      subtitle: 'Original/base ChatGPT website theme via Theme Core + GPThemes.',
       description: Object.freeze({
-        default: 'Open the themes surface and keep theme defaults together in one tab.',
-        focus: 'Use theme controls to keep reading contrast consistent.',
-        review: 'Adjust long-session colors without mixing them into unrelated interface tools.',
-        performance: 'Simplify theme changes when you want the lightest UI setup.',
+        default: 'Set the original/base ChatGPT page theme. Owned by H2O.theme (Theme Core) and GPThemes Customization.',
+        focus: 'Pick the base mode that keeps reading contrast comfortable for long sessions.',
+        review: 'Switch base light / dark / OLED; deep ChatGPT theme controls open in the GPThemes panel.',
+        performance: 'Base ChatGPT theme application is owned by Theme Core; this surface only switches state. Cockpit modules have their own controls.',
       }),
     }),
     Object.freeze({
       key: FEATURE_KEY_ACCENTS,
-      label: 'Accents',
+      label: 'Cockpit Appearance',
       icon: '🕹️',
-      subtitle: 'Control Hub accent and background tuning.',
+      subtitle: 'Cockpit Pro / H2O modules — Control Hub, Library, MiniMap, Dock, etc.',
       description: Object.freeze({
-        default: 'Tune Control Hub accent colors and shell backgrounds.',
-        focus: 'Keep buttons, selected tabs, and panel surfaces visually aligned.',
-        review: 'Adjust Control Hub colors without changing saved theme settings.',
-        performance: 'Use saved Control Hub accent settings without changing the theme engine.',
+        default: 'Tune Cockpit Pro / H2O module colors and surfaces. Independent of the ChatGPT/base theme.',
+        focus: 'Keep Cockpit buttons, selected tabs, and module surfaces visually aligned.',
+        review: 'Adjust Cockpit accents and surfaces without changing the ChatGPT/base theme.',
+        performance: 'Cockpit appearance is stored separately from the ChatGPT/base theme.',
       }),
     }),
   ]);
@@ -410,39 +423,131 @@
     },
   });
 
-  const THEMES_CONTROLS = Object.freeze([
+  /* ────────────── ChatGPT Appearance — original/base ChatGPT website theme ──────────────
+   * Owner: H2O.theme (8A1a Theme Core) + GPThemes Customization (8A1b Themes
+   * Panel). This surface only switches state; it does NOT define tokens or
+   * palettes itself.
+   *
+   * Targets ChatGPT-native page only (page background, ChatGPT sidebar/main/
+   * messages/header/composer where safe). MUST NOT control Cockpit/H2O modules
+   * (Library, Control Hub, MiniMap, Side Actions Panel, Command Bar, Dock).
+   * Cockpit modules are controlled by Cockpit Appearance below.
+   *
+   *   Base Theme  — ACTIVE in Phase 2A. Wires to H2O.theme.setMode(...).
+   *                 Mode values: 'light' | 'dark' | 'oled' (OLED preserved
+   *                 canonical; Theme Core resolves OLED → 'dark' for tokens
+   *                 via H2O.theme.effectiveMode()).
+   *   Base Accent — DEFERRED. H2O.theme.setAccent is passive in Phase 2A
+   *                 (returns false). The control renders as a single-option
+   *                 select reflecting the current accent (read-only) so it
+   *                 does not fake functionality. Activates in a later phase
+   *                 when Theme Core ships accent application.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  function THEME_CORE() {
+    return W.H2O?.theme || null;
+  }
+
+  function BASE_THEME_get() {
+    const t = THEME_CORE();
+    const mode = t?.get?.()?.mode;
+    return (mode === 'light' || mode === 'dark' || mode === 'oled') ? mode : 'dark';
+  }
+
+  function BASE_THEME_set(value) {
+    const next = (value === 'light' || value === 'oled') ? value : 'dark';
+    const t = THEME_CORE();
+    if (t && typeof t.setMode === 'function') {
+      try { t.setMode(next); } catch {}
+    }
+    return next;
+  }
+
+  function BASE_ACCENT_get() {
+    const t = THEME_CORE();
+    const accent = t?.get?.()?.accent;
+    return typeof accent === 'string' && accent ? accent : 'gold';
+  }
+
+  function BASE_ACCENT_currentLabel() {
+    const t = THEME_CORE();
+    const id = BASE_ACCENT_get();
+    try {
+      const list = typeof t?.listAccents === 'function' ? t.listAccents() : [];
+      const hit = Array.isArray(list) ? list.find(a => a && a.id === id) : null;
+      return hit?.label || (id.charAt(0).toUpperCase() + id.slice(1));
+    } catch {
+      return id.charAt(0).toUpperCase() + id.slice(1);
+    }
+  }
+
+  function BASE_ACCENT_opts() {
+    // Single option = current accent. Read-only by construction; the user
+    // cannot change accent here until H2O.theme.setAccent becomes active.
+    const id = BASE_ACCENT_get();
+    return [[id, `${BASE_ACCENT_currentLabel()} — deferred`]];
+  }
+
+  function BASE_ACCENT_set(_value) {
+    // Theme Core setAccent is passive in Phase 2A; this is a no-op that
+    // returns the current accent so the renderer keeps the visible state.
+    return BASE_ACCENT_get();
+  }
+
+  const BASE_APPEARANCE_CONTROLS = Object.freeze([
     Object.freeze({
       type: 'select',
-      key: 'thPreset',
-      label: 'Preset',
-      group: 'Themes Panel',
-      def: 'system',
-      opts: Object.freeze([
-        Object.freeze(['system', 'System']),
-        Object.freeze(['darkMatte', 'Dark Matte']),
-        Object.freeze(['neon', 'Neon']),
-      ]),
+      key: 'baseTheme',
+      label: 'Base Theme',
+      group: 'ChatGPT Appearance',
+      help: 'Base ChatGPT page theme. Owned by Theme Core; switches between Light, Dark, and OLED.',
+      def: 'dark',
+      opts: () => [
+        ['light', 'Light'],
+        ['dark',  'Dark'],
+        ['oled',  'OLED'],
+      ],
+      getLive() { return BASE_THEME_get(); },
+      setLive(v) { return BASE_THEME_set(v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'baseAccent',
+      label: 'Base Accent',
+      group: 'ChatGPT Appearance',
+      help: 'Base accent for the ChatGPT page theme. Deferred — Theme Core accent application ships in a later phase.',
+      def: 'gold',
+      opts: BASE_ACCENT_opts,
+      getLive() { return BASE_ACCENT_get(); },
+      setLive(v) { return BASE_ACCENT_set(v); },
     }),
   ]);
 
-  const ACCENT_CONTROLS = Object.freeze([
-    Object.freeze({
-      type: 'select',
-      key: 'chubControlAccent',
-      label: 'Control Accent',
-      group: 'Control Hub Colors',
-      help: 'Keeps buttons, switches, selected tabs, feature list selection, category rail, and subtabs aligned.',
-      def: 'default',
-      opts: CHUB_CONTROL_ACCENT_opts,
-      getLive() { return CHUB_CONTROL_ACCENT_get(); },
-      setLive(v) { return CHUB_CONTROL_ACCENT_set(v); },
-    }),
+  /* ────────────── Cockpit Appearance — Cockpit Pro / H2O modules ──────────────
+   * Owner: existing Control Hub accent + background system. STRICTLY
+   * independent of the ChatGPT/base theme — these controls do NOT touch
+   * H2O.theme and are NOT touched by GPThemes Customization.
+   *
+   * Targets: Control Hub shell, Library workspace, MiniMap, Side Actions
+   * Panel, Command Bar, Dock, and other H2O cards/panels. Each module reads
+   * the data-h2o-chub-* attributes written by the setters below.
+   *
+   *   Cockpit Theme    — RENAMED from "Panel Background"; same key/storage.
+   *                      Drives the Control Hub outer shell skin.
+   *   Cockpit Interior — RENAMED from "Interior Surfaces"; same key/storage.
+   *                      Independent of Cockpit Theme so the inner pane tone
+   *                      can differ from the outer shell.
+   *   Cockpit Accent   — RENAMED from "Control Accent"; same key/storage.
+   *                      Drives the Cockpit accent system (NOT Theme Core
+   *                      accent — Theme Core accent ships in a later phase).
+   * ────────────────────────────────────────────────────────────────────────── */
+  const COCKPIT_APPEARANCE_CONTROLS = Object.freeze([
     Object.freeze({
       type: 'select',
       key: 'chubPanelBackground',
-      label: 'Panel Background',
-      group: 'Control Hub Backgrounds',
-      help: 'Changes the outer Control Hub shell. Sand Glass is the original panel look.',
+      label: 'Cockpit Theme',
+      group: 'Cockpit Appearance',
+      help: 'Cockpit Pro / H2O outer shell skin. Sand Glass is the original Cockpit look. Does not affect the ChatGPT/base page.',
       def: 'default',
       opts: CHUB_PANEL_BG_opts,
       getLive() { return CHUB_PANEL_BG_get(); },
@@ -451,13 +556,24 @@
     Object.freeze({
       type: 'select',
       key: 'chubPaneBackground',
-      label: 'Interior Surfaces',
-      group: 'Control Hub Backgrounds',
-      help: 'Changes the right pane, mode pills, category rail tabs, and feature card surfaces together.',
+      label: 'Cockpit Interior',
+      group: 'Cockpit Appearance',
+      help: 'Inner Cockpit panes, mode pills, category rail tabs, and feature card surfaces. Independent of Cockpit Theme so the inner tone can differ from the outer shell.',
       def: 'default',
       opts: CHUB_PANE_BG_opts,
       getLive() { return CHUB_PANE_BG_get(); },
       setLive(v) { return CHUB_PANE_BG_set(v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chubControlAccent',
+      label: 'Cockpit Accent',
+      group: 'Cockpit Appearance',
+      help: 'Cockpit Pro / H2O accent: buttons, switches, selected tabs, category rail, and subtabs. Independent of the ChatGPT/base theme accent.',
+      def: 'default',
+      opts: CHUB_CONTROL_ACCENT_opts,
+      getLive() { return CHUB_CONTROL_ACCENT_get(); },
+      setLive(v) { return CHUB_CONTROL_ACCENT_set(v); },
     }),
   ]);
 
@@ -527,14 +643,14 @@
       api.registerPlugin({
         key: FEATURE_KEY_THEMES_PANEL,
         getControls() {
-          return THEMES_CONTROLS;
+          return BASE_APPEARANCE_CONTROLS;
         },
         detailHook: mountThemesPanelAction,
       });
       api.registerPlugin({
         key: FEATURE_KEY_ACCENTS,
         getControls() {
-          return ACCENT_CONTROLS;
+          return COCKPIT_APPEARANCE_CONTROLS;
         },
       });
       LAST_API = api;
