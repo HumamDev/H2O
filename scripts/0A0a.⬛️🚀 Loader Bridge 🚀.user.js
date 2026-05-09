@@ -4,8 +4,8 @@
 // @namespace          H2O.Premium.CGX.loader.bridge
 // @author             HumamDev
 // @version            1.0.0
-// @revision           003
-// @build              260509-012939
+// @revision           004
+// @build              260509-034832
 // @description        Phase 1 measurement infrastructure. Establishes H2O.loader namespace + install-time counters (listeners/observers/intervals/styles) + performance marks. No behavioral changes.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -745,6 +745,126 @@
       return totals;
     },
   });
+
+  // ─── Loader V2.1: H2O.scheduler — diagnostics bridge ─────────────────────
+  // Page-world surface-readiness map + async report() that merges with the
+  // loader-side script/wave data over the existing archive postMessage
+  // bridge. Gated on localStorage.H2O_LOADER_V3_DIAG === "1": when off,
+  // no surface listeners are installed and report() resolves to
+  // { enabled: false } without contacting the loader.
+  let V3_DIAG = false;
+  try {
+    if (W.localStorage && W.localStorage.getItem("H2O_LOADER_V3_DIAG") === "1") V3_DIAG = true;
+  } catch (_) {}
+
+  // Surface readiness map. Populated at most once per surface per page
+  // lifecycle (idempotent — late or duplicate emits do not overwrite the
+  // first-ready timestamp). questionWrapper has no owner-ready event today,
+  // so it stays null and is documented as a known gap.
+  const SURFACES = ["controlHub", "library", "sideActions", "minimap", "dockPanel", "questionWrapper"];
+  const surfaceReady = Object.create(null);
+  for (const s of SURFACES) surfaceReady[s] = null;
+
+  function recordSurfaceReady(name) {
+    if (!V3_DIAG) return;
+    if (surfaceReady[name]) return; // idempotent
+    const ms = (W.performance && typeof W.performance.now === "function") ? W.performance.now() : null;
+    surfaceReady[name] = { ts: Date.now(), readyMs: ms };
+  }
+
+  if (V3_DIAG) {
+    // Use H2O.events.onReady when available (replay-safe, catches
+    // already-fired emissions). Fall back to addEventListener for events
+    // whose owner doesn't route through the bus or for early subscribers
+    // (0A0a runs first; nothing has fired yet at this point — listeners
+    // simply wait).
+    function subscribeReady(eventName, surfaceName) {
+      const onReadyFn = (W && W.H2O && W.H2O.events && W.H2O.events.onReady) || null;
+      const handler = () => recordSurfaceReady(surfaceName);
+      if (typeof onReadyFn === "function") {
+        try { onReadyFn(eventName, handler); return; } catch (_) {}
+      }
+      try { W.addEventListener(eventName, handler, false); } catch (_) {}
+    }
+    subscribeReady("h2o.ev:prm:cgx:cntrlhb:ready:v1", "controlHub");
+    subscribeReady("h2o.ev:prm:cgx:lib:ready:v1", "library");
+    subscribeReady("h2o.ev:prm:cgx:sap:ready:v1", "sideActions");
+    subscribeReady("evt:h2o:minimap:engine-ready", "minimap");
+    subscribeReady("h2o:dpanel:ready", "dockPanel");
+    // questionWrapper has no owner-ready event in this phase. Left as null;
+    // tracked as a known gap to be filled when a future phase touches 2A1a.
+  }
+
+  // Async bridge to the loader (isolated world). Mirrors the existing
+  // refreshLoaderDiag pattern: window.postMessage with id, await response
+  // on ARCHIVE_RES, timeout-bounded. Returns the loader's V3 report or an
+  // error object; never throws.
+  function callSchedulerReport(timeoutMs) {
+    const tmo = (Number(timeoutMs) > 0) ? Math.floor(timeoutMs) : RUNTIME_REFRESH_TIMEOUT_MS;
+    return new Promise((resolve) => {
+      const id = "h2o-scheduler-report-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      let done = false;
+      let timer = 0;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        try { if (timer) W.clearTimeout(timer); } catch (_) {}
+        try { W.removeEventListener("message", onMessage, false); } catch (_) {}
+        resolve(value);
+      };
+      const onMessage = (ev) => {
+        if (ev.source !== W) return;
+        const data = ev.data;
+        if (!plainObject(data) || data.type !== ARCHIVE_RES || String(data.id || "") !== id) return;
+        finish(data);
+      };
+      try {
+        W.addEventListener("message", onMessage, false);
+        timer = W.setTimeout(() => {
+          finish({ ok: false, error: "schedulerReport timeout after " + tmo + "ms" });
+        }, tmo);
+        W.postMessage({
+          type: ARCHIVE_REQ,
+          id,
+          req: { op: "__schedulerReport", payload: {} },
+          timeoutMs: tmo,
+        }, "*");
+      } catch (e) {
+        finish({ ok: false, error: String((e && e.message) || e || "schedulerReport bridge failed") });
+      }
+    });
+  }
+
+  // Public H2O.scheduler API. report() returns a Promise so callers can
+  // simply `await H2O.scheduler.report()` from the console. When V3_DIAG
+  // is off (this side OR the loader side), resolves to { enabled: false }
+  // without further work.
+  H2O.scheduler = H2O.scheduler || {};
+  H2O.scheduler.enabled = V3_DIAG;
+  H2O.scheduler.surfacesSnapshot = function () {
+    const out = {};
+    for (const s of SURFACES) out[s] = surfaceReady[s] ? Object.assign({}, surfaceReady[s]) : null;
+    return out;
+  };
+  H2O.scheduler.report = async function (opts) {
+    if (!V3_DIAG) return { enabled: false };
+    const tmo = plainObject(opts) ? Number(opts.timeoutMs) : null;
+    const res = await callSchedulerReport(Number.isFinite(tmo) && tmo > 0 ? tmo : null);
+    if (!res || res.ok !== true) {
+      return { enabled: true, ok: false, error: String((res && res.error) || "report failed"),
+        surfaces: H2O.scheduler.surfacesSnapshot() };
+    }
+    const result = plainObject(res.result) ? res.result : {};
+    const report = plainObject(result.report) ? result.report : { enabled: false };
+    if (report.enabled === false) return { enabled: false };
+    // Merge page-side surfaces map into the loader-side report.
+    report.surfaces = report.surfaces && typeof report.surfaces === "object" ? report.surfaces : {};
+    const snap = H2O.scheduler.surfacesSnapshot();
+    for (const s of SURFACES) {
+      report.surfaces[s] = snap[s];
+    }
+    return report;
+  };
 
   try {
     if (W.performance && typeof W.performance.mark === "function") {

@@ -178,6 +178,18 @@
           try { W.dispatchEvent(new CustomEvent(legacyName, { detail: legacyDetail })); } catch {}
         }
       }
+
+      // Loader V2.1: explicit `{ replay: true }` writes the latest detail to
+      // the bounded cache so late onReady() subscribers replay it once. This
+      // is the spelling the V2.1 plan calls for (emit + replay flag) and is
+      // equivalent to calling H2O.events.emitReady directly. Override is
+      // explicit: it bypasses READY_PREDICATE — callers who pass
+      // { replay: true } know they want replay, regardless of name shape.
+      if (opts && opts.replay === true) {
+        try {
+          readyCache.set(readyCacheKey(canonical), { detail: detail || {}, ts: Date.now() });
+        } catch (_) {}
+      }
     };
 
     function bridgeLegacy(legacyEvt, canonicalEvt) {
@@ -210,8 +222,13 @@
      * gated writes ensure non-ready events are never cached.
      * ───────────────────────────────────────────────────────────────────────────── */
 
+    // Loader V2.1: also accept the established `:ready:vN` / `-ready-vN`
+    // suffix convention used by Control Hub, Library Core, and Side Actions
+    // Panel. Without this, e.g. `h2o.ev:prm:cgx:cntrlhb:ready:v1` was emitted
+    // as a "ready" event but the cache never picked it up, so late
+    // subscribers fell through to plain addEventListener and missed the fire.
     const READY_PREDICATE = (n) => typeof n === 'string'
-      && (n.endsWith(':ready') || n.endsWith('-ready'));
+      && /(?:[:-])ready(?:[:-]v\d+)?$/i.test(n);
 
     // Normalize so 'evt:h2o:foo:ready' and 'h2o:foo:ready' map to the same
     // cache slot. Other event consumers still see whatever name was passed;

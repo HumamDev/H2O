@@ -33,6 +33,128 @@ export function makeChromeLiveLoaderJs({
     onDemandState: {},
     currentPageLoads: {},
   };
+
+  // ─── Loader V2.1 diagnostics (gated on H2O_LOADER_V3_DIAG=1) ─────────────
+  // Pseudo-wave recorder. Captures per-script dispatch/settle timings, lane
+  // assignment, best-effort wait reasons, phase timings, and wave timings.
+  // When the flag is OFF, every recordV3* helper short-circuits to a no-op
+  // and zero state is allocated beyond this small object. The full
+  // H2O.scheduler.report() is computed only when callers request it via the
+  // postMessage __schedulerReport op (handled later in this file).
+  let V3_DIAG_ENABLED = false;
+  try {
+    V3_DIAG_ENABLED = (typeof localStorage !== "undefined")
+      && (localStorage.getItem("H2O_LOADER_V3_DIAG") === "1");
+  } catch (_) { V3_DIAG_ENABLED = false; }
+  const v3Diag = {
+    enabled: V3_DIAG_ENABLED,
+    bootStartMs: null,
+    bootEndMs: null,
+    phases: { start: null, end: null, idle: null }, // each: { startMs, endMs }
+    waves: [], // each: { lane, startMs, endMs, scriptCount }
+    activeWaves: new Map(), // lane -> { startMs, scripts: [] }
+    scripts: {}, // aliasId -> { lane, dispatchMs, settleMs, waitedFor, waitReason, waitMs, errors, ok }
+  };
+  function v3Now() {
+    return (typeof performance !== "undefined" && typeof performance.now === "function")
+      ? performance.now() : (Date.now() - PAGE_STARTED_AT);
+  }
+  function v3Mark(name) {
+    if (!V3_DIAG_ENABLED) return;
+    try { performance.mark(name); } catch (_) {}
+  }
+  function v3PhaseStart(phase) {
+    if (!V3_DIAG_ENABLED) return;
+    const key = phase === "document-start" ? "start" : phase === "document-end" ? "end" : "idle";
+    v3Diag.phases[key] = { startMs: v3Now(), endMs: null };
+  }
+  function v3PhaseEnd(phase) {
+    if (!V3_DIAG_ENABLED) return;
+    const key = phase === "document-start" ? "start" : phase === "document-end" ? "end" : "idle";
+    if (v3Diag.phases[key]) v3Diag.phases[key].endMs = v3Now();
+  }
+  function v3WaveStart(lane) {
+    if (!V3_DIAG_ENABLED) return;
+    v3Mark("h2o:wave:" + lane + ":start");
+    v3Diag.activeWaves.set(lane, { startMs: v3Now(), scripts: [] });
+  }
+  function v3WaveEnd(lane) {
+    if (!V3_DIAG_ENABLED) return;
+    v3Mark("h2o:wave:" + lane + ":end");
+    const w = v3Diag.activeWaves.get(lane);
+    if (!w) return;
+    v3Diag.waves.push({
+      lane,
+      startMs: w.startMs,
+      endMs: v3Now(),
+      scriptCount: w.scripts.length,
+    });
+    v3Diag.activeWaves.delete(lane);
+  }
+  function v3Dispatch(aliasId, lane, waitedFor, waitReason) {
+    if (!V3_DIAG_ENABLED || !aliasId) return;
+    const id = String(aliasId);
+    v3Mark("h2o:wave:" + lane + ":dispatch:" + id);
+    const now = v3Now();
+    const w = v3Diag.activeWaves.get(lane);
+    const waveStartMs = w ? w.startMs : null;
+    if (w) w.scripts.push(id);
+    v3Diag.scripts[id] = {
+      lane,
+      dispatchMs: now,
+      settleMs: null,
+      waitedFor: waitedFor || null,
+      waitReason: waitReason || "none",
+      waitMs: (waveStartMs != null) ? Math.max(0, now - waveStartMs) : 0,
+      errors: [],
+      ok: null,
+    };
+  }
+  function v3Settle(aliasId, lane, ok, errMsg) {
+    if (!V3_DIAG_ENABLED || !aliasId) return;
+    const id = String(aliasId);
+    v3Mark("h2o:wave:" + lane + ":settle:" + id);
+    const rec = v3Diag.scripts[id];
+    if (!rec) return;
+    rec.settleMs = v3Now();
+    rec.ok = !!ok;
+    if (!ok && errMsg) rec.errors.push(String(errMsg));
+  }
+  function v3GetReport() {
+    if (!V3_DIAG_ENABLED) return { enabled: false };
+    const report = {
+      version: 3,
+      buildId: LOADER_BUILD_ISO || String(LOADER_BUILD_TS || ""),
+      enabled: true,
+      pageStartedAt: PAGE_STARTED_AT,
+      bootStartMs: v3Diag.bootStartMs,
+      bootEndMs: v3Diag.bootEndMs,
+      phaseTimings: {
+        start: v3Diag.phases.start,
+        end: v3Diag.phases.end,
+        idle: v3Diag.phases.idle,
+      },
+      waves: v3Diag.waves.slice(),
+      scripts: {},
+      // surfaces are populated page-side by 0A0a Loader Bridge; the loader
+      // itself cannot subscribe to page-world ready events. The bridge merges
+      // its own surfaces map into the final report shown to callers.
+      surfaces: {},
+    };
+    for (const [k, v] of Object.entries(v3Diag.scripts)) {
+      report.scripts[k] = {
+        lane: v.lane,
+        dispatchMs: v.dispatchMs,
+        settleMs: v.settleMs,
+        waitedFor: v.waitedFor,
+        waitReason: v.waitReason,
+        waitMs: v.waitMs,
+        errors: v.errors.slice(),
+        ok: v.ok,
+      };
+    }
+    return report;
+  }
   try {
     globalThis[LOADER_INSTANCE_KEY] = {
       active: true,
@@ -951,6 +1073,21 @@ export function makeChromeLiveLoaderJs({
         return;
       }
 
+      // Loader V2.1: V3 diagnostics report. Returns the loader-side portion
+      // (phase timings, waves, per-script timings/lane/wait reasons). The
+      // page-side bridge (0A0a) merges this with its own surfaces map before
+      // returning to callers via H2O.scheduler.report(). When V3_DIAG_ENABLED
+      // is false, returns { enabled: false } and no real work was done.
+      if (op === "__schedulerReport") {
+        try {
+          const report = v3GetReport();
+          reply(id, { ok: true, result: { ok: true, source: "page-bridge-loader", at: Date.now(), report } });
+        } catch (e) {
+          reply(id, { ok: false, error: String(e && (e.message || e) || "__schedulerReport failed") });
+        }
+        return;
+      }
+
       if (!ALLOW_OPS.has(op)) {
         reply(id, { ok: false, error: "unsupported archive op: " + op });
         return;
@@ -1828,21 +1965,53 @@ export function makeChromeLiveLoaderJs({
     const serialList = isIdle ? list.filter((it) => idleSerialAlias(it && it.aliasId)) : list;
     const parallelList = isIdle ? list.filter((it) => !idleSerialAlias(it && it.aliasId)) : [];
 
+    // V3 lane labels — pseudo-waves from the existing serial/parallel split.
+    const serialLane = isIdle ? "idle-serial" : ("phase-" + phase);
+    if (serialList.length) v3WaveStart(serialLane);
+
     for (let i = 0; i < serialList.length; i++) {
-      loaded += await loadOneScript(serialList[i], i, total, phase, runtimeSamples, progressState);
+      const it = serialList[i];
+      const aliasId = it && it.aliasId ? String(it.aliasId) : "";
+      // First script in lane waits for the phase boundary; subsequent scripts
+      // wait for their predecessor in the serial chain.
+      const waitedFor = i === 0
+        ? ("phase:" + phase)
+        : (serialList[i - 1] && serialList[i - 1].aliasId ? String(serialList[i - 1].aliasId) : null);
+      const waitReason = i === 0 ? "phase" : "serial_predecessor";
+      v3Dispatch(aliasId, serialLane, waitedFor, waitReason);
+      const r = await loadOneScript(it, i, total, phase, runtimeSamples, progressState);
+      v3Settle(aliasId, serialLane, r === 1, null);
+      loaded += r;
       await yieldToBrowser();
     }
 
+    if (serialList.length) v3WaveEnd(serialLane);
+
     if (parallelList.length) {
       const batchSize = 6;
+      let batchN = 0;
       for (let start = 0; start < parallelList.length; start += batchSize) {
+        const lane = isIdle ? ("idle-parallel-batch-" + batchN) : ("phase-" + phase + "-batch-" + batchN);
+        v3WaveStart(lane);
         const chunk = parallelList.slice(start, start + batchSize);
+        // All scripts in a parallel batch dispatch together — none "waits for"
+        // a sibling. They wait for the previous batch's completion (or the
+        // phase boundary on the first batch). waitReason is best-effort.
+        const batchWaitReason = (batchN === 0 && serialList.length === 0) ? "phase" : "none";
+        const batchWaitedFor = (batchN === 0 && serialList.length === 0) ? ("phase:" + phase) : null;
         const tasks = chunk.map((it, localIdx) => {
           const globalIdx = serialList.length + start + localIdx;
-          return loadOneScript(it, globalIdx, total, phase, runtimeSamples, progressState);
+          const aliasId = it && it.aliasId ? String(it.aliasId) : "";
+          v3Dispatch(aliasId, lane, batchWaitedFor, batchWaitReason);
+          return loadOneScript(it, globalIdx, total, phase, runtimeSamples, progressState).then((r) => {
+            v3Settle(aliasId, lane, r === 1, null);
+            return r;
+          });
         });
         const results = await Promise.all(tasks);
         loaded += results.reduce((sum, n) => sum + Number(n || 0), 0);
+        v3WaveEnd(lane);
+        batchN += 1;
         await yieldToBrowser();
       }
     }
@@ -1856,6 +2025,9 @@ export function makeChromeLiveLoaderJs({
         performance.mark("h2o:loader:boot:start");
       }
     } catch {}
+    // V3 diagnostics: capture boot start; phase timings populate as each
+    // phase begins/ends. No-op when V3_DIAG_ENABLED=false.
+    v3Diag.bootStartMs = v3Now();
 
     // Phase 4 Step 5b: V2 flag — single source of truth, captured once at
     // boot start. When OFF, every V2 branch below is dead code and the V1
@@ -2074,20 +2246,27 @@ export function makeChromeLiveLoaderJs({
     let loadedTotal = 0;
     const progressState = { total: enabled.length, done: 0 };
     try { performance.mark("h2o:phase:start:start"); } catch {}
+    v3PhaseStart("document-start");
     loadedTotal += await loadPhase(phaseStart, "document-start", runtimeSamples, progressState);
     try { performance.mark("h2o:phase:start:end"); } catch {}
+    v3PhaseEnd("document-start");
     await waitDomContentLoaded();
     try { performance.mark("h2o:phase:end:start"); } catch {}
+    v3PhaseStart("document-end");
     loadedTotal += await loadPhase(phaseEnd, "document-end", runtimeSamples, progressState);
     try { performance.mark("h2o:phase:end:end"); } catch {}
+    v3PhaseEnd("document-end");
     await waitDomIdle();
     try { performance.mark("h2o:phase:idle:start"); } catch {}
+    v3PhaseStart("document-idle");
     loadedTotal += await loadPhase(phaseIdle, "document-idle", runtimeSamples, progressState);
     try { performance.mark("h2o:phase:idle:end"); } catch {}
+    v3PhaseEnd("document-idle");
     await flushRuntimeSamples(runtimeSamples);
     await maybeAutoOpenControlHubFromUrl();
 
     try { performance.mark("h2o:loader:boot:end"); } catch {}
+    v3Diag.bootEndMs = v3Now();
     log("boot done");
     setStatus(
       STATUS_LABEL +

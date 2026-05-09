@@ -1310,8 +1310,39 @@
   API.attachCommandBarBridge = ensureCommandBarBridge;
   API.adoptCommandBarControls = adoptCommandBarControls;
 
+  // Loader V2.1: replay-safe ready event. Emitted only after the panel is
+  // actually usable (host mounted, state.mounted=true, registerTab exposed)
+  // and only when localStorage.H2O_LOADER_V3_READY_EVENTS === "1". When off,
+  // behavior is unchanged. Idempotent via API.__readyEmitted: at most one
+  // emission per page lifecycle even if boot() is invoked again on a
+  // hot-reload or via the existing API.__h2oSideActionsPanelReady re-entry
+  // path.
+  function emitReadyIfNeeded() {
+    let v3 = false;
+    try { v3 = (W.localStorage && W.localStorage.getItem('H2O_LOADER_V3_READY_EVENTS') === '1'); }
+    catch (_) {}
+    if (!v3) return;
+    if (API.__readyEmitted) return;
+    if (state.mounted !== true) return;
+    if (typeof API.registerTab !== 'function') return;
+    API.__readyEmitted = true;
+    const detail = {
+      ts: Date.now(),
+      mountHostId: (state.host && state.host.id) || null,
+    };
+    try {
+      if (W.H2O && W.H2O.events && typeof W.H2O.events.emit === 'function') {
+        W.H2O.events.emit('h2o.ev:prm:cgx:sap:ready:v1', detail, { replay: true });
+      } else {
+        W.dispatchEvent(new CustomEvent('h2o.ev:prm:cgx:sap:ready:v1', { detail }));
+      }
+    } catch (_) {}
+    try { W.performance && W.performance.mark && W.performance.mark('h2o:surface:ready:sideActions'); } catch (_) {}
+  }
+
   function boot() {
     ensureMounted();
+    emitReadyIfNeeded();
   }
 
   if (D.readyState === "loading") {

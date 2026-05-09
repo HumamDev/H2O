@@ -48,18 +48,33 @@
   const BOOT_TIMER_SET = '__h2oLibraryWorkspaceBootTimers_v1_0_0';
   const BOOT_MAX_ATTEMPTS = 180;
 
+  // Loader V2.1: track when this script started so the diag can report
+  // milliseconds-from-script-start regardless of which boot path resolves.
+  const SCRIPT_START_MS = (W.performance && typeof W.performance.now === 'function')
+    ? W.performance.now() : 0;
+
+  function recordBootDiag(extra) {
+    try {
+      H2O.LibraryWorkspaceBootDiag = Object.assign({
+        ts: Date.now(),
+        msFromScriptStart: ((W.performance && typeof W.performance.now === 'function')
+          ? (W.performance.now() - SCRIPT_START_MS) : null),
+      }, extra || {});
+    } catch {}
+  }
+
   function bootWhenLibraryCoreReady(attempt = 0) {
     const core = H2O.LibraryCore;
     if (!core) {
       if (attempt >= BOOT_MAX_ATTEMPTS) {
-        try {
-          H2O.LibraryWorkspaceBootDiag = {
-            ok: false,
-            status: 'library-core-not-found',
-            attempts: attempt,
-            ts: Date.now(),
-          };
-        } catch {}
+        recordBootDiag({
+          ok: false,
+          status: 'library-core-not-found',
+          path: 'poll',
+          attempts: attempt,
+          resolved: false,
+          error: 'library-core-not-found',
+        });
         return;
       }
       if (!H2O[BOOT_TIMER_SET]) H2O[BOOT_TIMER_SET] = new Set();
@@ -72,15 +87,65 @@
       return;
     }
 
-    try {
-      H2O.LibraryWorkspaceBootDiag = {
+    recordBootDiag({
+      ok: true,
+      status: 'library-core-ready',
+      path: 'poll',
+      attempts: attempt,
+      resolved: true,
+      error: null,
+    });
+    runLibraryWorkspace(core);
+  }
+
+  // Loader V2.1: subscribe to Library Core's replay-safe ready event when
+  // localStorage.H2O_LOADER_V3_READY_EVENTS === "1". onReady returns the
+  // cached detail via microtask if Core already fired (late-subscriber
+  // replay), and also subscribes to future emits via the DOM. Polling is
+  // kept intact as the off-flag fallback so we have an A/B baseline.
+  function subscribeToLibraryReadyEvent() {
+    let resolved = false;
+    const resolve = (source) => {
+      if (resolved) return;
+      const core = H2O.LibraryCore;
+      if (!core) {
+        // Core advertised ready but somehow isn't on the namespace yet.
+        // Defensive: fall through to a small bounded poll rather than
+        // call into a missing API.
+        recordBootDiag({
+          ok: false,
+          status: 'library-core-missing-after-event',
+          path: 'event',
+          attempts: 0,
+          resolved: false,
+          error: 'core-missing-after-' + source,
+        });
+        bootWhenLibraryCoreReady(0);
+        return;
+      }
+      resolved = true;
+      recordBootDiag({
         ok: true,
         status: 'library-core-ready',
-        attempts: attempt,
-        ts: Date.now(),
-      };
-    } catch {}
-    runLibraryWorkspace(core);
+        path: 'event',
+        attempts: 0,
+        resolved: true,
+        error: null,
+      });
+      runLibraryWorkspace(core);
+    };
+
+    const onReadyFn = (W && W.H2O && W.H2O.events && W.H2O.events.onReady) || null;
+    if (typeof onReadyFn === 'function') {
+      try { onReadyFn('h2o.ev:prm:cgx:lib:ready:v1', () => resolve('on-ready')); return; }
+      catch (_) { /* fall through */ }
+    }
+    // Replay-safe API not available — fall back to plain DOM listener +
+    // bounded poll. The poll handles the rare case where Core fired before
+    // we subscribed AND the cache wasn't populated.
+    try { W.addEventListener('h2o.ev:prm:cgx:lib:ready:v1', () => resolve('dom'), { once: true }); }
+    catch (_) {}
+    bootWhenLibraryCoreReady(0);
   }
 
   function runLibraryWorkspace(core) {
@@ -3925,5 +3990,15 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     boot();
   }
 
-  bootWhenLibraryCoreReady();
+  // Loader V2.1: dual-path boot. When the flag is on, subscribe to Library
+  // Core's replay-safe ready event and skip the polling loop. When off,
+  // run the original polling boot exactly as before.
+  let v3ReadyEvents = false;
+  try { v3ReadyEvents = (W.localStorage && W.localStorage.getItem('H2O_LOADER_V3_READY_EVENTS') === '1'); }
+  catch (_) {}
+  if (v3ReadyEvents) {
+    subscribeToLibraryReadyEvent();
+  } else {
+    bootWhenLibraryCoreReady();
+  }
 })();

@@ -2231,4 +2231,32 @@ core.verifyOwnershipBoundaries = (() => {
   } catch (e) { err('publish:NavTo', e); }
 
   step('boot', core.meta.phase);
+
+  // ─── Loader V2.1: replay-safe ready event ──────────────────────────────
+  // Emitted only when localStorage.H2O_LOADER_V3_READY_EVENTS === "1". When
+  // off, Library Workspace's existing polling path runs unchanged (baseline
+  // for A/B comparison). Idempotent via core.__readyEmitted: if this script
+  // re-runs (hot reload, partial rerun), the event fires at most once per
+  // page lifecycle.
+  try {
+    let v3 = false;
+    try { v3 = (W.localStorage && W.localStorage.getItem('H2O_LOADER_V3_READY_EVENTS') === '1'); } catch (_) {}
+    if (v3 && !core.__readyEmitted) {
+      core.__readyEmitted = true;
+      const detail = {
+        ts: Date.now(),
+        version: core.meta && core.meta.version || '1.0.0',
+        owners: Object.keys(registries.owners || {}),
+        services: Object.keys(registries.services || {}),
+      };
+      try {
+        if (W.H2O && W.H2O.events && typeof W.H2O.events.emit === 'function') {
+          W.H2O.events.emit('h2o.ev:prm:cgx:lib:ready:v1', detail, { replay: true });
+        } else {
+          W.dispatchEvent(new CustomEvent('h2o.ev:prm:cgx:lib:ready:v1', { detail }));
+        }
+      } catch (_) {}
+      try { W.performance && W.performance.mark && W.performance.mark('h2o:surface:ready:library'); } catch (_) {}
+    }
+  } catch (_) {}
 })();
