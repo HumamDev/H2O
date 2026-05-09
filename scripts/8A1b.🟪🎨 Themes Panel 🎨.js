@@ -1,6 +1,6 @@
 // ==UserScript==
-// @h2o-id             8a1a.themes.panel
-// @name               8A1a.🟪🎨 Themes Panel 🎨
+// @h2o-id             8a1b.themes.panel
+// @name               8A1b.🟪🎨 Themes Panel 🎨
 // @namespace          H2O.Premium.CGX.themes.panel
 // @author             HumamDev
 // @version            2.1.14

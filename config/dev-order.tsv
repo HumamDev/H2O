@@ -50,6 +50,13 @@
 🟢	0X2a.⬛️🎛️ Side Actions Panel 🎛️.js
 
 # =========================
+# 🗂️ LIBRARY CORE
+# =========================
+🟢	0F1a.⬛️🗂️ Library Core 🗂️.js
+🟢	0F1b.⬛️🗂️ Library Workspace 🗂️.js
+🟢	0F1c.⬛️🗂️ Library Index 🧮🗂️.js
+
+# =========================
 # 🕹️ CONTROL HUB
 # =========================
 🟢	0Z1a.⬛️🕹️ Control Hub 🕹️.js
@@ -168,7 +175,8 @@
 # =========================
 # 🎨 APPEARANCE
 # =========================
-🟢	8A1a.🟪🎨 Themes Panel 🎨.js
+🟢	8A1a.🟪🎨 Theme Core 🎨.js
+🟢	8A1b.🟪🎨 Themes Panel 🎨.js
 🟢	8A2a.🟪🌸 H2O Skins Registry 🌸.js
 🟢	8Y1a.🟣🧊 Input Dock (Keys Rail).js
 
@@ -199,15 +207,12 @@
 🟢	0E1a.⬛️📀 Export Chat 📀.js
 🟢	0E1b.⚫️📀 Export Formats 📝📀.js
 🟢	0E2a.⚫️💿 Quick Export 💿.js
-🟢	0F1a.⬛️🗂️ Library Core 🗂️.js
+🟢	0F1d.⬛️🗂️ Library Insights 📊🗂️.js
 🟢	0F1e.⬛️🗂️ Library Store 📦🗂️.js
+🟢	0F1f.⬛️🗂️ Library Maintenance 🛠️🗂️.js
 🟢	0F2a.⬛️🗂️ Projects 🗂️.js
 🟢	0F3a.⬛️🗂️ Folders 🗂️.js
 🟢	0F4a.⬛️🗂️ Categories 🗂️.js
 🟢	0F5a.⬛️🗂️ Tags 🗂️.js
 🟢	0F6a.⬛️🏷️ Labels 🏷️.js
-🟢	0F1b.⬛️🗂️ Library Workspace 🗂️.js
-🟢	0F1c.⬛️🗂️ Library Index 🧮🗂️.js
-🟢	0F1d.⬛️🗂️ Library Insights 📊🗂️.js
-🟢	0F1f.⬛️🗂️ Library Maintenance 🛠️🗂️.js
 
