@@ -241,6 +241,12 @@ function groupOf(filename) {
   if (/^0C/i.test(id)) return "PERFORMANCE";
   if (/^0D/i.test(id)) return "DATA";
   if (/^0X/i.test(id)) return "COMMAND_BAR_SIDE_ACTIONS";
+  // Loader V2.2: Library Core / Workspace / Index live in their own section
+  // between SYSTEM SURFACES and CONTROL HUB so they land in early parallel
+  // batches (positions 2–4 of the parallel lane) instead of the OTHER tail.
+  // Other 0F scripts (Insights, Store, Maintenance, Projects, Folders,
+  // Categories, Tags, Labels) still fall through to OTHER.
+  if (/^0F1[abc]/i.test(id)) return "LIBRARY_CORE";
   if (/^0Z/i.test(id)) return "CONTROL_HUB";
 
   if (/^1A1/i.test(id)) return "MINIMAP_BASE";
@@ -292,6 +298,15 @@ const SECTIONS = [
     header: [
       "# =========================",
       "# 🎛️ SYSTEM SURFACES",
+      "# =========================",
+    ],
+  },
+  {
+    key: "LIBRARY_CORE",
+    title: "🗂️ LIBRARY CORE",
+    header: [
+      "# =========================",
+      "# 🗂️ LIBRARY CORE",
       "# =========================",
     ],
   },
