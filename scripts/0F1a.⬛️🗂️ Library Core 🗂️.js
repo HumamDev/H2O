@@ -640,6 +640,37 @@
       return root;
     },
 
+    PAGEHOST_captureScrollSnapshot(_env, host) {
+      if (!(host instanceof HTMLElement)) return { top: 0, left: 0 };
+      return {
+        top: Number(host.scrollTop || 0) || 0,
+        left: Number(host.scrollLeft || 0) || 0,
+      };
+    },
+
+    PAGEHOST_applyScrollSnapshot(_env, host, snapshot = null) {
+      if (!(host instanceof HTMLElement)) return false;
+      const top = Number(snapshot?.top || 0) || 0;
+      const left = Number(snapshot?.left || 0) || 0;
+      try {
+        host.scrollTop = top;
+        host.scrollLeft = left;
+      } catch {}
+      try {
+        host.scrollTo({ top, left, behavior: 'auto' });
+      } catch {
+        try { host.scrollTo(left, top); } catch {}
+      }
+      return true;
+    },
+
+    PAGEHOST_scrollHostToTop(env, host, reason = 'page-enter') {
+      const ok = pageHostService.PAGEHOST_applyScrollSnapshot(env, host, { top: 0, left: 0 });
+      if (!ok) return false;
+      try { step('pageHost:scroll-top', `${reason}|${host.tagName || 'host'}`); } catch {}
+      return true;
+    },
+
     PAGEHOST_normalizeHeaderText(raw = '') {
       return String(raw || '').replace(/\s+/g, ' ').trim();
     },
@@ -1109,6 +1140,7 @@
       pageHostService.PAGEHOST_clearNativeNavigationGuards(env, session);
       pageHostService.PAGEHOST_removeOwnedPageRoot(env, root);
       pageHostService.PAGEHOST_restoreHiddenHostChildren(env, session);
+      pageHostService.PAGEHOST_applyScrollSnapshot(env, session.host, session.hostScrollBeforeEnter);
 
       env.STATE.pageSession = null;
       env.STATE.pageEl = null;
@@ -1157,6 +1189,7 @@
       session.replacedAt = Date.now();
       env.STATE.pageEl = pageEl;
       env.STATE.pageHost = session.host;
+      pageHostService.PAGEHOST_scrollHostToTop(env, session.host, 'replace-current-page');
       pageHostService.PAGEHOST_isolateHeaderContext(env, session);
       pageHostService.PAGEHOST_scheduleHeaderContextSync(env, session);
       pageHostService.PAGEHOST_bindNativeNavigationGuards(env, session);
@@ -1177,6 +1210,7 @@
         pageHostService.PAGEHOST_clearNativeNavigationGuards(env, session);
         pageHostService.PAGEHOST_removeOwnedPageRoot(env, root);
         pageHostService.PAGEHOST_restoreHiddenHostChildren(env, session);
+        pageHostService.PAGEHOST_applyScrollSnapshot(env, session.host, session.hostScrollBeforeEnter);
 
         env.STATE.pageSession = null;
         env.STATE.pageEl = null;
@@ -1260,6 +1294,7 @@
         host,
         root,
         pageEl,
+        hostScrollBeforeEnter: pageHostService.PAGEHOST_captureScrollSnapshot(env, host),
         hiddenChildrenRecords: [],
         kind: root.getAttribute('data-cgxui-page-kind') || 'library',
         title: root.getAttribute('data-cgxui-page-title') || '',
@@ -1270,6 +1305,7 @@
       env.STATE.pageEl = pageEl;
       env.STATE.pageHost = host;
       env.STATE.pageHiddenRecords = [];
+      pageHostService.PAGEHOST_scrollHostToTop(env, host, 'enter-page');
       pageHostService.PAGEHOST_isolateHeaderContext(env, env.STATE.pageSession);
       pageHostService.PAGEHOST_scheduleHeaderContextSync(env, env.STATE.pageSession);
       pageHostService.PAGEHOST_bindNativeNavigationGuards(env, env.STATE.pageSession);
