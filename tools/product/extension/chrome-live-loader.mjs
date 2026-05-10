@@ -6,9 +6,11 @@ export function makeChromeLiveLoaderJs({
   PROXY_PACK_URL,
   DEV_SCRIPT_CATALOG,
   DEV_ORDER_SECTIONS_SNAPSHOT,
+  LOADER_DEPS_SNAPSHOT,
   STORAGE_KEY,
   STORAGE_ORDER_OVERRIDES_KEY,
   PAGE_FOLDER_BRIDGE_FILE,
+  PAGE_PILOT_OBSERVER_FILE,
 }) {
   return `(() => {
   "use strict";
@@ -46,6 +48,308 @@ export function makeChromeLiveLoaderJs({
     V3_DIAG_ENABLED = (typeof localStorage !== "undefined")
       && (localStorage.getItem("H2O_LOADER_V3_DIAG") === "1");
   } catch (_) { V3_DIAG_ENABLED = false; }
+  // Loader V3 Phase 1 — pure-prediction wave-diag flag. When OFF,
+  // v3PredictReport() returns null and the report.predictedV3 field is null.
+  // When ON, v3PredictReport() simulates V3 tier/wave dispatch using
+  // current metadata + V2.5 observed durations from v3Diag.scripts. Behavior
+  // is read-only — no runtime dispatch change either way.
+  let V3_WAVE_DIAG_ENABLED = false;
+  try {
+    V3_WAVE_DIAG_ENABLED = (typeof localStorage !== "undefined")
+      && (localStorage.getItem("H2O_LOADER_V3_WAVE_DIAG") === "1");
+  } catch (_) { V3_WAVE_DIAG_ENABLED = false; }
+
+  // ─── Loader V3 Phase 3-pilot: shadow dispatcher observer ──────────────
+  // Behind localStorage.H2O_LOADER_V3_DISPATCHER_PILOT === "1". Pure
+  // observation: when the flag is OFF, this block costs only a flag read.
+  //
+  // Architecture: the loader runs in the content-script isolated world; H2O
+  // (and H2O.events.onReady) live in the page world. We bridge by injecting
+  // an inline page-world <script> that subscribes to the 10 wave-exit ready
+  // events (9 required + 1 conditional) and posts the firedAtMs back to the
+  // loader via window.postMessage. The loader accumulates observations and
+  // synthesizes pilotPlan via computePilotPlan() from v3GetReport().
+  //
+  // Per P3c finding: evt:h2o:inputdock:ready is conditional/nullable. We
+  // record null when it never fires; we do NOT emit a synthetic event.
+  // V3.1 dispatcher flags (read once at IIFE entry; default OFF).
+  // Active dispatcher implies the pilot observer must also install (we reuse
+  // the WAR observer's H2O_PILOT_OBS_v1 message stream to wait for wave-exit
+  // events). When MODE != "active", V2.x runs byte-identical to today.
+  let V3_DISPATCHER_MODE = "off";
+  let V3_DISPATCHER_TIERS = "L0L1";
+  let V3_DISPATCHER_KILL = false;
+  try {
+    if (typeof localStorage !== "undefined") {
+      V3_DISPATCHER_MODE = String(localStorage.getItem("H2O_LOADER_V3_DISPATCHER_MODE") || "off");
+      V3_DISPATCHER_TIERS = String(localStorage.getItem("H2O_LOADER_V3_DISPATCHER_TIERS") || "L0L1");
+      V3_DISPATCHER_KILL = (localStorage.getItem("H2O_LOADER_V3_DISPATCHER_KILL") === "1");
+    }
+  } catch (_) { /* keep defaults */ }
+  const V3_DISPATCHER_ACTIVE = (V3_DISPATCHER_MODE === "active") && !V3_DISPATCHER_KILL;
+
+  let V3_PILOT_ENABLED = false;
+  try {
+    const pilotFlag = (typeof localStorage !== "undefined")
+      && (localStorage.getItem("H2O_LOADER_V3_DISPATCHER_PILOT") === "1");
+    // Auto-enable observer when the dispatcher is active — the dispatcher
+    // needs the WAR observer's postMessage stream to wait on wave-exit events
+    // via PILOT.observedReadyEvents. When DISPATCHER_ACTIVE alone is set
+    // (without the explicit pilot flag), the observer still installs and the
+    // pilotPlan still populates so dispatcherWaveResult is visible.
+    V3_PILOT_ENABLED = pilotFlag || V3_DISPATCHER_ACTIVE;
+  } catch (_) { V3_PILOT_ENABLED = false; }
+
+  // Required wave-exit events (Phase 3 audit; revised after L3 investigation).
+  //
+  // Required = the V3 dispatcher MUST gate the next wave on these. Failure to
+  // fire any required event indicates a real boot regression.
+  //
+  // Theme excluded from L2 required: can fire very late (observed up to ~24s)
+  // due to async storage + skin DOM probes. Reclassified as optionalAesthetic.
+  //
+  // L3 (Dock Panel + Workspace Core) excluded from required entirely after the
+  // L3 investigation: both surfaces gate their own ready emission on UI/route
+  // conditions. 3A1a CORE_DP_boot wraps emit inside CORE_DP_whenUiSafe(...)
+  // which never resolves on pages without the expected sidebar/composer shell.
+  // 3Z2a Workspace Core re-emits per-chat-route boot; non-chat URLs may not
+  // produce an emit. Reclassified as optionalRouteAware. The dispatcher should
+  // NOT gate L3 wave dispatch on these — they're "surface is now usable on
+  // this route" signals, not foundational gates.
+  const PILOT_WAVE_EXIT_REQUIRED = {
+    L0: ["evt:h2o:core:ready", "evt:h2o:obs:ready"],
+    L1: ["evt:h2o:data:ready", "h2o:identity:ready"],
+    L2: [
+      "h2o.ev:prm:cgx:cntrlhb:ready:v1",
+      "evt:h2o:minimap:engine-ready",
+      "h2o.ev:prm:cgx:lib:ready:v1",
+      "h2o.ev:prm:cgx:sap:ready:v1",
+    ],
+  };
+  // Aesthetic / non-blocking signals. Observed but NOT counted toward
+  // wave-exit completion or "predicted dispatcher end" computations.
+  const PILOT_OPTIONAL_AESTHETIC = ["evt:h2o:theme:ready"];
+  // Route-aware surfaces. Their boot is gated on UI/route conditions; missing
+  // them on a given page is NOT a failure. Observed for advisory reporting.
+  const PILOT_OPTIONAL_ROUTE_AWARE = {
+    L3: ["h2o:dpanel:ready", "h2o:wrkspc:ready"],
+  };
+  // Conditional surfaces (per P3c finding). Observed; nullable.
+  const PILOT_WAVE_EXIT_OPTIONAL = {
+    L4: ["evt:h2o:inputdock:ready"], // composer-anchored
+  };
+  const PILOT_SURFACE_MAP = {
+    library:     "h2o.ev:prm:cgx:lib:ready:v1",
+    sideActions: "h2o.ev:prm:cgx:sap:ready:v1",
+    controlHub:  "h2o.ev:prm:cgx:cntrlhb:ready:v1",
+    minimap:     "evt:h2o:minimap:engine-ready",
+    theme:       "evt:h2o:theme:ready",
+    dockPanel:   "h2o:dpanel:ready",
+    workspace:   "h2o:wrkspc:ready",
+    inputDock:   "evt:h2o:inputdock:ready", // nullable
+  };
+  const PILOT_MSG_TYPE = "H2O_PILOT_OBS_v1";
+  const PILOT_INSTALL_ERROR_EV = "__pilot_install_error__";
+  const PILOT_INSTALL_OK_EV = "__pilot_install_ok__";
+  const PILOT_OBSERVER_FILE = ${JSON.stringify(PAGE_PILOT_OBSERVER_FILE || "")};
+
+  const PILOT = {
+    enabled: V3_PILOT_ENABLED,
+    observedReadyEvents: {},
+    // Lifecycle/health flags — exposed in pilotPlan so callers can distinguish
+    // "no events fired" (legitimate sparse boot) from "observer never installed"
+    // (CSP block, network error, missing WAR file, etc.).
+    observerInstalled: false,   // true once the page-side observer posts
+                                 // PILOT_INSTALL_OK_EV (proves H2O.events.onReady
+                                 // was available AND subscriptions succeeded).
+    observerBlocked: false,     // true if the WAR script onerror fires (CSP block,
+                                 // 404, etc.) OR install timeout elapses.
+    installError: null,         // string when something went wrong; null otherwise
+    installStartMs: null,
+    installEndMs: null,
+    // Diagnostic fields (exposed in pilotPlan to investigate why the observer
+    // didn't install — e.g. CSP blocks the WAR URL silently, document_start
+    // is too early to append a script under <html> before <head> exists, etc.)
+    injectedScriptPresent: false,    // we successfully called host.appendChild
+    injectedScriptSrc: null,         // the chrome.runtime.getURL() result
+    chromeRuntimeGetUrlResult: null, // separate from injectedScriptSrc to record
+                                      // even when getURL throws or returns falsy
+    chromeRuntimeGetUrlError: null,  // error message if getURL threw
+    scriptOnloadSeen: false,         // <script>.onload fired
+    scriptOnerrorSeen: false,        // <script>.onerror fired
+    injectionDocReadyState: null,    // document.readyState at injection time
+    injectionDeferred: false,        // true if we waited for DOMContentLoaded
+    postMessageCount: 0,             // total H2O_PILOT_OBS_v1 messages received
+    lastPilotMessageType: null,      // last 'ev' field seen
+    installTimeoutMs: 8000,          // bumped from 3000 for diagnostic headroom
+  };
+
+  if (V3_PILOT_ENABLED) {
+    // Initialize pending state for every observed event:
+    //   required (L0-L2) + aesthetic (theme) + routeAware (L3) + conditional (L4 inputDock)
+    const _pilotAllEvents = [];
+    for (const list of Object.values(PILOT_WAVE_EXIT_REQUIRED)) {
+      for (const ev of list) _pilotAllEvents.push(ev);
+    }
+    for (const ev of PILOT_OPTIONAL_AESTHETIC) _pilotAllEvents.push(ev);
+    for (const list of Object.values(PILOT_OPTIONAL_ROUTE_AWARE)) {
+      for (const ev of list) _pilotAllEvents.push(ev);
+    }
+    for (const list of Object.values(PILOT_WAVE_EXIT_OPTIONAL)) {
+      for (const ev of list) _pilotAllEvents.push(ev);
+    }
+    for (const ev of _pilotAllEvents) {
+      PILOT.observedReadyEvents[ev] = null;
+    }
+
+    // Loader-side listener for postMessages from the page-world observer.
+    try {
+      window.addEventListener("message", function (e) {
+        const data = e && e.data;
+        if (!data || data.type !== PILOT_MSG_TYPE) return;
+        PILOT.postMessageCount += 1;
+        const ev = String(data.ev || "");
+        PILOT.lastPilotMessageType = ev || "(empty)";
+        if (!ev) return;
+        if (ev === PILOT_INSTALL_OK_EV) {
+          PILOT.observerInstalled = true;
+          return;
+        }
+        if (ev === PILOT_INSTALL_ERROR_EV) {
+          if (PILOT.installError == null) {
+            PILOT.installError = String(data.source || "page-observer install failed");
+          }
+          PILOT.observerBlocked = true;
+          return;
+        }
+        if (!Object.prototype.hasOwnProperty.call(PILOT.observedReadyEvents, ev)) return;
+        // Record only the first observation per event.
+        if (PILOT.observedReadyEvents[ev] !== null) return;
+        const firedAtMs = (typeof data.firedAtMs === "number" && isFinite(data.firedAtMs))
+          ? Math.round(data.firedAtMs) : null;
+        if (firedAtMs == null) return;
+        PILOT.observedReadyEvents[ev] = {
+          firedAtMs: firedAtMs,
+          source: String(data.source || "page-observer"),
+        };
+      }, false);
+    } catch (e) {
+      PILOT.installError = "loader-side message listener failed: " + (e && e.message);
+      PILOT.observerBlocked = true;
+    }
+
+    // Inject the page-world observer via web_accessible_resource (CSP-safe).
+    //
+    // Earlier failure mode (rev1): inline textContent injection blocked by
+    // ChatGPT CSP. Fixed via WAR file.
+    //
+    // Earlier failure mode (rev2): WAR file injected at document_start, but
+    // <head>/<body> didn't exist yet. Appending to documentElement before
+    // head exists left the script tag in DOM-limbo — neither onload nor
+    // onerror fired within the watchdog window. Fixed by deferring injection
+    // until at least DOMContentLoaded (or immediately if doc already past
+    // loading state).
+    //
+    // The two-step "appendInjection" closure also records diagnostics so a
+    // future failure can be diagnosed from pilotPlan alone.
+    function appendObserverScript() {
+      try {
+        if (!PILOT_OBSERVER_FILE) {
+          throw new Error("PAGE_PILOT_OBSERVER_FILE not set in build context");
+        }
+        const sEl = document.createElement("script");
+        sEl.type = "text/javascript";
+        sEl.async = false;
+        sEl.id = "h2o-ext-pilot-observer";
+        try { sEl.dataset.h2oPilot = "v1"; } catch (_) {}
+        try {
+          const url = chrome.runtime.getURL(PILOT_OBSERVER_FILE);
+          PILOT.chromeRuntimeGetUrlResult = url;
+          sEl.src = url;
+          PILOT.injectedScriptSrc = url;
+        } catch (e) {
+          PILOT.chromeRuntimeGetUrlError = "chrome.runtime.getURL failed: " + (e && e.message);
+          throw new Error(PILOT.chromeRuntimeGetUrlError);
+        }
+        PILOT.installStartMs = (typeof performance !== "undefined" && performance.now)
+          ? performance.now() : Date.now();
+        sEl.addEventListener("load", function () {
+          PILOT.scriptOnloadSeen = true;
+          PILOT.installEndMs = (typeof performance !== "undefined" && performance.now)
+            ? performance.now() : Date.now();
+          // observerInstalled flips to true only when the page-world script
+          // posts back PILOT_INSTALL_OK_EV. Script onload alone proves the file
+          // was fetched and parsed but doesn't prove H2O.events.onReady was
+          // available / subscriptions succeeded.
+        }, false);
+        sEl.addEventListener("error", function () {
+          PILOT.scriptOnerrorSeen = true;
+          PILOT.observerBlocked = true;
+          if (PILOT.installError == null) {
+            PILOT.installError = "WAR observer script failed to load (CSP, 404, or network error). "
+              + "Check DevTools Network tab for the chrome-extension://...:" + PILOT_OBSERVER_FILE
+              + " request and DevTools Console for any CSP violation.";
+          }
+        }, false);
+        // Defer host-resolution to call time (after readyState gate, head
+        // should exist for normal pages).
+        const host = document.head || document.body || document.documentElement;
+        if (!host) {
+          PILOT.observerBlocked = true;
+          PILOT.installError = "no host element for WAR observer injection (head/body/documentElement all null)";
+          return;
+        }
+        PILOT.injectionDocReadyState = String(document.readyState || "");
+        host.appendChild(sEl);
+        PILOT.injectedScriptPresent = true;
+        // Bounded watchdog: if neither onload nor onerror fires AND no
+        // install-ok message arrives within installTimeoutMs, treat as
+        // blocked. Bumped from 3000 to 8000 to leave headroom for slow
+        // chrome-extension:// resolution + onReady polling on cold cache.
+        setTimeout(function () {
+          if (!PILOT.observerInstalled && !PILOT.observerBlocked) {
+            PILOT.observerBlocked = true;
+            if (PILOT.installError == null) {
+              PILOT.installError = "WAR observer install timeout (" + PILOT.installTimeoutMs + "ms; "
+                + "scriptOnloadSeen=" + PILOT.scriptOnloadSeen
+                + ", scriptOnerrorSeen=" + PILOT.scriptOnerrorSeen
+                + ", postMessageCount=" + PILOT.postMessageCount
+                + ", injectedScriptPresent=" + PILOT.injectedScriptPresent
+                + ", injectionDocReadyState=" + PILOT.injectionDocReadyState
+                + ", injectionDeferred=" + PILOT.injectionDeferred
+                + ", injectedScriptSrc=" + PILOT.injectedScriptSrc + ")";
+            }
+          }
+        }, PILOT.installTimeoutMs);
+      } catch (e) {
+        PILOT.observerBlocked = true;
+        PILOT.installError = "page-observer injection failed: " + (e && e.message);
+      }
+    }
+
+    // Defer until at least DOMContentLoaded so <head> exists. content_scripts
+    // run at document_start, so document.readyState is "loading" and only
+    // <html> exists. Appending under <html> before <head>/<body> exists is
+    // the silent-failure case observed in rev2.
+    if (document.readyState === "loading") {
+      PILOT.injectionDeferred = true;
+      window.addEventListener("DOMContentLoaded", appendObserverScript, { once: true });
+    } else {
+      appendObserverScript();
+    }
+  }
+
+  // ─── Loader V3.1 dispatcher state ─────────────────────────────────────
+  // Single source of truth for "what did the dispatcher load this boot".
+  // Populated by runV3Dispatcher() on successful per-script <script>.onload.
+  // Read by the V2.x continuation in boot() to filter out already-loaded
+  // aliases. When V3_DISPATCHER_ACTIVE is false, this set stays empty and
+  // the V2.x filter short-circuits (byte-identity preserved).
+  const DISPATCHER_LOADED_ALIASES = new Set();
+  // dispatcherWaveResult is exposed via pilotPlan.dispatcherWaveResult for
+  // visibility from H2O.scheduler.report(). null when dispatcher didn't run.
+  let dispatcherWaveResult = null;
+
   const v3Diag = {
     enabled: V3_DIAG_ENABLED,
     bootStartMs: null,
@@ -120,8 +424,1136 @@ export function makeChromeLiveLoaderJs({
     rec.ok = !!ok;
     if (!ok && errMsg) rec.errors.push(String(errMsg));
   }
+
+  // ─── Loader V3.1 dispatcher ─────────────────────────────────────────────
+  //
+  // Behind localStorage.H2O_LOADER_V3_DISPATCHER_MODE === "active" (and not
+  // killed by H2O_LOADER_V3_DISPATCHER_KILL === "1"). Dispatches L0 + L1
+  // tier scripts using Kahn-ordered same-tier dependency resolution + per-
+  // tier wave-exit gating via the WAR observer's H2O_PILOT_OBS_v1 stream.
+  //
+  // Safety properties (enforced by structure):
+  //   - Pre-flight: aborts to V2.x if V3_DIAG helpers are unavailable
+  //     (recordings would be silent → would violate Safeguard #1).
+  //   - Cycle detection: dry-Kahn before any injection.
+  //   - Per-script + wave-exit + total-budget timeouts → fallback.
+  //   - Mid-flight kill flag re-checked at each tier and Kahn batch.
+  //   - DISPATCHER_LOADED_ALIASES populated on <script>.onload only.
+  //   - V2.x continuation (in boot()) filters dispatcher-loaded aliases out
+  //     of phaseIdle/phaseStart/phaseEnd before calling loadPhase.
+  //
+  // Diagnostic parity (Safeguard #1): every dispatched script gets exactly
+  // the same v3Dispatch + v3Settle calls V2.x makes — same v3Diag.scripts
+  // record shape — only the lane string differs ("v3-dispatcher-L0" or
+  // "v3-dispatcher-L1") so callers can filter by origin.
+  //
+  // V2.x predecessor compatibility (Safeguard #2): V2.x uses no settled
+  // tracking Map — its predecessor logic is purely positional within input
+  // arrays. Filtering dispatcher-loaded aliases out of those arrays IS the
+  // seeding. Documented here because the prior plan's "settled-Map seeding"
+  // turned out to be unnecessary after reading V2.x internals; the
+  // array-filter path achieves the same guarantees with less surface area.
+
+  // V3.1 dispatcher constants
+  const V3D_PER_SCRIPT_TIMEOUT_MS = 5000;
+  const V3D_WAVE_EXIT_TIMEOUT_MS = 8000;
+  const V3D_TOTAL_BUDGET_MS = 20000;
+  // Tier order is configurable via H2O_LOADER_V3_DISPATCHER_TIERS but V3.1
+  // only supports "L0L1". Other values fall back silently to L0+L1 to keep
+  // the implementation conservative.
+  const V3D_TIER_ORDER = ["L0", "L1"];
+  // L0 + L1 wave-exit events MUST be a subset of PILOT_WAVE_EXIT_REQUIRED
+  // so the WAR observer is already subscribed. Defining them here separately
+  // makes the dispatcher's gates explicit at the call site.
+  const V3D_WAVE_EXIT = {
+    L0: PILOT_WAVE_EXIT_REQUIRED.L0.slice(),  // ["evt:h2o:core:ready", "evt:h2o:obs:ready"]
+    L1: PILOT_WAVE_EXIT_REQUIRED.L1.slice(),  // ["evt:h2o:data:ready", "h2o:identity:ready"]
+  };
+
+  // Live kill check — reads localStorage on every call. Used at tier and
+  // Kahn batch boundaries so the user can flip the flag mid-boot to bail.
+  function v3dKillFlagSet() {
+    try {
+      return (typeof localStorage !== "undefined")
+        && (localStorage.getItem("H2O_LOADER_V3_DISPATCHER_KILL") === "1");
+    } catch (_) { return false; }
+  }
+
+  // Promise-based wait for one or more wave-exit events. Polls
+  // PILOT.observedReadyEvents (populated by the WAR observer's postMessage
+  // bridge). Resolves when all required events are observed or timeout.
+  // Returns { complete, fired, missing, waitedMs }.
+  function v3dWaitForReadyEvents(events, timeoutMs) {
+    return new Promise((resolve) => {
+      const startedAt = v3Now();
+      const remaining = new Set(events);
+      const fired = [];
+      const POLL_INTERVAL = 25;
+
+      function tick() {
+        for (const ev of [...remaining]) {
+          const obs = PILOT.observedReadyEvents[ev];
+          if (obs && typeof obs.firedAtMs === "number" && isFinite(obs.firedAtMs)) {
+            fired.push(ev);
+            remaining.delete(ev);
+          }
+        }
+        if (remaining.size === 0) {
+          resolve({ complete: true, fired: fired, missing: [], waitedMs: v3Now() - startedAt });
+          return;
+        }
+        if (v3Now() - startedAt > timeoutMs) {
+          resolve({ complete: false, fired: fired, missing: [...remaining], waitedMs: v3Now() - startedAt });
+          return;
+        }
+        setTimeout(tick, POLL_INTERVAL);
+      }
+
+      tick();
+    });
+  }
+
+  // Cycle detection (dry-Kahn). Returns null if no cycle, or an array of
+  // alias IDs that participate in the cycle.
+  function v3dDetectCycle(memberAliases, inDegreeIn, reverseGraph) {
+    const inDegree = Object.assign({}, inDegreeIn);
+    const remaining = new Set(memberAliases);
+    let safety = remaining.size + 5;
+    while (remaining.size > 0 && safety-- > 0) {
+      let progressed = false;
+      for (const a of [...remaining]) {
+        if (inDegree[a] === 0) {
+          remaining.delete(a);
+          for (const dep of reverseGraph[a] || []) {
+            inDegree[dep] -= 1;
+          }
+          progressed = true;
+        }
+      }
+      if (!progressed) return [...remaining]; // cycle detected
+    }
+    return null;
+  }
+
+  // Main dispatcher. Returns dispatcherWaveResult.
+  // Caller (boot()) is responsible for filtering eagerItems input AFTER this
+  // returns to remove DISPATCHER_LOADED_ALIASES from V2.x's phase arrays.
+  async function runV3Dispatcher(eagerIdleItems, runtimeSamples, progressState) {
+    const result = {
+      ok: false,
+      fellBack: false,
+      fallbackReason: null,
+      fallbackAtMs: null,
+      preFlightError: null,
+      mode: V3_DISPATCHER_MODE,
+      tiers: V3D_TIER_ORDER.slice(),
+      tierResults: {},
+      totalDispatchMs: null,
+      v2xResumedFrom: null,
+      dispatcherStartedAtMs: v3Now(),
+    };
+    const startMs = v3Now();
+
+    // ─── Pre-flight gates ─────────────────────────────────────────────────
+    // Safeguard #1 prerequisite: v3Dispatch / v3Settle must be operational.
+    // Both no-op when V3_DIAG_ENABLED is false → would violate diagnostics
+    // parity (dispatcher-loaded scripts would be invisible to v3Diag.scripts).
+    if (!V3_DIAG_ENABLED) {
+      result.preFlightError = "V3_DIAG_ENABLED is false; dispatcher diagnostics would be silent. "
+        + "Set localStorage.H2O_LOADER_V3_DIAG = '1' before activating dispatcher mode.";
+      result.fellBack = true;
+      result.fallbackReason = "preflight:v3-diag-disabled";
+      result.fallbackAtMs = v3Now();
+      result.v2xResumedFrom = "L0";
+      return result;
+    }
+    if (typeof v3Dispatch !== "function" || typeof v3Settle !== "function") {
+      result.preFlightError = "v3Dispatch/v3Settle helpers missing";
+      result.fellBack = true;
+      result.fallbackReason = "preflight:v3diag-helpers-missing";
+      result.fallbackAtMs = v3Now();
+      result.v2xResumedFrom = "L0";
+      return result;
+    }
+    // Safeguard #2 prerequisite: V2.x's "settled tracking" is just its input
+    // array. The seeding mechanism is the array-filter applied by the caller
+    // in boot(). No external helper to verify — the contract is enforced
+    // structurally by the caller. Document here for clarity.
+
+    // Index eager items by aliasId for fast lookup
+    const itemsByAliasId = new Map();
+    for (const it of eagerIdleItems) {
+      const a = it && it.aliasId ? String(it.aliasId) : "";
+      if (a) itemsByAliasId.set(a, it);
+    }
+
+    // ─── Per-tier dispatch ────────────────────────────────────────────────
+    function fallback(reason, atTier) {
+      result.fellBack = true;
+      result.fallbackReason = reason;
+      result.fallbackAtMs = v3Now();
+      result.totalDispatchMs = v3Now() - startMs;
+      result.v2xResumedFrom = atTier || "L0";
+      return result;
+    }
+
+    for (let ti = 0; ti < V3D_TIER_ORDER.length; ti++) {
+      const tier = V3D_TIER_ORDER[ti];
+
+      if (v3dKillFlagSet()) return fallback("user-killed-mid-flight", tier);
+      if (v3Now() - startMs > V3D_TOTAL_BUDGET_MS) return fallback("total-budget-exceeded:" + tier, tier);
+
+      // Build member list: scripts in eagerIdleItems whose catalog tier matches
+      const members = eagerIdleItems.filter((it) => {
+        const meta = DEV_SCRIPT_CATALOG[it && it.aliasId];
+        return meta && meta.tier === tier;
+      });
+      const memberAliases = members.map((it) => String(it.aliasId));
+      const memberSet = new Set(memberAliases);
+
+      const tierResult = {
+        tier: tier,
+        members: memberAliases.slice(),
+        injected: [],
+        settled: [],
+        failed: [],
+        waveExitMs: null,
+        waveExitEventsObserved: [],
+        waveExitMissing: [],
+        startedAtMs: v3Now(),
+      };
+
+      if (memberAliases.length === 0) {
+        // Empty tier — record + advance
+        tierResult.note = "no eager scripts in this tier";
+        result.tierResults[tier] = tierResult;
+        continue;
+      }
+
+      // Build same-tier hard-dep graph
+      const inDegree = {};
+      const reverseGraph = {};
+      for (const a of memberAliases) { inDegree[a] = 0; reverseGraph[a] = []; }
+      for (const a of memberAliases) {
+        const dep = LOADER_DEPS[a] || null;
+        const deps = (dep && Array.isArray(dep.dependsOn)) ? dep.dependsOn : [];
+        for (const d of deps) {
+          if (memberSet.has(d)) {
+            inDegree[a] += 1;
+            reverseGraph[d].push(a);
+          }
+          // Cross-tier deps are auto-satisfied by previous tier completion;
+          // ignored here.
+        }
+        // 'after' edges are soft hints, NOT counted toward inDegree.
+      }
+
+      // Cycle detection (dry-Kahn)
+      const cycle = v3dDetectCycle(memberAliases, inDegree, reverseGraph);
+      if (cycle) {
+        result.tierResults[tier] = tierResult;
+        return fallback("same-tier-dep-cycle:" + tier + ":[" + cycle.join(",") + "]", tier);
+      }
+
+      // Kahn batches
+      const lane = "v3-dispatcher-" + tier;
+      v3WaveStart(lane);
+      const remaining = new Set(memberAliases);
+      let lastIterationCount = remaining.size + 1; // force first iteration
+
+      while (remaining.size > 0) {
+        if (v3dKillFlagSet()) {
+          v3WaveEnd(lane);
+          result.tierResults[tier] = tierResult;
+          return fallback("user-killed-mid-tier:" + tier, tier);
+        }
+        if (v3Now() - startMs > V3D_TOTAL_BUDGET_MS) {
+          v3WaveEnd(lane);
+          result.tierResults[tier] = tierResult;
+          return fallback("total-budget-exceeded:" + tier, tier);
+        }
+
+        // Build batch of nodes with inDegree 0
+        const batch = [];
+        for (const a of remaining) {
+          if (inDegree[a] === 0) batch.push(a);
+        }
+        if (batch.length === 0) {
+          // Should never happen after cycle check; defensive.
+          v3WaveEnd(lane);
+          result.tierResults[tier] = tierResult;
+          return fallback("kahn-deadlock:" + tier, tier);
+        }
+        // Sort batch using 'after' hints for stability (soft preference).
+        batch.sort(function (a, b) {
+          const depA = LOADER_DEPS[a] || null;
+          const depB = LOADER_DEPS[b] || null;
+          const afterA = (depA && Array.isArray(depA.after)) ? depA.after : [];
+          const afterB = (depB && Array.isArray(depB.after)) ? depB.after : [];
+          if (afterA.indexOf(b) !== -1) return 1;
+          if (afterB.indexOf(a) !== -1) return -1;
+          return a < b ? -1 : (a > b ? 1 : 0);
+        });
+
+        // Inject batch in parallel
+        const batchPromises = [];
+        for (const aliasId of batch) {
+          remaining.delete(aliasId);
+          const it = itemsByAliasId.get(aliasId);
+          if (!it) {
+            // Member alias has no proxy-pack item (e.g. disabled in dev-order
+            // or not in the proxy-pack manifest). Skip; V2.x won't load it
+            // either. Decrement dependents to keep Kahn moving.
+            for (const dep of reverseGraph[aliasId] || []) inDegree[dep] -= 1;
+            continue;
+          }
+
+          // Compute waitedFor / waitReason for v3Diag parity (Safeguard #1).
+          const dep = LOADER_DEPS[aliasId] || null;
+          const sameTierDeps = ((dep && Array.isArray(dep.dependsOn)) ? dep.dependsOn : [])
+            .filter(function (d) { return memberSet.has(d); });
+          const waitedForVal = sameTierDeps.length
+            ? sameTierDeps[0]
+            : ("phase:document-idle:tier:" + tier);
+          const waitReasonVal = sameTierDeps.length ? "dep" : "phase";
+
+          // SAFEGUARD #1: record dispatch via the same v3Dispatch helper V2.x
+          // uses. This populates v3Diag.scripts[aliasId] with the parity shape.
+          v3Dispatch(aliasId, lane, waitedForVal, waitReasonVal);
+          tierResult.injected.push(aliasId);
+
+          // Use V2.x's loadOneScript() so per-script timeout, runtime sample,
+          // status panel, and heap probe instrumentation are identical between
+          // dispatcher and V2.x paths.
+          const idx = tierResult.injected.length - 1;
+          const total = memberAliases.length;
+          const p = loadOneScript(it, idx, total, "document-idle", runtimeSamples, progressState)
+            .then(function (r) {
+              const ok = (r === 1);
+              // SAFEGUARD #1: record settle via the same v3Settle helper V2.x uses.
+              v3Settle(aliasId, lane, ok, ok ? null : "dispatcher-load-failed");
+              if (ok) {
+                DISPATCHER_LOADED_ALIASES.add(aliasId);
+                tierResult.settled.push(aliasId);
+                // Decrement inDegree for same-tier dependents.
+                for (const dependent of reverseGraph[aliasId] || []) {
+                  inDegree[dependent] -= 1;
+                }
+              } else {
+                tierResult.failed.push(aliasId);
+                // Failed scripts NOT added to DISPATCHER_LOADED_ALIASES → V2.x
+                // will pick them up in the continuation (Safeguard 5: failed
+                // dispatcher scripts remain eligible for V2.x retry).
+              }
+              return r;
+            })
+            .catch(function (e) {
+              // loadOneScript should not throw (it returns 0 on error), but
+              // be defensive in case of an unexpected error in the chain.
+              v3Settle(aliasId, lane, false, String((e && e.message) || e));
+              tierResult.failed.push(aliasId);
+              return 0;
+            });
+          batchPromises.push(p);
+        }
+
+        await Promise.all(batchPromises);
+
+        // Bounded-progress safety
+        if (remaining.size === lastIterationCount) {
+          v3WaveEnd(lane);
+          result.tierResults[tier] = tierResult;
+          return fallback("kahn-no-progress:" + tier, tier);
+        }
+        lastIterationCount = remaining.size;
+      }
+
+      v3WaveEnd(lane);
+
+      // Wait for tier wave-exit events
+      const exitGate = await v3dWaitForReadyEvents(V3D_WAVE_EXIT[tier], V3D_WAVE_EXIT_TIMEOUT_MS);
+      tierResult.waveExitMs = exitGate.waitedMs;
+      tierResult.waveExitEventsObserved = exitGate.fired;
+      tierResult.waveExitMissing = exitGate.missing;
+
+      result.tierResults[tier] = tierResult;
+
+      if (!exitGate.complete) {
+        return fallback(
+          "wave-exit-timeout:" + tier + ":[" + exitGate.missing.join(",") + "]",
+          // Fall back from the NEXT tier: dispatched scripts in this tier are
+          // already loaded; V2.x picks up at next tier onwards.
+          (ti + 1 < V3D_TIER_ORDER.length) ? V3D_TIER_ORDER[ti + 1] : "L2"
+        );
+      }
+    }
+
+    // All tiers complete
+    result.ok = true;
+    result.fellBack = false;
+    result.totalDispatchMs = v3Now() - startMs;
+    result.v2xResumedFrom = "L2";
+    return result;
+  }
+
+  // Loader V3 Phase 1 — pure-prediction simulator. Read-only. Computes what
+  // V3 tier/wave dispatch WOULD look like given current metadata (LOADER_DEPS
+  // + DEV_SCRIPT_CATALOG.tier) and observed V2.5 durations from v3Diag.
+  // Returns null when V3_WAVE_DIAG flag is off. Does NOT mutate runtime
+  // dispatch state.
+  function v3PredictReport() {
+    if (!V3_WAVE_DIAG_ENABLED) return null;
+
+    const TIER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
+    const TIER_INDEX = {};
+    for (let i = 0; i < TIER_ORDER.length; i++) TIER_INDEX[TIER_ORDER[i]] = i;
+
+    // Build alias index over eager scripts (exclude DebugOnly and L5+openEvent)
+    const allAliases = Object.keys(DEV_SCRIPT_CATALOG || {});
+    const eagerAliases = allAliases.filter(function (a) {
+      const meta = DEV_SCRIPT_CATALOG[a] || {};
+      if (meta.tier === "DebugOnly") return false;
+      if (meta.tier === "L5" && meta.openEvent) return false;
+      return true;
+    });
+
+    // Compute median observed duration as fallback for unobserved scripts
+    const observedDurations = [];
+    for (let i = 0; i < eagerAliases.length; i++) {
+      const a = eagerAliases[i];
+      const obs = v3Diag.scripts[a];
+      if (obs && obs.dispatchMs != null && obs.settleMs != null) {
+        observedDurations.push(obs.settleMs - obs.dispatchMs);
+      }
+    }
+    observedDurations.sort(function (x, y) { return x - y; });
+    const medianDuration = observedDurations.length
+      ? observedDurations[Math.floor(observedDurations.length / 2)]
+      : 300;
+
+    // Per-script normalized info
+    const info = {};
+    for (let i = 0; i < eagerAliases.length; i++) {
+      const a = eagerAliases[i];
+      const meta = DEV_SCRIPT_CATALOG[a] || {};
+      const dep = LOADER_DEPS[a] || null;
+      const obs = v3Diag.scripts[a] || null;
+      const observedDur = (obs && obs.dispatchMs != null && obs.settleMs != null)
+        ? (obs.settleMs - obs.dispatchMs) : null;
+      info[a] = {
+        tier: meta.tier || "L4",
+        hasDecl: !!dep,
+        dependsOn: dep ? dep.dependsOn.slice() : [],
+        after: dep ? dep.after.slice() : [],
+        optionalDependsOn: dep ? dep.optionalDependsOn.slice() : [],
+        observedDuration: observedDur,
+        effectiveDuration: observedDur != null ? observedDur : medianDuration,
+        observedDispatch: obs ? obs.dispatchMs : null,
+        observedSettle: obs ? obs.settleMs : null,
+      };
+    }
+
+    // Tier inversions
+    const inversions = [];
+    for (let i = 0; i < eagerAliases.length; i++) {
+      const a = eagerAliases[i];
+      const myTier = info[a].tier;
+      const deps = info[a].dependsOn;
+      for (let j = 0; j < deps.length; j++) {
+        const depAlias = deps[j];
+        const depMeta = info[depAlias];
+        const depTier = depMeta ? depMeta.tier : "L4";
+        if (TIER_INDEX[depTier] != null && TIER_INDEX[myTier] != null
+            && TIER_INDEX[depTier] > TIER_INDEX[myTier]) {
+          inversions.push({ script: a, dependsOn: depAlias, scriptTier: myTier, depTier: depTier });
+        }
+      }
+    }
+
+    // Blockers
+    const blockers = [];
+    for (let i = 0; i < eagerAliases.length; i++) {
+      const a = eagerAliases[i];
+      if (!info[a].hasDecl) {
+        blockers.push({
+          script: a,
+          reason: "undeclared-in-loader-deps",
+          missingDeps: null,
+          unsafeTopLevelReads: null,
+          tierProblem: null,
+        });
+      } else {
+        const deps = info[a].dependsOn;
+        for (let j = 0; j < deps.length; j++) {
+          if (!DEV_SCRIPT_CATALOG[deps[j]]) {
+            blockers.push({
+              script: a,
+              reason: "depends-on-unknown-script",
+              missingDeps: [deps[j]],
+              unsafeTopLevelReads: null,
+              tierProblem: null,
+            });
+          }
+        }
+      }
+    }
+    for (let i = 0; i < inversions.length; i++) {
+      const inv = inversions[i];
+      blockers.push({
+        script: inv.script,
+        reason: "tier-inversion",
+        missingDeps: [],
+        unsafeTopLevelReads: null,
+        tierProblem: { scriptTier: inv.scriptTier, dependsOn: inv.dependsOn, depTier: inv.depTier },
+      });
+    }
+
+    // Per-wave simulation. Anchor at first observed dispatch (or fallback).
+    let firstObservedDispatch = Infinity;
+    for (let i = 0; i < eagerAliases.length; i++) {
+      const od = info[eagerAliases[i]].observedDispatch;
+      if (od != null && od < firstObservedDispatch) firstObservedDispatch = od;
+    }
+    if (!isFinite(firstObservedDispatch)) {
+      firstObservedDispatch = (typeof v3Diag.bootStartMs === "number" ? v3Diag.bootStartMs : 0) + 470;
+    }
+
+    const predictedScripts = {};
+    const predictedWaves = [];
+    let cursor = firstObservedDispatch;
+    const BATCH_SIZE = 8;
+
+    for (let ti = 0; ti < TIER_ORDER.length; ti++) {
+      const tier = TIER_ORDER[ti];
+      const members = eagerAliases.filter(function (a) { return info[a].tier === tier; });
+      const tierStart = cursor;
+
+      if (!members.length) {
+        predictedWaves.push({
+          tier: tier, scripts: [], scriptCount: 0,
+          estimatedStartMs: Math.round(tierStart),
+          estimatedEndMs: Math.round(tierStart),
+          estimatedDurationMs: 0,
+          criticalPath: [], criticalPathMs: 0,
+          blockers: [], metadataWarnings: [],
+        });
+        continue;
+      }
+
+      // Within-wave Kahn ordering with batches of 8
+      const remaining = {};
+      for (let i = 0; i < members.length; i++) remaining[members[i]] = true;
+      const settled = {};
+      const dispatched = {};
+
+      function isReady(a) {
+        const deps = info[a].dependsOn;
+        for (let j = 0; j < deps.length; j++) {
+          const d = deps[j];
+          if (info[d] && info[d].tier === tier && settled[d] == null) return false;
+        }
+        return true;
+      }
+
+      let safety = members.length + 5;
+      while (Object.keys(remaining).length && safety-- > 0) {
+        const ready = [];
+        for (const a in remaining) {
+          if (isReady(a)) ready.push(a);
+        }
+        if (!ready.length) {
+          // Cycle/unsatisfiable — flush remaining at cursor (overestimate)
+          for (const a in remaining) {
+            dispatched[a] = cursor;
+            settled[a] = cursor + info[a].effectiveDuration;
+            delete remaining[a];
+          }
+          break;
+        }
+        const batch = ready.slice(0, BATCH_SIZE);
+        let batchEnd = cursor;
+        for (let i = 0; i < batch.length; i++) {
+          const a = batch[i];
+          dispatched[a] = cursor;
+          const settleAt = cursor + info[a].effectiveDuration;
+          settled[a] = settleAt;
+          if (settleAt > batchEnd) batchEnd = settleAt;
+          delete remaining[a];
+        }
+        cursor = batchEnd;
+      }
+
+      const tierEnd = cursor;
+      const settleEntries = [];
+      for (const a in settled) settleEntries.push([a, settled[a]]);
+      settleEntries.sort(function (x, y) { return y[1] - x[1]; });
+      const criticalPath = settleEntries.slice(0, 5).map(function (e) { return e[0]; });
+      const criticalPathMs = settleEntries.length ? Math.round(settleEntries[0][1] - tierStart) : 0;
+
+      for (let i = 0; i < members.length; i++) {
+        const a = members[i];
+        predictedScripts[a] = {
+          tier: tier,
+          dispatch: dispatched[a],
+          settle: settled[a],
+        };
+      }
+
+      const memberSet = {};
+      for (let i = 0; i < members.length; i++) memberSet[members[i]] = true;
+      const tierBlockerScripts = blockers
+        .filter(function (b) { return memberSet[b.script]; })
+        .map(function (b) { return b.script; });
+      const metadataWarnings = [];
+      if (tierBlockerScripts.length) {
+        metadataWarnings.push(tierBlockerScripts.length + " blocker(s) in this tier");
+      }
+
+      predictedWaves.push({
+        tier: tier,
+        scripts: members,
+        scriptCount: members.length,
+        estimatedStartMs: Math.round(tierStart),
+        estimatedEndMs: Math.round(tierEnd),
+        estimatedDurationMs: Math.round(tierEnd - tierStart),
+        criticalPath: criticalPath,
+        criticalPathMs: criticalPathMs,
+        blockers: tierBlockerScripts,
+        metadataWarnings: metadataWarnings,
+      });
+    }
+
+    // Predicted visible readiness
+    const SURFACE_MAP = {
+      controlHub: "0Z1a._Control_Hub_.js",
+      commandBar: "0X1a._Command_Bar_.js",
+      sideActions: "0X2a._Side_Actions_Panel_.js",
+      library: "0F1a._Library_Core_.js",
+      minimap: "1A1c._MiniMap_Engine_.js",
+      dockPanel: "3A1a._Dock_Panel_.js",
+    };
+    const predictedVisibleReadiness = {};
+    const predictedSavings = {};
+    for (const surface in SURFACE_MAP) {
+      const aliasId = SURFACE_MAP[surface];
+      const pred = predictedScripts[aliasId];
+      const predMs = (pred && pred.settle != null) ? Math.round(pred.settle) : null;
+      const obs = v3Diag.scripts[aliasId];
+      const actualMs = (obs && obs.settleMs != null) ? Math.round(obs.settleMs) : null;
+      const delta = (predMs != null && actualMs != null) ? predMs - actualMs : null;
+      predictedVisibleReadiness[surface] = { ms: predMs, vsActualDelta: delta };
+      if (predMs != null && actualMs != null) {
+        predictedSavings[surface + "ReadyMs"] = actualMs - predMs;
+      }
+    }
+
+    // Total boot savings — robust calculation
+    // (1) Predicted total: take the MAX estimatedEndMs across all waves, not
+    //     just the last wave's value. The last tier (e.g. L6) may be empty,
+    //     leaving its end equal to its start — that would underestimate.
+    let lastWaveEnd = null;
+    for (let i = 0; i < predictedWaves.length; i++) {
+      const e = predictedWaves[i].estimatedEndMs;
+      if (typeof e === "number" && isFinite(e)) {
+        if (lastWaveEnd == null || e > lastWaveEnd) lastWaveEnd = e;
+      }
+    }
+
+    // (2) Actual total: prefer v3Diag.bootEndMs - bootStartMs, but fall back
+    //     to (max observed settleMs - min observed dispatchMs) when boot
+    //     timestamps are not yet finite at report capture time.
+    let actualTotal = null;
+    if (typeof v3Diag.bootEndMs === "number" && isFinite(v3Diag.bootEndMs)
+        && typeof v3Diag.bootStartMs === "number" && isFinite(v3Diag.bootStartMs)) {
+      actualTotal = Math.round(v3Diag.bootEndMs - v3Diag.bootStartMs);
+    } else {
+      let maxSettle = -Infinity, minDispatch = Infinity;
+      for (let i = 0; i < eagerAliases.length; i++) {
+        const obs = v3Diag.scripts[eagerAliases[i]];
+        if (!obs) continue;
+        if (typeof obs.dispatchMs === "number" && isFinite(obs.dispatchMs) && obs.dispatchMs < minDispatch) {
+          minDispatch = obs.dispatchMs;
+        }
+        if (typeof obs.settleMs === "number" && isFinite(obs.settleMs) && obs.settleMs > maxSettle) {
+          maxSettle = obs.settleMs;
+        }
+      }
+      if (isFinite(maxSettle) && isFinite(minDispatch) && maxSettle >= minDispatch) {
+        actualTotal = Math.round(maxSettle - minDispatch);
+      }
+    }
+
+    predictedSavings.totalBootMs = (actualTotal != null && lastWaveEnd != null)
+      ? Math.round(actualTotal - lastWaveEnd) : null;
+
+    // Recommendation policy (P3-pre, 2026-05): always compute BOTH the
+    // totalBootMs bucket AND the visible-surface savings bucket, then take
+    // the stronger signal. Visible-surface savings dominate when both are
+    // present, because a small totalBootMs with large per-surface deferrals
+    // (e.g. controlHubReadyMs >= 8000ms) is exactly the V3 win we want to
+    // surface. Only return "insufficient-data" when BOTH signals are absent.
+    const RECO_RANK = {
+      "insufficient-data": 0,
+      "stop": 1,
+      "metadata-cleanup": 2,
+      "continue-v3": 3,
+    };
+
+    // Bucket A — totalBootMs signal
+    let totalSavBucket;
+    const totalSav = predictedSavings.totalBootMs;
+    if (typeof totalSav === "number" && isFinite(totalSav)) {
+      if (totalSav >= 4000) totalSavBucket = "continue-v3";
+      else if (totalSav >= 2000) totalSavBucket = "metadata-cleanup";
+      else totalSavBucket = "stop";
+    } else {
+      totalSavBucket = "insufficient-data";
+    }
+
+    // Bucket B — visible-surface savings signal (always evaluated)
+    let surfaceBucket;
+    const surfaceSavings = [];
+    for (const surface in SURFACE_MAP) {
+      const v = predictedSavings[surface + "ReadyMs"];
+      if (typeof v === "number" && isFinite(v)) surfaceSavings.push(v);
+    }
+    if (!surfaceSavings.length) {
+      surfaceBucket = "insufficient-data";
+    } else {
+      let maxSav = -Infinity;
+      let strongCount = 0;
+      let anyMedium = false;
+      for (let i = 0; i < surfaceSavings.length; i++) {
+        const v = surfaceSavings[i];
+        if (v > maxSav) maxSav = v;
+        if (v >= 2500) strongCount++;
+        if (v >= 2000) anyMedium = true;
+      }
+      if (maxSav >= 4000 || strongCount >= 3) surfaceBucket = "continue-v3";
+      else if (anyMedium) surfaceBucket = "metadata-cleanup";
+      else surfaceBucket = "stop";
+    }
+
+    // Final = stronger signal. "insufficient-data" only if BOTH absent.
+    let recommendation;
+    if (totalSavBucket === "insufficient-data" && surfaceBucket === "insufficient-data") {
+      recommendation = "insufficient-data";
+    } else {
+      recommendation = (RECO_RANK[surfaceBucket] >= RECO_RANK[totalSavBucket])
+        ? surfaceBucket : totalSavBucket;
+    }
+
+    // Metadata coverage (Phase 3: dual All vs Enabled accounting).
+    //
+    // "All" = every script in DEV_SCRIPT_CATALOG (i.e., every file in scripts/
+    // dir, including DebugOnly and lazy L5-openEvent surfaces).
+    //
+    // "Enabled" = only scripts that the dispatcher would actually plan a wave
+    // for. This matches the eagerAliases filter used by the blockers logic
+    // (excludes DebugOnly and L5+openEvent). It is the meaningful view for
+    // V3 readiness: a non-eager script that lacks a deps entry is harmless
+    // because the dispatcher won't dispatch it anyway.
+    //
+    // "All" view stays available so the report still shows raw catalog
+    // coverage — useful for catching truly orphaned files. "Enabled" view is
+    // what should be compared against blockersTotal for self-consistency:
+    // depsMissingEnabled === 0 IFF blockersTotal == 0 in the no-tier-inversion
+    // case.
+    //
+    // Legacy fields depsDeclared/depsMissing remain as aliases of the "All"
+    // view so existing consumers do not break.
+    const totalScripts = allAliases.length;
+    const enabledScripts = eagerAliases.length;
+    const declaredKeySet = new Set(Object.keys(LOADER_DEPS || {}));
+
+    // "All" coverage
+    const depsDeclaredAll = declaredKeySet.size;
+    const depsMissingAll = Math.max(0, totalScripts - depsDeclaredAll);
+
+    // "Enabled" coverage (matches dispatcher eligibility = matches blockers semantics)
+    let depsDeclaredEnabled = 0;
+    for (let i = 0; i < eagerAliases.length; i++) {
+      if (declaredKeySet.has(eagerAliases[i])) depsDeclaredEnabled++;
+    }
+    const depsMissingEnabled = Math.max(0, enabledScripts - depsDeclaredEnabled);
+
+    // Legacy aliases (do not break existing consumers).
+    const depsDeclared = depsDeclaredAll;
+    const depsMissing = depsMissingAll;
+
+    let tiersDeclared = 0;
+    for (let i = 0; i < allAliases.length; i++) {
+      const meta = DEV_SCRIPT_CATALOG[allAliases[i]];
+      if (meta && meta.tier && meta.tier !== "L4") tiersDeclared++;
+    }
+    const defaultL4 = totalScripts - tiersDeclared;
+
+    return {
+      enabled: true,
+      version: 1,
+      dataSource: {
+        observedScriptCount: observedDurations.length,
+        diagFlagOn: V3_DIAG_ENABLED,
+        medianObservedDurationMs: medianDuration,
+      },
+      metadataCoverage: {
+        // Catalog totals
+        totalScripts: totalScripts,
+        enabledScripts: enabledScripts,
+        // "All" view (raw catalog coverage; includes DebugOnly + L5+openEvent)
+        depsDeclaredAll: depsDeclaredAll,
+        depsMissingAll: depsMissingAll,
+        // "Enabled" view (matches dispatcher eligibility + blockers semantics)
+        depsDeclaredEnabled: depsDeclaredEnabled,
+        depsMissingEnabled: depsMissingEnabled,
+        // Legacy aliases (= "All" view) for backward compat
+        depsDeclared: depsDeclared,
+        depsMissing: depsMissing,
+        tiersDeclared: tiersDeclared,
+        defaultL4: defaultL4,
+        readyEventEmittersDeclared: 0,
+      },
+      predictedWaves: predictedWaves,
+      predictedVisibleReadiness: predictedVisibleReadiness,
+      predictedSavings: predictedSavings,
+      blockers: blockers.slice(0, 50),
+      blockersTotal: blockers.length,
+      recommendation: recommendation,
+    };
+  }
+
+  // Loader V3 Phase 3-pilot: synthesize pilotPlan from observations gathered
+  // by the inline page-world observer (see V3_PILOT_ENABLED block above).
+  // Returns { enabled: false } when the pilot flag is off — no allocation
+  // beyond the early return. When enabled, returns the structured shape:
+  //   { enabled, flagOn, observedReadyEvents, observedWaveExits, surfaces,
+  //     compareToCurrent, installError }
+  // firedAtMs values are performance.now() readings (ms since navigation
+  // start), matching the scale used by v3Diag.scripts[*].settleMs.
+  // Visible surfaces used for the compareToCurrent.visibleSurfaces section.
+  // Per Phase 3 user decision: chrome-critical visible surfaces only.
+  // Excludes: theme (aesthetic), workspace (route-aware utility), inputDock
+  // (composer-conditional), commandBar (also visible but not in the
+  // user-listed set for the savings comparison).
+  const PILOT_VISIBLE_SURFACES_FOR_COMPARE = [
+    "library", "sideActions", "controlHub", "minimap", "dockPanel",
+  ];
+
+  function computePilotPlan(predictedV3Wave) {
+    if (!V3_PILOT_ENABLED) return { enabled: false };
+
+    // Count observed events for diagnostic clarity.
+    let observedEventCount = 0;
+    for (const ev in PILOT.observedReadyEvents) {
+      if (PILOT.observedReadyEvents[ev] !== null) observedEventCount += 1;
+    }
+
+    // ─── Current observations (from PILOT-side observer) ─────────────────
+    // Per-tier wave-exit = max(firedAtMs across REQUIRED events at that tier).
+    // Required tiers are L0/L1/L2 only. Theme excluded from L2 (aesthetic).
+    // L3 excluded entirely (route-aware; see PILOT_OPTIONAL_ROUTE_AWARE).
+    const currentObservedWaveExits = {};
+    for (const [tier, events] of Object.entries(PILOT_WAVE_EXIT_REQUIRED)) {
+      let maxMs = -Infinity;
+      let complete = true;
+      const fired = [];
+      const missing = [];
+      for (const ev of events) {
+        const obs = PILOT.observedReadyEvents[ev];
+        if (obs && typeof obs.firedAtMs === "number" && isFinite(obs.firedAtMs)) {
+          fired.push({ ev: ev, firedAtMs: obs.firedAtMs });
+          if (obs.firedAtMs > maxMs) maxMs = obs.firedAtMs;
+        } else {
+          complete = false;
+          missing.push(ev);
+        }
+      }
+      currentObservedWaveExits[tier] = {
+        exitMs: complete ? maxMs : null,
+        signals: events.slice(),
+        fired: fired,
+        missing: missing,
+        complete: complete,
+      };
+    }
+
+    // ─── Route-aware advisory observations (NOT a hard failure) ──────────
+    // L3 events (Dock Panel + Workspace Core) gate their own ready emission
+    // on UI/route conditions. Missing them on a given page is normal — e.g.
+    // Dock Panel's CORE_DP_whenUiSafe(...) only resolves on chat-shell pages;
+    // Workspace Core re-emits per-chat-route, never on landing pages.
+    // Reported as advisory only; routeAwareComplete is informational, not
+    // gating any savings/dispatcher decision.
+    const routeAwareObservation = {};
+    for (const [tier, events] of Object.entries(PILOT_OPTIONAL_ROUTE_AWARE)) {
+      let maxMs = -Infinity;
+      let allFired = true;
+      const fired = [];
+      const missing = [];
+      for (const ev of events) {
+        const obs = PILOT.observedReadyEvents[ev];
+        if (obs && typeof obs.firedAtMs === "number" && isFinite(obs.firedAtMs)) {
+          fired.push({ ev: ev, firedAtMs: obs.firedAtMs });
+          if (obs.firedAtMs > maxMs) maxMs = obs.firedAtMs;
+        } else {
+          allFired = false;
+          missing.push(ev);
+        }
+      }
+      routeAwareObservation[tier] = {
+        // exitMs: max of fired events (null only if NO event fired); not
+        // gated on "all fired" because each event is independent.
+        exitMs: fired.length ? maxMs : null,
+        signals: events.slice(),
+        fired: fired,
+        missing: missing,
+        // routeAwareComplete: all listed events fired (ideal case)
+        // routeAwareMissing: events that did NOT fire on this page
+        routeAwareComplete: allFired,
+        routeAwareMissing: missing,
+      };
+    }
+
+    // L4 fallback — REPORTED ONLY for visibility, NEVER used to derive any
+    // "predicted dispatcher end" value. The previous report bug used L4
+    // settle as the pilot's predicted end, which made the "comparison" be
+    // current-vs-current and yield savings=0 trivially.
+    let currentTailObservedL4ExitMs = null;
+    if (v3Diag && v3Diag.scripts) {
+      let maxL4Settle = -Infinity;
+      for (const a in v3Diag.scripts) {
+        const meta = DEV_SCRIPT_CATALOG[a];
+        if (!meta || meta.tier !== "L4") continue;
+        const obs = v3Diag.scripts[a];
+        if (obs && typeof obs.settleMs === "number" && isFinite(obs.settleMs)) {
+          if (obs.settleMs > maxL4Settle) maxL4Settle = obs.settleMs;
+        }
+      }
+      if (isFinite(maxL4Settle) && maxL4Settle > -Infinity) {
+        currentTailObservedL4ExitMs = Math.round(maxL4Settle);
+      }
+    }
+
+    // Per-surface readyMs (nullable for conditional surfaces).
+    const surfaces = {};
+    for (const [surface, ev] of Object.entries(PILOT_SURFACE_MAP)) {
+      const obs = PILOT.observedReadyEvents[ev];
+      surfaces[surface] = (obs && typeof obs.firedAtMs === "number")
+        ? { readyMs: obs.firedAtMs, source: ev }
+        : { readyMs: null, source: ev };
+    }
+
+    // Event classification — documents how the pilot is using each event.
+    const eventClassification = {
+      requiredL0: PILOT_WAVE_EXIT_REQUIRED.L0.slice(),
+      requiredL1: PILOT_WAVE_EXIT_REQUIRED.L1.slice(),
+      requiredL2: PILOT_WAVE_EXIT_REQUIRED.L2.slice(),
+      // L3 NOT in required (was, prior to L3 investigation)
+      l3Required: false,
+      optionalRouteAware: [].concat.apply([], Object.values(PILOT_OPTIONAL_ROUTE_AWARE)),
+      optionalAesthetic: PILOT_OPTIONAL_AESTHETIC.slice(),
+      optionalConditional: [].concat.apply([], Object.values(PILOT_WAVE_EXIT_OPTIONAL)),
+      notes: {
+        "evt:h2o:theme:ready":
+          "Reclassified from L2-required to optionalAesthetic. Theme can fire " +
+          "very late (observed up to ~24s) due to async storage + skin DOM " +
+          "probes; gating L3 dispatch on it would block chrome-critical " +
+          "surfaces unnecessarily. Theme is observed for surfaces.theme " +
+          "reporting but does NOT count toward L2 wave-exit completion.",
+        "h2o:dpanel:ready":
+          "Reclassified to optionalRouteAware. 3A1a Dock Panel CORE_DP_boot " +
+          "wraps emit inside CORE_DP_whenUiSafe(...) which only resolves on " +
+          "chat-shell pages. Non-chat URLs / project pages / share-link pages " +
+          "may not produce an emit. Treated as advisory; missing-on-this-page " +
+          "is NOT a failure for the dispatcher decision.",
+        "h2o:wrkspc:ready":
+          "Reclassified to optionalRouteAware. 3Z2a Workspace Core re-emits " +
+          "per-chat-route boot. Pages without an active chat route may never " +
+          "produce an emit. Treated as advisory; missing-on-this-page is NOT " +
+          "a failure for the dispatcher decision. NB: this is the right-side " +
+          "Workspace dock for spaces, NOT Library Workspace (different " +
+          "surface, different ready event).",
+        "evt:h2o:inputdock:ready":
+          "Reclassified per P3c finding: composer-anchored, may legitimately " +
+          "never fire on pages without an active composer. NOT treated as " +
+          "failure when missing.",
+      },
+    };
+
+    // ─── Health gate ─────────────────────────────────────────────────────
+    const observerHealthy = PILOT.observerInstalled && !PILOT.observerBlocked;
+    const observationsUsable = observerHealthy && observedEventCount > 0;
+
+    // ─── Current observed end-times (from v3Diag + observer) ─────────────
+    let currentTailEndMs = null; // entire script tail per V2.x loader
+    if (v3Diag && v3Diag.scripts) {
+      let maxSettle = -Infinity;
+      for (const a in v3Diag.scripts) {
+        const obs = v3Diag.scripts[a];
+        if (obs && typeof obs.settleMs === "number" && isFinite(obs.settleMs)) {
+          if (obs.settleMs > maxSettle) maxSettle = obs.settleMs;
+        }
+      }
+      if (isFinite(maxSettle) && maxSettle > -Infinity) {
+        currentTailEndMs = Math.round(maxSettle);
+      }
+    }
+
+    let currentObservedWaveEndMs = null; // max L0-L2 only (REQUIRED tiers)
+    if (observationsUsable) {
+      for (const tier of ["L0", "L1", "L2"]) {
+        const w = currentObservedWaveExits[tier];
+        if (w && typeof w.exitMs === "number" && isFinite(w.exitMs)
+            && (currentObservedWaveEndMs == null || w.exitMs > currentObservedWaveEndMs)) {
+          currentObservedWaveEndMs = w.exitMs;
+        }
+      }
+    }
+
+    let currentObservedVisibleEndMs = null; // max readyMs over the 5 listed surfaces
+    if (observationsUsable) {
+      for (const surface of PILOT_VISIBLE_SURFACES_FOR_COMPARE) {
+        const s = surfaces[surface];
+        if (s && typeof s.readyMs === "number" && isFinite(s.readyMs)
+            && (currentObservedVisibleEndMs == null || s.readyMs > currentObservedVisibleEndMs)) {
+          currentObservedVisibleEndMs = s.readyMs;
+        }
+      }
+    }
+
+    // ─── Predicted end-times (from existing v3PredictReport simulation) ──
+    // These come from the WAVE-DIAG predictor (chrome-live-loader.mjs ~line 285+).
+    // Available only when localStorage.H2O_LOADER_V3_WAVE_DIAG === "1".
+    let predictedVisibleEndMs = null;
+    let predictedWaveEndMs = null;
+    let waveSourceNote = null;
+    if (predictedV3Wave && predictedV3Wave.predictedVisibleReadiness) {
+      for (const surface of PILOT_VISIBLE_SURFACES_FOR_COMPARE) {
+        const r = predictedV3Wave.predictedVisibleReadiness[surface];
+        const ms = r && typeof r.ms === "number" && isFinite(r.ms) ? r.ms : null;
+        if (ms != null && (predictedVisibleEndMs == null || ms > predictedVisibleEndMs)) {
+          predictedVisibleEndMs = ms;
+        }
+      }
+    }
+    if (predictedV3Wave && Array.isArray(predictedV3Wave.predictedWaves)) {
+      for (const w of predictedV3Wave.predictedWaves) {
+        if (!w || !w.tier) continue;
+        // Required dispatcher waves are L0/L1/L2 only (post L3 reclassification).
+        if (w.tier !== "L0" && w.tier !== "L1" && w.tier !== "L2") continue;
+        const end = (typeof w.estimatedEndMs === "number" && isFinite(w.estimatedEndMs))
+          ? w.estimatedEndMs : null;
+        if (end != null && (predictedWaveEndMs == null || end > predictedWaveEndMs)) {
+          predictedWaveEndMs = end;
+        }
+      }
+    }
+    if (predictedV3Wave === null) {
+      waveSourceNote = "predictedV3 (V3_WAVE_DIAG) is OFF — predicted* values unavailable; "
+        + "set localStorage.H2O_LOADER_V3_WAVE_DIAG = '1' to enable.";
+    }
+
+    // ─── Savings (per-section; NEVER 0 when actually unmeasurable) ───────
+    function delta(currentMs, predMs) {
+      if (currentMs == null || predMs == null) return null;
+      return Math.max(0, Math.round(currentMs - predMs));
+    }
+
+    const visibleSavingsMs = delta(currentObservedVisibleEndMs, predictedVisibleEndMs);
+    const waveSavingsMs    = delta(currentObservedWaveEndMs,    predictedWaveEndMs);
+    // tailSavings — compares current full tail vs predicted L0-L3 wave end.
+    // Meaningful only as "if dispatcher cut off at L3, here's what would
+    // remain trailing into L4". Returns null if either input is missing.
+    const tailSavingsMs    = delta(currentTailEndMs,            predictedWaveEndMs);
+
+    const compareNotes = [];
+    if (waveSourceNote) compareNotes.push(waveSourceNote);
+    if (!observationsUsable) compareNotes.push(
+      "Observer not healthy (installed=" + PILOT.observerInstalled +
+      ", blocked=" + PILOT.observerBlocked + ", events=" + observedEventCount +
+      "); current* values may be partial."
+    );
+    if (currentTailObservedL4ExitMs != null) compareNotes.push(
+      "currentTailObservedL4ExitMs=" + currentTailObservedL4ExitMs + " is reported " +
+      "for visibility but is NOT used in any savings calculation — using it would " +
+      "make pilotPredictedEnd === currentTailEnd (current-vs-current, savings=0 always)."
+    );
+
+    return {
+      enabled: true,
+      flagOn: true,
+      // Observer lifecycle/health (CSP-block diagnosis hooks)
+      observerInstalled: PILOT.observerInstalled,
+      observerBlocked: PILOT.observerBlocked,
+      observedEventCount: observedEventCount,
+      installError: PILOT.installError,
+      installStartMs: PILOT.installStartMs,
+      installEndMs: PILOT.installEndMs,
+      // Detailed transport diagnostics — exposed so a failure can be diagnosed
+      // from pilotPlan alone without DevTools spelunking.
+      transport: {
+        injectedScriptPresent: PILOT.injectedScriptPresent,
+        injectedScriptSrc: PILOT.injectedScriptSrc,
+        chromeRuntimeGetUrlResult: PILOT.chromeRuntimeGetUrlResult,
+        chromeRuntimeGetUrlError: PILOT.chromeRuntimeGetUrlError,
+        scriptOnloadSeen: PILOT.scriptOnloadSeen,
+        scriptOnerrorSeen: PILOT.scriptOnerrorSeen,
+        injectionDocReadyState: PILOT.injectionDocReadyState,
+        injectionDeferred: PILOT.injectionDeferred,
+        postMessageCount: PILOT.postMessageCount,
+        lastPilotMessageType: PILOT.lastPilotMessageType,
+        installTimeoutMs: PILOT.installTimeoutMs,
+      },
+      // Event classification (theme reclassified, inputdock conditional)
+      eventClassification: eventClassification,
+      // Per-event raw observation data (firedAtMs in performance.now() scale)
+      observedReadyEvents: PILOT.observedReadyEvents,
+      // Per-tier wave-exit times derived from REQUIRED L0/L1/L2 events only.
+      // Renamed from observedWaveExits to make it clear these reflect what
+      // the CURRENT loader achieved (not a predicted dispatcher target).
+      currentObservedWaveExits: currentObservedWaveExits,
+      // L3 route-aware advisory observation. Includes routeAwareComplete
+      // (all L3 events fired — best case) and routeAwareMissing (which L3
+      // events did NOT fire on this page). Missing L3 events are NORMAL
+      // for non-chat URLs / project pages / share links — NOT a failure.
+      routeAwareObservation: routeAwareObservation,
+      // L4 settle observed in CURRENT loader. REPORTED FOR VISIBILITY ONLY —
+      // do not use to derive any "pilot predicted end" value.
+      currentTailObservedL4ExitMs: currentTailObservedL4ExitMs,
+      // Per-surface readyMs (nullable for conditional surfaces).
+      surfaces: surfaces,
+      // Comparison: current loader vs predicted V3 dispatcher (from
+      // v3PredictReport simulation). Each subfield is null when unmeasurable
+      // (never 0 to avoid misleading "no savings" readings).
+      compareToCurrent: {
+        currentTailEndMs:            currentTailEndMs,
+        currentObservedWaveEndMs:    currentObservedWaveEndMs,
+        currentObservedVisibleEndMs: currentObservedVisibleEndMs,
+        predictedVisibleEndMs:       predictedVisibleEndMs,
+        predictedWaveEndMs:          predictedWaveEndMs,
+        visibleSavingsMs:            visibleSavingsMs,
+        waveSavingsMs:               waveSavingsMs,
+        tailSavingsMs:               tailSavingsMs,
+        note: compareNotes.length ? compareNotes.join(" | ") : null,
+      },
+      // V3.1 dispatcher result (null when MODE != "active" OR dispatcher
+      // hasn't completed yet). Exposes per-tier dispatch outcome, fallback
+      // reason if any, and the loaded-alias set so callers can verify
+      // Safeguard #1 (parity) and Safeguard #2 (V2.x continuation) externally.
+      dispatcherWaveResult: dispatcherWaveResult,
+      dispatcherMode: V3_DISPATCHER_MODE,
+      dispatcherKill: V3_DISPATCHER_KILL,
+      dispatcherActive: V3_DISPATCHER_ACTIVE,
+      dispatcherTiers: V3_DISPATCHER_TIERS,
+      dispatcherLoadedAliases: [...DISPATCHER_LOADED_ALIASES],
+    };
+  }
+
   function v3GetReport() {
-    if (!V3_DIAG_ENABLED) return { enabled: false };
+    // Allow report when EITHER V3_DIAG OR V3_PILOT is on. V3_PILOT alone is
+    // sufficient to populate predictedV3.pilotPlan; other report fields will
+    // be empty/null when V3_DIAG is off.
+    if (!V3_DIAG_ENABLED && !V3_PILOT_ENABLED) return { enabled: false };
     const report = {
       version: 3,
       buildId: LOADER_BUILD_ISO || String(LOADER_BUILD_TS || ""),
@@ -137,9 +1569,30 @@ export function makeChromeLiveLoaderJs({
       waves: v3Diag.waves.slice(),
       scripts: {},
       // surfaces are populated page-side by 0A0a Loader Bridge; the loader
-      // itself cannot subscribe to page-world ready events. The bridge merges
-      // its own surfaces map into the final report shown to callers.
+      // itself cannot subscribe to page-world ready events directly via
+      // H2O.events.* — only via the P3-pilot inline-injection bridge below.
+      // The bridge merges its own surfaces map into the final report shown
+      // to callers.
       surfaces: {},
+      // Loader V3 Phase 1 + Phase 3-pilot: predictedV3 wraps both
+      //   - the V3_WAVE_DIAG simulation (top-level fields, populated when
+      //     localStorage.H2O_LOADER_V3_WAVE_DIAG === "1")
+      //   - the P3-pilot observation report at predictedV3.pilotPlan
+      //     (populated when localStorage.H2O_LOADER_V3_DISPATCHER_PILOT === "1")
+      // When neither flag is on, predictedV3 is null. When only the pilot
+      // flag is on, predictedV3 contains only { pilotPlan }.
+      predictedV3: (function () {
+        const wave = v3PredictReport();
+        if (!V3_PILOT_ENABLED) return wave; // null or full simulation
+        // Pass the wave simulation into computePilotPlan so it can read
+        // predictedVisibleReadiness + predictedWaves for the new
+        // compareToCurrent.{visible,wave,tail}SavingsMs sections. When
+        // V3_WAVE_DIAG is OFF, wave is null and predicted* values come back
+        // as null (with a note in compareToCurrent.note).
+        const pilot = computePilotPlan(wave);
+        if (wave === null) return { pilotPlan: pilot };
+        return Object.assign({}, wave, { pilotPlan: pilot });
+      })(),
     };
     for (const [k, v] of Object.entries(v3Diag.scripts)) {
       report.scripts[k] = {
@@ -167,6 +1620,11 @@ export function makeChromeLiveLoaderJs({
   const PROXY_PACK_URL = ${JSON.stringify(PROXY_PACK_URL)};
   const DEV_SCRIPT_CATALOG = ${JSON.stringify(DEV_SCRIPT_CATALOG)};
   const DEV_ORDER_SECTIONS = ${JSON.stringify(DEV_ORDER_SECTIONS_SNAPSHOT)};
+  // Loader V3 Phase 1: declared dependency edges (read-only). Used by
+  // v3PredictReport() to simulate tier/wave dispatch when
+  // localStorage.H2O_LOADER_V3_WAVE_DIAG === "1". Does NOT affect runtime
+  // dispatch — V2.x serial-then-parallel behavior is unchanged.
+  const LOADER_DEPS = ${JSON.stringify(LOADER_DEPS_SNAPSHOT || {})};
   const STORAGE_KEY = ${JSON.stringify(STORAGE_KEY)};
   const STORAGE_SETS_KEY = "h2oExtDevToggleSetsV1";
   const STORAGE_ORDER_OVERRIDES_KEY = ${JSON.stringify(STORAGE_ORDER_OVERRIDES_KEY)};
@@ -2259,7 +3717,51 @@ export function makeChromeLiveLoaderJs({
     await waitDomIdle();
     try { performance.mark("h2o:phase:idle:start"); } catch {}
     v3PhaseStart("document-idle");
-    loadedTotal += await loadPhase(phaseIdle, "document-idle", runtimeSamples, progressState);
+
+    // ─── V3.1 dispatcher (gated on H2O_LOADER_V3_DISPATCHER_MODE === "active",
+    //     and not killed by H2O_LOADER_V3_DISPATCHER_KILL === "1"). When OFF,
+    //     this branch is dead code and V2.x's loadPhase(phaseIdle, ...) below
+    //     runs byte-identically — phaseIdle is the same array reference,
+    //     DISPATCHER_LOADED_ALIASES stays empty, and the filter short-circuits.
+    let phaseIdleForV2x = phaseIdle;
+    if (V3_DISPATCHER_ACTIVE) {
+      try {
+        dispatcherWaveResult = await runV3Dispatcher(phaseIdle, runtimeSamples, progressState);
+        loadedTotal += DISPATCHER_LOADED_ALIASES.size;
+        if (DISPATCHER_LOADED_ALIASES.size > 0) {
+          // SAFEGUARD #2: filter dispatcher-loaded aliases out of phaseIdle
+          // before V2.x continuation. V2.x has no settled-tracking Map — its
+          // predecessor logic is purely positional within the input array.
+          // Filtering IS the seeding: V2.x simply doesn't see (or wait on)
+          // scripts the dispatcher already loaded. Failed dispatcher scripts
+          // are NOT in the set, so V2.x retries them as normal.
+          phaseIdleForV2x = phaseIdle.filter(function (it) {
+            return !(it && it.aliasId && DISPATCHER_LOADED_ALIASES.has(String(it.aliasId)));
+          });
+          log("v3-dispatcher", "loaded", DISPATCHER_LOADED_ALIASES.size,
+            "aliases via dispatcher; v2.x will continue with",
+            phaseIdleForV2x.length, "remaining (was", phaseIdle.length, ")");
+        } else {
+          log("v3-dispatcher", "loaded 0 aliases; V2.x continues unchanged. result=",
+            dispatcherWaveResult && (dispatcherWaveResult.fallbackReason || "ok"));
+        }
+      } catch (e) {
+        // Defensive: any uncaught dispatcher error → V2.x runs everything.
+        warn("v3-dispatcher", "uncaught error; falling back to V2.x", e);
+        dispatcherWaveResult = {
+          ok: false, fellBack: true,
+          fallbackReason: "dispatcher-uncaught:" + String((e && e.message) || e),
+          fallbackAtMs: v3Now(),
+          mode: V3_DISPATCHER_MODE,
+          tiers: V3D_TIER_ORDER.slice(),
+          tierResults: {},
+          v2xResumedFrom: "L0",
+        };
+        phaseIdleForV2x = phaseIdle;
+      }
+    }
+
+    loadedTotal += await loadPhase(phaseIdleForV2x, "document-idle", runtimeSamples, progressState);
     try { performance.mark("h2o:phase:idle:end"); } catch {}
     v3PhaseEnd("document-idle");
     await flushRuntimeSamples(runtimeSamples);
