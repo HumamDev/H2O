@@ -239,6 +239,14 @@ function groupOf(filename) {
   if (/^0A/i.test(id)) return "CORE";
   if (/^0B/i.test(id) || /^0W/i.test(id)) return "UNMOUNT_PAGINATION";
   if (/^0C/i.test(id)) return "PERFORMANCE";
+  // Loader V2.3: five non-foundation DATA scripts move to a parallel
+  // LATE_DATA section so the serial drain finishes earlier. These are UI/
+  // integration layers verified to be late-tolerant by code evidence:
+  // 0D3c/d/e use waitForEngine + queue-and-flush handshake with 0D3a;
+  // 0D4b/0D5b are modals only reached via lazy click handlers in 0Z1e.
+  // The remaining 0D scripts (Data Core, Data Sync, Archive Engine + Bridge,
+  // Identity Core, Billing Core) stay in serial DATA.
+  if (/^0D3[cde]$|^0D4b$|^0D5b$/i.test(id)) return "LATE_DATA";
   if (/^0D/i.test(id)) return "DATA";
   if (/^0X/i.test(id)) return "COMMAND_BAR_SIDE_ACTIONS";
   // Loader V2.2: Library Core / Workspace / Index live in their own section
@@ -247,8 +255,21 @@ function groupOf(filename) {
   // Other 0F scripts (Insights, Store, Maintenance, Projects, Folders,
   // Categories, Tags, Labels) still fall through to OTHER.
   if (/^0F1[abc]/i.test(id)) return "LIBRARY_CORE";
+  // Loader V2.4: eager Control Hub plugin tabs + Tab Tree move out of the
+  // serial CONTROL HUB lane into a parallel CHUB_PLUGINS section. Each plugin
+  // implements register-at-init + addEventListener (and several add interval
+  // polling) — verified safe to run after Control Hub via getApi() lookup.
+  // Only the Hub base (0Z1a) and the existing L5 on-demand tabs (0Z1c/d/i/j/
+  // l/m/n/o/p) remain in CONTROL_HUB. The L5 entries stay there because the
+  // V2 on-demand machinery filters them out of eager loading at runtime.
+  if (/^0Z1[befghk]$|^0Z2a$/i.test(id)) return "CHUB_PLUGINS";
   if (/^0Z/i.test(id)) return "CONTROL_HUB";
 
+  // Loader V2.5: 1A1f MiniMap Views moves to its own parallel MINIMAP_VIEWS
+  // section. Views is a self-installing registry attacher (185 lines, no DOM
+  // observers, no consumer in eager chain — only L5 0Z1c MiniMap Tab reads
+  // its API). Skin/Core/Shell/Engine remain in MINIMAP_BASE serial.
+  if (/^1A1f$/i.test(id)) return "MINIMAP_VIEWS";
   if (/^1A1/i.test(id)) return "MINIMAP_BASE";
   if (/^1A/i.test(id)) return "MINIMAP_PLUGINS";
   if (/^1B/i.test(id)) return "MM_FEATURE_UI";
@@ -311,14 +332,41 @@ const SECTIONS = [
     ],
   },
   {
+    key: "LATE_DATA",
+    title: "🧯 LATE DATA",
+    header: [
+      "# =========================",
+      "# 🧯 LATE DATA",
+      "# =========================",
+    ],
+  },
+  {
     key: "CONTROL_HUB",
     title: "🕹️ CONTROL HUB",
     header: ["# =========================", "# 🕹️ CONTROL HUB", "# ========================="],
   },
   {
+    key: "CHUB_PLUGINS",
+    title: "🔌 CONTROL HUB PLUGINS",
+    header: [
+      "# =========================",
+      "# 🔌 CONTROL HUB PLUGINS",
+      "# =========================",
+    ],
+  },
+  {
     key: "MINIMAP_BASE",
     title: "🗺️ MINIMAP BASE",
     header: ["# =========================", "# 🗺️ MINIMAP BASE", "# ========================="],
+  },
+  {
+    key: "MINIMAP_VIEWS",
+    title: "🗺️ MINIMAP VIEWS",
+    header: [
+      "# =========================",
+      "# 🗺️ MINIMAP VIEWS",
+      "# =========================",
+    ],
   },
   {
     key: "MINIMAP_PLUGINS",

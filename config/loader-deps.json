@@ -32,8 +32,7 @@
         "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js",
         "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js",
         "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js",
-        "0Z2a._Control_Hub_Tab_Tree_.js"
+        "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js"
       ]
     },
     "MINIMAP_BASE": {
@@ -63,10 +62,7 @@
         "1A3a._Highlight_Dots_(MiniMap_Plugin)_.js",
         "1A3b._Quote_Badges_(MiniMap_Plugin)_.js",
         "1A4b._Revision_Badges_(MiniMap_Plugin)_.js",
-        "1A5a._Title_Labels_(MiniMap_Plugin)_.js",
-        "1B1a._MiniMap_Quick_Controls_.js",
-        "1B2a._MiniMap_Context_Menu_.js",
-        "1C1a._Color_Legend_.js"
+        "1A5a._Title_Labels_(MiniMap_Plugin)_.js"
       ]
     },
     "QUESTION_UI": {
@@ -164,6 +160,105 @@
       "critical": true,
       "optionalDependsOn": []
     },
+    "0B1a._Performance_Governor_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.diet",
+        "h2o.diet.governor"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "0B1b._Performance_Store_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0B1a._Performance_Governor_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.diet.store"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "0B1c._Performance_Adapters_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0B1a._Performance_Governor_.js",
+        "0B1b._Performance_Store_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.diet.adapters"
+      ],
+      "critical": true,
+      "optionalDependsOn": [
+        "0C2a._Unmount_Messages_Engine_.js"
+      ]
+    },
+    "0C1a._Pagination_Windowing_Engine_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.pagination.engine"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0C1b._Pagination_Windowing_(Chat_Adapter)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0C1a._Pagination_Windowing_Engine_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.pagination.chatAdapter"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0C2a._Unmount_Messages_Engine_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.unmount.engine"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0C2b._Unmount_Messages_(Chat_Adapter)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0C2a._Unmount_Messages_Engine_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.unmount.chatAdapter"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
     "0D1a._Data_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -175,6 +270,51 @@
         "h2o.dataCore"
       ],
       "critical": true,
+      "optionalDependsOn": []
+    },
+    "0D1b._Data_Store_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.compress",
+        "h2o.dataStore"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "0D2a._Data_Sync_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0D1a._Data_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.sync"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D1b._Data_Store_.js"
+      ]
+    },
+    "0D2b._Data_Sync_Providers_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0D2a._Data_Sync_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.sync.providers"
+      ],
+      "critical": false,
       "optionalDependsOn": []
     },
     "0D3a._Transcript_Archive_Engine_.js": {
@@ -220,6 +360,128 @@
       ],
       "optionalDependsOn": []
     },
+    "0D3d._Transcript_Save_Strip_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "DATA_LATE",
+      "provides": [
+        "h2o.archiveSaveStrip"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D3a._Transcript_Archive_Engine_.js"
+      ]
+    },
+    "0D3e._Transcript_Studio_Host_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "DATA_LATE",
+      "provides": [
+        "h2o.studioHost"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0D4a._Identity_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.identity"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "0D4b._Identity_First-Run_Prompt_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "DATA_LATE",
+      "provides": [
+        "h2o.identityFirstRunPrompt"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D4a._Identity_Core_.js"
+      ]
+    },
+    "0D5a._Billing_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.billing"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0D5b._Subscription_Modal_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "DATA_LATE",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D5a._Billing_Core_.js"
+      ]
+    },
+    "0E1a._Export_Chat_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXPORT",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": [
+        "0E1b._Export_Formats_.js",
+        "1A1c._MiniMap_Engine_.js",
+        "0D1a._Data_Core_.js"
+      ]
+    },
+    "0E1b._Export_Formats_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXPORT",
+      "provides": [
+        "h2o.exportFormats",
+        "h2o.export"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0D1a._Data_Core_.js"
+      ]
+    },
+    "0E2a._Quick_Export_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXPORT",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
     "0X1a._Command_Bar_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -232,6 +494,22 @@
       "group": "CORE_BASE",
       "provides": [
         "h2o.commandBar"
+      ]
+    },
+    "0X2a._Side_Actions_Panel_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.sideActionsPanel"
+      ],
+      "critical": true,
+      "optionalDependsOn": [
+        "0D1a._Data_Core_.js",
+        "0X1a._Command_Bar_.js"
       ]
     },
     "0Z1a._Control_Hub_.js": {
@@ -274,6 +552,34 @@
       "group": "CORE_BASE",
       "provides": [
         "h2o.controlHub.minimapTab"
+      ]
+    },
+    "0Z1e._Account_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CHUB_PLUGINS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": [
+        "0Z1a._Control_Hub_.js",
+        "0D4a._Identity_Core_.js",
+        "0D5a._Billing_Core_.js"
+      ]
+    },
+    "0Z1f._Library_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CHUB_PLUGINS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": [
+        "0Z1a._Control_Hub_.js"
       ]
     },
     "0Z1g._Markup_Tab_(Control_Hub_Plugin)_.js": {
@@ -384,29 +690,20 @@
       ],
       "optionalDependsOn": []
     },
-    "0Z2a._Control_Hub_Tab_Tree_.js": {
+    "0Z2a._Control_Hub_Tab_Tree_(Control_Hub_Add-on)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "0Z1a._Control_Hub_.js"
+        "0A1a._H2O_Core_.js"
       ],
-      "after": [
-        "0Z1b._Data_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1c._MiniMap_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1g._Markup_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1h._Interface_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1i._Studio_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1j._Workspaces_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1k._Appearance_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1l._Annotations_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1m._Export_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1o._Dock_Panel_Tab_(Control_Hub_Plugin)_.js",
-        "0Z1n._Prompt_Manager_Tab_(Control_Hub_Plugin)_.js"
-      ],
-      "group": "CORE_BASE",
+      "after": [],
+      "group": "CHUB_PLUGINS",
       "provides": [
-        "h2o.controlHub.tabTree"
+        "h2o.ch.cntrlhb.tree"
       ],
-      "optionalDependsOn": []
+      "critical": false,
+      "optionalDependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ]
     },
     "1A1a._MiniMap_Kernel_.js": {
       "phase": "document-idle",
@@ -568,42 +865,148 @@
       ],
       "optionalDependsOn": []
     },
-    "1B1a._MiniMap_Quick_Controls_.js": {
+    "1B1a._Quick_Controls_(MiniMap_Plugin)_.js": {
       "phase": "document-idle",
       "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.perf.modules.miniMapQuickControls"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0B1a._Performance_Governor_.js",
+        "1A1a._MiniMap_Kernel_.js",
         "1A1c._MiniMap_Engine_.js"
+      ]
+    },
+    "1B2a._Context_Menu_(MiniMap_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.mm.ctxmenu"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "1A1a._MiniMap_Kernel_.js"
+      ]
+    },
+    "1C1a._Turn_Title_Bar_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
-        "minimap.quickControls"
+        "h2o.turnTitleBar"
       ],
-      "optionalDependsOn": []
+      "critical": false,
+      "optionalDependsOn": [
+        "1A1c._MiniMap_Engine_.js"
+      ]
     },
-    "1B2a._MiniMap_Context_Menu_.js": {
+    "1C1b._Thread_Pages_Controller_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1c._MiniMap_Engine_.js"
+        "0A1a._H2O_Core_.js"
       ],
-      "after": [
-        "1B1a._MiniMap_Quick_Controls_.js"
-      ],
-      "group": "MINIMAP_EXTENSIONS",
+      "after": [],
+      "group": "MM_PLUS",
       "provides": [
-        "minimap.contextMenu"
+        "h2o.chat.pages.controller"
       ],
-      "optionalDependsOn": []
+      "critical": false,
+      "optionalDependsOn": [
+        "0C1a._Pagination_Windowing_Engine_.js",
+        "1A1a._MiniMap_Kernel_.js"
+      ]
     },
-    "1C1a._Color_Legend_.js": {
+    "1C1c._Outline_Mechanisms_Router_(_Unmount_&_Pagination_Integration)_.js": {
       "phase": "document-idle",
       "dependsOn": [
-        "1A1c._MiniMap_Engine_.js"
+        "0A1a._H2O_Core_.js",
+        "0C1a._Pagination_Windowing_Engine_.js",
+        "0C2a._Unmount_Messages_Engine_.js"
       ],
       "after": [],
       "group": "MINIMAP_EXTENSIONS",
       "provides": [
-        "minimap.colorLegend"
+        "h2o.outlineRouter"
       ],
+      "critical": false,
+      "optionalDependsOn": [
+        "1A1c._MiniMap_Engine_.js",
+        "1A1b._MiniMap_Core_.js"
+      ]
+    },
+    "1D1a._Color_Legend_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.colorLegend"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ]
+    },
+    "1E1a._Code_Line_Numbers_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "1U1a._Answer_Background_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.AnsBg"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "1X1a._Answer_Numbers_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.AnsNums"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "1Z1a._Answer_Timestamp_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "MM_PLUS",
+      "provides": [
+        "h2o.answrts"
+      ],
+      "critical": false,
       "optionalDependsOn": []
     },
     "2A1a._Question_Wrapper_.js": {
@@ -970,6 +1373,162 @@
       ],
       "optionalDependsOn": []
     },
+    "4L0a._Legal_Pack_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.legalPack"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js"
+      ]
+    },
+    "6A1a._Margin_Anchor_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.MA"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "6B1a._Sticky_Notes_Portal_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": [
+        "6A1a._Margin_Anchor_.js"
+      ]
+    },
+    "6C1a._Quote_Backrefs_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.MQ"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "6S1a._Section_Bands_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.sctnbnds"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "6S2a._Section_Collapser_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.SectionCollapser"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "6S2b._Heading_Colorizer_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "7A1a._Prompt_Manager_.js": {
+      "phase": "document-end",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.PromptManager"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0A1a._H2O_Core_.js"
+      ]
+    },
+    "8A1a._Theme_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.theme"
+      ],
+      "critical": true,
+      "optionalDependsOn": []
+    },
+    "8A1b._Themes_Panel_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.themesPanel"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "8A1a._Theme_Core_.js"
+      ]
+    },
+    "8A2a._H2O_Skins_Registry_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.skins"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "8Y1a._Input_Dock_(Keys_Rail)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.InputDock"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
     "9A1a._Interface_Kernel_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -1070,6 +1629,28 @@
         "9A1a._Interface_Kernel_.js"
       ]
     },
+    "9X1a._Keep_Projects_Open_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [
+        "h2o.KP"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "9Z1a._Hide_Disclaimer_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXTENSIONS",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
     "0F1a._Library_Core_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -1138,6 +1719,145 @@
       "optionalDependsOn": [
         "0D3b._Transcript_Extension_Bridge_.js"
       ]
+    },
+    "0F1d._Library_Insights_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.insights"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js"
+      ]
+    },
+    "0F1f._Library_Maintenance_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.maintenance"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js",
+        "0F1c._Library_Index_.js"
+      ]
+    },
+    "0F2a._Projects_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0F1a._Library_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.projects"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F3a._Folders_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.folders"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js"
+      ]
+    },
+    "0F4a._Categories_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0F1a._Library_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.categories"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F5a._Tags_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0F1a._Library_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.tags"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F6a._Labels_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.labels"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js"
+      ]
+    },
+    "X1._Canvas_Last-Updated_Timestamp_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXPERIMENTAL",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "X2._Select_All_Answer_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXPERIMENTAL",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "X3._Toolbar_Palette_Button_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXPERIMENTAL",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "X5._Highlight_Double-Click_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [],
+      "group": "EXPERIMENTAL",
+      "provides": [],
+      "critical": false,
+      "optionalDependsOn": []
     }
   }
 }
