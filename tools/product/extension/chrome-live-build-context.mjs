@@ -49,6 +49,10 @@ export function createChromeLiveBuildContext() {
     : (DEV_HAS_CONTROLS ? "[H2O DEV CTRL]" : "[H2O DEV LEAN]");
   const DEV_ORDER_FILE = path.join(SRC, "config", "dev-order.tsv");
   const PAGE_FOLDER_BRIDGE_FILE = "folder-bridge-page.js";
+  // P3-pilot WAR observer (CSP-safe; replaces inline-textContent injection
+  // that ChatGPT CSP blocked). Loaded via chrome.runtime.getURL when
+  // localStorage.H2O_LOADER_V3_DISPATCHER_PILOT === "1".
+  const PAGE_PILOT_OBSERVER_FILE = "pilot-observer-page.js";
 
   return {
     SRC,
@@ -67,5 +71,6 @@ export function createChromeLiveBuildContext() {
     DEV_TAG,
     DEV_ORDER_FILE,
     PAGE_FOLDER_BRIDGE_FILE,
+    PAGE_PILOT_OBSERVER_FILE,
   };
 }

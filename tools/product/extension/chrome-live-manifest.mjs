@@ -3,6 +3,7 @@ export function makeChromeLiveManifest({
   PROXY_PACK_URL,
   CHAT_MATCH,
   PAGE_FOLDER_BRIDGE_FILE,
+  PAGE_PILOT_OBSERVER_FILE,
   DEV_HAS_CONTROLS,
   DEV_TITLE,
   DEV_NAME,
@@ -82,6 +83,13 @@ export function makeChromeLiveManifest({
         resources: [PAGE_FOLDER_BRIDGE_FILE],
         matches: [CHAT_MATCH],
       },
+      // P3-pilot WAR observer (loaded only when the pilot flag is on; harmless
+      // to expose unconditionally — it's no-op without the flag-checked
+      // injection from the loader).
+      ...(PAGE_PILOT_OBSERVER_FILE ? [{
+        resources: [PAGE_PILOT_OBSERVER_FILE],
+        matches: [CHAT_MATCH],
+      }] : []),
     ],
   };
   if (optionalHostPermissions.length) {

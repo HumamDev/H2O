@@ -250,10 +250,46 @@ function readScriptCatalog(srcRoot) {
   return out;
 }
 
+// Loader V3 Phase 1: read config/loader-deps.json and normalize per-script
+// dep edges into a JSON-serializable map embedded into the generated loader.
+// Read-only — used by the V3_WAVE_DIAG predictor to simulate tier/wave
+// dispatch. Does NOT change loader behavior.
+function readLoaderDepsSnapshot(srcRoot) {
+  const out = {};
+  const depsFile = path.join(srcRoot, "config", "loader-deps.json");
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(depsFile, "utf8"));
+  } catch {
+    return out;
+  }
+  const scripts = manifest && typeof manifest === "object" ? manifest.scripts : null;
+  if (!scripts || typeof scripts !== "object") return out;
+  for (const [aliasRaw, entry] of Object.entries(scripts)) {
+    const aliasId = String(aliasRaw || "").trim();
+    if (!aliasId || !entry || typeof entry !== "object") continue;
+    const dependsOn = Array.isArray(entry.dependsOn) ? entry.dependsOn.map((x) => String(x || "")).filter(Boolean) : [];
+    const after = Array.isArray(entry.after) ? entry.after.map((x) => String(x || "")).filter(Boolean) : [];
+    const optionalDependsOn = Array.isArray(entry.optionalDependsOn) ? entry.optionalDependsOn.map((x) => String(x || "")).filter(Boolean) : [];
+    const provides = Array.isArray(entry.provides) ? entry.provides.map((x) => String(x || "")).filter(Boolean) : [];
+    out[aliasId] = {
+      phase: String(entry.phase || "document-idle"),
+      dependsOn,
+      after,
+      optionalDependsOn,
+      group: String(entry.group || ""),
+      provides,
+      critical: entry.critical === true,
+    };
+  }
+  return out;
+}
+
 export function createChromeLiveSourceSnapshots({ srcRoot, orderFile }) {
   return {
     DEV_ORDER_SECTIONS_SNAPSHOT: readDevOrderSectionsSnapshot(orderFile),
     DEV_ALIAS_FILENAME_MAP: readAliasFilenameMap(srcRoot),
     DEV_SCRIPT_CATALOG: readScriptCatalog(srcRoot),
+    LOADER_DEPS_SNAPSHOT: readLoaderDepsSnapshot(srcRoot),
   };
 }

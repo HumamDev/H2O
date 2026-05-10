@@ -18,6 +18,7 @@ import { createChromeLiveBuildContext } from "./chrome-live-build-context.mjs";
 import { createChromeLiveSourceSnapshots } from "./chrome-live-source-snapshots.mjs";
 import { makeChromeLiveManifest } from "./chrome-live-manifest.mjs";
 import { makeChromeLiveFolderBridgePageJs } from "./chrome-live-folder-bridge.mjs";
+import { makeChromeLivePilotObserverJs } from "./chrome-live-pilot-observer.mjs";
 import { makeChromeLiveBackgroundJs } from "./chrome-live-background.mjs";
 import {
   buildIdentityProviderBundle,
@@ -65,6 +66,7 @@ const {
   DEV_TAG,
   DEV_ORDER_FILE,
   PAGE_FOLDER_BRIDGE_FILE,
+  PAGE_PILOT_OBSERVER_FILE,
 } = createChromeLiveBuildContext();
 const DEV_CONTROLS_ICONS_DIR = path.join(SRC, "assets", "chrome-dev-controls-icons");
 const DEV_LEAN_ICONS_DIR = path.join(SRC, "assets", "chrome-dev-lean-icons");
@@ -95,6 +97,7 @@ const {
   DEV_ORDER_SECTIONS_SNAPSHOT,
   DEV_ALIAS_FILENAME_MAP,
   DEV_SCRIPT_CATALOG,
+  LOADER_DEPS_SNAPSHOT,
 } = createChromeLiveSourceSnapshots({
   srcRoot: SRC,
   orderFile: DEV_ORDER_FILE,
@@ -396,6 +399,7 @@ async function main() {
       PROXY_PACK_URL,
       CHAT_MATCH,
       PAGE_FOLDER_BRIDGE_FILE,
+      PAGE_PILOT_OBSERVER_FILE,
       DEV_HAS_CONTROLS,
       DEV_TITLE,
       DEV_NAME,
@@ -443,11 +447,14 @@ async function main() {
     PROXY_PACK_URL,
     DEV_SCRIPT_CATALOG,
     DEV_ORDER_SECTIONS_SNAPSHOT,
+    LOADER_DEPS_SNAPSHOT,
     STORAGE_KEY,
     STORAGE_ORDER_OVERRIDES_KEY,
     PAGE_FOLDER_BRIDGE_FILE,
+    PAGE_PILOT_OBSERVER_FILE,
   }));
   writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
+  writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());
 
   if (DEV_HAS_CONTROLS) {
     const panelLogoPath = copyPanelIconAsset(OUT_DIR);
