@@ -3,9 +3,9 @@
 // @name               8A1b.🟪🎨 Themes Panel 🎨
 // @namespace          H2O.Premium.CGX.themes.panel
 // @author             HumamDev
-// @version            2.1.15
-// @revision           002
-// @build              260509-220000
+// @version            2.1.16
+// @revision           004
+// @build              260510-012500
 // @description        Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -29,6 +29,9 @@
   const SkID  = 'thpn';      // Themes(TH) + Panel(PN) => thpn
   const BrID  = PID;         // default
   const DsID  = PID;         // default
+  const API_VERSION = '2.1.16';
+  const API_BUILD = '260510-012500';
+  const API_PHASE = 'appearance-and-dock-mirror-controls';
 
   // labels only
   const MODTAG    = 'ThemesP';
@@ -53,15 +56,24 @@
   const ATTR_HO_THEME_ENABLED     = 'data-ho-theme-enabled';
   const ATTR_HO_MODE             = 'data-ho-mode';
   const ATTR_HO_FONT             = 'data-ho-font';
+  const ATTR_HO_FONT_SCOPE       = 'data-ho-font-scope';
   const ATTR_HO_CHAT_FULL        = 'data-ho-chat-full';
   const ATTR_HO_SYNC_PROMPT      = 'data-ho-sync-prompt';
   const ATTR_HO_HIDE_HEADER      = 'data-ho-hide-header';
   const ATTR_HO_HIDE_FOOTER      = 'data-ho-hide-footer';
   const ATTR_HO_EXPAND_CHATBOX   = 'data-ho-expand-chatbox';
-  const ATTR_HO_BUBBLE_USER      = 'data-ho-bubble-user';
-  const ATTR_HO_BUBBLE_GPT       = 'data-ho-bubble-gpt';
-  const ATTR_HO_ACCENT_USER_BUBL = 'data-ho-accent-user-bubble';
+  const ATTR_HO_FONT_TUNED       = 'data-ho-font-tuned';
+  const ATTR_HO_LAYOUT_TUNED     = 'data-ho-layout-tuned';
   const ATTR_HO_SCROLL_ALIGN     = 'data-ho-scroll-align';
+  const ATTR_HO_CHAT_ROOT        = 'data-ho-chat-root';
+  const ATTR_HO_CHAT_COLUMN      = 'data-ho-chat-column';
+  const ATTR_HO_MESSAGE_TEXT     = 'data-ho-message-text';
+  const ATTR_HO_COMPOSER         = 'data-ho-composer';
+  const ATTR_HO_COMPOSER_INPUT   = 'data-ho-composer-input';
+  const ATTR_HO_CHATGPT_HEADER   = 'data-ho-chatgpt-header';
+  const ATTR_HO_CHATGPT_SIDEBAR  = 'data-ho-chatgpt-sidebar';
+  const ATTR_HO_CHATGPT_FOOTER   = 'data-ho-chatgpt-footer';
+  const ATTR_HO_SCROLL_BUTTON    = 'data-ho-scroll-button';
 
   /* [DEFINE][STORE][API] Namespaces (boundary-only use of DsID) */
   const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`; // no trailing ":"
@@ -96,6 +108,7 @@
   const UI_TPANEL_PANE      = `${SkID}-pane`;
   const UI_TPANEL_RESET     = `${SkID}-reset`;
   const UI_TPANEL_ENABLE    = `${SkID}-enable`;
+  const UI_TPANEL_CLOSE     = `${SkID}-close`;
 
   /* [CSS][ThemesP] Style id — MUST be cgxui-<skid>-style */
   const CSS_TPANEL_STYLE_ID = `cgxui-${SkID}-style`;
@@ -103,6 +116,68 @@
   /* [SEL][ThemesP] Selector registry (NO ad-hoc selector strings elsewhere) */
   const SEL_SEND_BTN =
     'button[data-testid="send-button"], button[aria-label="Send message"]';
+  const SEL_COMPOSER_SEND_BTN =
+    'button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label*="send" i]';
+  const SEL_CHAT_MESSAGE =
+    '[data-message-author-role="assistant"], [data-message-author-role="user"]';
+  const SEL_CHAT_MESSAGE_TEXT =
+    '.markdown, .prose, [data-testid="markdown"], [data-testid*="message-content"], [data-testid*="message-text"], .whitespace-pre-wrap';
+  const SEL_COMPOSER_FORM =
+    'form[data-type="unified-composer"], form.group\\/composer, form[data-testid="composer"], form[action*="conversation"]';
+  const SEL_COMPOSER_INPUT =
+    '#prompt-textarea, textarea, [contenteditable="true"], [role="textbox"]';
+  const SEL_CHATGPT_HEADER =
+    'header, [data-testid="conversation-header"], [data-testid="chat-header"], [data-testid="thread-header"]';
+  const SEL_CHATGPT_SIDEBAR =
+    'nav[aria-label="Sidebar"], nav[aria-label="Chat history"]';
+  const SEL_CHATGPT_FOOTER =
+    '[data-testid="conversation-input-footer"], [data-testid="composer-footer"], footer';
+  const SEL_CHATGPT_SCROLL_BUTTON =
+    'button[aria-label*="scroll" i], button[aria-label*="bottom" i], button[data-testid*="scroll" i]';
+  const SEL_CHATGPT_NATIVE_CONTEXT =
+    '[data-message-author-role], [data-testid^="conversation-turn"]';
+  const H2O_CHATGPT_HELPER_OWNERS = Object.freeze([
+    'qbig',
+    'ansn',
+    'abig',
+    'atns',
+    'ats',
+    'qts',
+    'mrnc',
+    'qswr',
+  ]);
+  const H2O_CHATGPT_HELPER_CLASS_RE =
+    /\bcgxui-(?:ansn|qbig|abig|atns|ats|qts|mrnc|qswr)-/;
+  const H2O_OWNED_ROOT_SELECTORS = Object.freeze([
+    `[${ATTR_CGXUI_OWNER}="${SkID}"]`,
+    '[data-cgxui-owner="cnhb"]',
+    '[data-cgxui-owner="mnmp"]',
+    '[data-cgxui-owner="dcpn"]',
+    '[data-cgxui-owner="flsc"]',
+    '[data-cgxui-owner="lbsc"]',
+    '[data-cgxui-owner="xpch"]',
+    '[data-cgxui-owner="prmn"]',
+    '[data-h2o-chub]',
+    '[data-h2o-chub-artifact]',
+    '[data-h2o-library]',
+    '[data-h2o-library-workspace="root"]',
+    '[data-h2o-minimap]',
+    '[data-h2o-minimap-root]',
+    '[data-h2o-command]',
+    '[data-h2o-side-actions]',
+    '[data-h2o-cold]',
+    '[data-h2o-cold-layer]',
+    '[data-cgxui-page-kind]',
+    '[data-h2o-sidebar-shell]',
+    '[data-h2o-sidebar-shell-list]',
+    '.h2o-side-actions-root',
+    '.h2o-archive-dock',
+    '.h2o-cold-layer',
+    '.ho-mm-root',
+    '.cgxui-mm-col',
+    '.cgxui-mm-btn',
+  ]);
+  const SEL_H2O_OWNED_ROOT = H2O_OWNED_ROOT_SELECTORS.join(',');
 
   const SEL_TINY_RAIL = '#stage-sidebar-tiny-bar';
   const SEL_TINY_RAIL_IMG = 'img';
@@ -215,7 +290,14 @@
 
     panelBackdrop: null,
     panelEl: null,
-    outsideHandler: null,
+    panelDragCleanup: null,
+    panelPos: null,
+    nativeSyncObserver: null,
+    nativeSyncTimer: 0,
+    nativeApplyTimer: 0,
+    nativeApplyBusy: false,
+    nativePending: null,
+    chatTargetTimer: 0,
 
     booted: false,
     disposed: false,
@@ -223,6 +305,8 @@
     // tiny rail wiring
     moTinyRail: null,
     rafTinyRail: 0,
+    dockTabTimer: 0,
+    dockTabRegistered: false,
     onResize: null,
     onPop: null,
     tinyRailWrap: null,
@@ -230,25 +314,157 @@
 
   /* ───────────────────────────── 🟥 ENGINE — DOMAIN LOGIC / PIPELINE 📝🔓💥 ───────────────────────────── */
 
-  const ACCENT_PRESETS = [
-    { key: 'lavender', name: 'Lavender', light: '260, 55%, 78%', dark: '260, 45%, 62%' },
-    { key: 'coral',    name: 'Coral',    light: '12, 70%, 72%',  dark: '12, 60%, 55%' },
-    { key: 'aqua',     name: 'Aqua',     light: '188, 55%, 70%', dark: '188, 50%, 50%' },
-    { key: 'emerald',  name: 'Emerald',  light: '152, 45%, 68%', dark: '152, 40%, 48%' },
-    { key: 'amber',    name: 'Amber',    light: '40, 70%, 72%',  dark: '36, 65%, 52%' },
-    { key: 'rose',     name: 'Rose',     light: '338, 60%, 72%', dark: '338, 52%, 54%' },
-    { key: 'slate',    name: 'Slate',    light: '220, 18%, 70%', dark: '220, 18%, 46%' },
-  ];
+  const MODE_PRESETS = Object.freeze([
+    Object.freeze({ key: 'system', name: 'System' }),
+    Object.freeze({ key: 'light',  name: 'Light' }),
+    Object.freeze({ key: 'dark',   name: 'Dark' }),
+  ]);
+
+  const FONT_PRESETS = Object.freeze([
+    Object.freeze({ key: 'system',        name: 'Default' }),
+    Object.freeze({ key: 'inter',         name: 'Inter-like' }),
+    Object.freeze({ key: 'readable',      name: 'Readable Sans' }),
+    Object.freeze({ key: 'optima',        name: 'Optima' }),
+    Object.freeze({ key: 'avenir',        name: 'Avenir' }),
+    Object.freeze({ key: 'humanist',      name: 'Humanist Sans' }),
+    Object.freeze({ key: 'serif',         name: 'Serif Reading' }),
+    Object.freeze({ key: 'premium-serif', name: 'Premium Serif' }),
+    Object.freeze({ key: 'mono',          name: 'Mono' }),
+  ]);
+
+  const FONT_PRESET_MAP = Object.freeze(
+    FONT_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, Object.create(null))
+  );
+
+  const FONT_STACKS = Object.freeze({
+    system: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+    inter: '"Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", "Helvetica Neue", Arial, sans-serif',
+    readable: '"Atkinson Hyperlegible", Verdana, Arial, system-ui, sans-serif',
+    optima: 'Optima, Candara, "Segoe UI", Frutiger, "Frutiger Linotype", "Trebuchet MS", sans-serif',
+    avenir: 'Avenir, "Avenir Next", "Nunito Sans", "Segoe UI", system-ui, sans-serif',
+    humanist: '"Gill Sans", "Gill Sans MT", Calibri, "Trebuchet MS", system-ui, sans-serif',
+    serif: 'Georgia, "Times New Roman", ui-serif, serif',
+    'premium-serif': '"Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif',
+    mono: '"SF Mono", "Cascadia Code", Menlo, Consolas, ui-monospace, monospace',
+  });
+
+  const FONT_SCOPE_PRESETS = Object.freeze([
+    Object.freeze({ key: 'chat', name: 'Chat Only', hint: 'Messages and composer only.' }),
+    Object.freeze({ key: 'page', name: 'Entire ChatGPT Page', hint: 'ChatGPT shell only.' }),
+  ]);
+
+  const FONT_SCOPE_MAP = Object.freeze(
+    FONT_SCOPE_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, Object.create(null))
+  );
+
+  const THEME_PRESETS = Object.freeze([
+    Object.freeze({ key: 'lavender', name: 'Lavender', light: '260, 55%, 78%', dark: '260, 45%, 62%' }),
+    Object.freeze({ key: 'coral',    name: 'Coral',    light: '12, 70%, 72%',  dark: '12, 60%, 55%' }),
+    Object.freeze({ key: 'aqua',     name: 'Aqua',     light: '188, 55%, 70%', dark: '188, 50%, 50%' }),
+    Object.freeze({ key: 'emerald',  name: 'Emerald',  light: '152, 45%, 68%', dark: '152, 40%, 48%' }),
+    Object.freeze({ key: 'amber',    name: 'Amber',    light: '40, 70%, 72%',  dark: '36, 65%, 52%' }),
+    Object.freeze({ key: 'rose',     name: 'Rose',     light: '338, 60%, 72%', dark: '338, 52%, 54%' }),
+    Object.freeze({ key: 'slate',    name: 'Slate',    light: '220, 18%, 70%', dark: '220, 18%, 46%' }),
+  ]);
+
+  const THEME_PRESET_MAP = Object.freeze(
+    THEME_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, {})
+  );
+
+  const NATIVE_ACCENT_PRESETS = Object.freeze([
+    Object.freeze({ key: 'default', name: 'Default', light: '152, 45%, 68%', dark: '152, 40%, 48%' }),
+    Object.freeze({ key: 'green',   name: 'Green',   light: '152, 45%, 68%', dark: '152, 40%, 48%' }),
+    Object.freeze({ key: 'blue',    name: 'Blue',    light: '188, 55%, 70%', dark: '188, 50%, 50%' }),
+    Object.freeze({ key: 'yellow',  name: 'Yellow',  light: '40, 70%, 72%',  dark: '36, 65%, 52%' }),
+    Object.freeze({ key: 'orange',  name: 'Orange',  light: '12, 70%, 72%',  dark: '12, 60%, 55%' }),
+    Object.freeze({ key: 'pink',    name: 'Pink',    light: '338, 60%, 72%', dark: '338, 52%, 54%' }),
+    Object.freeze({ key: 'purple',  name: 'Purple',  light: '260, 55%, 78%', dark: '260, 45%, 62%' }),
+  ]);
+
+  const NATIVE_ACCENT_MAP = Object.freeze(
+    NATIVE_ACCENT_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, {})
+  );
+
+  function CORE_TP_normalizeMode(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'light' || value === 'dark' || value === 'system') return value;
+    return 'system';
+  }
+
+  function CORE_TP_normalizeThemePreset(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return THEME_PRESET_MAP[value] ? value : 'lavender';
+  }
+
+  function CORE_TP_resolveThemePreset(raw) {
+    return THEME_PRESET_MAP[CORE_TP_normalizeThemePreset(raw)] || THEME_PRESET_MAP.lavender;
+  }
+
+  function CORE_TP_inferThemePresetKey(accentLight, accentDark) {
+    const light = String(accentLight || '').trim();
+    const dark = String(accentDark || '').trim();
+    const hit = THEME_PRESETS.find((preset) => preset.light === light && preset.dark === dark);
+    return hit?.key || 'lavender';
+  }
+
+  function CORE_TP_applyThemePreset(target, themeKey) {
+    const preset = CORE_TP_resolveThemePreset(themeKey);
+    target.themePreset = preset.key;
+    target.accentLight = preset.light;
+    target.accentDark = preset.dark;
+    return preset;
+  }
+
+  function CORE_TP_normalizeNativeAccent(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return NATIVE_ACCENT_MAP[value] ? value : 'default';
+  }
+
+  function CORE_TP_normalizeFontFamily(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'default') return 'system';
+    if (value === 'readable-sans') return 'readable';
+    if (value === 'serif-reading') return 'serif';
+    if (value === 'premiumserif' || value === 'premium-serif-reading') return 'premium-serif';
+    if (value === 'humanist-sans') return 'humanist';
+    return FONT_PRESET_MAP[value] ? value : DEFAULT_SETTINGS.fontFamily;
+  }
+
+  function CORE_TP_normalizeFontScope(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'all' || value === 'full' || value === 'entire') return 'page';
+    return FONT_SCOPE_MAP[value] ? value : DEFAULT_SETTINGS.fontScope;
+  }
+
+  function CORE_TP_clampNumber(raw, fallback, min, max, precision = 0) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    const clamped = Math.min(max, Math.max(min, n));
+    return precision > 0 ? Number(clamped.toFixed(precision)) : Math.round(clamped);
+  }
 
   const DEFAULT_SETTINGS = {
     enabled: true,
-    mode: 'dark', // 'light' | 'dark' | 'oled'
+    mode: 'system', // 'system' | 'light' | 'dark'
+    themePreset: 'lavender',
+    nativeAccent: 'default',
+    accentLight: '260, 55%, 78%',
+    accentDark:  '260, 45%, 62%',
 
-    accentLight: '270, 80%, 75%',
-    accentDark:  '265, 70%, 62%',
-    accentUserBubble: false,
-
-    fontFamily: 'system', // 'system' | 'inter' | 'mono'
+    fontFamily: 'system', // 'system' | 'inter' | 'readable' | 'optima' | 'avenir' | 'humanist' | 'serif' | 'premium-serif' | 'mono'
+    fontScope: 'chat', // 'chat' | 'page'
     fontSize: 16,
     lineHeight: 28,
     letterSpace: 0,
@@ -262,23 +478,35 @@
     hideFooter: false,
     expandChatbox: false,
 
-    bubblesUser: true,
-    bubblesGpt:  true,
+    bubblesUser: false,
+    bubblesGpt:  false,
 
     scrollAlign: 'right',
   };
 
   function CORE_TP_loadSettings() {
+    const normalizeLoaded = (raw) => {
+      const merged = { ...DEFAULT_SETTINGS, ...raw };
+      merged.mode = CORE_TP_normalizeMode(merged.mode);
+      merged.themePreset = CORE_TP_normalizeThemePreset(merged.themePreset || CORE_TP_inferThemePresetKey(merged.accentLight, merged.accentDark));
+      CORE_TP_applyThemePreset(merged, merged.themePreset);
+      merged.nativeAccent = CORE_TP_normalizeNativeAccent(merged.nativeAccent);
+      merged.fontFamily = CORE_TP_normalizeFontFamily(merged.fontFamily);
+      merged.fontScope = CORE_TP_normalizeFontScope(merged.fontScope);
+      return merged;
+    };
+
     const diskObj = UTIL_storage.getJSON(KEY_TPANEL_UI_SETTINGS_V2, null);
-    if (diskObj && typeof diskObj === 'object') return { ...DEFAULT_SETTINGS, ...diskObj };
+    if (diskObj && typeof diskObj === 'object') return normalizeLoaded(diskObj);
 
     const legacyObj = UTIL_storage.getJSON(KEY_TPANEL_LEGACY_SETTINGS, null);
     if (legacyObj && typeof legacyObj === 'object') {
-      const merged = { ...DEFAULT_SETTINGS, ...legacyObj };
+      const merged = normalizeLoaded(legacyObj);
       UTIL_storage.setJSON(KEY_TPANEL_UI_SETTINGS_V2, merged);
+      UTIL_storage.setJSON(KEY_TPANEL_LEGACY_SETTINGS, merged);
       return merged;
     }
-    return { ...DEFAULT_SETTINGS };
+    return normalizeLoaded(DEFAULT_SETTINGS);
   }
 
   function CORE_TP_saveSettings() {
@@ -292,11 +520,11 @@
     const S = STATE.settings;
     if (section === 'color') {
       S.mode = DEFAULT_SETTINGS.mode;
-      S.accentLight = DEFAULT_SETTINGS.accentLight;
-      S.accentDark = DEFAULT_SETTINGS.accentDark;
-      S.accentUserBubble = DEFAULT_SETTINGS.accentUserBubble;
+      CORE_TP_applyThemePreset(S, DEFAULT_SETTINGS.themePreset);
+      S.nativeAccent = DEFAULT_SETTINGS.nativeAccent;
     } else if (section === 'font') {
       S.fontFamily = DEFAULT_SETTINGS.fontFamily;
+      S.fontScope = DEFAULT_SETTINGS.fontScope;
       S.fontSize = DEFAULT_SETTINGS.fontSize;
       S.lineHeight = DEFAULT_SETTINGS.lineHeight;
       S.letterSpace = DEFAULT_SETTINGS.letterSpace;
@@ -322,11 +550,851 @@
     try { return !!D.getElementById(id); } catch { return false; }
   }
 
+  function UTIL_normText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function UTIL_isVisible(el) {
+    if (!(el instanceof Element)) return false;
+    return !!(el.getClientRects?.().length);
+  }
+
+  function UTIL_wait(ms) {
+    return new Promise((resolve) => W.setTimeout(resolve, ms));
+  }
+
+  function UTIL_escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[ch] || ch);
+  }
+
+  const NATIVE_MODE_ALIASES = Object.freeze({
+    system: Object.freeze(['system']),
+    light:  Object.freeze(['light']),
+    dark:   Object.freeze(['dark']),
+  });
+
+  const NATIVE_ACCENT_ALIASES = Object.freeze({
+    default: Object.freeze(['default']),
+    green:   Object.freeze(['green']),
+    blue:    Object.freeze(['blue']),
+    yellow:  Object.freeze(['yellow']),
+    orange:  Object.freeze(['orange']),
+    pink:    Object.freeze(['pink', 'magenta']),
+    purple:  Object.freeze(['purple', 'violet']),
+  });
+
+  function NATIVE_matchKey(rawValue, aliases) {
+    const value = UTIL_normText(rawValue);
+    return Object.keys(aliases).find((key) => aliases[key].some(alias => value === alias || value.includes(alias))) || null;
+  }
+
+  function NATIVE_findGeneralDialog() {
+    const dialogs = Array.from(D.querySelectorAll('[role="dialog"], dialog')).filter(UTIL_isVisible);
+    return dialogs.find((el) => {
+      const text = UTIL_normText(el.textContent);
+      return text.includes('general') && text.includes('appearance') && text.includes('accent color');
+    }) || dialogs.find((el) => {
+      const text = UTIL_normText(el.textContent);
+      return text.includes('appearance') && text.includes('accent color');
+    }) || null;
+  }
+
+  function NATIVE_findSettingRow(root, label) {
+    if (!root) return null;
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const candidates = Array.from(root.querySelectorAll('button, [role="button"], div, section, li'));
+    candidates.forEach((el) => {
+      const text = UTIL_normText(el.textContent);
+      if (!text || !text.includes(label)) return;
+      const trigger = el.matches?.('button, [role="button"]') ? el : el.querySelector?.('button, [role="button"]');
+      if (!trigger || !UTIL_isVisible(trigger)) return;
+      const score = text.length;
+      if (score < bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    });
+    return best;
+  }
+
+  function NATIVE_getRowTrigger(row) {
+    if (!row) return null;
+    if (row.matches?.('button, [role="button"]')) return row;
+    return row.querySelector?.('button, [role="button"]') || null;
+  }
+
+  function NATIVE_extractValueFromTrigger(trigger, label) {
+    if (!trigger) return '';
+    const lines = String(trigger.innerText || trigger.textContent || '')
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(Boolean);
+    const labelNorm = UTIL_normText(label);
+    const filtered = lines.filter(line => UTIL_normText(line) !== labelNorm);
+    return filtered[filtered.length - 1] || '';
+  }
+
+  function NATIVE_findOpenPopup() {
+    const candidates = Array.from(D.querySelectorAll(
+      '[role="listbox"], [role="menu"], [data-radix-select-content], [data-radix-popper-content-wrapper]'
+    )).filter(UTIL_isVisible);
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function NATIVE_listPopupOptions(popup) {
+    if (!popup) return [];
+    const items = Array.from(popup.querySelectorAll(
+      'button, [role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"], [aria-checked], [data-state], [data-radix-collection-item]'
+    )).filter(UTIL_isVisible);
+    const out = [];
+    const seen = new Set();
+    items.forEach((el) => {
+      const clickEl =
+        (el.matches?.('button, [role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]') ? el : null)
+        || el.querySelector?.('button, [role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]')
+        || el;
+      const text = String(clickEl.innerText || el.innerText || clickEl.textContent || el.textContent || '').trim();
+      if (!text || text.length > 60) return;
+      const key = UTIL_normText(text);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push({ el: clickEl, text, key });
+    });
+    return out;
+  }
+
+  function NATIVE_readSetting(root, label, aliases) {
+    const row = NATIVE_findSettingRow(root, label);
+    const trigger = NATIVE_getRowTrigger(row);
+    const rawValue = NATIVE_extractValueFromTrigger(trigger, label);
+    return NATIVE_matchKey(rawValue, aliases);
+  }
+
+  async function NATIVE_openSettingPicker(root, label) {
+    const row = NATIVE_findSettingRow(root, label);
+    const trigger = NATIVE_getRowTrigger(row);
+    if (!trigger) return null;
+    trigger.click();
+    await UTIL_wait(120);
+    return trigger;
+  }
+
+  async function NATIVE_applySetting(kind, targetKey) {
+    const root = NATIVE_findGeneralDialog();
+    if (!root) return false;
+    const label = kind === 'mode' ? 'appearance' : 'accent color';
+    const aliases = kind === 'mode' ? NATIVE_MODE_ALIASES : NATIVE_ACCENT_ALIASES;
+    const targets = aliases[targetKey] || [targetKey];
+    const findHit = (popup) => NATIVE_listPopupOptions(popup)
+      .find((item) => targets.some(alias => item.key === alias || item.key.includes(alias)));
+
+    let popup = NATIVE_findOpenPopup();
+    let hit = popup ? findHit(popup) : null;
+    if (!hit) {
+      await NATIVE_openSettingPicker(root, label);
+      await UTIL_wait(120);
+      popup = NATIVE_findOpenPopup();
+      hit = popup ? findHit(popup) : null;
+    }
+    if (!hit) return false;
+    hit.el.click();
+    await UTIL_wait(140);
+    return true;
+  }
+
+  function NATIVE_syncFromDialog() {
+    if (STATE.nativeApplyBusy || !STATE.settings) return false;
+    const root = NATIVE_findGeneralDialog();
+    if (!root) return false;
+    const mode = NATIVE_readSetting(root, 'appearance', NATIVE_MODE_ALIASES);
+    const accent = NATIVE_readSetting(root, 'accent color', NATIVE_ACCENT_ALIASES);
+    let changed = false;
+    if (mode && STATE.settings.mode !== mode) {
+      STATE.settings.mode = mode;
+      changed = true;
+    }
+    if (accent && STATE.settings.nativeAccent !== accent) {
+      STATE.settings.nativeAccent = CORE_TP_normalizeNativeAccent(accent);
+      changed = true;
+    }
+    if (changed) {
+      CORE_TP_saveSettings();
+      DOM_TP_applySettings();
+      UI_TP_refreshColorPaneIfOpen();
+    }
+    return changed;
+  }
+
+  function NATIVE_scheduleSync() {
+    if (STATE.nativeSyncTimer) W.clearTimeout(STATE.nativeSyncTimer);
+    STATE.nativeSyncTimer = W.setTimeout(() => {
+      STATE.nativeSyncTimer = 0;
+      NATIVE_syncFromDialog();
+    }, 140);
+  }
+
+  async function NATIVE_applyPending() {
+    if (STATE.nativeApplyBusy || !STATE.nativePending) return false;
+    if (!NATIVE_findGeneralDialog()) return false;
+    const pending = { ...STATE.nativePending };
+    STATE.nativeApplyBusy = true;
+    let appliedAny = false;
+    try {
+      const modeApplied = pending.mode ? await NATIVE_applySetting('mode', pending.mode) : false;
+      const accentApplied = pending.accent ? await NATIVE_applySetting('accent', pending.accent) : false;
+      appliedAny = modeApplied || accentApplied;
+      if (appliedAny) {
+        const nextPending = { ...(STATE.nativePending || {}) };
+        if (modeApplied && pending.mode === nextPending.mode) delete nextPending.mode;
+        if (accentApplied && pending.accent === nextPending.accent) delete nextPending.accent;
+        STATE.nativePending = Object.keys(nextPending).length ? nextPending : null;
+      }
+    } finally {
+      STATE.nativeApplyBusy = false;
+      if (appliedAny) NATIVE_scheduleSync();
+      else if (STATE.nativePending && NATIVE_findGeneralDialog()) NATIVE_scheduleApply();
+    }
+    return appliedAny;
+  }
+
+  function NATIVE_scheduleApply() {
+    if (STATE.nativeApplyTimer) return;
+    STATE.nativeApplyTimer = W.setTimeout(() => {
+      STATE.nativeApplyTimer = 0;
+      void NATIVE_applyPending();
+    }, 180);
+  }
+
+  function NATIVE_queueSetting(kind, value) {
+    STATE.nativePending = { ...(STATE.nativePending || {}), [kind]: value };
+    NATIVE_scheduleApply();
+  }
+
+  function NATIVE_bootSyncObserver() {
+    if (STATE.nativeSyncObserver) return;
+    STATE.nativeSyncObserver = new MutationObserver(() => {
+      NATIVE_scheduleSync();
+      NATIVE_scheduleApply();
+      DOM_TP_scheduleChatTargetResolve();
+    });
+    try {
+      STATE.nativeSyncObserver.observe(D.documentElement, { childList: true, subtree: true });
+    } catch {}
+  }
+
   /* ───────────────────────────── 🟧 BOUNDARIES — DOM / IO ADAPTERS 📝🔓💥 ───────────────────────────── */
 
   // cgxui scoped selector helper (owned only)
   function DOM_selScoped(uiToken) {
     return `[${ATTR_CGXUI}="${uiToken}"][${ATTR_CGXUI_OWNER}="${SkID}"]`;
+  }
+
+  function DOM_TP_isEl(node) {
+    return !!(node && node.nodeType === 1);
+  }
+
+  function DOM_TP_attrSummary(node) {
+    if (!DOM_TP_isEl(node)) return '';
+    const names = [
+      'id',
+      'role',
+      'data-testid',
+      'data-message-author-role',
+      ATTR_CGXUI,
+      ATTR_CGXUI_OWNER,
+      'data-h2o-owner',
+      'data-h2o-library-workspace',
+      'data-cgxui-page-kind',
+    ];
+    const out = [];
+    for (const name of names) {
+      try {
+        const value = node.getAttribute?.(name);
+        if (value != null && value !== '') out.push(`${name}=${String(value).slice(0, 80)}`);
+      } catch {}
+    }
+    return out.join(' ');
+  }
+
+  function DOM_TP_classSummary(node) {
+    if (!DOM_TP_isEl(node)) return '';
+    try {
+      const raw = typeof node.className === 'string' ? node.className : String(node.getAttribute?.('class') || '');
+      return raw.trim().replace(/\s+/g, ' ').slice(0, 160);
+    } catch {
+      return '';
+    }
+  }
+
+  function DOM_TP_getAttr(node, attr) {
+    if (!DOM_TP_isEl(node)) return '';
+    try { return String(node.getAttribute?.(attr) || ''); } catch { return ''; }
+  }
+
+  function DOM_TP_findNativeContext(node) {
+    if (!DOM_TP_isEl(node)) return null;
+    try {
+      const prompt = D.getElementById?.('prompt-textarea') || null;
+      if (prompt && (node === prompt || prompt.contains?.(node) || node.contains?.(prompt))) return prompt;
+    } catch {}
+
+    try {
+      const form = node.closest?.('form') || null;
+      if (form?.querySelector?.('#prompt-textarea')) return form;
+    } catch {}
+
+    try {
+      return node.closest?.(SEL_CHATGPT_NATIVE_CONTEXT) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function DOM_TP_isChatGPTHelperNode(node, nativeContext = null) {
+    if (!DOM_TP_isEl(node)) return false;
+    if (!nativeContext) return false;
+    const owner = DOM_TP_getAttr(node, ATTR_CGXUI_OWNER).trim();
+    if (H2O_CHATGPT_HELPER_OWNERS.includes(owner)) return true;
+    const cgxui = DOM_TP_getAttr(node, ATTR_CGXUI).trim();
+    if (cgxui && /^(?:qbig|ansn|abig|atns|ats|qts|mrnc|qswr)-/.test(cgxui)) return true;
+    return H2O_CHATGPT_HELPER_CLASS_RE.test(DOM_TP_classSummary(node));
+  }
+
+  function DOM_TP_findH2OOwnershipMatch(node) {
+    if (!DOM_TP_isEl(node)) return null;
+    const nativeContext = DOM_TP_findNativeContext(node);
+    let cur = node;
+    while (DOM_TP_isEl(cur) && cur !== D.documentElement && cur !== D.body) {
+      if (DOM_TP_isChatGPTHelperNode(cur, nativeContext)) {
+        cur = cur.parentElement;
+        continue;
+      }
+      for (const selector of H2O_OWNED_ROOT_SELECTORS) {
+        try {
+          if (cur.matches?.(selector)) {
+            return { matchedExclusion: selector, matchedAncestor: cur };
+          }
+        } catch {
+          return { matchedExclusion: `selector-error:${selector}`, matchedAncestor: cur };
+        }
+      }
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function DOM_TP_recordH2OSkip(stats, node, match) {
+    if (!stats) return;
+    stats.skippedH2OOwned = Number(stats.skippedH2OOwned || 0) + 1;
+    if (!Array.isArray(stats.skipSamples)) stats.skipSamples = [];
+    if (stats.skipSamples.length >= 8) return;
+
+    const ancestor = match?.matchedAncestor || null;
+    stats.skipSamples.push({
+      tag: String(node?.tagName || '').toLowerCase(),
+      role: String(node?.getAttribute?.('role') || ''),
+      testid: String(node?.getAttribute?.('data-testid') || ''),
+      owner: DOM_TP_getAttr(node, ATTR_CGXUI_OWNER),
+      cgxui: DOM_TP_getAttr(node, ATTR_CGXUI),
+      className: DOM_TP_classSummary(node),
+      matchedExclusion: String(match?.matchedExclusion || ''),
+      matchedAncestorTag: String(ancestor?.tagName || '').toLowerCase(),
+      matchedAncestorOwner: DOM_TP_getAttr(ancestor, ATTR_CGXUI_OWNER),
+      matchedAncestorCgxui: DOM_TP_getAttr(ancestor, ATTR_CGXUI),
+      matchedAncestorAttrs: DOM_TP_attrSummary(ancestor),
+    });
+  }
+
+  function DOM_TP_isH2OOwned(node, stats = null) {
+    if (!DOM_TP_isEl(node)) return true;
+    const match = DOM_TP_findH2OOwnershipMatch(node);
+    if (!match) return false;
+    DOM_TP_recordH2OSkip(stats, node, match);
+    return true;
+  }
+
+  function DOM_TP_isVisible(node) {
+    if (!DOM_TP_isEl(node)) return false;
+    try {
+      const cs = W.getComputedStyle(node);
+      if (cs?.display === 'none' || cs?.visibility === 'hidden') return false;
+      const r = node.getBoundingClientRect();
+      return !!(r && r.width > 0 && r.height > 0);
+    } catch {
+      return true;
+    }
+  }
+
+  function DOM_TP_scoreBottomLane(node) {
+    if (!DOM_TP_isEl(node)) return 0;
+    try {
+      const r = node.getBoundingClientRect();
+      const vh = Math.max(1, Number(W.innerHeight) || 0);
+      if (!r || !Number.isFinite(r.bottom)) return 0;
+      const dist = Math.abs(vh - r.bottom);
+      return Math.max(0, 420 - dist) / 70;
+    } catch {
+      return 0;
+    }
+  }
+
+  function DOM_TP_markOwned(node, attr, stats = null) {
+    if (!DOM_TP_isEl(node)) return false;
+    if (DOM_TP_isH2OOwned(node, stats)) return false;
+    try {
+      if (node.getAttribute(attr) !== 'true') node.setAttribute(attr, 'true');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function DOM_TP_clearInvalidTargetMarks() {
+    const attrs = [
+      ATTR_HO_CHAT_ROOT,
+      ATTR_HO_CHAT_COLUMN,
+      ATTR_HO_MESSAGE_TEXT,
+      ATTR_HO_COMPOSER,
+      ATTR_HO_COMPOSER_INPUT,
+      ATTR_HO_CHATGPT_HEADER,
+      ATTR_HO_CHATGPT_SIDEBAR,
+      ATTR_HO_CHATGPT_FOOTER,
+      ATTR_HO_SCROLL_BUTTON,
+    ];
+    for (const attr of attrs) {
+      let nodes = [];
+      try { nodes = Array.from(D.querySelectorAll(`[${attr}="true"]`)); } catch { nodes = []; }
+      for (const node of nodes) {
+        if (!DOM_TP_isEl(node) || !D.documentElement.contains(node) || DOM_TP_isH2OOwned(node)) {
+          try { node.removeAttribute(attr); } catch {}
+        }
+      }
+    }
+  }
+
+  function DOM_TP_pickComposerInput(formHint = null, stats = null) {
+    const prompt = D.getElementById?.('prompt-textarea') || null;
+    if (prompt && !DOM_TP_isH2OOwned(prompt, stats) && DOM_TP_isVisible(prompt)) {
+      const promptForm = prompt.closest?.('form') || null;
+      if (!formHint || promptForm === formHint) return prompt;
+    }
+
+    const scope = formHint || D;
+    let candidates = [];
+    try { candidates = Array.from(scope.querySelectorAll(SEL_COMPOSER_INPUT)); } catch { candidates = []; }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el, stats) || !DOM_TP_isVisible(el)) continue;
+
+      const hostForm = el.closest?.('form') || null;
+      const aria = String(el.getAttribute?.('aria-label') || '').toLowerCase();
+      const placeholder = String(el.getAttribute?.('placeholder') || '').toLowerCase();
+      const looksMessageInput = (
+        el.id === 'prompt-textarea' ||
+        aria.includes('message') ||
+        placeholder.includes('message')
+      );
+      if (!hostForm && !looksMessageInput) continue;
+
+      let score = 0;
+      if (el.id === 'prompt-textarea') score += 12;
+      if (el.tagName === 'TEXTAREA') score += 3;
+      if (String(el.getAttribute?.('contenteditable') || '').toLowerCase() === 'true') score += 3;
+      if (String(el.getAttribute?.('role') || '').toLowerCase() === 'textbox') score += 2;
+      if (looksMessageInput) score += 3;
+      if (hostForm && formHint && hostForm === formHint) score += 8;
+      if (hostForm?.matches?.(SEL_COMPOSER_FORM)) score += 6;
+      if (hostForm?.querySelector?.(SEL_COMPOSER_SEND_BTN)) score += 4;
+      score += DOM_TP_scoreBottomLane(el);
+
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 5 ? best : null;
+  }
+
+  function DOM_TP_pickComposerForm(stats = null) {
+    const prompt = D.getElementById?.('prompt-textarea') || null;
+    const promptForm = prompt?.closest?.('form') || null;
+    if (promptForm && !DOM_TP_isH2OOwned(promptForm, stats) && DOM_TP_isVisible(promptForm)) return promptForm;
+
+    let forms = [];
+    try { forms = Array.from(D.querySelectorAll(SEL_COMPOSER_FORM)); } catch { forms = []; }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const form of forms) {
+      if (!DOM_TP_isEl(form) || DOM_TP_isH2OOwned(form, stats) || !DOM_TP_isVisible(form)) continue;
+      const hasSend = !!form.querySelector?.(SEL_COMPOSER_SEND_BTN);
+      const hasInput = !!DOM_TP_pickComposerInput(form, stats);
+      if (!hasSend && !hasInput) continue;
+
+      let score = 0;
+      if (form.matches?.('form[data-type="unified-composer"], form.group\\/composer')) score += 13;
+      if (form.matches?.('form[data-testid="composer"]')) score += 12;
+      if (form.querySelector?.('#prompt-textarea')) score += 10;
+      if (form.matches?.('form[action*="conversation"]')) score += 8;
+      if (hasSend) score += 6;
+      if (hasInput) score += 4;
+      score += DOM_TP_scoreBottomLane(form);
+
+      if (score > bestScore) {
+        best = form;
+        bestScore = score;
+      }
+    }
+
+    if (best && bestScore >= 8) return best;
+
+    const fallbackInput = DOM_TP_pickComposerInput(null, stats);
+    const fallbackForm = fallbackInput?.closest?.('form') || null;
+    if (fallbackForm && !DOM_TP_isH2OOwned(fallbackForm, stats) && DOM_TP_isVisible(fallbackForm)) return fallbackForm;
+
+    return null;
+  }
+
+  function DOM_TP_containsAll(root, nodes) {
+    if (!DOM_TP_isEl(root)) return false;
+    const list = Array.isArray(nodes) ? nodes : [];
+    if (!list.length) return false;
+    return list.every((node) => DOM_TP_isEl(node) && (root === node || root.contains?.(node)));
+  }
+
+  function DOM_TP_commonAncestor(nodes, stop = null) {
+    const list = (Array.isArray(nodes) ? nodes : []).filter(DOM_TP_isEl);
+    if (!list.length) return null;
+    let cur = list[0];
+    while (DOM_TP_isEl(cur) && cur !== D.documentElement && cur !== D.body) {
+      if (DOM_TP_containsAll(cur, list)) return cur;
+      if (stop && cur === stop) break;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function DOM_TP_messageLayoutHost(msg) {
+    if (!DOM_TP_isEl(msg)) return null;
+    try {
+      return (
+        msg.closest?.('[data-testid^="conversation-turn"]') ||
+        msg.closest?.('article') ||
+        msg
+      );
+    } catch {
+      return msg;
+    }
+  }
+
+  function DOM_TP_pickChatColumns(messages, chatRoot, stats = null) {
+    const msgHosts = (Array.isArray(messages) ? messages : [])
+      .filter((msg) => DOM_TP_isEl(msg) && !DOM_TP_isH2OOwned(msg, stats))
+      .map(DOM_TP_messageLayoutHost)
+      .filter(DOM_TP_isEl)
+      .filter((host) => !DOM_TP_isH2OOwned(host, stats));
+
+    if (!msgHosts.length) return [];
+
+    const common = DOM_TP_commonAncestor(msgHosts, chatRoot);
+    if (DOM_TP_isEl(common) && common !== chatRoot && !DOM_TP_isH2OOwned(common, stats)) return [common];
+
+    if (DOM_TP_isEl(chatRoot) && DOM_TP_containsAll(chatRoot, msgHosts)) {
+      let child = msgHosts[0];
+      let best = null;
+      while (DOM_TP_isEl(child) && child.parentElement && child.parentElement !== chatRoot) {
+        if (DOM_TP_containsAll(child, msgHosts)) best = child;
+        child = child.parentElement;
+      }
+      if (DOM_TP_isEl(best) && !DOM_TP_isH2OOwned(best, stats)) return [best];
+    }
+
+    return [...new Set(msgHosts)];
+  }
+
+  function DOM_TP_pickChatGptHeader(stats = null) {
+    let candidates = [];
+    try { candidates = Array.from(D.querySelectorAll(SEL_CHATGPT_HEADER)); } catch { candidates = []; }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el, stats) || !DOM_TP_isVisible(el)) continue;
+      if (DOM_TP_findNativeContext(el)) continue;
+      if (el.closest?.('form')) continue;
+
+      let score = 0;
+      const tag = String(el.tagName || '').toLowerCase();
+      const testid = DOM_TP_getAttr(el, 'data-testid').toLowerCase();
+      const cls = DOM_TP_classSummary(el).toLowerCase();
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.top <= 140 && r.bottom <= 180) score += 8;
+        if (r.width >= Math.max(320, W.innerWidth * 0.32)) score += 3;
+        if (r.height > 0 && r.height <= 112) score += 2;
+      } catch {}
+      if (tag === 'header') score += 6;
+      if (testid.includes('conversation') || testid.includes('chat') || testid.includes('thread')) score += 6;
+      if (cls.includes('sticky') || cls.includes('fixed') || cls.includes('top-0')) score += 2;
+
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 8 ? best : null;
+  }
+
+  function DOM_TP_pickChatGptSidebar(stats = null) {
+    let candidates = [];
+    try { candidates = Array.from(D.querySelectorAll(SEL_CHATGPT_SIDEBAR)); } catch { candidates = []; }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el, stats) || !DOM_TP_isVisible(el)) continue;
+
+      let score = 0;
+      const tag = String(el.tagName || '').toLowerCase();
+      const testid = DOM_TP_getAttr(el, 'data-testid').toLowerCase();
+      const aria = DOM_TP_getAttr(el, 'aria-label').toLowerCase();
+      if (testid === 'sidebar') score += 20;
+      if (aria === 'sidebar') score += 22;
+      if (aria === 'chat history') score += 16;
+      if (tag === 'nav') score += 3;
+      if (tag === 'aside') score += 2;
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.left <= 80) score += 4;
+        if (r.width >= 160 && r.width <= Math.max(420, W.innerWidth * 0.45)) score += 3;
+        if (r.height >= Math.max(240, W.innerHeight * 0.45)) score += 3;
+      } catch {}
+
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 18 ? best : null;
+  }
+
+  function DOM_TP_pickChatGptFooter(composer = null, chatRoot = null, stats = null) {
+    let candidates = [];
+    try { candidates = Array.from(D.querySelectorAll(SEL_CHATGPT_FOOTER)); } catch { candidates = []; }
+
+    const composerHost = DOM_TP_isEl(composer) ? composer : null;
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el, stats) || !DOM_TP_isVisible(el)) continue;
+
+      let score = 0;
+      const tag = String(el.tagName || '').toLowerCase();
+      const testid = DOM_TP_getAttr(el, 'data-testid').toLowerCase();
+      const text = String(el.textContent || '').toLowerCase();
+      if (testid === 'conversation-input-footer') score += 14;
+      if (testid.includes('footer') || testid.includes('composer')) score += 6;
+      if (tag === 'footer') score += 3;
+      if (text.includes('chatgpt') || text.includes('mistakes')) score += 4;
+      if (composerHost && (composerHost.contains?.(el) || el.contains?.(composerHost) || composerHost.parentElement?.contains?.(el))) score += 4;
+      if (chatRoot && chatRoot.contains?.(el)) score += 2;
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.top >= W.innerHeight * 0.45) score += 2;
+      } catch {}
+
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 8 ? best : null;
+  }
+
+  function DOM_TP_countTargetMarks(stats = null) {
+    const count = (sel) => {
+      try { return D.querySelectorAll(sel).length; } catch { return 0; }
+    };
+    const cgxuiSamples = (sel) => {
+      let nodes = [];
+      try { nodes = Array.from(D.querySelectorAll(sel)); } catch { nodes = []; }
+      return nodes.slice(0, 8).map((node) => ({
+        tag: String(node?.tagName || '').toLowerCase(),
+        testid: DOM_TP_getAttr(node, 'data-testid'),
+        owner: DOM_TP_getAttr(node, ATTR_CGXUI_OWNER),
+        cgxui: DOM_TP_getAttr(node, ATTR_CGXUI),
+        className: DOM_TP_classSummary(node),
+        h2oOwned: DOM_TP_isH2OOwned(node),
+      }));
+    };
+    const chatFontTargets = count(`[${ATTR_HO_MESSAGE_TEXT}="true"]`) + count(`[${ATTR_HO_COMPOSER_INPUT}="true"]`);
+    const pageFontTargets = count([
+      `[${ATTR_HO_CHAT_ROOT}="true"]`,
+      `[${ATTR_HO_CHAT_COLUMN}="true"]`,
+      `[${ATTR_HO_COMPOSER}="true"]`,
+      `[${ATTR_HO_CHATGPT_HEADER}="true"]`,
+      `[${ATTR_HO_CHATGPT_SIDEBAR}="true"]`,
+    ].join(','));
+    const sidebarTargets = count(`[${ATTR_HO_CHATGPT_SIDEBAR}="true"]`);
+    return {
+      messages: count('[data-message-author-role]'),
+      messageText: count(`[${ATTR_HO_MESSAGE_TEXT}="true"]`),
+      composer: count(`[${ATTR_HO_COMPOSER}="true"]`),
+      composerInput: count(`[${ATTR_HO_COMPOSER_INPUT}="true"]`),
+      chatRoot: count(`[${ATTR_HO_CHAT_ROOT}="true"]`),
+      chatColumn: count(`[${ATTR_HO_CHAT_COLUMN}="true"]`),
+      chatgptHeader: count(`[${ATTR_HO_CHATGPT_HEADER}="true"]`),
+      chatgptSidebar: sidebarTargets,
+      chatgptFooter: count(`[${ATTR_HO_CHATGPT_FOOTER}="true"]`),
+      scrollButton: count(`[${ATTR_HO_SCROLL_BUTTON}="true"]`),
+      fontScope: CORE_TP_normalizeFontScope(STATE.settings?.fontScope),
+      chatFontTargets,
+      pageFontTargets,
+      sidebarTargets,
+      cgxuiPageFontSamples: cgxuiSamples([
+        `[${ATTR_HO_CHAT_ROOT}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_CHAT_COLUMN}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_COMPOSER}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_COMPOSER_INPUT}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_CHATGPT_HEADER}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_CHATGPT_SIDEBAR}="true"][${ATTR_CGXUI}]`,
+        `[${ATTR_HO_MESSAGE_TEXT}="true"][${ATTR_CGXUI}]`,
+      ].join(',')),
+      skippedH2OOwned: Number(stats?.skippedH2OOwned || 0),
+      skipSamples: Array.isArray(stats?.skipSamples) ? stats.skipSamples.slice(0, 8) : [],
+    };
+  }
+
+  function DOM_TP_resolveChatTargets() {
+    const stats = { skippedH2OOwned: 0, skipSamples: [] };
+    DOM_TP_clearInvalidTargetMarks();
+
+    let chatRoot = null;
+    let messages = [];
+    try { messages = Array.from(D.querySelectorAll(SEL_CHAT_MESSAGE)); } catch { messages = []; }
+
+    for (const msg of messages) {
+      if (!DOM_TP_isEl(msg)) continue;
+      if (DOM_TP_isH2OOwned(msg, stats)) continue;
+      if (!chatRoot) chatRoot = msg.closest?.('main') || null;
+
+      let textTargets = [];
+      try { textTargets = Array.from(msg.querySelectorAll(SEL_CHAT_MESSAGE_TEXT)); } catch { textTargets = []; }
+      textTargets = textTargets.filter((el) => {
+        if (!DOM_TP_isEl(el)) return false;
+        if (DOM_TP_isH2OOwned(el, stats)) return false;
+        return true;
+      });
+
+      if (textTargets.length) {
+        for (const el of textTargets) DOM_TP_markOwned(el, ATTR_HO_MESSAGE_TEXT, stats);
+      } else if (!msg.querySelector?.(SEL_H2O_OWNED_ROOT)) {
+        DOM_TP_markOwned(msg, ATTR_HO_MESSAGE_TEXT, stats);
+      }
+    }
+
+    let looseTextTargets = [];
+    try { looseTextTargets = Array.from(D.querySelectorAll(SEL_CHAT_MESSAGE_TEXT)); } catch { looseTextTargets = []; }
+    for (const el of looseTextTargets) {
+      if (!DOM_TP_isEl(el) || el.getAttribute?.(ATTR_HO_MESSAGE_TEXT) === 'true') continue;
+      if (DOM_TP_isH2OOwned(el, stats)) continue;
+      const hostMsg = el.closest?.('[data-message-author-role]') || null;
+      if (hostMsg && !DOM_TP_isH2OOwned(hostMsg, stats)) {
+        DOM_TP_markOwned(el, ATTR_HO_MESSAGE_TEXT, stats);
+        if (!chatRoot) chatRoot = hostMsg.closest?.('main') || null;
+      }
+    }
+
+    const composer = DOM_TP_pickComposerForm(stats);
+    const promptInput = D.getElementById?.('prompt-textarea') || null;
+    const composerInput = (promptInput && !DOM_TP_isH2OOwned(promptInput, stats))
+      ? promptInput
+      : DOM_TP_pickComposerInput(composer, stats);
+    if (composer) {
+      DOM_TP_markOwned(composer, ATTR_HO_COMPOSER, stats);
+      if (!chatRoot) chatRoot = composer.closest?.('main') || null;
+    }
+    if (composerInput) {
+      DOM_TP_markOwned(composerInput, ATTR_HO_COMPOSER_INPUT, stats);
+      const inputForm = composerInput.closest?.('form') || null;
+      if (inputForm) DOM_TP_markOwned(inputForm, ATTR_HO_COMPOSER, stats);
+      if (!chatRoot) chatRoot = composerInput.closest?.('main') || null;
+    }
+    if (chatRoot) DOM_TP_markOwned(chatRoot, ATTR_HO_CHAT_ROOT, stats);
+
+    for (const column of DOM_TP_pickChatColumns(messages, chatRoot, stats)) {
+      DOM_TP_markOwned(column, ATTR_HO_CHAT_COLUMN, stats);
+    }
+
+    const chatHeader = DOM_TP_pickChatGptHeader(stats);
+    if (chatHeader) DOM_TP_markOwned(chatHeader, ATTR_HO_CHATGPT_HEADER, stats);
+
+    const chatSidebar = DOM_TP_pickChatGptSidebar(stats);
+    if (chatSidebar) DOM_TP_markOwned(chatSidebar, ATTR_HO_CHATGPT_SIDEBAR, stats);
+
+    const chatFooter = DOM_TP_pickChatGptFooter(composer, chatRoot, stats);
+    if (chatFooter) DOM_TP_markOwned(chatFooter, ATTR_HO_CHATGPT_FOOTER, stats);
+
+    return DOM_TP_countTargetMarks(stats);
+  }
+
+  function DOM_TP_scheduleChatTargetResolve() {
+    if (STATE.disposed) return;
+    if (STATE.chatTargetTimer) return;
+    STATE.chatTargetTimer = W.setTimeout(() => {
+      STATE.chatTargetTimer = 0;
+      try { DOM_TP_resolveChatTargets(); } catch {}
+    }, 120);
+  }
+
+  function DOM_TP_deferChatTargetResolve() {
+    DOM_TP_scheduleChatTargetResolve();
+    [350, 900, 1800].forEach((delay) => {
+      W.setTimeout(() => {
+        if (!STATE.disposed) DOM_TP_scheduleChatTargetResolve();
+      }, delay);
+    });
+  }
+
+  function API_TP_debugResolveTargets() {
+    try { return DOM_TP_resolveChatTargets(); } catch { return DOM_TP_countTargetMarks(); }
+  }
+
+  function DOM_TP_clearChatTargetMarks() {
+    if (STATE.chatTargetTimer) W.clearTimeout(STATE.chatTargetTimer);
+    STATE.chatTargetTimer = 0;
+
+    const attrs = [
+      ATTR_HO_CHAT_ROOT,
+      ATTR_HO_CHAT_COLUMN,
+      ATTR_HO_MESSAGE_TEXT,
+      ATTR_HO_COMPOSER,
+      ATTR_HO_COMPOSER_INPUT,
+      ATTR_HO_CHATGPT_HEADER,
+      ATTR_HO_CHATGPT_SIDEBAR,
+      ATTR_HO_CHATGPT_FOOTER,
+      ATTR_HO_SCROLL_BUTTON,
+    ];
+    for (const attr of attrs) {
+      let nodes = [];
+      try { nodes = Array.from(D.querySelectorAll(`[${attr}="true"]`)); } catch { nodes = []; }
+      for (const node of nodes) {
+        try { node.removeAttribute(attr); } catch {}
+      }
+    }
   }
 
   function DOM_TP_ensureStyle() {
@@ -357,13 +1425,29 @@
       const el = D.documentElement.style;
       el.removeProperty('--ho-accent-light-hsl');
       el.removeProperty('--ho-accent-dark-hsl');
+      el.removeProperty('--ho-font-family');
       el.removeProperty('--ho-font-size');
       el.removeProperty('--ho-line-height');
       el.removeProperty('--ho-letter-space');
       el.removeProperty('--ho-chat-width-rem');
       el.removeProperty('--ho-prompt-width-rem');
+      el.removeProperty('--main-surface-primary');
+      el.removeProperty('--sidebar-surface-primary');
+      el.removeProperty('--sidebar-surface-secondary');
+      el.removeProperty('--sidebar-surface-tertiary');
+      el.removeProperty('--bg-primary');
+      el.removeProperty('--bg-secondary');
+      el.removeProperty('--text-primary');
+      el.removeProperty('--text-secondary');
+      el.removeProperty('--text-tertiary');
+      el.removeProperty('--interactive-bg-secondary-hover');
+      el.removeProperty('--interactive-bg-secondary-press');
 
       D.body.removeAttribute(ATTR_HO_FONT);
+      D.body.removeAttribute(ATTR_HO_FONT_SCOPE);
+      D.body.removeAttribute(ATTR_HO_FONT_TUNED);
+      D.body.removeAttribute(ATTR_HO_LAYOUT_TUNED);
+      DOM_TP_deferChatTargetResolve();
       return;
     }
 
@@ -373,25 +1457,52 @@
     D.documentElement.style.setProperty('--ho-accent-light-hsl', S.accentLight);
     D.documentElement.style.setProperty('--ho-accent-dark-hsl',  S.accentDark);
 
-    let fontFlag = S.fontFamily;
-    if (!['system', 'inter', 'mono'].includes(fontFlag)) fontFlag = 'system';
+    let fontFlag = CORE_TP_normalizeFontFamily(S.fontFamily);
+    const fontScope = CORE_TP_normalizeFontScope(S.fontScope);
+    S.fontFamily = fontFlag;
+    S.fontScope = fontScope;
     D.body.setAttribute(ATTR_HO_FONT, fontFlag);
+    D.body.setAttribute(ATTR_HO_FONT_SCOPE, fontScope);
+    const fontTuned = (
+      fontFlag !== DEFAULT_SETTINGS.fontFamily ||
+      Number(S.fontSize) !== DEFAULT_SETTINGS.fontSize ||
+      Number(S.lineHeight) !== DEFAULT_SETTINGS.lineHeight ||
+      Number(S.letterSpace) !== DEFAULT_SETTINGS.letterSpace
+    );
+    const layoutTuned = (
+      Number(S.chatWidth) !== DEFAULT_SETTINGS.chatWidth ||
+      Number(S.promptWidth) !== DEFAULT_SETTINGS.promptWidth ||
+      Boolean(S.chatFullWidth) !== DEFAULT_SETTINGS.chatFullWidth ||
+      Boolean(S.syncPromptWidth) !== DEFAULT_SETTINGS.syncPromptWidth
+    );
+    D.body.setAttribute(ATTR_HO_FONT_TUNED, String(fontTuned));
+    D.body.setAttribute(ATTR_HO_LAYOUT_TUNED, String(layoutTuned));
 
+    D.documentElement.style.setProperty('--ho-font-family', FONT_STACKS[fontFlag] || FONT_STACKS.system);
     D.documentElement.style.setProperty('--ho-font-size', `${S.fontSize}px`);
     D.documentElement.style.setProperty('--ho-line-height', `${S.lineHeight}px`);
     D.documentElement.style.setProperty('--ho-letter-space', `${S.letterSpace}px`);
     D.documentElement.style.setProperty('--ho-chat-width-rem', `${S.chatWidth}rem`);
     D.documentElement.style.setProperty('--ho-prompt-width-rem', `${S.promptWidth}rem`);
+    D.documentElement.style.setProperty('--main-surface-primary', 'var(--ho-theme-surface-strong)');
+    D.documentElement.style.setProperty('--sidebar-surface-primary', 'var(--ho-theme-sidebar-solid)');
+    D.documentElement.style.setProperty('--sidebar-surface-secondary', 'var(--ho-theme-sidebar-solid)');
+    D.documentElement.style.setProperty('--sidebar-surface-tertiary', 'var(--ho-theme-sidebar-solid)');
+    D.documentElement.style.setProperty('--bg-primary', 'var(--ho-theme-canvas)');
+    D.documentElement.style.setProperty('--bg-secondary', 'var(--ho-theme-surface)');
+    D.documentElement.style.setProperty('--text-primary', 'var(--ho-theme-text)');
+    D.documentElement.style.setProperty('--text-secondary', 'var(--ho-theme-text-muted)');
+    D.documentElement.style.setProperty('--text-tertiary', 'color-mix(in srgb, var(--ho-theme-text-muted) 78%, transparent)');
+    D.documentElement.style.setProperty('--interactive-bg-secondary-hover', 'color-mix(in srgb, var(--ho-theme-surface-strong) 78%, white 22%)');
+    D.documentElement.style.setProperty('--interactive-bg-secondary-press', 'color-mix(in srgb, var(--ho-theme-surface-strong) 70%, var(--ho-accent-light) 30%)');
 
     D.body.setAttribute(ATTR_HO_CHAT_FULL, String(S.chatFullWidth));
     D.body.setAttribute(ATTR_HO_SYNC_PROMPT, String(S.syncPromptWidth));
     D.body.setAttribute(ATTR_HO_HIDE_HEADER, String(S.hideHeader));
     D.body.setAttribute(ATTR_HO_HIDE_FOOTER, String(S.hideFooter));
     D.body.setAttribute(ATTR_HO_EXPAND_CHATBOX, String(S.expandChatbox));
-    D.body.setAttribute(ATTR_HO_BUBBLE_USER, String(S.bubblesUser));
-    D.body.setAttribute(ATTR_HO_BUBBLE_GPT, String(S.bubblesGpt));
-    D.body.setAttribute(ATTR_HO_ACCENT_USER_BUBL, String(S.accentUserBubble));
     D.body.setAttribute(ATTR_HO_SCROLL_ALIGN, S.scrollAlign);
+    DOM_TP_deferChatTargetResolve();
   }
 
   /* ───────────────────────────── 🟪 UI BOUNDARY — CSS RULES 📄🔓💧 ───────────────────────────── */
@@ -405,6 +1516,7 @@
     const PANE     = DOM_selScoped(UI_TPANEL_PANE);
     const RESET    = DOM_selScoped(UI_TPANEL_RESET);
     const ENABLE   = DOM_selScoped(UI_TPANEL_ENABLE);
+    const CLOSE    = DOM_selScoped(UI_TPANEL_CLOSE);
 
     // Scoped “class-like” attributes inside owned subtree (avoid global .active etc.)
     const STATE_ACTIVE = 'active'; // used only as data-cgxui-state value
@@ -422,45 +1534,189 @@
   --ho-prompt-width-rem: ${STATE.settings?.promptWidth ?? DEFAULT_SETTINGS.promptWidth}rem;
 }
 
-/* global background based on accent */
+/* global theme tokens */
+:root {
+  --ho-theme-canvas: #020617;
+  --ho-theme-canvas-top: #0f172a;
+  --ho-theme-shell: rgba(15,23,42,0.82);
+  --ho-theme-surface: rgba(15,23,42,0.72);
+  --ho-theme-surface-strong: rgba(15,23,42,0.88);
+  --ho-theme-sidebar-solid: #0f172a;
+  --ho-theme-topbar-solid: #0f172a;
+  --ho-theme-border: rgba(148,163,184,0.24);
+  --ho-theme-text: rgba(226,232,240,0.96);
+  --ho-theme-text-muted: rgba(203,213,225,0.78);
+}
+
+html[${ATTR_HO_MODE}="light"]{
+  color-scheme: light;
+  --ho-theme-canvas: color-mix(in srgb, #fffaf0 86%, var(--ho-accent-light) 14%);
+  --ho-theme-canvas-top: color-mix(in srgb, #eef2ff 78%, var(--ho-accent-light) 22%);
+  --ho-theme-shell: color-mix(in srgb, rgba(255,255,255,0.96) 90%, var(--ho-accent-light) 10%);
+  --ho-theme-surface: color-mix(in srgb, rgba(255,255,255,0.92) 82%, var(--ho-accent-light) 18%);
+  --ho-theme-surface-strong: color-mix(in srgb, rgba(248,250,252,0.98) 78%, var(--ho-accent-light) 22%);
+  --ho-theme-sidebar-solid: color-mix(in srgb, #fffaf0 82%, var(--ho-accent-light) 18%);
+  --ho-theme-topbar-solid: color-mix(in srgb, #f8fafc 82%, var(--ho-accent-light) 18%);
+  --ho-theme-border: color-mix(in srgb, rgba(148,163,184,0.42) 68%, var(--ho-accent-dark) 32%);
+  --ho-theme-text: #172033;
+  --ho-theme-text-muted: #475569;
+}
+html[${ATTR_HO_MODE}="dark"]{
+  color-scheme: dark;
+  --ho-theme-canvas: color-mix(in srgb, #020617 82%, var(--ho-accent-dark) 18%);
+  --ho-theme-canvas-top: color-mix(in srgb, #0f172a 72%, var(--ho-accent-dark) 28%);
+  --ho-theme-shell: color-mix(in srgb, rgba(15,23,42,0.92) 82%, var(--ho-accent-dark) 18%);
+  --ho-theme-surface: color-mix(in srgb, rgba(15,23,42,0.84) 78%, var(--ho-accent-light) 22%);
+  --ho-theme-surface-strong: color-mix(in srgb, rgba(15,23,42,0.96) 72%, var(--ho-accent-dark) 28%);
+  --ho-theme-sidebar-solid: color-mix(in srgb, #0f172a 74%, var(--ho-accent-dark) 26%);
+  --ho-theme-topbar-solid: color-mix(in srgb, #111827 78%, var(--ho-accent-dark) 22%);
+  --ho-theme-border: color-mix(in srgb, rgba(148,163,184,0.22) 58%, var(--ho-accent-light) 42%);
+  --ho-theme-text: rgba(226,232,240,0.96);
+  --ho-theme-text-muted: rgba(203,213,225,0.78);
+}
+html[${ATTR_HO_MODE}="system"]{
+  color-scheme: light dark;
+}
+html[${ATTR_HO_MODE}]{
+  background: var(--ho-theme-canvas) !important;
+  color: var(--ho-theme-text);
+}
+@media (prefers-color-scheme: light) {
+  html[${ATTR_HO_MODE}="system"]{
+    --ho-theme-canvas: color-mix(in srgb, #fffaf0 86%, var(--ho-accent-light) 14%);
+    --ho-theme-canvas-top: color-mix(in srgb, #eef2ff 78%, var(--ho-accent-light) 22%);
+    --ho-theme-shell: color-mix(in srgb, rgba(255,255,255,0.96) 90%, var(--ho-accent-light) 10%);
+    --ho-theme-surface: color-mix(in srgb, rgba(255,255,255,0.92) 82%, var(--ho-accent-light) 18%);
+    --ho-theme-surface-strong: color-mix(in srgb, rgba(248,250,252,0.98) 78%, var(--ho-accent-light) 22%);
+    --ho-theme-sidebar-solid: color-mix(in srgb, #fffaf0 82%, var(--ho-accent-light) 18%);
+    --ho-theme-topbar-solid: color-mix(in srgb, #f8fafc 82%, var(--ho-accent-light) 18%);
+    --ho-theme-border: color-mix(in srgb, rgba(148,163,184,0.42) 68%, var(--ho-accent-dark) 32%);
+    --ho-theme-text: #172033;
+    --ho-theme-text-muted: #475569;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  html[${ATTR_HO_MODE}="system"]{
+    --ho-theme-canvas: color-mix(in srgb, #020617 82%, var(--ho-accent-dark) 18%);
+    --ho-theme-canvas-top: color-mix(in srgb, #0f172a 72%, var(--ho-accent-dark) 28%);
+    --ho-theme-shell: color-mix(in srgb, rgba(15,23,42,0.92) 82%, var(--ho-accent-dark) 18%);
+    --ho-theme-surface: color-mix(in srgb, rgba(15,23,42,0.84) 78%, var(--ho-accent-light) 22%);
+    --ho-theme-surface-strong: color-mix(in srgb, rgba(15,23,42,0.96) 72%, var(--ho-accent-dark) 28%);
+    --ho-theme-sidebar-solid: color-mix(in srgb, #0f172a 74%, var(--ho-accent-dark) 26%);
+    --ho-theme-topbar-solid: color-mix(in srgb, #111827 78%, var(--ho-accent-dark) 22%);
+    --ho-theme-border: color-mix(in srgb, rgba(148,163,184,0.22) 58%, var(--ho-accent-light) 42%);
+    --ho-theme-text: rgba(226,232,240,0.96);
+    --ho-theme-text-muted: rgba(203,213,225,0.78);
+  }
+}
+
+/* whole-page theme background */
 body[${ATTR_HO_THEME_ENABLED}="true"] {
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--ho-accent-light) 32%, transparent), transparent 34%),
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--ho-accent-dark) 28%, transparent), transparent 38%),
+    linear-gradient(180deg, var(--ho-theme-canvas-top), var(--ho-theme-canvas)) fixed !important;
+  color: var(--ho-theme-text);
+}
+body[${ATTR_HO_THEME_ENABLED}="true"],
+body[${ATTR_HO_THEME_ENABLED}="true"] #__next,
+body[${ATTR_HO_THEME_ENABLED}="true"] #__next > div,
+body[${ATTR_HO_THEME_ENABLED}="true"] main {
+  background-color: transparent !important;
+  color: inherit;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [role="dialog"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [role="menu"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [role="listbox"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-radix-popper-content-wrapper] {
+  background: var(--ho-theme-surface-strong) !important;
+  border-color: var(--ho-theme-border) !important;
+  color: var(--ho-theme-text) !important;
+}
+
+/* page shell colors only; do not frame individual answers/questions */
+body[${ATTR_HO_THEME_ENABLED}="true"] header,
+body[${ATTR_HO_THEME_ENABLED}="true"] aside,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [class*="composer-parent"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="conversation-input-footer"] {
+  background: var(--ho-theme-surface) !important;
+  border-color: var(--ho-theme-border) !important;
+  color: var(--ho-theme-text);
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] aside,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i],
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"],
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-sidebar-tiny-bar {
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+  color: var(--ho-theme-text) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button),
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button),
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button)::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button)::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button)::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button)::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button)::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button)::after {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]) {
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+  color: var(--ho-theme-text) !important;
+  z-index: 40 !important;
+  isolation: isolate;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] main > div:first-child,
+body[${ATTR_HO_THEME_ENABLED}="true"] main > div:first-child > div:first-child {
+  background: transparent !important;
+}
+
+/* FONT (family choice) */
+body[${ATTR_HO_FONT_TUNED}="true"] [${ATTR_HO_MESSAGE_TEXT}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"] [${ATTR_HO_COMPOSER_INPUT}="true"] {
+  font-family: var(--ho-font-family);
   font-size: var(--ho-font-size);
   line-height: var(--ho-line-height);
   letter-spacing: var(--ho-letter-space);
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, #020617 70%, var(--ho-accent-dark) 30%), transparent 60%),
-    #020617;
 }
-
-/* cards / panels tinted (only when theme enabled) */
-body[${ATTR_HO_THEME_ENABLED}="true"] main,
-body[${ATTR_HO_THEME_ENABLED}="true"] header,
-body[${ATTR_HO_THEME_ENABLED}="true"] nav,
-body[${ATTR_HO_THEME_ENABLED}="true"] aside,
-body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] {
-  background: transparent;
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHAT_ROOT}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHAT_COLUMN}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_COMPOSER}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_COMPOSER_INPUT}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHATGPT_HEADER}="true"],
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] {
+  font-family: var(--ho-font-family);
 }
-body[${ATTR_HO_THEME_ENABLED}="true"] main > div,
-body[${ATTR_HO_THEME_ENABLED}="true"] section,
-body[${ATTR_HO_THEME_ENABLED}="true"] article {
-  background: color-mix(in srgb, #020617 85%, var(--ho-accent-light) 15%);
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :where(*) {
+  font-family: var(--ho-font-family);
 }
-
-/* MODE */
-html[${ATTR_HO_MODE}="light"]  { color-scheme: light; }
-html[${ATTR_HO_MODE}="dark"]   { color-scheme: dark; }
-html[${ATTR_HO_MODE}="oled"]   { color-scheme: dark; background-color: #000; }
-html[${ATTR_HO_MODE}="oled"] body { background-color: #000; }
-
-/* FONT (family choice) */
-body[${ATTR_HO_FONT}="system"] {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-}
-body[${ATTR_HO_FONT}="inter"] {
-  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-}
-body[${ATTR_HO_FONT}="mono"] {
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New",monospace;
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(${SEL_H2O_OWNED_ROOT}),
+body[${ATTR_HO_FONT_TUNED}="true"][${ATTR_HO_FONT_SCOPE}="page"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(${SEL_H2O_OWNED_ROOT}) * {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* ACCENT: send button + toggles */
@@ -468,70 +1724,69 @@ ${SEL_SEND_BTN} {
   background: var(--ho-accent-dark);
   border-color: var(--ho-accent-dark);
   color: #020617;
-  transition: filter 120ms ease, transform 80ms ease;
 }
 ${SEL_SEND_BTN}:hover {
   filter: brightness(1.05);
-  transform: translateY(-0.5px);
 }
 
-/* chat width */
-body[${ATTR_HO_THEME_ENABLED}="true"] main {
-  max-width: var(--ho-chat-width-rem);
-  margin-left: auto;
-  margin-right: auto;
+/* layout: ChatGPT-native chat width */
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"] [${ATTR_HO_CHAT_COLUMN}="true"] {
+  max-width: min(100%, var(--ho-chat-width-rem));
+  width: min(100%, var(--ho-chat-width-rem));
+  margin-inline: auto;
 }
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_CHAT_FULL}="true"] main {
-  max-width: 100vw;
-}
-
-/* prompt width */
-body[${ATTR_HO_THEME_ENABLED}="true"] main form {
-  max-width: var(--ho-prompt-width-rem);
-  margin-left: auto;
-  margin-right: auto;
-}
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_SYNC_PROMPT}="true"] main form {
-  max-width: var(--ho-chat-width-rem);
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"][${ATTR_HO_CHAT_FULL}="true"] [${ATTR_HO_CHAT_ROOT}="true"],
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"][${ATTR_HO_CHAT_FULL}="true"] [${ATTR_HO_CHAT_COLUMN}="true"] {
+  max-width: 100%;
+  width: 100%;
 }
 
-/* header/footer hiding */
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_HIDE_HEADER}="true"] header {
-  display: none !important;
+/* layout: ChatGPT-native prompt width */
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_COMPOSER}="true"] {
+  background: var(--ho-theme-surface-strong) !important;
+  border-color: var(--ho-theme-border) !important;
+  color: var(--ho-theme-text);
 }
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_HIDE_FOOTER}="true"] main footer,
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_HIDE_FOOTER}="true"] [data-testid="conversation-input-footer"] {
-  display: none !important;
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"] [${ATTR_HO_COMPOSER}="true"] {
+  max-width: min(100%, var(--ho-prompt-width-rem));
+  width: min(100%, var(--ho-prompt-width-rem));
+  margin-inline: auto;
 }
-
-/* expand chatbox */
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_EXPAND_CHATBOX}="true"] main form textarea {
-  min-height: 130px !important;
-}
-
-/* chat bubbles */
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_BUBBLE_USER}="true"] [data-message-author-role="user"] {
-  background: radial-gradient(circle at top left, var(--ho-accent-light), transparent 60%);
-  border-radius: 18px;
-}
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_BUBBLE_GPT}="true"] [data-message-author-role="assistant"] {
-  background: radial-gradient(circle at top left, rgba(255,255,255,0.04), transparent 70%);
-  border-radius: 18px;
-}
-body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_ACCENT_USER_BUBL}="true"] [data-message-author-role="user"] {
-  background: var(--ho-accent-dark) !important;
-  color: #020617 !important;
-  border-radius: 18px !important;
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"][${ATTR_HO_SYNC_PROMPT}="true"] [${ATTR_HO_COMPOSER}="true"] {
+  max-width: min(100%, var(--ho-chat-width-rem));
+  width: min(100%, var(--ho-chat-width-rem));
 }
 
-/* header/footer tint */
-body[${ATTR_HO_THEME_ENABLED}="true"] header {
-  background: color-mix(in srgb, #020617 75%, var(--ho-accent-dark) 25%) !important;
-  border-bottom: 1px solid color-mix(in srgb, #020617 40%, var(--ho-accent-light) 60%);
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_COMPOSER_INPUT}="true"] {
+  color: var(--ho-theme-text) !important;
 }
-body[${ATTR_HO_THEME_ENABLED}="true"] footer,
-body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="conversation-input-footer"] {
-  background: color-mix(in srgb, #020617 80%, var(--ho-accent-light) 20%) !important;
+
+/* layout: ChatGPT-native header/footer hiding */
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_HIDE_HEADER}="true"] [${ATTR_HO_CHATGPT_HEADER}="true"] {
+  display: none;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_HIDE_FOOTER}="true"] [${ATTR_HO_CHATGPT_FOOTER}="true"] {
+  display: none;
+}
+
+/* layout: ChatGPT-native composer expansion */
+body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_EXPAND_CHATBOX}="true"] [${ATTR_HO_COMPOSER_INPUT}="true"] {
+  min-height: 130px;
+}
+
+/* ChatGPT-native header/footer tint */
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_HEADER}="true"] {
+  background: var(--ho-theme-topbar-solid) !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_HEADER}="true"] [class*="sticky"][class*="top-0"] {
+  background: var(--ho-theme-topbar-solid) !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_FOOTER}="true"] {
+  background: linear-gradient(180deg, var(--ho-theme-surface), var(--ho-theme-surface-strong)) !important;
 }
 
 /* ───────── panel backdrop/panel (cgxui-owned) ───────── */
@@ -584,7 +1839,16 @@ ${PANEL} * {
 ${PANEL} [data-part="hdr"] { text-align: center; margin-bottom: 12px; }
 ${PANEL} [data-part="ttl"] { font-weight: 600; font-size: 16px; }
 ${PANEL} [data-part="ttl"] span { font-weight: 700; }
-${PANEL} [data-part="hdrrow"] { display:flex; align-items:center; justify-content:space-between; }
+${PANEL} [data-part="hdrrow"] {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  cursor: grab;
+  user-select: none;
+}
+${PANEL} [data-part="hdrrow"][data-dragging="true"] { cursor: grabbing; }
+${PANEL} [data-part="hdractions"] { display:flex; align-items:center; gap:8px; }
 
 /* enable toggle (owned) */
 ${ENABLE} {
@@ -597,6 +1861,25 @@ ${ENABLE} {
   cursor: pointer;
 }
 ${ENABLE}[${ATTR_CGXUI_STATE}="off"] { opacity: 0.5; }
+
+${CLOSE} {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,253,0.45);
+  background: rgba(15,23,42,0.82);
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+${PANEL}[${ATTR_CGXUI_STATE}="light"] ${CLOSE} {
+  background: rgba(226,232,240,0.92);
+}
 
 /* tabs (owned) */
 ${PANEL} [data-part="tabs"] {
@@ -679,6 +1962,7 @@ ${PANEL} [data-part="fcard"]{
   border:2px solid transparent;
 }
 ${PANEL} [data-part="fcard"] span{ display:block; font-size:12px; }
+${PANEL} [data-part="fcard"] [data-role="hint"]{ margin-top:3px; font-size:10px; line-height:1.2; opacity:.72; }
 ${PANEL} [data-part="fcard"][${ATTR_CGXUI_STATE}="on"]{ border-color: rgba(255,255,255,0.85); }
 
 /* reset (owned) */
@@ -702,6 +1986,10 @@ ${PANEL} [data-part="agrid"]{
   gap:10px;
   margin-top:10px;
 }
+${PANEL} [data-part="agrid"][data-layout="compact"]{
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap:8px;
+}
 ${PANEL} [data-part="acard"]{
   display:flex; flex-direction:column; align-items:flex-start; gap:4px;
   padding:8px 9px;
@@ -723,6 +2011,60 @@ ${PANEL} [data-part="acard"][${ATTR_CGXUI_STATE}="on"]{
 ${PANEL} [data-part="apill"]{ display:flex; width:100%; height:18px; border-radius:999px; overflow:hidden; }
 ${PANEL} [data-part="ahalf"]{ flex:1; }
 ${PANEL} [data-part="aname"]{ font-size:11px; opacity:0.9; }
+${PANEL} [data-part="acard"][data-size="compact"]{
+  gap:6px;
+  padding:7px 8px 8px;
+  border-radius:18px;
+}
+${PANEL} [data-part="acard"][data-size="compact"] [data-part="apill"]{
+  height:14px;
+}
+${PANEL} [data-part="acard"][data-size="compact"] [data-part="aname"]{
+  font-size:10px;
+  font-weight:600;
+  line-height:1.2;
+}
+
+/* compact mode control */
+${PANEL} [data-part="modegrid"]{
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap:8px;
+  margin-top:8px;
+}
+${PANEL} [data-part="mchip"]{
+  min-width:0;
+  border-radius:16px;
+  padding:9px 8px;
+  border:1px solid rgba(148,163,253,0.26);
+  background: linear-gradient(180deg, rgba(30,41,59,0.72), rgba(15,23,42,0.94));
+  color:inherit;
+  font-size:12px;
+  font-weight:600;
+  text-align:center;
+  cursor:pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+}
+${PANEL} [data-part="mchip"]:hover{
+  border-color: rgba(190,227,248,0.48);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+  transform: translateY(-0.5px);
+}
+${PANEL} [data-part="mchip"][${ATTR_CGXUI_STATE}="on"]{
+  border-color: color-mix(in srgb, var(--ho-accent-light) 68%, white 32%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ho-accent-dark) 82%, white 18%), var(--ho-accent-dark));
+  color:#020617;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--ho-accent-dark) 30%, transparent);
+}
+${PANEL}[${ATTR_CGXUI_STATE}="light"] [data-part="mchip"]{
+  background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(226,232,240,0.96));
+}
+
+@media (max-width: 360px) {
+  ${PANEL} [data-part="agrid"][data-layout="compact"]{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 
 /* custom accent */
 ${PANEL} [data-part="acustom"]{
@@ -765,6 +2107,97 @@ ${PANEL} [data-part="aval"] span{ font-weight:600; }
 ${PANEL} [data-part="srow"]{ display:flex; align-items:center; gap:8px; font-size:11px; }
 ${PANEL} [data-part="srow"] span{ width:70px; opacity:0.9; }
 ${PANEL} [data-part="srow"] input[type="range"]{ flex:1; }
+
+.cgxui-${SkID}-docktab{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:8px 8px 18px;
+  color:rgba(248,250,252,0.92);
+}
+.cgxui-${SkID}-docksec{
+  border:1px solid rgba(148,163,184,0.22);
+  background:rgba(15,23,42,0.42);
+  border-radius:10px;
+  padding:10px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.cgxui-${SkID}-dockttl{
+  font-size:12px;
+  line-height:1.2;
+  font-weight:800;
+  letter-spacing:0;
+  margin:0 0 8px;
+}
+.cgxui-${SkID}-dockrow{
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) minmax(96px, 128px);
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  padding:5px 0;
+}
+.cgxui-${SkID}-docklab{
+  min-width:0;
+  font-size:12px;
+  line-height:1.25;
+  font-weight:650;
+  color:rgba(248,250,252,0.9);
+}
+.cgxui-${SkID}-dockhint{
+  display:block;
+  margin-top:2px;
+  font-size:10px;
+  line-height:1.2;
+  font-weight:500;
+  color:rgba(203,213,225,0.72);
+}
+.cgxui-${SkID}-docksel,
+.cgxui-${SkID}-dockbtn{
+  width:100%;
+  min-height:28px;
+  border-radius:8px;
+  border:1px solid rgba(148,163,184,0.28);
+  background:rgba(2,6,23,0.44);
+  color:rgba(248,250,252,0.94);
+  font:600 12px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  outline:none;
+}
+.cgxui-${SkID}-docksel{
+  padding:0 8px;
+}
+.cgxui-${SkID}-dockbtn{
+  cursor:pointer;
+}
+.cgxui-${SkID}-dockbtn[aria-pressed="true"]{
+  border-color:rgba(196,181,253,0.72);
+  background:linear-gradient(135deg, rgba(196,181,253,0.34), rgba(168,85,247,0.22));
+}
+.cgxui-${SkID}-dockrange{
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.cgxui-${SkID}-dockrange input{
+  width:100%;
+  min-width:0;
+}
+.cgxui-${SkID}-dockval{
+  width:42px;
+  flex:0 0 42px;
+  text-align:right;
+  font-size:10px;
+  color:rgba(203,213,225,0.86);
+}
+.cgxui-${SkID}-dockactions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-top:8px;
+}
+.cgxui-${SkID}-dockactions .cgxui-${SkID}-dockbtn{
+  min-height:30px;
+}
 
 /* tiny rail themes button: dock-panel badge style fallback */
 ${TINYBTN} .${CLS_DOCK_RAIL_NAV_BTN}{
@@ -837,11 +2270,101 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     else UI_TP_openPanel();
   }
 
-  function UI_TP_closePanel() {
-    if (STATE.outsideHandler) {
-      D.removeEventListener('mousedown', STATE.outsideHandler, true);
-      STATE.outsideHandler = null;
+  function UI_TP_panelTone() {
+    if (STATE.settings?.mode === 'light') return 'light';
+    if (STATE.settings?.mode === 'system') {
+      return W.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'light' : 'dark';
     }
+    return 'dark';
+  }
+
+  function UI_TP_refreshEnableControls() {
+    if (!STATE.panelEl) return;
+    const buttons = STATE.panelEl.querySelectorAll(DOM_selScoped(UI_TPANEL_ENABLE));
+    buttons.forEach((btn) => {
+      btn.textContent = STATE.settings?.enabled ? 'Theme: ON' : 'Theme: OFF';
+      btn.setAttribute(ATTR_CGXUI_STATE, STATE.settings?.enabled ? 'on' : 'off');
+    });
+  }
+
+  function CORE_TP_enablePageTheme() {
+    if (!STATE.settings || STATE.settings.enabled) return false;
+    STATE.settings.enabled = true;
+    return true;
+  }
+
+  function UI_TP_clampPanelPos(panel, left, top) {
+    const width = Math.min(panel.offsetWidth || CFG_PANEL_WIDTH_PX, W.innerWidth - (CFG_PANEL_VP_MARGIN_PX * 2));
+    const height = Math.min(panel.offsetHeight || 0, Math.max(240, W.innerHeight - (CFG_PANEL_VP_MARGIN_PX * 2)));
+    const minLeft = W.scrollX + CFG_PANEL_VP_MARGIN_PX;
+    const maxLeft = Math.max(minLeft, W.scrollX + W.innerWidth - width - CFG_PANEL_VP_MARGIN_PX);
+    const minTop = W.scrollY + CFG_PANEL_VP_MARGIN_PX;
+    const maxTop = Math.max(minTop, W.scrollY + W.innerHeight - height - CFG_PANEL_VP_MARGIN_PX);
+    return {
+      left: Math.min(Math.max(left, minLeft), maxLeft),
+      top: Math.min(Math.max(top, minTop), maxTop),
+    };
+  }
+
+  function UI_TP_setPanelPos(panel, left, top) {
+    const next = UI_TP_clampPanelPos(panel, left, top);
+    panel.style.left = `${Math.round(next.left)}px`;
+    panel.style.top = `${Math.round(next.top)}px`;
+    STATE.panelPos = next;
+  }
+
+  function UI_TP_wirePanelDrag(panel, handle) {
+    if (!panel || !handle) return () => {};
+
+    let activePointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+
+    const onPointerMove = (ev) => {
+      if (ev.pointerId !== activePointerId) return;
+      UI_TP_setPanelPos(panel, originLeft + (ev.clientX - startX), originTop + (ev.clientY - startY));
+    };
+
+    const stopDrag = () => {
+      if (activePointerId == null) return;
+      try { handle.releasePointerCapture(activePointerId); } catch {}
+      activePointerId = null;
+      handle.removeAttribute('data-dragging');
+      W.removeEventListener('pointermove', onPointerMove, true);
+      W.removeEventListener('pointerup', stopDrag, true);
+      W.removeEventListener('pointercancel', stopDrag, true);
+    };
+
+    const onPointerDown = (ev) => {
+      if (ev.button !== 0) return;
+      if (ev.target?.closest?.('button, input, textarea, select, label, a')) return;
+      const rect = panel.getBoundingClientRect();
+      activePointerId = ev.pointerId;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      originLeft = W.scrollX + rect.left;
+      originTop = W.scrollY + rect.top;
+      handle.setAttribute('data-dragging', 'true');
+      try { handle.setPointerCapture(activePointerId); } catch {}
+      W.addEventListener('pointermove', onPointerMove, true);
+      W.addEventListener('pointerup', stopDrag, true);
+      W.addEventListener('pointercancel', stopDrag, true);
+      ev.preventDefault();
+    };
+
+    handle.addEventListener('pointerdown', onPointerDown);
+
+    return () => {
+      stopDrag();
+      handle.removeEventListener('pointerdown', onPointerDown);
+    };
+  }
+
+  function UI_TP_closePanel() {
+    try { STATE.panelDragCleanup?.(); } catch {}
+    STATE.panelDragCleanup = null;
     if (STATE.panelBackdrop && STATE.panelBackdrop.parentNode) {
       STATE.panelBackdrop.parentNode.removeChild(STATE.panelBackdrop);
     }
@@ -862,17 +2385,25 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     const panel = D.createElement('div');
     panel.setAttribute(ATTR_CGXUI, UI_TPANEL_PANEL);
     panel.setAttribute(ATTR_CGXUI_OWNER, SkID);
-    panel.setAttribute(ATTR_CGXUI_STATE, (STATE.settings.mode === 'light') ? 'light' : 'dark');
+    panel.setAttribute(ATTR_CGXUI_STATE, UI_TP_panelTone());
 
     // Build structure (no global classes)
     panel.innerHTML = `
       <div data-part="hdr">
-        <div data-part="hdrrow">
+        <div data-part="hdrrow" data-role="drag-handle">
           <div data-part="ttl"><span>GPThemes</span> Customization</div>
-          <button type="button"
-            ${ATTR_CGXUI}="${UI_TPANEL_ENABLE}"
-            ${ATTR_CGXUI_OWNER}="${SkID}"
-            ></button>
+          <div data-part="hdractions">
+            <button type="button"
+              ${ATTR_CGXUI}="${UI_TPANEL_ENABLE}"
+              ${ATTR_CGXUI_OWNER}="${SkID}"
+              ></button>
+            <button type="button"
+              ${ATTR_CGXUI}="${UI_TPANEL_CLOSE}"
+              ${ATTR_CGXUI_OWNER}="${SkID}"
+              aria-label="Close themes panel"
+              title="Close"
+            >&times;</button>
+          </div>
         </div>
       </div>
 
@@ -916,31 +2447,25 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     STATE.panelBackdrop = backdrop;
     STATE.panelEl = panel;
 
-    // Position (same behavior)
-    const anchor = D.querySelector('header');
-    const minLeft = W.scrollX + CFG_PANEL_VP_MARGIN_PX;
-    const maxLeft = Math.max(W.scrollX + W.innerWidth - CFG_PANEL_WIDTH_PX - CFG_PANEL_VP_MARGIN_PX, minLeft);
-    const centerLeft = W.scrollX + (W.innerWidth - CFG_PANEL_WIDTH_PX) / 2;
-    const clampedLeft = Math.min(Math.max(centerLeft, minLeft), maxLeft);
-
-    const topBase = anchor ? (anchor.getBoundingClientRect().bottom + W.scrollY) : W.scrollY + CFG_PANEL_VP_MARGIN_PX;
-    const top = Math.max(W.scrollY + CFG_PANEL_VP_MARGIN_PX, topBase + CFG_PANEL_GAP_PX);
-
-    panel.style.left = `${Math.round(clampedLeft)}px`;
-    panel.style.top  = `${Math.round(top)}px`;
-
-    // Outside close
-    STATE.outsideHandler = (ev) => {
-      const t = ev.target;
-      if (!STATE.panelEl) return;
-      if (STATE.panelEl.contains(t)) return;
-      UI_TP_closePanel();
-    };
-    D.addEventListener('mousedown', STATE.outsideHandler, true);
+    // Position
+    if (STATE.panelPos) {
+      UI_TP_setPanelPos(panel, STATE.panelPos.left, STATE.panelPos.top);
+    } else {
+      const anchor = D.querySelector('header');
+      const centerLeft = W.scrollX + (W.innerWidth - CFG_PANEL_WIDTH_PX) / 2;
+      const topBase = anchor ? (anchor.getBoundingClientRect().bottom + W.scrollY) : W.scrollY + CFG_PANEL_VP_MARGIN_PX;
+      const top = Math.max(W.scrollY + CFG_PANEL_VP_MARGIN_PX, topBase + CFG_PANEL_GAP_PX);
+      UI_TP_setPanelPos(panel, centerLeft, top);
+    }
 
     const colorPane  = panel.querySelector('[data-pane="color"]');
     const fontPane   = panel.querySelector('[data-pane="font"]');
     const layoutPane = panel.querySelector('[data-pane="layout"]');
+    const dragHandle = panel.querySelector('[data-role="drag-handle"]');
+    const closeBtn = panel.querySelector(DOM_selScoped(UI_TPANEL_CLOSE));
+
+    STATE.panelDragCleanup = UI_TP_wirePanelDrag(panel, dragHandle);
+    closeBtn?.addEventListener('click', UI_TP_closePanel);
 
     UI_TP_buildColorPane(colorPane);
     UI_TP_buildFontPane(fontPane);
@@ -970,22 +2495,18 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
       UI_TP_buildFontPane(fontPane);
       UI_TP_buildLayoutPane(layoutPane);
 
-      panel.setAttribute(ATTR_CGXUI_STATE, (STATE.settings.mode === 'light') ? 'light' : 'dark');
+      panel.setAttribute(ATTR_CGXUI_STATE, UI_TP_panelTone());
     });
 
     // Enable toggle
     const toggleBtn = panel.querySelector(DOM_selScoped(UI_TPANEL_ENABLE));
-    function refreshEnableBtn() {
-      toggleBtn.textContent = STATE.settings.enabled ? 'Theme: ON' : 'Theme: OFF';
-      toggleBtn.setAttribute(ATTR_CGXUI_STATE, STATE.settings.enabled ? 'on' : 'off');
-    }
-    refreshEnableBtn();
+    UI_TP_refreshEnableControls();
 
     toggleBtn.addEventListener('click', () => {
       STATE.settings.enabled = !STATE.settings.enabled;
       CORE_TP_saveSettings();
       DOM_TP_applySettings();
-      refreshEnableBtn();
+      UI_TP_refreshEnableControls();
     });
 
     UTIL_dispatchEvt(EV_TPANEL_PANEL_OPEN, null);
@@ -997,68 +2518,41 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     if (!root) return;
     root.innerHTML = '';
 
-    const card = D.createElement('div');
-    card.setAttribute('data-part', 'card');
-    card.innerHTML = `
-      <div data-part="cardttl">Accent</div>
-      <div data-part="lbl">Choose an accent pair</div>
-      <div data-part="agrid"></div>
-
-      <button type="button" data-part="acustom" data-role="custom-accent">Customize…</button>
-
-      <div data-part="aedit" data-role="custom-editor" hidden>
-        <div data-part="arow">
-          <div data-part="aprev"></div>
-          <div data-part="avals">
-            <div data-part="aval">H: <span data-role="h-val"></span>°</div>
-            <div data-part="aval">S: <span data-role="s-val"></span>%</div>
-            <div data-part="aval">L: <span data-role="l-val"></span>%</div>
-          </div>
-        </div>
-
-        <label data-part="srow">
-          <span>Hue</span>
-          <input type="range" min="0" max="360" step="1" data-role="h">
-        </label>
-
-        <label data-part="srow">
-          <span>Saturation</span>
-          <input type="range" min="0" max="100" step="1" data-role="s">
-        </label>
-
-        <label data-part="srow">
-          <span>Lightness</span>
-          <input type="range" min="0" max="100" step="1" data-role="l">
-        </label>
-      </div>
-
-      <div data-part="swrow">
-        <div data-part="swmeta">
-          <span>ACCENT USER BUBBLE</span>
-          <span>Make the user bubble fully accented for higher contrast</span>
-        </div>
-        <div data-part="sw" data-role="accent-user"></div>
-      </div>
+    const themeCard = D.createElement('div');
+    themeCard.setAttribute('data-part', 'card');
+    themeCard.innerHTML = `
+      <div data-part="cardttl">Theme</div>
+      <div data-part="lbl">Controls the ChatGPT page styling</div>
+      <div data-part="agrid" data-role="theme-grid"></div>
     `;
-    root.appendChild(card);
+    root.appendChild(themeCard);
+
+    const accentCard = D.createElement('div');
+    accentCard.setAttribute('data-part', 'card');
+    accentCard.innerHTML = `
+      <div data-part="cardttl">Accent</div>
+      <div data-part="lbl">Matches ChatGPT accent color setting</div>
+      <div data-part="agrid" data-layout="compact" data-role="accent-grid"></div>
+    `;
+    root.appendChild(accentCard);
 
     const modeCard = D.createElement('div');
     modeCard.setAttribute('data-part', 'card');
     modeCard.innerHTML = `
       <div data-part="cardttl">Mode</div>
-      <div data-part="fgrid" data-role="mode-grid">
-        <div data-part="fcard" data-mode="light"><span>Light</span></div>
-        <div data-part="fcard" data-mode="dark"><span>Dark</span></div>
-        <div data-part="fcard" data-mode="oled"><span>OLED</span></div>
+      <div data-part="lbl">Matches ChatGPT appearance setting</div>
+      <div data-part="modegrid" data-role="mode-grid">
+        ${MODE_PRESETS.map(mode => `<button type="button" data-part="mchip" data-mode="${mode.key}"><span>${mode.name}</span></button>`).join('')}
       </div>
     `;
     root.appendChild(modeCard);
 
-    const grid = card.querySelector('[data-part="agrid"]');
-    const currentLight = STATE.settings.accentLight;
-    const currentDark  = STATE.settings.accentDark;
+    const themeGrid = themeCard.querySelector('[data-role="theme-grid"]');
+    const accentGrid = accentCard.querySelector('[data-role="accent-grid"]');
+    const currentTheme = CORE_TP_normalizeThemePreset(STATE.settings.themePreset);
+    const currentAccent = CORE_TP_normalizeNativeAccent(STATE.settings.nativeAccent);
 
-    ACCENT_PRESETS.forEach(p => {
+    THEME_PRESETS.forEach(p => {
       const item = D.createElement('button');
       item.type = 'button';
       item.setAttribute('data-part', 'acard');
@@ -1075,104 +2569,257 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
       lightEl.style.background = `hsl(${p.light})`;
       darkEl.style.background  = `hsl(${p.dark})`;
 
-      const isActive = (p.light === currentLight && p.dark === currentDark);
+      const isActive = (p.key === currentTheme);
       if (isActive) item.setAttribute(ATTR_CGXUI_STATE, 'on');
 
       item.addEventListener('click', () => {
-        STATE.settings.accentLight = p.light;
-        STATE.settings.accentDark  = p.dark;
+        CORE_TP_enablePageTheme();
+        CORE_TP_applyThemePreset(STATE.settings, p.key);
         CORE_TP_saveSettings();
         DOM_TP_applySettings();
-
-        Array.from(grid.children).forEach(ch => ch.removeAttribute(ATTR_CGXUI_STATE));
+        UI_TP_refreshEnableControls();
+        Array.from(themeGrid.children).forEach(ch => ch.removeAttribute(ATTR_CGXUI_STATE));
         item.setAttribute(ATTR_CGXUI_STATE, 'on');
-        syncSlidersToSettings();
       });
 
-      grid.appendChild(item);
+      themeGrid.appendChild(item);
     });
 
-    const customBtn = card.querySelector('[data-role="custom-accent"]');
-    const editor    = card.querySelector('[data-role="custom-editor"]');
-    const hSlider   = editor.querySelector('input[data-role="h"]');
-    const sSlider   = editor.querySelector('input[data-role="s"]');
-    const lSlider   = editor.querySelector('input[data-role="l"]');
-    const hValSpan  = editor.querySelector('[data-role="h-val"]');
-    const sValSpan  = editor.querySelector('[data-role="s-val"]');
-    const lValSpan  = editor.querySelector('[data-role="l-val"]');
-    const previewEl = editor.querySelector('[data-part="aprev"]');
+    NATIVE_ACCENT_PRESETS.forEach(p => {
+      const item = D.createElement('button');
+      item.type = 'button';
+      item.setAttribute('data-part', 'acard');
+      item.setAttribute('data-size', 'compact');
+      item.innerHTML = `
+        <div data-part="apill">
+          <div data-part="ahalf" data-role="light"></div>
+          <div data-part="ahalf" data-role="dark"></div>
+        </div>
+        <div data-part="aname">${p.name}</div>
+      `;
 
-    function applyCustomFromSliders() {
-      const h = Number(hSlider.value);
-      const s = Number(sSlider.value);
-      const l = Number(lSlider.value);
+      const lightEl = item.querySelector('[data-role="light"]');
+      const darkEl  = item.querySelector('[data-role="dark"]');
+      lightEl.style.background = `hsl(${p.light})`;
+      darkEl.style.background  = `hsl(${p.dark})`;
 
-      hValSpan.textContent = String(h);
-      sValSpan.textContent = String(s);
-      lValSpan.textContent = String(l);
+      if (p.key === currentAccent) item.setAttribute(ATTR_CGXUI_STATE, 'on');
 
-      previewEl.style.background = `hsl(${h}, ${s}%, ${l}%)`;
+      item.addEventListener('click', () => {
+        STATE.settings.nativeAccent = CORE_TP_normalizeNativeAccent(p.key);
+        CORE_TP_saveSettings();
+        DOM_TP_applySettings();
+        NATIVE_queueSetting('accent', p.key);
+        Array.from(accentGrid.children).forEach(ch => ch.removeAttribute(ATTR_CGXUI_STATE));
+        item.setAttribute(ATTR_CGXUI_STATE, 'on');
+      });
 
-      const hStr   = h.toFixed(0);
-      const sLight = Math.min(95, s + 5);
-      const sDark  = Math.min(95, s + 5);
-      const lLight = Math.min(92, l + 10);
-      const lDark  = Math.max(25, l - 8);
-
-      STATE.settings.accentLight = `${hStr}, ${sLight.toFixed(0)}%, ${lLight.toFixed(0)}%`;
-      STATE.settings.accentDark  = `${hStr}, ${sDark.toFixed(0)}%, ${lDark.toFixed(0)}%`;
-
-      CORE_TP_saveSettings();
-      DOM_TP_applySettings();
-    }
-
-    function syncSlidersToSettings() {
-      const base = UTIL_parseHslString(STATE.settings.accentDark || STATE.settings.accentLight);
-      hSlider.value = String(base.h);
-      sSlider.value = String(base.s);
-      lSlider.value = String(base.l);
-      hValSpan.textContent = String(base.h);
-      sValSpan.textContent = String(base.s);
-      lValSpan.textContent = String(base.l);
-      previewEl.style.background = `hsl(${base.h}, ${base.s}%, ${base.l}%)`;
-    }
-
-    customBtn.addEventListener('click', () => {
-      const open = customBtn.dataset.open === 'true';
-      const next = !open;
-      customBtn.dataset.open = String(next);
-      editor.hidden = !next;
-      if (next) syncSlidersToSettings();
-    });
-
-    ['input', 'change'].forEach(evt => {
-      hSlider.addEventListener(evt, applyCustomFromSliders);
-      sSlider.addEventListener(evt, applyCustomFromSliders);
-      lSlider.addEventListener(evt, applyCustomFromSliders);
-    });
-
-    const accentSwitch = card.querySelector('[data-role="accent-user"]');
-    accentSwitch.setAttribute(ATTR_CGXUI_STATE, STATE.settings.accentUserBubble ? 'on' : '');
-    accentSwitch.addEventListener('click', () => {
-      STATE.settings.accentUserBubble = !STATE.settings.accentUserBubble;
-      accentSwitch.setAttribute(ATTR_CGXUI_STATE, STATE.settings.accentUserBubble ? 'on' : '');
-      CORE_TP_saveSettings();
-      DOM_TP_applySettings();
+      accentGrid.appendChild(item);
     });
 
     const modeCards = modeCard.querySelectorAll('[data-mode]');
     modeCards.forEach(mc => {
       mc.setAttribute(ATTR_CGXUI_STATE, (mc.dataset.mode === STATE.settings.mode) ? 'on' : '');
       mc.addEventListener('click', () => {
-        STATE.settings.mode = mc.dataset.mode;
+        STATE.settings.mode = CORE_TP_normalizeMode(mc.dataset.mode);
         CORE_TP_saveSettings();
         DOM_TP_applySettings();
+        NATIVE_queueSetting('mode', STATE.settings.mode);
         modeCards.forEach(m => m.setAttribute(ATTR_CGXUI_STATE, (m === mc) ? 'on' : ''));
-        if (STATE.panelEl) STATE.panelEl.setAttribute(ATTR_CGXUI_STATE, (STATE.settings.mode === 'light') ? 'light' : 'dark');
+        if (STATE.panelEl) STATE.panelEl.setAttribute(ATTR_CGXUI_STATE, UI_TP_panelTone());
       });
     });
+  }
 
-    syncSlidersToSettings();
+  function UI_TP_refreshColorPaneIfOpen() {
+    const colorPane = STATE.panelEl?.querySelector?.('[data-pane="color"]');
+    if (!colorPane) return;
+    UI_TP_buildColorPane(colorPane);
+    STATE.panelEl.setAttribute(ATTR_CGXUI_STATE, UI_TP_panelTone());
+  }
+
+  function UI_TP_refreshFontPaneIfOpen() {
+    const fontPane = STATE.panelEl?.querySelector?.('[data-pane="font"]');
+    if (!fontPane) return;
+    UI_TP_buildFontPane(fontPane);
+  }
+
+  function UI_TP_refreshLayoutPaneIfOpen() {
+    const layoutPane = STATE.panelEl?.querySelector?.('[data-pane="layout"]');
+    if (!layoutPane) return;
+    UI_TP_buildLayoutPane(layoutPane);
+  }
+
+  function API_TP_getSettings() {
+    return STATE.settings ? { ...STATE.settings } : null;
+  }
+
+  function API_TP_updateSettings(patch = {}) {
+    if (!patch || typeof patch !== 'object') return API_TP_getSettings();
+    if (!STATE.settings) STATE.settings = CORE_TP_loadSettings();
+
+    const S = STATE.settings;
+    let colorChanged = false;
+    let fontChanged = false;
+    let layoutChanged = false;
+    let modeToSync = null;
+    let accentToSync = null;
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) {
+      S.enabled = !!patch.enabled;
+      colorChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'mode')) {
+      S.mode = CORE_TP_normalizeMode(patch.mode);
+      modeToSync = S.mode;
+      colorChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'themePreset')) {
+      CORE_TP_enablePageTheme();
+      CORE_TP_applyThemePreset(S, patch.themePreset);
+      colorChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'nativeAccent')) {
+      S.nativeAccent = CORE_TP_normalizeNativeAccent(patch.nativeAccent);
+      accentToSync = S.nativeAccent;
+      colorChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontFamily')) {
+      S.fontFamily = CORE_TP_normalizeFontFamily(patch.fontFamily);
+      fontChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontScope')) {
+      S.fontScope = CORE_TP_normalizeFontScope(patch.fontScope);
+      fontChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontSize')) {
+      S.fontSize = CORE_TP_clampNumber(patch.fontSize, DEFAULT_SETTINGS.fontSize, 12, 22, 0);
+      fontChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'lineHeight')) {
+      S.lineHeight = CORE_TP_clampNumber(patch.lineHeight, DEFAULT_SETTINGS.lineHeight, 18, 34, 0);
+      fontChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'letterSpace')) {
+      S.letterSpace = CORE_TP_clampNumber(patch.letterSpace, DEFAULT_SETTINGS.letterSpace, -1, 2, 1);
+      fontChanged = true;
+    }
+
+    const hasSyncPrompt = Object.prototype.hasOwnProperty.call(patch, 'syncPromptWidth');
+    const hasChatWidth = Object.prototype.hasOwnProperty.call(patch, 'chatWidth');
+    const hasPromptWidth = Object.prototype.hasOwnProperty.call(patch, 'promptWidth');
+
+    if (hasSyncPrompt) {
+      S.syncPromptWidth = !!patch.syncPromptWidth;
+      layoutChanged = true;
+    }
+
+    if (hasChatWidth) {
+      S.chatWidth = CORE_TP_clampNumber(patch.chatWidth, DEFAULT_SETTINGS.chatWidth, 40, 70, 0);
+      if (S.syncPromptWidth) S.promptWidth = S.chatWidth;
+      layoutChanged = true;
+    }
+
+    if (hasPromptWidth) {
+      S.promptWidth = CORE_TP_clampNumber(patch.promptWidth, DEFAULT_SETTINGS.promptWidth, 40, 70, 0);
+      if (!hasSyncPrompt || !S.syncPromptWidth) S.syncPromptWidth = false;
+      layoutChanged = true;
+    }
+
+    if (hasSyncPrompt && S.syncPromptWidth) {
+      S.promptWidth = S.chatWidth;
+      layoutChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'chatFullWidth')) {
+      S.chatFullWidth = !!patch.chatFullWidth;
+      layoutChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'hideHeader')) {
+      S.hideHeader = !!patch.hideHeader;
+      layoutChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'hideFooter')) {
+      S.hideFooter = !!patch.hideFooter;
+      layoutChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'expandChatbox')) {
+      S.expandChatbox = !!patch.expandChatbox;
+      layoutChanged = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'scrollAlign')) {
+      const next = String(patch.scrollAlign || '').trim().toLowerCase();
+      S.scrollAlign = ['left', 'center', 'right'].includes(next) ? next : DEFAULT_SETTINGS.scrollAlign;
+      layoutChanged = true;
+    }
+
+    CORE_TP_saveSettings();
+    DOM_TP_applySettings();
+    UI_TP_refreshEnableControls();
+    if (colorChanged) UI_TP_refreshColorPaneIfOpen();
+    if (fontChanged) UI_TP_refreshFontPaneIfOpen();
+    if (layoutChanged) UI_TP_refreshLayoutPaneIfOpen();
+    if (modeToSync) NATIVE_queueSetting('mode', modeToSync);
+    if (accentToSync) NATIVE_queueSetting('accent', accentToSync);
+    return API_TP_getSettings();
+  }
+
+  function API_TP_setMode(value) {
+    const next = CORE_TP_normalizeMode(value);
+    STATE.settings.mode = next;
+    CORE_TP_saveSettings();
+    DOM_TP_applySettings();
+    UI_TP_refreshColorPaneIfOpen();
+    NATIVE_queueSetting('mode', next);
+    return next;
+  }
+
+  function API_TP_setThemePreset(value) {
+    CORE_TP_enablePageTheme();
+    const preset = CORE_TP_applyThemePreset(STATE.settings, value);
+    CORE_TP_saveSettings();
+    DOM_TP_applySettings();
+    UI_TP_refreshEnableControls();
+    UI_TP_refreshColorPaneIfOpen();
+    return preset.key;
+  }
+
+  function API_TP_setNativeAccent(value) {
+    const next = CORE_TP_normalizeNativeAccent(value);
+    STATE.settings.nativeAccent = next;
+    CORE_TP_saveSettings();
+    DOM_TP_applySettings();
+    UI_TP_refreshColorPaneIfOpen();
+    NATIVE_queueSetting('accent', next);
+    return next;
+  }
+
+  function API_TP_listThemePresets() {
+    return THEME_PRESETS.map(preset => ({ ...preset }));
+  }
+
+  function API_TP_listNativeAccents() {
+    return NATIVE_ACCENT_PRESETS.map(preset => ({ ...preset }));
+  }
+
+  function API_TP_listFontPresets() {
+    return FONT_PRESETS.map(preset => ({ ...preset }));
+  }
+
+  function API_TP_listFontScopes() {
+    return FONT_SCOPE_PRESETS.map(preset => ({ ...preset }));
   }
 
   function UI_TP_buildFontPane(root) {
@@ -1184,12 +2831,24 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     card.innerHTML = `
       <div data-part="cardttl">Font Family</div>
       <div data-part="fgrid">
-        <div data-part="fcard" data-font="system"><span>Default</span></div>
-        <div data-part="fcard" data-font="inter"><span>Inter-like</span></div>
-        <div data-part="fcard" data-font="mono"><span>Mono</span></div>
+        ${FONT_PRESETS.map((preset) => (
+          `<div data-part="fcard" data-font="${preset.key}"><span>${preset.name}</span></div>`
+        )).join('')}
       </div>
     `;
     root.appendChild(card);
+
+    const scopeCard = D.createElement('div');
+    scopeCard.setAttribute('data-part', 'card');
+    scopeCard.innerHTML = `
+      <div data-part="cardttl">Font Scope</div>
+      <div data-part="fgrid">
+        ${FONT_SCOPE_PRESETS.map((preset) => (
+          `<div data-part="fcard" data-font-scope="${preset.key}"><span>${preset.name}</span><span data-role="hint">${preset.hint}</span></div>`
+        )).join('')}
+      </div>
+    `;
+    root.appendChild(scopeCard);
 
     const metrics = D.createElement('div');
     metrics.setAttribute('data-part', 'card');
@@ -1222,6 +2881,18 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
         CORE_TP_saveSettings();
         DOM_TP_applySettings();
         cards.forEach(x => x.setAttribute(ATTR_CGXUI_STATE, (x === c) ? 'on' : ''));
+      });
+    });
+
+    const scopeCards = root.querySelectorAll('[data-font-scope]');
+    scopeCards.forEach(c => {
+      const scope = CORE_TP_normalizeFontScope(c.dataset.fontScope);
+      c.setAttribute(ATTR_CGXUI_STATE, scope === CORE_TP_normalizeFontScope(STATE.settings.fontScope) ? 'on' : '');
+      c.addEventListener('click', () => {
+        STATE.settings.fontScope = scope;
+        CORE_TP_saveSettings();
+        DOM_TP_applySettings();
+        scopeCards.forEach(x => x.setAttribute(ATTR_CGXUI_STATE, (x === c) ? 'on' : ''));
       });
     });
 
@@ -1337,22 +3008,6 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
         </div>
         <div data-part="sw" data-role="sync-prompt"></div>
       </div>
-
-      <div data-part="swrow">
-        <div data-part="swmeta">
-          <span>USER BUBBLE</span>
-          <span>Toggle stylized bubble for user.</span>
-        </div>
-        <div data-part="sw" data-role="bubble-user"></div>
-      </div>
-
-      <div data-part="swrow">
-        <div data-part="swmeta">
-          <span>GPT BUBBLE</span>
-          <span>Toggle stylized bubble for GPT.</span>
-        </div>
-        <div data-part="sw" data-role="bubble-gpt"></div>
-      </div>
     `;
     root.appendChild(otherCard);
 
@@ -1430,8 +3085,6 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     mapSwitch('expand-chatbox', 'expandChatbox');
     mapSwitch('chat-full', 'chatFullWidth');
     mapSwitch('sync-prompt', 'syncPromptWidth');
-    mapSwitch('bubble-user', 'bubblesUser');
-    mapSwitch('bubble-gpt', 'bubblesGpt');
 
     const scrollCards = root.querySelectorAll('[data-scroll]');
     scrollCards.forEach(c => {
@@ -1444,6 +3097,237 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
         scrollCards.forEach(x => x.setAttribute(ATTR_CGXUI_STATE, (x === c) ? 'on' : ''));
       });
     });
+  }
+
+  function UI_TP_dockOptions(items, selected) {
+    return items.map((item) => {
+      const key = UTIL_escapeHtml(item.key);
+      const name = UTIL_escapeHtml(item.name);
+      const isSelected = item.key === selected ? ' selected' : '';
+      return `<option value="${key}"${isSelected}>${name}</option>`;
+    }).join('');
+  }
+
+  function UI_TP_dockSelectRow(key, label, value, items, hint = '') {
+    return `
+      <label class="cgxui-${SkID}-dockrow">
+        <span class="cgxui-${SkID}-docklab">${UTIL_escapeHtml(label)}${hint ? `<span class="cgxui-${SkID}-dockhint">${UTIL_escapeHtml(hint)}</span>` : ''}</span>
+        <select class="cgxui-${SkID}-docksel" data-ho-dock-select="${UTIL_escapeHtml(key)}">
+          ${UI_TP_dockOptions(items, value)}
+        </select>
+      </label>
+    `;
+  }
+
+  function UI_TP_dockRangeRow(key, label, value, min, max, step, unit) {
+    const safeKey = UTIL_escapeHtml(key);
+    const safeUnit = UTIL_escapeHtml(unit || '');
+    return `
+      <label class="cgxui-${SkID}-dockrow">
+        <span class="cgxui-${SkID}-docklab">${UTIL_escapeHtml(label)}</span>
+        <span class="cgxui-${SkID}-dockrange">
+          <input type="range" min="${min}" max="${max}" step="${step}" value="${UTIL_escapeHtml(value)}" data-ho-dock-range="${safeKey}">
+          <span class="cgxui-${SkID}-dockval" data-ho-dock-value="${safeKey}">${UTIL_escapeHtml(value)}${safeUnit}</span>
+        </span>
+      </label>
+    `;
+  }
+
+  function UI_TP_dockToggleRow(key, label, value, hint = '') {
+    return `
+      <div class="cgxui-${SkID}-dockrow">
+        <span class="cgxui-${SkID}-docklab">${UTIL_escapeHtml(label)}${hint ? `<span class="cgxui-${SkID}-dockhint">${UTIL_escapeHtml(hint)}</span>` : ''}</span>
+        <button type="button" class="cgxui-${SkID}-dockbtn" data-ho-dock-toggle="${UTIL_escapeHtml(key)}" aria-pressed="${value ? 'true' : 'false'}">${value ? 'On' : 'Off'}</button>
+      </div>
+    `;
+  }
+
+  function UI_TP_syncDockRange(root, key, value, unit = '') {
+    const input = root?.querySelector?.(`[data-ho-dock-range="${key}"]`);
+    const out = root?.querySelector?.(`[data-ho-dock-value="${key}"]`);
+    if (input) input.value = String(value);
+    if (out) out.textContent = `${value}${unit}`;
+  }
+
+  function UI_TP_syncDockToggle(root, key, value) {
+    const btn = root?.querySelector?.(`[data-ho-dock-toggle="${key}"]`);
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', value ? 'true' : 'false');
+    btn.textContent = value ? 'On' : 'Off';
+  }
+
+  function UI_TP_refreshDockDynamicValues(root, settings) {
+    const S = settings || STATE.settings || DEFAULT_SETTINGS;
+    UI_TP_syncDockRange(root, 'fontSize', S.fontSize, 'px');
+    UI_TP_syncDockRange(root, 'lineHeight', S.lineHeight, 'px');
+    UI_TP_syncDockRange(root, 'letterSpace', S.letterSpace, 'px');
+    UI_TP_syncDockRange(root, 'chatWidth', S.chatWidth, 'rem');
+    UI_TP_syncDockRange(root, 'promptWidth', S.promptWidth, 'rem');
+    UI_TP_syncDockToggle(root, 'enabled', S.enabled !== false);
+    UI_TP_syncDockToggle(root, 'hideHeader', !!S.hideHeader);
+    UI_TP_syncDockToggle(root, 'hideFooter', !!S.hideFooter);
+    UI_TP_syncDockToggle(root, 'expandChatbox', !!S.expandChatbox);
+    UI_TP_syncDockToggle(root, 'chatFullWidth', !!S.chatFullWidth);
+    UI_TP_syncDockToggle(root, 'syncPromptWidth', S.syncPromptWidth !== false);
+  }
+
+  function UI_TP_renderDockTab(ctx = {}) {
+    const root = ctx.listEl;
+    if (!root) return;
+    if (!STATE.settings) STATE.settings = CORE_TP_loadSettings();
+    const S = STATE.settings;
+
+    root.innerHTML = `
+      <div class="cgxui-${SkID}-docktab" data-cgxui="${SkID}-docktab" data-cgxui-owner="${SkID}">
+        <section class="cgxui-${SkID}-docksec">
+          <h3 class="cgxui-${SkID}-dockttl">Theme</h3>
+          ${UI_TP_dockToggleRow('enabled', 'GPThemes Enabled', S.enabled !== false)}
+          ${UI_TP_dockSelectRow('mode', 'Mode', CORE_TP_normalizeMode(S.mode), MODE_PRESETS)}
+          ${UI_TP_dockSelectRow('themePreset', 'Theme', CORE_TP_normalizeThemePreset(S.themePreset), THEME_PRESETS)}
+          ${UI_TP_dockSelectRow('nativeAccent', 'Accent', CORE_TP_normalizeNativeAccent(S.nativeAccent), NATIVE_ACCENT_PRESETS)}
+        </section>
+
+        <section class="cgxui-${SkID}-docksec">
+          <h3 class="cgxui-${SkID}-dockttl">Font</h3>
+          ${UI_TP_dockSelectRow('fontFamily', 'Font Family', CORE_TP_normalizeFontFamily(S.fontFamily), FONT_PRESETS)}
+          ${UI_TP_dockSelectRow('fontScope', 'Font Scope', CORE_TP_normalizeFontScope(S.fontScope), FONT_SCOPE_PRESETS)}
+          ${UI_TP_dockRangeRow('fontSize', 'Font Size', S.fontSize, 12, 22, 1, 'px')}
+          ${UI_TP_dockRangeRow('lineHeight', 'Line Height', S.lineHeight, 18, 34, 1, 'px')}
+          ${UI_TP_dockRangeRow('letterSpace', 'Letter Space', S.letterSpace, -1, 2, 0.1, 'px')}
+        </section>
+
+        <section class="cgxui-${SkID}-docksec">
+          <h3 class="cgxui-${SkID}-dockttl">Layout</h3>
+          ${UI_TP_dockRangeRow('chatWidth', 'Chats Width', S.chatWidth, 40, 70, 1, 'rem')}
+          ${UI_TP_dockRangeRow('promptWidth', 'Prompt Width', S.promptWidth, 40, 70, 1, 'rem')}
+          ${UI_TP_dockToggleRow('hideHeader', 'Hide Header', !!S.hideHeader)}
+          ${UI_TP_dockToggleRow('hideFooter', 'Hide Footer', !!S.hideFooter, 'Safe no-op when no footer target exists.')}
+          ${UI_TP_dockToggleRow('expandChatbox', 'Expand Chatbox', !!S.expandChatbox)}
+          ${UI_TP_dockToggleRow('chatFullWidth', 'Chat Full Width', !!S.chatFullWidth)}
+          ${UI_TP_dockToggleRow('syncPromptWidth', 'Sync Prompt Width', S.syncPromptWidth !== false)}
+          ${UI_TP_dockSelectRow('scrollAlign', 'Scrolldown Button Align', S.scrollAlign, [
+            { key: 'left', name: 'Left' },
+            { key: 'center', name: 'Center' },
+            { key: 'right', name: 'Right' },
+          ], 'Deferred unless a native scroll button target exists.')}
+        </section>
+
+        <div class="cgxui-${SkID}-dockactions">
+          <button type="button" class="cgxui-${SkID}-dockbtn" data-ho-dock-action="openPanel">Open Panel</button>
+          <button type="button" class="cgxui-${SkID}-dockbtn" data-ho-dock-action="resetAll">Reset All</button>
+        </div>
+      </div>
+    `;
+
+    const shell = root.querySelector(`.cgxui-${SkID}-docktab`);
+    const applyPatch = (patch, rerender = false) => {
+      const next = API_TP_updateSettings(patch) || STATE.settings || DEFAULT_SETTINGS;
+      if (rerender) UI_TP_renderDockTab(ctx);
+      else UI_TP_refreshDockDynamicValues(shell, next);
+      return next;
+    };
+
+    root.querySelectorAll('[data-ho-dock-select]').forEach((el) => {
+      el.addEventListener('change', () => {
+        const key = el.getAttribute('data-ho-dock-select');
+        if (!key) return;
+        applyPatch({ [key]: el.value }, true);
+      }, true);
+    });
+
+    root.querySelectorAll('[data-ho-dock-range]').forEach((el) => {
+      el.addEventListener('input', () => {
+        const key = el.getAttribute('data-ho-dock-range');
+        if (!key) return;
+        const precision = key === 'letterSpace' ? 1 : 0;
+        const value = CORE_TP_clampNumber(el.value, DEFAULT_SETTINGS[key], Number(el.min), Number(el.max), precision);
+        applyPatch({ [key]: value }, false);
+      }, true);
+    });
+
+    root.querySelectorAll('[data-ho-dock-toggle]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const key = el.getAttribute('data-ho-dock-toggle');
+        if (!key) return;
+        const next = el.getAttribute('aria-pressed') !== 'true';
+        applyPatch({ [key]: next }, key === 'syncPromptWidth');
+      }, true);
+    });
+
+    root.querySelector('[data-ho-dock-action="openPanel"]')?.addEventListener('click', () => {
+      UI_TP_openPanel();
+    }, true);
+
+    root.querySelector('[data-ho-dock-action="resetAll"]')?.addEventListener('click', () => {
+      CORE_TP_resetSection('color');
+      CORE_TP_resetSection('font');
+      CORE_TP_resetSection('layout');
+      UI_TP_renderDockTab(ctx);
+    }, true);
+  }
+
+  function DOCK_TP_getApi() {
+    return W.H2O?.DP?.dckpnl?.api || W.H2O?.Dock || W.H2O?.PanelSide || null;
+  }
+
+  function DOCK_TP_ensureMenuEntry(panelEl) {
+    const menu = panelEl?.querySelector?.('[data-h2o-view-menu="1"]');
+    if (!menu || menu.querySelector?.('[data-h2o-set-view="themes"]')) return;
+    const template = menu.querySelector('button[data-h2o-set-view]');
+    const btn = template ? template.cloneNode(true) : D.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Themes';
+    btn.setAttribute('data-h2o-set-view', TINY_RAIL_VIEW_THEMES);
+    menu.appendChild(btn);
+  }
+
+  function DOCK_TP_registerTab() {
+    const Dock = W.H2O?.Dock || W.H2O?.PanelSide || null;
+    if (!Dock?.registerTab) return false;
+    if (Dock.tabs?.[TINY_RAIL_VIEW_THEMES]?.__h2oThemesTab) {
+      STATE.dockTabRegistered = true;
+      return true;
+    }
+    Dock.registerTab(TINY_RAIL_VIEW_THEMES, {
+      id: TINY_RAIL_VIEW_THEMES,
+      title: 'Themes',
+      __h2oThemesTab: true,
+      render(ctx = {}) {
+        DOCK_TP_ensureMenuEntry(ctx.panelEl);
+        UI_TP_renderDockTab(ctx);
+      },
+    });
+    STATE.dockTabRegistered = true;
+    return true;
+  }
+
+  function DOCK_TP_scheduleRegister() {
+    if (STATE.dockTabRegistered || STATE.dockTabTimer) return;
+    let tries = 0;
+    const tick = () => {
+      STATE.dockTabTimer = 0;
+      if (DOCK_TP_registerTab()) return;
+      tries += 1;
+      if (tries > 80) return;
+      STATE.dockTabTimer = W.setTimeout(tick, 250);
+    };
+    tick();
+  }
+
+  function DOCK_TP_openThemesTab() {
+    DOCK_TP_registerTab();
+    const api = DOCK_TP_getApi();
+    if (!api?.setView || !api?.open) return false;
+    try { api.setView(TINY_RAIL_VIEW_THEMES); } catch { return false; }
+    try { api.open(); } catch { return false; }
+    try { api.requestRender?.(); } catch {}
+    return true;
+  }
+
+  function UI_TP_activateRailThemesSurface(ev) {
+    if (ev?.__h2oRailHandled) return;
+    if (DOCK_TP_openThemesTab()) return;
+    UI_TP_togglePanel();
   }
 
   /* ───────────────────────────── 🟧 BOUNDARIES — Tiny Rail Button 📝🔓💥 ───────────────────────────── */
@@ -1559,14 +3443,14 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        UI_TP_togglePanel();
+        UI_TP_activateRailThemesSurface(ev);
       }, true);
 
       btn.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         ev.preventDefault();
         ev.stopPropagation();
-        UI_TP_togglePanel();
+        UI_TP_activateRailThemesSurface(ev);
       }, true);
 
       const stop = (ev) => {
@@ -1688,25 +3572,75 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
   // bounded diag (Stage-1 minimal)
   MOD_OBJ.diag = MOD_OBJ.diag || { t0: performance.now(), steps: [], errors: [], bufMax: 160, errMax: 30 };
 
+  function API_TP_installPublicApi() {
+    const existingApi = MOD_OBJ.api && typeof MOD_OBJ.api === 'object' ? MOD_OBJ.api : null;
+    const api = existingApi && Object.isExtensible(existingApi) ? existingApi : {};
+
+    try { MOD_OBJ.api = api; } catch {}
+
+    try { api.version = API_VERSION; } catch {}
+    try { api.build = API_BUILD; } catch {}
+    try { api.phase = API_PHASE; } catch {}
+    try { api.open = UI_TP_openPanel; } catch {}
+    try { api.close = UI_TP_closePanel; } catch {}
+    try { api.toggle = UI_TP_togglePanel; } catch {}
+    try { api.getSettings = API_TP_getSettings; } catch {}
+    try { api.updateSettings = API_TP_updateSettings; } catch {}
+    try { api.setMode = API_TP_setMode; } catch {}
+    try { api.setThemePreset = API_TP_setThemePreset; } catch {}
+    try { api.setNativeAccent = API_TP_setNativeAccent; } catch {}
+    try { api.listThemePresets = API_TP_listThemePresets; } catch {}
+    try { api.listNativeAccents = API_TP_listNativeAccents; } catch {}
+    try { api.listFontPresets = API_TP_listFontPresets; } catch {}
+    try { api.listFontScopes = API_TP_listFontScopes; } catch {}
+    try { api.debugResolveTargets = API_TP_debugResolveTargets; } catch {}
+
+    try { MOD_OBJ.version = API_VERSION; } catch {}
+    try { MOD_OBJ.build = API_BUILD; } catch {}
+    try { MOD_OBJ.phase = API_PHASE; } catch {}
+    try { MOD_OBJ.debugResolveTargets = API_TP_debugResolveTargets; } catch {}
+
+    try {
+      MOD_OBJ.diag.version = API_VERSION;
+      MOD_OBJ.diag.build = API_BUILD;
+      MOD_OBJ.diag.phase = API_PHASE;
+      MOD_OBJ.diag.debugResolveTargets = API_TP_debugResolveTargets;
+    } catch {}
+  }
+
+  API_TP_installPublicApi();
+
   function CORE_TP_boot() {
     if (STATE.booted && !STATE.disposed) return;
     STATE.disposed = false;
     STATE.booted = true;
 
+    API_TP_installPublicApi();
+
     STATE.settings = CORE_TP_loadSettings();
     DOM_TP_applySettings();
+    DOM_TP_deferChatTargetResolve();
+    NATIVE_bootSyncObserver();
+    NATIVE_scheduleSync();
+    NATIVE_scheduleApply();
 
     UI_TP_wireTinyRailEnsure();
+    DOCK_TP_scheduleRegister();
 
-    MOD_OBJ.api = MOD_OBJ.api || {};
-    MOD_OBJ.api.open = UI_TP_openPanel;
-    MOD_OBJ.api.close = UI_TP_closePanel;
-    MOD_OBJ.api.toggle = UI_TP_togglePanel;
+    API_TP_installPublicApi();
   }
 
   function CORE_TP_dispose() {
     if (STATE.disposed) return;
     STATE.disposed = true;
+
+    try { STATE.nativeSyncObserver?.disconnect?.(); } catch {}
+    STATE.nativeSyncObserver = null;
+    if (STATE.nativeSyncTimer) W.clearTimeout(STATE.nativeSyncTimer);
+    if (STATE.nativeApplyTimer) W.clearTimeout(STATE.nativeApplyTimer);
+    STATE.nativeSyncTimer = 0;
+    STATE.nativeApplyTimer = 0;
+    DOM_TP_clearChatTargetMarks();
 
     UI_TP_unwireTinyRailEnsure();
     UI_TP_closePanel();

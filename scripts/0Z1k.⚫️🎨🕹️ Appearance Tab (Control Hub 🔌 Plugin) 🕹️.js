@@ -4,9 +4,9 @@
 // @namespace          H2O.Premium.CGX.appearance.tab.control.hub.plugin
 // @author             HumamDev
 // @version            0.2.1
-// @revision           003
-// @build              260509-220000
-// @description        Registers the Appearance tab with two strictly separated subtabs: ChatGPT Appearance (the original/base ChatGPT website theme via H2O.theme / Theme Core) and Cockpit Appearance (Cockpit Pro / H2O surface tuning via the existing Control Hub accent + background system). Base Theme is wired live to H2O.theme.setMode; Base Accent is deferred (read-only) until Theme Core ships accent application. Cockpit controls retain their existing storage keys. ARCHITECTURE RULE: ChatGPT/base page surfaces are owned by Theme Core / GPThemes; Cockpit/H2O modules (Library, Control Hub, MiniMap, Side Actions Panel, Command Bar, Dock, H2O cards/panels) are owned by Cockpit Appearance. The two systems must NOT cross-control each other.
+// @revision           004
+// @build              260510-011500
+// @description        Registers the Appearance tab with two strictly separated subtabs: ChatGPT Appearance (the original/base ChatGPT website theme via H2O.theme / Theme Core plus GPThemes page styling + native ChatGPT accent sync) and Cockpit Appearance (Cockpit Pro / H2O surface tuning via the existing Control Hub accent + background system). ChatGPT controls mirror the Themes Panel. Cockpit controls retain their existing storage keys. ARCHITECTURE RULE: ChatGPT/base page surfaces are owned by Theme Core / GPThemes; Cockpit/H2O modules (Library, Control Hub, MiniMap, Side Actions Panel, Command Bar, Dock, H2O cards/panels) are owned by Cockpit Appearance. The two systems must NOT cross-control each other.
 // @match       https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
@@ -22,13 +22,14 @@
   if (W !== TOPW) W.H2O = H2O;
 
   const EV_CHUB_READY_V1 = 'h2o.ev:prm:cgx:cntrlhb:ready:v1';
-  const MARK = '__H2O_CHUB_APPEARANCE_TAB_PLUGIN_V010__';
+  const MARK = '__H2O_CHUB_APPEARANCE_TAB_PLUGIN_V011__';
 
   if (W[MARK]) return;
   W[MARK] = true;
 
   let LAST_API = null;
   let CLS = 'cgxui-cnhb';
+  let THEME_EVENT_INVALIDATE_TIMER = 0;
 
   const FEATURE_KEY_APPEARANCE = 'themes';
   const FEATURE_KEY_THEMES_PANEL = 'themesPanel';
@@ -50,11 +51,13 @@
 
   const CHUB_THEME_DEFAULTS = Object.freeze({
     enabled: true,
-    mode: 'dark',
-    accentLight: '270, 80%, 75%',
-    accentDark: '265, 70%, 62%',
-    accentUserBubble: false,
+    mode: 'system',
+    themePreset: 'lavender',
+    nativeAccent: 'default',
+    accentLight: '260, 55%, 78%',
+    accentDark: '260, 45%, 62%',
     fontFamily: 'system',
+    fontScope: 'chat',
     fontSize: 16,
     lineHeight: 28,
     letterSpace: 0,
@@ -68,6 +71,69 @@
     bubblesUser: true,
     bubblesGpt: true,
     scrollAlign: 'right',
+  });
+
+  const CHUB_THEME_PRESETS = Object.freeze([
+    Object.freeze({ key: 'lavender', name: 'Lavender', light: '260, 55%, 78%', dark: '260, 45%, 62%' }),
+    Object.freeze({ key: 'coral',    name: 'Coral',    light: '12, 70%, 72%',  dark: '12, 60%, 55%' }),
+    Object.freeze({ key: 'aqua',     name: 'Aqua',     light: '188, 55%, 70%', dark: '188, 50%, 50%' }),
+    Object.freeze({ key: 'emerald',  name: 'Emerald',  light: '152, 45%, 68%', dark: '152, 40%, 48%' }),
+    Object.freeze({ key: 'amber',    name: 'Amber',    light: '40, 70%, 72%',  dark: '36, 65%, 52%' }),
+    Object.freeze({ key: 'rose',     name: 'Rose',     light: '338, 60%, 72%', dark: '338, 52%, 54%' }),
+    Object.freeze({ key: 'slate',    name: 'Slate',    light: '220, 18%, 70%', dark: '220, 18%, 46%' }),
+  ]);
+
+  const CHUB_THEME_PRESET_MAP = Object.freeze(
+    CHUB_THEME_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, Object.create(null))
+  );
+
+  const CHUB_NATIVE_ACCENT_PRESETS = Object.freeze([
+    Object.freeze({ key: 'default', name: 'Default' }),
+    Object.freeze({ key: 'green',   name: 'Green' }),
+    Object.freeze({ key: 'blue',    name: 'Blue' }),
+    Object.freeze({ key: 'yellow',  name: 'Yellow' }),
+    Object.freeze({ key: 'orange',  name: 'Orange' }),
+    Object.freeze({ key: 'pink',    name: 'Pink' }),
+    Object.freeze({ key: 'purple',  name: 'Purple' }),
+  ]);
+
+  const CHUB_FONT_PRESETS = Object.freeze([
+    Object.freeze({ key: 'system',        name: 'Default' }),
+    Object.freeze({ key: 'inter',         name: 'Inter-like' }),
+    Object.freeze({ key: 'readable',      name: 'Readable Sans' }),
+    Object.freeze({ key: 'optima',        name: 'Optima' }),
+    Object.freeze({ key: 'avenir',        name: 'Avenir' }),
+    Object.freeze({ key: 'humanist',      name: 'Humanist Sans' }),
+    Object.freeze({ key: 'serif',         name: 'Serif Reading' }),
+    Object.freeze({ key: 'premium-serif', name: 'Premium Serif' }),
+    Object.freeze({ key: 'mono',          name: 'Mono' }),
+  ]);
+
+  const CHUB_FONT_PRESET_MAP = Object.freeze(
+    CHUB_FONT_PRESETS.reduce((acc, preset) => {
+      acc[preset.key] = preset;
+      return acc;
+    }, Object.create(null))
+  );
+
+  const CHUB_FONT_SCOPE_PRESETS = Object.freeze([
+    Object.freeze({ key: 'chat', name: 'Chat Only' }),
+    Object.freeze({ key: 'page', name: 'Entire ChatGPT Page' }),
+  ]);
+
+  const CHUB_FONT_STACKS = Object.freeze({
+    system: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+    inter: '"Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", "Helvetica Neue", Arial, sans-serif',
+    readable: '"Atkinson Hyperlegible", Verdana, Arial, system-ui, sans-serif',
+    optima: 'Optima, Candara, "Segoe UI", Frutiger, "Frutiger Linotype", "Trebuchet MS", sans-serif',
+    avenir: 'Avenir, "Avenir Next", "Nunito Sans", "Segoe UI", system-ui, sans-serif',
+    humanist: '"Gill Sans", "Gill Sans MT", Calibri, "Trebuchet MS", system-ui, sans-serif',
+    serif: 'Georgia, "Times New Roman", ui-serif, serif',
+    'premium-serif': '"Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif',
+    mono: '"SF Mono", "Cascadia Code", Menlo, Consolas, ui-monospace, monospace',
   });
 
   const APPEARANCE_META = Object.freeze({
@@ -106,7 +172,7 @@
       description: Object.freeze({
         default: 'Set the original/base ChatGPT page theme. Owned by H2O.theme (Theme Core) and GPThemes Customization.',
         focus: 'Pick the base mode that keeps reading contrast comfortable for long sessions.',
-        review: 'Switch base light / dark / OLED; deep ChatGPT theme controls open in the GPThemes panel.',
+        review: 'Switch ChatGPT mode, GPThemes page theme, and native ChatGPT accent; deeper controls still open in the GPThemes panel.',
         performance: 'Base ChatGPT theme application is owned by Theme Core; this surface only switches state. Cockpit modules have their own controls.',
       }),
     }),
@@ -148,6 +214,9 @@
       if (raw == null) return fallback;
       try { return JSON.parse(raw); } catch { return fallback; }
     },
+    setJSON(key, value) {
+      try { return this.setStr(key, JSON.stringify(value)); } catch { return false; }
+    },
   };
 
   function safeCall(_label, fn) {
@@ -158,6 +227,16 @@
   function invalidate(api = LAST_API) {
     if (!api || typeof api.invalidate !== 'function') return;
     try { W.setTimeout(() => api.invalidate(), 0); } catch {}
+  }
+
+  function scheduleInvalidate(api = LAST_API) {
+    if (THEME_EVENT_INVALIDATE_TIMER) {
+      try { W.clearTimeout(THEME_EVENT_INVALIDATE_TIMER); } catch {}
+    }
+    THEME_EVENT_INVALIDATE_TIMER = W.setTimeout(() => {
+      THEME_EVENT_INVALIDATE_TIMER = 0;
+      invalidate(api);
+    }, 180);
   }
 
   function applySkin(api) {
@@ -200,16 +279,137 @@
     return null;
   }
 
+  function CHUB_THEME_clampNumber(raw, fallback, min, max, precision = 0) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    const clamped = Math.min(max, Math.max(min, n));
+    return precision > 0 ? Number(clamped.toFixed(precision)) : Math.round(clamped);
+  }
+
+  function CHUB_THEME_normalizeMode(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return (value === 'light' || value === 'dark' || value === 'system') ? value : CHUB_THEME_DEFAULTS.mode;
+  }
+
+  function CHUB_THEME_normalizeThemePreset(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return CHUB_THEME_PRESET_MAP[value] ? value : CHUB_THEME_DEFAULTS.themePreset;
+  }
+
+  function CHUB_THEME_applyThemePreset(target, raw) {
+    const key = CHUB_THEME_normalizeThemePreset(raw);
+    const preset = CHUB_THEME_PRESET_MAP[key] || CHUB_THEME_PRESET_MAP[CHUB_THEME_DEFAULTS.themePreset];
+    target.themePreset = preset.key;
+    target.accentLight = preset.light;
+    target.accentDark = preset.dark;
+    return preset;
+  }
+
+  function CHUB_THEME_normalizeNativeAccent(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return CHUB_NATIVE_ACCENT_PRESETS.some(preset => preset.key === value) ? value : CHUB_THEME_DEFAULTS.nativeAccent;
+  }
+
+  function CHUB_THEME_normalizeFontFamily(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'default') return 'system';
+    if (value === 'readable-sans') return 'readable';
+    if (value === 'serif-reading') return 'serif';
+    if (value === 'premiumserif' || value === 'premium-serif-reading') return 'premium-serif';
+    if (value === 'humanist-sans') return 'humanist';
+    return CHUB_FONT_PRESET_MAP[value] ? value : CHUB_THEME_DEFAULTS.fontFamily;
+  }
+
+  function CHUB_THEME_normalizeFontScope(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'all' || value === 'full' || value === 'entire') return 'page';
+    return (value === 'chat' || value === 'page') ? value : CHUB_THEME_DEFAULTS.fontScope;
+  }
+
+  function CHUB_THEME_normalizeScrollAlign(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return (value === 'left' || value === 'center' || value === 'right') ? value : CHUB_THEME_DEFAULTS.scrollAlign;
+  }
+
+  function CHUB_THEME_normalizeSettings(raw) {
+    const S = { ...CHUB_THEME_DEFAULTS, ...(raw || {}) };
+    S.enabled = S.enabled !== false;
+    S.mode = CHUB_THEME_normalizeMode(S.mode);
+    CHUB_THEME_applyThemePreset(S, S.themePreset);
+    S.nativeAccent = CHUB_THEME_normalizeNativeAccent(S.nativeAccent);
+    S.fontFamily = CHUB_THEME_normalizeFontFamily(S.fontFamily);
+    S.fontScope = CHUB_THEME_normalizeFontScope(S.fontScope);
+    S.fontSize = CHUB_THEME_clampNumber(S.fontSize, CHUB_THEME_DEFAULTS.fontSize, 12, 22, 0);
+    S.lineHeight = CHUB_THEME_clampNumber(S.lineHeight, CHUB_THEME_DEFAULTS.lineHeight, 18, 34, 0);
+    S.letterSpace = CHUB_THEME_clampNumber(S.letterSpace, CHUB_THEME_DEFAULTS.letterSpace, -1, 2, 1);
+    S.chatWidth = CHUB_THEME_clampNumber(S.chatWidth, CHUB_THEME_DEFAULTS.chatWidth, 40, 70, 0);
+    S.promptWidth = CHUB_THEME_clampNumber(S.promptWidth, CHUB_THEME_DEFAULTS.promptWidth, 40, 70, 0);
+    S.chatFullWidth = !!S.chatFullWidth;
+    S.syncPromptWidth = S.syncPromptWidth !== false;
+    S.hideHeader = !!S.hideHeader;
+    S.hideFooter = !!S.hideFooter;
+    S.expandChatbox = !!S.expandChatbox;
+    S.bubblesUser = S.bubblesUser !== false;
+    S.bubblesGpt = S.bubblesGpt !== false;
+    S.scrollAlign = CHUB_THEME_normalizeScrollAlign(S.scrollAlign);
+    return S;
+  }
+
   function CHUB_THEME_loadSettings() {
     const diskObj = storage.getJSON(CHUB_THEME_SETTINGS_KEY_V2, null);
-    if (diskObj && typeof diskObj === 'object') return { ...CHUB_THEME_DEFAULTS, ...diskObj };
+    if (diskObj && typeof diskObj === 'object') return CHUB_THEME_normalizeSettings(diskObj);
     const legacyObj = storage.getJSON(CHUB_THEME_SETTINGS_KEY_LEGACY, null);
-    if (legacyObj && typeof legacyObj === 'object') return { ...CHUB_THEME_DEFAULTS, ...legacyObj };
-    return { ...CHUB_THEME_DEFAULTS };
+    if (legacyObj && typeof legacyObj === 'object') return CHUB_THEME_normalizeSettings(legacyObj);
+    return CHUB_THEME_normalizeSettings(CHUB_THEME_DEFAULTS);
+  }
+
+  function CHUB_THEME_saveSettings(settings) {
+    const S = CHUB_THEME_normalizeSettings(settings);
+    storage.setJSON(CHUB_THEME_SETTINGS_KEY_V2, S);
+    storage.setJSON(CHUB_THEME_SETTINGS_KEY_LEGACY, S);
+    try { W.dispatchEvent(new CustomEvent(CHUB_THEME_SETTINGS_EVENT, { detail: { ...S } })); } catch {}
+    return S;
+  }
+
+  function CHUB_THEME_applySettingsPatch(base, patch = {}) {
+    const S = CHUB_THEME_normalizeSettings(base);
+    if (!patch || typeof patch !== 'object') return S;
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) S.enabled = !!patch.enabled;
+    if (Object.prototype.hasOwnProperty.call(patch, 'mode')) S.mode = CHUB_THEME_normalizeMode(patch.mode);
+    if (Object.prototype.hasOwnProperty.call(patch, 'themePreset')) CHUB_THEME_applyThemePreset(S, patch.themePreset);
+    if (Object.prototype.hasOwnProperty.call(patch, 'nativeAccent')) S.nativeAccent = CHUB_THEME_normalizeNativeAccent(patch.nativeAccent);
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontFamily')) S.fontFamily = CHUB_THEME_normalizeFontFamily(patch.fontFamily);
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontScope')) S.fontScope = CHUB_THEME_normalizeFontScope(patch.fontScope);
+    if (Object.prototype.hasOwnProperty.call(patch, 'fontSize')) S.fontSize = CHUB_THEME_clampNumber(patch.fontSize, S.fontSize, 12, 22, 0);
+    if (Object.prototype.hasOwnProperty.call(patch, 'lineHeight')) S.lineHeight = CHUB_THEME_clampNumber(patch.lineHeight, S.lineHeight, 18, 34, 0);
+    if (Object.prototype.hasOwnProperty.call(patch, 'letterSpace')) S.letterSpace = CHUB_THEME_clampNumber(patch.letterSpace, S.letterSpace, -1, 2, 1);
+
+    const hasSyncPrompt = Object.prototype.hasOwnProperty.call(patch, 'syncPromptWidth');
+    const hasChatWidth = Object.prototype.hasOwnProperty.call(patch, 'chatWidth');
+    const hasPromptWidth = Object.prototype.hasOwnProperty.call(patch, 'promptWidth');
+
+    if (hasSyncPrompt) S.syncPromptWidth = !!patch.syncPromptWidth;
+    if (hasChatWidth) {
+      S.chatWidth = CHUB_THEME_clampNumber(patch.chatWidth, S.chatWidth, 40, 70, 0);
+      if (S.syncPromptWidth) S.promptWidth = S.chatWidth;
+    }
+    if (hasPromptWidth) {
+      S.promptWidth = CHUB_THEME_clampNumber(patch.promptWidth, S.promptWidth, 40, 70, 0);
+      if (!hasSyncPrompt || !S.syncPromptWidth) S.syncPromptWidth = false;
+    }
+    if (hasSyncPrompt && S.syncPromptWidth) S.promptWidth = S.chatWidth;
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'chatFullWidth')) S.chatFullWidth = !!patch.chatFullWidth;
+    if (Object.prototype.hasOwnProperty.call(patch, 'hideHeader')) S.hideHeader = !!patch.hideHeader;
+    if (Object.prototype.hasOwnProperty.call(patch, 'hideFooter')) S.hideFooter = !!patch.hideFooter;
+    if (Object.prototype.hasOwnProperty.call(patch, 'expandChatbox')) S.expandChatbox = !!patch.expandChatbox;
+    if (Object.prototype.hasOwnProperty.call(patch, 'scrollAlign')) S.scrollAlign = CHUB_THEME_normalizeScrollAlign(patch.scrollAlign);
+    return S;
   }
 
   function CHUB_THEME_applySettings(settings) {
-    const S = { ...CHUB_THEME_DEFAULTS, ...(settings || {}) };
+    const S = CHUB_THEME_normalizeSettings(settings);
     const rootStyle = D.documentElement?.style;
     if (!D.body || !rootStyle) return S;
 
@@ -218,24 +418,43 @@
       D.documentElement.removeAttribute('data-ho-mode');
       rootStyle.removeProperty('--ho-accent-light-hsl');
       rootStyle.removeProperty('--ho-accent-dark-hsl');
+      rootStyle.removeProperty('--ho-font-family');
       rootStyle.removeProperty('--ho-font-size');
       rootStyle.removeProperty('--ho-line-height');
       rootStyle.removeProperty('--ho-letter-space');
       rootStyle.removeProperty('--ho-chat-width-rem');
       rootStyle.removeProperty('--ho-prompt-width-rem');
       D.body.removeAttribute('data-ho-font');
+      D.body.removeAttribute('data-ho-font-scope');
+      D.body.removeAttribute('data-ho-font-tuned');
+      D.body.removeAttribute('data-ho-layout-tuned');
+      D.body.removeAttribute('data-ho-scroll-align');
       return S;
     }
 
     D.body.setAttribute('data-ho-theme-enabled', 'true');
-    D.documentElement.setAttribute('data-ho-mode', String(S.mode || 'dark'));
+    D.documentElement.setAttribute('data-ho-mode', String(S.mode || 'system'));
     rootStyle.setProperty('--ho-accent-light-hsl', String(S.accentLight || CHUB_THEME_DEFAULTS.accentLight));
     rootStyle.setProperty('--ho-accent-dark-hsl', String(S.accentDark || CHUB_THEME_DEFAULTS.accentDark));
 
-    let fontFlag = String(S.fontFamily || 'system');
-    if (!['system', 'inter', 'mono'].includes(fontFlag)) fontFlag = 'system';
+    const fontFlag = CHUB_THEME_normalizeFontFamily(S.fontFamily);
+    const fontScope = CHUB_THEME_normalizeFontScope(S.fontScope);
     D.body.setAttribute('data-ho-font', fontFlag);
+    D.body.setAttribute('data-ho-font-scope', fontScope);
+    D.body.setAttribute('data-ho-font-tuned', String(
+      fontFlag !== CHUB_THEME_DEFAULTS.fontFamily ||
+      Number(S.fontSize) !== CHUB_THEME_DEFAULTS.fontSize ||
+      Number(S.lineHeight) !== CHUB_THEME_DEFAULTS.lineHeight ||
+      Number(S.letterSpace) !== CHUB_THEME_DEFAULTS.letterSpace
+    ));
+    D.body.setAttribute('data-ho-layout-tuned', String(
+      Number(S.chatWidth) !== CHUB_THEME_DEFAULTS.chatWidth ||
+      Number(S.promptWidth) !== CHUB_THEME_DEFAULTS.promptWidth ||
+      Boolean(S.chatFullWidth) !== CHUB_THEME_DEFAULTS.chatFullWidth ||
+      Boolean(S.syncPromptWidth) !== CHUB_THEME_DEFAULTS.syncPromptWidth
+    ));
 
+    rootStyle.setProperty('--ho-font-family', CHUB_FONT_STACKS[fontFlag] || CHUB_FONT_STACKS.system);
     rootStyle.setProperty('--ho-font-size', `${Number(S.fontSize || CHUB_THEME_DEFAULTS.fontSize)}px`);
     rootStyle.setProperty('--ho-line-height', `${Number(S.lineHeight || CHUB_THEME_DEFAULTS.lineHeight)}px`);
     rootStyle.setProperty('--ho-letter-space', `${Number(S.letterSpace || CHUB_THEME_DEFAULTS.letterSpace)}px`);
@@ -249,7 +468,7 @@
     D.body.setAttribute('data-ho-expand-chatbox', String(!!S.expandChatbox));
     D.body.setAttribute('data-ho-bubble-user', String(S.bubblesUser !== false));
     D.body.setAttribute('data-ho-bubble-gpt', String(S.bubblesGpt !== false));
-    D.body.setAttribute('data-ho-accent-user-bubble', String(!!S.accentUserBubble));
+    D.body.setAttribute('data-ho-scroll-align', CHUB_THEME_normalizeScrollAlign(S.scrollAlign));
     return S;
   }
 
@@ -433,15 +652,11 @@
    * (Library, Control Hub, MiniMap, Side Actions Panel, Command Bar, Dock).
    * Cockpit modules are controlled by Cockpit Appearance below.
    *
-   *   Base Theme  — ACTIVE in Phase 2A. Wires to H2O.theme.setMode(...).
-   *                 Mode values: 'light' | 'dark' | 'oled' (OLED preserved
-   *                 canonical; Theme Core resolves OLED → 'dark' for tokens
-   *                 via H2O.theme.effectiveMode()).
-   *   Base Accent — DEFERRED. H2O.theme.setAccent is passive in Phase 2A
-   *                 (returns false). The control renders as a single-option
-   *                 select reflecting the current accent (read-only) so it
-   *                 does not fake functionality. Activates in a later phase
-   *                 when Theme Core ships accent application.
+   *   Mode         — native ChatGPT appearance mode (system / light / dark).
+   *   Theme        — GPThemes page styling preset (independent of native
+   *                  ChatGPT Settings accent color).
+   *   Accent       — native ChatGPT accent color; mirrored with ChatGPT
+   *                  Settings and the GPThemes panel.
    * ────────────────────────────────────────────────────────────────────────── */
 
   function THEME_CORE() {
@@ -451,11 +666,11 @@
   function BASE_THEME_get() {
     const t = THEME_CORE();
     const mode = t?.get?.()?.mode;
-    return (mode === 'light' || mode === 'dark' || mode === 'oled') ? mode : 'dark';
+    return (mode === 'system' || mode === 'light' || mode === 'dark') ? mode : 'system';
   }
 
   function BASE_THEME_set(value) {
-    const next = (value === 'light' || value === 'oled') ? value : 'dark';
+    const next = (value === 'light' || value === 'dark' || value === 'system') ? value : 'system';
     const t = THEME_CORE();
     if (t && typeof t.setMode === 'function') {
       try { t.setMode(next); } catch {}
@@ -463,63 +678,329 @@
     return next;
   }
 
-  function BASE_ACCENT_get() {
-    const t = THEME_CORE();
-    const accent = t?.get?.()?.accent;
-    return typeof accent === 'string' && accent ? accent : 'gold';
+  function TPANEL_api() {
+    return themesPanelApi();
   }
 
-  function BASE_ACCENT_currentLabel() {
-    const t = THEME_CORE();
-    const id = BASE_ACCENT_get();
-    try {
-      const list = typeof t?.listAccents === 'function' ? t.listAccents() : [];
-      const hit = Array.isArray(list) ? list.find(a => a && a.id === id) : null;
-      return hit?.label || (id.charAt(0).toUpperCase() + id.slice(1));
-    } catch {
-      return id.charAt(0).toUpperCase() + id.slice(1);
+  function TPANEL_settings() {
+    return TPANEL_api()?.getSettings?.() || CHUB_THEME_loadSettings();
+  }
+
+  function TPANEL_update(patch = {}) {
+    const api = TPANEL_api();
+    if (api?.updateSettings) {
+      const next = api.updateSettings(patch);
+      return next || TPANEL_settings();
     }
+
+    const next = CHUB_THEME_applySettingsPatch(CHUB_THEME_loadSettings(), patch);
+    CHUB_THEME_saveSettings(next);
+    CHUB_THEME_applyVisibilityState();
+    if (Object.prototype.hasOwnProperty.call(patch, 'mode')) BASE_THEME_set(next.mode);
+    return next;
   }
 
-  function BASE_ACCENT_opts() {
-    // Single option = current accent. Read-only by construction; the user
-    // cannot change accent here until H2O.theme.setAccent becomes active.
-    const id = BASE_ACCENT_get();
-    return [[id, `${BASE_ACCENT_currentLabel()} — deferred`]];
+  function TPANEL_value_get(key, fallback) {
+    const settings = TPANEL_settings();
+    return settings && Object.prototype.hasOwnProperty.call(settings, key) ? settings[key] : fallback;
   }
 
-  function BASE_ACCENT_set(_value) {
-    // Theme Core setAccent is passive in Phase 2A; this is a no-op that
-    // returns the current accent so the renderer keeps the visible state.
-    return BASE_ACCENT_get();
+  function TPANEL_value_set(key, value) {
+    const next = TPANEL_update({ [key]: value });
+    return next?.[key];
+  }
+
+  function TPANEL_mode_get() {
+    return TPANEL_settings()?.mode || BASE_THEME_get();
+  }
+
+  function TPANEL_mode_set(value) {
+    const next = (value === 'light' || value === 'dark' || value === 'system') ? value : 'system';
+    const api = TPANEL_api();
+    if (api?.setMode) return api.setMode(next);
+    TPANEL_update({ mode: next });
+    return BASE_THEME_set(next);
+  }
+
+  function TPANEL_theme_get() {
+    return String(TPANEL_settings()?.themePreset || 'lavender');
+  }
+
+  function TPANEL_theme_set(value) {
+    const api = TPANEL_api();
+    if (api?.setThemePreset) return api.setThemePreset(value);
+    return TPANEL_update({ themePreset: value })?.themePreset || 'lavender';
+  }
+
+  function TPANEL_theme_opts() {
+    const api = TPANEL_api();
+    const list = api?.listThemePresets?.() || [];
+    if (Array.isArray(list) && list.length) return list.map(p => [p.key, p.name]);
+    return CHUB_THEME_PRESETS.map(p => [p.key, p.name]);
+  }
+
+  function TPANEL_nativeAccent_get() {
+    return String(TPANEL_settings()?.nativeAccent || 'default');
+  }
+
+  function TPANEL_nativeAccent_set(value) {
+    const api = TPANEL_api();
+    if (api?.setNativeAccent) return api.setNativeAccent(value);
+    return TPANEL_update({ nativeAccent: value })?.nativeAccent || 'default';
+  }
+
+  function TPANEL_nativeAccent_opts() {
+    const api = TPANEL_api();
+    const list = api?.listNativeAccents?.() || [];
+    if (Array.isArray(list) && list.length) return list.map(p => [p.key, p.name]);
+    return CHUB_NATIVE_ACCENT_PRESETS.map(p => [p.key, p.name]);
+  }
+
+  function TPANEL_fontFamily_opts() {
+    const api = TPANEL_api();
+    const list = api?.listFontPresets?.() || [];
+    if (Array.isArray(list) && list.length) return list.map(p => [p.key, p.name]);
+    return CHUB_FONT_PRESETS.map(p => [p.key, p.name]);
+  }
+
+  function TPANEL_fontScope_opts() {
+    const api = TPANEL_api();
+    const list = api?.listFontScopes?.() || [];
+    if (Array.isArray(list) && list.length) return list.map(p => [p.key, p.name]);
+    return CHUB_FONT_SCOPE_PRESETS.map(p => [p.key, p.name]);
+  }
+
+  function TPANEL_scrollAlign_opts() {
+    return [
+      ['left', 'Left'],
+      ['center', 'Center'],
+      ['right', 'Right'],
+    ];
+  }
+
+  function TPANEL_renderLetterSpaceControl() {
+    const box = D.createElement('div');
+    box.className = `${CLS}-rangebox`;
+
+    const inp = D.createElement('input');
+    inp.type = 'range';
+    inp.min = '-1';
+    inp.max = '2';
+    inp.step = '0.1';
+    inp.value = String(TPANEL_value_get('letterSpace', CHUB_THEME_DEFAULTS.letterSpace));
+
+    const val = D.createElement('span');
+    val.className = `${CLS}-rangeval`;
+    const sync = () => {
+      const n = CHUB_THEME_clampNumber(inp.value, CHUB_THEME_DEFAULTS.letterSpace, -1, 2, 1);
+      val.textContent = `${n}px`;
+      return n;
+    };
+
+    sync();
+    inp.addEventListener('input', () => {
+      TPANEL_value_set('letterSpace', sync());
+    }, true);
+
+    box.append(inp, val);
+    return box;
   }
 
   const BASE_APPEARANCE_CONTROLS = Object.freeze([
     Object.freeze({
-      type: 'select',
-      key: 'baseTheme',
-      label: 'Base Theme',
-      group: 'ChatGPT Appearance',
-      help: 'Base ChatGPT page theme. Owned by Theme Core; switches between Light, Dark, and OLED.',
-      def: 'dark',
-      opts: () => [
-        ['light', 'Light'],
-        ['dark',  'Dark'],
-        ['oled',  'OLED'],
-      ],
-      getLive() { return BASE_THEME_get(); },
-      setLive(v) { return BASE_THEME_set(v); },
+      type: 'toggle',
+      key: 'chatgptThemeEnabled',
+      label: 'GPThemes Enabled',
+      group: 'Theme',
+      help: 'Same control as the GPThemes panel Theme ON/OFF switch.',
+      def: true,
+      getLive() { return TPANEL_value_get('enabled', true) !== false; },
+      setLive(v) { return TPANEL_value_set('enabled', v); },
     }),
     Object.freeze({
       type: 'select',
-      key: 'baseAccent',
-      label: 'Base Accent',
-      group: 'ChatGPT Appearance',
-      help: 'Base accent for the ChatGPT page theme. Deferred — Theme Core accent application ships in a later phase.',
-      def: 'gold',
-      opts: BASE_ACCENT_opts,
-      getLive() { return BASE_ACCENT_get(); },
-      setLive(v) { return BASE_ACCENT_set(v); },
+      key: 'chatgptMode',
+      label: 'Mode',
+      group: 'Theme',
+      help: 'ChatGPT appearance mode. Same control as the Themes panel and ChatGPT Settings.',
+      def: 'system',
+      opts: () => [
+        ['system', 'System'],
+        ['light', 'Light'],
+        ['dark',  'Dark'],
+      ],
+      getLive() { return TPANEL_mode_get(); },
+      setLive(v) { return TPANEL_mode_set(v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chatgptTheme',
+      label: 'Theme',
+      group: 'Theme',
+      help: 'GPThemes page styling preset. Same control as the Themes panel theme cards. This is independent from ChatGPT Settings accent color.',
+      def: 'lavender',
+      opts: TPANEL_theme_opts,
+      getLive() { return TPANEL_theme_get(); },
+      setLive(v) { return TPANEL_theme_set(v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chatgptAccent',
+      label: 'Accent',
+      group: 'Theme',
+      help: 'Native ChatGPT accent color. Same control as ChatGPT Settings and the Themes panel accent cards.',
+      def: 'default',
+      opts: TPANEL_nativeAccent_opts,
+      getLive() { return TPANEL_nativeAccent_get(); },
+      setLive(v) { return TPANEL_nativeAccent_set(v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chatgptFontFamily',
+      label: 'Font Family',
+      group: 'Font',
+      help: 'Same control as GPThemes Font Family. Applies only to ChatGPT/base targets.',
+      def: 'system',
+      opts: TPANEL_fontFamily_opts,
+      getLive() { return CHUB_THEME_normalizeFontFamily(TPANEL_value_get('fontFamily', 'system')); },
+      setLive(v) { return TPANEL_value_set('fontFamily', v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chatgptFontScope',
+      label: 'Font Scope',
+      group: 'Font',
+      help: 'Chat Only affects messages and composer. Entire ChatGPT Page extends to safe ChatGPT shell targets.',
+      def: 'chat',
+      opts: TPANEL_fontScope_opts,
+      getLive() { return CHUB_THEME_normalizeFontScope(TPANEL_value_get('fontScope', 'chat')); },
+      setLive(v) { return TPANEL_value_set('fontScope', v); },
+    }),
+    Object.freeze({
+      type: 'range',
+      key: 'chatgptFontSize',
+      label: 'Font Size',
+      group: 'Font',
+      help: 'Same GPThemes font-size control for scoped ChatGPT text.',
+      def: 16,
+      min: 12,
+      max: 22,
+      step: 1,
+      unit: 'px',
+      getLive() { return Number(TPANEL_value_get('fontSize', 16)); },
+      setLive(v) { return TPANEL_value_set('fontSize', v); },
+    }),
+    Object.freeze({
+      type: 'range',
+      key: 'chatgptLineHeight',
+      label: 'Line Height',
+      group: 'Font',
+      help: 'Same GPThemes line-height control for scoped ChatGPT text.',
+      def: 28,
+      min: 18,
+      max: 34,
+      step: 1,
+      unit: 'px',
+      getLive() { return Number(TPANEL_value_get('lineHeight', 28)); },
+      setLive(v) { return TPANEL_value_set('lineHeight', v); },
+    }),
+    Object.freeze({
+      type: 'custom',
+      key: 'chatgptLetterSpace',
+      label: 'Letter Space',
+      group: 'Font',
+      help: 'Same GPThemes letter-spacing control, preserving 0.1px steps.',
+      stackBelowLabel: false,
+      render() { return TPANEL_renderLetterSpaceControl(); },
+    }),
+    Object.freeze({
+      type: 'range',
+      key: 'chatgptChatWidth',
+      label: 'Chats Width',
+      group: 'Layout',
+      help: 'Same GPThemes Chats width control for the ChatGPT conversation column.',
+      def: 48,
+      min: 40,
+      max: 70,
+      step: 1,
+      unit: 'rem',
+      getLive() { return Number(TPANEL_value_get('chatWidth', 48)); },
+      setLive(v) { return TPANEL_value_set('chatWidth', v); },
+    }),
+    Object.freeze({
+      type: 'range',
+      key: 'chatgptPromptWidth',
+      label: 'Prompt Width',
+      group: 'Layout',
+      help: 'Same GPThemes Prompt width control for the ChatGPT composer.',
+      def: 48,
+      min: 40,
+      max: 70,
+      step: 1,
+      unit: 'rem',
+      getLive() { return Number(TPANEL_value_get('promptWidth', 48)); },
+      setLive(v) { return TPANEL_value_set('promptWidth', v); },
+    }),
+    Object.freeze({
+      type: 'toggle',
+      key: 'chatgptHideHeader',
+      label: 'Hide Header',
+      group: 'Layout',
+      help: 'Same GPThemes Hide Header control. Targets only the marked ChatGPT-native header.',
+      def: false,
+      getLive() { return !!TPANEL_value_get('hideHeader', false); },
+      setLive(v) { return TPANEL_value_set('hideHeader', v); },
+    }),
+    Object.freeze({
+      type: 'toggle',
+      key: 'chatgptHideFooter',
+      label: 'Hide Footer',
+      group: 'Layout',
+      help: 'Same GPThemes Hide Footer control. Safe no-op when no ChatGPT footer target exists.',
+      def: false,
+      getLive() { return !!TPANEL_value_get('hideFooter', false); },
+      setLive(v) { return TPANEL_value_set('hideFooter', v); },
+    }),
+    Object.freeze({
+      type: 'toggle',
+      key: 'chatgptExpandChatbox',
+      label: 'Expand Chatbox',
+      group: 'Layout',
+      help: 'Same GPThemes Expand Chatbox control for the marked ChatGPT composer input.',
+      def: false,
+      getLive() { return !!TPANEL_value_get('expandChatbox', false); },
+      setLive(v) { return TPANEL_value_set('expandChatbox', v); },
+    }),
+    Object.freeze({
+      type: 'toggle',
+      key: 'chatgptChatFullWidth',
+      label: 'Chat Full Width',
+      group: 'Layout',
+      help: 'Same GPThemes Chat Full Width control for the marked ChatGPT chat surface.',
+      def: false,
+      getLive() { return !!TPANEL_value_get('chatFullWidth', false); },
+      setLive(v) { return TPANEL_value_set('chatFullWidth', v); },
+    }),
+    Object.freeze({
+      type: 'toggle',
+      key: 'chatgptSyncPromptWidth',
+      label: 'Sync Prompt Width',
+      group: 'Layout',
+      help: 'Same GPThemes Sync Prompt Width control. When on, prompt width follows chat width.',
+      def: true,
+      getLive() { return TPANEL_value_get('syncPromptWidth', true) !== false; },
+      setLive(v) { return TPANEL_value_set('syncPromptWidth', v); },
+    }),
+    Object.freeze({
+      type: 'select',
+      key: 'chatgptScrollAlign',
+      label: 'Scrolldown Button Align',
+      group: 'Layout',
+      help: 'Same GPThemes alignment setting. It remains a safe no-op unless a ChatGPT-native scroll button is marked.',
+      def: 'right',
+      opts: TPANEL_scrollAlign_opts,
+      getLive() { return CHUB_THEME_normalizeScrollAlign(TPANEL_value_get('scrollAlign', 'right')); },
+      setLive(v) { return TPANEL_value_set('scrollAlign', v); },
     }),
   ]);
 
@@ -669,6 +1150,7 @@
 
   W.addEventListener(CHUB_THEME_SETTINGS_EVENT, () => {
     CHUB_THEME_applyVisibilityState();
+    scheduleInvalidate();
   }, true);
 
   register();

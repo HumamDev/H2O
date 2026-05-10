@@ -171,6 +171,7 @@
   // and is written to <html data-h2o-mode="oled">. The derived effectiveMode()
   // helper resolves OLED to 'dark' for binary light/dark token branching.
   function normalizeMode(rawMode) {
+    if (rawMode === 'system') return 'system';
     if (rawMode === 'light') return 'light';
     if (rawMode === 'dark')  return 'dark';
     if (rawMode === 'oled')  return 'oled';
@@ -178,6 +179,9 @@
   }
 
   function resolveEffectiveMode(canonicalMode) {
+    if (canonicalMode === 'system') {
+      return W.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'light' : 'dark';
+    }
     return (canonicalMode === 'oled') ? 'dark' : canonicalMode;
   }
 
@@ -194,10 +198,10 @@
   }
 
   /* ───────────────────────────── 🎯 STATE NORMALIZATION ───────────────────────────── */
-  // Valid mode values in Phase 2A: 'light' | 'dark' | 'oled'. Anything else
+  // Valid mode values in Phase 2A: 'system' | 'light' | 'dark' | 'oled'. Anything else
   // falls back to DEFAULT_STATE.mode. ('auto' is reserved for Phase 4+ and is
   // not yet a valid mode here.)
-  function isValidMode(m) { return m === 'light' || m === 'dark' || m === 'oled'; }
+  function isValidMode(m) { return m === 'system' || m === 'light' || m === 'dark' || m === 'oled'; }
 
   function normalizeState(candidate) {
     const mode    = (candidate && isValidMode(candidate.mode))
@@ -324,7 +328,7 @@
    * changing the existing flow.
    *
    * Two attributes are written:
-   *   data-h2o-mode           = canonical user intent ('light' | 'dark' | 'oled')
+   *   data-h2o-mode           = canonical user intent ('system' | 'light' | 'dark' | 'oled')
    *   data-h2o-effective-mode = resolved binary ('light' | 'dark'); OLED → 'dark'
    *
    * Phase 2A intentionally ships only the safest body-level rules. Selectors
@@ -554,7 +558,7 @@ html[data-h2o-mode="oled"] body {
   function setModeActive(mode) {
     if (!isValidMode(mode)) {
       try {
-        console.warn(`[h2o-theme] H2O.theme.setMode rejected invalid mode '${mode}'. Expected 'light' | 'dark' | 'oled'.`);
+        console.warn(`[h2o-theme] H2O.theme.setMode rejected invalid mode '${mode}'. Expected 'system' | 'light' | 'dark' | 'oled'.`);
       } catch (_) {}
       return false;
     }
