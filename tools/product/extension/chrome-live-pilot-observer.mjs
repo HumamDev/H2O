@@ -10,7 +10,9 @@
 //   script.src = chrome.runtime.getURL("pilot-observer-page.js");
 //
 // Behavior:
-//   - Bounded-retries up to 3000ms for window.H2O.events.onReady availability.
+//   - Bounded-retries up to 8000ms for window.H2O.events.onReady availability.
+//     (bumped from 3000ms because dev-proxy XHR fetches of 0A1a Core can take
+//     >3s under cold load, racing the observer past the install deadline).
 //   - Subscribes (idempotently) to all 10 wave-exit events (9 required + 1
 //     conditional per P3c findings).
 //   - On first observation per event, postMessage's the firedAtMs back to
@@ -95,8 +97,8 @@ export function makeChromeLivePilotObserverJs() {
   function tryInstall() {
     const W = window;
     if (!W.H2O || !W.H2O.events || typeof W.H2O.events.onReady !== "function") {
-      if (nowMs() - startedAt > 3000) {
-        postInstallError("onReady-unavailable-after-3000ms");
+      if (nowMs() - startedAt > 8000) {
+        postInstallError("onReady-unavailable-after-8000ms");
         return;
       }
       setTimeout(tryInstall, 25);

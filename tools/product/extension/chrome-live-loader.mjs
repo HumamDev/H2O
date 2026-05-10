@@ -457,17 +457,31 @@ export function makeChromeLiveLoaderJs({
   // V3.1 dispatcher constants
   const V3D_PER_SCRIPT_TIMEOUT_MS = 5000;
   const V3D_WAVE_EXIT_TIMEOUT_MS = 8000;
-  const V3D_TOTAL_BUDGET_MS = 20000;
-  // Tier order is configurable via H2O_LOADER_V3_DISPATCHER_TIERS but V3.1
-  // only supports "L0L1". Other values fall back silently to L0+L1 to keep
-  // the implementation conservative.
-  const V3D_TIER_ORDER = ["L0", "L1"];
-  // L0 + L1 wave-exit events MUST be a subset of PILOT_WAVE_EXIT_REQUIRED
-  // so the WAR observer is already subscribed. Defining them here separately
-  // makes the dispatcher's gates explicit at the call site.
+  // V3.2 (L2 expansion): bumped from 20000ms because L2 has ~13 scripts vs
+  // L1's 6, and the L2 wave includes the largest userscripts (Library Core,
+  // Hub, MM Engine). Per-script timeout (5000ms) + wave-exit timeout (8000ms)
+  // remain unchanged. 30000ms total preserves comfortable headroom.
+  const V3D_TOTAL_BUDGET_MS = 30000;
+  // Tier order is configurable via H2O_LOADER_V3_DISPATCHER_TIERS.
+  //   "L0L1" (default) → V3.1 behavior, dispatch L0 + L1 only.
+  //   "L0L1L2" → V3.2 behavior, also dispatch L2.
+  //   Any other value → fall back to V3.1 ("L0L1") to keep behavior conservative.
+  const V3D_TIER_ORDER = (V3_DISPATCHER_TIERS === "L0L1L2")
+    ? ["L0", "L1", "L2"]
+    : ["L0", "L1"];
+  // Wave-exit events per tier. MUST be a subset of PILOT_WAVE_EXIT_REQUIRED
+  // so the WAR observer is already subscribed. Defining here separately makes
+  // the dispatcher's gates explicit at the call site. L2 set is included
+  // unconditionally (extra map keys are harmless when V3D_TIER_ORDER excludes
+  // L2). The 4 L2 wave-exit events are all replay-safe (verified by P3a/P3b/
+  // V2.1 migrations + P3-pilot stability runs).
+  // Theme ready (evt:h2o:theme:ready) is INTENTIONALLY EXCLUDED from L2 —
+  // reclassified as optionalAesthetic per Phase 3 audit (can fire ~24s late
+  // on slow pages; would block dispatcher unnecessarily).
   const V3D_WAVE_EXIT = {
     L0: PILOT_WAVE_EXIT_REQUIRED.L0.slice(),  // ["evt:h2o:core:ready", "evt:h2o:obs:ready"]
     L1: PILOT_WAVE_EXIT_REQUIRED.L1.slice(),  // ["evt:h2o:data:ready", "h2o:identity:ready"]
+    L2: PILOT_WAVE_EXIT_REQUIRED.L2.slice(),  // [cntrlhb, mm-engine, lib, sap]  V3.2
   };
 
   // Live kill check — reads localStorage on every call. Used at tier and
@@ -788,11 +802,18 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
-    // All tiers complete
+    // All tiers complete. v2xResumedFrom names the tier V2.x picks up at —
+    // derived dynamically from V3D_TIER_ORDER so the field stays accurate as
+    // the dispatcher's scope expands across V3.x versions.
+    //   V3.1 (TIER_ORDER=L0L1)   → resumed from "L2"
+    //   V3.2 (TIER_ORDER=L0L1L2) → resumed from "L3"
+    //   future expansions follow the same map.
+    const lastTier = V3D_TIER_ORDER[V3D_TIER_ORDER.length - 1];
+    const nextTierAfter = { L0: "L1", L1: "L2", L2: "L3", L3: "L4", L4: "L5" }[lastTier] || "next";
     result.ok = true;
     result.fellBack = false;
     result.totalDispatchMs = v3Now() - startMs;
-    result.v2xResumedFrom = "L2";
+    result.v2xResumedFrom = nextTierAfter;
     return result;
   }
 
