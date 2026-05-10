@@ -3484,6 +3484,14 @@
   }
 
   function emitEngineReady() {
+    // P3b (Loader V3 readiness migration): write to bounded readyCache so
+    // late subscribers attached AFTER this emission still receive the
+    // detail via H2O.events.onReady(...). emitReady() also fans out via
+    // H2O.events.emit() so bus subscribers are notified. The raw window
+    // dispatchEvent(...) below is RETAINED unchanged as backup for
+    // window-listener consumers (MM plugins, 0E1a Export Chat, 2A1a
+    // Question Wrapper, etc.).
+    try { window.H2O?.events?.emitReady?.(EVT_ENGINE_READY, { ver: ENGINE_VER }); } catch (_) {}
     try { window.dispatchEvent(new CustomEvent(EVT_ENGINE_READY, { detail: { ver: ENGINE_VER } })); } catch {}
   }
 

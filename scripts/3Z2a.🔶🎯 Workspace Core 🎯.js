@@ -1827,6 +1827,17 @@ function API_WS_insertTextIntoComposer(text, { replace = false } = {}) {
     CORE_WS_bindNav();
 
     API_WS_saveChatProfile({ lastOpenedAt: UTIL_WS_now() }, S.chatId);
+    // P3c (Loader V3 readiness migration): write to bounded readyCache so
+    // late subscribers attached AFTER this emission still receive the
+    // detail via H2O.events.onReady(...). emitReady() internally calls
+    // H2O.events.emit(), so the immediate-bus-fan-out is preserved. The
+    // UTIL_WS_emit(...) below is RETAINED unchanged as backup; for ready
+    // listeners (typically `once: true` or init-guarded) the additional
+    // bus emit from emitReady is idempotent. Note: CORE_WS_boot may run
+    // multiple times across a page lifecycle (per-chat re-boot); the
+    // readyCache stores only the most recent detail, mirroring what raw
+    // listeners would see for repeat events.
+    try { W.H2O?.events?.emitReady?.(EV_WS_READY, { chatId: S.chatId }); } catch (_) {}
     UTIL_WS_emit(EV_WS_READY, { chatId: S.chatId });
     DIAG_WS_safe('boot:ok', { chatId: S.chatId });
   }

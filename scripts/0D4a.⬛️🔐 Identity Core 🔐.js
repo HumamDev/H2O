@@ -920,6 +920,16 @@
   }
 
   function dispatchReady(identityApi) {
+    // P3b (Loader V3 readiness migration): write to bounded readyCache so
+    // late subscribers attached AFTER this emission still receive the
+    // detail via H2O.events.onReady(...). emitReady() also fans out via
+    // H2O.events.emit() so bus subscribers are notified. The raw window
+    // dispatchEvent(...) below is RETAINED unchanged as backup for
+    // window-listener consumers (e.g. 0D4b Identity First-Run Prompt,
+    // 0Z1a Control Hub).
+    try {
+      global.H2O?.events?.emitReady?.(EVENT_READY, { api: identityApi, version: VERSION });
+    } catch (_) {}
     try {
       global.dispatchEvent(new CustomEvent(EVENT_READY, { detail: { api: identityApi, version: VERSION } }));
     } catch (error) {

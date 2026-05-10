@@ -1946,6 +1946,15 @@ function CORE_DP_bindRailDelegationOnce(){
         CORE_DP_ensureRootMO();
         CORE_DP_bindRailObserversOnce();
 
+        // P3c (Loader V3 readiness migration): write to bounded readyCache so
+        // late subscribers attached AFTER this emission still receive a hit
+        // via H2O.events.onReady(...). emitReady() also fans out via
+        // H2O.events.emit() so bus subscribers are notified. The raw
+        // W.dispatchEvent(...) below is RETAINED unchanged as backup for
+        // window-listener consumers. Note: original event has no detail
+        // (uses `new Event(...)`); we pass an empty object to the bus so the
+        // cache stores something replayable.
+        try { W.H2O?.events?.emitReady?.(EV_DPANEL_READY, {}); } catch (_) {}
         try { W.dispatchEvent(new Event(EV_DPANEL_READY)); } catch (_) {}
         DIAG_DP_safe('boot:done', { view: S.view });
 

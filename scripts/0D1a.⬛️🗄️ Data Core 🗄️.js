@@ -576,6 +576,14 @@ store.registerKey = (key) => {
     } catch {}
   }
     EV_emit(EV_DATA_STORE_CHANGED, { reason: 'boot', keys: [] });
+    // P3a (Loader V3 readiness migration): write to bounded readyCache so
+    // late subscribers attached AFTER this emission still receive the
+    // detail via H2O.events.onReady(...). emitReady() internally calls
+    // H2O.events.emit(), so the immediate-bus-fan-out is preserved. The
+    // EV_emit(...) and raw W.dispatchEvent(...) below are RETAINED unchanged
+    // as backups; for ready listeners (typically `once: true` or init-guarded)
+    // the additional bus emit from emitReady is idempotent.
+    try { H2O.events?.emitReady?.(H2O.EV[`${TOK}_READY`], { ok: true, version: H2O.data.version }); } catch (_) {}
     EV_emit(H2O.EV[`${TOK}_READY`], { ok: true, version: H2O.data.version });
     // Also emit as DOM event (some modules listen on window, not H2O bus)
     try { W.dispatchEvent(new CustomEvent(H2O.EV[`${TOK}_READY`], { detail: { ok: true, version: H2O.data.version } })); } catch {}

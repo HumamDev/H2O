@@ -1141,18 +1141,26 @@ ${SEL_.RIGHT()} *{
     if (!API_ready()) return;
 
     STATE.readyEmitted = true;
+    const _readyDetail = {
+      version: '0.1.4',
+      rootEl: STATE.root,
+      slots: {
+        top: API_getSlot('top'),
+        left: API_getSlot('left'),
+        right: API_getSlot('right'),
+        layer: API_getSlot('layer'),
+      },
+    };
+    // P3c (Loader V3 readiness migration): write to bounded readyCache so
+    // late subscribers attached AFTER this emission still receive the
+    // detail via H2O.events.onReady(...). emitReady() also fans out via
+    // H2O.events.emit() so bus subscribers are notified. The raw
+    // W.dispatchEvent(...) below is RETAINED unchanged as backup for
+    // window-listener consumers (e.g. 0E1a Export Chat at line 1729).
+    try { W.H2O?.events?.emitReady?.(EV_.READY, _readyDetail); } catch (_) {}
     try {
       W.dispatchEvent(new CustomEvent(EV_.READY, {
-        detail: {
-          version: '0.1.4',
-          rootEl: STATE.root,
-          slots: {
-            top: API_getSlot('top'),
-            left: API_getSlot('left'),
-            right: API_getSlot('right'),
-            layer: API_getSlot('layer'),
-          },
-        },
+        detail: _readyDetail,
       }));
     } catch {}
   }

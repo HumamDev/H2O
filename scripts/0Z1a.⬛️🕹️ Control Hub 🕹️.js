@@ -4732,6 +4732,13 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
         try { W.removeEventListener('message', STATE_CH.externalOpenBridgeListener, true); } catch {}
       });
 
+      // P3b (Loader V3 readiness migration): write to bounded readyCache so
+      // late subscribers attached AFTER this emission still receive the
+      // detail via H2O.events.onReady(...). emitReady() also fans out via
+      // H2O.events.emit() so bus subscribers are notified. The UTIL_emit(...)
+      // below is RETAINED unchanged as backup — it does raw W.dispatchEvent
+      // for window-listener consumers (12+ Hub plugin scripts subscribe).
+      try { W.H2O?.events?.emitReady?.(EV_CHUB_READY_V1, { tok: TOK, pid: PID, skid: SkID }); } catch (_) {}
       UTIL_emit(EV_CHUB_READY_V1, { tok: TOK, pid: PID, skid: SkID });
 
       // expose minimal internal api (not a promised stable port; internal use)

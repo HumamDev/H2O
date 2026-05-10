@@ -723,6 +723,14 @@
       };
 
       SAFE_emit(EV_OBS_ROOT_CHANGED, detail);
+      // P3a (Loader V3 readiness migration): write to bounded readyCache so
+      // late subscribers attached AFTER this emission still receive the
+      // detail via H2O.events.onReady(...). emitReady() internally calls
+      // H2O.events.emit(), so the immediate-bus-fan-out is preserved. The
+      // SAFE_emit(...) below is RETAINED unchanged as the legacy bus/raw
+      // backup; for ready listeners (typically `once: true` or init-guarded)
+      // the additional bus emit from emitReady is idempotent.
+      try { H2O.events?.emitReady?.(EV_OBS_READY, detail); } catch (_) {}
       SAFE_emit(EV_OBS_READY, detail);
       deliver('ready', detail);
       DIAG_log('root:changed', { strategy: S.rootStrategy, rootVersion: S.rootVersion });
