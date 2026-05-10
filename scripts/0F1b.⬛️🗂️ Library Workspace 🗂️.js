@@ -2405,13 +2405,66 @@ ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{
   line-height:1;
   color:rgba(255,255,255,.88);
 }
-${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]{ width:34px; height:34px; border:1px solid rgba(255,255,255,.12); border-radius:11px; display:inline-flex; align-items:center; justify-content:center; background:rgba(255,255,255,.04); color:inherit; cursor:pointer; opacity:.86; }
-${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]:hover{ background:rgba(255,255,255,.08); opacity:1; }
-${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"] svg{ width:18px; height:18px; }
-${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
-${PAGE} [${ATTR_CGXUI_STATE}="search"]{ width:100%; min-height:40px; border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:0 14px; background:rgba(255,255,255,.055); color:var(--text-primary, #fff); outline:none; }
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]{
+  width:34px;
+  height:34px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:11px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(255,255,255,.04);
+  color:inherit;
+  cursor:pointer;
+  opacity:.9;
+  box-shadow:0 1px 0 rgba(255,255,255,.08) inset, 0 6px 18px rgba(0,0,0,.12);
+  transition:transform .14s ease, background .16s ease, box-shadow .16s ease, opacity .16s ease, border-color .16s ease;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]:hover{
+  background:rgba(255,255,255,.09);
+  border-color:rgba(255,255,255,.18);
+  opacity:1;
+  box-shadow:0 1px 0 rgba(255,255,255,.12) inset, 0 10px 22px rgba(0,0,0,.16);
+}
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"]:active{
+  transform:translateY(1px) scale(.96);
+  background:rgba(255,255,255,.13);
+  box-shadow:0 1px 0 rgba(255,255,255,.10) inset, 0 4px 10px rgba(0,0,0,.18);
+}
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"][data-busy="true"]{
+  cursor:progress;
+  opacity:1;
+  background:rgba(125,211,252,.14);
+  border-color:rgba(125,211,252,.26);
+  box-shadow:0 0 0 1px rgba(125,211,252,.08) inset, 0 0 0 4px rgba(125,211,252,.08), 0 10px 24px rgba(0,0,0,.16);
+}
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"] svg{ width:18px; height:18px; transition:transform .18s ease; }
+${PAGE} [${ATTR_CGXUI_STATE}="icon-btn"][data-busy="true"] svg{ animation:h2o-library-refresh-spin 900ms linear infinite; }
+${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-areas:
+    "search"
+    "tabs";
+  gap:14px;
+  align-items:start;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="search"]{
+  grid-area:search;
+  width:min(100%, 460px);
+  min-width:280px;
+  min-height:42px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:14px;
+  padding:0 14px;
+  background:rgba(255,255,255,.055);
+  color:var(--text-primary, #fff);
+  outline:none;
+  appearance:none;
+  justify-self:start;
+}
 ${PAGE} [${ATTR_CGXUI_STATE}="search"]:focus{ border-color:rgba(125,211,252,.45); box-shadow:0 0 0 3px rgba(125,211,252,.10); }
-${PAGE} [${ATTR_CGXUI_STATE}="tabs"]{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+${PAGE} [${ATTR_CGXUI_STATE}="tabs"]{ grid-area:tabs; display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
 ${PAGE} [${ATTR_CGXUI_STATE}="tab"]{ border:0; border-radius:999px; padding:8px 13px; background:transparent; color:var(--text-secondary, rgba(255,255,255,.72)); cursor:pointer; }
 ${PAGE} [${ATTR_CGXUI_STATE}="tab"]:hover{ background:rgba(255,255,255,.07); color:var(--text-primary, #fff); }
 ${PAGE} [${ATTR_CGXUI_STATE}="tab"][aria-selected="true"]{ background:var(--interactive-bg-secondary-press, rgba(255,255,255,.12)); color:var(--text-primary, #fff); }
@@ -2451,6 +2504,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
   ${PAGE} [${ATTR_CGXUI_STATE}="head-actions"]{ width:100%; justify-content:flex-end; }
   ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{ max-width:min(44vw, 154px); }
   ${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{ grid-template-columns:1fr; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="search"]{ width:100%; min-width:0; }
   ${PAGE} [${ATTR_CGXUI_STATE}="card-grid"],
   ${PAGE} [${ATTR_CGXUI_STATE}="notice-grid"]{ grid-template-columns:1fr; }
   ${PAGE} [${ATTR_CGXUI_STATE}="pills"]{ display:none; }
@@ -2459,7 +2513,25 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
   ${PAGE} [${ATTR_CGXUI_STATE}="user-card"]{ padding-right:5px; gap:0; }
   ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{ display:none; }
 }
+@keyframes h2o-library-refresh-spin{
+  from{ transform:rotate(0deg); }
+  to{ transform:rotate(360deg); }
+}
 `;
+    }
+
+    function setRefreshButtonBusy(isBusy) {
+      const btn = state.pageEl?.querySelector?.(`[${ATTR_CGXUI_STATE}="icon-btn"]`);
+      if (!(btn instanceof HTMLElement)) return;
+      if (isBusy) {
+        btn.setAttribute('data-busy', 'true');
+        btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('disabled', 'disabled');
+      } else {
+        btn.removeAttribute('data-busy');
+        btn.removeAttribute('aria-busy');
+        btn.removeAttribute('disabled');
+      }
     }
 
     function extendRouteServiceForLibrary() {
@@ -2733,7 +2805,17 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       refresh.setAttribute('aria-label', 'Refresh Library');
       refresh.title = 'Refresh Library';
       refresh.innerHTML = FRAG_SVG_REFRESH;
-      refresh.onclick = () => loadAndRender('manual-refresh').catch((error) => err('refresh-click', error));
+      refresh.onclick = async () => {
+        if (refresh.hasAttribute('disabled')) return;
+        setRefreshButtonBusy(true);
+        try {
+          await loadAndRender('manual-refresh');
+        } catch (error) {
+          err('refresh-click', error);
+        } finally {
+          setRefreshButtonBusy(false);
+        }
+      };
       actions.appendChild(userCard);
       actions.appendChild(refresh);
       updateUserCard(userCard);
@@ -2806,6 +2888,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       syncSidebarActiveState();
       scheduleLibraryActiveSyncPair('open-workspace');
       syncTabs();
+      setRefreshButtonBusy(false);
       safeDispatch('evt:h2o:library-workspace:open', { source: opts.source || 'api', ts: Date.now() });
       await loadAndRender(opts.reason || 'open');
       return state.pageEl;
