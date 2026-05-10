@@ -3,9 +3,9 @@
 // @name               0F1c.⬛️🗂️ Library Index 🧮🗂️
 // @namespace          H2O.Premium.CGX.library_index
 // @author             HumamDev
-// @version            1.1.0
-// @revision           003
-// @build              260426-000005
+// @version            1.1.1
+// @revision           004
+// @build              260509-000001
 // @description        Library Index: read-only normalized known-chat index, persisted known-chat registry, safer native Recents/known-chat discovery, facets, date buckets, and analytics foundation for Library Workspace Explorer/Analytics.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
@@ -149,6 +149,8 @@
     // scanBatchId / visibleInLastScan / batchHistory fields stamped onto registry rows.
     const KEY_SCAN_LEDGER_V1 = `${NS_LIBRARY_STORE}:scan-batches:v1`;
     const SCAN_LEDGER_BATCH_LIMIT = 50;
+    const SIDEBAR_RECENTS_SCAN_DEBOUNCE_MS = 180;
+    const SIDEBAR_RECENTS_SCROLL_DEBOUNCE_MS = 220;
 
     const EV_UPDATED = 'evt:h2o:library-index:updated';
     const EV_REFRESH_REQUEST = 'evt:h2o:library-index:refresh-request';
@@ -193,6 +195,23 @@
       lastKnownRegistryCount: 0,
       scheduledRefreshTimer: 0,
       listenersBound: false,
+      sidebarRecentsObserver: null,
+      sidebarRecentsObserverRoot: null,
+      sidebarRecentsScrollRoot: null,
+      sidebarRecentsScrollListener: null,
+      sidebarRecentsScanTimer: 0,
+      sidebarRecentsScrollTimer: 0,
+      sidebarRecentsEnsureTimer: 0,
+      sidebarRecentsLastSignature: '',
+      sidebarRecentsLastScanAt: 0,
+      sidebarRecentsLastScanReason: '',
+      sidebarRecentsLastRegisterAt: 0,
+      sidebarRecentsLastRegisterReason: '',
+      sidebarRecentsLastRegisteredRows: 0,
+      sidebarRecentsLastRegistryDelta: 0,
+      sidebarRecentsScrollRootSelector: '',
+      sidebarRecentsObserverRootSelector: '',
+      sidebarRecentsLastScanDiag: null,
       clean: { timers: new Set(), listeners: new Set() },
     });
     state.clean = state.clean || { timers: new Set(), listeners: new Set() };
@@ -243,6 +262,10 @@
         try { W.localStorage?.removeItem(key); return true; } catch { return false; }
       },
     };
+
+    function debugSidebarRecents(event, payload = null) {
+      try { console.debug('[H2O.LibraryIndex][sidebar-recents]', event, payload); } catch {}
+    }
 
     function coreNow() {
       return H2O.LibraryCore || coreAtBoot || null;
@@ -561,6 +584,107 @@
       return aa.length >= bb.length ? aa : bb;
     }
 
+    function selectorHint(node) {
+      if (!(node instanceof HTMLElement)) return '';
+      const tag = String(node.tagName || '').toLowerCase();
+      const dataTestId = normText(node.getAttribute?.('data-testid') || '');
+      const id = normText(node.id || '');
+      const cls = normText(typeof node.className === 'string' ? node.className : '')
+        .split(' ')
+        .filter(Boolean)
+        .slice(0, 3)
+        .join('.');
+      const out = [tag || 'node'];
+      if (id) out.push(`#${id}`);
+      if (dataTestId) out.push(`[data-testid="${dataTestId}"]`);
+      if (cls) out.push(`.${cls}`);
+      return out.join('');
+    }
+
+    function isScrollableNode(node) {
+      try {
+        if (!(node instanceof HTMLElement)) return false;
+        const style = W.getComputedStyle?.(node);
+        const overflowY = String(style?.overflowY || style?.overflow || '').toLowerCase();
+        if (!/(auto|scroll|overlay)/.test(overflowY)) return false;
+        return (Number(node.scrollHeight || 0) - Number(node.clientHeight || 0)) > 24;
+      } catch {
+        return false;
+      }
+    }
+
+    function findSidebarScrollRoot(section) {
+      let cur = section instanceof HTMLElement ? section : null;
+      while (cur && cur !== D.body) {
+        if (isScrollableNode(cur)) return cur;
+        cur = cur.parentElement;
+      }
+      const sidebar = D.querySelector('[data-testid="sidebar"]');
+      if (isScrollableNode(sidebar)) return sidebar;
+      const aside = D.querySelector(SEL.aside);
+      if (isScrollableNode(aside)) return aside;
+      return section instanceof HTMLElement ? section : null;
+    }
+
+    function resolveSidebarRecentsRoots() {
+      const section = findRecentsSection();
+      const scrollRoot = findSidebarScrollRoot(section);
+      const observerRoot = D.body || D.documentElement || null;
+      return {
+        section,
+        scrollRoot: scrollRoot instanceof HTMLElement ? scrollRoot : null,
+        observerRoot: observerRoot instanceof HTMLElement ? observerRoot : null,
+        scrollRootSelector: selectorHint(scrollRoot),
+        observerRootSelector: selectorHint(observerRoot),
+        sectionSelector: selectorHint(section),
+      };
+    }
+
+    function matchesSidebarRecentNode(node) {
+      if (!(node instanceof HTMLElement)) return false;
+      if (node.closest?.(`[${ATTR_CGXUI_OWNER}]`)) return false;
+      if (node.matches?.(SEL.sidebarItemAnchor) && /\/c\//i.test(String(node.getAttribute?.('href') || ''))) return true;
+      if (node.matches?.(SEL.header) && /^recents?\b/i.test(normText(node.textContent || ''))) return true;
+      if (node.matches?.('button[aria-expanded], [data-testid="sidebar"], aside, nav')) return true;
+      try {
+        if (node.querySelector?.(`${SEL.sidebarItemAnchor}, ${SEL.header}, [data-testid="sidebar"]`)) return true;
+      } catch {}
+      return false;
+    }
+
+    function mutationTouchesSidebarRecents(muts = []) {
+      return (Array.isArray(muts) ? muts : []).some((mu) => {
+        if (matchesSidebarRecentNode(mu.target)) return true;
+        const nodes = [
+          ...(Array.isArray(mu.addedNodes) ? mu.addedNodes : Array.from(mu.addedNodes || [])),
+          ...(Array.isArray(mu.removedNodes) ? mu.removedNodes : Array.from(mu.removedNodes || [])),
+        ];
+        return nodes.some((node) => matchesSidebarRecentNode(node));
+      });
+    }
+
+    function sidebarRecentsStatus() {
+      const scan = state.sidebarRecentsLastScanDiag;
+      return {
+        lastSidebarScanAt: state.sidebarRecentsLastScanAt || 0,
+        lastSidebarScanAtIso: state.sidebarRecentsLastScanAt ? new Date(state.sidebarRecentsLastScanAt).toISOString() : '',
+        lastSidebarScanReason: state.sidebarRecentsLastScanReason || '',
+        lastSidebarRegisterAt: state.sidebarRecentsLastRegisterAt || 0,
+        lastSidebarRegisterAtIso: state.sidebarRecentsLastRegisterAt ? new Date(state.sidebarRecentsLastRegisterAt).toISOString() : '',
+        lastSidebarRegisterReason: state.sidebarRecentsLastRegisterReason || '',
+        lastSidebarRegisteredRows: Number(state.sidebarRecentsLastRegisteredRows || 0) || 0,
+        lastSidebarRegistryDelta: Number(state.sidebarRecentsLastRegistryDelta || 0) || 0,
+        sidebarObserverAttached: !!state.sidebarRecentsObserver,
+        sidebarObserverRootSelector: state.sidebarRecentsObserverRootSelector || '',
+        sidebarScrollAttached: !!state.sidebarRecentsScrollListener,
+        sidebarScrollRootSelector: state.sidebarRecentsScrollRootSelector || '',
+        sidebarAnchorCount: Number(scan?.nativeRecentsAnchorCount || 0) || 0,
+        sidebarTitleCount: Number(scan?.nativeRecentsTitleCount || 0) || 0,
+        sidebarSkippedRows: Number(scan?.nativeRecentsSkippedCount || 0) || 0,
+        sidebarSkippedReasons: scan?.nativeRecentsSkippedReasons || {},
+      };
+    }
+
     function pickOlderDate(a, b) {
       const ma = dateMs(a);
       const mb = dateMs(b);
@@ -638,6 +762,10 @@
         nativeRecentsCacheCount: 0,
         nativeRecentsCacheKeys: 0,
         nativeRecentsDeclaredTotal: 0,
+        nativeRecentsAnchorCount: 0,
+        nativeRecentsTitleCount: 0,
+        nativeRecentsSkippedCount: 0,
+        nativeRecentsSkippedReasons: {},
         nativeConversationHistoryCacheFound: false,
         knownRegistryAvailable: false,
         knownRegistryCount: 0,
@@ -645,6 +773,22 @@
         completenessLevel: mode === 'visible' ? 'visible-only' : mode === 'loaded' ? 'loaded-dom' : 'best-effort',
         chatHistoryCompleteness: mode === 'visible' ? 'visible-only' : mode === 'loaded' ? 'loaded-dom' : 'best-effort',
         allChatHistoryAvailable: false,
+        lastSidebarScanAt: 0,
+        lastSidebarScanAtIso: '',
+        lastSidebarScanReason: '',
+        lastSidebarRegisterAt: 0,
+        lastSidebarRegisterAtIso: '',
+        lastSidebarRegisterReason: '',
+        lastSidebarRegisteredRows: 0,
+        lastSidebarRegistryDelta: 0,
+        sidebarObserverAttached: false,
+        sidebarObserverRootSelector: '',
+        sidebarScrollAttached: false,
+        sidebarScrollRootSelector: '',
+        sidebarAnchorCount: 0,
+        sidebarTitleCount: 0,
+        sidebarSkippedRows: 0,
+        sidebarSkippedReasons: {},
       };
     }
 
@@ -665,7 +809,7 @@
         knownRegistryAvailable: !!registry?.rows?.length,
         knownRegistryCount: Array.isArray(registry?.rows) ? registry.rows.length : 0,
       };
-      return { ...emptySourceStatus(mode), ...diagRow, ...out };
+      return { ...emptySourceStatus(mode), ...diagRow, ...sidebarRecentsStatus(), ...out };
     }
 
     async function buildModel(reason = 'refresh') {
@@ -900,10 +1044,36 @@
       return out;
     }
 
+    function extractNativeRecentTitle(anchor, chatId = '') {
+      if (!(anchor instanceof HTMLElement)) return normText(chatId || '');
+      const candidates = [
+        anchor.querySelector?.(SEL.sidebarTruncate)?.textContent,
+        anchor.getAttribute?.('aria-label'),
+        anchor.getAttribute?.('title'),
+        anchor.innerText,
+        anchor.textContent,
+        chatId,
+      ];
+      for (const raw of candidates) {
+        const title = normText(raw || '').slice(0, 220);
+        if (!title) continue;
+        if (/^more$/i.test(title) || /^recents?$/i.test(title)) continue;
+        return title;
+      }
+      return normText(chatId || '').slice(0, 220);
+    }
+
     function collectNativeRecentDomRows(observedAt = new Date().toISOString()) {
       const rows = [];
       const section = findRecentsSection();
       const expanded = readNativeRecentsToggle(section);
+      const skippedReasons = {};
+      let anchorCount = 0;
+      let titleCount = 0;
+      const skip = (reason) => {
+        const key = normText(reason || 'unknown') || 'unknown';
+        skippedReasons[key] = Number(skippedReasons[key] || 0) + 1;
+      };
       try {
         if (!(section instanceof HTMLElement)) {
           return {
@@ -914,17 +1084,32 @@
               nativeRecentsExpanded: false,
               nativeRecentsVisibleCount: 0,
               nativeRecentsLoadedCount: 0,
+              nativeRecentsAnchorCount: 0,
+              nativeRecentsTitleCount: 0,
+              nativeRecentsSkippedCount: 0,
+              nativeRecentsSkippedReasons: {},
             },
           };
         }
         Array.from(section.querySelectorAll(SEL.sidebarItemAnchor)).forEach((a, index) => {
           if (!(a instanceof HTMLElement)) return;
-          if (a.closest(`[${ATTR_CGXUI_OWNER}]`)) return;
+          anchorCount += 1;
+          if (a.closest(`[${ATTR_CGXUI_OWNER}]`)) {
+            skip('h2o-owned');
+            return;
+          }
           const href = normText(a.getAttribute('href') || '');
           const chatId = parseChatIdFromHref(href);
-          if (!chatId) return;
-          const title = normText(a.querySelector?.(SEL.sidebarTruncate)?.textContent || a.innerText || a.textContent || chatId).slice(0, 220);
-          if (!title || /^more$/i.test(title) || /^recents?$/i.test(title)) return;
+          if (!chatId) {
+            skip('missing-chat-id');
+            return;
+          }
+          const title = extractNativeRecentTitle(a, chatId);
+          if (!title) {
+            skip('missing-title');
+            return;
+          }
+          titleCount += 1;
           rows.push({
             chatId,
             href,
@@ -950,6 +1135,10 @@
           nativeRecentsExpanded: expanded == null ? !!deduped.length : !!expanded,
           nativeRecentsVisibleCount: visibleRows.length,
           nativeRecentsLoadedCount: deduped.length,
+          nativeRecentsAnchorCount: anchorCount,
+          nativeRecentsTitleCount: titleCount,
+          nativeRecentsSkippedCount: Object.values(skippedReasons).reduce((sum, value) => sum + Number(value || 0), 0),
+          nativeRecentsSkippedReasons: skippedReasons,
         },
       };
     }
@@ -1061,6 +1250,163 @@
       };
       state.lastNativeRecentsDiag = diagnostics;
       return { rows: stripNativeRecentPrivateFields(rows), diagnostics };
+    }
+
+    function signatureForRows(rows = []) {
+      return (Array.isArray(rows) ? rows : [])
+        .map((row) => `${normalizeChatId(row?.chatId || row?.href || row?.id || '')}|${normText(row?.title || '')}`)
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    async function scanSidebarRecentsNow(reason = 'sidebar-recents', opts = {}) {
+      const scanReason = normText(reason || 'sidebar-recents') || 'sidebar-recents';
+      const observedAt = new Date().toISOString();
+      const inspection = inspectNativeRecents({ mode: 'loaded', observedAt });
+      const rows = Array.isArray(inspection?.rows) ? inspection.rows : [];
+      const diagnostics = inspection?.diagnostics && typeof inspection.diagnostics === 'object'
+        ? { ...inspection.diagnostics }
+        : {};
+      const roots = resolveSidebarRecentsRoots();
+      diagnostics.sidebarObserverRootSelector = roots.observerRootSelector || '';
+      diagnostics.sidebarScrollRootSelector = roots.scrollRootSelector || '';
+      diagnostics.sidebarSectionSelector = roots.sectionSelector || '';
+      diagnostics.sidebarObserverAttached = !!state.sidebarRecentsObserver;
+      diagnostics.sidebarScrollAttached = !!state.sidebarRecentsScrollListener;
+      diagnostics.sidebarScanReason = scanReason;
+      diagnostics.sidebarRowsSeen = rows.length;
+      state.sidebarRecentsLastScanDiag = diagnostics;
+      state.sidebarRecentsLastScanAt = Date.now();
+      state.sidebarRecentsLastScanReason = scanReason;
+      const signature = signatureForRows(rows);
+      const changed = signature !== state.sidebarRecentsLastSignature;
+      let registryDelta = 0;
+      if (changed || opts.force === true) {
+        const beforeCount = Array.isArray(readKnownChatRegistry()?.rows) ? readKnownChatRegistry().rows.length : 0;
+        registerKnownChats(rows, { reason: `sidebar-recents:${scanReason}`, refresh: false });
+        const afterCount = Array.isArray(readKnownChatRegistry()?.rows) ? readKnownChatRegistry().rows.length : beforeCount;
+        registryDelta = Math.max(0, afterCount - beforeCount);
+        state.sidebarRecentsLastRegisterAt = Date.now();
+        state.sidebarRecentsLastRegisterReason = scanReason;
+        state.sidebarRecentsLastRegisteredRows = rows.length;
+        state.sidebarRecentsLastRegistryDelta = registryDelta;
+        state.sidebarRecentsLastSignature = signature;
+        debugSidebarRecents('scan', {
+          reason: scanReason,
+          anchors: diagnostics.nativeRecentsAnchorCount || 0,
+          titles: diagnostics.nativeRecentsTitleCount || 0,
+          loadedRows: rows.length,
+          registryDelta,
+          skipped: diagnostics.nativeRecentsSkippedReasons || {},
+          scrollRoot: roots.scrollRootSelector || '',
+          observerRoot: roots.observerRootSelector || '',
+        });
+        await flushKnownChatRegistryNow(`sidebar-recents:${scanReason}`);
+        scheduleRefresh(`sidebar-recents:${scanReason}`);
+      }
+      return { ok: true, changed, registryDelta, rows, diagnostics };
+    }
+
+    function scheduleSidebarRecentsScan(reason = 'sidebar-recents', delay = SIDEBAR_RECENTS_SCAN_DEBOUNCE_MS, opts = {}) {
+      const ms = Math.max(0, Number(delay || 0));
+      if (state.sidebarRecentsScanTimer) {
+        try { W.clearTimeout(state.sidebarRecentsScanTimer); } catch {}
+        state.clean.timers.delete(state.sidebarRecentsScanTimer);
+      }
+      state.sidebarRecentsScanTimer = W.setTimeout(() => {
+        const timer = state.sidebarRecentsScanTimer;
+        state.sidebarRecentsScanTimer = 0;
+        state.clean.timers.delete(timer);
+        ensureSidebarRecentsMonitor('scan');
+        try {
+          Promise.resolve(scanSidebarRecentsNow(reason, opts)).catch((e) => err(`sidebar-recents:scan:${reason}`, e));
+        } catch (e) {
+          err(`sidebar-recents:scan:${reason}`, e);
+        }
+      }, ms);
+      state.clean.timers.add(state.sidebarRecentsScanTimer);
+      return true;
+    }
+
+    function attachSidebarRecentsScroll(root) {
+      if (!(root instanceof HTMLElement)) return false;
+      if (state.sidebarRecentsScrollRoot === root && state.sidebarRecentsScrollListener) return true;
+      if (state.sidebarRecentsScrollRoot && state.sidebarRecentsScrollListener) {
+        try { state.sidebarRecentsScrollRoot.removeEventListener('scroll', state.sidebarRecentsScrollListener, true); } catch {}
+      }
+      const onScroll = () => {
+        if (state.sidebarRecentsScrollTimer) {
+          try { W.clearTimeout(state.sidebarRecentsScrollTimer); } catch {}
+          state.clean.timers.delete(state.sidebarRecentsScrollTimer);
+        }
+        state.sidebarRecentsScrollTimer = W.setTimeout(() => {
+          const timer = state.sidebarRecentsScrollTimer;
+          state.sidebarRecentsScrollTimer = 0;
+          state.clean.timers.delete(timer);
+          scheduleSidebarRecentsScan('scroll', 0);
+        }, SIDEBAR_RECENTS_SCROLL_DEBOUNCE_MS);
+        state.clean.timers.add(state.sidebarRecentsScrollTimer);
+      };
+      try {
+        root.addEventListener('scroll', onScroll, { passive: true, capture: true });
+        state.sidebarRecentsScrollRoot = root;
+        state.sidebarRecentsScrollListener = onScroll;
+        state.sidebarRecentsScrollRootSelector = selectorHint(root);
+        debugSidebarRecents('scroll-attached', { root: state.sidebarRecentsScrollRootSelector });
+        return true;
+      } catch (e) {
+        err('sidebar-recents:scroll-attach', e);
+        return false;
+      }
+    }
+
+    function ensureSidebarRecentsMonitor(reason = 'ensure') {
+      const roots = resolveSidebarRecentsRoots();
+      const observerRoot = roots.observerRoot;
+      if (observerRoot instanceof HTMLElement && state.sidebarRecentsObserverRoot !== observerRoot) {
+        try { state.sidebarRecentsObserver?.disconnect?.(); } catch {}
+        state.sidebarRecentsObserverRoot = observerRoot;
+        state.sidebarRecentsObserverRootSelector = roots.observerRootSelector || '';
+        if (typeof MutationObserver === 'function') {
+          const mo = new MutationObserver((muts) => {
+            if (!mutationTouchesSidebarRecents(muts)) return;
+            scheduleSidebarRecentsScan('mutation');
+            const nextRoots = resolveSidebarRecentsRoots();
+            if (nextRoots.scrollRoot instanceof HTMLElement) attachSidebarRecentsScroll(nextRoots.scrollRoot);
+          });
+          try {
+            mo.observe(observerRoot, {
+              childList: true,
+              subtree: true,
+              characterData: true,
+              attributes: true,
+              attributeFilter: ['href', 'aria-expanded', 'title', 'data-testid', 'hidden', 'class'],
+            });
+            state.sidebarRecentsObserver = mo;
+            debugSidebarRecents('observer-attached', { root: state.sidebarRecentsObserverRootSelector, reason });
+          } catch (e) {
+            err('sidebar-recents:observer-attach', e);
+          }
+        }
+      }
+      if (roots.scrollRoot instanceof HTMLElement) attachSidebarRecentsScroll(roots.scrollRoot);
+      state.sidebarRecentsScrollRootSelector = roots.scrollRootSelector || state.sidebarRecentsScrollRootSelector || '';
+      return roots;
+    }
+
+    function scheduleEnsureSidebarRecentsMonitor(reason = 'ensure') {
+      if (state.sidebarRecentsEnsureTimer) {
+        try { W.clearTimeout(state.sidebarRecentsEnsureTimer); } catch {}
+        state.clean.timers.delete(state.sidebarRecentsEnsureTimer);
+      }
+      state.sidebarRecentsEnsureTimer = W.setTimeout(() => {
+        const timer = state.sidebarRecentsEnsureTimer;
+        state.sidebarRecentsEnsureTimer = 0;
+        state.clean.timers.delete(timer);
+        ensureSidebarRecentsMonitor(reason);
+      }, 120);
+      state.clean.timers.add(state.sidebarRecentsEnsureTimer);
+      return true;
     }
 
     function listNativeRecentChats(options = null) {
@@ -1196,6 +1542,25 @@
       state.clean.timers.add(timer);
     }
 
+    async function flushKnownChatRegistryNow(reason = '') {
+      if (!state.v2RegistryCache) return false;
+      if (state.v2FlushTimer) {
+        try { W.clearTimeout(state.v2FlushTimer); } catch {}
+        state.clean.timers.delete(state.v2FlushTimer);
+        state.v2FlushTimer = 0;
+      }
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (!Store || !state.v2RegistryCache) return false;
+        await Store.set(KEY_REGISTRY_V2, state.v2RegistryCache);
+        step('store-flush:immediate', `${state.v2RegistryCache.rows?.length || 0} rows | ${reason || ''}`);
+        return true;
+      } catch (e) {
+        err('store-flush:immediate', e);
+        return false;
+      }
+    }
+
     // Phase 3: same debounce pattern but for the ledger. Decoupled from registry flush so a
     // burst of registry writes during a scan doesn't hold the ledger flush back, and vice
     // versa. Both eventually land in the bridge's IndexedDB through H2O.Library.Store.
@@ -1217,6 +1582,25 @@
       }, REGISTRY_STORE_FLUSH_DEBOUNCE_MS);
       state.ledgerFlushTimer = timer;
       state.clean.timers.add(timer);
+    }
+
+    async function flushScanLedgerNow(reason = '') {
+      if (!state.scanLedgerCache) return false;
+      if (state.ledgerFlushTimer) {
+        try { W.clearTimeout(state.ledgerFlushTimer); } catch {}
+        state.clean.timers.delete(state.ledgerFlushTimer);
+        state.ledgerFlushTimer = 0;
+      }
+      try {
+        const Store = W.H2O?.Library?.Store;
+        if (!Store || !state.scanLedgerCache) return false;
+        await Store.set(KEY_SCAN_LEDGER_V1, state.scanLedgerCache);
+        step('ledger-flush:immediate', `${state.scanLedgerCache.batches?.length || 0} batches | ${reason || ''}`);
+        return true;
+      } catch (e) {
+        err('ledger-flush:immediate', e);
+        return false;
+      }
     }
 
     function readKnownChatRegistry() {
@@ -1281,6 +1665,17 @@
     function mergeKnownChatRegistryRows(rows = [], meta = {}) {
       const current = readKnownChatRegistryRows();
       return writeKnownChatRegistryRows([...(Array.isArray(current) ? current : []), ...(Array.isArray(rows) ? rows : [])], meta);
+    }
+
+    async function flushDurabilityNow(reason = '') {
+      const [registry, ledger] = await Promise.allSettled([
+        flushKnownChatRegistryNow(reason),
+        flushScanLedgerNow(reason),
+      ]);
+      return {
+        registry: registry.status === 'fulfilled' ? registry.value === true : false,
+        ledger: ledger.status === 'fulfilled' ? ledger.value === true : false,
+      };
     }
 
     // Phase 3 fix: which refresh reasons warrant a fresh ledger batch. The 'storage:*'
@@ -2392,6 +2787,7 @@
         state.model = model;
         state.lastRefreshAt = Date.now();
         persistKnownChatRegistryFromModel(model, reason);
+        await flushDurabilityNow(`refresh:${reason}`);
         writeCache(model);
         dispatchUpdated(reason, model);
         step('refresh:done', `${model.counts.knownChats} known / ${model.durationMs}ms`);
@@ -2468,6 +2864,10 @@
       bind(W, 'h2o:library:store:tier-promoted', () => { retryLibraryStoreMigration('event:store-tier-promoted').catch((e) => err('migration:retry:store-tier-promoted', e)); }, true);
       bind(W, 'evt:h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
       bind(W, 'h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
+      bind(W, 'focus', () => {
+        scheduleEnsureSidebarRecentsMonitor('focus');
+        scheduleSidebarRecentsScan('focus', 0);
+      }, true);
       bind(W, 'storage', (event) => {
         const key = String(event?.key || '');
         if (/h2o:prm:cgx:(labels|fldrs|tags|library|library-index)|h2o:folders/i.test(key) || /\/conversation-history$/i.test(key)) {
@@ -2478,6 +2878,8 @@
       const timer = W.setTimeout(() => {
         state.clean.timers.delete(timer);
         retryLibraryStoreMigration('bind:initial-check').catch((e) => err('migration:retry:bind-initial-check', e));
+        ensureSidebarRecentsMonitor('bind-initial-check');
+        scheduleSidebarRecentsScan('bind-initial-check', 0, { force: true });
       }, 0);
       state.clean.timers.add(timer);
     }
@@ -2563,6 +2965,7 @@
       readCache() { return readCache(); },
       isCacheFresh() { return isCacheFresh(); },
       listNativeRecentChats(options = null) { return listNativeRecentChats(options); },
+      scanSidebarRecents(reason = 'api', opts = {}) { return scanSidebarRecentsNow(reason, opts); },
       selfCheck() { return selfCheck(); },
     };
 
@@ -2614,11 +3017,15 @@
       }
       if (!cached || !isCacheFresh(cached)) scheduleRefresh('boot');
       else step('boot:using-fresh-cache', `${cached.counts?.knownChats || 0} known`);
+      ensureSidebarRecentsMonitor('boot');
+      scheduleSidebarRecentsScan('boot', 0, { force: true });
 
       // Register again shortly after boot because some 0F modules may register late.
       const late = W.setTimeout(() => {
         state.clean.timers.delete(late);
         registerWithCore();
+        ensureSidebarRecentsMonitor('late-boot');
+        scheduleSidebarRecentsScan('late-boot');
         if (!state.model?.ok) scheduleRefresh('late-boot');
       }, 900);
       state.clean.timers.add(late);
