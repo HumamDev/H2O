@@ -448,11 +448,28 @@ function setRouteMeta(eyebrow, title, summary){
   if (summaryEl) summaryEl.textContent = String(summary || "");
 }
 
+// ── Transport seam ──────────────────────────────────────────────────────────
+// Archive requests route through H2O.Studio.platform.messaging.send — the
+// required boundary for the future Tauri port. The envelope is preserved
+// exactly so the service-worker receiver (bg.js) continues to dispatch by
+// type unchanged. The 'archive' target is informational today (MV3 routes
+// by envelope.type) and becomes the Tauri command name at port time.
+// Falls back to direct chrome.runtime.sendMessage if the platform adapter
+// is unavailable. See surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md.
+function getPlatformMessaging(){
+  const p = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.messaging;
+  if (!p || typeof p.send !== 'function') return null;
+  const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
+  if (env && env.adapter === 'fallback') return null;
+  return p;
+}
+
 async function callArchive(op, payload = {}, nsDisk){
-  const res = await chrome.runtime.sendMessage({
-    type: MSG_ARCHIVE,
-    req: { op, payload, nsDisk },
-  });
+  const message = { type: MSG_ARCHIVE, req: { op, payload, nsDisk } };
+  const pm = getPlatformMessaging();
+  const res = pm
+    ? await pm.send('archive', message)
+    : await chrome.runtime.sendMessage(message);
   if (!res?.ok) throw new Error(res?.error || `Archive op failed: ${op}`);
   return res.result;
 }
