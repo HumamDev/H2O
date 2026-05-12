@@ -27,8 +27,10 @@ After load, the following is available on `window`:
 H2O.Studio.platform.env                        // { adapter, version, bootedAt, isExtension, isTauri, isDev }
 H2O.Studio.platform.messaging.send(target, msg)// → Promise<response>
 H2O.Studio.platform.messaging.on(target, fn)   // → unsubscribe()
-H2O.Studio.platform.broadcast.emit(channel, p) // → Promise<void>
-H2O.Studio.platform.broadcast.on(channel, fn)  // → unsubscribe()
+H2O.Studio.platform.broadcast.emit(channel, p)      // → Promise<void>   (channel-based; uses 'h2o:studio:platform:broadcast:<channel>:v1')
+H2O.Studio.platform.broadcast.on(channel, fn)       // → unsubscribe()
+H2O.Studio.platform.broadcast.emitRaw(key, payload) // → Promise<void>   (writes to a specific key; for legacy wire-format interop)
+H2O.Studio.platform.broadcast.onAnyChange(fn)       // → unsubscribe()   (fn(changes, area); for prefix-watching / legacy interop)
 H2O.Studio.platform.storage.get(key)           // → Promise<any|null>
 H2O.Studio.platform.storage.set(key, value)    // → Promise<void>
 H2O.Studio.platform.storage.remove(key)        // → Promise<void>

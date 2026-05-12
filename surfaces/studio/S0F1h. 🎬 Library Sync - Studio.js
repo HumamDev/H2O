@@ -6,7 +6,7 @@
 // @version            1.0.0
 // @revision           001
 // @build              260511-000021
-// @description        Studio Library Sync: cross-surface live propagation of Library state. Watches chrome.storage.onChanged for archive-bridge mutations made by native (chatgpt.com tab) and re-emits them as evt:h2o:library:cross-surface-sync. Library Workspace + Index subscribe and refresh. Also broadcasts Studio-originated changes back out via chrome.storage so native can pick them up.
+// @description        Studio Library Sync: cross-surface live propagation of Library state. Routes through H2O.Studio.platform.broadcast (emitRaw / onAnyChange) which is the required boundary for the future Tauri port. Wire format (BROADCAST_KEY / NATIVE_BROADCAST_KEY in chrome.storage.local) is preserved for native (chatgpt.com tab) interop. Falls back to direct chrome.storage if the platform adapter is unavailable. Library Workspace + Index subscribe and refresh on sync events.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
@@ -60,11 +60,34 @@
 
   const state = {
     bound: false,
+    transport: null,        // 'platform.broadcast' | 'chrome.storage.fallback' | null
+    unsub: null,            // teardown for the bound listener, if any
     lastSync: 0,
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
   };
+
+  // ── Transport seam ────────────────────────────────────────────────────────
+  // All cross-surface signaling routes through H2O.Studio.platform.broadcast.
+  // emitRaw / onAnyChange preserve the legacy wire format (writes to
+  // BROADCAST_KEY / NATIVE_BROADCAST_KEY in chrome.storage.local) so the
+  // native counterpart at scripts/0F1h.*.js and the watching feature owners
+  // continue to operate unchanged. The platform adapter is the required
+  // boundary for the future Tauri port — at port time the MV3 adapter is
+  // swapped for a Tauri adapter without touching this file. See
+  // surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md and
+  // STUDIO_PORTABILITY_CONTRACT.md.
+  function getPlatformBroadcast() {
+    const p = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.broadcast;
+    if (!p) return null;
+    if (typeof p.emitRaw !== 'function' || typeof p.onAnyChange !== 'function') return null;
+    // Reject the fallback adapter — it would noop/throw and we'd want the
+    // direct chrome.storage path to take over for graceful degradation.
+    const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
+    if (env && env.adapter === 'fallback') return null;
+    return p;
+  }
 
   function hasChromeStorage() {
     try {
@@ -75,6 +98,30 @@
   function isWatchedKey(key) {
     const k = String(key || '');
     return WATCHED_PREFIXES.some((p) => k.startsWith(p));
+  }
+
+  /* Single change-handler body, shared by the platform-backed and legacy
+   * fallback paths so behavior is byte-identical regardless of transport. */
+  function handleChanges(changes, area) {
+    if (area !== 'local') return;
+    const hits = [];
+    for (const key of Object.keys(changes || {})) {
+      if (isWatchedKey(key)) hits.push(key);
+      if (key === BROADCAST_KEY) {
+        // chrome.storage.onChanged fires in the writing context too, so
+        // every Studio-originated broadcast would otherwise come back as
+        // an inbound event and trigger a wasteful self-refresh. Skip if
+        // the payload identifies itself as Studio's own write.
+        const newVal = changes[BROADCAST_KEY] && changes[BROADCAST_KEY].newValue;
+        if (newVal && newVal.surface === 'studio') continue;
+        hits.push('broadcast');
+      }
+      // Native counterpart (0F1h) writes here on its own state changes.
+      // Studio reacts so a folder/category mutation made in a chatgpt.com
+      // tab refreshes the open Library page.
+      if (key === NATIVE_BROADCAST_KEY) hits.push('native-broadcast');
+    }
+    if (hits.length) coalesceEmit(`${state.transport || 'transport'}:${hits.length}`);
   }
 
   function emitSync(reasonList) {
@@ -107,54 +154,63 @@
     }, COALESCE_MS);
   }
 
-  function bindChromeStorage() {
+  function bindTransport() {
     if (state.bound) return true;
+    // Prefer the platform adapter (Tauri-portable path).
+    const pb = getPlatformBroadcast();
+    if (pb) {
+      try {
+        state.unsub = pb.onAnyChange(handleChanges);
+        state.transport = 'platform.broadcast';
+        state.bound = true;
+        step('bind.platform.broadcast');
+        return true;
+      } catch (e) { err('bind.platform.broadcast', e); /* fall through to legacy */ }
+    }
+    // Legacy direct chrome.storage path — preserved for graceful degradation
+    // when the platform adapter is the fallback (e.g., chrome.* unavailable).
     if (!hasChromeStorage()) return false;
     if (!chrome.storage.onChanged || typeof chrome.storage.onChanged.addListener !== 'function') return false;
     try {
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local') return;
-        const hits = [];
-        for (const key of Object.keys(changes || {})) {
-          if (isWatchedKey(key)) hits.push(key);
-          if (key === BROADCAST_KEY) {
-            // chrome.storage.onChanged fires in the writing context too, so
-            // every Studio-originated broadcast would otherwise come back as
-            // an inbound event and trigger a wasteful self-refresh. Skip if
-            // the payload identifies itself as Studio's own write.
-            const newVal = changes[BROADCAST_KEY] && changes[BROADCAST_KEY].newValue;
-            if (newVal && newVal.surface === 'studio') continue;
-            hits.push('broadcast');
-          }
-          // Native counterpart (0F1h) writes here on its own state changes.
-          // Studio reacts so a folder/category mutation made in a chatgpt.com
-          // tab refreshes the open Library page.
-          if (key === NATIVE_BROADCAST_KEY) hits.push('native-broadcast');
-        }
-        if (hits.length) coalesceEmit(`chrome.storage:${hits.length}`);
-      });
+      const listener = (changes, area) => handleChanges(changes, area);
+      chrome.storage.onChanged.addListener(listener);
+      state.unsub = () => { try { chrome.storage.onChanged.removeListener(listener); } catch (_) {} };
+      state.transport = 'chrome.storage.fallback';
       state.bound = true;
-      step('bind.chrome.storage');
+      step('bind.chrome.storage.fallback');
       return true;
-    } catch (e) { err('bind.chrome.storage', e); return false; }
+    } catch (e) { err('bind.chrome.storage.fallback', e); return false; }
   }
 
   function broadcastFromStudio(reason, payload) {
-    // Write a small ticking sentinel to chrome.storage.local — native's listener
-    // (registered by 0F3a/0F4a/etc) can pick this up via the same key prefix.
+    // Write a small ticking sentinel — native's listener (registered by
+    // scripts/0F1h native counterpart) picks this up via chrome.storage.
+    // The wire format (BROADCAST_KEY, body shape) is part of the legacy
+    // cross-surface protocol and is intentionally preserved.
+    const body = {
+      ts: Date.now(),
+      surface: 'studio',
+      reason: String(reason || 'studio-change'),
+      payload: payload && typeof payload === 'object' ? payload : null,
+    };
+    const pb = getPlatformBroadcast();
+    if (pb) {
+      try {
+        // emitRaw is fire-and-forget for callers; preserve sync `return true`
+        // semantics by not awaiting. Errors funnel into err() via .catch.
+        pb.emitRaw(BROADCAST_KEY, body)
+          .then(() => step('broadcast.platform', body.reason))
+          .catch((e) => err('broadcast.platform', e));
+        return true;
+      } catch (e) { err('broadcast.platform', e); /* fall through to legacy */ }
+    }
     if (!hasChromeStorage()) return false;
     try {
-      const body = {
-        ts: Date.now(),
-        surface: 'studio',
-        reason: String(reason || 'studio-change'),
-        payload: payload && typeof payload === 'object' ? payload : null,
-      };
       chrome.storage.local.set({ [BROADCAST_KEY]: body }, () => {
-        step('broadcast', body.reason);
+        step('broadcast.fallback', body.reason);
       });
       return true;
-    } catch (e) { err('broadcast', e); return false; }
+    } catch (e) { err('broadcast.fallback', e); return false; }
   }
 
   // ── Workspace bridge ───────────────────────────────────────────────────────
@@ -185,9 +241,15 @@
     broadcast: broadcastFromStudio,
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
     diagnose() {
+      const pb = getPlatformBroadcast();
+      const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
       return {
         surface: 'studio',
         bound: state.bound,
+        transport: state.transport,                 // 'platform.broadcast' | 'chrome.storage.fallback' | null
+        platformBroadcastAvailable: !!pb,
+        platformAdapter: env ? env.adapter : null,  // 'mv3' | 'fallback' | 'tauri' (future)
+        legacyKeyCompat: true,                      // BROADCAST_KEY/NATIVE_BROADCAST_KEY preserved for native interop
         hasChromeStorage: hasChromeStorage(),
         lastSync: state.lastSync,
         watchedPrefixes: WATCHED_PREFIXES,
@@ -204,7 +266,7 @@
   H2O.Library.Sync = Sync;
 
   function bootBindings() {
-    bindChromeStorage();
+    bindTransport();
     bindWorkspaceEvents() || W.setTimeout(bindWorkspaceEvents, 350);
   }
 

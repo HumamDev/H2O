@@ -53,6 +53,8 @@
     broadcast: {
       emit: unavailableAsync('broadcast.emit'),
       on: noopUnsub,
+      emitRaw: unavailableAsync('broadcast.emitRaw'),
+      onAnyChange: noopUnsub,
     },
     storage: {
       get: function () { return Promise.resolve(null); },

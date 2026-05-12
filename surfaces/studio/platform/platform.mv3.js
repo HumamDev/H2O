@@ -134,6 +134,49 @@
     return function () { global.removeEventListener(winEvent, winHandler); };
   }
 
+  /* ── Legacy / interop transports ──
+   * emitRaw and onAnyChange let feature code preserve wire-format
+   * compatibility with non-Studio surfaces (e.g., the native chatgpt.com
+   * content scripts that already write to specific chrome.storage keys).
+   * Useful for migrations like S0F1h Library Sync, which broadcasts on
+   * `h2o:library:cross-surface:broadcast:v1` and listens for the native
+   * counterpart on `:native:v1`. The platform adapter remains the only
+   * place that touches chrome.* — feature code never imports chrome.
+   */
+
+  function broadcastEmitRaw(key, payload) {
+    return new Promise(function (resolve, reject) {
+      if (!hasStorage) return reject(new Error('chrome.storage unavailable'));
+      try {
+        var obj = {};
+        obj[String(key)] = payload;
+        chromeApi.storage.local.set(obj, function () {
+          var err = chromeApi.runtime && chromeApi.runtime.lastError;
+          if (err) return reject(new Error(err.message || String(err)));
+          resolve();
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function broadcastOnAnyChange(fn) {
+    if (typeof fn !== 'function') return function () {};
+    if (!hasStorage || !chromeApi.storage.onChanged || !chromeApi.storage.onChanged.addListener) {
+      return function () {};
+    }
+    var listener = function (changes, area) {
+      try { fn(changes, area); } catch (e) {
+        platform.__warn('broadcast.onAnyChange handler threw: ' + (e && e.message ? e.message : String(e)));
+      }
+    };
+    chromeApi.storage.onChanged.addListener(listener);
+    return function () {
+      try { chromeApi.storage.onChanged.removeListener(listener); } catch (e) { /* ignore */ }
+    };
+  }
+
   /* ───────────────────────── storage ─────────────────────────
    * Low-level, localStorage-backed. This is intentionally simple: it is the
    * building block under a future H2O.Studio.store façade, not a replacement
@@ -214,7 +257,12 @@
       isDev: !!(global.location && /[?&]h2oDev=1\b/.test(global.location.search || '')),
     },
     messaging: { send: messagingSend, on: messagingOn },
-    broadcast: { emit: broadcastEmit, on: broadcastOn },
+    broadcast: {
+      emit: broadcastEmit,
+      on: broadcastOn,
+      emitRaw: broadcastEmitRaw,
+      onAnyChange: broadcastOnAnyChange,
+    },
     storage: { get: storageGet, set: storageSet, remove: storageRemove },
     files: files,
     capture: capture,
