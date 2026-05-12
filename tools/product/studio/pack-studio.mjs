@@ -1,4 +1,4 @@
-// @version 2.0.0
+// @version 2.1.0
 import fs from "node:fs";
 import path from "node:path";
 
@@ -12,6 +12,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0A2a. 🎬 Observer Hub - Studio.js",
   "S0A1a. 🎬 H2O Core - Studio.js",
 
+  // Studio Platform Adapter — must load after H2O Core and before any feature
+  // module. Contracts: surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md.
+  // Subdir entries; pack-studio's sync step creates parent dirs on copy.
+  "platform/index.js",
+  "platform/platform.mv3.js",
+  "platform/selectors.contract.js",
+
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
   "S1A1e. 🎬 MiniMap Skin - Studio.js",
@@ -31,6 +38,32 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S1Z1a. 🎬 Answer Timestamp - Studio.js",
   "S2Z1a. 🎬 Question Timestamp - Studio.js",
   "S1X1a. 🎬 Answer Numbers - Studio.js",
+
+  // Library subsystem (Studio) — must match the <script> tag order in studio.html.
+  // studio.html references these by filename; if any are missing from the bundle
+  // the browser silently 404s the <script> tag and H2O.LibraryCore/etc. remain
+  // undefined. Keep this list in lockstep with studio.html.
+  "S0F0a. 🎬 Library Surface Host - Studio.js",
+  "S0F1a. 🎬 Library Core - Studio.js",
+  "S0F1e. 🎬 Library Store - Studio.js",
+  "S0F1g. 🎬 Chat Registry - Studio.js",
+  "S0F1c. 🎬 Library Index - Studio.js",
+  "S0F2a. 🎬 Projects - Studio.js",
+  "S0F3a. 🎬 Folders - Studio.js",
+  "S0F4a. 🎬 Categories - Studio.js",
+  "S0F5a. 🎬 Tags - Studio.js",
+  "S0F6a. 🎬 Labels - Studio.js",
+  "S0F1b. 🎬 Library Workspace - Studio.js",
+  "S0F1d. 🎬 Library Insights - Studio.js",
+  "S0F1f. 🎬 Library Maintenance - Studio.js",
+  "S0F1h. 🎬 Library Sync - Studio.js",
+  "S0X1a. 🎬 Command Bar - Studio.js",
+  "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
+  "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
+  "S0Z1g. 🎬 Library Sidebar Sections - Studio.js",
+
+  // Standalone Studio decorations referenced by studio.html.
+  "S9D1a. 🎬 Auto Emoji Title - Studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -41,6 +74,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0A2a. 🎬 Observer Hub - Studio.js",
   "S0A1a. 🎬 H2O Core - Studio.js",
 
+  // Studio Platform Adapter — see SOURCE_FILES list above for context.
+  "platform/index.js",
+  "platform/platform.mv3.js",
+  "platform/selectors.contract.js",
+
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
   "S1A1e. 🎬 MiniMap Skin - Studio.js",
@@ -60,6 +98,30 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S1Z1a. 🎬 Answer Timestamp - Studio.js",
   "S2Z1a. 🎬 Question Timestamp - Studio.js",
   "S1X1a. 🎬 Answer Numbers - Studio.js",
+
+  // Library subsystem (Studio). Out filenames are identical to source filenames —
+  // studio.html references them by the same name and copyFileSync preserves them.
+  "S0F0a. 🎬 Library Surface Host - Studio.js",
+  "S0F1a. 🎬 Library Core - Studio.js",
+  "S0F1e. 🎬 Library Store - Studio.js",
+  "S0F1g. 🎬 Chat Registry - Studio.js",
+  "S0F1c. 🎬 Library Index - Studio.js",
+  "S0F2a. 🎬 Projects - Studio.js",
+  "S0F3a. 🎬 Folders - Studio.js",
+  "S0F4a. 🎬 Categories - Studio.js",
+  "S0F5a. 🎬 Tags - Studio.js",
+  "S0F6a. 🎬 Labels - Studio.js",
+  "S0F1b. 🎬 Library Workspace - Studio.js",
+  "S0F1d. 🎬 Library Insights - Studio.js",
+  "S0F1f. 🎬 Library Maintenance - Studio.js",
+  "S0F1h. 🎬 Library Sync - Studio.js",
+  "S0X1a. 🎬 Command Bar - Studio.js",
+  "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
+  "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
+  "S0Z1g. 🎬 Library Sidebar Sections - Studio.js",
+
+  // Standalone Studio decorations referenced by studio.html.
+  "S9D1a. 🎬 Auto Emoji Title - Studio.js",
 ]);
 
 function ensureDir(dirPath) {
@@ -163,7 +225,12 @@ export function syncArchiveWorkbenchToOut(srcRoot, outDir) {
   for (let index = 0; index < ARCHIVE_WORKBENCH_SOURCE_FILES.length; index += 1) {
     const sourceName = ARCHIVE_WORKBENCH_SOURCE_FILES[index];
     const outName = ARCHIVE_WORKBENCH_OUT_FILES[index];
-    fs.copyFileSync(path.join(sourceDir, sourceName), path.join(outWorkbenchDir, outName));
+    const outPath = path.join(outWorkbenchDir, outName);
+    // Out filenames may now contain subdir segments (e.g. "platform/index.js"
+    // for the Studio platform adapter). Ensure each parent dir exists before
+    // copy so nested files don't fail with ENOENT.
+    ensureDir(path.dirname(outPath));
+    fs.copyFileSync(path.join(sourceDir, sourceName), outPath);
   }
 
   return {

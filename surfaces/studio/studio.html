@@ -24,11 +24,11 @@
 
     <aside class="wbSide wbSide--sidebar" id="studioSidebar" aria-label="Studio sidebar">
       <div class="wbSidebarHead">
-        <a class="wbSidebarHome" href="#/saved" aria-label="Saved chats">
+        <a class="wbSidebarHome" href="#/saved" aria-label="Studio home">
           <span class="wbSidebarHomeMark">H2O</span>
           <span class="wbSidebarHomeBody">
-            <span class="wbSidebarHomeTitle">Studio</span>
-            <span class="wbSidebarHomeMeta">Saved ChatGPT archive</span>
+            <span class="wbSidebarHomeTitle">Cockpit Pro</span>
+            <span class="wbSidebarHomeMeta">Studio</span>
           </span>
         </a>
 
@@ -41,33 +41,35 @@
         </button>
       </div>
 
-      <label class="wbSidebarSearch" for="q">
-        <span class="wbIco wbIco--search" aria-hidden="true">
-          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-            <circle cx="11" cy="11" r="5.25" />
-            <path d="m15.1 15.1 3.15 3.15" />
-          </svg>
-        </span>
-        <input id="q" class="wbSidebarSearchInput" placeholder="Search saved chats" autocomplete="off" spellcheck="false" />
-      </label>
+      <!--
+        v2.8: the visible "Search saved chats" input was replaced with a native-style
+        "Search chats" sidebar row that routes into the Library Explorer (which has
+        its own page-level search input). The #q input is preserved as a hidden
+        node so any existing studio.js read of $("#q")?.value (renderList filter,
+        sidebar chat-list filter) still resolves; we just don't render it.
+      -->
+      <input id="q" type="hidden" value="" autocomplete="off" />
 
-      <section class="wbSidebarSection">
-        <div class="wbSideLabel">Library</div>
-        <nav class="wbSidebarNav" aria-label="Studio views">
-          <a class="wbNavItem" href="#/saved" data-view="saved">
-            <span class="wbNavGlyph">Saved</span>
-            <span class="wbNavCopy">Latest saved chats</span>
-          </a>
-          <a class="wbNavItem" href="#/pinned" data-view="pinned">
-            <span class="wbNavGlyph">Pinned</span>
-            <span class="wbNavCopy">Pinned snapshots</span>
-          </a>
-          <a class="wbNavItem" href="#/archive" data-view="archive">
-            <span class="wbNavGlyph">Archive</span>
-            <span class="wbNavCopy">Archived conversations</span>
-          </a>
-        </nav>
-      </section>
+      <nav class="wbSidebarTopNav" aria-label="Studio navigation">
+        <a id="wbStudioNavSearch" class="wbStudioNavItem" href="#/library/explorer" data-action="search-chats" aria-label="Search saved chats">
+          <span class="wbStudioNavIcon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <circle cx="11" cy="11" r="6" />
+              <path d="m15.5 15.5 4 4" />
+            </svg>
+          </span>
+          <span class="wbStudioNavLabel">Search chats</span>
+        </a>
+      </nav>
+
+      <!--
+        Legacy Library/Saved/Pinned/Archive sidebar block removed in v2.6.
+        The single "Library" entry now lives in #wbLibrarySection (injected by
+        S0Z1f Library Sidebar Tab). Saved / Pinned / Archive are page-level tabs
+        inside the Library page (rendered by S0F1d Library Insights). The hash
+        routes #/saved, #/pinned, #/archive are still parsed by studio.js's
+        renderList, so any inbound deep link continues to work.
+      -->
 
       <section class="wbSidebarSection wbSidebarSection--folders">
         <div class="wbSideLabel">Folders</div>
@@ -76,9 +78,32 @@
         </div>
       </section>
 
-      <section class="wbSidebarSection wbSidebarSection--categories" hidden>
+      <!-- Labels — collapsible section populated by S0Z1g Library Sidebar Sections.
+           Starts as a heading-only collapsed state when empty so the sidebar
+           stays uncluttered for users without labels yet. -->
+      <section class="wbSidebarSection wbSidebarSection--labels">
+        <div class="wbSideLabel">Labels</div>
+        <div id="labelList" class="wbLabelList">
+          <div class="wbSideEmpty">Loading labels…</div>
+        </div>
+      </section>
+
+      <!-- Categories — un-hidden in v2.7. Populated by S0Z1g from
+           H2O.LibraryWorkspace.getCategories(). -->
+      <section class="wbSidebarSection wbSidebarSection--categories">
         <div class="wbSideLabel">Categories</div>
-        <div id="categoryList" class="wbCategoryList"></div>
+        <div id="categoryList" class="wbCategoryList">
+          <div class="wbSideEmpty">Loading categories…</div>
+        </div>
+      </section>
+
+      <!-- Projects — collapsible section populated by S0Z1g from
+           H2O.LibraryIndex.facets().byProject. -->
+      <section class="wbSidebarSection wbSidebarSection--projects">
+        <div class="wbSideLabel">Projects</div>
+        <div id="projectList" class="wbProjectList">
+          <div class="wbSideEmpty">Loading projects…</div>
+        </div>
       </section>
 
       <section class="wbSidebarSection wbSidebarSection--recent">
@@ -103,21 +128,14 @@
         </div>
 
         <div class="wbTopGroup wbTopGroup--actions">
-          <label class="wbSelectWrap" id="folderAssignWrap" hidden>
+          <div id="categoryAssignWrap" class="wbCategoryTopbar" hidden></div>
+
+          <label class="wbSelectWrap wbSelectWrap--topbar" id="folderAssignWrap" hidden>
             <span class="wbSelectLabel">Folder</span>
             <select id="folderAssignSelect" class="wbSelect" aria-label="Assign selected chat to folder"></select>
           </label>
 
-          <button class="wbBtn" id="refreshBtn" type="button">Refresh</button>
-          <button class="wbBtn wbBtnPrimary" id="openReaderTabBtn" type="button" disabled>Open</button>
-          <button class="wbIconBtn" id="closeBtn" type="button" aria-label="Close window" title="Close window">
-            <span class="wbIco" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                <path d="M6.75 6.75 17.25 17.25" />
-                <path d="M17.25 6.75 6.75 17.25" />
-              </svg>
-            </span>
-          </button>
+          <button class="wbBtn wbBtn--topbar" id="refreshBtn" type="button">Refresh</button>
         </div>
       </header>
 
@@ -135,13 +153,22 @@
         </section>
 
         <section id="viewReader" class="wbReader" hidden></section>
-        <aside id="inspectorPanel" class="wbInspector" hidden aria-label="Chat inspector"></aside>
       </main>
     </div>
   </div>
 
   <script src="./S0A2a. 🎬 Observer Hub - Studio.js"></script>
   <script src="./S0A1a. 🎬 H2O Core - Studio.js"></script>
+
+  <!-- ── Studio Platform Adapter ────────────────────────────────────────
+       Establishes H2O.Studio.platform.* and H2O.Studio.SELECTORS.
+       All later Studio scripts may use these instead of chrome.*,
+       localStorage, indexedDB, or hardcoded ChatGPT-attribute selectors.
+       Contracts: surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md,
+       STUDIO_PORTABILITY_CONTRACT.md. -->
+  <script src="./platform/index.js"></script>
+  <script src="./platform/platform.mv3.js"></script>
+  <script src="./platform/selectors.contract.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>
@@ -164,6 +191,45 @@
   <script src="./S1X1a. 🎬 Answer Numbers - Studio.js"></script>
 
   <script src="./S0D3e. 🎬 Transcript Studio Host - Studio.js"></script>
+
+  <!-- ── Library subsystem (Studio) ─────────────────────────────────────── -->
+  <!-- Surface Host first: registers Studio-specific ui-shell, page-host,
+       native-sidebar, route, chat-list services for Library Core to consume. -->
+  <script src="./S0F0a. 🎬 Library Surface Host - Studio.js"></script>
+  <!-- Library Core: registry hub. Picks up Surface Host services. -->
+  <script src="./S0F1a. 🎬 Library Core - Studio.js"></script>
+  <!-- Store + Registry: data layers. Boot independently. -->
+  <script src="./S0F1e. 🎬 Library Store - Studio.js"></script>
+  <script src="./S0F1g. 🎬 Chat Registry - Studio.js"></script>
+  <!-- Index: derived view over archive; feeds Workspace + Insights. -->
+  <script src="./S0F1c. 🎬 Library Index - Studio.js"></script>
+  <!-- Feature owner facades (read-only/read-write via chat-list service). -->
+  <script src="./S0F2a. 🎬 Projects - Studio.js"></script>
+  <script src="./S0F3a. 🎬 Folders - Studio.js"></script>
+  <script src="./S0F4a. 🎬 Categories - Studio.js"></script>
+  <script src="./S0F5a. 🎬 Tags - Studio.js"></script>
+  <script src="./S0F6a. 🎬 Labels - Studio.js"></script>
+  <!-- Workspace: canonical model facade for studio.js. -->
+  <script src="./S0F1b. 🎬 Library Workspace - Studio.js"></script>
+  <!-- Insights + Maintenance: renderer + diagnostics. -->
+  <script src="./S0F1d. 🎬 Library Insights - Studio.js"></script>
+  <script src="./S0F1f. 🎬 Library Maintenance - Studio.js"></script>
+  <!-- Cross-surface sync: chrome.storage watcher coalesces changes from native. -->
+  <script src="./S0F1h. 🎬 Library Sync - Studio.js"></script>
+  <!-- Studio Command Bar: ⌘K palette exposing Library Maintenance commands. -->
+  <script src="./S0X1a. 🎬 Command Bar - Studio.js"></script>
+  <!-- Library Commands plugin: registers Workspace / Index / Sync / Registry /
+       Navigation / System command groups on the Command Bar. -->
+  <script src="./S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js"></script>
+  <!-- Sidebar entry point: adds Library section to Studio sidebar. -->
+  <script src="./S0Z1f. 🎬 Library Sidebar Tab - Studio.js"></script>
+  <!-- Sidebar facet sections: populates Labels / Categories / Projects from
+       Library data with collapsible headings. -->
+  <script src="./S0Z1g. 🎬 Library Sidebar Sections - Studio.js"></script>
+  <!-- Studio-side companion of native 9D1a Auto Emoji Title / Title Palette. -->
+  <script src="./S9D1a. 🎬 Auto Emoji Title - Studio.js"></script>
+  <!-- ─────────────────────────────────────────────────────────────────── -->
+
   <script src="./studio.js"></script>
 </body>
 </html>
