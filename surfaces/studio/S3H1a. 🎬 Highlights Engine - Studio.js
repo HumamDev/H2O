@@ -3418,21 +3418,39 @@ mark.${CSS_CLS_HL}:hover{
         HL_openSelectionPopup();
       }, false);
 
-      if (chrome?.runtime?.onMessage) {
-        chrome.runtime.onMessage.addListener((request) => {
-          if (request?.type === 'h2o-highlight-trigger') {
-            const action = String(request?.action || 'popup').trim().toLowerCase();
-            if (action === 'apply') {
-              HL_doSelection({ color: request?.color, clearSelection: true });
-              return false;
-            }
-            HL_openSelectionPopup();
-            return false;
-          }
-        });
+      // ── Transport seam ──────────────────────────────────────────────────
+      // Inbound highlight-trigger messages route through
+      // H2O.Studio.platform.messaging.on — the required boundary for the
+      // future Tauri port. Type filter ('h2o-highlight-trigger'), action
+      // dispatch, and "no async response" semantics are preserved exactly:
+      // the handler returns nothing, which under both chrome.runtime and
+      // the platform adapter means "synchronous, do not sendResponse".
+      // Falls back to direct chrome.runtime.onMessage.addListener if the
+      // platform adapter is unavailable. See
+      // surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md.
+      const onHighlightTrigger = (request) => {
+        if (request?.type !== 'h2o-highlight-trigger') return;
+        const action = String(request?.action || 'popup').trim().toLowerCase();
+        if (action === 'apply') {
+          HL_doSelection({ color: request?.color, clearSelection: true });
+          return;
+        }
+        HL_openSelectionPopup();
+      };
+      const pmHL = (function () {
+        const p = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.messaging;
+        if (!p || typeof p.on !== 'function') return null;
+        const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
+        if (env && env.adapter === 'fallback') return null;
+        return p;
+      })();
+      if (pmHL) {
+        pmHL.on('highlight', onHighlightTrigger);
+      } else if (chrome?.runtime?.onMessage) {
+        chrome.runtime.onMessage.addListener(onHighlightTrigger);
       }
     } catch (err) {
-      console.warn(`[H2O.${MODTAG}] chrome.runtime.onMessage listener failed`, err);
+      console.warn(`[H2O.${MODTAG}] highlight-trigger listener failed`, err);
     }
 
     log('booted');
