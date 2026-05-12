@@ -7,6 +7,7 @@ import {
   compareArchiveWorkbenchToSource,
   getArchiveWorkbenchSourcePresence,
   getArchiveWorkbenchPresence,
+  ARCHIVE_WORKBENCH_SOURCE_FILES,
 } from "../product/studio/pack-studio.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
@@ -145,8 +146,16 @@ function printArchiveWorkbenchChecks(srcDir) {
   console.log(`[dev:check] archiveWorkbench.opsPanelFiles=${opsPanelPresence.length}`);
   console.log(`[dev:check] archiveWorkbench.devLeanFiles=${leanPresence.length}`);
 
-  if (sourcePresence.length !== 3) {
-    console.log(`[dev:check] archiveWorkbench source incomplete: ${sourcePresence.join(", ")}`);
+  // Validate against the current allowlist length rather than a stale
+  // hardcoded count. The earlier `!== 3` baseline pre-dated the Studio
+  // surface growth and tripped on every run regardless of repo health.
+  // Report the missing files (not the present ones) so the failure is
+  // actionable.
+  if (sourcePresence.length !== ARCHIVE_WORKBENCH_SOURCE_FILES.length) {
+    const missing = ARCHIVE_WORKBENCH_SOURCE_FILES.filter((name) => !sourcePresence.includes(name));
+    console.log(
+      `[dev:check] archiveWorkbench source incomplete (${missing.length} missing of ${ARCHIVE_WORKBENCH_SOURCE_FILES.length}): ${missing.join(", ")}`,
+    );
     process.exitCode = 1;
   }
 
