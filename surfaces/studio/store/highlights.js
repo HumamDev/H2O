@@ -76,7 +76,31 @@
     errors: [],
     errMax: 20,
     subscribers: new Set(),
+    /* Stage 3 write-tracking */
+    writesSinceBoot: 0,
+    savesSinceBoot: 0,
+    fallbackWritesSinceBoot: 0,
+    lastWriteSource: null,      /* 'store' | 'util_storage_fallback' | null */
+    lastWriteAt: null,           /* most recent update/set/remove call */
+    lastFlushAt: null,           /* most recent writeCanonical completion */
+    warnings: [],
+    warnMax: 20,
   };
+
+  function recordWrite(op) {
+    state.writesSinceBoot += 1;
+    state.lastWriteSource = 'store';
+    state.lastWriteAt = Date.now();
+  }
+
+  function recordWarning(msg) {
+    try {
+      state.warnings.push({ t: Date.now(), msg: String(msg) });
+      if (state.warnings.length > state.warnMax) {
+        state.warnings.splice(0, state.warnings.length - state.warnMax);
+      }
+    } catch (_) { /* swallow */ }
+  }
 
   function recordError(op, e) {
     try {
@@ -237,6 +261,8 @@
     return new Promise(function (resolve) {
       if (!hasChromeStorage()) {
         state.lastSavedAt = Date.now();
+        state.lastFlushAt = state.lastSavedAt;
+        state.savesSinceBoot += 1;
         resolve();
         return;
       }
@@ -247,11 +273,15 @@
           var err = global.chrome && global.chrome.runtime && global.chrome.runtime.lastError;
           if (err) recordError('writeCanonical.chrome', err);
           state.lastSavedAt = Date.now();
+          state.lastFlushAt = state.lastSavedAt;
+          state.savesSinceBoot += 1;
           resolve();
         });
       } catch (e) {
         recordError('writeCanonical.chrome.throw', e);
         state.lastSavedAt = Date.now();
+        state.lastFlushAt = state.lastSavedAt;
+        state.savesSinceBoot += 1;
         resolve();
       }
     });
@@ -388,6 +418,7 @@
     } else {
       delete iba[id];
     }
+    recordWrite('setForAnswer');
     scheduleSave();
     notifySubscribers({ source: 'local', op: 'setForAnswer', answerId: id });
   }
@@ -398,6 +429,7 @@
     var iba = asStoreObj(state.cache.itemsByAnswer);
     if (Object.prototype.hasOwnProperty.call(iba, id)) {
       delete iba[id];
+      recordWrite('removeForAnswer');
       scheduleSave();
       notifySubscribers({ source: 'local', op: 'removeForAnswer', answerId: id });
     }
@@ -419,6 +451,7 @@
       return;
     }
     state.cache = ensureShape(next);
+    recordWrite('update');
     scheduleSave();
     notifySubscribers({ source: 'local', op: 'update' });
   }
@@ -454,6 +487,7 @@
     if (!state.cache) state.cache = ensureShape({});
     if (!isPlainObject(state.cache._meta)) state.cache._meta = {};
     state.cache._meta.currentColor = String(name == null ? '' : name).trim().toLowerCase();
+    recordWrite('setCurrentColor');
     scheduleSave();
     notifySubscribers({ source: 'local', op: 'setCurrentColor' });
   }
@@ -478,30 +512,56 @@
       backend: backend,
       transport: state.transport,
       platformAdapter: pAdapter || null,
+      crossTabBound: !!state.unsubBroadcast,
       canonicalKey: KEY_DISK_CANON,
       legacyKeys: LEGACY_DISK_KEYS.slice(),
       migrationFlagKey: KEY_MIG_DISK_V1,
       cacheAnswers: cacheAnswers,
       cacheItems: state.cache ? countItems(state.cache) : 0,
       pendingSave: !!state.pending,
-      lastSavedAt: state.lastSavedAt,
-      lastReloadedAt: state.lastReloadedAt,
       saveDebounceMs: SAVE_DEBOUNCE_MS,
       subscribers: state.subscribers.size,
-      errors: state.errors.slice(),
-      /* Stage marker — feature code should not depend on this. */
-      stage: 1,
-      parallelInfra: true,
-      writesByS3H1aStillActive: true,
+      /* Write/save tracking (Stage 3) */
+      lastSavedAt: state.lastSavedAt,
+      lastFlushAt: state.lastFlushAt,
+      lastReloadedAt: state.lastReloadedAt,
+      lastWriteSource: state.lastWriteSource,
+      lastWriteAt: state.lastWriteAt,
+      writesSinceBoot: state.writesSinceBoot,
+      savesSinceBoot: state.savesSinceBoot,
+      fallbackWritesSinceBoot: state.fallbackWritesSinceBoot,
+      /* Stage / ownership markers — feature code should not depend on these. */
+      stage: 3,
+      parallelInfra: false,
+      writesByS3H1aStillActive: false,
+      readPathDelegatedFromS3H1a: true,
+      writePathDelegatedFromS3H1a: true,
+      bootstrapDelegatedFromS3H1a: false,
+      utilStorageRemoved: false,
       legacyBootstrapDeferred: 'stage-4',
       legacyKeyCompat: true,
+      /* Health */
+      errors: state.errors.slice(),
+      warnings: state.warnings.slice(),
     };
+  }
+
+  /* Internal — invoked by S3H1a's STORE_write / STORE_saveNow wrappers
+   * when they fall back to UTIL_storage. Increments the fallback counter
+   * for diagnose() so we can observe whether the store is truly handling
+   * all writes (fallbackWritesSinceBoot === 0 is the Stage 5 gate). */
+  function __recordFallbackWrite(reason) {
+    state.fallbackWritesSinceBoot += 1;
+    state.lastWriteSource = 'util_storage_fallback';
+    state.lastWriteAt = Date.now();
+    recordWarning('fallback used: ' + String(reason || 'unknown'));
   }
 
   /* ── Register & schedule init ─────────────────────────────────────── */
   var api = {
     __installed: true,
     __version: '0.1.0',
+    __recordFallbackWrite: __recordFallbackWrite,
     init: init,
     dispose: dispose,
     isReady: isReady,

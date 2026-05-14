@@ -1119,22 +1119,48 @@
     try { await UTIL_mig_setFlag(KEY_MIG_DISK_V1, '1'); } catch {}
   };
 
-  // ── Read seam (Stage 2: prefer H2O.Studio.store.highlights when ready) ──
-  // Reads delegate to the Studio store entity once it has hydrated; until
-  // then (or if the store is missing/the platform adapter is fallback) we
-  // use the legacy UTIL_storage.readSync() path. Both stores hydrate from
-  // the same canonical chrome.storage.local key, so a brief window of
-  // fallback at boot is harmless. Writes are NOT migrated in this stage —
-  // STORE_write continues to go through UTIL_storage.writeSync below.
+  // ── Storage seams (Stages 2 + 3: prefer H2O.Studio.store.highlights) ──
+  // Reads and writes delegate to the Studio store entity once it has
+  // hydrated; until then (or if the store is missing / the platform
+  // adapter is fallback / the store throws) we use the legacy UTIL_storage
+  // path. Both stores hydrate from the same canonical chrome.storage.local
+  // key, so a brief window of fallback at boot is harmless. The fallback
+  // path also notifies the store via __recordFallbackWrite so diagnose()
+  // exposes fallbackWritesSinceBoot — that counter is the Stage 5 readiness
+  // gate (must stay 0 over real-world traffic before UTIL_storage can be
+  // deleted). Legacy bootstrap and UTIL_storage lifecycle (init/dispose)
+  // remain in S3H1a; Stage 4 moves bootstrap, Stage 5 removes UTIL_storage.
   // See surfaces/studio/store/README.md.
+  const _storeApi = () => (W.H2O && W.H2O.Studio && W.H2O.Studio.store && W.H2O.Studio.store.highlights) || null;
+  const _storeReady = (sh) => !!(sh && typeof sh.isReady === 'function' && sh.isReady());
+  const _noteFallback = (sh, reason) => {
+    if (sh && typeof sh.__recordFallbackWrite === 'function') {
+      try { sh.__recordFallbackWrite(reason); } catch (_) { /* swallow */ }
+    }
+  };
   const STORE_read = () => {
-    const sh = W.H2O && W.H2O.Studio && W.H2O.Studio.store && W.H2O.Studio.store.highlights;
-    if (sh && typeof sh.isReady === 'function' && sh.isReady() && typeof sh.getAll === 'function') {
-      try { return sh.getAll(); } catch (_) { /* fall through to legacy */ }
+    const sh = _storeApi();
+    if (_storeReady(sh) && typeof sh.getAll === 'function') {
+      try { return sh.getAll(); } catch (_) { /* fall through */ }
     }
     return UTIL_storage.readSync();
   };
-  const STORE_write = (u) => UTIL_storage.writeSync(u);
+  const STORE_write = (u) => {
+    const sh = _storeApi();
+    if (_storeReady(sh) && typeof sh.update === 'function') {
+      try { sh.update(u); return; } catch (_) { /* fall through */ }
+    }
+    _noteFallback(sh, 'writeSync');
+    UTIL_storage.writeSync(u);
+  };
+  const STORE_saveNow = async () => {
+    const sh = _storeApi();
+    if (_storeReady(sh) && typeof sh.saveNow === 'function') {
+      try { await sh.saveNow(); return; } catch (_) { /* fall through */ }
+    }
+    _noteFallback(sh, 'saveNow');
+    await UTIL_storage.saveNow();
+  };
 
   /* ───────────────────────────── 🧱 Store shape ───────────────────────────── */
   const PAL_list = () => {
@@ -2009,7 +2035,7 @@
 
     if (changed > 0) {
       STORE_setCurrentColor(to);
-      try { await UTIL_storage.saveNow(); } catch {}
+      try { await STORE_saveNow(); } catch {}
       HL_notifyChanged(answerId);
       HL_emitInlineChanged(msgEl || answerId);
       try { W.syncMiniMapDot?.(answerId, STORE_colorsFrom(answerId), { persist: true }); } catch {}
@@ -2392,7 +2418,7 @@
       touched.push(node);
     }
     if (touched.length) {
-      try { void UTIL_storage.saveNow(); } catch {}
+      try { void STORE_saveNow(); } catch {}
     }
 
     // 2) new highlight if none touched
@@ -2412,7 +2438,7 @@
           ts: Date.now(),
           pairNo
         });
-        try { void UTIL_storage.saveNow(); } catch {}
+        try { void STORE_saveNow(); } catch {}
       }
     }
 
@@ -3115,8 +3141,8 @@ mark.${CSS_CLS_HL}:hover{
 
   const API_clearAll = async () => {
     try {
-      UTIL_storage.writeSync(() => ({}));
-      await UTIL_storage.saveNow();
+      STORE_write(() => ({}));
+      await STORE_saveNow();
     } catch (err) {
       if (CFG_DEBUG) console.warn(`[H2O.${MODTAG}] clearAll failed`, err);
     }
@@ -3162,7 +3188,7 @@ mark.${CSS_CLS_HL}:hover{
     };
 
     try {
-      UTIL_storage.writeSync((draft) => {
+      STORE_write((draft) => {
         STORE_ensureShape(draft);
         const byAnswer = draft.itemsByAnswer || {};
 
@@ -3188,7 +3214,7 @@ mark.${CSS_CLS_HL}:hover{
 
         return draft;
       });
-      await UTIL_storage.saveNow();
+      await STORE_saveNow();
     } catch (err) {
       if (CFG_DEBUG) console.warn(`[H2O.${MODTAG}] clearCurrentChat failed`, err);
       throw err;
