@@ -19,6 +19,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "platform/platform.mv3.js",
   "platform/selectors.contract.js",
 
+  // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
+  // any feature module. Contracts: surfaces/studio/store/README.md,
+  // STUDIO_STORAGE_CONTRACT.md.
+  "store/index.js",
+  "store/highlights.js",
+
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
   "S1A1e. 🎬 MiniMap Skin - Studio.js",
@@ -78,6 +84,10 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "platform/index.js",
   "platform/platform.mv3.js",
   "platform/selectors.contract.js",
+
+  // Studio Store — see SOURCE_FILES list above for context.
+  "store/index.js",
+  "store/highlights.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",

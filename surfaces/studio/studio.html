@@ -170,6 +170,16 @@
   <script src="./platform/platform.mv3.js"></script>
   <script src="./platform/selectors.contract.js"></script>
 
+  <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
+       Registers H2O.Studio.store and the highlights entity store. Loads
+       AFTER platform/ so the store can use platform.broadcast.onAnyChange,
+       and BEFORE any feature module so they may reference H2O.Studio.store
+       once Stages 2+ wire features through it.
+       Contracts: surfaces/studio/store/README.md,
+       STUDIO_STORAGE_CONTRACT.md. -->
+  <script src="./store/index.js"></script>
+  <script src="./store/highlights.js"></script>
+
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>
   <script src="./S1A1e. 🎬 MiniMap Skin - Studio.js"></script>
