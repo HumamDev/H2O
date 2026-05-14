@@ -68,7 +68,11 @@ H2O.Studio.store.highlights = {
   setForAnswer(answerId, items),       // mutate + debounced persist; [] to clear
   removeForAnswer(answerId),
 
-  // Full-blob access (for migrations / diagnostics / export)
+  // Full-blob access (for migrations / diagnostics / export).
+  // NOTE: returns the LIVE in-memory cache reference (not a clone) for
+  // byte-parity with the legacy UTIL_storage.readSync() contract in S3H1a.
+  // Feature code MUST NOT mutate the returned object directly — use
+  // setForAnswer / removeForAnswer / update / setCurrentColor instead.
   getAll(): { itemsByAnswer, convoId?, _meta? },
   update(updaterOrObj),                // mutate + debounced persist
 

@@ -1119,7 +1119,21 @@
     try { await UTIL_mig_setFlag(KEY_MIG_DISK_V1, '1'); } catch {}
   };
 
-  const STORE_read = () => UTIL_storage.readSync();
+  // ── Read seam (Stage 2: prefer H2O.Studio.store.highlights when ready) ──
+  // Reads delegate to the Studio store entity once it has hydrated; until
+  // then (or if the store is missing/the platform adapter is fallback) we
+  // use the legacy UTIL_storage.readSync() path. Both stores hydrate from
+  // the same canonical chrome.storage.local key, so a brief window of
+  // fallback at boot is harmless. Writes are NOT migrated in this stage —
+  // STORE_write continues to go through UTIL_storage.writeSync below.
+  // See surfaces/studio/store/README.md.
+  const STORE_read = () => {
+    const sh = W.H2O && W.H2O.Studio && W.H2O.Studio.store && W.H2O.Studio.store.highlights;
+    if (sh && typeof sh.isReady === 'function' && sh.isReady() && typeof sh.getAll === 'function') {
+      try { return sh.getAll(); } catch (_) { /* fall through to legacy */ }
+    }
+    return UTIL_storage.readSync();
+  };
   const STORE_write = (u) => UTIL_storage.writeSync(u);
 
   /* ───────────────────────────── 🧱 Store shape ───────────────────────────── */

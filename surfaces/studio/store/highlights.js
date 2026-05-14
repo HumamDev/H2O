@@ -357,7 +357,18 @@
 
   function isReady() { return !!state.ready; }
 
-  function getAll() { return state.cache ? clone(state.cache) : ensureShape({}); }
+  /* Returns the LIVE in-memory cache reference (not a clone) for byte-parity
+   * with the legacy UTIL_storage.readSync() contract in S3H1a. Feature code
+   * MUST NOT mutate the returned object directly — use setForAnswer /
+   * removeForAnswer / update / setCurrentColor for mutations. The Stage 2/3
+   * migration window relies on this live-reference behavior so that
+   * mutations made through the legacy STORE_ensureShape path land on the
+   * authoritative cache. The contract may evolve to immutable-return at
+   * Tauri port time. */
+  function getAll() {
+    if (state.cache == null) state.cache = ensureShape({});
+    return state.cache;
+  }
 
   function getForAnswer(answerId) {
     var id = String(answerId == null ? '' : answerId).trim();
