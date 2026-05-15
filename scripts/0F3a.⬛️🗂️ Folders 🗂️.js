@@ -167,13 +167,21 @@
   `;
   const FRAG_SVG_SECTION_ARROW = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true" data-rtl-flip="" class="invisible h-3 w-3 shrink-0 group-hover/sidebar-expando-section:visible"><use href="/cdn/assets/sprites-core-97566a9e.svg#ba3792" fill="currentColor"></use></svg>';
   const FRAG_SVG_CATEGORY = `
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 7.5h14M5 12h14M5 16.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-      <path d="M8 5.5 6.8 18.5M17.2 5.5 16 18.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="4" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M6.6 7.5H8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 6.6V8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M16.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 7.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 16.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
     </svg>
   `;
   const CFG_CATEGORY_ICON_OPTIONS = Object.freeze([
-    { key: 'hash', label: 'Hash', svg: FRAG_SVG_CATEGORY },
+    { key: 'hash', label: 'Category', svg: FRAG_SVG_CATEGORY },
     { key: 'folder', label: 'Folder', svg: FRAG_SVG_FOLDER },
     { key: 'briefcase', label: 'Briefcase', svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7V5.8A1.8 1.8 0 0 1 10.8 4h2.4A1.8 1.8 0 0 1 15 5.8V7m-9.5 4.5h13M5 7h14a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
     { key: 'code', label: 'Code', svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5m6-10 5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
@@ -271,6 +279,27 @@
 
   const SAFE_isEl = (x) => (x && typeof x === 'object' && x.nodeType === 1);
   const SAFE_remove = (node) => { try { node?.remove?.(); } catch {} };
+
+  function FOLDERCORE_get() {
+    try {
+      const core = H2O.Library?.FolderProviderCore || null;
+      return core && core.__phase === '3B' ? core : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function FOLDERCORE_origin() {
+    try { return W.location?.origin || 'https://chatgpt.com'; } catch {}
+    return 'https://chatgpt.com';
+  }
+
+  function FOLDERCORE_options(extra = {}) {
+    return {
+      origin: FOLDERCORE_origin(),
+      ...extra,
+    };
+  }
 
   function LIBCORE_getRouteService() {
     return H2O.LibraryCore?.getService?.('route') || null;
@@ -494,6 +523,7 @@
     makeRowShell: UI_makeRowShell,
     setRowText: UI_setRowText,
     injectIcon: UI_injectIcon,
+    makeNativeLikeMoreButton: UI_makeNativeLikeMoreButton,
     wireAsButton: UI_wireAsButton,
     makeIconToggle: UI_makeIconToggle,
     removeSurfaceChatLeadingIcon: UI_removeSurfaceChatLeadingIcon,
@@ -738,47 +768,72 @@ ${MENU} ${SEP}{ margin:0; }
 
 /* B) Folder row “⋯” button */
 ${FROW},
-${CROW}{ position:relative; }
+${CROW}{
+  position:relative;
+  padding-right:40px !important;
+}
 ${FROW}:not(:hover):not([aria-current="true"]),
 ${CROW}:not(:hover):not([aria-current="true"]){
   background: transparent !important;
 }
 ${FMORE},
 ${CMORE}{
-  all:unset;
-  position:absolute;
-  right:10px; top:50%;
-  transform:translateY(-50%);
-  width:28px; height:28px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  border-radius:8px;
-  cursor:pointer;
-  color:rgba(255,255,255,.85);
+  position:absolute !important;
+  right:9px !important;
+  top:50% !important;
+  transform:translateY(-50%) !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  width:24px !important;
+  height:24px !important;
+  padding:0 !important;
+  margin:0 !important;
+  border:0 !important;
+  border-radius:8px !important;
+  background:transparent !important;
+  color:var(--text-primary, #fff) !important;
+  cursor:pointer !important;
   opacity:0;
+  visibility:hidden;
+  transition:opacity .12s ease, background .12s ease, color .12s ease;
 }
 ${FROW}:hover ${FMORE},
 ${FROW}:focus-within ${FMORE},
 ${CROW}:hover ${CMORE},
-${CROW}:focus-within ${CMORE}{ opacity:1; }
+${CROW}:focus-within ${CMORE}{
+  opacity:1;
+  visibility:visible;
+}
+${FMORE} svg,
+${CMORE} svg{
+  width:20px !important;
+  height:20px !important;
+  display:block !important;
+  opacity:1 !important;
+}
 ${FMORE}:hover,
-${CMORE}:hover{ background:rgba(255,255,255,.08); }
+${CMORE}:hover{
+  color:var(--text-primary, #fff);
+  background:transparent !important;
+}
 ${FMORE}:active,
-${CMORE}:active{ background:rgba(255,255,255,.10); }
+${CMORE}:active{ background:transparent !important; }
 
 /* C) Popover (Rename / Delete) */
 ${POP}{
   position:fixed;
   z-index:${CFG_FSECTION_FLOATING_Z};
-  padding:6px;
-  min-width:210px;
+  padding:5px;
+  min-width:190px;
+  max-width:min(360px, calc(100vw - 16px));
+  max-height:min(78vh, 560px);
   background: var(--bg-elevated-secondary, #181818);
   border: 1px solid var(--border-default, #ffffff26);
   border-radius:12px;
   box-shadow: var(--shadow-lg, 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a);
   backdrop-filter: blur(var(--blur-sm, 8px));
-  overflow:hidden;
+  overflow:auto;
 }
 ${POP} button{
   all:unset;
@@ -824,6 +879,33 @@ ${POP} [${ATTR_CGXUI_STATE}="picker-grid"]{
   display: grid;
   grid-template-columns: repeat(6, 28px);
   gap: 8px;
+}
+/* Phase 14 polish: single-row color picker. Flattens the swatch grid into
+   one horizontal flex row so all colors are visible at once. The auto-fit
+   minmax keeps the swatches the same 28px size and lets the row breathe
+   when the popup is wider than 9*28 + gaps. */
+${POP} [${ATTR_CGXUI_STATE}="picker-grid"][data-grid-mode="row"]{
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 6px;
+  width: 100%;
+}
+${POP} [${ATTR_CGXUI_STATE}="picker-grid"][data-grid-mode="row"] > button{
+  flex: 0 0 auto;
+}
+/* Phase 14 polish: sand-glass surface tuning for the popup. The shared
+   data-h2o-skin-surface attribute provides the blurred glass treatment;
+   we just round corners + soften the border so the popup feels lighter. */
+${POP}[data-h2o-skin-surface="sand-glass"]{
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.055) 42%, rgba(255,255,255,.025)),
+    rgba(11,18,24,.58);
+  border-radius: 13px;
+  border: 1px solid rgba(255,255,255,.16);
+  box-shadow: 0 16px 44px rgba(0,0,0,.36), 0 0 0 1px rgba(255,255,255,.05) inset;
+  backdrop-filter: blur(22px) saturate(1.38);
+  -webkit-backdrop-filter: blur(22px) saturate(1.38);
 }
 ${POP} button[${ATTR_CGXUI_STATE}="color-swatch"],
 ${POP} button[${ATTR_CGXUI_STATE}="icon-choice"]{
@@ -1391,13 +1473,32 @@ ${CROW}[aria-current="true"]{
     return out;
   }
 
-  function STORE_normalizeFolderRecord(raw) {
+  function STORE_normalizeFolderRecord(raw, opts = {}) {
     const src = (raw && typeof raw === 'object') ? raw : {};
+    const stamp = Object.prototype.hasOwnProperty.call(opts || {}, 'now') ? opts.now : STORE_nowStamp();
+    const core = FOLDERCORE_get();
+    if (core && typeof core.normalizeFolder === 'function') {
+      const item = core.normalizeFolder({
+        id: src.id || src.folderId || '',
+        name: src.name || src.title || '',
+        kind: src.kind,
+        projectRef: src.projectRef,
+        createdAt: Object.prototype.hasOwnProperty.call(src, 'createdAt') ? src.createdAt : stamp,
+        updatedAt: Object.prototype.hasOwnProperty.call(src, 'updatedAt') ? src.updatedAt : (Object.prototype.hasOwnProperty.call(src, 'createdAt') ? src.createdAt : stamp),
+        iconColor: src.iconColor,
+      }, FOLDERCORE_options({ now: stamp }));
+      if (!item) return null;
+      const iconColor = STORE_normalizeProjectColor(item.iconColor);
+      if (iconColor) item.iconColor = iconColor;
+      else delete item.iconColor;
+      return item;
+    }
+
     const id = String(src.id || src.folderId || '').trim();
     if (!id) return null;
     const name = String(src.name || src.title || id).trim() || id;
     const kindRaw = String(src.kind || '').trim().toLowerCase();
-    const createdAt = src.createdAt ?? STORE_nowStamp();
+    const createdAt = src.createdAt ?? stamp;
     const updatedAt = src.updatedAt ?? createdAt;
     const item = {
       id,
@@ -1426,6 +1527,28 @@ ${CROW}[aria-current="true"]{
   }
 
   function STORE_normalizeData(raw) {
+    const core = FOLDERCORE_get();
+    if (core && typeof core.normalizeFolderState === 'function') {
+      const stamp = STORE_nowStamp();
+      const normalized = core.normalizeFolderState(raw, FOLDERCORE_options({ now: stamp }));
+      const folders = [];
+      const seen = new Set();
+      for (const row of Array.isArray(normalized.folders) ? normalized.folders : []) {
+        const item = STORE_normalizeFolderRecord(row, { now: stamp });
+        if (!item || seen.has(item.id)) continue;
+        seen.add(item.id);
+        folders.push(item);
+      }
+      const itemsSrc = (normalized.items && typeof normalized.items === 'object') ? normalized.items : {};
+      const items = {};
+      for (const folder of folders) {
+        items[folder.id] = Array.isArray(itemsSrc[folder.id])
+          ? [...new Set(itemsSrc[folder.id].map((v) => String(v || '').trim()).filter(Boolean))]
+          : [];
+      }
+      return { folders, items };
+    }
+
     const src = (raw && typeof raw === 'object') ? raw : {};
     const foldersSrc = Array.isArray(src.folders) ? src.folders : [];
     const folders = [];
@@ -1442,6 +1565,32 @@ ${CROW}[aria-current="true"]{
       items[folder.id] = Array.isArray(itemsSrc[folder.id]) ? [...new Set(itemsSrc[folder.id].map((v) => String(v || '').trim()).filter(Boolean))] : [];
     }
     return { folders, items };
+  }
+
+  function STORE_listFolderItems(data, folderId) {
+    const id = String(folderId || '').trim();
+    if (!id) return [];
+    const core = FOLDERCORE_get();
+    if (core && typeof core.listFolderItems === 'function') {
+      return core.listFolderItems(data, id, FOLDERCORE_options());
+    }
+    return Array.isArray(data?.items?.[id]) ? data.items[id].slice() : [];
+  }
+
+  function STORE_computeFolderCounts(data) {
+    const core = FOLDERCORE_get();
+    if (core && typeof core.computeFolderCounts === 'function') {
+      return core.computeFolderCounts(data, FOLDERCORE_options());
+    }
+    const byFolder = {};
+    let total = 0;
+    const d = STORE_normalizeData(data);
+    for (const folder of d.folders) {
+      const count = STORE_listFolderItems(d, folder.id).length;
+      byFolder[folder.id] = count;
+      total += count;
+    }
+    return { byFolder, total, orphaned: {} };
   }
 
   function STORE_normalizeCategoryOpenMode(raw) {
@@ -1653,6 +1802,10 @@ ${CROW}[aria-current="true"]{
 
   /* Popover (folder row actions) */
   function UI_closeFolderPop() {
+    if (typeof STATE.popPositionOff === 'function') {
+      try { STATE.popPositionOff(); } catch {}
+      STATE.popPositionOff = null;
+    }
     if (STATE.popEl) SAFE_remove(STATE.popEl);
     STATE.popEl = null;
   }
@@ -1665,6 +1818,12 @@ ${CROW}[aria-current="true"]{
     const pop = D.createElement('div');
     pop.setAttribute(ATTR_CGXUI, UI_FSECTION_POP);
     pop.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    // Phase 14 polish: opt the popup into the H2O sand-glass skin so its
+    // surface picks up the registry-driven blurred-glass treatment used by
+    // other premium popups in the app (e.g. the auto-title emoji picker).
+    pop.setAttribute('data-h2o-glass', 'panel');
+    pop.setAttribute('data-h2o-skin', 'sand-glass');
+    pop.setAttribute('data-h2o-skin-surface', 'sand-glass');
 
     items.forEach((it) => {
       if (it === 'sep') {
@@ -1694,6 +1853,10 @@ ${CROW}[aria-current="true"]{
 
         const grid = D.createElement('div');
         grid.setAttribute(ATTR_CGXUI_STATE, 'picker-grid');
+        // Phase 14 polish: tag color grids so the stylesheet can flatten them
+        // into a single horizontal row that scrolls when needed (matching the
+        // user's request that all colors live on one line).
+        if (it.type === 'color-grid') grid.setAttribute('data-grid-mode', 'row');
 
         (Array.isArray(it.options) ? it.options : []).forEach((option) => {
           const b = D.createElement('button');
@@ -1733,6 +1896,18 @@ ${CROW}[aria-current="true"]{
         return;
       }
 
+      if (it?.type === 'custom') {
+        try {
+          const node = typeof it.render === 'function'
+            ? it.render({ pop, close: UI_closeFolderPop })
+            : it.node;
+          if (node) pop.appendChild(node);
+        } catch (e) {
+          DIAG_err('popCustom', e);
+        }
+        return;
+      }
+
       const b = D.createElement('button');
       b.type = 'button';
       if (it.danger) b.setAttribute(ATTR_CGXUI_STATE, 'danger');
@@ -1767,17 +1942,50 @@ ${CROW}[aria-current="true"]{
     CLEAN.nodes.add(pop);
     STATE.popEl = pop;
 
-    const pad = 8;
-    const rA = anchorEl.getBoundingClientRect();
-    const rP = pop.getBoundingClientRect();
+    const positionPop = () => {
+      if (!pop.isConnected || !anchorEl?.isConnected) return;
+      const pad = 8;
+      const gap = 6;
+      const vw = Math.max(320, W.innerWidth || D.documentElement.clientWidth || 0);
+      const vh = Math.max(240, W.innerHeight || D.documentElement.clientHeight || 0);
+      pop.style.maxHeight = `${Math.max(160, vh - pad * 2)}px`;
 
-    let left = Math.min(rA.right - rP.width, innerWidth - rP.width - pad);
-    let top = Math.min(rA.bottom + 6, innerHeight - rP.height - pad);
-    left = Math.max(pad, left);
-    top = Math.max(pad, top);
+      const rA = anchorEl.getBoundingClientRect();
+      let rP = pop.getBoundingClientRect();
+      const width = Math.min(rP.width, vw - pad * 2);
+      let left = Math.min(rA.right - width, vw - width - pad);
+      left = Math.max(pad, left);
 
-    pop.style.left = `${left}px`;
-    pop.style.top = `${top}px`;
+      const spaceBelow = Math.max(0, vh - rA.bottom - gap - pad);
+      const spaceAbove = Math.max(0, rA.top - gap - pad);
+      const preferAbove = spaceBelow < Math.min(rP.height, 260) && spaceAbove > spaceBelow;
+      const maxSideSpace = Math.max(160, preferAbove ? spaceAbove : Math.max(spaceBelow, spaceAbove));
+      pop.style.maxHeight = `${Math.min(vh - pad * 2, maxSideSpace)}px`;
+      rP = pop.getBoundingClientRect();
+
+      let top = preferAbove ? (rA.top - gap - rP.height) : (rA.bottom + gap);
+      if (top + rP.height > vh - pad) top = vh - rP.height - pad;
+      if (top < pad) top = pad;
+
+      pop.style.left = `${left}px`;
+      pop.style.top = `${top}px`;
+    };
+
+    positionPop();
+    requestAnimationFrame(positionPop);
+    const onViewportChange = () => positionPop();
+    W.addEventListener('resize', onViewportChange, true);
+    W.addEventListener('scroll', onViewportChange, true);
+    let ro = null;
+    try {
+      ro = new ResizeObserver(() => positionPop());
+      ro.observe(pop);
+    } catch {}
+    STATE.popPositionOff = () => {
+      W.removeEventListener('resize', onViewportChange, true);
+      W.removeEventListener('scroll', onViewportChange, true);
+      try { ro?.disconnect?.(); } catch {}
+    };
 
     // close on outside click
     setTimeout(() => {
@@ -1833,7 +2041,7 @@ ${CROW}[aria-current="true"]{
       UI_openCategoriesOverflowDropdown(anchorEl, groups);
       return;
     }
-    UI_openCategoriesViewer(groups, { skipHistory: true });
+    UI_openCategoriesViewer(groups);
   }
 
   /* Modal (create/rename) */
@@ -1998,6 +2206,10 @@ ${CROW}[aria-current="true"]{
             return 'Capture is not available from this page. Use Capture / Save from Command Bar first.';
           case 'capture-failed':
             return 'Could not save this chat. Try Capture / Save from Command Bar.';
+          case 'capture-target-unavailable':
+            return 'Could not load that chat from ChatGPT. Open the chat and try again.';
+          case 'capture-local-only':
+            return 'The chat was saved locally, but Studio is not connected yet. Refresh the page and try again.';
           case 'capture-not-indexed':
           case 'chat-not-saved':
             return 'The chat was captured, but Library has not indexed it yet. Try again in a moment.';
@@ -2240,6 +2452,41 @@ ${CROW}[aria-current="true"]{
 
   function UI_injectIcon(rowEl, svg, opts = {}) {
     return UI_setPrimaryIcon(rowEl, svg, opts);
+  }
+
+  function UI_getNativeTrailingButtonTemplate() {
+    const selectors = [
+      'nav .ho-project-row button.__menu-item-trailing-btn',
+      'aside .ho-project-row button.__menu-item-trailing-btn',
+      'nav button.__menu-item-trailing-btn:not([data-cgxui])',
+      'aside button.__menu-item-trailing-btn:not([data-cgxui])',
+    ];
+    for (const selector of selectors) {
+      const btn = D.querySelector(selector);
+      if (btn?.tagName === 'BUTTON') return btn;
+    }
+    return null;
+  }
+
+  function UI_makeNativeLikeMoreButton(label, token) {
+    const nativeTemplate = UI_getNativeTrailingButtonTemplate();
+    const btn = nativeTemplate?.cloneNode(true) || D.createElement('button');
+    btn.type = 'button';
+    btn.classList.add('__menu-item-trailing-btn');
+    btn.querySelectorAll?.('[id]')?.forEach((el) => el.removeAttribute('id'));
+    btn.removeAttribute('id');
+    btn.removeAttribute('data-testid');
+    btn.removeAttribute('data-state');
+    btn.removeAttribute('aria-controls');
+    btn.removeAttribute('aria-expanded');
+    btn.setAttribute('data-trailing-button', 'true');
+    btn.setAttribute('aria-label', label || 'More actions');
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.title = label || 'More actions';
+    if (token) btn.setAttribute(ATTR_CGXUI, token);
+    btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    if (!btn.innerHTML.trim()) btn.innerHTML = FRAG_SVG_MORE;
+    return btn;
   }
 
   function UI_makeIconToggle(rowEl, label, onClick, expanded = null) {
@@ -2774,16 +3021,16 @@ function ROUTE_clearPageRoute_LOCAL() {
         localFolders,
       ].filter((folders) => folders.length);
       const currentChatHref = D.querySelector(SEL.currentChatAnchor)?.getAttribute('href') || '';
-      const currentChatId = DOM_parseChatIdFromHref(currentChatHref);
+      const currentChatKey = API_normalizeChatBindingKey(currentChatHref);
+      const currentChatCandidates = new Set((currentChatKey.candidates || []).map((value) => String(value || '').trim()).filter(Boolean));
+      const folderCounts = STORE_computeFolderCounts(data);
       const renderedFolderRows = [];
       const renderedFolders = [];
 
       const hrefMatchesCurrentChat = (href) => {
-        const value = String(href || '');
-        if (!value) return false;
-        if (currentChatHref && value === currentChatHref) return true;
-        const chatId = DOM_parseChatIdFromHref(value);
-        return !!(chatId && currentChatId && chatId === currentChatId);
+        if (!currentChatCandidates.size) return false;
+        const key = API_normalizeChatBindingKey(href);
+        return (key.candidates || []).some((value) => currentChatCandidates.has(String(value || '').trim()));
       };
 
       const appendKindDivider = () => {
@@ -2801,7 +3048,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           renderedFolders.push(folder);
           const inlinePreviewEnabled = ui.folderInlinePreviewOnOpen !== false;
           const isOpen = inlinePreviewEnabled && !!ui.openFolders[folder.id];
-          const hrefs = Array.isArray(data.items[folder.id]) ? data.items[folder.id] : [];
+          const hrefs = STORE_listFolderItems(data, folder.id);
           const isActiveFolder = hrefs.some(hrefMatchesCurrentChat);
 
           const grp = D.createElement('div');
@@ -2827,12 +3074,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           row.setAttribute('data-cgxui-folder-id', folder.id);
           renderedFolderRows.push({ row, isActiveFolder });
 
-          const more = D.createElement('button');
-          more.type = 'button';
-          more.textContent = '⋯';
-          more.title = 'Folder actions';
-          more.setAttribute(ATTR_CGXUI, UI_FSECTION_FOLDER_MORE);
-          more.setAttribute(ATTR_CGXUI_OWNER, SkID);
+          const more = UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE);
 
           more.onclick = (e) => {
             e.preventDefault();
@@ -2930,7 +3172,7 @@ function ROUTE_clearPageRoute_LOCAL() {
             span.style.opacity = '.6';
             span.style.marginLeft = '8px';
             span.style.fontSize = '12px';
-            span.textContent = `(${hrefs.length})`;
+            span.textContent = `(${Number(folderCounts.byFolder?.[folder.id] ?? hrefs.length) || 0})`;
             trunc.parentElement?.appendChild(span);
           }
 
@@ -3020,7 +3262,14 @@ function ROUTE_clearPageRoute_LOCAL() {
       const row = UI_makeRowShell(tplDiv, tplA, FALLBACK_ROW_CLASS, 'a');
       UI_setRowText(row, group?.name || 'Category');
       const appearance = opts.appearance || STORE_getCategoryAppearance(group);
-      UI_injectIcon(row, UI_categoryIconSvg(appearance.icon), { color: appearance.color });
+      // When the user hasn't picked an icon for this category yet, render the
+      // category panels placeholder. Falls back to the legacy helper if the
+      // Categories module is older and doesn't expose the new method.
+      const cats = LIBCORE_getCategoriesOwner();
+      const iconSvg = (typeof cats?.iconSvgForAppearance === 'function')
+        ? cats.iconSvgForAppearance(appearance)
+        : UI_categoryIconSvg(appearance.icon);
+      UI_injectIcon(row, iconSvg, { color: appearance.color });
       UI_wireAsButton(row, onOpen);
       if (typeof opts.onToggle === 'function') {
         UI_makeIconToggle(row, opts.isOpen ? 'Hide chats' : 'Show chats', opts.onToggle, !!opts.isOpen);
@@ -3150,12 +3399,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           trunc.parentElement?.appendChild(span);
         }
 
-        const more = D.createElement('button');
-        more.type = 'button';
-        more.textContent = '⋯';
-        more.title = 'Category appearance';
-        more.setAttribute(ATTR_CGXUI, UI_FSECTION_CATEGORY_MORE);
-        more.setAttribute(ATTR_CGXUI_OWNER, SkID);
+        const more = UI_makeNativeLikeMoreButton('Category appearance', UI_FSECTION_CATEGORY_MORE);
         more.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3240,8 +3484,7 @@ function ROUTE_clearPageRoute_LOCAL() {
     m.appendChild(sep);
 
     d.folders.forEach((f) => {
-      const arr = Array.isArray(d.items[f.id]) ? d.items[f.id] : [];
-      const inFolder = arr.includes(fullHref);
+      const inFolder = API_getBinding(fullHref).folderId === String(f.id || '');
 
       const btn = D.createElement('button');
       btn.type = 'button';
@@ -3877,8 +4120,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       };
       tabs.appendChild(btn);
     };
-    addViewAction('Pinned', '#/pinned');
-    addViewAction('Archive', '#/archive');
+    // Phase 12 polish: same hideViewActions seam as 0F1a UI_makeInShellPageShell.
+    if (!opts.hideViewActions) {
+      addViewAction('Pinned', '#/pinned');
+      addViewAction('Archive', '#/archive');
+    }
     if (opts.kind === 'projects') {
       const refreshBtn = D.createElement('button');
       refreshBtn.type = 'button';
@@ -4005,7 +4251,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     title.textContent = folder.name || folder.id || 'Folder';
     body.appendChild(title);
 
-    const hrefs = Array.isArray(STORE_readData().items?.[folder.id]) ? STORE_readData().items[folder.id] : [];
+    const folderData = STORE_readData();
+    const hrefs = STORE_listFolderItems(folderData, folder.id);
     const sub = D.createElement('div');
     sub.setAttribute(ATTR_CGXUI_STATE, 'row-sub');
     sub.textContent = `${hrefs.length} chats`;
@@ -4018,7 +4265,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     /* Phase C8: moved to 0F4a — function UI_appendInShellCategoryRow */
 
-  function UI_openFoldersViewer(foldersRaw = null) {
+  function UI_openFoldersViewer(foldersRaw = null, opts = {}) {
     UI_ensureStyle();
 
     const allFolders = STORE_readData().folders.filter((folder) => !UTIL_isReservedFolderViewName(folder.name));
@@ -4029,27 +4276,31 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     });
     folders.forEach((folder) => UI_appendInShellFolderRow(list, folder));
 
-    if (!UI_mountInShellPage(page)) {
-      UI_closeViewer();
-      const { box, list: fallbackList } = UI_makeViewerShell('Folders', `${folders.length} folders`, { mode: CFG_CATEGORY_OPEN_MODE_PANEL });
-      folders.forEach((folder) => {
-        const btn = D.createElement('button');
-        btn.type = 'button';
-        btn.onclick = () => UI_openFolderByMode(folder.id);
-        const body = D.createElement('div');
-        body.style.minWidth = '0';
-        body.style.flex = '1 1 auto';
-        const title = D.createElement('div');
-        title.setAttribute(ATTR_CGXUI_STATE, 'row-title');
-        title.textContent = folder.name || folder.id || 'Folder';
-        body.appendChild(title);
-        btn.appendChild(body);
-        fallbackList.appendChild(btn);
-      });
-      D.body.appendChild(box);
-      CLEAN.nodes.add(box);
-      STATE.viewerEl = box;
+    if (UI_mountInShellPage(page)) {
+      ROUTE_commitPageRoute({ view: 'folders', id: '' }, opts);
+      return page;
     }
+
+    UI_closeViewer();
+    const { box, list: fallbackList } = UI_makeViewerShell('Folders', `${folders.length} folders`, { mode: CFG_CATEGORY_OPEN_MODE_PANEL });
+    folders.forEach((folder) => {
+      const btn = D.createElement('button');
+      btn.type = 'button';
+      btn.onclick = () => UI_openFolderByMode(folder.id);
+      const body = D.createElement('div');
+      body.style.minWidth = '0';
+      body.style.flex = '1 1 auto';
+      const title = D.createElement('div');
+      title.setAttribute(ATTR_CGXUI_STATE, 'row-title');
+      title.textContent = folder.name || folder.id || 'Folder';
+      body.appendChild(title);
+      btn.appendChild(body);
+      fallbackList.appendChild(btn);
+    });
+    D.body.appendChild(box);
+    CLEAN.nodes.add(box);
+    STATE.viewerEl = box;
+    return box;
   }
 
   function UI_getFolderSurfaceData(folderId) {
@@ -4059,12 +4310,15 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const folders = store.folders || [];
     const chatToFolders = store.chatToFolders || {};
     const data = STORE_readData();
+    const core = FOLDERCORE_get();
 
-    const currentDataFolder = data.folders.find((f) => f.id === id) || null;
+    const currentDataFolder = core && typeof core.getFolderById === 'function'
+      ? core.getFolderById(data, id)
+      : (data.folders.find((f) => f.id === id) || null);
     const folder = currentDataFolder || folders.find((f) => f.id === id) || null;
     const title = folder ? folder.name : id;
 
-    let hrefs = Array.isArray(data.items?.[id]) ? data.items[id] : [];
+    let hrefs = STORE_listFolderItems(data, id);
     if (!hrefs.length) {
       hrefs = Object.entries(chatToFolders)
         .filter(([, ids]) => Array.isArray(ids) && ids.includes(id))
@@ -4079,6 +4333,15 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         chatId,
         title: DOM_findChatTitleInSidebarByHref(href) || DOM_getChatTitleFromSidebar(href) || chatId || href,
       };
+    });
+
+    chats.forEach((chat) => {
+      if (!chat?.chatId) return;
+      Promise.resolve(API_repairStudioVisibilityForChat(chat.chatId, {
+        folderId: id,
+        folderName: String(folder?.name || title || id),
+        source: 'folder-surface-data',
+      })).catch((error) => DIAG_err('folderSurface:repairStudioVisibility', error));
     });
 
     return { folder, title, chats };
@@ -4196,14 +4459,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       const route = ROUTE_parseCurrent();
       const activeRouteFolderId = route?.view === 'folder' ? String(route.id || '').trim() : '';
       const currentHref = D.querySelector(SEL.currentChatAnchor)?.getAttribute('href') || W.location.pathname || '';
-      const key = API_normalizeChatBindingKey(currentHref);
-      const candidates = new Set((key.candidates || []).map((value) => String(value || '').trim()).filter(Boolean));
-      const data = STORE_readData();
+      const activeBinding = API_getBinding(currentHref);
       let activeMarked = false;
       D.querySelectorAll(UTIL_selScoped(UI_FSECTION_FOLDER_ROW)).forEach((row) => {
         const folderId = String(row.getAttribute('data-cgxui-folder-id') || '').trim();
-        const hrefs = Array.isArray(data.items?.[folderId]) ? data.items[folderId] : [];
-        const matchesCurrentChat = !!folderId && hrefs.some((value) => candidates.has(String(value || '').trim()));
+        const matchesCurrentChat = !!folderId && String(activeBinding.folderId || '') === folderId;
         const active = !!folderId && !activeMarked && (folderId === activeRouteFolderId || matchesCurrentChat);
         if (active) {
           row.setAttribute('aria-current', 'true');
@@ -4651,6 +4911,27 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const raw = String(chatIdOrHref || '').trim();
     if (!raw) return { raw: '', chatId: '', href: '', candidates: [] };
 
+    const core = FOLDERCORE_get();
+    if (core && typeof core.normalizeBindingKey === 'function') {
+      const normalized = core.normalizeBindingKey(raw, FOLDERCORE_options());
+      const chatId = String(normalized.chatId || '').trim();
+      const href = String(normalized.href || normalized.canonical || raw).trim();
+      const candidates = [];
+      const add = (value) => {
+        const v = String(value || '').trim();
+        if (!v || candidates.includes(v)) return;
+        candidates.push(v);
+      };
+
+      add(href);
+      add(raw);
+      if (!raw.startsWith('/')) add(`/c/${raw}`);
+      (Array.isArray(normalized.candidates) ? normalized.candidates : []).forEach(add);
+      if (chatId) add(DOM_findChatHrefInSidebarByChatId(chatId));
+
+      return { raw, chatId, href, candidates };
+    }
+
     let chatId = DOM_parseChatIdFromHref(raw) || '';
 
     if (!chatId) {
@@ -4692,6 +4973,15 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     if (!key.raw && !key.href) return { folderId: '', folderName: '' };
 
     const d = STORE_readData();
+    const core = FOLDERCORE_get();
+    if (core && typeof core.getBinding === 'function') {
+      const binding = core.getBinding(d, key.href || key.raw, FOLDERCORE_options());
+      return {
+        folderId: String(binding?.folderId || ''),
+        folderName: String(binding?.folderName || ''),
+      };
+    }
+
     const folders = Array.isArray(d.folders) ? d.folders : [];
     const items = (d.items && typeof d.items === 'object') ? d.items : {};
     const candidates = new Set(key.candidates);
@@ -4791,6 +5081,106 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return rows.some((row) => API_savedLibraryRowMatchesKey(row, key));
   }
 
+  async function API_refreshStudioSavedLibraryRowsForChat(chatKeyOrHref = '') {
+    const key = API_normalizeChatBindingKey(chatKeyOrHref);
+    if (!key.chatId && !key.href) return false;
+
+    const archive = H2O.archiveBoot || {};
+    if (typeof archive.isExtensionBacked === 'function' && !archive.isExtensionBacked()) {
+      return false;
+    }
+
+    const rows = [];
+    const addRows = (value) => {
+      if (!Array.isArray(value)) return;
+      value.forEach((row) => { if (row && typeof row === 'object') rows.push(row); });
+    };
+    const readRows = async (fn, ctx = null) => {
+      if (typeof fn !== 'function') return;
+      try {
+        const value = ctx ? fn.call(ctx) : fn();
+        addRows(value && typeof value.then === 'function' ? await value : value);
+      } catch {}
+    };
+
+    await readRows(archive.listWorkbenchRows, archive);
+    await readRows(archive._rendererHost?.listWorkbenchRows, archive._rendererHost);
+    if (rows.length) STATE.savedLibraryRows = rows;
+    return rows.some((row) => API_savedLibraryRowMatchesKey(row, key));
+  }
+
+  async function API_repairStudioVisibilityForChat(chatKeyOrHref = '', opts = {}) {
+    const key = API_normalizeChatBindingKey(chatKeyOrHref);
+    const cid = String(key.chatId || '').trim();
+    if (!cid) {
+      return { ok: false, status: 'capture-failed', reason: 'missing-chat-id', chatId: '' };
+    }
+
+    const archive = H2O.archiveBoot || {};
+    const folderId = String(opts?.folderId || '').trim();
+    const folderName = String(opts?.folderName || '').trim();
+    const source = String(opts?.source || 'folders-repair');
+    const shouldUpsertFolderMeta = Object.prototype.hasOwnProperty.call(opts || {}, 'folderId')
+      || Object.prototype.hasOwnProperty.call(opts || {}, 'folderName');
+    const capture = opts?.capture && typeof opts.capture === 'object' ? opts.capture : null;
+
+    const upsertFolderMeta = async () => {
+      const upsert = typeof archive.upsertLatestSnapshotMeta === 'function'
+        ? archive.upsertLatestSnapshotMeta.bind(archive)
+        : null;
+      if (!upsert || !shouldUpsertFolderMeta) return false;
+      try {
+        await upsert(cid, { folderId, folderName }, { source });
+        return true;
+      } catch (error) {
+        DIAG_err('repairStudioVisibility:upsertLatestSnapshotMeta', error);
+        return false;
+      }
+    };
+
+    let studioVisible = await API_refreshStudioSavedLibraryRowsForChat(cid);
+    if (studioVisible) {
+      await upsertFolderMeta();
+      return { ok: true, status: 'studio-visible', chatId: cid };
+    }
+
+    let migration = null;
+    const migrateLegacyIfNeeded = archive._bridge && typeof archive._bridge.migrateLegacyIfNeeded === 'function'
+      ? archive._bridge.migrateLegacyIfNeeded.bind(archive._bridge)
+      : null;
+    if (migrateLegacyIfNeeded) {
+      try {
+        migration = await migrateLegacyIfNeeded(cid);
+      } catch (error) {
+        DIAG_err('repairStudioVisibility:migrateLegacyIfNeeded', error);
+      }
+    }
+
+    try { await archive.loadLatestSnapshot?.(cid); } catch {}
+    studioVisible = await API_refreshStudioSavedLibraryRowsForChat(cid);
+    if (studioVisible) {
+      await upsertFolderMeta();
+      return {
+        ok: true,
+        status: migration?.imported ? 'legacy-migrated' : 'studio-visible',
+        chatId: cid,
+        migration,
+      };
+    }
+
+    const extensionUnavailable = String(migration?.reason || '') === 'extension_unavailable'
+      || (typeof archive.isExtensionBacked === 'function' && !archive.isExtensionBacked());
+    const localOnly = extensionUnavailable
+      || String(capture?.storage || '').toLowerCase() === 'legacy'
+      || capture?.workbenchVisible === false;
+    return {
+      ok: false,
+      status: localOnly ? 'capture-local-only' : 'capture-not-indexed',
+      chatId: cid,
+      migration,
+    };
+  }
+
   async function API_captureCurrentChatForFolder(chatId, opts = {}) {
     const key = API_normalizeChatBindingKey(chatId);
     const cid = String(key.chatId || '').trim();
@@ -4805,28 +5195,39 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     let capture = null;
     try {
-      capture = await archive.captureNow(cid);
+      capture = await archive.captureNow(cid, {
+        href: String(key.href || ''),
+        source: String(opts?.source || 'capture-current-chat-for-folder'),
+      });
     } catch (error) {
       DIAG_err('capture-current-chat-for-folder', error);
       return { ok: false, status: 'capture-failed', chatId: cid, capture: null, error: String(error && (error.message || error) || '') };
     }
 
     if (!capture || capture.ok === false) {
-      return { ok: false, status: 'capture-failed', chatId: cid, capture };
+      const reason = String(capture?.reason || '').trim().toLowerCase();
+      const status = reason.startsWith('backend-') || reason === 'fetch-unavailable'
+        ? 'capture-target-unavailable'
+        : 'capture-failed';
+      return { ok: false, status, chatId: cid, capture };
     }
 
     try { await archive.loadLatestSnapshot?.(cid); } catch {}
-
-    if (API_isSavedLibraryChat(cid)) {
-      return { ok: true, status: 'captured', chatId: cid, capture };
+    const repair = await API_repairStudioVisibilityForChat(cid, {
+      capture,
+      source: String(opts?.source || 'capture-current-chat-for-folder'),
+    });
+    if (repair?.ok) {
+      return { ok: true, status: 'captured', chatId: cid, capture, repair };
     }
 
-    const rowsMatch = await API_refreshSavedLibraryRowsForChat(cid);
-    if (rowsMatch && API_isSavedLibraryChat(cid)) {
-      return { ok: true, status: 'captured', chatId: cid, capture };
-    }
-
-    return { ok: false, status: 'capture-not-indexed', chatId: cid, capture };
+    return {
+      ok: false,
+      status: String(repair?.status || 'capture-not-indexed'),
+      chatId: cid,
+      capture,
+      repair,
+    };
   }
 
   async function API_saveAndBindToFolder({ chatId = '', href = '', folderId = '', folderName = '', source = '' } = {}) {
@@ -4933,27 +5334,37 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const d = STORE_readData();
     const folders = Array.isArray(d.folders) ? d.folders : [];
     const folder = folders.find(f => String(f.id || '') === fid);
-    const candidates = new Set(key.candidates);
-    d.items = (d.items && typeof d.items === 'object') ? d.items : {};
+    const core = FOLDERCORE_get();
 
-    // Remove all known key shapes first; API_setBinding preserves one-folder-max behavior.
-    for (const existingFid of Object.keys(d.items)) {
-      d.items[existingFid] = (d.items[existingFid] || []).filter(h => {
-        const value = String(h || '');
-        return !candidates.has(value.trim());
-      });
+    if (core && typeof core.applyFolderBinding === 'function' && typeof core.removeFolderBinding === 'function') {
+      const result = fid
+        ? core.applyFolderBinding(d, key.href || key.raw, fid, FOLDERCORE_options())
+        : core.removeFolderBinding(d, key.href || key.raw, FOLDERCORE_options());
+      const nextState = result?.state && typeof result.state === 'object' ? result.state : d;
+      STORE_writeData(STORE_normalizeData(nextState));
+    } else {
+      const candidates = new Set(key.candidates);
+      d.items = (d.items && typeof d.items === 'object') ? d.items : {};
+
+      // Remove all known key shapes first; API_setBinding preserves one-folder-max behavior.
+      for (const existingFid of Object.keys(d.items)) {
+        d.items[existingFid] = (d.items[existingFid] || []).filter(h => {
+          const value = String(h || '');
+          return !candidates.has(value.trim());
+        });
+      }
+
+      // Assign to target folder using the canonical normalized href.
+      if (fid && folder) {
+        d.items[fid] = Array.isArray(d.items[fid]) ? d.items[fid] : [];
+        d.items[fid].push(key.href);
+        d.items[fid] = [...new Set(d.items[fid])];
+      } else if (fid) {
+        // Folder doesn't exist in data yet — skip silently
+      }
+
+      STORE_writeData(d);
     }
-
-    // Assign to target folder using the canonical normalized href.
-    if (fid && folder) {
-      d.items[fid] = Array.isArray(d.items[fid]) ? d.items[fid] : [];
-      d.items[fid].push(key.href);
-      d.items[fid] = [...new Set(d.items[fid])];
-    } else if (fid) {
-      // Folder doesn't exist in data yet — skip silently
-    }
-
-    STORE_writeData(d);
 
     const effective = API_getBinding(key.chatId || key.href);
     if (previous.folderId !== effective.folderId || previous.folderName !== effective.folderName) {
@@ -4969,6 +5380,34 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         previousFolderName: String(previous.folderName || ''),
         affectedChatIds: key.chatId ? [key.chatId] : [],
       });
+    }
+    if (key.chatId) {
+      try {
+        const upsert = H2O.archiveBoot && typeof H2O.archiveBoot.upsertLatestSnapshotMeta === 'function'
+          ? H2O.archiveBoot.upsertLatestSnapshotMeta.bind(H2O.archiveBoot)
+          : null;
+        if (upsert) {
+          Promise.resolve(upsert(key.chatId, {
+            folderId: String(effective.folderId || ''),
+            folderName: String(effective.folderName || ''),
+          }, {
+            source: String(opts?.source || 'folders-api'),
+          })).catch((error) => DIAG_err('setBinding:upsertLatestSnapshotMeta', error));
+        }
+      } catch (error) {
+        DIAG_err('setBinding:upsertLatestSnapshotMeta', error);
+      }
+      if (effective.folderId) {
+        try {
+          Promise.resolve(API_repairStudioVisibilityForChat(key.chatId, {
+            folderId: String(effective.folderId || ''),
+            folderName: String(effective.folderName || ''),
+            source: String(opts?.source || 'folders-api'),
+          })).catch((error) => DIAG_err('setBinding:repairStudioVisibility', error));
+        } catch (error) {
+          DIAG_err('setBinding:repairStudioVisibility', error);
+        }
+      }
     }
     return { folderId: fid, folderName: String(folder?.name || ''), ok: true, status: 'ok' };
   }
@@ -5154,6 +5593,20 @@ function LIBCORE_registerFoldersOwner() {
     H2O.LibraryCore?.registerService?.('folders', foldersPublicApi, { replace: true });
     H2O.LibraryCore?.registerRoute?.('folder', (route) => {
       UI_openFolderViewer(route?.id, {
+        fromRoute: true,
+        baseHref: route?.baseHref,
+        routeToken: route?.routeToken,
+      });
+      return true;
+    }, { replace: true });
+    // Phase 15: register the plural `folders` route so the Library Workspace
+    // tab can route out to the canonical Folders list page (owned here)
+    // instead of rendering its own duplicate list inside the workspace body.
+    H2O.LibraryCore?.registerRoute?.('folders', (route) => {
+      // UI_openFoldersViewer takes a single optional argument (a pre-filtered
+      // folders array). Passing null means "use the full known set", which is
+      // what we want when the user clicks the workspace's Folders tab.
+      UI_openFoldersViewer(null, {
         fromRoute: true,
         baseHref: route?.baseHref,
         routeToken: route?.routeToken,

@@ -4022,6 +4022,54 @@
   archiveBoot.getLabelsCatalog = () => getLabelsCatalog();
   archiveBoot.getCategoriesCatalog = () => getCategoriesCatalog();
   archiveBoot.createCategory = (name, opts = {}) => createCategory(name, opts);
+  // Phase 12 polish: rename + delete public APIs so the Categories page can
+  // surface the "Rename" / "Delete" actions in the per-row popup. Both wrap
+  // direct catalog persistence — they bypass mergeCategoriesCatalog's seen-id
+  // dedupe (which would otherwise silently drop in-place updates). Both refuse
+  // to operate on default (non-custom) catalog entries to protect the seeded
+  // category set.
+  archiveBoot.renameCategory = (idRaw, nextNameRaw) => {
+    const id = String(idRaw || "").trim();
+    const nextName = String(nextNameRaw || "").trim();
+    if (!id || !nextName) return null;
+    const current = getCategoriesCatalog();
+    const idx = current.findIndex((item) => String(item?.id || "") === id);
+    if (idx < 0) return null;
+    // Renaming is allowed for any category. The default seeded catalog is merged
+    // by id (not by name), so a renamed default category keeps its id and stays
+    // mapped correctly even after a future seed reload — only the display name
+    // changes. Deletion (below) is still custom-only because removing a default
+    // catalog row would have it silently regenerated on next read.
+    const updated = [...current];
+    updated[idx] = { ...updated[idx], name: nextName, updatedAt: nowIso() };
+    lsSetJson(keyCategoryCatalog(), { categories: normalizeCategoryCatalog(updated), updatedAt: nowIso() });
+    return updated[idx];
+  };
+  archiveBoot.deleteCategory = (idRaw) => {
+    const id = String(idRaw || "").trim();
+    if (!id) return false;
+    const current = getCategoriesCatalog();
+    const target = current.find((item) => String(item?.id || "") === id);
+    if (!target) return false;
+    if (target.custom === true) {
+      // User-created category: physically remove. The seed catalog has no
+      // matching id, so the row stays gone after the next read.
+      const next = current.filter((item) => String(item?.id || "") !== id);
+      lsSetJson(keyCategoryCatalog(), { categories: normalizeCategoryCatalog(next), updatedAt: nowIso() });
+      return true;
+    }
+    // Default seeded category: write a retired-status tombstone. The catalog
+    // merge prefers stored records over defaults (first-id-wins), so the
+    // tombstone hides the seeded version on subsequent reads. getCatalogEntries
+    // filters out status === 'retired' before rendering.
+    const next = current.map((item) => (
+      String(item?.id || "") === id
+        ? { ...item, status: "retired", updatedAt: nowIso() }
+        : item
+    ));
+    lsSetJson(keyCategoryCatalog(), { categories: normalizeCategoryCatalog(next), updatedAt: nowIso() });
+    return true;
+  };
   archiveBoot.exportBundle = (opts = {}) => exportBundle(opts);
   archiveBoot.importBundle = (opts = {}) => importBundle(opts);
   // Phase 7 (Library NavTo). Expose the hash helpers + key constants so H2O.Library.NavTo

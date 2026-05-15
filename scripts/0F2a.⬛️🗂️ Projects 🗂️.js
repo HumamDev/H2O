@@ -76,9 +76,9 @@
   const UI_PROJECT_TITLE_ROW_CLASS = 'ho-project-row';
   const CFG_H2O_PAGE_ROUTE_OWNER = `${OWNER_SKID}:page-route:v1`;
   const CFG_H2O_PAGE_ROUTE_PREFIX = 'h2o';
-  const CFG_H2O_PAGE_QUERY_FLAG = `h2o_${OWNER_SKID}`;
-  const CFG_H2O_PAGE_QUERY_VIEW = `h2o_${OWNER_SKID}_view`;
-  const CFG_H2O_PAGE_QUERY_ID = `h2o_${OWNER_SKID}_id`;
+  const CFG_H2O_PAGE_QUERY_FLAG = 'h2o_flsc';
+  const CFG_H2O_PAGE_QUERY_VIEW = 'h2o_flsc_view';
+  const CFG_H2O_PAGE_QUERY_ID = 'h2o_flsc_id';
 
   const KEY_FSECTION_PROJECTS_CACHE_V1 = 'h2o:prm:cgx:fldrs:state:projects_cache:v1';
   const KEY_FSECTION_PROJECTS_NATIVE_HEADERS_V1 = 'h2o:prm:cgx:fldrs:state:projects_native_headers:v1';
@@ -122,9 +122,17 @@
     </svg>
   `;
   const FRAG_SVG_CATEGORY = `
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 7.5h14M5 12h14M5 16.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-      <path d="M8 5.5 6.8 18.5M17.2 5.5 16 18.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="4" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M6.6 7.5H8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 6.6V8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M16.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 7.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 16.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
     </svg>
   `;
 

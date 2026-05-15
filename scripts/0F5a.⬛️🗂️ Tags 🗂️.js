@@ -112,6 +112,8 @@
   // bridge, never blocking existing tag/manual behavior. No UI consumes them yet (Phase 5+).
   const NS_LIBRARY_STORE = `h2o:${SUITE}:${HOST}:library`;
   const KEY_TAG_AUTO_POOL = `${NS_LIBRARY_STORE}:tag-auto-pool:v1`;
+  const KEY_TAG_USER_POOL = `${NS_LIBRARY_STORE}:tag-user-pool:v1`;
+  const KEY_TAG_CATEGORY_LINKS = `${NS_LIBRARY_STORE}:tag-category-links:v1`;
   const KEY_TAG_OCC_INDEX_PREFIX = `${NS_LIBRARY_STORE}:tag-occ-index:v1:`;
   const TAG_AUTO_POOL_ALGO_VERSION = 'kw-v1';
   const TAG_AUTO_POOL_FLUSH_DEBOUNCE_MS = 200;
@@ -122,6 +124,8 @@
   const EV_TAG_AUTO_POOL_UPDATED = 'evt:h2o:library:tag-auto-pool-updated';
   const EV_TAG_OCC_INDEX_UPDATED = 'evt:h2o:library:tag-occ-index-updated';
   const EV_TAG_OCC_INDEX_OVERSIZE = 'evt:h2o:library:tag-occ-index-oversize';
+  const EV_TAG_USER_POOL_CHANGED = 'evt:h2o:tags:user-pool-changed';
+  const EV_TAG_CATEGORY_LINKS_CHANGED = 'evt:h2o:tags:category-links-changed';
 
   const TAG_COLOR_PALETTE = Object.freeze([
     '#3B82F6', '#22C55E', '#A855F7', '#F472B6', '#FF914D', '#FFD54F', '#7DD3FC', '#14B8A6', '#F97316', '#8B5CF6', '#84CC16', '#EF4444'
@@ -148,6 +152,7 @@
   const UI_TAG_EDIT = `${SkID}-edit`;
   const UI_TAG_ADD_DOT = `${SkID}-add-dot`;
   const UI_TAG_POP = `${SkID}-pool-pop`;
+  const UI_TAG_CLOUD_POP = `${SkID}-cloud-pop`;
   const UI_TAG_ACTIONS = `${SkID}-actions`;
   const UI_TAG_EMPTY = `${SkID}-empty`;
   const UI_FSECTION_VIEWER = `${SkID}-viewer`;
@@ -787,6 +792,232 @@
       .toLowerCase()
       .replace(/[^a-z0-9\u0600-\u06ff]+/g, '-')
       .replace(/^-+|-+$/g, '');
+  }
+
+  function normalizeTagLinkKey(raw) {
+    if (raw && typeof raw === 'object') return normalizeTagKey(raw.key || raw.id || raw.label || raw.name || '');
+    return normalizeTagKey(raw);
+  }
+
+  function normalizeCategoryLinkId(raw) {
+    return String(raw || '').trim();
+  }
+
+  function normalizeUserTagPoolStore(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = {
+      version: 1,
+      updatedAt: Number(src.updatedAt || 0) || 0,
+      tags: Object.create(null),
+    };
+    Object.entries(src.tags || {}).forEach(([fallbackKey, row]) => {
+      const key = normalizeTagLinkKey(row?.id || row?.key || fallbackKey);
+      const label = normalizeLabel(row?.label || row?.name || key);
+      if (!key || !label) return;
+      out.tags[key] = {
+        id: key,
+        label,
+        color: normalizeHexColor(row?.color || '') || initialTagColor(key),
+        createdAt: Number(row?.createdAt || src.updatedAt || Date.now()) || Date.now(),
+        updatedAt: Number(row?.updatedAt || row?.createdAt || src.updatedAt || Date.now()) || Date.now(),
+        source: String(row?.source || 'user'),
+        usageCount: Math.max(0, Number(row?.usageCount || 0) || 0),
+      };
+    });
+    return out;
+  }
+
+  function readUserTagPoolStore() {
+    return normalizeUserTagPoolStore(storage.getJSON(KEY_TAG_USER_POOL, null));
+  }
+
+  function writeUserTagPoolStore(storeRaw) {
+    const next = normalizeUserTagPoolStore(storeRaw);
+    next.updatedAt = Date.now();
+    storage.setJSON(KEY_TAG_USER_POOL, next);
+    return next;
+  }
+
+  function listUserPoolTags() {
+    const store = readUserTagPoolStore();
+    return Object.values(store.tags || {})
+      .sort((a, b) => (Number(b.updatedAt || 0) - Number(a.updatedAt || 0)) || String(a.label || '').localeCompare(String(b.label || '')));
+  }
+
+  function dispatchUserTagPoolChanged(tag) {
+    const detail = { tag: tag || null, ts: Date.now() };
+    safeDispatch(EV_TAG_USER_POOL_CHANGED, detail);
+    safeDispatch('h2o:tags:user-pool-changed', detail);
+  }
+
+  function createUserPoolTag(labelRaw, opts = {}) {
+    const label = normalizeLabel(labelRaw);
+    const id = normalizeTagKey(label);
+    if (!id || !label) return null;
+    if (getPriorityLabelTagBlocklist().has(id)) return null;
+    const store = readUserTagPoolStore();
+    const now = Date.now();
+    const current = store.tags[id] || {};
+    const tag = {
+      id,
+      label,
+      color: normalizeHexColor(opts.color || current.color || '') || initialTagColor(id),
+      createdAt: Number(current.createdAt || now) || now,
+      updatedAt: now,
+      source: 'user',
+      usageCount: Math.max(0, Number(current.usageCount || 0) || 0),
+    };
+    store.tags[id] = tag;
+    writeUserTagPoolStore(store);
+    if (opts.addToCurrentChatPool !== false) {
+      try {
+        const chatId = toChatId();
+        if (chatId) ensureTagInPool(chatId, { id: tag.id, label: tag.label, source: 'user' });
+      } catch (e) {
+        err('user-tag-pool:current-chat-pool', e);
+      }
+    }
+    dispatchUserTagPoolChanged(tag);
+    return tag;
+  }
+
+  function listCategoryLinkCatalog() {
+    try {
+      const rows = H2O.archiveBoot?.getCategoriesCatalog?.() || [];
+      if (!Array.isArray(rows)) return [];
+      return rows
+        .map((row) => ({
+          id: normalizeCategoryLinkId(row?.id),
+          name: normalizeLabel(row?.name || row?.label || row?.id || ''),
+          color: normalizeHexColor(row?.color || row?.appearance?.color || ''),
+          status: String(row?.status || 'active').trim().toLowerCase(),
+          sortOrder: Number.isFinite(Number(row?.sortOrder)) ? Number(row.sortOrder) : 9999,
+        }))
+        .filter((row) => row.id && row.name && row.status !== 'retired')
+        .sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name));
+    } catch (e) {
+      err('tag-category-links:list-categories', e);
+      return [];
+    }
+  }
+
+  function normalizeTagCategoryLinkStore(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = {
+      version: 1,
+      updatedAt: Number(src.updatedAt || 0) || 0,
+      tags: Object.create(null),
+    };
+    Object.entries(src.tags || {}).forEach(([fallbackKey, row]) => {
+      if (!row || typeof row !== 'object') return;
+      const key = normalizeTagLinkKey(row.key || row.id || fallbackKey);
+      if (!key) return;
+      const categoryIds = Array.from(new Set((Array.isArray(row.categoryIds) ? row.categoryIds : [])
+        .map(normalizeCategoryLinkId)
+        .filter(Boolean)));
+      if (!categoryIds.length) return;
+      out.tags[key] = {
+        id: key,
+        label: normalizeLabel(row.label || row.name || key) || key,
+        color: normalizeHexColor(row.color || ''),
+        categoryIds,
+        updatedAt: Number(row.updatedAt || src.updatedAt || 0) || 0,
+      };
+    });
+    return out;
+  }
+
+  function readTagCategoryLinkStore() {
+    return normalizeTagCategoryLinkStore(storage.getJSON(KEY_TAG_CATEGORY_LINKS, null));
+  }
+
+  function writeTagCategoryLinkStore(storeRaw) {
+    const next = normalizeTagCategoryLinkStore(storeRaw);
+    next.updatedAt = Date.now();
+    storage.setJSON(KEY_TAG_CATEGORY_LINKS, next);
+    return next;
+  }
+
+  function normalizeCategoryIdsForTagLinks(categoryIds) {
+    const ids = Array.from(new Set((Array.isArray(categoryIds) ? categoryIds : [categoryIds])
+      .map(normalizeCategoryLinkId)
+      .filter(Boolean)));
+    const catalog = listCategoryLinkCatalog();
+    const valid = new Set(catalog.map((row) => row.id));
+    return valid.size ? ids.filter((id) => valid.has(id)) : ids;
+  }
+
+  function tagLinkDescriptor(raw) {
+    const key = normalizeTagLinkKey(raw);
+    const fallback = raw && typeof raw === 'object' ? (raw.label || raw.name || raw.key || raw.id || '') : raw;
+    return {
+      id: key,
+      label: normalizeLabel(fallback || key) || key,
+      color: normalizeHexColor(raw?.color || raw?.tagRecord?.color || '') || '',
+    };
+  }
+
+  function dispatchTagCategoryLinksChanged(tagKey, categoryIds) {
+    const detail = { tagKey, categoryIds: Array.isArray(categoryIds) ? categoryIds.slice() : [], ts: Date.now() };
+    safeDispatch(EV_TAG_CATEGORY_LINKS_CHANGED, detail);
+    safeDispatch('h2o:tags:category-links-changed', detail);
+  }
+
+  function getTagCategoryIds(tagIdOrRecord) {
+    const key = normalizeTagLinkKey(tagIdOrRecord);
+    if (!key) return [];
+    const store = readTagCategoryLinkStore();
+    return Array.isArray(store.tags[key]?.categoryIds) ? store.tags[key].categoryIds.slice() : [];
+  }
+
+  function setTagCategoryIds(tagIdOrRecord, categoryIds) {
+    const tag = tagLinkDescriptor(tagIdOrRecord);
+    if (!tag.id) return [];
+    const nextIds = normalizeCategoryIdsForTagLinks(categoryIds);
+    const store = readTagCategoryLinkStore();
+    if (!nextIds.length) {
+      delete store.tags[tag.id];
+    } else {
+      const previous = store.tags[tag.id] || {};
+      store.tags[tag.id] = {
+        id: tag.id,
+        label: tag.label || previous.label || tag.id,
+        color: tag.color || previous.color || '',
+        categoryIds: nextIds,
+        updatedAt: Date.now(),
+      };
+    }
+    writeTagCategoryLinkStore(store);
+    dispatchTagCategoryLinksChanged(tag.id, nextIds);
+    return nextIds;
+  }
+
+  function toggleTagCategoryLink(tagIdOrRecord, categoryId, linked) {
+    const id = normalizeCategoryLinkId(categoryId);
+    if (!id) return getTagCategoryIds(tagIdOrRecord);
+    const selected = new Set(getTagCategoryIds(tagIdOrRecord));
+    if (linked === false) selected.delete(id);
+    else selected.add(id);
+    return setTagCategoryIds(tagIdOrRecord, Array.from(selected));
+  }
+
+  function getTagsForCategory(categoryId) {
+    const id = normalizeCategoryLinkId(categoryId);
+    if (!id) return [];
+    const store = readTagCategoryLinkStore();
+    return Object.values(store.tags || {})
+      .filter((row) => Array.isArray(row?.categoryIds) && row.categoryIds.includes(id))
+      .map((row) => ({
+        id: row.id,
+        label: row.label || row.id,
+        color: row.color || '',
+        lastSeen: Number(row.updatedAt || store.updatedAt || 0) || 0,
+        updatedAt: Number(row.updatedAt || store.updatedAt || 0) || 0,
+        totalUsage: 1,
+        source: 'tag-category-link',
+        categoryIds: row.categoryIds.slice(),
+      }))
+      .sort((a, b) => (b.lastSeen - a.lastSeen) || a.label.localeCompare(b.label));
   }
 
   function getPriorityLabelTagBlocklist() {
@@ -2988,6 +3219,15 @@ ${out.answerText}`);
     return true;
   }
 
+  function closeTagsCloudPopup() {
+    closeCloudCandidatePopup();
+    try { state.openCloudPopupCleanup?.(); } catch {}
+    state.openCloudPopupCleanup = null;
+    try { state.openCloudPopup?.remove?.(); } catch {}
+    state.openCloudPopup = null;
+    return true;
+  }
+
   function addPoolTagToTurn(chatIdRaw, turnIdOrAnswerId, tagIdOrLabel) {
     const chatId = toChatId(chatIdRaw);
     const tagId = slugify(tagIdOrLabel) || String(tagIdOrLabel || '').trim().toLowerCase();
@@ -3477,8 +3717,33 @@ ${out.answerText}`);
       }
     }
 
+    listUserPoolTags().forEach((tag) => {
+      const key = normalizeTagKey(tag);
+      const label = normalizeLabel(tag?.label || tag?.id || '');
+      if (!key || !label || excludedKeys.has(key)) return;
+      const current = map.get(key);
+      if (current) {
+        current.poolCreated = true;
+        current.lastSeen = Math.max(Number(current.lastSeen || 0) || 0, Number(tag.updatedAt || 0) || 0);
+        if (!current.color || current.color === '#64748B') current.color = normalizeHexColor(tag.color || '') || current.color;
+        return;
+      }
+      map.set(key, {
+        id: key,
+        label,
+        color: normalizeHexColor(tag.color || '') || initialTagColor(key),
+        usageCount: 0,
+        chats: [],
+        poolOnly: true,
+        poolCreated: true,
+        createdAt: Number(tag.createdAt || 0) || 0,
+        updatedAt: Number(tag.updatedAt || 0) || 0,
+        lastSeen: Number(tag.updatedAt || tag.createdAt || 0) || 0,
+      });
+    });
+
     return Array.from(map.values())
-      .filter((tag) => Number(tag?.usageCount || 0) > 0)
+      .filter((tag) => Number(tag?.usageCount || 0) > 0 || tag?.poolOnly === true)
       .sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0) || String(a.label || '').localeCompare(String(b.label || '')));
   }
 
@@ -3709,6 +3974,39 @@ ${out.answerText}`);
   const CLOUD_BUBBLE_FONT_MIN = 12;
   const CLOUD_BUBBLE_FONT_MAX = 28;
 
+  // Phase 13 polish: presentation-only title-case for tag labels.
+  // - Capitalize the first letter of plain lowercase labels: apple → Apple.
+  // - Preserve already-mixed-case acronyms / brand names: iPhone, MV3, H2O, UI.
+  // - Hard-fix a small allow-list of common tech terms with canonical casing
+  //   (iphone → iPhone, ipad → iPad, etc.) so the cloud feels premium even
+  //   when the user typed everything in lowercase.
+  // The underlying tag id and storage stay lowercase — this only affects
+  // displayed text on bubbles and popups. Search/filter is case-insensitive
+  // and unaffected.
+  const TAG_DISPLAY_CASING = Object.freeze({
+    iphone: 'iPhone', ipad: 'iPad', ipod: 'iPod', macbook: 'MacBook',
+    ios: 'iOS', macos: 'macOS', tvos: 'tvOS', watchos: 'watchOS',
+    ui: 'UI', ux: 'UX', api: 'API', mv3: 'MV3', sdk: 'SDK',
+    sso: 'SSO', mfa: 'MFA', oauth: 'OAuth',
+    h2o: 'H2O', cgx: 'CGX', dom: 'DOM', css: 'CSS', html: 'HTML',
+    json: 'JSON', xml: 'XML', yaml: 'YAML', svg: 'SVG', pdf: 'PDF',
+    http: 'HTTP', https: 'HTTPS', url: 'URL', sql: 'SQL', cli: 'CLI', npm: 'npm',
+  });
+  function titleCaseTagLabel(rawLabel) {
+    const s = String(rawLabel || '').trim();
+    if (!s) return s;
+    // Already has a non-leading uppercase letter? Caller knows their casing.
+    if (/[A-Z]/.test(s.slice(1))) return s;
+    return s.split(/(\s+)/).map((part) => {
+      if (!part || /^\s+$/.test(part)) return part;
+      const lower = part.toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(TAG_DISPLAY_CASING, lower)) return TAG_DISPLAY_CASING[lower];
+      // Don't title-case non-Latin scripts — they have no concept of case.
+      if (!/[a-z]/.test(lower)) return part;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    }).join('');
+  }
+
   // Phase 5.5 — Candidate quality filter (DISPLAY-TIME only).
   // Auto-pool data in Store stays untouched; we just hide low-value candidates from the
   // bubble cloud so the user-facing surface looks intelligent. Manual / in-use tags always
@@ -3810,6 +4108,7 @@ ${out.answerText}`);
 
   // Returns { ok, reason } where reason is one of:
   //   'manual'        — bubble is a manual / in-use tag (always passes)
+  //   'pool'          — user-created pool tag (always passes)
   //   'stopword'      — matches the noise word list above
   //   'numeric'       — starts with a digit (catches '100', '2026', '1best', '20x', '90-month')
   //   'short'         — < 3 chars after trim
@@ -3818,7 +4117,7 @@ ${out.answerText}`);
   //   null / undefined — passes; ranked normally
   function assessCandidateQuality(bubble) {
     if (!bubble) return { ok: false, reason: 'empty' };
-    if (bubble.kind === 'manual') return { ok: true, reason: 'manual' };
+    if (bubble.kind === 'manual' || bubble.kind === 'pool') return { ok: true, reason: bubble.kind };
     const label = String(bubble.label || '').trim().toLowerCase();
     const key   = String(bubble.key   || '').trim().toLowerCase();
     if (!label) return { ok: false, reason: 'empty' };
@@ -3870,6 +4169,37 @@ ${out.answerText}`);
       }
       [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-search"]:focus {
         border-color: rgba(255,255,255,.32);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-create-form"] {
+        display: inline-flex; align-items: center; gap: 6px;
+        flex: 0 1 230px; min-width: 190px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-create-input"] {
+        flex: 1 1 120px; min-width: 100px; box-sizing: border-box;
+        height: 30px; padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(0,0,0,.18);
+        color: rgba(255,255,255,.92);
+        font-size: 12px; outline: none;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-create-input"]:focus {
+        border-color: rgba(255,255,255,.32);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-create-button"] {
+        all: unset; box-sizing: border-box;
+        height: 30px; padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, #7DD3FC 34%, rgba(255,255,255,.10));
+        background: color-mix(in srgb, #7DD3FC 14%, rgba(255,255,255,.04));
+        color: rgba(235,250,255,.92);
+        font-size: 11px; font-weight: 700; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+        white-space: nowrap;
+        transition: background 200ms cubic-bezier(.2,.8,.2,1);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-create-button"]:hover {
+        background: color-mix(in srgb, #7DD3FC 22%, rgba(255,255,255,.08));
       }
       [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-sort"] {
         box-sizing: border-box; height: 30px; padding: 0 8px;
@@ -3978,6 +4308,64 @@ ${out.answerText}`);
       }
       [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] .pop-meta {
         font-size: 11px; color: rgba(255,255,255,.55);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-link"] {
+        padding: 0 0 10px; margin: -2px 0 8px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-label"] {
+        margin: 0 0 6px; font-size: 10px; font-weight: 700;
+        letter-spacing: .06em; text-transform: uppercase;
+        color: rgba(255,255,255,.42);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-details"] {
+        position: relative;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-summary"] {
+        list-style: none; cursor: pointer; user-select: none;
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        min-height: 32px; padding: 7px 9px; border-radius: 9px;
+        background: rgba(255,255,255,.045);
+        border: 1px solid rgba(255,255,255,.10);
+        color: rgba(255,255,255,.80); font-size: 11px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-summary"]::-webkit-details-marker { display: none; }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-summary"]::after {
+        content: '⌄'; flex: 0 0 auto; opacity: .65; font-size: 13px; line-height: 1;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-details"][open] [${CLOUD_ATTR}="pop-category-summary"]::after {
+        transform: rotate(180deg);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-summary-text"] {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-menu"] {
+        margin-top: 7px; max-height: 170px; overflow: auto; padding: 4px;
+        border-radius: 10px;
+        background: rgba(255,255,255,.035);
+        border: 1px solid rgba(255,255,255,.08);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-option"] {
+        display: flex; align-items: center; gap: 8px;
+        padding: 7px 6px; border-radius: 8px;
+        color: rgba(255,255,255,.76); cursor: pointer; font-size: 11px;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-option"]:hover {
+        background: rgba(255,255,255,.055);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-option"] input {
+        margin: 0; accent-color: var(--bubble-color, #64748B);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-dot"] {
+        width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto;
+        background: var(--category-color, var(--bubble-color, #64748B));
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--category-color, var(--bubble-color, #64748B)) 44%, transparent);
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-option-text"] {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-category-empty"] {
+        padding: 8px 2px; color: rgba(255,255,255,.45); font-size: 11px;
       }
       [${ATTR_CGXUI_OWNER}="${CLOUD_OWNER}"][${CLOUD_ATTR}="cloud-candidate-pop"] [${CLOUD_ATTR}="pop-row"] {
         display: flex; align-items: center; justify-content: space-between;
@@ -4139,11 +4527,11 @@ ${out.answerText}`);
         color: tag?.color || '',
         count: Number(tag?.usageCount || 0) || 0,
         score: 0,
-        kind: 'manual',
+        kind: tag?.poolOnly ? 'pool' : 'manual',
         tagRecord: tag,
         chatRefs: Array.isArray(tag?.chats) ? tag.chats.length : 0,
         blocked: false,
-        lastSeen: 0,
+        lastSeen: Number(tag?.lastSeen || tag?.updatedAt || tag?.createdAt || 0) || 0,
         contribByChat: null,
       });
     });
@@ -4197,8 +4585,10 @@ ${out.answerText}`);
     catch (e) { err('cloud-diag:auto-pool-snapshot', e); }
     const merged = buildBubbleData(Array.isArray(tags) ? tags : [], auto, true);
     const totalManual    = merged.filter((b) => b.kind === 'manual').length;
+    const totalPool      = merged.filter((b) => b.kind === 'pool').length;
     const totalCandidate = merged.filter((b) => b.kind === 'candidate').length;
     const visibleManual    = merged.filter((b) => b.kind === 'manual' && b.qualityOk).length;
+    const visiblePool      = merged.filter((b) => b.kind === 'pool' && b.qualityOk).length;
     const visibleCandidate = merged.filter((b) => b.kind === 'candidate' && b.qualityOk).length;
     const hidden           = merged.filter((b) => !b.qualityOk);
     const hiddenByReason   = hidden.reduce((acc, b) => {
@@ -4209,10 +4599,12 @@ ${out.answerText}`);
     const sampleSize = Number.isFinite(Number(o.sampleSize)) ? Math.max(0, Math.min(50, Math.floor(Number(o.sampleSize)))) : 12;
     return {
       totalManual,
+      totalPool,
       totalCandidates: totalCandidate,
       visibleManual,
+      visiblePool,
       visibleCandidates: visibleCandidate,
-      visibleTotal: visibleManual + visibleCandidate,
+      visibleTotal: visibleManual + visiblePool + visibleCandidate,
       hiddenTotal: hidden.length,
       hiddenByReason,
       sampleHidden: hidden.slice(0, sampleSize).map((b) => ({
@@ -4247,6 +4639,7 @@ ${out.answerText}`);
     const parts = [bubble.label];
     parts.push(`${bubble.count} ${bubble.count === 1 ? 'chat' : 'chats'}`);
     if (bubble.kind === 'candidate') parts.push('candidate (auto)');
+    else if (bubble.kind === 'pool') parts.push('in pool');
     else parts.push('in use');
     if (bubble.score) parts.push(`score ${bubble.score.toFixed(1)}`);
     if (bubble.lastSeen) {
@@ -4534,6 +4927,94 @@ ${out.answerText}`);
     }
   }
 
+  function makeTagCategoryLinkControl(bubble) {
+    const wrap = D.createElement('div');
+    wrap.setAttribute(CLOUD_ATTR, 'pop-category-link');
+
+    const label = D.createElement('div');
+    label.setAttribute(CLOUD_ATTR, 'pop-category-label');
+    label.textContent = 'Linked categories';
+    wrap.appendChild(label);
+
+    const categories = listCategoryLinkCatalog();
+    if (!categories.length) {
+      const empty = D.createElement('div');
+      empty.setAttribute(CLOUD_ATTR, 'pop-category-empty');
+      empty.textContent = 'No categories available yet.';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    const details = D.createElement('details');
+    details.setAttribute(CLOUD_ATTR, 'pop-category-details');
+
+    const summary = D.createElement('summary');
+    summary.setAttribute(CLOUD_ATTR, 'pop-category-summary');
+    summary.setAttribute('aria-label', 'Link this tag to categories');
+    const summaryText = D.createElement('span');
+    summaryText.setAttribute(CLOUD_ATTR, 'pop-category-summary-text');
+    summary.appendChild(summaryText);
+    details.appendChild(summary);
+
+    const menu = D.createElement('div');
+    menu.setAttribute(CLOUD_ATTR, 'pop-category-menu');
+    const checkboxes = [];
+
+    let selected = new Set(getTagCategoryIds(bubble));
+    const nameById = new Map(categories.map((category) => [category.id, category.name]));
+    const updateSummary = () => {
+      const names = Array.from(selected).map((id) => nameById.get(id)).filter(Boolean);
+      if (!names.length) {
+        summaryText.textContent = 'Choose categories';
+      } else if (names.length <= 2) {
+        summaryText.textContent = names.join(', ');
+      } else {
+        summaryText.textContent = `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+      }
+      summary.title = names.length ? names.join(', ') : 'No linked categories';
+    };
+
+    const persistSelection = () => {
+      const nextIds = checkboxes
+        .filter((input) => input.checked)
+        .map((input) => normalizeCategoryLinkId(input.value))
+        .filter(Boolean);
+      selected = new Set(setTagCategoryIds(bubble, nextIds));
+      checkboxes.forEach((input) => { input.checked = selected.has(input.value); });
+      updateSummary();
+    };
+
+    categories.forEach((category) => {
+      const row = D.createElement('label');
+      row.setAttribute(CLOUD_ATTR, 'pop-category-option');
+
+      const input = D.createElement('input');
+      input.type = 'checkbox';
+      input.value = category.id;
+      input.checked = selected.has(category.id);
+      input.addEventListener('change', persistSelection);
+      checkboxes.push(input);
+      row.appendChild(input);
+
+      const dot = D.createElement('span');
+      dot.setAttribute(CLOUD_ATTR, 'pop-category-dot');
+      dot.style.setProperty('--category-color', category.color || bubbleStableColorForKey(category.id));
+      row.appendChild(dot);
+
+      const text = D.createElement('span');
+      text.setAttribute(CLOUD_ATTR, 'pop-category-option-text');
+      text.textContent = category.name;
+      row.appendChild(text);
+
+      menu.appendChild(row);
+    });
+
+    updateSummary();
+    details.appendChild(menu);
+    wrap.appendChild(details);
+    return wrap;
+  }
+
   function openCloudCandidatePopup(anchorEl, bubble) {
     closeCloudCandidatePopup();
     if (!anchorEl || !bubble) return;
@@ -4545,10 +5026,22 @@ ${out.answerText}`);
 
     const header = D.createElement('div');
     header.setAttribute(CLOUD_ATTR, 'pop-header');
+    // Phase 13 polish: title-case the displayed label and pick the right
+    // status descriptor depending on whether this bubble is a manual user-
+    // chosen tag ('in use') or an auto-pool candidate ('candidate'). The
+    // score line is only useful for candidates; for manual tags we surface
+    // total occurrence count instead.
+    const popupLabel = titleCaseTagLabel(bubble.label);
+    const popupKindLabel = bubble.kind === 'pool' ? 'in pool' : (bubble.kind === 'manual' ? 'in use' : 'candidate');
+    const popupMeta = bubble.kind === 'candidate'
+      ? `${bubble.count} ${bubble.count === 1 ? 'chat' : 'chats'} · ${popupKindLabel} · score ${bubble.score ? bubble.score.toFixed(1) : '—'}`
+      : `${bubble.count} ${bubble.count === 1 ? 'occurrence' : 'occurrences'} · ${popupKindLabel}`;
     header.innerHTML =
-      `<span class="pop-pill">${bubbleEscapeHtml(bubble.label)}</span>` +
-      `<span class="pop-meta">${bubble.count} ${bubble.count === 1 ? 'chat' : 'chats'} · candidate · score ${bubble.score ? bubble.score.toFixed(1) : '—'}</span>`;
+      `<span class="pop-pill">${bubbleEscapeHtml(popupLabel)}</span>` +
+      `<span class="pop-meta">${popupMeta}</span>`;
     pop.appendChild(header);
+
+    pop.appendChild(makeTagCategoryLinkControl(bubble));
 
     const list = D.createElement('div');
     list.setAttribute(CLOUD_ATTR, 'pop-chats');
@@ -4876,6 +5369,28 @@ ${out.answerText}`);
     search.setAttribute(CLOUD_ATTR, 'cloud-search');
     search.setAttribute('aria-label', 'Filter tags');
 
+    const createForm = D.createElement('form');
+    createForm.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    createForm.setAttribute(CLOUD_ATTR, 'cloud-create-form');
+    createForm.setAttribute('aria-label', 'Create a tag');
+
+    const createInput = D.createElement('input');
+    createInput.type = 'text';
+    createInput.placeholder = 'New tag...';
+    createInput.spellcheck = false;
+    createInput.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    createInput.setAttribute(CLOUD_ATTR, 'cloud-create-input');
+    createInput.setAttribute('aria-label', 'New tag name');
+
+    const createBtn = D.createElement('button');
+    createBtn.type = 'submit';
+    createBtn.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
+    createBtn.setAttribute(CLOUD_ATTR, 'cloud-create-button');
+    createBtn.textContent = '+ Tag';
+
+    createForm.appendChild(createInput);
+    createForm.appendChild(createBtn);
+
     const sortSel = D.createElement('select');
     sortSel.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
     sortSel.setAttribute(CLOUD_ATTR, 'cloud-sort');
@@ -4914,6 +5429,7 @@ ${out.answerText}`);
     statusEl.setAttribute(CLOUD_ATTR, 'cloud-status');
 
     toolbar.appendChild(search);
+    toolbar.appendChild(createForm);
     toolbar.appendChild(sortSel);
     toolbar.appendChild(toggleLabel);
     toolbar.appendChild(refreshBtn);
@@ -4965,6 +5481,7 @@ ${out.answerText}`);
       const sorted = sortBubbleData(filtered, localState.sortMode);
 
       const totalManual = merged.filter((b) => b.kind === 'manual').length;
+      const totalPool = merged.filter((b) => b.kind === 'pool').length;
       const totalCandidate = merged.filter((b) => b.kind === 'candidate').length;
       const totalHidden = Object.values(hiddenByReason).reduce((a, n) => a + n, 0);
       const visibleCandidates = merged.filter((b) => b.kind === 'candidate' && b.qualityOk).length;
@@ -4976,9 +5493,10 @@ ${out.answerText}`);
           ? `Hidden (display-time noise filter): ${breakdownParts.join(', ')}\nManual / in-use tags always pass.`
           : 'No candidates filtered';
       } catch (_e) {}
+      const poolPart = totalPool ? ` · ${totalPool} in pool` : '';
       statusEl.textContent = localState.showCandidates
-        ? `${sorted.length} shown · ${totalManual} in use · ${visibleCandidates}/${totalCandidate} candidates${totalHidden ? ` · ${totalHidden} hidden as noise` : ''}`
-        : `${sorted.length} shown · ${totalManual} in use`;
+        ? `${sorted.length} shown · ${totalManual} in use${poolPart} · ${visibleCandidates}/${totalCandidate} candidates${totalHidden ? ` · ${totalHidden} hidden as noise` : ''}`
+        : `${sorted.length} shown · ${totalManual} in use${poolPart}`;
 
       canvas.innerHTML = '';
       if (!sorted.length) {
@@ -4986,7 +5504,7 @@ ${out.answerText}`);
         emptyEl.textContent = localState.query
           ? `No tags match “${localState.query}”`
           : (totalManual + totalCandidate === 0
-              ? 'No tags yet — open chats with the tag tray to discover them, or run a tag scan.'
+              ? 'No tags yet — create one above, open chats with the tag tray, or run a tag scan.'
               : 'No tags match the current filters.');
         return;
       }
@@ -5007,16 +5525,16 @@ ${out.answerText}`);
         btn.style.setProperty('--bubble-color', color);
         btn.style.fontSize = `${bubbleFontSize(bubble.count)}px`;
         btn.title = buildBubbleTooltip(bubble);
-        // Phase 11 a11y: explicit aria-label so screen readers announce the bubble
-        // without relying on tooltip text (which is not exposed to AT consistently).
-        // Format: "<label> tag, <kind>, <count> occurrences" — short and scannable.
+        // Phase 11 a11y + Phase 13 polish: explicit aria-label uses the
+        // title-cased display label so announcements match the visible text.
         const kindLabel = bubble.kind === 'manual' ? 'manual' : bubble.kind === 'candidate' ? 'candidate' : bubble.kind;
-        btn.setAttribute('aria-label', `${bubble.label} tag, ${kindLabel}, ${bubble.count} occurrence${bubble.count === 1 ? '' : 's'}`);
+        const displayLabel = titleCaseTagLabel(bubble.label);
+        btn.setAttribute('aria-label', `${displayLabel} tag, ${kindLabel}, ${bubble.count} occurrence${bubble.count === 1 ? '' : 's'}`);
 
         const labelEl = D.createElement('span');
         labelEl.setAttribute(ATTR_CGXUI_OWNER, CLOUD_OWNER);
         labelEl.setAttribute(CLOUD_ATTR, 'bubble-label');
-        labelEl.textContent = bubble.label;
+        labelEl.textContent = displayLabel;
         btn.appendChild(labelEl);
 
         const countEl = D.createElement('span');
@@ -5028,15 +5546,28 @@ ${out.answerText}`);
         btn.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (bubble.kind === 'manual' && bubble.tagRecord) {
-            // Reuse the existing tag viewer (already wires per-chat list + turn navigation
-            // via openTurnByRef). No new NavTo behavior introduced here.
-            openTagViewer(bubble.tagRecord, { ...cfg, refreshFn }).catch((error) => err('open-tag-viewer', error));
-          } else {
-            // Phase 5 candidate path: non-navigating info popup. Phase 6 NavTo will
-            // upgrade this to expandable per-chat turn lists.
-            openCloudCandidatePopup(btn, bubble);
-          }
+          // Phase 13 polish: every bubble now opens the inline candidate popup
+          // (with chat list + turn list) instead of the full-page tag viewer.
+          // For manual bubbles, the popup needs `contribByChat` — which only
+          // exists for auto-pool entries — so we synthesize it from the
+          // tagRecord's chats list. tagRecord.chats[i].turnRefs already carries
+          // the per-turn references, so the popup's expandable rows still work
+          // even when the auto-pool occurrence index is empty for this tag.
+          try {
+            if ((!bubble.contribByChat || !Object.keys(bubble.contribByChat).length) && bubble.tagRecord) {
+              const synth = {};
+              const chats = Array.isArray(bubble.tagRecord.chats) ? bubble.tagRecord.chats : [];
+              chats.forEach((c) => {
+                const cid = String(c?.chatId || '').trim();
+                if (!cid) return;
+                const usage = Array.isArray(c?.turnRefs) ? c.turnRefs.length : 1;
+                const lastSeenMs = Number(Date.parse(c?.updatedAt || '')) || 0;
+                synth[cid] = { count: usage, lastSeen: lastSeenMs };
+              });
+              bubble.contribByChat = synth;
+            }
+          } catch (e2) { err('bubble-click:synth-contribs', e2); }
+          openCloudCandidatePopup(btn, bubble);
         };
 
         frag.appendChild(btn);
@@ -5061,6 +5592,21 @@ ${out.answerText}`);
       renderBubbles();
     });
     refreshBtn.addEventListener('click', () => loadData());
+    createForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const label = normalizeLabel(createInput.value || '');
+      if (!label) return;
+      const created = createUserPoolTag(label);
+      if (!created) {
+        statusEl.textContent = 'Tag could not be created';
+        return;
+      }
+      createInput.value = '';
+      search.value = '';
+      localState.query = '';
+      statusEl.textContent = `Added "${created.label}" to the tag pool`;
+      loadData();
+    });
 
     // ─── Data load (re-runnable via refresh button) ───
     const loadData = () => {
@@ -5084,6 +5630,130 @@ ${out.answerText}`);
     };
 
     loadData();
+  }
+
+  function positionTagsCloudPopup(pop, anchorEl) {
+    if (!(pop instanceof HTMLElement)) return;
+    const pad = 12;
+    const gap = 10;
+    const vw = Math.max(320, W.innerWidth || D.documentElement.clientWidth || 0);
+    const vh = Math.max(240, W.innerHeight || D.documentElement.clientHeight || 0);
+    const rect = anchorEl?.getBoundingClientRect?.() || { left: vw / 2, right: vw / 2, top: vh / 2, bottom: vh / 2 };
+    const box = pop.getBoundingClientRect();
+    const width = Math.min(box.width || 760, vw - pad * 2);
+    const height = Math.min(box.height || 420, vh - pad * 2);
+    let left = (rect.left + rect.right) / 2 - width / 2;
+    left = Math.max(pad, Math.min(left, vw - width - pad));
+    let top = rect.bottom + gap;
+    if (top + height > vh - pad) top = rect.top - height - gap;
+    top = Math.max(pad, Math.min(top, vh - height - pad));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  }
+
+  function openTagsCloudPopup(anchorEl, opts = {}) {
+    const cfg = (opts && typeof opts === 'object') ? { ...opts } : {};
+    closeTagsCloudPopup();
+    closeTagPoolPopup();
+    ensureStyle();
+    ensureBubbleCloudStyle();
+
+    const pop = D.createElement('div');
+    pop.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    pop.setAttribute(ATTR_CGXUI, UI_TAG_CLOUD_POP);
+    pop.style.position = 'fixed';
+    pop.style.zIndex = '2147483647';
+    pop.style.width = 'min(760px, calc(100vw - 24px))';
+    pop.style.maxHeight = 'min(72vh, 620px)';
+    pop.style.overflow = 'auto';
+    pop.style.borderRadius = '18px';
+    pop.style.border = '1px solid rgba(255,255,255,.16)';
+    pop.style.background = 'linear-gradient(135deg, rgba(30,48,59,.92), rgba(12,22,30,.90))';
+    pop.style.backdropFilter = 'blur(22px) saturate(1.25)';
+    pop.style.webkitBackdropFilter = 'blur(22px) saturate(1.25)';
+    pop.style.boxShadow = '0 24px 70px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08)';
+    pop.style.color = 'rgba(244,248,252,.94)';
+
+    const header = D.createElement('div');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
+    header.style.gap = '12px';
+    header.style.padding = '14px 16px 8px';
+    header.style.position = 'sticky';
+    header.style.top = '0';
+    header.style.zIndex = '1';
+    header.style.background = 'linear-gradient(180deg, rgba(18,32,42,.96), rgba(18,32,42,.82))';
+    header.style.backdropFilter = 'blur(16px)';
+
+    const title = D.createElement('div');
+    title.innerHTML = '<strong>All tags</strong><span style="display:block;font-size:11px;opacity:.58;margin-top:2px;">Use Suggestions to show or hide the candidate pool cloud.</span>';
+    title.style.fontSize = '14px';
+    title.style.letterSpacing = '.01em';
+
+    const closeBtn = D.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', 'Close tags popup');
+    closeBtn.style.all = 'unset';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.width = '30px';
+    closeBtn.style.height = '30px';
+    closeBtn.style.display = 'inline-flex';
+    closeBtn.style.alignItems = 'center';
+    closeBtn.style.justifyContent = 'center';
+    closeBtn.style.borderRadius = '10px';
+    closeBtn.style.border = '1px solid rgba(255,255,255,.12)';
+    closeBtn.style.background = 'rgba(255,255,255,.06)';
+    closeBtn.style.fontSize = '22px';
+    closeBtn.style.lineHeight = '1';
+    closeBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTagsCloudPopup();
+    };
+
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    pop.appendChild(header);
+
+    const body = D.createElement('div');
+    body.style.padding = '0 8px 10px';
+    pop.appendChild(body);
+
+    D.body.appendChild(pop);
+    state.openCloudPopup = pop;
+
+    const currentChatId = toChatId(cfg.currentChatId || '');
+    renderTagsIntoList(body, {
+      ...cfg,
+      currentChatId,
+      reason: cfg.reason || 'chat-page-divider-tags-cloud',
+    });
+
+    const reposition = () => positionTagsCloudPopup(pop, anchorEl);
+    reposition();
+    W.requestAnimationFrame?.(reposition);
+
+    const onDoc = (event) => {
+      if (pop.contains(event.target) || anchorEl?.contains?.(event.target)) return;
+      closeTagsCloudPopup();
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') closeTagsCloudPopup();
+    };
+    const onViewport = () => reposition();
+    D.addEventListener('mousedown', onDoc, true);
+    D.addEventListener('keydown', onKey, true);
+    W.addEventListener('resize', onViewport, true);
+    W.addEventListener('scroll', onViewport, true);
+    state.openCloudPopupCleanup = () => {
+      D.removeEventListener('mousedown', onDoc, true);
+      D.removeEventListener('keydown', onKey, true);
+      W.removeEventListener('resize', onViewport, true);
+      W.removeEventListener('scroll', onViewport, true);
+    };
+    return pop;
   }
 
   function openTagsViewer(opts = {}) {
@@ -5172,9 +5842,18 @@ ${out.answerText}`);
     listAllChatTags(opts = {}) { return listAllChatTags(opts); },
     listChatsByTag(tagIdOrLabel, opts = {}) { return listChatsByTag(tagIdOrLabel, opts); },
     openTagsViewer(opts = {}) { return openTagsViewer(opts); },
+    openTagsCloudPopup(anchorEl, opts = {}) { return openTagsCloudPopup(anchorEl, opts); },
+    closeTagsCloudPopup() { return closeTagsCloudPopup(); },
     openTagViewer(tagIdOrRecord, opts = {}) { return openTagViewer(tagIdOrRecord, opts); },
     closeTagViewer() { return closeTagViewer(); },
     renderTagsIntoList(container, opts = {}) { return renderTagsIntoList(container, opts); },
+    createPoolTag(label, opts = {}) { return createUserPoolTag(label, opts); },
+    listPoolTags() { return listUserPoolTags(); },
+    getTagCategoryIds(tagIdOrRecord) { return getTagCategoryIds(tagIdOrRecord); },
+    setTagCategoryIds(tagIdOrRecord, categoryIds) { return setTagCategoryIds(tagIdOrRecord, categoryIds); },
+    toggleTagCategoryLink(tagIdOrRecord, categoryId, linked) { return toggleTagCategoryLink(tagIdOrRecord, categoryId, linked); },
+    getTagsForCategory(categoryId) { return getTagsForCategory(categoryId); },
+    getTagCategoryLinks() { return readTagCategoryLinkStore(); },
     openTagEditorPopup(anchorEl, opts = {}, chatId = '', afterChange = null) { return openTagEditorPopup(anchorEl, opts, chatId, afterChange); },
     closeTagEditorPopup() { return closeTagEditorPopup(); },
     getCurrentChatTagCount() { return getCurrentChatTagCount(); },
@@ -5235,6 +5914,8 @@ ${out.answerText}`);
   MOD.ui.openTagEditorPopup = openTagEditorPopup;
   MOD.ui.closeTagEditorPopup = closeTagEditorPopup;
   MOD.ui.openTagsViewer = openTagsViewer;
+  MOD.ui.openTagsCloudPopup = openTagsCloudPopup;
+  MOD.ui.closeTagsCloudPopup = closeTagsCloudPopup;
   MOD.ui.openTagViewer = openTagViewer;
   MOD.ui.closeTagViewer = closeTagViewer;
   MOD.ui.renderTagsIntoList = renderTagsIntoList;
@@ -5273,9 +5954,18 @@ ${out.answerText}`);
   MOD.listAllChatTags = (...args) => owner.listAllChatTags(...args);
   MOD.listChatsByTag = (...args) => owner.listChatsByTag(...args);
   MOD.openTagsViewer = (...args) => owner.openTagsViewer(...args);
+  MOD.openTagsCloudPopup = (...args) => owner.openTagsCloudPopup(...args);
+  MOD.closeTagsCloudPopup = (...args) => owner.closeTagsCloudPopup(...args);
   MOD.openTagViewer = (...args) => owner.openTagViewer(...args);
   MOD.closeTagViewer = (...args) => owner.closeTagViewer(...args);
   MOD.renderTagsIntoList = (...args) => owner.renderTagsIntoList(...args);
+  MOD.createPoolTag = (...args) => owner.createPoolTag(...args);
+  MOD.listPoolTags = (...args) => owner.listPoolTags(...args);
+  MOD.getTagCategoryIds = (...args) => owner.getTagCategoryIds(...args);
+  MOD.setTagCategoryIds = (...args) => owner.setTagCategoryIds(...args);
+  MOD.toggleTagCategoryLink = (...args) => owner.toggleTagCategoryLink(...args);
+  MOD.getTagsForCategory = (...args) => owner.getTagsForCategory(...args);
+  MOD.getTagCategoryLinks = (...args) => owner.getTagCategoryLinks(...args);
   MOD.openTagEditorPopup = (...args) => owner.openTagEditorPopup(...args);
   MOD.closeTagEditorPopup = (...args) => owner.closeTagEditorPopup(...args);
   MOD.getCurrentChatTagCount = (...args) => owner.getCurrentChatTagCount(...args);

@@ -238,6 +238,13 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.35-5.65M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     `;
 
+    const FRAG_SVG_CLOSE = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6.5 6.5L17.5 17.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+        <path d="M17.5 6.5L6.5 17.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      </svg>
+    `;
+
     const EVENT_IDENTITY_READY = 'h2o:identity:ready';
     const EVENT_IDENTITY_CHANGED = 'h2o:identity:changed';
     const USER_READY_STATUSES = new Set(['profile_ready', 'sync_ready']);
@@ -284,16 +291,21 @@
 
     const TABS = Object.freeze([
       { key: 'dashboard', label: 'Dashboard' },
-      { key: 'explorer', label: 'Explorer' },
       { key: 'analytics', label: 'Analytics' },
+      { key: 'explorer', label: 'Explorer' },
+      { key: 'recents', label: 'Recents' },
       { key: 'saved', label: 'Saved' },
-      { key: 'recent', label: 'Recent' },
       { key: 'folders', label: 'Folders' },
       { key: 'labels', label: 'Labels' },
       { key: 'categories', label: 'Categories' },
       { key: 'projects', label: 'Projects' },
       { key: 'organize', label: 'Organize' },
     ]);
+    const SEARCH_ROW_TAB_KEYS = Object.freeze(['folders', 'labels', 'categories', 'projects']);
+    const SEARCH_ROW_TABS = Object.freeze(TABS.filter((tab) => SEARCH_ROW_TAB_KEYS.includes(tab.key)));
+    const WORKSPACE_TABS = Object.freeze(TABS.filter((tab) => !SEARCH_ROW_TAB_KEYS.includes(tab.key)));
+    const WORKSPACE_ROUTE_VIEW_KEYS = Object.freeze(['library', 'dashboard', ...WORKSPACE_TABS.map((tab) => tab.key)]);
+    const WORKSPACE_ROUTE_TAB_KEYS = Object.freeze(WORKSPACE_TABS.map((tab) => tab.key));
 
     const SIDEBAR_SECTIONS = Object.freeze([
       { id: 'library', label: 'Library', defaultOrder: 10 },
@@ -675,11 +687,29 @@
     }
 
     function normalizeTabKey(raw = '') {
-      const key = String(raw || '').trim();
+      const key = String(raw || '').trim().toLowerCase();
       // Backward compatibility for v1.1.4 UI storage.
       if (key === 'overview') return 'dashboard';
       if (key === 'chats') return 'saved';
+      if (key === 'recent') return 'recents';
       return TABS.some((item) => item.key === key) ? key : 'dashboard';
+    }
+
+    function routeViewForTabKey(tabKey = '') {
+      const tab = normalizeTabKey(tabKey);
+      return tab === 'dashboard' ? 'library' : tab;
+    }
+
+    function tabKeyFromRouteView(view = '') {
+      const v = String(view || '').trim().toLowerCase();
+      if (!v || v === 'library' || v === 'dashboard') return 'dashboard';
+      if (v === 'recent') return 'recents';
+      return WORKSPACE_ROUTE_TAB_KEYS.includes(v) ? v : '';
+    }
+
+    function isWorkspaceRouteView(view = '') {
+      const v = String(view || '').trim().toLowerCase();
+      return WORKSPACE_ROUTE_VIEW_KEYS.includes(v) || !!tabKeyFromRouteView(v);
     }
 
     function readUi() {
@@ -2444,14 +2474,23 @@ ${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{
   display:grid;
   grid-template-columns:minmax(0,1fr);
   grid-template-areas:
-    "search"
+    "search-row"
     "tabs";
   gap:14px;
   align-items:start;
 }
+${PAGE} [${ATTR_CGXUI_STATE}="search-row"]{
+  grid-area:search-row;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  min-width:0;
+}
 ${PAGE} [${ATTR_CGXUI_STATE}="search"]{
-  grid-area:search;
+  flex:1 1 360px;
   width:min(100%, 460px);
+  max-width:460px;
   min-width:280px;
   min-height:42px;
   border:1px solid rgba(255,255,255,.12);
@@ -2464,6 +2503,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="search"]{
   justify-self:start;
 }
 ${PAGE} [${ATTR_CGXUI_STATE}="search"]:focus{ border-color:rgba(125,211,252,.45); box-shadow:0 0 0 3px rgba(125,211,252,.10); }
+${PAGE} [${ATTR_CGXUI_STATE}="route-tabs"]{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
 ${PAGE} [${ATTR_CGXUI_STATE}="tabs"]{ grid-area:tabs; display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
 ${PAGE} [${ATTR_CGXUI_STATE}="tab"]{ border:0; border-radius:999px; padding:8px 13px; background:transparent; color:var(--text-secondary, rgba(255,255,255,.72)); cursor:pointer; }
 ${PAGE} [${ATTR_CGXUI_STATE}="tab"]:hover{ background:rgba(255,255,255,.07); color:var(--text-primary, #fff); }
@@ -2504,7 +2544,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
   ${PAGE} [${ATTR_CGXUI_STATE}="head-actions"]{ width:100%; justify-content:flex-end; }
   ${PAGE} [${ATTR_CGXUI_STATE}="user-name"]{ max-width:min(44vw, 154px); }
   ${PAGE} [${ATTR_CGXUI_STATE}="toolbar"]{ grid-template-columns:1fr; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="search-row"]{ align-items:stretch; }
   ${PAGE} [${ATTR_CGXUI_STATE}="search"]{ width:100%; min-width:0; }
+  ${PAGE} [${ATTR_CGXUI_STATE}="route-tabs"]{ width:100%; }
   ${PAGE} [${ATTR_CGXUI_STATE}="card-grid"],
   ${PAGE} [${ATTR_CGXUI_STATE}="notice-grid"]{ grid-template-columns:1fr; }
   ${PAGE} [${ATTR_CGXUI_STATE}="pills"]{ display:none; }
@@ -2536,7 +2578,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
 
     function extendRouteServiceForLibrary() {
       const svc = getRouteService();
-      if (!svc || svc.__h2oLibraryWorkspaceRoutePatchV1) return false;
+      if (!svc || svc.__h2oLibraryWorkspaceRoutePatchV2) return false;
       try {
         const base = {
           makeHash: svc.ROUTE_makeHash?.bind(svc),
@@ -2546,10 +2588,10 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         };
 
         const shouldParseGenericView = (view) => {
-          const v = String(view || '').trim();
+          const v = String(view || '').trim().toLowerCase();
           if (!v) return false;
           if (['projects', 'folder', 'categories', 'category'].includes(v)) return false;
-          return v === 'library' || typeof core.getRoute?.(v) === 'function';
+          return isWorkspaceRouteView(v) || typeof core.getRoute?.(v) === 'function';
         };
 
         svc.ROUTE_makeHash = function patchedMakeHash(env, route = {}) {
@@ -2610,7 +2652,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
           return { view, id };
         };
 
-        Object.defineProperty(svc, '__h2oLibraryWorkspaceRoutePatchV1', {
+        Object.defineProperty(svc, '__h2oLibraryWorkspaceRoutePatchV2', {
           value: { ok: true, ts: Date.now(), source: MOD.meta.owner },
           configurable: true,
         });
@@ -2632,10 +2674,12 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
           route = parseLibraryRouteLocal(input) || parseLibraryHashLocal(W.location.hash);
         } catch {}
       }
-      if (route?.view !== 'library') return null;
+      const tab = tabKeyFromRouteView(route?.view || '');
+      if (!tab) return null;
       return {
-        view: 'library',
+        view: String(route?.view || 'library').trim().toLowerCase() || 'library',
         id: '',
+        tab,
         baseHref: String(getSafeBaseHref()),
       };
     }
@@ -2645,8 +2689,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       try { url = input instanceof URL ? input : new URL(String(input || W.location.href), W.location.href); }
       catch { return null; }
       if (url.searchParams.get(CFG_H2O_PAGE_QUERY_FLAG) !== '1') return null;
-      const view = String(url.searchParams.get(CFG_H2O_PAGE_QUERY_VIEW) || '').trim();
-      return view === 'library' ? { view: 'library', id: '' } : null;
+      const view = String(url.searchParams.get(CFG_H2O_PAGE_QUERY_VIEW) || 'library').trim().toLowerCase();
+      const tab = tabKeyFromRouteView(view);
+      return tab ? { view: view || 'library', id: '', tab } : null;
     }
 
     function getLibraryRouteHref() {
@@ -2666,7 +2711,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       const raw = String(hash || '').replace(/^#/, '');
       const parts = raw.split('/').filter(Boolean);
       if (parts[0] !== CFG_H2O_PAGE_ROUTE_PREFIX) return null;
-      return parts[1] === 'library' ? { view: 'library', id: '' } : null;
+      const view = String(parts[1] || 'library').trim().toLowerCase();
+      const tab = tabKeyFromRouteView(view);
+      return tab ? { view, id: '', tab } : null;
     }
 
     function getCurrentBaseHref() {
@@ -2688,7 +2735,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     }
 
     function commitLibraryRoute(opts = {}) {
-      const route = { view: 'library', id: '' };
+      const tab = opts.tab ? normalizeTabKey(opts.tab) : readUi().tab;
+      const route = { view: String(opts.view || routeViewForTabKey(tab) || 'library'), id: '' };
       const routeSvc = getRouteService();
       try {
         if (routeSvc?.ROUTE_commitPageRoute) {
@@ -2703,21 +2751,21 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       try {
         const url = new URL('/', W.location.origin);
         url.searchParams.set(CFG_H2O_PAGE_QUERY_FLAG, '1');
-        url.searchParams.set(CFG_H2O_PAGE_QUERY_VIEW, 'library');
+        url.searchParams.set(CFG_H2O_PAGE_QUERY_VIEW, route.view);
         const baseHref = getSafeBaseHref();
         const current = (W.history?.state && typeof W.history.state === 'object') ? W.history.state : {};
         const nextState = {
           ...current,
           h2o: {
             owner: CFG_H2O_PAGE_ROUTE_OWNER,
-            view: 'library',
+            view: route.view,
             id: '',
             returnHref: String(baseHref),
             baseHref: String(baseHref),
           },
         };
         W.history.pushState(nextState, '', `${url.pathname}${url.search}`);
-        state.pageRoute = { view: 'library', id: '', baseHref: String(baseHref) };
+        state.pageRoute = { view: route.view, id: '', tab: tabKeyFromRouteView(route.view), baseHref: String(baseHref) };
         return true;
       } catch (error) {
         err('commit-route-local', error);
@@ -2728,9 +2776,11 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     function closeWorkspace(opts = {}) {
       try { getPageHostService()?.UI_restoreInShellPage?.(libraryEnv(), opts.reason || 'close-library'); } catch (error) { err('close-page-host', error); }
       safeRemove(state.viewerEl);
+      disposeWorkspacePageDom(opts.reason || 'close-library');
       state.viewerEl = null;
       state.pageEl = null;
       state.pageHost = null;
+      state.pageSession = null;
       state.pageRoute = null;
       syncSidebarActiveState();
       scheduleLibraryActiveSyncPair('close-workspace');
@@ -2743,6 +2793,308 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         } catch (error) {
           err('close-route', error);
         }
+      }
+    }
+
+    function navigationUrl(href = '') {
+      try { return new URL(String(href || ''), W.location.href); } catch { return null; }
+    }
+
+    function isNativeChatHref(href = '') {
+      const url = navigationUrl(href);
+      if (!url) return false;
+      if (!/^https?:$/i.test(url.protocol)) return false;
+      if (url.origin !== W.location.origin) return false;
+      if (parseLibraryRouteLocal(url) || parseLibraryHashLocal(url.hash)) return false;
+      return /^\/c\/[^/]+\/?$/i.test(url.pathname);
+    }
+
+    function isNativeChatLocation(href = W.location.href) {
+      const url = navigationUrl(href);
+      if (!url) return false;
+      if (!/^https?:$/i.test(url.protocol)) return false;
+      if (url.origin !== W.location.origin) return false;
+      if (url.searchParams.get(CFG_H2O_PAGE_QUERY_FLAG) === '1') return false;
+      return /^\/c\/[^/]+\/?$/i.test(url.pathname);
+    }
+
+    function shouldInterceptPlainNavigation(event, link = null) {
+      if (event?.defaultPrevented) return false;
+      if (event?.button && event.button !== 0) return false;
+      if (event?.metaKey || event?.ctrlKey || event?.shiftKey || event?.altKey) return false;
+      const target = String(link?.getAttribute?.('target') || '').trim().toLowerCase();
+      if (target && target !== '_self') return false;
+      if (link?.hasAttribute?.('download')) return false;
+      return true;
+    }
+
+    function markNativeChatNavigation(href = '', reason = 'native-chat') {
+      const url = navigationUrl(href);
+      state.nativeChatNavigation = {
+        href: String(url?.href || href || ''),
+        reason: String(reason || 'native-chat'),
+        startedAt: Date.now(),
+        until: Date.now() + 8000,
+      };
+      state.pageRoute = null;
+      return state.nativeChatNavigation;
+    }
+
+    function nativeChatNavigationLocked() {
+      const lock = state.nativeChatNavigation;
+      return !!lock && Number(lock.until || 0) > Date.now();
+    }
+
+    function isExplicitLibraryOpen(opts = {}) {
+      const source = String(opts?.source || '').trim();
+      return opts?.userInitiated === true || ['sidebar', 'top-sidebar', 'rail-sidebar', 'control-hub'].includes(source);
+    }
+
+    function shouldBlockWorkspaceOpen(opts = {}) {
+      if (parseLibraryRoute(W.location.href)) return false;
+      if (!isNativeChatLocation() && !nativeChatNavigationLocked()) return false;
+      return !isExplicitLibraryOpen(opts);
+    }
+
+    function workspacePageRootSelector() {
+      return [
+        `[${ATTR_CGXUI_OWNER}="${cssEscape(SkID)}"][${ATTR_CGXUI}="${cssEscape(UI_LIBRARY_PAGE_HOST)}"]`,
+        `[${ATTR_CGXUI_OWNER}="${cssEscape(SkID)}"][${ATTR_CGXUI}="${cssEscape(UI_LIBRARY_VIEWER)}"]`,
+      ].join(',');
+    }
+
+    function workspacePageRootExists() {
+      try { return !!D.querySelector(workspacePageRootSelector()); } catch { return false; }
+    }
+
+    function workspacePageMounted() {
+      return !!(
+        state.pageEl?.isConnected ||
+        state.viewerEl?.isConnected ||
+        state.pageSession?.root?.isConnected ||
+        workspacePageRootExists()
+      );
+    }
+
+    function forceNativeChatWorkspaceExit(reason = 'native-chat-route') {
+      if (!isNativeChatLocation()) return false;
+      if (!workspacePageMounted()) return false;
+      const rawReason = String(reason || 'native-chat-route');
+      const closeReason = rawReason.startsWith('native-') ? rawReason : `native-${rawReason}`;
+      const href = String(W.location.href || '');
+      markNativeChatNavigation(href, closeReason);
+      closeWorkspace({ skipHistory: true, reason: closeReason });
+      const removed = disposeWorkspacePageDom(`${closeReason}:dispose`);
+      state.lastNativeChatWorkspaceExit = {
+        reason: closeReason,
+        href,
+        removed,
+        ts: Date.now(),
+      };
+      syncSidebarActiveState();
+      scheduleLibraryActiveSyncPair(closeReason);
+      return true;
+    }
+
+    function scheduleNativeChatWorkspaceExit(reason = 'native-chat-route') {
+      [0, 80, 220, 650].forEach((delay) => {
+        const timer = W.setTimeout(() => {
+          try { state.clean.timers.delete(timer); } catch {}
+          forceNativeChatWorkspaceExit(reason);
+        }, delay);
+        try { state.clean.timers.add(timer); } catch {}
+      });
+    }
+
+    function nativeVisualRestoreDeferred() {
+      return Number(state.pageNativeRestoreDeferred?.until || 0) > Date.now();
+    }
+
+    function disposeWorkspacePageDom(reason = 'dispose-workspace-page') {
+      let removed = 0;
+      try {
+        D.querySelectorAll(workspacePageRootSelector()).forEach((node) => {
+          try { state.clean.nodes.delete(node); } catch {}
+          safeRemove(node);
+          removed += 1;
+        });
+      } catch (error) {
+        err('dispose-workspace-dom', error);
+      }
+      if (!nativeVisualRestoreDeferred()) {
+        try {
+          const host = DOM_resolveRightPanePageHost();
+          getPageHostService()?.PAGEHOST_restoreHostChildrenAfterForeignPage?.(libraryEnv(), host);
+        } catch (error) {
+          err('dispose-workspace-dom-restore', error);
+        }
+      }
+      if (removed) {
+        state.lastWorkspaceDomDispose = { reason: String(reason || ''), removed, ts: Date.now() };
+      }
+      state.viewerEl = null;
+      state.pageEl = null;
+      state.pageHost = null;
+      state.pageSession = null;
+      return removed;
+    }
+
+    function nativeChatRouteUrl(href = '') {
+      const url = navigationUrl(href);
+      if (!url || !isNativeChatHref(url.href)) return null;
+      const chatId = normalizeChatId(url.href);
+      if (!chatId) return null;
+      const out = new URL(`/c/${encodeURIComponent(chatId)}`, W.location.origin);
+      if (url.hash) out.hash = url.hash;
+      return out;
+    }
+
+    function stripH2OHistoryState() {
+      const current = (W.history?.state && typeof W.history.state === 'object') ? W.history.state : {};
+      const next = { ...current };
+      try { delete next.h2o; } catch {}
+      return next;
+    }
+
+    function emitNativeChatRouteEvents(reason = 'native-chat-route') {
+      const stateObj = W.history?.state || {};
+      try {
+        W.dispatchEvent(new PopStateEvent('popstate', { state: stateObj }));
+      } catch {
+        try { W.dispatchEvent(new Event('popstate')); } catch {}
+      }
+      try {
+        W.dispatchEvent(new CustomEvent('evt:h2o:library-workspace:native-chat-route', {
+          detail: { reason: String(reason || ''), href: String(W.location.href || ''), ts: Date.now() },
+        }));
+      } catch {}
+    }
+
+    function findNativeChatAnchor(href = '') {
+      const chatId = normalizeChatId(href);
+      if (!chatId) return null;
+      try {
+        const anchors = D.querySelectorAll('aside a[href*="/c/"], nav a[href*="/c/"]');
+        return [...anchors].find((anchor) => normalizeChatId(anchor.href || anchor.getAttribute('href') || '') === chatId) || null;
+      } catch {
+        return null;
+      }
+    }
+
+    function dispatchNativeChatAnchorClick(anchor, reason = 'native-chat-anchor') {
+      if (!(anchor instanceof HTMLAnchorElement)) return false;
+      try {
+        return !anchor.dispatchEvent(new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          button: 0,
+          view: W,
+        }));
+      } catch (error) {
+        err(`native-chat-anchor:${reason}`, error);
+        return false;
+      }
+    }
+
+    function pushNativeChatRoute(href = '', reason = 'native-chat-route') {
+      const url = nativeChatRouteUrl(href);
+      if (!url) return false;
+      const target = `${url.pathname}${url.search}${url.hash}`;
+      try {
+        const nextState = stripH2OHistoryState();
+        if (`${W.location.pathname}${W.location.search}${W.location.hash}` !== target) {
+          W.history.pushState(nextState, '', target);
+        } else if (W.history?.replaceState) {
+          W.history.replaceState(nextState, '', target);
+        }
+        W.setTimeout(() => emitNativeChatRouteEvents(reason), 0);
+        W.setTimeout(() => emitNativeChatRouteEvents(`${reason}:late`), 120);
+        return true;
+      } catch (error) {
+        err(`native-chat-route:${reason}`, error);
+        return false;
+      }
+    }
+
+    function prepareNativeChatNavigation(href = '', reason = 'native-chat') {
+      if (!isNativeChatHref(href)) return false;
+      const closeReason = String(reason || 'native-chat').startsWith('native-') ? String(reason || 'native-chat') : `native-${reason || 'chat'}`;
+      markNativeChatNavigation(href, closeReason);
+      closeWorkspace({ skipHistory: true, reason: closeReason });
+      disposeWorkspacePageDom(closeReason);
+      return true;
+    }
+
+    function openNativeChat(href = '', opts = {}) {
+      const url = navigationUrl(href);
+      if (!url || !isNativeChatHref(url.href)) return false;
+      prepareNativeChatNavigation(url.href, opts.reason || 'native-chat-open');
+      const reason = String(opts.reason || 'native-chat-open');
+      const anchor = findNativeChatAnchor(url.href);
+      if (anchor) {
+        W.setTimeout(() => {
+          dispatchNativeChatAnchorClick(anchor, reason);
+          W.setTimeout(() => {
+            const target = nativeChatRouteUrl(url.href);
+            if (target && normalizeChatId(W.location.href) !== normalizeChatId(target.href)) {
+              pushNativeChatRoute(target.href, `${reason}:anchor-fallback`);
+            }
+          }, 160);
+        }, 0);
+        return true;
+      }
+      pushNativeChatRoute(url.href, reason);
+      return true;
+    }
+
+    function wireNativeChatLink(el, href = '', reason = 'native-chat-link') {
+      if (!(el instanceof HTMLElement)) return el;
+      if (!isNativeChatHref(href)) return el;
+      el.addEventListener('click', (event) => {
+        if (!shouldInterceptPlainNavigation(event, el)) return;
+        event.preventDefault();
+        openNativeChat(href, { reason });
+      }, true);
+      return el;
+    }
+
+    async function openWorkspaceListPage(key) {
+      const view = String(key || '').trim();
+      if (!SEARCH_ROW_TAB_KEYS.includes(view)) return false;
+      extendRouteServiceForLibrary();
+
+      const handler = core?.getRoute?.(view);
+      if (typeof handler !== 'function') {
+        err(`route-out:${view}:missing`, new Error(`Missing route handler for ${view}`));
+        return false;
+      }
+
+      const baseHref = String(getSafeBaseHref());
+      const route = {
+        view,
+        id: '',
+        baseHref,
+        routeToken: ++state.pageRouteToken,
+      };
+
+      try { writeUi({ tab: 'dashboard' }); } catch {}
+      try {
+        getRouteService()?.ROUTE_commitPageRoute?.(libraryEnv(), { view, id: '' }, { baseHref });
+      } catch (error) {
+        err(`route-out:${view}:commit`, error);
+      }
+
+      closeWorkspace({ skipHistory: true, reason: `route-out:${view}` });
+
+      try {
+        const result = await handler({ ...route, fromRoute: true, reason: `library-search-row:${view}` });
+        syncSidebarActiveState();
+        scheduleLibraryActiveSyncPair(`route-out:${view}`);
+        return result !== false;
+      } catch (error) {
+        err(`route-out:${view}`, error);
+        return false;
       }
     }
 
@@ -2816,8 +3168,22 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
           setRefreshButtonBusy(false);
         }
       };
+      const close = D.createElement('button');
+      close.type = 'button';
+      close.setAttribute(ATTR_CGXUI_STATE, 'icon-btn');
+      close.setAttribute('aria-label', 'Close Library');
+      close.title = 'Close Library';
+      close.innerHTML = FRAG_SVG_CLOSE;
+      close.onclick = () => {
+        try {
+          closeWorkspace({ reason: 'header-close' });
+        } catch (error) {
+          err('close-click', error);
+        }
+      };
       actions.appendChild(userCard);
       actions.appendChild(refresh);
+      actions.appendChild(close);
       updateUserCard(userCard);
 
       head.appendChild(titleWrap);
@@ -2825,6 +3191,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
 
       const toolbar = D.createElement('div');
       toolbar.setAttribute(ATTR_CGXUI_STATE, 'toolbar');
+      const searchRow = D.createElement('div');
+      searchRow.setAttribute(ATTR_CGXUI_STATE, 'search-row');
       const search = D.createElement('input');
       search.type = 'search';
       search.placeholder = 'Search chats, folders, labels, categories, projects…';
@@ -2843,22 +3211,41 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         state.clean.timers.add(state.searchTimer);
       };
 
-      const tabs = D.createElement('div');
-      tabs.setAttribute(ATTR_CGXUI_STATE, 'tabs');
-      TABS.forEach((tab) => {
+      const makeWorkspaceTabButton = (tab, opts = {}) => {
+        const routeOut = opts.routeOut === true;
         const btn = D.createElement('button');
         btn.type = 'button';
         btn.setAttribute(ATTR_CGXUI_STATE, 'tab');
         btn.setAttribute('data-h2o-library-tab', tab.key);
         btn.textContent = tab.label;
+        if (routeOut) {
+          btn.setAttribute('data-h2o-library-route-tab', 'true');
+          btn.title = `Open ${tab.label} list`;
+        }
         btn.onclick = () => {
+          if (routeOut) {
+            openWorkspaceListPage(tab.key).catch((error) => err(`route-tab:${tab.key}`, error));
+            return;
+          }
           writeUi({ tab: tab.key });
+          commitLibraryRoute({ tab: tab.key });
           syncTabs();
           renderWorkspaceBody();
         };
-        tabs.appendChild(btn);
-      });
-      toolbar.appendChild(search);
+        return btn;
+      };
+
+      const routeTabs = D.createElement('div');
+      routeTabs.setAttribute(ATTR_CGXUI_STATE, 'route-tabs');
+      routeTabs.setAttribute('aria-label', 'Library list pages');
+      SEARCH_ROW_TABS.forEach((tab) => routeTabs.appendChild(makeWorkspaceTabButton(tab, { routeOut: true })));
+      searchRow.appendChild(search);
+      searchRow.appendChild(routeTabs);
+
+      const tabs = D.createElement('div');
+      tabs.setAttribute(ATTR_CGXUI_STATE, 'tabs');
+      WORKSPACE_TABS.forEach((tab) => tabs.appendChild(makeWorkspaceTabButton(tab)));
+      toolbar.appendChild(searchRow);
       toolbar.appendChild(tabs);
 
       const body = D.createElement('div');
@@ -2872,9 +3259,26 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     }
 
     async function openWorkspace(opts = {}) {
+      if (shouldBlockWorkspaceOpen(opts)) {
+        state.lastWorkspaceOpenBlocked = {
+          reason: String(opts.reason || opts.source || 'unknown'),
+          href: String(W.location.href || ''),
+          nativeChatNavigationLocked: nativeChatNavigationLocked(),
+          ts: Date.now(),
+        };
+        disposeWorkspacePageDom('blocked-native-chat-open');
+        syncSidebarActiveState();
+        scheduleLibraryActiveSyncPair('blocked-native-chat-open');
+        return null;
+      }
+
       ensureStyle();
       ensureInjected('open-workspace');
       extendRouteServiceForLibrary();
+
+      const routeTab = tabKeyFromRouteView(opts.routeView || opts.view || '');
+      const requestedTab = opts.tab ? normalizeTabKey(opts.tab) : '';
+      if (routeTab || requestedTab) writeUi({ tab: routeTab || requestedTab });
 
       if (!state.pageEl || !state.pageEl.isConnected || state.pageEl.getAttribute('data-cgxui-page-kind') !== 'library') {
         const page = makeWorkspacePage();
@@ -2884,7 +3288,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
 
       updateUserCard();
       if (!opts.fromRoute && !opts.skipHistory) commitLibraryRoute(opts);
-      state.pageRoute = { view: 'library', id: '', baseHref: String(getSafeBaseHref()) };
+      const activeTab = readUi().tab;
+      state.pageRoute = { view: routeViewForTabKey(activeTab), id: '', tab: activeTab, baseHref: String(getSafeBaseHref()) };
       syncSidebarActiveState();
       scheduleLibraryActiveSyncPair('open-workspace');
       syncTabs();
@@ -2949,14 +3354,20 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       body.innerHTML = '';
 
       if (tab === 'dashboard') return renderDashboard(body, model, q);
-      if (tab === 'explorer') return renderInsightsTab(body, model, q, 'explorer');
       if (tab === 'analytics') return renderInsightsTab(body, model, q, 'analytics');
+      if (tab === 'explorer') return renderInsightsTab(body, model, q, 'explorer');
+      if (tab === 'recents') return renderChats(body, filterRows(model.recentChats || [], q), 'Recents');
       if (tab === 'saved') return renderChats(body, filterRows(model.savedChats || [], q), 'Saved chats');
-      if (tab === 'recent') return renderChats(body, filterRows(model.recentChats || [], q), 'Recent chats');
-      if (tab === 'folders') return renderFolders(body, filterRows(model.folders, q));
-      if (tab === 'labels') return renderLabels(body, filterRows(model.labels, q));
-      if (tab === 'categories') return renderCategories(body, filterRows(model.categories, q));
-      if (tab === 'projects') return renderProjects(body, filterRows(model.projects, q));
+      // Phase 15: Folders / Labels / Categories / Projects no longer render
+      // their own list inside the Library Workspace body. Their tab buttons
+      // route out to the canonical list pages owned by 0F3a / 0F6a / 0F4a /
+      // 0F2a (registered as LibraryCore routes). If a saved tab key still
+      // points at one of these, we redirect via the route handler and reset
+      // the workspace tab to dashboard so subsequent rebuilds don't loop.
+      if (SEARCH_ROW_TAB_KEYS.includes(tab)) {
+        openWorkspaceListPage(tab).catch((error) => err(`route-out-render:${tab}`, error));
+        return;
+      }
       if (tab === 'organize') return renderOrganize(body, model, q);
       renderDashboard(body, model, q);
     }
@@ -2998,7 +3409,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     }
 
     function switchWorkspaceTab(tabKey) {
-      writeUi({ tab: normalizeTabKey(tabKey) });
+      const tab = normalizeTabKey(tabKey);
+      writeUi({ tab });
+      commitLibraryRoute({ tab });
       syncTabs();
       renderWorkspaceBody();
     }
@@ -3046,6 +3459,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       const savedChats = Array.isArray(indexModel.savedChats) ? indexModel.savedChats : chats.filter((chat) => chat.isSaved || chat.saved);
       const recentChats = Array.isArray(indexModel.recentChats) ? indexModel.recentChats : chats.filter((chat) => chat.isRecent || chat.recent);
       const counts = indexModel.counts || {};
+      const storedKnownChats = Number(counts.storedKnownChats ?? counts.knownChats ?? counts.allChats ?? chats.length) || 0;
       return {
         ok: true,
         builtAt: indexModel.builtAt || Date.now(),
@@ -3060,8 +3474,9 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
           chats: savedChats.length,
           savedChats: Number(counts.savedChats ?? savedChats.length) || 0,
           recentChats: Number(counts.recentChats ?? recentChats.length) || 0,
-          allChats: Number(counts.knownChats ?? counts.allChats ?? chats.length) || 0,
-          knownChats: Number(counts.knownChats ?? chats.length) || 0,
+          allChats: storedKnownChats,
+          knownChats: storedKnownChats,
+          storedKnownChats,
           folders: Number(counts.folders ?? (indexModel.folders || []).length) || 0,
           labels: Number(counts.labels ?? (indexModel.labels || []).length) || 0,
           categories: Number(counts.categories ?? (indexModel.categories || []).length) || 0,
@@ -3207,7 +3622,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       // - no organization warnings here; cleanup belongs in the Organize tab
       renderCards(body, [
         { label: 'Saved chats', value: c.savedChats ?? c.chats ?? 0, note: 'Captured / saved Library chats' },
-        { label: 'Recent chats', value: c.recentChats || 0, note: 'Native ChatGPT Recents currently discoverable' },
+        { label: 'Recents', value: c.recentChats || 0, note: 'Stored native ChatGPT recents' },
         { label: 'Folders', value: c.folders || 0, note: 'Folder groups' },
         { label: 'Labels', value: c.labels || 0, note: 'Manual chat labels' },
         { label: 'Categories', value: c.categories || 0, note: 'Category groups' },
@@ -3215,7 +3630,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       ]);
 
       renderChats(body, savedChats, q ? 'Matching saved chats' : 'Latest saved chats');
-      renderChats(body, recentChats, q ? 'Matching recent chats' : 'Latest recent chats');
+      renderChats(body, recentChats, q ? 'Matching recents' : 'Latest recents');
       renderLibrarySourceStatus(body, model);
     }
 
@@ -3224,7 +3639,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       const c = model.counts || {};
       const sourceRows = [
         { id: 'saved', title: 'Saved source', count: c.savedChats ?? c.chats ?? 0, available: !!sources.archive, note: 'H2O archive / saved chat rows' },
-        { id: 'recents', title: 'Recent source', count: c.recentChats || 0, available: !!sources.recents, note: 'Native ChatGPT Recents discoverable via DOM/cache' },
+        { id: 'recents', title: 'Recents source', count: c.recentChats || 0, available: !!sources.recents, note: 'Native ChatGPT Recents persisted from DOM/cache scans' },
         { id: 'folders', title: 'Folders source', count: c.folders || 0, available: !!sources.folders, note: 'Folders owner/service' },
         { id: 'labels', title: 'Labels source', count: c.labels || 0, available: !!sources.labels, note: 'Labels owner/service' },
         { id: 'categories', title: 'Categories source', count: c.categories || 0, available: !!sources.categories, note: 'Categories owner/service' },
@@ -3250,7 +3665,10 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       const clickable = !!href && !opts.noLink;
       const el = D.createElement(clickable ? 'a' : 'div');
       el.setAttribute(ATTR_CGXUI_STATE, 'row');
-      if (clickable) el.setAttribute('href', href);
+      if (clickable) {
+        el.setAttribute('href', href);
+        wireNativeChatLink(el, href, 'library-row-chat');
+      }
       const iconText = String(opts.icon || row.icon || '•').slice(0, 2);
       const sub = opts.subText || row.subText || row.subtitle || '';
       const pills = Array.isArray(opts.pills) ? opts.pills : (Array.isArray(row.pills) ? row.pills : []);
@@ -3794,18 +4212,64 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       return 0;
     }
 
+    function emitHistoryRouteChange(method = 'history', beforeHref = '') {
+      W.setTimeout(() => {
+        try {
+          W.dispatchEvent(new CustomEvent('evt:h2o:library-workspace:history-changed', {
+            detail: {
+              method: String(method || 'history'),
+              beforeHref: String(beforeHref || ''),
+              href: String(W.location.href || ''),
+              ts: Date.now(),
+            },
+          }));
+        } catch {}
+      }, 0);
+    }
+
+    function patchHistoryForRouteSync() {
+      const hist = W.history;
+      if (!hist || hist.__h2oLibraryWorkspaceHistoryPatchedV1) return false;
+      try {
+        ['pushState', 'replaceState'].forEach((name) => {
+          const base = hist[name];
+          if (typeof base !== 'function') return;
+          hist[name] = function patchedLibraryWorkspaceHistory(...args) {
+            const beforeHref = String(W.location.href || '');
+            const result = base.apply(this, args);
+            emitHistoryRouteChange(name, beforeHref);
+            return result;
+          };
+        });
+        try { Object.defineProperty(hist, '__h2oLibraryWorkspaceHistoryPatchedV1', { value: true, configurable: true }); } catch { hist.__h2oLibraryWorkspaceHistoryPatchedV1 = true; }
+        return true;
+      } catch (error) {
+        err('patch-history-route-sync', error);
+        return false;
+      }
+    }
+
     function bindRouteEventsOnce() {
       if (state.routeEventsBound) return;
       state.routeEventsBound = true;
+      patchHistoryForRouteSync();
       const sync = (reason) => {
         W.setTimeout(() => {
           try {
             const route = parseLibraryRoute(W.location.href);
             if (route) {
-              owner.openWorkspace({ fromRoute: true, baseHref: route.baseHref, reason }).catch((error) => err(`route-open:${reason}`, error));
-            } else if (state.pageEl?.isConnected) {
+              owner.openWorkspace({
+                fromRoute: true,
+                baseHref: route.baseHref,
+                routeView: route.view,
+                tab: route.tab,
+                reason,
+              }).catch((error) => err(`route-open:${reason}`, error));
+            } else if (state.pageEl?.isConnected || workspacePageRootExists()) {
               closeWorkspace({ skipHistory: true, reason: `route-exit:${reason}` });
+              if (isNativeChatLocation()) disposeWorkspacePageDom(`native-route-exit:${reason}`);
             }
+            if (isNativeChatLocation()) scheduleNativeChatWorkspaceExit(`native-route-sync:${reason}`);
             syncSidebarActiveState();
             scheduleLibraryActiveSyncPair(`route:${reason}`);
           } catch (error) {
@@ -3815,10 +4279,67 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       };
       const onPopState = () => sync('popstate');
       const onHashChange = () => sync('hashchange');
+      const onHistoryChange = (event) => sync(String(event?.detail?.method || 'history'));
       W.addEventListener('popstate', onPopState, true);
       W.addEventListener('hashchange', onHashChange, true);
+      W.addEventListener('evt:h2o:library-workspace:history-changed', onHistoryChange, true);
       state.clean.listeners.add(() => W.removeEventListener('popstate', onPopState, true));
       state.clean.listeners.add(() => W.removeEventListener('hashchange', onHashChange, true));
+      state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library-workspace:history-changed', onHistoryChange, true));
+    }
+
+    function bindNativeChatExitGuardOnce() {
+      if (state.nativeChatExitGuardBound) return;
+      state.nativeChatExitGuardBound = true;
+      patchHistoryForRouteSync();
+
+      const routeSignal = (reason) => {
+        scheduleNativeChatWorkspaceExit(`native-route-${String(reason || 'change')}`);
+      };
+      const onPopState = () => routeSignal('popstate');
+      const onHashChange = () => routeSignal('hashchange');
+      const onCoreHistoryChange = (event) => routeSignal(`core-${String(event?.detail?.method || 'history')}`);
+      const onWorkspaceHistoryChange = (event) => routeSignal(`workspace-${String(event?.detail?.method || 'history')}`);
+      const onFocus = () => routeSignal('focus');
+      const onVisibilityChange = () => routeSignal('visibilitychange');
+      const onClick = (event) => {
+        if (event.button && event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const link = event.target?.closest?.('a[href]');
+        if (!(link instanceof HTMLAnchorElement)) return;
+        if (!isNativeChatHref(link.href)) return;
+        if (!workspacePageMounted()) return;
+        markNativeChatNavigation(link.href, 'native-chat-click-preflight');
+        closeWorkspace({ skipHistory: true, reason: 'native-chat-click-preflight' });
+        disposeWorkspacePageDom('native-chat-click-preflight');
+        routeSignal('native-chat-click-preflight');
+      };
+
+      try { W.addEventListener('popstate', onPopState, true); state.clean.listeners.add(() => W.removeEventListener('popstate', onPopState, true)); } catch {}
+      try { W.addEventListener('hashchange', onHashChange, true); state.clean.listeners.add(() => W.removeEventListener('hashchange', onHashChange, true)); } catch {}
+      try { W.addEventListener('evt:h2o:library-core:history-changed', onCoreHistoryChange, true); state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library-core:history-changed', onCoreHistoryChange, true)); } catch {}
+      try { W.addEventListener('evt:h2o:library-workspace:history-changed', onWorkspaceHistoryChange, true); state.clean.listeners.add(() => W.removeEventListener('evt:h2o:library-workspace:history-changed', onWorkspaceHistoryChange, true)); } catch {}
+      try { W.addEventListener('focus', onFocus, true); state.clean.listeners.add(() => W.removeEventListener('focus', onFocus, true)); } catch {}
+      try { D.addEventListener('visibilitychange', onVisibilityChange, true); state.clean.listeners.add(() => D.removeEventListener('visibilitychange', onVisibilityChange, true)); } catch {}
+      try { D.addEventListener('click', onClick, true); state.clean.listeners.add(() => D.removeEventListener('click', onClick, true)); } catch {}
+
+      const hrefPoll = W.setInterval(() => {
+        try {
+          const href = String(W.location.href || '');
+          const changed = href !== state.nativeChatExitGuardHref;
+          state.nativeChatExitGuardHref = href;
+          if (changed || (isNativeChatLocation(href) && workspacePageRootExists())) {
+            forceNativeChatWorkspaceExit(changed ? 'native-href-poll-change' : 'native-href-poll-orphan');
+          }
+        } catch {}
+      }, 350);
+      try { state.clean.timers.add(hrefPoll); } catch {}
+      try {
+        state.clean.listeners.add(() => {
+          try { W.clearInterval(hrefPoll); } catch {}
+          try { state.clean.timers.delete(hrefPoll); } catch {}
+        });
+      } catch {}
     }
 
     function bindPageExitEventsOnce() {
@@ -3841,8 +4362,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       };
 
       const onNativeClick = (event) => {
-        if (!parseLibraryRoute(W.location.href)) return;
-        if (event.defaultPrevented) return;
+        if (!parseLibraryRoute(W.location.href) && !workspacePageMounted()) return;
         if (event.button && event.button !== 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const link = event.target?.closest?.('a[href]');
@@ -3851,6 +4371,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         try { url = new URL(link.href, W.location.href); } catch { return; }
         if (url.origin !== W.location.origin) return;
         if (parseLibraryRoute(url.href)) return;
+        if (isNativeChatHref(url.href)) markNativeChatNavigation(url.href, 'native-chat-click');
+        closeWorkspace({ skipHistory: true, reason: isNativeChatHref(url.href) ? 'native-chat-click' : 'native-click' });
         state.pageRoute = null;
         syncSidebarActiveState();
         W.setTimeout(clearActiveSoon, 0);
@@ -3968,7 +4490,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         pageMounted: !!state.pageEl?.isConnected,
         availableSources: sources,
         counts: model?.counts || null,
-        routePatch: !!getRouteService()?.__h2oLibraryWorkspaceRoutePatchV1,
+        routePatch: !!getRouteService()?.__h2oLibraryWorkspaceRoutePatchV2,
         sidebarLayout: getSidebarLayoutDiagnostics(),
         route: parseLibraryRoute(W.location.href),
         bootDiag: H2O.LibraryWorkspaceBootDiag || null,
@@ -3983,6 +4505,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       phase: 'phase-7-index-first-workspace-model',
       openWorkspace(opts = {}) { return openWorkspace(opts); },
       closeWorkspace(opts = {}) { return closeWorkspace(opts); },
+      prepareNativeChatNavigation(href = '', reason = 'api') { return prepareNativeChatNavigation(href, reason); },
+      openNativeChat(href = '', opts = {}) { return openNativeChat(href, opts); },
       refresh(reason = 'api') { return loadAndRender(reason); },
       buildModel(reason = 'api') { return buildLibraryModel(reason); },
       getModel() { return state.model; },
@@ -4009,10 +4533,20 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
         core.registerOwner?.('library-workspace', owner, { replace: true });
         core.registerService?.('library-workspace', owner, { replace: true });
         core.registerPage?.('library', owner, { replace: true });
-        core.registerRoute?.('library', async (route) => {
-          const page = await owner.openWorkspace({ fromRoute: true, baseHref: route?.baseHref, reason: 'core-route' });
+        const routeHandler = async (route) => {
+          const view = String(route?.view || 'library').trim().toLowerCase() || 'library';
+          const page = await owner.openWorkspace({
+            fromRoute: true,
+            baseHref: route?.baseHref,
+            routeView: view,
+            tab: tabKeyFromRouteView(view),
+            reason: `core-route:${view}`,
+          });
           return !!page;
-        }, { replace: true });
+        };
+        WORKSPACE_ROUTE_VIEW_KEYS.forEach((view) => {
+          core.registerRoute?.(view, routeHandler, { replace: true });
+        });
         step('library-workspace-registered');
       } catch (error) {
         err('register-with-core', error);
@@ -4028,9 +4562,14 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
       registerWithCore();
       extendRouteServiceForLibrary();
       bindRouteEventsOnce();
+      bindNativeChatExitGuardOnce();
       bindPageExitEventsOnce();
       bindLibraryIndexEventsOnce();
       bindIdentityEventsOnce();
+      if (isNativeChatLocation()) {
+        disposeWorkspacePageDom(`${bootReason}-native-chat-cleanup`);
+        state.pageRoute = null;
+      }
       ensureSidebarPrepaint(`${bootReason}-sync`);
       scheduleSidebarPrepaint(bootReason);
       ensureSidebarPrepaintObserver(bootReason);
@@ -4052,7 +4591,15 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
 
       W.setTimeout(() => {
         const route = parseLibraryRoute(W.location.href);
-        if (route) owner.openWorkspace({ fromRoute: true, baseHref: route.baseHref, reason: 'boot-route' }).catch((error) => err('boot-route', error));
+        if (route) {
+          owner.openWorkspace({
+            fromRoute: true,
+            baseHref: route.baseHref,
+            routeView: route.view,
+            tab: route.tab,
+            reason: 'boot-route',
+          }).catch((error) => err('boot-route', error));
+        }
       }, 0);
 
       Object.keys(owner).forEach((key) => {

@@ -72,14 +72,39 @@
   const CFG_CATEGORY_DEFAULT_ICON = 'hash';
   const CFG_CATEGORY_DEFAULT_COLOR = '#3B82F6';
   const FRAG_SVG_CATEGORY = `
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 7.5h14M5 12h14M5 16.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-      <path d="M8 5.5 6.8 18.5M17.2 5.5 16 18.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="4" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <rect x="13" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M6.6 7.5H8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 6.6V8.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="M7.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M16.5 11V13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 7.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M11 16.5H13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
     </svg>
   `;
+  const FRAG_SVG_CATEGORY_PLACEHOLDER = FRAG_SVG_CATEGORY;
+  // Phase 12 polish: lightweight Title-Case helper for category display.
+  // Capitalizes each word; preserves intentional all-caps acronyms (UI, API,
+  // MV3, H2O, …) by leaving any token that's already fully uppercase alone.
+  function titleCaseCategoryName(rawName) {
+    const s = String(rawName || '').trim();
+    if (!s) return s;
+    return s.split(/(\s+)/).map((part) => {
+      if (!part || /^\s+$/.test(part)) return part;
+      // Already all-uppercase token (e.g. "UI", "API", "MV3", "H2O") — keep.
+      if (/^[A-Z0-9]+$/.test(part) && part.length <= 6) return part;
+      // Camel-cased multi-cap token (e.g. "iPhone", "MacBook") — keep.
+      if (/[A-Z]/.test(part) && /[a-z]/.test(part) && /^[A-Za-z]/.test(part)) return part;
+      const lower = part.toLowerCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    }).join('');
+  }
 
   const CFG_CATEGORY_ICON_OPTIONS = Object.freeze([
-    { key: 'hash', label: 'Hash', svg: FRAG_SVG_CATEGORY },
+    { key: 'hash', label: 'Category', svg: FRAG_SVG_CATEGORY },
     { key: 'folder', label: 'Folder', svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` },
     { key: 'briefcase', label: 'Briefcase', svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7V5.8A1.8 1.8 0 0 1 10.8 4h2.4A1.8 1.8 0 0 1 15 5.8V7m-9.5 4.5h13M5 7h14a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
     { key: 'code', label: 'Code', svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5m6-10 5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
@@ -287,7 +312,9 @@
       });
     }
     for (const entry of catalog.values()) {
-      if (!entry.custom || groups.has(entry.id)) continue;
+      // The Categories page must mirror the tag-link dropdown: every
+      // non-retired catalog category is visible, even before chats are assigned.
+      if (groups.has(entry.id)) continue;
       groups.set(entry.id, {
         id: entry.id,
         name: entry.name,
@@ -409,7 +436,20 @@
     return {
       icon: normalizeCategoryIcon(pref?.icon || CFG_CATEGORY_DEFAULT_ICON),
       color: normalizeHexColor(pref?.color || group?.color || CFG_CATEGORY_DEFAULT_COLOR) || CFG_CATEGORY_DEFAULT_COLOR,
+      // Phase 12 polish: tells the row renderer whether the user has explicitly
+      // chosen an icon. If false, the row should render the default category
+      // panels placeholder instead of treating the persisted default as explicit.
+      iconExplicit: !!pref?.icon,
+      colorExplicit: !!(pref?.color || group?.color),
     };
+  }
+
+  // Resolve the SVG to render for a row's icon position. When the user hasn't
+  // chosen an icon yet, return the default category panels placeholder;
+  // otherwise return the chosen icon's SVG.
+  function categoryIconSvgForAppearance(appearance) {
+    if (!appearance?.iconExplicit) return FRAG_SVG_CATEGORY_PLACEHOLDER;
+    return categoryIconSvg(appearance.icon);
   }
 
   function setCategoryAppearance(categoryId, patch = {}) {
@@ -471,7 +511,7 @@
     btn.setAttribute(ATTR_CGXUI_STATE, 'row');
     btn.onclick = () => owner.openByMode(group);
 
-    btn.appendChild(makePanelIcon(categoryIconSvg(appearance.icon), appearance.color));
+    btn.appendChild(makePanelIcon(categoryIconSvgForAppearance(appearance), appearance.color));
 
     const body = W.document.createElement('div');
     body.style.minWidth = '0';
@@ -492,18 +532,349 @@
     return btn;
   }
 
+  // Phase 13 polish: per-row tag bubbles for the Categories page.
+  //
+  // Collects unique tags across every chat in the category, tag seeds
+  // remembered by the category candidate pool, and real auto-pool tags whose
+  // phrase matches the category name/aliases. It de-duplicates by tag id, sorts
+  // by recency (most-recently-used first), then renders pill-shaped bubbles
+  // inline on the row between the title block and the right-side three-dots menu.
+  //
+  // Overflow rule: when the strip's available width can't fit all bubbles,
+  // the most-recent bubbles win — older ones are hidden and an "+N" chip is
+  // appended at the end. Measurement happens in rAF after the row is in
+  // the DOM so we have real widths.
+  //
+  // The strip is non-interactive (visual only). Clicks bubble up to the row
+  // which still opens the category viewer. We can wire per-bubble navigation
+  // in a later pass if needed.
+  let _catRowCandidatePoolPromise = null;
+
+  function normalizeTagKeyForCategoryRow(raw) {
+    return String(raw?.id || raw?.label || raw || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\u0600-\u06ff]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function tagColorForCategoryRow(tagIdOrLabel) {
+    const palette = ['#3B82F6', '#22C55E', '#A855F7', '#F472B6', '#FF914D', '#FFD54F', '#7DD3FC', '#14B8A6', '#F97316', '#8B5CF6', '#84CC16', '#EF4444'];
+    const id = String(tagIdOrLabel || '');
+    let hash = 0;
+    for (let i = 0; i < id.length; i += 1) hash = ((hash << 5) - hash) + id.charCodeAt(i);
+    return palette[Math.abs(hash) % palette.length] || '#7DD3FC';
+  }
+
+  function timestampMsForCategoryRow(raw) {
+    if (raw == null || raw === '') return 0;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(String(raw || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function mergeCategoryRowTag(byId, raw = {}) {
+    const id = normalizeTagKeyForCategoryRow(raw.id || raw.label || raw.phrase);
+    const label = normText(raw.label || raw.phrase || raw.id || '');
+    if (!id || !label) return;
+    const lastSeen = Math.max(
+      timestampMsForCategoryRow(raw.lastSeen),
+      timestampMsForCategoryRow(raw.updatedAt),
+      timestampMsForCategoryRow(raw.updatedAtIso),
+      timestampMsForCategoryRow(raw.createdAt)
+    );
+    const totalUsage = Math.max(1, Number(raw.totalUsage || raw.usageCount || raw.totalCount || raw.count || raw.chatCount || 0) || 0);
+    const color = normalizeHexColor(raw.color || '') || tagColorForCategoryRow(id);
+    const existing = byId.get(id);
+    if (existing) {
+      existing.lastSeen = Math.max(existing.lastSeen, lastSeen);
+      existing.totalUsage += totalUsage;
+      if (!existing.color) existing.color = color;
+      return;
+    }
+    byId.set(id, { id, label, color, lastSeen, totalUsage });
+  }
+
+  function buildAutoPoolPhraseLookup() {
+    const out = new Map();
+    const pool = safeReadTagAutoPool();
+    Object.entries(pool?.phrases || {}).forEach(([key, entry]) => {
+      if (!entry || entry.blocked || entry.status === 'rejected') return;
+      const normalizedKey = normalizeTagKeyForCategoryRow(key);
+      const phraseKey = normalizeTagKeyForCategoryRow(entry.phrase || '');
+      if (normalizedKey) out.set(normalizedKey, entry);
+      if (phraseKey) out.set(phraseKey, entry);
+    });
+    return out;
+  }
+
+  function categoryCandidateMatchesGroup(candidate, group) {
+    const groupId = String(group?.id || '').trim();
+    const groupNameKey = normalizeCategoryNameKey(group?.name || group?.id || '');
+    if (!candidate || !groupId) return false;
+    if (String(candidate.createdCategoryId || '') === groupId) return true;
+    if (String(candidate.mergedIntoCategoryId || '') === groupId) return true;
+    return !!groupNameKey && normalizeCategoryNameKey(candidate.name || '') === groupNameKey;
+  }
+
+  function collectCandidateSeedTagsForCategoryRow(group) {
+    const candidates = Array.isArray(_catPoolCache?.candidates) ? _catPoolCache.candidates : [];
+    if (!candidates.length) return [];
+    const autoPoolByKey = buildAutoPoolPhraseLookup();
+    const out = [];
+    candidates
+      .filter((candidate) => String(candidate?.status || 'candidate') !== 'rejected')
+      .filter((candidate) => categoryCandidateMatchesGroup(candidate, group))
+      .forEach((candidate) => {
+        const seedTags = Array.isArray(candidate?.sourceSignals?.seedTags) ? candidate.sourceSignals.seedTags : [];
+        seedTags.forEach((phrase) => {
+          const key = normalizeTagKeyForCategoryRow(phrase);
+          const auto = autoPoolByKey.get(key) || null;
+          out.push({
+            id: key || phrase,
+            label: String(auto?.phrase || phrase || '').trim(),
+            lastSeen: auto?.lastSeen || candidate.decidedAt || candidate.createdAt,
+            totalUsage: auto?.totalCount || auto?.chatCount || 1,
+            color: tagColorForCategoryRow(key || phrase),
+          });
+        });
+      });
+    return out;
+  }
+
+  function getCategoryAliasKeysForRow(group) {
+    const keys = new Set();
+    const add = (value) => {
+      const key = normalizeTagKeyForCategoryRow(value);
+      if (key) keys.add(key);
+    };
+    add(group?.name || '');
+    const catalog = getCatalogEntries();
+    const entry = catalog.find((item) => String(item?.id || '') === String(group?.id || ''))
+      || catalog.find((item) => normalizeCategoryNameKey(item?.name || '') === normalizeCategoryNameKey(group?.name || ''));
+    if (entry) {
+      add(entry.name);
+      (entry.aliases || []).forEach(add);
+    }
+    return keys;
+  }
+
+  function collectAutoPoolAliasTagsForCategoryRow(group) {
+    const autoPoolByKey = buildAutoPoolPhraseLookup();
+    if (!autoPoolByKey.size) return [];
+    const out = [];
+    getCategoryAliasKeysForRow(group).forEach((key) => {
+      const auto = autoPoolByKey.get(key) || null;
+      if (!auto) return;
+      out.push({
+        id: key,
+        label: String(auto.phrase || key || '').trim(),
+        lastSeen: auto.lastSeen,
+        totalUsage: auto.totalCount || auto.chatCount || 1,
+        color: tagColorForCategoryRow(key),
+      });
+    });
+    return out;
+  }
+
+  function collectExplicitLinkedTagsForCategoryRow(group) {
+    const categoryId = String(group?.id || '').trim();
+    if (!categoryId) return [];
+    const tagsApi = getTagsApi();
+    if (typeof tagsApi?.getTagsForCategory !== 'function') return [];
+    try {
+      const rows = tagsApi.getTagsForCategory(categoryId) || [];
+      return (Array.isArray(rows) ? rows : []).map((tag) => ({
+        id: tag?.id || tag?.key || tag?.label,
+        label: tag?.label || tag?.id || tag?.key || '',
+        color: tag?.color || tagColorForCategoryRow(tag?.id || tag?.label || ''),
+        lastSeen: tag?.lastSeen || tag?.updatedAt || 0,
+        totalUsage: tag?.totalUsage || tag?.usageCount || 1,
+      }));
+    } catch (e) {
+      err('cat-row-bubbles:explicit-links', e);
+      return [];
+    }
+  }
+
+  function collectGroupTagsForRow(group) {
+    const byId = new Map();
+    const tagsApi = W.H2O?.Tags;
+    const chatRows = Array.isArray(group?.rows) ? group.rows : [];
+    if (tagsApi && typeof tagsApi.getChatTagCatalog === 'function') {
+      for (const r of chatRows) {
+        const chatId = String(r?.chatId || '').trim();
+        if (!chatId) continue;
+        let tags = [];
+        try { tags = tagsApi.getChatTagCatalog(chatId) || []; } catch (_e) { tags = []; }
+        for (const tag of tags) {
+          mergeCategoryRowTag(byId, {
+            ...tag,
+            lastSeen: tag?.lastSeen || tag?.updatedAt || r?.updatedAt,
+          });
+        }
+      }
+    }
+    collectExplicitLinkedTagsForCategoryRow(group).forEach((tag) => mergeCategoryRowTag(byId, tag));
+    collectCandidateSeedTagsForCategoryRow(group).forEach((tag) => mergeCategoryRowTag(byId, tag));
+    collectAutoPoolAliasTagsForCategoryRow(group).forEach((tag) => mergeCategoryRowTag(byId, tag));
+    if (!byId.size) return [];
+    return Array.from(byId.values()).sort((a, b) => (
+      (b.lastSeen - a.lastSeen) || (b.totalUsage - a.totalUsage) || a.label.localeCompare(b.label)
+    ));
+  }
+
+  function makeCategoryRowTagBubble(tag) {
+    const pill = W.document.createElement('span');
+    pill.setAttribute(ATTR_CGXUI_STATE, 'cat-row-tag-bubble');
+    pill.textContent = tag.label;
+    const color = /^#[0-9a-f]{6}$/i.test(tag.color) ? tag.color : '#7DD3FC';
+    pill.title = `${tag.label} · ${tag.totalUsage} occurrence${tag.totalUsage === 1 ? '' : 's'}`;
+    pill.style.display = 'inline-flex';
+    pill.style.alignItems = 'center';
+    pill.style.padding = '2px 8px';
+    pill.style.borderRadius = '999px';
+    pill.style.fontSize = '11px';
+    pill.style.lineHeight = '15px';
+    pill.style.fontWeight = '500';
+    pill.style.flex = '0 0 auto';
+    pill.style.maxWidth = '140px';
+    pill.style.whiteSpace = 'nowrap';
+    pill.style.overflow = 'hidden';
+    pill.style.textOverflow = 'ellipsis';
+    pill.style.background = `${color}22`;
+    pill.style.border = `1px solid ${color}55`;
+    pill.style.color = `${color}EE`;
+    pill.style.pointerEvents = 'none'; // visual only — let the row's click win
+    return pill;
+  }
+
+  function makeCategoryRowOverflowChip(count) {
+    const chip = W.document.createElement('span');
+    chip.setAttribute(ATTR_CGXUI_STATE, 'cat-row-tag-overflow');
+    chip.textContent = `+${count}`;
+    chip.title = `${count} more tag${count === 1 ? '' : 's'}`;
+    chip.style.display = 'inline-flex';
+    chip.style.alignItems = 'center';
+    chip.style.padding = '2px 7px';
+    chip.style.borderRadius = '999px';
+    chip.style.fontSize = '11px';
+    chip.style.lineHeight = '15px';
+    chip.style.fontWeight = '600';
+    chip.style.flex = '0 0 auto';
+    chip.style.background = 'rgba(255,255,255,0.06)';
+    chip.style.border = '1px solid rgba(255,255,255,0.10)';
+    chip.style.color = 'rgba(255,255,255,0.72)';
+    chip.style.pointerEvents = 'none';
+    return chip;
+  }
+
+  function renderCategoryRowTagBubbles(li, group) {
+    if (!li || !group) return;
+    li.querySelector?.(`[${ATTR_CGXUI_STATE}="cat-row-tag-strip"]`)?.remove?.();
+    const tags = collectGroupTagsForRow(group);
+    if (!tags.length) return;
+    const strip = W.document.createElement('div');
+    strip.setAttribute(ATTR_CGXUI_STATE, 'cat-row-tag-strip');
+    strip.style.position = 'absolute';
+    // Sit between the body text and the right-side three-dots button (40px reserved).
+    strip.style.right = '44px';
+    strip.style.top = '50%';
+    strip.style.transform = 'translateY(-50%)';
+    strip.style.display = 'flex';
+    strip.style.flexDirection = 'row';
+    strip.style.gap = '5px';
+    strip.style.alignItems = 'center';
+    strip.style.maxWidth = '60%';                 // never crowd the title body
+    strip.style.minWidth = '0';
+    strip.style.overflow = 'hidden';
+    strip.style.justifyContent = 'flex-end';
+    strip.style.pointerEvents = 'none';
+    // Append all bubbles in recent-first order, then measure and hide overflow.
+    const bubbleEls = tags.map((t) => makeCategoryRowTagBubble(t));
+    bubbleEls.forEach((b) => strip.appendChild(b));
+    li.appendChild(strip);
+    // Defer measurement so layout has computed real widths.
+    requestAnimationFrame(() => {
+      try {
+        const stripWidth = strip.clientWidth;
+        if (!stripWidth || !bubbleEls.length) return;
+        // Reserve ~36 px for the +N overflow chip.
+        const chipReserve = 36;
+        let used = 0;
+        let cutAt = -1;
+        for (let i = 0; i < bubbleEls.length; i += 1) {
+          const w = bubbleEls[i].offsetWidth + (i === 0 ? 0 : 5); // gap=5
+          // If this bubble would push us over the budget (leaving room for chip
+          // when there ARE more after it), hide from here onward.
+          const willOverflow = (used + w) > (stripWidth - (i < bubbleEls.length - 1 ? chipReserve : 0));
+          if (willOverflow) { cutAt = i; break; }
+          used += w;
+        }
+        if (cutAt >= 0) {
+          const hidden = bubbleEls.length - cutAt;
+          for (let i = cutAt; i < bubbleEls.length; i += 1) {
+            try { bubbleEls[i].remove(); } catch (_e) {}
+          }
+          if (hidden > 0) strip.appendChild(makeCategoryRowOverflowChip(hidden));
+        }
+      } catch (e) { err('cat-row-bubbles:measure', e); }
+    });
+  }
+
+  function ensureCategoryRowCandidatePoolLoaded() {
+    if (_catPoolCache) return null;
+    if (_catRowCandidatePoolPromise) return _catRowCandidatePoolPromise;
+    _catRowCandidatePoolPromise = Promise.resolve(loadCategoryCandidatePool())
+      .catch((e) => { err('cat-row-bubbles:load-candidate-pool', e); return null; })
+      .finally(() => { _catRowCandidatePoolPromise = null; });
+    return _catRowCandidatePoolPromise;
+  }
+
+  function enrichCategoryRowWithTagBubbles(li, group) {
+    renderCategoryRowTagBubbles(li, group);
+    const pending = ensureCategoryRowCandidatePoolLoaded();
+    if (pending) {
+      pending.then(() => {
+        if (li?.isConnected) renderCategoryRowTagBubbles(li, group);
+      }).catch((e) => err('cat-row-bubbles:async-render', e));
+    }
+  }
+
+  function bindTagCategoryLinkRefresh() {
+    if (MOD._tagCategoryLinkRefreshBound) return;
+    MOD._tagCategoryLinkRefreshBound = true;
+    const onLinksChanged = () => {
+      W.setTimeout(() => {
+        refreshActivePageForAppearance('category', '').catch((e) => err('tag-category-links:refresh-page', e));
+      }, 0);
+    };
+    try {
+      W.addEventListener('evt:h2o:tags:category-links-changed', onLinksChanged, true);
+      W.addEventListener('h2o:tags:category-links-changed', onLinksChanged, true);
+    } catch (e) {
+      err('tag-category-links:bind-refresh', e);
+    }
+  }
+
   function appendInShellCategoryRow(list, group) {
     if (!list || !group) return null;
     const appearance = getCategoryAppearance(group);
     const li = W.document.createElement('li');
-    li.className = 'group/project-item hover:bg-token-interactive-bg-secondary-hover active:bg-token-interactive-bg-secondary-press flex min-h-16 cursor-pointer items-center p-3 text-sm select-none';
+    // Phase 12 polish: tighter row (was min-h-16 / p-3 = 64px+ tall, now ~44px),
+    // explicit relative positioning so the absolute three-dots button can sit
+    // on top, and a `data-h2o-cat-row` marker for future style hooks.
+    li.className = 'group/project-item hover:bg-token-interactive-bg-secondary-hover active:bg-token-interactive-bg-secondary-press relative flex cursor-pointer items-center px-3 py-2 text-sm select-none';
+    li.setAttribute('data-h2o-cat-row', '1');
+    li.style.minHeight = '44px';
 
     const btn = W.document.createElement('button');
     btn.type = 'button';
     btn.setAttribute(ATTR_CGXUI_STATE, 'category-button');
     btn.onclick = () => owner.openViewer(group);
 
-    const icon = makePanelIcon(categoryIconSvg(appearance.icon), appearance.color);
+    const icon = makePanelIcon(categoryIconSvgForAppearance(appearance), appearance.color);
     icon.style.width = '20px';
     icon.style.height = '20px';
     icon.style.minWidth = '20px';
@@ -520,7 +891,11 @@
 
     const title = W.document.createElement('div');
     title.setAttribute(ATTR_CGXUI_STATE, 'row-title');
-    title.textContent = group.name || group.id || 'Category';
+    // Phase 12 polish: render every category name title-cased so user-typed
+    // names like "first" / "new" / "cars" all line up with seeded names like
+    // "Technology" / "Engineering" / "Health". Original raw name stays in the
+    // catalog; this is presentation-only.
+    title.textContent = titleCaseCategoryName(group.name || group.id || 'Category');
     body.appendChild(title);
 
     const sub = W.document.createElement('div');
@@ -530,8 +905,295 @@
 
     btn.appendChild(body);
     li.appendChild(btn);
+
+    // Phase 12 polish: per-row three-dots menu, mirrors the sidebar action
+    // pattern so Categories page interactions match the rest of Library.
+    // Opens the category appearance / rename / delete popup. Stops bubbling
+    // so the row's main click (open viewer) doesn't fire too.
+    const moreBtn = W.document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.setAttribute(ATTR_CGXUI_STATE, 'row-more');
+    moreBtn.setAttribute('aria-label', `Category actions for ${titleCaseCategoryName(group.name || group.id || 'Category')}`);
+    moreBtn.title = 'Category actions';
+    moreBtn.style.position = 'absolute';
+    moreBtn.style.right = '8px';
+    moreBtn.style.top = '50%';
+    moreBtn.style.transform = 'translateY(-50%)';
+    moreBtn.style.width = '28px';
+    moreBtn.style.height = '28px';
+    moreBtn.style.borderRadius = '8px';
+    moreBtn.style.display = 'inline-flex';
+    moreBtn.style.alignItems = 'center';
+    moreBtn.style.justifyContent = 'center';
+    moreBtn.style.opacity = '0.65';
+    moreBtn.style.cursor = 'pointer';
+    moreBtn.style.background = 'transparent';
+    moreBtn.style.border = '1px solid transparent';
+    moreBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg>';
+    moreBtn.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; moreBtn.style.background = 'rgba(255,255,255,0.06)'; moreBtn.style.borderColor = 'rgba(255,255,255,0.10)'; });
+    moreBtn.addEventListener('mouseleave', () => { moreBtn.style.opacity = '0.65'; moreBtn.style.background = 'transparent'; moreBtn.style.borderColor = 'transparent'; });
+    moreBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCategoryAppearanceEditor(moreBtn, group, () => {
+        // Re-render from the live catalog so renames / deletes stay in sync.
+        refreshActivePageForAppearance('category', group.id).catch((e2) => err('category-row-more:refresh', e2));
+      });
+    };
+    li.appendChild(moreBtn);
+
+    // Reserve right-side space inside the main button so its content doesn't
+    // collide with the three-dots affordance.
+    btn.style.paddingRight = '40px';
+
     list.appendChild(li);
+
+    // Phase 13: enrich with inline tag bubbles. Non-blocking — runs after the
+    // row is in the DOM so layout/measurement is real. Rows can still show
+    // seed-tag bubbles before any chats are assigned to the category.
+    try { enrichCategoryRowWithTagBubbles(li, group); } catch (e) { err('cat-row-enrich-tags', e); }
+
     return li;
+  }
+
+  function makeCategoryTagLinkPicker(group, afterChange = null) {
+    const categoryId = String(group?.id || '').trim();
+    const section = W.document.createElement('div');
+    section.setAttribute(ATTR_CGXUI_STATE, 'picker-section');
+    section.style.minWidth = '0';
+    section.style.width = '100%';
+    section.style.maxWidth = '320px';
+
+    const title = W.document.createElement('div');
+    title.setAttribute(ATTR_CGXUI_STATE, 'picker-label');
+    title.textContent = 'Tags';
+    section.appendChild(title);
+
+    const form = W.document.createElement('form');
+    form.style.display = 'flex';
+    form.style.alignItems = 'center';
+    form.style.gap = '6px';
+    form.style.marginBottom = '7px';
+
+    const input = W.document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Tag name...';
+    input.spellcheck = false;
+    input.style.flex = '1 1 auto';
+    input.style.minWidth = '0';
+    input.style.height = '28px';
+    input.style.borderRadius = '8px';
+    input.style.border = '1px solid rgba(255,255,255,.14)';
+    input.style.background = 'rgba(255,255,255,.055)';
+    input.style.color = 'rgba(255,255,255,.92)';
+    input.style.padding = '0 8px';
+    input.style.fontSize = '12px';
+    input.style.outline = 'none';
+
+    const addBtn = W.document.createElement('button');
+    addBtn.type = 'submit';
+    addBtn.textContent = '+';
+    addBtn.title = 'Create and link tag';
+    addBtn.style.height = '28px';
+    addBtn.style.width = '34px';
+    addBtn.style.padding = '0';
+    addBtn.style.borderRadius = '8px';
+    addBtn.style.border = '1px solid rgba(125,211,252,.34)';
+    addBtn.style.background = 'rgba(125,211,252,.14)';
+    addBtn.style.color = 'rgba(235,250,255,.94)';
+    addBtn.style.fontWeight = '700';
+    addBtn.style.cursor = 'pointer';
+    addBtn.style.whiteSpace = 'nowrap';
+
+    form.appendChild(input);
+    form.appendChild(addBtn);
+    section.appendChild(form);
+
+    const summary = W.document.createElement('div');
+    summary.style.fontSize = '11px';
+    summary.style.color = 'rgba(255,255,255,.52)';
+    summary.style.marginBottom = '5px';
+    section.appendChild(summary);
+
+    const list = W.document.createElement('div');
+    list.style.display = 'grid';
+    list.style.gap = '2px';
+    list.style.maxHeight = '118px';
+    list.style.overflow = 'auto';
+    list.style.padding = '4px';
+    list.style.border = '1px solid rgba(255,255,255,.09)';
+    list.style.borderRadius = '9px';
+    list.style.background = 'rgba(255,255,255,.035)';
+    section.appendChild(list);
+
+    const tagsApi = getTagsApi();
+    if (!categoryId || !tagsApi) {
+      list.textContent = 'Tags are not available yet.';
+      return section;
+    }
+
+    const byId = new Map();
+    const linkedIds = new Set();
+    const mergeTagOption = (tagLike) => {
+      const rawLabel = typeof tagLike === 'string'
+        ? tagLike
+        : (tagLike?.label || tagLike?.name || tagLike?.id || tagLike?.key || '');
+      const id = normalizeTagKeyForCategoryRow(tagLike?.id || tagLike?.key || rawLabel);
+      const label = normText(rawLabel || id);
+      if (!id || !label) return null;
+      const current = byId.get(id) || {};
+      const color = normalizeHexColor(tagLike?.color || current.color || '') || tagColorForCategoryRow(id);
+      const usageCount = Math.max(Number(current.usageCount || 0) || 0, Number(tagLike?.usageCount || tagLike?.count || 0) || 0);
+      const next = { id, label: current.label || label, color, usageCount };
+      byId.set(id, next);
+      return next;
+    };
+
+    const readLinkedTags = () => {
+      linkedIds.clear();
+      try {
+        const linked = typeof tagsApi.getTagsForCategory === 'function'
+          ? tagsApi.getTagsForCategory(categoryId)
+          : [];
+        (Array.isArray(linked) ? linked : []).forEach((tag) => {
+          const option = mergeTagOption(tag);
+          if (option?.id) linkedIds.add(option.id);
+        });
+      } catch (e) {
+        err('category-tag-picker:read-linked', e);
+      }
+    };
+
+    const updateSummary = () => {
+      const count = linkedIds.size;
+      summary.textContent = `${count} tag${count === 1 ? '' : 's'} linked to ${group?.name || 'this category'}`;
+    };
+
+    const refreshPage = () => {
+      refreshActivePageForAppearance('category', categoryId).catch((e) => err('category-tag-picker:refresh-page', e));
+    };
+
+    const setLinked = (tag, checked) => {
+      if (!tag?.id) return;
+      try {
+        if (typeof tagsApi.toggleTagCategoryLink === 'function') {
+          tagsApi.toggleTagCategoryLink(tag, categoryId, checked);
+        } else if (typeof tagsApi.setTagCategoryIds === 'function' && typeof tagsApi.getTagCategoryIds === 'function') {
+          const next = new Set(tagsApi.getTagCategoryIds(tag) || []);
+          if (checked) next.add(categoryId);
+          else next.delete(categoryId);
+          tagsApi.setTagCategoryIds(tag, Array.from(next));
+        }
+        if (checked) linkedIds.add(tag.id);
+        else linkedIds.delete(tag.id);
+        updateSummary();
+        refreshPage();
+      } catch (e) {
+        err('category-tag-picker:set-linked', e);
+      }
+    };
+
+    const renderRows = () => {
+      list.innerHTML = '';
+      const rows = Array.from(byId.values()).sort((a, b) => (
+        Number(linkedIds.has(b.id)) - Number(linkedIds.has(a.id))
+        || String(a.label || '').localeCompare(String(b.label || ''))
+      ));
+      if (!rows.length) {
+        const empty = W.document.createElement('div');
+        empty.textContent = 'No tags yet. Create one above.';
+        empty.style.padding = '8px 6px';
+        empty.style.color = 'rgba(255,255,255,.48)';
+        empty.style.fontSize = '12px';
+        list.appendChild(empty);
+        updateSummary();
+        return;
+      }
+      rows.forEach((tag) => {
+        const row = W.document.createElement('label');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.gap = '7px';
+        row.style.padding = '4px 5px';
+        row.style.borderRadius = '7px';
+        row.style.cursor = 'pointer';
+        row.style.color = 'rgba(255,255,255,.82)';
+        row.style.fontSize = '11px';
+
+        const cb = W.document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = linkedIds.has(tag.id);
+        cb.style.margin = '0';
+        cb.style.width = '13px';
+        cb.style.height = '13px';
+        cb.onchange = () => setLinked(tag, cb.checked);
+        row.appendChild(cb);
+
+        const dot = W.document.createElement('span');
+        dot.style.width = '8px';
+        dot.style.height = '8px';
+        dot.style.borderRadius = '999px';
+        dot.style.background = tag.color || tagColorForCategoryRow(tag.id);
+        dot.style.flex = '0 0 auto';
+        row.appendChild(dot);
+
+        const text = W.document.createElement('span');
+        text.textContent = tag.label;
+        text.style.flex = '1 1 auto';
+        text.style.minWidth = '0';
+        text.style.overflow = 'hidden';
+        text.style.textOverflow = 'ellipsis';
+        text.style.whiteSpace = 'nowrap';
+        row.appendChild(text);
+
+        if (tag.usageCount > 0) {
+          const count = W.document.createElement('span');
+          count.textContent = String(tag.usageCount);
+          count.style.fontSize = '10px';
+          count.style.opacity = '.55';
+          row.appendChild(count);
+        }
+
+        list.appendChild(row);
+      });
+      updateSummary();
+    };
+
+    readLinkedTags();
+    try { (tagsApi.listPoolTags?.() || []).forEach(mergeTagOption); } catch (e) { err('category-tag-picker:list-pool', e); }
+    renderRows();
+
+    if (typeof tagsApi.listAllChatTags === 'function') {
+      Promise.resolve(tagsApi.listAllChatTags({ refreshCurrent: false }))
+        .then((tags) => {
+          if (!section.isConnected) return;
+          (Array.isArray(tags) ? tags : []).forEach(mergeTagOption);
+          readLinkedTags();
+          renderRows();
+        })
+        .catch((e) => err('category-tag-picker:list-all', e));
+    }
+
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const label = normText(input.value || '');
+      if (!label) return;
+      let tag = null;
+      try {
+        tag = typeof tagsApi.createPoolTag === 'function'
+          ? tagsApi.createPoolTag(label, { addToCurrentChatPool: false })
+          : mergeTagOption(label);
+      } catch (e2) {
+        err('category-tag-picker:create-tag', e2);
+      }
+      const option = mergeTagOption(tag || label);
+      if (!option) return;
+      input.value = '';
+      setLinked(option, true);
+      renderRows();
+    };
+
+    return section;
   }
 
   function openCategoryAppearanceEditor(anchorEl, group, afterChange = null) {
@@ -540,7 +1202,14 @@
     const openFolderPop = compat && compat.openFolderPop;
     if (typeof openFolderPop !== 'function') return null;
     const appearance = getCategoryAppearance(group);
-    return openFolderPop(anchorEl, [
+    // Phase 12 polish: Rename and Delete are now available for every category.
+    // - Rename: catalog merges by id, so renaming a default seeded category
+    //   persists across reads.
+    // - Delete: custom categories are physically removed; default seeded ones
+    //   get a retired-status tombstone written into the stored catalog so the
+    //   default-seed merge keeps them hidden on subsequent reads.
+    const isCustom = group?.custom === true;
+    const items = [
       { type: 'title', label: 'Category appearance' },
       {
         type: 'color-grid',
@@ -572,7 +1241,53 @@
           try { afterChange?.(); } catch (e) { err('after-change-icon', e); }
         },
       },
-    ]);
+    ];
+
+    items.push('sep');
+    items.push({
+      type: 'custom',
+      render: () => makeCategoryTagLinkPicker(group, afterChange),
+    });
+
+    // Rename — available for every category.
+    items.push('sep');
+    items.push({
+      label: 'Rename',
+      iconSvg: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m4 20 4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Zm11-13 3 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      onClick: async () => {
+        const opener = compat?.openNameModal;
+        if (typeof opener !== 'function') return;
+        const next = await opener({
+          title: 'Rename category',
+          placeholder: 'Category name',
+          initialValue: String(group.name || ''),
+          confirmText: 'Save',
+        });
+        const trimmed = String(next || '').trim();
+        if (!trimmed || trimmed === group.name) return;
+        if (typeof H2O.archiveBoot?.renameCategory !== 'function') return;
+        const updated = H2O.archiveBoot.renameCategory(group.id, trimmed);
+        if (!updated) return;
+        try { afterChange?.(); } catch (e) { err('after-change-rename', e); }
+      },
+    });
+    // Delete — available for every category. Default seeded ones become
+    // retired tombstones; custom ones are physically removed.
+    items.push({
+      label: 'Delete',
+      danger: true,
+      iconSvg: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M9 7V5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5v2m-7 0v12.5A1.5 1.5 0 0 0 9.5 21h5A1.5 1.5 0 0 0 16 19.5V7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      onClick: () => {
+        const ok = W.confirm?.(`Delete category "${group.name}"?\n\nThis removes the category from the catalog. Chats already assigned to this category by the extension are not modified by this action.`);
+        if (!ok) return;
+        if (typeof H2O.archiveBoot?.deleteCategory !== 'function') return;
+        const removed = H2O.archiveBoot.deleteCategory(group.id);
+        if (!removed) return;
+        try { afterChange?.(); } catch (e) { err('after-change-delete', e); }
+      },
+    });
+
+    return openFolderPop(anchorEl, items);
   }
 
   function getCompat() {
@@ -655,7 +1370,8 @@
     const shell = makeInShellPageShell(title, `${rows.length} chats in this category`, 'Chats', {
       kind: 'category',
       id: group.id,
-      iconSvg: categoryIconSvg(appearance.icon),
+      hideViewActions: true,
+      iconSvg: categoryIconSvgForAppearance(appearance),
       iconColor: appearance.color,
       iconLabel: 'Edit category appearance',
       onIconClick: (anchor) => openCategoryAppearanceEditor(anchor, group, () => openCategoryViewer(group, { skipHistory: true })),
@@ -687,7 +1403,7 @@
     const appearance = getCategoryAppearance(group);
     const shell = makeViewerShell(title, `${rows.length} chats in this category`, {
       mode: 'panel',
-      iconSvg: categoryIconSvg(appearance.icon),
+      iconSvg: categoryIconSvgForAppearance(appearance),
       iconColor: appearance.color,
       iconLabel: 'Edit category appearance',
       onIconClick: (anchor) => openCategoryAppearanceEditor(anchor, group, () => openCategoryPanel(group)),
@@ -706,7 +1422,13 @@
     ensureStyle();
     const groups = Array.isArray(groupsRaw) ? groupsRaw : [];
 
-    const shell = makeInShellPageShell('Categories', `${groups.length} categories`, 'Categories', { kind: 'categories' });
+    const shell = makeInShellPageShell('Categories', `${groups.length} categories`, 'Categories', {
+      kind: 'categories',
+      hideViewActions: true,
+      // Header icon matches the per-row "no icon picked yet" category panels
+      // placeholder so the Categories page reads as its own surface.
+      iconSvg: FRAG_SVG_CATEGORY_PLACEHOLDER,
+    });
     if (!shell?.page || !shell?.list) return null;
 
     const tabs = shell.page.querySelector?.(`[${ATTR_CGXUI_STATE}="tabs"]`) || null;
@@ -859,7 +1581,7 @@
       const row = compat.makeRowShell?.(tplDiv, tplA, fallbackRowClass, 'a');
       compat.setRowText?.(row, group?.name || 'Category');
       const appearance = opts.appearance || getCategoryAppearance(group);
-      compat.injectIcon?.(row, categoryIconSvg(appearance.icon), { color: appearance.color });
+      compat.injectIcon?.(row, categoryIconSvgForAppearance(appearance), { color: appearance.color });
       compat.wireAsButton?.(row, onOpen);
       if (typeof opts.onToggle === 'function') {
         compat.makeIconToggle?.(row, opts.isOpen ? 'Hide chats' : 'Show chats', opts.onToggle, !!opts.isOpen);
@@ -930,6 +1652,7 @@
         compat.writeUi?.(nextUi);
         expanded = true;
         render();
+        refreshActivePageForAppearance('category', created?.id || '').catch((e2) => err('category-create:refresh-page', e2));
       }));
 
       let groups = [];
@@ -987,11 +1710,12 @@
           span.textContent = `(${group.rows.length})`;
           trunc.parentElement?.appendChild(span);
         }
-        const more = doc.createElement('button');
-        more.type = 'button';
-        more.textContent = '⋯';
-        more.title = 'Category appearance';
-        more.setAttribute('data-cgxui', compat.categoryMoreToken || 'flsc-category-more');
+        const more = compat.makeNativeLikeMoreButton?.('Category appearance', compat.categoryMoreToken || 'flsc-category-more') || doc.createElement('button');
+        if (!more.hasAttribute('type')) more.type = 'button';
+        if (!more.hasAttribute('aria-label')) more.setAttribute('aria-label', 'Category appearance');
+        if (!more.hasAttribute('title')) more.title = 'Category appearance';
+        if (!more.hasAttribute('data-cgxui')) more.setAttribute('data-cgxui', compat.categoryMoreToken || 'flsc-category-more');
+        if (!more.innerHTML) more.innerHTML = compat.moreIconSvg || '⋯';
         more.setAttribute(ATTR_CGXUI_OWNER, OWNER_SKID);
         more.onclick = (e) => {
           e.preventDefault();
@@ -1758,6 +2482,7 @@
     cand.createdCategoryId = String(created.id);
     const persistRes = await persistCategoryCandidatePool(_catPoolCache);
     if (!persistRes.ok) return { ok: false, status: `persist-failed:${persistRes.status}` };
+    refreshActivePageForAppearance('category', cand.createdCategoryId).catch((e2) => err('catpool:create-refresh-page', e2));
     return { ok: true, status: 'ok', createdCategoryId: cand.createdCategoryId, candidate: cand };
   }
 
@@ -2382,6 +3107,7 @@
     setAppearance(categoryId, patch = {}) { return setCategoryAppearance(categoryId, patch); },
     iconOptionForKey(key) { return iconOptionForKey(key); },
     iconSvg(key) { return categoryIconSvg(key); },
+    iconSvgForAppearance(appearance) { return categoryIconSvgForAppearance(appearance); },
     openAppearanceEditor(anchorEl, group, afterChange = null) { return openCategoryAppearanceEditor(anchorEl, group, afterChange); },
     appendPanelRow(list, group) { return appendPanelCategoryRow(list, group); },
     appendInShellRow(list, group) { return appendInShellCategoryRow(list, group); },
@@ -2427,6 +3153,11 @@
   MOD.appearance.setAppearance = setCategoryAppearance;
   MOD.appearance.iconOptionForKey = iconOptionForKey;
   MOD.appearance.iconSvg = categoryIconSvg;
+  // Expose the appearance-aware variant so the sidebar (0F3a Folders) and any
+  // future consumer can render the category panels placeholder when a category
+  // hasn't had an icon picked yet.
+  MOD.appearance.iconSvgForAppearance = categoryIconSvgForAppearance;
+  MOD.appearance.placeholderSvg = FRAG_SVG_CATEGORY_PLACEHOLDER;
   MOD.appearance.openAppearanceEditor = openCategoryAppearanceEditor;
   MOD.appearance.refreshActivePageForAppearance = refreshActivePageForAppearance;
   MOD.render = MOD.render || {};
@@ -2464,6 +3195,8 @@
   MOD.setUserCategoryOverride = (...args) => owner.setUserCategoryOverride(...args);
   MOD.getCategoryOverrides = (...args) => owner.getCategoryOverrides(...args);
   MOD.getAutoClassDiagnostics = (...args) => owner.getAutoClassDiagnostics(...args);
+
+  bindTagCategoryLinkRefresh();
 
   try {
     core.registerOwner?.('categories', owner, { replace: true });

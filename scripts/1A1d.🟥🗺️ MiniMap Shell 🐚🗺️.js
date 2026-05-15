@@ -801,8 +801,17 @@
     return false;
   }
 
+  function viewHasActiveH2OPageHost() {
+    let hosts = [];
+    try { hosts = Array.from(document.querySelectorAll('[data-cgxui$="-page-host"][data-cgxui-owner]')); } catch { hosts = []; }
+    for (const host of hosts) {
+      if (viewIsVisibleNode(host)) return true;
+    }
+    return false;
+  }
+
   function viewShouldShowControls() {
-    return viewIsChatPath() && !viewIsSearchPanelOpen();
+    return viewIsChatPath() && !viewIsSearchPanelOpen() && !viewHasActiveH2OPageHost();
   }
 
   function viewSetDisplay(el, show) {
@@ -818,7 +827,8 @@
     const perfT0 = perfNow();
     try {
       const show = viewShouldShowControls();
-      const sig = `${show ? 1 : 0}|${String(location.pathname || '')}|${viewIsSearchPanelOpen() ? 1 : 0}`;
+      const h2oPageActive = viewHasActiveH2OPageHost();
+      const sig = `${show ? 1 : 0}|${String(location.pathname || '')}|${viewIsSearchPanelOpen() ? 1 : 0}|${h2oPageActive ? 1 : 0}`;
       if (sig === state.viewSig) return show;
       state.viewSig = sig;
       viewSetDisplay(refs?.root, show);
@@ -2130,6 +2140,9 @@
     bind(window, 'resize', () => scheduleViewVisibility('resize'), { passive: true });
     bind(window, 'focus', () => scheduleViewVisibility('focus'), { passive: true });
     bind(document, 'focusin', () => scheduleViewVisibility('focusin'), true);
+    bind(window, 'evt:h2o:library-core:page-entered', () => scheduleViewVisibility('library-page-entered'), { passive: true });
+    bind(window, 'evt:h2o:library-core:page-replaced', () => scheduleViewVisibility('library-page-replaced'), { passive: true });
+    bind(window, 'evt:h2o:library-core:page-exited', () => scheduleViewVisibility('library-page-exited'), { passive: true });
     bind(window, 'evt:h2o:answers:scan', onRoute, { passive: true });
     bind(window, 'h2o:answers:scan', onRoute, { passive: true });
 

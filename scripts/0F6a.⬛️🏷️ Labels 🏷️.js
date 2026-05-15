@@ -161,6 +161,7 @@
   const UI_LABELS_MODAL = `${SkID}-modal`;
   const UI_LABELS_POP = `${SkID}-pop`;
   const UI_LABELS_ROW = `${SkID}-row`;
+  const UI_LABELS_MORE = `${SkID}-more`;
   const UI_LABELS_MENU_ITEM = `${SkID}-menu-item`;
   const UI_LABELS_ICON_SLOT = `${SkID}-ico-slot`;
   const CSS_STYLE_ID = `cgxui-${SkID}-style`;
@@ -170,9 +171,9 @@
   const CFG_FLOATING_Z = 2147483647;
   const CFG_H2O_PAGE_ROUTE_OWNER = `${SkID}:page-route:v1`;
   const CFG_H2O_PAGE_ROUTE_PREFIX = 'h2o';
-  const CFG_H2O_PAGE_QUERY_FLAG = `h2o_${SkID}`;
-  const CFG_H2O_PAGE_QUERY_VIEW = `h2o_${SkID}_view`;
-  const CFG_H2O_PAGE_QUERY_ID = `h2o_${SkID}_id`;
+  const CFG_H2O_PAGE_QUERY_FLAG = 'h2o_flsc';
+  const CFG_H2O_PAGE_QUERY_VIEW = 'h2o_flsc_view';
+  const CFG_H2O_PAGE_QUERY_ID = 'h2o_flsc_id';
 
   const FRAG_SVG_LABEL = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -184,7 +185,7 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
   `;
   const FRAG_SVG_MORE = `
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="icon"><use href="/cdn/assets/sprites-core-97566a9e.svg#f6d0e2" fill="currentColor"></use></svg>
   `;
   const FRAG_SVG_SECTION_ARROW = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true" data-rtl-flip="" class="invisible h-3 w-3 shrink-0 group-hover/sidebar-expando-section:visible"><use href="/cdn/assets/sprites-core-97566a9e.svg#ba3792" fill="currentColor"></use></svg>';
 
@@ -1023,6 +1024,15 @@
     return core.getService?.('page-host') || null;
   }
 
+  function commitPageRoute(route, opts = {}) {
+    try {
+      return core.getService?.('route')?.ROUTE_commitPageRoute?.(labelsEnv(), route, opts);
+    } catch (e) {
+      err('commit-page-route', e);
+      return false;
+    }
+  }
+
   function labelsEnv() {
     return {
       W,
@@ -1195,6 +1205,104 @@
 
   function injectIcon(row, color = '') {
     return setPrimaryIcon(row, FRAG_SVG_LABEL, { color });
+  }
+
+  function getNativeTrailingButtonTemplate() {
+    const selectors = [
+      'nav .ho-project-row button.__menu-item-trailing-btn',
+      'aside .ho-project-row button.__menu-item-trailing-btn',
+      'nav button.__menu-item-trailing-btn:not([data-cgxui])',
+      'aside button.__menu-item-trailing-btn:not([data-cgxui])',
+    ];
+    for (const selector of selectors) {
+      const btn = D.querySelector(selector);
+      if (btn?.tagName === 'BUTTON') return btn;
+    }
+    return null;
+  }
+
+  function makeNativeLikeMoreButton(label = 'Label actions') {
+    const nativeTemplate = getNativeTrailingButtonTemplate();
+    const btn = nativeTemplate?.cloneNode(true) || D.createElement('button');
+    btn.type = 'button';
+    btn.classList.add('__menu-item-trailing-btn');
+    btn.querySelectorAll?.('[id]')?.forEach((el) => el.removeAttribute('id'));
+    btn.removeAttribute('id');
+    btn.removeAttribute('data-testid');
+    btn.removeAttribute('data-state');
+    btn.removeAttribute('aria-controls');
+    btn.removeAttribute('aria-expanded');
+    btn.setAttribute('data-trailing-button', 'true');
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.title = label;
+    btn.setAttribute(ATTR_CGXUI, UI_LABELS_MORE);
+    btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    if (!btn.innerHTML.trim()) btn.innerHTML = FRAG_SVG_MORE;
+    return btn;
+  }
+
+  function openLabelActionsPop(anchor, typeDef, record, count = 0) {
+    if (!(anchor instanceof HTMLElement) || !typeDef || !record) return false;
+    closeTransientPop();
+
+    const pop = D.createElement('div');
+    pop.setAttribute(ATTR_CGXUI, UI_LABELS_POP);
+    pop.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    pop.setAttribute('role', 'menu');
+
+    const title = D.createElement('div');
+    title.setAttribute(ATTR_CGXUI_STATE, 'pop-title');
+    title.textContent = `${typeDef.fullLabel}: ${record.label}`;
+    pop.appendChild(title);
+
+    const addItem = (label, onClick, opts = {}) => {
+      const item = D.createElement('button');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      if (opts.danger) item.setAttribute(ATTR_CGXUI_STATE, 'danger');
+      item.textContent = label;
+      item.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeTransientPop();
+        try { onClick?.(); } catch (error) { err('label-row-actions', error); }
+      };
+      pop.appendChild(item);
+      return item;
+    };
+
+    addItem(`Open label (${Number(count || 0)} chats)`, () => openLabelByMode(typeDef.key, record.id));
+    addItem('Manage labels', () => openLabelsByMode({ focusType: typeDef.key }));
+    addItem('Rename label', () => {
+      const next = W.prompt?.('Rename label', record.label || '');
+      if (!next || normalizeLabel(next) === normalizeLabel(record.label)) return;
+      renameLabel(typeDef.key, record.id, next);
+    });
+    if (!record.builtIn) {
+      addItem('Delete label', () => {
+        if (!W.confirm?.(`Delete label "${record.label}"?`)) return;
+        deleteLabel(typeDef.key, record.id);
+      }, { danger: true });
+    }
+
+    D.body.appendChild(pop);
+    state.clean.nodes.add(pop);
+    const rect = anchor.getBoundingClientRect();
+    const width = Math.min(280, Math.max(210, pop.offsetWidth || 230));
+    const left = Math.min(Math.max(8, rect.right - width), Math.max(8, W.innerWidth - width - 8));
+    const top = Math.min(Math.max(8, rect.bottom + 6), Math.max(8, W.innerHeight - (pop.offsetHeight || 180) - 8));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+
+    const onDocDown = (event) => {
+      if (pop.contains(event.target) || anchor.contains(event.target)) return;
+      closeTransientPop();
+      D.removeEventListener('pointerdown', onDocDown, true);
+    };
+    W.setTimeout(() => D.addEventListener('pointerdown', onDocDown, true), 0);
+    state.clean.listeners.add(() => D.removeEventListener('pointerdown', onDocDown, true));
+    return true;
   }
 
   function findExistingPrimaryIconSlot(row) {
@@ -1554,6 +1662,13 @@
       row.title = `${typeDef.fullLabel}: ${record.label}`;
       const trunc = row.querySelector?.(SEL.sidebarTruncate);
       if (trunc && ui.showCounts !== false) trunc.parentElement?.appendChild(makeLabelCountSpan(count));
+      const more = makeNativeLikeMoreButton(`Label actions for ${record.label}`);
+      more.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openLabelActionsPop(more, typeDef, record, count);
+      };
+      row.appendChild(more);
       if (previewEnabled) {
         makeIconToggle(
           row,
@@ -2055,6 +2170,7 @@
     });
 
     mountPage(page, { mode: opts.mode });
+    commitPageRoute({ view: 'labels', id: '' }, opts);
     state.pageEl = page;
     syncLabelSidebarActiveState('open-labels-viewer');
     safeDispatch(EV_LABELS_UI_OPEN, { view: 'labels', opts, ts: Date.now() });
@@ -2086,6 +2202,7 @@
     }
 
     mountPage(page, { mode: opts.mode });
+    commitPageRoute({ view: 'label', id: `${type}:${labelId}` }, opts);
     state.pageEl = page;
     syncLabelSidebarActiveState('open-label-viewer');
     safeDispatch(EV_LABELS_UI_OPEN, { view: 'label', type, labelId, opts, ts: Date.now() });
@@ -2322,10 +2439,12 @@
   function CSS_TEXT() {
     const ROOT = utilSelScoped(UI_LABELS_ROOT);
     const MODAL = utilSelScoped(UI_LABELS_MODAL);
+    const POP = utilSelScoped(UI_LABELS_POP);
     const VIEWER = utilSelScoped(UI_LABELS_VIEWER);
     const PAGE_HOST = utilSelScoped(UI_LABELS_PAGE_HOST);
     const PAGE = utilSelScoped(UI_LABELS_PAGE);
     const ROW = utilSelScoped(UI_LABELS_ROW);
+    const MORE = utilSelScoped(UI_LABELS_MORE);
     const ICON = utilSelScoped(UI_LABELS_ICON_SLOT);
     const MENU_ITEM = utilSelScoped(UI_LABELS_MENU_ITEM);
     return `
@@ -2385,6 +2504,47 @@ ${ROW}[aria-current="true"]{
   background: var(--interactive-bg-secondary-hover, rgba(255,255,255,.08));
   border-radius: 8px;
 }
+${ROW}[data-h2o-label-id]{
+  position:relative;
+  padding-right:40px !important;
+}
+${MORE}{
+  position:absolute !important;
+  right:9px !important;
+  top:50% !important;
+  transform:translateY(-50%) !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  width:24px !important;
+  height:24px !important;
+  padding:0 !important;
+  margin:0 !important;
+  border:0 !important;
+  border-radius:8px !important;
+  background:transparent !important;
+  color:var(--text-primary, #fff) !important;
+  cursor:pointer !important;
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .12s ease, background .12s ease, color .12s ease;
+}
+${ROW}:hover ${MORE},
+${ROW}:focus-within ${MORE}{
+  opacity:1;
+  visibility:visible;
+}
+${MORE} svg{
+  width:20px !important;
+  height:20px !important;
+  display:block !important;
+  opacity:1 !important;
+}
+${MORE}:hover{
+  color:var(--text-primary, #fff);
+  background:transparent !important;
+}
+${MORE}:active{ background:transparent !important; }
 ${MENU_ITEM}{
   box-sizing:border-box;
   display:flex;
@@ -2401,6 +2561,41 @@ ${MENU_ITEM}{
 ${MENU_ITEM}:hover{ background: var(--interactive-bg-secondary-hover, rgba(255,255,255,.08)); }
 ${MENU_ITEM} [${ATTR_CGXUI_STATE}="menu-icon"]{ width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; opacity:.9; }
 ${MENU_ITEM} svg{ width:18px; height:18px; }
+${POP}{
+  position:fixed;
+  z-index:${CFG_FLOATING_Z};
+  min-width:210px;
+  max-width:min(280px, calc(100vw - 16px));
+  padding:6px;
+  border:1px solid var(--border-default, rgba(255,255,255,.14));
+  border-radius:12px;
+  background:var(--bg-elevated-secondary, rgba(32,32,32,.98));
+  color:var(--text-primary, #fff);
+  box-shadow:0 18px 45px rgba(0,0,0,.38);
+}
+${POP} [${ATTR_CGXUI_STATE}="pop-title"]{
+  padding:8px 10px;
+  color:var(--text-secondary, rgba(255,255,255,.68));
+  font-size:12px;
+  font-weight:650;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+${POP} button{
+  all:unset;
+  box-sizing:border-box;
+  width:100%;
+  min-height:34px;
+  display:flex;
+  align-items:center;
+  padding:8px 10px;
+  border-radius:8px;
+  cursor:pointer;
+  font-size:13px;
+}
+${POP} button:hover{ background:var(--interactive-bg-secondary-hover, rgba(255,255,255,.08)); }
+${POP} button[${ATTR_CGXUI_STATE}="danger"]{ color:var(--text-error, #ff4d4f); }
 ${MODAL}{
   position:fixed; inset:0; z-index:${CFG_FLOATING_Z};
   display:flex; align-items:flex-start; justify-content:center;

@@ -81,13 +81,22 @@
     pages: Object.create(null),
     views: Object.create(null),
     services: Object.create(null),
+    surfaces: Object.create(null),
   });
+
+  // Defensive: the `surfaces` bucket is new (added alongside the Studio Library
+  // transfer in 2026-05). If LibraryCore was hot-reloaded before this change,
+  // an older `registries` object may not have the bucket yet — ensure it exists
+  // so downstream calls to registerSurface/getSurface/listSurfaces never throw.
+  if (!registries.surfaces) registries.surfaces = Object.create(null);
 
   const state = (core.state = core.state || {
     initializedAt: Date.now(),
     phase1Ready: true,
     phase2Ready: true,
+    currentSurface: 'native',
   });
+  if (!state.currentSurface) state.currentSurface = 'native';
 
   const contracts = (core.contracts = core.contracts || {
     frozen: true,
@@ -111,7 +120,7 @@
       queryFlag: 'h2o_flsc',
       queryView: 'h2o_flsc_view',
       queryId: 'h2o_flsc_id',
-      supportedViews: ['projects', 'folder', 'categories', 'category', 'labels', 'label'],
+      supportedViews: ['library', 'dashboard', 'analytics', 'explorer', 'recents', 'saved', 'organize', 'projects', 'folder', 'categories', 'category', 'labels', 'label'],
     },
     publicApi: {
       keepStable: 'H2O.folders',
@@ -165,6 +174,47 @@
   core.getService = core.getService || ((name) => getFrom('services', name));
   core.listServices = core.listServices || (() => listBucket('services'));
 
+  // ── Surface registration (additive, introduced for the Studio Library transfer)
+  // Native and Studio share Library Core shape. Each surface registers itself so
+  // diagnostics and cross-surface tooling can report which surfaces are live.
+  // No behavior change for existing native consumers: getCurrentSurface() defaults
+  // to 'native' when no caller has set it.
+  core.registerSurface = core.registerSurface || function registerSurface(name, def) {
+    const n = ensureString(name);
+    if (!n) return false;
+    registries.surfaces[n] = { ...(def || {}), name: n, registeredAt: Date.now() };
+    step('register:surfaces', n);
+    return true;
+  };
+  core.getSurface = core.getSurface || function getSurface(name) {
+    return registries.surfaces[ensureString(name)] || null;
+  };
+  core.listSurfaces = core.listSurfaces || function listSurfaces() {
+    return Object.keys(registries.surfaces);
+  };
+  core.setCurrentSurface = core.setCurrentSurface || function setCurrentSurface(name) {
+    const n = ensureString(name);
+    if (!n) return false;
+    state.currentSurface = n;
+    step('set-current-surface', n);
+    return true;
+  };
+  core.getCurrentSurface = core.getCurrentSurface || function getCurrentSurface() {
+    return state.currentSurface || 'native';
+  };
+
+  // Self-register the native surface so listSurfaces() always includes 'native'.
+  // Studio document is a different window, so this never collides with the
+  // Studio surface registration in surfaces/studio/S0F1a.
+  if (!registries.surfaces.native) {
+    registries.surfaces.native = {
+      name: 'native',
+      label: 'Native ChatGPT',
+      registeredAt: Date.now(),
+      services: { route: 'inline', 'page-host': 'inline', 'ui-shell': 'inline', 'native-sidebar': 'inline' },
+    };
+  }
+
   core.phase = {
     ...(core.phase || {}),
     getCurrent() { return 'phase-8-library-boundary-diagnostics'; },
@@ -185,7 +235,7 @@
     optionalOwners: ['library-workspace', 'library-insights', 'projects'],
     requiredServices: ['route', 'page-host', 'ui-shell', 'native-sidebar', 'folders', 'categories', 'labels', 'tags', 'library-index'],
     optionalServices: ['library-workspace', 'library-insights', 'projects', 'categories-compat'],
-    requiredRoutes: ['projects', 'folder', 'categories', 'category', 'labels', 'label'],
+    requiredRoutes: ['folders', 'folder', 'projects', 'categories', 'category', 'labels', 'label'],
     optionalRoutes: [],
     deferredRoutes: ['tags', 'tag'],
     forbiddenServices: ['projects-compat'],
@@ -194,7 +244,7 @@
   contracts.routeContract = contracts.routeContract || {};
   contracts.routeContract.supportedViews = uniqueStrings(
     contracts.routeContract.supportedViews || [],
-    ['projects', 'folder', 'categories', 'category', 'labels', 'label']
+    ['library', 'dashboard', 'analytics', 'explorer', 'recents', 'saved', 'organize', 'folders', 'folder', 'projects', 'categories', 'category', 'labels', 'label']
   );
   contracts.routeContract.deferredViews = boundarySpec.deferredRoutes.slice();
 
@@ -210,11 +260,11 @@
     ),
     pages: uniqueStrings(
       core.reserved?.pages || [],
-      ['library', 'projects', 'folder', 'categories', 'category', 'labels', 'label']
+      ['library', 'dashboard', 'analytics', 'explorer', 'recents', 'saved', 'organize', 'folders', 'folder', 'projects', 'categories', 'category', 'labels', 'label']
     ),
     routes: uniqueStrings(
       core.reserved?.routes || [],
-      ['library', 'projects', 'folder', 'categories', 'category', 'labels', 'label']
+      ['library', 'dashboard', 'analytics', 'explorer', 'recents', 'saved', 'organize', 'folders', 'folder', 'projects', 'categories', 'category', 'labels', 'label']
     ),
     views: uniqueStrings(
       core.reserved?.views || [],
@@ -268,27 +318,23 @@
 
     ROUTE_makeHash(env, route = {}) {
       const view = String(route.view || '').trim();
-      if (view === 'projects') return `#${env.CFG_H2O_PAGE_ROUTE_PREFIX}/projects`;
-      if (view === 'categories') return `#${env.CFG_H2O_PAGE_ROUTE_PREFIX}/categories`;
-      if (view === 'folder' || view === 'category') {
-        const id = encodeURIComponent(String(route.id || '').trim());
-        return id ? `#${env.CFG_H2O_PAGE_ROUTE_PREFIX}/${view}/${id}` : '';
-      }
-      return '';
+      if (!routeService.ROUTE_isKnownView(view)) return '';
+      const id = String(route.id || '').trim();
+      if (routeService.ROUTE_viewRequiresId(view) && !id) return '';
+      const suffix = id ? `/${encodeURIComponent(id)}` : '';
+      return `#${env.CFG_H2O_PAGE_ROUTE_PREFIX}/${encodeURIComponent(view)}${suffix}`;
     },
 
     ROUTE_makeUrl(env, route = {}) {
       const view = String(route.view || '').trim();
-      if (!view) return '';
+      if (!routeService.ROUTE_isKnownView(view)) return '';
 
       const url = new URL('/', env.W.location.origin);
       url.searchParams.set(env.CFG_H2O_PAGE_QUERY_FLAG, '1');
       url.searchParams.set(env.CFG_H2O_PAGE_QUERY_VIEW, view);
-      if (view === 'folder' || view === 'category') {
-        const id = String(route.id || '').trim();
-        if (!id) return '';
-        url.searchParams.set(env.CFG_H2O_PAGE_QUERY_ID, id);
-      }
+      const id = String(route.id || '').trim();
+      if (routeService.ROUTE_viewRequiresId(view) && !id) return '';
+      if (id) url.searchParams.set(env.CFG_H2O_PAGE_QUERY_ID, id);
       return `${url.pathname}${url.search}`;
     },
 
@@ -302,29 +348,38 @@
 
       if (url.searchParams.get(env.CFG_H2O_PAGE_QUERY_FLAG) !== '1') return null;
       const view = String(url.searchParams.get(env.CFG_H2O_PAGE_QUERY_VIEW) || '').trim();
-      if (view === 'projects') return { view: 'projects', id: '' };
-      if (view === 'categories') return { view: 'categories', id: '' };
-      if (view === 'folder' || view === 'category') {
-        const id = String(url.searchParams.get(env.CFG_H2O_PAGE_QUERY_ID) || '').trim();
-        return id ? { view, id } : null;
-      }
-      return null;
+      if (!routeService.ROUTE_isKnownView(view)) return null;
+      const id = String(url.searchParams.get(env.CFG_H2O_PAGE_QUERY_ID) || '').trim();
+      if (routeService.ROUTE_viewRequiresId(view) && !id) return null;
+      return { view, id };
     },
 
     ROUTE_parseHash(env, hash = env.W.location.hash) {
       const raw = String(hash || '').replace(/^#/, '');
       const parts = raw.split('/').filter(Boolean);
       if (parts[0] !== env.CFG_H2O_PAGE_ROUTE_PREFIX) return null;
-      if (parts[1] === 'projects') return { view: 'projects', id: '' };
-      if (parts[1] === 'categories') return { view: 'categories', id: '' };
-      if ((parts[1] === 'folder' || parts[1] === 'category') && parts[2]) {
-        try {
-          return { view: parts[1], id: decodeURIComponent(parts.slice(2).join('/')) };
-        } catch {
-          return { view: parts[1], id: parts.slice(2).join('/') };
-        }
+      let view = '';
+      try { view = decodeURIComponent(parts[1] || ''); } catch { view = String(parts[1] || ''); }
+      if (!routeService.ROUTE_isKnownView(view)) return null;
+      let id = '';
+      if (parts[2]) {
+        try { id = decodeURIComponent(parts.slice(2).join('/')); } catch { id = parts.slice(2).join('/'); }
       }
-      return null;
+      if (routeService.ROUTE_viewRequiresId(view) && !id) return null;
+      return { view, id };
+    },
+
+    ROUTE_isKnownView(view = '') {
+      const v = String(view || '').trim();
+      if (!v) return false;
+      if (core.getRoute?.(v)) return true;
+      if (Array.isArray(core.reserved?.routes) && core.reserved.routes.includes(v)) return true;
+      if (Array.isArray(contracts.routeContract?.supportedViews) && contracts.routeContract.supportedViews.includes(v)) return true;
+      return false;
+    },
+
+    ROUTE_viewRequiresId(view = '') {
+      return ['folder', 'category', 'label', 'project', 'tag'].includes(String(view || '').trim());
     },
 
     ROUTE_parseCurrent(env) {
@@ -1035,6 +1090,83 @@
       return false;
     },
 
+    PAGEHOST_isPageHostRoot(env, node) {
+      if (!(node instanceof HTMLElement)) return false;
+      const ownerAttr = String(env?.ATTR_CGXUI_OWNER || 'data-cgxui-owner');
+      const cgxAttr = String(env?.ATTR_CGXUI || 'data-cgxui');
+      if (!node.hasAttribute(ownerAttr) || !node.hasAttribute(cgxAttr)) return false;
+      const token = String(node.getAttribute(cgxAttr) || '');
+      if (token && token === String(env?.UI_FSECTION_PAGE_HOST || '')) return true;
+      if (/-page-host$/i.test(token)) return true;
+      return node.hasAttribute('data-cgxui-page-kind') && node.hasAttribute('data-cgxui-page-title') && node.getAttribute('role') === 'main';
+    },
+
+    PAGEHOST_unhidePageRoot(env, root) {
+      if (!(root instanceof HTMLElement)) return false;
+      try {
+        const hiddenAttr = pageHostService.PAGEHOST_getHiddenAttr(env);
+        if (root.style.display === 'none') root.style.display = '';
+        if (root.getAttribute('aria-hidden') === 'true') root.removeAttribute('aria-hidden');
+        if (root.getAttribute('data-cgxui-page-hidden-kind') === 'host-child') root.removeAttribute('data-cgxui-page-hidden-kind');
+        root.removeAttribute(hiddenAttr);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    PAGEHOST_restoreHostChildrenAfterForeignPage(env, host) {
+      if (!(host instanceof HTMLElement)) return 0;
+      const hiddenAttr = pageHostService.PAGEHOST_getHiddenAttr(env);
+      let restored = 0;
+      [...host.children].forEach((child) => {
+        if (!(child instanceof HTMLElement)) return;
+        if (pageHostService.PAGEHOST_isPageHostRoot(env, child)) return;
+        const hiddenByPage = child.getAttribute('data-cgxui-page-hidden-kind') === 'host-child' || child.hasAttribute(hiddenAttr);
+        if (!hiddenByPage) return;
+        try {
+          if (child.style.display === 'none') child.style.display = '';
+          if (child.getAttribute('aria-hidden') === 'true') child.removeAttribute('aria-hidden');
+          child.removeAttribute(hiddenAttr);
+          child.removeAttribute('data-cgxui-page-hidden-kind');
+          restored += 1;
+        } catch {}
+      });
+      return restored;
+    },
+
+    PAGEHOST_disposeForeignPageRoots(env, host, keepRoot = null, opts = {}) {
+      if (!(host instanceof HTMLElement)) return 0;
+      let removed = 0;
+      [...host.children].forEach((child) => {
+        if (child === keepRoot) return;
+        if (!pageHostService.PAGEHOST_isPageHostRoot(env, child)) return;
+        try {
+          child.remove();
+          removed += 1;
+        } catch {}
+      });
+      if (removed && opts.restoreHidden) {
+        pageHostService.PAGEHOST_restoreHostChildrenAfterForeignPage(env, host);
+      }
+      return removed;
+    },
+
+    PAGEHOST_emitPageEvent(env, name = 'page-entered', session = null, reason = '') {
+      const active = session || env?.STATE?.pageSession || null;
+      try {
+        (env?.W || W).dispatchEvent(new CustomEvent(`evt:h2o:library-core:${name}`, {
+          detail: {
+            reason: String(reason || name || ''),
+            kind: String(active?.kind || active?.root?.getAttribute?.('data-cgxui-page-kind') || ''),
+            title: String(active?.title || active?.root?.getAttribute?.('data-cgxui-page-title') || ''),
+            id: String(active?.pageEl?.getAttribute?.('data-cgxui-page-id') || ''),
+            ts: Date.now(),
+          },
+        }));
+      } catch {}
+    },
+
     PAGEHOST_emitPageExit(env, reason = 'page-exit') {
       try {
         (env?.W || W).dispatchEvent(new CustomEvent('evt:h2o:library-core:page-exited', {
@@ -1055,6 +1187,17 @@
       }
     },
 
+    PAGEHOST_hasH2OPageMarker(env, href = '') {
+      try {
+        const url = new URL(String(href || ''), env?.W?.location?.href || W.location.href);
+        const flag = String(env?.CFG_H2O_PAGE_QUERY_FLAG || 'h2o_flsc');
+        const prefix = String(env?.CFG_H2O_PAGE_ROUTE_PREFIX || 'h2o');
+        return url.searchParams.get(flag) === '1' || String(url.hash || '').startsWith(`#${prefix}/`);
+      } catch {
+        return false;
+      }
+    },
+
     PAGEHOST_isNativeNavigationHref(env, href = '') {
       const win = env?.W || W;
       let url;
@@ -1066,6 +1209,7 @@
       if (!/^https?:$/i.test(url.protocol)) return false;
       if (url.origin !== win.location.origin) return false;
       if (pageHostService.PAGEHOST_isH2OPageHref(env, url.href)) return false;
+      if (pageHostService.PAGEHOST_hasH2OPageMarker(env, url.href)) return false;
       if (url.href === win.location.href) return false;
       return true;
     },
@@ -1078,6 +1222,159 @@
       });
     },
 
+    PAGEHOST_chatIdFromHref(env, href = '') {
+      try {
+        const url = new URL(String(href || ''), env?.W?.location?.href || W.location.href);
+        if (!/^\/c\/[^/]+\/?$/i.test(url.pathname)) return '';
+        return decodeURIComponent(url.pathname.split('/').filter(Boolean)[1] || '').trim();
+      } catch {
+        return '';
+      }
+    },
+
+    PAGEHOST_pendingNativeHref(env, session) {
+      return String(
+        session?.nativeNavigationHref ||
+        env?.STATE?.nativeChatNavigation?.href ||
+        env?.W?.location?.href ||
+        W.location.href ||
+        ''
+      );
+    },
+
+    PAGEHOST_shouldDeferNativeVisualRestore(env, session) {
+      const fromChatId = pageHostService.PAGEHOST_chatIdFromHref(env, session?.url || '');
+      const targetChatId = pageHostService.PAGEHOST_chatIdFromHref(env, pageHostService.PAGEHOST_pendingNativeHref(env, session));
+      return !!(fromChatId && targetChatId && fromChatId !== targetChatId);
+    },
+
+    PAGEHOST_restoreNativeExitVisuals(env, session, reason = 'native-visual-restore', opts = {}) {
+      if (!session) return false;
+      try { pageHostService.PAGEHOST_restoreHeaderContext(env, session); } catch {}
+      try { pageHostService.PAGEHOST_restoreHiddenHostChildren(env, session); } catch {}
+      if (opts.restoreScroll !== false) {
+        try { pageHostService.PAGEHOST_applyScrollSnapshot(env, session.host, session.hostScrollBeforeEnter); } catch {}
+      }
+      try {
+        if (env?.STATE?.pageNativeRestoreDeferred?.sessionId === session.id) {
+          env.STATE.pageNativeRestoreDeferred = null;
+        }
+        env.STATE.pageNativeRestoreLast = { reason: String(reason || ''), sessionId: String(session.id || ''), ts: Date.now() };
+      } catch {}
+      return true;
+    },
+
+    PAGEHOST_scheduleDeferredNativeVisualRestore(env, session, reason = 'native-navigation') {
+      const win = env?.W || W;
+      const host = session?.host;
+      if (!(host instanceof HTMLElement) || !session) return false;
+
+      let done = false;
+      let observer = null;
+      const timers = [];
+      const targetChatId = pageHostService.PAGEHOST_chatIdFromHref(env, pageHostService.PAGEHOST_pendingNativeHref(env, session));
+      const cleanup = () => {
+        try { observer?.disconnect?.(); } catch {}
+        timers.splice(0).forEach((timer) => {
+          try { win.clearTimeout(timer); } catch {}
+          try { env?.CLEAN?.timers?.delete?.(timer); } catch {}
+        });
+      };
+      const restore = (why) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        pageHostService.PAGEHOST_restoreNativeExitVisuals(env, session, `${reason}:${why}`, { restoreScroll: false });
+      };
+      const scheduleRestore = (why, delay = 90) => {
+        const timer = win.setTimeout(() => restore(why), Math.max(0, Number(delay || 0)));
+        timers.push(timer);
+        try { env?.CLEAN?.timers?.add?.(timer); } catch {}
+      };
+      const currentMatchesTarget = () => {
+        if (!targetChatId) return true;
+        return pageHostService.PAGEHOST_chatIdFromHref(env, win.location.href) === targetChatId;
+      };
+
+      try {
+        env.STATE.pageNativeRestoreDeferred = {
+          reason: String(reason || ''),
+          sessionId: String(session.id || ''),
+          fromHref: String(session.url || ''),
+          targetHref: pageHostService.PAGEHOST_pendingNativeHref(env, session),
+          until: Date.now() + 2200,
+          ts: Date.now(),
+        };
+      } catch {}
+      try { pageHostService.PAGEHOST_clearHeaderContextTimers(env, session); } catch {}
+
+      try {
+        observer = new MutationObserver(() => {
+          if (!currentMatchesTarget()) return;
+          scheduleRestore('target-mutation', 120);
+        });
+        observer.observe(host, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ['class', 'style', 'aria-busy', 'data-testid', 'data-message-id'],
+        });
+      } catch {
+        observer = null;
+      }
+
+      scheduleRestore('fallback', 1800);
+      return true;
+    },
+
+    PAGEHOST_emitHistoryNavigationEvent(env, method = 'history', beforeHref = '') {
+      const win = env?.W || W;
+      win.setTimeout(() => {
+        try {
+          win.dispatchEvent(new CustomEvent('evt:h2o:library-core:history-changed', {
+            detail: {
+              method: String(method || 'history'),
+              beforeHref: String(beforeHref || ''),
+              href: String(win.location.href || ''),
+              ts: Date.now(),
+            },
+          }));
+        } catch {}
+      }, 0);
+    },
+
+    PAGEHOST_ensureHistoryNavigationGuard(env) {
+      const win = env?.W || W;
+      const hist = win.history;
+      if (!hist) return false;
+      try {
+        let wrapped = 0;
+        ['pushState', 'replaceState'].forEach((name) => {
+          const base = hist[name];
+          if (typeof base !== 'function') return;
+          if (base.__h2oLibraryCorePageHostGuardV2) return;
+          const wrappedHistoryMethod = function h2oPageHostHistoryGuard(...args) {
+            const beforeHref = String(win.location.href || '');
+            const result = base.apply(this, args);
+            pageHostService.PAGEHOST_emitHistoryNavigationEvent(env, name, beforeHref);
+            return result;
+          };
+          try { Object.defineProperty(wrappedHistoryMethod, '__h2oLibraryCorePageHostGuardV2', { value: true, configurable: true }); } catch { wrappedHistoryMethod.__h2oLibraryCorePageHostGuardV2 = true; }
+          try { Object.defineProperty(wrappedHistoryMethod, '__h2oLibraryCorePageHostBase', { value: base, configurable: true }); } catch {}
+          hist[name] = wrappedHistoryMethod;
+          wrapped += 1;
+        });
+        if (wrapped) {
+          try { Object.defineProperty(hist, '__h2oLibraryCorePageHostHistoryPatchedV2', { value: true, configurable: true }); } catch { hist.__h2oLibraryCorePageHostHistoryPatchedV2 = true; }
+        }
+        return wrapped > 0;
+      } catch (error) {
+        err('pageHostHistoryGuard', error);
+        return false;
+      }
+    },
+
     PAGEHOST_bindNativeNavigationGuards(env, session) {
       if (!session || session !== env.STATE?.pageSession) return;
       if (Array.isArray(session.nativeNavigationCleanups) && session.nativeNavigationCleanups.length) return;
@@ -1085,17 +1382,20 @@
       const doc = env?.D || document;
       const win = env?.W || W;
       session.nativeNavigationCleanups = [];
+      pageHostService.PAGEHOST_ensureHistoryNavigationGuard(env);
 
       const exitIfNativeLocation = (reason) => {
         try {
-          if (!pageHostService.PAGEHOST_isH2OPageHref(env, win.location.href)) {
+          if (
+            !pageHostService.PAGEHOST_isH2OPageHref(env, win.location.href) &&
+            !pageHostService.PAGEHOST_hasH2OPageMarker(env, win.location.href)
+          ) {
             pageHostService.PAGEHOST_exitForNativeNavigation(env, reason);
           }
         } catch {}
       };
 
       const onClick = (event) => {
-        if (event.defaultPrevented) return;
         if (event.button && event.button !== 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const link = event.target?.closest?.('a[href]');
@@ -1104,6 +1404,7 @@
         const target = String(link.getAttribute('target') || '').trim().toLowerCase();
         if (target && target !== '_self') return;
         if (!pageHostService.PAGEHOST_isNativeNavigationHref(env, link.href)) return;
+        try { session.nativeNavigationHref = link.href; } catch {}
 
         // Native ChatGPT routing owns this click. Remove the H2O page root synchronously
         // and avoid restoring stale native DOM into a host React is about to replace.
@@ -1112,6 +1413,18 @@
 
       const onPopState = () => exitIfNativeLocation('native-popstate');
       const onHashChange = () => exitIfNativeLocation('native-hashchange');
+      const onHistoryChange = (event) => exitIfNativeLocation(`native-${String(event?.detail?.method || 'history').toLowerCase()}`);
+      let lastHref = String(win.location.href || '');
+      const hrefWatchTimer = win.setInterval(() => {
+        try {
+          const href = String(win.location.href || '');
+          const changed = href !== lastHref;
+          lastHref = href;
+          if (changed || (session.root instanceof HTMLElement && session.root.isConnected)) {
+            exitIfNativeLocation(changed ? 'native-location-change' : 'native-location-watch');
+          }
+        } catch {}
+      }, 250);
 
       try {
         doc.addEventListener('click', onClick, true);
@@ -1125,6 +1438,13 @@
         win.addEventListener('hashchange', onHashChange, true);
         session.nativeNavigationCleanups.push(() => win.removeEventListener('hashchange', onHashChange, true));
       } catch {}
+      try {
+        win.addEventListener('evt:h2o:library-core:history-changed', onHistoryChange, true);
+        session.nativeNavigationCleanups.push(() => win.removeEventListener('evt:h2o:library-core:history-changed', onHistoryChange, true));
+      } catch {}
+      try {
+        session.nativeNavigationCleanups.push(() => win.clearInterval(hrefWatchTimer));
+      } catch {}
     },
 
     PAGEHOST_isNativeNavigationRestoreReason(reason = '') {
@@ -1136,11 +1456,16 @@
       if (!session) return false;
 
       const root = session.root;
-      pageHostService.PAGEHOST_restoreHeaderContext(env, session);
+      const deferNativeVisualRestore = pageHostService.PAGEHOST_shouldDeferNativeVisualRestore(env, session);
+      if (!deferNativeVisualRestore) pageHostService.PAGEHOST_restoreHeaderContext(env, session);
       pageHostService.PAGEHOST_clearNativeNavigationGuards(env, session);
       pageHostService.PAGEHOST_removeOwnedPageRoot(env, root);
-      pageHostService.PAGEHOST_restoreHiddenHostChildren(env, session);
-      pageHostService.PAGEHOST_applyScrollSnapshot(env, session.host, session.hostScrollBeforeEnter);
+      if (deferNativeVisualRestore) {
+        pageHostService.PAGEHOST_scheduleDeferredNativeVisualRestore(env, session, reason);
+      } else {
+        pageHostService.PAGEHOST_restoreHiddenHostChildren(env, session);
+        pageHostService.PAGEHOST_applyScrollSnapshot(env, session.host, session.hostScrollBeforeEnter);
+      }
 
       env.STATE.pageSession = null;
       env.STATE.pageEl = null;
@@ -1177,6 +1502,8 @@
       const root = session?.root;
       if (!session || !(root instanceof HTMLElement) || !root.isConnected || !(pageEl instanceof HTMLElement)) return false;
 
+      pageHostService.PAGEHOST_disposeForeignPageRoots(env, session.host, root, { reason: 'replace-current-page' });
+      pageHostService.PAGEHOST_unhidePageRoot(env, root);
       while (root.firstChild) root.removeChild(root.firstChild);
       root.setAttribute('data-cgxui-page-kind', String(meta.kind || session.kind || 'library'));
       root.setAttribute('data-cgxui-page-title', String(meta.title || session.title || ''));
@@ -1193,6 +1520,7 @@
       pageHostService.PAGEHOST_isolateHeaderContext(env, session);
       pageHostService.PAGEHOST_scheduleHeaderContextSync(env, session);
       pageHostService.PAGEHOST_bindNativeNavigationGuards(env, session);
+      pageHostService.PAGEHOST_emitPageEvent(env, 'page-replaced', session, 'replace-current-page');
       return true;
     },
 
@@ -1279,6 +1607,7 @@
       }
 
       pageHostService.UI_restoreInShellPage(env, 'enter-new-host');
+      pageHostService.PAGEHOST_disposeForeignPageRoots(env, host, null, { restoreHidden: true, reason: 'enter-new-host' });
 
       const root = pageHostService.UI_makePageHostRoot(env, {
         kind: pageEl.getAttribute('data-cgxui-page-kind') || 'library',
@@ -1309,6 +1638,7 @@
       pageHostService.PAGEHOST_isolateHeaderContext(env, env.STATE.pageSession);
       pageHostService.PAGEHOST_scheduleHeaderContextSync(env, env.STATE.pageSession);
       pageHostService.PAGEHOST_bindNativeNavigationGuards(env, env.STATE.pageSession);
+      pageHostService.PAGEHOST_emitPageEvent(env, 'page-entered', env.STATE.pageSession, 'enter-page');
       return true;
     },
 
@@ -1469,8 +1799,13 @@
         };
         tabs.appendChild(btn);
       };
-      addViewAction('Pinned', '#/pinned');
-      addViewAction('Archive', '#/archive');
+      // Phase 12 polish: callers can pass { hideViewActions: true } to suppress the
+      // Pinned/Archive shortcuts. Useful for list-of-things pages (Categories list,
+      // Tags index, etc.) where those workbench routes don't apply to the items shown.
+      if (!opts.hideViewActions) {
+        addViewAction('Pinned', '#/pinned');
+        addViewAction('Archive', '#/archive');
+      }
       // ENCAPSULATION SEAM: this branch injects a Projects-specific refresh button when kind='projects'.
       // env.UI_setProjectsRefreshButtonState and env.UI_handleProjectsManualRefresh are injected by
       // 0F2a via PROJECTS_ENV() — so LibraryCore does not hard-import Projects. However it does read

@@ -79,6 +79,7 @@
     listenersBound: false,
     lastAppliedChatId: '',
     onDividerDblClick: null,
+    onDividerClick: null,
     onDividerDotClick: null,
     onAnswerCollapse: null,
     onTitleSet: null,
@@ -87,6 +88,7 @@
     onMiniMapTogglePageCollapsed: null,
     dividerVisualTimer: null,
     dividerVisualRefreshToken: 0,
+    dividerClickTimer: null,
     dividerStyleEl: null,
   };
 
@@ -109,6 +111,14 @@
 
   function CM_ROUTER_API() {
     try { return TOPW.H2O?.CM?.chtmech?.api || null; } catch { return null; }
+  }
+
+  function TAGS_API() {
+    try {
+      return TOPW.H2O?.Tags || TOPW.H2O?.LibraryCore?.getService?.('tags') || TOPW.H2O?.LibraryCore?.getOwner?.('tags') || null;
+    } catch {
+      return null;
+    }
   }
 
   function UM_PUBLIC() {
@@ -170,6 +180,27 @@
     if (!S.dividerVisualTimer) return;
     try { clearTimeout(S.dividerVisualTimer); } catch {}
     S.dividerVisualTimer = null;
+  }
+
+  function clearDividerClickTimer() {
+    if (!S.dividerClickTimer) return;
+    try { W.clearTimeout(S.dividerClickTimer); } catch {}
+    S.dividerClickTimer = null;
+  }
+
+  function openTagsCloudFromDivider(divider) {
+    if (!(divider instanceof HTMLElement)) return false;
+    const api = TAGS_API();
+    if (typeof api?.openTagsCloudPopup !== 'function') return false;
+    const chatId = resolveChatId();
+    try {
+      return !!api.openTagsCloudPopup(divider, {
+        currentChatId: chatId,
+        reason: 'chat-page-divider',
+      });
+    } catch {
+      return false;
+    }
   }
 
   function isPageWrappedByPagination(pageNum = 0, chatId = '') {
@@ -1484,6 +1515,8 @@
     }
 
     S.onDividerDblClick = (ev) => {
+      clearDividerClickTimer();
+      try { TAGS_API()?.closeTagsCloudPopup?.(); } catch {}
       const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
       if (dot) return;
       const divider = ev?.target?.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
@@ -1506,6 +1539,22 @@
       });
       if (routed?.handled === true) return;
       try { togglePageCollapsed(pageNum, { chatId: resolveChatId(), source: 'chat-page-divider:dblclick' }); } catch {}
+    };
+
+    S.onDividerClick = (ev) => {
+      if (Number(ev?.detail || 1) > 1) return;
+      const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
+      if (dot) return;
+      const divider = ev?.target?.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
+      if (!divider) return;
+      const pageNum = getDividerPageNum(divider);
+      if (!pageNum) return;
+      try { ev.preventDefault(); ev.stopPropagation(); } catch {}
+      clearDividerClickTimer();
+      S.dividerClickTimer = W.setTimeout(() => {
+        S.dividerClickTimer = null;
+        openTagsCloudFromDivider(divider);
+      }, 180);
     };
 
     S.onDividerDotClick = (ev) => {
@@ -1580,6 +1629,7 @@
     };
 
     document.addEventListener('dblclick', S.onDividerDblClick, true);
+    window.addEventListener('click', S.onDividerClick, true);
     window.addEventListener('click', S.onDividerDotClick, true);
     window.addEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged);
     window.addEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse);
@@ -1600,7 +1650,9 @@
   }
 
   function unbind() {
+    clearDividerClickTimer();
     try { document.removeEventListener('dblclick', S.onDividerDblClick, true); } catch {}
+    try { window.removeEventListener('click', S.onDividerClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerDotClick, true); } catch {}
     try { window.removeEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged); } catch {}
     try { window.removeEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse); } catch {}
@@ -1611,6 +1663,7 @@
       try { window.removeEventListener(EV_PAGE_CHANGED.slice(4), S.onPaginationPageChanged); } catch {}
     }
     S.onDividerDblClick = null;
+    S.onDividerClick = null;
     S.onDividerDotClick = null;
     S.onAnswerCollapse = null;
     S.onTitleSet = null;
