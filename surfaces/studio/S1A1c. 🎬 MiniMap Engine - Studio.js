@@ -25,6 +25,7 @@
   const TOPW = W.top || W;
   const H2O = (TOPW.H2O = TOPW.H2O || {});
   if (W !== TOPW) W.H2O = H2O;
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
   H2O.perf = H2O.perf || {};
   H2O.perf.modules = H2O.perf.modules || Object.create(null);
   const PERF_MODULE = (H2O.perf.modules.miniMapEngine && typeof H2O.perf.modules.miniMapEngine === 'object')
@@ -684,7 +685,7 @@
   }
 
   function conversationTurnSelector() {
-    return '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
+    return STUDIO_SEL.sel.conversationTurnLoose;
   }
 
   function getViewportScrollRoot() {

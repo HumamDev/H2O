@@ -19,6 +19,7 @@
   const TOPW = W.top || W;
   const H2O = (TOPW.H2O = TOPW.H2O || {});
   if (W !== TOPW) W.H2O = H2O;
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
   H2O.perf = H2O.perf || {};
   H2O.perf.modules = H2O.perf.modules || Object.create(null);
   const PERF_MODULE = (H2O.perf.modules.miniMapCoreUi && typeof H2O.perf.modules.miniMapCoreUi === 'object')
@@ -1671,7 +1672,7 @@ function UM_PUBLIC() {
     if (a.length) return a;
     const b = qq('[data-message-author-role="assistant"]');
     if (b.length) return b;
-    return qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]').flatMap((host) => {
+    return qq(STUDIO_SEL.sel.conversationTurnLoose).flatMap((host) => {
       try {
         const el = host?.querySelector?.('[data-message-author-role="assistant"]');
         return el ? [el] : [];
@@ -5576,7 +5577,7 @@ function UM_PUBLIC() {
 
   function getAnswerTitleTurnHost(answerMsgEl = null) {
     if (!answerMsgEl) return null;
-    return answerMsgEl.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || answerMsgEl.parentElement || null;
+    return answerMsgEl.closest?.(STUDIO_SEL.sel.conversationTurnLoose) || answerMsgEl.parentElement || null;
   }
 
 
@@ -5608,7 +5609,7 @@ function UM_PUBLIC() {
       || ''
     ).trim();
     if (qId) return `no-answer:${qId}`;
-    const turns = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    const turns = qq(STUDIO_SEL.sel.conversationTurnLoose);
     const idx = Math.max(0, turns.indexOf(host));
     return `no-answer:dom:${idx + 1}`;
   }
@@ -5626,7 +5627,7 @@ function UM_PUBLIC() {
       const turnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || rec?.index || 0) || 0);
       if (turnNo > 0) return turnNo;
     }
-    const turns = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    const turns = qq(STUDIO_SEL.sel.conversationTurnLoose);
     const idx = turns.indexOf(host);
     return idx >= 0 ? (idx + 1) : 0;
   }
@@ -5719,7 +5720,7 @@ function UM_PUBLIC() {
       bar._noAnswerDblClickWired = true;
       bar.addEventListener('dblclick', (e) => {
         try { e.stopPropagation(); e.preventDefault(); } catch {}
-        const liveHost = bar.closest('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+        const liveHost = bar.closest(STUDIO_SEL.sel.conversationTurnLoose);
         if (!liveHost) return;
         const nextCollapsed = !isTitleBarCollapsed(bar);
         applyNoAnswerTitleCollapsedDom(liveHost, nextCollapsed, { animate: true });
@@ -6199,7 +6200,7 @@ function UM_PUBLIC() {
     // builder missed (e.g. a trailing question with no answer yet, or a chat
     // where S.turnList hasn't been populated yet).
     try {
-      const allTurnEls = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+      const allTurnEls = qq(STUDIO_SEL.sel.conversationTurnLoose);
       for (let i = 0; i < allTurnEls.length; i += 1) {
         const host = allTurnEls[i];
         const role = getChatPageTurnRole(host);
@@ -6791,7 +6792,7 @@ function unbindChatPageDividerBridge() {
     // above.  We scan the live DOM here and add those turns so that
     // buildChatPageAnswerRows can later call ensureNoAnswerTitleBar on them.
     try {
-      const allTurnEls = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+      const allTurnEls = qq(STUDIO_SEL.sel.conversationTurnLoose);
       for (const domHost of allTurnEls) {
         if (allHostSet.has(domHost)) continue;
         const role = getChatPageTurnRole(domHost);
@@ -6836,7 +6837,7 @@ function unbindChatPageDividerBridge() {
   // purely from their DOM position order. This is the independent fallback
   // that makes collapse work regardless of whether Pagination is loaded.
   function buildChatPageSectionsFromDom() {
-    const turnEls = qq('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    const turnEls = qq(STUDIO_SEL.sel.conversationTurnLoose);
     if (!turnEls.length) return null;
 
     const sections = new Map();

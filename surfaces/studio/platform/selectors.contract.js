@@ -65,6 +65,13 @@
     conversationTurn: '[' + ATTR.TESTID + '="' + TESTIDS.CONVERSATION_TURN + '"]',
     conversationTurns: '[' + ATTR.TESTID + '="' + TESTIDS.CONVERSATION_TURNS + '"]',
     copyTurnAction: '[' + ATTR.TESTID + '="' + TESTIDS.COPY_TURN_ACTION + '"]',
+    /* Loose turn-host union that also matches `conversation-turn-<n>` testids
+     * via a prefix-match clause. Use when discovering turn hosts where the
+     * testid may be either exact `conversation-turn` or numbered. Repeated
+     * verbatim in MiniMap Core/Engine and Turn Title Bar. */
+    conversationTurnLoose:
+      '[' + ATTR.TESTID + '="' + TESTIDS.CONVERSATION_TURN + '"], ' +
+      '[' + ATTR.TESTID + '^="' + TESTIDS.CONVERSATION_TURN + '-"]',
     /* Broad "any turn marker" used when discovering message hosts; matches the
      * union historically used by MiniMap Core (S1A1b:1012). */
     anyMessageHost:

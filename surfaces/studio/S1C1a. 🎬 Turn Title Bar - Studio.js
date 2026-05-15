@@ -19,6 +19,7 @@
 
   const W = window;
   const D = document;
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
 
   // ✅ Identity (LOCKED)
   const SUITE = 'prm';
@@ -663,8 +664,8 @@ No quotes, no emojis, no numbering. Just the title text.`;
   /* [SEL] One selector registry block */
   const SEL_ = Object.freeze({
     ASSISTANT_MSG: `[${ATTR_.ROLE}="assistant"][${ATTR_.MSG_ID}]`,
-    TURN: '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]',
-    TURNS_ROOT: '[data-testid="conversation-turns"]',
+    TURN: STUDIO_SEL.sel.conversationTurnLoose,
+    TURNS_ROOT: STUDIO_SEL.sel.conversationTurns,
     OWNED_BAR_ANY: `[${ATTR_.CGXUI}="${UI_.BAR}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
     OWNED_TEXT_ANY:`[${ATTR_.CGXUI}="${UI_.TEXT}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`,
   });
@@ -956,7 +957,7 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_getAnswerTurnHost = (msgEl) => {
     if (!msgEl) return null;
-    return msgEl.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || msgEl.parentElement || null;
+    return msgEl.closest?.(SEL_.TURN) || msgEl.parentElement || null;
   };
 
   // Find the preceding user-turn host (the question for this answer).
