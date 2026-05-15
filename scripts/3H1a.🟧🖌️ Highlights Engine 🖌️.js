@@ -9,9 +9,6 @@
 // @description        H2O Contract v2.0 refactor — Inline highlights (XPath + TextPosition + TextQuote) with configurable apply/remove shortcuts, popup trigger, editable palette, robust persistence, MiniMap sync, and Control Hub integration.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
-// @grant              GM_getValue
-// @grant              GM_setValue
-// @grant              GM_deleteValue
 // @grant              unsafeWindow
 // ==/UserScript==
 
@@ -76,25 +73,6 @@
   const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`;
 
   const KEY_DISK_CANON = `${NS_DISK}:state:inline_highlights:v3`;
-  const KEY_DISK_CANON_V2 = `${NS_DISK}:state:inline_highlights:v2`;
-  const KEY_DISK_CANON_V1 = `${NS_DISK}:state:inline_highlights:v1`;
-  const KEY_DISK_CANON_ALIAS_V3 = 'h2o:inlineHighlights.v3';
-  const KEY_DISK_PUBLIC_SIMPLE = 'h2o:inlineHighlights';
-  const KEY_DISK_FUTURE_ALIAS_V2 = 'h2o:inlineHighlights.v2';
-  const KEY_DISK_LEGACY_HO_V2 = 'ho:inlineHighlights.v2';
-  const KEY_DISK_LEGACY_HO_V1 = 'ho:inlineHighlights';
-
-  const LEGACY_DISK_KEYS = Object.freeze([
-    KEY_DISK_CANON_V2,
-    KEY_DISK_CANON_V1,
-    KEY_DISK_CANON_ALIAS_V3,
-    KEY_DISK_PUBLIC_SIMPLE,
-    KEY_DISK_FUTURE_ALIAS_V2,
-    KEY_DISK_LEGACY_HO_V2,
-    KEY_DISK_LEGACY_HO_V1,
-  ]);
-
-  const KEY_MIG_DISK_V1 = `${NS_DISK}:migrate:inline_highlights:v1`;
   const KEY_CFG_UI_V1 = `${NS_DISK}:cfg:ui:v1`;
 
   /* ───────────────────────────── EV_ (Bus + DOM) ───────────────────────────── */
@@ -728,399 +706,130 @@
     };
   };
 
-  /* ───────────────────────────── 💾 UTIL_storage (Chrome → GM → localStorage) ───────────────────────────── */
-  const UTIL_storage = (() => {
-    const hasGM = (typeof GM_getValue === 'function') && (typeof GM_setValue === 'function');
-    // In Tampermonkey, a partial chrome.* bridge may exist but can fail internally
-    // (e.g. runtime.connect missing). Prefer GM storage whenever available.
-    const hasChrome = !hasGM
-      && typeof chrome !== 'undefined'
-      && (typeof chrome?.storage?.local?.get === 'function')
-      && (typeof chrome?.storage?.local?.set === 'function')
-      && (typeof chrome?.storage?.local?.remove === 'function');
+  /* ── Storage (canonical chrome.storage.local; shared key with Studio) ──
+   * Native runs in the chatgpt.com page world; Studio runs in the
+   * chrome-extension page. Both surfaces persist Highlights at the same
+   * canonical v3 key (KEY_DISK_CANON) and stay in sync via
+   * chrome.storage.onChanged. UI prefs (KEY_CFG_UI_V1) remain in
+   * chatgpt.com origin localStorage via CFG_loadUiConfig / CFG_saveUiConfig
+   * — separate concern, untouched.
+   */
+  const SAVE_DEBOUNCE_MS = 250;
 
+  const STORE = (() => {
     let cache = null;
     let dirty = false;
     let saveTimer = null;
-
     let onChangedListener = null;
-    let onStorageListener = null;
+    const errors = [];
+    const errMax = 20;
 
-    const _isPlainObject = (v) => {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-      const proto = Object.getPrototypeOf(v);
-      return proto === Object.prototype || proto === null;
+    const _isPlainObject = (v) =>
+      !!v && typeof v === 'object' && !Array.isArray(v) &&
+      (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+    const _clone = (v) => { try { return JSON.parse(JSON.stringify(v || {})); } catch (_) { return {}; } };
+    const _ensureShape = (b) => {
+      const blob = _isPlainObject(b) ? _clone(b) : {};
+      if (!_isPlainObject(blob.itemsByAnswer)) blob.itemsByAnswer = {};
+      if (!_isPlainObject(blob._meta))         blob._meta = {};
+      return blob;
     };
-    const _cloneObj = (v) => UTIL_safeParse(JSON.stringify(v || {}), {}) || {};
-    const _asStoreObj = (v) => (_isPlainObject(v) ? v : {});
-    const _knownColorNames = new Set(
-      CFG_PALETTE_DEFAULTS
-        .map((entry) => String(entry?.title || '').trim().toLowerCase())
-        .filter(Boolean)
-    );
-    const _defaultImportedColor = () => {
-      const preferred = String(CFG_getUiConfig()?.defaultColor || CFG_DEFAULT_COLOR || '').trim().toLowerCase();
-      return _knownColorNames.has(preferred) ? preferred : CFG_DEFAULT_COLOR;
-    };
-    const _normalizeImportedColor = (raw) => {
-      const color = String(raw || '').trim().toLowerCase();
-      return _knownColorNames.has(color) ? color : _defaultImportedColor();
-    };
-    const _sanitizeImportedStore = (rawStore) => {
-      const store = _asStoreObj(rawStore);
-      const srcItems = _asStoreObj(store.itemsByAnswer);
-      if (!Object.keys(srcItems).length) return {};
-
-      const out = { itemsByAnswer: {} };
-      let total = 0;
-
-      for (const [answerIdRaw, srcList] of Object.entries(srcItems)) {
-        const answerId = String(answerIdRaw || '').trim();
-        if (!answerId || !Array.isArray(srcList) || !srcList.length) continue;
-
-        const cleanById = new Map();
-        for (const itemRaw of srcList) {
-          if (!_isPlainObject(itemRaw)) continue;
-          const item = _cloneObj(itemRaw);
-          const id = String(item?.id || '').trim();
-          if (!id) continue;
-          item.id = id;
-          item.color = _normalizeImportedColor(item.color);
-          const prev = cleanById.get(id);
-          const prevTs = Number(prev?.ts || 0);
-          const nextTs = Number(item?.ts || 0);
-          if (!prev || nextTs >= prevTs) cleanById.set(id, item);
-        }
-        const cleanList = Array.from(cleanById.values());
-        if (!cleanList.length) continue;
-        out.itemsByAnswer[answerId] = cleanList;
-        total += cleanList.length;
-      }
-
-      if (!total) return {};
-
-      const convoId = String(store.convoId || '').trim();
-      if (convoId) out.convoId = convoId;
-      out._meta = { currentColor: _normalizeImportedColor(_asStoreObj(store._meta).currentColor) };
-      return out;
-    };
-    const _countStoreItems = (store) => {
-      let total = 0;
-      const byAnswer = _asStoreObj(_asStoreObj(store).itemsByAnswer);
-      for (const list of Object.values(byAnswer)) {
-        if (!Array.isArray(list)) continue;
-        total += list.length;
-      }
-      return total;
-    };
-    const _mergeStore = (baseRaw, incomingRaw) => {
-      const base = _asStoreObj(baseRaw);
-      const incoming = _asStoreObj(incomingRaw);
-      if (!Object.keys(incoming).length) return _cloneObj(base);
-      const out = _cloneObj(base);
-      out.itemsByAnswer = _asStoreObj(out.itemsByAnswer);
-      const srcItems = _asStoreObj(incoming.itemsByAnswer);
-      for (const [answerIdRaw, srcList] of Object.entries(srcItems)) {
-        const answerId = String(answerIdRaw || '').trim();
-        if (!answerId || !Array.isArray(srcList) || !srcList.length) continue;
-        const prevList = Array.isArray(out.itemsByAnswer[answerId]) ? out.itemsByAnswer[answerId].slice() : [];
-        const byId = new Map();
-        for (const item of prevList) {
-          const id = String(item?.id || '').trim();
-          if (id) byId.set(id, item);
-        }
-        for (const item of srcList) {
-          if (!_isPlainObject(item)) continue;
-          const id = String(item.id || '').trim();
-          if (!id) {
-            prevList.push(item);
-            continue;
-          }
-          const prev = byId.get(id);
-          if (!prev) {
-            byId.set(id, item);
-            continue;
-          }
-          const prevTs = Number(prev?.ts || 0);
-          const nextTs = Number(item?.ts || 0);
-          if (nextTs >= prevTs) byId.set(id, item);
-        }
-        const mergedById = Array.from(byId.values());
-        const merged = mergedById.concat(prevList.filter((item) => {
-          const id = String(item?.id || '').trim();
-          return !id;
-        }));
-        out.itemsByAnswer[answerId] = merged;
-      }
-      if (!out.convoId && incoming.convoId) out.convoId = incoming.convoId;
-      out._meta = _asStoreObj(out._meta);
-      const srcMeta = _asStoreObj(incoming._meta);
-      if (!out._meta.currentColor && srcMeta.currentColor) out._meta.currentColor = srcMeta.currentColor;
-      if (!out._meta.currentColor) out._meta.currentColor = CFG_getUiConfig().defaultColor || CFG_DEFAULT_COLOR;
-      return out;
-    };
-
-    const _readKey = async (key) => {
-      if (!key) return {};
+    const _recordError = (op, e) => {
       try {
-        if (hasChrome) {
-          return await new Promise(resolve => chrome.storage.local.get([key], r => resolve(r?.[key] || {})));
-        }
-        if (hasGM) {
-          const raw = GM_getValue(key, null);
-          if (!raw) return {};
-          if (typeof raw === 'object') return raw;
-          return UTIL_safeParse(raw, {}) || {};
-        }
-        const rawLS = localStorage.getItem(key);
-        if (!rawLS) return {};
-        return UTIL_safeParse(rawLS, {}) || {};
-      } catch {
-        return {};
-      }
+        errors.push({ t: Date.now(), op: String(op), e: String((e && e.stack) || e || '') });
+        if (errors.length > errMax) errors.splice(0, errors.length - errMax);
+      } catch (_) { /* swallow */ }
     };
 
-    const _readKeyWithPresence = async (key) => {
-      if (!key) return { present: false, value: {} };
+    const _readCanonical = () => new Promise((resolve) => {
       try {
-        if (hasChrome) {
-          return await new Promise((resolve) => chrome.storage.local.get([key], (r) => {
-            const obj = (r && typeof r === 'object') ? r : {};
-            resolve({
-              present: Object.prototype.hasOwnProperty.call(obj, key),
-              value: obj?.[key] || {},
-            });
-          }));
-        }
-        if (hasGM) {
-          const raw = GM_getValue(key, undefined);
-          if (raw == null) return { present: false, value: {} };
-          if (typeof raw === 'object') return { present: true, value: raw || {} };
-          return { present: true, value: UTIL_safeParse(raw, {}) || {} };
-        }
-        const rawLS = localStorage.getItem(key);
-        if (rawLS == null) return { present: false, value: {} };
-        return { present: true, value: UTIL_safeParse(rawLS, {}) || {} };
-      } catch {
-        return { present: false, value: {} };
-      }
-    };
+        chrome.storage.local.get([KEY_DISK_CANON], (r) => {
+          const v = r && r[KEY_DISK_CANON];
+          resolve(_isPlainObject(v) ? v : {});
+        });
+      } catch (e) { _recordError('readCanonical', e); resolve({}); }
+    });
 
-    const _readKeyLocal = (key) => {
-      if (!key) return {};
+    const _writeCanonical = (blob) => new Promise((resolve) => {
       try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return {};
-        return UTIL_safeParse(raw, {}) || {};
-      } catch {
-        return {};
-      }
-    };
-
-    const _readKeyLocalWithPresence = (key) => {
-      if (!key) return { present: false, value: {} };
-      try {
-        const raw = localStorage.getItem(key);
-        if (raw == null) return { present: false, value: {} };
-        return { present: true, value: UTIL_safeParse(raw, {}) || {} };
-      } catch {
-        return { present: false, value: {} };
-      }
-    };
-
-    const _writeKey = async (key, obj) => {
-      if (!key) return;
-      try {
-        if (hasChrome) {
-          await new Promise(resolve => chrome.storage.local.set({ [key]: obj }, resolve));
-          return;
-        }
-        if (hasGM) {
-          GM_setValue(key, JSON.stringify(obj));
-          return;
-        }
-        localStorage.setItem(key, JSON.stringify(obj));
-      } catch (err) {
-        console.warn(`[H2O.${MODTAG}] disk write failed`, key, err);
-      }
-    };
-
-    const _readRaw = async () => {
-      const canonDisk = await _readKeyWithPresence(KEY_DISK_CANON);
-      const canonLocal = _readKeyLocalWithPresence(KEY_DISK_CANON);
-      const canonMerged = _mergeStore(canonDisk.value, canonLocal.value);
-
-      // Once the canonical v3 key exists, treat it as authoritative.
-      // Legacy aliases are read only as a bootstrap source so old deletions do not resurrect.
-      if (canonDisk.present || canonLocal.present) {
-        return Object.keys(_asStoreObj(canonMerged)).length ? canonMerged : {};
-      }
-
-      let migrationDone = null;
-      try { migrationDone = await UTIL_mig_getFlag(KEY_MIG_DISK_V1); } catch {}
-      if (String(migrationDone || '').trim() === '1') return {};
-
-      let merged = canonMerged;
-      for (const key of LEGACY_DISK_KEYS) {
-        merged = _mergeStore(merged, _sanitizeImportedStore(await _readKey(key)));
-        // Always also check localStorage mirror to survive backend flips (GM <-> LS).
-        merged = _mergeStore(merged, _sanitizeImportedStore(_readKeyLocal(key)));
-      }
-      if (!_countStoreItems(merged) && !Object.keys(_asStoreObj(merged)).length) return {};
-      return merged;
-    };
-
-    const _writeLocalMirror = (key, obj) => {
-      if (!key) return;
-      try { localStorage.setItem(key, JSON.stringify(obj)); } catch {}
-    };
-
-    const _writeRaw = async (obj) => {
-      const safe = _asStoreObj(obj);
-      _writeLocalMirror(KEY_DISK_CANON, safe);
-      await _writeKey(KEY_DISK_CANON, safe);
-
-      if (CFG_MIRROR_ALIAS_KEYS) {
-        _writeLocalMirror(KEY_DISK_CANON_ALIAS_V3, safe);
-        _writeLocalMirror(KEY_DISK_FUTURE_ALIAS_V2, safe);
-        await _writeKey(KEY_DISK_CANON_ALIAS_V3, safe);
-        await _writeKey(KEY_DISK_FUTURE_ALIAS_V2, safe);
-      }
-
-      if (CFG_MIRROR_LEGACY_KEYS) {
-        _writeLocalMirror(KEY_DISK_LEGACY_HO_V2, safe);
-        await _writeKey(KEY_DISK_LEGACY_HO_V2, safe);
-      }
-    };
+        chrome.storage.local.set({ [KEY_DISK_CANON]: _ensureShape(blob) }, () => {
+          const err = chrome.runtime && chrome.runtime.lastError;
+          if (err) _recordError('writeCanonical', err);
+          resolve();
+        });
+      } catch (e) { _recordError('writeCanonical.throw', e); resolve(); }
+    });
 
     const _scheduleSave = () => {
-      if (saveTimer) clearTimeout(saveTimer);
+      if (saveTimer) return;
       saveTimer = setTimeout(async () => {
-        if (!dirty || cache == null) return;
+        saveTimer = null;
+        if (!dirty || !cache) return;
         dirty = false;
-        await _writeRaw(cache);
-        if (CFG_DEBUG) console.log(`[H2O.${MODTAG}] saved`);
-      }, CFG_SAVE_DEBOUNCE_MS);
-    };
-
-    const _initCrossTab = () => {
-      if (hasChrome && chrome.storage?.onChanged) {
-        onChangedListener = (changes, area) => {
-          if (area !== 'local') return;
-
-          const pick = (k) => (changes[k] ? (changes[k].newValue || {}) : null);
-
-          const vCanon = pick(KEY_DISK_CANON);
-          if (vCanon) cache = _mergeStore(cache || {}, vCanon);
-        };
-        chrome.storage.onChanged.addListener(onChangedListener);
-      } else {
-        onStorageListener = (e) => {
-          if (!e?.key) return;
-          const k = String(e.key);
-          if (k !== KEY_DISK_CANON) return;
-          try {
-            const next = UTIL_safeParse(e.newValue || '{}', {}) || {};
-            cache = _mergeStore(cache || {}, next);
-          } catch {}
-        };
-        window.addEventListener('storage', onStorageListener);
-      }
-    };
-
-    const _disposeCrossTab = () => {
-      try {
-        if (hasChrome && onChangedListener && chrome.storage?.onChanged?.removeListener) {
-          chrome.storage.onChanged.removeListener(onChangedListener);
-        }
-      } catch {}
-      try {
-        if (onStorageListener) window.removeEventListener('storage', onStorageListener);
-      } catch {}
-      onChangedListener = null;
-      onStorageListener = null;
+        await _writeCanonical(cache);
+      }, SAVE_DEBOUNCE_MS);
     };
 
     return {
-      async init() { cache = await _readRaw(); _initCrossTab(); return cache; },
-      dispose() { _disposeCrossTab(); },
-      readSync() { return cache || {}; },
-      async reload() { cache = await _readRaw(); return cache; },
-      writeSync(updaterOrObj) {
-        if (!cache) cache = {};
-        const draft = UTIL_safeParse(JSON.stringify(cache || {}), {});
-        const next = (typeof updaterOrObj === 'function') ? (updaterOrObj(draft) || draft) : (updaterOrObj || draft);
-        cache = next;
-        dirty = true;
-        _scheduleSave();
+      async init() {
+        cache = _ensureShape(await _readCanonical());
+        onChangedListener = (changes, area) => {
+          if (area !== 'local' || !changes || !changes[KEY_DISK_CANON]) return;
+          const next = changes[KEY_DISK_CANON].newValue;
+          if (_isPlainObject(next)) cache = _ensureShape(next);
+        };
+        try { chrome.storage.onChanged.addListener(onChangedListener); }
+        catch (e) { _recordError('init.onChanged', e); }
         return cache;
       },
-      saveNow: async () => { if (dirty) { dirty = false; await _writeRaw(cache || {}); } },
+      dispose() {
+        if (onChangedListener) {
+          try { chrome.storage.onChanged.removeListener(onChangedListener); } catch (_) {}
+          onChangedListener = null;
+        }
+        if (saveTimer) { try { clearTimeout(saveTimer); } catch (_) {} saveTimer = null; }
+      },
+      readSync() { return cache || _ensureShape({}); },
+      writeSync(updaterOrObj) {
+        if (!cache) cache = _ensureShape({});
+        const draft = _clone(cache);
+        let next;
+        try {
+          next = (typeof updaterOrObj === 'function') ? (updaterOrObj(draft) || draft) : (updaterOrObj || draft);
+        } catch (e) { _recordError('writeSync.updater', e); return; }
+        cache = _ensureShape(next);
+        dirty = true;
+        _scheduleSave();
+      },
+      async saveNow() {
+        if (saveTimer) { try { clearTimeout(saveTimer); } catch (_) {} saveTimer = null; }
+        if (!dirty) return;
+        dirty = false;
+        await _writeCanonical(cache || {});
+      },
+      diagnose() {
+        const iba = (cache && cache.itemsByAnswer) || {};
+        const answers = Object.keys(iba);
+        const items = answers.reduce((n, a) => n + (Array.isArray(iba[a]) ? iba[a].length : 0), 0);
+        return {
+          surface: 'native',
+          schemaVersion: 3,
+          ready: cache !== null,
+          backend: 'chrome.storage',
+          canonicalKey: KEY_DISK_CANON,
+          cacheAnswers: answers.length,
+          cacheItems: items,
+          pendingSave: !!saveTimer || dirty,
+          saveDebounceMs: SAVE_DEBOUNCE_MS,
+          errors: errors.slice(),
+        };
+      },
     };
   })();
 
-  const HAS_GM_STORAGE = (typeof GM_getValue === 'function') && (typeof GM_setValue === 'function') && (typeof GM_deleteValue === 'function');
-  const HAS_CHROME_STORAGE = !HAS_GM_STORAGE
-    && typeof chrome !== 'undefined'
-    && (typeof chrome?.storage?.local?.get === 'function')
-    && (typeof chrome?.storage?.local?.set === 'function')
-    && (typeof chrome?.storage?.local?.remove === 'function');
-
-  const UTIL_mig_getFlag = async (key) => {
-    try {
-      if (HAS_CHROME_STORAGE) {
-        return await new Promise(resolve => chrome.storage.local.get([key], r => resolve(r?.[key] || null)));
-      }
-      if (HAS_GM_STORAGE) {
-        return GM_getValue(key, null);
-      }
-      return localStorage.getItem(key);
-    } catch {
-      return null;
-    }
-  };
-
-  const UTIL_mig_setFlag = async (key, val) => {
-    try {
-      if (HAS_CHROME_STORAGE) {
-        await new Promise(resolve => chrome.storage.local.set({ [key]: String(val) }, resolve));
-        return;
-      }
-      if (HAS_GM_STORAGE) {
-        GM_setValue(key, String(val));
-        return;
-      }
-      localStorage.setItem(key, String(val));
-    } catch {}
-  };
-
-  const MIG_disk_legacy_to_canon_once = async () => {
-    try {
-      const done = await UTIL_mig_getFlag(KEY_MIG_DISK_V1);
-      if (done === '1') return;
-    } catch {}
-
-    let shouldMarkDone = false;
-    try {
-      const s0 = STORE_read() || {};
-      if (s0 && Object.keys(s0).length) {
-        UTIL_storage.writeSync((d) => {
-          const next = UTIL_safeParse(JSON.stringify(s0), d || {});
-          return next || d || {};
-        });
-        await UTIL_storage.saveNow();
-      }
-      shouldMarkDone = true;
-    } catch {}
-
-    if (!shouldMarkDone) return;
-
-    // Keep legacy keys as read-aliases; never hard-delete automatically.
-    try { await UTIL_mig_setFlag(KEY_MIG_DISK_V1, '1'); } catch {}
-  };
-
-  const STORE_read = () => UTIL_storage.readSync();
-  const STORE_write = (u) => UTIL_storage.writeSync(u);
+  const STORE_read = () => STORE.readSync();
+  const STORE_write = (u) => STORE.writeSync(u);
+  const STORE_saveNow = () => STORE.saveNow();
 
   /* ───────────────────────────── 🧱 Store shape ───────────────────────────── */
   const PAL_list = () => {
@@ -1995,7 +1704,7 @@
 
     if (changed > 0) {
       STORE_setCurrentColor(to);
-      try { await UTIL_storage.saveNow(); } catch {}
+      try { await STORE_saveNow(); } catch {}
       HL_notifyChanged(answerId);
       HL_emitInlineChanged(msgEl || answerId);
       try { W.syncMiniMapDot?.(answerId, STORE_colorsFrom(answerId), { persist: true }); } catch {}
@@ -2378,7 +2087,7 @@
       touched.push(node);
     }
     if (touched.length) {
-      try { void UTIL_storage.saveNow(); } catch {}
+      try { void STORE_saveNow(); } catch {}
     }
 
     // 2) new highlight if none touched
@@ -2398,7 +2107,7 @@
           ts: Date.now(),
           pairNo
         });
-        try { void UTIL_storage.saveNow(); } catch {}
+        try { void STORE_saveNow(); } catch {}
       }
     }
 
@@ -3101,8 +2810,8 @@ mark.${CSS_CLS_HL}:hover{
 
   const API_clearAll = async () => {
     try {
-      UTIL_storage.writeSync(() => ({}));
-      await UTIL_storage.saveNow();
+      STORE_write(() => ({}));
+      await STORE_saveNow();
     } catch (err) {
       if (CFG_DEBUG) console.warn(`[H2O.${MODTAG}] clearAll failed`, err);
     }
@@ -3148,7 +2857,7 @@ mark.${CSS_CLS_HL}:hover{
     };
 
     try {
-      UTIL_storage.writeSync((draft) => {
+      STORE_write((draft) => {
         STORE_ensureShape(draft);
         const byAnswer = draft.itemsByAnswer || {};
 
@@ -3174,7 +2883,7 @@ mark.${CSS_CLS_HL}:hover{
 
         return draft;
       });
-      await UTIL_storage.saveNow();
+      await STORE_saveNow();
     } catch (err) {
       if (CFG_DEBUG) console.warn(`[H2O.${MODTAG}] clearCurrentChat failed`, err);
       throw err;
@@ -3230,6 +2939,7 @@ mark.${CSS_CLS_HL}:hover{
     getCurrentColor: STORE_getCurrentColor,
     setEnabled: (on) => { STATE.enabled = !!on; log('setEnabled', STATE.enabled); },
     getEnabled: () => STATE.enabled,
+    diagnose: () => STORE.diagnose(),
     dispose: () => CORE_dispose()
   };
 
@@ -3445,7 +3155,7 @@ mark.${CSS_CLS_HL}:hover{
     DIAG.disposedCount += 1;
     DIAG.lastDisposeAt = Date.now();
     try { STATE_mo?.disconnect(); } catch {}
-    try { UTIL_storage.dispose(); } catch {}
+    try { STORE.dispose(); } catch {}
     try { OBS_unhookNavigation(); } catch {}
     try { UTIL_offAll(); } catch {}
     try { UTIL_clearAllTimers(); } catch {}
@@ -3456,8 +3166,7 @@ mark.${CSS_CLS_HL}:hover{
     DIAG.steps = [];
     DIAG_step('init');
 
-    await UTIL_storage.init();
-    await MIG_disk_legacy_to_canon_once();
+    await STORE.init();
 
     BRIDGE_registerControlHub();
     CORE_boot();
