@@ -107,6 +107,104 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v3 — M2a-2b organizational entities. Adds the Studio-owned
+        // organization layer: folders + folder_bindings, labels +
+        // label_bindings, tags + tag_bindings, categories.
+        //
+        // V1 desktop is import-only, and per the capture-model decision
+        // these entities are Studio-original (not mirrored from chatgpt.com).
+        // ChatGPT export does not carry user labels, tags, or arbitrary
+        // user-defined folders per current best knowledge; categories may
+        // be auto-derived from message metadata (model_slug etc.) by M3
+        // but the table itself is Studio-owned.
+        //
+        // Pattern matches v2:
+        //   - All FKs are SOFT (column convention only). No SQL FOREIGN KEY.
+        //   - Every primary table carries `meta_json TEXT NOT NULL DEFAULT '{}'`
+        //     for forward-compat catch-all. Binding tables omit it (pure
+        //     join rows; no per-binding metadata in V1).
+        //   - `source` column on folders/labels/categories distinguishes
+        //     'user' vs 'imported' vs 'derived' provenance.
+        //   - Categories use chats.category_id denormalization (one
+        //     category per chat) — no separate category_bindings table.
+        //   - folder_bindings.PRIMARY KEY (chat_id) enforces "one folder
+        //     per chat" in V1; if multi-folder is added later it becomes
+        //     a v4 ALTER TABLE.
+        //
+        // No JS-side consumers wired in M2a-2b; tables sit empty until
+        // M2a-3 wires `H2O.Studio.store.{folders,labels,tags,categories}`.
+        Migration {
+            version: 3,
+            description: "init folders, labels, tags, categories",
+            sql: r#"
+                CREATE TABLE folders (
+                  id          TEXT    PRIMARY KEY,
+                  name        TEXT    NOT NULL,
+                  parent_id   TEXT,
+                  color       TEXT,
+                  sort_order  INTEGER NOT NULL DEFAULT 0,
+                  source      TEXT    NOT NULL DEFAULT 'user',
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL,
+                  meta_json   TEXT    NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX idx_folders_parent_id ON folders(parent_id);
+
+                CREATE TABLE folder_bindings (
+                  chat_id     TEXT    NOT NULL,
+                  folder_id   TEXT    NOT NULL,
+                  assigned_at INTEGER NOT NULL,
+                  PRIMARY KEY (chat_id)
+                );
+                CREATE INDEX idx_folder_bindings_folder_id ON folder_bindings(folder_id);
+
+                CREATE TABLE labels (
+                  id          TEXT    PRIMARY KEY,
+                  name        TEXT    NOT NULL,
+                  color       TEXT,
+                  source      TEXT    NOT NULL DEFAULT 'user',
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL,
+                  meta_json   TEXT    NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE label_bindings (
+                  chat_id     TEXT    NOT NULL,
+                  label_id    TEXT    NOT NULL,
+                  assigned_at INTEGER NOT NULL,
+                  PRIMARY KEY (chat_id, label_id)
+                );
+                CREATE INDEX idx_label_bindings_label_id ON label_bindings(label_id);
+
+                CREATE TABLE tags (
+                  id           TEXT    PRIMARY KEY,
+                  name         TEXT    NOT NULL,
+                  auto_derived INTEGER NOT NULL DEFAULT 0,
+                  created_at   INTEGER NOT NULL,
+                  meta_json    TEXT    NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE tag_bindings (
+                  chat_id     TEXT    NOT NULL,
+                  tag_id      TEXT    NOT NULL,
+                  assigned_at INTEGER NOT NULL,
+                  PRIMARY KEY (chat_id, tag_id)
+                );
+                CREATE INDEX idx_tag_bindings_tag_id ON tag_bindings(tag_id);
+
+                CREATE TABLE categories (
+                  id          TEXT    PRIMARY KEY,
+                  name        TEXT    NOT NULL,
+                  parent_id   TEXT,
+                  source      TEXT    NOT NULL DEFAULT 'user',
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL,
+                  meta_json   TEXT    NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX idx_categories_parent_id ON categories(parent_id);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
