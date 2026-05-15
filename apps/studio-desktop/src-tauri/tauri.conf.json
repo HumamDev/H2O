@@ -4,17 +4,13 @@
   "version": "0.1.0",
   "identifier": "org.h2o.studio.desktop",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
-    "frontendDist": "../dist",
-    "devUrl": null
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "label": "main",
         "title": "H2O Studio",
-        "url": "studio.html",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
