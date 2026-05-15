@@ -62,6 +62,8 @@
     // the legacy write. Values: 'entity+legacy' | 'entity' | 'legacy' | 'none'.
     lastPersistBackend: 'none',
     lastPersistTs: 0,
+    lastHydrateSources: null,
+    lastRefreshSources: null,
     refreshTimer: null,
     refreshInFlight: null,
     subscribers: new Set(),
@@ -180,6 +182,15 @@
       const useLegacy = !!lRows && (!eRows || lTs > eTs);
       const chosen = useLegacy ? legacySnap : (eRows ? entitySnap : null);
       const sourceLabel = useLegacy ? 'legacy' : (eRows ? 'entity' : 'none');
+      state.lastHydrateSources = {
+        entityRows: Array.isArray(eRows) ? eRows.length : 0,
+        legacyRows: Array.isArray(lRows) ? lRows.length : 0,
+        entityTs: eTs,
+        legacyTs: lTs,
+        chosen: sourceLabel,
+        seededEntity: false,
+        at: Date.now(),
+      };
 
       if (chosen && Array.isArray(chosen.rows)) {
         state.rows = chosen.rows.map(normalizeRow).filter(Boolean);
@@ -194,7 +205,7 @@
       // chrome.storage.local matches IDB on the next boot. setAll is itself
       // debounced (250 ms) so this does not block hydrate.
       if (useLegacy && entity && typeof entity.setAll === 'function' && Array.isArray(lRows) && lRows.length) {
-        try { entity.setAll(lRows); }
+        try { entity.setAll(lRows); if (state.lastHydrateSources) state.lastHydrateSources.seededEntity = true; }
         catch (e) { err('hydrate.seed-entity', e); }
       }
     } catch (e) { err('hydrate', e); }
@@ -266,13 +277,28 @@
         //   2. Studio H2O.ChatRegistry as a defensive fallback in case the
         //      two registries are ever unified (then listRecords appears).
         let linkedRows = [];
+        state.lastRefreshSources = {
+          reason: String(reason),
+          archiveRowsRaw: list.length,
+          archiveRowsNormalized: archiveRows.length,
+          nativeLinkedRecords: 0,
+          nativeLinkedRows: 0,
+          fallbackRegistryRecords: 0,
+          fallbackLinkedRows: 0,
+          linkedRows: 0,
+          at: Date.now(),
+        };
         try {
           const archiveIds = new Set(archiveRows.map((r) => r.chatId));
           const nativeRecords = await readNativeChatRegistryRecords();
+          const nativeRecordsCount = Array.isArray(nativeRecords) ? nativeRecords.length : 0;
+          let nativeLinkedRows = 0;
+          let fallbackRecordsCount = 0;
+          let fallbackLinkedRows = 0;
           for (const rec of nativeRecords) {
             if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
             const row = normalizeLinkedOnlyRegistryRow(rec);
-            if (row) linkedRows.push(row);
+            if (row) { linkedRows.push(row); nativeLinkedRows++; }
           }
           // Fallback: if native key is empty (e.g. fresh install pre-reload)
           // try the Studio-side registry's listRecords-or-listAll. Filters
@@ -282,12 +308,25 @@
             const list = reg && (typeof reg.listRecords === 'function'
               ? await reg.listRecords({ includeDeleted: false })
               : (typeof reg.listActive === 'function' ? await reg.listActive() : []));
-            for (const rec of (Array.isArray(list) ? list : [])) {
+            const fallbackRecords = Array.isArray(list) ? list : [];
+            fallbackRecordsCount = fallbackRecords.length;
+            for (const rec of fallbackRecords) {
               if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
               const row = normalizeLinkedOnlyRegistryRow(rec);
-              if (row) linkedRows.push(row);
+              if (row) { linkedRows.push(row); fallbackLinkedRows++; }
             }
           }
+          state.lastRefreshSources = {
+            reason: String(reason),
+            archiveRowsRaw: list.length,
+            archiveRowsNormalized: archiveRows.length,
+            nativeLinkedRecords: nativeRecordsCount,
+            nativeLinkedRows,
+            fallbackRegistryRecords: fallbackRecordsCount,
+            fallbackLinkedRows,
+            linkedRows: linkedRows.length,
+            at: Date.now(),
+          };
         } catch (e) { err('refresh.linked-only', e); }
 
         state.rows = archiveRows.concat(linkedRows);
@@ -299,6 +338,13 @@
         state.lastSource = linkedRows.length
           ? `studio-archive+registry(${linkedRows.length})`
           : 'studio-archive';
+        state.lastRefreshSources = {
+          ...(state.lastRefreshSources || {}),
+          reason: String(reason),
+          totalRows: state.rows.length,
+          source: state.lastSource,
+          at: state.lastScanTs,
+        };
         step('refresh.ok', `${archiveRows.length}+${linkedRows.length}:${reason}`);
 
         // Mirror archive rows into Chat Registry so it has fresh metadata
@@ -334,6 +380,16 @@
       state.refreshTimer = null;
       refreshFromArchive(reason || 'scheduled').catch(() => {});
     }, REFRESH_DEBOUNCE_MS);
+  }
+
+  function summarizeFacets() {
+    const out = {};
+    try {
+      for (const [key, value] of Object.entries(state.facets || {})) {
+        out[key] = value && typeof value === 'object' ? Object.keys(value).length : 0;
+      }
+    } catch {}
+    return out;
   }
 
   // ── Query API ──────────────────────────────────────────────────────────────
@@ -403,6 +459,11 @@
         hasStore: !!getStore(),
         hasRegistry: !!getChatRegistry(),
         counts: LibraryIndex.counts(),
+        projection: {
+          sources: state.lastRefreshSources ? { ...state.lastRefreshSources } : null,
+          hydrate: state.lastHydrateSources ? { ...state.lastHydrateSources } : null,
+          facetKeyCounts: summarizeFacets(),
+        },
         storeBackend: getStore()?.backend?.() || null,
         storageKey: STORAGE_KEY,
         steps: diag.steps.slice(-25),

@@ -280,14 +280,23 @@
     setSnapshotCategory,
     async refresh() { return listCategories({ fresh: true }); },
     diagnose() {
+      const byCategory = getIndex()?.facets?.().byCategory || {};
       return {
         surface: 'studio',
         cachedCount: cachedCatalog ? cachedCatalog.length : 0,
         cachedAt,
+        cacheAgeMs: cachedAt ? Math.max(0, Date.now() - cachedAt) : null,
         hasWorkspace: !!getWorkspace(),
         hasIndex: !!getIndex(),
         hasCategoryCore: !!categoryCore(),
         categoryCorePhase: categoryCore()?.__phase || '',
+        projection: {
+          catalogSource: 'LibraryWorkspace.getCategories(chat-list bridge)',
+          cachedCount: cachedCatalog ? cachedCatalog.length : 0,
+          indexFacetCount: Object.keys(byCategory || {}).length,
+          bridgeAvailable: typeof getWorkspace()?.getCategories === 'function',
+          lastWriteStatus: lastWrite ? String(lastWrite.status || '') : '',
+        },
         normalizationDiagnostics: lastCategoryDiagnostics.slice(-10),
         lastWrite,
         steps: diag.steps.slice(-10),

@@ -196,7 +196,18 @@
     }
 
     const ws = getWorkspace();
-    if (!ws) throw new Error('library-workspace unavailable');
+    if (!ws || typeof ws.setFolderBinding !== 'function') {
+      const result = {
+        ok: false,
+        status: 'folder-bridge-unavailable',
+        reason: 'library-workspace unavailable',
+        chatId: normalizedChat.chatId,
+        folderId: normalizedFolder.folderId,
+        folderName: '',
+      };
+      recordWrite(result);
+      return result;
+    }
 
     try {
       const result = await ws.setFolderBinding(normalizedChat.chatId, normalizedFolder.folderId, opts || {});
@@ -247,13 +258,21 @@
       }
       recordWrite({
         ok: false,
-        status: 'error',
+        status: 'folder-write-failed',
+        reason: String(e?.message || e || 'folder-write-failed'),
         chatId: normalizedChat.chatId,
         folderId: normalizedFolder.folderId,
         error: String(e?.stack || e),
       });
       err('setBinding', e);
-      throw e;
+      return {
+        ok: false,
+        status: 'folder-write-failed',
+        reason: String(e?.message || e || 'folder-write-failed'),
+        chatId: normalizedChat.chatId,
+        folderId: normalizedFolder.folderId,
+        folderName: '',
+      };
     }
   }
 
@@ -270,15 +289,24 @@
     buildRouteHash,
     async refresh() { return listFolders({ fresh: true }); },
     diagnose() {
+      const byFolder = getIndex()?.facets?.().byFolder || {};
       return {
         surface: 'studio',
         cached: !!cachedFolders,
         cachedCount: cachedFolders ? cachedFolders.length : 0,
         cachedAt,
+        cacheAgeMs: cachedAt ? Math.max(0, Date.now() - cachedAt) : null,
         hasWorkspace: !!getWorkspace(),
         hasIndex: !!getIndex(),
         hasFolderCore: !!folderCore(),
         folderCorePhase: folderCore()?.__phase || '',
+        projection: {
+          catalogSource: 'LibraryWorkspace.getFolders(chat-list bridge)',
+          cachedCount: cachedFolders ? cachedFolders.length : 0,
+          indexFacetCount: Object.keys(byFolder || {}).length,
+          bridgeAvailable: typeof getWorkspace()?.getFolders === 'function',
+          lastWriteStatus: lastWrite ? String(lastWrite.status || '') : '',
+        },
         normalizationDiagnostics: lastFolderDiagnostics.slice(-10),
         lastWrite,
         steps: diag.steps.slice(-10),

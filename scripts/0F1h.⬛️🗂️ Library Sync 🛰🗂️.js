@@ -56,6 +56,8 @@
     'evt:h2o:library:autoclass-prefs-changed',
     'evt:h2o:library:autoclass-review-completed',
     'evt:h2o:tags:category-links-changed',
+    'evt:h2o:projects:changed',
+    'evt:h2o:projects:cache-updated',
     'evt:h2o:library-workspace:updated',
     'evt:h2o:chat-title:changed',
     'evt:h2o:chat-title:emoji-updated',
@@ -63,6 +65,10 @@
     'h2o:chat-title:emoji-updated',
     'h2o:interface:meta-mirror',
   ];
+  const IMMEDIATE_BROADCAST_EVENTS = new Set([
+    'evt:h2o:projects:changed',
+    'evt:h2o:projects:cache-updated',
+  ]);
 
   // Page-world / content-script bridge channels. The chrome-live loader.js
   // content script listens to chrome.storage.onChanged in the extension's
@@ -92,7 +98,21 @@
     bridgeReady: false,
     eventsBound: false,
     lastInbound: 0,
+    lastInboundReason: '',
+    lastInboundPayloadKeys: [],
+    lastInboundPayloadSurface: '',
+    lastInboundPayloadTs: 0,
     lastOutbound: 0,
+    lastOutboundReasons: [],
+    lastOutboundPayloadKeys: [],
+    lastOutboundTransport: '',
+    lastLinkedRecordsCount: 0,
+    lastLinkedRecordsEligible: 0,
+    lastLinkedRecordsCapped: false,
+    lastProjectCatalogAvailable: false,
+    lastProjectCatalogCount: 0,
+    lastProjectCatalogCapped: false,
+    lastProjectCatalogSource: '',
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -120,6 +140,13 @@
       t: Date.now(),
       surface: 'native',
     };
+    try {
+      const p = payload && typeof payload === 'object' ? payload : null;
+      state.lastInboundReason = detail.reason;
+      state.lastInboundPayloadKeys = p ? Object.keys(p).slice(0, 24) : [];
+      state.lastInboundPayloadSurface = String(p?.surface || '');
+      state.lastInboundPayloadTs = Number(p?.ts || 0) || 0;
+    } catch {}
     // Dual-event pattern (H2O convention): canonical evt:* + legacy alias + bus.
     try { W.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', { detail })); } catch {}
     try { W.dispatchEvent(new CustomEvent('h2o:library:cross-surface-sync', { detail })); } catch {}
@@ -226,38 +253,135 @@
   // chrome.storage (Chrome's per-key quota is 8 KiB by default and we
   // share the key with the existing reasons array).
   const LINKED_SNAPSHOT_MAX = 500;
+  const PROJECT_CATALOG_MAX = 250;
   function snapshotLinkedRecords() {
     try {
       const reg = W.H2O && W.H2O.ChatRegistry;
-      if (!reg || typeof reg.listRecords !== 'function') return [];
+      if (!reg || typeof reg.listRecords !== 'function') {
+        state.lastLinkedRecordsCount = 0;
+        state.lastLinkedRecordsEligible = 0;
+        state.lastLinkedRecordsCapped = false;
+        return [];
+      }
       const out = [];
+      let eligible = 0;
       const records = reg.listRecords({ includeDeleted: false }) || [];
       for (const rec of records) {
         if (!rec || !rec.chatId || !rec.state) continue;
         if (!rec.state.isLinked) continue;
         if (rec.state.isSaved) continue;
-        out.push({
-          chatId: rec.chatId,
-          title: rec.title || '',
-          href: rec.href || '',
-          normalizedHref: rec.normalizedHref || '',
-          linkSourceHref: rec.linkSourceHref || '',
-          linkedAt: rec.linkedAt || '',
-          linkedFrom: rec.linkedFrom || '',
-          updatedAt: rec.updatedAt || '',
-          firstSeenAt: rec.firstSeenAt || '',
-          lastSeenAt: rec.lastSeenAt || '',
-          project: rec.project ? { projectId: rec.project.projectId || '', projectName: rec.project.projectName || '' } : null,
-          state: {
-            isLinked: true,
-            isSaved: false,
-            isImported: !!rec.state.isImported,
-          },
-        });
+        eligible++;
+        if (out.length < LINKED_SNAPSHOT_MAX) {
+          out.push({
+            chatId: rec.chatId,
+            title: rec.title || '',
+            href: rec.href || '',
+            normalizedHref: rec.normalizedHref || '',
+            linkSourceHref: rec.linkSourceHref || '',
+            linkedAt: rec.linkedAt || '',
+            linkedFrom: rec.linkedFrom || '',
+            updatedAt: rec.updatedAt || '',
+            firstSeenAt: rec.firstSeenAt || '',
+            lastSeenAt: rec.lastSeenAt || '',
+            project: rec.project ? { projectId: rec.project.projectId || '', projectName: rec.project.projectName || '' } : null,
+            state: {
+              isLinked: true,
+              isSaved: false,
+              isImported: !!rec.state.isImported,
+            },
+          });
+        }
         if (out.length >= LINKED_SNAPSHOT_MAX) break;
       }
+      state.lastLinkedRecordsCount = out.length;
+      state.lastLinkedRecordsEligible = eligible;
+      state.lastLinkedRecordsCapped = out.length >= LINKED_SNAPSHOT_MAX;
       return out;
-    } catch (e) { err('snapshotLinkedRecords', e); return []; }
+    } catch (e) {
+      state.lastLinkedRecordsCount = 0;
+      state.lastLinkedRecordsEligible = 0;
+      state.lastLinkedRecordsCapped = false;
+      err('snapshotLinkedRecords', e);
+      return [];
+    }
+  }
+
+  function normalizeProjectCatalogRow(row, index) {
+    const src = row && typeof row === 'object' ? row : {};
+    const id = String(src.id || src.projectId || '').trim();
+    if (!id) return null;
+    const title = String(src.title || src.name || src.projectName || id).trim() || id;
+    const href = String(src.href || src.nativeProjectHref || '').trim();
+    return {
+      id,
+      projectId: id,
+      title,
+      name: title,
+      projectName: title,
+      href,
+      nativeProjectHref: href,
+      index: Number.isFinite(Number(src.index)) ? Number(src.index) : index,
+      source: String(src.source || 'native-project-cache'),
+    };
+  }
+
+  function snapshotProjectCatalog() {
+    try {
+      const projects = W.H2O && W.H2O.Projects;
+      const store = typeof projects?.readStore === 'function' ? projects.readStore() : null;
+      const bestRows = Array.isArray(store?.bestRows) ? store.bestRows : [];
+      const rows = Array.isArray(store?.rows) ? store.rows : [];
+      let fallbackRows = [];
+      if (!bestRows.length && !rows.length && typeof projects?.owner?.loadRowsFast === 'function') {
+        try {
+          const fastRows = projects.owner.loadRowsFast();
+          fallbackRows = Array.isArray(fastRows) ? fastRows : [];
+        } catch (error) {
+          err('snapshotProjectCatalog.loadRowsFast', error);
+        }
+      }
+      const sourceRows = bestRows.length ? bestRows : (rows.length ? rows : fallbackRows);
+      const out = [];
+      for (let i = 0; i < sourceRows.length; i += 1) {
+        const row = normalizeProjectCatalogRow(sourceRows[i], i);
+        if (row) out.push(row);
+        if (out.length >= PROJECT_CATALOG_MAX) break;
+      }
+      state.lastProjectCatalogCount = out.length;
+      state.lastProjectCatalogAvailable = !!out.length;
+      state.lastProjectCatalogCapped = sourceRows.length > out.length;
+      state.lastProjectCatalogSource = bestRows.length
+        ? 'H2O.Projects.readStore.bestRows'
+        : rows.length
+        ? 'H2O.Projects.readStore.rows'
+        : fallbackRows.length
+        ? 'H2O.Projects.owner.loadRowsFast'
+        : 'none';
+      return {
+        source: state.lastProjectCatalogSource,
+        rows: out,
+        count: out.length,
+        capped: state.lastProjectCatalogCapped,
+        cap: PROJECT_CATALOG_MAX,
+        store: {
+          source: String(store?.source || ''),
+          bestSource: String(store?.bestSource || ''),
+          rowCount: Number(store?.itemCount || rows.length || 0) || 0,
+          bestRowCount: Number(store?.bestRowCount || bestRows.length || 0) || 0,
+          complete: !!store?.complete,
+          bestComplete: !!store?.bestComplete,
+          lastSuccessAt: Number(store?.lastSuccessAt || 0) || 0,
+          lastReconciledAt: Number(store?.lastReconciledAt || 0) || 0,
+        },
+      };
+    } catch (e) {
+      state.lastProjectCatalogCount = 0;
+      state.lastProjectCatalogAvailable = false;
+      state.lastProjectCatalogCapped = false;
+      state.lastProjectCatalogSource = 'error';
+      err('snapshotProjectCatalog', e);
+      return { source: 'error', rows: [], count: 0, capped: false, cap: PROJECT_CATALOG_MAX, store: null };
+    }
   }
 
   // ── Outbound: native → Studio ──────────────────────────────────────────────
@@ -273,9 +397,16 @@
       // native registry lives in chatgpt.com's localStorage and is otherwise
       // unreachable from Studio.
       linkedRecords: snapshotLinkedRecords(),
+      // Phase 7C read-only projection: native project cache names live in
+      // page localStorage. Studio cannot read that origin, so expose a bounded
+      // catalog summary through the existing cross-surface sync envelope.
+      projectCatalog: snapshotProjectCatalog(),
     };
+    state.lastOutboundReasons = reasons.slice(0, 24);
+    state.lastOutboundPayloadKeys = Object.keys(body).slice(0, 24);
     if (hasChromeStorage()) {
       try {
+        state.lastOutboundTransport = 'chrome.storage';
         chrome.storage.local.set({ [NATIVE_BROADCAST_KEY]: body }, () => {
           state.lastOutbound = body.ts;
           step('outbound', String(reasons.length));
@@ -289,12 +420,15 @@
       try { W.postMessage({ type: BRIDGE_WRITE, ...writePayload }, '*'); sent = true; } catch (e) { err('broadcast.bridge.postMessage', e); }
       try { D.dispatchEvent(new CustomEvent(EV_WRITE, { detail: writePayload })); sent = true; } catch (e) { err('broadcast.bridge.event', e); }
       if (sent) {
+        state.lastOutboundTransport = 'bridge';
         state.lastOutbound = body.ts;
         step('outbound.bridge', String(reasons.length));
       } else {
+        state.lastOutboundTransport = 'drop:transport-failed';
         step('outbound.drop', 'transport-failed');
       }
     } else {
+      state.lastOutboundTransport = 'drop:no-transport';
       step('outbound.drop', 'no transport');
     }
   }
@@ -308,11 +442,23 @@
     }, COALESCE_MS);
   }
 
+  function broadcastImmediately(reason) {
+    state.pendingReasons.add(String(reason || 'change'));
+    if (state.pendingTimer) {
+      try { W.clearTimeout(state.pendingTimer); } catch {}
+      state.pendingTimer = null;
+    }
+    broadcastNow();
+  }
+
   function bindNativeEvents() {
     if (state.eventsBound) return true;
     try {
       for (const ev of NATIVE_EVENTS_TO_BROADCAST) {
-        W.addEventListener(ev, () => scheduleBroadcast(ev));
+        W.addEventListener(ev, () => {
+          if (IMMEDIATE_BROADCAST_EVENTS.has(ev)) broadcastImmediately(ev);
+          else scheduleBroadcast(ev);
+        });
       }
       state.eventsBound = true;
       step('bind.events', String(NATIVE_EVENTS_TO_BROADCAST.length));
@@ -347,6 +493,38 @@
         eventsListened: NATIVE_EVENTS_TO_BROADCAST.slice(),
         lastInbound: state.lastInbound,
         lastOutbound: state.lastOutbound,
+        projection: {
+          watchedKey: STUDIO_BROADCAST_KEY,
+          broadcastKey: NATIVE_BROADCAST_KEY,
+          eventsListenedCount: NATIVE_EVENTS_TO_BROADCAST.length,
+          inbound: {
+            at: state.lastInbound,
+            reason: state.lastInboundReason,
+            payloadKeys: state.lastInboundPayloadKeys.slice(),
+            surface: state.lastInboundPayloadSurface,
+            ts: state.lastInboundPayloadTs,
+          },
+          outbound: {
+            at: state.lastOutbound,
+            reasons: state.lastOutboundReasons.slice(),
+            payloadKeys: state.lastOutboundPayloadKeys.slice(),
+            transport: state.lastOutboundTransport,
+          },
+          linkedRecords: {
+            count: state.lastLinkedRecordsCount,
+            eligibleCountSampled: state.lastLinkedRecordsEligible,
+            eligibleCountComplete: !state.lastLinkedRecordsCapped,
+            capped: state.lastLinkedRecordsCapped,
+            cap: LINKED_SNAPSHOT_MAX,
+          },
+          projectCatalog: {
+            available: !!state.lastProjectCatalogAvailable,
+            count: Number(state.lastProjectCatalogCount || 0) || 0,
+            capped: !!state.lastProjectCatalogCapped,
+            cap: PROJECT_CATALOG_MAX,
+            source: String(state.lastProjectCatalogSource || ''),
+          },
+        },
         subscribers: state.subscribers.size,
         steps: diag.steps.slice(-15),
         errors: diag.errors.slice(-10),

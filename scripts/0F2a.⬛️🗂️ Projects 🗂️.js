@@ -935,11 +935,35 @@
     return PROJECTS_normalizeStore(storage.getJSON(KEY_FSECTION_PROJECTS_CACHE_V1, null));
   }
 
+  function PROJECTS_emitChanged(reason, store) {
+    try {
+      const snapshot = PROJECTS_normalizeStore(store);
+      const bestRows = PROJECTS_bestRows(snapshot);
+      const detail = {
+        reason: String(reason || 'projects-cache-updated'),
+        surface: 'native',
+        t: Date.now(),
+        rows: Array.isArray(snapshot.rows) ? snapshot.rows.length : 0,
+        bestRows: bestRows.length,
+        source: String(snapshot.source || ''),
+        bestSource: String(snapshot.bestSource || ''),
+        complete: !!snapshot.complete,
+        bestComplete: !!snapshot.bestComplete,
+      };
+      W.dispatchEvent(new CustomEvent('evt:h2o:projects:changed', { detail }));
+      W.dispatchEvent(new CustomEvent('evt:h2o:projects:cache-updated', { detail }));
+      try { W.H2O?.events?.emit?.('projects:changed', detail); } catch {}
+    } catch (error) {
+      err('projectsEmitChanged', error);
+    }
+  }
+
   function PROJECTS_writeStore(store) {
     const normalized = PROJECTS_normalizeStore(store);
     storage.setJSON(KEY_FSECTION_PROJECTS_CACHE_V1, normalized);
     STATE.projectsIconCorpusCache = null;
     STATE.projectsIconCorpusCacheAt = 0;
+    PROJECTS_emitChanged('projects-write-store', normalized);
     return normalized;
   }
 

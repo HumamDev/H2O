@@ -115,6 +115,8 @@
     prefs: () => ({ ...prefs }),
     setPrefs(patch) { Object.assign(prefs, patch || {}); savePrefs(prefs); },
     diagnose() {
+      const tags = listTags();
+      const byTag = getIndex()?.facets?.().byTag || {};
       return {
         surface: 'studio',
         hasIndex: !!getIndex(),
@@ -123,7 +125,12 @@
         storeBackend: getStore()?.backend?.() || null,
         prefsKey: PREFS_KEY,
         prefs: { ...prefs },
-        topTags: listTags().slice(0, 12),
+        projection: {
+          source: 'LibraryIndex.facets.byTag',
+          facetCount: Object.keys(byTag || {}).length,
+          tagCount: tags.length,
+        },
+        topTags: tags.slice(0, 12),
         normalizationDiagnostics: state.normalizationDiagnostics.slice(-8),
         steps: diag.steps.slice(-10),
         errors: diag.errors.slice(-5),

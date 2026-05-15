@@ -161,13 +161,22 @@
     getChatsForLabel,
     async refresh() { return listLabels({ fresh: true }); },
     diagnose() {
+      const byLabel = getIndex()?.facets?.().byLabel || {};
       return {
         surface: 'studio',
         cachedCount: cachedCatalog ? cachedCatalog.length : 0,
         cachedAt,
+        cacheAgeMs: cachedAt ? Math.max(0, Date.now() - cachedAt) : null,
         hasWorkspace: !!getWorkspace(),
+        hasIndex: !!getIndex(),
         hasLabelCore: !!labelCore(),
         labelCorePhase: labelCore()?.__phase || '',
+        projection: {
+          catalogSource: 'LibraryWorkspace.getLabels(chat-list bridge)',
+          cachedCount: cachedCatalog ? cachedCatalog.length : 0,
+          indexFacetCount: Object.keys(byLabel || {}).length,
+          bridgeAvailable: typeof getWorkspace()?.getLabels === 'function',
+        },
         normalizationDiagnostics: state.normalizationDiagnostics.slice(-8),
         steps: diag.steps.slice(-10),
         errors: diag.errors.slice(-5),

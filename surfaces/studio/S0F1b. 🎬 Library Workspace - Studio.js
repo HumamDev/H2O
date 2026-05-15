@@ -43,6 +43,10 @@
     labels: { value: null, ts: 0, ttl: 60_000 },
     layout: null,
   };
+  const state = {
+    lastReads: Object.create(null),
+    lastWrites: Object.create(null),
+  };
 
   function getCore() { return H2O.LibraryCore || null; }
   function getIndex() { return H2O.LibraryIndex || null; }
@@ -80,6 +84,39 @@
     slot.value = value;
     slot.ts = Date.now();
   }
+  function itemCount(value) {
+    if (Array.isArray(value)) return value.length;
+    if (value && typeof value === 'object') return Object.keys(value).length;
+    return 0;
+  }
+  function cacheAge(slot) {
+    return slot && slot.ts ? Math.max(0, Date.now() - slot.ts) : null;
+  }
+  function recordRead(name, payload) {
+    try {
+      state.lastReads[String(name || '')] = {
+        ...(payload || {}),
+        at: Date.now(),
+      };
+    } catch {}
+  }
+  function recordWrite(name, payload) {
+    try {
+      const clean = { ...(payload || {}) };
+      if (clean.result && typeof clean.result === 'object') {
+        clean.resultSummary = {
+          ok: clean.result.ok,
+          status: clean.result.status || clean.result.reason || '',
+          keys: Object.keys(clean.result).slice(0, 16),
+        };
+        delete clean.result;
+      }
+      state.lastWrites[String(name || '')] = {
+        ...clean,
+        at: Date.now(),
+      };
+    } catch {}
+  }
   function bustCaches(reason) {
     cache.folders.value = null;
     cache.categories.value = null;
@@ -112,60 +149,136 @@
   }
 
   async function getFolders({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.folders)) return cache.folders.value;
+    if (!fresh && isFresh(cache.folders)) {
+      recordRead('folders', { source: 'cache', count: itemCount(cache.folders.value), fresh: false });
+      return cache.folders.value;
+    }
     const cl = getChatList();
-    if (!cl) return [];
+    if (!cl) {
+      recordRead('folders', { source: 'unavailable', count: 0, fresh: !!fresh });
+      return [];
+    }
     try {
       const list = await cl.getFoldersList();
       setCache(cache.folders, Array.isArray(list) ? list : []);
+      recordRead('folders', { source: 'chat-list.bridge', count: itemCount(cache.folders.value), fresh: !!fresh });
       return cache.folders.value;
-    } catch (e) { err('getFolders', e); return cache.folders.value || []; }
+    } catch (e) {
+      recordRead('folders', { source: 'error', count: itemCount(cache.folders.value), fresh: !!fresh, error: String(e?.message || e) });
+      err('getFolders', e);
+      return cache.folders.value || [];
+    }
   }
 
   async function getCategories({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.categories)) return cache.categories.value;
+    if (!fresh && isFresh(cache.categories)) {
+      recordRead('categories', { source: 'cache', count: itemCount(cache.categories.value), fresh: false });
+      return cache.categories.value;
+    }
     const cl = getChatList();
-    if (!cl) return [];
+    if (!cl) {
+      recordRead('categories', { source: 'unavailable', count: 0, fresh: !!fresh });
+      return [];
+    }
     try {
       const list = await cl.getCategoriesCatalog();
       setCache(cache.categories, Array.isArray(list) ? list : []);
+      recordRead('categories', { source: 'chat-list.bridge', count: itemCount(cache.categories.value), fresh: !!fresh });
       return cache.categories.value;
-    } catch (e) { err('getCategories', e); return cache.categories.value || []; }
+    } catch (e) {
+      recordRead('categories', { source: 'error', count: itemCount(cache.categories.value), fresh: !!fresh, error: String(e?.message || e) });
+      err('getCategories', e);
+      return cache.categories.value || [];
+    }
   }
 
   async function getLabels({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.labels)) return cache.labels.value;
+    if (!fresh && isFresh(cache.labels)) {
+      recordRead('labels', { source: 'cache', count: itemCount(cache.labels.value), fresh: false });
+      return cache.labels.value;
+    }
     const cl = getChatList();
-    if (!cl) return [];
+    if (!cl) {
+      recordRead('labels', { source: 'unavailable', count: 0, fresh: !!fresh });
+      return [];
+    }
     try {
       const list = await cl.getLabelsCatalog();
       setCache(cache.labels, Array.isArray(list) ? list : []);
+      recordRead('labels', { source: 'chat-list.bridge', count: itemCount(cache.labels.value), fresh: !!fresh });
       return cache.labels.value;
-    } catch (e) { err('getLabels', e); return cache.labels.value || []; }
+    } catch (e) {
+      recordRead('labels', { source: 'error', count: itemCount(cache.labels.value), fresh: !!fresh, error: String(e?.message || e) });
+      err('getLabels', e);
+      return cache.labels.value || [];
+    }
   }
 
   async function getTags() {
     const index = getIndex();
-    if (!index) return [];
+    if (!index) {
+      recordRead('tags', { source: 'unavailable', count: 0 });
+      return [];
+    }
     const counts = index.counts().tags || {};
-    return Object.entries(counts)
+    const tags = Object.entries(counts)
       .map(([id, count]) => ({ id, count }))
       .sort((a, b) => b.count - a.count);
+    recordRead('tags', { source: 'LibraryIndex.counts.tags', count: tags.length });
+    return tags;
   }
 
   async function getProjects() {
+    const projectsFacade = H2O.Projects;
+    if (projectsFacade && typeof projectsFacade.listProjects === 'function') {
+      try {
+        const projects = projectsFacade.listProjects();
+        if (Array.isArray(projects) && projects.length) {
+          recordRead('projects', { source: 'H2O.Projects.listProjects', count: projects.length });
+          return projects;
+        }
+      } catch (e) {
+        recordRead('projects', { source: 'H2O.Projects.error', count: 0, error: String(e?.message || e) });
+        err('getProjects.facade', e);
+      }
+    }
     const index = getIndex();
-    if (!index) return [];
+    if (!index) {
+      recordRead('projects', { source: 'unavailable', count: 0 });
+      return [];
+    }
     const f = index.facets();
-    return Object.entries(f.byProject || {})
+    const projects = Object.entries(f.byProject || {})
       .map(([id, chatIds]) => ({ id, chatIds: chatIds.slice(), count: chatIds.length }));
+    recordRead('projects', { source: 'LibraryIndex.facets.byProject', count: projects.length });
+    return projects;
   }
 
   async function resolveFolderBindings(chatIds) {
     const cl = getChatList();
-    if (!cl) return {};
-    try { return await cl.resolveFolderBindings(chatIds); }
-    catch (e) { err('resolveFolderBindings', e); return {}; }
+    if (!cl) {
+      recordRead('folderBindings', { source: 'unavailable', count: 0, requested: Array.isArray(chatIds) ? chatIds.length : 0 });
+      return {};
+    }
+    try {
+      const result = await cl.resolveFolderBindings(chatIds);
+      recordRead('folderBindings', {
+        source: 'chat-list.bridge',
+        count: itemCount(result),
+        requested: Array.isArray(chatIds) ? chatIds.length : 0,
+      });
+      return result;
+    }
+    catch (e) {
+      recordRead('folderBindings', {
+        source: 'error',
+        count: 0,
+        requested: Array.isArray(chatIds) ? chatIds.length : 0,
+        error: String(e?.message || e),
+      });
+      err('resolveFolderBindings', e);
+      return {};
+    }
   }
 
   // ── Mutations (write through to archive bridge, then refresh) ──────────────
@@ -179,17 +292,51 @@
   //   5. Library Sync (S0F1h) picks up the resulting chrome.storage changes
   //      and broadcasts to native — closing the cross-surface loop.
 
+  function folderWriteFailure(status, chatId, folderId, reason) {
+    return {
+      ok: false,
+      status: String(status || 'folder-write-failed'),
+      reason: String(reason || status || 'folder-write-failed'),
+      chatId: String(chatId || ''),
+      folderId: String(folderId || ''),
+      folderName: '',
+    };
+  }
+
+  function isFolderBridgeTransportError(error) {
+    const msg = String(error?.stack || error?.message || error || '');
+    return /Could not establish connection|Receiving end does not exist|folder bridge|chat-list service unavailable|open a ChatGPT tab to access folders|Extension context invalidated|context invalidated/i.test(msg);
+  }
+
   async function setFolderBinding(chatId, folderId, opts = {}) {
+    const cid = String(chatId || '');
+    const folder = String(folderId || '');
     const cl = getChatList();
-    if (!cl) throw new Error('chat-list service unavailable');
-    const result = await cl.setFolderBinding(chatId, folderId, opts);
+    if (!cl) {
+      const result = folderWriteFailure('folder-bridge-unavailable', cid, folder, 'chat-list service unavailable');
+      recordWrite('folderBinding', { ...result });
+      return result;
+    }
+    let result;
+    try {
+      result = await cl.setFolderBinding(chatId, folderId, opts);
+    } catch (e) {
+      const status = isFolderBridgeTransportError(e) ? 'folder-bridge-unavailable' : 'folder-write-failed';
+      const result = folderWriteFailure(status, cid, folder, String(e?.message || e || status));
+      recordWrite('folderBinding', { ...result, error: String(e?.stack || e) });
+      step('setFolderBinding.rejected', status);
+      err('setFolderBinding', e);
+      return result;
+    }
     if (result?.ok === false) {
+      recordWrite('folderBinding', { ok: false, status: String(result.status || result.reason || 'rejected'), chatId: cid, folderId: folder, result });
       step('setFolderBinding.rejected', String(result.status || result.reason || 'rejected'));
       return result;
     }
     bustCaches('setFolderBinding');
     try { await getIndex()?.refresh('setFolderBinding'); } catch {}
     emitUpdated('folder-binding-changed', { chatId, folderId, source: opts?.source || null });
+    recordWrite('folderBinding', { ok: result?.ok !== false, status: String(result?.status || 'ok'), chatId: cid, folderId: folder, result });
     return result;
   }
 
@@ -213,12 +360,22 @@
     const sid = String(snapshotId || '').trim();
     const cid = String(chatId || '').trim();
     const category = String(categoryId || '').trim();
-    if (!sid) return categoryWriteFailure('missing-snapshot-id', sid, cid, category);
-    if (!category) return categoryWriteFailure('missing-category-id', sid, cid, category);
+    if (!sid) {
+      const result = categoryWriteFailure('missing-snapshot-id', sid, cid, category);
+      recordWrite('snapshotCategory', { ...result });
+      return result;
+    }
+    if (!category) {
+      const result = categoryWriteFailure('missing-category-id', sid, cid, category);
+      recordWrite('snapshotCategory', { ...result });
+      return result;
+    }
 
     const cl = getChatList();
     if (!cl || typeof cl.setSnapshotCategory !== 'function') {
-      return categoryWriteFailure('category-bridge-unavailable', sid, cid, category, 'chat-list service unavailable');
+      const result = categoryWriteFailure('category-bridge-unavailable', sid, cid, category, 'chat-list service unavailable');
+      recordWrite('snapshotCategory', { ...result });
+      return result;
     }
 
     let result;
@@ -228,15 +385,19 @@
       const status = isCategoryBridgeTransportError(e) ? 'category-bridge-unavailable' : 'category-write-failed';
       step('setSnapshotCategory.rejected', status);
       err('setSnapshotCategory', e);
-      return categoryWriteFailure(status, sid, cid, category, String(e?.message || e || status));
+      const result = categoryWriteFailure(status, sid, cid, category, String(e?.message || e || status));
+      recordWrite('snapshotCategory', { ...result });
+      return result;
     }
     if (result?.ok === false) {
+      recordWrite('snapshotCategory', { ok: false, status: String(result.status || result.reason || 'rejected'), snapshotId: sid, chatId: cid, categoryId: category, result });
       step('setSnapshotCategory.rejected', String(result.status || result.reason || 'rejected'));
       return result;
     }
     bustCaches('setSnapshotCategory');
     try { await getIndex()?.refresh('setSnapshotCategory'); } catch {}
     emitUpdated('category-changed', { snapshotId: sid, chatId: cid, categoryId: category });
+    recordWrite('snapshotCategory', { ok: result?.ok !== false, status: String(result?.status || 'ok'), snapshotId: sid, chatId: cid, categoryId: category, result });
     return result;
   }
 
@@ -249,6 +410,7 @@
     bustCaches('reclassifySnapshotCategory');
     try { await getIndex()?.refresh('reclassifySnapshotCategory'); } catch {}
     emitUpdated('category-reclassified', { snapshotId });
+    recordWrite('snapshotCategoryReclassify', { ok: result?.ok !== false, status: String(result?.status || 'ok'), snapshotId: String(snapshotId || ''), result });
     return result;
   }
 
@@ -339,9 +501,21 @@
           index: !!idx,
         },
         cache: {
-          folders: { hasValue: !!cache.folders.value, ts: cache.folders.ts },
-          categories: { hasValue: !!cache.categories.value, ts: cache.categories.ts },
-          labels: { hasValue: !!cache.labels.value, ts: cache.labels.ts },
+          folders: { hasValue: !!cache.folders.value, ts: cache.folders.ts, ageMs: cacheAge(cache.folders), count: itemCount(cache.folders.value) },
+          categories: { hasValue: !!cache.categories.value, ts: cache.categories.ts, ageMs: cacheAge(cache.categories), count: itemCount(cache.categories.value) },
+          labels: { hasValue: !!cache.labels.value, ts: cache.labels.ts, ageMs: cacheAge(cache.labels), count: itemCount(cache.labels.value) },
+        },
+        sources: {
+          bridgeAvailability: {
+            folders: typeof getChatList()?.getFoldersList === 'function',
+            categories: typeof getChatList()?.getCategoriesCatalog === 'function',
+            labels: typeof getChatList()?.getLabelsCatalog === 'function',
+            folderBindings: typeof getChatList()?.resolveFolderBindings === 'function',
+            folderWrite: typeof getChatList()?.setFolderBinding === 'function',
+            categoryWrite: typeof getChatList()?.setSnapshotCategory === 'function',
+          },
+          lastReads: { ...state.lastReads },
+          lastWrites: { ...state.lastWrites },
         },
         indexCounts: idx?.counts?.() || null,
         layout: loadLayout(),

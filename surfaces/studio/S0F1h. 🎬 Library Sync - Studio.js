@@ -63,6 +63,26 @@
     transport: null,        // 'platform.broadcast' | 'chrome.storage.fallback' | null
     unsub: null,            // teardown for the bound listener, if any
     lastSync: 0,
+    lastChangeKeys: [],
+    lastWatchedHits: [],
+    lastEmittedReasons: [],
+    lastNativeBroadcastAt: 0,
+    lastNativeBroadcastTs: 0,
+    lastNativeBroadcastKeys: [],
+    lastNativeBroadcastReasons: [],
+    lastNativeBroadcastHasLinkedRecords: false,
+    lastNativeBroadcastLinkedRecordsCount: 0,
+    lastNativeBroadcastProjectCatalogCount: 0,
+    lastNativeBroadcastProjectCatalogSource: '',
+    lastNativeBroadcastPayload: null,
+    lastNativeBroadcastReadAt: 0,
+    lastNativeBroadcastReadSource: '',
+    lastNativeBroadcastReadError: '',
+    lastRefreshOwners: [],
+    lastStudioBroadcastAt: 0,
+    lastStudioBroadcastReason: '',
+    lastStudioBroadcastPayloadKeys: [],
+    lastStudioBroadcastTransport: '',
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -95,9 +115,87 @@
     } catch { return false; }
   }
 
+  function hasChromeStorageRead() {
+    try {
+      return !!(W.chrome && chrome.storage && chrome.storage.local && typeof chrome.storage.local.get === 'function');
+    } catch { return false; }
+  }
+
   function isWatchedKey(key) {
     const k = String(key || '');
     return WATCHED_PREFIXES.some((p) => k.startsWith(p));
+  }
+
+  function normalizeNativeBroadcastPayload(value) {
+    const raw = value && typeof value === 'object' ? value : null;
+    if (!raw) return null;
+    if (raw.projectCatalog || Array.isArray(raw.linkedRecords) || raw.surface === 'native' || Array.isArray(raw.reasons)) return raw;
+    const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : null;
+    if (payload && (payload.projectCatalog || Array.isArray(payload.linkedRecords) || payload.surface === 'native' || Array.isArray(payload.reasons))) return payload;
+    const nestedValue = raw.value && typeof raw.value === 'object' ? raw.value : null;
+    if (nestedValue && (nestedValue.projectCatalog || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native' || Array.isArray(nestedValue.reasons))) return nestedValue;
+    return raw;
+  }
+
+  function emitNativeBroadcastUpdated(payload, reason) {
+    const detail = {
+      key: NATIVE_BROADCAST_KEY,
+      payload: payload || null,
+      reason: String(reason || 'native-broadcast'),
+      t: Date.now(),
+    };
+    try { W.dispatchEvent(new CustomEvent('evt:h2o:library:native-broadcast-updated', { detail })); } catch {}
+    try { W.H2O?.events?.emit?.('library:native-broadcast-updated', detail); } catch {}
+  }
+
+  function rememberNativeBroadcast(payload, reason = '') {
+    try {
+      const p = normalizeNativeBroadcastPayload(payload);
+      state.lastNativeBroadcastAt = Date.now();
+      state.lastNativeBroadcastTs = Number(p?.ts || 0) || 0;
+      state.lastNativeBroadcastKeys = p ? Object.keys(p).slice(0, 24) : [];
+      state.lastNativeBroadcastReasons = Array.isArray(p?.reasons) ? p.reasons.slice(0, 24) : [];
+      state.lastNativeBroadcastHasLinkedRecords = Array.isArray(p?.linkedRecords);
+      state.lastNativeBroadcastLinkedRecordsCount = Array.isArray(p?.linkedRecords) ? p.linkedRecords.length : 0;
+      state.lastNativeBroadcastProjectCatalogCount = Array.isArray(p?.projectCatalog?.rows) ? p.projectCatalog.rows.length : 0;
+      state.lastNativeBroadcastProjectCatalogSource = String(p?.projectCatalog?.source || '');
+      state.lastNativeBroadcastPayload = p || null;
+      emitNativeBroadcastUpdated(p, reason);
+    } catch {}
+  }
+
+  async function refreshNativeBroadcast(reason = '') {
+    if (!hasChromeStorageRead()) {
+      state.lastNativeBroadcastReadAt = Date.now();
+      state.lastNativeBroadcastReadSource = 'none';
+      state.lastNativeBroadcastReadError = 'chrome-storage-read-unavailable';
+      return null;
+    }
+    try {
+      const raw = await new Promise((resolve) => {
+        try {
+          chrome.storage.local.get(NATIVE_BROADCAST_KEY, (items) => {
+            if (chrome.runtime && chrome.runtime.lastError) { resolve(null); return; }
+            resolve(items && items[NATIVE_BROADCAST_KEY]);
+          });
+        } catch { resolve(null); }
+      });
+      const payload = normalizeNativeBroadcastPayload(raw);
+      state.lastNativeBroadcastReadAt = Date.now();
+      state.lastNativeBroadcastReadSource = payload ? 'chrome.storage.local' : 'chrome.storage.local-empty';
+      state.lastNativeBroadcastReadError = payload ? '' : state.lastNativeBroadcastReadError;
+      if (payload) {
+        rememberNativeBroadcast(payload, reason || 'refresh');
+        step('native-broadcast.refresh', String(reason || 'manual'));
+      }
+      return payload;
+    } catch (e) {
+      state.lastNativeBroadcastReadAt = Date.now();
+      state.lastNativeBroadcastReadSource = 'error';
+      state.lastNativeBroadcastReadError = String(e?.message || e || 'native-broadcast-read-error');
+      err('native-broadcast.refresh', e);
+      return null;
+    }
   }
 
   /* Single change-handler body, shared by the platform-backed and legacy
@@ -105,7 +203,9 @@
   function handleChanges(changes, area) {
     if (area !== 'local') return;
     const hits = [];
-    for (const key of Object.keys(changes || {})) {
+    const changedKeys = Object.keys(changes || {});
+    state.lastChangeKeys = changedKeys.slice(-24);
+    for (const key of changedKeys) {
       if (isWatchedKey(key)) hits.push(key);
       if (key === BROADCAST_KEY) {
         // chrome.storage.onChanged fires in the writing context too, so
@@ -119,9 +219,15 @@
       // Native counterpart (0F1h) writes here on its own state changes.
       // Studio reacts so a folder/category mutation made in a chatgpt.com
       // tab refreshes the open Library page.
-      if (key === NATIVE_BROADCAST_KEY) hits.push('native-broadcast');
+      if (key === NATIVE_BROADCAST_KEY) {
+        rememberNativeBroadcast(changes[NATIVE_BROADCAST_KEY]?.newValue || null, 'storage.onChanged');
+        hits.push('native-broadcast');
+      }
     }
-    if (hits.length) coalesceEmit(`${state.transport || 'transport'}:${hits.length}`);
+    if (hits.length) {
+      state.lastWatchedHits = hits.slice(-24);
+      coalesceEmit(`${state.transport || 'transport'}:${hits.length}`);
+    }
   }
 
   function emitSync(reasonList) {
@@ -131,6 +237,7 @@
     try { W.dispatchEvent(new CustomEvent('h2o:library:cross-surface-sync', { detail })); } catch {}
     try { W.H2O?.events?.emit?.('library:cross-surface-sync', detail); } catch {}
     state.subscribers.forEach((fn) => { try { fn(detail); } catch (e) { err('subscriber', e); } });
+    state.lastEmittedReasons = reasons.slice(0, 24);
     step('emit-sync', String(reasons.length));
   }
 
@@ -147,9 +254,17 @@
       try {
         const ws = H2O.LibraryWorkspace;
         const idx = H2O.LibraryIndex;
-        if (idx?.refresh) idx.refresh('cross-surface-sync').catch(() => {});
+        const owners = [];
+        if (idx?.refresh) {
+          owners.push('library-index');
+          idx.refresh('cross-surface-sync').catch(() => {});
+        }
         // Workspace caches will bust naturally via the index-updated subscription.
-        if (ws?._bustCaches) ws._bustCaches('cross-surface-sync');
+        if (ws?._bustCaches) {
+          owners.push('library-workspace');
+          ws._bustCaches('cross-surface-sync');
+        }
+        state.lastRefreshOwners = owners;
       } catch (e) { err('refresh.bust', e); }
     }, COALESCE_MS);
   }
@@ -193,9 +308,13 @@
       reason: String(reason || 'studio-change'),
       payload: payload && typeof payload === 'object' ? payload : null,
     };
+    state.lastStudioBroadcastAt = body.ts;
+    state.lastStudioBroadcastReason = body.reason;
+    state.lastStudioBroadcastPayloadKeys = body.payload ? Object.keys(body.payload).slice(0, 24) : [];
     const pb = getPlatformBroadcast();
     if (pb) {
       try {
+        state.lastStudioBroadcastTransport = 'platform.broadcast';
         // emitRaw is fire-and-forget for callers; preserve sync `return true`
         // semantics by not awaiting. Errors funnel into err() via .catch.
         pb.emitRaw(BROADCAST_KEY, body)
@@ -204,13 +323,21 @@
         return true;
       } catch (e) { err('broadcast.platform', e); /* fall through to legacy */ }
     }
-    if (!hasChromeStorage()) return false;
+    if (!hasChromeStorage()) {
+      state.lastStudioBroadcastTransport = 'drop:no-chrome-storage';
+      return false;
+    }
     try {
+      state.lastStudioBroadcastTransport = 'chrome.storage.fallback';
       chrome.storage.local.set({ [BROADCAST_KEY]: body }, () => {
         step('broadcast.fallback', body.reason);
       });
       return true;
-    } catch (e) { err('broadcast.fallback', e); return false; }
+    } catch (e) {
+      state.lastStudioBroadcastTransport = 'drop:error';
+      err('broadcast.fallback', e);
+      return false;
+    }
   }
 
   // ── Workspace bridge ───────────────────────────────────────────────────────
@@ -240,7 +367,12 @@
     },
     broadcast: broadcastFromStudio,
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
+    getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
+    refreshNativeBroadcast,
     diagnose() {
+      if (!state.lastNativeBroadcastAt) {
+        try { refreshNativeBroadcast('diagnose').catch(() => {}); } catch {}
+      }
       const pb = getPlatformBroadcast();
       const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
       return {
@@ -256,6 +388,32 @@
         broadcastKey: BROADCAST_KEY,
         nativeBroadcastKey: NATIVE_BROADCAST_KEY,
         coalesceMs: COALESCE_MS,
+        projection: {
+          watchedPrefixesCount: WATCHED_PREFIXES.length,
+          lastChangeKeys: state.lastChangeKeys.slice(),
+          lastWatchedHits: state.lastWatchedHits.slice(),
+          lastEmittedReasons: state.lastEmittedReasons.slice(),
+          lastRefreshOwners: state.lastRefreshOwners.slice(),
+          nativeBroadcast: {
+            observedAt: state.lastNativeBroadcastAt,
+            ts: state.lastNativeBroadcastTs,
+            payloadKeys: state.lastNativeBroadcastKeys.slice(),
+            reasons: state.lastNativeBroadcastReasons.slice(),
+            hasLinkedRecords: state.lastNativeBroadcastHasLinkedRecords,
+            linkedRecordsCount: state.lastNativeBroadcastLinkedRecordsCount,
+            projectCatalogCount: state.lastNativeBroadcastProjectCatalogCount,
+            projectCatalogSource: state.lastNativeBroadcastProjectCatalogSource,
+            readAt: state.lastNativeBroadcastReadAt,
+            readSource: state.lastNativeBroadcastReadSource,
+            readError: state.lastNativeBroadcastReadError,
+          },
+          studioBroadcast: {
+            at: state.lastStudioBroadcastAt,
+            reason: state.lastStudioBroadcastReason,
+            payloadKeys: state.lastStudioBroadcastPayloadKeys.slice(),
+            transport: state.lastStudioBroadcastTransport,
+          },
+        },
         subscribers: state.subscribers.size,
         steps: diag.steps.slice(-15),
         errors: diag.errors.slice(-10),
@@ -267,6 +425,7 @@
 
   function bootBindings() {
     bindTransport();
+    refreshNativeBroadcast('boot').catch(() => {});
     bindWorkspaceEvents() || W.setTimeout(bindWorkspaceEvents, 350);
   }
 
