@@ -6,6 +6,7 @@ export function makeChromeLiveManifest({
   PAGE_PILOT_OBSERVER_FILE,
   DEV_HAS_CONTROLS,
   DEV_TITLE,
+  DEV_ACTION_TITLE,
   DEV_NAME,
   DEV_VERSION,
   DEV_DESCRIPTION,
@@ -45,7 +46,7 @@ export function makeChromeLiveManifest({
       .filter((value) => /^https:\/\/[a-z0-9-]+\.supabase\.co\/\*$/.test(value)),
   ));
   const action = {
-    default_title: DEV_TITLE,
+    default_title: DEV_ACTION_TITLE || DEV_TITLE,
     default_icon: {
       "16": "icon16.png",
       "32": "icon32.png",

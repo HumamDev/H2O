@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  removeArchiveWorkbenchFromOut,
   syncArchiveWorkbenchToOut,
+  removeArchiveWorkbenchFromOut,
 } from "../studio/pack-studio.mjs";
 import {
   syncIdentitySurfaceToOut,
@@ -61,6 +61,7 @@ const {
   MANIFEST_PROFILE,
   DEV_VERSION,
   DEV_TITLE,
+  DEV_ACTION_TITLE,
   DEV_NAME,
   DEV_DESCRIPTION,
   DEV_TAG,
@@ -402,6 +403,7 @@ async function main() {
       PAGE_PILOT_OBSERVER_FILE,
       DEV_HAS_CONTROLS,
       DEV_TITLE,
+      DEV_ACTION_TITLE,
       DEV_NAME,
       DEV_VERSION,
       DEV_DESCRIPTION,
@@ -433,6 +435,7 @@ async function main() {
     DEV_TAG,
     CHAT_MATCH,
     DEV_HAS_CONTROLS,
+    MANIFEST_PROFILE,
     IDENTITY_PROVIDER_BUNDLE_PATH: IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH,
     IDENTITY_PROVIDER_PRIVATE_CONFIG_PATH: IDENTITY_PROVIDER_PRIVATE_CONFIG_RELATIVE_PATH,
     IDENTITY_PROVIDER_OPTIONAL_HOST_PATTERN: identityProviderBuildConfig.optionalHostPattern,
@@ -467,14 +470,34 @@ async function main() {
       DEV_ORDER_SECTIONS_SNAPSHOT,
       DEV_ALIAS_FILENAME_MAP,
     }));
-    syncArchiveWorkbenchToOut(SRC, OUT_DIR);
   } else {
     for (const n of ["popup.html", "popup.css", "popup.js"]) {
       try {
         fs.unlinkSync(path.join(OUT_DIR, n));
       } catch {}
     }
+  }
+
+  // Studio is the canonical Studio app and storage owner, hosted ONLY in
+  // chrome-ext-prod. Dev-controls / dev-lean ship without the Studio surface
+  // so the dev-controls extension is purely a debug/toggle tool and cannot
+  // accidentally create a second Studio storage namespace under a different
+  // extension ID. The bg.js for non-prod profiles also disables the action
+  // listener, openWorkbench, and presence-restore (see ARCHIVE_WORKBENCH_ENABLED
+  // in chrome-live-background.mjs — gated on MANIFEST_PROFILE === "production").
+  if (MANIFEST_PROFILE === "production") {
+    syncArchiveWorkbenchToOut(SRC, OUT_DIR);
+  } else {
+    // removeArchiveWorkbenchFromOut only deletes files it knows about
+    // (ARCHIVE_WORKBENCH_OUT_FILES). That leaves stale files from previous
+    // builds (renamed scripts, .DS_Store, etc.) which keep the directory
+    // alive and let chrome.runtime.getURL("surfaces/studio/studio.html")
+    // still resolve to a partial / broken page. Recursively removing the
+    // whole surfaces/studio directory guarantees a clean non-prod build.
     removeArchiveWorkbenchFromOut(OUT_DIR);
+    try {
+      fs.rmSync(path.join(OUT_DIR, "surfaces", "studio"), { recursive: true, force: true });
+    } catch {}
   }
 
   writeFile(path.join(OUT_DIR, "README.txt"), makeChromeLiveReadme({

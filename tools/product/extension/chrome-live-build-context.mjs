@@ -36,6 +36,9 @@ export function createChromeLiveBuildContext() {
   const DEV_TITLE = DEV_VARIANT === "production"
     ? "H2O Cockpit Pro"
     : (DEV_HAS_CONTROLS ? "H2O Dev Controls" : "H2O Dev Loader (Lean)");
+  const DEV_ACTION_TITLE = DEV_VARIANT === "production"
+    ? "Open H2O Studio"
+    : DEV_TITLE;
   const DEV_NAME = DEV_VARIANT === "production"
     ? "H2O Cockpit Pro"
     : (DEV_HAS_CONTROLS ? "H2O Dev Controls (Unpacked)" : "H2O Dev Loader (Lean, Unpacked)");
@@ -66,6 +69,7 @@ export function createChromeLiveBuildContext() {
     MANIFEST_PROFILE,
     DEV_VERSION,
     DEV_TITLE,
+    DEV_ACTION_TITLE,
     DEV_NAME,
     DEV_DESCRIPTION,
     DEV_TAG,

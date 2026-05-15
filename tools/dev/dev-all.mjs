@@ -69,21 +69,36 @@ function runNodeStep(label, scriptPath, extraEnv = {}) {
 async function main() {
   const { srcDir } = resolveEnvDefaults();
   const oauthGoogleOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls-oauth-google");
+  const prodOutDir = path.join(srcDir, "build", "chrome-ext-prod");
 
-  await runNodeStep("1/2 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
+  await runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
 
-  await runNodeStep("2/2 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("2/3 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
     H2O_EXT_OUT_DIR: oauthGoogleOutDir,
     H2O_IDENTITY_PHASE_NETWORK: "request_otp",
     H2O_IDENTITY_OAUTH_PROVIDER: "google",
   });
 
+  // Prod Studio launcher extension. Same builder, different variant + out dir.
+  // The dev server's proxy pack URL is irrelevant in prod (the prod manifest
+  // doesn't host_permission it) but the builder still consumes the env var, so
+  // we leave it at the default rather than threading a separate prod-only one.
+  await runNodeStep("3/3 Build Prod Studio launcher extension", "tools/product/extension/build-chrome-live-extension.mjs", {
+    H2O_EXT_DEV_VARIANT: "production",
+    H2O_EXT_OUT_DIR: prodOutDir,
+  });
+
   console.log("\n[dev:all] done");
-  console.log("[dev:all] Outputs:");
-  console.log(`[dev:all]   V3 armed oauth-google EXT OUT_DIR: ${oauthGoogleOutDir}`);
+  console.log("");
+  console.log("✅ Dev Controls OAuth Google Extension:");
+  console.log(`   ${oauthGoogleOutDir}`);
+  console.log("");
+  console.log("✅ Prod Studio Launcher Extension:");
+  console.log(`   ${prodOutDir}`);
+  console.log("");
   console.log(
-    "[dev:all] Reminder: Open chrome://extensions and reload the oauth-google dev controls extension, then refresh the page.",
+    "[dev:all] Reminder: Open chrome://extensions and reload the relevant extension(s), then refresh the page.",
   );
 }
 
