@@ -2840,11 +2840,18 @@ export function makeChromeLiveLoaderJs({
     const aliasId = normalizeAliasId(aliasIdRaw);
     if (!aliasId) return "";
     const enc = encodeURIComponent(aliasId);
+    // Always include a build-time cache-bust on the catalog-only fallback
+    // URL. Without this, when the proxy-pack fetch fails (CORS, SW asleep,
+    // network blip), the loader builds URLs here that the browser HTTP cache
+    // then serves stale forever — even after the source file is edited and
+    // the extension is rebuilt. LOADER_BUILD_TS changes on every chrome-live
+    // rebuild, so each rebuild forces a fresh fetch of every module.
+    const cacheBust = "?v=" + String(LOADER_BUILD_TS || Date.now());
     try {
       const u = new URL(PROXY_PACK_URL);
-      return u.origin + "/alias/" + enc;
+      return u.origin + "/alias/" + enc + cacheBust;
     } catch {}
-    return "http://127.0.0.1:5500/alias/" + enc;
+    return "http://127.0.0.1:5500/alias/" + enc + cacheBust;
   }
 
   function normalizeCatalog(rawCatalog) {
@@ -3637,6 +3644,27 @@ export function makeChromeLiveLoaderJs({
     });
     if (disabled.length) {
       log("disabled aliases", disabled.map((d) => d.aliasId));
+    }
+
+    // Defense-in-depth: publish the disabled-alias list to the page world via
+    // a DOM attribute on <html>. The loader's decideScriptState gate filters
+    // scripts out of the inject loop above, but that gate is a single point of
+    // failure — any future code path that injects a script bypasses it. Per-
+    // script runtime gates (inside each module's IIFE) read this attribute
+    // before any DOM ops / observers / listeners and self-abort. The attribute
+    // mechanism is CSP-safe (no inline <script>); page-world scripts read it
+    // synchronously at boot. Always set the attribute (even when empty) so
+    // scripts can rely on its presence to mean "loader has decided".
+    try {
+      const disabledAliasIds = disabled
+        .map((d) => normalizeAliasId(d && d.aliasId || ""))
+        .filter(Boolean);
+      const html = document && document.documentElement;
+      if (html) {
+        html.setAttribute("data-h2o-disabled-aliases", JSON.stringify(disabledAliasIds));
+      }
+    } catch (err) {
+      warn("publish disabled-aliases attribute failed", err && (err.message || err));
     }
 
     const host = await waitScriptHost();

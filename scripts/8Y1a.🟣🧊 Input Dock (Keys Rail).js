@@ -28,6 +28,61 @@
   const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
   const D = document;
 
+  /* ───────────────────── 0a) Loader self-gate (runtime fail-safe) ───────────────────── */
+  //
+  // The chrome-live loader filters disabled aliases out of its injection loop
+  // (decideScriptState → if (decision.enabled) ...). This is the primary gate.
+  // The runtime gate below is a defense-in-depth fail-safe: if for any reason
+  // the loader does inject this script while Dev Controls has 8Y1a toggled
+  // OFF (set/global-toggle drift, future bug, hot-reload, manual injection,
+  // browser serving a stale cached copy of THIS file from before the toggle
+  // change), we MUST NOT proceed to mount the dock. Mounting touches the
+  // live composer, installs a documentElement MutationObserver, and
+  // registers resize/scroll/input listeners — all of which the user
+  // explicitly opted out of.
+  //
+  // The canonical disabled-aliases list is published by the loader on
+  // <html data-h2o-disabled-aliases='[...]'> before any module scripts run.
+  // If our alias appears in that list: dispose any prior boot state, run
+  // emergency DOM/API cleanup, and return cleanly from the IIFE.
+  const MY_ALIAS_ID = '8Y1a._Input_Dock_(Keys_Rail)_.js';
+  try {
+    const rawDisabled = D.documentElement && D.documentElement.getAttribute('data-h2o-disabled-aliases');
+    const list = rawDisabled ? JSON.parse(rawDisabled) : [];
+    const isDisabled = Array.isArray(list) && list.indexOf(MY_ALIAS_ID) >= 0;
+    if (isDisabled) {
+      // Validation marker — confirms this file's gate code is what's running.
+      // Safe to keep in production: fires once per page load only when the
+      // module is explicitly disabled.
+      try { console.warn('[H2O/InputDock] disabled by loader; aborting boot. alias=' + MY_ALIAS_ID); } catch {}
+      // 1) Dispose any prior live instance (handles hot-reload + cached-old-
+      //    script scenarios where a prior load mounted the dock).
+      try { if (W.H2O && W.H2O.ID && W.H2O.ID.inpdck && W.H2O.ID.inpdck.api && typeof W.H2O.ID.inpdck.api.dispose === 'function') W.H2O.ID.inpdck.api.dispose(); } catch {}
+      // 2) Emergency removal of any DOM/style this module owns. Targets the
+      //    style tag the script appends (id `cgxui-idok-style`) and any
+      //    elements tagged with the module's owner attribute. Matches the
+      //    SkID/CSS_.STYLE_ID/ATTR_.CGX_OWNER constants further down in
+      //    this same file — kept in sync by the constants below.
+      try { const styleEl = D.getElementById('cgxui-idok-style'); if (styleEl && styleEl.parentNode) styleEl.parentNode.removeChild(styleEl); } catch {}
+      try {
+        const owned = D.querySelectorAll('[data-cgxui-owner="idok"]');
+        for (let i = 0; i < owned.length; i++) {
+          try { owned[i].remove(); } catch {}
+        }
+      } catch {}
+      // 3) Neutralize public APIs so other modules don't keep references to
+      //    a half-disposed instance and accidentally re-mount us.
+      try { if (W.H2O && W.H2O.InputDock) W.H2O.InputDock.api = Object.create(null); } catch {}
+      try { if (W.H2O && W.H2O.ID && W.H2O.ID.inpdck) W.H2O.ID.inpdck.api = Object.create(null); } catch {}
+      return;
+    }
+  } catch (gateErr) {
+    // Gate threw before deciding. Log but continue to boot — failing closed
+    // here would be worse: an unparseable attribute would brick every page
+    // load. The primary loader gate (decideScriptState) still applies.
+    try { console.warn('[H2O/InputDock] gate check threw; continuing to boot. err=', gateErr && (gateErr.message || gateErr)); } catch {}
+  }
+
   /* ───────────────────────────── 0) Identity (confirmed) ───────────────────────────── */
 
   const TOK = 'ID';
