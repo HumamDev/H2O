@@ -2445,6 +2445,7 @@ export function makeChromeLiveLoaderJs({
       "getFoldersList",
       "resolveFolderBindings",
       "setFolderBinding",
+      "upsertLatestSnapshotMeta",
       "getLabelsCatalog",
       "pinSnapshot",
       "deleteSnapshot",

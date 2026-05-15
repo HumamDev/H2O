@@ -1004,6 +1004,7 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "getFoldersList",
   "resolveFolderBindings",
   "setFolderBinding",
+  "upsertLatestSnapshotMeta",
   "getLabelsCatalog",
   "getCategoriesCatalog",
   "setSnapshotCategory",
@@ -1389,6 +1390,25 @@ function normalizeSnapshotMeta(raw, categoryCatalog = DEFAULT_CATEGORY_CATALOG, 
   out.keywords = normalizeKeywords(src.keywords);
   out.category = normalizeSnapshotMetaCategory(src, out, categoryCatalog, classificationInput);
   return out;
+}
+
+function normalizeSnapshotMetaPatch(raw = {}) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  if (Object.prototype.hasOwnProperty.call(src, "folderId") || Object.prototype.hasOwnProperty.call(src, "folder")) {
+    out.folderId = String(src.folderId || src.folder || "").trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(src, "folderName")) out.folderName = String(src.folderName || "").trim();
+  return out;
+}
+
+function mergeSnapshotMetaPatch(baseMetaRaw, patchRaw = {}, opts = {}, categoryCatalog = DEFAULT_CATEGORY_CATALOG) {
+  const base = normalizeSnapshotMeta(baseMetaRaw, categoryCatalog);
+  const patch = normalizeSnapshotMetaPatch(patchRaw);
+  const next = { ...base, ...patch, updatedAt: nowIso() };
+  const source = String(opts && opts.source || "").trim();
+  if (source) next.source = source;
+  return normalizeSnapshotMeta(next, categoryCatalog);
 }
 
 function normalizeRetentionPolicy(raw) {
@@ -2532,6 +2552,39 @@ async function loadLatestSnapshot(chatId, nsDisk = DEFAULT_NS_DISK) {
   const loaded = await loadSnapshotById(list[0].snapshotId);
   if (!loaded) return null;
   return buildLoadedSnapshotResponse(loaded, await readCategoryCatalog(ns));
+}
+
+async function upsertLatestSnapshotMeta(chatId, patchRaw = {}, opts = {}, nsDisk = DEFAULT_NS_DISK) {
+  const id = normalizeChatId(chatId);
+  if (!id) throw new Error("missing chatId");
+  const patch = normalizeSnapshotMetaPatch(patchRaw);
+  if (!Object.keys(patch).length) {
+    return { ok: false, status: "empty-patch", chatId: id, patch: {} };
+  }
+  const ns = normalizeNsDisk(nsDisk);
+  return withChatLock(id, async () => {
+    const headers = await listSnapshotHeadersByChat(id);
+    const latestHeader = headers[0] || null;
+    if (!latestHeader) return { ok: false, status: "snapshot-not-found", chatId: id, patch };
+    const loaded = await loadSnapshotById(latestHeader.snapshotId);
+    if (!loaded || !loaded.header) return { ok: false, status: "snapshot-not-found", chatId: id, patch };
+    const categoryCatalog = await readCategoryCatalog(ns);
+    const nextHeader = {
+      ...loaded.header,
+      meta: mergeSnapshotMetaPatch(loaded.header.meta, patch, opts, categoryCatalog),
+    };
+    const db = await openArchiveDb();
+    const tx = db.transaction([STORE_SNAPSHOTS], "readwrite");
+    tx.objectStore(STORE_SNAPSHOTS).put(nextHeader);
+    await txDone(tx);
+    return {
+      ok: true,
+      status: "ok",
+      chatId: id,
+      patch,
+      snapshotId: String(nextHeader.snapshotId || ""),
+    };
+  });
 }
 
 async function replaceSnapshotCategory(snapshotId, categoryRecord, nsDisk = DEFAULT_NS_DISK) {
@@ -3728,6 +3781,9 @@ async function handleArchiveMessage(msg) {
   }
   if (op === "setFolderBinding") {
     return { ok: true, result: await setFolderBindingBridge(payload.chatId, payload.folderId, nsDisk) };
+  }
+  if (op === "upsertLatestSnapshotMeta") {
+    return { ok: true, result: await upsertLatestSnapshotMeta(payload.chatId, payload.patch, payload.opts, nsDisk) };
   }
   if (op === "getLabelsCatalog") {
     return { ok: true, result: await readLabelCatalog(nsDisk) };

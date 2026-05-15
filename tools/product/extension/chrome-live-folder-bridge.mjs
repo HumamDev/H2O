@@ -167,6 +167,12 @@ export function makeChromeLiveFolderBridgePageJs() {
     }
     if (!folderId) {
       delKey(keyArchiveFolder(id, nsDisk));
+      try {
+        const upsert = window.H2O && window.H2O.archiveBoot && typeof window.H2O.archiveBoot.upsertLatestSnapshotMeta === "function"
+          ? window.H2O.archiveBoot.upsertLatestSnapshotMeta.bind(window.H2O.archiveBoot)
+          : null;
+        if (upsert) Promise.resolve(upsert(id, { folderId: "", folderName: "" }, { source: "ext-folder-bridge" })).catch(() => {});
+      } catch {}
       return { ok: true, chatId: id, folderId: "", folderName: "" };
     }
     const info = resolveFolderInfo(folderId);
@@ -175,6 +181,12 @@ export function makeChromeLiveFolderBridgePageJs() {
       folderName: info.folderName,
       updatedAt: new Date().toISOString(),
     });
+    try {
+      const upsert = window.H2O && window.H2O.archiveBoot && typeof window.H2O.archiveBoot.upsertLatestSnapshotMeta === "function"
+        ? window.H2O.archiveBoot.upsertLatestSnapshotMeta.bind(window.H2O.archiveBoot)
+        : null;
+      if (upsert) Promise.resolve(upsert(id, { folderId: info.folderId, folderName: info.folderName }, { source: "ext-folder-bridge" })).catch(() => {});
+    } catch {}
     return { ok: true, chatId: id, folderId: info.folderId, folderName: info.folderName };
   }
 

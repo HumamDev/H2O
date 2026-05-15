@@ -364,9 +364,247 @@
   function normalizeCreatedAt(raw) {
     if (raw == null || raw === "") return null;
     const n = Number(raw);
-    if (Number.isFinite(n)) return Math.floor(n);
+    if (Number.isFinite(n)) {
+      if (Math.abs(n) >= 1e9 && Math.abs(n) < 1e11) return Math.floor(n * 1000);
+      return Math.floor(n);
+    }
     const d = new Date(String(raw));
     return Number.isFinite(d.getTime()) ? d.getTime() : null;
+  }
+
+  function readSidebarConversationTitle(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return "";
+    try {
+      const anchors = D.querySelectorAll('a[href*="/c/"]');
+      for (const a of anchors) {
+        const href = String(a?.getAttribute?.("href") || "").trim();
+        if (toChatId((href.match(/\/c\/([a-z0-9-]+)/i) || [])[1]) !== chatId) continue;
+        const title = String(a.getAttribute?.("title") || a.innerText || "").replace(/\s+/g, " ").trim();
+        if (title) return title;
+      }
+    } catch {}
+    return "";
+  }
+
+  function readConversationHistoryCacheTitle(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return "";
+    try {
+      const box = W.localStorage;
+      const len = Number(box?.length || 0);
+      for (let i = 0; i < len; i += 1) {
+        const key = String(box?.key?.(i) || "");
+        if (!key || !/\/conversation-history$/i.test(key)) continue;
+        const raw = box.getItem(key);
+        if (!raw) continue;
+        let parsed = null;
+        try { parsed = JSON.parse(raw); } catch { parsed = null; }
+        const pages = Array.isArray(parsed?.value?.pages) ? parsed.value.pages : [];
+        for (const page of pages) {
+          const items = Array.isArray(page?.items) ? page.items : [];
+          for (const item of items) {
+            if (toChatId(item?.id || item?.conversationId || "") !== chatId) continue;
+            const title = String(item?.title || item?.snippet || "").replace(/\s+/g, " ").trim();
+            if (title) return title;
+          }
+        }
+      }
+    } catch {}
+    return "";
+  }
+
+  async function readChatGptAccessToken() {
+    try {
+      if (typeof W.fetch !== "function") return "";
+      const res = await W.fetch("/api/auth/session", {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (!res?.ok) return "";
+      const json = await res.json();
+      return String(json?.accessToken || json?.access_token || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function nativeConversationHeaders(path, accessToken) {
+    const headers = {
+      accept: "application/json",
+      "content-type": "application/json",
+      "x-openai-target-path": path,
+      "x-openai-target-route": path,
+    };
+    if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+    return headers;
+  }
+
+  function targetChatHref(chatIdRaw) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return String(W.location.href || "");
+    try {
+      return new URL(`/c/${encodeURIComponent(chatId)}`, W.location.origin).toString();
+    } catch {
+      return `/c/${encodeURIComponent(chatId)}`;
+    }
+  }
+
+  function appendConversationTextParts(out, value) {
+    if (value == null) return;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      const text = String(value).replace(/\s+\n/g, "\n").replace(/\n\s+/g, "\n").trim();
+      if (text) out.push(text);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => appendConversationTextParts(out, item));
+      return;
+    }
+    if (!isObj(value)) return;
+
+    if (Array.isArray(value.parts)) {
+      appendConversationTextParts(out, value.parts);
+      return;
+    }
+    if (Array.isArray(value.items)) {
+      appendConversationTextParts(out, value.items);
+      return;
+    }
+    if (Array.isArray(value.children)) {
+      appendConversationTextParts(out, value.children);
+      return;
+    }
+
+    if (typeof value.text === "string") appendConversationTextParts(out, value.text);
+    else if (typeof value.content === "string") appendConversationTextParts(out, value.content);
+    else if (typeof value.result === "string") appendConversationTextParts(out, value.result);
+    else if (typeof value.caption === "string") appendConversationTextParts(out, value.caption);
+    else if (typeof value.alt === "string") appendConversationTextParts(out, value.alt);
+    else if (typeof value.value === "string") appendConversationTextParts(out, value.value);
+  }
+
+  function extractConversationMessageText(message) {
+    const content = isObj(message?.content) ? message.content : {};
+    const parts = [];
+    if (Array.isArray(content.parts)) appendConversationTextParts(parts, content.parts);
+    else appendConversationTextParts(parts, content);
+    if (!parts.length) appendConversationTextParts(parts, message?.text);
+    const seen = new Set();
+    return parts
+      .map((part) => String(part || "").replace(/\s+/g, " ").trim())
+      .filter((part) => {
+        if (!part || seen.has(part)) return false;
+        seen.add(part);
+        return true;
+      })
+      .join("\n\n")
+      .trim();
+  }
+
+  function normalizeBackendConversationMessages(conversation) {
+    const mapping = isObj(conversation?.mapping) ? conversation.mapping : {};
+    const currentNode = String(conversation?.current_node || "").trim();
+    const chain = [];
+    const seen = new Set();
+    let cursor = currentNode;
+    while (cursor && !seen.has(cursor) && isObj(mapping[cursor])) {
+      seen.add(cursor);
+      chain.push(mapping[cursor]);
+      cursor = String(mapping[cursor]?.parent || "").trim();
+    }
+
+    const orderedNodes = chain.length
+      ? chain.reverse()
+      : Object.values(mapping).filter((row) => isObj(row)).sort((a, b) => {
+          const aTime = Number(a?.message?.create_time || a?.create_time || 0);
+          const bTime = Number(b?.message?.create_time || b?.create_time || 0);
+          return aTime - bTime;
+        });
+
+    const rows = [];
+    for (let i = 0; i < orderedNodes.length; i += 1) {
+      const node = isObj(orderedNodes[i]) ? orderedNodes[i] : {};
+      const message = isObj(node.message) ? node.message : {};
+      const role = String(message?.author?.role || "").trim().toLowerCase();
+      if (role !== "user" && role !== "assistant") continue;
+      if (message?.metadata?.is_visually_hidden_from_conversation === true) continue;
+      const text = extractConversationMessageText(message);
+      if (!text) continue;
+      rows.push({
+        role,
+        text,
+        order: rows.length,
+        createdAt: normalizeCreatedAt(message?.create_time ?? node?.create_time ?? ""),
+      });
+    }
+    return normalizeMessages(rows);
+  }
+
+  async function fetchConversationCapture(chatIdRaw, opts = {}) {
+    const chatId = toChatId(chatIdRaw);
+    if (!chatId) return { ok: false, reason: "missing-chat-id", message: "Missing chat id." };
+    if (typeof W.fetch !== "function") {
+      return { ok: false, reason: "fetch-unavailable", message: "Browser fetch is unavailable." };
+    }
+
+    const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
+    const accessToken = await readChatGptAccessToken();
+    let res = null;
+    try {
+      res = await W.fetch(path, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: nativeConversationHeaders(path, accessToken),
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "backend-request-failed",
+        error: String(error && (error.message || error) || ""),
+        message: "Could not load this chat from ChatGPT. Open the chat and try again.",
+      };
+    }
+
+    let body = null;
+    try { body = await res.clone().json(); } catch {}
+    if (!res?.ok) {
+      return {
+        ok: false,
+        reason: `backend-${res?.status || "unknown"}`,
+        statusCode: Number(res?.status || 0) || 0,
+        message: "Could not load this chat from ChatGPT. Open the chat and try again.",
+      };
+    }
+
+    const messages = normalizeBackendConversationMessages(body);
+    if (!messages.length) {
+      return {
+        ok: false,
+        reason: "backend-empty-messages",
+        message: "This chat could not be loaded for saving. Open it and try again.",
+      };
+    }
+
+    const title = String(
+      body?.title
+      || opts.title
+      || readSidebarConversationTitle(chatId)
+      || readConversationHistoryCacheTitle(chatId)
+      || chatId
+    ).trim();
+
+    return {
+      ok: true,
+      chatId,
+      title,
+      href: String(opts.href || targetChatHref(chatId)).trim(),
+      messages,
+      source: "backend-conversation",
+    };
   }
 
   function normalizeMessages(messages) {
@@ -2100,15 +2338,53 @@
   async function captureNow(chatIdRaw, captureOpts = {}) {
     const chatId = toChatId(chatIdRaw || getCurrentChatId());
     if (!chatId) throw new Error("missing chatId");
-    const messages = captureDomNormalizedMessages();
-    if (!messages.length) return { ok: false, message: "No chat content found to archive." };
+    const currentChatId = toChatId(getCurrentChatId());
+    const shouldUseBackend = !currentChatId || currentChatId !== chatId;
+    let messages = [];
     let bridgeError = "";
+    let richTurns = [];
+    let turnHighlights = [];
+    let metaOverrides = {};
+    let captureSource = shouldUseBackend ? "backend" : "dom";
 
-    const nativeTurns = collectNativeTurnNodes(D);
-    const richTurns = captureDomRichTurns(nativeTurns);
-    const turnHighlights = captureAssistantTurnHighlights(nativeTurns);
+    if (shouldUseBackend) {
+      const fetched = await fetchConversationCapture(chatId, captureOpts);
+      if (!fetched?.ok) {
+        return {
+          ...(isObj(fetched) ? fetched : {}),
+          ok: false,
+          chatId,
+          captureSource: "backend",
+        };
+      }
+      messages = normalizeMessages(fetched.messages);
+      metaOverrides = {
+        href: String(fetched.href || targetChatHref(chatId)),
+        title: String(fetched.title || ""),
+        source: String(fetched.source || "backend-conversation"),
+      };
+    } else {
+      messages = captureDomNormalizedMessages();
+      if (!messages.length) {
+        const fetched = await fetchConversationCapture(chatId, captureOpts);
+        if (!fetched?.ok) return { ok: false, message: "No chat content found to archive." };
+        captureSource = "backend";
+        messages = normalizeMessages(fetched.messages);
+        metaOverrides = {
+          href: String(fetched.href || targetChatHref(chatId)),
+          title: String(fetched.title || ""),
+          source: String(fetched.source || "backend-conversation"),
+        };
+      } else {
+        const nativeTurns = collectNativeTurnNodes(D);
+        richTurns = captureDomRichTurns(nativeTurns);
+        turnHighlights = captureAssistantTurnHighlights(nativeTurns);
+      }
+    }
+    if (!messages.length) return { ok: false, message: "No chat content found to archive." };
     const meta = buildCaptureMeta(chatId, messages, {
       ...(isObj(captureOpts) ? captureOpts : {}),
+      ...metaOverrides,
       richTurns,
       turnHighlights,
     });
@@ -2125,6 +2401,7 @@
           ...(isObj(out) ? out : {}),
           ok: out?.ok !== false,
           messageCount: Number(out?.messageCount || messages.length || 0),
+          captureSource,
           storage: "extension",
           workbenchVisible: true,
         };
@@ -2144,6 +2421,7 @@
       ...(isObj(out) ? out : {}),
       ok: out?.ok !== false,
       messageCount: Number(out?.messageCount || messages.length || 0),
+      captureSource,
       storage: "legacy",
       workbenchVisible: false,
       bridgeError,
@@ -2289,6 +2567,10 @@
   function normalizeSnapshotMetaPatch(raw = {}) {
     const src = isObj(raw) ? raw : {};
     const out = {};
+    if (Object.prototype.hasOwnProperty.call(src, 'folderId') || Object.prototype.hasOwnProperty.call(src, 'folder')) {
+      out.folderId = String(src.folderId || src.folder || '').trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(src, 'folderName')) out.folderName = String(src.folderName || '').trim();
     if (Object.prototype.hasOwnProperty.call(src, 'tags')) out.tags = normalizeTags(src.tags);
     if (Object.prototype.hasOwnProperty.call(src, 'keywords')) out.keywords = normalizeKeywords(src.keywords);
     if (Object.prototype.hasOwnProperty.call(src, 'category')) out.category = normalizeCategoryAssignment(src.category);
@@ -2570,7 +2852,10 @@
   async function captureWithOptions(opts = {}) {
     const chatId = toChatId(opts.chatId || getCurrentChatId());
     if (!chatId) throw new Error("missing chatId");
-    const folderResult = setFolderBinding(chatId, opts.folderId);
+    const hasFolderSelection = Object.prototype.hasOwnProperty.call(opts || {}, "folderId");
+    let folderResult = hasFolderSelection
+      ? (setFolderBinding(chatId, opts.folderId) || { folderId: "", folderName: "" })
+      : resolveFolderBinding(chatId);
     const mode = normalizeAfterSaveMode(opts.mode || SAVE_MODE_SILENT);
     setDockAfterSaveMode(mode);
     const captureMetaOverrides = {
@@ -2582,6 +2867,10 @@
       keywords: opts.keywords,
     };
     const res = await captureNow(chatId, captureMetaOverrides);
+    if (hasFolderSelection) {
+      const rebound = setFolderBinding(chatId, opts.folderId);
+      if (rebound && typeof rebound === "object") folderResult = rebound;
+    }
     const snapshotId = String(res?.snapshotId || "");
     let afterOpen = null;
     if (mode === SAVE_MODE_READER) {
@@ -3638,7 +3927,7 @@
     toChatId,
     isExtensionBacked,
     getStorageMode,
-    captureNow: (chatId) => captureNow(chatId),
+    captureNow: (chatId, opts = {}) => captureNow(chatId, opts),
     captureWithOptions: (opts = {}) => captureWithOptions(opts),
     loadLatestSnapshot: (chatId) => loadLatestSnapshotInternal(chatId),
     getCachedLatestSnapshot: (chatIdRaw) => {
