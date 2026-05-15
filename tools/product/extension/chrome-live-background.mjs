@@ -2742,10 +2742,17 @@ function normalizeFolderList(raw) {
 }
 
 function normalizeFolderBinding(raw) {
-  return {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const out = {
     folderId: String(raw && (raw.folderId || raw.id) || "").trim(),
     folderName: String(raw && (raw.folderName || raw.name || raw.title) || "").trim(),
   };
+  if (Object.prototype.hasOwnProperty.call(src, "ok")) out.ok = src.ok !== false;
+  if (Object.prototype.hasOwnProperty.call(src, "status")) out.status = String(src.status || "").trim();
+  if (Object.prototype.hasOwnProperty.call(src, "reason")) out.reason = String(src.reason || "").trim();
+  if (Object.prototype.hasOwnProperty.call(src, "chatId")) out.chatId = normalizeChatId(src.chatId);
+  if (Object.prototype.hasOwnProperty.call(src, "href")) out.href = String(src.href || "").trim();
+  return out;
 }
 
 function folderCatalogCacheKey(nsDisk = DEFAULT_NS_DISK) {
@@ -2947,12 +2954,33 @@ async function resolveFolderBindingsBridge(chatIds, nsDisk = DEFAULT_NS_DISK) {
 async function setFolderBindingBridge(chatId, folderId, nsDisk = DEFAULT_NS_DISK) {
   const id = normalizeChatId(chatId);
   if (!id) throw new Error("missing chatId");
-  const result = normalizeFolderBinding(await queryFolderBridge("setFolderBinding", {
-    chatId: id,
-    folderId: String(folderId || ""),
-  }, nsDisk));
-  await writeFolderBindingCache(id, result, nsDisk);
-  return result;
+  try {
+    const result = normalizeFolderBinding(await queryFolderBridge("setFolderBinding", {
+      chatId: id,
+      folderId: String(folderId || ""),
+    }, nsDisk));
+    if (result.ok === false) {
+      return {
+        ok: false,
+        status: String(result.status || result.reason || "rejected"),
+        reason: String(result.reason || result.status || "rejected"),
+        chatId: id,
+        folderId: String(result.folderId || ""),
+        folderName: String(result.folderName || ""),
+      };
+    }
+    await writeFolderBindingCache(id, result, nsDisk);
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      status: "folder-bridge-unavailable",
+      reason: String(error && (error.message || error) || "folder bridge unavailable"),
+      chatId: id,
+      folderId: "",
+      folderName: "",
+    };
+  }
 }
 
 function normalizeWorkbenchRoute(routeRaw) {

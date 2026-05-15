@@ -183,6 +183,10 @@
     const cl = getChatList();
     if (!cl) throw new Error('chat-list service unavailable');
     const result = await cl.setFolderBinding(chatId, folderId, opts);
+    if (result?.ok === false) {
+      step('setFolderBinding.rejected', String(result.status || result.reason || 'rejected'));
+      return result;
+    }
     bustCaches('setFolderBinding');
     try { await getIndex()?.refresh('setFolderBinding'); } catch {}
     emitUpdated('folder-binding-changed', { chatId, folderId, source: opts?.source || null });

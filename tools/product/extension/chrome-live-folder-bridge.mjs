@@ -132,6 +132,39 @@ export function makeChromeLiveFolderBridgePageJs() {
     const id = normalizeChatId(chatId);
     if (!id) throw new Error("missing chatId");
     const folderId = String(folderIdRaw || "").trim();
+    const api = foldersApi();
+    if (api && typeof api.setBinding === "function") {
+      const res = api.setBinding(id, folderId);
+      if (res && res.ok === false) {
+        return {
+          ok: false,
+          chatId: id,
+          folderId: String(res.folderId || ""),
+          folderName: String(res.folderName || ""),
+          status: String(res.status || res.reason || "rejected"),
+          reason: String(res.reason || res.status || "rejected"),
+        };
+      }
+      const info = folderId ? resolveFolderInfo(folderId) : { folderId: "", folderName: "" };
+      const effectiveId = String(res && (res.folderId || res.id) || info.folderId || "").trim();
+      const effectiveName = String(res && (res.folderName || res.name) || info.folderName || effectiveId).trim();
+      if (effectiveId) {
+        writeJson(keyArchiveFolder(id, nsDisk), {
+          folderId: effectiveId,
+          folderName: effectiveName,
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        delKey(keyArchiveFolder(id, nsDisk));
+      }
+      return {
+        ok: !res || res.ok !== false,
+        chatId: id,
+        folderId: effectiveId,
+        folderName: effectiveName,
+        status: String(res && res.status || "ok"),
+      };
+    }
     if (!folderId) {
       delKey(keyArchiveFolder(id, nsDisk));
       return { ok: true, chatId: id, folderId: "", folderName: "" };
