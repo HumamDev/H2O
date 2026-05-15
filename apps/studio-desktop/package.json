@@ -1,0 +1,16 @@
+{
+  "name": "@h2o/studio-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "H2O Studio — Tauri V2 desktop shell (M1 boot proof; V1 = import-only).",
+  "type": "module",
+  "scripts": {
+    "prepare-dist": "node ./scripts/prepare-dist.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "npm run prepare-dist && tauri dev",
+    "tauri:build": "npm run prepare-dist && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

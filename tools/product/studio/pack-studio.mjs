@@ -17,6 +17,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Subdir entries; pack-studio's sync step creates parent dirs on copy.
   "platform/index.js",
   "platform/platform.mv3.js",
+  "platform/platform.tauri.js",
   "platform/selectors.contract.js",
 
   // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
@@ -98,6 +99,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Studio Platform Adapter — see SOURCE_FILES list above for context.
   "platform/index.js",
   "platform/platform.mv3.js",
+  "platform/platform.tauri.js",
   "platform/selectors.contract.js",
 
   // Studio Store — see SOURCE_FILES list above for context.
