@@ -43,6 +43,130 @@
   }
   if (!detectTauri()) return;
 
+  /* ── chrome.storage.local polyfill (M1 only) ────────────────────────
+   * `surfaces/studio/store/highlights.js` and
+   * `surfaces/studio/store/libraryIndex.js` both check `chrome.storage.local`
+   * directly via their own `hasChromeStorage()` helper. They predate
+   * platform.storage integration. In Tauri there is no `chrome` global,
+   * so without this shim those entity stores report
+   * `diagnose().backend === 'none'` and every read/write becomes a
+   * silent no-op.
+   *
+   * This installs a localStorage-backed shim that matches
+   * chrome.storage.local's callback-and-Promise contract closely enough
+   * for the entity stores' `get` / `set` / `remove` calls and for
+   * `chrome.storage.onChanged.addListener` (used by their cross-tab
+   * binding). Also stubs `chrome.runtime` so `chrome.runtime.lastError`
+   * reads return `undefined` cleanly.
+   *
+   * M2 will replace this with a SQLite-backed shim driven by
+   * tauri-plugin-sql. The entity stores will not need to change.
+   */
+  (function installChromeStorageShim() {
+    try {
+      if (typeof global.chrome === 'undefined') {
+        try { global.chrome = {}; } catch (_) { return; }
+      }
+      if (!global.chrome.runtime) {
+        /* chrome.runtime.lastError is a getter that returns undefined when
+         * there's no error. An empty object suffices: accessing
+         * .lastError returns undefined, which is the success signal. */
+        global.chrome.runtime = {};
+      }
+      if (!global.chrome.storage) global.chrome.storage = {};
+      if (global.chrome.storage.local) return; /* real chrome.storage present; don't shim */
+
+      var changeListeners = new Set();
+
+      global.chrome.storage.local = {
+        get: function (keys, cb) {
+          try {
+            var arr;
+            if (Array.isArray(keys)) arr = keys.slice();
+            else if (typeof keys === 'string') arr = [keys];
+            else if (keys && typeof keys === 'object') arr = Object.keys(keys);
+            else arr = [];
+            var out = {};
+            for (var i = 0; i < arr.length; i += 1) {
+              var k = arr[i];
+              var raw = global.localStorage.getItem(k);
+              if (raw == null) continue;
+              try { out[k] = JSON.parse(raw); }
+              catch (_) { out[k] = raw; }
+            }
+            if (typeof cb === 'function') cb(out);
+            return Promise.resolve(out);
+          } catch (e) {
+            if (typeof cb === 'function') cb({});
+            return Promise.reject(e);
+          }
+        },
+        set: function (items, cb) {
+          try {
+            var changed = {};
+            var keys = Object.keys(items || {});
+            for (var i = 0; i < keys.length; i += 1) {
+              var k = keys[i];
+              var newValue = items[k];
+              var oldRaw = global.localStorage.getItem(k);
+              var oldValue;
+              if (oldRaw != null) {
+                try { oldValue = JSON.parse(oldRaw); }
+                catch (_) { oldValue = oldRaw; }
+              }
+              global.localStorage.setItem(k, JSON.stringify(newValue));
+              changed[k] = { newValue: newValue, oldValue: oldValue };
+            }
+            changeListeners.forEach(function (fn) {
+              try { fn(changed, 'local'); } catch (_) { /* ignore */ }
+            });
+            if (typeof cb === 'function') cb();
+            return Promise.resolve();
+          } catch (e) {
+            if (typeof cb === 'function') cb();
+            return Promise.reject(e);
+          }
+        },
+        remove: function (keys, cb) {
+          try {
+            var arr = Array.isArray(keys) ? keys.slice() : [keys];
+            var changed = {};
+            for (var i = 0; i < arr.length; i += 1) {
+              var k = arr[i];
+              var oldRaw = global.localStorage.getItem(k);
+              var oldValue;
+              if (oldRaw != null) {
+                try { oldValue = JSON.parse(oldRaw); }
+                catch (_) { oldValue = oldRaw; }
+              }
+              global.localStorage.removeItem(k);
+              changed[k] = { oldValue: oldValue };
+            }
+            changeListeners.forEach(function (fn) {
+              try { fn(changed, 'local'); } catch (_) { /* ignore */ }
+            });
+            if (typeof cb === 'function') cb();
+            return Promise.resolve();
+          } catch (e) {
+            if (typeof cb === 'function') cb();
+            return Promise.reject(e);
+          }
+        },
+      };
+
+      if (!global.chrome.storage.onChanged) {
+        global.chrome.storage.onChanged = {
+          addListener: function (fn) { if (typeof fn === 'function') changeListeners.add(fn); },
+          removeListener: function (fn) { changeListeners.delete(fn); },
+          hasListener: function (fn) { return changeListeners.has(fn); },
+        };
+      }
+    } catch (e) {
+      try { console.warn('[H2O.Studio.platform.tauri] chrome.storage shim install failed', e); }
+      catch (_) { /* ignore */ }
+    }
+  })();
+
   /* ── Hook into the platform namespace ───────────────────────────── */
   var platform = global.H2O && global.H2O.Studio && global.H2O.Studio.platform;
   if (!platform || typeof platform.__registerAdapter !== 'function') {
