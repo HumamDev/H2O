@@ -1,32 +1,29 @@
-/* H2O Studio Store — Highlights Entity (Stage 1: parallel infra)
+/* H2O Studio Store — Highlights Entity
  *
- * Registers H2O.Studio.store.highlights as a parallel entity store for the
- * planned migration of S3H1a's UTIL_storage IIFE into a Studio-wide façade.
+ * Owns Highlights persistence on the Studio side. After Phase A1 there is
+ * a single active backend (chrome.storage.local) and a single canonical
+ * key. Legacy fallbacks (localStorage mirror, GM_*, alias keys, migration
+ * flag) have been removed in favor of clean architecture.
  *
- * STAGE 1 SCOPE (this commit):
- *   - Hydrate the same canonical chrome.storage.local key S3H1a uses.
- *   - Subscribe to cross-tab changes via platform.broadcast.onAnyChange,
- *     with a direct chrome.storage.onChanged fallback when the platform
- *     adapter is unavailable.
- *   - Expose the full public API listed below.
- *   - Record errors in diagnostics; never throw during boot.
+ * Active storage path:
+ *   chrome.storage.local  ←  H2O.Studio.store.highlights  ←  S3H1a feature code
  *
- * STAGE 1 NON-GOALS (deliberately not done here):
- *   - Does NOT take over S3H1a's read/write paths — S3H1a's UTIL_storage
- *     remains the active code path for the live Highlights workflow.
- *   - Does NOT run legacy-key bootstrap on init (deferred to Stage 4).
- *     init() reads ONLY the canonical v3 key; if it's missing the cache is
- *     simply empty. No write happens on boot.
- *   - Does NOT touch UI prefs (KEY_CFG_UI_V1) or CFG_load/save in S3H1a.
- *   - Does NOT mirror alias/legacy keys on write (matches current
- *     CFG_MIRROR_LEGACY_KEYS=false / CFG_MIRROR_ALIAS_KEYS=false in S3H1a).
+ * Cross-context sync:
+ *   chrome.storage.onChanged via H2O.Studio.platform.broadcast.onAnyChange
+ *   when available; falls back to direct chrome.storage.onChanged.
+ *   Studio and native 3H1a share the same canonical chrome.storage.local
+ *   key and stay in sync via these change events.
  *
- * Wire format preserved exactly (must match S3H1a):
+ * Wire format (must match native 3H1a):
  *   key  : 'h2o:prm:cgx:nlnhghlghtr:state:inline_highlights:v3'
  *   shape: { itemsByAnswer: { [answerId]: Item[] },
  *            convoId?: string,
  *            _meta?: { currentColor?: string } }
- *   debounce: 250ms (matches S3H1a CFG_SAVE_DEBOUNCE_MS)
+ *   debounce: 250ms
+ *   schemaVersion: 3
+ *
+ * UI prefs (KEY_CFG_UI_V1) are NOT owned by this store. They remain in
+ * S3H1a's CFG_loadUiConfig / CFG_saveUiConfig (separate concern).
  *
  * Contracts: surfaces/studio/store/README.md
  *            surfaces/studio/STUDIO_STORAGE_CONTRACT.md
@@ -48,19 +45,10 @@
     return;
   }
 
-  /* ── Constants (mirror S3H1a exactly) ─────────────────────────────── */
+  /* ── Constants ────────────────────────────────────────────────────── */
   var NS_DISK = 'h2o:prm:cgx:nlnhghlghtr';
   var KEY_DISK_CANON = NS_DISK + ':state:inline_highlights:v3';
-  var LEGACY_DISK_KEYS = Object.freeze([
-    NS_DISK + ':state:inline_highlights:v2',
-    NS_DISK + ':state:inline_highlights:v1',
-    'h2o:inlineHighlights.v3',
-    'h2o:inlineHighlights',
-    'h2o:inlineHighlights.v2',
-    'ho:inlineHighlights.v2',
-    'ho:inlineHighlights',
-  ]);
-  var KEY_MIG_DISK_V1 = NS_DISK + ':migrate:inline_highlights:v1';
+  var SCHEMA_VERSION = 3;
   var SAVE_DEBOUNCE_MS = 250;
 
   /* ── State ────────────────────────────────────────────────────────── */
@@ -70,26 +58,21 @@
     pending: false,             /* dirty + scheduled save */
     saveTimer: null,
     lastSavedAt: null,
+    lastFlushAt: null,           /* most recent writeCanonical completion */
     lastReloadedAt: null,
-    unsubBroadcast: null,
-    transport: null,            /* 'platform.broadcast' | 'chrome.storage' | 'none' */
-    errors: [],
-    errMax: 20,
-    subscribers: new Set(),
-    /* Stage 3 write-tracking */
+    lastWriteAt: null,           /* most recent update/set/remove call */
     writesSinceBoot: 0,
     savesSinceBoot: 0,
-    fallbackWritesSinceBoot: 0,
-    lastWriteSource: null,      /* 'store' | 'util_storage_fallback' | null */
-    lastWriteAt: null,           /* most recent update/set/remove call */
-    lastFlushAt: null,           /* most recent writeCanonical completion */
+    unsubBroadcast: null,
+    errors: [],
+    errMax: 20,
     warnings: [],
     warnMax: 20,
+    subscribers: new Set(),
   };
 
-  function recordWrite(op) {
+  function recordWrite(/* op */) {
     state.writesSinceBoot += 1;
-    state.lastWriteSource = 'store';
     state.lastWriteAt = Date.now();
   }
 
@@ -119,10 +102,6 @@
         && typeof global.chrome.storage.local.set === 'function');
     } catch (_) { return false; }
   }
-  function hasLocalStorage() {
-    try { return typeof global.localStorage !== 'undefined' && global.localStorage !== null; }
-    catch (_) { return false; }
-  }
   function getPlatformBroadcast() {
     var p = global.H2O && global.H2O.Studio && global.H2O.Studio.platform && global.H2O.Studio.platform.broadcast;
     if (!p || typeof p.onAnyChange !== 'function') return null;
@@ -132,12 +111,6 @@
   }
 
   /* ── Helpers ──────────────────────────────────────────────────────── */
-  function safeParse(raw, fallback) {
-    if (raw == null) return fallback;
-    if (typeof raw === 'object') return raw;
-    try { var v = JSON.parse(raw); return v == null ? fallback : v; }
-    catch (_) { return fallback; }
-  }
   function isPlainObject(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
     var proto = Object.getPrototypeOf(v);
@@ -166,7 +139,8 @@
   }
 
   /* Non-destructive merge: last-write-wins by per-item `ts`. Mirrors
-   * S3H1a's _mergeStore semantics so cross-tab races stay byte-identical. */
+   * native 3H1a's _mergeStore semantics so cross-tab races stay
+   * byte-identical between Studio and native. */
   function mergeBlob(a, b) {
     if (!isPlainObject(a) && !isPlainObject(b)) return null;
     if (!isPlainObject(a)) return clone(b);
@@ -212,54 +186,35 @@
   }
 
   /* ── Low-level disk I/O ───────────────────────────────────────────── */
-  /* Read the canonical key from chrome.storage.local AND the localStorage
-   * mirror, then merge non-destructively. Matches the pattern in S3H1a's
-   * UTIL_storage._readRaw (canonical-only path). LEGACY key bootstrap is
-   * deliberately NOT performed here — that is Stage 4. */
+  /* Read the canonical key from chrome.storage.local. No localStorage
+   * fallback — chrome.storage.local is the single backend. Errors surface
+   * in diagnose().errors rather than silently degrading to localStorage. */
   function readCanonical() {
     return new Promise(function (resolve) {
-      var chromeVal = null;
-      var lsVal = null;
-      var done = false;
-      function finish() {
-        if (done) return;
-        done = true;
-        resolve(mergeBlob(chromeVal, lsVal));
+      if (!hasChromeStorage()) {
+        recordWarning('chrome.storage unavailable on read');
+        resolve(null);
+        return;
       }
-      if (hasLocalStorage()) {
-        try {
-          var raw = global.localStorage.getItem(KEY_DISK_CANON);
-          lsVal = raw ? safeParse(raw, null) : null;
-        } catch (e) { recordError('readCanonical.ls', e); }
-      }
-      if (!hasChromeStorage()) { finish(); return; }
       try {
         global.chrome.storage.local.get([KEY_DISK_CANON], function (r) {
-          try {
-            var v = r && r[KEY_DISK_CANON];
-            chromeVal = isPlainObject(v) ? v : null;
-          } catch (e) { recordError('readCanonical.parse', e); }
-          finish();
+          var v = r && r[KEY_DISK_CANON];
+          resolve(isPlainObject(v) ? v : null);
         });
       } catch (e) {
         recordError('readCanonical.chrome.throw', e);
-        finish();
+        resolve(null);
       }
     });
   }
 
-  /* Write the canonical blob to BOTH chrome.storage.local AND the
-   * localStorage mirror, matching S3H1a's _writeRaw + _writeLocalMirror
-   * pattern (line ~978–994). Stage 1: write APIs exist but are not
-   * auto-invoked on boot. */
+  /* Write the canonical blob to chrome.storage.local. No localStorage
+   * mirror — chrome.storage.local is the single backend. */
   function writeCanonical(blob) {
     var safe = ensureShape(blob);
-    if (hasLocalStorage()) {
-      try { global.localStorage.setItem(KEY_DISK_CANON, JSON.stringify(safe)); }
-      catch (e) { recordError('writeCanonical.ls', e); }
-    }
     return new Promise(function (resolve) {
       if (!hasChromeStorage()) {
+        recordWarning('chrome.storage unavailable on write');
         state.lastSavedAt = Date.now();
         state.lastFlushAt = state.lastSavedAt;
         state.savesSinceBoot += 1;
@@ -305,11 +260,10 @@
     if (pb) {
       try {
         state.unsubBroadcast = pb.onAnyChange(handleChange);
-        state.transport = 'platform.broadcast';
         return true;
       } catch (e) {
         recordError('bindBroadcast.platform', e);
-        /* fall through to legacy chrome.storage path */
+        /* fall through to direct chrome.storage.onChanged */
       }
     }
     if (hasChromeStorage() && global.chrome.storage.onChanged
@@ -321,11 +275,9 @@
           try { global.chrome.storage.onChanged.removeListener(listener); }
           catch (_) { /* ignore */ }
         };
-        state.transport = 'chrome.storage';
         return true;
       } catch (e) { recordError('bindBroadcast.chrome', e); }
     }
-    state.transport = 'none';
     return false;
   }
 
@@ -356,13 +308,6 @@
       state.lastReloadedAt = Date.now();
       bindBroadcast();
       state.ready = true;
-      /* SAFETY: Stage 1 does NOT run legacy-key bootstrap. Reading the
-       * canonical v3 key is non-destructive. If the user is on legacy data
-       * and S3H1a has already imported it (via its own UTIL_storage path),
-       * the canonical key is already populated and we hydrate from it. If
-       * neither side has imported yet (extreme edge), the cache is simply
-       * empty — S3H1a continues to be the source of truth for live state
-       * during Stage 1. Legacy bootstrap moves into the store at Stage 4. */
       return state.cache;
     }).catch(function (e) {
       recordError('init', e);
@@ -381,7 +326,6 @@
       try { global.clearTimeout(state.saveTimer); } catch (_) { /* ignore */ }
       state.saveTimer = null;
     }
-    state.transport = 'none';
     state.ready = false;
   }
 
@@ -390,11 +334,7 @@
   /* Returns the LIVE in-memory cache reference (not a clone) for byte-parity
    * with the legacy UTIL_storage.readSync() contract in S3H1a. Feature code
    * MUST NOT mutate the returned object directly — use setForAnswer /
-   * removeForAnswer / update / setCurrentColor for mutations. The Stage 2/3
-   * migration window relies on this live-reference behavior so that
-   * mutations made through the legacy STORE_ensureShape path land on the
-   * authoritative cache. The contract may evolve to immutable-return at
-   * Tauri port time. */
+   * removeForAnswer / update / setCurrentColor for mutations. */
   function getAll() {
     if (state.cache == null) state.cache = ensureShape({});
     return state.cache;
@@ -499,69 +439,35 @@
   }
 
   function diagnose() {
-    var backend;
-    if (hasChromeStorage()) backend = 'chrome.storage';
-    else if (hasLocalStorage()) backend = 'localStorage';
-    else backend = 'none';
-    var pAdapter = global.H2O && global.H2O.Studio && global.H2O.Studio.platform
-      && global.H2O.Studio.platform.env && global.H2O.Studio.platform.env.adapter;
+    var backend = hasChromeStorage() ? 'chrome.storage' : 'none';
     var cacheAnswers = state.cache ? Object.keys(asStoreObj(state.cache.itemsByAnswer)).length : 0;
     return {
       installed: true,
       ready: state.ready,
+      schemaVersion: SCHEMA_VERSION,
       backend: backend,
-      transport: state.transport,
-      platformAdapter: pAdapter || null,
-      crossTabBound: !!state.unsubBroadcast,
       canonicalKey: KEY_DISK_CANON,
-      legacyKeys: LEGACY_DISK_KEYS.slice(),
-      migrationFlagKey: KEY_MIG_DISK_V1,
+      crossTabBound: !!state.unsubBroadcast,
       cacheAnswers: cacheAnswers,
       cacheItems: state.cache ? countItems(state.cache) : 0,
       pendingSave: !!state.pending,
       saveDebounceMs: SAVE_DEBOUNCE_MS,
-      subscribers: state.subscribers.size,
-      /* Write/save tracking (Stage 3) */
       lastSavedAt: state.lastSavedAt,
       lastFlushAt: state.lastFlushAt,
       lastReloadedAt: state.lastReloadedAt,
-      lastWriteSource: state.lastWriteSource,
       lastWriteAt: state.lastWriteAt,
       writesSinceBoot: state.writesSinceBoot,
       savesSinceBoot: state.savesSinceBoot,
-      fallbackWritesSinceBoot: state.fallbackWritesSinceBoot,
-      /* Stage / ownership markers — feature code should not depend on these. */
-      stage: 3,
-      parallelInfra: false,
-      writesByS3H1aStillActive: false,
-      readPathDelegatedFromS3H1a: true,
-      writePathDelegatedFromS3H1a: true,
-      bootstrapDelegatedFromS3H1a: false,
-      utilStorageRemoved: false,
-      legacyBootstrapDeferred: 'stage-4',
-      legacyKeyCompat: true,
-      /* Health */
+      subscribers: state.subscribers.size,
       errors: state.errors.slice(),
       warnings: state.warnings.slice(),
     };
   }
 
-  /* Internal — invoked by S3H1a's STORE_write / STORE_saveNow wrappers
-   * when they fall back to UTIL_storage. Increments the fallback counter
-   * for diagnose() so we can observe whether the store is truly handling
-   * all writes (fallbackWritesSinceBoot === 0 is the Stage 5 gate). */
-  function __recordFallbackWrite(reason) {
-    state.fallbackWritesSinceBoot += 1;
-    state.lastWriteSource = 'util_storage_fallback';
-    state.lastWriteAt = Date.now();
-    recordWarning('fallback used: ' + String(reason || 'unknown'));
-  }
-
   /* ── Register & schedule init ─────────────────────────────────────── */
   var api = {
     __installed: true,
-    __version: '0.1.0',
-    __recordFallbackWrite: __recordFallbackWrite,
+    __version: '0.2.0',
     init: init,
     dispose: dispose,
     isReady: isReady,
