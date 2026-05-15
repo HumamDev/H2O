@@ -107,16 +107,23 @@
     state.subscribers.forEach((fn) => { try { fn(detail); } catch (e) { err('subscriber', e); } });
   }
 
-  // Phase E1 Stage 3: write the compact snapshot through BOTH the new entity
-  // (chrome.storage.local via H2O.Studio.store.libraryIndex) and the legacy
-  // H2O.Library.Store (IDB / localStorage). Both backends share a single ts
-  // so Stage 2's hydrate decision tree treats them as equal next boot.
-  // The legacy write is retained as rollback safety for one stage; Stage 3.5
-  // will drop it. H2O.Library.Store is NOT retired in this commit.
+  // Phase E1 Stage 3.5: write the compact snapshot ONLY through the new entity
+  // (chrome.storage.local via H2O.Studio.store.libraryIndex). The legacy
+  // H2O.Library.Store write was dropped after Stage 3 dual-write was
+  // runtime-validated. hydrate() (Stage 2) still reads legacy as a fallback
+  // so a one-shot bootstrap succeeds for users coming from earlier builds;
+  // that fallback path will be dropped in a later phase once the entity is
+  // confirmed canonical across surfaces.
+  // H2O.Library.Store is NOT globally retired by this change — other consumers
+  // (Chat Registry, etc.) still use it. Phase F handles the broader retirement.
   async function persist() {
     const entity = getEntity();
-    const store = getStore();
-    if (!entity && !store) return;
+    if (!entity) {
+      state.lastPersistBackend = 'none';
+      state.lastPersistTs = Date.now();
+      step('persist.skip', 'entity-unavailable');
+      return;
+    }
     try {
       const compact = state.rows.map((r) => ({
         chatId: r.chatId, snapshotId: r.snapshotId, title: r.title, projectId: r.projectId,
@@ -130,20 +137,12 @@
       const snap = { rows: compact, ts };
 
       let entityOk = false;
-      let legacyOk = false;
-      if (entity && typeof entity.setAll === 'function') {
+      if (typeof entity.setAll === 'function') {
         try { entity.setAll(snap); entityOk = true; }
         catch (e) { err('persist.entity', e); }
       }
-      if (store && typeof store.set === 'function') {
-        try { await store.set(STORAGE_KEY, snap); legacyOk = true; }
-        catch (e) { err('persist.legacy', e); }
-      }
 
-      state.lastPersistBackend = entityOk && legacyOk ? 'entity+legacy'
-                                : entityOk ? 'entity'
-                                : legacyOk ? 'legacy'
-                                : 'none';
+      state.lastPersistBackend = entityOk ? 'entity' : 'none';
       state.lastPersistTs = ts;
       step('persist.ok', `${state.lastPersistBackend}:${compact.length}`);
     } catch (e) { err('persist', e); }
