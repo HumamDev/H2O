@@ -123,6 +123,21 @@
     return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
   }
 
+  /* tauri-plugin-sql v2's execute command returns a Rust tuple (u64, i64) =
+   * (rows_affected, last_insert_id), which Tauri serializes as a JSON array
+   * [rowsAffected, lastInsertId]. Some build/version permutations have
+   * historically surfaced object shapes too, so we tolerate both. */
+  function readRowsAffected(result) {
+    if (Array.isArray(result)) return Number(result[0]) || 0;
+    if (result && typeof result === 'object') {
+      if (result.rowsAffected != null) return Number(result.rowsAffected) || 0;
+      if (result.rows_affected != null) return Number(result.rows_affected) || 0;
+      if (result.affected != null) return Number(result.affected) || 0;
+    }
+    if (typeof result === 'number') return result;
+    return 0;
+  }
+
   /* Wait for the SQLite-backed chrome.storage.local upgrade in
    * platform.tauri.js to complete before issuing queries. The upgrade is
    * async (plugin:sql|load + one-shot localStorage→SQLite copy), and our
@@ -377,9 +392,7 @@
     if (!id) return Promise.resolve(false);
     return sqlExecute('DELETE FROM chats WHERE id = ?', [id])
       .then(function (result) {
-        var rowsAffected = (result && (result.rowsAffected != null ? result.rowsAffected
-          : (result.affected != null ? result.affected : 0))) || 0;
-        var ok = rowsAffected > 0;
+        var ok = readRowsAffected(result) > 0;
         if (ok) {
           recordWrite('remove');
           notifySubscribers({ source: 'local', op: 'remove', chatId: id });
