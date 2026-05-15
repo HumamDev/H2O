@@ -73,6 +73,7 @@ export function makeChromeLiveBackgroundJs({
   DEV_TAG,
   CHAT_MATCH,
   DEV_HAS_CONTROLS,
+  MANIFEST_PROFILE = "development",
   IDENTITY_PROVIDER_BUNDLE_PATH = "provider/identity-provider-supabase.js",
   IDENTITY_PROVIDER_PRIVATE_CONFIG_PATH = "provider/identity-provider-private-config.js",
   IDENTITY_PROVIDER_OPTIONAL_HOST_PATTERN = null,
@@ -80,6 +81,11 @@ export function makeChromeLiveBackgroundJs({
   IDENTITY_PROVIDER_PHASE_NETWORK = null,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
 }) {
+  // Studio is hosted in chrome-ext-prod ONLY. Non-prod builds ship without
+  // surfaces/studio/* (the build script calls removeArchiveWorkbenchFromOut)
+  // AND disable every code path that would try to open / focus / restore
+  // Studio at runtime. ARCHIVE_WORKBENCH_ENABLED gates all those paths.
+  const STUDIO_HOSTED_HERE = String(MANIFEST_PROFILE || "").trim().toLowerCase() === "production";
   const IDENTITY_PROVIDER_OAUTH_PROVIDER_SAFE = sanitizeIdentityProviderOAuthProviderForBackground(IDENTITY_PROVIDER_OAUTH_PROVIDER);
   const IDENTITY_PROVIDER_CONFIG_STATUS_SAFE = sanitizeIdentityProviderConfigStatusForBackground(
     IDENTITY_PROVIDER_CONFIG_STATUS,
@@ -117,7 +123,12 @@ const IDENTITY_PROVIDER_OPTIONAL_HOST_PATTERN = ${JSON.stringify(IDENTITY_PROVID
 const IDENTITY_PROVIDER_PHASE_NETWORK = ${JSON.stringify(IDENTITY_PROVIDER_PHASE_NETWORK_SAFE)};
 const IDENTITY_PROVIDER_OAUTH_PROVIDER = ${JSON.stringify(IDENTITY_PROVIDER_OAUTH_PROVIDER_SAFE)};
 const CHAT_MATCH = ${JSON.stringify(CHAT_MATCH)};
-const ARCHIVE_WORKBENCH_ENABLED = ${JSON.stringify(DEV_HAS_CONTROLS)};
+// Studio (a.k.a. "archive workbench") is the user-facing surface and lives in
+// chrome-ext-prod ONLY. Flag is true for production builds and false for
+// dev-controls / dev-lean. When false, every Studio launch / restore code
+// path is short-circuited so the bg.js never tries to navigate a tab to
+// surfaces/studio/studio.html which does not exist in non-prod outputs.
+const ARCHIVE_WORKBENCH_ENABLED = ${JSON.stringify(STUDIO_HOSTED_HERE)};
 const PAGE_DISABLE_ONCE_MAX_AGE_MS = 10 * 60 * 1000;
 const DEV_SET_SLOTS = [1, 2, 3, 4, 5, 6];
 const STORAGE_TOGGLE_SETS_KEY = "h2oExtDevToggleSetsV1";
@@ -3010,6 +3021,210 @@ async function openWorkbench(routeRaw = "/saved") {
       reject(err);
     }
   });
+}
+
+const STUDIO_LAST_HASH_KEY = "h2o:studio:lastHash";
+
+function getStoredStudioLastHash() {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.get !== "function") {
+        resolve("");
+        return;
+      }
+      chrome.storage.local.get(STUDIO_LAST_HASH_KEY, (result) => {
+        void chrome.runtime.lastError;
+        const raw = result && typeof result === "object" ? result[STUDIO_LAST_HASH_KEY] : "";
+        const trimmed = String(raw || "").trim();
+        resolve(trimmed.startsWith("#") ? trimmed : "");
+      });
+    } catch {
+      resolve("");
+    }
+  });
+}
+
+// Open Studio in a new tab, OR focus the existing Studio tab if one is already
+// open. This is the fast path bound to chrome.action.onClicked in profiles
+// without a popup (prod, dev-lean). Behavior:
+//   - explicit routeRaw  : normalize it and use that as the hash
+//   - no routeRaw        : read last-saved hash from chrome.storage.local;
+//                           fall back to "#/saved" if missing/invalid
+//   - existing tab found : focus tab + focus window; only rewrite URL if the
+//                           caller passed an explicit route AND it differs
+//                           from the tab's current hash (never silently
+//                           rewrite the user's view on a plain icon click)
+//   - no existing tab    : chrome.tabs.create at the resolved URL
+async function openOrFocusStudio(routeRaw = "") {
+  if (!ARCHIVE_WORKBENCH_ENABLED) {
+    throw new Error("Studio is not hosted in this extension build (chrome-ext-prod only).");
+  }
+  const baseUrl = chrome.runtime.getURL("surfaces/studio/studio.html");
+  const callerProvidedRoute = typeof routeRaw === "string" && routeRaw.trim() !== "";
+  let hash = "";
+  if (callerProvidedRoute) {
+    hash = normalizeWorkbenchRoute(routeRaw);
+  } else {
+    const stored = await getStoredStudioLastHash();
+    hash = stored || "#/saved";
+  }
+  const url = baseUrl + hash;
+
+  // Query all tabs and filter to our Studio surface URL prefix. We avoid
+  // chrome.tabs.query({ url }) here because that filter requires either the
+  // "tabs" permission or matching host_permissions — neither of which prod
+  // grants. For the extension's own pages, tab.url is always visible.
+  const existing = await new Promise((resolve) => {
+    try {
+      chrome.tabs.query({}, (rows) => {
+        void chrome.runtime.lastError;
+        const all = Array.isArray(rows) ? rows : [];
+        resolve(all.filter((tab) => typeof tab?.url === "string" && tab.url.startsWith(baseUrl)));
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+
+  if (existing.length) {
+    const tab = existing.slice().sort((a, b) => Number(!!b.active) - Number(!!a.active))[0];
+    const tabId = Number(tab && tab.id || 0);
+    const winId = Number(tab && tab.windowId || 0);
+    try { if (tabId) chrome.tabs.update(tabId, { active: true }); } catch {}
+    try { if (winId) chrome.windows.update(winId, { focused: true }); } catch {}
+    if (callerProvidedRoute && tabId) {
+      try {
+        const existingHash = (() => {
+          try { return new URL(tab.url).hash || ""; } catch { return ""; }
+        })();
+        if (existingHash !== hash) {
+          chrome.tabs.update(tabId, { url });
+        }
+      } catch {}
+    }
+    return { ok: true, tabId, source: "existing-tab", url: (tab && tab.url) || url };
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.tabs.create({ url }, (tab) => {
+        const le = chrome.runtime.lastError;
+        if (le) return reject(new Error(String(le.message || le)));
+        resolve({ ok: true, tabId: Number(tab && tab.id || 0), source: "new-tab", url });
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+// ─── Studio auto-restore after extension reload ────────────────────────────
+//
+// When the user reloads the extension from chrome://extensions, Chrome:
+//   - terminates the SW
+//   - invalidates every chrome-extension://<id>/* page in tabs (the tab usually
+//     stays but its document context is dead until navigated again)
+//   - respawns the SW and fires chrome.runtime.onInstalled
+//
+// If the Studio tab was alive within the freshness window before the reload,
+// we want it back at its last route. The Studio page writes a heartbeat to
+// chrome.storage.local["h2o:studio:presence:v1"] every 10s (plus on boot /
+// hashchange / visibilitychange). On SW respawn we read that record:
+//   - if missing or stale → do nothing (user closed Studio long ago)
+//   - if fresh            → reload the existing Studio tab (force navigation
+//                           to clear the invalidated context) OR open a new
+//                           background tab if none exists
+// A cooldown marker prevents repeat restores from multiple SW wake events.
+
+const STUDIO_PRESENCE_KEY = "h2o:studio:presence:v1";
+const STUDIO_LAST_AUTO_RESTORE_KEY = "h2o:studio:lastAutoRestoreAt";
+const STUDIO_PRESENCE_FRESHNESS_MS = 3 * 60 * 1000;       // 3 min: "alive recently"
+const STUDIO_AUTO_RESTORE_COOLDOWN_MS = 30 * 1000;        // 30 s: avoid duplicate restores
+
+async function restoreStudioTabAfterReload(hashRaw) {
+  const baseUrl = chrome.runtime.getURL("surfaces/studio/studio.html");
+  const hash = normalizeWorkbenchRoute(hashRaw);
+  const url = baseUrl + hash;
+  const existing = await new Promise((resolve) => {
+    try {
+      chrome.tabs.query({}, (rows) => {
+        void chrome.runtime.lastError;
+        const all = Array.isArray(rows) ? rows : [];
+        resolve(all.filter((t) => typeof t?.url === "string" && t.url.startsWith(baseUrl)));
+      });
+    } catch { resolve([]); }
+  });
+  if (existing.length) {
+    // Page context was invalidated by the extension reload; navigating to the
+    // same URL forces a fresh load that picks up the new SW context. We do
+    // NOT call chrome.tabs.update({active:true}) on purpose — we don't want
+    // to steal focus from chrome://extensions while the user is mid-reload.
+    const tab = existing[0];
+    try {
+      await new Promise((resolve) => {
+        chrome.tabs.update(tab.id, { url }, () => { void chrome.runtime.lastError; resolve(); });
+      });
+    } catch {}
+    return { source: "reload-existing", tabId: Number(tab.id || 0) };
+  }
+  // No surviving tab. Open a new one in the background (active:false) so the
+  // user's current focus (likely chrome://extensions) stays put. The user can
+  // switch to it manually when ready.
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.create({ url, active: false }, (tab) => {
+        void chrome.runtime.lastError;
+        resolve({ source: "new-tab", tabId: Number(tab && tab.id || 0) });
+      });
+    } catch {
+      resolve({ source: "error", tabId: 0 });
+    }
+  });
+}
+
+async function scheduleStudioPresenceRestore(reason) {
+  if (!ARCHIVE_WORKBENCH_ENABLED) {
+    // Studio is not hosted in this build; nothing to restore. Returning
+    // silently here is intentional — non-prod profiles should never even
+    // try to read presence (the storage namespace is per-extension-ID, so
+    // any stale presence belongs to a previous prod-ish identity anyway).
+    return { ok: false, skipped: "studio-not-hosted", reason };
+  }
+  try {
+    const result = await new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([STUDIO_PRESENCE_KEY, STUDIO_LAST_AUTO_RESTORE_KEY], (rows) => {
+          void chrome.runtime.lastError;
+          resolve(rows || {});
+        });
+      } catch { resolve({}); }
+    });
+    const presence = result[STUDIO_PRESENCE_KEY];
+    if (!presence || typeof presence !== "object") {
+      return { ok: false, skipped: "no-presence", reason };
+    }
+    const lastSeen = Number(presence.lastSeenAt || 0);
+    const ageMs = Date.now() - lastSeen;
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > STUDIO_PRESENCE_FRESHNESS_MS) {
+      return { ok: false, skipped: "stale", ageMs, reason };
+    }
+    const lastRestore = Number(result[STUDIO_LAST_AUTO_RESTORE_KEY] || 0);
+    if (Date.now() - lastRestore < STUDIO_AUTO_RESTORE_COOLDOWN_MS) {
+      return { ok: false, skipped: "cooldown", reason };
+    }
+    const lastHash = String(presence.lastHash || "").trim() || "#/saved";
+    const restoreResult = await restoreStudioTabAfterReload(lastHash);
+    try {
+      chrome.storage.local.set({ [STUDIO_LAST_AUTO_RESTORE_KEY]: Date.now() }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {}
+    console.log(TAG, "studio auto-restored", { reason, lastHash, ageMs, ...restoreResult });
+    return { ok: true, reason, lastHash, ageMs, ...restoreResult };
+  } catch (e) {
+    console.warn(TAG, "studio auto-restore failed", e && (e.message || e));
+    return { ok: false, error: String(e && (e.message || e)), reason };
+  }
 }
 
 async function openControlHubPanel() {
@@ -8541,20 +8756,46 @@ function ensureHighlightContextMenu() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   ensureHighlightContextMenu();
   identityProviderSession_scheduleWakeHydration("installed");
+  // onInstalled fires on install / update / browser-update / "Reload" from
+  // chrome://extensions. We only restore if presence is fresh; cold installs
+  // and post-update wakes are filtered out by the staleness check inside
+  // scheduleStudioPresenceRestore.
+  scheduleStudioPresenceRestore("onInstalled:" + String(details && details.reason || "unknown")).catch(() => {});
 });
 
 if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === "function") {
   chrome.runtime.onStartup.addListener(() => {
     ensureHighlightContextMenu();
     identityProviderSession_scheduleWakeHydration("startup");
+    scheduleStudioPresenceRestore("onStartup").catch(() => {});
   });
 }
 
 ensureHighlightContextMenu();
 identityProviderSession_scheduleWakeHydration("boot");
+// Top-level boot path also tries a restore — covers the unpacked-reload case
+// where Chrome respawns the SW without firing onInstalled (rare, but
+// observed in practice depending on Chrome version). The cooldown guard
+// prevents double-fires when onInstalled does fire.
+scheduleStudioPresenceRestore("sw-boot").catch(() => {});
+
+// Toolbar-icon entry point for Studio. ONLY registered in chrome-ext-prod
+// (ARCHIVE_WORKBENCH_ENABLED). Dev-controls / dev-lean bg.js does not bind
+// this listener at all — dev-controls has a popup that intercepts the click
+// anyway, but the explicit gate makes intent obvious and prevents a future
+// change (e.g. removing the popup) from accidentally exposing Studio launch
+// from a build that doesn't ship the Studio surface. Registered at top level
+// so the service worker can replay queued click events after cold start.
+if (ARCHIVE_WORKBENCH_ENABLED && chrome.action && typeof chrome.action.onClicked?.addListener === "function") {
+  chrome.action.onClicked.addListener(() => {
+    openOrFocusStudio().catch((err) => {
+      console.warn(TAG, "studio launch failed", err && (err.message || err));
+    });
+  });
+}
 
 function broadcastIdentityPush(snapshot) {
   const safeSnap = snapshot ? identitySnapshot_sanitize(snapshot) : null;
