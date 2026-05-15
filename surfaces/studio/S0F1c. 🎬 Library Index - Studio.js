@@ -56,6 +56,12 @@
     lastScanTs: 0,
     lastScanReason: '',
     lastSource: 'none',
+    // Phase E1 Stage 3: persist() now writes to both the new entity and legacy
+    // Library.Store. These fields surface which backends accepted the most
+    // recent persist so Stage 3.5 can confirm runtime parity before dropping
+    // the legacy write. Values: 'entity+legacy' | 'entity' | 'legacy' | 'none'.
+    lastPersistBackend: 'none',
+    lastPersistTs: 0,
     refreshTimer: null,
     refreshInFlight: null,
     subscribers: new Set(),
@@ -101,9 +107,16 @@
     state.subscribers.forEach((fn) => { try { fn(detail); } catch (e) { err('subscriber', e); } });
   }
 
+  // Phase E1 Stage 3: write the compact snapshot through BOTH the new entity
+  // (chrome.storage.local via H2O.Studio.store.libraryIndex) and the legacy
+  // H2O.Library.Store (IDB / localStorage). Both backends share a single ts
+  // so Stage 2's hydrate decision tree treats them as equal next boot.
+  // The legacy write is retained as rollback safety for one stage; Stage 3.5
+  // will drop it. H2O.Library.Store is NOT retired in this commit.
   async function persist() {
+    const entity = getEntity();
     const store = getStore();
-    if (!store) return;
+    if (!entity && !store) return;
     try {
       const compact = state.rows.map((r) => ({
         chatId: r.chatId, snapshotId: r.snapshotId, title: r.title, projectId: r.projectId,
@@ -113,8 +126,26 @@
         snapshotCount: r.snapshotCount, capturedAt: r.capturedAt, updatedAt: r.updatedAt,
         messageCount: r.messageCount, pinned: r.pinned, archived: r.archived,
       }));
-      await store.set(STORAGE_KEY, { rows: compact, ts: Date.now() });
-      step('persist.ok', String(compact.length));
+      const ts = Date.now();
+      const snap = { rows: compact, ts };
+
+      let entityOk = false;
+      let legacyOk = false;
+      if (entity && typeof entity.setAll === 'function') {
+        try { entity.setAll(snap); entityOk = true; }
+        catch (e) { err('persist.entity', e); }
+      }
+      if (store && typeof store.set === 'function') {
+        try { await store.set(STORAGE_KEY, snap); legacyOk = true; }
+        catch (e) { err('persist.legacy', e); }
+      }
+
+      state.lastPersistBackend = entityOk && legacyOk ? 'entity+legacy'
+                                : entityOk ? 'entity'
+                                : legacyOk ? 'legacy'
+                                : 'none';
+      state.lastPersistTs = ts;
+      step('persist.ok', `${state.lastPersistBackend}:${compact.length}`);
     } catch (e) { err('persist', e); }
   }
 
@@ -367,6 +398,8 @@
         lastScanTs: state.lastScanTs,
         lastScanReason: state.lastScanReason,
         lastSource: state.lastSource,
+        lastPersistBackend: state.lastPersistBackend,
+        lastPersistTs: state.lastPersistTs,
         hasArchive: !!getChatList(),
         hasStore: !!getStore(),
         hasRegistry: !!getChatRegistry(),
