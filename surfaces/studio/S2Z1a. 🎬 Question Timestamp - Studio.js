@@ -43,12 +43,13 @@
   /* ───────────────────────────── 1) REGISTRIES ───────────────────────────── */
 
   /** @core Selectors (no raw strings outside SEL_) */
+  const STUDIO_SEL = window.H2O.Studio.SELECTORS;
   const SEL_QTIMESTAMP_ = Object.freeze({
     USER_MSG: 'div[data-message-author-role="user"]',
     TURN_ROOT_A: '.group\\/turn-messages',
     TURN_ROOT_B: '[class~="group/turn-messages"]',
-    CONV_TURNS: '[data-testid="conversation-turns"]',
-    CONV_TURN: '[data-testid="conversation-turn"]',
+    CONV_TURNS: STUDIO_SEL.sel.conversationTurns,
+    CONV_TURN: STUDIO_SEL.sel.conversationTurn,
     MAIN: 'main',
 
     COPY_BTN: 'button[data-testid="copy-turn-action-button"]',

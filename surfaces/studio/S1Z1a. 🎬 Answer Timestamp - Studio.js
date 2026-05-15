@@ -43,12 +43,13 @@
   /* ───────────────────────────── 1) REGISTRIES ───────────────────────────── */
 
   /** @core Constants & registries (no raw selector/key/style IDs) */
+  const STUDIO_SEL = window.H2O.Studio.SELECTORS;
   const SEL_ = Object.freeze({
     ASSIST_MSG: 'div[data-message-author-role="assistant"]',
     STAMP_OURS: ':scope > .cgxui-ats-ts',
     STAMP_LEGACY: ':scope > .chatgpt-timestamp',
-    CONV_TURNS: '[data-testid="conversation-turns"]',
-    CONV_TURN: '[data-testid="conversation-turn"]',
+    CONV_TURNS: STUDIO_SEL.sel.conversationTurns,
+    CONV_TURN: STUDIO_SEL.sel.conversationTurn,
     MAIN: 'main',
   });
 
