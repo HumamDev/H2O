@@ -26,6 +26,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "store/index.js",
   "store/highlights.js",
   "store/libraryIndex.js",
+  // Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
+  // and silently no-ops on MV3 / web; safe to ship in chrome-live build.
+  "store/chats.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -118,6 +121,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/index.js",
   "store/highlights.js",
   "store/libraryIndex.js",
+  "store/chats.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
