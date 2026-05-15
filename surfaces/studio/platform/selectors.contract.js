@@ -61,6 +61,17 @@
     userTurn: '[' + ATTR.ROLE + '="' + ROLES.USER + '"]',
     anyTurn: '[' + ATTR.ROLE + ']',
     assistantOrUser: '[' + ATTR.ROLE + '="' + ROLES.ASSISTANT + '"], [' + ATTR.ROLE + '="' + ROLES.USER + '"]',
+    /* Article-or-div narrowed assistant turn. This is the deliberate Tier-2
+     * "tag-narrow" floor of MiniMap Core's `getAnswerEls()` cascade
+     * (T1: registry → T2: article|div role → T3: bare role → T4: by turn-host)
+     * and the default fallback used when SEL.ANSWER is empty in MiniMap
+     * Core/Engine. The tag prefix intentionally narrows to <article>|<div>
+     * to defend against any future non-message element that might carry the
+     * role attribute. Do NOT collapse this into `assistantTurn` — that
+     * would erase the cascade's narrow-before-broaden shape. */
+    assistantTurnTagged:
+      'article[' + ATTR.ROLE + '="' + ROLES.ASSISTANT + '"], ' +
+      'div[' + ATTR.ROLE + '="' + ROLES.ASSISTANT + '"]',
     /* Testid-anchored containers. */
     conversationTurn: '[' + ATTR.TESTID + '="' + TESTIDS.CONVERSATION_TURN + '"]',
     conversationTurns: '[' + ATTR.TESTID + '="' + TESTIDS.CONVERSATION_TURNS + '"]',

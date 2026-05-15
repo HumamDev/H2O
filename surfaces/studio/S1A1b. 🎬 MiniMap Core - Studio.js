@@ -1668,7 +1668,7 @@ function UM_PUBLIC() {
     const { SEL } = getRegs();
     const primary = qq(SEL.ANSWER || '');
     if (primary.length) return primary;
-    const a = qq('article[data-message-author-role="assistant"], div[data-message-author-role="assistant"]');
+    const a = qq(STUDIO_SEL.sel.assistantTurnTagged);
     if (a.length) return a;
     const b = qq(STUDIO_SEL.sel.assistantTurn);
     if (b.length) return b;
@@ -2948,7 +2948,7 @@ function UM_PUBLIC() {
   function attachVisibleAnswers(_chatId = '', root = null) {
     const host = (root && root.querySelectorAll) ? root : document;
     const { SEL } = getRegs();
-    const sel = SEL.ANSWER || 'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"]';
+    const sel = SEL.ANSWER || STUDIO_SEL.sel.assistantTurnTagged;
     const answers = qq(sel, host);
     if (!answers.length) return { ok: false, status: 'empty', attached: 0 };
 
@@ -5033,7 +5033,7 @@ function UM_PUBLIC() {
           const probe = document.elementFromPoint(Math.floor(window.innerWidth * 0.5), turnAnchor);
           const { SEL } = getRegs();
           const aEl = probe?.closest?.(
-            SEL.ANSWER || 'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"]'
+            SEL.ANSWER || STUDIO_SEL.sel.assistantTurnTagged
           );
           if (aEl) {
             const aId = String(getMessageId(aEl) || '').trim();

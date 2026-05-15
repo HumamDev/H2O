@@ -681,7 +681,7 @@
 
   function answersSelector() {
     const { SEL } = getRegs();
-    return SEL.ANSWER || 'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"]';
+    return SEL.ANSWER || STUDIO_SEL.sel.assistantTurnTagged;
   }
 
   function conversationTurnSelector() {
