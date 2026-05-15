@@ -159,6 +159,16 @@
           addListener: function (fn) { if (typeof fn === 'function') changeListeners.add(fn); },
           removeListener: function (fn) { changeListeners.delete(fn); },
           hasListener: function (fn) { return changeListeners.has(fn); },
+          /* H2O-internal helper used by the M2a-1 SQLite-backed upgrade so
+           * the SQLite get/set/remove implementations can fire the same
+           * listener Set without needing direct access to it. NOT part of
+           * the chrome.storage.onChanged spec; do not consume from feature
+           * code. */
+          __dispatch: function (changed) {
+            changeListeners.forEach(function (fn) {
+              try { fn(changed, 'local'); } catch (_) { /* ignore */ }
+            });
+          },
         };
       }
     } catch (e) {
@@ -323,4 +333,278 @@
   } catch (e) {
     try { console.error('[H2O.Studio.platform.tauri] registration failed', e); } catch (_) { /* ignore */ }
   }
+
+  /* ── SQLite-backed chrome.storage.local upgrade (M2a-1) ─────────────
+   * The M1 chrome.storage shim above is localStorage-backed (synchronous,
+   * fast, but per-window and ephemeral). M2a-1 upgrades the backend to
+   * SQLite (durable, queryable, the foundation for M2a-2 domain tables).
+   *
+   * Lifecycle:
+   *   1. The synchronous shim above already installed chrome.storage.local
+   *      with localStorage-backed get/set/remove + onChanged.addListener.
+   *      Studio scripts can call them immediately at boot.
+   *   2. We now async-init the SQLite database (`sqlite:studio-v1.db`).
+   *      tauri-plugin-sql auto-applies the V1 migrations declared in
+   *      src-tauri/src/lib.rs (currently: just kv_store).
+   *   3. Once SQLite is ready, run a one-shot localStorage→SQLite copy
+   *      of every `h2o:*` key. Idempotent — marker key in SQLite tracks
+   *      completion. Original localStorage data is NOT deleted (rollback
+   *      safety; M2a-2 cleans up).
+   *   4. Atomically swap chrome.storage.local.{get,set,remove} to
+   *      SQLite-backed implementations. Subsequent calls hit SQLite.
+   *      Listeners (chrome.storage.onChanged) continue working via the
+   *      shim's __dispatch helper.
+   *
+   * Failure path: if SQLite init throws (Tauri plugin missing, db locked,
+   * permissions denied), the localStorage shim stays active. Diagnostics
+   * surface the error via `H2O.Studio.platform.__sqliteStatus()`.
+   */
+  var SQLITE_DB_URL = 'sqlite:studio-v1.db';
+  var SQLITE_MIGRATION_MARKER_KEY = '__h2o_v1_localstorage_migration';
+  var sqliteState = {
+    ready: false,
+    backend: 'localStorage',     /* current active backend for chrome.storage.local */
+    initError: null,             /* string | null */
+    dbUrl: SQLITE_DB_URL,
+    migrationCompletedAt: null,  /* epoch ms | null */
+    keysMigrated: 0,
+  };
+  var sqliteReadyPromise = null;
+
+  function sqliteInit() {
+    if (sqliteReadyPromise) return sqliteReadyPromise;
+    var invoke = getTauriInvoke();
+    if (!invoke) {
+      sqliteState.initError = 'tauri invoke unavailable';
+      sqliteReadyPromise = Promise.resolve(false);
+      return sqliteReadyPromise;
+    }
+    sqliteReadyPromise = (function () {
+      return invoke('plugin:sql|load', { db: SQLITE_DB_URL })
+        .then(function () {
+          sqliteState.ready = true;
+          return migrateLocalStorageToSqlite();
+        })
+        .then(function () {
+          if (sqliteState.ready) {
+            upgradeChromeStorageToSqlite();
+            sqliteState.backend = 'sqlite';
+            try { console.log('[H2O.Studio.platform.tauri] chrome.storage.local backend → sqlite (' + sqliteState.keysMigrated + ' keys migrated from localStorage)'); }
+            catch (_) { /* ignore */ }
+          }
+          return sqliteState.ready;
+        })
+        .catch(function (e) {
+          sqliteState.initError = String((e && e.message) || e);
+          try { console.warn('[H2O.Studio.platform.tauri] SQLite init failed; staying on localStorage shim', e); }
+          catch (_) { /* ignore */ }
+          return false;
+        });
+    })();
+    return sqliteReadyPromise;
+  }
+
+  /* One-shot copy of all `h2o:*` keys from localStorage into SQLite's
+   * kv_store. Marker key in SQLite makes this idempotent across boots.
+   * Stores the value bytes verbatim (no double-JSON-encoding) since the
+   * shim methods JSON.stringify before put and JSON.parse after get. */
+  function migrateLocalStorageToSqlite() {
+    var invoke = getTauriInvoke();
+    if (!invoke || !sqliteState.ready) return Promise.resolve();
+    return invoke('plugin:sql|select', {
+      db: SQLITE_DB_URL,
+      query: 'SELECT value FROM kv_store WHERE key = ?',
+      values: [SQLITE_MIGRATION_MARKER_KEY],
+    }).then(function (rows) {
+      if (Array.isArray(rows) && rows.length > 0) {
+        try {
+          var rec = JSON.parse(rows[0].value);
+          sqliteState.migrationCompletedAt = rec.at || null;
+          sqliteState.keysMigrated = rec.keysMigrated || 0;
+        } catch (_) { /* ignore */ }
+        return; /* already migrated on a prior boot */
+      }
+      var keys = [];
+      try {
+        for (var i = 0; i < global.localStorage.length; i += 1) {
+          var k = global.localStorage.key(i);
+          if (k && k.indexOf('h2o:') === 0) keys.push(k);
+        }
+      } catch (_) { /* localStorage unavailable; nothing to migrate */ }
+      var now = Date.now();
+      var copyChain = Promise.resolve();
+      keys.forEach(function (key) {
+        copyChain = copyChain.then(function () {
+          var raw = global.localStorage.getItem(key);
+          if (raw == null) return null;
+          return invoke('plugin:sql|execute', {
+            db: SQLITE_DB_URL,
+            query: 'INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)',
+            values: [key, raw, now],
+          }).catch(function (e) {
+            try { console.warn('[H2O.Studio.platform.tauri] migration: failed to copy key ' + key, e); }
+            catch (_) { /* ignore */ }
+          });
+        });
+      });
+      return copyChain.then(function () {
+        sqliteState.keysMigrated = keys.length;
+        sqliteState.migrationCompletedAt = now;
+        var marker = JSON.stringify({ at: now, keysMigrated: keys.length, schema: 'v1' });
+        return invoke('plugin:sql|execute', {
+          db: SQLITE_DB_URL,
+          query: 'INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)',
+          values: [SQLITE_MIGRATION_MARKER_KEY, marker, now],
+        }).catch(function () { /* swallow; non-fatal */ });
+      });
+    });
+  }
+
+  /* Replace chrome.storage.local.{get,set,remove} with SQLite-backed
+   * implementations. Listeners (chrome.storage.onChanged) continue
+   * working via the shim's __dispatch helper. */
+  function upgradeChromeStorageToSqlite() {
+    if (!global.chrome || !global.chrome.storage || !global.chrome.storage.local) return;
+    var invoke = getTauriInvoke();
+    if (!invoke) return;
+
+    function sqliteGet(keys, cb) {
+      var arr;
+      if (Array.isArray(keys)) arr = keys.slice();
+      else if (typeof keys === 'string') arr = [keys];
+      else if (keys && typeof keys === 'object') arr = Object.keys(keys);
+      else arr = [];
+      if (arr.length === 0) {
+        if (typeof cb === 'function') { try { cb({}); } catch (_) { /* ignore */ } }
+        return Promise.resolve({});
+      }
+      var placeholders = arr.map(function () { return '?'; }).join(',');
+      var p = invoke('plugin:sql|select', {
+        db: SQLITE_DB_URL,
+        query: 'SELECT key, value FROM kv_store WHERE key IN (' + placeholders + ')',
+        values: arr,
+      }).then(function (rows) {
+        var out = {};
+        (rows || []).forEach(function (row) {
+          var raw = row && row.value;
+          if (raw == null) return;
+          try { out[row.key] = JSON.parse(raw); }
+          catch (_) { out[row.key] = raw; }
+        });
+        return out;
+      }).catch(function () { return {}; });
+      if (typeof cb === 'function') p.then(function (v) { try { cb(v); } catch (_) {} });
+      return p;
+    }
+
+    function sqliteSet(items, cb) {
+      var keys = Object.keys(items || {});
+      var now = Date.now();
+      var changed = {};
+      var chain = Promise.resolve();
+      /* Read existing values for the change-event payload, then upsert. */
+      keys.forEach(function (k) {
+        chain = chain.then(function () {
+          return invoke('plugin:sql|select', {
+            db: SQLITE_DB_URL,
+            query: 'SELECT value FROM kv_store WHERE key = ?',
+            values: [k],
+          }).then(function (rows) {
+            var oldValue;
+            if (Array.isArray(rows) && rows.length > 0) {
+              try { oldValue = JSON.parse(rows[0].value); }
+              catch (_) { oldValue = rows[0].value; }
+            }
+            var newValue = items[k];
+            changed[k] = { newValue: newValue, oldValue: oldValue };
+            return invoke('plugin:sql|execute', {
+              db: SQLITE_DB_URL,
+              query: 'INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)',
+              values: [k, JSON.stringify(newValue), now],
+            });
+          });
+        });
+      });
+      var p = chain.then(function () {
+        try {
+          if (global.chrome.storage.onChanged && typeof global.chrome.storage.onChanged.__dispatch === 'function') {
+            global.chrome.storage.onChanged.__dispatch(changed);
+          }
+        } catch (_) { /* ignore */ }
+      }).catch(function (e) {
+        try { console.warn('[H2O.Studio.platform.tauri] sqliteSet failed', e); } catch (_) {}
+      });
+      if (typeof cb === 'function') p.then(function () { try { cb(); } catch (_) {} });
+      return p;
+    }
+
+    function sqliteRemove(keys, cb) {
+      var arr = Array.isArray(keys) ? keys.slice() : [keys];
+      if (arr.length === 0) {
+        if (typeof cb === 'function') { try { cb(); } catch (_) {} }
+        return Promise.resolve();
+      }
+      var changed = {};
+      var chain = Promise.resolve();
+      arr.forEach(function (k) {
+        chain = chain.then(function () {
+          return invoke('plugin:sql|select', {
+            db: SQLITE_DB_URL,
+            query: 'SELECT value FROM kv_store WHERE key = ?',
+            values: [k],
+          }).then(function (rows) {
+            var oldValue;
+            if (Array.isArray(rows) && rows.length > 0) {
+              try { oldValue = JSON.parse(rows[0].value); }
+              catch (_) { oldValue = rows[0].value; }
+            }
+            changed[k] = { oldValue: oldValue };
+            return invoke('plugin:sql|execute', {
+              db: SQLITE_DB_URL,
+              query: 'DELETE FROM kv_store WHERE key = ?',
+              values: [k],
+            });
+          });
+        });
+      });
+      var p = chain.then(function () {
+        try {
+          if (global.chrome.storage.onChanged && typeof global.chrome.storage.onChanged.__dispatch === 'function') {
+            global.chrome.storage.onChanged.__dispatch(changed);
+          }
+        } catch (_) { /* ignore */ }
+      }).catch(function (e) {
+        try { console.warn('[H2O.Studio.platform.tauri] sqliteRemove failed', e); } catch (_) {}
+      });
+      if (typeof cb === 'function') p.then(function () { try { cb(); } catch (_) {} });
+      return p;
+    }
+
+    global.chrome.storage.local.get = sqliteGet;
+    global.chrome.storage.local.set = sqliteSet;
+    global.chrome.storage.local.remove = sqliteRemove;
+  }
+
+  /* Diagnostic probe — exposed on the platform namespace so DevTools
+   * console probes can verify SQLite is actually active without needing
+   * to reach into module internals. NOT part of the platform-adapter
+   * contract; treat as Tauri-specific debug API. */
+  try {
+    platform.__sqliteStatus = function () {
+      return {
+        ready: sqliteState.ready,
+        backend: sqliteState.backend,
+        initError: sqliteState.initError,
+        dbUrl: sqliteState.dbUrl,
+        migrationCompletedAt: sqliteState.migrationCompletedAt,
+        keysMigrated: sqliteState.keysMigrated,
+      };
+    };
+  } catch (_) { /* ignore */ }
+
+  /* Kick off SQLite init asynchronously. The synchronous localStorage
+   * shim above remains active until init resolves; entity stores can
+   * call chrome.storage.local immediately at boot without waiting. */
+  sqliteInit();
+
 })(typeof window !== 'undefined' ? window : globalThis);
