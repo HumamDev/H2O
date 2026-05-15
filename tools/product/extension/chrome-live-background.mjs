@@ -1004,9 +1004,12 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "getFoldersList",
   "resolveFolderBindings",
   "setFolderBinding",
+  "setFolderIconColor",
   "upsertLatestSnapshotMeta",
   "getLabelsCatalog",
   "getCategoriesCatalog",
+  "renameCategory",
+  "deleteCategory",
   "setSnapshotCategory",
   "reclassifySnapshotCategory",
   "pinSnapshot",
@@ -1020,6 +1023,11 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "libraryKvEstimate",
   "exportBundle",
   "importBundle",
+  // v2 full-bundle migration (chat archive + chrome.storage.local + library-kv).
+  // See exportFullBundle / dryRunImportFullBundle / importFullBundle below.
+  "exportFullBundle",
+  "dryRunImportFullBundle",
+  "importFullBundle",
 ]);
 
 function normHeaders(h) {
@@ -1103,6 +1111,11 @@ function normalizeProjectRef(raw) {
   if (!id) return null;
   const name = String(src.name || src.projectName || id).trim() || id;
   return { id, name };
+}
+
+function normalizeHexColor(raw) {
+  const value = String(raw || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : "";
 }
 
 function normalizeCategoryAssignment(raw) {
@@ -2782,7 +2795,7 @@ function normalizeFolderEntry(raw) {
   const id = String(raw && (raw.id || raw.folderId) || "").trim();
   if (!id) return null;
   const kindRaw = String(raw && raw.kind || "").trim().toLowerCase();
-  return {
+  const out = {
     id,
     name: String(raw && (raw.name || raw.title || id) || id).trim() || id,
     kind: kindRaw === "project_backed" ? "project_backed" : "local",
@@ -2790,6 +2803,9 @@ function normalizeFolderEntry(raw) {
     createdAt: String(raw && raw.createdAt || "").trim(),
     updatedAt: String(raw && raw.updatedAt || "").trim(),
   };
+  const iconColor = normalizeHexColor(raw && (raw.iconColor || raw.color || raw.folderColor || raw.accentColor || raw.appearance && raw.appearance.color));
+  if (iconColor) out.iconColor = iconColor;
+  return out;
 }
 
 function normalizeFolderList(raw) {
@@ -2881,6 +2897,48 @@ async function mergeCategoryCatalog(categories, nsDisk = DEFAULT_NS_DISK) {
     },
   });
   return merged;
+}
+
+async function writeCategoryCatalog(categories, nsDisk = DEFAULT_NS_DISK) {
+  const key = categoryCatalogKey(nsDisk);
+  const normalized = normalizeCategoryCatalog(categories);
+  await storageSet({
+    [key]: {
+      categories: normalized,
+      updatedAt: nowIso(),
+    },
+  });
+  return normalized;
+}
+
+async function renameCategory(categoryId, nextNameRaw, nsDisk = DEFAULT_NS_DISK) {
+  const id = String(categoryId || "").trim();
+  const nextName = String(nextNameRaw || "").trim();
+  if (!id || !nextName) throw new Error("missing category id or name");
+  const current = await readCategoryCatalog(nsDisk);
+  const idx = current.findIndex((item) => String(item && item.id || "") === id);
+  if (idx < 0) throw new Error("category not found");
+  const next = current.slice();
+  next[idx] = { ...next[idx], name: nextName, updatedAt: nowIso() };
+  await writeCategoryCatalog(next, nsDisk);
+  return next[idx];
+}
+
+async function deleteCategory(categoryId, nsDisk = DEFAULT_NS_DISK) {
+  const id = String(categoryId || "").trim();
+  if (!id) throw new Error("missing category id");
+  const current = await readCategoryCatalog(nsDisk);
+  const target = current.find((item) => String(item && item.id || "") === id);
+  if (!target) return false;
+  const next = target.custom === true
+    ? current.filter((item) => String(item && item.id || "") !== id)
+    : current.map((item) => (
+      String(item && item.id || "") === id
+        ? { ...item, status: "retired", updatedAt: nowIso() }
+        : item
+    ));
+  await writeCategoryCatalog(next, nsDisk);
+  return true;
 }
 
 async function mergeLabelCatalog(labels, nsDisk = DEFAULT_NS_DISK) {
@@ -3045,6 +3103,21 @@ async function setFolderBindingBridge(chatId, folderId, nsDisk = DEFAULT_NS_DISK
       folderName: "",
     };
   }
+}
+
+async function setFolderIconColorBridge(folderId, iconColor, nsDisk = DEFAULT_NS_DISK) {
+  const id = String(folderId || "").trim();
+  if (!id) throw new Error("missing folderId");
+  const color = normalizeHexColor(iconColor || "");
+  const result = await queryFolderBridge("setFolderIconColor", {
+    folderId: id,
+    iconColor: color,
+  }, nsDisk);
+  try {
+    const list = normalizeFolderList(await queryFolderBridge("getFoldersList", {}, nsDisk));
+    await writeFolderCatalogCache(list, nsDisk);
+  } catch {}
+  return result && typeof result === "object" ? result : { ok: true, folderId: id, iconColor: color };
 }
 
 function normalizeWorkbenchRoute(routeRaw) {
@@ -3470,6 +3543,406 @@ async function importBundle(bundle, modeRaw = "merge", nsDisk = DEFAULT_NS_DISK)
   return { ok: true, mode, importedChats, importedSnapshots };
 }
 
+// ─── v2 Full-bundle migration (chat archive + chrome.storage.local + library-kv) ─
+//
+// One-shot migration tool used when the user needs to move all Studio data from
+// one extension ID to another (e.g. moving from chrome-ext-dev-controls to
+// chrome-ext-prod after the Studio launcher was wired to a new build path).
+// Chrome isolates chrome.storage.local + IndexedDB by extension ID, so the
+// destination extension starts with empty user data even though the code is
+// identical. This pipeline produces a portable JSON bundle on the source side
+// and applies it (with dry-run + auto-backup + merge semantics) on the dest.
+//
+// Schema versions:
+//   v1: "h2o.chatArchive.bundle.v1"  ← existing exportBundle / importBundle
+//   v2: "h2o.studio.fullBundle.v2"   ← embeds v1 + chrome.storage.local + library-kv
+// v2 is backward compatible: dryRunImportFullBundle / importFullBundle accept
+// a v1 bundle as a degraded input (no storage / kv sections).
+//
+// SECURITY: identity tokens, dev-control toggles, ephemeral broadcast keys, and
+// the studio-route hint are never exported (see STORAGE_KEY_*).
+
+const FULL_BUNDLE_SCHEMA_V2 = "h2o.studio.fullBundle.v2";
+
+// Allowlist + denylist for chrome.storage.local. We export only keys matching
+// the allowlist AND not matching the denylist. Tested in this order — denylist
+// wins on overlap.
+const STORAGE_KEY_DENYLIST_PREFIXES = Object.freeze([
+  // Identity / auth: NEVER export tokens, snapshots, refresh keys, OAuth flow.
+  "h2oIdentity",
+  "h2oIdentityProvider",
+  "H2O_IDENTITY_",
+  // Dev-control toggles + sets + chat bindings — extension-local, not user data.
+  "h2oExtDev",
+  // Ephemeral cross-surface heartbeats — pure runtime sync signal, not state.
+  "h2o:library:cross-surface:broadcast",
+  // Studio-route hint — extension-local route restore, not user data.
+  "h2o:studio:lastHash",
+]);
+
+const STORAGE_KEY_ALLOWLIST_PREFIXES = Object.freeze([
+  // Studio UI prefs + edit overrides
+  "h2o:archiveWorkbench:",
+  // Folders, projects, expanded state, see-more state, projects cache
+  "h2o:prm:cgx:fldrs:",
+  // Inline highlights (canonical v3 disk format)
+  "h2o:prm:cgx:nlnhghlghtr:",
+  // Library workspace metadata (chat-title state, interface-meta, chat-registry)
+  "h2o:prm:cgx:library:",
+  // Answer numbering / config
+  "h2o:prm:cgx:ansn:",
+  // MiniMap state (inline-dot map, badge visibility, etc.)
+  "h2o:prm:cgx:mnmp:",
+  // Legacy "ho:" chat metadata (pin / heat / row tint / chat-meta)
+  "ho:chat-",
+  "ho:chat-meta-",
+]);
+
+function isExportableStorageKey(key) {
+  const k = String(key || "");
+  if (!k) return false;
+  for (const deny of STORAGE_KEY_DENYLIST_PREFIXES) {
+    if (k.startsWith(deny)) return false;
+  }
+  for (const allow of STORAGE_KEY_ALLOWLIST_PREFIXES) {
+    if (k.startsWith(allow)) return true;
+  }
+  return false;
+}
+
+function dumpChromeStorageLocalFiltered() {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.get(null, (all) => {
+        const le = chrome.runtime.lastError;
+        if (le) return reject(new Error(String(le.message || le)));
+        const out = {};
+        const rows = all && typeof all === "object" ? all : {};
+        for (const [k, v] of Object.entries(rows)) {
+          if (isExportableStorageKey(k)) out[k] = v;
+        }
+        resolve(out);
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function dumpLibraryKvAll() {
+  const db = await libraryKvOpenDb();
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readonly"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    const keysReq = store.getAllKeys();
+    const valsReq = store.getAll();
+    let keys = null;
+    let vals = null;
+    keysReq.onsuccess = () => { keys = keysReq.result; if (vals !== null) finish(); };
+    valsReq.onsuccess = () => { vals = valsReq.result; if (keys !== null) finish(); };
+    keysReq.onerror = () => reject(keysReq.error || new Error("library kv: getAllKeys failed"));
+    valsReq.onerror = () => reject(valsReq.error || new Error("library kv: getAll failed"));
+    function finish() {
+      const out = [];
+      const ks = Array.isArray(keys) ? keys : [];
+      const vs = Array.isArray(vals) ? vals : [];
+      const n = Math.min(ks.length, vs.length);
+      for (let i = 0; i < n; i++) {
+        const k = ks[i];
+        if (typeof k !== "string") continue;
+        out.push({ key: k, value: vs[i] });
+      }
+      resolve(out);
+    }
+  });
+}
+
+async function writeLibraryKvBatchMerge(rows, modeRaw) {
+  const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
+  if (!Array.isArray(rows) || !rows.length) return { written: 0, skipped: 0, errors: [] };
+  const db = await libraryKvOpenDb();
+
+  // Snapshot existing keys once for merge-mode skip decisions.
+  const existingKeys = new Set();
+  if (mode === "merge") {
+    await new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(LIBRARY_KV_STORE, "readonly"); }
+      catch (e) { reject(e); return; }
+      const req = tx.objectStore(LIBRARY_KV_STORE).getAllKeys();
+      req.onsuccess = () => {
+        for (const k of (req.result || [])) if (typeof k === "string") existingKeys.add(k);
+        resolve();
+      };
+      req.onerror = () => reject(req.error || new Error("library kv: getAllKeys failed"));
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(LIBRARY_KV_STORE, "readwrite"); }
+    catch (e) { reject(e); return; }
+    const store = tx.objectStore(LIBRARY_KV_STORE);
+    let written = 0;
+    let skipped = 0;
+    const errors = [];
+    for (const row of rows) {
+      const k = row && typeof row.key === "string" ? row.key : "";
+      if (!k) { skipped += 1; continue; }
+      const keyCheck = libraryKvValidateKey(k);
+      if (!keyCheck.ok) {
+        errors.push({ key: k, code: keyCheck.code, error: keyCheck.error });
+        skipped += 1;
+        continue;
+      }
+      if (mode === "merge" && existingKeys.has(k)) { skipped += 1; continue; }
+      try {
+        store.put(row.value, k);
+        written += 1;
+      } catch (e) {
+        errors.push({ key: k, code: "PUT_FAILED", error: String(e && (e.message || e)) });
+        skipped += 1;
+      }
+    }
+    tx.oncomplete = () => resolve({ written, skipped, errors });
+    tx.onerror = () => reject(tx.error || new Error("library kv: tx error"));
+    tx.onabort = () => reject(tx.error || new Error("library kv: tx aborted"));
+  });
+}
+
+async function writeChromeStorageLocalMerge(entries, modeRaw) {
+  const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
+  const obj = entries && typeof entries === "object" && !Array.isArray(entries) ? entries : {};
+  const incomingKeys = Object.keys(obj);
+  if (!incomingKeys.length) return { written: 0, skipped: 0 };
+
+  // Whitelist enforcement on the import side too — never write a denylisted
+  // key even if a hand-edited bundle tries to.
+  const safeIncoming = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (isExportableStorageKey(k)) safeIncoming[k] = v;
+  }
+  const safeKeys = Object.keys(safeIncoming);
+  if (!safeKeys.length) return { written: 0, skipped: incomingKeys.length };
+
+  let existing = {};
+  if (mode === "merge") {
+    existing = await new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.get(safeKeys, (rows) => {
+          const le = chrome.runtime.lastError;
+          if (le) return reject(new Error(String(le.message || le)));
+          resolve(rows || {});
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  const writes = {};
+  let written = 0;
+  let skipped = incomingKeys.length - safeKeys.length;
+  for (const k of safeKeys) {
+    if (mode === "merge" && Object.prototype.hasOwnProperty.call(existing, k)) {
+      skipped += 1;
+      continue;
+    }
+    writes[k] = safeIncoming[k];
+    written += 1;
+  }
+  if (written > 0) {
+    await new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.set(writes, () => {
+          const le = chrome.runtime.lastError;
+          if (le) return reject(new Error(String(le.message || le)));
+          resolve();
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+  return { written, skipped };
+}
+
+function validateFullBundleShape(bundleRaw) {
+  if (!bundleRaw || typeof bundleRaw !== "object") {
+    throw new Error("bundle: not an object");
+  }
+  // Accept v1 as degraded input (no chromeStorageLocal / libraryKv).
+  if (bundleRaw.schema === "h2o.chatArchive.bundle.v1") {
+    return {
+      schema: FULL_BUNDLE_SCHEMA_V2,
+      chatArchive: bundleRaw,
+      chromeStorageLocal: {},
+      libraryKv: [],
+      sourceVersion: "v1",
+    };
+  }
+  if (bundleRaw.schema !== FULL_BUNDLE_SCHEMA_V2) {
+    throw new Error("bundle: unsupported schema " + JSON.stringify(bundleRaw.schema));
+  }
+  const chatArchive = bundleRaw.chatArchive;
+  if (!chatArchive || chatArchive.schema !== "h2o.chatArchive.bundle.v1" || !Array.isArray(chatArchive.chats)) {
+    throw new Error("bundle: missing or invalid chatArchive section");
+  }
+  return {
+    schema: FULL_BUNDLE_SCHEMA_V2,
+    chatArchive,
+    chromeStorageLocal:
+      bundleRaw.chromeStorageLocal && typeof bundleRaw.chromeStorageLocal === "object" && !Array.isArray(bundleRaw.chromeStorageLocal)
+        ? bundleRaw.chromeStorageLocal
+        : {},
+    libraryKv: Array.isArray(bundleRaw.libraryKv) ? bundleRaw.libraryKv : [],
+    sourceVersion: "v2",
+  };
+}
+
+async function exportFullBundle(optsRaw = {}, nsDisk = DEFAULT_NS_DISK) {
+  const ns = normalizeNsDisk((optsRaw && optsRaw.nsDisk) || nsDisk);
+  const chatArchive = await exportBundle("all", null, ns);
+  let chromeStorageLocal = {};
+  let libraryKv = [];
+  let chromeStorageError = null;
+  let libraryKvError = null;
+  try { chromeStorageLocal = await dumpChromeStorageLocalFiltered(); }
+  catch (e) { chromeStorageError = String(e && (e.message || e)); }
+  try { libraryKv = await dumpLibraryKvAll(); }
+  catch (e) { libraryKvError = String(e && (e.message || e)); }
+
+  const snapshotCount = chatArchive.chats.reduce(
+    (sum, c) => sum + (Array.isArray(c && c.snapshots) ? c.snapshots.length : 0),
+    0,
+  );
+
+  return {
+    schema: FULL_BUNDLE_SCHEMA_V2,
+    exportedAt: nowIso(),
+    exportedFromExtensionId: (chrome && chrome.runtime && chrome.runtime.id) || "",
+    exportedFromExtensionName: (chrome && chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().name) || "",
+    exportedFromVersion: (chrome && chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "",
+    chatArchive,
+    chromeStorageLocal,
+    libraryKv,
+    diagnostics: {
+      chromeStorageError,
+      libraryKvError,
+    },
+    summary: {
+      chatCount: chatArchive.chatCount || chatArchive.chats.length,
+      snapshotCount,
+      categoryCount: ((chatArchive.catalogs && chatArchive.catalogs.categories) || []).length,
+      labelCount: ((chatArchive.catalogs && chatArchive.catalogs.labels) || []).length,
+      chromeStorageKeyCount: Object.keys(chromeStorageLocal).length,
+      libraryKvKeyCount: libraryKv.length,
+    },
+  };
+}
+
+async function dryRunImportFullBundle(bundleRaw, nsDisk = DEFAULT_NS_DISK) {
+  const ns = normalizeNsDisk(nsDisk);
+  const src = validateFullBundleShape(bundleRaw);
+
+  const prodChatIds = await listAllChatIds(ns);
+  const prodChatIdSet = new Set(prodChatIds);
+  const incomingChatIds = src.chatArchive.chats.map((c) => normalizeChatId(c && c.chatId)).filter(Boolean);
+  const newChatIds = [];
+  const dupChatIds = [];
+  for (const id of incomingChatIds) {
+    if (prodChatIdSet.has(id)) dupChatIds.push(id);
+    else newChatIds.push(id);
+  }
+  const incomingSnapshots = src.chatArchive.chats.reduce(
+    (sum, c) => sum + (Array.isArray(c && c.snapshots) ? c.snapshots.length : 0),
+    0,
+  );
+
+  let currentStorage = {};
+  try { currentStorage = await dumpChromeStorageLocalFiltered(); } catch {}
+  const incomingStorage = src.chromeStorageLocal || {};
+  const storageKeysToWrite = [];
+  const storageKeysSkipped = [];
+  const storageKeysDenied = [];
+  for (const k of Object.keys(incomingStorage)) {
+    if (!isExportableStorageKey(k)) { storageKeysDenied.push(k); continue; }
+    if (Object.prototype.hasOwnProperty.call(currentStorage, k)) storageKeysSkipped.push(k);
+    else storageKeysToWrite.push(k);
+  }
+
+  let currentKvKeys = new Set();
+  try {
+    const rows = await dumpLibraryKvAll();
+    currentKvKeys = new Set(rows.map((r) => r.key));
+  } catch {}
+  const kvIncoming = Array.isArray(src.libraryKv) ? src.libraryKv : [];
+  const kvKeysToWrite = [];
+  const kvKeysSkipped = [];
+  const kvKeysDenied = [];
+  for (const row of kvIncoming) {
+    const k = row && typeof row.key === "string" ? row.key : "";
+    if (!k) { kvKeysDenied.push(""); continue; }
+    const check = libraryKvValidateKey(k);
+    if (!check.ok) { kvKeysDenied.push(k); continue; }
+    if (currentKvKeys.has(k)) kvKeysSkipped.push(k);
+    else kvKeysToWrite.push(k);
+  }
+
+  return {
+    schema: FULL_BUNDLE_SCHEMA_V2,
+    mode: "dry-run",
+    sourceVersion: src.sourceVersion,
+    plan: {
+      chats: {
+        incoming: incomingChatIds.length,
+        incomingSnapshots,
+        willImport: newChatIds.length,
+        willSkipDuplicates: dupChatIds.length,
+      },
+      chromeStorageLocal: {
+        incoming: Object.keys(incomingStorage).length,
+        willImport: storageKeysToWrite.length,
+        willSkipDuplicates: storageKeysSkipped.length,
+        deniedByPolicy: storageKeysDenied.length,
+      },
+      libraryKv: {
+        incoming: kvIncoming.length,
+        willImport: kvKeysToWrite.length,
+        willSkipDuplicates: kvKeysSkipped.length,
+        deniedByPolicy: kvKeysDenied.length,
+      },
+    },
+    sample: {
+      newChatIds: newChatIds.slice(0, 10),
+      dupChatIds: dupChatIds.slice(0, 10),
+      storageKeysToWrite: storageKeysToWrite.slice(0, 20),
+      storageKeysSkipped: storageKeysSkipped.slice(0, 20),
+      storageKeysDenied: storageKeysDenied.slice(0, 20),
+      kvKeysToWrite: kvKeysToWrite.slice(0, 20),
+      kvKeysSkipped: kvKeysSkipped.slice(0, 20),
+      kvKeysDenied: kvKeysDenied.slice(0, 20),
+    },
+  };
+}
+
+async function importFullBundle(bundleRaw, modeRaw = "merge", nsDisk = DEFAULT_NS_DISK) {
+  const ns = normalizeNsDisk(nsDisk);
+  const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
+  const src = validateFullBundleShape(bundleRaw);
+
+  const chatResult = await importBundle(src.chatArchive, mode, ns);
+  const storageResult = await writeChromeStorageLocalMerge(src.chromeStorageLocal || {}, mode);
+  const kvResult = await writeLibraryKvBatchMerge(src.libraryKv || [], mode);
+
+  return {
+    schema: FULL_BUNDLE_SCHEMA_V2,
+    mode,
+    sourceVersion: src.sourceVersion,
+    chats: chatResult,
+    chromeStorageLocal: storageResult,
+    libraryKv: kvResult,
+  };
+}
+
 async function httpRequest(req) {
   const method = String(req?.method || "GET").toUpperCase();
   const url = String(req?.url || "");
@@ -3782,6 +4255,9 @@ async function handleArchiveMessage(msg) {
   if (op === "setFolderBinding") {
     return { ok: true, result: await setFolderBindingBridge(payload.chatId, payload.folderId, nsDisk) };
   }
+  if (op === "setFolderIconColor") {
+    return { ok: true, result: await setFolderIconColorBridge(payload.folderId, payload.iconColor || payload.color || "", nsDisk) };
+  }
   if (op === "upsertLatestSnapshotMeta") {
     return { ok: true, result: await upsertLatestSnapshotMeta(payload.chatId, payload.patch, payload.opts, nsDisk) };
   }
@@ -3790,6 +4266,12 @@ async function handleArchiveMessage(msg) {
   }
   if (op === "getCategoriesCatalog") {
     return { ok: true, result: await readCategoryCatalog(nsDisk) };
+  }
+  if (op === "renameCategory") {
+    return { ok: true, result: await renameCategory(payload.categoryId || payload.id, payload.name || payload.nextName, nsDisk) };
+  }
+  if (op === "deleteCategory") {
+    return { ok: true, result: await deleteCategory(payload.categoryId || payload.id, nsDisk) };
   }
   if (op === "setSnapshotCategory") {
     return { ok: true, result: await setSnapshotCategory(payload.snapshotId, payload.primaryCategoryId, nsDisk) };
@@ -3814,6 +4296,15 @@ async function handleArchiveMessage(msg) {
   }
   if (op === "importBundle") {
     return { ok: true, result: await importBundle(payload.bundle, payload.mode, nsDisk) };
+  }
+  if (op === "exportFullBundle") {
+    return { ok: true, result: await exportFullBundle(payload || {}, nsDisk) };
+  }
+  if (op === "dryRunImportFullBundle") {
+    return { ok: true, result: await dryRunImportFullBundle(payload && payload.bundle, nsDisk) };
+  }
+  if (op === "importFullBundle") {
+    return { ok: true, result: await importFullBundle(payload && payload.bundle, payload && payload.mode, nsDisk) };
   }
 
   return { ok: false, error: "unsupported op" };

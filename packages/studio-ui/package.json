@@ -4,5 +4,8 @@
   "private": true,
   "main": "index.ts",
   "types": "index.ts",
-  "description": "Shared design tokens and UI primitives for H2O Studio"
+  "description": "Shared design tokens and UI primitives for H2O Studio",
+  "peerDependencies": {
+    "react": ">=18"
+  }
 }

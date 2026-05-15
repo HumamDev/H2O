@@ -4,6 +4,7 @@ Shared design tokens and UI primitives for H2O Studio.
 
 ## Contents
 
+- `src/icons/` — shared React SVG icon components
 - `src/tokens/` — `Colors`, `Spacing`, `Radius` design tokens
 - `src/types/` — shared UI prop types
 

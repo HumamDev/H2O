@@ -16,6 +16,22 @@ const CATEGORY_RECLASSIFY_OPS = ["reclassifySnapshotCategory"];
 const FOLDER_FILTER_NONE = "__none__";
 const UI_PREFS_KEY = "h2o:archiveWorkbench:ui:vNext";
 const EDIT_OVERRIDES_KEY = "h2o:archiveWorkbench:editOverrides:v1";
+const CHAT_TITLE_STATE_KEY_PREFIX = "h2o:prm:cgx:library:chat-title:state:v1:";
+const CHAT_TITLE_BOOT_KEY_PREFIX = "h2o:prm:cgx:library:chat-title:boot-cache:v1:";
+const LEGACY_CHAT_TITLE_BOOT_KEY_PREFIX = "h2o:chat-title:boot-cache:v1:";
+const INTERFACE_META_MIRROR_KEY_PREFIX = "h2o:prm:cgx:library:interface-meta:v1:";
+const INTERFACE_META_KEY = "ho:chat-meta-v1";
+const HEAT_OVERRIDE_KEY_PREFIX = "ho:chat-heat-override:";
+const PIN_KEY_PREFIX = "ho:chat-pin:";
+const ROW_TINT_KEY_PREFIX = "ho:chat-row-idx:";
+const LIBRARY_SYNC_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
+const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
+const INTERFACE_COLORS = [
+  { name: "gold", value: "rgba(212,175,55,1)" },
+  { name: "red", value: "rgba(179,58,58,1)" },
+  { name: "blue", value: "rgba(70,100,200,1)" },
+  { name: "green", value: "rgba(60,150,90,1)" },
+];
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -37,6 +53,8 @@ const state = {
   layout: "focused",
   lastTagFilter: "",
   renderToken: 0,
+  titleStateByChat: {},
+  interfaceMetaByChat: {},
 };
 
 function esc(s){
@@ -163,10 +181,12 @@ function persistEditToExtensionSnapshot(snapshotId, turnIdx, newText){
 }
 
 // ─── Delete-confirm state ─────────────────────────────────────────────────────
-// Two-click pattern: first click arms the confirm state (highlighted button +
-// 3-second timeout), second click within that window executes the delete.
+// Two-click pattern: first click arms the icon, second click within the
+// timeout executes the delete.
 
 const DELETE_ICON_HTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4h12M5 4V2.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5V4M6 7v5M10 7v5M3 4l.8 9.1a.6.6 0 0 0 .6.9h7.2a.6.6 0 0 0 .6-.9L13 4"/></svg>`;
+const INFO_ICON_HTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.8"/><path d="M8 7.3v3.6M8 5.1h.01"/></svg>`;
+const PIN_ICON_HTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.7 1.9 4.4 4.4-1.6 1.6-2.1-.6-2.5 2.5.4 2.5-1 1-2.6-2.6-2.8 2.8-.7-.7 2.8-2.8-2.6-2.6 1-1 2.5.4 2.5-2.5-.6-2.1 1.6-1.6Z"/></svg>`;
 
 const deleteConfirm = {
   chatId: "",
@@ -175,13 +195,17 @@ const deleteConfirm = {
   timer: null,
 };
 
+let titlePaletteEl = null;
+
 function armDeleteConfirm(chatId, snapshotId, articleEl, btnEl){
   clearDeleteConfirm();
   deleteConfirm.chatId = chatId;
   deleteConfirm.snapshotId = snapshotId;
   deleteConfirm.articleEl = articleEl;
   articleEl.classList.add("wbHistoryRow--deleting");
-  btnEl.textContent = "Delete?";
+  btnEl.innerHTML = DELETE_ICON_HTML;
+  btnEl.setAttribute("aria-label", "Click again to delete this chat from Studio");
+  btnEl.setAttribute("title", "Click again to delete");
   btnEl.classList.add("wbDeleteBtn--armed");
   deleteConfirm.timer = setTimeout(() => clearDeleteConfirm(), 3000);
 }
@@ -192,7 +216,12 @@ function clearDeleteConfirm(){
   if (el){
     el.classList.remove("wbHistoryRow--deleting");
     const btn = el.querySelector(".wbDeleteBtn");
-    if (btn){ btn.innerHTML = DELETE_ICON_HTML; btn.classList.remove("wbDeleteBtn--armed"); }
+    if (btn){
+      btn.innerHTML = DELETE_ICON_HTML;
+      btn.classList.remove("wbDeleteBtn--armed");
+      btn.setAttribute("aria-label", "Delete this chat from Studio");
+      btn.setAttribute("title", "Delete from Studio");
+    }
   }
   deleteConfirm.chatId = "";
   deleteConfirm.snapshotId = "";
@@ -387,6 +416,425 @@ function fmtDateCompact(iso){
   }
 }
 
+function toTimestampMs(value){
+  if (value == null || value === "") return 0;
+  if (value instanceof Date) {
+    const n = value.getTime();
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 10_000_000_000 ? Math.round(value * 1000) : Math.round(value);
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? Math.round(numeric * 1000) : Math.round(numeric);
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function timestampToIso(value){
+  const ms = toTimestampMs(value);
+  if (!ms) return "";
+  try { return new Date(ms).toISOString(); } catch { return ""; }
+}
+
+function firstTimestamp(...values){
+  for (const value of values){
+    const iso = timestampToIso(value);
+    if (iso) return iso;
+  }
+  return "";
+}
+
+function fmtDateMeta(value){
+  const ms = toTimestampMs(value);
+  if (!ms) return "";
+  const d = new Date(ms);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mon = d.toLocaleString(undefined, { month: "short" });
+  const yy = d.getFullYear();
+  return `${dd} ${mon} ${yy}`;
+}
+
+function toWholeCount(value, fallback = 0){
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+}
+
+function toRowTintIndex(value, fallback = -1){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const idx = Math.floor(n);
+  return idx >= 0 && idx < INTERFACE_COLORS.length ? idx : -1;
+}
+
+function normalizeHeatLevel(value){
+  const level = String(value || "").trim().toLowerCase();
+  return HEAT_LEVELS.has(level) ? level : "auto";
+}
+
+function readLocalJson(key, fallback = null){
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function decodeSharedRecord(value){
+  if (value == null) return null;
+  if (typeof value === "object") return value;
+  const raw = String(value || "").trim();
+  if (!raw || raw.startsWith("\x00LZb64:")) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasChromeStorage(){
+  try {
+    return !!(W.chrome && W.chrome.storage && W.chrome.storage.local && typeof W.chrome.storage.local.get === "function");
+  } catch {
+    return false;
+  }
+}
+
+// Persisted across sessions so the toolbar icon (background's openOrFocusStudio)
+// can restore the user to their last route. Distinct from LAST_LIST_HASH_KEY,
+// which is sessionStorage-scoped and tracks the most recent non-reader hash for
+// the topbar Close button within a single tab.
+const STUDIO_LAST_HASH_KEY = "h2o:studio:lastHash";
+
+function persistStudioLastHash(hash){
+  try {
+    if (!hasChromeStorage() || !W.chrome?.storage?.local?.set) return;
+    const value = String(hash || "").trim();
+    if (!value || !value.startsWith("#")) return;
+    W.chrome.storage.local.set({ [STUDIO_LAST_HASH_KEY]: value }, () => {
+      void W.chrome.runtime?.lastError;
+    });
+  } catch {}
+}
+
+// Presence heartbeat — written on boot, hashchange, visibilitychange, and once
+// every 10s while the tab exists. The background SW reads this on
+// chrome.runtime.onInstalled / onStartup to decide whether to auto-restore
+// the Studio tab after the user reloads the extension from chrome://extensions
+// (which invalidates the page context). A fresh lastSeenAt within ~3 min is
+// the signal "Studio was alive recently — bring it back".
+//
+// The presence record is intentionally small: open + lastHash + lastSeenAt +
+// runtimeId. We never write open:false on unload (page-teardown can't run
+// async chrome.storage reliably); staleness of lastSeenAt is the safer
+// freshness signal.
+const STUDIO_PRESENCE_KEY = "h2o:studio:presence:v1";
+const STUDIO_PRESENCE_HEARTBEAT_MS = 10 * 1000;
+
+function persistStudioPresence(){
+  try {
+    if (!hasChromeStorage() || !W.chrome?.storage?.local?.set) return;
+    const rec = {
+      open: true,
+      lastHash: String(location.hash || "#/saved"),
+      lastSeenAt: Date.now(),
+      runtimeId: (W.chrome && W.chrome.runtime && W.chrome.runtime.id) || "",
+    };
+    W.chrome.storage.local.set({ [STUDIO_PRESENCE_KEY]: rec }, () => {
+      void W.chrome.runtime?.lastError;
+    });
+  } catch {}
+}
+
+function chromeStorageGet(keys){
+  if (!hasChromeStorage()) return Promise.resolve({});
+  return new Promise((resolve) => {
+    try {
+      W.chrome.storage.local.get(keys, (result) => resolve(result || {}));
+    } catch {
+      resolve({});
+    }
+  });
+}
+
+function chromeStorageSet(obj){
+  if (!hasChromeStorage()) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      W.chrome.storage.local.set(obj || {}, () => resolve(true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function chromeStorageRemove(keys){
+  if (!hasChromeStorage()) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      W.chrome.storage.local.remove(keys, () => resolve(true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function readSharedRecord(key, chromeValues = null){
+  const k = String(key || "");
+  if (!k) return null;
+
+  const fromChrome = chromeValues && Object.prototype.hasOwnProperty.call(chromeValues, k)
+    ? decodeSharedRecord(chromeValues[k])
+    : null;
+  if (fromChrome) return fromChrome;
+
+  try {
+    const store = W.H2O?.Library?.Store;
+    if (store && typeof store.get === "function") {
+      const fromStore = decodeSharedRecord(await store.get(k));
+      if (fromStore) return fromStore;
+    }
+  } catch {}
+
+  return decodeSharedRecord(readLocalJson(k, null));
+}
+
+async function writeSharedRecord(key, value){
+  const k = String(key || "");
+  if (!k) return false;
+  const record = value && typeof value === "object" ? value : {};
+  try { localStorage.setItem(k, JSON.stringify(record)); } catch {}
+
+  const jobs = [chromeStorageSet({ [k]: record })];
+  try {
+    const store = W.H2O?.Library?.Store;
+    if (store && typeof store.set === "function") jobs.push(store.set(k, record).catch(() => false));
+  } catch {}
+  await Promise.allSettled(jobs);
+  return true;
+}
+
+function broadcastStudioMeta(reason, payload){
+  const body = {
+    ts: Date.now(),
+    surface: "studio",
+    reason: String(reason || "studio-interface-meta"),
+    payload: payload && typeof payload === "object" ? payload : null,
+  };
+  try { W.H2O?.Library?.Sync?.broadcast?.(body.reason, body.payload); } catch {}
+  chromeStorageSet({ [LIBRARY_SYNC_BROADCAST_KEY]: body }).catch(() => {});
+  try {
+    W.dispatchEvent(new CustomEvent("evt:h2o:library:cross-surface-sync", {
+      detail: { reasons: [body.reason], t: body.ts, surface: "studio" },
+    }));
+  } catch {}
+}
+
+function normalizeTitleStatePayload(record){
+  const src = record && typeof record === "object" && record.state && typeof record.state === "object"
+    ? record.state
+    : record;
+  if (!src || typeof src !== "object") return null;
+  const chatId = String(src.chatId || "").trim();
+  const baseTitle = String(src.baseTitle || src.title || "").trim();
+  const emoji = String(src.emoji || "").trim();
+  const displayTitle = String(src.displayTitle || src.documentTitle || "").trim();
+  if (!baseTitle && !emoji && !displayTitle) return null;
+  return {
+    chatId,
+    baseTitle,
+    emoji,
+    displayTitle,
+    updatedAt: toTimestampMs(src.updatedAt || src.emojiUpdatedAt || 0),
+  };
+}
+
+function composeTitleFromState(titleState, fallbackTitle){
+  const fallback = String(fallbackTitle || "").trim();
+  const stateObj = normalizeTitleStatePayload(titleState);
+  if (!stateObj) return fallback;
+  const baseTitle = stateObj.baseTitle || fallback;
+  const displayTitle = stateObj.displayTitle;
+  const emoji = stateObj.emoji;
+  if (displayTitle) return displayTitle;
+  if (emoji && baseTitle && !baseTitle.startsWith(`${emoji} `)) return `${emoji} ${baseTitle}`;
+  return baseTitle || fallback;
+}
+
+function emojiList(line){
+  return String(line || "").trim().split(/\s+/).filter(Boolean);
+}
+
+const STUDIO_EMOJI_GROUPS = Object.freeze([
+  Object.freeze({ label: "Smileys & Emotion", emojis: emojiList(`
+    😀 😃 😄 😁 😆 😅 😂 🤣 🥲 🥹 ☺️ 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚
+    😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🥸 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 ☹️ 😣 😖
+    😫 😩 🥺 😢 😭 😮‍💨 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🫣
+    🤗 🫡 🤔 🫢 🤭 🤫 🤥 😶 😐 😑 😬 🫨 🫠 🙄 😯 😦 😧 😮 😲 🥱
+    😴 🤤 😪 😵 😵‍💫 🫥 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👿 👹
+    👺 🤡 💩 👻 💀 ☠️ 👽 👾 🤖 🎃 😺 😸 😹 😻 😼 😽 🙀 😿 😾
+  `) }),
+  Object.freeze({ label: "Work & Objects", emojis: emojiList(`
+    💬 🗨️ 🧠 💻 🖥️ ⌨️ 🖱️ ⚙️ 🛠️ 🔧 🧰 💡 📌 📍 🧭 🗺️ 🧩 📦
+    📁 📂 🗂️ 📝 📄 📑 📜 🧾 📚 📖 🔖 📎 ✉️ 📧 📤 📥 🔍 🔎 📊
+  `) }),
+  Object.freeze({ label: "People & Roles", emojis: emojiList(`
+    👨‍💻 👩‍💻 🧑‍💻 👨‍🎓 👩‍🎓 🧑‍🎓 👨‍🏫 👩‍🏫 🧑‍🏫 👨‍🔬 👩‍🔬 🧑‍🔬
+    👨‍⚕️ 👩‍⚕️ 🧑‍⚕️ 👨‍⚖️ 👩‍⚖️ 🧑‍⚖️ 👨‍🔧 👩‍🔧 🧑‍🔧 👨‍🚀 👩‍🚀 🧑‍🚀
+  `) }),
+  Object.freeze({ label: "Symbols & Flags", emojis: emojiList(`
+    ⭐ ✨ ⚡ 🔥 ✅ ❗ ⚠️ 🔁 🔒 🔓 ❤️ 💙 💚 💛 🧡 💜 🖤 🤍
+    🔶 🔷 🔺 🔻 ⬆️ ⬇️ ⬅️ ➡️ 🇵🇸 🇩🇪 🇦🇹 🇪🇺 🇬🇧 🇺🇸 🇨🇦 🇨🇭
+  `) }),
+]);
+
+const STUDIO_EMOJI_POOL = Object.freeze(Array.from(new Set(STUDIO_EMOJI_GROUPS.flatMap((group) => group.emojis || []))));
+
+function splitTitleEmoji(raw){
+  const title = String(raw || "").trim();
+  if (!title) return { baseTitle: "", emoji: "" };
+  let parts = [];
+  try {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    parts = Array.from(segmenter.segment(title), (entry) => entry.segment);
+  } catch {
+    parts = Array.from(title);
+  }
+  const isEmoji = (value) => (
+    /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u.test(String(value || "")) ||
+    /[\u2600-\u27BF]/u.test(String(value || ""))
+  );
+  const first = parts[0] || "";
+  const last = parts[parts.length - 1] || "";
+  const emoji = isEmoji(first) ? first : (isEmoji(last) ? last : "");
+  if (!emoji) return { baseTitle: title, emoji: "" };
+  if (emoji === first) parts.shift();
+  else parts.pop();
+  const baseTitle = parts.join("").trim();
+  return { baseTitle: baseTitle || title, emoji };
+}
+
+function displayTitleWithEmoji(baseTitle, emoji){
+  const base = String(baseTitle || "").trim();
+  const e = String(emoji || "").trim();
+  if (!base) return e;
+  if (!e) return base;
+  return base.startsWith(`${e} `) ? base : `${e} ${base}`;
+}
+
+function messageTimestamp(message){
+  return toTimestampMs(
+    message?.createdAt ??
+    message?.createTime ??
+    message?.create_time ??
+    message?.timestamp ??
+    message?.ts ??
+    message?.messageCreateTime ??
+    message?.message_create_time
+  );
+}
+
+function earliestMessageTimestamp(messages){
+  let min = 0;
+  for (const msg of Array.isArray(messages) ? messages : []){
+    const ms = messageTimestamp(msg);
+    if (!ms) continue;
+    min = min ? Math.min(min, ms) : ms;
+  }
+  return min;
+}
+
+function latestMessageTimestamp(messages){
+  let max = 0;
+  for (const msg of Array.isArray(messages) ? messages : []){
+    const ms = messageTimestamp(msg);
+    if (!ms) continue;
+    max = Math.max(max, ms);
+  }
+  return max;
+}
+
+function resolveOriginalChatCreatedAt(row, meta, messages){
+  const messageFirst = earliestMessageTimestamp(messages);
+  return firstTimestamp(
+    row?.chatCreatedAt,
+    row?.conversationCreatedAt,
+    row?.originalCreatedAt,
+    row?.originCreatedAt,
+    row?.firstMessageCreatedAt,
+    row?.createdAtOriginal,
+    meta?.chatCreatedAt,
+    meta?.conversationCreatedAt,
+    meta?.originalCreatedAt,
+    meta?.originCreatedAt,
+    meta?.firstMessageCreatedAt,
+    meta?.createdAt,
+    meta?.createTime,
+    meta?.create_time,
+    messageFirst,
+    meta?.updatedAt,
+    row?.updatedAt,
+    row?.createdAt
+  );
+}
+
+function resolveLastTurnAt(row, meta, messages){
+  const messageLast = latestMessageTimestamp(messages);
+  return firstTimestamp(
+    row?.lastTurnAt,
+    row?.lastTurnCreatedAt,
+    row?.lastMessageCreatedAt,
+    row?.lastActivityAt,
+    row?.conversationUpdatedAt,
+    meta?.lastTurnAt,
+    meta?.lastTurnCreatedAt,
+    meta?.lastMessageCreatedAt,
+    meta?.lastActivityAt,
+    meta?.conversationUpdatedAt,
+    messageLast,
+    row?.updatedAt,
+    meta?.updatedAt,
+    row?.studioAddedAt,
+    row?.createdAt
+  );
+}
+
+function resolveStudioAddedAt(row, meta){
+  return firstTimestamp(
+    row?.studioAddedAt,
+    row?.addedAt,
+    row?.capturedAt,
+    row?.createdAt,
+    meta?.studioAddedAt,
+    meta?.addedAt,
+    meta?.capturedAt
+  );
+}
+
+function computeHeatLevel(row){
+  const override = normalizeHeatLevel(row?.heatOverride);
+  if (override !== "auto") return override;
+  const meta = row?.interfaceMeta && typeof row.interfaceMeta === "object" ? row.interfaceMeta : {};
+  const lastActivity = Math.max(
+    toTimestampMs(meta.updatedAt),
+    toTimestampMs(row?.updatedAt),
+    toTimestampMs(row?.originalCreatedAt),
+    toTimestampMs(row?.studioAddedAt)
+  );
+  if (!lastActivity) return "off";
+  const ageHrs = (Date.now() - lastActivity) / 36e5;
+  if (ageHrs <= 24) return "hot";
+  if (ageHrs <= 24 * 7) return "warm";
+  return "off";
+}
+
 function readUiPrefs(){
   try {
     const raw = localStorage.getItem(UI_PREFS_KEY);
@@ -431,12 +879,6 @@ function applyUiState(){
   const railBtn = $("#railSidebarBtn");
   if (railBtn) railBtn.tabIndex = sidebarOpen ? -1 : 0;
 
-  const closeBtn = $("#closeBtn");
-  if (closeBtn){
-    const isReader = !!state.currentReaderSnapshot;
-    closeBtn.setAttribute("aria-label", isReader ? "Close reader" : "Close Studio window");
-    closeBtn.setAttribute("title", isReader ? "Close reader" : "Close window");
-  }
 }
 
 function setRouteMeta(eyebrow, title, summary){
@@ -503,6 +945,28 @@ function parseHash(){
   const [pathRaw, searchRaw = ""] = raw.split("?");
   const parts = pathRaw.split("/").filter(Boolean);
   if (parts[0] === "read") return { name: "read", snapshotId: decodeURIComponent(parts[1] || "") };
+  // The Library overlay (S0F1d Library Insights) owns #/library/* routes.
+  // Surface them through parseHash with a distinct `name`, so renderRoute can
+  // skip studio.js's list/reader render path AND avoid the listHash reset in
+  // renderList — which previously rewrote the URL back to #/saved the moment
+  // the user clicked the sidebar Library button.
+  if (parts[0] === "library") {
+    let view = "dashboard";
+    try { view = decodeURIComponent(parts[1] || "dashboard"); } catch { view = parts[1] || "dashboard"; }
+    let id = "";
+    try { id = decodeURIComponent(parts.slice(2).join("/")); } catch { id = parts.slice(2).join("/"); }
+    return { name: "library", view, id };
+  }
+  // v2 full-bundle migration routes (export from old extension, import into new).
+  // Two leaf actions: "export" (download bundle JSON) and "import" (file picker
+  // + dry-run + auto-backup + confirm). Owned by renderMigrateRoute below.
+  if (parts[0] === "migrate") {
+    const action = String(parts[1] || "").toLowerCase();
+    if (action === "export" || action === "import") return { name: "migrate", action };
+  }
+  // Settings page — sidebar entry-point that exposes #/migrate/* through
+  // user-facing cards. Owned by renderSettingsRoute below.
+  if (parts[0] === "settings") return { name: "settings" };
   const search = new URLSearchParams(searchRaw);
   return {
     name: "list",
@@ -1081,6 +1545,31 @@ function scrubReplayNode(root){
   });
 }
 
+// Captured chatgpt.com turn HTML contains <svg><use href="/cdn/assets/sprites-core-*.svg#id"/></svg>
+// references to ChatGPT's hashed sprite bundle. In the Studio document the absolute path
+// resolves against the chrome-extension://<id>/ origin, which doesn't host /cdn/, producing
+// repeated ERR_FILE_NOT_FOUND every time a reader mounts. We never need ChatGPT's UI sprites
+// inside the Studio reader (they're chrome icons, not message content), so the safest fix is
+// to neutralize the <use> reference at sanitization time. The empty <svg> wrapper stays so
+// layout doesn't shift.
+function neutralizeExternalUseHrefs(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  try {
+    // Plain `href` (modern) and namespaced `xlink:href` (legacy).
+    root.querySelectorAll("use[href], use[*|href]").forEach((useEl) => {
+      try {
+        const href = useEl.getAttribute("href") || useEl.getAttributeNS("http://www.w3.org/1999/xlink", "href") || "";
+        // Treat anything that points outside the current document fragment as unsafe in
+        // the Studio context: absolute URLs, root-relative paths, and CDN-style hashed
+        // sprite references all fail because the extension origin doesn't serve them.
+        if (/^(https?:)?\/\//i.test(href) || href.startsWith("/") || /sprites-core-/i.test(href)) {
+          useEl.remove();
+        }
+      } catch {}
+    });
+  } catch {}
+}
+
 function sanitizeRichTurnElement(htmlRaw){
   const html = String(htmlRaw || "").trim();
   if (!html) return null;
@@ -1091,12 +1580,16 @@ function sanitizeRichTurnElement(htmlRaw){
   tpl.content.querySelectorAll("script,link,iframe,object,embed,style").forEach((bad) => {
     try { bad.remove(); } catch {}
   });
+  neutralizeExternalUseHrefs(tpl.content);
 
   const turnEl = findConversationTurnElement(tpl.content);
   if (!turnEl) return null;
 
   const cleanTurn = turnEl.cloneNode(true);
   scrubReplayNode(cleanTurn);
+  // Defensive pass: scrubReplayNode might leave or rebuild <use> elements, so strip
+  // any remaining cross-origin references once more on the cloned tree.
+  neutralizeExternalUseHrefs(cleanTurn);
   return cleanTurn;
 }
 
@@ -1805,7 +2298,10 @@ function normalizeFolderRecord(raw){
   const updatedAt = String(row.updatedAt || "").trim();
   const kind = String(row.kind || "").trim().toLowerCase() === "project_backed" ? "project_backed" : "local";
   const projectRef = normalizeProjectRef(row.projectRef);
-  return { id, name, createdAt, updatedAt, kind, projectRef };
+  const iconColor = normalizeSidebarIconColor(row.iconColor || row.color || row.folderColor || row.accentColor || row.appearance?.color || "");
+  const folder = { id, name, createdAt, updatedAt, kind, projectRef };
+  if (iconColor) folder.iconColor = iconColor;
+  return folder;
 }
 
 function normalizeWorkbenchRow(raw){
@@ -1820,12 +2316,16 @@ function normalizeWorkbenchRow(raw){
   const excerpt = String(row.excerpt || meta.excerpt || buildExcerptFromMessages(messages)).trim();
   const createdAt = String(row.createdAt || row.updatedAt || meta.updatedAt || "").trim();
   const updatedAt = String(row.updatedAt || meta.updatedAt || createdAt).trim();
+  const originalCreatedAt = resolveOriginalChatCreatedAt(row, meta, messages);
+  const studioAddedAt = resolveStudioAddedAt(row, meta) || createdAt;
+  const lastTurnAt = resolveLastTurnAt(row, meta, messages) || updatedAt;
   const messageCount = Number(row.messageCount || messages.length || meta.messageCount || 0);
-  const answerCount = Number(row.answerCount || meta.answerCount || countAssistantTurns(messages));
+  const answerCount = Number(row.answerCount || meta.answerCount || meta.answers || countAssistantTurns(messages));
   const pinned = !!(row.pinned ?? meta.pinned);
   const archived = !!(row.archived ?? meta.archived ?? (String(meta.state || "").trim().toLowerCase() === "archived"));
   const folderId = String(row.folderId || meta.folderId || meta.folder || "").trim();
   const folderName = String(row.folderName || meta.folderName || "").trim();
+  const folderIconColor = normalizeSidebarIconColor(row.folderIconColor || meta.folderIconColor || row.folderColor || meta.folderColor || "");
   const tags = normalizeTags(row.tags ?? meta.tags);
   const originSource = normalizeOriginSource(row.originSource ?? meta.originSource);
   const originProjectRef = normalizeProjectRef(row.originProjectRef ?? meta.originProjectRef);
@@ -1840,12 +2340,16 @@ function normalizeWorkbenchRow(raw){
     excerpt,
     createdAt,
     updatedAt,
+    originalCreatedAt,
+    studioAddedAt,
+    lastTurnAt,
     messageCount: Number.isFinite(messageCount) ? Math.max(0, Math.floor(messageCount)) : 0,
     answerCount: Number.isFinite(answerCount) ? Math.max(0, Math.floor(answerCount)) : 0,
     pinned,
     archived,
     folderId,
     folderName,
+    folderIconColor,
     tags,
     originSource,
     originProjectRef,
@@ -1853,6 +2357,110 @@ function normalizeWorkbenchRow(raw){
     labels,
     keywords,
   };
+}
+
+async function readTitleStateForChat(chatId, chromeValues = null){
+  const id = String(chatId || "").trim();
+  if (!id) return null;
+  const stateKey = `${CHAT_TITLE_STATE_KEY_PREFIX}${id}`;
+  const bootKey = `${CHAT_TITLE_BOOT_KEY_PREFIX}${id}`;
+  const legacyBootKey = `${LEGACY_CHAT_TITLE_BOOT_KEY_PREFIX}${id}`;
+
+  const direct = normalizeTitleStatePayload(await readSharedRecord(stateKey, chromeValues));
+  if (direct) return direct;
+
+  const boot = normalizeTitleStatePayload(await readSharedRecord(bootKey, chromeValues));
+  if (boot) return boot;
+
+  let legacyBootRaw = null;
+  try { legacyBootRaw = localStorage.getItem(legacyBootKey); } catch {}
+  const legacyBoot = normalizeTitleStatePayload(decodeSharedRecord(legacyBootRaw));
+  if (legacyBoot) return legacyBoot;
+
+  return null;
+}
+
+async function readInterfaceMetaForChat(chatId, chromeValues = null, legacyMetaStore = {}){
+  const id = String(chatId || "").trim();
+  if (!id) return {};
+
+  const mirrorKey = `${INTERFACE_META_MIRROR_KEY_PREFIX}${id}`;
+  const mirror = await readSharedRecord(mirrorKey, chromeValues);
+  const legacy = legacyMetaStore && typeof legacyMetaStore === "object" ? legacyMetaStore[id] : null;
+  const heatKey = `${HEAT_OVERRIDE_KEY_PREFIX}${id}`;
+  const pinKey = `${PIN_KEY_PREFIX}${id}`;
+  const rowKey = `${ROW_TINT_KEY_PREFIX}${id}`;
+
+  const chromeHeat = chromeValues && Object.prototype.hasOwnProperty.call(chromeValues, heatKey)
+    ? chromeValues[heatKey]
+    : null;
+  const chromePin = chromeValues && Object.prototype.hasOwnProperty.call(chromeValues, pinKey)
+    ? chromeValues[pinKey]
+    : null;
+  const chromeRow = chromeValues && Object.prototype.hasOwnProperty.call(chromeValues, rowKey)
+    ? chromeValues[rowKey]
+    : null;
+
+  let localHeat = "";
+  let localPinned = false;
+  let localRow = -1;
+  try { localHeat = localStorage.getItem(heatKey) || ""; } catch {}
+  try { localPinned = localStorage.getItem(pinKey) === "1"; } catch {}
+  try { localRow = Number.parseInt(localStorage.getItem(rowKey) || "-1", 10); } catch {}
+
+  return {
+    ...(legacy && typeof legacy === "object" ? legacy : {}),
+    ...(mirror && typeof mirror === "object" ? mirror : {}),
+    heatOverride: normalizeHeatLevel((mirror && mirror.heatOverride) || chromeHeat || localHeat || "auto"),
+    pinned: !!((mirror && mirror.pinned) || chromePin === "1" || chromePin === true || localPinned),
+    rowTint: toRowTintIndex((mirror && mirror.rowTint) ?? chromeRow ?? localRow, -1),
+  };
+}
+
+async function enrichRowsWithNativeInterfaceData(rows){
+  const baseRows = (Array.isArray(rows) ? rows : []).map((row) => ({ ...row }));
+  const ids = uniqStrings(baseRows.map((row) => row.chatId));
+  if (!ids.length) return baseRows;
+
+  const sharedKeys = ids.flatMap((id) => [
+    `${CHAT_TITLE_STATE_KEY_PREFIX}${id}`,
+    `${CHAT_TITLE_BOOT_KEY_PREFIX}${id}`,
+    `${INTERFACE_META_MIRROR_KEY_PREFIX}${id}`,
+    `${HEAT_OVERRIDE_KEY_PREFIX}${id}`,
+    `${PIN_KEY_PREFIX}${id}`,
+    `${ROW_TINT_KEY_PREFIX}${id}`,
+  ]);
+  const chromeValues = await chromeStorageGet(sharedKeys).catch(() => ({}));
+  const legacyMetaStore = readLocalJson(INTERFACE_META_KEY, {}) || {};
+
+  const out = await Promise.all(baseRows.map(async (row) => {
+    const titleState = await readTitleStateForChat(row.chatId, chromeValues);
+    const interfaceMeta = await readInterfaceMetaForChat(row.chatId, chromeValues, legacyMetaStore);
+    const title = composeTitleFromState(titleState, row.title);
+    const originalCreatedAt = firstTimestamp(interfaceMeta.createdAt, row.originalCreatedAt);
+    const answerCount = toWholeCount(interfaceMeta.answers ?? interfaceMeta.answerCount, row.answerCount || 0);
+    const heatOverride = normalizeHeatLevel(interfaceMeta.heatOverride);
+    const pinned = !!(row.pinned || interfaceMeta.pinned);
+
+    state.titleStateByChat[row.chatId] = titleState || {};
+    state.interfaceMetaByChat[row.chatId] = interfaceMeta || {};
+
+    const next = {
+      ...row,
+      title,
+      titleState: titleState || null,
+      interfaceMeta,
+      originalCreatedAt: originalCreatedAt || row.originalCreatedAt,
+      answerCount,
+      heatOverride,
+      rowTint: toRowTintIndex(interfaceMeta.rowTint, -1),
+      pinned,
+    };
+    next.heatLevel = computeHeatLevel(next);
+    return next;
+  }));
+
+  return out;
 }
 
 async function buildRowsFromChatIds(chatIds){
@@ -1924,6 +2532,11 @@ function normalizeFolderCatalog(raw){
   return out;
 }
 
+function normalizeSidebarIconColor(raw){
+  const value = String(raw || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : "";
+}
+
 function mergeFolderCatalogs(...lists){
   const out = [];
   const seen = new Set();
@@ -1933,6 +2546,9 @@ function mergeFolderCatalogs(...lists){
         const existing = out.find((row) => row.id === item.id);
         if (existing && (!existing.name || existing.name === existing.id) && item.name) {
           existing.name = item.name;
+        }
+        if (existing && !existing.iconColor && item.iconColor) {
+          existing.iconColor = item.iconColor;
         }
         continue;
       }
@@ -1956,6 +2572,7 @@ function deriveFolderCatalogFromRows(rows){
       updatedAt: "",
       kind: "local",
       projectRef: null,
+      iconColor: normalizeSidebarIconColor(row?.folderIconColor || ""),
     });
     seen.add(folderId);
   }
@@ -2021,8 +2638,29 @@ function rememberFolderBindings(map){
   }
 }
 
+// ── Library Workspace facade integration ──────────────────────────────────────
+// Prefer H2O.LibraryWorkspace (canonical model facade from S0F1b) when it has
+// already booted. The facade memoises results, dedups in-flight calls, and
+// emits library-workspace:updated when state changes (so we can re-render
+// without polling). If the facade isn't ready yet we fall back to the original
+// direct archive bridge call — identical behavior to pre-migration, so this is
+// a strict opportunistic upgrade with zero regression risk.
+function getLibraryWorkspace(){
+  try { return W.H2O?.LibraryWorkspace || null; } catch { return null; }
+}
+
 async function fetchFolderCatalog(force = false){
   if (!force && Array.isArray(state.folderCatalog) && state.folderCatalog.length) return state.folderCatalog.slice();
+  const ws = getLibraryWorkspace();
+  if (ws?.getFolders){
+    try {
+      const list = await ws.getFolders({ fresh: !!force });
+      if (Array.isArray(list)){
+        state.folderCatalog = normalizeFolderCatalog(list);
+        return Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [];
+      }
+    } catch { /* fall through to archive bridge */ }
+  }
   const attempt = await tryArchiveOps(FOLDER_LIST_OPS, {});
   if (attempt.ok){
     state.folderCatalog = normalizeFolderCatalog(attempt.result);
@@ -2032,6 +2670,16 @@ async function fetchFolderCatalog(force = false){
 
 async function fetchLabelCatalog(force = false){
   if (!force && Array.isArray(state.labelCatalog) && state.labelCatalog.length) return state.labelCatalog.slice();
+  const ws = getLibraryWorkspace();
+  if (ws?.getLabels){
+    try {
+      const list = await ws.getLabels({ fresh: !!force });
+      if (Array.isArray(list)){
+        state.labelCatalog = normalizeLabelCatalog(list);
+        return Array.isArray(state.labelCatalog) ? state.labelCatalog.slice() : [];
+      }
+    } catch { /* fall through to archive bridge */ }
+  }
   const attempt = await tryArchiveOps(LABEL_CATALOG_OPS, {});
   if (attempt.ok){
     state.labelCatalog = normalizeLabelCatalog(attempt.result);
@@ -2041,12 +2689,59 @@ async function fetchLabelCatalog(force = false){
 
 async function fetchCategoryCatalog(force = false){
   if (!force && Array.isArray(state.categoryCatalog) && state.categoryCatalog.length) return state.categoryCatalog.slice();
+  const ws = getLibraryWorkspace();
+  if (ws?.getCategories){
+    try {
+      const list = await ws.getCategories({ fresh: !!force });
+      if (Array.isArray(list)){
+        state.categoryCatalog = normalizeCategoryCatalog(list);
+        return Array.isArray(state.categoryCatalog) ? state.categoryCatalog.slice() : [];
+      }
+    } catch { /* fall through to archive bridge */ }
+  }
   const attempt = await tryArchiveOps(CATEGORY_CATALOG_OPS, {});
   if (attempt.ok){
     state.categoryCatalog = normalizeCategoryCatalog(attempt.result);
   }
   return Array.isArray(state.categoryCatalog) ? state.categoryCatalog.slice() : [];
 }
+
+// One-time subscription: when Library Workspace cache busts (folder binding
+// change, category change, cross-surface sync), drop our local catalog caches
+// so the next fetch picks up the canonical model. This is fire-and-forget — if
+// Workspace isn't ready, we wire the listener once it emits its ready event.
+(function wireLibraryWorkspaceSubscription(){
+  function attach(){
+    const ws = getLibraryWorkspace();
+    if (!ws || typeof ws.subscribe !== 'function') return false;
+    ws.subscribe((evt) => {
+      const reason = String(evt?.reason || '');
+      // Only bust on changes that actually affect catalogs (not on every
+      // route-change/index-tick).
+      if (['folder-binding-changed','category-changed','index-updated','cache-bust','cross-surface-sync'].includes(reason)){
+        state.folderCatalog = [];
+        state.categoryCatalog = [];
+        state.labelCatalog = [];
+      }
+    });
+    return true;
+  }
+  if (!attach()){
+    W.addEventListener('h2o.ev:prm:cgx:lib:ready:v1', () => { attach(); }, { once: true });
+  }
+  // Also listen for Library Sync's cross-surface-sync event independently so
+  // we catch native-originated changes even if the Workspace facade is slow.
+  const handleCatalogBroadcast = () => {
+    state.folderCatalog = [];
+    state.categoryCatalog = [];
+    state.labelCatalog = [];
+    renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
+    renderFolderAssignmentControl();
+  };
+  W.addEventListener('evt:h2o:library:cross-surface-sync', handleCatalogBroadcast);
+  W.addEventListener('evt:h2o:folders:changed', handleCatalogBroadcast);
+  W.addEventListener('evt:h2o:labels:changed', handleCatalogBroadcast);
+})();
 
 function resolveCategoryRecord(categoryId){
   const id = String(categoryId || "").trim();
@@ -2137,7 +2832,7 @@ function mergeRowFolderData(row, bindingMap){
 }
 
 async function enrichRowsWithFolderData(rows, force = false){
-  const baseRows = (Array.isArray(rows) ? rows : []).map((row) => ({ ...row }));
+  const baseRows = await enrichRowsWithNativeInterfaceData(rows);
   const fallbackCatalog = deriveFolderCatalogFromRows(baseRows);
   const [catalog, bindingMap] = await Promise.all([
     fetchFolderCatalog(force).catch(() => []),
@@ -2270,6 +2965,7 @@ function collectFolderSidebarItems(rows, view){
       count: counts.get(folder.id) || 0,
       kind: "folder",
       folderKind: folder.kind || "local",
+      iconColor: normalizeSidebarIconColor(folder.iconColor || ""),
     });
   }
   if (unfiledCount || state.lastFolderId === FOLDER_FILTER_NONE) {
@@ -2277,6 +2973,12 @@ function collectFolderSidebarItems(rows, view){
   }
   return out;
 }
+
+const SIDEBAR_FOLDER_ICON_SVG = `
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>
+`;
 
 function renderFolderSidebar(rows, view, selectedFolderId){
   const host = $("#folderList");
@@ -2302,16 +3004,59 @@ function renderFolderSidebar(rows, view, selectedFolderId){
       divider.className = "wbFolderDivider";
       host.appendChild(divider);
     }
+    const appearance = item.kind === "folder"
+      ? W.H2O?.Library?.SidebarSections?.getRowAppearance?.({
+        kind: "folders",
+        id: item.folderId,
+        folderId: item.folderId,
+        name: item.label,
+        color: item.iconColor || "",
+      })
+      : null;
+    if (appearance?.hidden) return;
+    const displayLabel = String(appearance?.name || item.label || "").trim() || item.folderId || "";
+    const folderIconSvg = appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG;
     const link = document.createElement("a");
     link.className = "wbFolderItem";
     if (!item.count) link.classList.add("is-empty");
     if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
     link.href = buildListHash(view, item.folderId);
     link.dataset.folderId = String(item.folderId || "");
+    const iconColor = normalizeSidebarIconColor(appearance?.color || item.iconColor || "");
+    if (iconColor) {
+      link.dataset.color = iconColor;
+      link.style.setProperty("--wb-sidebar-item-color", iconColor);
+    }
+    const folderMenuHtml = item.kind === "folder"
+      ? `<button class="wbFolderMenuBtn" type="button" aria-label="More options for ${esc(displayLabel)}" aria-haspopup="menu" aria-expanded="false" title="More options for ${esc(displayLabel)}">...</button>`
+      : `<span class="wbFolderMenuSlot" aria-hidden="true"></span>`;
     link.innerHTML = `
-      <span class="wbFolderLabel">${esc(item.label)}</span>
+      <span class="wbFolderIcon" aria-hidden="true">${folderIconSvg}</span>
+      <span class="wbFolderLabel">${esc(displayLabel)}</span>
       <span class="wbFolderCount">${esc(String(item.count || 0))}</span>
+      ${folderMenuHtml}
     `;
+    const menuBtn = link.querySelector(".wbFolderMenuBtn");
+    if (menuBtn) {
+      menuBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
+      menuBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const api = W.H2O?.Library?.SidebarSections;
+        if (typeof api?.openRowMenu === "function") {
+          api.openRowMenu(menuBtn, {
+            kind: "folders",
+            id: item.folderId,
+            folderId: item.folderId,
+            name: displayLabel,
+            count: item.count || 0,
+            color: iconColor,
+            iconKey: appearance?.icon || "folder",
+            folderKind: item.folderKind || item.kind || "",
+          });
+        }
+      });
+    }
     host.appendChild(link);
   });
 
@@ -2376,11 +3121,7 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
     link.dataset.chatId = row.chatId;
     if (row.snapshotId === activeSnapshotId) link.classList.add("active");
 
-    const meta = [
-      row.folderId ? (row.folderName || row.folderId) : "",
-      fmtDateCompact(row.updatedAt || row.createdAt || ""),
-      row.pinned ? "Pinned" : "",
-    ].filter(Boolean).join(" · ") || row.chatId;
+    const meta = rowMetaParts(row).join(" · ");
 
     link.innerHTML = `
       <span class="wbSidebarChatTitle">${esc(row.title)}</span>
@@ -2462,16 +3203,15 @@ function renderFolderAssignmentControl(){
   wrap.hidden = false;
 }
 
-function syncSelectionControls(){
-  const openBtn = $("#openReaderTabBtn");
+function getSelectedWorkbenchRow(){
   const sid = String(state.selectedSnapshotId || state.currentReaderSnapshot?.snapshotId || "").trim();
-  if (openBtn) {
-    openBtn.disabled = !sid;
-    openBtn.dataset.snapshotId = sid;
-    openBtn.textContent = state.currentReaderSnapshot ? "Open tab" : "Open";
-    openBtn.title = sid ? "Open this saved chat in a separate Studio tab" : "Select a saved chat first";
-  }
+  if (!sid || !Array.isArray(state.rowsCache)) return null;
+  return state.rowsCache.find((row) => String(row?.snapshotId || "").trim() === sid) || null;
+}
+
+function syncSelectionControls(){
   renderFolderAssignmentControl();
+  renderCategoryInspector();
 }
 
 function selectRow(row, articleEl){
@@ -2482,6 +3222,498 @@ function selectRow(row, articleEl){
   if (articleEl) articleEl.classList.add("is-selected");
   setActiveSidebarChat(state.selectedSnapshotId);
   syncSelectionControls();
+}
+
+function rowMetaParts(row){
+  const folder = String(row?.folderName || row?.folderId || "Unfiled").trim();
+  const answers = pluralize(toWholeCount(row?.answerCount, 0), "answer");
+  const created = fmtDateMeta(row?.originalCreatedAt);
+  const added = fmtDateMeta(row?.studioAddedAt || row?.createdAt);
+  const lastTurn = fmtDateMeta(row?.lastTurnAt || row?.updatedAt);
+  return [
+    folder,
+    answers,
+    created ? `Created ${created}` : "Created unknown",
+    added ? `Added ${added}` : "Added to Studio",
+    lastTurn ? `Last turn ${lastTurn}` : "Last turn unknown",
+  ];
+}
+
+function heatLabel(level){
+  const normalized = normalizeHeatLevel(level);
+  if (normalized === "hot") return "Hot";
+  if (normalized === "warm") return "Warm";
+  if (normalized === "off") return "Off";
+  return "Auto";
+}
+
+function closeRowPopovers(exceptEl = null){
+  $$(".wbRowPopover").forEach((node) => {
+    if (exceptEl && node === exceptEl) return;
+    node.remove();
+  });
+  if (!exceptEl) {
+    try { W.H2O?.StudioAutoEmojiTitle?.closePalette?.(); } catch {}
+  }
+  if (!exceptEl && titlePaletteEl) {
+    titlePaletteEl.remove();
+    titlePaletteEl = null;
+  }
+  $$(".wbRowTools [aria-expanded='true']").forEach((node) => {
+    node.setAttribute("aria-expanded", "false");
+  });
+}
+
+function updateCachedRow(chatId, patch){
+  const id = String(chatId || "").trim();
+  if (!id || !Array.isArray(state.rowsCache)) return null;
+  let updated = null;
+  state.rowsCache = state.rowsCache.map((row) => {
+    if (row.chatId !== id) return row;
+    updated = { ...row, ...(patch || {}) };
+    updated.heatLevel = computeHeatLevel(updated);
+    return updated;
+  });
+  return updated;
+}
+
+async function persistInterfaceMetaPatch(chatId, patch, reason = "studio-interface-meta"){
+  const id = String(chatId || "").trim();
+  if (!id) return {};
+  const existing = state.interfaceMetaByChat[id] && typeof state.interfaceMetaByChat[id] === "object"
+    ? state.interfaceMetaByChat[id]
+    : {};
+  const next = {
+    ...existing,
+    ...(patch && typeof patch === "object" ? patch : {}),
+    chatId: id,
+    updatedAt: Date.now(),
+  };
+  state.interfaceMetaByChat[id] = next;
+  await writeSharedRecord(`${INTERFACE_META_MIRROR_KEY_PREFIX}${id}`, next);
+  broadcastStudioMeta(reason, { chatId: id, meta: next });
+  return next;
+}
+
+async function persistHeatOverride(chatId, level){
+  const id = String(chatId || "").trim();
+  const next = normalizeHeatLevel(level);
+  if (!id) return;
+  const key = `${HEAT_OVERRIDE_KEY_PREFIX}${id}`;
+  try {
+    if (next === "auto") localStorage.removeItem(key);
+    else localStorage.setItem(key, next);
+  } catch {}
+  if (next === "auto") await chromeStorageRemove([key]).catch(() => false);
+  else await chromeStorageSet({ [key]: next }).catch(() => false);
+  await persistInterfaceMetaPatch(id, { heatOverride: next }, "studio-heat-override");
+}
+
+async function persistPin(chatId, pinned){
+  const id = String(chatId || "").trim();
+  if (!id) return;
+  const key = `${PIN_KEY_PREFIX}${id}`;
+  try {
+    if (pinned) localStorage.setItem(key, "1");
+    else localStorage.removeItem(key);
+  } catch {}
+  if (pinned) await chromeStorageSet({ [key]: "1" }).catch(() => false);
+  else await chromeStorageRemove([key]).catch(() => false);
+  await persistInterfaceMetaPatch(id, { pinned: !!pinned }, "studio-pin");
+}
+
+async function persistRowTint(chatId, idx){
+  const id = String(chatId || "").trim();
+  const next = toRowTintIndex(idx, -1);
+  if (!id) return;
+  const key = `${ROW_TINT_KEY_PREFIX}${id}`;
+  try {
+    if (next < 0) localStorage.removeItem(key);
+    else localStorage.setItem(key, String(next));
+  } catch {}
+  if (next < 0) await chromeStorageRemove([key]).catch(() => false);
+  else await chromeStorageSet({ [key]: String(next) }).catch(() => false);
+  await persistInterfaceMetaPatch(id, { rowTint: next }, "studio-row-tint");
+}
+
+async function persistChatTitleState(row, emoji){
+  const chatId = String(row?.chatId || "").trim();
+  if (!chatId) return null;
+  const split = splitTitleEmoji(row?.titleState?.baseTitle || row?.title || "");
+  const baseTitle = String(row?.titleState?.baseTitle || split.baseTitle || row?.title || chatId).trim();
+  const nextEmoji = String(emoji || "").trim();
+  const now = Date.now();
+  const payload = {
+    version: "1.0.0",
+    chatId,
+    baseTitle,
+    source: "studio-title-palette",
+    priority: 100,
+    confidence: 1,
+    emoji: nextEmoji,
+    emojiSource: "user-picker-native-rename",
+    emojiPriority: 100,
+    emojiConfidence: 1,
+    updatedAt: now,
+    emojiUpdatedAt: now,
+  };
+  const displayTitle = displayTitleWithEmoji(baseTitle, nextEmoji);
+  const titleState = { ...payload, displayTitle };
+  await writeSharedRecord(`${CHAT_TITLE_STATE_KEY_PREFIX}${chatId}`, payload);
+  state.titleStateByChat[chatId] = titleState;
+  broadcastStudioMeta("studio-title-palette", { chatId, titleState });
+  return titleState;
+}
+
+function syncRowTools(article, row){
+  if (!article || !row) return;
+  const heatLevel = row.heatLevel || computeHeatLevel(row);
+  article.dataset.heatLevel = heatLevel;
+  article.classList.toggle("is-pinned", !!row.pinned);
+  INTERFACE_COLORS.forEach((color) => article.classList.remove(`wb-row-${color.name}`));
+  const rowTint = toRowTintIndex(row?.rowTint, -1);
+  if (rowTint >= 0) article.classList.add(`wb-row-${INTERFACE_COLORS[rowTint].name}`);
+
+  const pinBtn = article.querySelector(".wbRowIconBtn--pin");
+  if (pinBtn){
+    pinBtn.classList.toggle("is-on", !!row.pinned);
+    pinBtn.setAttribute("aria-pressed", row.pinned ? "true" : "false");
+    pinBtn.setAttribute("title", row.pinned ? "Unpin chat" : "Pin chat");
+  }
+
+  const heatBtn = article.querySelector(".wbHeatPill");
+  if (heatBtn){
+    heatBtn.className = `wbHeatPill wbHeatPill--${heatLevel}`;
+    heatBtn.textContent = "";
+    heatBtn.setAttribute("aria-label", `Heat: ${heatLabel(heatLevel)}`);
+    heatBtn.setAttribute("title", `Heat: ${heatLabel(heatLevel)}`);
+  }
+}
+
+function buildInfoPopover(row){
+  const meta = row?.interfaceMeta && typeof row.interfaceMeta === "object" ? row.interfaceMeta : {};
+  const items = [
+    ["Created in ChatGPT", fmtDateMeta(row?.originalCreatedAt) || "Unknown"],
+    ["Answers", String(toWholeCount(row?.answerCount, 0))],
+    ["Folder", String(row?.folderName || row?.folderId || "Unfiled")],
+    ["Added to Studio", fmtDateMeta(row?.studioAddedAt || row?.createdAt) || "Unknown"],
+    ["Heat", heatLabel(row?.heatLevel || computeHeatLevel(row))],
+    ["Pinned", row?.pinned ? "Yes" : "No"],
+  ];
+  const preview = [
+    meta.firstQ ? `<div class="wbRowPopoverPreview"><b>First Q</b><span>${esc(meta.firstQ)}</span></div>` : "",
+    meta.lastA ? `<div class="wbRowPopoverPreview"><b>Last A</b><span>${esc(meta.lastA)}</span></div>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="wbRowPopoverHead">
+      <div class="wbRowPopoverTitle">${esc(row?.title || "Chat info")}</div>
+    </div>
+    <div class="wbRowPopoverGrid">
+      ${items.map(([label, value]) => `<div><span>${esc(label)}</span><b>${esc(value)}</b></div>`).join("")}
+    </div>
+    ${preview}
+  `;
+}
+
+function openInfoPopover(row, article, anchor){
+  closeRowPopovers();
+  const pop = document.createElement("div");
+  pop.className = "wbRowPopover wbRowPopover--info";
+  pop.setAttribute("role", "dialog");
+  pop.innerHTML = buildInfoPopover(row);
+  article.appendChild(pop);
+  anchor?.setAttribute("aria-expanded", "true");
+}
+
+function stopPaletteEvent(ev){
+  ev?.preventDefault?.();
+  ev?.stopPropagation?.();
+}
+
+function refreshTitlePaletteMeta(palette, row){
+  if (!palette || !row) return;
+  const heat = normalizeHeatLevel(row.heatOverride);
+  const rowTint = toRowTintIndex(row.rowTint, -1);
+  palette.querySelectorAll(".ho-swatch.heat").forEach((sw) => {
+    sw.classList.toggle("ho-meta-selected", sw.dataset.level === heat);
+  });
+  palette.querySelectorAll(".ho-swatch.row").forEach((sw) => {
+    sw.classList.toggle("ho-meta-selected", Number(sw.dataset.idx) === rowTint);
+  });
+}
+
+function applyTitlePaletteMetaChoice(target, row, article, palette){
+  if (!target || !row) return;
+  const mode = String(target.dataset.mode || "");
+  if (mode === "heat") {
+    const nextOverride = normalizeHeatLevel(target.dataset.level || "auto");
+    row.interfaceMeta = {
+      ...(row.interfaceMeta && typeof row.interfaceMeta === "object" ? row.interfaceMeta : {}),
+      heatOverride: nextOverride,
+    };
+    row.heatOverride = nextOverride;
+    row.heatLevel = computeHeatLevel(row);
+    updateCachedRow(row.chatId, {
+      interfaceMeta: row.interfaceMeta,
+      heatOverride: nextOverride,
+      heatLevel: row.heatLevel,
+    });
+    syncRowTools(article, row);
+    refreshTitlePaletteMeta(palette, row);
+    persistHeatOverride(row.chatId, nextOverride).catch(console.warn);
+    return;
+  }
+
+  if (mode === "row") {
+    const idx = Number.parseInt(target.dataset.idx || "-1", 10);
+    const current = toRowTintIndex(row.rowTint, -1);
+    const next = current === idx ? -1 : toRowTintIndex(idx, -1);
+    row.interfaceMeta = {
+      ...(row.interfaceMeta && typeof row.interfaceMeta === "object" ? row.interfaceMeta : {}),
+      rowTint: next,
+    };
+    row.rowTint = next;
+    updateCachedRow(row.chatId, { interfaceMeta: row.interfaceMeta, rowTint: next });
+    syncRowTools(article, row);
+    refreshTitlePaletteMeta(palette, row);
+    persistRowTint(row.chatId, next).catch(console.warn);
+  }
+}
+
+function buildTitleMetaPalette(row, article){
+  const palette = document.createElement("div");
+  palette.className = "ho-palette ho-emoji-meta-palette show";
+  palette.dataset.chatid = row.chatId;
+
+  const heatRow = document.createElement("div");
+  heatRow.className = "ho-palette-row ho-emoji-heat-row";
+  [
+    ["auto", "A"],
+    ["hot", "H"],
+    ["warm", "W"],
+    ["off", "O"],
+  ].forEach(([level, label]) => {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "ho-swatch heat";
+    sw.textContent = label;
+    sw.title = `Heat: ${level}`;
+    sw.setAttribute("aria-label", `Heat: ${level}`);
+    sw.dataset.mode = "heat";
+    sw.dataset.level = level;
+    heatRow.appendChild(sw);
+  });
+
+  const divider = document.createElement("span");
+  divider.className = "ho-emoji-meta-divider";
+  divider.setAttribute("aria-hidden", "true");
+
+  const rowRow = document.createElement("div");
+  rowRow.className = "ho-palette-row ho-emoji-row-tint-row";
+  INTERFACE_COLORS.forEach((color, idx) => {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "ho-swatch row";
+    sw.style.backgroundColor = String(color.value || "").replace(/,1\)/, ",0.5)");
+    sw.title = `Row: ${color.name}`;
+    sw.setAttribute("aria-label", `Row: ${color.name}`);
+    sw.dataset.mode = "row";
+    sw.dataset.idx = String(idx);
+    rowRow.appendChild(sw);
+  });
+
+  let choosingMeta = false;
+  const chooseMeta = (ev) => {
+    const sw = ev.target?.closest?.(".ho-swatch");
+    if (!sw) return;
+    stopPaletteEvent(ev);
+    if (choosingMeta) return;
+    choosingMeta = true;
+    applyTitlePaletteMetaChoice(sw, row, article, palette);
+    setTimeout(() => { choosingMeta = false; }, 120);
+  };
+  palette.addEventListener("pointerdown", chooseMeta, true);
+  palette.addEventListener("mousedown", chooseMeta, true);
+  palette.addEventListener("click", chooseMeta, true);
+  palette.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    chooseMeta(ev);
+  }, true);
+
+  palette.appendChild(heatRow);
+  palette.appendChild(divider);
+  palette.appendChild(rowRow);
+  refreshTitlePaletteMeta(palette, row);
+  return palette;
+}
+
+function renderTitlePaletteSections(grid, sections, selectedEmoji, selectEmoji){
+  grid.innerHTML = "";
+  const seen = new Set();
+  for (const section of sections){
+    const list = Array.from(new Set(section.emojis || [])).filter((emoji) => emoji && !seen.has(emoji));
+    if (!list.length) continue;
+
+    const wrap = document.createElement("section");
+    wrap.className = "ho-emoji-section";
+
+    const label = document.createElement("div");
+    label.className = "ho-emoji-section-title";
+    label.textContent = section.label || "Icons";
+
+    const cells = document.createElement("div");
+    cells.className = "ho-emoji-section-grid";
+
+    list.forEach((emoji) => {
+      seen.add(emoji);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ho-emoji-btn";
+      if (selectedEmoji && emoji === selectedEmoji) b.classList.add("ho-emoji-selected");
+      b.textContent = emoji;
+      b.setAttribute("aria-label", `Use ${emoji}`);
+      b.addEventListener("pointerdown", (ev) => selectEmoji(emoji, ev), true);
+      b.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        selectEmoji(emoji, ev);
+      }, true);
+      cells.appendChild(b);
+    });
+
+    wrap.appendChild(label);
+    wrap.appendChild(cells);
+    grid.appendChild(wrap);
+  }
+}
+
+function searchEmojiSections(query){
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return STUDIO_EMOJI_GROUPS;
+  const sections = STUDIO_EMOJI_GROUPS.map((section) => {
+    const label = String(section.label || "").toLowerCase();
+    const emojis = (section.emojis || []).filter((emoji) => String(emoji || "").includes(q));
+    if (label.includes(q) || q.includes(label.split(" ")[0])) return { label: section.label, emojis: section.emojis };
+    return { label: section.label, emojis };
+  }).filter((section) => section.emojis && section.emojis.length);
+  if (sections.length) return sections;
+  return [{ label: "Results", emojis: STUDIO_EMOJI_POOL.slice(0, 96) }];
+}
+
+function openTitlePalette(row, article, anchor){
+  const paletteApi = W.H2O?.StudioAutoEmojiTitle;
+  if (paletteApi && typeof paletteApi.openPalette === "function") {
+    closeRowPopovers();
+    paletteApi.openPalette({
+      row,
+      article,
+      anchor,
+      callbacks: {
+        persistTitleState: persistChatTitleState,
+        applyTitleState(titleState){
+          if (!titleState) return;
+          row.titleState = titleState;
+          row.title = titleState.displayTitle || composeTitleFromState(titleState, row.title);
+          updateCachedRow(row.chatId, { title: row.title, titleState });
+          const titleEl = article?.querySelector?.(".wbTitle");
+          if (titleEl) titleEl.textContent = row.title;
+          refreshSidebarChatList();
+        },
+        applyMetaChoice(target, palette){
+          applyTitlePaletteMetaChoice(target, row, article, palette);
+        },
+      },
+    });
+    return;
+  }
+
+  closeRowPopovers();
+  const gutter = 12;
+  const pickerWidth = Math.min(398, Math.max(292, window.innerWidth - (gutter * 2)));
+  const pickerHeight = Math.min(462, Math.max(300, window.innerHeight - (gutter * 2)));
+  const rect = anchor?.getBoundingClientRect?.() || article?.getBoundingClientRect?.() || { left: gutter, bottom: gutter };
+  const left = Math.max(gutter, Math.min(rect.right - pickerWidth, window.innerWidth - pickerWidth - gutter));
+  const top = Math.max(gutter, Math.min(rect.bottom + 8, window.innerHeight - pickerHeight - gutter));
+  const split = splitTitleEmoji(row?.titleState?.displayTitle || row?.title || "");
+  const selectedEmoji = String(row?.titleState?.emoji || split.emoji || "").trim();
+
+  const picker = document.createElement("div");
+  titlePaletteEl = picker;
+  picker.className = "ho-emoji-picker";
+  picker.setAttribute("data-cgxui-owner", "auto-title-palette");
+  picker.setAttribute("data-h2o-glass", "panel");
+  picker.setAttribute("data-h2o-skin-surface", "sand-glass");
+  picker.style.setProperty("--ho-picker-w", `${pickerWidth}px`);
+  picker.style.setProperty("--ho-picker-max-h", `${pickerHeight}px`);
+  picker.style.left = `${left}px`;
+  picker.style.top = `${top}px`;
+
+  const topbar = document.createElement("div");
+  topbar.className = "ho-emoji-picker-top";
+
+  const title = document.createElement("div");
+  title.className = "ho-emoji-picker-title";
+  const icon = document.createElement("span");
+  icon.className = "ho-title-panel-icon";
+  icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 7.5h8.75a3.25 3.25 0 0 1 0 6.5H9.2"/><path d="M6.5 7.5 4 5m2.5 2.5L4 10"/><path d="M17.5 16.5 20 19m-2.5-2.5L20 14"/><path d="M8 14.25h5.6"/></svg>';
+  icon.setAttribute("aria-hidden", "true");
+  const titleText = document.createElement("span");
+  titleText.textContent = "Title Palette";
+  title.appendChild(icon);
+  title.appendChild(titleText);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ho-emoji-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "Close emoji picker");
+  close.addEventListener("pointerdown", (ev) => {
+    stopPaletteEvent(ev);
+    closeRowPopovers();
+  }, true);
+
+  topbar.appendChild(title);
+  topbar.appendChild(close);
+
+  const input = document.createElement("input");
+  input.placeholder = "Search emoji, symbols, food, travel, flags";
+  input.setAttribute("aria-label", "Search emoji");
+
+  const search = document.createElement("div");
+  search.className = "ho-emoji-search";
+  search.appendChild(input);
+
+  const grid = document.createElement("div");
+  grid.className = "ho-emoji-grid";
+
+  const metaPalette = buildTitleMetaPalette(row, article);
+
+  const selectEmoji = (emoji, ev) => {
+    stopPaletteEvent(ev);
+    persistChatTitleState(row, emoji).then((titleState) => {
+      if (!titleState) return;
+      row.titleState = titleState;
+      row.title = titleState.displayTitle || composeTitleFromState(titleState, row.title);
+      updateCachedRow(row.chatId, { title: row.title, titleState });
+      const titleEl = article.querySelector(".wbTitle");
+      if (titleEl) titleEl.textContent = row.title;
+      closeRowPopovers();
+    }).catch(console.warn);
+  };
+
+  renderTitlePaletteSections(grid, STUDIO_EMOJI_GROUPS, selectedEmoji, selectEmoji);
+  input.addEventListener("input", () => {
+    renderTitlePaletteSections(grid, searchEmojiSections(input.value), selectedEmoji, selectEmoji);
+  });
+
+  picker.addEventListener("pointerdown", (ev) => ev.stopPropagation(), true);
+  picker.addEventListener("click", (ev) => ev.stopPropagation(), true);
+  picker.appendChild(topbar);
+  picker.appendChild(search);
+  if (metaPalette) picker.appendChild(metaPalette);
+  picker.appendChild(grid);
+  document.body.appendChild(picker);
+  anchor?.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => input.focus());
 }
 
 function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""){
@@ -2495,9 +3727,7 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
   button.type = "button";
   button.className = "wbRowMain";
 
-  const suppressPin = (activeView === "pinned");
   const suppressArchive = (activeView === "archive");
-  const suppressFolder = !!(activeFolderId && activeFolderId !== FOLDER_FILTER_NONE && row.folderId === activeFolderId);
 
   const sourceLabel = row.originSource === "mobile"
     ? "Mobile"
@@ -2505,28 +3735,32 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
   const visibleTags = Array.isArray(row.tags) ? row.tags.slice(0, 2) : [];
   const hiddenTagCount = Math.max(0, (Array.isArray(row.tags) ? row.tags.length : 0) - visibleTags.length);
   const badgeHtml = [
-    (row.pinned && !suppressPin) ? `<span class="wbBadge wbBadge--pin">Pinned</span>` : "",
     (row.archived && !suppressArchive) ? `<span class="wbBadge wbBadge--archive">Archived</span>` : "",
     sourceLabel ? `<span class="wbBadge wbBadge--source">${esc(sourceLabel)}</span>` : "",
-    (!suppressFolder && row.folderId) ? `<span class="wbBadge wbBadge--folder">${esc(row.folderName || row.folderId)}</span>` : "",
     ...visibleTags.map((tag) => `<span class="wbBadge wbBadge--tag" data-tag="${esc(tag)}" role="button" tabindex="0" aria-label="Filter by tag: ${esc(tag)}">${esc(tag)}</span>`),
     hiddenTagCount > 0 ? `<span class="wbBadge wbBadge--tag-more">+${hiddenTagCount}</span>` : "",
   ].filter(Boolean).join("");
+  const metaParts = rowMetaParts(row);
+  const heatLevel = row.heatLevel || computeHeatLevel(row);
 
   button.innerHTML = `
     <div class="wbRowTitleLine">
       <div class="wbTitle">${esc(row.title)}</div>
-      <div class="wbRowDate">${esc(fmtDateCompact(row.updatedAt || row.createdAt))}</div>
     </div>
-    <div class="wbExcerpt">${esc(row.excerpt || "No excerpt captured yet.")}</div>
     <div class="wbMeta">
-      <span>${esc(pluralize(row.messageCount || 0, "message"))}</span>
-      <span>${esc(pluralize(row.answerCount || 0, "answer"))}</span>
-      <span class="wbMetaChatId">${esc(row.chatId)}</span>
+      ${metaParts.map((part) => `<span>${esc(part)}</span>`).join("")}
     </div>
   `;
 
-  // Delete button — revealed on row hover, two-click confirm pattern
+  const tools = document.createElement("div");
+  tools.className = "wbRowTools";
+  tools.innerHTML = `
+    <button type="button" class="wbRowIconBtn wbRowIconBtn--info" aria-label="Show chat info" aria-expanded="false" title="Chat info">${INFO_ICON_HTML}</button>
+    <button type="button" class="wbRowIconBtn wbRowIconBtn--pin${row.pinned ? " is-on" : ""}" aria-label="${row.pinned ? "Unpin chat" : "Pin chat"}" aria-pressed="${row.pinned ? "true" : "false"}" title="${row.pinned ? "Unpin chat" : "Pin chat"}">${PIN_ICON_HTML}</button>
+    <button type="button" class="wbHeatPill wbHeatPill--${esc(heatLevel)}" aria-label="Heat: ${esc(heatLabel(heatLevel))}" aria-expanded="false" title="Heat: ${esc(heatLabel(heatLevel))}"></button>
+  `;
+
+  // Delete button uses the same compact icon rail as the native row controls.
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "wbDeleteBtn";
@@ -2535,6 +3769,7 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
   deleteBtn.innerHTML = DELETE_ICON_HTML;
 
   deleteBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
     ev.stopPropagation();
     if (deleteConfirm.chatId === row.chatId){
       // Second click — execute
@@ -2545,29 +3780,61 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
       armDeleteConfirm(row.chatId, row.snapshotId, article, deleteBtn);
     }
   });
-
-  const actions = document.createElement("div");
-  actions.className = "wbRowActions";
-  actions.appendChild(deleteBtn);
+  tools.appendChild(deleteBtn);
 
   article.appendChild(button);
+  article.appendChild(tools);
   if (badgeHtml){
     const badgesEl = document.createElement("div");
     badgesEl.className = "wbBadges";
     badgesEl.innerHTML = badgeHtml;
     article.appendChild(badgesEl);
   }
-  article.appendChild(actions);
   article.addEventListener("pointerenter", () => selectRow(row, article));
   article.addEventListener("focusin", () => selectRow(row, article));
   article.addEventListener("pointerleave", () => {
     // Disarm confirm if mouse leaves the row without confirming
     if (deleteConfirm.chatId === row.chatId) clearDeleteConfirm();
   });
+  tools.addEventListener("pointerdown", (ev) => ev.stopPropagation(), true);
+  tools.addEventListener("click", (ev) => {
+    const target = ev.target instanceof HTMLElement ? ev.target : null;
+    const infoBtn = target?.closest(".wbRowIconBtn--info");
+    const pinBtn = target?.closest(".wbRowIconBtn--pin");
+    const heatBtn = target?.closest(".wbHeatPill");
+    if (!infoBtn && !pinBtn && !heatBtn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    if (infoBtn){
+      openInfoPopover(row, article, infoBtn);
+      return;
+    }
+
+    if (heatBtn){
+      openTitlePalette(row, article, heatBtn);
+      return;
+    }
+
+    if (pinBtn){
+      const nextPinned = !row.pinned;
+      row.pinned = nextPinned;
+      row.interfaceMeta = {
+        ...(row.interfaceMeta && typeof row.interfaceMeta === "object" ? row.interfaceMeta : {}),
+        pinned: nextPinned,
+      };
+      updateCachedRow(row.chatId, { pinned: nextPinned, interfaceMeta: row.interfaceMeta });
+      syncRowTools(article, row);
+      persistPin(row.chatId, nextPinned).catch(console.warn);
+      callArchive("pinSnapshot", { chatId: row.chatId, snapshotId: row.snapshotId, pinned: nextPinned }).catch(console.warn);
+      if (activeView === "pinned" && !nextPinned) renderList(activeView, activeFolderId).catch(console.warn);
+    }
+  });
   button.addEventListener("click", () => {
     selectRow(row, article);
     location.hash = `#/read/${encodeURIComponent(row.snapshotId)}`;
   });
+  syncRowTools(article, row);
 
   return article;
 }
@@ -2635,54 +3902,76 @@ function renderReaderRouteMeta(snap){
 }
 
 function renderCategoryInspector(snap = state.currentReaderSnapshot){
-  const panel = $("#inspectorPanel");
-  if (!panel) return;
-  if (!snap) {
-    panel.hidden = true;
-    panel.innerHTML = "";
+  const wrap = $("#categoryAssignWrap");
+  if (!wrap) return;
+
+  const selectedRow = getSelectedWorkbenchRow();
+  const selectedSnapshotId = String(
+    snap?.snapshotId
+    || state.currentReaderSnapshot?.snapshotId
+    || selectedRow?.snapshotId
+    || state.selectedSnapshotId
+    || ""
+  ).trim();
+  if (!selectedSnapshotId) {
+    wrap.hidden = true;
+    wrap.innerHTML = "";
     return;
   }
 
-  const meta = snap.meta && typeof snap.meta === "object" ? snap.meta : {};
-  const category = normalizeCategoryAssignment(meta.category);
+  const meta = snap?.meta && typeof snap.meta === "object"
+    ? snap.meta
+    : (state.currentReaderSnapshot?.meta && typeof state.currentReaderSnapshot.meta === "object"
+      ? state.currentReaderSnapshot.meta
+      : {});
+  const category = normalizeCategoryAssignment(meta.category ?? selectedRow?.category);
   const catalog = (state.categoryCatalog || []).filter((row) => row.status === "active");
   const primaryId = String(category?.primaryCategoryId || "");
   const secondaryId = String(category?.secondaryCategoryId || "");
-  const source = String(category?.source || "system");
+  const source = String(category?.source || "");
   const primaryName = resolveCategoryName(primaryId);
   const secondaryName = secondaryId ? resolveCategoryName(secondaryId) : "";
   const confidence = Number(category?.confidence);
   const confidenceText = category?.source === "system" && Number.isFinite(confidence)
     ? `${Math.round(confidence * 100)}%`
     : "";
+  const sourceLabel = source === "user"
+    ? "Manual"
+    : (primaryId || confidenceText || secondaryName ? "System" : "Category");
 
-  const options = catalog.map((row) => (
-    `<option value="${esc(row.id)}"${row.id === primaryId ? " selected" : ""}>${esc(row.name || row.id)}</option>`
-  )).join("");
+  if (!catalog.length && !primaryId) {
+    wrap.hidden = true;
+    wrap.innerHTML = "";
+    return;
+  }
 
-  panel.hidden = false;
-  panel.innerHTML = `
-    <section class="wbInspectorCard" aria-label="Category">
-      <div class="wbInspectorHead">
-        <div>
-          <div class="wbInspectorLabel">Category</div>
-          <div class="wbInspectorTitle">${esc(primaryName)}</div>
-        </div>
-        <span class="wbCategorySource">${source === "user" ? "Manual" : "System"}</span>
-      </div>
-      ${secondaryName ? `<div class="wbInspectorLine">Secondary: ${esc(secondaryName)}</div>` : ""}
-      ${confidenceText ? `<div class="wbInspectorLine">Confidence: ${esc(confidenceText)}</div>` : ""}
-      <label class="wbInspectorField">
-        <span>Primary category</span>
-        <select id="categoryAssignSelect" class="wbSelect wbInspectorSelect" aria-label="Primary category">
-          ${options}
-        </select>
-      </label>
-      <div class="wbInspectorActions">
-        ${source === "user" ? `<button class="wbBtn" id="restoreCategoryBtn" type="button">Restore system</button>` : ""}
-        <button class="wbBtn" id="reclassifyCategoryBtn" type="button">Reclassify</button>
-      </div>
-    </section>
+  const options = [
+    { value: "", label: primaryId ? "Uncategorized" : "Select category" },
+    ...catalog.map((row) => ({
+      value: String(row.id || ""),
+      label: String(row.name || row.id || ""),
+    })),
+  ];
+  if (primaryId && !options.some((item) => item.value === primaryId)) {
+    options.push({ value: primaryId, label: primaryName });
+  }
+
+  wrap.hidden = false;
+  wrap.innerHTML = `
+    <div class="wbCategoryMeta"${secondaryName ? ` title="Secondary category: ${esc(secondaryName)}"` : ""}>
+      <span class="wbCategorySource">${esc(sourceLabel)}</span>
+      ${confidenceText ? `<span class="wbCategoryConfidence">${esc(confidenceText)}</span>` : ""}
+    </div>
+    <label class="wbSelectWrap wbSelectWrap--topbar wbSelectWrap--category">
+      <span class="wbSelectLabel">Category</span>
+      <select id="categoryAssignSelect" class="wbSelect" aria-label="Assign selected chat to category">
+        ${options.map((row) => (
+          `<option value="${esc(row.value)}"${row.value === primaryId ? " selected" : ""}>${esc(row.label)}</option>`
+        )).join("")}
+      </select>
+    </label>
+    ${source === "user" ? `<button class="wbBtn wbBtn--topbar" id="restoreCategoryBtn" type="button">Restore system</button>` : ""}
+    <button class="wbBtn wbBtn--topbar" id="reclassifyCategoryBtn" type="button">Reclassify</button>
   `;
 }
 
@@ -2694,7 +3983,6 @@ async function renderList(view, folderId = "", opts = {}){
   const listPanel = $("#viewListPanel");
   const listEl = $("#viewList");
   const readerEl = $("#viewReader");
-  const inspectorEl = $("#inspectorPanel");
 
   state.currentReaderSnapshot = null;
   state.lastView = nextView;
@@ -2716,10 +4004,6 @@ async function renderList(view, folderId = "", opts = {}){
     }
   }
   if (readerEl) readerEl.hidden = true;
-  if (inspectorEl) {
-    inspectorEl.hidden = true;
-    inspectorEl.innerHTML = "";
-  }
   if (listPanel) listPanel.hidden = false;
   if (listEl) listEl.innerHTML = `<div class="wbState">Loading ${esc(viewCopy(nextView).toLowerCase())}…</div>`;
   setSidebarChatLoading(nextView, selectedFolderId);
@@ -2810,7 +4094,6 @@ async function renderReader(snapshotId){
       state.selectedSnapshotId = "";
       state.selectedChatId = "";
       state.currentReaderSnapshot = null;
-      renderCategoryInspector(null);
       syncSelectionControls();
       return;
     }
@@ -2855,7 +4138,6 @@ async function renderReader(snapshotId){
       readerEl.appendChild(buildReaderDOM(snap));
     }
     renderReaderRouteMeta(snap);
-    renderCategoryInspector(snap);
     setActiveSidebarChat(state.selectedSnapshotId);
     syncSelectionControls();
     applyUiState();
@@ -2867,62 +4149,46 @@ async function renderReader(snapshotId){
     state.selectedSnapshotId = "";
     state.selectedChatId = "";
     state.currentReaderSnapshot = null;
-    renderCategoryInspector(null);
     setActiveSidebarChat("");
     syncSelectionControls();
   }
 }
 
-function openStudioRouteInNewTab(route){
-  const normalizedRoute = String(route || "/saved").startsWith("/")
-    ? String(route || "/saved")
-    : `/${String(route || "saved")}`;
-  const chromeApi = typeof chrome !== "undefined" ? chrome : null;
-  const url = chromeApi?.runtime?.getURL
-    ? `${chromeApi.runtime.getURL("surfaces/studio/studio.html")}#${normalizedRoute}`
-    : `${location.origin}${location.pathname}#${normalizedRoute}`;
-
-  if (chromeApi?.tabs?.create){
-    return new Promise((resolve, reject) => {
-      try {
-        chromeApi.tabs.create({ url }, (tab) => {
-          const le = chromeApi.runtime?.lastError;
-          if (le) return reject(new Error(String(le.message || le)));
-          resolve(tab);
-        });
-      } catch (error){
-        reject(error);
-      }
-    });
-  }
-
-  const opened = window.open(url, "_blank", "noopener");
-  if (!opened) throw new Error("Popup blocked while opening Studio tab.");
-  return Promise.resolve(opened);
-}
-
-async function openSelectedReaderTab(){
-  const sid = String($("#openReaderTabBtn")?.dataset?.snapshotId || "").trim();
-  if (!sid) return;
-  const route = `/read/${encodeURIComponent(sid)}`;
+// ── Library Workspace mutation integration ─────────────────────────────────
+// Opportunistically route folder / category / reclassify mutations through
+// H2O.LibraryWorkspace when it's booted, so the Workspace cache busts, the
+// Library Index refreshes, Insights re-renders, and S0F1h Library Sync
+// broadcasts the change to other surfaces. If the facade isn't ready, fall
+// back to the original tryArchiveOps path so behavior never regresses.
+async function workspaceFolderBinding(chatId, folderId){
+  const ws = getLibraryWorkspace();
+  if (!ws?.setFolderBinding) return null;
   try {
-    await callArchive("openWorkbench", { route });
-    return;
-  } catch {}
-  try {
-    await openStudioRouteInNewTab(route);
+    const result = await ws.setFolderBinding(chatId, folderId, { source: "user" });
+    return { ok: true, result };
   } catch (error){
-    window.alert(String(error?.message || error || "Failed to open Studio tab."));
+    return { ok: false, error };
   }
 }
-
-function handleCloseTopbar(){
-  const route = parseHash();
-  if (route.name === "read"){
-    location.hash = buildListHash(state.lastView || "saved", state.lastFolderId || "");
-    return;
+async function workspaceCategoryAssign(snapshotId, chatId, primaryCategoryId){
+  const ws = getLibraryWorkspace();
+  if (!ws?.setSnapshotCategory) return null;
+  try {
+    const result = await ws.setSnapshotCategory(snapshotId, chatId, primaryCategoryId);
+    return { ok: true, result };
+  } catch (error){
+    return { ok: false, error };
   }
-  window.close();
+}
+async function workspaceCategoryReclassify(snapshotId){
+  const ws = getLibraryWorkspace();
+  if (!ws?.reclassifySnapshotCategory) return null;
+  try {
+    const result = await ws.reclassifySnapshotCategory(snapshotId);
+    return { ok: true, result };
+  } catch (error){
+    return { ok: false, error };
+  }
 }
 
 async function handleFolderAssignChange(){
@@ -2933,7 +4199,12 @@ async function handleFolderAssignChange(){
   const nextFolderId = normalizeFolderFilter(select.value);
   select.disabled = true;
   try {
-    const attempt = await tryArchiveOps(FOLDER_SET_OPS, { chatId, folderId: nextFolderId, folderBindingSource: "user" });
+    // Prefer the Workspace facade; it shares the same archive bridge but also
+    // busts the Library catalog cache and emits 'folder-binding-changed'.
+    let attempt = await workspaceFolderBinding(chatId, nextFolderId);
+    if (!attempt || !attempt.ok){
+      attempt = await tryArchiveOps(FOLDER_SET_OPS, { chatId, folderId: nextFolderId, folderBindingSource: "user" });
+    }
     if (!attempt.ok) throw attempt.error || new Error("Folder update failed");
 
     const binding = normalizeFolderBinding(attempt.result);
@@ -2967,9 +4238,14 @@ async function handleCategoryAssignChange(){
   const primaryCategoryId = String(select?.value || "").trim();
   if (!(select && snapshotId && primaryCategoryId)) return;
 
+  const chatId = String(state.currentReaderSnapshot?.chatId || state.selectedChatId || "").trim();
+
   select.disabled = true;
   try {
-    const attempt = await tryArchiveOps(CATEGORY_SET_OPS, { snapshotId, primaryCategoryId });
+    let attempt = await workspaceCategoryAssign(snapshotId, chatId, primaryCategoryId);
+    if (!attempt || !attempt.ok){
+      attempt = await tryArchiveOps(CATEGORY_SET_OPS, { snapshotId, primaryCategoryId });
+    }
     if (!attempt.ok) throw attempt.error || new Error("Category update failed");
     applySnapshotCategoryUpdate(attempt.result);
     renderCategoryInspector();
@@ -2988,7 +4264,10 @@ async function handleCategoryReclassify(){
   const buttons = ["#restoreCategoryBtn", "#reclassifyCategoryBtn"].map((selector) => $(selector)).filter(Boolean);
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
-    const attempt = await tryArchiveOps(CATEGORY_RECLASSIFY_OPS, { snapshotId });
+    let attempt = await workspaceCategoryReclassify(snapshotId);
+    if (!attempt || !attempt.ok){
+      attempt = await tryArchiveOps(CATEGORY_RECLASSIFY_OPS, { snapshotId });
+    }
     if (!attempt.ok) throw attempt.error || new Error("Category reclassify failed");
     applySnapshotCategoryUpdate(attempt.result);
     renderCategoryInspector();
@@ -3026,19 +4305,587 @@ function toggleLayout(){
 }
 
 function focusSearch(){
-  $("#q")?.focus();
+  // v2.8: the visible #q input was removed from the sidebar header in favour
+  // of a "Search chats" nav row that routes into the Library Explorer (which
+  // exposes its own page-level search input). Keep this helper as a no-op-
+  // friendly entry point so any callers (keyboard shortcuts, etc.) still work.
+  const q = $("#q");
+  if (q && typeof q.focus === "function" && !q.hidden) { q.focus(); return; }
+  if (location.hash !== "#/library/explorer") location.hash = "#/library/explorer";
+  // Defer one frame so S0F1d has a chance to mount the Explorer page header.
+  requestAnimationFrame(() => {
+    const pageSearch = document.querySelector(".wbLibraryPageSearchInput");
+    if (pageSearch && typeof pageSearch.focus === "function") pageSearch.focus();
+  });
 }
 
 async function renderRoute(opts = {}){
   const route = parseHash();
+  // Hide the migration / settings panels by default on every route change;
+  // their respective renderers un-hide as needed. This avoids adding cleanup
+  // calls inside every other render path.
+  if (route.name !== "migrate") {
+    const migratePanel = document.getElementById("viewMigratePanel");
+    if (migratePanel) migratePanel.hidden = true;
+  }
+  if (route.name !== "settings") {
+    const settingsPanel = document.getElementById("viewSettingsPanel");
+    if (settingsPanel) settingsPanel.hidden = true;
+  }
+  // Sidebar Settings highlight — active on /settings AND on /migrate/* since
+  // those are reached from inside Settings. Doesn't touch any other nav item's
+  // active state (Library, folders, etc. manage their own).
+  try {
+    const settingsNav = document.getElementById("wbStudioNavSettings");
+    if (settingsNav) {
+      const isSettingsScope = route.name === "settings" || route.name === "migrate";
+      settingsNav.classList.toggle("active", isSettingsScope);
+      if (isSettingsScope) settingsNav.setAttribute("aria-current", "page");
+      else settingsNav.removeAttribute("aria-current");
+    }
+  } catch {}
+  if (route.name === "library") {
+    // Library overlay is owned by S0F1d Library Insights and toggled by S0Z1f's
+    // route subscriber. studio.js does NOT render the list/reader on Library
+    // routes — the overlay covers the stage. Bailing out here is the single
+    // critical fix that prevents renderList from history.replaceState'ing the
+    // hash back to "#/saved" the moment the Library button is clicked. The
+    // topbar meta still gets refreshed below so the eyebrow doesn't keep
+    // showing the previous list view's text once the overlay opens.
+    const LIBRARY_TAB_LABELS = {
+      dashboard: "Dashboard",
+      analytics: "Analytics",
+      explorer:  "Explorer",
+      recents:   "Recents",
+      saved:     "Saved",
+      organize:  "Organize",
+      detail:    "Detail",
+    };
+    const view = String(route.view || "dashboard").toLowerCase();
+    const label = LIBRARY_TAB_LABELS[view] || (view ? view[0].toUpperCase() + view.slice(1) : "Dashboard");
+    setRouteMeta("Library", label, "Library workspace · folders · labels · categories · projects · tags");
+    return;
+  }
   if (route.name === "read") {
     await renderReader(route.snapshotId);
+    return;
+  }
+  if (route.name === "migrate") {
+    renderMigrateRoute(route.action);
+    return;
+  }
+  if (route.name === "settings") {
+    renderSettingsRoute();
     return;
   }
   await renderList(route.view, route.folderId, {
     ...opts,
     chatId: route.chatId,
     snapshotId: route.snapshotId,
+  });
+}
+
+// ─── Migration UI (full-bundle export / import) ────────────────────────────
+// Owned by the two #/migrate/* routes added in parseHash. Renders directly
+// into .wbMain by hiding the list + reader panels and inserting a single
+// migration panel. No new HTML/CSS needed — uses inline styles so the panel
+// works without studio.css edits and is trivially removable.
+
+function migrateOverlayEnsure(){
+  const main = document.querySelector(".wbMain");
+  if (!main) return null;
+  let panel = document.getElementById("viewMigratePanel");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "viewMigratePanel";
+    panel.className = "wbPanel wbPanel--migrate";
+    panel.style.padding = "20px 24px";
+    panel.style.maxWidth = "720px";
+    panel.style.margin = "0 auto";
+    panel.style.fontSize = "14px";
+    panel.style.lineHeight = "1.5";
+    main.appendChild(panel);
+  }
+  return panel;
+}
+
+function migrateRouteHideOtherPanels(){
+  const listPanel = $("#viewListPanel");
+  const readerEl = $("#viewReader");
+  if (listPanel) listPanel.hidden = true;
+  if (readerEl) readerEl.hidden = true;
+}
+
+function migrateDownloadJson(filename, obj){
+  const json = JSON.stringify(obj, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = String(filename || "h2o-studio-bundle.json");
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { try { document.body.removeChild(a); } catch {} try { URL.revokeObjectURL(url); } catch {} }, 200);
+}
+
+// Studio talks to the SW directly through callArchive (it's the established
+// transport seam). archiveBoot lives in S0D3a which is NOT loaded by the
+// Studio surface (only S0D3e Transcript Studio Host is), so the migration UI
+// invokes the SW ops directly here — same envelope as exportBundle /
+// importBundle, just routing to exportFullBundle / importFullBundle.
+function migrateGetArchiveBoot(){
+  return {
+    exportFullBundle: (opts = {}) => callArchive("exportFullBundle", opts || {}),
+    dryRunImportFullBundle: ({ bundle } = {}) => callArchive("dryRunImportFullBundle", { bundle }),
+    importFullBundle: ({ bundle, mode = "merge" } = {}) =>
+      callArchive("importFullBundle", { bundle, mode: String(mode || "merge") }),
+  };
+}
+
+function migrateExtensionLabel(){
+  try {
+    const id = chrome?.runtime?.id || "(unknown id)";
+    const name = chrome?.runtime?.getManifest?.().name || "(unknown name)";
+    const version = chrome?.runtime?.getManifest?.().version || "";
+    return { id, name, version, label: `${name} · ${id}${version ? " · v" + version : ""}` };
+  } catch {
+    return { id: "", name: "", version: "", label: "(extension info unavailable)" };
+  }
+}
+
+function migrateBuildTimestamp(){
+  // ISO 8601 with seconds, safe for filenames.
+  return new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "Z");
+}
+
+// ─── Settings UI ──────────────────────────────────────────────────────────
+// Sidebar entry-point that surfaces the existing #/migrate/* routes through a
+// user-facing page. NO migration backend logic lives here — the buttons are
+// just navigation links to routes that already work. Storage diagnostics show
+// the active extension's identity (the same info that resolves the "data
+// disappeared after switching builds" class of bug) plus a cheap saved-chat
+// count via the existing listAllChatIds bridge op.
+
+function settingsOverlayEnsure(){
+  const main = document.querySelector(".wbMain");
+  if (!main) return null;
+  let panel = document.getElementById("viewSettingsPanel");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "viewSettingsPanel";
+    panel.className = "wbPanel wbPanel--settings";
+    panel.style.padding = "20px 24px";
+    panel.style.maxWidth = "880px";
+    panel.style.margin = "0 auto";
+    panel.style.fontSize = "14px";
+    panel.style.lineHeight = "1.55";
+    main.appendChild(panel);
+  }
+  return panel;
+}
+
+function settingsHideOtherPanels(){
+  const listPanel = $("#viewListPanel");
+  const readerEl = $("#viewReader");
+  const migratePanel = document.getElementById("viewMigratePanel");
+  if (listPanel) listPanel.hidden = true;
+  if (readerEl) readerEl.hidden = true;
+  if (migratePanel) migratePanel.hidden = true;
+}
+
+function renderSettingsRoute(){
+  settingsHideOtherPanels();
+  setRouteMeta("Settings", "Studio Settings", "Studio configuration · data & migration · storage diagnostics");
+  const panel = settingsOverlayEnsure();
+  if (!panel) return;
+  panel.hidden = false;
+
+  // Idempotency: same guard as renderMigrateRoute (focus / visibilitychange
+  // re-enters renderRoute and would otherwise wipe the panel on every
+  // window-focus event).
+  if (panel.dataset.settingsRendered === "1" && panel.firstChild) {
+    refreshSettingsDiagnostics(panel);
+    return;
+  }
+  panel.dataset.settingsRendered = "1";
+  panel.innerHTML = "";
+
+  const meta = migrateExtensionLabel();
+  const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
+  const sectionTitleStyle = "margin:0 0 12px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;opacity:.65";
+  const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
+
+  panel.innerHTML = `
+    <h2 style="margin:0 0 4px;font-size:22px;font-weight:600">Studio Settings</h2>
+    <div style="margin:0 0 24px;opacity:.7;font-size:12px">Studio configuration, data tools, and diagnostics.</div>
+
+    <h3 style="${sectionTitleStyle}">Data &amp; Migration</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:0 0 28px">
+      <div style="${cardStyle}">
+        <div style="font-weight:600">Export Studio Bundle</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Download a full JSON bundle of your chats, snapshots, folders, labels, categories, projects, highlights, library KV, and UI prefs. Auth tokens are never exported.</div>
+        <a href="#/migrate/export" style="${btnStyle}">Open Export</a>
+      </div>
+      <div style="${cardStyle}">
+        <div style="font-weight:600">Import Studio Bundle</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Apply a previously exported bundle to this extension. The flow auto-backs-up current data and dry-runs before any write. Merge mode never overwrites existing records.</div>
+        <a href="#/migrate/import" style="${btnStyle}">Open Import</a>
+      </div>
+      <div style="${cardStyle}">
+        <div style="font-weight:600">Backup Current Studio Data</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Generate a snapshot of <em>this</em> extension's Studio data right now. Same operation as Export — pair it with Import to migrate across extension IDs or restore from a known-good state.</div>
+        <a href="#/migrate/export" style="${btnStyle}">Open Backup</a>
+      </div>
+    </div>
+
+    <h3 style="${sectionTitleStyle}">Storage Diagnostics</h3>
+    <div id="wbSettingsDiagBox" style="${cardStyle}">
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <div style="opacity:.6">Extension ID</div>           <div id="wbSettingsDiagId">${esc(meta.id || "(unavailable)")}</div>
+        <div style="opacity:.6">Extension name</div>         <div id="wbSettingsDiagName">${esc(meta.name || "(unavailable)")}</div>
+        <div style="opacity:.6">Version</div>                <div id="wbSettingsDiagVersion">${esc(meta.version || "(unavailable)")}</div>
+        <div style="opacity:.6">Saved chats</div>            <div id="wbSettingsDiagChats">(loading…)</div>
+        <div style="opacity:.6">Build channel</div>          <div id="wbSettingsDiagBuild">(loading…)</div>
+      </div>
+      <div id="wbSettingsDiagWarn" style="margin-top:8px;font-size:12px;opacity:.75" hidden></div>
+    </div>
+    <div style="margin-top:8px;font-size:12px;opacity:.6">
+      Tip: each Chrome extension ID has its own isolated <code>chrome.storage.local</code> and IndexedDB. If your data ever disappears after rebuilding from a new path, it's almost certainly still alive under the previous extension ID — use Import on the old extension's bundle to restore.
+    </div>
+  `;
+
+  refreshSettingsDiagnostics(panel);
+}
+
+async function refreshSettingsDiagnostics(panel){
+  if (!panel) return;
+  const meta = migrateExtensionLabel();
+  const elId = panel.querySelector("#wbSettingsDiagId");
+  const elName = panel.querySelector("#wbSettingsDiagName");
+  const elVer = panel.querySelector("#wbSettingsDiagVersion");
+  const elChats = panel.querySelector("#wbSettingsDiagChats");
+  const elBuild = panel.querySelector("#wbSettingsDiagBuild");
+  const elWarn = panel.querySelector("#wbSettingsDiagWarn");
+  if (elId) elId.textContent = meta.id || "(unavailable)";
+  if (elName) elName.textContent = meta.name || "(unavailable)";
+  if (elVer) elVer.textContent = meta.version || "(unavailable)";
+
+  // Build channel inferred from manifest name. Cheap heuristic; aligns with
+  // the names emitted by chrome-live-build-context.mjs.
+  let channel = "unknown";
+  const nm = String(meta.name || "");
+  if (/Cockpit Pro/i.test(nm)) channel = "production (chrome-ext-prod)";
+  else if (/Dev Controls/i.test(nm)) channel = "dev-controls";
+  else if (/Lean/i.test(nm)) channel = "dev-lean";
+  if (elBuild) elBuild.textContent = channel;
+
+  if (elChats) {
+    try {
+      const rows = await callArchive("listAllChatIds", {});
+      const count = Array.isArray(rows) ? rows.length : 0;
+      elChats.textContent = String(count);
+      if (elWarn && count === 0) {
+        elWarn.hidden = false;
+        elWarn.textContent = "This extension has zero saved chats. If you expect chats here, check whether another extension (different ID) holds them — see the tip above and use Import.";
+      } else if (elWarn) {
+        elWarn.hidden = true;
+        elWarn.textContent = "";
+      }
+    } catch (err) {
+      elChats.textContent = "(unavailable)";
+      if (elWarn) {
+        elWarn.hidden = false;
+        elWarn.textContent = "Storage probe failed: " + String(err && (err.message || err));
+      }
+    }
+  }
+}
+
+function renderMigrateRoute(actionRaw){
+  const action = String(actionRaw || "").toLowerCase();
+  migrateRouteHideOtherPanels();
+  setRouteMeta("Migrate", action === "export" ? "Export Bundle" : "Import Bundle",
+    "Move all Studio data between extension IDs · Phase 2 migration");
+  const panel = migrateOverlayEnsure();
+  if (!panel) return;
+  panel.hidden = false;
+  // Idempotency guard: renderRoute fires on hashchange AND on every window
+  // focus / visibilitychange (refreshFromForeground). Opening the OS file
+  // picker steals focus, so when the user picks a file the Studio window
+  // re-focuses and renderRoute runs again — re-entering this function. Without
+  // this guard, we would wipe the file <input> element and its change
+  // listener (plus the closure that holds `parsedBundle`) BEFORE the browser
+  // delivers the change event. The user's pick would vanish silently.
+  // Solution: track the currently rendered action on the panel itself; bail
+  // out early when re-entering for the same action. The DOM + closures stay
+  // intact so the file picker's change event lands on the live listener.
+  if (panel.dataset.migrateActiveAction === action && panel.firstChild) {
+    return;
+  }
+  panel.dataset.migrateActiveAction = action;
+  panel.innerHTML = "";
+
+  const meta = migrateExtensionLabel();
+  const header = document.createElement("div");
+  header.innerHTML = `
+    <h2 style="margin:0 0 4px;font-size:20px;font-weight:600">Studio Migration · ${esc(action === "export" ? "Export" : "Import")}</h2>
+    <div style="margin:0 0 16px;opacity:.75;font-size:12px">Active extension: <code style="background:rgba(255,255,255,.06);padding:2px 6px;border-radius:4px">${esc(meta.label)}</code></div>
+    <p style="margin:0 0 18px;opacity:.85">${
+      action === "export"
+        ? "Generate a full Studio bundle (chats, snapshots, folders, projects, labels, categories, highlights, library KV, UI prefs). Auth tokens are <strong>not</strong> exported. Run this on the <em>source</em> extension."
+        : "Apply a previously exported Studio bundle to <strong>this</strong> extension. The flow is: pick file → dry-run → auto-backup current data → confirm import. Existing prod data is never overwritten in merge mode."
+    }</p>
+  `;
+  panel.appendChild(header);
+
+  if (action === "export") renderMigrateExport(panel);
+  else renderMigrateImport(panel);
+}
+
+function renderMigrateExport(panel){
+  const log = document.createElement("pre");
+  log.style.cssText = "white-space:pre-wrap;background:rgba(0,0,0,.18);padding:12px;border-radius:6px;max-height:280px;overflow:auto;font-size:12px;line-height:1.45;margin:12px 0";
+  log.textContent = "Ready.";
+
+  const btn = document.createElement("button");
+  btn.className = "wbBtn";
+  btn.textContent = "Export Full Studio Bundle";
+  btn.style.cssText = "padding:8px 16px;font-weight:600;cursor:pointer";
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    log.textContent = "Exporting… (reading chat archive, chrome.storage.local, library-kv)";
+    try {
+      const ab = migrateGetArchiveBoot();
+      const t0 = performance.now();
+      const bundle = await ab.exportFullBundle({});
+      const ms = Math.round(performance.now() - t0);
+      const summary = bundle && bundle.summary ? bundle.summary : {};
+      log.textContent = [
+        `Exported in ${ms}ms.`,
+        `  schema:             ${bundle?.schema || "(missing)"}`,
+        `  exportedAt:         ${bundle?.exportedAt || "(missing)"}`,
+        `  fromExtensionId:    ${bundle?.exportedFromExtensionId || "(missing)"}`,
+        `  fromExtensionName:  ${bundle?.exportedFromExtensionName || "(missing)"}`,
+        `  chats:              ${summary.chatCount || 0}`,
+        `  snapshots:          ${summary.snapshotCount || 0}`,
+        `  categories:         ${summary.categoryCount || 0}`,
+        `  labels:             ${summary.labelCount || 0}`,
+        `  chromeStorage keys: ${summary.chromeStorageKeyCount || 0}`,
+        `  libraryKv keys:     ${summary.libraryKvKeyCount || 0}`,
+        ``,
+        `Downloading…`,
+      ].join("\n");
+      const filename = `h2o-studio-full-bundle__${(bundle?.exportedFromExtensionId || "unknown").slice(0,8)}__${migrateBuildTimestamp()}.json`;
+      migrateDownloadJson(filename, bundle);
+      log.textContent += `\nSaved as ${filename}`;
+    } catch (err) {
+      log.textContent = "Export FAILED.\n" + String(err && (err.stack || err.message || err));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  panel.appendChild(btn);
+  panel.appendChild(log);
+}
+
+function renderMigrateImport(panel){
+  let parsedBundle = null;
+  let bundleFilename = "";
+  let dryRun = null;
+  let backupSaved = false;
+
+  const log = document.createElement("pre");
+  log.style.cssText = "white-space:pre-wrap;background:rgba(0,0,0,.18);padding:12px;border-radius:6px;max-height:360px;overflow:auto;font-size:12px;line-height:1.45;margin:12px 0";
+  log.textContent = "Step 1: pick a bundle file.";
+
+  const fileWrap = document.createElement("div");
+  fileWrap.style.cssText = "display:flex;gap:8px;align-items:center;margin:8px 0";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "application/json,.json";
+  fileWrap.appendChild(fileInput);
+  panel.appendChild(fileWrap);
+
+  const btnDry = document.createElement("button");
+  btnDry.className = "wbBtn";
+  btnDry.textContent = "2. Dry-run validate";
+  btnDry.disabled = true;
+  btnDry.style.cssText = "margin:0 8px 0 0;padding:8px 16px;cursor:pointer";
+
+  const btnBackup = document.createElement("button");
+  btnBackup.className = "wbBtn";
+  btnBackup.textContent = "3. Backup current data (auto-download)";
+  btnBackup.disabled = true;
+  btnBackup.style.cssText = "margin:0 8px 0 0;padding:8px 16px;cursor:pointer";
+
+  const btnImport = document.createElement("button");
+  btnImport.className = "wbBtn";
+  btnImport.textContent = "4. Confirm import (merge mode)";
+  btnImport.disabled = true;
+  btnImport.style.cssText = "padding:8px 16px;font-weight:600;cursor:pointer;background:rgba(13,148,136,.18);border-color:rgba(13,148,136,.6)";
+
+  panel.appendChild(btnDry);
+  panel.appendChild(btnBackup);
+  panel.appendChild(btnImport);
+  panel.appendChild(log);
+
+  const onFilePicked = async (ev) => {
+    // Diagnostic: log to console too so any silent-failure case surfaces in
+    // DevTools regardless of whether the UI log is intact.
+    try { console.log("[H2O/Migrate] file change event fired", { hasFiles: !!(fileInput.files && fileInput.files.length) }); } catch {}
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      log.textContent = "No file picked (file input cleared or selection cancelled).";
+      return;
+    }
+    log.textContent = `File selected: ${file.name} (${(file.size || 0).toLocaleString()} bytes). Parsing…`;
+    bundleFilename = file.name;
+    parsedBundle = null;
+    dryRun = null;
+    backupSaved = false;
+    btnDry.disabled = true;
+    btnBackup.disabled = true;
+    btnImport.disabled = true;
+    try {
+      const text = await file.text();
+      let obj;
+      try {
+        obj = JSON.parse(text);
+      } catch (parseErr) {
+        throw new Error(`JSON parse failed: ${parseErr && (parseErr.message || parseErr)}`);
+      }
+      const schema = String(obj && obj.schema || "(missing)");
+      if (schema !== "h2o.studio.fullBundle.v2" && schema !== "h2o.chatArchive.bundle.v1") {
+        throw new Error(`Unrecognized bundle schema: ${schema}. Expected "h2o.studio.fullBundle.v2" or "h2o.chatArchive.bundle.v1".`);
+      }
+      parsedBundle = obj;
+      const summary = obj.summary || {};
+      log.textContent = [
+        `File parsed successfully.`,
+        ``,
+        `  filename:           ${file.name}`,
+        `  bytes:              ${(file.size || 0).toLocaleString()}`,
+        `  schema:             ${schema}`,
+        `  exportedAt:         ${obj.exportedAt || "(missing)"}`,
+        `  fromExtensionId:    ${obj.exportedFromExtensionId || "(legacy v1 bundle — no extension id)"}`,
+        `  fromExtensionName:  ${obj.exportedFromExtensionName || "(legacy v1 bundle — no name)"}`,
+        `  fromVersion:        ${obj.exportedFromVersion || "(missing)"}`,
+        ``,
+        `Summary (as stored in bundle):`,
+        `  chats:              ${summary.chatCount ?? "(not summarized)"}`,
+        `  snapshots:          ${summary.snapshotCount ?? "(not summarized)"}`,
+        `  categories:         ${summary.categoryCount ?? "(not summarized)"}`,
+        `  labels:             ${summary.labelCount ?? "(not summarized)"}`,
+        `  chromeStorage keys: ${summary.chromeStorageKeyCount ?? "(not summarized)"}`,
+        `  libraryKv keys:     ${summary.libraryKvKeyCount ?? "(not summarized)"}`,
+        ``,
+        `Step 2 is now available. Click "Dry-run validate" — nothing will be written.`,
+      ].join("\n");
+      btnDry.disabled = false;
+      try { console.log("[H2O/Migrate] bundle accepted; dry-run enabled"); } catch {}
+    } catch (err) {
+      parsedBundle = null;
+      const msg = String(err && (err.stack || err.message || err));
+      log.textContent = `Bundle rejected.\n${msg}\n\nTry a different file. (No data was written; this is the file-select step.)`;
+      try { console.warn("[H2O/Migrate] bundle parse/validate failed", err); } catch {}
+    }
+  };
+  fileInput.addEventListener("change", onFilePicked);
+  // Defense in depth for some Chromium edge cases where re-picking the same
+  // filename doesn't refire "change" — also listen to "input".
+  fileInput.addEventListener("input", onFilePicked);
+
+  btnDry.addEventListener("click", async () => {
+    if (!parsedBundle) return;
+    btnDry.disabled = true;
+    log.textContent = "Running dry-run on this extension's storage… (no writes)";
+    try {
+      const ab = migrateGetArchiveBoot();
+      dryRun = await ab.dryRunImportFullBundle({ bundle: parsedBundle });
+      const p = dryRun.plan || {};
+      log.textContent = [
+        `Dry-run report (NO WRITES PERFORMED):`,
+        ``,
+        `Chats:`,
+        `  incoming chats:        ${p.chats?.incoming || 0}`,
+        `  incoming snapshots:    ${p.chats?.incomingSnapshots || 0}`,
+        `  will import:           ${p.chats?.willImport || 0}`,
+        `  will skip (duplicate): ${p.chats?.willSkipDuplicates || 0}`,
+        ``,
+        `chrome.storage.local:`,
+        `  incoming keys:         ${p.chromeStorageLocal?.incoming || 0}`,
+        `  will import:           ${p.chromeStorageLocal?.willImport || 0}`,
+        `  will skip (duplicate): ${p.chromeStorageLocal?.willSkipDuplicates || 0}`,
+        `  denied by policy:      ${p.chromeStorageLocal?.deniedByPolicy || 0}  (auth/dev-only keys)`,
+        ``,
+        `library-kv (IndexedDB):`,
+        `  incoming keys:         ${p.libraryKv?.incoming || 0}`,
+        `  will import:           ${p.libraryKv?.willImport || 0}`,
+        `  will skip (duplicate): ${p.libraryKv?.willSkipDuplicates || 0}`,
+        `  denied by policy:      ${p.libraryKv?.deniedByPolicy || 0}`,
+        ``,
+        `Sample IDs (first 10):`,
+        `  new chats:    ${(dryRun.sample?.newChatIds || []).join(", ") || "(none)"}`,
+        `  dup chats:    ${(dryRun.sample?.dupChatIds || []).join(", ") || "(none)"}`,
+        ``,
+        `Step 3: click "Backup current data" before confirming the import.`,
+      ].join("\n");
+      btnBackup.disabled = false;
+    } catch (err) {
+      log.textContent = "Dry-run FAILED.\n" + String(err && (err.stack || err.message || err));
+      btnDry.disabled = false;
+    }
+  });
+
+  btnBackup.addEventListener("click", async () => {
+    btnBackup.disabled = true;
+    log.textContent += "\n\nGenerating pre-import backup of THIS extension…";
+    try {
+      const ab = migrateGetArchiveBoot();
+      const bundle = await ab.exportFullBundle({});
+      const filename = `h2o-studio-PROD-pre-import-backup__${(bundle?.exportedFromExtensionId || "unknown").slice(0,8)}__${migrateBuildTimestamp()}.json`;
+      migrateDownloadJson(filename, bundle);
+      backupSaved = true;
+      log.textContent += `\nBackup saved as ${filename}.`;
+      log.textContent += `\n\nStep 4: click "Confirm import" to merge incoming data.`;
+      log.textContent += `\n(Existing records in this extension are preserved; only NEW chats/keys are written.)`;
+      btnImport.disabled = false;
+    } catch (err) {
+      log.textContent += "\nBackup FAILED — refusing to proceed with import.\n" + String(err && (err.stack || err.message || err));
+      btnBackup.disabled = false;
+    }
+  });
+
+  btnImport.addEventListener("click", async () => {
+    if (!parsedBundle || !backupSaved) return;
+    if (!confirm("Apply this bundle to the current extension in MERGE mode?\n\nExisting records are preserved. Only new chats/keys will be added.\n\nThis cannot be undone except by restoring the backup file you just downloaded.")) {
+      return;
+    }
+    btnImport.disabled = true;
+    log.textContent += "\n\nImporting… (merge mode)";
+    try {
+      const ab = migrateGetArchiveBoot();
+      const t0 = performance.now();
+      const result = await ab.importFullBundle({ bundle: parsedBundle, mode: "merge" });
+      const ms = Math.round(performance.now() - t0);
+      log.textContent += [
+        ``,
+        `Import complete in ${ms}ms.`,
+        ``,
+        `Chats:                ${result.chats?.importedChats || 0} imported, ${result.chats?.importedSnapshots || 0} snapshots`,
+        `chrome.storage.local: ${result.chromeStorageLocal?.written || 0} written, ${result.chromeStorageLocal?.skipped || 0} skipped`,
+        `library-kv:           ${result.libraryKv?.written || 0} written, ${result.libraryKv?.skipped || 0} skipped${result.libraryKv?.errors?.length ? `, ${result.libraryKv.errors.length} errors` : ""}`,
+        ``,
+        `Reload the Studio tab (or navigate to #/library/explorer) to see the imported data.`,
+      ].join("\n");
+      // Notify the rest of Studio so live views refresh.
+      try { W.dispatchEvent(new CustomEvent("evt:h2o:data:backup:imported", { detail: { source: "migrate-import", result } })); } catch {}
+    } catch (err) {
+      log.textContent += "\nImport FAILED.\n" + String(err && (err.stack || err.message || err));
+      btnImport.disabled = false;
+    }
   });
 }
 
@@ -3053,19 +4900,17 @@ function boot(){
     renderRoute({ force: true }).catch(console.error);
   });
 
-  $("#closeBtn")?.addEventListener("click", handleCloseTopbar);
-  $("#openReaderTabBtn")?.addEventListener("click", openSelectedReaderTab);
   $("#sidebarCollapseBtn")?.addEventListener("click", closeSidebar);
   $("#railSidebarBtn")?.addEventListener("click", openSidebar);
   $("#folderAssignSelect")?.addEventListener("change", () => {
     handleFolderAssignChange().catch(console.error);
   });
-  $("#inspectorPanel")?.addEventListener("change", (ev) => {
+  $("#categoryAssignWrap")?.addEventListener("change", (ev) => {
     if (ev.target?.id === "categoryAssignSelect") {
       handleCategoryAssignChange().catch(console.error);
     }
   });
-  $("#inspectorPanel")?.addEventListener("click", (ev) => {
+  $("#categoryAssignWrap")?.addEventListener("click", (ev) => {
     const target = ev.target?.closest?.("#restoreCategoryBtn, #reclassifyCategoryBtn");
     if (!target) return;
     handleCategoryReclassify().catch(console.error);
@@ -3074,6 +4919,62 @@ function boot(){
   $("#q")?.addEventListener("input", () => {
     const route = parseHash();
     if (route.name === "list") renderList(route.view, route.folderId).catch(console.error);
+  });
+
+  document.addEventListener("click", (ev) => {
+    const target = ev.target instanceof HTMLElement ? ev.target : null;
+    if (target?.closest(".wbRowPopover, .wbRowTools, .ho-emoji-picker")) return;
+    closeRowPopovers();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeRowPopovers();
+  });
+
+  let nativeMetaRefreshTimer = 0;
+  const scheduleNativeMetaRefresh = () => {
+    clearTimeout(nativeMetaRefreshTimer);
+    nativeMetaRefreshTimer = setTimeout(() => {
+      state.rowsCache = null;
+      renderRoute({ force: true }).catch(console.error);
+    }, 250);
+  };
+  const nativeMetaPrefixes = [
+    CHAT_TITLE_STATE_KEY_PREFIX,
+    CHAT_TITLE_BOOT_KEY_PREFIX,
+    INTERFACE_META_MIRROR_KEY_PREFIX,
+    HEAT_OVERRIDE_KEY_PREFIX,
+    PIN_KEY_PREFIX,
+    ROW_TINT_KEY_PREFIX,
+  ];
+  if (hasChromeStorage() && W.chrome?.storage?.onChanged?.addListener) {
+    try {
+      W.chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        const keys = Object.keys(changes || {});
+        if (keys.some((key) => nativeMetaPrefixes.some((prefix) => key.startsWith(prefix)))) {
+          scheduleNativeMetaRefresh();
+        }
+      });
+    } catch {}
+  }
+  ["h2o:chat-title:changed", "h2o:chat-title:emoji-updated", "evt:h2o:chat-title:changed", "evt:h2o:chat-title:emoji-updated", "evt:h2o:library:cross-surface-sync"].forEach((eventName) => {
+    window.addEventListener(eventName, scheduleNativeMetaRefresh);
+  });
+
+  // v2.8: top-of-sidebar "Search chats" row → route into the Library Explorer
+  // and focus its own page-level search input. The Explorer header mounts
+  // asynchronously after the hash change, so we poll briefly (≤ 800ms) for
+  // the input before giving up rather than racing it on the first frame.
+  $("#wbStudioNavSearch")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (location.hash !== "#/library/explorer") location.hash = "#/library/explorer";
+    const deadline = Date.now() + 800;
+    const tryFocus = () => {
+      const pageSearch = document.querySelector(".wbLibraryPageSearchInput");
+      if (pageSearch && typeof pageSearch.focus === "function") { pageSearch.focus(); return; }
+      if (Date.now() < deadline) setTimeout(tryFocus, 60);
+    };
+    requestAnimationFrame(tryFocus);
   });
 
   $("#viewList")?.addEventListener("click", (ev) => {
@@ -3087,7 +4988,56 @@ function boot(){
     if (route.name === "list") renderList(route.view, route.folderId).catch(console.error);
   });
 
-  window.addEventListener("hashchange", () => renderRoute().catch(console.error));
+  // Hashchange listener with "last list-ish hash" capture. We remember the most
+  // recent non-reader hash in sessionStorage so the topbar Close button can return
+  // the user to wherever they came from (Library page, Saved, Pinned, Archive, …)
+  // instead of always falling back to #/saved.
+  const LAST_LIST_HASH_KEY = "h2o:studio:lastListHash:v1";
+  function captureLastListHash(hash){
+    const h = String(hash || "").trim();
+    if (!h || h.startsWith("#/read/")) return;
+    try { sessionStorage.setItem(LAST_LIST_HASH_KEY, h); } catch {}
+  }
+  function readLastListHash(){
+    try { return sessionStorage.getItem(LAST_LIST_HASH_KEY) || ""; } catch { return ""; }
+  }
+  window.addEventListener("hashchange", (ev) => {
+    try {
+      const oldUrl = ev?.oldURL || "";
+      if (oldUrl) captureLastListHash(new URL(oldUrl).hash || "");
+    } catch {}
+    persistStudioLastHash(location.hash);
+    persistStudioPresence();
+    renderRoute().catch(console.error);
+  });
+
+  // Wire the topbar Close button. Previously it had a label-update path in
+  // applyUiState but no click handler — clicking it did nothing. Now: if the
+  // user is in the reader, return to the previous list/library route (or fall
+  // back to #/saved); if they're already on a list/library route, close the
+  // window (Studio is a separate tab/window so this collapses cleanly).
+  $("#closeBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    const route = parseHash();
+    if (route.name === "read") {
+      const target = readLastListHash();
+      // Guard against returning to the same read hash (defensive — shouldn't
+      // happen because we only capture non-read hashes, but cheap to check).
+      const safe = (target && !target.startsWith("#/read/")) ? target : "#/saved";
+      if (location.hash === safe) {
+        // Already at the target hash — trigger a render anyway so the reader
+        // closes visually.
+        renderRoute({ force: true }).catch(console.error);
+      } else {
+        location.hash = safe;
+      }
+      return;
+    }
+    // Not in the reader → close the Studio window. Some Chrome contexts block
+    // window.close() on tabs the user opened directly; falling back to a
+    // navigation to the empty hash keeps the page in a sane state.
+    try { window.close(); } catch {}
+  });
 
   const refreshFromForeground = () => {
     state.rowsCache = null;
@@ -3095,10 +5045,24 @@ function boot(){
   };
   window.addEventListener("focus", refreshFromForeground);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refreshFromForeground();
+    if (document.visibilityState === "visible") {
+      persistStudioPresence();
+      refreshFromForeground();
+    }
   });
 
+  // Seed the capture so the very first reader-open from a fresh tab also
+  // has something to return to.
+  captureLastListHash(location.hash);
+
   if (!location.hash) location.hash = "#/saved";
+  persistStudioLastHash(location.hash);
+  persistStudioPresence();
+  // Heartbeat keeps presence fresh so the SW can tell "Studio was alive in
+  // the last ~10s" vs "Studio has been closed for hours". The interval is
+  // unconditional — cheap (one chrome.storage.local.set / 10s) and survives
+  // tab hidden/visible cycles. If the tab is closed, the interval dies with it.
+  try { W.setInterval(() => persistStudioPresence(), STUDIO_PRESENCE_HEARTBEAT_MS); } catch {}
   renderRoute().catch(console.error);
 }
 

@@ -3052,6 +3052,15 @@
   archiveBoot.exportBundle = (opts = {}) => exportBundle(opts);
   archiveBoot.importBundle = (opts = {}) => importBundle(opts);
 
+  // v2 full-bundle migration wrappers. SW owns the heavy lifting; these are
+  // thin pass-throughs so the Studio migration page can call them without
+  // depending on the bridge directly. See chrome-live-background.mjs:
+  // exportFullBundle / dryRunImportFullBundle / importFullBundle.
+  archiveBoot.exportFullBundle = (opts = {}) => bridgeCall("exportFullBundle", opts || {});
+  archiveBoot.dryRunImportFullBundle = ({ bundle } = {}) => bridgeCall("dryRunImportFullBundle", { bundle });
+  archiveBoot.importFullBundle = ({ bundle, mode = "merge" } = {}) =>
+    bridgeCall("importFullBundle", { bundle, mode: String(mode || "merge") });
+
   archiveBoot.captureLive = legacyCaptureLive;
   archiveBoot.saveLatest = legacySaveLatest;
   archiveBoot.getLatest = legacyGetLatest;

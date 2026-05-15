@@ -37,6 +37,11 @@ export function makeChromeLiveFolderBridgePageJs() {
     }
   }
 
+  function normalizeHexColor(raw) {
+    const value = String(raw || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : "";
+  }
+
   function delKey(key) {
     try {
       localStorage.removeItem(String(key));
@@ -54,11 +59,14 @@ export function makeChromeLiveFolderBridgePageJs() {
   function normalizeFolderEntry(raw) {
     const id = String(raw && (raw.id || raw.folderId) || "").trim();
     if (!id) return null;
-    return {
+    const out = {
       id,
       name: String(raw && (raw.name || raw.title || id) || id).trim() || id,
       createdAt: String(raw && raw.createdAt || "").trim(),
     };
+    const iconColor = normalizeHexColor(raw && (raw.iconColor || raw.color || raw.folderColor || raw.accentColor || raw.appearance && raw.appearance.color));
+    if (iconColor) out.iconColor = iconColor;
+    return out;
   }
 
   function normalizeFolderList(raw) {
@@ -99,6 +107,54 @@ export function makeChromeLiveFolderBridgePageJs() {
     return normalizeFolderList(tryLoadFoldersFallback());
   }
 
+  function setFolderIconColor(folderIdRaw, colorRaw) {
+    const folderId = String(folderIdRaw || "").trim();
+    if (!folderId) throw new Error("missing folderId");
+    const color = normalizeHexColor(colorRaw || "");
+    const api = foldersApi();
+    try {
+      if (api && typeof api.setFolderIconColor === "function") {
+        const res = api.setFolderIconColor(folderId, color);
+        return { ok: !res || res.ok !== false, folderId, iconColor: color };
+      }
+    } catch {}
+
+    const keys = [
+      "h2o:prm:cgx:fldrs:state:data:v1",
+      "h2o:folders:data:v1",
+      "h2o:folders:v1",
+      "h2o:prm:cgx:folders:v1",
+      "H2O:folders:v1",
+    ];
+    let changed = false;
+    for (const key of keys) {
+      const value = readJson(key, null);
+      const folders = Array.isArray(value) ? value : (value && Array.isArray(value.folders) ? value.folders : null);
+      if (!folders) continue;
+      let hit = false;
+      const nextFolders = folders.map((row) => {
+        const id = String(row && (row.id || row.folderId) || "").trim();
+        if (id !== folderId || !row || typeof row !== "object") return row;
+        hit = true;
+        const next = { ...row, updatedAt: new Date().toISOString() };
+        if (color) next.iconColor = color;
+        else delete next.iconColor;
+        return next;
+      });
+      if (!hit) continue;
+      const nextValue = Array.isArray(value) ? nextFolders : { ...value, folders: nextFolders, updatedAt: new Date().toISOString() };
+      changed = writeJson(key, nextValue) || changed;
+    }
+    if (changed) {
+      try {
+        window.dispatchEvent(new CustomEvent("evt:h2o:folders:changed", {
+          detail: { action: "folder-appearance", folderId, iconColor: color, source: "ext-folder-bridge", ts: Date.now() },
+        }));
+      } catch {}
+    }
+    return { ok: changed, folderId, iconColor: color };
+  }
+
   function keyArchiveFolder(chatId, nsDisk) {
     return normalizeNsDisk(nsDisk) + ":archiveFolder:" + normalizeChatId(chatId) + ":v1";
   }
@@ -121,6 +177,20 @@ export function makeChromeLiveFolderBridgePageJs() {
   function resolveFolderBinding(chatId, nsDisk) {
     const id = normalizeChatId(chatId);
     if (!id) return { folderId: "", folderName: "" };
+    const api = foldersApi();
+    try {
+      if (api && typeof api.getBinding === "function") {
+        const res = api.getBinding(id);
+        const folderId = String(res && (res.folderId || res.id) || "").trim();
+        if (folderId) {
+          const info = resolveFolderInfo(folderId);
+          return {
+            folderId,
+            folderName: String(res && (res.folderName || res.name) || info.folderName || folderId).trim() || folderId,
+          };
+        }
+      }
+    } catch {}
     const raw = readJson(keyArchiveFolder(id, nsDisk), null);
     const folderId = String(raw && (raw.folderId || raw.id) || "").trim();
     if (!folderId) return { folderId: "", folderName: "" };
@@ -214,6 +284,8 @@ export function makeChromeLiveFolderBridgePageJs() {
         result = out;
       } else if (op === "setFolderBinding") {
         result = setFolderBinding(payload.chatId, payload.folderId, nsDisk);
+      } else if (op === "setFolderIconColor") {
+        result = setFolderIconColor(payload.folderId, payload.iconColor || payload.color || "");
       } else {
         throw new Error("unsupported folders op: " + op);
       }
