@@ -27,22 +27,66 @@
 
   function getCore() { return H2O.LibraryCore || null; }
   function getIndex() { return H2O.LibraryIndex || null; }
+  function projectCore() { return H2O.Library?.ProjectProviderCore || null; }
+
+  function normalizeProjectListFromFacets(facets) {
+    const byProject = facets?.byProject || {};
+    const legacy = Object.entries(byProject).map(([id, chatIds]) => ({
+      id,
+      chatIds: Array.isArray(chatIds) ? chatIds.slice() : [],
+      count: Array.isArray(chatIds) ? chatIds.length : Number(chatIds || 0) || 0,
+    })).sort((a, b) => b.count - a.count);
+
+    const api = projectCore();
+    if (!api || typeof api.normalizeProjectCatalog !== 'function') return legacy;
+    try {
+      const diagnostics = [];
+      const catalog = api.normalizeProjectCatalog({ byProject }, { diagnostics });
+      diag.lastNormalizationDiagnostics = diagnostics.concat(catalog?.diagnostics || []).slice(-10);
+      const byId = new Map(legacy.map((project) => [project.id, project]));
+      return (catalog.projects || [])
+        .map((project) => {
+          const legacyProject = byId.get(project.id || project.projectId) || null;
+          return {
+            id: legacyProject?.id || project.id || project.projectId,
+            chatIds: legacyProject?.chatIds ? legacyProject.chatIds.slice() : (Array.isArray(project.chatIds) ? project.chatIds.slice() : []),
+            count: Number(legacyProject?.count ?? project.count ?? 0) || 0,
+          };
+        })
+        .filter((project) => project.id)
+        .sort((a, b) => b.count - a.count);
+    } catch (e) {
+      err('projectCore.normalizeProjectCatalog', e);
+      return legacy;
+    }
+  }
 
   function listProjects() {
     const idx = getIndex();
     if (!idx) return [];
     const f = idx.facets();
-    return Object.entries(f.byProject || {}).map(([id, chatIds]) => ({
-      id,
-      chatIds: chatIds.slice(),
-      count: chatIds.length,
-    })).sort((a, b) => b.count - a.count);
+    return normalizeProjectListFromFacets(f);
   }
 
   function getProjectById(id) {
     const pid = String(id || '').trim();
     if (!pid) return null;
-    return listProjects().find((p) => p.id === pid) || null;
+    const projects = listProjects();
+    const api = projectCore();
+    if (api && typeof api.validateProjectId === 'function') {
+      try {
+        const valid = api.validateProjectId(pid);
+        if (!valid.ok) return null;
+        if (typeof api.resolveProjectId === 'function') {
+          const resolved = api.resolveProjectId(valid.projectId, projects);
+          if (resolved?.ok) return projects.find((p) => p.id === resolved.projectId) || null;
+        }
+        return projects.find((p) => p.id === valid.projectId) || null;
+      } catch (e) {
+        err('projectCore.resolveProjectId', e);
+      }
+    }
+    return projects.find((p) => p.id === pid) || null;
   }
 
   function getChatsInProject(id) {
@@ -60,7 +104,10 @@
       return {
         surface: 'studio',
         hasIndex: !!getIndex(),
+        hasProjectCore: !!projectCore(),
+        projectCorePhase: projectCore()?.__phase || '',
         projects: listProjects().length,
+        normalizationDiagnostics: (diag.lastNormalizationDiagnostics || []).slice(-5),
         steps: diag.steps.slice(-8),
         errors: diag.errors.slice(-5),
       };

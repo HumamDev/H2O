@@ -166,6 +166,7 @@
 
   const normText = (raw) => String(raw || '').trim().replace(/\s+/g, ' ');
   const safeRemove = (node) => { try { node?.remove?.(); } catch {} };
+  function projectCore() { return H2O.Library?.ProjectProviderCore || null; }
 
   function getSharedFoldersState() {
     return H2O?.FS?.fldrs?.state || null;
@@ -532,10 +533,43 @@
     return moved;
   }
 
+  function PROJECTS_normalizeRowViaCore(row, index = 0) {
+    const api = projectCore();
+    if (!api || typeof api.normalizeProject !== 'function') return null;
+    try {
+      const href = String(row?.href || '').trim();
+      const id = String(row?.id || row?.projectId || PROJECTS_idFromHref(href) || '').trim();
+      const project = api.normalizeProject({
+        ...row,
+        id,
+        projectId: id,
+        href,
+        nativeProjectHref: href,
+        title: row?.title || row?.name || href,
+        projectName: row?.projectName || row?.title || row?.name || href,
+        index,
+      });
+      if (!project) return null;
+      return {
+        id: id || String(project.id || project.projectId || '').trim(),
+        href,
+        title: normText(row?.title || row?.name || project.title || project.projectName || href),
+        iconHtml: String(row?.iconHtml || project.iconHtml || ''),
+        index: Number.isFinite(Number(row?.index)) ? Number(row.index) : index,
+        source: String(row?.source || project.source || 'unknown'),
+      };
+    } catch (error) {
+      err('projectCore.normalizeProject', error);
+      return null;
+    }
+  }
+
   function PROJECTS_normalizeRow(row, index = 0) {
     if (!row || typeof row !== 'object') return null;
     const href = String(row.href || '').trim();
     if (!href || !/\/g\/.+\/project(?:$|[?#])/.test(href)) return null;
+    const coreRow = PROJECTS_normalizeRowViaCore(row, index);
+    if (coreRow) return coreRow;
     const id = String(row.id || row.projectId || PROJECTS_idFromHref(href) || '').trim();
     return {
       id,
@@ -725,7 +759,18 @@
   }
 
   function PROJECTS_knownIdsFromRows(rows) {
-    return [...new Set(PROJECTS_serializeRows(rows).map((row) => row.id || PROJECTS_idFromHref(row.href)).filter(Boolean))];
+    const serialized = PROJECTS_serializeRows(rows);
+    const legacyIds = serialized.map((row) => row.id || PROJECTS_idFromHref(row.href)).filter(Boolean);
+    const api = projectCore();
+    if (!api || typeof api.normalizeProjectCatalog !== 'function') return [...new Set(legacyIds)];
+    try {
+      const catalog = api.normalizeProjectCatalog(serialized);
+      const coreIds = (catalog.projects || []).map((row) => row.projectId || row.id).filter(Boolean);
+      return [...new Set([...coreIds, ...legacyIds])];
+    } catch (error) {
+      err('projectCore.normalizeProjectCatalog', error);
+      return [...new Set(legacyIds)];
+    }
   }
 
   function PROJECTS_bestRows(store) {
@@ -798,7 +843,56 @@
     };
   }
 
+  function PROJECTS_normalizeStoreViaCore(raw) {
+    const api = projectCore();
+    if (!api || typeof api.normalizeProjectCache !== 'function') return null;
+    try {
+      api.normalizeProjectCache(raw);
+    } catch (error) {
+      err('projectCore.normalizeProjectCache', error);
+      return null;
+    }
+    if (Array.isArray(raw)) {
+      const rows = PROJECTS_serializeRows(raw);
+      return PROJECTS_emptyStore({
+        source: 'legacy-row-cache',
+        rows,
+        complete: false,
+        itemCount: rows.length,
+      });
+    }
+    if (!raw || typeof raw !== 'object') return PROJECTS_emptyStore();
+    const rows = PROJECTS_serializeRows(raw.rows || []);
+    const bestRows = PROJECTS_serializeRows(raw.bestRows || rows);
+    return PROJECTS_emptyStore({
+      source: raw.source || CFG_PROJECTS_SOURCE,
+      rows,
+      bestRows,
+      complete: raw.complete === true,
+      lastSuccessAt: raw.lastSuccessAt,
+      lastAttemptAt: raw.lastAttemptAt,
+      pageCount: raw.pageCount,
+      itemCount: raw.itemCount || rows.length,
+      nextCursor: raw.nextCursor,
+      signature: raw.signature || PROJECTS_rowsSignature(rows),
+      error: raw.error,
+      orderSource: raw.orderSource,
+      lastReconciledAt: raw.lastReconciledAt,
+      bestSignature: raw.bestSignature || PROJECTS_rowsSignature(bestRows),
+      bestSource: raw.bestSource,
+      bestSourceRank: raw.bestSourceRank,
+      bestRowCount: raw.bestRowCount || bestRows.length,
+      bestAt: raw.bestAt,
+      bestComplete: raw.bestComplete,
+      knownProjectIds: raw.knownProjectIds,
+      lastRicherNativeAt: raw.lastRicherNativeAt,
+      sources: raw.sources,
+    });
+  }
+
   function PROJECTS_normalizeStore(raw) {
+    const coreStore = PROJECTS_normalizeStoreViaCore(raw);
+    if (coreStore) return coreStore;
     if (Array.isArray(raw)) {
       const rows = PROJECTS_serializeRows(raw);
       return PROJECTS_emptyStore({
