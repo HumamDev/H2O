@@ -203,6 +203,10 @@
        and silently no-ops on MV3 / web. Backs the `chats` table defined in
        apps/studio-desktop/src-tauri/src/lib.rs (Migrations v2 + v4). -->
   <script src="./store/chats.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed snapshots entity (M2a-3b). Backs the
+       snapshots + snapshot_turns tables (Migration v5). Same self-detect
+       gating as chats.tauri.js. -->
+  <script src="./store/snapshots.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>
