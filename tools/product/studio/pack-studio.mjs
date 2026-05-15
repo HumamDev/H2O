@@ -24,6 +24,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // STUDIO_STORAGE_CONTRACT.md.
   "store/index.js",
   "store/highlights.js",
+  "store/libraryIndex.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -99,6 +100,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Studio Store — see SOURCE_FILES list above for context.
   "store/index.js",
   "store/highlights.js",
+  "store/libraryIndex.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
