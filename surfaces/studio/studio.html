@@ -206,6 +206,16 @@
   <!-- Surface Host first: registers Studio-specific ui-shell, page-host,
        native-sidebar, route, chat-list services for Library Core to consume. -->
   <script src="./S0F0a. 🎬 Library Surface Host - Studio.js"></script>
+  <!-- Phase 2A shared registry core: pure merge/normalize/repair logic
+       consumed by S0F1g Chat Registry. Body byte-identical to
+       shared/library/chat-registry-core.js and scripts/0F0c. mirror. Must
+       load before S0F1g so the shared module is available at first read. -->
+  <script src="./S0F0c. 🎬 Library Registry Core - Studio.js"></script>
+  <!-- Phase 2B shared library-index core: pure row normalization, merge,
+       facet, count, filter, sort, bucketing logic. Consumed by S0F1c.
+       Body byte-identical to shared/library/library-index-core.js and
+       scripts/0F0d. mirror. Must load before S0F1c. -->
+  <script src="./S0F0d. 🎬 Library Index Core - Studio.js"></script>
   <!-- Library Core: registry hub. Picks up Surface Host services. -->
   <script src="./S0F1a. 🎬 Library Core - Studio.js"></script>
   <!-- Store + Registry: data layers. Boot independently. -->
@@ -226,6 +236,10 @@
   <script src="./S0F1f. 🎬 Library Maintenance - Studio.js"></script>
   <!-- Cross-surface sync: chrome.storage watcher coalesces changes from native. -->
   <script src="./S0F1h. 🎬 Library Sync - Studio.js"></script>
+  <!-- Phase 1 service boundary: canonical service aliases + H2O.flags registry.
+       Loads after every Library feature owner so canonical aliases resolve
+       to real impls on the first registration pass. Purely additive. -->
+  <script src="./S0F1k. 🎬 Library Canonical Services - Studio.js"></script>
   <!-- Studio Command Bar: ⌘K palette exposing Library Maintenance commands. -->
   <script src="./S0X1a. 🎬 Command Bar - Studio.js"></script>
   <!-- Library Commands plugin: registers Workspace / Index / Sync / Registry /

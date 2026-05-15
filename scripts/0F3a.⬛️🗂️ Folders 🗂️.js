@@ -3308,8 +3308,12 @@ function ROUTE_clearPageRoute_LOCAL() {
     if (!href) return;
 
     const addItem = moveItem.cloneNode(true);
+    // Internal selector kept as `${SkID}-add-to-folder` (Phase 4): we
+    // changed only the user-visible label. Renaming the data-cgxui token
+    // would break idempotency against any persisted DOM or any external
+    // tooling that targets `[data-cgxui="flsc-add-to-folder"]`.
     addItem.setAttribute(ATTR_CGXUI, `${SkID}-add-to-folder`);
-    DOM_setMenuItemLabel(addItem, 'Add to Folder');
+    DOM_setMenuItemLabel(addItem, 'Save to Folder');
 
     addItem.addEventListener('click', (e) => {
       e.preventDefault();
@@ -3319,6 +3323,161 @@ function ROUTE_clearPageRoute_LOCAL() {
     }, true);
 
     moveItem.parentNode.insertBefore(addItem, moveItem.nextSibling);
+  }
+
+  /* Radix "..." menu injection: Add "Add to Library" item (Phase 3).
+     STRICTLY additive — sits above the existing "Add to Folder" item, uses
+     the same anchor (cloned "Move to project") for visual parity, and
+     delegates ALL business logic to H2O.LibraryActions. No transcript
+     capture, no folder binding, no archive write. */
+  function ENGINE_injectAddToLibrary(menuEl) {
+    if (!menuEl) return;
+
+    // Same idempotency guard pattern as ENGINE_injectAddToFolder.
+    if (menuEl.querySelector(`[${ATTR_CGXUI}="${SkID}-add-to-library"]`)) return;
+
+    // Same anchor as Add-to-Folder so styling, focus rings, and keyboard
+    // navigation match native menu items byte-for-byte.
+    const moveItem = DOM_findMenuItemByText(menuEl, /move to project/i);
+    if (!moveItem) return;
+
+    // Reuse the same chat-identity STATE the existing menu uses. Fallback
+    // capture (current-chat anchor) mirrors ENGINE_injectAddToFolder above.
+    if (!STATE.lastChatHrefForMenu) {
+      const a = D.querySelector(SEL.currentChatAnchor);
+      if (a) STATE.lastChatHrefForMenu = a.getAttribute('href') || '';
+    }
+    const href = STATE.lastChatHrefForMenu;
+    if (!href) return;
+
+    const item = moveItem.cloneNode(true);
+    item.setAttribute(ATTR_CGXUI, `${SkID}-add-to-library`);
+    DOM_setMenuItemLabel(item, 'Add to Library');
+
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleAddToLibraryClick(href).catch((err) => {
+        try { console.warn('[H2O.folders] add-to-library handler threw', err); } catch {}
+        UI_showLibraryToast('Could not add to Library', 'err');
+      });
+    }, true);
+
+    // Order: "Add to Library" goes ABOVE "Add to Folder". If Add-to-Folder
+    // already landed (the callsite invokes us second), insert before it;
+    // otherwise insert right after Move-to-project and Add-to-Folder will
+    // land below us when it runs.
+    const existingAddToFolder = menuEl.querySelector(`[${ATTR_CGXUI}="${SkID}-add-to-folder"]`);
+    if (existingAddToFolder && existingAddToFolder.parentNode === moveItem.parentNode) {
+      existingAddToFolder.parentNode.insertBefore(item, existingAddToFolder);
+    } else {
+      moveItem.parentNode.insertBefore(item, moveItem.nextSibling);
+    }
+  }
+
+  /* Best-effort title resolution for a sidebar row by href. The radix menu
+     fires from a row whose anchor still lives in the sidebar DOM; we read
+     the anchor's text content so the linked Library record gets the same
+     title the user sees in the sidebar. Returns '' on any miss; the
+     downstream LibraryActions.addToLibrary will fall back to document.title
+     or 'Untitled chat'. */
+  function DOM_findTitleForHref(href) {
+    if (!href || typeof href !== 'string') return '';
+    try {
+      const safe = href.replace(/"/g, '\\"');
+      const a = D.querySelector(`a[href="${safe}"]`);
+      if (a) return (a.textContent || '').trim().slice(0, 200);
+    } catch {}
+    return '';
+  }
+
+  /* Add-to-Library click handler. Resolves identity from the menu's href,
+     calls H2O.LibraryActions.addToLibrary, and routes the result to the
+     three documented feedback strings. Never throws. */
+  async function handleAddToLibraryClick(href) {
+    if (!H2O.LibraryActions || typeof H2O.LibraryActions.addToLibrary !== 'function') {
+      try { console.warn('[H2O.folders] Add to Library clicked but H2O.LibraryActions is unavailable'); } catch {}
+      UI_showLibraryToast('Library not ready', 'err');
+      return;
+    }
+    const reg = H2O.ChatRegistry;
+    const chatId = (reg && typeof reg.parseChatIdFromHref === 'function')
+      ? (reg.parseChatIdFromHref(href) || '')
+      : ((String(href).match(/\/c\/([^/?#]+)/) || [])[1] || '');
+    const title = DOM_findTitleForHref(href);
+
+    let result;
+    try {
+      result = await H2O.LibraryActions.addToLibrary({
+        chatId,
+        href,
+        title,
+        source: 'native-sidebar-menu',
+      });
+    } catch (err) {
+      try { console.warn('[H2O.folders] LibraryActions.addToLibrary threw', err); } catch {}
+      UI_showLibraryToast('Could not add to Library', 'err');
+      return;
+    }
+    if (!result || result.ok !== true) {
+      UI_showLibraryToast('Could not add to Library', 'err');
+      return;
+    }
+    if (result.alreadyLinked === true) {
+      UI_showLibraryToast('Already in Library', 'info');
+      return;
+    }
+    UI_showLibraryToast('Added to Library', 'ok');
+  }
+
+  /* Minimal ephemeral toast used only by the Add-to-Library click feedback.
+     No new notification system — a single absolutely-positioned pill that
+     auto-dismisses after 2 seconds. Inline styles keep it independent of
+     CSS file edits. role="status" + aria-live for accessibility. */
+  function UI_showLibraryToast(message, kind) {
+    const k = String(kind || 'info');
+    try {
+      // De-dup: if a previous toast is still on-screen, replace it so a
+      // rapid double-click doesn't stack pills.
+      const existing = D.getElementById('h2o-add-to-library-toast');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+      const toast = D.createElement('div');
+      toast.id = 'h2o-add-to-library-toast';
+      toast.setAttribute(ATTR_CGXUI, `${SkID}-toast`);
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+      const bg = k === 'err' ? '#3b1f1f' : k === 'ok' ? '#1f3b25' : '#262626';
+      const fg = k === 'err' ? '#fca5a5' : k === 'ok' ? '#a7e8b5' : '#e5e5e5';
+      toast.style.cssText = [
+        'position:fixed',
+        'left:50%',
+        'bottom:24px',
+        'transform:translateX(-50%)',
+        'z-index:2147483646',
+        'background:' + bg,
+        'color:' + fg,
+        'padding:8px 14px',
+        'border-radius:10px',
+        'font-size:13px',
+        'font-weight:500',
+        'box-shadow:0 4px 14px rgba(0,0,0,.45)',
+        'pointer-events:none',
+        'transition:opacity .18s ease',
+        'opacity:0',
+        'font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+      ].join(';');
+      toast.textContent = String(message || '');
+      D.body.appendChild(toast);
+      requestAnimationFrame(() => { try { toast.style.opacity = '1'; } catch {} });
+      W.setTimeout(() => {
+        try { toast.style.opacity = '0'; } catch {}
+        W.setTimeout(() => { try { toast.parentNode && toast.parentNode.removeChild(toast); } catch {} }, 250);
+      }, 2000);
+    } catch {
+      // Last-resort fallback: never throw from a toast.
+      try { console.info('[H2O.folders] toast:', message); } catch {}
+    }
   }
 
   /* Minimal viewer (kept feature; storage key preserved as-is) */
@@ -4184,7 +4343,13 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
               const txt = UTIL_normText(menu.innerText || '');
               // lightweight signature check (same as your original intention)
               if (/move to project/i.test(txt) || /pin chat/i.test(txt) || /archive/i.test(txt) || /delete/i.test(txt)) {
+                // Add-to-Folder first, Add-to-Library second. The Add-to-
+                // Library injector then inserts itself BEFORE Add-to-Folder
+                // so the on-screen order is "Add to Library" → "Add to
+                // Folder". See ENGINE_injectAddToLibrary for the insertion
+                // logic.
                 ENGINE_injectAddToFolder(menu);
+                ENGINE_injectAddToLibrary(menu);
               }
             });
           }
@@ -4697,6 +4862,33 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         capture: captured.capture,
         binding,
       };
+    }
+
+    // Phase 4: stamp explicit Add-to-Library / Save-to-Folder provenance
+    // on the ChatRegistry record. The Phase 1 invariant in 0F1g.mergeRecord
+    // already forces state.isLinked=true when isSaved=true && chatId exists,
+    // but without this explicit stamp the in-merge fallback assigns
+    // linkedFrom='backfill:saved' for native chats that reached "saved" via
+    // this menu path. Stamping linkedFrom='save-to-folder' here makes the
+    // provenance accurate for analytics / UI that consume the field.
+    //
+    // Safety: this runs AFTER capture + bind both succeeded, uses the
+    // sticky-on-true public upsert API (no state can regress), is wrapped
+    // in try/catch with the existing DIAG_err logger, and its result is
+    // not used by the function's return value — it is a pure side effect.
+    try {
+      const reg = H2O.ChatRegistry;
+      if (reg && typeof reg.upsertRecord === 'function') {
+        reg.upsertRecord({
+          chatId: cid,
+          href: String(key.href || ''),
+          state: { isSaved: true, isLinked: true },
+          linkedFrom: 'save-to-folder',
+          linkSourceHref: String(key.href || ''),
+        }, { source: String(source || 'save-to-folder') });
+      }
+    } catch (provenanceErr) {
+      DIAG_err('save-and-bind:provenance-stamp', provenanceErr);
     }
 
     return {

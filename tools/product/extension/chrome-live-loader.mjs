@@ -3802,6 +3802,160 @@ export function makeChromeLiveLoaderJs({
     clearStatusLater();
   }
 
+  // ── Cross-surface sync bridge (Studio ↔ native via chrome.storage) ───────
+  // 0F1h runs as a page-world userscript on chatgpt.com and therefore cannot
+  // touch chrome.storage directly. This content-script slice forwards
+  // onChanged events for the two known cross-surface broadcast keys to page
+  // world via window.postMessage, and accepts outbound write requests so the
+  // page can publish its own broadcasts. Strictly additive: only handles
+  // those two keys and the postMessage types listed below.
+  //
+  // Source-filter note: rather than gating on ev.source identity (which
+  // diverges between page main-world and content-script isolated-world
+  // WindowProxy references), we gate on the uniquely-namespaced message-type
+  // strings below. This matches the page-world half (0F1h) and avoids the
+  // cross-world identity check that silently drops legitimate bridge frames.
+  (() => {
+    const MSG_CS_EVENT = "h2o-ext-cs:v1:event";
+    const MSG_CS_WRITE = "h2o-ext-cs:v1:write";
+    const MSG_CS_PROBE = "h2o-ext-cs:v1:probe";
+    const MSG_CS_READY = "h2o-ext-cs:v1:ready";
+    // CustomEvent channel names — dispatched on document (not window)
+    // because document events traverse the DOM event system that IS shared
+    // between page main-world and content-script isolated-world. This is
+    // a transport-redundant backup for environments where the
+    // window.postMessage cross-world hop is unreliable.
+    const EV_PROBE = "h2o-ext-cs:probe";
+    const EV_WRITE = "h2o-ext-cs:write";
+    const EV_READY = "h2o-ext-cs:ready";
+    const EV_EVENT = "h2o-ext-cs:event";
+    const STUDIO_KEY = "h2o:library:cross-surface:broadcast:v1";
+    const NATIVE_KEY = "h2o:library:cross-surface:broadcast:native:v1";
+    const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY]);
+    const DIAG = (typeof TAG === "string" ? TAG : "[H2O cs-bridge]");
+    const dlog = (...args) => { try { console.info(DIAG, "cs-bridge", ...args); } catch (_) {} };
+
+    const hasStorage = !!(chrome && chrome.storage && chrome.storage.local);
+    dlog(hasStorage ? "init" : "init.degraded", hasStorage ? "ready" : "no chrome.storage — probe-only");
+
+    // Send READY through BOTH transports. CustomEvent on document is the
+    // primary fallback because the DOM event system is shared between
+    // worlds; window.postMessage is kept for symmetry with archive bridge.
+    function sendReady(reason) {
+      const detail = { t: Date.now(), reason: String(reason || "") };
+      try { window.postMessage({ type: MSG_CS_READY, ...detail }, "*"); } catch {}
+      try { document.dispatchEvent(new CustomEvent(EV_READY, { detail })); } catch {}
+      dlog("ready.sent", reason || "");
+    }
+
+    function sendEvent(key, newValue, oldValue, opts = {}) {
+      const detail = {
+        key, newValue, oldValue,
+        t: Date.now(),
+        replay: !!opts.replay,
+      };
+      try {
+        window.postMessage({ type: MSG_CS_EVENT, ...detail }, "*");
+      } catch {}
+      try {
+        document.dispatchEvent(new CustomEvent(EV_EVENT, { detail }));
+      } catch {}
+    }
+
+    function handleProbe(srcLabel, attempt) {
+      dlog("probe.recv", srcLabel + " attempt=" + (attempt || 0));
+      sendReady("probe-response");
+      // After the handshake, push the current value of the two broadcast
+      // keys so a page-world consumer that booted after the most recent
+      // chrome.storage write still gets the state. No-op if storage is
+      // unreachable in this context.
+      if (hasStorage) replayCurrentBroadcasts();
+    }
+
+    function handleWrite(srcLabel, key, value) {
+      if (!WATCHED.has(String(key || ""))) return;
+      if (!hasStorage) {
+        dlog("write.skip", srcLabel + " no chrome.storage");
+        return;
+      }
+      try {
+        chrome.storage.local.set({ [key]: value }, () => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            dlog("write.err", String(chrome.runtime.lastError.message || chrome.runtime.lastError));
+          } else {
+            dlog("write.ok", srcLabel + " key=" + key);
+          }
+        });
+      } catch (e) {
+        dlog("write.throw", String(e && (e.message || e)));
+      }
+    }
+
+    function replayCurrentBroadcasts() {
+      if (!hasStorage) return;
+      try {
+        chrome.storage.local.get([STUDIO_KEY, NATIVE_KEY], (items) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            dlog("replay.err", String(chrome.runtime.lastError.message || chrome.runtime.lastError));
+            return;
+          }
+          for (const key of WATCHED) {
+            const value = items && items[key];
+            if (!value) continue;
+            sendEvent(key, value, undefined, { replay: true });
+          }
+        });
+      } catch (e) {
+        dlog("replay.throw", String(e && (e.message || e)));
+      }
+    }
+
+    // Transport 1: window.postMessage. Registered UNCONDITIONALLY so that
+    // even if chrome.storage is briefly unavailable on early document_start
+    // ticks, the probe→READY handshake still completes and 0F1h's
+    // bridgeReady flag flips true.
+    window.addEventListener("message", (ev) => {
+      const data = ev && ev.data;
+      if (!data || typeof data !== "object") return;
+      const type = data.type;
+      if (type === MSG_CS_PROBE) { handleProbe("postMessage", data.attempt); return; }
+      if (type === MSG_CS_WRITE) { handleWrite("postMessage", data.key, data.value); return; }
+    }, false);
+
+    // Transport 2: CustomEvent on document. Survives some isolated-world
+    // edge cases where window.postMessage cross-world hops are dropped.
+    document.addEventListener(EV_PROBE, (ev) => {
+      handleProbe("custom-event", ev && ev.detail && ev.detail.attempt);
+    }, false);
+    document.addEventListener(EV_WRITE, (ev) => {
+      const d = (ev && ev.detail) || {};
+      handleWrite("custom-event", d.key, d.value);
+    }, false);
+
+    if (hasStorage) {
+      try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area !== "local" || !changes) return;
+          for (const key of Object.keys(changes)) {
+            if (!WATCHED.has(key)) continue;
+            const ch = changes[key];
+            sendEvent(key, ch && ch.newValue, ch && ch.oldValue);
+          }
+        });
+      } catch (e) {
+        dlog("onChanged.bind.err", String(e && (e.message || e)));
+      }
+    }
+
+    // Best-effort unsolicited READY beacons. They cover the corner case
+    // where 0F1h registers its listener AFTER content-script init but
+    // BEFORE 0F1h's own probe fires — the page-world listener catches
+    // one of the beacons and flips bridgeReady=true with no probe needed.
+    sendReady("init");
+    setTimeout(() => sendReady("init+200"), 200);
+    setTimeout(() => sendReady("init+800"), 800);
+  })();
+
   boot().catch((e) => {
     err("boot fatal", e);
     setStatus(STATUS_LABEL + ": boot fatal (check console)", true);

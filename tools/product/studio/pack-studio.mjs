@@ -50,6 +50,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // the browser silently 404s the <script> tag and H2O.LibraryCore/etc. remain
   // undefined. Keep this list in lockstep with studio.html.
   "S0F0a. 🎬 Library Surface Host - Studio.js",
+  // Phase 2A — shared registry core. Must load before any Library feature
+  // owner so H2O.Library.RegistryCore is available when S0F1g sanitizes its
+  // first record. Same index position in the OUT list.
+  "S0F0c. 🎬 Library Registry Core - Studio.js",
+  // Phase 2B — shared library-index core. Must load before S0F1c so the
+  // shared module is available when Library Index hydrates/normalizes its
+  // first row. Same index position in the OUT list.
+  "S0F0d. 🎬 Library Index Core - Studio.js",
   "S0F1a. 🎬 Library Core - Studio.js",
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
@@ -63,6 +71,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0F1d. 🎬 Library Insights - Studio.js",
   "S0F1f. 🎬 Library Maintenance - Studio.js",
   "S0F1h. 🎬 Library Sync - Studio.js",
+  // Phase 1 — canonical services + H2O.flags. Loads after every feature owner
+  // so canonical aliases resolve to real impls on the first registration pass.
+  "S0F1k. 🎬 Library Canonical Services - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
@@ -111,7 +122,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Library subsystem (Studio). Out filenames are identical to source filenames —
   // studio.html references them by the same name and copyFileSync preserves them.
+  // Keep this list in lockstep with ARCHIVE_WORKBENCH_SOURCE_FILES above
+  // (the syncArchiveWorkbenchToOut copy is index-paired).
   "S0F0a. 🎬 Library Surface Host - Studio.js",
+  "S0F0c. 🎬 Library Registry Core - Studio.js",
+  "S0F0d. 🎬 Library Index Core - Studio.js",
   "S0F1a. 🎬 Library Core - Studio.js",
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
@@ -125,6 +140,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F1d. 🎬 Library Insights - Studio.js",
   "S0F1f. 🎬 Library Maintenance - Studio.js",
   "S0F1h. 🎬 Library Sync - Studio.js",
+  "S0F1k. 🎬 Library Canonical Services - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",

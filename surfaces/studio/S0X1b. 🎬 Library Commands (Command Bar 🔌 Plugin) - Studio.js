@@ -205,6 +205,52 @@
       },
     });
 
+    // ── Group: Library Actions (Add to Library / Save to Folder / open) ──────
+    // Thin wrappers over H2O.LibraryActions so the same business logic is
+    // reachable from the Command Bar, the native menu (Phase 3), and any
+    // future Studio row action. Each command degrades to a console warning
+    // if H2O.LibraryActions is not yet registered (e.g. before 0F1j boots).
+    cb.registerGroup('library-actions', { label: 'Library Actions', icon: '🎯' });
+    const getActions = () => H2O.LibraryActions || null;
+    cb.registerCommand('library-actions', {
+      id: 'diagnose',
+      label: 'Diagnose Library Actions',
+      hint: 'Counts, last add/save/open, errors',
+      fn: () => {
+        const a = getActions();
+        if (!a) { try { console.warn('[H2O.LibraryActions] not yet loaded'); } catch {} return null; }
+        const out = a.diagnose?.();
+        try { console.info('[H2O.LibraryActions] diagnose →', out); } catch {}
+        return out;
+      },
+    });
+    cb.registerCommand('library-actions', {
+      id: 'open-linked-chat',
+      label: 'Open original ChatGPT chat for current Library row',
+      hint: 'Studio-side: requires a focused Library row',
+      fn: () => {
+        const a = getActions();
+        if (!a) return null;
+        // Best-effort: use the focused/active row in the Library page if any,
+        // otherwise fall back to the route id (e.g. /library/folder/<id>
+        // does not carry a chatId, so this is a no-op in that case).
+        const active = document.querySelector('.wbChatRow[data-chat-id]:focus, .wbChatRow[data-chat-id]:hover')
+                    || document.querySelector('.wbChatRow[data-chat-id]');
+        const chatId = active?.dataset?.chatId || '';
+        if (!chatId) {
+          try { console.info('[H2O.LibraryActions] open-linked-chat: no chat row available'); } catch {}
+          return false;
+        }
+        return a.openLinkedChat?.(chatId);
+      },
+    });
+    // Note: addToLibrary / saveToFolder are inherently native-side actions
+    // (they require the chatgpt.com archive bridge to capture transcripts).
+    // We expose only diagnose + openLinkedChat here on the Studio Command
+    // Bar; native-side users have the explicit menu items for the write
+    // paths. A Studio→native RPC for the write paths is deliberately
+    // deferred per the Phase 2 contract.
+
     // ── Group: Navigation (jump to a Library page tab) ───────────────────────
     cb.registerGroup('library-navigation', { label: 'Open Library Page', icon: '🧭' });
     cb.registerCommand('library-navigation', { id: 'dashboard', label: 'Open Dashboard',  hint: '#/library/dashboard',  fn: nav('dashboard') });

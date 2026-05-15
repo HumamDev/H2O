@@ -69,71 +69,20 @@
   }
   function getChatRegistry() { return H2O.ChatRegistry || null; }
 
+  // Phase 2B — pure row normalize / facet / dedupe / view logic lives in the
+  // shared library-index-core (loaded by S0F0d before this script). Studio
+  // and native compute byte-identical rows + facets for identical inputs.
+  function ixCore() { return H2O.Library?.LibraryIndexCore || null; }
+
   function normalizeRow(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    const chatId = String(raw.chatId || raw.id || '').trim();
-    if (!chatId) return null;
-
-    // Category metadata may be flat or nested. Archive snapshots commonly emit
-    // `raw.category.primaryCategoryId` / `primaryCategoryName`, while other
-    // upstream paths use the flat `raw.categoryId` / `raw.categoryName` or
-    // `raw.primaryCategoryId`. Read in priority order; never throw on a missing
-    // nested object (raw.category may be undefined).
-    const catObj = (raw.category && typeof raw.category === 'object') ? raw.category : null;
-    const categoryId = String(
-      raw.categoryId
-      || catObj?.primaryCategoryId
-      || raw.primaryCategoryId
-      || catObj?.categoryId
-      || catObj?.id
-      || ''
-    ).trim();
-    const categoryName = String(
-      raw.categoryName
-      || catObj?.primaryCategoryName
-      || catObj?.name
-      || catObj?.label
-      || ''
-    ).trim();
-
-    // Resolve snapshotId from the archive payload. Different archive ops have
-    // used different field names across versions; we accept any of these. The
-    // value flows into the Library page ChatRow's href (#/read/<id>) and the
-    // Studio reader hash-route — same path studio.js's saved-list rows use.
-    const snapshotId = String(
-      raw.snapshotId
-      || raw.snapId
-      || raw.snapshot_id
-      || raw.snapshot?.id
-      || raw.snapshot?.snapshotId
-      || raw.meta?.snapshotId
-      || ''
-    ).trim();
-
-    return {
-      chatId,
-      snapshotId,
-      title: String(raw.title || raw.name || raw.chatTitle || '').trim(),
-      projectId: String(raw.projectId || '').trim(),
-      folderId: String(raw.folderId || raw.folder || '').trim(),
-      folderName: String(raw.folderName || '').trim(),
-      categoryId,
-      categoryName,
-      view: String(raw.view || raw.state || 'saved').toLowerCase(),
-      tags: Array.isArray(raw.tags) ? raw.tags.slice() : [],
-      labels: Array.isArray(raw.labels) ? raw.labels.slice() : [],
-      snapshotCount: Number(raw.snapshotCount || raw.snapshots?.length || 1),
-      capturedAt: String(raw.capturedAt || raw.updatedAt || raw.lastUpdated || ''),
-      updatedAt: String(raw.updatedAt || raw.capturedAt || ''),
-      messageCount: Number(raw.messageCount || raw.turns || 0),
-      pinned: !!raw.pinned,
-      archived: !!raw.archived,
-      raw,
-    };
+    const c = ixCore();
+    if (c) return c.normalizeRowStudio(raw);
+    return null;
   }
 
   function rebuildFacets() {
-    const f = state.facets = {
+    const c = ixCore();
+    state.facets = c ? c.buildFacetsStudio(state.rows) : {
       byView: Object.create(null),
       byFolder: Object.create(null),
       byCategory: Object.create(null),
@@ -141,19 +90,6 @@
       byLabel: Object.create(null),
       byTag: Object.create(null),
     };
-    const push = (bucket, key, chatId) => {
-      const k = String(key || '').trim();
-      if (!k) return;
-      (bucket[k] = bucket[k] || []).push(chatId);
-    };
-    for (const row of state.rows) {
-      push(f.byView, row.view, row.chatId);
-      if (row.folderId) push(f.byFolder, row.folderId, row.chatId);
-      if (row.categoryId) push(f.byCategory, row.categoryId, row.chatId);
-      if (row.projectId) push(f.byProject, row.projectId, row.chatId);
-      for (const lab of row.labels) push(f.byLabel, lab, row.chatId);
-      for (const tag of row.tags) push(f.byTag, tag, row.chatId);
-    }
   }
 
   function emitUpdated(reason) {
@@ -197,6 +133,43 @@
     } catch (e) { err('hydrate', e); }
   }
 
+  // Native Chat Registry persists to chatgpt.com's window.localStorage
+  // (key h2o:library:chat-registry:v1), which is in a DIFFERENT origin
+  // from Studio's chrome-extension://… page and therefore unreachable.
+  // The only viable cross-origin channel is the existing cross-surface
+  // broadcast key, which the bridge writes via the loader.js content-script
+  // and which Studio (chrome-extension origin) can read with direct
+  // chrome.storage.local.get. Native 0F1h now includes a projected
+  // linked-only snapshot in the broadcast payload (`linkedRecords`).
+  // We read that snapshot here.
+  const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
+
+  async function readNativeChatRegistryRecords() {
+    try {
+      if (!W.chrome || !chrome.storage || !chrome.storage.local) return [];
+      const payload = await new Promise((resolve) => {
+        try {
+          chrome.storage.local.get(NATIVE_BROADCAST_KEY, (items) => {
+            if (chrome.runtime && chrome.runtime.lastError) { resolve(null); return; }
+            resolve(items && items[NATIVE_BROADCAST_KEY]);
+          });
+        } catch { resolve(null); }
+      });
+      if (!payload || typeof payload !== 'object') return [];
+      const linked = payload.linkedRecords;
+      return Array.isArray(linked) ? linked.filter((r) => r && typeof r === 'object') : [];
+    } catch (e) { err('readNativeChatRegistryRecords', e); return []; }
+  }
+
+  // Linked-only records live in Chat Registry but have no archive snapshot.
+  // Delegated to the shared core; the projection enforces the strict filter
+  // (isLinked AND !isSaved AND !isDeleted) and sets view='linked' so the
+  // Saved/Pinned/Archive tabs naturally exclude them.
+  function normalizeLinkedOnlyRegistryRow(rec) {
+    const c = ixCore();
+    return c ? c.normalizeLinkedOnlyProjection(rec) : null;
+  }
+
   async function refreshFromArchive(reason = 'manual') {
     if (state.refreshInFlight) return state.refreshInFlight;
     const chatList = getChatList();
@@ -208,20 +181,66 @@
       try {
         const raw = await chatList.listAll();
         const list = Array.isArray(raw) ? raw : [];
-        state.rows = list.map(normalizeRow).filter(Boolean);
+        const archiveRows = list.map(normalizeRow).filter(Boolean);
+
+        // Pull linked-only records from Chat Registry. These are records the
+        // user explicitly added via "Add to Library" on the native side but
+        // never captured as a transcript, so the archive doesn't know about
+        // them. Dedup by chatId — archive wins for any record present in
+        // both (the archive carries snapshotId; the registry carries link
+        // provenance only).
+        //
+        // Source priority:
+        //   1. Native Chat Registry via chrome.storage (canonical for the
+        //      Phase 1 record shape with state.isLinked / linkedAt / …).
+        //      Studio's own H2O.ChatRegistry uses a different storage key
+        //      and a simpler shape, so the native key is the source of
+        //      truth for linked-only records.
+        //   2. Studio H2O.ChatRegistry as a defensive fallback in case the
+        //      two registries are ever unified (then listRecords appears).
+        let linkedRows = [];
+        try {
+          const archiveIds = new Set(archiveRows.map((r) => r.chatId));
+          const nativeRecords = await readNativeChatRegistryRecords();
+          for (const rec of nativeRecords) {
+            if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
+            const row = normalizeLinkedOnlyRegistryRow(rec);
+            if (row) linkedRows.push(row);
+          }
+          // Fallback: if native key is empty (e.g. fresh install pre-reload)
+          // try the Studio-side registry's listRecords-or-listAll. Filters
+          // are best-effort because the Studio shape doesn't carry state.
+          if (linkedRows.length === 0) {
+            const reg = getChatRegistry();
+            const list = reg && (typeof reg.listRecords === 'function'
+              ? await reg.listRecords({ includeDeleted: false })
+              : (typeof reg.listActive === 'function' ? await reg.listActive() : []));
+            for (const rec of (Array.isArray(list) ? list : [])) {
+              if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
+              const row = normalizeLinkedOnlyRegistryRow(rec);
+              if (row) linkedRows.push(row);
+            }
+          }
+        } catch (e) { err('refresh.linked-only', e); }
+
+        state.rows = archiveRows.concat(linkedRows);
         state.byChatId = Object.create(null);
         for (const r of state.rows) state.byChatId[r.chatId] = r;
         rebuildFacets();
         state.lastScanTs = Date.now();
         state.lastScanReason = String(reason);
-        state.lastSource = 'studio-archive';
-        step('refresh.ok', `${state.rows.length}:${reason}`);
+        state.lastSource = linkedRows.length
+          ? `studio-archive+registry(${linkedRows.length})`
+          : 'studio-archive';
+        step('refresh.ok', `${archiveRows.length}+${linkedRows.length}:${reason}`);
 
-        // Mirror into Chat Registry so it has fresh metadata for all chats.
+        // Mirror archive rows into Chat Registry so it has fresh metadata
+        // for all chats. Skip linked rows because they originated there
+        // and we'd just re-stamp them with empty fields.
         try {
           const reg = getChatRegistry();
           if (reg && typeof reg.upsertMany === 'function') {
-            await reg.upsertMany(state.rows.map((r) => ({
+            await reg.upsertMany(archiveRows.map((r) => ({
               chatId: r.chatId, title: r.title, projectId: r.projectId,
               folderId: r.folderId, snapshotCount: r.snapshotCount,
               lastSeenTs: Date.now(),
@@ -289,16 +308,9 @@
     },
 
     counts() {
-      const f = state.facets;
-      return {
-        total: state.rows.length,
-        views: Object.fromEntries(Object.entries(f.byView).map(([k, v]) => [k, v.length])),
-        folders: Object.fromEntries(Object.entries(f.byFolder).map(([k, v]) => [k, v.length])),
-        categories: Object.fromEntries(Object.entries(f.byCategory).map(([k, v]) => [k, v.length])),
-        projects: Object.fromEntries(Object.entries(f.byProject).map(([k, v]) => [k, v.length])),
-        labels: Object.fromEntries(Object.entries(f.byLabel).map(([k, v]) => [k, v.length])),
-        tags: Object.fromEntries(Object.entries(f.byTag).map(([k, v]) => [k, v.length])),
-      };
+      const c = ixCore();
+      if (c) return c.countsFromFacetsStudio(state.facets, state.rows.length);
+      return { total: state.rows.length, views: {}, folders: {}, categories: {}, projects: {}, labels: {}, tags: {} };
     },
 
     async refresh(reason) { return refreshFromArchive(reason || 'api'); },

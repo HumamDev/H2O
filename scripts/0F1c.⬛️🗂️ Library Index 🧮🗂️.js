@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0f1c.library_index
 // @name               0F1c.⬛️🗂️ Library Index 🧮🗂️
 // @namespace          H2O.Premium.CGX.library_index
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';
@@ -192,6 +192,7 @@
       lastRefreshAt: 0,
       lastSourceStatus: null,
       lastNativeRecentsDiag: null,
+      lastNativeProjectChatsDiag: null,
       lastKnownRegistryCount: 0,
       scheduledRefreshTimer: 0,
       listenersBound: false,
@@ -212,6 +213,12 @@
       sidebarRecentsScrollRootSelector: '',
       sidebarRecentsObserverRootSelector: '',
       sidebarRecentsLastScanDiag: null,
+      sidebarProjectChatsScanTimer: 0,
+      sidebarProjectChatsLastSignature: '',
+      sidebarProjectChatsLastScanAt: 0,
+      sidebarProjectChatsLastScanReason: '',
+      sidebarProjectChatsLastRegisteredRows: 0,
+      sidebarProjectChatsLastRegistryDelta: 0,
       clean: { timers: new Set(), listeners: new Set() },
     });
     state.clean = state.clean || { timers: new Set(), listeners: new Set() };
@@ -239,6 +246,30 @@
     state.scanLedgerCache = state.scanLedgerCache || null;
     state.ledgerFlushTimer = state.ledgerFlushTimer || 0;
     state.activeScanBatch = state.activeScanBatch || null;
+
+    // Phase 2 (Chat Registry integration): tracks our soft coupling with H2O.ChatRegistry.
+    // Library Index remains the discovery/index/build-model layer; the registry receives
+    // mirrored rows as the canonical truth layer for forward consumers. This object holds
+    // the diagnostic counters surfaced by getChatRegistrySyncStatus() — it is NOT used as
+    // an authoritative cache and never gates the existing build/refresh path.
+    state.chatRegistrySync = state.chatRegistrySync || {
+      lastSeedAt: 0,
+      lastSeedReason: '',
+      lastSeedSourceRows: 0,
+      lastSeedMappedRows: 0,
+      lastSeedUpsertedRows: 0,
+      lastSeedSkipped: 0,
+      lastSeedDurationMs: 0,
+      lastSeedError: null,
+      lastRecentsMirrorAt: 0,
+      lastRecentsMirrorRows: 0,
+      lastRecentsMirrorError: null,
+      lastRegistryEventAt: 0,
+      lastRegistryEventSource: '',
+      lastRegistryEventDebouncedRefreshAt: 0,
+      registryAvailable: false,
+    };
+    state.chatRegistryRefreshTimer = state.chatRegistryRefreshTimer || 0;
 
     const storage = {
       getJSON(key, fallback = null) {
@@ -287,301 +318,125 @@
     function tagsApi() { return ownerOrService('tags', H2O.Tags || null); }
     function labelsApi() { return ownerOrService('labels', H2O.Labels || null); }
 
-    function normText(raw = '') {
-      return String(raw || '').replace(/\u00a0/g, ' ').trim().replace(/\s+/g, ' ');
-    }
+    /* \u2500\u2500\u2500 Phase 2B: shared pure module \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+     *
+     * Pure row normalize / merge / dedupe / view derive / facet / count /
+     * filter / sort / bucket helpers live in shared/library/library-index-core.js
+     * (loaded into this surface by scripts/0F0d.). We delegate to it instead
+     * of carrying our own copy of the logic so native and Studio compute
+     * byte-identical merged rows + facets + counts for identical inputs.
+     *
+     * The local wrappers preserve the previous in-file names so callers
+     * inside this file (and any external consumers reaching for the same
+     * names) don't change. If the shared module is unavailable for any
+     * reason, the wrappers fall back to safe defaults \u2014 boot still succeeds. */
+    function ixCore() { return H2O.Library?.LibraryIndexCore || null; }
 
+    function normText(raw = '') {
+      const c = ixCore();
+      return c ? c.normText(raw) : String(raw || '').trim();
+    }
     function slug(raw = '') {
-      return normText(raw).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100);
+      const c = ixCore();
+      return c ? c.slug(raw) : String(raw || '').toLowerCase().trim();
     }
 
     function uniqueStrings(rows) {
-      const out = [];
-      const seen = new Set();
-      (Array.isArray(rows) ? rows : []).forEach((row) => {
-        const value = normText(row);
-        const key = value.toLowerCase();
-        if (!value || seen.has(key)) return;
-        seen.add(key);
-        out.push(value);
-      });
-      return out;
+      const c = ixCore();
+      return c ? c.uniqueStrings(rows) : (Array.isArray(rows) ? rows.slice() : []);
     }
-
     function normalizeChatId(raw = '') {
-      const value = String(raw || '').trim();
-      if (!value) return '';
-      const hrefMatch = value.match(/\/c\/([a-z0-9-]+)/i);
-      if (hrefMatch) return hrefMatch[1];
-      return value.replace(/^chat:/i, '').trim();
+      const c = ixCore();
+      return c ? c.normalizeChatId(raw) : String(raw || '').trim();
     }
-
     function parseChatIdFromHref(href = '') {
-      const match = String(href || '').match(/\/c\/([a-z0-9-]+)/i);
-      return match ? match[1] : '';
+      const c = ixCore();
+      return c ? c.parseChatIdFromHref(href) : '';
     }
-
     function hrefForChatId(chatIdRaw = '') {
-      const chatId = normalizeChatId(chatIdRaw);
-      if (!chatId || /^imported[-_:]/i.test(chatId)) return '';
-      return `/c/${encodeURIComponent(chatId)}`;
+      const c = ixCore();
+      return c ? c.hrefForChatId(chatIdRaw) : '';
     }
-
     function dateMs(value) {
-      const raw = String(value || '').trim();
-      if (!raw) return 0;
-      const n = Number(raw);
-      if (Number.isFinite(n) && n > 0) return n;
-      const parsed = Date.parse(raw);
-      return Number.isFinite(parsed) ? parsed : 0;
+      const c = ixCore();
+      return c ? c.dateMs(value) : 0;
     }
-
     function isoOrEmpty(value) {
-      const ms = dateMs(value);
-      if (!ms) return '';
-      try { return new Date(ms).toISOString(); } catch { return ''; }
+      const c = ixCore();
+      return c ? c.isoOrEmpty(value) : '';
     }
-
     function pickNewerDate(a, b) {
-      const ma = dateMs(a);
-      const mb = dateMs(b);
-      if (!ma) return b || '';
-      if (!mb) return a || '';
-      return ma >= mb ? a : b;
+      const c = ixCore();
+      return c ? c.pickNewerDate(a, b) : (a || b || '');
     }
-
-    // Phase 2: union of recent scan-batch ids, newest-first, capped. The merge prefers the
-    // `next` list (more recent batch) at the head — it's the "latest incoming wins" half of
-    // the ordering, while `prev` items fill the tail in their original order.
+    function toNonNegativeInt(value, fallback = 0) {
+      const c = ixCore();
+      return c ? c.toNonNegativeInt(value, fallback) : fallback;
+    }
+    function firstCount(src, keys = []) {
+      const c = ixCore();
+      return c ? c.firstCount(src, keys) : 0;
+    }
+    function deriveTurnCounts(src = {}) {
+      const c = ixCore();
+      return c ? c.deriveTurnCounts(src) : { turnCount: 0, answerCount: 0, userTurnCount: 0 };
+    }
     function mergeBatchHistory(prev, next) {
-      const out = [];
-      const seen = new Set();
-      const push = (s) => {
-        const v = normText(s);
-        if (!v || seen.has(v)) return;
-        seen.add(v);
-        out.push(v);
-      };
-      (Array.isArray(next) ? next : []).forEach(push);
-      (Array.isArray(prev) ? prev : []).forEach(push);
-      return out.slice(0, REGISTRY_BATCH_HISTORY_LIMIT);
+      const c = ixCore();
+      return c ? c.mergeBatchHistory(prev, next) : [];
     }
-
-    function compareDateDesc(a, b, field = 'sortAt') {
-      const da = dateMs(readDateField(a, field));
-      const db = dateMs(readDateField(b, field));
-      if (da !== db) return db - da;
-      return 0;
+    function compareDateDesc(a, b, field = 'createdAt') {
+      const c = ixCore();
+      return c ? c.compareDateDesc(a, b, field) : 0;
     }
-
-    function readDateField(row, field = 'sortAt') {
-      const f = String(field || 'sortAt');
-      if (f === 'best' || f === 'sortAt') return row?.sortAt || row?.updatedAt || row?.savedAt || row?.lastSeenAt || row?.createdAt || row?.observedAt || '';
-      return row?.[f] || row?.dates?.[f] || '';
+    function readDateField(row, field = 'createdAt') {
+      const c = ixCore();
+      return c ? c.readDateField(row, field) : '';
     }
-
     function sourceRank(source) {
-      const key = String(source || '').trim().toLowerCase();
-      return SOURCE_RANK[key] || SOURCE_RANK.unknown;
+      const c = ixCore();
+      return c ? c.sourceRank(source) : 0;
     }
-
     function normalizeSource(source = '') {
-      const s = String(source || '').trim().toLowerCase();
-      if (!s) return 'unknown';
-      if (/archive|workbench|snapshot|capture|saved/.test(s)) return 'archive';
-      if (/import/.test(s)) return 'imported';
-      if (/recent|recents|native/.test(s)) return 'recents';
-      if (/\bindexed?\b|registry|discover/.test(s)) return 'indexed';
-      if (/label/.test(s)) return s === 'labels-binding' ? 'labels-binding' : 'labels';
-      if (/categor/.test(s)) return 'categories';
-      if (/folder/.test(s)) return 'folders';
-      if (/project/.test(s)) return 'projects';
-      if (/tag/.test(s)) return 'tags';
-      return s;
+      const c = ixCore();
+      return c ? c.normalizeSource(source) : 'unknown';
     }
-
     function mergeSourceArrays(a = [], b = []) {
-      const out = [];
-      const seen = new Set();
-      [...(Array.isArray(a) ? a : String(a || '').split('+')), ...(Array.isArray(b) ? b : String(b || '').split('+'))].forEach((source) => {
-        const src = normalizeSource(source);
-        if (!src || src === 'unknown' || seen.has(src)) return;
-        seen.add(src);
-        out.push(src);
-      });
-      if (out.includes('indexed') && out.some((src) => src && src !== 'indexed')) {
-        return out.filter((src) => src !== 'indexed').sort((x, y) => sourceRank(y) - sourceRank(x) || x.localeCompare(y));
-      }
-      return out.sort((x, y) => sourceRank(y) - sourceRank(x) || x.localeCompare(y));
+      const c = ixCore();
+      return c ? c.mergeSourceArrays(a, b) : [];
     }
-
     function bestSource(sources = []) {
-      const rows = mergeSourceArrays(sources);
-      return rows[0] || 'unknown';
+      const c = ixCore();
+      return c ? c.bestSource(sources) : 'unknown';
+    }
+    function sourceHintsForRow(src = {}, explicitSource = '') {
+      const c = ixCore();
+      return c ? c.sourceHintsForRow(src, explicitSource) : [];
     }
 
+    // Native row normalize + merge — delegated to shared core. The bodies
+    // previously inlined here are now in shared/library/library-index-core.js
+    // (loaded by 0F0d); both surfaces compute byte-identical rows for the
+    // same inputs.
     function normalizeChatRow(row, source = '', extra = {}) {
+      const c = ixCore();
+      if (c) return c.normalizeChatRow(row, source, extra);
+      // Defensive fallback — should never run because 0F0d loads before 0F1c.
       const src = row && typeof row === 'object' ? row : {};
-      const normalizedSource = normalizeSource(source || src.source || src.origin || src.originSource || '');
-      const href = normText(src.href || src.url || src.path || src.link || '');
-      const chatId = normalizeChatId(src.chatId || src.conversationId || src.id || parseChatIdFromHref(href));
-      const title = normText(src.title || src.name || src.label || src.excerpt || src.summary || src.chatTitle || chatId || href || 'Untitled chat').slice(0, 220);
-      const createdAt = isoOrEmpty(src.createdAt || src.createTime || src.create_time || src.created || '');
-      const updatedAt = isoOrEmpty(src.updatedAt || src.lastActivityAt || src.updateTime || src.update_time || src.modifiedAt || src.savedAt || src.capturedAt || '');
-      const savedAt = isoOrEmpty(src.savedAt || src.capturedAt || src.snapshotCapturedAt || src.archivedAt || '');
-      const lastSeenAt = isoOrEmpty(src.lastSeenAt || src.lastViewedAt || '');
-      const observedAt = isoOrEmpty(extra.observedAt || '');
-      const id = chatId || href || `title:${slug(title)}`;
-      const isSaved = normalizedSource === 'archive' || normalizedSource === 'saved' || normalizedSource === 'imported' || !!src.snapshotId || !!src.capturedAt || src.isSavedHint === true;
-      const isRecent = normalizedSource === 'recents';
-      return {
-        id,
-        chatId,
-        title,
-        href: href || hrefForChatId(chatId),
-        sources: normalizedSource === 'unknown' ? [] : [normalizedSource],
-        source: normalizedSource,
-        isSaved,
-        isRecent,
-        isImported: normalizedSource === 'imported' || /^imported[-_:]/i.test(chatId) || src.isImportedHint === true,
-        isArchived: src.archived === true || src.isArchived === true || src.is_archived === true,
-        isPinned: src.pinned === true || src.isPinned === true || !!src.pinned_time,
-        createdAt,
-        updatedAt,
-        savedAt,
-        lastSeenAt,
-        observedAt,
-        sortAt: pickNewerDate(updatedAt, pickNewerDate(savedAt, pickNewerDate(lastSeenAt, observedAt))),
-        nativeOrder: Number.isFinite(Number(src.nativeOrder ?? extra.nativeOrder)) ? Number(src.nativeOrder ?? extra.nativeOrder) : null,
-        nativeRecentsMode: normText(src.nativeRecentsMode || extra.nativeRecentsMode || ''),
-        nativeRecentsSource: normText(src.nativeRecentsSource || extra.nativeRecentsSource || ''),
-        folderIds: [],
-        folderNames: [],
-        labels: [],
-        labelIds: [],
-        labelNames: [],
-        categories: [],
-        categoryIds: [],
-        categoryNames: [],
-        projectId: normText(src.projectId || src.nativeProjectId || src.gizmoId || src.project?.id || ''),
-        projectName: normText(src.projectName || src.nativeProjectName || src.gizmoName || src.project?.title || src.project?.name || ''),
-        tags: [],
-        tagIds: [],
-        tagNames: [],
-        keywords: uniqueStrings(Array.isArray(src.keywords) ? src.keywords : []),
-        confidence: isSaved ? 'high' : isRecent ? 'medium' : 'low',
-        evidence: normalizedSource === 'unknown' ? [] : [{ source: normalizedSource, at: Date.now() }],
-        // Phase 3 fix: preserve durability fields through normalization. Without these,
-        // compactKnownRegistryRows → mergeChatRecord(normalizeChatRow(prev), normalizeChatRow(row))
-        // strips the four fields before the merge runs, causing every persisted row to come
-        // out with empty/false durability — even when the input rows were correctly stamped
-        // by commitScanBatch. The Phase 2 merge rules in mergeChatRecord can only apply
-        // when these fields actually reach it.
-        firstSeenAt: isoOrEmpty(src.firstSeenAt || ''),
-        scanBatchId: normText(src.scanBatchId || ''),
-        visibleInLastScan: !!src.visibleInLastScan,
-        batchHistory: Array.isArray(src.batchHistory)
-          ? uniqueStrings(src.batchHistory.map((s) => normText(s))).slice(0, REGISTRY_BATCH_HISTORY_LIMIT)
-          : [],
-      };
+      return { id: '', chatId: String(src.chatId || ''), title: String(src.title || ''), href: '', sources: [], source: 'unknown', isSaved: false, isRecent: false, isImported: false, isArchived: false, isPinned: false, createdAt: '', updatedAt: '', lastInteractionAt: '', turnCount: 0, answerCount: 0, userTurnCount: 0, savedAt: '', lastSeenAt: '', observedAt: '', sortAt: '', nativeOrder: null, nativeRecentsMode: '', nativeRecentsSource: '', folderIds: [], folderNames: [], labels: [], labelIds: [], labelNames: [], categories: [], categoryIds: [], categoryNames: [], projectId: '', projectName: '', tags: [], tagIds: [], tagNames: [], keywords: [], confidence: 'low', evidence: [], firstSeenAt: '', scanBatchId: '', visibleInLastScan: false, batchHistory: [] };
     }
-
     function mergeObjectsById(a = [], b = [], idKeys = ['id'], labelKeys = ['label', 'name', 'title']) {
-      const map = new Map();
-      const put = (raw) => {
-        const src = raw && typeof raw === 'object' ? raw : { label: raw };
-        const id = normText(idKeys.map((k) => src[k]).find(Boolean) || slug(labelKeys.map((k) => src[k]).find(Boolean) || ''));
-        const label = normText(labelKeys.map((k) => src[k]).find(Boolean) || id);
-        if (!id && !label) return;
-        const key = (id || label).toLowerCase();
-        const prev = map.get(key) || {};
-        map.set(key, { ...prev, ...src, id: id || prev.id || slug(label), label: label || prev.label || id });
-      };
-      (Array.isArray(a) ? a : []).forEach(put);
-      (Array.isArray(b) ? b : []).forEach(put);
-      return Array.from(map.values());
+      const c = ixCore();
+      return c ? c.mergeObjectsById(a, b, idKeys, labelKeys) : [];
     }
-
     function mergeChatRecord(prevRaw, nextRaw) {
-      const prev = prevRaw && typeof prevRaw === 'object' ? prevRaw : {};
-      const next = nextRaw && typeof nextRaw === 'object' ? nextRaw : {};
-      const sources = mergeSourceArrays(prev.sources || prev.source, next.sources || next.source);
-      const merged = {
-        ...prev,
-        ...next,
-        id: prev.id || next.id,
-        chatId: prev.chatId || next.chatId || '',
-        href: prev.href || next.href || '',
-        title: chooseBetterTitle(prev.title, next.title, prev.id || next.id),
-        sources,
-        source: bestSource(sources),
-        isSaved: !!(prev.isSaved || next.isSaved),
-        isRecent: !!(prev.isRecent || next.isRecent),
-        isImported: !!(prev.isImported || next.isImported),
-        isArchived: !!(prev.isArchived || next.isArchived),
-        isPinned: !!(prev.isPinned || next.isPinned),
-        createdAt: pickOlderDate(prev.createdAt, next.createdAt),
-        updatedAt: pickNewerDate(prev.updatedAt, next.updatedAt),
-        savedAt: pickNewerDate(prev.savedAt, next.savedAt),
-        lastSeenAt: pickNewerDate(prev.lastSeenAt, next.lastSeenAt),
-        observedAt: pickNewerDate(prev.observedAt, next.observedAt),
-        nativeRecentsMode: prev.nativeRecentsMode || next.nativeRecentsMode || '',
-        nativeRecentsSource: prev.nativeRecentsSource || next.nativeRecentsSource || '',
-        folderIds: uniqueStrings([...(prev.folderIds || []), ...(next.folderIds || [])]),
-        folderNames: uniqueStrings([...(prev.folderNames || []), ...(next.folderNames || [])]),
-        labels: mergeObjectsById(prev.labels, next.labels, ['key', 'id'], ['label', 'name']),
-        categories: mergeObjectsById(prev.categories, next.categories, ['id'], ['name', 'label']),
-        tags: mergeObjectsById(prev.tags, next.tags, ['id'], ['label', 'name']),
-        keywords: uniqueStrings([...(prev.keywords || []), ...(next.keywords || [])]),
-        evidence: [...(Array.isArray(prev.evidence) ? prev.evidence : []), ...(Array.isArray(next.evidence) ? next.evidence : [])].slice(-12),
-        confidence: higherConfidence(prev.confidence, next.confidence),
-      };
-      merged.labelIds = uniqueStrings(merged.labels.map((item) => item.key || item.id || item.label));
-      merged.labelNames = uniqueStrings(merged.labels.map((item) => item.label || item.name || item.id));
-      merged.categoryIds = uniqueStrings(merged.categories.map((item) => item.id || item.label || item.name));
-      merged.categoryNames = uniqueStrings(merged.categories.map((item) => item.name || item.label || item.id));
-      merged.tagIds = uniqueStrings(merged.tags.map((item) => item.id || item.label || item.name));
-      merged.tagNames = uniqueStrings(merged.tags.map((item) => item.label || item.name || item.id));
-      merged.projectId = prev.projectId || next.projectId || '';
-      merged.projectName = prev.projectName || next.projectName || '';
-      merged.sortAt = pickNewerDate(merged.updatedAt, pickNewerDate(merged.savedAt, pickNewerDate(merged.lastSeenAt, merged.observedAt)));
-      // Phase 2 durability merges. Rules:
-      //   firstSeenAt        — oldest wins (provenance must never move forward).
-      //   scanBatchId        — latest scan-context wins (current scan is authoritative).
-      //   visibleInLastScan  — latest scan-context wins (current scan flips it).
-      //   batchHistory       — union, newest-first, capped at REGISTRY_BATCH_HISTORY_LIMIT.
-      //
-      // Phase 3 fix: gate the last three rules on whether `next` actually has a non-empty
-      // scanBatchId. Without this gate, model-build merges that pull in raw source rows
-      // (normalizeChatRow defaults visibleInLastScan to false / scanBatchId to '' /
-      // batchHistory to []) silently overwrote the registry's batch context — visible as
-      // "28 reappeared on every refresh" because the 28 chats that show up in BOTH the
-      // registry AND native recents had their visibility reset to false during model build.
-      // Only batch-stamped rows (commitScanBatch sets scanBatchId to the current batch id)
-      // are authoritative for these three fields.
-      merged.firstSeenAt = pickOlderDate(prev.firstSeenAt, next.firstSeenAt);
-      const nextHasBatchContext = (typeof next.scanBatchId === 'string' && next.scanBatchId.length > 0);
-      if (nextHasBatchContext) {
-        merged.scanBatchId = next.scanBatchId;
-        merged.visibleInLastScan = !!next.visibleInLastScan;
-        merged.batchHistory = mergeBatchHistory(prev.batchHistory, next.batchHistory);
-      } else {
-        merged.scanBatchId = (typeof prev.scanBatchId === 'string') ? prev.scanBatchId : '';
-        merged.visibleInLastScan = !!prev.visibleInLastScan;
-        merged.batchHistory = Array.isArray(prev.batchHistory)
-          ? prev.batchHistory.slice(0, REGISTRY_BATCH_HISTORY_LIMIT)
-          : [];
-      }
-      return merged;
+      const c = ixCore();
+      if (c) return c.mergeChatRecord(prevRaw, nextRaw);
+      return { ...(prevRaw || {}), ...(nextRaw || {}) };
     }
-
     function chooseBetterTitle(a = '', b = '', fallback = '') {
-      const aa = normText(a);
-      const bb = normText(b);
-      if (!aa) return bb || fallback || '';
-      if (!bb) return aa;
-      if (/^[a-z0-9-]{8,}$/i.test(aa) && !/^[a-z0-9-]{8,}$/i.test(bb)) return bb;
-      return aa.length >= bb.length ? aa : bb;
+      const c = ixCore();
+      return c ? c.chooseBetterTitle(a, b, fallback) : (String(a || '') || String(b || '') || String(fallback || ''));
     }
 
     function selectorHint(node) {
@@ -663,6 +518,32 @@
       });
     }
 
+    function matchesSidebarProjectNode(node, section = findProjectsSection()) {
+      if (!(node instanceof HTMLElement)) return false;
+      if (node.closest?.(`[${ATTR_CGXUI_OWNER}]`)) return false;
+      if (section instanceof HTMLElement && section.contains(node)) return true;
+      if (node.matches?.(SEL.header) && /^projects?\b/i.test(normText(node.textContent || ''))) return true;
+      if (node.matches?.('a[href*="/g/"][href*="/project"]')) return true;
+      try {
+        if (node.querySelector?.('a[href*="/g/"][href*="/project"], a[href*="/c/"]')) {
+          if (section instanceof HTMLElement && section.contains(node)) return true;
+        }
+      } catch {}
+      return false;
+    }
+
+    function mutationTouchesSidebarProjects(muts = []) {
+      const section = findProjectsSection();
+      return (Array.isArray(muts) ? muts : []).some((mu) => {
+        if (matchesSidebarProjectNode(mu.target, section)) return true;
+        const nodes = [
+          ...(Array.isArray(mu.addedNodes) ? mu.addedNodes : Array.from(mu.addedNodes || [])),
+          ...(Array.isArray(mu.removedNodes) ? mu.removedNodes : Array.from(mu.removedNodes || [])),
+        ];
+        return nodes.some((node) => matchesSidebarProjectNode(node, section));
+      });
+    }
+
     function sidebarRecentsStatus() {
       const scan = state.sidebarRecentsLastScanDiag;
       return {
@@ -686,16 +567,12 @@
     }
 
     function pickOlderDate(a, b) {
-      const ma = dateMs(a);
-      const mb = dateMs(b);
-      if (!ma) return b || '';
-      if (!mb) return a || '';
-      return ma <= mb ? a : b;
+      const c = ixCore();
+      return c ? c.pickOlderDate(a, b) : (a || b || '');
     }
-
     function higherConfidence(a = 'low', b = 'low') {
-      const rank = { low: 1, medium: 2, high: 3 };
-      return (rank[b] || 1) > (rank[a] || 1) ? b : a;
+      const c = ixCore();
+      return c ? c.higherConfidence(a, b) : a;
     }
 
     function buildEmptyModel(reason = 'empty') {
@@ -766,6 +643,17 @@
         nativeRecentsTitleCount: 0,
         nativeRecentsSkippedCount: 0,
         nativeRecentsSkippedReasons: {},
+        nativeProjectChatsSectionFound: false,
+        nativeProjectChatsLoadedCount: 0,
+        nativeProjectChatsAnchorCount: 0,
+        nativeProjectChatsProjectAnchorCount: 0,
+        nativeProjectChatsSkippedCount: 0,
+        nativeProjectChatsSkippedReasons: {},
+        lastSidebarProjectChatsScanAt: 0,
+        lastSidebarProjectChatsScanAtIso: '',
+        lastSidebarProjectChatsScanReason: '',
+        lastSidebarProjectChatsRegisteredRows: 0,
+        lastSidebarProjectChatsRegistryDelta: 0,
         nativeConversationHistoryCacheFound: false,
         knownRegistryAvailable: false,
         knownRegistryCount: 0,
@@ -796,20 +684,26 @@
       const c = coreNow();
       const mode = String(opts.mode || nativeDiag?.nativeRecentsCollectionMode || 'best-effort').toLowerCase();
       const diagRow = nativeDiag && typeof nativeDiag === 'object' ? nativeDiag : inspectNativeRecents({ mode }).diagnostics;
+      const projectDiag = opts.projectChatDiag && typeof opts.projectChatDiag === 'object' ? opts.projectChatDiag : (state.lastNativeProjectChatsDiag || {});
       const registry = readKnownChatRegistry();
       const out = {
         core: !!c,
         archive: typeof archiveApi()?.listWorkbenchRows === 'function',
         nativeRecents: !!(diagRow.nativeRecentsSectionFound || diagRow.nativeConversationHistoryCacheFound || diagRow.nativeRecentsBestEffortCount),
         folders: !!foldersApi(),
-        projects: !!projectsApi(),
+        projects: !!projectsApi() || !!(projectDiag.nativeProjectChatsSectionFound || projectDiag.nativeProjectChatsLoadedCount),
         categories: !!categoriesApi(),
         tags: !!tagsApi(),
         labels: !!labelsApi(),
         knownRegistryAvailable: !!registry?.rows?.length,
         knownRegistryCount: Array.isArray(registry?.rows) ? registry.rows.length : 0,
+        lastSidebarProjectChatsScanAt: Number(state.sidebarProjectChatsLastScanAt || 0) || 0,
+        lastSidebarProjectChatsScanAtIso: state.sidebarProjectChatsLastScanAt ? new Date(state.sidebarProjectChatsLastScanAt).toISOString() : '',
+        lastSidebarProjectChatsScanReason: state.sidebarProjectChatsLastScanReason || '',
+        lastSidebarProjectChatsRegisteredRows: Number(state.sidebarProjectChatsLastRegisteredRows || 0) || 0,
+        lastSidebarProjectChatsRegistryDelta: Number(state.sidebarProjectChatsLastRegistryDelta || 0) || 0,
       };
-      return { ...emptySourceStatus(mode), ...diagRow, ...sidebarRecentsStatus(), ...out };
+      return { ...emptySourceStatus(mode), ...diagRow, ...projectDiag, ...sidebarRecentsStatus(), ...out };
     }
 
     async function buildModel(reason = 'refresh') {
@@ -857,11 +751,12 @@
       model.categories = normalizeCategoryList(sourceRows.categoryGroups, model.chats);
       model.projects = sourceRows.projects;
       model.tags = collectTagFacets(model.chats);
-      model.sourceStatus = sourceStatus(sourceRows.nativeRecentsDiag);
+      model.sourceStatus = sourceStatus(sourceRows.nativeRecentsDiag, { projectChatDiag: sourceRows.nativeProjectChatsDiag });
       model.counts = buildCounts(model);
       model.facets = buildFacets(model.chats, model);
       model.durationMs = Math.round(performance.now() - startedAt);
       state.lastNativeRecentsDiag = sourceRows.nativeRecentsDiag || null;
+      state.lastNativeProjectChatsDiag = sourceRows.nativeProjectChatsDiag || null;
       state.lastSourceStatus = model.sourceStatus || null;
       return model;
     }
@@ -870,12 +765,19 @@
       const indexedRows = readKnownChatRegistryRows();
       indexedRows.forEach((row) => ctx.upsert(row, 'indexed'));
 
+      const chatRegistryRows = safeListChatRegistryRows();
+      chatRegistryRows.forEach((row) => ctx.upsert(row, 'indexed'));
+
       const archiveRows = safeListArchiveRows();
       archiveRows.forEach((row) => ctx.upsert(row, detectArchiveSource(row)));
 
       const nativeRecents = inspectNativeRecents({ mode: 'best-effort', observedAt: ctx.observedAt });
       const recentRows = nativeRecents.rows;
       recentRows.forEach((row) => ctx.upsert(row, 'recents'));
+
+      const nativeProjectChats = collectNativeProjectChatDomRows(ctx.observedAt);
+      const projectChatRows = nativeProjectChats.rows;
+      projectChatRows.forEach((row) => ctx.upsert(row, 'projects'));
 
       const folders = safeListFolders();
       const projects = await safeListProjects();
@@ -893,7 +795,21 @@
         (Array.isArray(group?.rows) ? group.rows : []).forEach((row) => ctx.upsert(row, 'categories'));
       });
 
-      return { indexedRows, archiveRows, recentRows, nativeRecentsDiag: nativeRecents.diagnostics, folders, projects, labelsOwner, labels, tagsOwner, categoryGroups };
+      return {
+        indexedRows,
+        chatRegistryRows,
+        archiveRows,
+        recentRows,
+        projectChatRows,
+        nativeRecentsDiag: nativeRecents.diagnostics,
+        nativeProjectChatsDiag: nativeProjectChats.diagnostics,
+        folders,
+        projects,
+        labelsOwner,
+        labels,
+        tagsOwner,
+        categoryGroups,
+      };
     }
 
     function detectArchiveSource(row) {
@@ -933,6 +849,134 @@
 
     function findRecentsSection() {
       return findNativeHeaderSection(/^recents?\b/i);
+    }
+
+    function findProjectsSection() {
+      return findNativeHeaderSection(/^projects?\b/i);
+    }
+
+    function parseProjectIdFromHref(href = '') {
+      const match = String(href || '').match(/\/g\/([^/?#]+)\/project(?:[/?#]|$)/i);
+      return match ? normText(match[1]) : '';
+    }
+
+    function mergeNativeProjectChatRows(prevRaw, nextRaw) {
+      const prev = prevRaw && typeof prevRaw === 'object' ? prevRaw : {};
+      const next = nextRaw && typeof nextRaw === 'object' ? nextRaw : {};
+      return {
+        ...prev,
+        ...next,
+        chatId: prev.chatId || next.chatId || '',
+        href: prev.href || next.href || '',
+        title: chooseBetterTitle(prev.title, next.title, prev.chatId || next.chatId || prev.href || next.href || ''),
+        source: 'projects',
+        projectId: prev.projectId || next.projectId || '',
+        projectName: chooseBetterTitle(prev.projectName, next.projectName, prev.projectId || next.projectId || ''),
+        nativeProjectHref: prev.nativeProjectHref || next.nativeProjectHref || '',
+        nativeOrder: Number.isFinite(Number(prev.nativeOrder)) ? Number(prev.nativeOrder) : (Number.isFinite(Number(next.nativeOrder)) ? Number(next.nativeOrder) : null),
+        observedAt: prev.observedAt || next.observedAt || '',
+        nativeProjectChatsSource: prev.nativeProjectChatsSource || next.nativeProjectChatsSource || '',
+      };
+    }
+
+    function dedupeNativeProjectChatRows(rows = []) {
+      const out = [];
+      const indexByKey = new Map();
+      (Array.isArray(rows) ? rows : []).forEach((row) => {
+        const key = normalizeChatId(row?.chatId || row?.id || row?.href || '') || normText(row?.href || row?.title || '');
+        if (!key) return;
+        const at = indexByKey.get(key);
+        if (Number.isInteger(at)) {
+          out[at] = mergeNativeProjectChatRows(out[at], row);
+          return;
+        }
+        indexByKey.set(key, out.length);
+        out.push(row);
+      });
+      return out;
+    }
+
+    function collectNativeProjectChatDomRows(observedAt = new Date().toISOString()) {
+      const rows = [];
+      const section = findProjectsSection();
+      const skippedReasons = {};
+      let anchorCount = 0;
+      let projectAnchorCount = 0;
+      let currentProject = null;
+      const skip = (reason) => {
+        const key = normText(reason || 'unknown') || 'unknown';
+        skippedReasons[key] = Number(skippedReasons[key] || 0) + 1;
+      };
+      try {
+        if (!(section instanceof HTMLElement)) {
+          return {
+            rows,
+            diagnostics: {
+              nativeProjectChatsSectionFound: false,
+              nativeProjectChatsLoadedCount: 0,
+              nativeProjectChatsAnchorCount: 0,
+              nativeProjectChatsProjectAnchorCount: 0,
+              nativeProjectChatsSkippedCount: 0,
+              nativeProjectChatsSkippedReasons: {},
+            },
+          };
+        }
+        Array.from(section.querySelectorAll('a[href]')).forEach((a, index) => {
+          if (!(a instanceof HTMLElement)) return;
+          anchorCount += 1;
+          if (a.closest(`[${ATTR_CGXUI_OWNER}]`)) {
+            skip('h2o-owned');
+            return;
+          }
+          const href = normText(a.getAttribute('href') || '');
+          const projectId = parseProjectIdFromHref(href);
+          if (projectId) {
+            projectAnchorCount += 1;
+            currentProject = {
+              id: projectId,
+              name: extractNativeRecentTitle(a, projectId),
+              href,
+            };
+            return;
+          }
+          const chatId = parseChatIdFromHref(href);
+          if (!chatId) {
+            skip('missing-chat-id');
+            return;
+          }
+          const title = extractNativeRecentTitle(a, chatId);
+          if (!title) {
+            skip('missing-title');
+            return;
+          }
+          rows.push({
+            chatId,
+            href,
+            title,
+            source: 'projects',
+            projectId: currentProject?.id || '',
+            projectName: currentProject?.name || '',
+            nativeProjectHref: currentProject?.href || '',
+            nativeOrder: index,
+            observedAt,
+            nativeProjectChatsSource: 'sidebar-dom',
+          });
+        });
+      } catch (e) {
+        err('native-project-chats:dom', e);
+      }
+      const deduped = dedupeNativeProjectChatRows(rows);
+      return {
+        rows: deduped,
+        diagnostics: {
+          nativeProjectChatsSectionFound: !!section,
+          nativeProjectChatsLoadedCount: deduped.length,
+          nativeProjectChatsAnchorCount: anchorCount,
+          nativeProjectChatsProjectAnchorCount: projectAnchorCount,
+          nativeProjectChatsSkippedCount: Object.values(skippedReasons).reduce((sum, value) => sum + Number(value || 0), 0),
+          nativeProjectChatsSkippedReasons: skippedReasons,
+        },
+      };
     }
 
     function normalizeNativeRecentsMode(mode = 'best-effort') {
@@ -1020,10 +1064,14 @@
         source: 'recents',
         createdAt: prev.createdAt || next.createdAt || prev.create_time || next.create_time || '',
         updatedAt: prev.updatedAt || next.updatedAt || prev.update_time || next.update_time || '',
+        lastInteractionAt: pickNewerDate(prev.lastInteractionAt || prev.lastMessageAt || prev.updatedAt || prev.update_time, next.lastInteractionAt || next.lastMessageAt || next.updatedAt || next.update_time),
         nativeOrder: Number.isFinite(Number(prev.nativeOrder)) ? Number(prev.nativeOrder) : (Number.isFinite(Number(next.nativeOrder)) ? Number(next.nativeOrder) : null),
         observedAt: prev.observedAt || next.observedAt || '',
         nativeRecentsMode: prev.nativeRecentsMode || next.nativeRecentsMode || '',
         nativeRecentsSource: prev.nativeRecentsSource || next.nativeRecentsSource || '',
+        projectId: prev.projectId || next.projectId || prev.nativeProjectId || next.nativeProjectId || prev.gizmoId || next.gizmoId || prev.gizmo_id || next.gizmo_id || '',
+        projectName: prev.projectName || next.projectName || prev.nativeProjectName || next.nativeProjectName || prev.gizmoName || next.gizmoName || prev.gizmo_name || next.gizmo_name || '',
+        gizmo_id: prev.gizmo_id || next.gizmo_id || prev.gizmoId || next.gizmoId || '',
       };
     }
 
@@ -1186,6 +1234,7 @@
                 source: 'recents',
                 create_time: item?.create_time || '',
                 update_time: item?.update_time || '',
+                lastInteractionAt: item?.update_time || '',
                 pinned_time: item?.pinned_time || '',
                 gizmo_id: item?.gizmo_id || '',
                 is_archived: item?.is_archived === true,
@@ -1259,6 +1308,56 @@
         .join('\n');
     }
 
+    function signatureForProjectRows(rows = []) {
+      return (Array.isArray(rows) ? rows : [])
+        .map((row) => [
+          normalizeChatId(row?.chatId || row?.href || row?.id || ''),
+          normText(row?.title || ''),
+          normText(row?.projectId || ''),
+          normText(row?.projectName || ''),
+        ].join('|'))
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    async function scanSidebarProjectChatsNow(reason = 'sidebar-projects', opts = {}) {
+      const scanReason = normText(reason || 'sidebar-projects') || 'sidebar-projects';
+      const observedAt = new Date().toISOString();
+      const inspection = collectNativeProjectChatDomRows(observedAt);
+      const rows = inspection.rows || [];
+      const diagnostics = inspection.diagnostics || {};
+      state.lastNativeProjectChatsDiag = diagnostics;
+      state.sidebarProjectChatsLastScanAt = Date.now();
+      state.sidebarProjectChatsLastScanReason = scanReason;
+      const signature = signatureForProjectRows(rows);
+      const changed = signature !== state.sidebarProjectChatsLastSignature;
+      if (rows.length && (changed || opts.force === true)) {
+        const registryDelta = registerKnownChats(rows, { reason: `sidebar-projects:${scanReason}`, refresh: false });
+        state.sidebarProjectChatsLastRegisteredRows = rows.length;
+        state.sidebarProjectChatsLastRegistryDelta = registryDelta;
+        state.sidebarProjectChatsLastSignature = signature;
+        await flushKnownChatRegistryNow(`sidebar-projects:${scanReason}`);
+        scheduleRefresh(`sidebar-projects:${scanReason}`);
+      } else if (changed) {
+        state.sidebarProjectChatsLastSignature = signature;
+      }
+      return { rows, diagnostics, changed };
+    }
+
+    function scheduleSidebarProjectChatsScan(reason = 'sidebar-projects', delay = SIDEBAR_RECENTS_SCAN_DEBOUNCE_MS, opts = {}) {
+      if (state.sidebarProjectChatsScanTimer) {
+        try { W.clearTimeout(state.sidebarProjectChatsScanTimer); } catch {}
+        state.clean.timers.delete(state.sidebarProjectChatsScanTimer);
+      }
+      state.sidebarProjectChatsScanTimer = W.setTimeout(() => {
+        const timer = state.sidebarProjectChatsScanTimer;
+        state.sidebarProjectChatsScanTimer = 0;
+        state.clean.timers.delete(timer);
+        Promise.resolve(scanSidebarProjectChatsNow(reason, opts)).catch((e) => err(`sidebar-projects:scan:${reason}`, e));
+      }, Math.max(0, Number(delay || 0)));
+      state.clean.timers.add(state.sidebarProjectChatsScanTimer);
+    }
+
     async function scanSidebarRecentsNow(reason = 'sidebar-recents', opts = {}) {
       const scanReason = normText(reason || 'sidebar-recents') || 'sidebar-recents';
       const observedAt = new Date().toISOString();
@@ -1302,6 +1401,10 @@
           observerRoot: roots.observerRootSelector || '',
         });
         await flushKnownChatRegistryNow(`sidebar-recents:${scanReason}`);
+        // Phase 2C — mirror the same rows into H2O.ChatRegistry as passive sightings.
+        // Soft no-op if the registry isn't loaded; never raises through to the caller.
+        try { mirrorSidebarRecentsToChatRegistry(rows, observedAt); }
+        catch (e) { err('chat-registry:mirror-recents', e); }
         scheduleRefresh(`sidebar-recents:${scanReason}`);
       }
       return { ok: true, changed, registryDelta, rows, diagnostics };
@@ -1344,6 +1447,7 @@
           state.sidebarRecentsScrollTimer = 0;
           state.clean.timers.delete(timer);
           scheduleSidebarRecentsScan('scroll', 0);
+          scheduleSidebarProjectChatsScan('scroll', 0);
         }, SIDEBAR_RECENTS_SCROLL_DEBOUNCE_MS);
         state.clean.timers.add(state.sidebarRecentsScrollTimer);
       };
@@ -1369,11 +1473,14 @@
         state.sidebarRecentsObserverRootSelector = roots.observerRootSelector || '';
         if (typeof MutationObserver === 'function') {
           const mo = new MutationObserver((muts) => {
-            if (!mutationTouchesSidebarRecents(muts)) return;
-            scheduleSidebarRecentsScan('mutation');
-            const nextRoots = resolveSidebarRecentsRoots();
-            if (nextRoots.scrollRoot instanceof HTMLElement) attachSidebarRecentsScroll(nextRoots.scrollRoot);
-          });
+          const touchesRecents = mutationTouchesSidebarRecents(muts);
+          const touchesProjects = mutationTouchesSidebarProjects(muts);
+          if (!touchesRecents && !touchesProjects) return;
+          if (touchesRecents) scheduleSidebarRecentsScan('mutation');
+          if (touchesProjects) scheduleSidebarProjectChatsScan('mutation');
+          const nextRoots = resolveSidebarRecentsRoots();
+          if (nextRoots.scrollRoot instanceof HTMLElement) attachSidebarRecentsScroll(nextRoots.scrollRoot);
+        });
           try {
             mo.observe(observerRoot, {
               childList: true,
@@ -1423,7 +1530,7 @@
     }
 
     function registrySortMs(row) {
-      return dateMs(row?.updatedAt || row?.savedAt || row?.lastSeenAt || row?.createdAt || row?.observedAt || '');
+      return dateMs(row?.lastInteractionAt || row?.lastMessageAt || row?.updatedAt || row?.savedAt || row?.lastSeenAt || row?.createdAt || row?.observedAt || '');
     }
 
     function toKnownRegistryRow(raw, fallbackSource = 'indexed') {
@@ -1453,6 +1560,10 @@
           isPinned: !!(raw?.isPinned || normalized.isPinned),
           createdAt: normalized.createdAt || '',
           updatedAt: normalized.updatedAt || '',
+          lastInteractionAt: normalized.lastInteractionAt || '',
+          turnCount: toNonNegativeInt(normalized.turnCount),
+          answerCount: toNonNegativeInt(normalized.answerCount),
+          userTurnCount: toNonNegativeInt(normalized.userTurnCount),
           savedAt: normalized.savedAt || '',
           lastSeenAt: normalized.lastSeenAt || '',
           observedAt,
@@ -1478,6 +1589,10 @@
       const observedAt = isoOrEmpty(row.observedAt || row.lastSeenAt || '');
       return {
         ...row,
+        lastInteractionAt: isoOrEmpty(row.lastInteractionAt || row.lastMessageAt || row.updatedAt || ''),
+        turnCount: toNonNegativeInt(row.turnCount || row.answerCount || row.userTurnCount),
+        answerCount: toNonNegativeInt(row.answerCount),
+        userTurnCount: toNonNegativeInt(row.userTurnCount),
         firstSeenAt: isoOrEmpty(row.firstSeenAt || observedAt || ''),
         scanBatchId: normText(row.scanBatchId || ''),
         visibleInLastScan: !!row.visibleInLastScan,
@@ -1637,6 +1752,265 @@
       const rows = Array.isArray(payload?.rows) ? payload.rows : [];
       state.lastKnownRegistryCount = rows.length;
       return rows.map((row) => ({ ...row, source: 'indexed' }));
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+     * Phase 2 — H2O.ChatRegistry soft integration
+     *
+     * Why this lives here: 0F1c is the discovery/index layer; it knows the legacy
+     * known-chat row shape and the sidebar-recents row shape. The registry is the
+     * truth layer. We translate row → ChatRegistry input here, then call the
+     * registry's public API. If the registry isn't loaded (older build, partial
+     * loader), every helper soft-no-ops with a diagnostic counter — Library Index
+     * keeps working unchanged.
+     * ────────────────────────────────────────────────────────────────── */
+
+    function chatRegistry() {
+      // Live-read each call: the registry can boot a tick later than 0F1c when the
+      // dev loader runs them in different orders. Capturing at init would miss it.
+      const reg = W.H2O && W.H2O.ChatRegistry;
+      state.chatRegistrySync.registryAvailable = !!reg;
+      return reg && typeof reg.upsertMany === 'function' ? reg : null;
+    }
+
+    function safeListChatRegistryRows(api = chatRegistry()) {
+      if (!api || typeof api.listRecords !== 'function') return [];
+      try {
+        const rows = api.listRecords({ includeDeleted: false });
+        return (Array.isArray(rows) ? rows : []).map((record) => {
+          const originSources = mergeSourceArrays(record?.source?.seenFrom || [], record?.source?.first || '');
+          return {
+            id: normText(record?.chatId || record?.id || ''),
+            chatId: normText(record?.chatId || record?.id || ''),
+            href: normText(record?.href || record?.normalizedHref || hrefForChatId(record?.chatId || record?.id || '')),
+            title: normText(record?.title || record?.chatId || 'Untitled chat'),
+            source: 'indexed',
+            originSource: originSources[0] || 'chat-registry',
+            originSources: originSources.length ? originSources : ['indexed'],
+            createdAt: record?.createdAt || '',
+            updatedAt: record?.updatedAt || '',
+            lastSeenAt: record?.lastSeenAt || '',
+            lastInteractionAt: record?.lastMessageAt || record?.lastInteractionAt || record?.updatedAt || '',
+            turnCount: toNonNegativeInt(record?.turnCount),
+            answerCount: toNonNegativeInt(record?.answerCount),
+            userTurnCount: toNonNegativeInt(record?.userTurnCount),
+            projectId: normText(record?.project?.projectId || ''),
+            projectName: normText(record?.project?.projectName || ''),
+            isArchived: !!record?.state?.isArchived,
+            isPinned: !!record?.state?.isPinned,
+            isSavedHint: !!record?.state?.isSaved,
+            isImportedHint: !!record?.state?.isImported,
+            isRecentHint: originSources.includes('recents'),
+          };
+        }).filter((row) => row.chatId || row.href || row.title);
+      } catch (e) {
+        err('chat-registry:list-records', e);
+        return [];
+      }
+    }
+
+    function mapKnownRegistryRowToChatRegistryInput(row, observedAt) {
+      try {
+        const id = normalizeChatId(row?.chatId || row?.id || parseChatIdFromHref(row?.href || ''));
+        if (!id) return null;
+        const originSources = sourceHintsForRow(row, row?.source || 'indexed');
+        const lastSeen = isoOrEmpty(row?.lastSeenAt || row?.observedAt || observedAt || '');
+        const firstSeen = isoOrEmpty(row?.firstSeenAt || row?.observedAt || lastSeen);
+        return {
+          chatId: id,
+          href: normText(row?.href || ''),
+          title: normText(row?.title || ''),
+          // titleSource: 'sidebar' is the most accurate fallback — known-registry rows
+          // originate from native sidebar discovery + cross-source merges.
+          titleSource: 'sidebar',
+          createdAt: isoOrEmpty(row?.createdAt),
+          firstSeenAt: firstSeen,
+          lastSeenAt: lastSeen,
+          updatedAt: isoOrEmpty(row?.updatedAt),
+          lastMessageAt: isoOrEmpty(row?.lastInteractionAt || row?.lastMessageAt || row?.updatedAt || row?.lastSeenAt || ''),
+          turnCount: toNonNegativeInt(row?.turnCount),
+          answerCount: toNonNegativeInt(row?.answerCount),
+          userTurnCount: toNonNegativeInt(row?.userTurnCount),
+          project: {
+            projectId: normText(row?.projectId || ''),
+            projectName: normText(row?.projectName || ''),
+          },
+          state: {
+            isPinned: !!row?.isPinned,
+            isArchived: !!row?.isArchived,
+            isSaved: !!row?.isSavedHint,
+            isImported: !!row?.isImportedHint,
+          },
+          quality: { confidence: 'medium' },
+          source: {
+            first: bestSource(originSources),
+            seenFrom: originSources,
+          },
+        };
+      } catch (e) {
+        err('chat-registry:map-known-row', e);
+        return null;
+      }
+    }
+
+    function mapSidebarRecentsRowToChatRegistryInput(row, observedAt) {
+      try {
+        const id = normalizeChatId(row?.chatId || row?.id || parseChatIdFromHref(row?.href || ''));
+        if (!id) return null;
+        return {
+          chatId: id,
+          href: normText(row?.href || ''),
+          title: normText(row?.title || ''),
+          titleSource: 'recents',
+          createdAt: isoOrEmpty(row?.createdAt),
+          firstSeenAt: isoOrEmpty(row?.firstSeenAt || observedAt || row?.observedAt || ''),
+          lastSeenAt: isoOrEmpty(observedAt || row?.lastSeenAt || row?.observedAt || ''),
+          updatedAt: isoOrEmpty(row?.updatedAt),
+          lastMessageAt: isoOrEmpty(row?.lastInteractionAt || row?.lastMessageAt || row?.updatedAt || ''),
+          turnCount: toNonNegativeInt(row?.turnCount),
+          answerCount: toNonNegativeInt(row?.answerCount),
+          userTurnCount: toNonNegativeInt(row?.userTurnCount),
+          project: {
+            projectId: normText(row?.projectId || ''),
+            projectName: normText(row?.projectName || ''),
+          },
+          state: {
+            isPinned: !!row?.isPinned,
+            isArchived: !!row?.isArchived,
+          },
+          quality: { confidence: 'medium' },
+          source: { first: 'recents', seenFrom: ['recents'] },
+        };
+      } catch (e) {
+        err('chat-registry:map-recents-row', e);
+        return null;
+      }
+    }
+
+    // Phase 2B — one-shot seed from the existing known-chat registry. Safe to call
+    // repeatedly: passive merge protects organization/project/title-source rules in
+    // the registry, so re-seeding cannot regress richer data.
+    function seedChatRegistryFromKnownRegistry(reason = 'seed-chat-registry') {
+      const startedAt = Date.now();
+      const observedAt = new Date().toISOString();
+      const reg = chatRegistry();
+      const sourceRows = (() => {
+        try { return readKnownChatRegistry()?.rows || []; }
+        catch { return []; }
+      })();
+      const sourceCount = Array.isArray(sourceRows) ? sourceRows.length : 0;
+      if (!reg) {
+        const out = {
+          ok: false, reason, sourceRows: sourceCount, mappedRows: 0,
+          upsertedRows: 0, skipped: 0, registryCount: 0,
+          error: 'chat-registry-not-available',
+          durationMs: Date.now() - startedAt,
+        };
+        state.chatRegistrySync.lastSeedAt = startedAt;
+        state.chatRegistrySync.lastSeedReason = String(reason || '');
+        state.chatRegistrySync.lastSeedError = out.error;
+        return out;
+      }
+      let mapped = [];
+      let skipped = 0;
+      for (const row of sourceRows) {
+        const input = mapKnownRegistryRowToChatRegistryInput(row, observedAt);
+        if (input) mapped.push(input); else skipped += 1;
+      }
+      let upserted = [];
+      let error = null;
+      try {
+        upserted = reg.upsertMany(mapped, {
+          source: 'library-index',
+          passive: true,
+          observedAt,
+        });
+      } catch (e) {
+        err('chat-registry:seed:upsertMany', e);
+        error = String(e?.message || e);
+      }
+      const registryCount = (() => {
+        try { return reg.getStats?.()?.counts?.records || 0; } catch { return 0; }
+      })();
+      const out = {
+        ok: !error,
+        reason: String(reason || ''),
+        sourceRows: sourceCount,
+        mappedRows: mapped.length,
+        upsertedRows: Array.isArray(upserted) ? upserted.length : 0,
+        skipped,
+        registryCount,
+        error,
+        durationMs: Date.now() - startedAt,
+      };
+      state.chatRegistrySync.lastSeedAt = startedAt;
+      state.chatRegistrySync.lastSeedReason = String(reason || '');
+      state.chatRegistrySync.lastSeedSourceRows = sourceCount;
+      state.chatRegistrySync.lastSeedMappedRows = mapped.length;
+      state.chatRegistrySync.lastSeedUpsertedRows = out.upsertedRows;
+      state.chatRegistrySync.lastSeedSkipped = skipped;
+      state.chatRegistrySync.lastSeedDurationMs = out.durationMs;
+      state.chatRegistrySync.lastSeedError = error;
+      step('chat-registry:seed', `rows=${sourceCount} mapped=${mapped.length} upserted=${out.upsertedRows} skipped=${skipped}`);
+      return out;
+    }
+
+    // Phase 2C — mirror native-recents rows into the registry as a passive sighting.
+    // Called from scanSidebarRecentsNow after registerKnownChats so the legacy registry
+    // remains the system-of-record for the existing model build path.
+    function mirrorSidebarRecentsToChatRegistry(rows = [], observedAt = '') {
+      const reg = chatRegistry();
+      if (!reg) {
+        state.chatRegistrySync.lastRecentsMirrorError = 'chat-registry-not-available';
+        return { ok: false, mappedRows: 0, upsertedRows: 0, error: 'chat-registry-not-available' };
+      }
+      const obs = isoOrEmpty(observedAt) || new Date().toISOString();
+      const mapped = (Array.isArray(rows) ? rows : [])
+        .map((row) => mapSidebarRecentsRowToChatRegistryInput(row, obs))
+        .filter(Boolean);
+      let upserted = [];
+      let error = null;
+      try {
+        upserted = reg.upsertMany(mapped, {
+          source: 'recents',
+          passive: true,
+          observedAt: obs,
+        });
+      } catch (e) {
+        err('chat-registry:mirror-recents:upsertMany', e);
+        error = String(e?.message || e);
+      }
+      state.chatRegistrySync.lastRecentsMirrorAt = Date.now();
+      state.chatRegistrySync.lastRecentsMirrorRows = mapped.length;
+      state.chatRegistrySync.lastRecentsMirrorError = error;
+      return {
+        ok: !error,
+        mappedRows: mapped.length,
+        upsertedRows: Array.isArray(upserted) ? upserted.length : 0,
+        error,
+      };
+    }
+
+    // Phase 2F — read-only sync status surface. Library Workspace / Insights / a future
+    // Library Tab diag panel can consume this without depending on registry internals.
+    function getChatRegistrySyncStatus() {
+      const reg = chatRegistry();
+      const stats = (() => {
+        try { return reg?.getStats?.() || null; } catch { return null; }
+      })();
+      return {
+        chatRegistryAvailable: !!reg,
+        chatRegistryVersion: reg?.version || null,
+        chatRegistrySchemaVersion: reg?.schemaVersion || null,
+        chatRegistryStorageKey: reg?.storageKey || null,
+        chatRegistryRecordCount: stats?.counts?.records || 0,
+        chatRegistryTombstones: stats?.counts?.tombstones || 0,
+        knownRegistryRowCount: (() => {
+          try { return Array.isArray(readKnownChatRegistry()?.rows) ? readKnownChatRegistry().rows.length : 0; }
+          catch { return 0; }
+        })(),
+        sync: { ...state.chatRegistrySync },
+      };
     }
 
     function writeKnownChatRegistryRows(rows = [], meta = {}) {
@@ -2403,7 +2777,27 @@
 
     function enrichWithProjects(chats, projects) {
       const projectRows = Array.isArray(projects) ? projects : [];
+      const byKey = new Map();
+      const putProjectKey = (key, project) => {
+        const k = normText(key).toLowerCase();
+        if (!k || byKey.has(k)) return;
+        byKey.set(k, project);
+      };
+      projectRows.forEach((project) => {
+        putProjectKey(project.id, project);
+        putProjectKey(project.projectId, project);
+        putProjectKey(project.title, project);
+        putProjectKey(project.name, project);
+        putProjectKey(parseProjectIdFromHref(project.href), project);
+      });
       chats.forEach((chat) => {
+        const projectKey = normText(chat.projectId || chat.nativeProjectId || chat.gizmoId || chat.gizmo_id || '');
+        const matchById = byKey.get(projectKey.toLowerCase()) || null;
+        if (matchById) {
+          chat.projectId = chat.projectId || matchById.id || matchById.projectId || projectKey || '';
+          chat.projectName = chat.projectName || matchById.title || matchById.name || '';
+          return;
+        }
         if (chat.projectName || chat.projectId) return;
         const href = normText(chat.href || '');
         if (!href) return;
@@ -2424,6 +2818,10 @@
         chat.categoryNames = uniqueStrings((chat.categories || []).map((item) => item.name || item.label || item.id));
         chat.tagIds = uniqueStrings((chat.tags || []).map((item) => item.id || item.label || item.name));
         chat.tagNames = uniqueStrings((chat.tags || []).map((item) => item.label || item.name || item.id));
+        chat.lastInteractionAt = pickNewerDate(chat.lastInteractionAt || chat.lastMessageAt, chat.updatedAt || '');
+        chat.answerCount = toNonNegativeInt(chat.answerCount);
+        chat.userTurnCount = toNonNegativeInt(chat.userTurnCount);
+        chat.turnCount = Math.max(toNonNegativeInt(chat.turnCount), chat.answerCount, chat.userTurnCount);
         chat.folderId = chat.folderIds?.[0] || '';
         chat.folderName = chat.folderNames?.[0] || '';
         chat.labelText = chat.labelNames.join(', ');
@@ -2434,9 +2832,10 @@
           chat.title, chat.chatId, chat.href, chat.sourceText, chat.folderNames.join(' '), chat.labelText,
           chat.categoryText, chat.projectName, chat.tagText, chat.keywords.join(' '),
         ]).join(' ').toLowerCase();
-        chat.sortAt = pickNewerDate(chat.updatedAt, pickNewerDate(chat.savedAt, pickNewerDate(chat.lastSeenAt, chat.observedAt)));
+        chat.sortAt = pickNewerDate(chat.lastInteractionAt, pickNewerDate(chat.updatedAt, pickNewerDate(chat.savedAt, pickNewerDate(chat.lastSeenAt, chat.observedAt))));
         chat.dates = {
           createdAt: chat.createdAt || '',
+          lastInteractionAt: chat.lastInteractionAt || '',
           updatedAt: chat.updatedAt || '',
           savedAt: chat.savedAt || '',
           lastSeenAt: chat.lastSeenAt || '',
@@ -2446,202 +2845,58 @@
       });
     }
 
+    // Facet / count / filter / sort / bucket — delegated to shared core.
+    // Native and Studio compute byte-identical facets + counts for identical
+    // row inputs after Phase 2B.
     function normalizeCategoryList(groups, chats) {
-      const countById = new Map();
-      (Array.isArray(chats) ? chats : []).forEach((chat) => (chat.categories || []).forEach((cat) => {
-        const id = normText(cat.id || cat.name || cat.label);
-        if (!id) return;
-        countById.set(id, (countById.get(id) || 0) + 1);
-      }));
-      return (Array.isArray(groups) ? groups : []).map((group) => ({
-        id: group.id,
-        name: group.name,
-        label: group.name,
-        color: group.color || '',
-        count: countById.get(group.id) || (Array.isArray(group.rows) ? group.rows.length : 0),
-        source: 'categories',
-      })).sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name));
+      const c = ixCore();
+      return c ? c.normalizeCategoryList(groups, chats) : (Array.isArray(groups) ? groups.slice() : []);
     }
-
     function collectTagFacets(chats) {
-      const map = new Map();
-      (Array.isArray(chats) ? chats : []).forEach((chat) => {
-        (chat.tags || []).forEach((tag) => {
-          const id = normText(tag.id || slug(tag.label || tag.name));
-          const label = normText(tag.label || tag.name || id);
-          if (!id && !label) return;
-          const key = (id || label).toLowerCase();
-          const current = map.get(key) || { id, label, name: label, color: tag.color || '', count: 0, usageCount: 0, source: 'tags' };
-          current.count += 1;
-          current.usageCount += Number(tag.usageCount || 0) || 0;
-          if (!current.color && tag.color) current.color = tag.color;
-          map.set(key, current);
-        });
-      });
-      return Array.from(map.values()).sort((a, b) => (b.count - a.count) || a.label.localeCompare(b.label));
+      const c = ixCore();
+      return c ? c.collectTagFacets(chats) : [];
     }
-
     function buildCounts(model) {
-      const saved = model.savedChats || [];
-      const chats = model.chats || [];
-      const recentChats = model.recentChats || [];
-      return {
-        knownChats: chats.length,
-        savedChats: saved.length,
-        recentChats: recentChats.length,
-        nativeRecentChats: recentChats.length,
-        importedChats: chats.filter((chat) => chat.isImported).length,
-        folders: (model.folders || []).length,
-        labels: (model.labels || []).length,
-        categories: (model.categories || []).length,
-        projects: (model.projects || []).length,
-        tags: (model.tags || []).length,
-        undated: chats.filter((chat) => !dateMs(chat.sortAt)).length,
-        unfiledSaved: saved.filter((chat) => !(chat.folderIds || []).length).length,
-        unlabeledSaved: saved.filter((chat) => !(chat.labels || []).length).length,
-        uncategorizedSaved: saved.filter((chat) => !(chat.categories || []).length).length,
-      };
+      const c = ixCore();
+      if (c) return c.buildCounts({ ...(model || {}), lastKnownRegistryCount: state.lastKnownRegistryCount });
+      return { knownChats: 0, storedKnownChats: 0, savedChats: 0, recentChats: 0, nativeRecentChats: 0, importedChats: 0, folders: 0, labels: 0, categories: 0, projects: 0, tags: 0, undated: 0, unfiledSaved: 0, unlabeledSaved: 0, uncategorizedSaved: 0 };
     }
-
     function facetRowsFromMap(map) {
-      return Array.from(map.values()).sort((a, b) => (b.count - a.count) || String(a.label || a.id).localeCompare(String(b.label || b.id)));
+      const c = ixCore();
+      return c ? c.facetRowsFromMap(map) : Array.from(map?.values?.() || []);
     }
-
     function bumpFacet(map, idRaw, labelRaw = idRaw, extra = {}) {
-      const id = normText(idRaw || labelRaw);
-      const label = normText(labelRaw || id);
-      if (!id && !label) return;
-      const key = (id || label).toLowerCase();
-      const row = map.get(key) || { id, label, count: 0, ...extra };
-      row.count += 1;
-      map.set(key, row);
+      const c = ixCore();
+      if (c) return c.bumpFacet(map, idRaw, labelRaw, extra);
     }
-
-    function buildFacets(chats, model = null) {
-      const sourceMap = new Map();
-      const folderMap = new Map();
-      const labelMap = new Map();
-      const categoryMap = new Map();
-      const projectMap = new Map();
-      const tagMap = new Map();
-      const yearMap = new Map();
-      const monthMap = new Map();
-
-      (Array.isArray(chats) ? chats : []).forEach((chat) => {
-        (chat.sources || []).forEach((source) => bumpFacet(sourceMap, source, source));
-        (chat.folderIds || []).forEach((id, idx) => bumpFacet(folderMap, id, chat.folderNames?.[idx] || id));
-        (chat.labels || []).forEach((label) => bumpFacet(labelMap, label.key || label.id, label.label || label.name || label.id, { type: label.type || '' }));
-        (chat.categories || []).forEach((cat) => bumpFacet(categoryMap, cat.id, cat.name || cat.label || cat.id));
-        if (chat.projectId || chat.projectName) bumpFacet(projectMap, chat.projectId || chat.projectName, chat.projectName || chat.projectId);
-        (chat.tags || []).forEach((tag) => bumpFacet(tagMap, tag.id || tag.label, tag.label || tag.name || tag.id));
-        const ms = dateMs(chat.sortAt);
-        if (ms) {
-          const d = new Date(ms);
-          const year = String(d.getUTCFullYear());
-          const month = `${year}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-          bumpFacet(yearMap, year, year);
-          bumpFacet(monthMap, month, month);
-        }
-      });
-
-      return {
-        sources: facetRowsFromMap(sourceMap),
-        folders: facetRowsFromMap(folderMap),
-        labels: facetRowsFromMap(labelMap),
-        categories: facetRowsFromMap(categoryMap),
-        projects: facetRowsFromMap(projectMap),
-        tags: facetRowsFromMap(tagMap),
-        years: facetRowsFromMap(yearMap),
-        months: facetRowsFromMap(monthMap),
-      };
+    function buildFacets(chats /* , model */) {
+      const c = ixCore();
+      return c ? c.buildFacets(chats) : { sources: [], folders: [], labels: [], categories: [], projects: [], tags: [], years: [], months: [] };
     }
-
     function matchesOne(value, candidates = []) {
-      if (value == null || value === '' || value === 'all') return true;
-      const vals = Array.isArray(value) ? value : [value];
-      const lookup = new Set((Array.isArray(candidates) ? candidates : [candidates]).map((v) => normText(v).toLowerCase()).filter(Boolean));
-      return vals.some((raw) => lookup.has(normText(raw).toLowerCase()));
+      const c = ixCore();
+      return c ? c.matchesOne(value, candidates) : true;
     }
-
     function filterChats(chats, filters = {}) {
-      const f = filters && typeof filters === 'object' ? filters : {};
-      const q = normText(f.q || f.search || '').toLowerCase();
-      const source = f.source || f.sources || '';
-      const folder = f.folder || f.folderId || f.folderName || '';
-      const label = f.label || f.labelId || f.labelName || '';
-      const category = f.category || f.categoryId || f.categoryName || '';
-      const project = f.project || f.projectId || f.projectName || '';
-      const tag = f.tag || f.tagId || f.tagName || '';
-      const missing = normText(f.missing || '').toLowerCase();
-      const includeArchived = f.includeArchived === true;
-      const dateField = f.dateField || 'sortAt';
-      const startMs = dateMs(f.start || f.dateStart || f.from || '');
-      const endMs = dateMs(f.end || f.dateEnd || f.to || '');
-
-      return (Array.isArray(chats) ? chats : []).filter((chat) => {
-        if (!includeArchived && chat.isArchived) return false;
-        if (q && !String(chat.searchText || '').includes(q)) return false;
-        if (source && !matchesOne(source, chat.sources || chat.source)) return false;
-        if (folder && !matchesOne(folder, [...(chat.folderIds || []), ...(chat.folderNames || [])])) return false;
-        if (label && !matchesOne(label, [...(chat.labelIds || []), ...(chat.labelNames || [])])) return false;
-        if (category && !matchesOne(category, [...(chat.categoryIds || []), ...(chat.categoryNames || [])])) return false;
-        if (project && !matchesOne(project, [chat.projectId, chat.projectName])) return false;
-        if (tag && !matchesOne(tag, [...(chat.tagIds || []), ...(chat.tagNames || [])])) return false;
-        if (missing === 'folder' && (chat.folderIds || []).length) return false;
-        if (missing === 'label' && (chat.labels || []).length) return false;
-        if (missing === 'category' && (chat.categories || []).length) return false;
-        const ms = dateMs(readDateField(chat, dateField));
-        if (startMs && (!ms || ms < startMs)) return false;
-        if (endMs && (!ms || ms > endMs)) return false;
-        return true;
-      });
+      const c = ixCore();
+      return c ? c.filterChats(chats, filters) : (Array.isArray(chats) ? chats.slice() : []);
     }
-
-    function sortChats(chats, sort = 'newest', dateField = 'sortAt') {
-      const rows = (Array.isArray(chats) ? chats : []).slice();
-      const s = String(sort || 'newest').toLowerCase();
-      rows.sort((a, b) => {
-        if (s === 'oldest') return -compareDateDesc(a, b, dateField) || String(a.title || '').localeCompare(String(b.title || ''));
-        if (s === 'title') return String(a.title || '').localeCompare(String(b.title || ''));
-        if (s === 'source') return String(a.source || '').localeCompare(String(b.source || '')) || compareDateDesc(a, b, dateField);
-        if (s === 'category') return String(a.categoryText || '').localeCompare(String(b.categoryText || '')) || compareDateDesc(a, b, dateField);
-        if (s === 'label') return String(a.labelText || '').localeCompare(String(b.labelText || '')) || compareDateDesc(a, b, dateField);
-        return compareDateDesc(a, b, dateField) || String(a.title || '').localeCompare(String(b.title || ''));
-      });
-      return rows;
+    function sortChats(chats, sort = 'newest', dateField = 'createdAt') {
+      const c = ixCore();
+      return c ? c.sortChats(chats, sort, dateField) : (Array.isArray(chats) ? chats.slice() : []);
     }
-
     function bucketKey(value, bucket = 'month') {
-      const ms = dateMs(value);
-      if (!ms) return '';
-      const d = new Date(ms);
-      const year = d.getUTCFullYear();
-      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      const b = String(bucket || 'month').toLowerCase();
-      if (b === 'day') return `${year}-${month}-${day}`;
-      if (b === 'week') return isoWeekKey(d);
-      if (b === 'year') return String(year);
-      return `${year}-${month}`;
+      const c = ixCore();
+      return c ? c.bucketKey(value, bucket) : '';
     }
-
     function isoWeekKey(date) {
-      const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-      const dayNum = d.getUTCDay() || 7;
-      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-      const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-      return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+      const c = ixCore();
+      return c ? c.isoWeekKey(date) : '';
     }
 
     function bucketLabel(key, bucket = 'month') {
-      if (!key) return 'Undated';
-      const b = String(bucket || 'month').toLowerCase();
-      if (b === 'month' && /^\d{4}-\d{2}$/.test(key)) {
-        const [year, month] = key.split('-').map(Number);
-        try { return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }); } catch { return key; }
-      }
-      return key;
+      const c = ixCore();
+      return c ? c.bucketLabel(key, bucket) : (key || 'Undated');
     }
 
     function getActiveModel() {
@@ -2657,7 +2912,7 @@
     function getDateBuckets(options = {}) {
       const opts = options && typeof options === 'object' ? options : {};
       const bucket = String(opts.bucket || opts.groupBy || 'month').toLowerCase();
-      const dateField = String(opts.dateField || 'sortAt');
+      const dateField = String(opts.dateField || 'createdAt');
       const rows = listChats(opts.filters || opts, { sort: 'newest', dateField });
       const map = new Map();
       let undated = 0;
@@ -2677,7 +2932,7 @@
     function getStats(options = {}) {
       const opts = options && typeof options === 'object' ? options : {};
       const filters = opts.filters || opts;
-      const dateField = opts.dateField || 'sortAt';
+      const dateField = opts.dateField || 'createdAt';
       const bucket = opts.bucket || opts.groupBy || 'month';
       const chats = listChats(filters, { sort: opts.sort || 'newest', dateField });
       const partialModel = { ...getActiveModel(), chats };
@@ -2711,7 +2966,7 @@
     function listChats(filters = {}, options = {}) {
       const model = getActiveModel();
       const rows = filterChats(model.chats || [], filters);
-      return sortChats(rows, options.sort || filters.sort || 'newest', options.dateField || filters.dateField || 'sortAt');
+      return sortChats(rows, options.sort || filters.sort || 'newest', options.dateField || filters.dateField || 'createdAt');
     }
 
     function getChat(chatIdOrHref) {
@@ -2736,7 +2991,7 @@
         refreshDebounceMs: clampInt(src.refreshDebounceMs, 150, 8000, 900),
         cacheTtlMs: clampInt(src.cacheTtlMs, 0, 24 * 60 * 60 * 1000, 10 * 60 * 1000),
         defaultBucket: ['day', 'week', 'month', 'year'].includes(src.defaultBucket) ? src.defaultBucket : 'month',
-        defaultDateField: ['sortAt', 'savedAt', 'updatedAt', 'lastSeenAt', 'createdAt', 'observedAt'].includes(src.defaultDateField) ? src.defaultDateField : 'sortAt',
+        defaultDateField: ['createdAt', 'lastInteractionAt', 'savedAt', 'updatedAt', 'lastSeenAt', 'observedAt', 'sortAt'].includes(src.defaultDateField) ? src.defaultDateField : 'createdAt',
       };
     }
 
@@ -2786,7 +3041,16 @@
         const model = await buildModel(reason);
         state.model = model;
         state.lastRefreshAt = Date.now();
-        persistKnownChatRegistryFromModel(model, reason);
+        const registryPayload = persistKnownChatRegistryFromModel(model, reason);
+        const storedKnownChats = Array.isArray(registryPayload?.rows)
+          ? registryPayload.rows.length
+          : (Number(state.lastKnownRegistryCount || 0) || 0);
+        if (storedKnownChats) {
+          model.counts = model.counts || {};
+          model.counts.storedKnownChats = storedKnownChats;
+          model.counts.knownChats = Math.max(Number(model.counts.knownChats || 0) || 0, storedKnownChats);
+          model.counts.allChats = Math.max(Number(model.counts.allChats || 0) || 0, storedKnownChats);
+        }
         await flushDurabilityNow(`refresh:${reason}`);
         writeCache(model);
         dispatchUpdated(reason, model);
@@ -2857,6 +3121,8 @@
       bind(W, 'evt:h2o:tags:changed', () => scheduleRefresh('event:tags-changed'), true);
       bind(W, 'evt:h2o:tags:chat-analyzed', () => scheduleRefresh('event:tags-analyzed'), true);
       bind(W, 'evt:h2o:folders:changed', () => scheduleRefresh('event:folders-changed'), true);
+      bind(W, 'evt:h2o:projects:changed', () => scheduleRefresh('event:projects-changed'), true);
+      bind(W, 'evt:h2o:projects:refreshed', () => scheduleRefresh('event:projects-refreshed'), true);
       bind(W, 'evt:h2o:core:index:updated', () => scheduleRefresh('event:core-index-updated'), true);
       bind(W, 'popstate', () => scheduleRefresh('event:popstate'), true);
       bind(W, 'hashchange', () => scheduleRefresh('event:hashchange'), true);
@@ -2864,9 +3130,44 @@
       bind(W, 'h2o:library:store:tier-promoted', () => { retryLibraryStoreMigration('event:store-tier-promoted').catch((e) => err('migration:retry:store-tier-promoted', e)); }, true);
       bind(W, 'evt:h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
       bind(W, 'h2o:library:store:ready', () => { retryLibraryStoreMigration('event:store-ready').catch((e) => err('migration:retry:store-ready', e)); }, true);
+
+      // Phase 2E — Chat Registry change listener with debounce + loop guard.
+      // The registry fires evt:h2o:chat-registry:changed (with a legacy h2o:chat-registry:changed
+      // mirror) on every meaningful mutation. We schedule a debounced Library Index refresh
+      // when the change came from anywhere else (an open-chat enrichment, an external
+      // upsert, a future seed from another tab). Guards:
+      //   - source === 'library-index': skip — the change is our own mirrored seed/upsert.
+      //   - source === 'recents' while a refresh is already in flight: skip — the same scan
+      //     that produced the recents mirror is already going to refresh.
+      const onChatRegistryChanged = (e) => {
+        try {
+          const detail = e?.detail || {};
+          const sourceLabel = String(detail.source || '').toLowerCase();
+          if (sourceLabel === 'library-index') return;
+          if (sourceLabel === 'recents' && state.refreshPromise) return;
+          if (state.chatRegistryRefreshTimer) {
+            try { W.clearTimeout(state.chatRegistryRefreshTimer); } catch {}
+            state.clean.timers.delete(state.chatRegistryRefreshTimer);
+            state.chatRegistryRefreshTimer = 0;
+          }
+          state.chatRegistryRefreshTimer = W.setTimeout(() => {
+            const t = state.chatRegistryRefreshTimer;
+            state.chatRegistryRefreshTimer = 0;
+            state.clean.timers.delete(t);
+            state.chatRegistrySync.lastRegistryEventAt = Date.now();
+            state.chatRegistrySync.lastRegistryEventSource = sourceLabel;
+            state.chatRegistrySync.lastRegistryEventDebouncedRefreshAt = Date.now();
+            scheduleRefresh(`event:chat-registry-changed:${sourceLabel || 'unknown'}`);
+          }, 180);
+          state.clean.timers.add(state.chatRegistryRefreshTimer);
+        } catch (er) { err('chat-registry:on-changed', er); }
+      };
+      bind(W, 'evt:h2o:chat-registry:changed', onChatRegistryChanged, true);
+      bind(W, 'h2o:chat-registry:changed', onChatRegistryChanged, true);
       bind(W, 'focus', () => {
         scheduleEnsureSidebarRecentsMonitor('focus');
         scheduleSidebarRecentsScan('focus', 0);
+        scheduleSidebarProjectChatsScan('focus', 0);
       }, true);
       bind(W, 'storage', (event) => {
         const key = String(event?.key || '');
@@ -2880,6 +3181,7 @@
         retryLibraryStoreMigration('bind:initial-check').catch((e) => err('migration:retry:bind-initial-check', e));
         ensureSidebarRecentsMonitor('bind-initial-check');
         scheduleSidebarRecentsScan('bind-initial-check', 0, { force: true });
+        scheduleSidebarProjectChatsScan('bind-initial-check', 0, { force: true });
       }, 0);
       state.clean.timers.add(timer);
     }
@@ -2917,6 +3219,7 @@
         counts: model?.counts || null,
         registryReady: !!readKnownChatRegistry()?.rows?.length,
         registryCount: Array.isArray(readKnownChatRegistry()?.rows) ? readKnownChatRegistry().rows.length : 0,
+        chatRegistrySync: getChatRegistrySyncStatus(),
         storageKeys: { cache: KEY_CACHE_V1, knownRegistry: KEY_KNOWN_REGISTRY_V1, prefs: KEY_PREFS_V1 },
         prefs: readPrefs(),
         bootDiag: H2O.LibraryIndexBootDiag || null,
@@ -2966,6 +3269,11 @@
       isCacheFresh() { return isCacheFresh(); },
       listNativeRecentChats(options = null) { return listNativeRecentChats(options); },
       scanSidebarRecents(reason = 'api', opts = {}) { return scanSidebarRecentsNow(reason, opts); },
+      scanSidebarProjectChats(reason = 'api', opts = {}) { return scanSidebarProjectChatsNow(reason, opts); },
+      // Phase 2 (Chat Registry integration) — soft, additive helpers.
+      seedChatRegistryFromKnownRegistry(reason = 'manual') { return seedChatRegistryFromKnownRegistry(reason); },
+      mirrorSidebarRecentsToChatRegistry(rows, observedAt) { return mirrorSidebarRecentsToChatRegistry(rows, observedAt); },
+      getChatRegistrySyncStatus() { return getChatRegistrySyncStatus(); },
       selfCheck() { return selfCheck(); },
     };
 
@@ -3019,6 +3327,7 @@
       else step('boot:using-fresh-cache', `${cached.counts?.knownChats || 0} known`);
       ensureSidebarRecentsMonitor('boot');
       scheduleSidebarRecentsScan('boot', 0, { force: true });
+      scheduleSidebarProjectChatsScan('boot', 0, { force: true });
 
       // Register again shortly after boot because some 0F modules may register late.
       const late = W.setTimeout(() => {
@@ -3026,6 +3335,7 @@
         registerWithCore();
         ensureSidebarRecentsMonitor('late-boot');
         scheduleSidebarRecentsScan('late-boot');
+        scheduleSidebarProjectChatsScan('late-boot');
         if (!state.model?.ok) scheduleRefresh('late-boot');
       }, 900);
       state.clean.timers.add(late);

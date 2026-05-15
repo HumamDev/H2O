@@ -1691,7 +1691,9 @@
         "0A1a._H2O_Core_.js",
         "0F1a._Library_Core_.js"
       ],
-      "after": [],
+      "after": [
+        "0F1g._Chat_Registry_.js"
+      ],
       "group": "CORE_BASE",
       "provides": [
         "h2o.libraryIndex"
@@ -1699,8 +1701,25 @@
       "critical": false,
       "optionalDependsOn": [
         "0D3a._Transcript_Archive_Engine_.js",
-        "0F3a._Folders_.js"
+        "0F3a._Folders_.js",
+        "0F1g._Chat_Registry_.js"
       ]
+    },
+    "0F1g._Chat_Registry_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0F1a._Library_Core_.js"
+      ],
+      "after": [
+        "0F1b._Library_Workspace_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chatRegistry"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
     },
     "0F1e._Library_Store_.js": {
       "phase": "document-idle",

@@ -39,7 +39,10 @@
     "0Z1a._Control_Hub_.js":      { "tier": "L2" },
     "0F1a._Library_Core_.js":     { "tier": "L2" },
     "0F1b._Library_Workspace_.js": { "tier": "L2" },
+    "0F1g._Chat_Registry_.js":    { "tier": "L2" },
     "0F1c._Library_Index_.js":    { "tier": "L2" },
+    "0F1h._Library_Sync_.js":     { "tier": "L2" },
+    "0F1j._Library_Actions_.js":  { "tier": "L2" },
     "8A1a._Theme_Core_.js":       { "tier": "L2" },
 
 

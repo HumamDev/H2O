@@ -257,8 +257,50 @@
     ).trim();
   }
 
+  // Phase 5 — flatten state regardless of whether the row carries the new
+  // normalized shape (state: { isLinked, isSaved, ... }) or the legacy shape
+  // (state on raw only). Callers always go through this helper so the
+  // upstream S0F1c pass-through can be tightened later without churn here.
+  function getRowState(row) {
+    if (!row) return { isLinked: false, isSaved: false, isImported: false };
+    const a = (row.state && typeof row.state === 'object') ? row.state : null;
+    const b = (row.raw && row.raw.state && typeof row.raw.state === 'object') ? row.raw.state : null;
+    return {
+      isLinked:   !!(a?.isLinked   || b?.isLinked),
+      isSaved:    !!(a?.isSaved    || b?.isSaved),
+      isImported: !!(a?.isImported || b?.isImported),
+    };
+  }
+
+  // Phase 5 — produce a real chatgpt.com URL from the row's stored link
+  // provenance. Returns '' for records with no source URL (imported-only).
+  function resolveLinkedUrl(row) {
+    if (!row) return '';
+    const r = row.raw || {};
+    const raw = String(
+      row.linkSourceHref
+      || row.href
+      || row.normalizedHref
+      || r.linkSourceHref
+      || r.href
+      || r.normalizedHref
+      || ''
+    ).trim();
+    if (!raw) return '';
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+    if (raw.startsWith('/')) return `https://chatgpt.com${raw}`;
+    return '';
+  }
+
   function ChatRow(row, idx) {
     const sid = resolveSnapshotId(row);
+    const st = getRowState(row);
+    const linkedUrl = resolveLinkedUrl(row);
+    // Click target priority: saved+snapshot → Studio reader; linked-only →
+    // original ChatGPT chat; otherwise the row is inert.
+    const opensReader = !!sid && !st.isDeleted;
+    const opensExternal = !opensReader && !!(st.isLinked && linkedUrl);
+
     const meta = [];
     if (row.folderName) meta.push(`📁 ${row.folderName}`);
     else if (row.folderId) meta.push(`📁 ${row.folderId.slice(0, 8)}…`);
@@ -270,46 +312,105 @@
     const tags = (row.tags || []).slice(0, 3);
     const labels = (row.labels || []).slice(0, 3);
 
-    const anchor = el('a', {
-      class: 'wbChatRow',
-      // Same hash route studio.js's saved-list rows use. Anchor click →
-      // browser default sets location.hash → studio.js's hashchange listener
-      // calls renderRoute → renderReader(snapshotId). One reader, one path.
-      href: sid ? `#/read/${encodeURIComponent(sid)}` : '#',
-      data: {
-        chatId:     row.chatId || '',
-        snapshotId: sid,
-        view:       row.view || '',
-        idx:        String(idx),
-      },
-      title: row.title || row.chatId || '',
-      // No snapshot id → mark the row as inert so it doesn't look clickable.
-      'aria-disabled': sid ? null : 'true',
-    }, [
+    // Linked / Saved / Imported chips. Saved subsumes Linked visually.
+    // Imported (saved-only with no chatId) is a special case: show the
+    // Imported chip alongside Saved so the user knows the record has no
+    // native source URL to fall back to.
+    const chips = [];
+    if (st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
+    else if (st.isLinked) chips.push(['Linked', 'wbRowChip--linked']);
+    if (st.isImported) chips.push(['Imported', 'wbRowChip--imported']);
+
+    // Anchor href: prefer the reader hash for saved rows so cmd-click "open
+    // in new tab" stays inside Studio; for linked-only rows the href IS the
+    // original ChatGPT URL so cmd-click opens it natively.
+    const anchorHref = opensReader
+      ? `#/read/${encodeURIComponent(sid)}`
+      : (opensExternal ? linkedUrl : '#');
+    const inertAria = (opensReader || opensExternal) ? null : 'true';
+
+    const titleRow = el('div', { class: 'wbChatRowTitleRow' }, [
+      el('div', { class: 'wbChatRowTitle' }, row.title || row.chatId || 'Untitled chat'),
+      chips.length
+        ? el('div', { class: 'wbChatRowChips' }, chips.map(([label, klass]) =>
+            el('span', { class: `wbRowChip ${klass}`, 'aria-hidden': 'true' }, label)
+          ))
+        : null,
+    ]);
+
+    const children = [
       el('div', { class: 'wbChatRowMain' }, [
-        el('div', { class: 'wbChatRowTitle' }, row.title || row.chatId || 'Untitled chat'),
+        titleRow,
         el('div', { class: 'wbChatRowMeta' }, meta.join(' · ') || ''),
       ]),
       ((tags.length + labels.length) > 0) ? el('div', { class: 'wbChatRowTags' }, [
         ...tags.map((t) => el('span', { class: 'wbChatRowTag', data: { kind: 'tag' } }, `#${t}`)),
         ...labels.map((l) => el('span', { class: 'wbChatRowTag', data: { kind: 'label' } }, l)),
       ]) : null,
-    ]);
+    ];
 
-    // Defensive click handler: if the anchor's default navigation is ever
-    // suppressed (e.g. a future click-delegation handler that doesn't know
-    // about Library rows), we still navigate programmatically — mirroring
-    // studio.js's saved-row click handler exactly. We don't call preventDefault
-    // for modifier-clicks or middle-clicks so cmd-click "open in new tab"
-    // still works.
+    // Secondary action: a compact "Open original ChatGPT chat" button shown
+    // when the row is a SAVED record that also has a source URL. Linked-only
+    // rows already open the original on primary click, so no secondary
+    // affordance is needed for them. Imported-only saves with no source URL
+    // omit the button entirely.
+    if (opensReader && linkedUrl) {
+      const openExt = el('button', {
+        type: 'button',
+        class: 'wbChatRowOpenExternal',
+        title: 'Open original ChatGPT chat',
+        'aria-label': 'Open original ChatGPT chat',
+        data: { url: linkedUrl },
+      }, [
+        el('span', { class: 'wbChatRowOpenExternalIcon', 'aria-hidden': 'true' }, '↗'),
+      ]);
+      openExt.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        try { W.open(linkedUrl, '_blank', 'noopener'); } catch {}
+      });
+      children.push(openExt);
+    }
+
+    const anchor = el('a', {
+      class: 'wbChatRow',
+      href: anchorHref,
+      data: {
+        chatId:     row.chatId || '',
+        snapshotId: sid,
+        view:       row.view || '',
+        idx:        String(idx),
+        linked:     st.isLinked ? '1' : '0',
+        saved:      st.isSaved  ? '1' : '0',
+        opens:      opensReader ? 'reader' : (opensExternal ? 'external' : 'none'),
+      },
+      title: row.title || row.chatId || '',
+      'aria-disabled': inertAria,
+    }, children);
+
     anchor.addEventListener('click', (ev) => {
-      if (!sid) { ev.preventDefault(); return; }
+      // Inert rows: nothing to do.
+      if (!opensReader && !opensExternal) { ev.preventDefault(); return; }
+      // Preserve modifier/middle-click semantics for both branches: cmd-click
+      // on a saved row opens the reader in a new tab; cmd-click on a linked
+      // row opens the native chat in a new tab.
       if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+
+      if (opensExternal) {
+        // Linked-only: programmatically open the native URL so the in-Studio
+        // hash doesn't move. Anchor href IS already the URL so default
+        // navigation would also try; we preventDefault to keep Studio's
+        // route stable and explicitly use noopener.
+        ev.preventDefault();
+        try { W.open(linkedUrl, '_blank', 'noopener'); } catch {}
+        return;
+      }
+
+      // Saved path — identical to the prior implementation. Anchor's default
+      // navigation sets location.hash; studio.js's hashchange listener calls
+      // renderRoute → renderReader(snapshotId). Microtask poll force-sets
+      // the hash if a future click-delegation handler suppresses the default.
       const target = `#/read/${encodeURIComponent(sid)}`;
-      // If we're not already at the target, let the browser do its default
-      // navigation (it'll fire hashchange and studio.js will renderRoute).
-      // Only force-set the hash if the default was prevented somewhere.
-      // Microtask poll: if hash hasn't moved by next tick, kick it ourselves.
       const before = W.location.hash;
       W.queueMicrotask(() => {
         if (W.location.hash === before && before !== target) {
@@ -415,11 +516,19 @@
       step('prefs', `${key}=${value}`);
       render();
     };
+    // Linked pill is conditional: only render when there's at least one
+    // linked-only record so the filter row stays clean on installs that
+    // never used "Add to Library". Counts come from idx.counts() which
+    // the renderer captures alongside rows.
+    const linkedCount = (opts && opts.linkedCount) || 0;
     return el('div', { class: 'wbFilterChips' }, [
       opts.hideViewChips ? null : el('div', { class: 'wbFilterChipGroup' }, [
         Pill({ label: 'Saved',   active: prefs.view === 'saved',   onClick: onSet('view', 'saved') }),
         Pill({ label: 'Pinned',  active: prefs.view === 'pinned',  onClick: onSet('view', 'pinned') }),
         Pill({ label: 'Archive', active: prefs.view === 'archive', onClick: onSet('view', 'archive') }),
+        linkedCount > 0
+          ? Pill({ label: 'Linked', count: linkedCount, active: prefs.view === 'linked', onClick: onSet('view', 'linked') })
+          : null,
       ]),
       opts.hideViewChips ? null : el('span', { class: 'wbFilterChipDivider' }),
       el('div', { class: 'wbFilterChipGroup' }, [
@@ -611,12 +720,23 @@
     const saved = counts.views?.saved || 0;
     const pinned = counts.views?.pinned || 0;
     const archive = counts.views?.archive || 0;
+    // Linked-only records flow in from S0F1c via the Chat Registry source
+    // with view='linked'. Surface them as a first-class count alongside
+    // saved/pinned/archive so they have a visible signal on the dashboard.
+    const linked = counts.views?.linked || 0;
+
+    const subParts = [
+      `${formatNumber(saved)} saved`,
+      `${formatNumber(pinned)} pinned`,
+      `${formatNumber(archive)} archived`,
+    ];
+    if (linked > 0) subParts.push(`${formatNumber(linked)} linked`);
 
     const hero = el('section', { class: 'wbDashHero' }, [
       el('div', { class: 'wbDashHeroLeft' }, [
         el('div', { class: 'wbDashHeroLabel' }, 'Library'),
         el('div', { class: 'wbDashHeroValue' }, formatNumber(total)),
-        el('div', { class: 'wbDashHeroSub' }, `${formatNumber(saved)} saved · ${formatNumber(pinned)} pinned · ${formatNumber(archive)} archived`),
+        el('div', { class: 'wbDashHeroSub' }, subParts.join(' · ')),
       ]),
       el('div', { class: 'wbDashHeroRight' }, [
         el('div', { class: 'wbDashHeroSparklineLabel' }, 'Activity · last 30 days'),
@@ -624,13 +744,32 @@
       ]),
     ]);
 
+    const distBars = [
+      BarRow({ name: 'Saved',    count: saved,    total, swatch: '#7ab6ff' }),
+      BarRow({ name: 'Pinned',   count: pinned,   total, swatch: '#f3c969' }),
+      BarRow({ name: 'Archive',  count: archive,  total, swatch: '#a78bfa' }),
+    ];
+    if (linked > 0) {
+      // Make the Linked bar a clickable link into Explorer with the Linked
+      // pill pre-selected. Persists prefs.view='linked' first so the
+      // Explorer renderer picks it up on the next render() pass.
+      const linkedBar = BarRow({ name: 'Linked', count: linked, total, swatch: '#7dd3fc' });
+      const linkedAnchor = el('a', {
+        class: 'wbBarRowLink',
+        href: '#/library/explorer',
+        'aria-label': `View ${linked} linked chats`,
+      }, [linkedBar]);
+      linkedAnchor.addEventListener('click', (ev) => {
+        // Programmatic prefs flip — the hash change handles the route, but
+        // the view-pill state needs to land before render() fires.
+        try { prefs.view = 'linked'; savePrefs(prefs); } catch {}
+      });
+      distBars.push(linkedAnchor);
+    }
+
     const dist = el('section', { class: 'wbDashDist' }, [
       el('header', { class: 'wbDashSectionHead' }, [el('h3', {}, 'Distribution')]),
-      el('div', { class: 'wbDashDistBars' }, [
-        BarRow({ name: 'Saved',    count: saved,    total, swatch: '#7ab6ff' }),
-        BarRow({ name: 'Pinned',   count: pinned,   total, swatch: '#f3c969' }),
-        BarRow({ name: 'Archive',  count: archive,  total, swatch: '#a78bfa' }),
-      ]),
+      el('div', { class: 'wbDashDistBars' }, distBars),
     ]);
 
     const topFolders    = topN(idx.facets().byFolder, 6);
@@ -849,6 +988,10 @@
     // "Rich" mode = dedicated Explorer tab. The Saved / Pinned / Archive tabs
     // (forceView set) keep the simpler chip-only layout.
     const rich = !opts.forceView;
+    // Linked count drives whether the Linked pill renders. Saved/Pinned/
+    // Archive tabs (forceView set) keep `hideViewChips:true` so they never
+    // show a Linked pill — the Saved tab must remain saved-transcript-only.
+    const linkedCount = (idx.counts?.()?.views?.linked) || 0;
 
     // The page-level shell renders a unified search input above the tab nav,
     // so we hide the internal Explorer SearchBar to avoid a duplicate field.
@@ -858,7 +1001,7 @@
       rich ? renderExplorerToolbar(idx) : null,
       rich ? renderExplorerDropdownGrid(idx) : null,
       opts.hideInternalSearch ? null : SearchBar(),
-      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich }),
+      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount }),
       el('div', { class: 'wbExpSummary' },
         `${formatNumber(filtered.length)} of ${formatNumber(rows.length)} chats${
           rich && hasActiveFilters() ? ` · ${[

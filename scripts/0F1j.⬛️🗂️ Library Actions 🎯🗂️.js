@@ -1,0 +1,392 @@
+// ==H2O Module==
+// @h2o-id             0f1j.library_actions
+// @name               0F1j.⬛️🗂️ Library Actions 🎯🗂️
+// @namespace          H2O.Premium.CGX.library_actions
+// @author             HumamDev
+// @version            1.0.0
+// @revision           001
+// @build              260512-000010
+// @description        Native Library Actions: business-logic surface for Add to Library / Save to Folder / Open original ChatGPT chat. Wraps H2O.ChatRegistry (light link) and H2O.folders.saveAndBindToFolder + H2O.folders.captureCurrentChatForFolder (heavy capture, Unfiled supported) without duplicating their behavior. Phase 2 of the Add-to-Library / Save-to-Folder rollout — adds NO UI, NO menu items, NO renames. Strictly additive: callable from DevTools and from later phases (native menu, command bar).
+// @match              https://chatgpt.com/*
+// @run-at             document-idle
+// @grant              none
+// ==/H2O Module==
+
+(() => {
+  'use strict';
+
+  console.log('H2O DEV LOAD ✅ 0F1j Library Actions (native)', Date.now());
+
+  const W = window;
+  const H2O = (W.H2O = W.H2O || {});
+  H2O.Library = H2O.Library || {};
+
+  const VERSION = '1.0.0';
+  const SURFACE = 'native';
+  const TAG = '[H2O.LibraryActions]';
+
+  // ── Bounded buffers for diagnose() ────────────────────────────────────────
+  const ERR_MAX = 20;
+  const diag = {
+    t0: performance.now(),
+    counts: {
+      addCalls: 0,
+      saveCalls: 0,
+      openCalls: 0,
+      alreadyLinkedHits: 0,
+      errors: 0,
+    },
+    lastAdd: null,
+    lastSave: null,
+    lastOpen: null,
+    errors: [],
+  };
+
+  function pushError(stage, e) {
+    diag.counts.errors += 1;
+    try {
+      diag.errors.push({
+        t: Math.round(performance.now() - diag.t0),
+        stage: String(stage || ''),
+        e: String(e?.stack || e?.message || e || ''),
+      });
+      if (diag.errors.length > ERR_MAX) diag.errors.splice(0, diag.errors.length - ERR_MAX);
+    } catch {}
+  }
+
+  // ── Capability probes ────────────────────────────────────────────────────
+  function hasChatRegistry() {
+    const r = H2O.ChatRegistry;
+    return !!(r && typeof r.upsertRecord === 'function' && typeof r.getRecord === 'function');
+  }
+  function hasFolders() {
+    const f = H2O.folders;
+    return !!(f && typeof f.saveAndBindToFolder === 'function');
+  }
+  function hasFoldersCapture() {
+    const f = H2O.folders;
+    return !!(f && typeof f.captureCurrentChatForFolder === 'function');
+  }
+  function hasArchiveBoot() {
+    const a = H2O.archiveBoot;
+    return !!(a && typeof a.captureNow === 'function');
+  }
+
+  // ── Identity & URL helpers ───────────────────────────────────────────────
+  function trimString(v) { return typeof v === 'string' ? v.trim() : ''; }
+
+  function activeHref() {
+    try {
+      const h = String(W.location?.href || '');
+      // Only accept chatgpt.com chat URLs — never leak random page hrefs.
+      if (/^https?:\/\/chatgpt\.com\//i.test(h)) return h;
+    } catch {}
+    return '';
+  }
+
+  /**
+   * Resolve a {chatId, href, normalizedHref} triple from arbitrary user input.
+   * Prefers explicit chatId, then parses href, then falls back to the active
+   * chatgpt.com URL. Returns nulls when nothing can be derived.
+   */
+  function resolveIdentity({ chatId = '', href = '' } = {}) {
+    const reg = H2O.ChatRegistry;
+    const parse = reg && typeof reg.parseChatIdFromHref === 'function' ? reg.parseChatIdFromHref : null;
+    const norm  = reg && typeof reg.normalizeHref === 'function' ? reg.normalizeHref : null;
+
+    let cid = trimString(chatId);
+    let usedHref = trimString(href);
+    if (!cid && usedHref && parse) cid = parse(usedHref) || '';
+    if (!cid) {
+      const pageHref = activeHref();
+      if (pageHref) {
+        const parsed = parse ? (parse(pageHref) || '') : '';
+        if (parsed) { cid = parsed; usedHref = pageHref; }
+      }
+    }
+    if (!cid) return { chatId: '', href: '', normalizedHref: '' };
+
+    if (!usedHref) usedHref = `https://chatgpt.com/c/${cid}`;
+    const nh = norm ? (norm(usedHref) || `/c/${cid}`) : `/c/${cid}`;
+    return { chatId: cid, href: usedHref, normalizedHref: nh };
+  }
+
+  function resolveTitle(explicitTitle) {
+    const t1 = trimString(explicitTitle);
+    if (t1) return t1;
+    try {
+      const dt = trimString(D.title || '');
+      if (dt) return dt;
+    } catch {}
+    return 'Untitled chat';
+  }
+
+  /**
+   * Build a full chatgpt.com URL from any of the three href variants.
+   * Returns '' when no useful source URL exists (imported-only records).
+   */
+  function urlFromRecord(record) {
+    if (!record || typeof record !== 'object') return '';
+    const lsh = trimString(record.linkSourceHref);
+    if (lsh) return lsh;
+    const h = trimString(record.href);
+    if (h) return h;
+    const nh = trimString(record.normalizedHref);
+    if (nh) {
+      if (/^https?:/i.test(nh)) return nh;
+      const path = nh.startsWith('/') ? nh : `/${nh}`;
+      return `https://chatgpt.com${path}`;
+    }
+    return '';
+  }
+
+  const D = (typeof document !== 'undefined') ? document : null;
+
+  // ── addToLibrary ─────────────────────────────────────────────────────────
+  async function addToLibrary(args = {}) {
+    diag.counts.addCalls += 1;
+    const source = trimString(args.source) || 'add-to-library';
+    try {
+      if (!hasChatRegistry()) {
+        const out = { ok: false, error: 'chat-registry-unavailable' };
+        diag.lastAdd = out;
+        return out;
+      }
+
+      const ident = resolveIdentity({ chatId: args.chatId, href: args.href });
+      if (!ident.chatId) {
+        const out = { ok: false, error: 'missing-chat-identity' };
+        diag.lastAdd = out;
+        return out;
+      }
+
+      // Idempotency: if the record is already linked, return early with the
+      // existing record. The Phase 1 sticky-merge would also produce a no-op,
+      // but short-circuiting here keeps `alreadyLinked` honest and avoids
+      // emitting a redundant chat-registry:changed event.
+      const prev = H2O.ChatRegistry.getRecord(ident.chatId);
+      if (prev && prev.state && prev.state.isLinked === true) {
+        diag.counts.alreadyLinkedHits += 1;
+        const out = { ok: true, alreadyLinked: true, chatId: ident.chatId, record: prev };
+        diag.lastAdd = out;
+        return out;
+      }
+
+      const title = resolveTitle(args.title);
+      const project = (args.project && typeof args.project === 'object') ? args.project : null;
+      const patch = {
+        chatId: ident.chatId,
+        href: ident.href,
+        normalizedHref: ident.normalizedHref,
+        title,
+        titleSource: source,
+        state: { isLinked: true },
+        linkedFrom: source,
+        linkSourceHref: ident.href,
+      };
+      if (project && (project.projectId || project.projectName)) {
+        patch.project = {
+          projectId: trimString(project.projectId),
+          projectName: trimString(project.projectName),
+        };
+      }
+
+      const record = H2O.ChatRegistry.upsertRecord(patch, { source });
+      const out = { ok: true, alreadyLinked: false, chatId: ident.chatId, record };
+      diag.lastAdd = out;
+      return out;
+    } catch (e) {
+      pushError('addToLibrary', e);
+      const out = { ok: false, error: String(e?.message || e || 'unknown') };
+      diag.lastAdd = out;
+      return out;
+    }
+  }
+
+  // ── saveToFolder ─────────────────────────────────────────────────────────
+  async function saveToFolder(args = {}) {
+    diag.counts.saveCalls += 1;
+    const source = trimString(args.source) || 'save-to-folder';
+    try {
+      const ident = resolveIdentity({ chatId: args.chatId, href: args.href });
+      if (!ident.chatId) {
+        const out = { ok: false, error: 'missing-chat-identity', chatId: '', folderId: trimString(args.folderId) };
+        diag.lastSave = out;
+        return out;
+      }
+
+      const fid = trimString(args.folderId); // '' means Unfiled
+      let captureResult = null;
+      let bindResult = null;
+      let snapshotId = '';
+
+      if (fid) {
+        // Heavy path: existing folders flow captures transcript + binds.
+        if (!hasFolders()) {
+          const out = { ok: false, chatId: ident.chatId, folderId: fid, error: 'folders-unavailable' };
+          diag.lastSave = out;
+          return out;
+        }
+        bindResult = await H2O.folders.saveAndBindToFolder({
+          chatId: ident.chatId,
+          href: ident.href,
+          folderId: fid,
+          source,
+        });
+        if (!bindResult || bindResult.ok === false) {
+          const err = trimString(bindResult?.reason) || trimString(bindResult?.status) || 'save-and-bind-failed';
+          const out = { ok: false, chatId: ident.chatId, folderId: fid, error: err, details: bindResult };
+          diag.lastSave = out;
+          return out;
+        }
+        snapshotId = trimString(bindResult?.capture?.snapshotId)
+          || trimString(bindResult?.capture?.snapshot?.snapshotId);
+      } else {
+        // Unfiled path: capture transcript only, no folder bind. Falls back
+        // through captureCurrentChatForFolder (folders) → archiveBoot directly.
+        if (hasFoldersCapture()) {
+          captureResult = await H2O.folders.captureCurrentChatForFolder(ident.chatId, { source });
+        } else if (hasArchiveBoot()) {
+          // Last-resort defensive path — folders module not ready but archive is.
+          try {
+            const cap = await H2O.archiveBoot.captureNow(ident.chatId, { href: ident.href, source });
+            captureResult = { ok: cap && cap.ok !== false, status: cap?.status || '', chatId: ident.chatId, capture: cap };
+          } catch (e) {
+            pushError('saveToFolder:archiveBoot.captureNow', e);
+            captureResult = { ok: false, status: 'capture-threw', chatId: ident.chatId };
+          }
+        } else {
+          const out = { ok: false, chatId: ident.chatId, folderId: '', error: 'capture-unavailable' };
+          diag.lastSave = out;
+          return out;
+        }
+        if (!captureResult || captureResult.ok === false) {
+          const err = trimString(captureResult?.status) || 'capture-failed';
+          const out = { ok: false, chatId: ident.chatId, folderId: '', error: err, details: captureResult };
+          diag.lastSave = out;
+          return out;
+        }
+        snapshotId = trimString(captureResult?.capture?.snapshotId)
+          || trimString(captureResult?.capture?.snapshot?.snapshotId);
+        // Best-effort: clear any prior folder binding so the chat lands as Unfiled.
+        if (H2O.folders && typeof H2O.folders.setBinding === 'function') {
+          try { H2O.folders.setBinding(ident.chatId, '', { source, reason: 'unfiled-after-capture' }); } catch (e) { pushError('saveToFolder:setBinding-clear', e); }
+        }
+      }
+
+      // After a successful save, stamp ChatRegistry with the canonical state
+      // and provenance. The Phase 1 invariant in 0F1g mergeRecord already
+      // forces state.isLinked=true when isSaved=true && chatId — we set both
+      // explicitly here so the linkedFrom='save-to-folder' provenance is
+      // captured (otherwise the merge fallback would record 'backfill:saved').
+      let record = null;
+      try {
+        if (hasChatRegistry()) {
+          record = H2O.ChatRegistry.upsertRecord({
+            chatId: ident.chatId,
+            href: ident.href,
+            normalizedHref: ident.normalizedHref,
+            state: { isSaved: true, isLinked: true },
+            linkedFrom: 'save-to-folder',
+            linkSourceHref: ident.href,
+          }, { source });
+        }
+      } catch (e) {
+        pushError('saveToFolder:registry-stamp', e);
+      }
+
+      const out = {
+        ok: true,
+        chatId: ident.chatId,
+        folderId: fid,
+        snapshotId,
+        record,
+        details: bindResult || captureResult || null,
+      };
+      diag.lastSave = out;
+      return out;
+    } catch (e) {
+      pushError('saveToFolder', e);
+      const out = { ok: false, chatId: trimString(args.chatId), folderId: trimString(args.folderId), error: String(e?.message || e || 'unknown') };
+      diag.lastSave = out;
+      return out;
+    }
+  }
+
+  // ── openLinkedChat ───────────────────────────────────────────────────────
+  function openLinkedChat(chatIdOrRecord, opts = {}) {
+    diag.counts.openCalls += 1;
+    const target = (opts && trimString(opts.target)) || '_blank';
+    try {
+      let record = null;
+      if (chatIdOrRecord && typeof chatIdOrRecord === 'object') {
+        record = chatIdOrRecord;
+      } else if (typeof chatIdOrRecord === 'string' && chatIdOrRecord.trim()) {
+        const id = chatIdOrRecord.trim();
+        if (hasChatRegistry()) record = H2O.ChatRegistry.getRecord(id);
+      }
+      const url = urlFromRecord(record);
+      if (!url) {
+        const out = false;
+        diag.lastOpen = { ok: false, reason: 'no-url' };
+        return out;
+      }
+      W.open(url, target, 'noopener');
+      diag.lastOpen = { ok: true, url, target };
+      return true;
+    } catch (e) {
+      pushError('openLinkedChat', e);
+      diag.lastOpen = { ok: false, reason: 'threw' };
+      return false;
+    }
+  }
+
+  // ── diagnose ─────────────────────────────────────────────────────────────
+  function diagnose() {
+    return {
+      surface: SURFACE,
+      version: VERSION,
+      counts: { ...diag.counts },
+      lastAdd: diag.lastAdd,
+      lastSave: diag.lastSave,
+      lastOpen: diag.lastOpen,
+      errors: diag.errors.slice(-Math.min(10, ERR_MAX)),
+      hasChatRegistry: hasChatRegistry(),
+      hasFolders: hasFolders(),
+      hasArchiveBoot: hasArchiveBoot(),
+    };
+  }
+
+  // ── Public surface ───────────────────────────────────────────────────────
+  const LibraryActions = {
+    surface: SURFACE,
+    version: VERSION,
+    addToLibrary,
+    saveToFolder,
+    openLinkedChat,
+    diagnose,
+  };
+
+  H2O.LibraryActions = LibraryActions;
+  H2O.Library.Actions = LibraryActions; // convenience namespace
+
+  // ── Boot: register with LibraryCore when ready ───────────────────────────
+  function registerOnCore() {
+    const core = H2O.LibraryCore;
+    if (!core || typeof core.registerOwner !== 'function') return false;
+    try {
+      core.registerOwner('library-actions', LibraryActions, { replace: true });
+      core.registerService('library-actions', LibraryActions, { replace: true });
+      return true;
+    } catch (e) { pushError('register-on-core', e); return false; }
+  }
+
+  if (!registerOnCore()) {
+    // The existing Library Core ready event used by other 0F1* modules.
+    W.addEventListener('h2o.ev:prm:cgx:lib:ready:v1', () => registerOnCore(), { once: true });
+  }
+
+  try {
+    console.log(`${TAG} v${VERSION} ready — chatRegistry=${hasChatRegistry()} folders=${hasFolders()} archive=${hasArchiveBoot()}`);
+  } catch {}
+})();
