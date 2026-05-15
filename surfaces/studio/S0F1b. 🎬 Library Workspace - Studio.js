@@ -193,13 +193,50 @@
     return result;
   }
 
+  function categoryWriteFailure(status, snapshotId, chatId, categoryId, reason) {
+    return {
+      ok: false,
+      status: String(status || 'category-write-failed'),
+      reason: String(reason || status || 'category-write-failed'),
+      snapshotId: String(snapshotId || ''),
+      chatId: String(chatId || ''),
+      categoryId: String(categoryId || ''),
+    };
+  }
+
+  function isCategoryBridgeTransportError(error) {
+    const msg = String(error?.stack || error?.message || error || '');
+    return /Could not establish connection|Receiving end does not exist|archive bridge|category bridge|Extension context invalidated|context invalidated/i.test(msg);
+  }
+
   async function setSnapshotCategory(snapshotId, chatId, categoryId) {
+    const sid = String(snapshotId || '').trim();
+    const cid = String(chatId || '').trim();
+    const category = String(categoryId || '').trim();
+    if (!sid) return categoryWriteFailure('missing-snapshot-id', sid, cid, category);
+    if (!category) return categoryWriteFailure('missing-category-id', sid, cid, category);
+
     const cl = getChatList();
-    if (!cl) throw new Error('chat-list service unavailable');
-    const result = await cl.setSnapshotCategory(snapshotId, chatId, categoryId);
+    if (!cl || typeof cl.setSnapshotCategory !== 'function') {
+      return categoryWriteFailure('category-bridge-unavailable', sid, cid, category, 'chat-list service unavailable');
+    }
+
+    let result;
+    try {
+      result = await cl.setSnapshotCategory(sid, cid, category);
+    } catch (e) {
+      const status = isCategoryBridgeTransportError(e) ? 'category-bridge-unavailable' : 'category-write-failed';
+      step('setSnapshotCategory.rejected', status);
+      err('setSnapshotCategory', e);
+      return categoryWriteFailure(status, sid, cid, category, String(e?.message || e || status));
+    }
+    if (result?.ok === false) {
+      step('setSnapshotCategory.rejected', String(result.status || result.reason || 'rejected'));
+      return result;
+    }
     bustCaches('setSnapshotCategory');
     try { await getIndex()?.refresh('setSnapshotCategory'); } catch {}
-    emitUpdated('category-changed', { snapshotId, chatId, categoryId });
+    emitUpdated('category-changed', { snapshotId: sid, chatId: cid, categoryId: category });
     return result;
   }
 

@@ -40,6 +40,7 @@
   let cachedCatalog = null;
   let cachedAt = 0;
   let lastCategoryDiagnostics = [];
+  let lastWrite = null;
   const TTL_MS = 30_000;
 
   function mergeNormalizedCategory(raw, normalized) {
@@ -79,6 +80,97 @@
 
   function normalizeCategoryId(categoryId) {
     return String(categoryId || '').trim();
+  }
+
+  function normalizeSnapshotId(snapshotId) {
+    return String(snapshotId || '').trim();
+  }
+
+  function normalizeWriteChatId(chatId) {
+    return String(chatId || '').trim();
+  }
+
+  function recordWrite(payload) {
+    lastWrite = { ...(payload || {}), t: Date.now() };
+    step('setSnapshotCategory', `${lastWrite.status || ''}:${lastWrite.snapshotId || ''}:${lastWrite.categoryId || ''}`);
+  }
+
+  function writeFailure(status, snapshotId, chatId, categoryId, reason) {
+    const result = {
+      ok: false,
+      status: String(status || 'category-write-failed'),
+      reason: String(reason || status || 'category-write-failed'),
+      snapshotId: String(snapshotId || ''),
+      chatId: String(chatId || ''),
+      categoryId: String(categoryId || ''),
+    };
+    recordWrite(result);
+    return result;
+  }
+
+  function isBridgeTransportError(error) {
+    const msg = String(error?.stack || error?.message || error || '');
+    return /Could not establish connection|Receiving end does not exist|archive bridge|category bridge|Extension context invalidated|context invalidated/i.test(msg);
+  }
+
+  async function validateCategoryIdForWrite(categoryId) {
+    const id = normalizeCategoryId(categoryId);
+    if (!id) {
+      return { ok: false, categoryId: '', status: 'missing-category-id', reason: 'missing-category-id' };
+    }
+
+    const core = categoryCore();
+    if (core && typeof core.validateCategoryId === 'function') {
+      try {
+        const valid = core.validateCategoryId(id);
+        if (!valid?.ok) {
+          return {
+            ok: false,
+            categoryId: id,
+            status: String(valid?.reason || 'invalid-category-id'),
+            reason: String(valid?.reason || 'invalid-category-id'),
+          };
+        }
+      } catch (e) {
+        err('validateCategoryIdForWrite.validate', e);
+      }
+    } else if (/[\u0000-\u001f\u007f<>\\/]/.test(id)) {
+      return { ok: false, categoryId: id, status: 'invalid-category-id', reason: 'invalid-category-id' };
+    }
+
+    let list = [];
+    try { list = await listCategories(); }
+    catch (e) { err('validateCategoryIdForWrite.list', e); list = []; }
+    if (!Array.isArray(list) || !list.length) {
+      return { ok: true, categoryId: id, status: 'ok', reason: '' };
+    }
+
+    if (core && typeof core.resolveCategoryId === 'function') {
+      try {
+        const resolved = core.resolveCategoryId(id, { categories: list });
+        if (resolved?.ok && resolved.categoryId) {
+          return {
+            ok: true,
+            categoryId: String(resolved.categoryId),
+            status: 'ok',
+            reason: '',
+            replaced: !!resolved.replaced,
+          };
+        }
+        return {
+          ok: false,
+          categoryId: id,
+          status: String(resolved?.reason || 'category-not-found'),
+          reason: String(resolved?.reason || 'category-not-found'),
+        };
+      } catch (e) {
+        err('validateCategoryIdForWrite.resolve', e);
+      }
+    }
+
+    const found = list.some((category) => String(category?.id || category?.categoryId || '') === id);
+    if (!found) return { ok: false, categoryId: id, status: 'category-not-found', reason: 'category-not-found' };
+    return { ok: true, categoryId: id, status: 'ok', reason: '' };
   }
 
   function resolveCategoryIdForRead(categoryId, list) {
@@ -131,10 +223,53 @@
     return idx.query({ categoryId: String(id || '') });
   }
 
-  async function setSnapshotCategory(snapshotId, chatId, categoryId) {
+  async function setSnapshotCategory(snapshotId, chatId, categoryId, opts = {}) {
+    const sid = normalizeSnapshotId(snapshotId);
+    const cid = normalizeWriteChatId(chatId);
+    if (!sid) return writeFailure('missing-snapshot-id', sid, cid, categoryId);
+
+    const normalizedCategory = await validateCategoryIdForWrite(categoryId);
+    if (!normalizedCategory.ok) {
+      return writeFailure(normalizedCategory.status, sid, cid, normalizedCategory.categoryId, normalizedCategory.reason);
+    }
+
     const ws = getWorkspace();
-    if (!ws) throw new Error('library-workspace unavailable');
-    return ws.setSnapshotCategory(snapshotId, chatId, categoryId);
+    if (!ws || typeof ws.setSnapshotCategory !== 'function') {
+      return writeFailure('category-bridge-unavailable', sid, cid, normalizedCategory.categoryId, 'library-workspace unavailable');
+    }
+
+    try {
+      const result = await ws.setSnapshotCategory(sid, cid, normalizedCategory.categoryId, opts || {});
+      if (result?.ok === false) {
+        recordWrite({
+          ok: false,
+          status: String(result.status || result.reason || 'rejected'),
+          reason: String(result.reason || result.status || 'rejected'),
+          snapshotId: sid,
+          chatId: cid,
+          categoryId: String(result.categoryId || normalizedCategory.categoryId || ''),
+          result,
+        });
+        return result;
+      }
+      cachedCatalog = null;
+      cachedAt = 0;
+      recordWrite({
+        ok: result?.ok !== false,
+        status: String(result?.status || 'ok'),
+        snapshotId: sid,
+        chatId: cid,
+        categoryId: normalizedCategory.categoryId,
+        source: String(opts?.source || ''),
+        result,
+      });
+      return result;
+    } catch (e) {
+      const status = isBridgeTransportError(e) ? 'category-bridge-unavailable' : 'category-write-failed';
+      const result = writeFailure(status, sid, cid, normalizedCategory.categoryId, String(e?.message || e || status));
+      err('setSnapshotCategory', e);
+      return result;
+    }
   }
 
   const Categories = {
@@ -154,6 +289,7 @@
         hasCategoryCore: !!categoryCore(),
         categoryCorePhase: categoryCore()?.__phase || '',
         normalizationDiagnostics: lastCategoryDiagnostics.slice(-10),
+        lastWrite,
         steps: diag.steps.slice(-10),
         errors: diag.errors.slice(-5),
       };
