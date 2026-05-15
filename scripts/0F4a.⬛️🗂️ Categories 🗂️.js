@@ -61,6 +61,13 @@
       if (diag.errors.length > diag.errMax) diag.errors.splice(0, diag.errors.length - diag.errMax);
     } catch {}
   };
+  function categoryCore() {
+    try {
+      return H2O.Library?.CategoryProviderCore || null;
+    } catch {
+      return null;
+    }
+  }
 
   const KEY_FSECTION_STATE_UI_V1 = 'h2o:prm:cgx:fldrs:state:ui:v1';
   const KEY_LEG_UI = 'h2o:folders:ui:v1';
@@ -175,6 +182,118 @@
     return out;
   }
 
+  function normalizeCatalogEntriesViaCore(catalog) {
+    const Core = categoryCore();
+    if (!Core?.normalizeCategoryCatalog) return null;
+    try {
+      const normalized = Core.normalizeCategoryCatalog({ categories: catalog });
+      if (!Array.isArray(normalized?.categories)) return null;
+      const rawById = new Map();
+      (Array.isArray(catalog) ? catalog : []).forEach((raw) => {
+        const src = (raw && typeof raw === 'object') ? raw : {};
+        const id = String(src.id || '').trim();
+        if (id && !rawById.has(id)) rawById.set(id, src);
+      });
+      return normalized.categories
+        .map((entry) => {
+          const src = rawById.get(entry.id) || entry || {};
+          const id = String(entry.id || src.id || '').trim();
+          const name = normText(src.name || entry.name || '');
+          if (!id || !name) return null;
+          return {
+            id,
+            name,
+            color: normalizeHexColor(src.color || ''),
+            custom: entry.custom === true || src.custom === true,
+            status: normalizeCategoryStatus(src.status || entry.status),
+            sortOrder: Number.isFinite(Number(src.sortOrder)) ? Number(src.sortOrder) : 9999,
+            replacementCategoryId: String(entry.replacementCategoryId || src.replacementCategoryId || '').trim(),
+            aliases: normalizeAliasList(entry.aliases || src.aliases),
+          };
+        })
+        .filter((entry) => entry && entry.status !== 'retired');
+    } catch (e) {
+      err('category-core:normalize-catalog', e);
+      return null;
+    }
+  }
+
+  function resolveCategoryIdViaCore(raw, catalogEntries) {
+    const Core = categoryCore();
+    if (!Core?.resolveCategoryId) return '';
+    try {
+      const resolved = Core.resolveCategoryId(raw, { categories: catalogEntries || [] });
+      return resolved?.ok ? String(resolved.categoryId || '').trim() : '';
+    } catch (e) {
+      err('category-core:resolve-category-id', e);
+      return '';
+    }
+  }
+
+  function normalizeSnapshotCategoryViaCore(input) {
+    const Core = categoryCore();
+    if (!Core?.normalizeSnapshotCategory) return null;
+    try {
+      return Core.normalizeSnapshotCategory(input || {});
+    } catch (e) {
+      err('category-core:normalize-snapshot-category', e);
+      return null;
+    }
+  }
+
+  function normalizeCategoryOverrideViaCore(input, catalogEntries) {
+    const Core = categoryCore();
+    if (!Core?.normalizeCategoryOverride) return null;
+    try {
+      return Core.normalizeCategoryOverride(input || {}, { catalog: catalogEntries || [] });
+    } catch (e) {
+      err('category-core:normalize-category-override', e);
+      return null;
+    }
+  }
+
+  function normalizeCategoryCandidateViaCore(input) {
+    const Core = categoryCore();
+    if (!Core?.normalizeCategoryCandidate) return null;
+    try {
+      return Core.normalizeCategoryCandidate(input || {}, { nowIso: input?.createdAt || '' });
+    } catch (e) {
+      err('category-core:normalize-category-candidate', e);
+      return null;
+    }
+  }
+
+  function normalizeCategoryCandidateForPool(raw, patch = {}) {
+    const src = { ...((raw && typeof raw === 'object') ? raw : {}), ...patch };
+    const normalized = normalizeCategoryCandidateViaCore(src) || {};
+    const id = String(normalized.id || src.id || '').trim();
+    if (!id) return null;
+    const score = Number.isFinite(Number(normalized.score)) ? Number(normalized.score) : (Number(src.score) || 0);
+    const confidence = Number.isFinite(Number(normalized.confidence)) ? Number(normalized.confidence) : (Number(src.confidence) || 0);
+    const out = {
+      ...src,
+      id,
+      name: normText(normalized.name || src.name || id),
+      score,
+      confidence,
+      status: String(normalized.status || src.status || 'candidate').trim() || 'candidate',
+      createdAt: String(src.createdAt || normalized.createdAt || ''),
+      decidedAt: String(src.decidedAt || ''),
+    };
+    const sourceSignals = (src.sourceSignals && typeof src.sourceSignals === 'object')
+      ? src.sourceSignals
+      : ((normalized.sourceSignals && typeof normalized.sourceSignals === 'object') ? normalized.sourceSignals : null);
+    if (sourceSignals) out.sourceSignals = sourceSignals;
+    return out;
+  }
+
+  function normalizeCategoryCandidatePool(pool) {
+    if (!pool || typeof pool !== 'object') return pool;
+    if (!Array.isArray(pool.candidates)) return pool;
+    const candidates = pool.candidates.map((candidate) => normalizeCategoryCandidateForPool(candidate)).filter(Boolean);
+    return { ...pool, candidates };
+  }
+
   function getCatalogEntries() {
     let catalog = [];
     try {
@@ -183,8 +302,9 @@
       err('get-categories-catalog', e);
       catalog = [];
     }
-    return Array.isArray(catalog)
-      ? catalog
+    if (!Array.isArray(catalog)) return [];
+    const normalizedViaCore = normalizeCatalogEntriesViaCore(catalog);
+    return normalizedViaCore || catalog
           .map((raw) => {
             const src = (raw && typeof raw === 'object') ? raw : {};
             const id = String(src.id || '').trim();
@@ -201,8 +321,7 @@
               aliases: normalizeAliasList(src.aliases),
             };
           })
-          .filter((entry) => entry && entry.status !== 'retired')
-      : [];
+          .filter((entry) => entry && entry.status !== 'retired');
   }
 
   function buildCatalogIndex(catalogEntries) {
@@ -225,13 +344,25 @@
   function resolveCategoryId(raw, index, seen = new Set()) {
     const key = String(raw || '').trim();
     if (!key || !index?.aliasToId) return '';
+    const Core = categoryCore();
+    if (Core?.validateCategoryId) {
+      try {
+        const valid = Core.validateCategoryId(key);
+        if (!valid?.ok && !index.aliasToId.has(key.toLowerCase())) return '';
+      } catch (e) {
+        err('category-core:validate-category-id', e);
+      }
+    }
     const resolved = index.aliasToId.get(key.toLowerCase()) || '';
     if (!resolved || seen.has(resolved)) return '';
     seen.add(resolved);
     const entry = index.byId.get(resolved);
     if (!entry) return '';
-    if (entry.status === 'active') return entry.id;
+    const catalogEntries = Array.from(index.byId.values());
+    const coreResolved = resolveCategoryIdViaCore(entry.id, catalogEntries);
+    if (entry.status === 'active') return coreResolved || entry.id;
     if (entry.status === 'deprecated' && entry.replacementCategoryId) {
+      if (coreResolved) return coreResolved;
       return resolveCategoryId(entry.replacementCategoryId, index, seen);
     }
     return '';
@@ -241,9 +372,18 @@
     const category = (row?.category && typeof row.category === 'object') ? row.category : {};
     const primaryRaw = category.primaryCategoryId || category.primary || row?.primaryCategoryId || row?.primary || '';
     const secondaryRaw = category.secondaryCategoryId || category.secondary || row?.secondaryCategoryId || row?.secondary || '';
+    const normalized = normalizeSnapshotCategoryViaCore({
+      primaryCategoryId: primaryRaw,
+      secondaryCategoryId: secondaryRaw,
+      source: category.source || row?.categorySource || '',
+      algorithmVersion: category.algorithmVersion || '',
+      classifiedAt: category.classifiedAt || '',
+      overriddenAt: category.overriddenAt || '',
+      confidence: category.confidence ?? row?.categoryConfidence,
+    });
     const ids = [];
-    const primaryId = resolveCategoryId(primaryRaw, index);
-    const secondaryId = resolveCategoryId(secondaryRaw, index);
+    const primaryId = resolveCategoryId(normalized?.primaryCategoryId || primaryRaw, index);
+    const secondaryId = resolveCategoryId(normalized?.secondaryCategoryId || secondaryRaw, index);
     if (primaryId) ids.push(primaryId);
     if (secondaryId && secondaryId !== primaryId) ids.push(secondaryId);
     return ids;
@@ -2325,27 +2465,36 @@
   // existing 'candidate'-status entries that are NOT in the new list are dropped.
   function mergeWithExistingPool(prev, fresh) {
     const prevById = new Map();
-    if (prev?.candidates) prev.candidates.forEach((c) => { if (c?.id) prevById.set(c.id, c); });
+    if (prev?.candidates) {
+      prev.candidates
+        .map((c) => normalizeCategoryCandidateForPool(c))
+        .filter(Boolean)
+        .forEach((c) => { if (c?.id) prevById.set(c.id, c); });
+    }
     const freshById = new Map();
-    fresh.forEach((c) => { if (c?.id) freshById.set(c.id, c); });
+    const freshCandidates = (Array.isArray(fresh) ? fresh : [])
+      .map((c) => normalizeCategoryCandidateForPool(c))
+      .filter(Boolean);
+    freshCandidates.forEach((c) => { if (c?.id) freshById.set(c.id, c); });
 
     const out = [];
     const seen = new Set();
     // First pass: each fresh candidate, layered with existing decision if present.
-    for (const c of fresh) {
+    for (const c of freshCandidates) {
       if (!c?.id || seen.has(c.id)) continue;
       seen.add(c.id);
       const old = prevById.get(c.id);
       if (old && old.status && old.status !== 'candidate') {
         // Preserve user decision; refresh sourceSignals + score for context.
-        out.push({
+        const preserved = normalizeCategoryCandidateForPool({
           ...old,
           score: c.score,
           confidence: c.confidence,
           sourceSignals: c.sourceSignals,
         });
+        if (preserved) out.push(preserved);
       } else {
-        out.push({
+        const next = normalizeCategoryCandidateForPool({
           id: c.id,
           name: c.name,
           score: c.score,
@@ -2355,6 +2504,7 @@
           createdAt: (old?.createdAt) || new Date().toISOString(),
           decidedAt: '',
         });
+        if (next) out.push(next);
       }
     }
     // Second pass: keep retired entries (rejected/created/merged) that are no longer
@@ -2376,8 +2526,8 @@
     try {
       const v = await Store.get(CATPOOL_KEY);
       if (v && typeof v === 'object') {
-        _catPoolCache = v;
-        return v;
+        _catPoolCache = normalizeCategoryCandidatePool(v);
+        return _catPoolCache;
       }
     } catch (e) { err('catpool:load', e); }
     return null;
@@ -2387,8 +2537,9 @@
     if (!isStoreDurable()) return { ok: false, status: 'store-not-durable' };
     const Store = getLibraryStore();
     if (!Store?.set) return { ok: false, status: 'no-store' };
+    const nextPool = normalizeCategoryCandidatePool(pool);
     try {
-      await Store.set(CATPOOL_KEY, pool);
+      await Store.set(CATPOOL_KEY, nextPool);
       return { ok: true };
     } catch (e) {
       err('catpool:persist', e);
@@ -2711,11 +2862,23 @@
     return _overridesCache.rows[id];
   }
 
+  function normalizeCategorySlotForRead(source, value) {
+    if (!value?.primaryCategoryId) return null;
+    const normalized = normalizeSnapshotCategoryViaCore(value);
+    const out = { source, ...value };
+    const primaryCategoryId = String(normalized?.primaryCategoryId || value.primaryCategoryId || '').trim();
+    const secondaryCategoryId = String(normalized?.secondaryCategoryId || value.secondaryCategoryId || '').trim();
+    if (primaryCategoryId) out.primaryCategoryId = primaryCategoryId;
+    if (secondaryCategoryId || Object.prototype.hasOwnProperty.call(value, 'secondaryCategoryId')) out.secondaryCategoryId = secondaryCategoryId;
+    if (Object.prototype.hasOwnProperty.call(value, 'confidence') && normalized?.confidence != null) out.confidence = normalized.confidence;
+    return out;
+  }
+
   function getEffectiveCategoryFromRow(row) {
     if (!row || typeof row !== 'object') return null;
-    if (row.userOverride?.primaryCategoryId)       return { source: 'userOverride',       ...row.userOverride };
-    if (row.acceptedSuggestion?.primaryCategoryId) return { source: 'acceptedSuggestion', ...row.acceptedSuggestion };
-    if (row.autoSuggestion?.primaryCategoryId)     return { source: 'autoSuggestion',     ...row.autoSuggestion };
+    if (row.userOverride?.primaryCategoryId)       return normalizeCategorySlotForRead('userOverride', row.userOverride);
+    if (row.acceptedSuggestion?.primaryCategoryId) return normalizeCategorySlotForRead('acceptedSuggestion', row.acceptedSuggestion);
+    if (row.autoSuggestion?.primaryCategoryId)     return normalizeCategorySlotForRead('autoSuggestion', row.autoSuggestion);
     return null;
   }
 
@@ -2984,10 +3147,11 @@
     if (!row) return { ok: false, status: 'invalid-chat-id' };
     // Boundary: applyAutoClassSuggestion writes the acceptedSuggestion slot
     // ONLY. It does NOT touch userOverride.
+    const normalizedSuggestion = normalizeSnapshotCategoryViaCore(suggestion);
     row.acceptedSuggestion = {
-      primaryCategoryId: String(suggestion.primaryCategoryId),
+      primaryCategoryId: String(normalizedSuggestion?.primaryCategoryId || suggestion.primaryCategoryId),
       primaryCategoryName: String(suggestion.primaryCategoryName || ''),
-      confidence: Number.isFinite(Number(suggestion.confidence)) ? Number(suggestion.confidence) : null,
+      confidence: normalizedSuggestion?.confidence ?? (Number.isFinite(Number(suggestion.confidence)) ? Number(suggestion.confidence) : null),
       at: new Date().toISOString(),
     };
     const persistRes = await persistCategoryOverrides();
@@ -3041,8 +3205,16 @@
     if (row.userOverride?.primaryCategoryId && !force) {
       return { ok: false, status: 'override-exists' };
     }
+    const normalizedOverride = normalizeCategoryOverrideViaCore({
+      chatId,
+      primaryCategoryId: value.primaryCategoryId,
+      categoryId: value.primaryCategoryId,
+      confidence: value.confidence,
+      overriddenAt: value.overriddenAt || value.at || '',
+      source: 'user',
+    }, getCatalogEntries());
     row.userOverride = {
-      primaryCategoryId: String(value.primaryCategoryId),
+      primaryCategoryId: String(normalizedOverride?.categoryId || value.primaryCategoryId),
       primaryCategoryName: String(value.primaryCategoryName || ''),
       secondaryCategoryId: String(value.secondaryCategoryId || ''),
       at: new Date().toISOString(),
