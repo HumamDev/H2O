@@ -1,6 +1,6 @@
 # Studio Store
 
-Status: Active (Studio Highlights cleanup complete — store is the only Studio-side persistence path)
+Status: Active (Highlights cleanup complete on both surfaces — store is the only Studio-side persistence path; native `scripts/3H1a` is also free of legacy storage)
 Owns: `H2O.Studio.store` namespace and entity stores.
 Contracts: `surfaces/studio/STUDIO_STORAGE_CONTRACT.md`, `surfaces/studio/STUDIO_PORTABILITY_CONTRACT.md`.
 
@@ -50,11 +50,11 @@ Reads and writes go through `H2O.Studio.store.<entity>.*`. The adapter is the on
 
 See `STUDIO_PORTABILITY_CONTRACT.md` Rule 3 for the full rule.
 
-## `H2O.Studio.store.highlights` (Studio Cleanup Complete)
+## `H2O.Studio.store.highlights` (Cleanup Complete — Studio + Native)
 
 **The store is the only Studio-side persistence path for Highlights.** S3H1a's `STORE_read` / `STORE_write` / `STORE_saveNow` are thin one-line aliases over `H2O.Studio.store.highlights.{getAll, update, saveNow}`. There is no fallback to `UTIL_storage` — `UTIL_storage` has been deleted from S3H1a. There is no legacy-key bootstrap, no migration flag, no GM_* path, and no localStorage mirror inside S3H1a's highlight code. UI prefs (`KEY_CFG_UI_V1`, `CFG_loadUiConfig`, `CFG_saveUiConfig`) remain in S3H1a as a separate, unchanged concern.
 
-The native (chatgpt.com) `scripts/3H1a` script still contains its own legacy storage code (UTIL_storage IIFE, GM_* paths, legacy keys, migration flag). That cleanup is a separate, future commit series (Phase B1). Studio and native interoperate through the **shared canonical chrome.storage.local key** — wire format unchanged, both surfaces see the same data via `chrome.storage.onChanged` events.
+The native (chatgpt.com) `scripts/3H1a` script has also been cleaned up (Phase B1, runtime-validated): its old `UTIL_storage` IIFE, GM_* paths, legacy v1/v2/alias keys, and localStorage mirror were replaced with a slim `STORE` module that reads and writes only the canonical v3 key through `chrome.storage.local`. Studio and native interoperate through the **shared canonical chrome.storage.local key** — wire format unchanged, both surfaces see each other's writes via `chrome.storage.onChanged` events.
 
 ### Active path (Studio side)
 
@@ -68,7 +68,7 @@ S3H1a feature code  →  STORE_read / STORE_write / STORE_saveNow
 ### What is preserved
 
 - **Canonical v3 key:** `h2o:prm:cgx:nlnhghlghtr:state:inline_highlights:v3` — unchanged. All existing user highlight data continues to load and persist.
-- **Wire format:** `{ itemsByAnswer, convoId?, _meta? }` — must remain compatible with native 3H1a until Phase B1 lands.
+- **Wire format:** `{ itemsByAnswer, convoId?, _meta? }` — shared with native 3H1a (both surfaces now read and write the same shape under the canonical v3 key).
 - **Cross-context interop:** Studio and native still share the canonical key; both see each other's writes via `chrome.storage.onChanged`.
 - **UI prefs:** `KEY_CFG_UI_V1` and its `localStorage` get/set in `CFG_loadUiConfig` / `CFG_saveUiConfig` are separate, untouched.
 
@@ -145,7 +145,7 @@ backing: chrome.storage.local (single backend; no localStorage mirror)
 cross-tab: H2O.Studio.platform.broadcast.onAnyChange (fallback: chrome.storage.onChanged direct)
 ```
 
-The wire format is **shared with native `scripts/3H1a`** so the two surfaces stay in sync at the chrome.storage.local layer. Native 3H1a still has its own legacy storage internals (UTIL_storage IIFE, GM_*, localStorage mirror, legacy keys) — Phase B1 will clean that up separately. The shared canonical key keeps interop working in the meantime.
+The wire format is **shared with native `scripts/3H1a`** so the two surfaces stay in sync at the chrome.storage.local layer. As of Phase B1 (runtime-validated), native 3H1a has also been stripped of its legacy storage internals (UTIL_storage IIFE, GM_*, localStorage mirror, legacy v1/v2/alias keys) and now reads and writes only the canonical v3 key. Both surfaces converge on a single backend (`chrome.storage.local`) with a single canonical key — no parallel paths.
 
 Per-item conflicts are resolved by `mergeBlob`'s last-write-wins semantics on item `ts`. Cross-context writes (Studio replay highlight ↔ native chatgpt.com highlight) merge correctly because both sides use the same merge function on the same wire shape.
 
@@ -159,7 +159,7 @@ Per-item conflicts are resolved by `mergeBlob`'s last-write-wins semantics on it
 | **A1** | Simplify store internals (drop legacy fields/fallback/mirror; clean diagnose) | complete + runtime-validated |
 | **A2** | Remove `UTIL_storage` IIFE + legacy bootstrap + GM_* from S3H1a; wrappers become thin aliases | complete + runtime-validated |
 | **A3** | This doc refresh | complete in this commit |
-| B1 | Native `scripts/3H1a` parallel cleanup (drop UTIL_storage IIFE, GM_*, legacy keys; share canonical key) | **not started** |
+| B1 | Native `scripts/3H1a` parallel cleanup (drop UTIL_storage IIFE, GM_*, legacy keys; share canonical key) | complete + runtime-validated |
 
 **The original Stage 4 (legacy-key bootstrap migration into the store) was deliberately replaced by Phase A1/A2's clean-architecture path.** Legacy v1/v2/alias data is no longer imported anywhere; only the current canonical v3 key is read/written. Users on legacy data who have not already been bootstrapped to v3 by a prior runtime will see an empty highlight state — that trade-off was made consciously in favor of clean architecture.
 
