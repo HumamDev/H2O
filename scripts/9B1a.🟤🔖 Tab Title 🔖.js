@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9b1a.tab.title
 // @name               9B1a.🟤🔖 Tab Title 🔖
 // @namespace          H2O.Premium.CGX.tab.title
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-start
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (function () {
   'use strict';

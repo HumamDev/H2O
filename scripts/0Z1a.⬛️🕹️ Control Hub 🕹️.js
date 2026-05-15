@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0z1a.control.hub
 // @name               0Z1a.⬛️🕹️ Control Hub 🕹️
 // @namespace          H2O.Premium.CGX.control.hub
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 
 /* 🔑 MODULE KEYS INVENTORY (Values)

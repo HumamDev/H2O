@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0f1d.library_insights
 // @name               0F1d.⬛️🗂️ Library Insights 📊🗂️
 // @namespace          H2O.Premium.CGX.library_insights
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9a1c.chat-meta.enricher
 // @name               9A1c.🟫🖥️ Chat Meta Enricher 🧾🖥️
 // @namespace          H2O.Premium.CGX.interface.chatMetaEnricher
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

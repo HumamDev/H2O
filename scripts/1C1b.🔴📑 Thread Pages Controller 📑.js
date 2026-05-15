@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1c1b.chat.pages.controller
 // @name               1C1b.🔴📑 Thread Pages Controller 📑
 // @namespace          H2O.Premium.CGX.chat.pages.controller
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

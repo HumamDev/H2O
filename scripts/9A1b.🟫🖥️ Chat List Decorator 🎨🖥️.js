@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9a1b.chat-list.decorator
 // @name               9A1b.🟫🖥️ Chat List Decorator 🎨🖥️
 // @namespace          H2O.Premium.CGX.interface.chatListDecorator
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

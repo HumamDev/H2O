@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a1d.minimap.shell
 // @name               1A1d.🟥🗺️ MiniMap Shell 🐚🗺️
 // @namespace          H2O.Premium.CGX.minimap.shell
@@ -11,7 +11,7 @@
 // @run-at             document-idle
 // @grant              none
 
-// ==/UserScript==
+// ==/H2O Module==
 
 /* Smoke Test Checklist
  * - Main only -> UI works (fallback)

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             8y1a.input.dock.keys.rail
 // @name               8Y1a.🟣🧊 Input Dock (Keys Rail)
 // @namespace          H2O.Premium.CGX.input.dock.keys.rail
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';
