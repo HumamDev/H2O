@@ -986,8 +986,27 @@ const DB_NAME = "h2o_chat_archive";
 const DB_VERSION = 1;
 const STORE_SNAPSHOTS = "snapshots";
 const STORE_CHUNKS = "chunks";
+const LIBRARY_STORAGE_DIAG_OP = "h2o:library-storage:diagnose";
+const LIBRARY_SHARED_DB_NAME = "h2o.library.shared";
+const LIBRARY_SHARED_DB_VERSION = 1;
+const LIBRARY_SHARED_PLANNED_STORES = Object.freeze([
+  "chatRegistry",
+  "folders",
+  "folderBindings",
+  "categories",
+  "categoryAssignments",
+  "tags",
+  "tagSummaries",
+  "labels",
+  "labelBindings",
+  "projects",
+  "archiveRefs",
+  "syncState",
+  "migrationState",
+]);
 const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "ping",
+  LIBRARY_STORAGE_DIAG_OP,
   "getBootMode",
   "setBootMode",
   "getMigratedFlag",
@@ -4185,6 +4204,73 @@ async function libraryKvHandle(op, payload) {
   }
 }
 
+async function libraryStorageDiagnose() {
+  const indexedDbAvailable = typeof indexedDB !== "undefined";
+  const databasesApiAvailable = indexedDbAvailable && typeof indexedDB.databases === "function";
+  const now = new Date().toISOString();
+  let databases = [];
+  let databasesError = "";
+  if (databasesApiAvailable) {
+    try {
+      const rows = await indexedDB.databases();
+      databases = Array.isArray(rows) ? rows : [];
+    } catch (e) {
+      databasesError = String(e && (e.message || e)) || "indexedDB.databases failed";
+    }
+  }
+  const canDetermineDbExistence = databasesApiAvailable && !databasesError;
+  const current = canDetermineDbExistence ? (databases.find((row) => row && row.name === LIBRARY_SHARED_DB_NAME) || null) : null;
+  const dbExists = canDetermineDbExistence ? !!current : null;
+  const stores = {};
+  for (const name of LIBRARY_SHARED_PLANNED_STORES) {
+    stores[name] = {
+      planned: true,
+      exists: null,
+      status: dbExists === true
+        ? "not-inspected-without-db-open"
+        : (dbExists === false ? "not-created" : "unknown-db-existence"),
+    };
+  }
+  return {
+    ok: true,
+    phase: "8B",
+    mode: "diagnostics-only",
+    service: "library-storage",
+    background: {
+      reachable: true,
+      context: "chrome-extension-background",
+      at: now,
+    },
+    indexedDB: {
+      available: indexedDbAvailable,
+      databasesApiAvailable,
+      databasesError,
+    },
+    schema: {
+      dbName: LIBRARY_SHARED_DB_NAME,
+      plannedVersion: LIBRARY_SHARED_DB_VERSION,
+      currentVersion: dbExists === true ? Number(current.version || 0) || null : null,
+      dbExists,
+      dbCreatedByThisCheck: false,
+      objectStoreInspection: dbExists
+        ? "skipped-to-avoid-db-open-side-effects"
+        : (dbExists === false ? "skipped-db-absent" : "skipped-db-existence-unknown"),
+      plannedStores: LIBRARY_SHARED_PLANNED_STORES.slice(),
+      stores,
+    },
+    flags: {
+      migration: false,
+      dualWrite: false,
+      canonicalRead: false,
+    },
+    health: {
+      ok: indexedDbAvailable,
+      status: indexedDbAvailable ? "ready-for-future-schema" : "indexeddb-unavailable",
+      reason: databasesError || "",
+    },
+  };
+}
+
 async function handleArchiveMessage(msg) {
   const req = msg && msg.req && typeof msg.req === "object" ? msg.req : {};
   const op = String(req.op || "").trim();
@@ -4194,6 +4280,10 @@ async function handleArchiveMessage(msg) {
   // Library KV ops are namespace-isolated from archive snapshots and skip the rest of
   // the archive-specific routing (nsDisk, snapshot helpers, etc.). One-line dispatch.
   if (LIBRARY_KV_OP_SET[op]) return libraryKvHandle(op, payload);
+
+  if (op === LIBRARY_STORAGE_DIAG_OP || op === "libraryStorageDiagnose") {
+    return { ok: true, result: await libraryStorageDiagnose() };
+  }
 
   if (op === "ping") {
     return {

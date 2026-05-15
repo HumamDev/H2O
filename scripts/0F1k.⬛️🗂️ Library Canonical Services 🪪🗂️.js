@@ -201,6 +201,678 @@
     return !!(value && typeof value === 'object' && value.__placeholder === true);
   }
 
+  // ── Phase 8A storage adapter contract diagnostics ─────────────────────────
+  const STORAGE_ADAPTER_PHASE = '8A';
+  const STORAGE_BACKGROUND_DIAG_OP = 'h2o:library-storage:diagnose';
+  const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
+  const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
+  const STORAGE_ADAPTER_DOMAINS = Object.freeze([
+    {
+      name: 'chatRegistry',
+      currentOwner: 'native-chat-registry',
+      currentRoot: 'chatgpt.com localStorage',
+      currentRoots: ['h2o:library:chat-registry:v1'],
+      targetOwner: 'extension-background-service-worker',
+      targetRoot: SHARED_IDB_TARGET,
+      migrationPriority: 'high',
+      migrate: 'later',
+      sourcePriority: ['native localStorage registry', 'Studio mirror registry', 'future SW-IDB'],
+      readCompatibility: ['legacy localStorage', 'Studio registry cache', 'future storage adapter'],
+      writeCompatibility: ['legacy native writer until migration flag is enabled'],
+      rollback: ['turn migration flag off', 'read legacy localStorage key'],
+    },
+    {
+      name: 'libraryIndex',
+      currentOwner: 'surface-library-index',
+      currentRoot: 'Library Store plus archive/registry projections',
+      currentRoots: ['h2o:prm:cgx:library:registry:v2', 'h2o:prm:cgx:library:scan-ledger'],
+      targetOwner: 'derived-cache',
+      targetRoot: 'rebuild from canonical records plus per-surface cache',
+      migrationPriority: 'medium',
+      migrate: 'later-cache-only',
+      sourcePriority: ['archive rows', 'chat registry rows', 'linked record broadcast', 'future SW-IDB cache'],
+      readCompatibility: ['legacy LibraryIndex refresh', 'future cache rebuild'],
+      writeCompatibility: ['no direct canonical writes'],
+      rollback: ['rebuild from legacy registry/archive sources'],
+    },
+    {
+      name: 'folders',
+      currentOwner: 'native-folders/archive-bridge',
+      currentRoot: 'folder vault localStorage/archive metadata',
+      currentRoots: [
+        'h2o:prm:cgx:fldrs:state:data:v1',
+        'h2o:folders:data:v1',
+        'h2o:folders:v1',
+      ],
+      targetOwner: 'extension-background-service-worker',
+      targetRoot: SHARED_IDB_TARGET,
+      migrationPriority: 'high',
+      migrate: 'later',
+      sourcePriority: ['native folder vault', 'archive snapshot metadata', 'Studio bridge cache', 'future SW-IDB'],
+      readCompatibility: ['FolderProviderCore normalizers', 'legacy folder vault', 'archive bridge'],
+      writeCompatibility: ['legacy native/archive writers until migration flag is enabled'],
+      rollback: ['turn migration flag off', 'legacy folder keys remain readable'],
+    },
+    {
+      name: 'categories',
+      currentOwner: 'native-categories/archive-bridge',
+      currentRoot: 'archive category catalog plus Store candidate/override keys',
+      currentRoots: [
+        'h2o:prm:cgx:library:cat-candidate-pool:v1',
+        'h2o:prm:cgx:library:category-overrides:v1',
+        'h2o:prm:cgx:library:autoclass-prefs:v1',
+      ],
+      targetOwner: 'extension-background-service-worker',
+      targetRoot: SHARED_IDB_TARGET,
+      migrationPriority: 'high',
+      migrate: 'later',
+      sourcePriority: ['archive category catalog', 'snapshot metadata', 'candidate/override Store keys', 'future SW-IDB'],
+      readCompatibility: ['CategoryProviderCore normalizers', 'archive bridge', 'legacy Store keys'],
+      writeCompatibility: ['legacy category writers until migration flag is enabled'],
+      rollback: ['turn migration flag off', 'legacy archive/category keys remain readable'],
+    },
+    {
+      name: 'tags',
+      currentOwner: 'native-tags',
+      currentRoot: 'native turn/chat localStorage plus Library Store indexes',
+      currentRoots: [
+        'h2o:prm:cgx:tags:turn-cache:v2',
+        'h2o:prm:cgx:tags:chat-cache:v2',
+        'h2o:prm:cgx:tags:tag-pool:v2',
+        'h2o:prm:cgx:library:tag-auto-pool:v1',
+        'h2o:prm:cgx:library:tag-user-pool:v1',
+        'h2o:prm:cgx:library:tag-category-links:v1',
+      ],
+      targetOwner: 'mixed-native-and-background',
+      targetRoot: 'native live turn state plus selected SW-IDB catalogs/bindings',
+      migrationPriority: 'medium',
+      migrate: 'later-partial',
+      sourcePriority: ['native turn DOM/cache', 'tag occurrence Store keys', 'LibraryIndex row facets', 'future SW-IDB'],
+      readCompatibility: ['TagProviderCore normalizers', 'legacy tag caches', 'future shared catalogs'],
+      writeCompatibility: ['native turn/tag writers stay owner for live DOM-derived state'],
+      rollback: ['turn migration flag off', 'legacy native tag keys remain readable'],
+    },
+    {
+      name: 'labels',
+      currentOwner: 'native-labels/archive-bridge',
+      currentRoot: 'native label catalog/bindings plus Studio bridge catalog',
+      currentRoots: [
+        'h2o:prm:cgx:library:labels:catalog:v1',
+        'h2o:prm:cgx:library:labels:bindings:v1',
+        'h2o:prm:cgx:library:labels:ui:v1',
+        'h2o:prm:cgx:library:labels:cfg:v1',
+      ],
+      targetOwner: 'extension-background-service-worker',
+      targetRoot: SHARED_IDB_TARGET,
+      migrationPriority: 'high',
+      migrate: 'later',
+      sourcePriority: ['native label catalog/bindings', 'archive metadata', 'Studio bridge catalog', 'future SW-IDB'],
+      readCompatibility: ['LabelProviderCore normalizers', 'legacy label keys', 'archive bridge'],
+      writeCompatibility: ['legacy label writers until migration flag is enabled'],
+      rollback: ['turn migration flag off', 'legacy label keys remain readable'],
+    },
+    {
+      name: 'projects',
+      currentOwner: 'native-projects',
+      currentRoot: 'native project cache plus read-only Studio broadcast projection',
+      currentRoots: [
+        'h2o:prm:cgx:fldrs:state:projects_cache:v1',
+        'h2o:prm:cgx:fldrs:state:projects_native_headers:v1',
+      ],
+      targetOwner: 'extension-background-service-worker',
+      targetRoot: SHARED_IDB_TARGET,
+      migrationPriority: 'medium',
+      migrate: 'later-read-mostly',
+      sourcePriority: ['native project cache', 'native broadcast projectCatalog', 'LibraryIndex project facets', 'future SW-IDB'],
+      readCompatibility: ['ProjectProviderCore normalizers', 'native cache', 'broadcast catalog'],
+      writeCompatibility: ['no Studio write path', 'native project harvesting remains owner'],
+      rollback: ['turn migration flag off', 'native project cache remains readable'],
+    },
+    {
+      name: 'archiveRefs',
+      currentOwner: 'archive-engine/background',
+      currentRoot: 'archive snapshot storage',
+      currentRoots: ['h2o_chat_archive IndexedDB', 'archive snapshot metadata'],
+      targetOwner: 'archive-engine/background',
+      targetRoot: 'archive DB plus future reference indexes',
+      migrationPriority: 'low',
+      migrate: 'later-after-archive-boundary',
+      sourcePriority: ['archive snapshot DB', 'background archive APIs', 'future reference indexes'],
+      readCompatibility: ['existing archive bridge'],
+      writeCompatibility: ['existing archive engine only'],
+      rollback: ['archive DB remains canonical'],
+    },
+    {
+      name: 'syncEnvelopes',
+      currentOwner: 'cross-surface-sync',
+      currentRoot: 'chrome.storage.local broadcast envelopes',
+      currentRoots: [
+        'h2o:library:cross-surface:broadcast:v1',
+        'h2o:library:cross-surface:broadcast:native:v1',
+      ],
+      targetOwner: 'cross-surface-sync',
+      targetRoot: 'chrome.storage.local broadcast envelopes',
+      migrationPriority: 'none',
+      migrate: 'never',
+      sourcePriority: ['chrome.storage.local broadcast envelope'],
+      readCompatibility: ['existing sync diagnostics'],
+      writeCompatibility: ['existing sync envelope writers only'],
+      rollback: ['clear broadcast envelope only if explicitly requested'],
+    },
+    {
+      name: 'uiPrefs',
+      currentOwner: 'surface-ui',
+      currentRoot: 'surface-local localStorage/chrome.storage small prefs',
+      currentRoots: [
+        'h2o:flags:v1',
+        'h2o:prm:cgx:fldrs:state:ui:v1',
+        'h2o:prm:cgx:library-workspace:sidebar-layout:v1',
+      ],
+      targetOwner: 'surface-ui',
+      targetRoot: 'surface-local hot-path prefs',
+      migrationPriority: 'none',
+      migrate: 'never-or-later-selective',
+      sourcePriority: ['surface localStorage', 'chrome.storage.local small prefs'],
+      readCompatibility: ['existing UI pref reads'],
+      writeCompatibility: ['existing UI pref writers'],
+      rollback: ['surface-local keys remain owner'],
+    },
+  ]);
+  const backgroundHealthState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
+    lastResult: null,
+  };
+
+  function safeCall(label, fn, fallback = null) {
+    try { return fn(); } catch (e) { err(label, e); return fallback; }
+  }
+
+  function compactStoreCaps(caps) {
+    const c = (caps && typeof caps === 'object') ? caps : {};
+    const adapters = {};
+    const rawAdapters = (c.adapters && typeof c.adapters === 'object') ? c.adapters : {};
+    Object.keys(rawAdapters).sort().forEach((name) => {
+      const a = rawAdapters[name] || {};
+      adapters[name] = {
+        apiPresent: a.apiPresent === true,
+        sentinelOk: a.sentinelOk === true,
+        available: a.available === true,
+      };
+    });
+    return {
+      ready: c.ready === true,
+      runtime: String(c.runtime || ''),
+      primary: String(c.primary || ''),
+      mirror: c.mirror || null,
+      migrationSource: c.migrationSource || null,
+      durable: c.durable === true,
+      canMigrateLargeLibraryData: c.canMigrateLargeLibraryData === true,
+      health: String(c.health || ''),
+      adapters,
+    };
+  }
+
+  function storageCapabilities() {
+    const store = H2O.Library?.Store || null;
+    const caps = store && typeof store.caps === 'function' ? safeCall('storage-adapter.store.caps', () => store.caps(), null) : null;
+    return {
+      backgroundServiceWorker: {
+        available: !!W.chrome?.runtime?.sendMessage,
+        access: 'chrome.runtime.sendMessage',
+      },
+      indexedDB: {
+        available: typeof W.indexedDB !== 'undefined',
+        access: 'surface-global',
+      },
+      chromeStorageLocal: {
+        available: !!W.chrome?.storage?.local,
+        access: 'extension-api-if-present',
+      },
+      legacyLocalStorage: {
+        available: safeCall('storage-adapter.localStorage.available', () => !!W.localStorage, false) === true,
+        access: 'surface-origin',
+      },
+      libraryStore: {
+        available: !!store,
+        backend: store && typeof store.backend === 'function' ? safeCall('storage-adapter.store.backend', () => store.backend(), '') : '',
+        mirrorBackend: store && typeof store.mirrorBackend === 'function' ? safeCall('storage-adapter.store.mirrorBackend', () => store.mirrorBackend(), null) : null,
+        caps: compactStoreCaps(caps),
+      },
+      plannedCanonicalStore: {
+        owner: 'extension-background-service-worker',
+        root: SHARED_IDB_TARGET,
+        enabled: false,
+        phase: STORAGE_ADAPTER_PHASE,
+      },
+    };
+  }
+
+  function flagsForDomain(domain) {
+    const flags = H2O.flags;
+    const base = `library.storage.${domain}`;
+    const read = (suffix) => {
+      try { return flags && typeof flags.get === 'function' ? flags.get(`${base}.${suffix}`, false) === true : false; }
+      catch (e) { err(`storage-adapter.flag:${domain}:${suffix}`, e); return false; }
+    };
+    return {
+      canonicalReadEnabled: read('canonicalReadEnabled'),
+      dualWriteEnabled: read('dualWriteEnabled'),
+      migrationEnabled: read('migrationEnabled'),
+      legacyReadDisabled: read('legacyReadDisabled'),
+    };
+  }
+
+  function hasLegacyKey(key) {
+    if (!key || /IndexedDB|metadata|archive DB|cross-surface:broadcast/i.test(key)) return null;
+    return safeCall(`storage-adapter.localStorage.has:${key}`, () => W.localStorage?.getItem(String(key)) != null, null);
+  }
+
+  function domainStatus(domainName) {
+    const name = String(domainName || '');
+    const cfg = STORAGE_ADAPTER_DOMAINS.find((d) => d.name === name);
+    if (!cfg) {
+      return {
+        ok: false,
+        status: 'unknown-domain',
+        domain: name,
+        knownDomains: STORAGE_ADAPTER_DOMAINS.map((d) => d.name),
+      };
+    }
+    const legacyKeys = {};
+    (cfg.currentRoots || []).forEach((key) => { legacyKeys[key] = hasLegacyKey(key); });
+    const flags = flagsForDomain(cfg.name);
+    const sentinelKey = `h2o:library:storage-migration:${cfg.name}:v1`;
+    return {
+      ok: true,
+      phase: STORAGE_ADAPTER_PHASE,
+      mode: 'diagnostics-only',
+      domain: cfg.name,
+      currentOwner: cfg.currentOwner,
+      currentRoot: cfg.currentRoot,
+      currentRoots: cfg.currentRoots.slice(),
+      targetOwner: cfg.targetOwner,
+      targetRoot: cfg.targetRoot,
+      migrationPriority: cfg.migrationPriority,
+      migrate: cfg.migrate,
+      sourcePriority: cfg.sourcePriority.slice(),
+      readCompatibility: cfg.readCompatibility.slice(),
+      writeCompatibility: cfg.writeCompatibility.slice(),
+      rollback: cfg.rollback.slice(),
+      flags,
+      canonicalEnabled: false,
+      migrationSentinel: {
+        key: sentinelKey,
+        present: hasLegacyKey(sentinelKey) === true,
+        writeEnabled: false,
+      },
+      legacyKeyPresence: legacyKeys,
+      parityCounts: {
+        available: false,
+        source: 'not-collected-in-phase-8a',
+        legacy: null,
+        canonical: null,
+      },
+      lastBackend: {
+        read: null,
+        write: null,
+        source: 'not-tracked-in-phase-8a',
+      },
+    };
+  }
+
+  function dualReadBlockers(cfg, flags, legacyKeys) {
+    const blockers = [
+      'phase-8c-diagnostics-only',
+      'canonical-read-flag-disabled',
+      'dual-read-execution-not-implemented',
+      'parity-counts-not-collected',
+      'no-domain-migration-sentinel',
+    ];
+    if (!cfg || cfg.migrate === 'never' || String(cfg.migrate || '').startsWith('never')) {
+      blockers.push('domain-not-planned-for-canonical-migration');
+    }
+    if (cfg && cfg.targetOwner === 'derived-cache') blockers.push('domain-is-derived-cache-not-canonical-store');
+    if (cfg && cfg.name === 'tags') blockers.push('live-turn-dom-state-must-remain-native-owned');
+    if (cfg && cfg.name === 'archiveRefs') blockers.push('archive-boundary-not-migrated');
+    if (cfg && cfg.name === 'syncEnvelopes') blockers.push('broadcast-envelope-remains-transport-not-store');
+    if (cfg && cfg.name === 'uiPrefs') blockers.push('hot-path-ui-prefs-remain-surface-local');
+    if (flags && flags.legacyReadDisabled) blockers.push('legacy-read-disabled-flag-would-be-unsafe');
+    const knownPresence = Object.values(legacyKeys || {}).filter((v) => v !== null);
+    if (knownPresence.length && !knownPresence.some(Boolean)) blockers.push('no-known-legacy-key-present-on-this-surface');
+    return blockers;
+  }
+
+  function dualReadParityChecks(cfg) {
+    const base = [
+      'record-count',
+      'id-set-hash',
+      'schema-version',
+      'updated-at-watermark',
+      'provider-normalized-shape',
+    ];
+    switch (cfg?.name) {
+      case 'folders':
+        return base.concat(['folder-catalog-count', 'folder-binding-count', 'orphan-folder-bindings']);
+      case 'categories':
+        return base.concat(['category-catalog-count', 'assignment-count', 'override-count', 'candidate-pool-count']);
+      case 'tags':
+        return base.concat(['tag-summary-count', 'turn-binding-count', 'occurrence-index-count', 'tag-category-link-count']);
+      case 'labels':
+        return base.concat(['label-catalog-count', 'label-binding-count', 'label-type-count']);
+      case 'projects':
+        return base.concat(['project-catalog-count', 'project-name-coverage', 'project-binding-count']);
+      case 'libraryIndex':
+        return ['row-count', 'facet-counts', 'linked-saved-imported-split', 'source-component-counts', 'row-id-set-hash'];
+      case 'archiveRefs':
+        return ['snapshot-count', 'snapshot-id-set-hash', 'metadata-shape', 'chunk-count'];
+      case 'syncEnvelopes':
+        return ['envelope-version', 'payload-key-set', 'last-broadcast-age'];
+      case 'uiPrefs':
+        return ['pref-key-set', 'json-shape', 'surface-specificity'];
+      default:
+        return base;
+    }
+  }
+
+  function dualReadRisk(cfg) {
+    if (!cfg) return 'unknown';
+    if (cfg.name === 'tags') return 'high-live-dom-and-large-index';
+    if (cfg.name === 'archiveRefs') return 'high-archive-boundary';
+    if (cfg.migrationPriority === 'high') return 'high';
+    if (cfg.migrationPriority === 'medium') return 'medium';
+    return 'low';
+  }
+
+  function dualReadPrerequisites(cfg) {
+    const out = [
+      'background-schema-created-and-validated',
+      'domain-copy-or-mirror-populated',
+      'legacy-and-canonical-normalizers-produce-compatible-shapes',
+      'parity-checks-pass-with-bounded-diagnostics',
+      'structured-fallback-result-shapes-validated',
+      'canonical-read-flag-explicitly-enabled',
+    ];
+    if (cfg?.name === 'tags') out.push('tag-occurrence-index-size-strategy-decided');
+    if (cfg?.name === 'libraryIndex') out.push('index-cache-rebuild-boundary-defined');
+    if (cfg?.name === 'archiveRefs') out.push('archive-storage-boundary-approved');
+    if (cfg?.name === 'syncEnvelopes') out.push('transport-remains-chrome-storage-envelope');
+    if (cfg?.name === 'uiPrefs') out.push('surface-local-pref-boundary-approved');
+    return out;
+  }
+
+  function getDualReadPlan(domainName) {
+    const name = String(domainName || '');
+    const cfg = STORAGE_ADAPTER_DOMAINS.find((d) => d.name === name);
+    if (!cfg) {
+      return {
+        ok: false,
+        status: 'unknown-domain',
+        domain: name,
+        knownDomains: STORAGE_ADAPTER_DOMAINS.map((d) => d.name),
+      };
+    }
+    const status = domainStatus(cfg.name);
+    const flags = status.flags || {};
+    const canonicalSource = {
+      owner: cfg.targetOwner,
+      root: cfg.targetRoot,
+      domain: cfg.name,
+      enabled: false,
+      checkedInPhase8C: false,
+    };
+    const legacySources = (cfg.sourcePriority || []).map((source, index) => ({
+      source,
+      priority: index + 1,
+      activeFallback: index === 0 || cfg.migrate === 'never' || String(cfg.migrate || '').startsWith('never'),
+    }));
+    return {
+      ok: true,
+      phase: '8C',
+      mode: 'diagnostics-only',
+      domain: cfg.name,
+      enabled: false,
+      canonicalReadEnabled: false,
+      legacyFallbackEnabled: true,
+      activeReadPathChanged: false,
+      canonicalSource,
+      legacySources,
+      activeReadOrder: legacySources.map((s) => s.source),
+      futureDualReadOrder: [canonicalSource.root].concat(legacySources.map((s) => s.source)),
+      fallbackSource: legacySources[0]?.source || cfg.currentRoot,
+      parityChecksPlanned: dualReadParityChecks(cfg),
+      parityMetrics: {
+        collected: false,
+        legacyCount: null,
+        canonicalCount: null,
+        idSetHashMatch: null,
+        shapeMatch: null,
+      },
+      blockers: dualReadBlockers(cfg, flags, status.legacyKeyPresence),
+      risk: dualReadRisk(cfg),
+      activationPrerequisites: dualReadPrerequisites(cfg),
+      status,
+    };
+  }
+
+  function getDualReadReadiness() {
+    const plans = {};
+    const summary = {
+      total: STORAGE_ADAPTER_DOMAINS.length,
+      enabled: 0,
+      canonicalReadEnabled: 0,
+      ready: 0,
+      blocked: 0,
+      diagnosticsOnly: true,
+    };
+    STORAGE_ADAPTER_DOMAINS.forEach((cfg) => {
+      const plan = getDualReadPlan(cfg.name);
+      plans[cfg.name] = plan;
+      if (plan.enabled) summary.enabled += 1;
+      if (plan.canonicalReadEnabled) summary.canonicalReadEnabled += 1;
+      if (plan.ok && Array.isArray(plan.blockers) && plan.blockers.length === 0) summary.ready += 1;
+      else summary.blocked += 1;
+    });
+    return {
+      ok: true,
+      phase: '8C',
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      canonicalReadsEnabled: false,
+      dualReadExecutionEnabled: false,
+      legacyFallbackEnabled: true,
+      activeReadPathsChanged: false,
+      summary,
+      plans,
+    };
+  }
+
+  function storageAdapterHealth() {
+    const capabilities = storageCapabilities();
+    const store = capabilities.libraryStore;
+    const ok = capabilities.legacyLocalStorage.available || store.available || capabilities.chromeStorageLocal.available || capabilities.indexedDB.available;
+    return {
+      ok,
+      phase: STORAGE_ADAPTER_PHASE,
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      canonicalStoreEnabled: false,
+      migrationEnabled: false,
+      dualWriteEnabled: false,
+      backgroundServiceWorkerAvailable: capabilities.backgroundServiceWorker.available,
+      indexedDBAvailable: capabilities.indexedDB.available,
+      chromeStorageAvailable: capabilities.chromeStorageLocal.available,
+      legacyLocalStorageAvailable: capabilities.legacyLocalStorage.available,
+      libraryStoreAvailable: store.available,
+      libraryStoreBackend: store.backend || '',
+      libraryStoreHealth: store.caps.health || '',
+    };
+  }
+
+  function rememberBackgroundHealth(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-background-diagnostic-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'background-diagnostic-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    backgroundHealthState.lastCheckedAt = Date.now();
+    backgroundHealthState.lastTransport = out.transport;
+    backgroundHealthState.lastResult = out;
+    return out;
+  }
+
+  function normalizeBackgroundHealthEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return rememberBackgroundHealth({
+        ok: false,
+        status: 'background-diagnostic-empty-result',
+        reason: 'background returned no diagnostic payload',
+      }, transport);
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return rememberBackgroundHealth({
+          ok: false,
+          status: 'background-diagnostic-rejected',
+          reason: String(env.error || env.reason || 'background diagnostic rejected'),
+          error: env.error || '',
+        }, transport);
+      }
+      return rememberBackgroundHealth(env.result, transport);
+    }
+    return rememberBackgroundHealth(env, transport);
+  }
+
+  function sendRuntimeArchiveMessage() {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!W.chrome?.runtime || typeof W.chrome.runtime.sendMessage !== 'function') {
+          reject(new Error('chrome.runtime.sendMessage unavailable'));
+          return;
+        }
+        W.chrome.runtime.sendMessage({
+          type: STORAGE_ARCHIVE_MSG,
+          req: { op: STORAGE_BACKGROUND_DIAG_OP, payload: {} },
+        }, (response) => {
+          const le = W.chrome?.runtime?.lastError;
+          if (le) {
+            reject(new Error(String(le.message || le)));
+            return;
+          }
+          resolve(response);
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  async function getBackgroundHealth() {
+    try {
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageDiagnose === 'function') {
+        const out = await bridge.libraryStorageDiagnose();
+        return normalizeBackgroundHealthEnvelope(out, 'extension-archive-bridge');
+      }
+      if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        const out = await sendRuntimeArchiveMessage();
+        return normalizeBackgroundHealthEnvelope(out, 'chrome.runtime.sendMessage');
+      }
+      return rememberBackgroundHealth({
+        ok: false,
+        status: 'background-diagnostic-unavailable',
+        reason: 'no extension archive bridge or chrome.runtime transport available',
+      }, 'none');
+    } catch (e) {
+      return rememberBackgroundHealth({
+        ok: false,
+        status: 'background-diagnostic-error',
+        reason: String(e?.message || e || ''),
+      }, 'error');
+    }
+  }
+
+  function backgroundHealthSnapshot() {
+    return {
+      lastCheckedAt: backgroundHealthState.lastCheckedAt,
+      lastTransport: backgroundHealthState.lastTransport,
+      lastResult: backgroundHealthState.lastResult,
+      queried: backgroundHealthState.lastCheckedAt > 0,
+    };
+  }
+
+  function installStorageAdapterDiagnostics(core) {
+    H2O.Library = H2O.Library || {};
+    const api = Object.freeze({
+      __phase: STORAGE_ADAPTER_PHASE,
+      surface: SURFACE,
+      mode: 'diagnostics-only',
+      listDomains() { return STORAGE_ADAPTER_DOMAINS.map((d) => d.name); },
+      getHealth() { return storageAdapterHealth(); },
+      getBackgroundHealth,
+      getDualReadPlan,
+      getDualReadReadiness,
+      getDomainStatus(domain) { return domainStatus(domain); },
+      read(domain, key) {
+        return Promise.resolve({
+          ok: false,
+          status: 'phase-8a-diagnostics-only',
+          reason: 'storage-adapter-read-not-enabled',
+          domain: String(domain || ''),
+          key: String(key || ''),
+        });
+      },
+      write(domain, key) {
+        return Promise.resolve({
+          ok: false,
+          status: 'phase-8a-diagnostics-only',
+          reason: 'storage-adapter-write-not-enabled',
+          domain: String(domain || ''),
+          key: String(key || ''),
+        });
+      },
+      diagnose() {
+        const domains = {};
+        STORAGE_ADAPTER_DOMAINS.forEach((d) => { domains[d.name] = domainStatus(d.name); });
+        return {
+          phase: STORAGE_ADAPTER_PHASE,
+          surface: SURFACE,
+          mode: 'diagnostics-only',
+          contract: {
+            service: 'H2O.Library.StorageAdapter',
+            methods: [
+              'getHealth',
+              'getBackgroundHealth',
+              'getDualReadPlan',
+              'getDualReadReadiness',
+              'getDomainStatus',
+              'listDomains',
+              'diagnose',
+            ],
+            futureMethods: ['read', 'write'],
+            canonicalTarget: SHARED_IDB_TARGET,
+            writesEnabled: false,
+            migrationsEnabled: false,
+            dualWriteEnabled: false,
+          },
+          health: storageAdapterHealth(),
+          capabilities: storageCapabilities(),
+          background: backgroundHealthSnapshot(),
+          dualRead: getDualReadReadiness(),
+          domains,
+        };
+      },
+    });
+    H2O.Library.StorageAdapter = api;
+    if (core && typeof core.registerService === 'function') {
+      try { core.registerService('storage-adapter', api, { replace: true }); }
+      catch (e) { err('register:storage-adapter', e); }
+    }
+    step('storage-adapter-diagnostics-ready', `domains=${STORAGE_ADAPTER_DOMAINS.length}`);
+    return api;
+  }
+
   // ── H2O.flags registry (minimal) ───────────────────────────────────────────
   // Per-surface key/value store. Phase 1 contract:
   //   - No feature behavior reads a flag yet.
@@ -348,6 +1020,7 @@
     const core = H2O.LibraryCore;
     if (!core) return false;
     installCanonicalDiagnostics(core);
+    installStorageAdapterDiagnostics(core);
     registerCanonicalServices(core);
     return true;
   }
@@ -358,7 +1031,10 @@
     W.addEventListener('h2o.ev:prm:cgx:lib:ready:v1', () => {
       try {
         const core = H2O.LibraryCore;
-        if (core) registerCanonicalServices(core);
+        if (core) {
+          installStorageAdapterDiagnostics(core);
+          registerCanonicalServices(core);
+        }
       } catch (e) { err('rebind-on-ready', e); }
     }, { once: true });
   }
@@ -370,7 +1046,10 @@
   W.setTimeout(() => {
     try {
       const core = H2O.LibraryCore;
-      if (core) registerCanonicalServices(core);
+      if (core) {
+        installStorageAdapterDiagnostics(core);
+        registerCanonicalServices(core);
+      }
       step('late-rebind');
     } catch (e) { err('late-rebind', e); }
   }, 350);
@@ -388,6 +1067,7 @@
         surface: SURFACE,
         canonical: CANONICAL_SERVICES.slice(),
         status: H2O.LibraryCore?.getCanonicalServiceStatus?.() || null,
+        storageAdapter: H2O.Library?.StorageAdapter?.getHealth?.() || null,
         steps: diag.steps.slice(-15),
         errors: diag.errors.slice(-10),
       };

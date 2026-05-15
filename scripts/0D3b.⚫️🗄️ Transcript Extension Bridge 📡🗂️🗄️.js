@@ -55,7 +55,7 @@
     // __loaderInfo is a content-script-local diagnostic that never reaches the SW, so it
     // doesn't need a session token attached. Keeps the diagnostic available even when the
     // SW or session machinery is misbehaving.
-    return !!op && op !== "ping" && op !== "initSession" && op !== "__loaderInfo";
+    return !!op && op !== "ping" && op !== "initSession" && op !== "__loaderInfo" && op !== "h2o:library-storage:diagnose";
   }
 
   async function ensureSession(force = false) {
@@ -256,6 +256,7 @@
     libraryKvDel: (key) => call("libraryKvDel", { key }),
     libraryKvListKeys: (prefix) => call("libraryKvListKeys", { prefix }),
     libraryKvEstimate: () => call("libraryKvEstimate", {}),
+    libraryStorageDiagnose: () => call("h2o:library-storage:diagnose", {}, { timeoutMs: 2500 }),
     // Loader-side diagnostic — handled entirely inside the page content-script, never reaches
     // the SW. Returns { loaderBuildTs, loaderBuildIso, libraryKvOps, allowOps, allowOpsCount, tag }
     // so we can confirm which loader.js Chrome actually has active for this page.

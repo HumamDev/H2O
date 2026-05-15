@@ -2425,7 +2425,7 @@ export function makeChromeLiveLoaderJs({
   function installPageArchiveBridge() {
     // Best-effort anti-spam gate for same-page callers. This is not a cryptographic trust boundary.
     const archiveSession = { clientId: "", token: "" };
-    const AUTH_FREE_OPS = new Set(["ping", "initSession"]);
+    const AUTH_FREE_OPS = new Set(["ping", "initSession", "h2o:library-storage:diagnose"]);
     const ALLOW_OPS = new Set([
       "ping",
       "initSession",
@@ -2453,6 +2453,7 @@ export function makeChromeLiveLoaderJs({
       "openWorkbench",
       "exportBundle",
       "importBundle",
+      "h2o:library-storage:diagnose",
       // Library KV (Phase 1.6): durable backend for H2O.Library.Store via the SW's
       // h2o_library_kv IndexedDB. Page → loader → SW. These ops go through the same
       // session-auth check as snapshot ops (they are NOT in AUTH_FREE_OPS).
