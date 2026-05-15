@@ -63,6 +63,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Phase 3B — shared folder-provider core. Must load before later folder
   // delegation phases. Same index position in the OUT list.
   "S0F0e. 🎬 Folder Provider Core - Studio.js",
+  // Phase 4B — shared category-provider core. Must load before later category
+  // delegation phases. Same index position in the OUT list.
+  "S0F0f. 🎬 Category Provider Core - Studio.js",
   "S0F1a. 🎬 Library Core - Studio.js",
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
@@ -135,6 +138,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F0c. 🎬 Library Registry Core - Studio.js",
   "S0F0d. 🎬 Library Index Core - Studio.js",
   "S0F0e. 🎬 Folder Provider Core - Studio.js",
+  "S0F0f. 🎬 Category Provider Core - Studio.js",
   "S0F1a. 🎬 Library Core - Studio.js",
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
