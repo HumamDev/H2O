@@ -64,6 +64,7 @@
 
   function getCore() { return H2O.LibraryCore || null; }
   function getStore() { return H2O.Library?.Store || null; }
+  function getEntity() { return W.H2O?.Studio?.store?.libraryIndex || null; }
   function getChatList() {
     return getCore()?.getService?.('chat-list') || null;
   }
@@ -117,18 +118,54 @@
     } catch (e) { err('persist', e); }
   }
 
+  // Phase E1 Stage 2: hydrate from H2O.Studio.store.libraryIndex when available
+  // and seed it from the legacy H2O.Library.Store snapshot on first boot.
+  // Writes (persist, refreshFromArchive) and all sync read APIs are unchanged.
+  // Decision tree:
+  //   both populated, legacy newer    → use legacy + seed entity
+  //   both populated, entity ≥ legacy → use entity (no seed)
+  //   only legacy populated           → use legacy + seed entity
+  //   only entity populated           → use entity
+  //   neither populated               → leave state empty; refreshFromArchive
+  //                                     will populate it as before
+  //   entity unavailable / init throws → fall through to legacy-only path
   async function hydrate() {
+    const entity = getEntity();
     const store = getStore();
-    if (!store) return;
     try {
-      const v = await store.get(STORAGE_KEY);
-      if (v && Array.isArray(v.rows)) {
-        state.rows = v.rows.map(normalizeRow).filter(Boolean);
+      if (entity && typeof entity.init === 'function') {
+        try { await entity.init(); }
+        catch (e) { err('hydrate.entity.init', e); }
+      }
+      const entitySnap = (entity && typeof entity.getAll === 'function') ? entity.getAll() : null;
+      const legacySnap = (store && typeof store.get === 'function') ? await store.get(STORAGE_KEY) : null;
+
+      const eRows = (entitySnap && Array.isArray(entitySnap.rows)) ? entitySnap.rows : null;
+      const lRows = (legacySnap && Array.isArray(legacySnap.rows)) ? legacySnap.rows : null;
+      const eTs = (entitySnap && Number(entitySnap.ts)) || 0;
+      const lTs = (legacySnap && Number(legacySnap.ts)) || 0;
+
+      // Prefer whichever source is newer; tie or entity-newer → use entity
+      // (avoids re-seeding when caches are already in sync).
+      const useLegacy = !!lRows && (!eRows || lTs > eTs);
+      const chosen = useLegacy ? legacySnap : (eRows ? entitySnap : null);
+      const sourceLabel = useLegacy ? 'legacy' : (eRows ? 'entity' : 'none');
+
+      if (chosen && Array.isArray(chosen.rows)) {
+        state.rows = chosen.rows.map(normalizeRow).filter(Boolean);
         state.byChatId = Object.create(null);
         for (const r of state.rows) state.byChatId[r.chatId] = r;
         rebuildFacets();
-        state.lastSource = 'store-hydrate';
-        step('hydrate.ok', String(state.rows.length));
+        state.lastSource = `${sourceLabel}-hydrate`;
+        step('hydrate.ok', `${sourceLabel}:${state.rows.length}`);
+      }
+
+      // Bootstrap: when legacy is the live source, seed the entity so
+      // chrome.storage.local matches IDB on the next boot. setAll is itself
+      // debounced (250 ms) so this does not block hydrate.
+      if (useLegacy && entity && typeof entity.setAll === 'function' && Array.isArray(lRows) && lRows.length) {
+        try { entity.setAll(lRows); }
+        catch (e) { err('hydrate.seed-entity', e); }
       }
     } catch (e) { err('hydrate', e); }
   }
