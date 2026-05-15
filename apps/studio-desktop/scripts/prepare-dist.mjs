@@ -60,6 +60,70 @@ if (!fs.existsSync(studioBuilt)) {
   process.exit(1);
 }
 
+/* Staleness guard.
+ *
+ * The build artifacts at build/chrome-ext-prod/surfaces/studio/ are produced
+ * by a SEPARATE chain (`npm run dev:all` + `chrome-live-extension.mjs`) that
+ * this script does NOT trigger. If you edit Studio source under
+ * surfaces/studio/ and run `npm run tauri:dev` without re-running that
+ * chain, prepare-dist will silently copy a STALE snapshot into dist/, the
+ * Tauri window will load the pre-edit Studio code, and you'll spend time
+ * debugging "why didn't my fix take effect" symptoms.
+ *
+ * This guard compares the newest mtime under surfaces/studio/ against the
+ * newest mtime under build/chrome-ext-prod/surfaces/studio/. If the source
+ * is newer, the build is stale — fail with a clear message that says
+ * exactly what to run.
+ *
+ * To bypass (e.g., you intentionally want to use the existing build),
+ * set SKIP_STALENESS_CHECK=1 in the environment.
+ */
+function newestMtimeRecursive(dir) {
+  let newest = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    /* Ignore .DS_Store and other dotfiles — never load-bearing for the build. */
+    if (entry.name.startsWith('.')) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestMtimeRecursive(full));
+    } else {
+      try {
+        const m = fs.statSync(full).mtimeMs;
+        if (m > newest) newest = m;
+      } catch (_) { /* skip unreadable */ }
+    }
+  }
+  return newest;
+}
+
+if (process.env.SKIP_STALENESS_CHECK !== '1') {
+  const studioSource = path.join(repoRoot, 'surfaces', 'studio');
+  if (fs.existsSync(studioSource)) {
+    const sourceMtime = newestMtimeRecursive(studioSource);
+    const buildMtime = newestMtimeRecursive(studioBuilt);
+    if (sourceMtime > buildMtime) {
+      const sourceWhen = new Date(sourceMtime).toISOString();
+      const buildWhen = new Date(buildMtime).toISOString();
+      console.error('[prepare-dist] STALE BUILD DETECTED');
+      console.error(`  newest source mtime: ${sourceWhen}  (surfaces/studio/)`);
+      console.error(`  newest build  mtime: ${buildWhen}  (build/chrome-ext-prod/surfaces/studio/)`);
+      console.error('');
+      console.error('  Studio source is newer than the bundled build. If you proceed, Tauri will');
+      console.error('  load a pre-edit snapshot of Studio and any recent changes will not take');
+      console.error('  effect. From h2o-source/ run:');
+      console.error('');
+      console.error('    npm run dev:rebuild');
+      console.error('    npm run dev:all');
+      console.error('    node tools/product/extension/build-chrome-live-extension.mjs');
+      console.error('');
+      console.error('  Then re-run `npm run tauri:dev`.');
+      console.error('');
+      console.error('  To force-skip this check (intentional stale build): SKIP_STALENESS_CHECK=1 npm run tauri:dev');
+      process.exit(2);
+    }
+  }
+}
+
 /* HTML files whose `<script src="...">` references need to be rewritten
  * after files are renamed. Only studio.html in M1; broaden if other
  * HTML files start referencing renamed assets. */
