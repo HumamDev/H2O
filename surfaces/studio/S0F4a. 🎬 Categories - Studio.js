@@ -28,26 +28,101 @@
   function getCore() { return H2O.LibraryCore || null; }
   function getWorkspace() { return H2O.LibraryWorkspace || null; }
   function getIndex() { return H2O.LibraryIndex || null; }
+  function categoryCore() {
+    try {
+      const core = H2O.Library?.CategoryProviderCore || null;
+      return core && core.__phase === '4B' ? core : null;
+    } catch {
+      return null;
+    }
+  }
 
   let cachedCatalog = null;
   let cachedAt = 0;
+  let lastCategoryDiagnostics = [];
   const TTL_MS = 30_000;
+
+  function mergeNormalizedCategory(raw, normalized) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const category = normalized && typeof normalized === 'object' ? normalized : {};
+    const id = String(category.id || src.id || src.categoryId || '').trim();
+    const name = String(category.name || src.name || src.categoryName || src.label || id).trim() || id;
+    return {
+      ...src,
+      ...category,
+      id,
+      categoryId: String(src.categoryId || id).trim() || id,
+      name,
+      categoryName: String(src.categoryName || name).trim() || name,
+    };
+  }
+
+  function normalizeCategoryList(rawList) {
+    const list = Array.isArray(rawList) ? rawList : [];
+    const core = categoryCore();
+    lastCategoryDiagnostics = [];
+    if (!core || typeof core.normalizeCategoryCatalog !== 'function') return list.slice();
+    try {
+      const normalized = core.normalizeCategoryCatalog({ categories: list });
+      lastCategoryDiagnostics = Array.isArray(normalized?.diagnostics) ? normalized.diagnostics : [];
+      const firstRawById = new Map();
+      for (const row of list) {
+        const id = String(row?.id || row?.categoryId || '').trim();
+        if (id && !firstRawById.has(id)) firstRawById.set(id, row);
+      }
+      return (normalized?.categories || []).map((category) => mergeNormalizedCategory(firstRawById.get(category.id), category));
+    } catch (e) {
+      err('normalizeCategoryList', e);
+      return list.slice();
+    }
+  }
+
+  function normalizeCategoryId(categoryId) {
+    return String(categoryId || '').trim();
+  }
+
+  function resolveCategoryIdForRead(categoryId, list) {
+    const id = normalizeCategoryId(categoryId);
+    if (!id) return '';
+    const core = categoryCore();
+    if (core && typeof core.validateCategoryId === 'function') {
+      try {
+        const valid = core.validateCategoryId(id);
+        if (!valid?.ok && !(Array.isArray(list) && list.some((c) => String(c?.id || c?.categoryId || '') === id))) return '';
+      } catch (e) {
+        err('validateCategoryId', e);
+      }
+    }
+    if (core && typeof core.resolveCategoryId === 'function') {
+      try {
+        const resolved = core.resolveCategoryId(id, { categories: Array.isArray(list) ? list : [] });
+        if (resolved?.ok && resolved.categoryId) return String(resolved.categoryId);
+      } catch (e) {
+        err('resolveCategoryId', e);
+      }
+    }
+    return id;
+  }
 
   async function listCategories({ fresh = false } = {}) {
     const now = Date.now();
     if (!fresh && cachedCatalog && (now - cachedAt) < TTL_MS) return cachedCatalog;
     const ws = getWorkspace();
     const list = ws ? await ws.getCategories({ fresh }) : [];
-    cachedCatalog = Array.isArray(list) ? list.slice() : [];
+    cachedCatalog = normalizeCategoryList(list);
     cachedAt = now;
     return cachedCatalog;
   }
 
   async function getCategoryById(id) {
-    const cid = String(id || '').trim();
+    const cid = normalizeCategoryId(id);
     if (!cid) return null;
     const list = await listCategories();
-    return list.find((c) => String(c.id || c.categoryId || '') === cid) || null;
+    const resolvedId = resolveCategoryIdForRead(cid, list);
+    if (!resolvedId) return null;
+    return list.find((c) => String(c.id || c.categoryId || '') === resolvedId)
+      || list.find((c) => String(c.id || c.categoryId || '') === cid)
+      || null;
   }
 
   async function getChatsInCategory(id) {
@@ -75,6 +150,10 @@
         cachedCount: cachedCatalog ? cachedCatalog.length : 0,
         cachedAt,
         hasWorkspace: !!getWorkspace(),
+        hasIndex: !!getIndex(),
+        hasCategoryCore: !!categoryCore(),
+        categoryCorePhase: categoryCore()?.__phase || '',
+        normalizationDiagnostics: lastCategoryDiagnostics.slice(-10),
         steps: diag.steps.slice(-10),
         errors: diag.errors.slice(-5),
       };
