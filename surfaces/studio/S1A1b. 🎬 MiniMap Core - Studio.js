@@ -1010,7 +1010,7 @@ function UM_PUBLIC() {
     ];
     const roots = [
       el,
-      el.closest?.('[data-message-author-role], [data-author-role], [data-role], [data-message-id], [data-turn-id]') || null,
+      el.closest?.(STUDIO_SEL.sel.anyMessageHost) || null,
     ].filter(Boolean);
 
     for (const root of roots) {
@@ -1670,11 +1670,11 @@ function UM_PUBLIC() {
     if (primary.length) return primary;
     const a = qq('article[data-message-author-role="assistant"], div[data-message-author-role="assistant"]');
     if (a.length) return a;
-    const b = qq('[data-message-author-role="assistant"]');
+    const b = qq(STUDIO_SEL.sel.assistantTurn);
     if (b.length) return b;
     return qq(STUDIO_SEL.sel.conversationTurnLoose).flatMap((host) => {
       try {
-        const el = host?.querySelector?.('[data-message-author-role="assistant"]');
+        const el = host?.querySelector?.(STUDIO_SEL.sel.assistantTurn);
         return el ? [el] : [];
       } catch {
         return [];
@@ -1687,11 +1687,11 @@ function UM_PUBLIC() {
     const role = String(node.getAttribute?.('data-message-author-role') || '').toLowerCase();
     if (role === 'assistant') return node;
     try {
-      const nested = node.querySelector?.('[data-message-author-role="assistant"]');
+      const nested = node.querySelector?.(STUDIO_SEL.sel.assistantTurn);
       if (nested) return nested;
     } catch {}
     try {
-      const up = node.closest?.('[data-message-author-role="assistant"]');
+      const up = node.closest?.(STUDIO_SEL.sel.assistantTurn);
       if (up) return up;
     } catch {}
     return null;
@@ -5589,7 +5589,7 @@ function UM_PUBLIC() {
     if (!host || host.nodeType !== 1) return null;
     const selfRole = String(host.getAttribute?.('data-message-author-role') || '').trim().toLowerCase();
     if (selfRole === 'user') return host;
-    try { return host.querySelector?.('[data-message-author-role="user"]') || null; } catch {}
+    try { return host.querySelector?.(STUDIO_SEL.sel.userTurn) || null; } catch {}
     return null;
   }
 
@@ -6157,7 +6157,7 @@ function UM_PUBLIC() {
       }
       if (role !== 'assistant') continue;
       if (pendingQuestionHost) removeNoAnswerTitleBar(pendingQuestionHost);
-      const answerMsgEl = pickAssistantMessageEl(host) || host.querySelector?.('[data-message-author-role="assistant"]') || null;
+      const answerMsgEl = pickAssistantMessageEl(host) || host.querySelector?.(STUDIO_SEL.sel.assistantTurn) || null;
       const answerId = getAnswerTitleAnswerId(answerMsgEl);
       const bar = getAnswerTitleBarEl(answerMsgEl);
       if (!answerMsgEl || !answerId || !bar) {
@@ -6551,7 +6551,7 @@ function unbindChatPageDividerBridge() {
 
   function getChatPageAnchorBoxEl(host = null) {
     if (!host || host.nodeType !== 1) return null;
-    const assistantHost = pickAssistantMessageEl(host) || host.querySelector?.('[data-message-author-role="assistant"]') || host;
+    const assistantHost = pickAssistantMessageEl(host) || host.querySelector?.(STUDIO_SEL.sel.assistantTurn) || host;
     if (!assistantHost) return null;
     const toolbar = assistantHost.querySelector?.('[aria-label="Response actions"]');
     if (toolbar instanceof Element && toolbar.isConnected) return toolbar;
@@ -6654,7 +6654,7 @@ function unbindChatPageDividerBridge() {
     if (selfRole === 'user' || selfRole === 'assistant') return selfRole;
     if (pickAssistantMessageEl(host)) return 'assistant';
     try {
-      const userEl = host.querySelector?.('[data-message-author-role="user"]');
+      const userEl = host.querySelector?.(STUDIO_SEL.sel.userTurn);
       if (userEl) return 'user';
     } catch {}
     return '';
@@ -6847,7 +6847,7 @@ function unbindChatPageDividerBridge() {
 
     for (const host of turnEls) {
       // Count only assistant turns for page numbering (mirrors how Core indexes turns)
-      const isAssistant = !!host.querySelector('[data-message-author-role="assistant"]');
+      const isAssistant = !!host.querySelector(STUDIO_SEL.sel.assistantTurn);
       if (isAssistant) answerIdx += 1;
 
       const pageNum = Math.max(1, Math.ceil(Math.max(1, answerIdx) / 25));

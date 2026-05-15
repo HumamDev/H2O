@@ -934,11 +934,11 @@
       if (role === 'assistant') return el;
     } catch {}
     try {
-      const nested = el.querySelector?.('[data-message-author-role="assistant"]');
+      const nested = el.querySelector?.(STUDIO_SEL.sel.assistantTurn);
       if (nested) return nested;
     } catch {}
     try {
-      const up = el.closest?.('[data-message-author-role="assistant"]');
+      const up = el.closest?.(STUDIO_SEL.sel.assistantTurn);
       if (up) return up;
     } catch {}
     return el;
@@ -951,11 +951,11 @@
       if (role === 'user') return el;
     } catch {}
     try {
-      const nested = el.querySelector?.('[data-message-author-role="user"]');
+      const nested = el.querySelector?.(STUDIO_SEL.sel.userTurn);
       if (nested) return nested;
     } catch {}
     try {
-      const up = el.closest?.('[data-message-author-role="user"]');
+      const up = el.closest?.(STUDIO_SEL.sel.userTurn);
       if (up) return up;
     } catch {}
     return null;
@@ -1295,7 +1295,7 @@
     if (ans) {
       try {
         const turnHost = ans.closest?.(conversationTurnSelector());
-        const qInTurn = normalizeQuestionEl(turnHost?.querySelector?.('[data-message-author-role="user"]'));
+        const qInTurn = normalizeQuestionEl(turnHost?.querySelector?.(STUDIO_SEL.sel.userTurn));
         if (qInTurn) return qInTurn;
       } catch {}
       try {
@@ -1308,11 +1308,11 @@
       } catch {}
       try {
         const host = ans.closest?.('[data-testid^="conversation-turn"]') || ans.parentElement;
-        const q = host?.querySelector?.('[data-message-author-role="user"]');
+        const q = host?.querySelector?.(STUDIO_SEL.sel.userTurn);
         if (q) return q;
       } catch {}
       try {
-        const users = qq('[data-message-author-role="user"]');
+        const users = qq(STUDIO_SEL.sel.userTurn);
         let best = null;
         for (const u of users) {
           if (!u?.isConnected) continue;
@@ -1337,14 +1337,14 @@
       if (idx > 0) {
         const turnHosts = qq(conversationTurnSelector());
         const host = turnHosts[idx - 1] || null;
-        const q = normalizeQuestionEl(host?.querySelector?.('[data-message-author-role="user"]'));
+        const q = normalizeQuestionEl(host?.querySelector?.(STUDIO_SEL.sel.userTurn));
         if (q) return q;
       }
     } catch {}
     if (ans) {
       try {
         const ar = ans.getBoundingClientRect();
-        const users = qq('[data-message-author-role="user"]');
+        const users = qq(STUDIO_SEL.sel.userTurn);
         const near = users.find((u) => {
           const ur = u.getBoundingClientRect();
           return ur.top <= ar.top && (ar.top - ur.top) < 1400;

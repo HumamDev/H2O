@@ -970,8 +970,8 @@ No quotes, no emojis, no numbering. Just the title text.`;
     while (prev) {
       // Skip dividers and other non-turn elements
       const role = String(prev.getAttribute?.('data-message-author-role') || '').toLowerCase();
-      const hasUser = !!prev.querySelector?.('[data-message-author-role="user"]');
-      const hasAssistant = !!prev.querySelector?.('[data-message-author-role="assistant"]');
+      const hasUser = !!prev.querySelector?.(STUDIO_SEL.sel.userTurn);
+      const hasAssistant = !!prev.querySelector?.(STUDIO_SEL.sel.assistantTurn);
       if ((role === 'user' || hasUser) && !hasAssistant) return prev;
       if (hasUser || role === 'user') return prev;
       // If this is another assistant turn stop — don't cross another Q/A pair

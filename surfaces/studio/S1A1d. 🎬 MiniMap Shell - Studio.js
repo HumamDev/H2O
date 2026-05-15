@@ -27,6 +27,7 @@
   const TOPW = W.top || W;
   const H2O = (TOPW.H2O = TOPW.H2O || {});
   if (W !== TOPW) W.H2O = H2O;
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
   H2O.perf = H2O.perf || {};
   H2O.perf.modules = H2O.perf.modules || Object.create(null);
   const PERF_MODULE = (H2O.perf.modules.miniMapShell && typeof H2O.perf.modules.miniMapShell === 'object')
@@ -1897,7 +1898,7 @@
   }
 
   function hasAssistantAnswersInDom() {
-    try { return !!document.querySelector('[data-message-author-role="assistant"]'); } catch {}
+    try { return !!document.querySelector(STUDIO_SEL.sel.assistantTurn); } catch {}
     return false;
   }
 

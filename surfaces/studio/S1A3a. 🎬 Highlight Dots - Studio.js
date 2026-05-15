@@ -26,6 +26,7 @@
   /* ───────────────────────── 0) Realm + Identity ───────────────────────── */
   const W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
   const R = window;
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
 
   // ✅ Ownership flag: this script is the single authority for MiniMap left-side dots
   const TOPW = (W.top || W);
@@ -2188,8 +2189,8 @@ ${dotSel}{
         for (const node of [...(m.addedNodes || []), ...(m.removedNodes || [])]) {
           if (
             node.nodeType === 1 &&
-            !node.matches?.('[data-message-author-role]') &&
-            !node.querySelector?.('[data-message-author-role]')
+            !node.matches?.(STUDIO_SEL.sel.anyTurn) &&
+            !node.querySelector?.(STUDIO_SEL.sel.anyTurn)
           ) {
             continue;
           }
