@@ -244,6 +244,69 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v5 — M2a-2d: snapshots + snapshot_turns. Completes the V1
+        // SQLite schema for Save-to-Folder full transcript persistence.
+        //
+        // Per the corrected V1 ingestion model (see v4 commit body):
+        // primary V1 data sources are Save-to-Folder (saved snapshots,
+        // this commit) and Add-to-Library (indexed link-only chats,
+        // expressible since v4 with is_linked + link provenance columns).
+        //
+        // Design:
+        //   - One snapshot row per Save-to-Folder capture; a chat can
+        //     have multiple snapshots over time (re-saves).
+        //   - snapshot_turns is a single table that holds BOTH shape
+        //     variants the existing Studio data uses:
+        //       * richTurns rows populate `outer_html` (DOM-captured
+        //         fidelity from S0D3a)
+        //       * older messages-only rows populate `text`
+        //     Future ChatGPT-export imports (whenever they land) will
+        //     translate `mapping[id].message` into the same row schema,
+        //     with content_type / parts in meta_json. No separate `turns`
+        //     table needed.
+        //   - PRIMARY KEY (snapshot_id, turn_idx) enforces order +
+        //     uniqueness within a snapshot.
+        //   - Soft FKs only (column convention; no SQL FOREIGN KEY).
+        //   - meta_json catch-all on snapshots (folderName, captureMeta,
+        //     etc.) and on snapshot_turns (timeMeta, attachments,
+        //     content_type, etc.).
+        //
+        // No JS-side consumers wired in M2a-2d; tables sit empty until
+        // M2a-3 wires `H2O.Studio.store.snapshots` and the reader
+        // refactor to load snapshots from SQLite.
+        Migration {
+            version: 5,
+            description: "init snapshots and snapshot_turns",
+            sql: r#"
+                CREATE TABLE snapshots (
+                  id              TEXT    PRIMARY KEY,
+                  chat_id         TEXT    NOT NULL,
+                  title           TEXT    NOT NULL DEFAULT '',
+                  digest          TEXT,
+                  message_count   INTEGER NOT NULL DEFAULT 0,
+                  pinned          INTEGER NOT NULL DEFAULT 0,
+                  legacy          INTEGER NOT NULL DEFAULT 0,
+                  captured_at     INTEGER NOT NULL DEFAULT 0,
+                  updated_at      INTEGER NOT NULL DEFAULT 0,
+                  meta_json       TEXT    NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX idx_snapshots_chat_id     ON snapshots(chat_id);
+                CREATE INDEX idx_snapshots_captured_at ON snapshots(captured_at);
+                CREATE INDEX idx_snapshots_pinned      ON snapshots(pinned);
+
+                CREATE TABLE snapshot_turns (
+                  snapshot_id     TEXT    NOT NULL,
+                  turn_idx        INTEGER NOT NULL,
+                  role            TEXT    NOT NULL,
+                  outer_html      TEXT    NOT NULL DEFAULT '',
+                  text            TEXT    NOT NULL DEFAULT '',
+                  meta_json       TEXT    NOT NULL DEFAULT '{}',
+                  PRIMARY KEY (snapshot_id, turn_idx)
+                );
+                CREATE INDEX idx_snapshot_turns_role ON snapshot_turns(role);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
