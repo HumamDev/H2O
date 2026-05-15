@@ -585,7 +585,7 @@
     global.chrome.storage.local.remove = sqliteRemove;
   }
 
-  /* Diagnostic probe — exposed on the platform namespace so DevTools
+  /* Diagnostic probes — exposed on the platform namespace so DevTools
    * console probes can verify SQLite is actually active without needing
    * to reach into module internals. NOT part of the platform-adapter
    * contract; treat as Tauri-specific debug API. */
@@ -599,6 +599,75 @@
         migrationCompletedAt: sqliteState.migrationCompletedAt,
         keysMigrated: sqliteState.keysMigrated,
       };
+    };
+
+    /* Returns a Promise<{ ready, tables, indexes, rowCounts, error? }>.
+     * Use to confirm the v2+ migrations applied (`tables` includes the
+     * expected names) and to spot-check row counts (all 0 in M2a-2 since
+     * no JS consumers write to the new tables yet). Caller awaits. */
+    platform.__sqliteTables = function () {
+      if (!sqliteState.ready) {
+        return Promise.resolve({
+          ready: false,
+          error: 'sqlite not ready: ' + (sqliteState.initError || 'still initializing'),
+          tables: [],
+          indexes: [],
+          rowCounts: {},
+        });
+      }
+      var invoke = getTauriInvoke();
+      if (!invoke) {
+        return Promise.resolve({
+          ready: false,
+          error: 'tauri invoke unavailable',
+          tables: [],
+          indexes: [],
+          rowCounts: {},
+        });
+      }
+      return invoke('plugin:sql|select', {
+        db: SQLITE_DB_URL,
+        query: "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        values: [],
+      }).then(function (rows) {
+        var tables = [];
+        var indexes = [];
+        (rows || []).forEach(function (r) {
+          if (r && r.type === 'table') tables.push(r.name);
+          else if (r && r.type === 'index') indexes.push(r.name);
+        });
+        var rowCounts = {};
+        var chain = Promise.resolve();
+        tables.forEach(function (t) {
+          chain = chain.then(function () {
+            /* Table name comes from sqlite_master with type='table' filter
+             * — not user input. Identifier interpolation is safe here. */
+            return invoke('plugin:sql|select', {
+              db: SQLITE_DB_URL,
+              query: 'SELECT COUNT(*) AS n FROM ' + t,
+              values: [],
+            }).then(function (c) {
+              rowCounts[t] = (c && c[0] && typeof c[0].n === 'number') ? c[0].n : 0;
+            }).catch(function () { rowCounts[t] = -1; });
+          });
+        });
+        return chain.then(function () {
+          return {
+            ready: true,
+            tables: tables,
+            indexes: indexes,
+            rowCounts: rowCounts,
+          };
+        });
+      }).catch(function (e) {
+        return {
+          ready: false,
+          error: String((e && e.message) || e),
+          tables: [],
+          indexes: [],
+          rowCounts: {},
+        };
+      });
     };
   } catch (_) { /* ignore */ }
 
