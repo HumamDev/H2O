@@ -638,10 +638,8 @@ const CFG_CH = {
 
   const CHUB_TRIGGER_OPTIONS = Object.freeze([
     ['left_click', 'Click'],
-    ['middle_click', 'Middle Click'],
     ['right_click', 'Right Click'],
     ['left_double', 'Double Click'],
-    ['middle_double', 'Double Middle Click'],
     ['right_double', 'Double Right Click'],
     ['none', 'Disabled'],
   ]);
@@ -1102,7 +1100,7 @@ __ROOT__ .cgxui-qbig-number{
         key: 'hubOpenTrigger',
         label: 'Open Control Hub',
         group: 'Launcher / Gestures',
-        help: 'Choose which Cockpit button gesture toggles the main Control Hub panel.',
+        help: 'Choose which Cockpit button gesture toggles the main Control Hub panel. Middle-click is reserved for opening Studio.',
         def: CHUB_UI_DEFAULTS.hubOpenTrigger,
         opts: CHUB_UI_triggerOpts,
         getLive() { return CHUB_UI_get('hubOpenTrigger'); },
@@ -1113,7 +1111,7 @@ __ROOT__ .cgxui-qbig-number{
         key: 'treeOpenTrigger',
         label: 'Open Tab Tree',
         group: 'Launcher / Gestures',
-        help: 'If this matches the hub trigger, the Control Hub opens first and the Tab Tree uses the same gesture once the hub is already open.',
+        help: 'If this matches the hub trigger, the Control Hub opens first and the Tab Tree uses the same gesture once the hub is already open. Middle-click is reserved for opening Studio.',
         def: CHUB_UI_DEFAULTS.treeOpenTrigger,
         opts: CHUB_UI_triggerOpts,
         getLive() { return CHUB_UI_get('treeOpenTrigger'); },
@@ -2797,6 +2795,29 @@ __ROOT__ .cgxui-qbig-number{
     return String(trigger || '').startsWith(`${buttonName}_`);
   }
 
+  function CHUB_topBtnOpenStudio(){
+    const api = W.H2O?.archiveBoot || null;
+    if (!api || (typeof api.openWorkbench !== 'function' && typeof api.openSavedChats !== 'function')) return false;
+
+    Promise.resolve()
+      .then(() => (typeof api.openWorkbench === 'function' ? api.openWorkbench('/saved') : { ok: false }))
+      .then((res) => {
+        if (res?.ok === false && typeof api.openSavedChats === 'function') {
+          return api.openSavedChats({ view: 'saved', source: 'control-hub:topbtn-middle-click', force: true });
+        }
+        return res;
+      })
+      .catch(() => {
+        try {
+          if (typeof api.openSavedChats === 'function') {
+            api.openSavedChats({ view: 'saved', source: 'control-hub:topbtn-middle-click-error', force: true });
+          }
+        } catch {}
+      });
+
+    return true;
+  }
+
   function CHUB_topBtnDelaySingle(buttonName){
     if (!buttonName) return false;
     const doubleTrigger = CHUB_topBtnTrigger(buttonName, true);
@@ -2864,6 +2885,14 @@ __ROOT__ .cgxui-qbig-number{
     const buttonName = CHUB_topBtnButtonName(event.button);
     if (!buttonName) return;
 
+    if (buttonName === 'middle') {
+      event.preventDefault();
+      event.stopPropagation();
+      CHUB_topBtnClearGestureTimer(buttonName);
+      CHUB_topBtnOpenStudio();
+      return;
+    }
+
     const cfg = CHUB_UI_getConfig();
     const usesButton = CHUB_topBtnUsesButton(cfg.hubOpenTrigger, buttonName) || CHUB_topBtnUsesButton(cfg.treeOpenTrigger, buttonName);
     if (!usesButton) return;
@@ -2897,6 +2926,17 @@ __ROOT__ .cgxui-qbig-number{
     event.stopPropagation();
   }
 
+  function CHUB_topBtnHandleMouseDown(event){
+    if (!event?.isTrusted || event.button !== 1) return;
+    event.preventDefault();
+  }
+
+  function CHUB_topBtnHandleAuxClick(event){
+    if (!event?.isTrusted || event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function CHUB_topBtnHandleKeyboardClick(event){
     if (!event?.isTrusted || event.detail > 0) return;
     event.preventDefault();
@@ -2906,7 +2946,9 @@ __ROOT__ .cgxui-qbig-number{
 
   function DOM_bindTopButton(btn){
     if (!btn || btn[CHUB_TOPBTN_BOUND_MARK]) return btn;
+    btn.addEventListener('mousedown', CHUB_topBtnHandleMouseDown, true);
     btn.addEventListener('pointerup', CHUB_topBtnHandlePointerUp, true);
+    btn.addEventListener('auxclick', CHUB_topBtnHandleAuxClick, true);
     btn.addEventListener('contextmenu', CHUB_topBtnHandleContextMenu, true);
     btn.addEventListener('click', CHUB_topBtnHandleKeyboardClick, true);
     btn[CHUB_TOPBTN_BOUND_MARK] = true;

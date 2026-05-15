@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d3a.transcript.archive.engine
 // @name               0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.archive.engine
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   "use strict";
@@ -4005,7 +4005,7 @@
   archiveBoot.getPreviewStatus = (chatId) => getPreviewStatus(chatId);
   archiveBoot.clearMiniMapColdMarkers = () => clearMiniMapColdMarkers();
   archiveBoot.resyncMiniMapColdMarkers = (chatId, reason) => resyncMiniMapColdMarkers(chatId, reason);
-  archiveBoot.captureNow = (chatId) => captureNow(chatId);
+  archiveBoot.captureNow = (chatId, opts = {}) => captureNow(chatId, opts);
   archiveBoot.captureWithOptions = (opts = {}) => captureWithOptions(opts);
   archiveBoot.loadLatestSnapshot = (chatId) => loadLatestSnapshotInternal(chatId);
   archiveBoot.openReader = () => { warn("openReader deprecated — use hybrid view or Studio"); return Promise.resolve({ ok: false, reason: "reader-removed" }); };

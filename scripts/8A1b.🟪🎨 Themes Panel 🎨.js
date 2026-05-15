@@ -1,16 +1,16 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             8a1b.themes.panel
 // @name               8A1b.🟪🎨 Themes Panel 🎨
 // @namespace          H2O.Premium.CGX.themes.panel
 // @author             HumamDev
 // @version            2.1.16
 // @revision           004
-// @build              260510-012500
+// @build              260510-163551
 // @description        Theme button next to Save/Panel/Control that opens a full GPThemes-style customization panel (Color / Font / Layout) for ChatGPT. Contract v2 Stage-1 aligned + legacy settings migration + Tiny Rail button.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';
@@ -30,8 +30,8 @@
   const BrID  = PID;         // default
   const DsID  = PID;         // default
   const API_VERSION = '2.1.16';
-  const API_BUILD = '260510-012500';
-  const API_PHASE = 'appearance-and-dock-mirror-controls';
+  const API_BUILD = '260510-163900';
+  const API_PHASE = 'top-more-before-section-boundary';
 
   // labels only
   const MODTAG    = 'ThemesP';
@@ -74,6 +74,8 @@
   const ATTR_HO_CHATGPT_SIDEBAR  = 'data-ho-chatgpt-sidebar';
   const ATTR_HO_CHATGPT_FOOTER   = 'data-ho-chatgpt-footer';
   const ATTR_HO_SCROLL_BUTTON    = 'data-ho-scroll-button';
+  const ATTR_HO_SIDEBAR_TOP_MORE = 'data-ho-sidebar-top-more';
+  const ATTR_HO_SIDEBAR_MORE_HIDDEN = 'data-ho-sidebar-more-hidden';
 
   /* [DEFINE][STORE][API] Namespaces (boundary-only use of DsID) */
   const NS_DISK = `h2o:${SUITE}:${HOST}:${DsID}`; // no trailing ":"
@@ -215,7 +217,7 @@
       host.style.flexDirection = 'column';
       host.style.gap = '6px';
       host.style.pointerEvents = 'auto';
-      document.documentElement.appendChild(host);
+      (document.body || document.head)?.appendChild(host);
     }
     return host;
   }
@@ -283,6 +285,15 @@
     } catch {}
   }
 
+  function UTIL_recordDiagError(err) {
+    try {
+      const diag = W.H2O?.[TOK]?.[BrID]?.diag;
+      if (!diag?.errors) return;
+      diag.errors.push(String(err?.stack || err));
+      if (diag.errors.length > (diag.errMax || 30)) diag.errors.shift();
+    } catch {}
+  }
+
   /* ───────────────────────────── 🔴 STATE — REGISTRIES / CACHES 📄🔓💧 ───────────────────────────── */
 
   const STATE = {
@@ -298,6 +309,11 @@
     nativeApplyBusy: false,
     nativePending: null,
     chatTargetTimer: 0,
+    pendingHtmlMutation: null,
+    htmlMutationScheduled: false,
+    sidebarMoreGuardRaf: 0,
+    sidebarMoreGuardBound: false,
+    sidebarMoreGuardHandler: null,
 
     booted: false,
     disposed: false,
@@ -967,6 +983,7 @@
       ATTR_HO_CHATGPT_SIDEBAR,
       ATTR_HO_CHATGPT_FOOTER,
       ATTR_HO_SCROLL_BUTTON,
+      ATTR_HO_SIDEBAR_TOP_MORE,
     ];
     for (const attr of attrs) {
       let nodes = [];
@@ -977,6 +994,96 @@
         }
       }
     }
+  }
+
+  function DOM_TP_sidebarTopGuardBottom(sidebar) {
+    if (!DOM_TP_isEl(sidebar)) return 0;
+    let sidebarRect = null;
+    try { sidebarRect = sidebar.getBoundingClientRect(); } catch {}
+    const sidebarTop = Number(sidebarRect?.top) || 0;
+    let bottom = sidebarTop + 280;
+    let candidates = [];
+    try { candidates = Array.from(sidebar.querySelectorAll('a, button, [role="button"], [data-sidebar-item="true"]')); } catch { candidates = []; }
+    const fixedLabels = new Set(['library', 'new chat', 'search chats', 'codex']);
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el) || !DOM_TP_isVisible(el)) continue;
+      const text = String(el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const aria = DOM_TP_getAttr(el, 'aria-label').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!fixedLabels.has(text) && !fixedLabels.has(aria)) continue;
+      try {
+        const r = el.getBoundingClientRect();
+        const relTop = r.top - sidebarTop;
+        if (Number.isFinite(relTop) && relTop >= 0 && relTop <= 420) {
+          bottom = Math.max(bottom, r.bottom + 8);
+        }
+      } catch {}
+    }
+    return bottom;
+  }
+
+  function DOM_TP_updateSidebarMoreGuard() {
+    let rows = [];
+    try { rows = Array.from(D.querySelectorAll(`[${ATTR_HO_SIDEBAR_TOP_MORE}="true"]`)); } catch { rows = []; }
+    for (const row of rows) {
+      if (!DOM_TP_isEl(row)) continue;
+      const sidebar = row.closest?.(`[${ATTR_HO_CHATGPT_SIDEBAR}="true"]`) || row.closest?.(SEL_CHATGPT_SIDEBAR);
+      if (!DOM_TP_isEl(sidebar)) continue;
+      let shouldHide = false;
+      try {
+        const r = row.getBoundingClientRect();
+        const guardBottom = DOM_TP_sidebarTopGuardBottom(sidebar);
+        shouldHide = r.top < guardBottom && r.bottom > 0;
+      } catch {}
+      try {
+        if (shouldHide) row.setAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN, 'true');
+        else row.removeAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN);
+      } catch {}
+    }
+  }
+
+  function DOM_TP_scheduleSidebarMoreGuard() {
+    if (STATE.disposed || STATE.sidebarMoreGuardRaf) return;
+    const raf = typeof W.requestAnimationFrame === 'function'
+      ? W.requestAnimationFrame.bind(W)
+      : (cb) => W.setTimeout(cb, 16);
+    STATE.sidebarMoreGuardRaf = raf(() => {
+      STATE.sidebarMoreGuardRaf = 0;
+      DOM_TP_updateSidebarMoreGuard();
+    });
+  }
+
+  function DOM_TP_wireSidebarMoreGuard() {
+    if (STATE.sidebarMoreGuardBound) {
+      DOM_TP_scheduleSidebarMoreGuard();
+      return;
+    }
+    STATE.sidebarMoreGuardBound = true;
+    STATE.sidebarMoreGuardHandler = () => DOM_TP_scheduleSidebarMoreGuard();
+    try { D.addEventListener('scroll', STATE.sidebarMoreGuardHandler, true); } catch {}
+    try { W.addEventListener(EV_WIN_RESIZE, STATE.sidebarMoreGuardHandler, { passive: true }); } catch {}
+    try { W.visualViewport?.addEventListener?.('scroll', STATE.sidebarMoreGuardHandler, { passive: true }); } catch {}
+    DOM_TP_scheduleSidebarMoreGuard();
+  }
+
+  function DOM_TP_unwireSidebarMoreGuard() {
+    try {
+      if (STATE.sidebarMoreGuardBound && STATE.sidebarMoreGuardHandler) {
+        D.removeEventListener('scroll', STATE.sidebarMoreGuardHandler, true);
+        W.removeEventListener(EV_WIN_RESIZE, STATE.sidebarMoreGuardHandler);
+        W.visualViewport?.removeEventListener?.('scroll', STATE.sidebarMoreGuardHandler);
+      }
+    } catch {}
+    if (STATE.sidebarMoreGuardRaf) {
+      try { W.cancelAnimationFrame?.(STATE.sidebarMoreGuardRaf); } catch {}
+    }
+    STATE.sidebarMoreGuardRaf = 0;
+    STATE.sidebarMoreGuardBound = false;
+    STATE.sidebarMoreGuardHandler = null;
+    try {
+      for (const row of Array.from(D.querySelectorAll(`[${ATTR_HO_SIDEBAR_MORE_HIDDEN}="true"]`))) {
+        row.removeAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN);
+      }
+    } catch {}
   }
 
   function DOM_TP_pickComposerInput(formHint = null, stats = null) {
@@ -1190,6 +1297,68 @@
     return bestScore >= 18 ? best : null;
   }
 
+  function DOM_TP_sidebarLabelText(el) {
+    return String(el?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[›>]\s*$/u, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  function DOM_TP_findSidebarFirstSectionBoundary(sidebar, stats = null) {
+    if (!DOM_TP_isEl(sidebar)) return null;
+    const sectionLabels = new Set(['folders', 'labels', 'categories', 'projects', 'recents']);
+    let candidates = [];
+    try {
+      candidates = Array.from(sidebar.querySelectorAll('h1, h2, h3, h4, h5, h6, a, button, div, span, p, [role="heading"], [role="button"], [data-sidebar-item="true"], [aria-label]'));
+    } catch {
+      candidates = [];
+    }
+
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el)) continue;
+      const text = DOM_TP_sidebarLabelText(el);
+      const aria = DOM_TP_getAttr(el, 'aria-label').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (sectionLabels.has(text) || sectionLabels.has(aria)) return el;
+    }
+    return null;
+  }
+
+  function DOM_TP_isBeforeDomNode(el, boundary) {
+    if (!DOM_TP_isEl(el) || !DOM_TP_isEl(boundary) || el === boundary) return false;
+    try {
+      const nodeApi = W.Node || (typeof Node !== 'undefined' ? Node : null);
+      const follows = Number(nodeApi?.DOCUMENT_POSITION_FOLLOWING) || 4;
+      return !!(el.compareDocumentPosition(boundary) & follows);
+    } catch {
+      return false;
+    }
+  }
+
+  function DOM_TP_pickSidebarTopMoreRow(sidebar, stats = null) {
+    if (!DOM_TP_isEl(sidebar)) return null;
+    const firstSectionBoundary = DOM_TP_findSidebarFirstSectionBoundary(sidebar, stats);
+    let candidates = [];
+    try {
+      candidates = Array.from(sidebar.querySelectorAll('a, button, [role="button"], [data-sidebar-item="true"]'));
+    } catch {
+      candidates = [];
+    }
+
+    for (const el of candidates) {
+      if (!DOM_TP_isEl(el) || DOM_TP_isH2OOwned(el, stats) || !DOM_TP_isVisible(el)) continue;
+      if (firstSectionBoundary && !DOM_TP_isBeforeDomNode(el, firstSectionBoundary)) continue;
+
+      const text = DOM_TP_sidebarLabelText(el);
+      const aria = DOM_TP_getAttr(el, 'aria-label').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (text !== 'more' && aria !== 'more') continue;
+      return el;
+    }
+
+    return null;
+  }
+
   function DOM_TP_pickChatGptFooter(composer = null, chatRoot = null, stats = null) {
     let candidates = [];
     try { candidates = Array.from(D.querySelectorAll(SEL_CHATGPT_FOOTER)); } catch { candidates = []; }
@@ -1260,6 +1429,7 @@
       chatgptSidebar: sidebarTargets,
       chatgptFooter: count(`[${ATTR_HO_CHATGPT_FOOTER}="true"]`),
       scrollButton: count(`[${ATTR_HO_SCROLL_BUTTON}="true"]`),
+      sidebarTopMore: count(`[${ATTR_HO_SIDEBAR_TOP_MORE}="true"]`),
       fontScope: CORE_TP_normalizeFontScope(STATE.settings?.fontScope),
       chatFontTargets,
       pageFontTargets,
@@ -1343,7 +1513,24 @@
     if (chatHeader) DOM_TP_markOwned(chatHeader, ATTR_HO_CHATGPT_HEADER, stats);
 
     const chatSidebar = DOM_TP_pickChatGptSidebar(stats);
-    if (chatSidebar) DOM_TP_markOwned(chatSidebar, ATTR_HO_CHATGPT_SIDEBAR, stats);
+    if (chatSidebar) {
+      DOM_TP_markOwned(chatSidebar, ATTR_HO_CHATGPT_SIDEBAR, stats);
+      try {
+        for (const node of Array.from(D.querySelectorAll(`[${ATTR_HO_SIDEBAR_TOP_MORE}="true"]`))) {
+          node.removeAttribute(ATTR_HO_SIDEBAR_TOP_MORE);
+          node.removeAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN);
+        }
+      } catch {}
+      const sidebarTopMore = DOM_TP_pickSidebarTopMoreRow(chatSidebar, stats);
+      if (sidebarTopMore) {
+        DOM_TP_markOwned(sidebarTopMore, ATTR_HO_SIDEBAR_TOP_MORE, stats);
+        DOM_TP_wireSidebarMoreGuard();
+      } else {
+        DOM_TP_unwireSidebarMoreGuard();
+      }
+    } else {
+      DOM_TP_unwireSidebarMoreGuard();
+    }
 
     const chatFooter = DOM_TP_pickChatGptFooter(composer, chatRoot, stats);
     if (chatFooter) DOM_TP_markOwned(chatFooter, ATTR_HO_CHATGPT_FOOTER, stats);
@@ -1414,34 +1601,66 @@
     D.head.appendChild(s);
   }
 
+  function DOM_TP_scheduleHydrationSafeHtmlMutation(fn) {
+    if (typeof fn !== 'function') return;
+    STATE.pendingHtmlMutation = fn;
+    if (STATE.htmlMutationScheduled) return;
+    STATE.htmlMutationScheduled = true;
+
+    const run = () => {
+      const latest = STATE.pendingHtmlMutation;
+      STATE.pendingHtmlMutation = null;
+      STATE.htmlMutationScheduled = false;
+      if (!latest) return;
+      try { latest(); } catch (err) { UTIL_recordDiagError(err); }
+    };
+
+    const afterReady = () => {
+      const raf = typeof W.requestAnimationFrame === 'function'
+        ? W.requestAnimationFrame.bind(W)
+        : (cb) => W.setTimeout(cb, 16);
+      raf(() => raf(run));
+    };
+
+    if (D.readyState === 'loading') {
+      W.addEventListener(EV_DOM_READY, afterReady, { once: true });
+    } else {
+      afterReady();
+    }
+  }
+
   function DOM_TP_applySettings() {
     DOM_TP_ensureStyle();
     const S = STATE.settings;
 
     if (!S.enabled) {
       D.body.removeAttribute(ATTR_HO_THEME_ENABLED);
-      D.documentElement.removeAttribute(ATTR_HO_MODE);
+      DOM_TP_scheduleHydrationSafeHtmlMutation(() => {
+        const root = D.documentElement;
+        if (!root) return;
+        root.removeAttribute(ATTR_HO_MODE);
 
-      const el = D.documentElement.style;
-      el.removeProperty('--ho-accent-light-hsl');
-      el.removeProperty('--ho-accent-dark-hsl');
-      el.removeProperty('--ho-font-family');
-      el.removeProperty('--ho-font-size');
-      el.removeProperty('--ho-line-height');
-      el.removeProperty('--ho-letter-space');
-      el.removeProperty('--ho-chat-width-rem');
-      el.removeProperty('--ho-prompt-width-rem');
-      el.removeProperty('--main-surface-primary');
-      el.removeProperty('--sidebar-surface-primary');
-      el.removeProperty('--sidebar-surface-secondary');
-      el.removeProperty('--sidebar-surface-tertiary');
-      el.removeProperty('--bg-primary');
-      el.removeProperty('--bg-secondary');
-      el.removeProperty('--text-primary');
-      el.removeProperty('--text-secondary');
-      el.removeProperty('--text-tertiary');
-      el.removeProperty('--interactive-bg-secondary-hover');
-      el.removeProperty('--interactive-bg-secondary-press');
+        const el = root.style;
+        el.removeProperty('--ho-accent-light-hsl');
+        el.removeProperty('--ho-accent-dark-hsl');
+        el.removeProperty('--ho-font-family');
+        el.removeProperty('--ho-font-size');
+        el.removeProperty('--ho-line-height');
+        el.removeProperty('--ho-letter-space');
+        el.removeProperty('--ho-chat-width-rem');
+        el.removeProperty('--ho-prompt-width-rem');
+        el.removeProperty('--main-surface-primary');
+        el.removeProperty('--sidebar-surface-primary');
+        el.removeProperty('--sidebar-surface-secondary');
+        el.removeProperty('--sidebar-surface-tertiary');
+        el.removeProperty('--bg-primary');
+        el.removeProperty('--bg-secondary');
+        el.removeProperty('--text-primary');
+        el.removeProperty('--text-secondary');
+        el.removeProperty('--text-tertiary');
+        el.removeProperty('--interactive-bg-secondary-hover');
+        el.removeProperty('--interactive-bg-secondary-press');
+      });
 
       D.body.removeAttribute(ATTR_HO_FONT);
       D.body.removeAttribute(ATTR_HO_FONT_SCOPE);
@@ -1452,10 +1671,6 @@
     }
 
     D.body.setAttribute(ATTR_HO_THEME_ENABLED, 'true');
-    D.documentElement.setAttribute(ATTR_HO_MODE, S.mode);
-
-    D.documentElement.style.setProperty('--ho-accent-light-hsl', S.accentLight);
-    D.documentElement.style.setProperty('--ho-accent-dark-hsl',  S.accentDark);
 
     let fontFlag = CORE_TP_normalizeFontFamily(S.fontFamily);
     const fontScope = CORE_TP_normalizeFontScope(S.fontScope);
@@ -1478,23 +1693,41 @@
     D.body.setAttribute(ATTR_HO_FONT_TUNED, String(fontTuned));
     D.body.setAttribute(ATTR_HO_LAYOUT_TUNED, String(layoutTuned));
 
-    D.documentElement.style.setProperty('--ho-font-family', FONT_STACKS[fontFlag] || FONT_STACKS.system);
-    D.documentElement.style.setProperty('--ho-font-size', `${S.fontSize}px`);
-    D.documentElement.style.setProperty('--ho-line-height', `${S.lineHeight}px`);
-    D.documentElement.style.setProperty('--ho-letter-space', `${S.letterSpace}px`);
-    D.documentElement.style.setProperty('--ho-chat-width-rem', `${S.chatWidth}rem`);
-    D.documentElement.style.setProperty('--ho-prompt-width-rem', `${S.promptWidth}rem`);
-    D.documentElement.style.setProperty('--main-surface-primary', 'var(--ho-theme-surface-strong)');
-    D.documentElement.style.setProperty('--sidebar-surface-primary', 'var(--ho-theme-sidebar-solid)');
-    D.documentElement.style.setProperty('--sidebar-surface-secondary', 'var(--ho-theme-sidebar-solid)');
-    D.documentElement.style.setProperty('--sidebar-surface-tertiary', 'var(--ho-theme-sidebar-solid)');
-    D.documentElement.style.setProperty('--bg-primary', 'var(--ho-theme-canvas)');
-    D.documentElement.style.setProperty('--bg-secondary', 'var(--ho-theme-surface)');
-    D.documentElement.style.setProperty('--text-primary', 'var(--ho-theme-text)');
-    D.documentElement.style.setProperty('--text-secondary', 'var(--ho-theme-text-muted)');
-    D.documentElement.style.setProperty('--text-tertiary', 'color-mix(in srgb, var(--ho-theme-text-muted) 78%, transparent)');
-    D.documentElement.style.setProperty('--interactive-bg-secondary-hover', 'color-mix(in srgb, var(--ho-theme-surface-strong) 78%, white 22%)');
-    D.documentElement.style.setProperty('--interactive-bg-secondary-press', 'color-mix(in srgb, var(--ho-theme-surface-strong) 70%, var(--ho-accent-light) 30%)');
+    const htmlMode = S.mode;
+    const accentLight = S.accentLight;
+    const accentDark = S.accentDark;
+    const fontSize = S.fontSize;
+    const lineHeight = S.lineHeight;
+    const letterSpace = S.letterSpace;
+    const chatWidth = S.chatWidth;
+    const promptWidth = S.promptWidth;
+    const fontFamily = FONT_STACKS[fontFlag] || FONT_STACKS.system;
+    DOM_TP_scheduleHydrationSafeHtmlMutation(() => {
+      const root = D.documentElement;
+      if (!root) return;
+      root.setAttribute(ATTR_HO_MODE, htmlMode);
+
+      const el = root.style;
+      el.setProperty('--ho-accent-light-hsl', accentLight);
+      el.setProperty('--ho-accent-dark-hsl', accentDark);
+      el.setProperty('--ho-font-family', fontFamily);
+      el.setProperty('--ho-font-size', `${fontSize}px`);
+      el.setProperty('--ho-line-height', `${lineHeight}px`);
+      el.setProperty('--ho-letter-space', `${letterSpace}px`);
+      el.setProperty('--ho-chat-width-rem', `${chatWidth}rem`);
+      el.setProperty('--ho-prompt-width-rem', `${promptWidth}rem`);
+      el.setProperty('--main-surface-primary', 'var(--ho-theme-surface-strong)');
+      el.setProperty('--sidebar-surface-primary', 'var(--ho-theme-sidebar-solid)');
+      el.setProperty('--sidebar-surface-secondary', 'var(--ho-theme-sidebar-solid)');
+      el.setProperty('--sidebar-surface-tertiary', 'var(--ho-theme-sidebar-solid)');
+      el.setProperty('--bg-primary', 'var(--ho-theme-canvas)');
+      el.setProperty('--bg-secondary', 'var(--ho-theme-surface)');
+      el.setProperty('--text-primary', 'var(--ho-theme-text)');
+      el.setProperty('--text-secondary', 'var(--ho-theme-text-muted)');
+      el.setProperty('--text-tertiary', 'color-mix(in srgb, var(--ho-theme-text-muted) 78%, transparent)');
+      el.setProperty('--interactive-bg-secondary-hover', 'color-mix(in srgb, var(--ho-theme-surface-strong) 78%, white 22%)');
+      el.setProperty('--interactive-bg-secondary-press', 'color-mix(in srgb, var(--ho-theme-surface-strong) 70%, var(--ho-accent-light) 30%)');
+    });
 
     D.body.setAttribute(ATTR_HO_CHAT_FULL, String(S.chatFullWidth));
     D.body.setAttribute(ATTR_HO_SYNC_PROMPT, String(S.syncPromptWidth));
@@ -1644,6 +1877,18 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="conversation-input-footer"] 
   border-color: var(--ho-theme-border) !important;
   color: var(--ho-theme-text);
 }
+body[${ATTR_HO_THEME_ENABLED}="true"] [class*="composer-parent"]:has([${ATTR_HO_COMPOSER}="true"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [class*="composer-parent"]:has([${ATTR_HO_COMPOSER_INPUT}="true"]) {
+  background:
+    linear-gradient(180deg, var(--ho-theme-canvas-top) 0%, var(--ho-theme-canvas) 42%, var(--ho-theme-canvas) 100%) !important;
+  border-color: color-mix(in srgb, var(--ho-theme-border) 82%, transparent) !important;
+  border-radius: 30px 30px 0 0;
+  background-clip: padding-box;
+  box-shadow:
+    0 -28px 54px 18px var(--ho-theme-canvas),
+    inset 0 1px 0 color-mix(in srgb, var(--ho-theme-border) 62%, transparent);
+  isolation: isolate;
+}
 body[${ATTR_HO_THEME_ENABLED}="true"] aside,
 body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i],
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"],
@@ -1690,9 +1935,51 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="stick
   background: var(--ho-theme-sidebar-solid) !important;
   background-image: none !important;
 }
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] nav[aria-label="Chat history"] {
+  position: relative;
+  z-index: 0;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(> nav[aria-label="Chat history"]) > :not(nav[aria-label="Chat history"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(+ nav[aria-label="Chat history"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(~ nav[aria-label="Chat history"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is([class*="sticky"], [class*="fixed"], [class*="top-0"], [style*="position: sticky"], [style*="position: fixed"]) {
+  position: relative;
+  z-index: 45;
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+  isolation: isolate;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(> nav[aria-label="Chat history"]) > :not(nav[aria-label="Chat history"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(+ nav[aria-label="Chat history"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, section, nav):has(~ nav[aria-label="Chat history"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is([class*="sticky"], [class*="fixed"], [class*="top-0"], [style*="position: sticky"], [style*="position: fixed"])::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0 -10px;
+  z-index: -1;
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+  pointer-events: none;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_SIDEBAR_TOP_MORE}="true"] {
+  background: var(--ho-theme-sidebar-solid) !important;
+  background-image: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_SIDEBAR_TOP_MORE}="true"][${ATTR_HO_SIDEBAR_MORE_HIDDEN}="true"] {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none;
+}
 body[${ATTR_HO_THEME_ENABLED}="true"] main > div:first-child,
 body[${ATTR_HO_THEME_ENABLED}="true"] main > div:first-child > div:first-child {
   background: transparent !important;
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] main,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHAT_ROOT}="true"] {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
 }
 
 /* FONT (family choice) */
@@ -1743,8 +2030,13 @@ body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"][${ATTR_HO_
 
 /* layout: ChatGPT-native prompt width */
 body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_COMPOSER}="true"] {
-  background: var(--ho-theme-surface-strong) !important;
-  border-color: var(--ho-theme-border) !important;
+  background: color-mix(in srgb, var(--ho-theme-canvas) 82%, var(--ho-theme-surface-strong) 18%) !important;
+  border-color: color-mix(in srgb, var(--ho-theme-border) 82%, transparent) !important;
+  border-radius: 32px !important;
+  background-clip: padding-box;
+  box-shadow:
+    0 18px 44px color-mix(in srgb, var(--ho-theme-canvas) 56%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--ho-theme-border) 48%, transparent);
   color: var(--ho-theme-text);
 }
 body[${ATTR_HO_THEME_ENABLED}="true"][${ATTR_HO_LAYOUT_TUNED}="true"] [${ATTR_HO_COMPOSER}="true"] {
@@ -3640,6 +3932,9 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     if (STATE.nativeApplyTimer) W.clearTimeout(STATE.nativeApplyTimer);
     STATE.nativeSyncTimer = 0;
     STATE.nativeApplyTimer = 0;
+    STATE.pendingHtmlMutation = null;
+    STATE.htmlMutationScheduled = false;
+    DOM_TP_unwireSidebarMoreGuard();
     DOM_TP_clearChatTargetMarks();
 
     UI_TP_unwireTinyRailEnsure();

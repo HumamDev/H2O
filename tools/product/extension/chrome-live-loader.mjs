@@ -1702,7 +1702,7 @@ export function makeChromeLiveLoaderJs({
   const DEFAULT_NS_DISK = "h2o:prm:cgx:h2odata";
   const ARCHIVE_TIMEOUT_MS = 12000;
 
-  const HDR_RE = /\\/\\/\\s*==UserScript==[\\s\\S]*?\\/\\/\\s*==\\/UserScript==/g;
+  const HDR_RE = /\\/\\/\\s*==H2O Module==[\\s\\S]*?\\/\\/\\s*==\\/H2O Module==/g;
 
   function log(...args) {
     try { console.log(TAG, ...args); } catch {}
