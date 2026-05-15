@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         3H3d.✴️✨ Smart Highlight State 📊✨
 // @namespace    H2O.Premium.CGX.smart-highlight.state
 // @author       HumamDev
@@ -6,7 +6,7 @@
 // @description  Smart Highlight state, persistence, freshness, overrides.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

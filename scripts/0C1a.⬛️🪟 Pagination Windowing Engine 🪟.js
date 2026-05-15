@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0c1a.pagination.windowing
 // @name               0C1a.⬛️🪟 Pagination Windowing Engine 🪟
 // @namespace          H2O.Premium.CGX.pagination.windowing
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

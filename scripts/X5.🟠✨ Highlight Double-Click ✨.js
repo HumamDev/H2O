@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             x5.highlight.double.click
 // @name               X5.🟠✨ Highlight Double-Click ✨
 // @namespace          H2O.Premium.CGX.highlight.double.click
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @grant              none
 // @run-at             document-idle
-// ==/UserScript==
+// ==/H2O Module==
 
 (function () {
   'use strict';

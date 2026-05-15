@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             7a1a.prompt.manager
 // @name               7A1a.⬜️✍️ Prompt Manager ✍️
 // @namespace          H2O.Premium.CGX.prompt.manager
@@ -11,7 +11,7 @@
 // @run-at             document-end
 // @grant              none
 // @require            https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

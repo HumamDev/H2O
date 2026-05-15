@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             2z1a.question.timestamp
 // @name               2Z1a.🟡🕛 Question Timestamp 🕛
 // @namespace          H2O.Premium.CGX.question.timestamp
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-end
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             2c1a.question.wash.engine
 // @name               2C1a.🟡🧼 Question Wash Engine 🧼
 // @namespace          H2O.Premium.CGX.question.wash.engine
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 /*
 How to use:

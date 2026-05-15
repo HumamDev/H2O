@@ -10,12 +10,12 @@ const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
 
-const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
+const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
 const REVISION_LINE_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/i;
 const BUILD_LINE_RE = /^\s*\/\/\s*@build\s+(.+?)\s*$/i;
 const VERSION_LINE_RE = /^\s*\/\/\s*@version\b/i;
-const START_LINE_RE = /^\s*\/\/\s*==UserScript==\s*$/i;
+const START_LINE_RE = /^\s*\/\/\s*==H2O Module==\s*$/i;
 const META_VALUE_COL = 24;
 
 try {

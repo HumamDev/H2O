@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             6s1a.section.bands
 // @name               6S1a.🟩🍰 Section Bands 🍰
 // @namespace          H2O.Premium.CGX.section.bands
@@ -9,7 +9,7 @@
 // @description        Section bands with popup controls for collapse, expand, show sections, collapse sections, and native first-title full-answer collapse.
 // @match              https://chatgpt.com/*
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

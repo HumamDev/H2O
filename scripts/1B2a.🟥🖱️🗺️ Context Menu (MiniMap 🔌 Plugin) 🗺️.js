@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1b2a.minimap.context.menu
 // @name               1B2a.🟥🖱️🗺️ Context Menu (MiniMap 🔌 Plugin) 🗺️
 // @namespace          H2O.Premium.CGX.minimap.context.menu
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

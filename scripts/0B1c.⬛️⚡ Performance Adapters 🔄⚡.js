@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0b1c.perf.adapters
 // @name               0B1c.⬛️⚡ Performance Adapters 🔌⚡
 // @namespace          H2O.Premium.CGX.executor.adapters
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

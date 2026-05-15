@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         3H3a.✴️✨ Smart Highlight Engine 🚂✨
 // @namespace    H2O.Premium.CGX.smart-highlight.engine
 // @author       HumamDev
@@ -6,7 +6,7 @@
 // @description  Smart Highlight scoring engine and classification.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

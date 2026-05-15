@@ -1,11 +1,11 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         H2O Identity Core
 // @namespace    h2o.identity
 // @version      1.1.1
 // @description  Phase 1/2 identity facade, local/mock onboarding state, and safe diagnostics for H2O.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (function bootH2OIdentityCore(global) {
   'use strict';

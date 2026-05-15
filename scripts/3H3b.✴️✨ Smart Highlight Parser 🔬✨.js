@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         3H3b.✴️✨ Smart Highlight Parser 🔬✨
 // @namespace    H2O.Premium.CGX.smart-highlight.parser
 // @author       HumamDev
@@ -6,7 +6,7 @@
 // @description  Smart Highlight parser, sentence-level chunking, pairing, hashing.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0a1a.h2o.core
 // @name               0A1a.⬛️🧠 H2O Core 🧠
 // @namespace          H2O.Premium.CGX.h2o.core
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

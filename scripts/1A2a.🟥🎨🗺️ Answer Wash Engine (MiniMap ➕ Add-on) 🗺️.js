@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a2a.answer.wash.engine.minimap.add.on
 // @name               1A2a.🟥🎨🗺️ Answer Wash Engine (MiniMap ➕ Add-on) 🗺️
 // @namespace          H2O.Premium.CGX.answer.wash.engine.minimap.add.on
@@ -9,7 +9,7 @@
 // @description        Answer Background Washer for H2O MiniMap: persistent wash map + middle-click palette + paints answer + paints minimap buttons (exported API only).
 // @match              https://chatgpt.com/*
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

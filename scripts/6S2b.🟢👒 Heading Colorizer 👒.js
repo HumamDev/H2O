@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         6S2b.🟢👒 Heading Colorizer 👒
 // @namespace    H2O.ChatGPT.HeadingColorizer
 // @version      0.4.2
@@ -6,7 +6,7 @@
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

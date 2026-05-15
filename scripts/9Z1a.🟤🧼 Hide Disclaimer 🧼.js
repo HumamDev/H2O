@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9z1a.hide.disclaimer
 // @name               9Z1a.🟤🧼 Hide Disclaimer 🧼
 // @namespace          H2O.Premium.CGX.hide.disclaimer
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (function () {
   'use strict';

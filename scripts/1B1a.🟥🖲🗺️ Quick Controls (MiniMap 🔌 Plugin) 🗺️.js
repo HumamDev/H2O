@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1b1a.minimap.quick.controls
 // @name               1B1a.🟥🖲🗺️ Quick Controls (MiniMap 🔌 Plugin) 🗺️
 // @namespace          H2O.Premium.CGX.minimap.quick.controls
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

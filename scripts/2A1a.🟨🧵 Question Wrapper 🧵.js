@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             2a1a.question.wrapper
 // @name               2A1a.🟨🧵 Question Wrapper 🧵
 // @namespace          H2O.Premium.CGX.question.wrapper
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-start
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

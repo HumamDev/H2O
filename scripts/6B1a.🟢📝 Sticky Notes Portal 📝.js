@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             6b1a.sticky.notes.portal
 // @name               6B1a.🟢📝 Sticky Notes Portal 📝
 // @namespace          H2O.Premium.CGX.sticky.notes.portal
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

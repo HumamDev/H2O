@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             6s2a.section.collapser
 // @name               6S2a.🟢🧩 Section Collapser 🧩
 // @namespace          H2O.Premium.CGX.section.collapser
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9d1a.auto.emoji.title
 // @name               9D1a.🟤📱 Auto Emoji Title 📱
 // @namespace          H2O.Premium.CGX.auto.emoji.title
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (function () {
   'use strict';

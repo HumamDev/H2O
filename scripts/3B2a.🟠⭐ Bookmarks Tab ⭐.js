@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3b2a.bookmarks.tab
 // @name               3B2a.🟠⭐ Bookmarks Tab ⭐
 // @namespace          H2O.Premium.CGX.bookmarks.tab
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

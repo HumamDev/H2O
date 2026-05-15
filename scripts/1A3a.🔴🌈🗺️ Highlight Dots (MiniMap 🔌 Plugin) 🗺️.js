@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a3a.highlight.dots.minimap.plugin
 // @name               1A3a.🔴🌈🗺️ Highlight Dots (MiniMap 🔌 Plugin) 🗺️
 // @namespace          H2O.Premium.CGX.highlight.dots.minimap.plugin
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -11,7 +11,7 @@ const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
 const CHANGELOG_DIR = path.join(REPO_ROOT, "changelogs");
 const VERSIONS_CSV_PATH = path.join(REPO_ROOT, "versions.csv");
 
-const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
+const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
 const CC_SUBJECT_RE = /^([a-z]+)(?:\(([^()\r\n]+)\))?(!)?:\s+(.+)$/;
 const CSV_HEADER = "\"date\",\"script_id\",\"version\",\"bump\",\"summary\",\"commit_sha\"";
@@ -551,13 +551,13 @@ function rewriteUserscriptVersionAndId(filePath, scriptId, nextVersion) {
   } else {
     insertedH2oId = true;
     const insertLine = `// @h2o-id      ${scriptId}`;
-    if (/^\/\/\s*==UserScript==\s*$/m.test(nextHeader)) {
+    if (/^\/\/\s*==H2O Module==\s*$/m.test(nextHeader)) {
       nextHeader = nextHeader.replace(
-        /(^\/\/\s*==UserScript==\s*$)/m,
+        /(^\/\/\s*==H2O Module==\s*$)/m,
         (_line) => `${_line}${newline}${insertLine}`,
       );
     } else {
-      throw new Error(`Could not find // ==UserScript== line in ${displayPath(filePath)}.`);
+      throw new Error(`Could not find // ==H2O Module== line in ${displayPath(filePath)}.`);
     }
   }
 

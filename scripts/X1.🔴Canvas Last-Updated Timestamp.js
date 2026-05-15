@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             x1.canvas.last.updated.timestamp
 // @name               X1.🔴Canvas Last-Updated Timestamp
 // @namespace          H2O.Premium.CGX.canvas.last.updated.timestamp
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @grant              none
 // @run-at             document-idle
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

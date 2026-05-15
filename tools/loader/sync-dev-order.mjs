@@ -46,7 +46,7 @@ const OUT_JSON = path.join(DIR, `${STEM}.json`);
 const OUT_SCRIPTS_LIST_TSV = path.join(DIR, "scripts-list.tsv");
 const OUT_USERSCRIPT_HEADERS_TSV = path.join(DIR, "userscript-headers.tsv");
 const OUT_USERSCRIPT_HEADERS_HTML = path.join(DIR, "userscript-headers.html");
-const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
+const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const DEBUG_SYNC_DEV_ORDER = process.env.H2O_DEBUG_SYNC_DEV_ORDER === "1";
 const RUN_STARTED_AT = Date.now();
 
@@ -590,9 +590,9 @@ function writeUserscriptHeadersTSV({ fp, names }) {
   out.push("# Layout per block:");
   out.push("#   <filename>");
   out.push("#");
-  out.push("#   \t// ==UserScript==");
+  out.push("#   \t// ==H2O Module==");
   out.push("#   \t// ...");
-  out.push("#   \t// ==/UserScript==");
+  out.push("#   \t// ==/H2O Module==");
   out.push("");
 
   for (const name of names) {

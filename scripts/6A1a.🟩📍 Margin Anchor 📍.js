@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             6a1a.margin.anchor
 // @name               6A1a.🟩📍 Margin Anchor 📍
 // @namespace          H2O.Premium.CGX.margin.anchor
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

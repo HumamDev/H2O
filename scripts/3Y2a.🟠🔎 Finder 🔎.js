@@ -1,11 +1,11 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         3Y2a.🟠🔎 Finder 🔎
 // @namespace    h2o
 // @version      0.2.0
 // @description  Unified finder tab for Dock: search highlights, bookmarks, notes.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

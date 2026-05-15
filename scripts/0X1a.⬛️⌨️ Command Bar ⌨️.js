@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0b3c.command.bar
 // @name               0B3c.⬛️⌨️ Command Bar ⌨️
 // @namespace          H2O.Premium.CGX.command.bar
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   "use strict";

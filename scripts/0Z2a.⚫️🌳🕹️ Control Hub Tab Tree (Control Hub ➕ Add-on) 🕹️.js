@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0z2a.control.hub.tab.tree
 // @name               0Z2a.⚫️🌳🕹️ Control Hub Tab Tree (Control Hub ➕ Add-on) 🕹️
 // @namespace          H2O.Premium.CGX.control.hub.tab.tree
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   "use strict";

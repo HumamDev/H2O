@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1d1a.color.legend
 // @name               1D1a.🟥🧭 Color Legend 🧭
 // @namespace          H2O.Premium.CGX.color.legend
@@ -9,7 +9,7 @@
 // @description        Compact per-chat color legend: 4-page responsive editor with glassy color-pill dropdown + recent custom history.
 // @match              https://chatgpt.com/*
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

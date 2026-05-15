@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a2b.navigation.controls.minimap.add.on
 // @name               1A2b.🟥💠🗺️ Navigation Controls (MiniMap ➕ Add-on) 🗺️
 // @namespace          H2O.Premium.CGX.navigation.controls.minimap.add.on
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

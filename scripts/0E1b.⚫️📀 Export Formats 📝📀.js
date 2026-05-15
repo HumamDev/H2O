@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0e1b.export.formats
 // @name               0E1b.⚫️📀 Export Formats 📝📀
 // @namespace          H2O.Premium.CGX.export.formats
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3a1a.dock.panel
 // @name               3A1a.🟧🎖️ Dock Panel 🎖️
 // @namespace          H2O.Premium.CGX.dock.panel
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

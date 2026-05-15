@@ -153,7 +153,7 @@ function parseProxyPack(txt) {
   const order = [];
   if (!txt) return { order };
 
-  const hdrRe = /\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/g;
+  const hdrRe = /\/\/ ==H2O Module==[\s\S]*?\/\/ ==\/H2O Module==/g;
   const requireRe = /^[ \t]*\/\/[ \t]*@require[ \t]+(.+)$/im;
   const blocks = String(txt).match(hdrRe) || [];
   for (const block of blocks) {

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a1e.minimap.skin
 // @name               1A1e.🟥🗺️ MiniMap Skin 🖐🗺️
 // @namespace          H2O.Premium.CGX.minimap.skin
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

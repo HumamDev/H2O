@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d2b.data.sync.providers
 // @name               0D2b.⚫️🗄️ Data Sync Providers 🧩🛜🗄️
 // @namespace          H2O.Premium.CGX.data.sync.providers
@@ -15,7 +15,7 @@
 // @connect            *
 // @connect            app.koofr.net
 // @connect            *.koofr.net
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

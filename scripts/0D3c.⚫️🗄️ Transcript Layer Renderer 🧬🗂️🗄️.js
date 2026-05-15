@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d3c.transcript.layer.renderer
 // @name               0D3c.⚫️🗄️ Transcript Layer Renderer 🧬🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.layer.renderer
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   "use strict";

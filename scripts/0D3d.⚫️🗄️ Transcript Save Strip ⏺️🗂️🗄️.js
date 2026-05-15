@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d3d.transcript.save.strip
 // @name               0D3d.⚫️🗄️ Transcript Save Strip ⏺️🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.save.strip
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 
 /* ═══════════════════════════════════════════════════════════

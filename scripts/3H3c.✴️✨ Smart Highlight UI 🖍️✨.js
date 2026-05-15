@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @name         3H3c.✴️✨ Smart Highlight UI 🖍️✨
 // @namespace    H2O.Premium.CGX.smart-highlight.ui
 // @author       HumamDev
@@ -6,7 +6,7 @@
 // @description  Smart Highlight UI, sentence-level rendering, controls, restore, API.
 // @match        https://chatgpt.com/*
 // @grant        none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             4l0a.legal.pack
 // @name               4L0a.⚖️ Legal Pack ⚖️
 // @namespace          H2O.Premium.CGX.legal.pack
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

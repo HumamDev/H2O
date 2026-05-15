@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d3b.transcript.extension.bridge
 // @name               0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.extension.bridge
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   "use strict";

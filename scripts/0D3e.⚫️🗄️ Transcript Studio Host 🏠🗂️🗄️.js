@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d3e.transcript.studio.host
 // @name               0D3e.⚫️🗄️ Transcript Studio Host 🏠🗂️🗄️
 // @namespace          H2O.Premium.CGX.transcript.studio.host
@@ -7,7 +7,7 @@
 // @revision           001
 // @build              260415-000001
 // @description        Studio H2O Host: Studio reader -> real H2O runtime bridge
-// ==/UserScript==
+// ==/H2O Module==
 
 (function studioH2OHost() {
   "use strict";

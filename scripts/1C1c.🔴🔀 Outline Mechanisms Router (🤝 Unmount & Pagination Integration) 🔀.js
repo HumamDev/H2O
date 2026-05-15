@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1c1c.chat.mechanisms.router
 // @name               1C1c.🔴🔀 Outline Mechanisms Router (🤝 Unmount & Pagination Integration) 🔀
 // @namespace          H2O.Premium.CGX.chat.mechanisms.router
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             8a1a.theme.core
 // @name               8A1a.🟪🎨 Theme Core 🎨
 // @namespace          H2O.Premium.CGX.theme.core
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3t1a.attachments.tab
 // @name               3T1a.🟠📎 Attachments Tab 📎
 // @namespace          H2O.Premium.CGX.attachments.tab
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

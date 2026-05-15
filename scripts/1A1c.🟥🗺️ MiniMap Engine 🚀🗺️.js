@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a1c.minimap.engine
 // @name               1A1c.🟥🗺️ MiniMap Engine 🚀🗺️
 // @namespace          H2O.Premium.CGX.minimap.engine
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 /* Cutover Smoke Test Checklist
  * - Kernel+Shell+Engine (Main optional): MiniMap appears, updates, navigates

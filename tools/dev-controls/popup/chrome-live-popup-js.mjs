@@ -43,7 +43,7 @@ export function makeChromeLivePopupJs({
   const MSG_IDENTITY = "h2o-ext-identity:v1";
   const IDENTITY_GET_DERIVED_STATE_ACTION = "identity:get-derived-state";
   const IDENTITY_REQUEST_PROVIDER_PERMISSION_ACTION = "identity:request-provider-permission";
-  const HDR_RE = /\\/\\/\\s*==UserScript==[\\s\\S]*?\\/\\/\\s*==\\/UserScript==/g;
+  const HDR_RE = /\\/\\/\\s*==H2O Module==[\\s\\S]*?\\/\\/\\s*==\\/H2O Module==/g;
   const DEV_ORDER_SECTIONS = ${JSON.stringify(DEV_ORDER_SECTIONS_SNAPSHOT)};
   const DEV_ALIAS_FILENAME_MAP = ${JSON.stringify(DEV_ALIAS_FILENAME_MAP)};
 

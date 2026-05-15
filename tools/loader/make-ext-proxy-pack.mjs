@@ -226,7 +226,7 @@ function readRuntimeGroupOrders(depsFile) {
 }
 
 function readHeaderBlock(fileText) {
-  const m = String(fileText || "").match(/\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/);
+  const m = String(fileText || "").match(/\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/);
   return m ? String(m[0]) : "";
 }
 
@@ -298,7 +298,7 @@ function buildPackEntry(aliasFileRaw) {
   const requireUrl = `${DEV_ORIGIN}/alias/${encodeURIComponent(aliasFile)}?v=${encodeURIComponent(BUILD_TS)}`;
 
   return [
-    "// ==UserScript==",
+    "// ==H2O Module==",
     line("name", name),
     line("version", BUILD_TS),
     line("run-at", runAt),
@@ -309,7 +309,7 @@ function buildPackEntry(aliasFileRaw) {
     line("h2o-watchers", String(metrics.watchers)),
     line("h2o-listeners", String(metrics.listeners)),
     line("require", requireUrl),
-    "// ==/UserScript==",
+    "// ==/H2O Module==",
     "",
   ].join("\n");
 }

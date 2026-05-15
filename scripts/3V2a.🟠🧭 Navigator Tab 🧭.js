@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3v2a.navigator.tab
 // @name               3V2a.🟠🧭 Navigator Tab 🧭
 // @namespace          H2O.Premium.CGX.navigator.tab
@@ -8,7 +8,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

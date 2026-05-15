@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0c2a.unmount.messages
 // @name               0C2a.⬛️⛰️ Unmount Messages Engine ⛰️
 // @namespace          H2O.Premium.CGX.unmount.messages
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

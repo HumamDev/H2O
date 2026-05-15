@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             6c1a.quote.backrefs
 // @name               6C1a.🟢↩️ Quote Backrefs ↩️
 // @namespace          H2O.Premium.CGX.quote.backrefs
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

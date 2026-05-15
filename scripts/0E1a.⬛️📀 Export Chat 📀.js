@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0e1a.export.chat
 // @name               0E1a.⬛️📀 Export Chat 📀
 // @namespace          H2O.Premium.CGX.export.chat
@@ -11,7 +11,7 @@
 // @run-at             document-idle
 // @grant              none
 // @require            https://unpkg.com/html-docx-js/dist/html-docx.js
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3y1a.capture.engine
 // @name               3Y1a.🟧🧷 Capture Engine 🧷
 // @namespace          H2O.Premium.CGX.capture.engine
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

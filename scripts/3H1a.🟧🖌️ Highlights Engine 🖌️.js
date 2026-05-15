@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3h1a.highlights.engine
 // @name               3H1a.🟧🖌️ Highlights Engine 🖌️
 // @namespace          H2O.Premium.CGX.highlights.engine
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              unsafeWindow
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

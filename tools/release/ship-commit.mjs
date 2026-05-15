@@ -10,7 +10,7 @@ const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
 
-const USERSCRIPT_HEADER_RE = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/;
+const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
 const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
 const CSV_HEADER = "\"date\",\"script_id\",\"version\",\"bump\",\"summary\",\"commit_sha\"";

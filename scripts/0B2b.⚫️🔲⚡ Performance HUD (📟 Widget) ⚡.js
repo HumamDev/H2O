@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0b2b.perf.hud
 // @name               0B2b.⚫️🔲⚡ Performance HUD (Widget) ⚡
 // @namespace          H2O.Premium.CGX.perf.hud
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

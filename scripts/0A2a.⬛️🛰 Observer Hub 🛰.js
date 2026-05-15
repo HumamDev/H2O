@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0a2a.observer.hub
 // @name               0A2a.⬛️🛰 Observer Hub 🛰
 // @namespace          H2O.Premium.CGX.observer.hub
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

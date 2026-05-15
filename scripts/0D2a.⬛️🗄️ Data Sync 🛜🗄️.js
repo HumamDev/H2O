@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d2a.data.sync
 // @name               0D2a.⬛️🗄️ Data Sync 🛜🗄️
 // @namespace          H2O.Premium.CGX.data.sync
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              unsafeWindow
-// ==/UserScript==
+// ==/H2O Module==
 
 
 (() => {

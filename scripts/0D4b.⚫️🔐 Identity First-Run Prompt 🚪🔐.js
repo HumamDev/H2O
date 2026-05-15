@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0d4b.identity.first-run.prompt
 // @name               0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐
 // @namespace          H2O.Premium.CGX.identity.first-run
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

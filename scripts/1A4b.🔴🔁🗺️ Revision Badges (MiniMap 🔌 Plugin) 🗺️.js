@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a4b.revision.badges.minimap.plugin
 // @name               1A4b.🔴🔁🗺️ Revision Badges (MiniMap 🔌 Plugin) 🗺️
 // @namespace          H2O.Premium.CGX.revision.badges.minimap.plugin
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

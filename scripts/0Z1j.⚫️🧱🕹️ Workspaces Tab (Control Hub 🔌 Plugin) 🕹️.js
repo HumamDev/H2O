@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0z1j.workspaces.tab.control.hub.plugin
 // @name               0Z1j.⚫️🧱🕹️ Workspaces Tab (Control Hub 🔌 Plugin) 🕹️
 // @namespace          H2O.Premium.CGX.workspaces.tab.control.hub.plugin
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

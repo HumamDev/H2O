@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             8a2a.h2o.skins.registry
 // @name               8A2a.🟪🌸 H2O Skins Registry 🌸
 // @namespace          H2O.Premium.CGX.h2o.skins.registry
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             x3.toolbar.palette.button
 // @name               X3.🔴🎨 Toolbar Palette Button 🎨
 // @namespace          H2O.Premium.CGX.toolbar.palette.button
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

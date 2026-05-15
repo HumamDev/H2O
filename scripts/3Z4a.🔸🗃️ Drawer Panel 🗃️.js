@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3Z4a.drawer.panel
 // @name               3Z4a.🔸🗃️ Drawer Panel 🗃️
 // @namespace          H2O.Premium.CGX.drawer.panel
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0c1b.pagination.windowing.chat.adapter
 // @name               0C1b.⬛️🪟 Pagination Windowing (Chat Adapter) 🪟
 // @namespace          H2O.Premium.CGX.pagination.windowing.chat.adapter
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 /*
 Usage:

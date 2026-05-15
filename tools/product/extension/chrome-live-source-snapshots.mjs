@@ -226,7 +226,7 @@ function readScriptCatalog(srcRoot) {
       srcText = "";
     }
 
-    const metaMatch = String(srcText || "").match(/\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/m);
+    const metaMatch = String(srcText || "").match(/\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/m);
     const meta = metaMatch ? String(metaMatch[0] || "") : "";
     const scriptName = stripScriptFilenameSuffix(entry.name) || String(readHeaderTag(meta, "name") || entry.name).trim() || entry.name;
     const runAt = normalizeRunAtTag(readHeaderTag(meta, "run-at") || "document-idle");

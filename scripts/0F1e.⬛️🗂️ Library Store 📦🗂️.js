@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0f1e.library_store
 // @name               0F1e.⬛️🗂️ Library Store 📦🗂️
 // @namespace          H2O.Premium.CGX.library_store
@@ -13,7 +13,7 @@
 // @grant              GM_getValue
 // @grant              GM_setValue
 // @grant              GM_deleteValue
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

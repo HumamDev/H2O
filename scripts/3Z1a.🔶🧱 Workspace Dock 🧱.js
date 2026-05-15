@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             3Z1a.workspace.dock
 // @name               3Z1a.🔶🧱 Workspace Dock 🧱
 // @namespace          H2O.Premium.CGX.workspace.dock
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

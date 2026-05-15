@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             1a1a.minimap.kernel
 // @name               1A1a.🟥🗺️ MiniMap Kernel ⚙️🗺️
 // @namespace          H2O.Premium.CGX.minimap.kernel
@@ -11,7 +11,7 @@
 // @run-at             document-idle
 // @grant              none
 
-// ==/UserScript==
+// ==/H2O Module==
 
 /* Smoke Test Checklist
  * - Main only installed -> should work

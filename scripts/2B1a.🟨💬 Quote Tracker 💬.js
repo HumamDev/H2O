@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             2b1a.quote.tracker
 // @name               2B1a.🟨💬 Quote Tracker 💬
 // @namespace          H2O.Premium.CGX.quote.tracker
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-start
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

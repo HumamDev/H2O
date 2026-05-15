@@ -1,4 +1,4 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             9x1a.keep.projects.open
 // @name               9X1a.🟤🧷 Keep Projects Open
 // @namespace          H2O.Premium.CGX.keep.projects.open
@@ -10,7 +10,7 @@
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 
 (() => {
   'use strict';

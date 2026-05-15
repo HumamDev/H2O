@@ -1,16 +1,16 @@
-// ==UserScript==
+// ==H2O Module==
 // @h2o-id             0a0a.loader.bridge
 // @name               0A0a.⬛️🚀 Loader Bridge 🚀
 // @namespace          H2O.Premium.CGX.loader.bridge
 // @author             HumamDev
 // @version            1.0.0
-// @revision           004
-// @build              260509-034832
+// @revision           005
+// @build              260515-204856
 // @description        Phase 1 measurement infrastructure. Establishes H2O.loader namespace + install-time counters (listeners/observers/intervals/styles) + performance marks. No behavioral changes.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
-// ==/UserScript==
+// ==/H2O Module==
 //
 // 0A0a.⬛️🚀 Loader Bridge — measurement-only V2 infrastructure (Phase 1).
 //
