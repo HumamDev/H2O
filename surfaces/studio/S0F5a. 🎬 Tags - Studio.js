@@ -29,6 +29,14 @@
   function getCore() { return H2O.LibraryCore || null; }
   function getIndex() { return H2O.LibraryIndex || null; }
   function getStore() { return H2O.Library?.Store || null; }
+  function tagCore() {
+    try {
+      const api = H2O.Library?.TagProviderCore || null;
+      return api && api.__phase === '5B' ? api : null;
+    } catch {
+      return null;
+    }
+  }
 
   function loadPrefs() {
     try { return JSON.parse(W.localStorage.getItem(PREFS_KEY) || '{}') || {}; } catch { return {}; }
@@ -38,20 +46,66 @@
   }
 
   const prefs = loadPrefs();
+  const state = { normalizationDiagnostics: [] };
+
+  function rememberNormalization(diag) {
+    try {
+      if (!diag) return;
+      state.normalizationDiagnostics.push({ ...diag, t: Date.now() });
+      if (state.normalizationDiagnostics.length > 20) state.normalizationDiagnostics.splice(0, state.normalizationDiagnostics.length - 20);
+    } catch {}
+  }
+
+  function normalizeTagFacetEntry(id, chatIds) {
+    const rawId = String(id || '').trim();
+    const ids = Array.isArray(chatIds) ? chatIds.slice() : [];
+    const fallback = { id: rawId, chatIds: ids, count: ids.length };
+    const api = tagCore();
+    if (!api) return fallback;
+    try {
+      const valid = api.validateTagId?.(rawId);
+      if (!valid?.ok) {
+        rememberNormalization({ code: 'invalid-tag-id', tagId: rawId, reason: valid?.reason || 'invalid-tag-id' });
+        return fallback;
+      }
+      const normalized = api.normalizeTag?.({ id: valid.tagId, label: rawId, usageCount: ids.length });
+      if (!normalized?.id) return fallback;
+      return { id: normalized.id, chatIds: ids, count: ids.length };
+    } catch (e) {
+      err('normalizeTagFacetEntry', e);
+      return fallback;
+    }
+  }
+
+  function normalizeTagQueryId(tagId) {
+    const rawId = String(tagId || '').trim();
+    if (!rawId) return '';
+    const api = tagCore();
+    if (!api) return rawId;
+    try {
+      const valid = api.validateTagId?.(rawId);
+      if (valid?.ok) return valid.tagId;
+      rememberNormalization({ code: 'invalid-tag-query', tagId: rawId, reason: valid?.reason || 'invalid-tag-id' });
+      return rawId;
+    } catch (e) {
+      err('normalizeTagQueryId', e);
+      return rawId;
+    }
+  }
 
   function listTags() {
     const idx = getIndex();
     if (!idx) return [];
     const f = idx.facets();
     return Object.entries(f.byTag || {})
-      .map(([id, chatIds]) => ({ id, chatIds: chatIds.slice(), count: chatIds.length }))
+      .map(([id, chatIds]) => normalizeTagFacetEntry(id, chatIds))
       .sort((a, b) => b.count - a.count);
   }
 
   function getChatsByTag(tagId) {
     const idx = getIndex();
     if (!idx) return [];
-    return idx.query({ tag: String(tagId || '') });
+    return idx.query({ tag: normalizeTagQueryId(tagId) });
   }
 
   const Tags = {
@@ -64,10 +118,13 @@
       return {
         surface: 'studio',
         hasIndex: !!getIndex(),
+        hasTagCore: !!tagCore(),
+        tagCorePhase: tagCore()?.__phase || '',
         storeBackend: getStore()?.backend?.() || null,
         prefsKey: PREFS_KEY,
         prefs: { ...prefs },
         topTags: listTags().slice(0, 12),
+        normalizationDiagnostics: state.normalizationDiagnostics.slice(-8),
         steps: diag.steps.slice(-10),
         errors: diag.errors.slice(-5),
       };

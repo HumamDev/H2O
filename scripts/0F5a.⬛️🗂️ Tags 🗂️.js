@@ -59,6 +59,15 @@
   };
   MOD.meta.phase = 'phase-3-tags-browsing-owner';
 
+  function tagCore() {
+    try {
+      const api = H2O.Library?.TagProviderCore || null;
+      return api && api.__phase === '5B' ? api : null;
+    } catch {
+      return null;
+    }
+  }
+
   const diag = (MOD.diag = MOD.diag || {
     t0: performance.now(),
     steps: [],
@@ -717,13 +726,36 @@
   function normalizeTag(raw, extra = {}) {
     const label = normalizeLabel(typeof raw === 'string' ? raw : (raw?.label || raw?.name || ''));
     if (!label) return null;
-    return {
+    const fallback = {
       id: slugify(extra.id || raw?.id || label) || label.toLowerCase(),
       label,
       score: Number.isFinite(Number(extra.score ?? raw?.score)) ? Number(extra.score ?? raw?.score) : 0,
       source: String(extra.source || raw?.source || 'auto'),
       visible: extra.visible !== false && raw?.visible !== false,
     };
+    const api = tagCore();
+    if (api?.normalizeTag) {
+      try {
+        const normalized = api.normalizeTag({
+          ...(raw && typeof raw === 'object' ? raw : {}),
+          id: fallback.id,
+          label: fallback.label,
+          score: fallback.score,
+          source: fallback.source,
+          visible: fallback.visible,
+        });
+        if (normalized?.id) {
+          return {
+            id: normalized.id || fallback.id,
+            label: fallback.label,
+            score: fallback.score,
+            source: fallback.source,
+            visible: fallback.visible,
+          };
+        }
+      } catch (e) { err('tag-core:normalizeTag', e); }
+    }
+    return fallback;
   }
 
   function normalizeKeyword(raw, extra = {}) {
@@ -744,7 +776,36 @@
       const prev = map.get(tag.id);
       if (!prev || tag.score > prev.score) map.set(tag.id, tag);
     }
-    return Array.from(map.values()).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+    const values = Array.from(map.values()).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+    const api = tagCore();
+    if (api?.normalizeTagCatalog) {
+      try {
+        const catalog = api.normalizeTagCatalog(values);
+        const valid = new Set((catalog?.tags || []).map((tag) => tag.id));
+        return valid.size ? values.filter((tag) => valid.has(tag.id)) : values;
+      } catch (e) { err('tag-core:normalizeTagCatalog', e); }
+    }
+    return values;
+  }
+
+  function normalizeTurnManualTags(chatIdRaw, turnIdOrAnswerId, tags, source = 'manual') {
+    const added = (Array.isArray(tags) ? tags : [])
+      .map((item) => normalizeTag({ ...item, source }))
+      .filter(Boolean);
+    const api = tagCore();
+    if (api?.normalizeTurnTagBinding) {
+      try {
+        const binding = api.normalizeTurnTagBinding({
+          chatId: toChatId(chatIdRaw),
+          turnId: getTurnKey(turnIdOrAnswerId),
+          tags: added,
+          source,
+        });
+        const validIds = new Set(binding?.tagIds || []);
+        return validIds.size ? added.filter((tag) => validIds.has(tag.id)) : added;
+      } catch (e) { err('tag-core:normalizeTurnTagBinding', e); }
+    }
+    return added;
   }
 
   function uniqKeywords(rows) {
@@ -787,11 +848,19 @@
   }
 
   function normalizeTagKey(raw) {
-    return String(raw?.id || raw?.label || raw || '')
+    const key = String(raw?.id || raw?.label || raw || '')
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9\u0600-\u06ff]+/g, '-')
       .replace(/^-+|-+$/g, '');
+    const api = tagCore();
+    if (api?.validateTagId && key) {
+      try {
+        const valid = api.validateTagId(key);
+        return valid?.ok ? key : '';
+      } catch (e) { err('tag-core:validateTagId', e); }
+    }
+    return key;
   }
 
   function normalizeTagLinkKey(raw) {
@@ -813,14 +882,15 @@
     Object.entries(src.tags || {}).forEach(([fallbackKey, row]) => {
       const key = normalizeTagLinkKey(row?.id || row?.key || fallbackKey);
       const label = normalizeLabel(row?.label || row?.name || key);
-      if (!key || !label) return;
+      const tag = normalizeTag({ ...(row && typeof row === 'object' ? row : {}), id: key, label, source: row?.source || 'user' });
+      if (!key || !label || !tag) return;
       out.tags[key] = {
-        id: key,
-        label,
+        id: tag.id || key,
+        label: tag.label || label,
         color: normalizeHexColor(row?.color || '') || initialTagColor(key),
         createdAt: Number(row?.createdAt || src.updatedAt || Date.now()) || Date.now(),
         updatedAt: Number(row?.updatedAt || row?.createdAt || src.updatedAt || Date.now()) || Date.now(),
-        source: String(row?.source || 'user'),
+        source: String(tag.source || row?.source || 'user'),
         usageCount: Math.max(0, Number(row?.usageCount || 0) || 0),
       };
     });
@@ -916,11 +986,25 @@
         .map(normalizeCategoryLinkId)
         .filter(Boolean)));
       if (!categoryIds.length) return;
+      let normalizedLink = null;
+      const api = tagCore();
+      if (api?.normalizeTagCategoryLink) {
+        try {
+          normalizedLink = api.normalizeTagCategoryLink({
+            tagId: key,
+            id: key,
+            label: row.label || row.name || key,
+            color: row.color || '',
+            categoryIds,
+            updatedAt: row.updatedAt || src.updatedAt || 0,
+          });
+        } catch (e) { err('tag-core:normalizeTagCategoryLink', e); }
+      }
       out.tags[key] = {
-        id: key,
-        label: normalizeLabel(row.label || row.name || key) || key,
-        color: normalizeHexColor(row.color || ''),
-        categoryIds,
+        id: normalizedLink?.tagId || key,
+        label: normalizeLabel(normalizedLink?.label || row.label || row.name || key) || key,
+        color: normalizeHexColor(normalizedLink?.color || row.color || ''),
+        categoryIds: Array.isArray(normalizedLink?.categoryIds) ? normalizedLink.categoryIds.slice() : categoryIds,
         updatedAt: Number(row.updatedAt || src.updatedAt || 0) || 0,
       };
     });
@@ -2762,7 +2846,7 @@ ${out.answerText}`);
   function setManualTags(chatIdRaw, turnIdOrAnswerId, tags) {
     return mutateManual(chatIdRaw, turnIdOrAnswerId, (row) => ({
       ...row,
-      added: (Array.isArray(tags) ? tags : []).map((item) => normalizeTag({ ...item, source: 'manual' })).filter(Boolean),
+      added: normalizeTurnManualTags(chatIdRaw, turnIdOrAnswerId, tags, 'manual'),
       removed: [],
       pinned: Array.isArray(row.pinned) ? row.pinned : [],
       hidden: Array.isArray(row.hidden) ? row.hidden : [],

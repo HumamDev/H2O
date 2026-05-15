@@ -129,6 +129,15 @@
     } catch {}
   };
 
+  function labelCore() {
+    try {
+      const api = H2O.Library?.LabelProviderCore || null;
+      return api && api.__phase === '5C' ? api : null;
+    } catch {
+      return null;
+    }
+  }
+
   const TOK = 'LB';
   const PID = 'labels';
   const SkID = 'lbsc';
@@ -386,9 +395,23 @@
 
   function normalizeType(raw = '') {
     const direct = String(raw || '').trim();
+    if (!direct) return '';
     if (TYPE_DEFS[direct]) return direct;
     const key = direct.toLowerCase().replace(/[\s-]+/g, '_');
-    return TYPE_ALIASES[key] || TYPE_ALIASES[key.replace(/_/g, '')] || '';
+    const local = TYPE_ALIASES[key] || TYPE_ALIASES[key.replace(/_/g, '')] || '';
+    if (local) return local;
+    const api = labelCore();
+    if (api?.normalizeLabelType) {
+      try {
+        const coreType = api.normalizeLabelType(direct);
+        if (coreType !== 'custom' && TYPE_DEFS[coreType]) return coreType;
+        const coreKey = String(coreType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+        return TYPE_ALIASES[coreKey] || TYPE_ALIASES[coreKey.replace(/_/g, '')] || '';
+      } catch (e) {
+        err('label-core:normalizeLabelType', e);
+      }
+    }
+    return '';
   }
 
   function listTypeDefs() {
@@ -404,7 +427,7 @@
     if (!id || !label) return null;
     const now = Date.now();
     const builtIn = opts.builtIn === true || src.builtIn === true;
-    return {
+    const fallback = {
       id,
       label,
       type,
@@ -415,6 +438,38 @@
       createdAt: Number.isFinite(Number(src.createdAt)) ? Number(src.createdAt) : now,
       updatedAt: Number.isFinite(Number(src.updatedAt)) ? Number(src.updatedAt) : now,
     };
+    const api = labelCore();
+    if (api?.normalizeLabel) {
+      try {
+        const normalized = api.normalizeLabel({
+          ...src,
+          id: fallback.id,
+          label: fallback.label,
+          name: fallback.label,
+          type: fallback.type,
+          color: fallback.color,
+          icon: fallback.icon,
+          sortOrder: fallback.sortOrder,
+          builtIn: fallback.builtIn,
+          createdAt: fallback.createdAt,
+          updatedAt: fallback.updatedAt,
+        }, { now: fallback.updatedAt });
+        if (normalized && normalized.id === fallback.id) {
+          return {
+            ...fallback,
+            color: normalizeHexColor(normalized.color) || fallback.color,
+            icon: String(normalized.icon || fallback.icon).trim() || 'label',
+            sortOrder: Number.isFinite(Number(normalized.sortOrder)) ? Number(normalized.sortOrder) : fallback.sortOrder,
+            builtIn: fallback.builtIn || normalized.builtIn === true,
+            createdAt: Number.isFinite(Number(normalized.createdAt)) ? Number(normalized.createdAt) : fallback.createdAt,
+            updatedAt: Number.isFinite(Number(normalized.updatedAt)) ? Number(normalized.updatedAt) : fallback.updatedAt,
+          };
+        }
+      } catch (e) {
+        err('label-core:normalizeLabel', e);
+      }
+    }
+    return fallback;
   }
 
   function defaultCatalog() {
@@ -478,6 +533,24 @@
         out[typeDef.key] = [...new Set(arr.map((v) => slugify(v)).filter(Boolean))];
       }
     });
+    const api = labelCore();
+    if (api?.normalizeLabelSummary) {
+      try {
+        const summary = api.normalizeLabelSummary(out);
+        const next = {};
+        listTypeDefs().forEach((typeDef) => {
+          if (typeDef.cardinality === 'single') {
+            next[typeDef.key] = slugify(summary[typeDef.key] || out[typeDef.key] || '');
+          } else {
+            const values = Array.isArray(summary[typeDef.key]) ? summary[typeDef.key] : out[typeDef.key];
+            next[typeDef.key] = [...new Set((Array.isArray(values) ? values : []).map((v) => slugify(v)).filter(Boolean))];
+          }
+        });
+        return next;
+      } catch (e) {
+        err('label-core:normalizeLabelSummary', e);
+      }
+    }
     return out;
   }
 
@@ -487,7 +560,16 @@
     Object.keys(src).forEach((chatIdRaw) => {
       const chatId = normalizeChatId(chatIdRaw);
       if (!chatId) return;
-      out[chatId] = normalizeBindingRow(src[chatIdRaw]);
+      const row = normalizeBindingRow(src[chatIdRaw]);
+      const api = labelCore();
+      if (api?.normalizeLabelBinding) {
+        try {
+          api.normalizeLabelBinding({ chatId, ...row });
+        } catch (e) {
+          err('label-core:normalizeLabelBinding', e);
+        }
+      }
+      out[chatId] = row;
     });
     return out;
   }
@@ -916,8 +998,10 @@
     const counts = {};
     listTypeDefs().forEach((typeDef) => { counts[typeDef.key] = Object.create(null); });
     const bindings = readBindings();
-    Object.values(bindings).forEach((rowRaw) => {
+    const coreRows = [];
+    Object.entries(bindings).forEach(([chatId, rowRaw]) => {
       const row = normalizeBindingRow(rowRaw);
+      coreRows.push({ chatId, labelSummary: row });
       listTypeDefs().forEach((typeDef) => {
         const ids = typeDef.cardinality === 'single'
           ? (row[typeDef.key] ? [row[typeDef.key]] : [])
@@ -925,6 +1009,21 @@
         ids.forEach((id) => { counts[typeDef.key][id] = (counts[typeDef.key][id] || 0) + 1; });
       });
     });
+    const api = labelCore();
+    if (api?.computeLabelCounts) {
+      try {
+        const coreCounts = api.computeLabelCounts(coreRows);
+        listTypeDefs().forEach((typeDef) => {
+          const byType = coreCounts?.byType?.[typeDef.key];
+          if (!byType || typeof byType !== 'object') return;
+          Object.entries(byType).forEach(([id, count]) => {
+            if (counts[typeDef.key][id] == null) counts[typeDef.key][id] = count;
+          });
+        });
+      } catch (e) {
+        err('label-core:computeLabelCounts', e);
+      }
+    }
     return counts;
   }
 
@@ -970,13 +1069,22 @@
     const chatId = toChatId(chatIdRaw);
     if (!chatId) return null;
     const row = getChatLabels(chatId);
-    const contentTypeIds = Array.isArray(row.contentType) ? row.contentType : [];
-    const customIds = Array.isArray(row.custom) ? row.custom : [];
+    let summary = row;
+    const api = labelCore();
+    if (api?.normalizeLabelSummary) {
+      try {
+        summary = api.normalizeLabelSummary(row);
+      } catch (e) {
+        err('label-core:archiveLabelSummary', e);
+      }
+    }
+    const contentTypeIds = Array.isArray(summary.contentType) ? summary.contentType : [];
+    const customIds = Array.isArray(summary.custom) ? summary.custom : [];
     return {
-      workflowStatusLabelId: String(row.workflowStatus || '').trim(),
-      priorityLabelId: String(row.priority || '').trim(),
-      actionLabelIds: [...new Set(Array.isArray(row.followUp) ? row.followUp : [])],
-      contextLabelIds: [...new Set(Array.isArray(row.context) ? row.context : [])],
+      workflowStatusLabelId: String(summary.workflowStatus || '').trim(),
+      priorityLabelId: String(summary.priority || '').trim(),
+      actionLabelIds: [...new Set(Array.isArray(summary.followUp) ? summary.followUp : [])],
+      contextLabelIds: [...new Set(Array.isArray(summary.context) ? summary.context : [])],
       customLabelIds: [...new Set([
         ...customIds,
         ...contentTypeIds.map((id) => `contentType:${slugify(id)}`).filter((id) => id !== 'contentType:'),
@@ -2739,6 +2847,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
   function selfCheck() {
     const owner = core.getOwner?.('labels') || null;
     const service = core.getService?.('labels') || null;
+    const provider = labelCore();
     const sectionCount = D.querySelectorAll(utilSelScoped(UI_LABELS_ROOT)).length;
     const catalog = readCatalog();
     const bindings = readBindings();
@@ -2747,6 +2856,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
       ok: !!owner && !!service,
       ownerRegistered: !!owner,
       serviceRegistered: !!service,
+      hasLabelCore: !!provider,
+      labelCorePhase: provider?.__phase || '',
       routesRegistered: {
         labels: !!core.getRoute?.('labels'),
         label: !!core.getRoute?.('label'),
