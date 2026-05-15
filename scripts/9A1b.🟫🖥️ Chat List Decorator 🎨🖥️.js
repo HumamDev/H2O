@@ -1141,6 +1141,93 @@ function applyRowByIndex(link, idx) {
   rowEl.classList.add(cls);
 }
 
+function unwrapCrossSurfacePayload(detail) {
+  const root = detail && typeof detail === "object" ? detail : {};
+  const payload = root.payload && typeof root.payload === "object" ? root.payload : root;
+  return payload.payload && typeof payload.payload === "object" ? payload.payload : payload;
+}
+
+function extractMetaMirrorChatId(detail) {
+  const payload = unwrapCrossSurfacePayload(detail);
+  const meta = payload?.meta && typeof payload.meta === "object"
+    ? payload.meta
+    : (payload?.interfaceMeta && typeof payload.interfaceMeta === "object" ? payload.interfaceMeta : payload);
+  return String(payload?.chatId || meta?.chatId || detail?.chatId || "").trim();
+}
+
+function forEachNativeChatLink(chatId, fn) {
+  const id = String(chatId || "").trim();
+  if (!id || typeof fn !== "function") return;
+  document.querySelectorAll("nav a[href], aside a[href], main a[href], a.ho-has-colorbtn[href]").forEach(link => {
+    if (!(link instanceof HTMLAnchorElement)) return;
+    if (I.utils?.isInsideH2OInternalSurface?.(link)) return;
+    const linkId = I.nav.getChatIdFromHref(link.getAttribute("href") || "");
+    if (linkId === id) fn(link);
+  });
+}
+
+function refreshChatMetaDecorations(chatId) {
+  const id = String(chatId || "").trim();
+  if (!id) return;
+  const rowIdx = I.store.getRow(id);
+  const touchedLinks = new Set();
+  const paletteOpen = hoOpenPalette && hoOpenPalette.classList.contains("show");
+
+  forEachNativeChatLink(id, link => {
+    if (!paletteOpen) decorateLink(link);
+    applyRowByIndex(link, rowIdx);
+    const row = link.closest(".ho-main-row") || link.parentElement || link;
+    const btn = link.querySelector(".ho-colorbtn") || row.querySelector?.(".ho-colorbtn");
+    if (btn) I.heat.applyToBtn(btn, id);
+    touchedLinks.add(link);
+  });
+
+  document.querySelectorAll(".ho-colorbtn").forEach(btn => {
+    if (!(btn instanceof HTMLElement) || btn.dataset.chatid !== id) return;
+    I.heat.applyToBtn(btn, id);
+    const link = btn.closest("a[href]") || getLinkForChatId(id);
+    if (link && !touchedLinks.has(link)) {
+      applyRowByIndex(link, rowIdx);
+      touchedLinks.add(link);
+    }
+  });
+
+  scheduleColorPrioritySort();
+}
+
+let hoMetaRefreshRAF = 0;
+let hoMetaRefreshTO = 0;
+const hoMetaRefreshIds = new Set();
+
+function scheduleChatMetaDecorationRefresh(chatId) {
+  const id = String(chatId || "").trim();
+  if (id) hoMetaRefreshIds.add(id);
+
+  const run = () => {
+    cancelAnimationFrame(hoMetaRefreshRAF);
+    clearTimeout(hoMetaRefreshTO);
+    hoMetaRefreshRAF = 0;
+    hoMetaRefreshTO = 0;
+    const ids = Array.from(hoMetaRefreshIds);
+    hoMetaRefreshIds.clear();
+    if (!ids.length) {
+      scanSidebar();
+      return;
+    }
+    ids.forEach(refreshChatMetaDecorations);
+    markActiveSidebarLink();
+  };
+
+  if (!hoMetaRefreshRAF) hoMetaRefreshRAF = requestAnimationFrame(run);
+  clearTimeout(hoMetaRefreshTO);
+  hoMetaRefreshTO = setTimeout(run, 90);
+}
+
+function handleCrossSurfaceMetaRefresh(event) {
+  const id = extractMetaMirrorChatId(event?.detail);
+  if (id) scheduleChatMetaDecorationRefresh(id);
+}
+
 function isElementVisible(el) {
   if (!el) return false;
   const rect = el.getBoundingClientRect();
@@ -2235,5 +2322,10 @@ const rescan = I.utils.debounce(scanSidebar, 50);
   scanSidebar();
 
 window.addEventListener(I.nav.EVENT, markActiveSidebarLink, true);
+window.addEventListener("h2o:interface:meta-mirror", (event) => {
+  scheduleChatMetaDecorationRefresh(event?.detail?.chatId);
+}, true);
+window.addEventListener("evt:h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
+window.addEventListener("h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
 window.__h2o_interface_decorator_booted = true;
 })();

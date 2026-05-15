@@ -526,7 +526,146 @@ function updateMetaFromOpenChat() {
   };
 
   I.store.setMeta(chatId, partial);
+  // Phase 2D — mirror into H2O.ChatRegistry as the canonical truth layer. Soft no-op
+  // if registry isn't loaded yet; never throws back into the caller.
+  try { mirrorOpenChatMetaToRegistry(chatId, partial); } catch (_) {}
 }
+
+// Phase 2D — small additive bridge from the existing interface-local meta store
+// (ho:chat-meta-v1, owned by 9A1a) into H2O.ChatRegistry. Strict rules:
+//   • If H2O.ChatRegistry is missing, silent no-op.
+//   • Never alters tooltip rendering, never blocks the existing setMeta call.
+//   • Reuses the already-truncated firstQ/firstA/lastQ/lastA strings (320/360 chars).
+//   • Maps numeric timestamps → ISO strings and `answers` → answerCount.
+//   • source: "chat-meta-enricher", passive: false (open-chat DOM extraction is
+//     authoritative for createdAt/answerCount/preview, NOT a passive sighting).
+//
+// Phase 2D-perf — fingerprint-based idempotency guard. The MutationObserver in
+// setupMetaObserver() can fire multiple times during boot resync and on any DOM
+// churn under <main>; without a guard, mirrorOpenChatMetaToRegistry would call
+// reg.upsertRecord on every tick. The guard is in-memory only (intentionally not
+// persisted): a fresh page load should re-mirror once to populate the registry,
+// but within a single session repeated identical calls are dropped.
+const _registryMirrorDiag = {
+  mirroredToRegistryCount: 0,
+  lastRegistryMirrorAt: 0,
+  lastRegistryMirrorChatId: '',
+  lastRegistryMirrorError: null,
+  skippedRegistryMirrorCount: 0,
+  lastRegistryMirrorSkipReason: '',
+  lastRegistryMirrorFingerprintAt: 0,
+};
+
+// chatId → last-mirrored fingerprint string. Map (not Object) so we get O(1) lookups
+// and clean iteration without prototype-pollution concerns. In-memory only — no
+// localStorage, no Library Store, no persistence layer.
+const _lastMirrorFingerprintByChatId = new Map();
+
+function _toIsoOrEmpty(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+    try { return new Date(v).toISOString(); } catch { return ''; }
+  }
+  if (typeof v === 'string') {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) {
+      try { return new Date(n).toISOString(); } catch {}
+    }
+    const parsed = Date.parse(v);
+    if (Number.isFinite(parsed)) { try { return new Date(parsed).toISOString(); } catch {} }
+  }
+  return '';
+}
+
+// Deterministic fingerprint over the meaningful content fields. Uses an array
+// (not an object) so JSON.stringify produces a stable order without depending on
+// engine key-iteration order. updatedAt is intentionally EXCLUDED — it is set to
+// Date.now() on every updateMetaFromOpenChat tick, so including it would defeat
+// the dedupe goal (every observer tick would produce a unique fingerprint even
+// when no chat content actually changed). updatedAt is still written into the
+// Registry record by the caller; only the comparison key skips it.
+function _computeMirrorFingerprint(chatId, partial) {
+  const p = (partial && typeof partial === 'object') ? partial : {};
+  return JSON.stringify([
+    String(chatId || ''),
+    p.createdAt ?? '',
+    p.answers ?? 0,
+    typeof p.firstQ === 'string' ? p.firstQ : '',
+    typeof p.firstA === 'string' ? p.firstA : '',
+    typeof p.lastQ  === 'string' ? p.lastQ  : '',
+    typeof p.lastA  === 'string' ? p.lastA  : '',
+  ]);
+}
+
+function mirrorOpenChatMetaToRegistry(chatId, partial) {
+  const reg = window.H2O && window.H2O.ChatRegistry;
+  if (!reg || typeof reg.upsertRecord !== 'function') return; // silent no-op
+  if (!chatId || !partial || typeof partial !== 'object') return;
+
+  // Fingerprint guard — short-circuit before any string formatting or upsert work.
+  // Skips when the same (chatId, createdAt, answers, firstQ, firstA, lastQ, lastA)
+  // tuple was last mirrored. updatedAt is excluded because it is Date.now() on
+  // every observer tick. Cached regardless of upsert outcome so a tombstoned chat
+  // that returns null also gets the cheap-skip path on subsequent identical attempts.
+  const fingerprint = _computeMirrorFingerprint(chatId, partial);
+  const last = _lastMirrorFingerprintByChatId.get(chatId);
+  if (last !== undefined && last === fingerprint) {
+    _registryMirrorDiag.skippedRegistryMirrorCount += 1;
+    _registryMirrorDiag.lastRegistryMirrorSkipReason = 'fingerprint-match';
+    _registryMirrorDiag.lastRegistryMirrorFingerprintAt = Date.now();
+    return;
+  }
+
+  const createdAtIso = _toIsoOrEmpty(partial.createdAt);
+  const updatedAtIso = _toIsoOrEmpty(partial.updatedAt) || new Date().toISOString();
+  const answers = Number(partial.answers);
+  const safeAnswers = Number.isFinite(answers) && answers > 0 ? Math.trunc(answers) : 0;
+
+  const input = {
+    chatId,
+    href: `/c/${chatId}`,
+    titleSource: 'sidebar',
+    createdAt: createdAtIso,
+    updatedAt: updatedAtIso,
+    lastMessageAt: updatedAtIso,
+    answerCount: safeAnswers,
+    preview: {
+      firstQ: typeof partial.firstQ === 'string' ? partial.firstQ : '',
+      firstA: typeof partial.firstA === 'string' ? partial.firstA : '',
+      lastQ:  typeof partial.lastQ  === 'string' ? partial.lastQ  : '',
+      lastA:  typeof partial.lastA  === 'string' ? partial.lastA  : '',
+      updatedAt: updatedAtIso,
+    },
+  };
+
+  try {
+    reg.upsertRecord(input, { source: 'chat-meta-enricher', passive: false });
+    _registryMirrorDiag.mirroredToRegistryCount += 1;
+    _registryMirrorDiag.lastRegistryMirrorAt = Date.now();
+    _registryMirrorDiag.lastRegistryMirrorChatId = chatId;
+    _registryMirrorDiag.lastRegistryMirrorError = null;
+    _registryMirrorDiag.lastRegistryMirrorFingerprintAt = Date.now();
+    // Cache the fingerprint AFTER the call so a thrown error doesn't poison the
+    // dedupe map (the next attempt will retry naturally). Tombstone-blocked
+    // upserts return null without throwing, so they DO update the fingerprint —
+    // that's desirable: repeated identical attempts on a tombstoned chat skip
+    // the cheap upsert call as well.
+    _lastMirrorFingerprintByChatId.set(chatId, fingerprint);
+  } catch (e) {
+    _registryMirrorDiag.lastRegistryMirrorError = String(e?.message || e || 'unknown');
+  }
+}
+
+// Phase 2F — expose tiny read-only diag surface so a future Library Tab / Control Hub
+// debug pane can surface mirror health without depending on enricher internals.
+try {
+  window.H2O = window.H2O || {};
+  window.H2O.interface = window.H2O.interface || {};
+  window.H2O.interface.metaEnricher = Object.assign(window.H2O.interface.metaEnricher || {}, {
+    mirrorDiag: _registryMirrorDiag,
+    mirrorOpenChatMetaToRegistry,   // exported so other modules can opt-in to mirror specific chatIds
+  });
+} catch (_) {}
 
 
   // --------------------------

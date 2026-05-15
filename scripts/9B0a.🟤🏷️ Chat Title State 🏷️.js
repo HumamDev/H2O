@@ -1152,9 +1152,51 @@
     W.addEventListener('evt:h2o:library:store:ready', () => scheduleStoreAttach('library-store-ready'));
   }
 
+  function unwrapCrossSurfacePayload(detail) {
+    const root = detail && typeof detail === 'object' ? detail : {};
+    const payload = root.payload && typeof root.payload === 'object' ? root.payload : root;
+    return payload.payload && typeof payload.payload === 'object' ? payload.payload : payload;
+  }
+
+  function applyCrossSurfaceTitlePayload(detail) {
+    const payload = unwrapCrossSurfacePayload(detail);
+    const titleState = payload?.titleState && typeof payload.titleState === 'object'
+      ? payload.titleState
+      : (payload?.state && typeof payload.state === 'object' ? payload.state : payload);
+    const chatId = String(payload?.chatId || titleState?.chatId || '').trim();
+    if (!chatId || !canPersistChatId(chatId, 'chat') || !titleState || typeof titleState !== 'object') return false;
+    if (!titleState.baseTitle && !titleState.emoji) return false;
+    const rec = ensureRecord(chatId, chatId);
+    const changed = mergeRecordPayload(rec, titleState, 'cross-surface-title-payload');
+    if (!changed) return false;
+    if (chatId === identity.chatId) notify('cross-surface-title-payload', null);
+    else emitEvent('changed', composeState(rec, {
+      chatId,
+      routeKind: 'chat',
+      stableId: isStableChatId(chatId),
+      routeKey: `chat:${chatId}`,
+    }, 'cross-surface-title-payload'), 'cross-surface-title-payload');
+    return true;
+  }
+
+  function bindCrossSurfaceTitleSync() {
+    const handler = (ev) => {
+      const appliedDirectly = applyCrossSurfaceTitlePayload(ev && ev.detail);
+      const chatId = identity && identity.chatId;
+      if (!chatId || !canPersistChatId(chatId, identity.routeKind)) return;
+      scheduleStoreAttach('cross-surface-title-sync');
+      hydrateFromStore(chatId, 'cross-surface-title-sync').then((changed) => {
+        if (changed || appliedDirectly) scheduleRefresh('cross-surface-title-sync', 60);
+      }).catch((err) => fail('cross-surface-title-sync', err));
+    };
+    W.addEventListener('evt:h2o:library:cross-surface-sync', handler);
+    W.addEventListener('h2o:library:cross-surface-sync', handler);
+  }
+
   function boot() {
     H2O.ChatTitle = api;
     patchHistory();
+    bindCrossSurfaceTitleSync();
     installObservers();
     scheduleStoreAttach('boot');
     refresh('boot');

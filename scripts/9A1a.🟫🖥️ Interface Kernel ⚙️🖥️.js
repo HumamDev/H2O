@@ -31,6 +31,8 @@
   const META_KEY = "ho:chat-meta-v1";
   const OVERRIDE_KEY = id => `ho:chat-heat-override:${id}`;
   const PIN_KEY = id => `ho:chat-pin:${id}`;
+  const INTERFACE_META_MIRROR_KEY = id => `h2o:prm:cgx:library:interface-meta:v1:${id}`;
+  const NATIVE_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:native:v1";
   const ACTIVITY_STYLE_KEY = "ho:chat-list-activity-style";
   const HEAT_CLASSES = ['ho-heat-hot','ho-heat-warm','ho-heat-off'];
   const HEAT_CLASS_CLEANUP = [...HEAT_CLASSES, 'ho-heat-cold'];
@@ -53,6 +55,134 @@
 
   function saveMetaStore(meta) {
     try { localStorage.setItem(META_KEY, JSON.stringify(meta || {})); } catch {}
+  }
+
+  function hasChromeStorage() {
+    try {
+      return !!(window.chrome && chrome.storage && chrome.storage.local && typeof chrome.storage.local.set === "function");
+    } catch {
+      return false;
+    }
+  }
+
+  let HO_MIRROR_APPLYING = 0;
+
+  function broadcastInterfaceMirror(reason, payload) {
+    if (!hasChromeStorage()) return;
+    try {
+      chrome.storage.local.set({
+        [NATIVE_BROADCAST_KEY]: {
+          ts: Date.now(),
+          surface: "native",
+          reason: String(reason || "interface-meta"),
+          payload: payload && typeof payload === "object" ? payload : null,
+        },
+      });
+    } catch {}
+  }
+
+  function mirrorInterfaceState(id, partial, reason = "interface-meta") {
+    if (HO_MIRROR_APPLYING || !id || !partial || typeof partial !== "object") return;
+    const metaStore = loadMetaStore();
+    const current = metaStore?.[id] && typeof metaStore[id] === "object" ? metaStore[id] : {};
+    const currentHeat = normalizeHeatLevel(localStorage.getItem(OVERRIDE_KEY(id)) || current.heatOverride || "auto");
+    const currentPinned = localStorage.getItem(PIN_KEY(id)) === "1" || !!current.pinned;
+    const next = {
+      ...current,
+      heatOverride: currentHeat,
+      pinned: currentPinned,
+      ...partial,
+      chatId: id,
+      updatedAt: partial.updatedAt || Date.now(),
+    };
+    const key = INTERFACE_META_MIRROR_KEY(id);
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+    try { window.H2O?.Library?.Store?.set?.(key, next)?.catch?.(() => {}); } catch {}
+    if (hasChromeStorage()) {
+      try { chrome.storage.local.set({ [key]: next }); } catch {}
+    }
+    broadcastInterfaceMirror(reason, { chatId: id, meta: next });
+  }
+
+  function applyInterfaceMirror(id, value) {
+    if (!id || !value || typeof value !== "object") return;
+    HO_MIRROR_APPLYING++;
+    try {
+      if (Object.prototype.hasOwnProperty.call(value, "heatOverride")) {
+        const heat = normalizeHeatLevel(value.heatOverride || "auto");
+        if (heat === "auto") localStorage.removeItem(OVERRIDE_KEY(id));
+        else localStorage.setItem(OVERRIDE_KEY(id), heat);
+      }
+
+      if (value.pinned) localStorage.setItem(PIN_KEY(id), "1");
+      else if (Object.prototype.hasOwnProperty.call(value, "pinned")) localStorage.removeItem(PIN_KEY(id));
+
+      if (Object.prototype.hasOwnProperty.call(value, "rowTint")) {
+        const rowTint = Number.parseInt(value.rowTint, 10);
+        if (Number.isFinite(rowTint) && rowTint >= 0) localStorage.setItem(ROW_KEY(id), String(rowTint));
+        else localStorage.removeItem(ROW_KEY(id));
+      }
+
+      const metaPatch = { ...value };
+      delete metaPatch.chatId;
+      delete metaPatch.heatOverride;
+      delete metaPatch.pinned;
+      const hasMetaPatch = Object.keys(metaPatch).some((key) => metaPatch[key] !== undefined && metaPatch[key] !== null && metaPatch[key] !== "");
+      if (hasMetaPatch) {
+        const meta = loadMetaStore();
+        meta[id] = { ...(meta[id] || {}), ...metaPatch };
+        saveMetaStore(meta);
+      }
+    } catch {
+    } finally {
+      HO_MIRROR_APPLYING--;
+    }
+    try { window.dispatchEvent(new Event(api.nav.EVENT)); } catch {}
+    try { window.dispatchEvent(new CustomEvent("h2o:interface:meta-mirror", { detail: { chatId: id } })); } catch {}
+  }
+
+  function bindInterfaceMirrorSync() {
+    if (!hasChromeStorage() || !chrome.storage.onChanged || typeof chrome.storage.onChanged.addListener !== "function") return;
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        for (const key of Object.keys(changes || {})) {
+          if (!key.startsWith("h2o:prm:cgx:library:interface-meta:v1:")) continue;
+          const chatId = key.slice("h2o:prm:cgx:library:interface-meta:v1:".length);
+          const next = changes[key]?.newValue;
+          if (chatId && next && typeof next === "object") applyInterfaceMirror(chatId, next);
+        }
+      });
+    } catch {}
+  }
+
+  function unwrapCrossSurfacePayload(detail) {
+    const root = detail && typeof detail === "object" ? detail : {};
+    const payload = root.payload && typeof root.payload === "object" ? root.payload : root;
+    return payload.payload && typeof payload.payload === "object" ? payload.payload : payload;
+  }
+
+  function applyCrossSurfaceInterfaceMeta(detail) {
+    const payload = unwrapCrossSurfacePayload(detail);
+    const meta = payload?.meta && typeof payload.meta === "object"
+      ? payload.meta
+      : (payload?.interfaceMeta && typeof payload.interfaceMeta === "object" ? payload.interfaceMeta : payload);
+    const chatId = String(payload?.chatId || meta?.chatId || "").trim();
+    if (!chatId || !meta || typeof meta !== "object") return false;
+    const hasInterfacePatch = ["heatOverride", "pinned", "rowTint"].some((key) => (
+      Object.prototype.hasOwnProperty.call(meta, key)
+    ));
+    if (!hasInterfacePatch) return false;
+    applyInterfaceMirror(chatId, meta);
+    return true;
+  }
+
+  function bindCrossSurfaceInterfaceMirrorSync() {
+    const handler = (ev) => {
+      try { applyCrossSurfaceInterfaceMeta(ev && ev.detail); } catch {}
+    };
+    try { window.addEventListener("evt:h2o:library:cross-surface-sync", handler); } catch {}
+    try { window.addEventListener("h2o:library:cross-surface-sync", handler); } catch {}
   }
 
   function getChatIdFromHref(href) {
@@ -114,8 +244,10 @@
         return stored !== null ? parseInt(stored, 10) : -1;
       },
       setRow(id, idx) {
-        if (idx < 0) localStorage.removeItem(ROW_KEY(id));
-        else localStorage.setItem(ROW_KEY(id), String(idx));
+        const next = Number.parseInt(idx, 10);
+        if (!Number.isFinite(next) || next < 0) localStorage.removeItem(ROW_KEY(id));
+        else localStorage.setItem(ROW_KEY(id), String(next));
+        mirrorInterfaceState(id, { rowTint: Number.isFinite(next) ? next : -1 }, "interface-row-tint");
       },
       getOverride(id) {
         const stored = localStorage.getItem(OVERRIDE_KEY(id));
@@ -125,6 +257,7 @@
         const next = normalizeHeatLevel(level);
         if (next === "auto") localStorage.removeItem(OVERRIDE_KEY(id));
         else localStorage.setItem(OVERRIDE_KEY(id), next);
+        mirrorInterfaceState(id, { heatOverride: next }, "interface-heat-override");
       },
       isPinned(id) {
         try { return localStorage.getItem(PIN_KEY(id)) === "1"; }
@@ -134,6 +267,7 @@
         try {
           if (on) localStorage.setItem(PIN_KEY(id), "1");
           else localStorage.removeItem(PIN_KEY(id));
+          mirrorInterfaceState(id, { pinned: !!on }, "interface-pin");
         } catch {}
       },
       getActivityStyle() {
@@ -167,6 +301,7 @@
         const meta = loadMetaStore();
         meta[id] = { ...(meta[id] || {}), ...(partial || {}) };
         saveMetaStore(meta);
+        mirrorInterfaceState(id, meta[id], "interface-meta");
       },
     },
 
@@ -292,6 +427,8 @@
 
   window.H2O.interface = api;
 
+  bindInterfaceMirrorSync();
+  bindCrossSurfaceInterfaceMirrorSync();
   api.nav.installHistoryHook();
   api.nav.installProjectClickHook();
 
