@@ -44,9 +44,10 @@
   /* ───────────────────────────── 1) REGISTRIES ───────────────────────────── */
 
   /** @core Constants & registries */
+  const STUDIO_SEL = window.H2O.Studio.SELECTORS;
   const SEL_QWRAP_ = Object.freeze({
-    USER_MSG:      '[data-message-author-role="user"]',
-    ASSIST_MSG:    '[data-message-author-role="assistant"]',
+    USER_MSG:      STUDIO_SEL.sel.userTurn,
+    ASSIST_MSG:    STUDIO_SEL.sel.assistantTurn,
     ANY_MSG:       '[data-message-author-role="assistant"],[data-message-author-role="user"]',
     NOT_WRAPPED_USER: '[data-message-author-role="user"]:not([data-ho-qwrap-done="1"])',
 

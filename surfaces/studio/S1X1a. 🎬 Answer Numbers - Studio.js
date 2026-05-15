@@ -37,10 +37,11 @@
     lastErr: null,
   });
 
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
   const SEL = Object.freeze({
-    ANSWER: '[data-message-author-role="assistant"]',
-    TURN: '[data-testid="conversation-turn"]',
-    TURNS: '[data-testid="conversation-turns"]',
+    ANSWER: STUDIO_SEL.sel.assistantTurn,
+    TURN: STUDIO_SEL.sel.conversationTurn,
+    TURNS: STUDIO_SEL.sel.conversationTurns,
   });
 
   const EV = Object.freeze({

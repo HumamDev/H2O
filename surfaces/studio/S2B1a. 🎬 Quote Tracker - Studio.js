@@ -42,12 +42,13 @@
   /* ───────────────────────────── 1) REGISTRIES ───────────────────────────── */
 
   /** @core */
+  const STUDIO_SEL = window.H2O.Studio.SELECTORS;
   const SEL_QT_ = Object.freeze({
-    USER_MSG:   '[data-message-author-role="user"]',
-    ASSIST_MSG: '[data-message-author-role="assistant"]',
+    USER_MSG:   STUDIO_SEL.sel.userTurn,
+    ASSIST_MSG: STUDIO_SEL.sel.assistantTurn,
     ANY_MSG:    '[data-message-author-role="assistant"],[data-message-author-role="user"]',
-    CONV_TURNS: '[data-testid="conversation-turns"]',
-    CONV_TURN:  '[data-testid="conversation-turn"]',
+    CONV_TURNS: STUDIO_SEL.sel.conversationTurns,
+    CONV_TURN:  STUDIO_SEL.sel.conversationTurn,
     MAIN:       'main',
 
     // QWrapper wrapper
