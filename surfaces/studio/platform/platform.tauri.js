@@ -669,6 +669,67 @@
         };
       });
     };
+
+    /* Returns a Promise<{ ready, table, columns: [{ cid, name, type, notnull,
+     * dflt_value, pk }], error? }>. Wraps SQLite's PRAGMA table_info(...)
+     * so DevTools probes can confirm ALTER TABLE columns landed (the
+     * table-list-only __sqliteTables() probe can't see column-level
+     * changes). Caller awaits.
+     *
+     * tableName must match /^[A-Za-z_][A-Za-z0-9_]*$/ — only call with
+     * names returned by __sqliteTables().tables. */
+    platform.__sqliteSchema = function (tableName) {
+      var name = String(tableName || '').trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        return Promise.resolve({
+          ready: false,
+          error: 'invalid table name (must match /^[A-Za-z_][A-Za-z0-9_]*$/)',
+          table: name,
+          columns: [],
+        });
+      }
+      if (!sqliteState.ready) {
+        return Promise.resolve({
+          ready: false,
+          error: 'sqlite not ready: ' + (sqliteState.initError || 'still initializing'),
+          table: name,
+          columns: [],
+        });
+      }
+      var invoke = getTauriInvoke();
+      if (!invoke) {
+        return Promise.resolve({
+          ready: false,
+          error: 'tauri invoke unavailable',
+          table: name,
+          columns: [],
+        });
+      }
+      return invoke('plugin:sql|select', {
+        db: SQLITE_DB_URL,
+        query: 'PRAGMA table_info(' + name + ')',
+        values: [],
+      }).then(function (rows) {
+        var columns = (rows || []).map(function (r) {
+          return {
+            cid: r.cid,
+            name: r.name,
+            type: r.type,
+            notnull: r.notnull,
+            dflt_value: r.dflt_value,
+            pk: r.pk,
+          };
+        });
+        return { ready: true, table: name, columns: columns };
+      }).catch(function (e) {
+        return {
+          ready: false,
+          error: String((e && e.message) || e),
+          table: name,
+          columns: [],
+        };
+      });
+    };
   } catch (_) { /* ignore */ }
 
   /* Kick off SQLite init asynchronously. The synchronous localStorage

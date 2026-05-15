@@ -205,6 +205,45 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v4 — M2a-2c: expand `chats` and `import_batches` to represent
+        // saved snapshots, indexed (Add-to-Library) link-only chats, link
+        // provenance, snapshot summary fields, and import-source
+        // classification.
+        //
+        // Per the corrected V1 ingestion model: Studio Desktop V1's primary
+        // data sources are Save-to-Folder (full saved snapshots) and
+        // Add-to-Library (indexed chat links/metadata). The ChatGPT export
+        // ZIP is an OPTIONAL additional ingestion source, deferred. This
+        // migration adds the columns those two primary flows need on
+        // existing tables — pure ALTER TABLE, no data movement.
+        //
+        // Soft FKs only (column convention; no SQL FOREIGN KEY).
+        // No JS-side consumers wired; M2a-3 wires entities later.
+        // snapshots / snapshot_turns tables arrive in v5 (M2a-2d).
+        Migration {
+            version: 4,
+            description: "expand chats with save/link/snapshot provenance; tag import sources",
+            sql: r#"
+                ALTER TABLE chats ADD COLUMN is_saved          INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE chats ADD COLUMN is_linked         INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE chats ADD COLUMN linked_at         INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE chats ADD COLUMN linked_from       TEXT    NOT NULL DEFAULT '';
+                ALTER TABLE chats ADD COLUMN link_source_href  TEXT    NOT NULL DEFAULT '';
+                ALTER TABLE chats ADD COLUMN href              TEXT;
+                ALTER TABLE chats ADD COLUMN normalized_href   TEXT;
+                ALTER TABLE chats ADD COLUMN snapshot_count    INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE chats ADD COLUMN last_snapshot_id  TEXT;
+                ALTER TABLE chats ADD COLUMN last_captured_at  INTEGER NOT NULL DEFAULT 0;
+
+                CREATE INDEX idx_chats_is_saved        ON chats(is_saved);
+                CREATE INDEX idx_chats_is_linked       ON chats(is_linked);
+                CREATE INDEX idx_chats_normalized_href ON chats(normalized_href);
+
+                ALTER TABLE import_batches ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown';
+                CREATE INDEX idx_import_batches_source ON import_batches(source);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
