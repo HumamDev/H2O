@@ -96,8 +96,9 @@
   const MSG_EXT_HIGHLIGHT_REQ = 'h2o-ext-live:highlight:req';
 
   /* ───────────────────────────── SEL_ ───────────────────────────── */
-  const SEL_ANSWER = '[data-message-author-role="assistant"]';
-  const SEL_MSG = '[data-message-author-role="assistant"], [data-message-author-role="user"]';
+  const STUDIO_SEL = W.H2O.Studio.SELECTORS;
+  const SEL_ANSWER = STUDIO_SEL.sel.assistantTurn;
+  const SEL_MSG = STUDIO_SEL.sel.assistantOrUser;
   const SEL_MAIN = 'main';
   const SEL_TURN_HOST = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
 
@@ -487,8 +488,8 @@
     let turnHost = MSG_getTurnHost(msgEl);
     if (!turnHost && turnId) turnHost = MSG_getTurnHost(MSG_getByTurnId(turnId));
 
-    let answerEl = turnHost?.querySelector?.('[data-message-author-role="assistant"]') || null;
-    let questionEl = turnHost?.querySelector?.('[data-message-author-role="user"]') || null;
+    let answerEl = turnHost?.querySelector?.(SEL_ANSWER) || null;
+    let questionEl = turnHost?.querySelector?.(STUDIO_SEL.sel.userTurn) || null;
     if (!answerEl && role !== 'question' && msgEl && MSG_roleMatches(msgEl, 'answer')) answerEl = msgEl;
     if (!questionEl && role === 'question' && msgEl && MSG_roleMatches(msgEl, 'question')) questionEl = msgEl;
     if (!answerEl && canonical?.answerId) answerEl = MSG_getById(canonical.answerId, { role: 'answer' });
