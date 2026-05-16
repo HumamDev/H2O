@@ -2457,6 +2457,7 @@ export function makeChromeLiveLoaderJs({
       "h2o:library-storage:create-empty-schema",
       "h2o:library-storage:inspect-schema",
       "h2o:library-storage:write-chat-registry-mirror",
+      "h2o:library-storage:verify-chat-registry-mirror",
       // Library KV (Phase 1.6): durable backend for H2O.Library.Store via the SW's
       // h2o_library_kv IndexedDB. Page → loader → SW. These ops go through the same
       // session-auth check as snapshot ops (they are NOT in AUTH_FREE_OPS).
