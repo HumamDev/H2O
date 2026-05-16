@@ -989,9 +989,11 @@ const STORE_CHUNKS = "chunks";
 const LIBRARY_STORAGE_DIAG_OP = "h2o:library-storage:diagnose";
 const LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP = "h2o:library-storage:create-empty-schema";
 const LIBRARY_STORAGE_INSPECT_SCHEMA_OP = "h2o:library-storage:inspect-schema";
+const LIBRARY_STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP = "h2o:library-storage:write-chat-registry-mirror";
 const LIBRARY_SHARED_DB_NAME = "h2o.library.shared";
 const LIBRARY_SHARED_DB_VERSION = 1;
 const LIBRARY_SHARED_EMPTY_SCHEMA_APPROVAL = "CREATE_EMPTY_H2O_LIBRARY_SHARED_V1";
+const LIBRARY_SHARED_CHAT_REGISTRY_MIRROR_WRITE_APPROVAL = "WRITE_CHAT_REGISTRY_MIRROR_V1";
 const LIBRARY_SHARED_MINIMAL_SCHEMA_STORES = Object.freeze([
   "chatRegistry",
   "migrationState",
@@ -1017,6 +1019,7 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   LIBRARY_STORAGE_DIAG_OP,
   LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP,
   LIBRARY_STORAGE_INSPECT_SCHEMA_OP,
+  LIBRARY_STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP,
   "getBootMode",
   "setBootMode",
   "getMigratedFlag",
@@ -4805,6 +4808,283 @@ async function libraryStorageInspectSchema(payload = {}) {
   });
 }
 
+function libraryStorageHashString(value) {
+  const raw = String(value || "");
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return "fnv1a32:" + (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function normalizeChatRegistryMirrorRecords(records, candidateKeys) {
+  const rawRecords = Array.isArray(records) ? records : [];
+  const rawKeys = Array.isArray(candidateKeys) ? candidateKeys : [];
+  const normalized = [];
+  const keys = [];
+  const seenChatIds = new Set();
+  const errors = [];
+  for (let index = 0; index < rawRecords.length; index += 1) {
+    const rec = rawRecords[index];
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) {
+      errors.push("record-not-object:" + index);
+      continue;
+    }
+    const chatId = String(rec.chatId || "").trim();
+    if (!chatId) {
+      errors.push("record-missing-chatId:" + index);
+      continue;
+    }
+    if (seenChatIds.has(chatId)) {
+      errors.push("duplicate-chatId:" + chatId);
+      continue;
+    }
+    seenChatIds.add(chatId);
+    normalized.push(rec);
+    keys.push(String(rawKeys[index] || ("chatId:" + chatId)));
+  }
+  return { records: normalized, candidateKeys: keys, errors };
+}
+
+function checksumChatRegistryMirrorPayload(records, candidateKeys) {
+  const checksumInput = (records || []).map((rec, index) => [
+    candidateKeys[index] || "",
+    rec && rec.chatId || "",
+    rec && rec.normalizedHref || "",
+    rec && rec.updatedAt || "",
+    rec && rec.state && rec.state.isSaved ? "saved" : "",
+    rec && rec.state && rec.state.isLinked ? "linked" : "",
+    rec && rec.state && rec.state.isImported ? "imported" : "",
+  ].join(":")).join("|");
+  return records && records.length ? libraryStorageHashString(checksumInput) : "";
+}
+
+function writeChatRegistryMirrorRecords(db, records) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let tx = null;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      resolve(out);
+    };
+    try {
+      tx = db.transaction("chatRegistry", "readwrite");
+      const store = tx.objectStore("chatRegistry");
+      for (const record of records) {
+        try {
+          store.put(record);
+        } catch (e) {
+          try { tx.abort(); } catch {}
+          done({
+            ok: false,
+            status: "mirror-write-record-put-failed",
+            reason: String(e && (e.message || e)) || "mirror record put failed",
+            recordsWritten: 0,
+          });
+          return;
+        }
+      }
+      tx.oncomplete = () => done({ ok: true, recordsWritten: records.length });
+      tx.onabort = () => {
+        const err = tx.error;
+        done({
+          ok: false,
+          status: "mirror-write-transaction-aborted",
+          reason: String(err && (err.message || err.name || err)) || "mirror write transaction aborted",
+          recordsWritten: 0,
+        });
+      };
+      tx.onerror = () => {
+        const err = tx.error;
+        done({
+          ok: false,
+          status: "mirror-write-transaction-failed",
+          reason: String(err && (err.message || err.name || err)) || "mirror write transaction failed",
+          recordsWritten: 0,
+        });
+      };
+    } catch (e) {
+      done({
+        ok: false,
+        status: "mirror-write-threw",
+        reason: String(e && (e.message || e)) || "mirror write threw",
+        recordsWritten: 0,
+      });
+    }
+  });
+}
+
+async function libraryStorageWriteChatRegistryMirror(payload = {}) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const domain = String(src.domain || "").trim();
+  const mode = String(src.mode || "").trim();
+  const explicitApproval = String(src.explicitApproval || "").trim();
+  const expectedChecksum = String(src.expectedChecksum || "").trim();
+  const checksum = String(src.checksum || "").trim();
+  const expectedCandidateCount = Number(src.expectedCandidateCount);
+  const candidateCount = Number(src.candidateCount);
+  const batchSize = Number(src.batchSize);
+  const now = new Date().toISOString();
+  const base = {
+    ok: false,
+    phase: "8K",
+    domain,
+    mode,
+    dbName: LIBRARY_SHARED_DB_NAME,
+    store: "chatRegistry",
+    recordsWritten: 0,
+    expectedCandidateCount: Number.isFinite(expectedCandidateCount) ? expectedCandidateCount : null,
+    checksum: checksum || expectedChecksum,
+    canonicalReadsEnabled: false,
+    canonicalReadEnabled: false,
+    dualReadExecutionEnabled: false,
+    dualWriteEnabled: false,
+    legacyMutated: false,
+    migrationStateWritten: false,
+    syncStateWritten: false,
+    at: now,
+  };
+  if (domain !== "chatRegistry") {
+    return { ...base, status: "unsupported-domain", reason: "only chatRegistry mirror writes are allowed in phase 8K" };
+  }
+  if (mode !== "mirror-write-bounded") {
+    return { ...base, status: "invalid-mode", reason: "mode must be mirror-write-bounded" };
+  }
+  if (explicitApproval !== LIBRARY_SHARED_CHAT_REGISTRY_MIRROR_WRITE_APPROVAL) {
+    return { ...base, status: "missing-explicit-approval", reason: "explicit mirror write approval token is required" };
+  }
+  if (!expectedChecksum || !checksum || checksum !== expectedChecksum) {
+    return { ...base, status: "checksum-mismatch", reason: "expected checksum must match the current mirror candidate checksum" };
+  }
+  if (!Number.isFinite(expectedCandidateCount) || expectedCandidateCount <= 0) {
+    return { ...base, status: "invalid-expected-candidate-count", reason: "expectedCandidateCount must be a positive number" };
+  }
+  if (!Number.isFinite(candidateCount) || candidateCount !== expectedCandidateCount) {
+    return { ...base, status: "candidate-count-mismatch", reason: "candidateCount must match expectedCandidateCount", candidateCount: Number.isFinite(candidateCount) ? candidateCount : null };
+  }
+  if (batchSize !== 50) {
+    return { ...base, status: "invalid-batch-size", reason: "batchSize must be 50 for phase 8K" };
+  }
+  const normalized = normalizeChatRegistryMirrorRecords(src.records, src.candidateKeys);
+  if (normalized.errors.length) {
+    return { ...base, status: "invalid-records", reason: "mirror payload contains invalid records", errors: normalized.errors.slice(0, 10), candidateCount: normalized.records.length };
+  }
+  if (normalized.records.length !== expectedCandidateCount) {
+    return { ...base, status: "record-count-mismatch", reason: "records length must match expectedCandidateCount", candidateCount: normalized.records.length };
+  }
+  const payloadChecksum = checksumChatRegistryMirrorPayload(normalized.records, normalized.candidateKeys);
+  if (payloadChecksum !== expectedChecksum) {
+    return { ...base, status: "payload-checksum-mismatch", reason: "mirror payload checksum does not match expected checksum", payloadChecksum };
+  }
+  const inspection = await libraryStorageInspectSchema({ domain: "chatRegistry", mode: "inspect-schema-only" });
+  if (!inspection.ok) {
+    return { ...base, status: "schema-inspection-failed", reason: inspection.reason || inspection.status || "schema inspection failed", inspection };
+  }
+  const stores = inspection.stores || {};
+  const missingStores = LIBRARY_SHARED_MINIMAL_SCHEMA_STORES.filter((name) => !stores[name] || stores[name].exists !== true);
+  if (inspection.currentVersion !== LIBRARY_SHARED_DB_VERSION && inspection.version !== LIBRARY_SHARED_DB_VERSION) {
+    return { ...base, status: "db-version-not-1", reason: "h2o.library.shared version must be 1", inspection };
+  }
+  if (missingStores.length) {
+    return { ...base, status: "required-stores-missing", reason: "required phase 8I stores are missing", missingStores, inspection };
+  }
+  if (Array.isArray(inspection.unexpectedStores) && inspection.unexpectedStores.length) {
+    return { ...base, status: "unexpected-stores-present", reason: "unexpected stores block the first mirror write", unexpectedStores: inspection.unexpectedStores.slice(), inspection };
+  }
+  if (!stores.chatRegistry || stores.chatRegistry.count !== 0) {
+    return { ...base, status: "chatregistry-store-not-empty", reason: "chatRegistry store must be empty before the first mirror write", canonicalExistingCount: stores.chatRegistry ? stores.chatRegistry.count : null, inspection };
+  }
+  if (stores.migrationState && stores.migrationState.count !== 0) {
+    return { ...base, status: "migration-state-not-empty", reason: "migrationState is expected to remain empty in phase 8K", inspection };
+  }
+  if (stores.syncState && stores.syncState.count !== 0) {
+    return { ...base, status: "sync-state-not-empty", reason: "syncState is expected to remain empty in phase 8K", inspection };
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let req = null;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      resolve(out);
+    };
+    try {
+      req = indexedDB.open(LIBRARY_SHARED_DB_NAME);
+    } catch (e) {
+      done({ ...base, status: "indexeddb-open-failed", reason: String(e && (e.message || e)) || "IndexedDB open failed" });
+      return;
+    }
+    req.onupgradeneeded = () => {
+      try {
+        const tx = req.transaction;
+        if (tx && typeof tx.abort === "function") tx.abort();
+      } catch {}
+      try {
+        const db = req.result;
+        if (db && typeof db.close === "function") db.close();
+      } catch {}
+      done({ ...base, status: "indexeddb-upgrade-attempted", reason: "mirror write aborted because IndexedDB attempted to create or upgrade h2o.library.shared" });
+    };
+    req.onsuccess = async () => {
+      const db = req.result;
+      try {
+        const currentVersion = Number(db.version || 0) || null;
+        if (currentVersion !== LIBRARY_SHARED_DB_VERSION) {
+          done({ ...base, status: "db-version-not-1", reason: "opened h2o.library.shared version must be 1", currentVersion });
+          return;
+        }
+        const beforeCount = await countLibrarySharedStore(db, "chatRegistry");
+        if (!beforeCount.ok) {
+          done({ ...base, status: beforeCount.status || "chatregistry-count-failed", reason: beforeCount.reason || "failed to count chatRegistry before write" });
+          return;
+        }
+        if (beforeCount.count !== 0) {
+          done({ ...base, status: "chatregistry-store-not-empty", reason: "chatRegistry store must be empty before write", canonicalExistingCount: beforeCount.count });
+          return;
+        }
+        const written = await writeChatRegistryMirrorRecords(db, normalized.records);
+        if (!written.ok) {
+          done({ ...base, ...written, ok: false, checksum: expectedChecksum });
+          return;
+        }
+        const afterCount = await countLibrarySharedStore(db, "chatRegistry");
+        if (!afterCount.ok) {
+          done({ ...base, status: afterCount.status || "post-write-count-failed", reason: afterCount.reason || "failed to count chatRegistry after write", recordsWritten: written.recordsWritten });
+          return;
+        }
+        if (afterCount.count !== expectedCandidateCount) {
+          done({ ...base, status: "post-write-count-mismatch", reason: "chatRegistry count after write does not match expected candidate count", recordsWritten: written.recordsWritten, canonicalExistingCount: afterCount.count });
+          return;
+        }
+        done({
+          ...base,
+          ok: true,
+          status: "mirror-write-complete",
+          recordsWritten: written.recordsWritten,
+          candidateCount: expectedCandidateCount,
+          expectedCandidateCount,
+          checksum: expectedChecksum,
+          canonicalExistingCount: afterCount.count,
+        });
+      } catch (e) {
+        done({ ...base, status: "mirror-write-failed", reason: String(e && (e.message || e)) || "mirror write failed" });
+      } finally {
+        try { db.close(); } catch {}
+      }
+    };
+    req.onerror = () => {
+      const err = req.error;
+      done({ ...base, status: "indexeddb-open-failed", reason: String(err && (err.message || err.name || err)) || "IndexedDB open failed" });
+    };
+    req.onblocked = () => {
+      done({ ...base, status: "indexeddb-open-blocked", reason: "opening h2o.library.shared was blocked by another connection" });
+    };
+  });
+}
+
 async function handleArchiveMessage(msg) {
   const req = msg && msg.req && typeof msg.req === "object" ? msg.req : {};
   const op = String(req.op || "").trim();
@@ -4823,6 +5103,9 @@ async function handleArchiveMessage(msg) {
   }
   if (op === LIBRARY_STORAGE_INSPECT_SCHEMA_OP || op === "libraryStorageInspectSchema") {
     return { ok: true, result: await libraryStorageInspectSchema(payload) };
+  }
+  if (op === LIBRARY_STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP || op === "libraryStorageWriteChatRegistryMirror") {
+    return { ok: true, result: await libraryStorageWriteChatRegistryMirror(payload) };
   }
 
   if (op === "ping") {

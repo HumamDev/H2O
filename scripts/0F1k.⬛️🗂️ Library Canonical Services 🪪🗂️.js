@@ -206,6 +206,8 @@
   const STORAGE_BACKGROUND_DIAG_OP = 'h2o:library-storage:diagnose';
   const STORAGE_CREATE_EMPTY_SCHEMA_OP = 'h2o:library-storage:create-empty-schema';
   const STORAGE_INSPECT_SCHEMA_OP = 'h2o:library-storage:inspect-schema';
+  const STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:write-chat-registry-mirror';
+  const CHAT_REGISTRY_MIRROR_WRITE_APPROVAL = 'WRITE_CHAT_REGISTRY_MIRROR_V1';
   const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
   const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
   const STORAGE_ADAPTER_DOMAINS = Object.freeze([
@@ -397,6 +399,11 @@
   };
   const mirrorWritePreflightState = {
     lastCheckedAt: 0,
+    lastResult: null,
+  };
+  const mirrorWriteState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
     lastResult: null,
   };
 
@@ -1478,7 +1485,16 @@
     return sources;
   }
 
-  function buildChatRegistryCandidates(core, sources) {
+  function cloneMirrorRecord(record) {
+    if (!record || typeof record !== 'object') return null;
+    try {
+      return JSON.parse(JSON.stringify(record));
+    } catch {
+      return { ...record };
+    }
+  }
+
+  function buildChatRegistryCandidates(core, sources, opts = {}) {
     const byKey = Object.create(null);
     let legacyCount = 0;
     let skippedCount = 0;
@@ -1534,7 +1550,7 @@
       rec?.state?.isLinked ? 'linked' : '',
       rec?.state?.isImported ? 'imported' : '',
     ].join(':')).join('|');
-    return {
+    const out = {
       legacyCount,
       candidateCount: records.length,
       skippedCount,
@@ -1543,6 +1559,11 @@
       sampleChatIds,
       checksum: records.length ? hashString(checksumInput) : '',
     };
+    if (opts && opts.includeRecords === true) {
+      out.candidateKeys = keys.slice();
+      out.records = records.map(cloneMirrorRecord).filter(Boolean);
+    }
+    return out;
   }
 
   function getMirrorDryRun(domainName) {
@@ -2244,6 +2265,163 @@
     });
   }
 
+  function rememberMirrorWriteResult(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-mirror-write-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'mirror-write-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    mirrorWriteState.lastCheckedAt = Date.now();
+    mirrorWriteState.lastTransport = out.transport;
+    mirrorWriteState.lastResult = out;
+    return out;
+  }
+
+  function normalizeMirrorWriteEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return rememberMirrorWriteResult({
+        ok: false,
+        phase: '8K',
+        status: 'mirror-write-empty-result',
+        reason: 'background returned no mirror write payload',
+        recordsWritten: 0,
+      }, transport);
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return rememberMirrorWriteResult({
+          ok: false,
+          phase: '8K',
+          status: 'mirror-write-rejected',
+          reason: String(env.error || env.reason || 'background mirror write rejected'),
+          error: env.error || '',
+          recordsWritten: 0,
+        }, transport);
+      }
+      return rememberMirrorWriteResult(env.result, transport);
+    }
+    return rememberMirrorWriteResult(env, transport);
+  }
+
+  function normalizeWriteMirrorOptions(domainOrOptions, opts = {}) {
+    const src = domainOrOptions && typeof domainOrOptions === 'object' && !Array.isArray(domainOrOptions)
+      ? domainOrOptions
+      : { ...(opts && typeof opts === 'object' ? opts : {}), domain: domainOrOptions };
+    return {
+      domain: String(src.domain || '').trim(),
+      mode: String(src.mode || '').trim(),
+      explicitApproval: String(src.explicitApproval || '').trim(),
+      expectedChecksum: String(src.expectedChecksum || '').trim(),
+      expectedCandidateCount: Number(src.expectedCandidateCount),
+      batchSize: Number(src.batchSize),
+    };
+  }
+
+  function getChatRegistryMirrorCandidatePayload() {
+    const core = chatRegistryCore();
+    const sources = chatRegistryMirrorSources(core);
+    return {
+      core,
+      sources,
+      candidate: buildChatRegistryCandidates(core, sources, { includeRecords: true }),
+      sourceSummaries: sources.map(summarizeMirrorSource),
+    };
+  }
+
+  function localMirrorWriteFailure(status, reason, extra = {}) {
+    return rememberMirrorWriteResult({
+      ok: false,
+      phase: '8K',
+      status,
+      reason,
+      domain: extra.domain || 'chatRegistry',
+      mode: extra.mode || 'mirror-write-bounded',
+      recordsWritten: 0,
+      canonicalReadsEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      legacyMutated: false,
+      migrationStateWritten: false,
+      syncStateWritten: false,
+      ...extra,
+    }, extra.transport || 'local-validation');
+  }
+
+  async function writeMirror(domainOrOptions, opts = {}) {
+    const options = normalizeWriteMirrorOptions(domainOrOptions, opts);
+    if (options.domain !== 'chatRegistry') {
+      return localMirrorWriteFailure('unsupported-domain', 'only chatRegistry mirror writes are supported in phase 8K', { domain: options.domain, supportedDomains: ['chatRegistry'] });
+    }
+    if (options.mode !== 'mirror-write-bounded') {
+      return localMirrorWriteFailure('invalid-mode', 'mode must be mirror-write-bounded', { mode: options.mode });
+    }
+    if (options.explicitApproval !== CHAT_REGISTRY_MIRROR_WRITE_APPROVAL) {
+      return localMirrorWriteFailure('missing-explicit-approval', 'explicit mirror write approval token is required');
+    }
+    if (!options.expectedChecksum) {
+      return localMirrorWriteFailure('missing-expected-checksum', 'expectedChecksum is required');
+    }
+    if (!Number.isFinite(options.expectedCandidateCount) || options.expectedCandidateCount <= 0) {
+      return localMirrorWriteFailure('invalid-expected-candidate-count', 'expectedCandidateCount must be a positive number', { expectedCandidateCount: options.expectedCandidateCount });
+    }
+    if (options.batchSize !== 50) {
+      return localMirrorWriteFailure('invalid-batch-size', 'batchSize must be 50 for phase 8K', { batchSize: options.batchSize });
+    }
+
+    const preflight = await getMirrorWritePreflight('chatRegistry');
+    if (!preflight || preflight.ok !== true || preflight.status !== 'preflight-ready-for-explicit-write-approval') {
+      return localMirrorWriteFailure('preflight-not-ready', 'mirror write preflight is not ready for explicit write approval', { preflight });
+    }
+    const { candidate, sourceSummaries } = getChatRegistryMirrorCandidatePayload();
+    if (candidate.checksum !== options.expectedChecksum) {
+      return localMirrorWriteFailure('checksum-mismatch', 'expectedChecksum does not match current dry-run checksum', { expectedChecksum: options.expectedChecksum, checksum: candidate.checksum });
+    }
+    if (candidate.candidateCount !== options.expectedCandidateCount) {
+      return localMirrorWriteFailure('candidate-count-mismatch', 'expectedCandidateCount does not match current dry-run candidate count', { expectedCandidateCount: options.expectedCandidateCount, candidateCount: candidate.candidateCount });
+    }
+    if (candidate.invalidCount || candidate.skippedCount || !candidate.candidateCount) {
+      return localMirrorWriteFailure('candidate-set-not-writable', 'candidate set has invalid, skipped, or empty records', {
+        candidateCount: candidate.candidateCount,
+        invalidCount: candidate.invalidCount,
+        skippedCount: candidate.skippedCount,
+      });
+    }
+
+    const payload = {
+      domain: 'chatRegistry',
+      mode: 'mirror-write-bounded',
+      explicitApproval: options.explicitApproval,
+      expectedChecksum: options.expectedChecksum,
+      expectedCandidateCount: options.expectedCandidateCount,
+      batchSize: options.batchSize,
+      checksum: candidate.checksum,
+      candidateCount: candidate.candidateCount,
+      candidateKeys: Array.isArray(candidate.candidateKeys) ? candidate.candidateKeys.slice() : [],
+      records: Array.isArray(candidate.records) ? candidate.records.slice() : [],
+      sourceSummaries,
+    };
+    try {
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageWriteChatRegistryMirror === 'function') {
+        const out = await bridge.libraryStorageWriteChatRegistryMirror(payload);
+        return normalizeMirrorWriteEnvelope(out, 'extension-archive-bridge');
+      }
+      if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        const out = await sendRuntimeArchiveMessage(STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP, payload);
+        return normalizeMirrorWriteEnvelope(out, 'chrome.runtime.sendMessage');
+      }
+      return localMirrorWriteFailure('mirror-write-transport-unavailable', 'no extension archive bridge or chrome.runtime transport available', { transport: 'none' });
+    } catch (e) {
+      return localMirrorWriteFailure('mirror-write-error', String(e?.message || e || ''), { transport: 'error' });
+    }
+  }
+
+  function writeChatRegistryMirror(options = {}) {
+    return writeMirror('chatRegistry', options);
+  }
+
   function backgroundHealthSnapshot() {
     return {
       lastCheckedAt: backgroundHealthState.lastCheckedAt,
@@ -2279,6 +2457,15 @@
     };
   }
 
+  function mirrorWriteSnapshot() {
+    return {
+      lastCheckedAt: mirrorWriteState.lastCheckedAt,
+      lastTransport: mirrorWriteState.lastTransport,
+      lastResult: mirrorWriteState.lastResult,
+      queried: mirrorWriteState.lastCheckedAt > 0,
+    };
+  }
+
   function installStorageAdapterDiagnostics(core) {
     H2O.Library = H2O.Library || {};
     const api = Object.freeze({
@@ -2303,6 +2490,8 @@
       createEmptySchema,
       inspectCanonicalSchema,
       getMirrorWritePreflight,
+      writeMirror,
+      writeChatRegistryMirror,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -2350,6 +2539,8 @@
               'createEmptySchema',
               'inspectCanonicalSchema',
               'getMirrorWritePreflight',
+              'writeMirror',
+              'writeChatRegistryMirror',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -2380,6 +2571,9 @@
           },
           mirrorWritePreflight: {
             chatRegistry: mirrorWritePreflightSnapshot(),
+          },
+          mirrorWrite: {
+            chatRegistry: mirrorWriteSnapshot(),
           },
           domains,
         };
