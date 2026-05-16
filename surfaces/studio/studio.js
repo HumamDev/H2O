@@ -5166,6 +5166,25 @@ function boot(){
   // tab hidden/visible cycles. If the tab is closed, the interval dies with it.
   try { W.setInterval(() => persistStudioPresence(), STUDIO_PRESENCE_HEARTBEAT_MS); } catch {}
   renderRoute().catch(console.error);
+
+  // Desktop (Tauri) only: the webview emits focus / visibilitychange /
+  // hashchange in close succession during startup. Each event triggers
+  // a new renderRoute which bumps state.renderToken, and every
+  // in-flight renderList silently bails at its post-await token checks
+  // before reaching renderFolderSidebar([]) / renderSidebarChatList([]).
+  // The result is that the sidebar's static "Loading folder bindings…"
+  // / "Loading chats…" HTML placeholders never get replaced until the
+  // user manually triggers another renderRoute. A single deferred
+  // renderRoute scheduled after the startup flurry settles is a
+  // defensive empty-state completion pass: by then fetchWorkbenchRows
+  // returns the cached [] instantly (via the callArchive interceptors)
+  // and renderList runs end-to-end. Cheap; safe to double-render the
+  // empty state. MV3 is unaffected — this whole block is gated on Tauri.
+  if (STUDIO_isTauri()) {
+    setTimeout(() => {
+      renderRoute({ force: true }).catch(console.error);
+    }, 600);
+  }
 }
 
 boot();
