@@ -203,6 +203,7 @@
   // ── Phase 8A storage adapter contract diagnostics ─────────────────────────
   const STORAGE_ADAPTER_PHASE = '8A';
   const STORAGE_BACKGROUND_DIAG_OP = 'h2o:library-storage:diagnose';
+  const STORAGE_CREATE_EMPTY_SCHEMA_OP = 'h2o:library-storage:create-empty-schema';
   const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
   const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
   const STORAGE_ADAPTER_DOMAINS = Object.freeze([
@@ -371,6 +372,11 @@
     },
   ]);
   const backgroundHealthState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
+    lastResult: null,
+  };
+  const schemaCreationState = {
     lastCheckedAt: 0,
     lastTransport: '',
     lastResult: null,
@@ -1827,7 +1833,7 @@
     return rememberBackgroundHealth(env, transport);
   }
 
-  function sendRuntimeArchiveMessage() {
+  function sendRuntimeArchiveMessage(op = STORAGE_BACKGROUND_DIAG_OP, payload = {}) {
     return new Promise((resolve, reject) => {
       try {
         if (!W.chrome?.runtime || typeof W.chrome.runtime.sendMessage !== 'function') {
@@ -1836,7 +1842,7 @@
         }
         W.chrome.runtime.sendMessage({
           type: STORAGE_ARCHIVE_MSG,
-          req: { op: STORAGE_BACKGROUND_DIAG_OP, payload: {} },
+          req: { op: String(op || ''), payload: payload && typeof payload === 'object' ? payload : {} },
         }, (response) => {
           const le = W.chrome?.runtime?.lastError;
           if (le) {
@@ -1859,7 +1865,7 @@
         return normalizeBackgroundHealthEnvelope(out, 'extension-archive-bridge');
       }
       if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
-        const out = await sendRuntimeArchiveMessage();
+        const out = await sendRuntimeArchiveMessage(STORAGE_BACKGROUND_DIAG_OP, {});
         return normalizeBackgroundHealthEnvelope(out, 'chrome.runtime.sendMessage');
       }
       return rememberBackgroundHealth({
@@ -1876,12 +1882,110 @@
     }
   }
 
+  function rememberSchemaCreationResult(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-schema-creation-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'schema-creation-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    schemaCreationState.lastCheckedAt = Date.now();
+    schemaCreationState.lastTransport = out.transport;
+    schemaCreationState.lastResult = out;
+    return out;
+  }
+
+  function normalizeSchemaCreationEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return rememberSchemaCreationResult({
+        ok: false,
+        status: 'schema-creation-empty-result',
+        reason: 'background returned no schema creation payload',
+      }, transport);
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return rememberSchemaCreationResult({
+          ok: false,
+          status: 'schema-creation-rejected',
+          reason: String(env.error || env.reason || 'background schema creation rejected'),
+          error: env.error || '',
+        }, transport);
+      }
+      return rememberSchemaCreationResult(env.result, transport);
+    }
+    return rememberSchemaCreationResult(env, transport);
+  }
+
+  function normalizeCreateEmptySchemaPayload(domainOrOptions, opts = {}) {
+    const src = domainOrOptions && typeof domainOrOptions === 'object' && !Array.isArray(domainOrOptions)
+      ? domainOrOptions
+      : { ...(opts && typeof opts === 'object' ? opts : {}), domain: domainOrOptions };
+    return {
+      domain: String(src.domain || '').trim(),
+      mode: String(src.mode || 'dry-run').trim() || 'dry-run',
+      stores: Array.isArray(src.stores) ? src.stores.slice() : [],
+      explicitApproval: String(src.explicitApproval || '').trim(),
+    };
+  }
+
+  async function createEmptySchema(domainOrOptions, opts = {}) {
+    const payload = normalizeCreateEmptySchemaPayload(domainOrOptions, opts);
+    try {
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageCreateEmptySchema === 'function') {
+        const out = await bridge.libraryStorageCreateEmptySchema(payload);
+        return normalizeSchemaCreationEnvelope(out, 'extension-archive-bridge');
+      }
+      if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        const out = await sendRuntimeArchiveMessage(STORAGE_CREATE_EMPTY_SCHEMA_OP, payload);
+        return normalizeSchemaCreationEnvelope(out, 'chrome.runtime.sendMessage');
+      }
+      return rememberSchemaCreationResult({
+        ok: false,
+        phase: '8I',
+        status: 'schema-creation-transport-unavailable',
+        reason: 'no extension archive bridge or chrome.runtime transport available',
+        domain: payload.domain,
+        mode: payload.mode,
+        recordsWritten: 0,
+        canonicalReadsEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      }, 'none');
+    } catch (e) {
+      return rememberSchemaCreationResult({
+        ok: false,
+        phase: '8I',
+        status: 'schema-creation-error',
+        reason: String(e?.message || e || ''),
+        domain: payload.domain,
+        mode: payload.mode,
+        recordsWritten: 0,
+        canonicalReadsEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      }, 'error');
+    }
+  }
+
   function backgroundHealthSnapshot() {
     return {
       lastCheckedAt: backgroundHealthState.lastCheckedAt,
       lastTransport: backgroundHealthState.lastTransport,
       lastResult: backgroundHealthState.lastResult,
       queried: backgroundHealthState.lastCheckedAt > 0,
+    };
+  }
+
+  function schemaCreationSnapshot() {
+    return {
+      lastCheckedAt: schemaCreationState.lastCheckedAt,
+      lastTransport: schemaCreationState.lastTransport,
+      lastResult: schemaCreationState.lastResult,
+      queried: schemaCreationState.lastCheckedAt > 0,
     };
   }
 
@@ -1906,6 +2010,7 @@
       getMirrorReadiness,
       getReadOnlyMirrorStatus,
       getReadOnlyMirrorPlan,
+      createEmptySchema,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -1950,6 +2055,7 @@
               'getMirrorReadiness',
               'getReadOnlyMirrorStatus',
               'getReadOnlyMirrorPlan',
+              'createEmptySchema',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -1963,6 +2069,7 @@
           health: storageAdapterHealth(),
           capabilities: storageCapabilities(),
           background: backgroundHealthSnapshot(),
+          schemaCreation: schemaCreationSnapshot(),
           dualRead: getDualReadReadiness(),
           dualWrite: getDualWriteReadiness(),
           migrationInventory: getMigrationInventoryAll(),

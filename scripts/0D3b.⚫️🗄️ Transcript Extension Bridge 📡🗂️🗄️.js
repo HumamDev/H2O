@@ -257,6 +257,7 @@
     libraryKvListKeys: (prefix) => call("libraryKvListKeys", { prefix }),
     libraryKvEstimate: () => call("libraryKvEstimate", {}),
     libraryStorageDiagnose: () => call("h2o:library-storage:diagnose", {}, { timeoutMs: 2500 }),
+    libraryStorageCreateEmptySchema: (payload = {}) => call("h2o:library-storage:create-empty-schema", payload, { timeoutMs: 8000 }),
     // Loader-side diagnostic — handled entirely inside the page content-script, never reaches
     // the SW. Returns { loaderBuildTs, loaderBuildIso, libraryKvOps, allowOps, allowOpsCount, tag }
     // so we can confirm which loader.js Chrome actually has active for this page.
