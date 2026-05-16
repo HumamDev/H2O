@@ -212,6 +212,11 @@
        gating as chats.tauri.js. listChats() delegates to store.chats; load
        order matters here (chats.tauri.js loads above). -->
   <script src="./store/folders.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed labels entity (M2a-3d). Backs the
+       labels + label_bindings tables (Migration v3). Composite binding PK
+       allows multiple labels per chat. Same gating + store.chats
+       delegation pattern as folders.tauri.js. -->
+  <script src="./store/labels.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

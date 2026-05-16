@@ -36,6 +36,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // backs folders + folder_bindings tables. Must load after chats.tauri.js
   // because listChats() delegates to store.chats.
   "store/folders.tauri.js",
+  // Desktop-only: SQLite-backed labels entity (M2a-3d). Same gating; backs
+  // labels + label_bindings tables. Composite binding PK allows multiple
+  // labels per chat. listChats() delegates to store.chats (same pattern).
+  "store/labels.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -131,6 +135,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/chats.tauri.js",
   "store/snapshots.tauri.js",
   "store/folders.tauri.js",
+  "store/labels.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
