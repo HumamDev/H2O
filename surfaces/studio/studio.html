@@ -207,6 +207,11 @@
        snapshots + snapshot_turns tables (Migration v5). Same self-detect
        gating as chats.tauri.js. -->
   <script src="./store/snapshots.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed folders entity (M2a-3c). Backs the
+       folders + folder_bindings tables (Migration v3). Same self-detect
+       gating as chats.tauri.js. listChats() delegates to store.chats; load
+       order matters here (chats.tauri.js loads above). -->
+  <script src="./store/folders.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

@@ -32,6 +32,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: SQLite-backed snapshots entity (M2a-3b). Same gating
   // as chats.tauri.js; backs snapshots + snapshot_turns tables.
   "store/snapshots.tauri.js",
+  // Desktop-only: SQLite-backed folders entity (M2a-3c). Same gating;
+  // backs folders + folder_bindings tables. Must load after chats.tauri.js
+  // because listChats() delegates to store.chats.
+  "store/folders.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -126,6 +130,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/libraryIndex.js",
   "store/chats.tauri.js",
   "store/snapshots.tauri.js",
+  "store/folders.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
