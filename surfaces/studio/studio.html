@@ -222,6 +222,11 @@
        as labels. Tags carries an auto_derived boolean and has no
        updated_at column. -->
   <script src="./store/tags.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed categories entity (M2a-3f). Backs the
+       categories table only (no category_bindings) — chat assignment
+       lives in chats.category_id. assignChat / clearChat write directly
+       to chats via raw SQL; listChats delegates to store.chats. -->
+  <script src="./store/categories.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

@@ -44,6 +44,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // shape as labels.tauri.js; tags has an auto_derived boolean and no
   // updated_at column.
   "store/tags.tauri.js",
+  // Desktop-only: SQLite-backed categories entity (M2a-3f). No
+  // category_bindings table — assignment lives in chats.category_id.
+  // assignChat / clearChat write directly to chats; listChats delegates
+  // to store.chats.
+  "store/categories.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -141,6 +146,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/folders.tauri.js",
   "store/labels.tauri.js",
   "store/tags.tauri.js",
+  "store/categories.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
