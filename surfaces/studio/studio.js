@@ -906,7 +906,101 @@ function getPlatformMessaging(){
   return p;
 }
 
+// ── Desktop reader (M2a-3i) ─────────────────────────────────────────────────
+// On Tauri Studio Desktop, saved snapshots live in the SQLite-backed
+// H2O.Studio.store.snapshots. callArchive's "loadSnapshot" op is the single
+// funnel renderReader → buildReaderDOM uses; we intercept just that op and
+// project SQLite output into the canonical snapshot shape the existing
+// reader path already consumes. All other archive ops fall through to the
+// MV3 platform-messaging path unchanged — Save-to-Folder / Add-to-Library
+// ingestion plumbing is a separate roadmap item (M2b).
+function isTauri(){
+  try {
+    return !!(W.H2O && W.H2O.Studio && W.H2O.Studio.platform
+      && W.H2O.Studio.platform.env && W.H2O.Studio.platform.env.isTauri === true);
+  } catch { return false; }
+}
+
+// Pure mapper: { snapshot, turns } from store.snapshots.get → canonical
+// snapshot shape produced by S0D3a's canonicalSnapshot. Only includes
+// meta.richTurns when at least one turn has non-empty outerHtml, so HTML-less
+// captures still fall through to buildCanonicalConversation (text rendering).
+// Note: outerHtml → outerHTML (case flip) is the reader's contract.
+function projectSqliteSnapshotToCanonical(input){
+  if (!input || typeof input !== 'object') return null;
+  const snap = input.snapshot;
+  const turns = Array.isArray(input.turns) ? input.turns : [];
+  if (!snap || typeof snap !== 'object' || !snap.snapshotId) return null;
+
+  const capturedAtMs = (typeof snap.capturedAt === 'number' && snap.capturedAt > 0) ? snap.capturedAt : 0;
+  let createdAt = '';
+  if (capturedAtMs > 0) {
+    try { createdAt = new Date(capturedAtMs).toISOString(); }
+    catch { createdAt = ''; }
+  }
+
+  const messages = turns.map((t, idx) => ({
+    role: (t && t.role) || 'assistant',
+    text: (t && t.text) || '',
+    order: (t && typeof t.turnIdx === 'number') ? t.turnIdx : idx,
+    createdAt: capturedAtMs || 0,
+  }));
+
+  const richTurns = turns
+    .filter((t) => t && typeof t.outerHtml === 'string' && t.outerHtml.length > 0)
+    .map((t, idx) => Object.assign(
+      { turnIdx: (typeof t.turnIdx === 'number') ? t.turnIdx : idx,
+        role: t.role || 'assistant',
+        outerHTML: t.outerHtml },
+      (t.meta && typeof t.meta === 'object' && !Array.isArray(t.meta)) ? t.meta : {}
+    ));
+
+  // Spread snapshot.meta (catch-all) first so any pre-captured fields
+  // (folderId, folderName, projectId, originSource, …) survive intact;
+  // overlay derived fields on top.
+  const metaBase = (snap.meta && typeof snap.meta === 'object' && !Array.isArray(snap.meta)) ? snap.meta : {};
+  const meta = Object.assign({}, metaBase);
+  if (snap.title && !meta.title) meta.title = snap.title;
+  if (richTurns.length > 0) meta.richTurns = richTurns;
+  if (typeof snap.messageCount === 'number' && meta.messageCount == null) {
+    meta.messageCount = snap.messageCount;
+  }
+
+  return {
+    snapshotId: snap.snapshotId,
+    chatId: snap.chatId || '',
+    title: snap.title || meta.title || '',
+    createdAt,
+    schemaVersion: 1,
+    messageCount: Number(snap.messageCount || messages.length || 0),
+    digest: snap.digest || '',
+    messages,
+    meta,
+  };
+}
+
+async function loadSnapshotFromStoresDesktop(snapshotId){
+  const id = String(snapshotId || '').trim();
+  if (!id) return null;
+  const snapStore = W.H2O && W.H2O.Studio && W.H2O.Studio.store && W.H2O.Studio.store.snapshots;
+  if (!snapStore || typeof snapStore.get !== 'function') return null;
+  try {
+    const raw = await snapStore.get(id);
+    if (!raw) return null;
+    return projectSqliteSnapshotToCanonical(raw);
+  } catch (e) {
+    try { console.warn('[H2O.Studio] loadSnapshotFromStoresDesktop failed', e); } catch {}
+    return null;
+  }
+}
+
 async function callArchive(op, payload = {}, nsDisk){
+  // Desktop (Tauri): route reader's loadSnapshot op to the SQLite store and
+  // project to the canonical shape. Every other op falls through to the MV3
+  // platform-messaging path unchanged.
+  if (op === 'loadSnapshot' && isTauri()) {
+    return loadSnapshotFromStoresDesktop(payload && payload.snapshotId);
+  }
   const message = { type: MSG_ARCHIVE, req: { op, payload, nsDisk } };
   const pm = getPlatformMessaging();
   const res = pm
