@@ -996,10 +996,18 @@ async function loadSnapshotFromStoresDesktop(snapshotId){
 
 async function callArchive(op, payload = {}, nsDisk){
   // Desktop (Tauri): route reader's loadSnapshot op to the SQLite store and
-  // project to the canonical shape. Every other op falls through to the MV3
-  // platform-messaging path unchanged.
-  if (op === 'loadSnapshot' && STUDIO_isTauri()) {
-    return loadSnapshotFromStoresDesktop(payload && payload.snapshotId);
+  // project to the canonical shape. The list ops have no archive bridge yet
+  // on Desktop V1 — short-circuit them to empty arrays so renderList runs
+  // its normal empty-state path instead of throwing "archive unavailable"
+  // and leaving the sidebar stuck on the static "Loading folder bindings…"
+  // / "Loading chats…" HTML defaults. Future enhancement (M2a-3j) will
+  // project actual workbench rows from store.snapshots. Every other op
+  // falls through to the MV3 platform-messaging path unchanged.
+  if (STUDIO_isTauri()) {
+    if (op === 'loadSnapshot') return loadSnapshotFromStoresDesktop(payload && payload.snapshotId);
+    if (op === 'listWorkbenchRows') return [];
+    if (op === 'listAllChatIds') return [];
+    if (op === 'listChatIds') return [];
   }
   const message = { type: MSG_ARCHIVE, req: { op, payload, nsDisk } };
   const pm = getPlatformMessaging();
