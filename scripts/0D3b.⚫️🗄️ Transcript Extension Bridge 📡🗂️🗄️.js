@@ -266,6 +266,7 @@
     libraryStorageInspectSchema: (payload = {}) => call("h2o:library-storage:inspect-schema", payload, { timeoutMs: 5000 }),
     libraryStorageWriteChatRegistryMirror: (payload = {}) => call("h2o:library-storage:write-chat-registry-mirror", payload, { timeoutMs: 12000 }),
     libraryStorageVerifyChatRegistryMirror: (payload = {}) => call("h2o:library-storage:verify-chat-registry-mirror", payload, { timeoutMs: 8000 }),
+    libraryStorageReadChatRegistryRecordDiagnostic: (payload = {}) => call("h2o:library-storage:read-chat-registry-record-diagnostic", payload, { timeoutMs: 5000 }),
     // Loader-side diagnostic — handled entirely inside the page content-script, never reaches
     // the SW. Returns { loaderBuildTs, loaderBuildIso, libraryKvOps, allowOps, allowOpsCount, tag }
     // so we can confirm which loader.js Chrome actually has active for this page.
