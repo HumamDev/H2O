@@ -381,7 +381,7 @@
   // from the MV3 chat-list service + native broadcast. The MV3 path is left
   // untouched; the dispatcher below picks the right refresher based on
   // platform detection.
-  function isTauri() {
+  function LI_isTauri() {
     try { return W.H2O?.Studio?.platform?.env?.isTauri === true; }
     catch (_) { return false; }
   }
@@ -584,7 +584,7 @@
   // refresh-request listener. Branches on Tauri detection; MV3 keeps the
   // existing refreshFromArchive path verbatim.
   function runRefresh(reason) {
-    if (isTauri()) return refreshFromStores(reason);
+    if (LI_isTauri()) return refreshFromStores(reason);
     return refreshFromArchive(reason);
   }
 
@@ -660,7 +660,7 @@
     },
 
     diagnose() {
-      const desktop = isTauri();
+      const desktop = LI_isTauri();
       return {
         surface: 'studio',
         source: desktop ? 'sqlite' : 'archive',
@@ -705,7 +705,7 @@
       // Desktop / Tauri (M2a-3g): the chat-list service is MV3-only; on
       // Desktop we wire subscribers and refresh from the SQLite-backed
       // entity stores once their async init has caught up.
-      if (isTauri()) {
+      if (LI_isTauri()) {
         try { subscribeToDesktopStores(); }
         catch (e) { err('boot.desktop.subscribe', e); }
         state.ready = true;

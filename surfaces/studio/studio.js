@@ -914,7 +914,7 @@ function getPlatformMessaging(){
 // reader path already consumes. All other archive ops fall through to the
 // MV3 platform-messaging path unchanged — Save-to-Folder / Add-to-Library
 // ingestion plumbing is a separate roadmap item (M2b).
-function isTauri(){
+function STUDIO_isTauri(){
   try {
     return !!(W.H2O && W.H2O.Studio && W.H2O.Studio.platform
       && W.H2O.Studio.platform.env && W.H2O.Studio.platform.env.isTauri === true);
@@ -998,7 +998,7 @@ async function callArchive(op, payload = {}, nsDisk){
   // Desktop (Tauri): route reader's loadSnapshot op to the SQLite store and
   // project to the canonical shape. Every other op falls through to the MV3
   // platform-messaging path unchanged.
-  if (op === 'loadSnapshot' && isTauri()) {
+  if (op === 'loadSnapshot' && STUDIO_isTauri()) {
     return loadSnapshotFromStoresDesktop(payload && payload.snapshotId);
   }
   const message = { type: MSG_ARCHIVE, req: { op, payload, nsDisk } };

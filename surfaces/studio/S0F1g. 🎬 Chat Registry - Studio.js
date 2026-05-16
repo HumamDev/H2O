@@ -87,7 +87,7 @@
     // Desktop (Tauri): canonical chat metadata lives in SQLite via
     // H2O.Studio.store.chats. Delegate hydration there and skip the
     // H2O.Library.Store / localStorage kv-blob read entirely.
-    if (isTauri()) return hydrateFromStores();
+    if (CR_isTauri()) return hydrateFromStores();
     const c = core();
     if (!c) {
       err('load', 'shared-core-missing');
@@ -130,7 +130,7 @@
   function scheduleFlush(reason = '') {
     // Desktop: writes go through store.chats.upsert (see writeToChatsStore);
     // the kv blob at STORAGE_KEY is not authoritative here.
-    if (isTauri()) return;
+    if (CR_isTauri()) return;
     if (state.flushTimer) return;
     state.flushTimer = W.setTimeout(async () => {
       state.flushTimer = null;
@@ -165,7 +165,7 @@
   // sourced from SQLite. MV3 behavior is left untouched — the helpers below
   // are only invoked from isTauri-gated branches in loadFromStore /
   // scheduleFlush / upsertRecord / markDeleted / repairLinkedFlag / boot.
-  function isTauri() {
+  function CR_isTauri() {
     try { return W.H2O?.Studio?.platform?.env?.isTauri === true; }
     catch { return false; }
   }
@@ -514,7 +514,7 @@
     const next = c.mergeRecord(prev, sane, options);
     const changed = prev ? c.diffFields(prev, next) : ['<created>'];
     indexRecord(prev, next);
-    if (isTauri()) {
+    if (CR_isTauri()) {
       // Fire-and-forget write to SQLite. The sync read API serves the
       // updated record immediately from the in-memory cache; the SQLite
       // round-trip catches up asynchronously. The subsequent store.chats
@@ -575,7 +575,7 @@
       state: { ...prev.state, isDeleted: true, syncState: 'deleted' },
     }, id));
     indexRecord(prev, next);
-    if (isTauri()) {
+    if (CR_isTauri()) {
       // Soft-delete: mark the chats row's isDeleted column rather than
       // hard-deleting (snapshots and bindings stay intact). Matches MV3
       // tombstone semantics.
@@ -608,7 +608,7 @@
     // by their write paths; the "if isSaved then isLinked" invariant
     // repair is a legacy-shape concern. Skip on Desktop. A SQLite-aware
     // repair pass is a future follow-up if invariant drift is observed.
-    if (isTauri()) return { scanned: 0, updated: 0 };
+    if (CR_isTauri()) return { scanned: 0, updated: 0 };
     const c = core();
     if (!c) return { scanned: 0, updated: 0 };
     const beforeMap = state.recordsById;
@@ -679,7 +679,7 @@
         issues.push({ kind: 'invariant-violation:saved-not-linked', id: r.chatId });
       }
     }
-    const desktop = isTauri();
+    const desktop = CR_isTauri();
     return {
       ok: issues.length === 0,
       version: VERSION,
@@ -700,7 +700,7 @@
 
   // ── Diagnose (preserved from v1) ────────────────────────────────────────────
   function diagnose() {
-    const desktop = isTauri();
+    const desktop = CR_isTauri();
     return {
       surface: 'studio',
       source: desktop ? 'sqlite' : 'library-store',
@@ -794,7 +794,7 @@
   // skip repairLinkedFlag (SQLite columns are independently authoritative).
   ensureLoaded().then(() => {
     state.booted = true;
-    if (isTauri()) {
+    if (CR_isTauri()) {
       try { subscribeToDesktopStores(); }
       catch (e) { err('boot:subscribe-desktop', e); }
     } else {
