@@ -49,6 +49,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // assignChat / clearChat write directly to chats; listChats delegates
   // to store.chats.
   "store/categories.tauri.js",
+  // Desktop-only: full-bundle ingestion (M2b-1). dryRunImportBundle is
+  // read-only; importBundle write side ships as stub returning
+  // not-implemented (M2b-2 pending). Routed through callArchive's
+  // Desktop branch in studio.js.
+  "ingestion/import-bundle.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -147,6 +152,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/labels.tauri.js",
   "store/tags.tauri.js",
   "store/categories.tauri.js",
+  "ingestion/import-bundle.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",

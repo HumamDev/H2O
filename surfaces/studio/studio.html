@@ -227,6 +227,13 @@
        lives in chats.category_id. assignChat / clearChat write directly
        to chats via raw SQL; listChats delegates to store.chats. -->
   <script src="./store/categories.tauri.js"></script>
+  <!-- Desktop-only: full-bundle ingestion (M2b-1). Self-bails on MV3 / web.
+       Registers H2O.Studio.ingestion with dryRunImportBundle (read-only) +
+       importBundle stub. Routes through callArchive's Desktop branch for
+       dryRunImportFullBundle / importFullBundle so the existing
+       #/migrate/import UI works unchanged. Must load after store/*.tauri.js
+       since dry-run reads via the store public APIs. -->
+  <script src="./ingestion/import-bundle.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

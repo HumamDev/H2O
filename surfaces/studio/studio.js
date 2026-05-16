@@ -1008,6 +1008,23 @@ async function callArchive(op, payload = {}, nsDisk){
     if (op === 'listWorkbenchRows') return [];
     if (op === 'listAllChatIds') return [];
     if (op === 'listChatIds') return [];
+    // M2b-1: route the full-bundle import ops through the Desktop
+    // ingestion module so the existing #/migrate/import dry-run UI
+    // works against SQLite. importBundle is a stub until M2b-2 lands.
+    if (op === 'dryRunImportFullBundle') {
+      const fn = W.H2O?.Studio?.ingestion?.dryRunImportBundle;
+      if (typeof fn !== 'function') {
+        return Promise.reject(new Error('Desktop ingestion module not loaded'));
+      }
+      return fn(payload && payload.bundle);
+    }
+    if (op === 'importFullBundle') {
+      const fn = W.H2O?.Studio?.ingestion?.importBundle;
+      if (typeof fn !== 'function') {
+        return Promise.reject(new Error('Desktop ingestion module not loaded'));
+      }
+      return fn(payload && payload.bundle, payload && payload.mode);
+    }
   }
   const message = { type: MSG_ARCHIVE, req: { op, payload, nsDisk } };
   const pm = getPlatformMessaging();
