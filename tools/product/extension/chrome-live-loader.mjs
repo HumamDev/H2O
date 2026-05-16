@@ -2425,7 +2425,7 @@ export function makeChromeLiveLoaderJs({
   function installPageArchiveBridge() {
     // Best-effort anti-spam gate for same-page callers. This is not a cryptographic trust boundary.
     const archiveSession = { clientId: "", token: "" };
-    const AUTH_FREE_OPS = new Set(["ping", "initSession", "h2o:library-storage:diagnose"]);
+    const AUTH_FREE_OPS = new Set(["ping", "initSession", "h2o:library-storage:diagnose", "h2o:library-storage:inspect-schema"]);
     const ALLOW_OPS = new Set([
       "ping",
       "initSession",

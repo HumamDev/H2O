@@ -55,7 +55,12 @@
     // __loaderInfo is a content-script-local diagnostic that never reaches the SW, so it
     // doesn't need a session token attached. Keeps the diagnostic available even when the
     // SW or session machinery is misbehaving.
-    return !!op && op !== "ping" && op !== "initSession" && op !== "__loaderInfo" && op !== "h2o:library-storage:diagnose";
+    return !!op
+      && op !== "ping"
+      && op !== "initSession"
+      && op !== "__loaderInfo"
+      && op !== "h2o:library-storage:diagnose"
+      && op !== "h2o:library-storage:inspect-schema";
   }
 
   async function ensureSession(force = false) {
