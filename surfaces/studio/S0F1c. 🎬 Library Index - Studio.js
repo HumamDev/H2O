@@ -374,11 +374,225 @@
     return state.refreshInFlight;
   }
 
+  // ── Desktop / Tauri (M2a-3g) ───────────────────────────────────────────────
+  // When running in the Tauri Studio Desktop shell (apps/studio-desktop),
+  // LibraryIndex derives its rows from the six SQLite-backed entity stores
+  // (chats / snapshots / folders / labels / tags / categories) instead of
+  // from the MV3 chat-list service + native broadcast. The MV3 path is left
+  // untouched; the dispatcher below picks the right refresher based on
+  // platform detection.
+  function isTauri() {
+    try { return W.H2O?.Studio?.platform?.env?.isTauri === true; }
+    catch (_) { return false; }
+  }
+
+  function collectStoreStatus() {
+    const out = {};
+    const stores = W.H2O?.Studio?.store;
+    if (!stores) return out;
+    ['chats', 'snapshots', 'folders', 'labels', 'tags', 'categories'].forEach((name) => {
+      const s = stores[name];
+      if (!s || typeof s.diagnose !== 'function') {
+        out[name] = { available: false };
+        return;
+      }
+      try {
+        const d = s.diagnose() || {};
+        out[name] = {
+          available: true,
+          ready: !!d.ready,
+          backend: d.backend || null,
+          errors: Array.isArray(d.errors) ? d.errors.length : 0,
+        };
+      } catch (e) {
+        out[name] = { available: true, error: String(e?.message || e) };
+      }
+    });
+    return out;
+  }
+
+  // Stores poll for SQLite-ready themselves; their isReady() flips true once
+  // the kv shim has been upgraded and the first sanity count completes. We
+  // poll briefly so the boot refresh sees populated tables rather than
+  // racing the async store init.
+  async function waitForDesktopStoresReady(maxWaitMs = 10000) {
+    const stores = W.H2O?.Studio?.store;
+    if (!stores) return false;
+    const names = ['chats', 'snapshots', 'folders', 'labels', 'tags', 'categories'];
+    const deadline = Date.now() + Math.max(100, Number(maxWaitMs) || 0);
+    while (Date.now() < deadline) {
+      const allReady = names.every((n) => {
+        const s = stores[n];
+        return s && typeof s.isReady === 'function' && s.isReady();
+      });
+      if (allReady) return true;
+      await new Promise((r) => W.setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  // Pure mapper: SQLite chat row + pre-fetched join data → compact row that
+  // matches the shape persist() emits and that normalizeRow() round-trips.
+  // Studio convention: tags/labels are arrays of NAMES (not ids/objects);
+  // see persist() for the fields each carries.
+  function projectChatToCompactRow(chat, joins) {
+    const cid = chat?.chatId;
+    const folderInfo = (joins.folderByChatId && joins.folderByChatId[cid]) || null;
+    const labelInfos = (joins.labelsByChatId && joins.labelsByChatId[cid]) || [];
+    const tagInfos = (joins.tagsByChatId && joins.tagsByChatId[cid]) || [];
+    const catInfo = (joins.categoryByChatId && joins.categoryByChatId[cid]) || null;
+    let view = 'all';
+    if (chat?.isArchived) view = 'archived';
+    else if (chat?.isSaved) view = 'saved';
+    else if (chat?.isLinked) view = 'linked';
+    const href = chat?.href || chat?.linkSourceHref
+      || (chat?.sourceId ? ('https://chatgpt.com/c/' + chat.sourceId) : '')
+      || (cid ? ('https://chatgpt.com/c/' + cid) : '');
+    return {
+      chatId: cid,
+      snapshotId: chat?.lastSnapshotId || null,
+      title: chat?.title || '',
+      projectId: chat?.projectId || '',
+      folderId: folderInfo ? folderInfo.folderId : '',
+      folderName: folderInfo ? folderInfo.name : '',
+      categoryId: catInfo ? catInfo.categoryId : (chat?.categoryId || ''),
+      categoryName: catInfo ? catInfo.name : '',
+      view,
+      tags: tagInfos.map((t) => t && t.name).filter(Boolean),
+      labels: labelInfos.map((l) => l && l.name).filter(Boolean),
+      snapshotCount: Number(chat?.snapshotCount || 0),
+      capturedAt: chat?.lastCapturedAt || null,
+      updatedAt: chat?.updatedAt || 0,
+      messageCount: Number(chat?.messageCount || 0),
+      pinned: !!chat?.isPinned,
+      archived: !!chat?.isArchived,
+      // Desktop-only enrichment — not part of the compact contract but the
+      // Reader / Library UI may consume these later (M2a-3i+):
+      href,
+      linkSourceHref: chat?.linkSourceHref || '',
+      isSaved: !!chat?.isSaved,
+      isLinked: !!chat?.isLinked,
+      isImported: !!chat?.importBatchId,
+    };
+  }
+
+  // First-commit join strategy: per-chat lookups via the existing store
+  // APIs (one round-trip per chat per facet — N+1). Correctness over
+  // performance for V1; large imports can later switch to bulk SQL JOINs
+  // via direct __TAURI_INTERNALS__.invoke('plugin:sql|select') without
+  // changing this contract.
+  async function loadDesktopJoinsForChats(chatRows) {
+    const stores = W.H2O?.Studio?.store || {};
+    const folders = stores.folders;
+    const labels = stores.labels;
+    const tags = stores.tags;
+    const categories = stores.categories;
+    const folderByChatId = Object.create(null);
+    const labelsByChatId = Object.create(null);
+    const tagsByChatId = Object.create(null);
+    const categoryByChatId = Object.create(null);
+    await Promise.all((chatRows || []).map(async (chat) => {
+      const cid = chat?.chatId;
+      if (!cid) return;
+      try {
+        if (folders && typeof folders.listForChat === 'function') {
+          const arr = await folders.listForChat(cid);
+          if (Array.isArray(arr) && arr.length > 0) folderByChatId[cid] = arr[0];
+        }
+      } catch (e) { err('loadJoins.folders', e); }
+      try {
+        if (labels && typeof labels.listForChat === 'function') {
+          const arr = await labels.listForChat(cid);
+          if (Array.isArray(arr) && arr.length > 0) labelsByChatId[cid] = arr;
+        }
+      } catch (e) { err('loadJoins.labels', e); }
+      try {
+        if (tags && typeof tags.listForChat === 'function') {
+          const arr = await tags.listForChat(cid);
+          if (Array.isArray(arr) && arr.length > 0) tagsByChatId[cid] = arr;
+        }
+      } catch (e) { err('loadJoins.tags', e); }
+      try {
+        if (categories && typeof categories.getForChat === 'function') {
+          const cat = await categories.getForChat(cid);
+          if (cat) categoryByChatId[cid] = cat;
+        }
+      } catch (e) { err('loadJoins.category', e); }
+    }));
+    return { folderByChatId, labelsByChatId, tagsByChatId, categoryByChatId };
+  }
+
+  async function refreshFromStores(reason = 'manual') {
+    if (state.refreshInFlight) return state.refreshInFlight;
+    const chatsStore = W.H2O?.Studio?.store?.chats;
+    if (!chatsStore || typeof chatsStore.list !== 'function') {
+      err('refreshFromStores', 'store.chats unavailable');
+      return state.rows;
+    }
+    state.refreshInFlight = (async () => {
+      try {
+        const chatRows = await chatsStore.list();
+        const list = Array.isArray(chatRows) ? chatRows : [];
+        const joins = await loadDesktopJoinsForChats(list);
+        const compact = list.map((c) => projectChatToCompactRow(c, joins));
+        const normalized = compact.map(normalizeRow).filter(Boolean);
+        state.rows = normalized;
+        state.byChatId = Object.create(null);
+        for (const r of state.rows) state.byChatId[r.chatId] = r;
+        rebuildFacets();
+        state.lastScanTs = Date.now();
+        state.lastScanReason = String(reason);
+        state.lastSource = 'desktop-sqlite';
+        state.lastRefreshSources = {
+          reason: String(reason),
+          sqliteChats: list.length,
+          normalizedRows: normalized.length,
+          totalRows: state.rows.length,
+          source: state.lastSource,
+          at: state.lastScanTs,
+        };
+        step('refreshFromStores.ok', `${list.length}->${normalized.length}:${reason}`);
+        // Skip persist() on Desktop — SQLite tables are the canonical source
+        // and the entity blob would only carry a redundant compact mirror.
+        emitUpdated(reason);
+        return state.rows;
+      } catch (e) {
+        err('refreshFromStores', e);
+        return state.rows;
+      } finally {
+        state.refreshInFlight = null;
+      }
+    })();
+    return state.refreshInFlight;
+  }
+
+  // Single point of fan-out: each store's subscribe() fires on any local
+  // write; we coalesce them through scheduleRefresh's existing debouncer.
+  function subscribeToDesktopStores() {
+    const stores = W.H2O?.Studio?.store;
+    if (!stores) return;
+    ['chats', 'snapshots', 'folders', 'labels', 'tags', 'categories'].forEach((name) => {
+      const s = stores[name];
+      if (!s || typeof s.subscribe !== 'function') return;
+      try { s.subscribe(() => scheduleRefresh('store:' + name + ':changed')); }
+      catch (e) { err('subscribeToDesktopStores:' + name, e); }
+    });
+    step('subscribeToDesktopStores', 'wired');
+  }
+
+  // Dispatcher used by scheduleRefresh, the public refresh() API, and the
+  // refresh-request listener. Branches on Tauri detection; MV3 keeps the
+  // existing refreshFromArchive path verbatim.
+  function runRefresh(reason) {
+    if (isTauri()) return refreshFromStores(reason);
+    return refreshFromArchive(reason);
+  }
+
   function scheduleRefresh(reason) {
     if (state.refreshTimer) return;
     state.refreshTimer = W.setTimeout(() => {
       state.refreshTimer = null;
-      refreshFromArchive(reason || 'scheduled').catch(() => {});
+      runRefresh(reason || 'scheduled').catch(() => {});
     }, REFRESH_DEBOUNCE_MS);
   }
 
@@ -436,7 +650,7 @@
       return { total: state.rows.length, views: {}, folders: {}, categories: {}, projects: {}, labels: {}, tags: {} };
     },
 
-    async refresh(reason) { return refreshFromArchive(reason || 'api'); },
+    async refresh(reason) { return runRefresh(reason || 'api'); },
     scheduleRefresh,
 
     subscribe(fn) {
@@ -446,8 +660,11 @@
     },
 
     diagnose() {
+      const desktop = isTauri();
       return {
         surface: 'studio',
+        source: desktop ? 'sqlite' : 'archive',
+        storeStatus: desktop ? collectStoreStatus() : null,
         ready: state.ready,
         rows: state.rows.length,
         lastScanTs: state.lastScanTs,
@@ -485,7 +702,20 @@
         core.registerService('library-index', LibraryIndex, { replace: true });
         step('register-on-core', 'library-index');
       } catch (e) { err('register-on-core', e); }
-      // First refresh after Library Ready signal so we know chat-list service is available.
+      // Desktop / Tauri (M2a-3g): the chat-list service is MV3-only; on
+      // Desktop we wire subscribers and refresh from the SQLite-backed
+      // entity stores once their async init has caught up.
+      if (isTauri()) {
+        try { subscribeToDesktopStores(); }
+        catch (e) { err('boot.desktop.subscribe', e); }
+        state.ready = true;
+        waitForDesktopStoresReady().then((ok) => {
+          if (!ok) err('boot.desktop', 'stores not ready within timeout');
+          refreshFromStores('boot').catch(() => {});
+        });
+        return;
+      }
+      // MV3: first refresh after Library Ready signal so we know chat-list service is available.
       const onReady = () => {
         state.ready = true;
         refreshFromArchive('boot').catch(() => {});
@@ -509,7 +739,7 @@
 
   // Listen for explicit refresh requests from other modules.
   W.addEventListener('evt:h2o:library-index:refresh-request', (e) => {
-    refreshFromArchive(String(e?.detail?.reason || 'refresh-request')).catch(() => {});
+    runRefresh(String(e?.detail?.reason || 'refresh-request')).catch(() => {});
   });
 
   step('boot', 'studio-library-index-ready');
