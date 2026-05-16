@@ -217,6 +217,11 @@
        allows multiple labels per chat. Same gating + store.chats
        delegation pattern as folders.tauri.js. -->
   <script src="./store/labels.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed tags entity (M2a-3e). Backs the
+       tags + tag_bindings tables (Migration v3). Same composite-PK shape
+       as labels. Tags carries an auto_derived boolean and has no
+       updated_at column. -->
+  <script src="./store/tags.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

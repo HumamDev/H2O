@@ -40,6 +40,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // labels + label_bindings tables. Composite binding PK allows multiple
   // labels per chat. listChats() delegates to store.chats (same pattern).
   "store/labels.tauri.js",
+  // Desktop-only: SQLite-backed tags entity (M2a-3e). Same gating + binding
+  // shape as labels.tauri.js; tags has an auto_derived boolean and no
+  // updated_at column.
+  "store/tags.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -136,6 +140,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/snapshots.tauri.js",
   "store/folders.tauri.js",
   "store/labels.tauri.js",
+  "store/tags.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
