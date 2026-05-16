@@ -1315,6 +1315,303 @@
     };
   }
 
+  const MIRROR_DRY_RUN_SAMPLE_LIMIT = 8;
+  const MIRROR_DRY_RUN_MAX_RECORDS = 5000;
+  const MIRROR_DRY_RUN_MAX_RAW_CHARS = 2000000;
+
+  function chatRegistryCore() {
+    return H2O.Library?.RegistryCore || H2O.Library?.ChatRegistryCore || null;
+  }
+
+  function hashString(value) {
+    const raw = String(value || '');
+    let hash = 2166136261;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash ^= raw.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+
+  function emptyMirrorSource(source, key, backend, error = '') {
+    return {
+      source,
+      key,
+      backend,
+      present: null,
+      readable: false,
+      recordCount: null,
+      tombstoneCount: 0,
+      skippedCount: 0,
+      invalidCount: 0,
+      sampleChatIds: [],
+      error,
+      records: [],
+    };
+  }
+
+  function summarizeMirrorSource(src) {
+    return {
+      source: src.source,
+      key: src.key,
+      backend: src.backend,
+      present: src.present,
+      readable: src.readable,
+      recordCount: src.recordCount,
+      tombstoneCount: src.tombstoneCount,
+      skippedCount: src.skippedCount,
+      invalidCount: src.invalidCount,
+      sampleChatIds: src.sampleChatIds.slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT),
+      error: src.error || '',
+    };
+  }
+
+  function readChatRegistryLocalSource(core, key, sourceName) {
+    const source = emptyMirrorSource(sourceName, key, 'localStorage');
+    if (!localStorageReadable()) {
+      source.error = 'localStorage-unavailable';
+      return source;
+    }
+    source.readable = true;
+    try {
+      const raw = W.localStorage.getItem(key);
+      source.present = raw != null;
+      if (raw == null) {
+        source.recordCount = 0;
+        return source;
+      }
+      if (raw.length > MIRROR_DRY_RUN_MAX_RAW_CHARS) {
+        source.readable = false;
+        source.skippedCount = 1;
+        source.error = 'legacy-registry-too-large-for-phase-8f-bounded-dry-run';
+        return source;
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        source.skippedCount = 1;
+        source.error = 'legacy-registry-json-parse-failed';
+        return source;
+      }
+      if (!core || typeof core.adoptShape !== 'function') {
+        source.skippedCount = 1;
+        source.error = 'chat-registry-core-unavailable';
+        return source;
+      }
+      const adopted = core.adoptShape(parsed);
+      const recordsById = adopted?.recordsById && typeof adopted.recordsById === 'object' ? adopted.recordsById : {};
+      const ids = Object.keys(recordsById);
+      source.recordCount = ids.length;
+      source.tombstoneCount = adopted?.tombstonesById && typeof adopted.tombstonesById === 'object'
+        ? Object.keys(adopted.tombstonesById).length
+        : 0;
+      source.records = ids.slice(0, MIRROR_DRY_RUN_MAX_RECORDS).map((id) => recordsById[id]).filter(Boolean);
+      source.skippedCount = Math.max(0, ids.length - source.records.length);
+      source.sampleChatIds = source.records.map((rec) => String(rec?.chatId || '')).filter(Boolean).slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT);
+      return source;
+    } catch (e) {
+      source.present = null;
+      source.readable = false;
+      source.error = String(e?.message || e || 'chat registry source read failed');
+      return source;
+    }
+  }
+
+  function readChatRegistryNativeBroadcastSource(core) {
+    const source = emptyMirrorSource('native-linked-record-broadcast', 'h2o:library:cross-surface:broadcast:native:v1', 'broadcast');
+    try {
+      const payload = H2O.Library?.Sync && typeof H2O.Library.Sync.getNativeBroadcast === 'function'
+        ? H2O.Library.Sync.getNativeBroadcast()
+        : null;
+      const rows = Array.isArray(payload?.linkedRecords) ? payload.linkedRecords : [];
+      source.present = !!payload;
+      source.readable = !!payload;
+      source.recordCount = rows.length;
+      if (!payload) {
+        source.error = 'native-broadcast-unavailable-on-this-surface';
+        return source;
+      }
+      if (!core || typeof core.sanitizeRecord !== 'function') {
+        source.skippedCount = rows.length;
+        source.error = 'chat-registry-core-unavailable';
+        return source;
+      }
+      source.records = rows.slice(0, MIRROR_DRY_RUN_MAX_RECORDS)
+        .map((row) => core.sanitizeRecord(row, row?.chatId || row?.id || ''))
+        .filter(Boolean);
+      source.skippedCount = Math.max(0, rows.length - source.records.length);
+      source.sampleChatIds = source.records.map((rec) => String(rec?.chatId || '')).filter(Boolean).slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT);
+      return source;
+    } catch (e) {
+      source.present = null;
+      source.readable = false;
+      source.error = String(e?.message || e || 'native broadcast read failed');
+      return source;
+    }
+  }
+
+  function chatRegistryMirrorSources(core) {
+    const sources = [];
+    if (SURFACE === 'studio') {
+      sources.push(readChatRegistryLocalSource(core, 'h2o:library:chat-registry:studio:v1', 'studio-chat-registry-localStorage'));
+      sources.push(readChatRegistryNativeBroadcastSource(core));
+    } else {
+      sources.push(readChatRegistryLocalSource(core, 'h2o:library:chat-registry:v1', 'native-chat-registry-localStorage'));
+    }
+    return sources;
+  }
+
+  function buildChatRegistryCandidates(core, sources) {
+    const byKey = Object.create(null);
+    let legacyCount = 0;
+    let skippedCount = 0;
+    let invalidCount = 0;
+    let tombstoneCount = 0;
+    (sources || []).forEach((source) => {
+      if (typeof source.recordCount === 'number') legacyCount += source.recordCount;
+      skippedCount += Number(source.skippedCount || 0) || 0;
+      invalidCount += Number(source.invalidCount || 0) || 0;
+      tombstoneCount += Number(source.tombstoneCount || 0) || 0;
+      (source.records || []).forEach((rec) => {
+        if (Object.keys(byKey).length >= MIRROR_DRY_RUN_MAX_RECORDS) {
+          skippedCount += 1;
+          return;
+        }
+        let sane = null;
+        try {
+          sane = core?.sanitizeRecord ? core.sanitizeRecord(rec, rec?.chatId || rec?.id || '') : rec;
+        } catch {
+          invalidCount += 1;
+          return;
+        }
+        const key = (core?.getRecordDedupeKey ? core.getRecordDedupeKey(sane) : '')
+          || (sane?.chatId ? `chatId:${sane.chatId}` : '')
+          || (sane?.normalizedHref ? `href:${sane.normalizedHref}` : '');
+        if (!key) {
+          invalidCount += 1;
+          return;
+        }
+        if (byKey[key] && core?.mergeRecord) {
+          try {
+            byKey[key] = core.mergeRecord(byKey[key], sane, { passive: true });
+          } catch {
+            byKey[key] = sane;
+          }
+        } else {
+          byKey[key] = sane;
+        }
+      });
+    });
+    const keys = Object.keys(byKey).sort();
+    const records = keys.map((key) => byKey[key]);
+    const sampleChatIds = records
+      .map((rec) => String(rec?.chatId || ''))
+      .filter(Boolean)
+      .slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT);
+    const checksumInput = records.map((rec, index) => [
+      keys[index],
+      rec?.chatId || '',
+      rec?.normalizedHref || '',
+      rec?.updatedAt || '',
+      rec?.state?.isSaved ? 'saved' : '',
+      rec?.state?.isLinked ? 'linked' : '',
+      rec?.state?.isImported ? 'imported' : '',
+    ].join(':')).join('|');
+    return {
+      legacyCount,
+      candidateCount: records.length,
+      skippedCount,
+      invalidCount,
+      tombstoneCount,
+      sampleChatIds,
+      checksum: records.length ? hashString(checksumInput) : '',
+    };
+  }
+
+  function getMirrorDryRun(domainName) {
+    const domain = String(domainName || '');
+    if (domain !== 'chatRegistry') {
+      return {
+        ok: false,
+        status: 'unsupported-domain',
+        phase: '8F',
+        domain,
+        supportedDomains: ['chatRegistry'],
+      };
+    }
+    const core = chatRegistryCore();
+    const sources = chatRegistryMirrorSources(core);
+    const candidate = buildChatRegistryCandidates(core, sources);
+    const canonicalStoreExists = canonicalStoreExistsForInventory();
+    const sourceSummaries = sources.map(summarizeMirrorSource);
+    const blockers = ['phase-8f-diagnostics-only'];
+    if (!core) blockers.push('chat-registry-core-unavailable');
+    if (canonicalStoreExists === false) blockers.push('canonical-store-not-created');
+    else if (canonicalStoreExists === null) blockers.push('canonical-store-existence-unknown');
+    if (!candidate.legacyCount) blockers.push('no-legacy-chat-registry-records-detected');
+    if (candidate.invalidCount) blockers.push('invalid-records-detected');
+    if (candidate.skippedCount) blockers.push('records-skipped-by-bounded-dry-run');
+    const hasCandidates = candidate.candidateCount > 0;
+    return {
+      ok: true,
+      phase: '8F',
+      domain: 'chatRegistry',
+      mode: 'dry-run',
+      writesEnabled: false,
+      canonicalReadEnabled: false,
+      dualWriteEnabled: false,
+      canonicalStoreExists,
+      legacySource: sourceSummaries.map((src) => src.source).join('+') || 'none',
+      legacyCount: candidate.legacyCount,
+      candidateCount: candidate.candidateCount,
+      skippedCount: candidate.skippedCount,
+      invalidCount: candidate.invalidCount,
+      tombstoneCount: candidate.tombstoneCount,
+      sampleChatIds: candidate.sampleChatIds,
+      checksum: candidate.checksum,
+      sources: sourceSummaries,
+      blockers,
+      nextAction: hasCandidates ? 'review-only' : 'blocked',
+    };
+  }
+
+  function getMirrorReadiness(domainName, dryRunInput = null) {
+    const domain = String(domainName || '');
+    if (domain !== 'chatRegistry') {
+      return {
+        ok: false,
+        status: 'unsupported-domain',
+        phase: '8F',
+        domain,
+        supportedDomains: ['chatRegistry'],
+      };
+    }
+    const dryRun = dryRunInput && dryRunInput.ok ? dryRunInput : getMirrorDryRun(domain);
+    const blockers = [
+      'phase-8f-diagnostics-only',
+      'mirror-write-disabled',
+      'canonical-read-disabled',
+      'dual-write-disabled',
+    ].concat((dryRun.blockers || []).filter((item) => item !== 'phase-8f-diagnostics-only'));
+    return {
+      ok: true,
+      phase: '8F',
+      mode: 'dry-run-readiness',
+      domain: 'chatRegistry',
+      enabled: false,
+      writesEnabled: false,
+      canonicalReadEnabled: false,
+      dualWriteEnabled: false,
+      readyForReadOnlyMirror: false,
+      legacyCount: dryRun.legacyCount,
+      candidateCount: dryRun.candidateCount,
+      checksum: dryRun.checksum,
+      blockers,
+      nextAction: dryRun.candidateCount > 0 ? 'ready-for-read-only-mirror-review' : 'blocked',
+    };
+  }
+
   function storageAdapterHealth() {
     const capabilities = storageCapabilities();
     const store = capabilities.libraryStore;
@@ -1448,6 +1745,8 @@
       getMigrationInventoryAll,
       getParityPlan,
       getParityReadiness,
+      getMirrorDryRun,
+      getMirrorReadiness,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -1470,6 +1769,7 @@
       diagnose() {
         const domains = {};
         STORAGE_ADAPTER_DOMAINS.forEach((d) => { domains[d.name] = domainStatus(d.name); });
+        const chatRegistryMirrorDryRun = getMirrorDryRun('chatRegistry');
         return {
           phase: STORAGE_ADAPTER_PHASE,
           surface: SURFACE,
@@ -1487,6 +1787,8 @@
               'getMigrationInventoryAll',
               'getParityPlan',
               'getParityReadiness',
+              'getMirrorDryRun',
+              'getMirrorReadiness',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -1504,6 +1806,12 @@
           dualWrite: getDualWriteReadiness(),
           migrationInventory: getMigrationInventoryAll(),
           parity: getParityReadiness(),
+          mirrorDryRun: {
+            chatRegistry: chatRegistryMirrorDryRun,
+          },
+          mirrorReadiness: {
+            chatRegistry: getMirrorReadiness('chatRegistry', chatRegistryMirrorDryRun),
+          },
           domains,
         };
       },
