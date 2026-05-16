@@ -687,6 +687,634 @@
     };
   }
 
+  function dualWriteDomains() {
+    return [
+      {
+        name: 'chatRegistry',
+        eligible: true,
+        writerOwner: SURFACE === 'studio' ? 'studio' : 'native',
+        canonicalStore: 'chatRegistry',
+        legacyOwner: SURFACE === 'studio' ? 'studio-chat-registry' : 'native-chat-registry',
+        legacyRoot: SURFACE === 'studio' ? 'h2o:library:chat-registry:studio:v1' : 'h2o:library:chat-registry:v1',
+        operation: 'write-chat-registry-record',
+        risk: 'high',
+      },
+      {
+        name: 'folders',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'folders',
+        legacyOwner: 'native-folders/archive-bridge',
+        legacyRoot: 'folder vault localStorage/archive metadata',
+        operation: 'write-folder-catalog',
+        risk: 'high',
+      },
+      {
+        name: 'folderBindings',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'folderBindings',
+        legacyOwner: 'native-folders/archive-bridge',
+        legacyRoot: 'folder bindings in folder vault/archive snapshot metadata',
+        operation: 'write-folder-binding',
+        risk: 'high',
+      },
+      {
+        name: 'categories',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'categories',
+        legacyOwner: 'native-categories/archive-bridge',
+        legacyRoot: 'archive category catalog',
+        operation: 'write-category-catalog',
+        risk: 'high',
+      },
+      {
+        name: 'categoryAssignments',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'categoryAssignments',
+        legacyOwner: 'native-categories/archive-bridge',
+        legacyRoot: 'snapshot category metadata and category override keys',
+        operation: 'write-category-assignment',
+        risk: 'high',
+      },
+      {
+        name: 'labels',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'labels',
+        legacyOwner: 'native-labels/archive-bridge',
+        legacyRoot: 'native label catalog',
+        operation: 'write-label-catalog',
+        risk: 'high',
+      },
+      {
+        name: 'labelBindings',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'labelBindings',
+        legacyOwner: 'native-labels/archive-bridge',
+        legacyRoot: 'native label bindings and archive metadata',
+        operation: 'write-label-binding',
+        risk: 'high',
+      },
+      {
+        name: 'projects',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'projects',
+        legacyOwner: 'native-projects',
+        legacyRoot: 'native project cache and read-only Studio projection',
+        operation: 'mirror-project-catalog',
+        risk: 'medium',
+        extraBlockers: ['project-domain-is-read-mostly', 'native-project-harvest-owner-not-adapted'],
+      },
+      {
+        name: 'tags',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'tags',
+        legacyOwner: 'native-tags',
+        legacyRoot: 'native turn/chat tag state',
+        operation: 'write-tag-catalog-or-binding',
+        risk: 'high',
+        extraBlockers: ['live-turn-dom-state-must-remain-native-owned', 'tag-occurrence-strategy-not-finalized'],
+      },
+      {
+        name: 'tagSummaries',
+        eligible: true,
+        writerOwner: 'native',
+        canonicalStore: 'tagSummaries',
+        legacyOwner: 'native-tags',
+        legacyRoot: 'chat tag summaries and occurrence index',
+        operation: 'mirror-tag-summary',
+        risk: 'high',
+        extraBlockers: ['tag-occurrence-index-size-strategy-not-finalized'],
+      },
+      {
+        name: 'archiveRefs',
+        eligible: false,
+        writerOwner: 'archive',
+        canonicalStore: 'archiveRefs',
+        legacyOwner: 'archive-engine/background',
+        legacyRoot: 'archive snapshot storage',
+        operation: 'write-archive-reference',
+        risk: 'high',
+        extraBlockers: ['archive-boundary-owned-separately', 'archive-contract-not-migrated'],
+      },
+      {
+        name: 'libraryIndex',
+        eligible: false,
+        writerOwner: 'none',
+        canonicalStore: 'libraryIndex',
+        legacyOwner: 'derived-cache',
+        legacyRoot: 'rebuild from archive/registry/provider records',
+        operation: 'write-library-index-cache',
+        risk: 'medium',
+        extraBlockers: ['library-index-is-derived-cache'],
+      },
+      {
+        name: 'syncEnvelopes',
+        eligible: false,
+        writerOwner: 'none',
+        canonicalStore: 'syncState',
+        legacyOwner: 'cross-surface-sync',
+        legacyRoot: 'chrome.storage.local broadcast envelopes',
+        operation: 'write-sync-envelope',
+        risk: 'low',
+        extraBlockers: ['sync-envelope-is-transport-not-canonical-data'],
+      },
+      {
+        name: 'uiPrefs',
+        eligible: false,
+        writerOwner: 'none',
+        canonicalStore: 'uiPrefs',
+        legacyOwner: 'surface-ui',
+        legacyRoot: 'surface-local localStorage/chrome.storage small prefs',
+        operation: 'write-ui-pref',
+        risk: 'low',
+        extraBlockers: ['ui-prefs-remain-surface-local'],
+      },
+    ];
+  }
+
+  function getDualWriteConfig(domainName) {
+    const name = String(domainName || '');
+    return dualWriteDomains().find((d) => d.name === name) || null;
+  }
+
+  function dualWritePreconditions(cfg) {
+    const out = [
+      'background-schema-created-and-validated',
+      'canonical-write-transport-available',
+      'legacy-writer-result-shape-structured',
+      'canonical-writer-result-shape-structured',
+      'idempotent-operation-key-defined',
+      'legacy-and-canonical-post-write-parity-check-defined',
+      'rollback-to-legacy-read-path-validated',
+      'dual-write-flag-explicitly-enabled',
+    ];
+    if (cfg?.eligible === false) out.push('domain-ownership-approved-for-canonical-writes');
+    if (cfg?.name === 'tags' || cfg?.name === 'tagSummaries') out.push('tag-live-turn-boundary-approved');
+    if (cfg?.name === 'archiveRefs') out.push('archive-storage-contract-approved');
+    return out;
+  }
+
+  function dualWriteBlockers(cfg) {
+    const blockers = [
+      'phase-8d-diagnostics-only',
+      'dual-write-flag-disabled',
+      'canonical-write-disabled',
+      'canonical-schema-not-created',
+      'dual-write-execution-not-implemented',
+    ];
+    if (!cfg?.eligible) blockers.push('domain-not-dual-write-eligible');
+    (cfg?.extraBlockers || []).forEach((item) => blockers.push(item));
+    return blockers;
+  }
+
+  function dualWriteFailureShape(cfg) {
+    return {
+      ok: false,
+      status: 'dual-write-disabled|canonical-write-unavailable|legacy-write-failed|canonical-write-failed|partial-write-failed',
+      reason: 'dual-write is disabled and diagnostics-only in Phase 8D',
+      domain: cfg?.name || '',
+      operation: cfg?.operation || 'write',
+    };
+  }
+
+  function getDualWritePlan(domainName) {
+    const name = String(domainName || '');
+    const cfg = getDualWriteConfig(name);
+    if (!cfg) {
+      return {
+        ok: false,
+        status: 'unknown-domain',
+        domain: name,
+        knownDomains: dualWriteDomains().map((d) => d.name),
+      };
+    }
+    const blockers = dualWriteBlockers(cfg);
+    return {
+      ok: true,
+      phase: '8D',
+      mode: 'diagnostics-only',
+      domain: cfg.name,
+      enabled: false,
+      dualWriteEnabled: false,
+      canonicalWriteEnabled: false,
+      legacyWriteEnabled: cfg.writerOwner !== 'none',
+      eligible: cfg.eligible === true,
+      ready: false,
+      canonicalTarget: {
+        owner: 'extension-background-service-worker',
+        root: SHARED_IDB_TARGET,
+        store: cfg.canonicalStore,
+        enabled: false,
+      },
+      legacyTarget: {
+        owner: cfg.legacyOwner,
+        root: cfg.legacyRoot,
+        enabled: cfg.writerOwner !== 'none',
+      },
+      writerOwner: cfg.writerOwner,
+      preconditions: dualWritePreconditions(cfg),
+      blockers,
+      failureShape: dualWriteFailureShape(cfg),
+      rollback: [
+        'leave canonical write flag disabled',
+        'continue legacy writes only',
+        'prefer legacy read path',
+        'ignore or clear future canonical mirror only after explicit migration rollback approval',
+      ],
+      atomicity: 'legacy-first-with-canonical-mirror-later',
+      partialFailurePolicy: 'future dual-write must return structured partial-write-failed and keep legacy read fallback active',
+      risk: cfg.risk || 'medium',
+    };
+  }
+
+  function getDualWriteReadiness() {
+    const domains = {};
+    const summary = {
+      total: 0,
+      domainsEligible: 0,
+      domainsNotEligible: 0,
+      domainsReady: 0,
+      domainsBlocked: 0,
+    };
+    dualWriteDomains().forEach((cfg) => {
+      const plan = getDualWritePlan(cfg.name);
+      summary.total += 1;
+      if (plan.eligible) summary.domainsEligible += 1;
+      else summary.domainsNotEligible += 1;
+      if (plan.ready) summary.domainsReady += 1;
+      if (!plan.ready) summary.domainsBlocked += 1;
+      domains[cfg.name] = {
+        eligible: plan.eligible,
+        ready: plan.ready,
+        writerOwner: plan.writerOwner,
+        risk: plan.risk,
+        blockers: plan.blockers.slice(),
+      };
+    });
+    return {
+      ok: true,
+      phase: '8D',
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      enabled: false,
+      dualWriteEnabled: false,
+      canonicalWriteEnabled: false,
+      legacyWritesRemainAuthoritative: true,
+      summary,
+      domainsEligible: summary.domainsEligible,
+      domainsBlocked: summary.domainsBlocked,
+      domains,
+    };
+  }
+
+  const INVENTORY_SAMPLE_LIMIT = 5;
+  const INVENTORY_PARSE_LIMIT_CHARS = 250000;
+
+  function canonicalStoreExistsForInventory() {
+    const result = backgroundHealthState.lastResult;
+    const schema = result && typeof result === 'object' ? result.schema : null;
+    if (schema && Object.prototype.hasOwnProperty.call(schema, 'dbExists')) {
+      if (schema.dbExists === true) return true;
+      if (schema.dbExists === false) return false;
+      return null;
+    }
+    return null;
+  }
+
+  function backendForLegacyRoot(root) {
+    const value = String(root || '');
+    if (!value) return 'unknown';
+    if (/^h2o:/u.test(value)) {
+      if (/cross-surface:broadcast/u.test(value)) return 'broadcast';
+      return 'localStorage';
+    }
+    if (/chrome\.storage/u.test(value)) return 'chrome.storage';
+    if (/indexeddb|idb|h2o_chat_archive/iu.test(value)) return SURFACE === 'studio' ? 'idb-studio' : 'archive-bridge';
+    if (/archive/iu.test(value)) return 'archive-bridge';
+    if (/broadcast/iu.test(value)) return 'broadcast';
+    return 'unknown';
+  }
+
+  function localStorageReadable() {
+    return safeCall('storage-adapter.inventory.localStorage.available', () => !!W.localStorage, false) === true;
+  }
+
+  function estimateRecordCount(parsed) {
+    if (Array.isArray(parsed)) return parsed.length;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const arrayKeys = [
+      'rows',
+      'bestRows',
+      'categories',
+      'folders',
+      'labels',
+      'projects',
+      'bindings',
+      'records',
+      'items',
+      'entries',
+      'chats',
+      'snapshots',
+      'tagIds',
+      'labelIds',
+    ];
+    for (const key of arrayKeys) {
+      if (Array.isArray(parsed[key])) return parsed[key].length;
+    }
+    const objectKeys = ['byId', 'map', 'bindingsByChatId', 'recordsById', 'catalog', 'index'];
+    for (const key of objectKeys) {
+      if (parsed[key] && typeof parsed[key] === 'object' && !Array.isArray(parsed[key])) {
+        return Object.keys(parsed[key]).length;
+      }
+    }
+    return Object.keys(parsed).length;
+  }
+
+  function sampleRecordKey(item, index) {
+    if (item && typeof item === 'object') {
+      return String(item.id || item.chatId || item.snapshotId || item.key || item.name || item.title || index);
+    }
+    return String(item ?? index);
+  }
+
+  function sampleParsedKeys(parsed) {
+    if (Array.isArray(parsed)) {
+      return parsed.slice(0, INVENTORY_SAMPLE_LIMIT).map(sampleRecordKey);
+    }
+    if (parsed && typeof parsed === 'object') {
+      return Object.keys(parsed).slice(0, INVENTORY_SAMPLE_LIMIT);
+    }
+    return [];
+  }
+
+  function inspectLegacySource(key) {
+    const root = String(key || '');
+    const backend = backendForLegacyRoot(root);
+    const base = {
+      key: root,
+      backend,
+      present: null,
+      count: null,
+      sampleKeys: [],
+      readable: false,
+      error: '',
+    };
+    if (backend !== 'localStorage') {
+      base.error = backend === 'unknown'
+        ? 'source-not-classified-for-synchronous-phase-8e-inventory'
+        : 'source-not-synchronously-readable-on-this-surface';
+      return base;
+    }
+    if (!localStorageReadable()) {
+      base.error = 'localStorage-unavailable';
+      return base;
+    }
+    base.readable = true;
+    try {
+      const raw = W.localStorage.getItem(root);
+      base.present = raw != null;
+      if (raw == null) {
+        base.count = 0;
+        return base;
+      }
+      if (raw.length > INVENTORY_PARSE_LIMIT_CHARS) {
+        base.error = 'value-too-large-for-phase-8e-bounded-parse';
+        return base;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        base.count = estimateRecordCount(parsed);
+        base.sampleKeys = sampleParsedKeys(parsed);
+      } catch (e) {
+        base.count = 1;
+        base.error = 'non-json-or-unparsed-legacy-value';
+      }
+      return base;
+    } catch (e) {
+      base.present = null;
+      base.readable = false;
+      base.error = String(e?.message || e || 'localStorage read failed');
+      return base;
+    }
+  }
+
+  function migrationExclusionReason(cfg) {
+    if (!cfg) return 'unknown-domain';
+    if (cfg.name === 'libraryIndex') return 'derived-cache-rebuilds-from-canonical-records';
+    if (cfg.name === 'syncEnvelopes') return 'transport-envelope-not-canonical-domain-data';
+    if (cfg.name === 'uiPrefs') return 'surface-local-hot-path-preferences';
+    if (cfg.name === 'archiveRefs') return 'archive-owned-boundary-not-in-library-storage-migration';
+    if (cfg.migrate === 'never' || String(cfg.migrate || '').startsWith('never')) return 'domain-marked-never-migrate';
+    return '';
+  }
+
+  function getMigrationInventory(domainName) {
+    const name = String(domainName || '');
+    const cfg = STORAGE_ADAPTER_DOMAINS.find((d) => d.name === name);
+    if (!cfg) {
+      return {
+        ok: false,
+        status: 'unknown-domain',
+        domain: name,
+        knownDomains: STORAGE_ADAPTER_DOMAINS.map((d) => d.name),
+      };
+    }
+    const legacySources = (cfg.currentRoots || []).map(inspectLegacySource);
+    const counts = legacySources.map((src) => src.count).filter((count) => typeof count === 'number' && Number.isFinite(count));
+    const hasUnknownPresent = legacySources.some((src) => src.present === null);
+    const hasUncountedPresent = legacySources.some((src) => src.present === true && typeof src.count !== 'number');
+    const anyPresent = legacySources.some((src) => src.present === true);
+    const allKnownAbsent = legacySources.length > 0 && legacySources.every((src) => src.present === false);
+    const estimatedRecords = hasUncountedPresent ? null : counts.reduce((sum, count) => sum + count, 0);
+    const canCountSafely = !hasUncountedPresent && !hasUnknownPresent;
+    const canSampleSafely = legacySources.every((src) => src.present !== true || !src.error || src.error === 'non-json-or-unparsed-legacy-value');
+    const reasonIfExcluded = migrationExclusionReason(cfg);
+    const canonicalStoreExists = canonicalStoreExistsForInventory();
+    const blockers = ['phase-8e-diagnostics-only'];
+    if (canonicalStoreExists === false) blockers.push('canonical-store-not-created');
+    else if (canonicalStoreExists === null) blockers.push('canonical-store-existence-unknown');
+    if (reasonIfExcluded) blockers.push('domain-excluded-from-migration');
+    if (hasUnknownPresent) blockers.push('legacy-source-presence-unknown-on-this-surface');
+    if (hasUncountedPresent) blockers.push('legacy-source-count-unavailable-with-bounded-parser');
+    if (!anyPresent && allKnownAbsent) blockers.push('no-present-legacy-source-detected-on-this-surface');
+    let nextAction = 'diagnostics-only';
+    if (reasonIfExcluded) nextAction = 'excluded';
+    else if (canonicalStoreExists !== true) nextAction = 'needs-canonical-db';
+    else if (!canCountSafely) nextAction = 'needs-parser';
+    return {
+      ok: true,
+      phase: '8E',
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      domain: cfg.name,
+      migrationEnabled: false,
+      canonicalStoreExists,
+      legacySources,
+      estimatedRecords,
+      canCountSafely,
+      canSampleSafely,
+      excludedFromMigration: !!reasonIfExcluded,
+      reasonIfExcluded,
+      blockers,
+      nextAction,
+    };
+  }
+
+  function getMigrationInventoryAll() {
+    const domains = {};
+    const summary = {
+      total: 0,
+      countable: 0,
+      empty: 0,
+      excluded: 0,
+      blocked: 0,
+      canonicalStoreExists: canonicalStoreExistsForInventory(),
+    };
+    STORAGE_ADAPTER_DOMAINS.forEach((cfg) => {
+      const inventory = getMigrationInventory(cfg.name);
+      domains[cfg.name] = inventory;
+      summary.total += 1;
+      if (inventory.canCountSafely) summary.countable += 1;
+      if (inventory.estimatedRecords === 0) summary.empty += 1;
+      if (inventory.excludedFromMigration) summary.excluded += 1;
+      if (Array.isArray(inventory.blockers) && inventory.blockers.length > 0) summary.blocked += 1;
+    });
+    return {
+      ok: true,
+      phase: '8E',
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      migrationEnabled: false,
+      summary,
+      domains,
+    };
+  }
+
+  function comparableFieldsForParity(cfg) {
+    switch (cfg?.name) {
+      case 'chatRegistry':
+        return ['chatId', 'href', 'title', 'updatedAt', 'organization'];
+      case 'folders':
+        return ['id', 'name', 'parentId', 'sortOrder', 'status'];
+      case 'categories':
+        return ['id', 'name', 'status', 'replacementCategoryId', 'assignment'];
+      case 'tags':
+        return ['tagId', 'name', 'chatId', 'turnId', 'source'];
+      case 'labels':
+        return ['labelId', 'name', 'type', 'chatId'];
+      case 'projects':
+        return ['projectId', 'projectName', 'href', 'source'];
+      case 'libraryIndex':
+        return ['rowId', 'chatId', 'view', 'facets'];
+      case 'archiveRefs':
+        return ['snapshotId', 'chatId', 'metadata'];
+      case 'syncEnvelopes':
+        return ['version', 'reason', 'payloadKeys'];
+      case 'uiPrefs':
+        return ['key', 'valueShape', 'surface'];
+      default:
+        return ['id', 'updatedAt'];
+    }
+  }
+
+  function checksumStrategyForParity(cfg, inventory) {
+    if (inventory?.excludedFromMigration) return 'none';
+    if (cfg?.name === 'tags') return 'count-only';
+    if (cfg?.name === 'libraryIndex') return 'count-only';
+    if (cfg?.name === 'uiPrefs' || cfg?.name === 'syncEnvelopes') return 'none';
+    if (typeof inventory?.estimatedRecords === 'number') return 'id-list';
+    return 'count-only';
+  }
+
+  function getParityPlan(domainName) {
+    const name = String(domainName || '');
+    const cfg = STORAGE_ADAPTER_DOMAINS.find((d) => d.name === name);
+    if (!cfg) {
+      return {
+        ok: false,
+        status: 'unknown-domain',
+        domain: name,
+        knownDomains: STORAGE_ADAPTER_DOMAINS.map((d) => d.name),
+      };
+    }
+    const inventory = getMigrationInventory(cfg.name);
+    const canonicalStoreExists = inventory.canonicalStoreExists;
+    const blockers = [
+      'phase-8e-diagnostics-only',
+      'canonical-read-disabled',
+      'parity-execution-not-implemented',
+    ];
+    if (canonicalStoreExists === false) blockers.push('canonical-store-not-created');
+    else if (canonicalStoreExists === null) blockers.push('canonical-store-existence-unknown');
+    if (inventory.excludedFromMigration) blockers.push('domain-excluded-from-parity');
+    if (typeof inventory.estimatedRecords !== 'number') blockers.push('legacy-count-unavailable');
+    return {
+      ok: true,
+      phase: '8E',
+      mode: 'diagnostics-only',
+      domain: cfg.name,
+      enabled: false,
+      canonicalReadEnabled: false,
+      parityCheckExecutable: false,
+      canonicalCount: null,
+      legacyCount: inventory.estimatedRecords,
+      comparableFields: comparableFieldsForParity(cfg),
+      checksumStrategy: checksumStrategyForParity(cfg, inventory),
+      blockers,
+      passCriteria: [
+        'legacy-count-equals-canonical-count',
+        'legacy-id-set-equals-canonical-id-set-where-applicable',
+        'provider-normalized-shape-compatible',
+        'no-orphan-bindings-after-normalization',
+      ],
+      inventory,
+    };
+  }
+
+  function getParityReadiness() {
+    const domains = {};
+    const summary = {
+      total: 0,
+      executable: 0,
+      blocked: 0,
+      excluded: 0,
+      legacyCountable: 0,
+    };
+    STORAGE_ADAPTER_DOMAINS.forEach((cfg) => {
+      const plan = getParityPlan(cfg.name);
+      domains[cfg.name] = {
+        enabled: plan.enabled === true,
+        executable: plan.parityCheckExecutable === true,
+        legacyCount: plan.legacyCount,
+        checksumStrategy: plan.checksumStrategy,
+        blockers: plan.blockers.slice(),
+      };
+      summary.total += 1;
+      if (plan.parityCheckExecutable) summary.executable += 1;
+      if (plan.blockers.length) summary.blocked += 1;
+      if (plan.inventory?.excludedFromMigration) summary.excluded += 1;
+      if (typeof plan.legacyCount === 'number') summary.legacyCountable += 1;
+    });
+    return {
+      ok: true,
+      phase: '8E',
+      mode: 'diagnostics-only',
+      surface: SURFACE,
+      enabled: false,
+      canonicalReadEnabled: false,
+      parityExecutionEnabled: false,
+      summary,
+      domains,
+    };
+  }
+
   function storageAdapterHealth() {
     const capabilities = storageCapabilities();
     const store = capabilities.libraryStore;
@@ -699,6 +1327,7 @@
       canonicalStoreEnabled: false,
       migrationEnabled: false,
       dualWriteEnabled: false,
+      canonicalWriteEnabled: false,
       backgroundServiceWorkerAvailable: capabilities.backgroundServiceWorker.available,
       indexedDBAvailable: capabilities.indexedDB.available,
       chromeStorageAvailable: capabilities.chromeStorageLocal.available,
@@ -813,6 +1442,12 @@
       getBackgroundHealth,
       getDualReadPlan,
       getDualReadReadiness,
+      getDualWritePlan,
+      getDualWriteReadiness,
+      getMigrationInventory,
+      getMigrationInventoryAll,
+      getParityPlan,
+      getParityReadiness,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -846,6 +1481,12 @@
               'getBackgroundHealth',
               'getDualReadPlan',
               'getDualReadReadiness',
+              'getDualWritePlan',
+              'getDualWriteReadiness',
+              'getMigrationInventory',
+              'getMigrationInventoryAll',
+              'getParityPlan',
+              'getParityReadiness',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -860,6 +1501,9 @@
           capabilities: storageCapabilities(),
           background: backgroundHealthSnapshot(),
           dualRead: getDualReadReadiness(),
+          dualWrite: getDualWriteReadiness(),
+          migrationInventory: getMigrationInventoryAll(),
+          parity: getParityReadiness(),
           domains,
         };
       },
