@@ -2596,10 +2596,88 @@ async function buildRowsFromChatIds(chatIds){
   return rows;
 }
 
+// ── Desktop reader / list (M2a-3j) ──────────────────────────────────────────
+// On Tauri Studio Desktop, the workbench list is sourced from
+// H2O.LibraryIndex (which already reads from store.chats + folder/label/
+// tag/category binding stores via M2a-3g). This pure mapper translates a
+// LibraryIndex compact row into the raw shape that normalizeWorkbenchRow
+// accepts. Linked-only chats (Add-to-Library without snapshot) have
+// snapshotId === null and are filtered by normalizeWorkbenchRow's guard,
+// so this V1 surface shows saved snapshots only. A separate "linked
+// chats" view is a future stage.
+function projectLibraryIndexRowToWorkbenchInput(liRow){
+  if (!liRow || typeof liRow !== 'object') return null;
+  const chatId = String(liRow.chatId || '').trim();
+  const snapshotId = String(liRow.snapshotId || '').trim();
+  if (!chatId || !snapshotId) return null;
+
+  // LI carries timestamps as epoch ms (capturedAt, updatedAt);
+  // normalizeWorkbenchRow expects ISO strings. Same conversion edge as
+  // M2a-3i's projectSqliteSnapshotToCanonical.
+  function toIso(epochMs){
+    if (!epochMs || typeof epochMs !== 'number' || epochMs <= 0) return '';
+    try { return new Date(epochMs).toISOString(); }
+    catch { return ''; }
+  }
+  const updatedAtIso = toIso(liRow.updatedAt);
+  const capturedAtIso = toIso(liRow.capturedAt);
+
+  const labelNames = Array.isArray(liRow.labels) ? liRow.labels : [];
+  const tagNames   = Array.isArray(liRow.tags)   ? liRow.tags   : [];
+
+  return {
+    snapshotId,
+    chatId,
+    title: liRow.title || '',
+    createdAt: capturedAtIso || updatedAtIso || '',
+    updatedAt: updatedAtIso || '',
+    messageCount: Number(liRow.messageCount || 0),
+    answerCount: Number(liRow.answerCount || 0),
+    pinned: !!liRow.pinned,
+    archived: !!liRow.archived,
+    folderId: liRow.folderId || '',
+    folderName: liRow.folderName || '',
+    tags: tagNames.slice(),
+    labels: labelNames.map((name) => ({ id: name, name, label: name })),
+    category: (liRow.categoryId || liRow.categoryName)
+      ? { id: liRow.categoryId || '', name: liRow.categoryName || '', label: liRow.categoryName || liRow.categoryId || '' }
+      : null,
+    keywords: [],
+    meta: {
+      title: liRow.title || '',
+      folderId: liRow.folderId || '',
+      folderName: liRow.folderName || '',
+      messageCount: Number(liRow.messageCount || 0),
+      updatedAt: updatedAtIso || '',
+    },
+  };
+}
+
 async function fetchWorkbenchRows(force = false){
   if (!force && Array.isArray(state.rowsCache)) return state.rowsCache.slice();
 
   state.lastFetchDiag = { source: "", directOk: false, idsOk: false, errors: [] };
+
+  // Desktop (Tauri) — M2a-3j: project saved-snapshot rows from
+  // H2O.LibraryIndex (already wired to SQLite stores via M2a-3g) instead
+  // of going through the MV3 archive bridge. normalizeWorkbenchRow's
+  // snapshotId guard naturally drops linked-only chats; the callArchive
+  // interceptors below stay as a defensive fallback if LibraryIndex
+  // happens to be unavailable. On failure here we fall through to the
+  // archive path (which on Desktop returns [] via the M2a-3i sidebar
+  // interceptors), preserving the empty-state UI rather than throwing.
+  if (STUDIO_isTauri() && W.H2O?.LibraryIndex && typeof W.H2O.LibraryIndex.getAll === 'function') {
+    try {
+      const liRows = W.H2O.LibraryIndex.getAll() || [];
+      const raw = liRows.map(projectLibraryIndexRowToWorkbenchInput).filter(Boolean);
+      state.rowsCache = raw.map(normalizeWorkbenchRow).filter(Boolean);
+      state.lastFetchDiag = { source: 'desktop-library-index', directOk: true, idsOk: false, errors: [] };
+      return state.rowsCache.slice();
+    } catch (e) {
+      state.lastFetchDiag = { source: 'desktop-library-index', directOk: false, idsOk: false, errors: [String(e?.message || e)] };
+      // Fall through to the (empty-result) archive path as safety net.
+    }
+  }
 
   const direct = await tryArchiveOps(LIST_ROW_OPS, {});
   if (direct.ok && Array.isArray(direct.result)){
@@ -4991,6 +5069,39 @@ function renderMigrateImport(panel){
   });
 }
 
+// ── Desktop list auto-refresh (M2a-3j) ──────────────────────────────────────
+// On Tauri, the workbench list is sourced from H2O.LibraryIndex (via
+// fetchWorkbenchRows). LibraryIndex itself auto-refreshes from store
+// subscribers (M2a-3g), so any SQLite write (ingestion, chat upsert,
+// folder bind, etc.) triggers a LibraryIndex update. We listen for those
+// updates and invalidate state.rowsCache + re-render the current route so
+// the Desktop UI reflects the new data without a manual refresh.
+//
+// Debounced 200 ms so multi-write batches coalesce into one re-render.
+function subscribeLibraryIndexToWorkbenchCache(){
+  if (!STUDIO_isTauri()) return;
+  const li = W.H2O && W.H2O.LibraryIndex;
+  if (!li || typeof li.subscribe !== 'function') return;
+  let pendingTimer = null;
+  try {
+    li.subscribe(() => {
+      if (pendingTimer) return;
+      pendingTimer = W.setTimeout(() => {
+        pendingTimer = null;
+        state.rowsCache = null;
+        // renderRoute dispatches to renderList (list/saved/pinned/archive/
+        // folder) or renderReader (read) based on the current hash —
+        // safe to call unconditionally. Other routes (library, settings,
+        // migrate) ignore rowsCache; the invalidation alone is enough for
+        // them on next navigation.
+        renderRoute().catch(console.error);
+      }, 200);
+    });
+  } catch (e) {
+    try { console.warn('[H2O.Studio] subscribeLibraryIndexToWorkbenchCache failed', e); } catch {}
+  }
+}
+
 function boot(){
   readUiPrefs();
   applyUiState();
@@ -5181,6 +5292,11 @@ function boot(){
   // and renderList runs end-to-end. Cheap; safe to double-render the
   // empty state. MV3 is unaffected — this whole block is gated on Tauri.
   if (STUDIO_isTauri()) {
+    // M2a-3j: subscribe to LibraryIndex updates so SQLite-driven changes
+    // (ingestion, edits, etc.) invalidate the workbench cache and
+    // re-render the current route. Idempotent — subscribers are
+    // deduplicated by LibraryIndex.subscribe.
+    subscribeLibraryIndexToWorkbenchCache();
     setTimeout(() => {
       renderRoute({ force: true }).catch(console.error);
     }, 600);
