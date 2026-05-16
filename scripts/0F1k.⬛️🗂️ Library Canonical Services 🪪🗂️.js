@@ -1612,6 +1612,171 @@
     };
   }
 
+  function backgroundSchemaSnapshot() {
+    const result = backgroundHealthState.lastResult && typeof backgroundHealthState.lastResult === 'object'
+      ? backgroundHealthState.lastResult
+      : null;
+    const schema = result?.schema && typeof result.schema === 'object' ? result.schema : null;
+    const stores = schema?.stores && typeof schema.stores === 'object' ? schema.stores : {};
+    const chatRegistryStore = stores.chatRegistry && typeof stores.chatRegistry === 'object' ? stores.chatRegistry : null;
+    const dbExists = typeof schema?.dbExists === 'boolean' ? schema.dbExists : null;
+    let canonicalStoreStatus = 'unknown';
+    if (dbExists === false) {
+      canonicalStoreStatus = 'not-created';
+    } else if (dbExists === true) {
+      const storeStatus = String(chatRegistryStore?.status || '');
+      if (chatRegistryStore?.exists === false) canonicalStoreStatus = 'absent';
+      else if (/not-inspected/i.test(storeStatus)) canonicalStoreStatus = 'not-inspected';
+      else canonicalStoreStatus = 'not-inspected';
+    }
+    return {
+      queried: backgroundHealthState.lastCheckedAt > 0,
+      ok: result?.ok === true,
+      status: String(result?.status || (result ? 'ok' : 'not-queried')),
+      transport: String(backgroundHealthState.lastTransport || result?.transport || ''),
+      schemaAvailable: !!schema,
+      canonicalDbExists: dbExists,
+      canonicalStoreStatus,
+      dbCreatedByThisCheck: schema?.dbCreatedByThisCheck === true,
+      plannedStores: Array.isArray(schema?.plannedStores) ? schema.plannedStores.slice() : [],
+      chatRegistryStore: chatRegistryStore
+        ? {
+            planned: chatRegistryStore.planned === true,
+            exists: typeof chatRegistryStore.exists === 'boolean' ? chatRegistryStore.exists : null,
+            status: String(chatRegistryStore.status || ''),
+          }
+        : null,
+    };
+  }
+
+  function getReadOnlyMirrorStatus(domainName) {
+    const domain = String(domainName || '');
+    if (domain !== 'chatRegistry') {
+      return {
+        ok: false,
+        status: 'unsupported-domain',
+        phase: '8H',
+        domain,
+        supportedDomains: ['chatRegistry'],
+      };
+    }
+    const dryRun = getMirrorDryRun('chatRegistry');
+    const readiness = getMirrorReadiness('chatRegistry', dryRun);
+    const background = backgroundSchemaSnapshot();
+    const blockers = [
+      'phase-8h-diagnostics-only',
+      'mirror-write-disabled',
+      'canonical-read-disabled',
+      'dual-read-execution-disabled',
+      'dual-write-disabled',
+    ];
+    if (!background.queried) blockers.push('background-health-not-queried');
+    if (background.queried && background.ok !== true) blockers.push('background-health-not-ok');
+    if (background.canonicalDbExists !== true) blockers.push('canonical-db-not-created');
+    if (background.canonicalStoreStatus !== 'not-inspected') blockers.push(`canonical-store-${background.canonicalStoreStatus}`);
+    if (!dryRun.candidateCount) blockers.push('no-chat-registry-mirror-candidates');
+    if (dryRun.invalidCount) blockers.push('invalid-chat-registry-candidates');
+    if (dryRun.skippedCount) blockers.push('bounded-dry-run-skipped-records');
+    return {
+      ok: true,
+      phase: '8H',
+      domain: 'chatRegistry',
+      mode: 'read-only-mirror-status',
+      mirrorExecutable: false,
+      writesEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      legacyCandidateCount: typeof dryRun.candidateCount === 'number' ? dryRun.candidateCount : null,
+      legacyCount: typeof dryRun.legacyCount === 'number' ? dryRun.legacyCount : null,
+      canonicalDbExists: background.canonicalDbExists,
+      canonicalStoreStatus: background.canonicalStoreStatus,
+      dbCreatedByThisCheck: false,
+      background,
+      dryRun: {
+        ok: dryRun.ok === true,
+        phase: dryRun.phase,
+        mode: dryRun.mode,
+        legacySource: dryRun.legacySource,
+        legacyCount: dryRun.legacyCount,
+        candidateCount: dryRun.candidateCount,
+        skippedCount: dryRun.skippedCount,
+        invalidCount: dryRun.invalidCount,
+        tombstoneCount: dryRun.tombstoneCount,
+        sampleChatIds: Array.isArray(dryRun.sampleChatIds) ? dryRun.sampleChatIds.slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT) : [],
+        checksum: dryRun.checksum || '',
+      },
+      readiness: {
+        ok: readiness.ok === true,
+        phase: readiness.phase,
+        mode: readiness.mode,
+        readyForReadOnlyMirror: readiness.readyForReadOnlyMirror === true,
+        nextAction: readiness.nextAction || '',
+      },
+      nextAction: 'schema-creation-review',
+      blockers,
+    };
+  }
+
+  function getReadOnlyMirrorPlan(domainName) {
+    const domain = String(domainName || '');
+    if (domain !== 'chatRegistry') {
+      return {
+        ok: false,
+        status: 'unsupported-domain',
+        phase: '8H',
+        domain,
+        supportedDomains: ['chatRegistry'],
+      };
+    }
+    const status = getReadOnlyMirrorStatus('chatRegistry');
+    return {
+      ok: true,
+      phase: '8H',
+      domain: 'chatRegistry',
+      mode: 'read-only-mirror-plan',
+      selectedOption: 'read-only-empty-mirror-diagnostics',
+      activeReadPathChanged: false,
+      mirrorExecutable: false,
+      writesEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      contract: {
+        statusMethod: 'StorageAdapter.getReadOnlyMirrorStatus("chatRegistry")',
+        planMethod: 'StorageAdapter.getReadOnlyMirrorPlan("chatRegistry")',
+        canonicalTarget: SHARED_IDB_TARGET,
+        canonicalStore: 'chatRegistry',
+        legacySources: status.dryRun?.legacySource ? String(status.dryRun.legacySource).split('+').filter(Boolean) : [],
+      },
+      prerequisites: [
+        'explicit-schema-creation-phase-approved',
+        'background-schema-diagnostics-reviewed',
+        'mirror-dry-run-candidate-count-reviewed',
+        'rollback-plan-approved',
+      ],
+      futureSteps: [
+        'create-empty-schema-behind-explicit-phase-gate',
+        'inspect-empty-chatRegistry-store-without-canonical-read-switch',
+        'review-parity-plan-before-any-record-write',
+      ],
+      rollback: [
+        'disable future schema/mirror flags',
+        'leave legacy chat registry keys untouched',
+        'remove empty diagnostic DB only with explicit user approval',
+      ],
+      forbiddenActions: [
+        'no-sw-idb-schema-creation-in-phase-8h',
+        'no-canonical-record-writes',
+        'no-canonical-read-switch',
+        'no-dual-read-execution',
+        'no-dual-write',
+      ],
+      status,
+      nextAction: 'schema-creation-review',
+    };
+  }
+
   function storageAdapterHealth() {
     const capabilities = storageCapabilities();
     const store = capabilities.libraryStore;
@@ -1747,6 +1912,8 @@
       getParityReadiness,
       getMirrorDryRun,
       getMirrorReadiness,
+      getReadOnlyMirrorStatus,
+      getReadOnlyMirrorPlan,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -1789,6 +1956,8 @@
               'getParityReadiness',
               'getMirrorDryRun',
               'getMirrorReadiness',
+              'getReadOnlyMirrorStatus',
+              'getReadOnlyMirrorPlan',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -1811,6 +1980,9 @@
           },
           mirrorReadiness: {
             chatRegistry: getMirrorReadiness('chatRegistry', chatRegistryMirrorDryRun),
+          },
+          readOnlyMirror: {
+            chatRegistry: getReadOnlyMirrorStatus('chatRegistry'),
           },
           domains,
         };
