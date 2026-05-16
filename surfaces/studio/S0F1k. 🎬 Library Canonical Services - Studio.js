@@ -204,6 +204,7 @@
   const STORAGE_ADAPTER_PHASE = '8A';
   const STORAGE_BACKGROUND_DIAG_OP = 'h2o:library-storage:diagnose';
   const STORAGE_CREATE_EMPTY_SCHEMA_OP = 'h2o:library-storage:create-empty-schema';
+  const STORAGE_INSPECT_SCHEMA_OP = 'h2o:library-storage:inspect-schema';
   const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
   const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
   const STORAGE_ADAPTER_DOMAINS = Object.freeze([
@@ -379,6 +380,15 @@
   const schemaCreationState = {
     lastCheckedAt: 0,
     lastTransport: '',
+    lastResult: null,
+  };
+  const schemaInspectionState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
+    lastResult: null,
+  };
+  const mirrorWritePreflightState = {
+    lastCheckedAt: 0,
     lastResult: null,
   };
 
@@ -1971,6 +1981,261 @@
     }
   }
 
+  function rememberSchemaInspectionResult(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-schema-inspection-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'schema-inspection-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    schemaInspectionState.lastCheckedAt = Date.now();
+    schemaInspectionState.lastTransport = out.transport;
+    schemaInspectionState.lastResult = out;
+    return out;
+  }
+
+  function normalizeSchemaInspectionEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return rememberSchemaInspectionResult({
+        ok: false,
+        phase: '8J',
+        status: 'schema-inspection-empty-result',
+        reason: 'background returned no schema inspection payload',
+        recordsWritten: 0,
+      }, transport);
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return rememberSchemaInspectionResult({
+          ok: false,
+          phase: '8J',
+          status: 'schema-inspection-rejected',
+          reason: String(env.error || env.reason || 'background schema inspection rejected'),
+          error: env.error || '',
+          recordsWritten: 0,
+        }, transport);
+      }
+      return rememberSchemaInspectionResult(env.result, transport);
+    }
+    return rememberSchemaInspectionResult(env, transport);
+  }
+
+  function normalizeInspectCanonicalSchemaPayload(domainOrOptions, opts = {}) {
+    const src = domainOrOptions && typeof domainOrOptions === 'object' && !Array.isArray(domainOrOptions)
+      ? domainOrOptions
+      : { ...(opts && typeof opts === 'object' ? opts : {}), domain: domainOrOptions };
+    return {
+      domain: String(src.domain || '').trim(),
+      mode: 'inspect-schema-only',
+    };
+  }
+
+  async function inspectCanonicalSchema(domainOrOptions, opts = {}) {
+    const payload = normalizeInspectCanonicalSchemaPayload(domainOrOptions, opts);
+    if (payload.domain !== 'chatRegistry') {
+      return rememberSchemaInspectionResult({
+        ok: false,
+        phase: '8J',
+        status: 'unsupported-domain',
+        reason: 'only chatRegistry schema inspection is supported in phase 8J',
+        domain: payload.domain,
+        mode: payload.mode,
+        recordsWritten: 0,
+        canonicalReadsEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      }, 'local-validation');
+    }
+    try {
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageInspectSchema === 'function') {
+        const out = await bridge.libraryStorageInspectSchema(payload);
+        return normalizeSchemaInspectionEnvelope(out, 'extension-archive-bridge');
+      }
+      if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        const out = await sendRuntimeArchiveMessage(STORAGE_INSPECT_SCHEMA_OP, payload);
+        return normalizeSchemaInspectionEnvelope(out, 'chrome.runtime.sendMessage');
+      }
+      return rememberSchemaInspectionResult({
+        ok: false,
+        phase: '8J',
+        status: 'schema-inspection-transport-unavailable',
+        reason: 'no extension archive bridge or chrome.runtime transport available',
+        domain: payload.domain,
+        mode: payload.mode,
+        recordsWritten: 0,
+        canonicalReadsEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      }, 'none');
+    } catch (e) {
+      return rememberSchemaInspectionResult({
+        ok: false,
+        phase: '8J',
+        status: 'schema-inspection-error',
+        reason: String(e?.message || e || ''),
+        domain: payload.domain,
+        mode: payload.mode,
+        recordsWritten: 0,
+        canonicalReadsEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      }, 'error');
+    }
+  }
+
+  function summarizeSchemaInspectionForPreflight(schema) {
+    const src = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {};
+    const stores = src.stores && typeof src.stores === 'object' ? src.stores : {};
+    const approvedStores = ['chatRegistry', 'migrationState', 'syncState'];
+    const compactStores = {};
+    approvedStores.forEach((name) => {
+      const store = stores[name] && typeof stores[name] === 'object' ? stores[name] : {};
+      compactStores[name] = {
+        exists: store.exists === true,
+        count: typeof store.count === 'number' ? store.count : null,
+        error: String(store.error || ''),
+      };
+    });
+    return {
+      ok: src.ok === true,
+      phase: src.phase || '8J',
+      status: String(src.status || ''),
+      reason: String(src.reason || ''),
+      dbName: String(src.dbName || ''),
+      dbExists: typeof src.dbExists === 'boolean' ? src.dbExists : null,
+      version: typeof src.version === 'number' ? src.version : null,
+      currentVersion: typeof src.currentVersion === 'number' ? src.currentVersion : null,
+      inspected: src.inspected === true,
+      stores: compactStores,
+      missingStores: Array.isArray(src.missingStores) ? src.missingStores.slice() : [],
+      unexpectedStores: Array.isArray(src.unexpectedStores) ? src.unexpectedStores.slice() : [],
+      recordsWritten: 0,
+      transport: String(src.transport || ''),
+    };
+  }
+
+  function rememberMirrorWritePreflightResult(result) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-mirror-write-preflight-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'mirror-write-preflight-failed' : 'ok';
+    mirrorWritePreflightState.lastCheckedAt = Date.now();
+    mirrorWritePreflightState.lastResult = out;
+    return out;
+  }
+
+  async function getMirrorWritePreflight(domainName) {
+    const domain = String(domainName || '');
+    if (domain !== 'chatRegistry') {
+      return rememberMirrorWritePreflightResult({
+        ok: false,
+        phase: '8J',
+        status: 'unsupported-domain',
+        reason: 'only chatRegistry mirror write preflight is supported in phase 8J',
+        domain,
+        supportedDomains: ['chatRegistry'],
+        recordsWritten: 0,
+        readyForWrite: false,
+        writesEnabled: false,
+        canonicalReadEnabled: false,
+        dualReadExecutionEnabled: false,
+        dualWriteEnabled: false,
+      });
+    }
+    const schemaRaw = await inspectCanonicalSchema('chatRegistry');
+    const dryRun = getMirrorDryRun('chatRegistry');
+    const status = getReadOnlyMirrorStatus('chatRegistry');
+    const schema = summarizeSchemaInspectionForPreflight(schemaRaw);
+    const candidateCount = Number(dryRun?.candidateCount || 0) || 0;
+    const batchSize = 50;
+    const batchCount = Math.ceil(candidateCount / batchSize);
+    const chatRegistryCount = schema.stores.chatRegistry.count;
+    const blockers = [
+      'phase-8j-diagnostics-only',
+      'mirror-write-disabled',
+      'canonical-read-disabled',
+      'dual-read-execution-disabled',
+      'dual-write-disabled',
+    ];
+    if (schema.ok !== true) blockers.push('schema-inspection-failed');
+    if (schema.dbExists !== true) blockers.push('canonical-db-missing');
+    const schemaVersion = schema.currentVersion || schema.version || null;
+    if (schemaVersion !== 1) blockers.push('canonical-db-version-not-1');
+    Object.keys(schema.stores).forEach((name) => {
+      if (schema.stores[name].exists !== true) blockers.push(`required-store-missing:${name}`);
+    });
+    if (schema.unexpectedStores.length) blockers.push('unexpected-stores-present');
+    if (typeof chatRegistryCount !== 'number') blockers.push('chatregistry-store-count-unavailable');
+    else if (chatRegistryCount !== 0) blockers.push('chatregistry-store-not-empty');
+    if (!candidateCount) blockers.push('candidate-set-empty');
+    if (Number(dryRun?.invalidCount || 0) > 0) blockers.push('invalid-candidates-present');
+    if (Number(dryRun?.skippedCount || 0) > 0) blockers.push('skipped-candidates-present');
+    const dataReady = schema.ok === true
+      && schema.dbExists === true
+      && schemaVersion === 1
+      && schema.unexpectedStores.length === 0
+      && Object.keys(schema.stores).every((name) => schema.stores[name].exists === true)
+      && chatRegistryCount === 0
+      && candidateCount > 0
+      && Number(dryRun?.invalidCount || 0) === 0
+      && Number(dryRun?.skippedCount || 0) === 0;
+    return rememberMirrorWritePreflightResult({
+      ok: true,
+      phase: '8J',
+      status: dataReady ? 'preflight-ready-for-explicit-write-approval' : 'preflight-blocked',
+      domain: 'chatRegistry',
+      mode: 'mirror-write-preflight',
+      writesEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      readyForWrite: false,
+      legacyCandidateCount: typeof dryRun?.legacyCount === 'number' ? dryRun.legacyCount : null,
+      candidateCount,
+      skippedCount: Number(dryRun?.skippedCount || 0) || 0,
+      invalidCount: Number(dryRun?.invalidCount || 0) || 0,
+      tombstoneCount: Number(dryRun?.tombstoneCount || 0) || 0,
+      canonicalExistingCount: typeof chatRegistryCount === 'number' ? chatRegistryCount : null,
+      recordsWritten: 0,
+      batchPlan: {
+        batchSize,
+        batchCount,
+        wouldWrite: candidateCount,
+      },
+      checksum: dryRun?.checksum || '',
+      sampleChatIds: Array.isArray(dryRun?.sampleChatIds) ? dryRun.sampleChatIds.slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT) : [],
+      requiredApprovalForNextPhase: 'WRITE_CHAT_REGISTRY_MIRROR_V1',
+      schema,
+      dryRun: {
+        ok: dryRun?.ok === true,
+        phase: dryRun?.phase || '',
+        mode: dryRun?.mode || '',
+        legacySource: dryRun?.legacySource || '',
+        legacyCount: typeof dryRun?.legacyCount === 'number' ? dryRun.legacyCount : null,
+        candidateCount,
+        skippedCount: Number(dryRun?.skippedCount || 0) || 0,
+        invalidCount: Number(dryRun?.invalidCount || 0) || 0,
+        tombstoneCount: Number(dryRun?.tombstoneCount || 0) || 0,
+        sampleChatIds: Array.isArray(dryRun?.sampleChatIds) ? dryRun.sampleChatIds.slice(0, MIRROR_DRY_RUN_SAMPLE_LIMIT) : [],
+        checksum: dryRun?.checksum || '',
+      },
+      readOnlyMirrorStatus: {
+        ok: status?.ok === true,
+        phase: status?.phase || '',
+        mode: status?.mode || '',
+        canonicalDbExists: typeof status?.canonicalDbExists === 'boolean' ? status.canonicalDbExists : null,
+        canonicalStoreStatus: status?.canonicalStoreStatus || '',
+        legacyCandidateCount: typeof status?.legacyCandidateCount === 'number' ? status.legacyCandidateCount : null,
+      },
+      blockers: Array.from(new Set(blockers)),
+      nextAction: dataReady ? 'approve-bounded-mirror-write' : 'blocked',
+    });
+  }
+
   function backgroundHealthSnapshot() {
     return {
       lastCheckedAt: backgroundHealthState.lastCheckedAt,
@@ -1986,6 +2251,23 @@
       lastTransport: schemaCreationState.lastTransport,
       lastResult: schemaCreationState.lastResult,
       queried: schemaCreationState.lastCheckedAt > 0,
+    };
+  }
+
+  function schemaInspectionSnapshot() {
+    return {
+      lastCheckedAt: schemaInspectionState.lastCheckedAt,
+      lastTransport: schemaInspectionState.lastTransport,
+      lastResult: schemaInspectionState.lastResult,
+      queried: schemaInspectionState.lastCheckedAt > 0,
+    };
+  }
+
+  function mirrorWritePreflightSnapshot() {
+    return {
+      lastCheckedAt: mirrorWritePreflightState.lastCheckedAt,
+      lastResult: mirrorWritePreflightState.lastResult,
+      queried: mirrorWritePreflightState.lastCheckedAt > 0,
     };
   }
 
@@ -2011,6 +2293,8 @@
       getReadOnlyMirrorStatus,
       getReadOnlyMirrorPlan,
       createEmptySchema,
+      inspectCanonicalSchema,
+      getMirrorWritePreflight,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -2056,6 +2340,8 @@
               'getReadOnlyMirrorStatus',
               'getReadOnlyMirrorPlan',
               'createEmptySchema',
+              'inspectCanonicalSchema',
+              'getMirrorWritePreflight',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -2070,6 +2356,7 @@
           capabilities: storageCapabilities(),
           background: backgroundHealthSnapshot(),
           schemaCreation: schemaCreationSnapshot(),
+          schemaInspection: schemaInspectionSnapshot(),
           dualRead: getDualReadReadiness(),
           dualWrite: getDualWriteReadiness(),
           migrationInventory: getMigrationInventoryAll(),
@@ -2082,6 +2369,9 @@
           },
           readOnlyMirror: {
             chatRegistry: getReadOnlyMirrorStatus('chatRegistry'),
+          },
+          mirrorWritePreflight: {
+            chatRegistry: mirrorWritePreflightSnapshot(),
           },
           domains,
         };

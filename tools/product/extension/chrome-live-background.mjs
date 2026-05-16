@@ -988,6 +988,7 @@ const STORE_SNAPSHOTS = "snapshots";
 const STORE_CHUNKS = "chunks";
 const LIBRARY_STORAGE_DIAG_OP = "h2o:library-storage:diagnose";
 const LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP = "h2o:library-storage:create-empty-schema";
+const LIBRARY_STORAGE_INSPECT_SCHEMA_OP = "h2o:library-storage:inspect-schema";
 const LIBRARY_SHARED_DB_NAME = "h2o.library.shared";
 const LIBRARY_SHARED_DB_VERSION = 1;
 const LIBRARY_SHARED_EMPTY_SCHEMA_APPROVAL = "CREATE_EMPTY_H2O_LIBRARY_SHARED_V1";
@@ -1015,6 +1016,7 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "ping",
   LIBRARY_STORAGE_DIAG_OP,
   LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP,
+  LIBRARY_STORAGE_INSPECT_SCHEMA_OP,
   "getBootMode",
   "setBootMode",
   "getMigratedFlag",
@@ -4349,6 +4351,68 @@ function createLibrarySharedStore(db, name) {
   return false;
 }
 
+function countLibrarySharedStore(db, storeName) {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).count();
+      req.onsuccess = () => resolve({ ok: true, count: Number(req.result || 0) || 0 });
+      req.onerror = () => {
+        const err = req.error;
+        resolve({
+          ok: false,
+          status: "object-store-count-failed",
+          reason: String(err && (err.message || err.name || err)) || "object store count failed",
+        });
+      };
+      tx.onerror = () => {
+        const err = tx.error;
+        resolve({
+          ok: false,
+          status: "object-store-transaction-failed",
+          reason: String(err && (err.message || err.name || err)) || "object store transaction failed",
+        });
+      };
+    } catch (e) {
+      resolve({
+        ok: false,
+        status: "object-store-count-threw",
+        reason: String(e && (e.message || e)) || "object store count threw",
+      });
+    }
+  });
+}
+
+async function inspectLibrarySharedSchemaCounts(db, requiredStores) {
+  const existingStores = Array.from(db.objectStoreNames || []);
+  const stores = {};
+  for (const name of requiredStores) {
+    const exists = db.objectStoreNames.contains(name);
+    stores[name] = {
+      exists,
+      count: exists ? null : null,
+    };
+    if (!exists) continue;
+    const counted = await countLibrarySharedStore(db, name);
+    if (!counted.ok) {
+      stores[name] = {
+        ...stores[name],
+        count: null,
+        error: counted.reason || counted.status || "count failed",
+      };
+      return {
+        ok: false,
+        status: counted.status || "object-store-count-failed",
+        reason: counted.reason || ("failed to count " + name),
+        stores,
+        existingStores,
+      };
+    }
+    stores[name].count = counted.count;
+  }
+  return { ok: true, stores, existingStores };
+}
+
 async function libraryStorageCreateEmptySchema(payload = {}) {
   const src = payload && typeof payload === "object" ? payload : {};
   const domain = String(src.domain || "").trim();
@@ -4536,6 +4600,211 @@ async function libraryStorageCreateEmptySchema(payload = {}) {
   });
 }
 
+async function libraryStorageInspectSchema(payload = {}) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const domain = String(src.domain || "").trim();
+  const mode = String(src.mode || "").trim();
+  const requiredStores = LIBRARY_SHARED_MINIMAL_SCHEMA_STORES.slice();
+  const now = new Date().toISOString();
+  const base = {
+    phase: "8J",
+    mode,
+    dbName: LIBRARY_SHARED_DB_NAME,
+    version: LIBRARY_SHARED_DB_VERSION,
+    plannedVersion: LIBRARY_SHARED_DB_VERSION,
+    domain,
+    requiredStores: requiredStores.slice(),
+    approvedStores: requiredStores.slice(),
+    recordsWritten: 0,
+    canonicalReadsEnabled: false,
+    canonicalReadEnabled: false,
+    dualReadExecutionEnabled: false,
+    dualWriteEnabled: false,
+    migrationEnabled: false,
+    inspected: false,
+    at: now,
+  };
+  if (domain !== "chatRegistry") {
+    return { ...base, ok: false, status: "unsupported-domain", reason: "only chatRegistry schema inspection is allowed in phase 8J" };
+  }
+  if (mode !== "inspect-schema-only") {
+    return { ...base, ok: false, status: "invalid-mode", reason: "mode must be inspect-schema-only" };
+  }
+  if (typeof indexedDB === "undefined") {
+    return { ...base, ok: false, status: "indexeddb-unavailable", reason: "IndexedDB is unavailable in background context" };
+  }
+  const listing = await getLibrarySharedDbListing();
+  if (!listing.canDetermineDbExistence) {
+    return {
+      ...base,
+      ok: false,
+      status: "db-existence-undetermined",
+      reason: listing.databasesError || "indexedDB.databases unavailable; inspection refuses to open DB",
+      dbExists: null,
+      indexedDbAvailable: listing.indexedDbAvailable,
+      databasesApiAvailable: listing.databasesApiAvailable,
+    };
+  }
+  if (listing.dbExists !== true) {
+    return {
+      ...base,
+      ok: false,
+      status: "db-missing",
+      reason: "h2o.library.shared does not exist; phase 8J will not create it",
+      dbExists: false,
+      currentVersion: null,
+    };
+  }
+  if (listing.currentVersion !== LIBRARY_SHARED_DB_VERSION) {
+    return {
+      ...base,
+      ok: false,
+      status: "db-version-not-1",
+      reason: "h2o.library.shared version does not match the approved phase 8I schema version",
+      dbExists: true,
+      currentVersion: listing.currentVersion,
+    };
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let req = null;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      resolve(out);
+    };
+    try {
+      req = indexedDB.open(LIBRARY_SHARED_DB_NAME);
+    } catch (e) {
+      done({ ...base, ok: false, status: "indexeddb-open-failed", reason: String(e && (e.message || e)) || "IndexedDB open failed", dbExists: true, currentVersion: listing.currentVersion });
+      return;
+    }
+    req.onupgradeneeded = () => {
+      try {
+        const tx = req.transaction;
+        if (tx && typeof tx.abort === "function") tx.abort();
+      } catch {}
+      try {
+        const db = req.result;
+        if (db && typeof db.close === "function") db.close();
+      } catch {}
+      done({
+        ...base,
+        ok: false,
+        status: "indexeddb-upgrade-attempted",
+        reason: "schema inspection aborted because IndexedDB attempted to create or upgrade h2o.library.shared",
+        dbExists: true,
+        currentVersion: listing.currentVersion,
+      });
+    };
+    req.onsuccess = async () => {
+      const db = req.result;
+      try {
+        const currentVersion = Number(db.version || 0) || null;
+        const existingStores = Array.from(db.objectStoreNames || []);
+        const missingStores = requiredStores.filter((name) => !db.objectStoreNames.contains(name));
+        const unexpectedStores = existingStores.filter((name) => !requiredStores.includes(name));
+        if (currentVersion !== LIBRARY_SHARED_DB_VERSION) {
+          done({
+            ...base,
+            ok: false,
+            status: "db-version-not-1",
+            reason: "opened h2o.library.shared version does not match the approved phase 8I schema version",
+            dbExists: true,
+            currentVersion,
+            existingStores,
+            unexpectedStores,
+          });
+          return;
+        }
+        const counted = await inspectLibrarySharedSchemaCounts(db, requiredStores);
+        const stores = counted.stores || {};
+        if (!counted.ok) {
+          done({
+            ...base,
+            ok: false,
+            status: counted.status || "object-store-count-failed",
+            reason: counted.reason || "failed to count an approved object store",
+            dbExists: true,
+            inspected: true,
+            currentVersion,
+            version: currentVersion,
+            existingStores,
+            unexpectedStores,
+            missingStores,
+            stores,
+          });
+          return;
+        }
+        if (missingStores.length) {
+          done({
+            ...base,
+            ok: false,
+            status: "required-stores-missing",
+            reason: "h2o.library.shared is missing required phase 8I stores",
+            dbExists: true,
+            inspected: true,
+            currentVersion,
+            version: currentVersion,
+            existingStores,
+            unexpectedStores,
+            missingStores,
+            stores,
+          });
+          return;
+        }
+        done({
+          ...base,
+          ok: true,
+          status: unexpectedStores.length ? "schema-inspected-with-unexpected-stores" : "schema-inspected",
+          reason: unexpectedStores.length ? "h2o.library.shared contains stores outside the approved phase 8I minimal schema" : "",
+          dbExists: true,
+          inspected: true,
+          currentVersion,
+          version: currentVersion,
+          existingStores,
+          unexpectedStores,
+          missingStores: [],
+          stores,
+        });
+      } catch (e) {
+        done({
+          ...base,
+          ok: false,
+          status: "schema-inspection-failed",
+          reason: String(e && (e.message || e)) || "schema inspection failed",
+          dbExists: true,
+          currentVersion: listing.currentVersion,
+        });
+      } finally {
+        try { db.close(); } catch {}
+      }
+    };
+    req.onerror = () => {
+      const err = req.error;
+      done({
+        ...base,
+        ok: false,
+        status: "indexeddb-open-failed",
+        reason: String(err && (err.message || err.name || err)) || "IndexedDB open failed",
+        dbExists: true,
+        currentVersion: listing.currentVersion,
+      });
+    };
+    req.onblocked = () => {
+      done({
+        ...base,
+        ok: false,
+        status: "indexeddb-open-blocked",
+        reason: "opening h2o.library.shared was blocked by another connection",
+        dbExists: true,
+        currentVersion: listing.currentVersion,
+      });
+    };
+  });
+}
+
 async function handleArchiveMessage(msg) {
   const req = msg && msg.req && typeof msg.req === "object" ? msg.req : {};
   const op = String(req.op || "").trim();
@@ -4551,6 +4820,9 @@ async function handleArchiveMessage(msg) {
   }
   if (op === LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP || op === "libraryStorageCreateEmptySchema") {
     return { ok: true, result: await libraryStorageCreateEmptySchema(payload) };
+  }
+  if (op === LIBRARY_STORAGE_INSPECT_SCHEMA_OP || op === "libraryStorageInspectSchema") {
+    return { ok: true, result: await libraryStorageInspectSchema(payload) };
   }
 
   if (op === "ping") {
