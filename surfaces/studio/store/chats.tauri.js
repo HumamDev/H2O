@@ -1,7 +1,7 @@
 /* H2O Studio Store — Chats Entity (Desktop / Tauri SQLite)
  *
  * M2a-3a — first table-aware entity store. Backs the SQLite `chats` table
- * defined in apps/studio-desktop/src-tauri/src/lib.rs (Migrations v2 + v4).
+ * defined in apps/studio/desktop/src-tauri/src/lib.rs (Migrations v2 + v4).
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is
  * a silent no-op and registers nothing. No MV3 behavior is changed by this

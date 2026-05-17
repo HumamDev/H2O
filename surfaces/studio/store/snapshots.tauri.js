@@ -1,7 +1,7 @@
 /* H2O Studio Store — Snapshots Entity (Desktop / Tauri SQLite)
  *
  * M2a-3b — second table-aware entity store. Backs the SQLite `snapshots`
- * + `snapshot_turns` tables defined in apps/studio-desktop/src-tauri/src/lib.rs
+ * + `snapshot_turns` tables defined in apps/studio/desktop/src-tauri/src/lib.rs
  * (Migration v5).
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is

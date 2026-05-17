@@ -1,7 +1,7 @@
 /* H2O Studio Store — Folders Entity (Desktop / Tauri SQLite)
  *
  * M2a-3c — third table-aware entity store. Backs the SQLite `folders` +
- * `folder_bindings` tables defined in apps/studio-desktop/src-tauri/src/lib.rs
+ * `folder_bindings` tables defined in apps/studio/desktop/src-tauri/src/lib.rs
  * (Migration v3).
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is

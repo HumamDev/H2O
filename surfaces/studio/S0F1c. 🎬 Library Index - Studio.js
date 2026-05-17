@@ -375,7 +375,7 @@
   }
 
   // ── Desktop / Tauri (M2a-3g) ───────────────────────────────────────────────
-  // When running in the Tauri Studio Desktop shell (apps/studio-desktop),
+  // When running in the Tauri Studio Desktop shell (apps/studio/desktop),
   // LibraryIndex derives its rows from the six SQLite-backed entity stores
   // (chats / snapshots / folders / labels / tags / categories) instead of
   // from the MV3 chat-list service + native broadcast. The MV3 path is left

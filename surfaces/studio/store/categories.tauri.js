@@ -1,7 +1,7 @@
 /* H2O Studio Store — Categories Entity (Desktop / Tauri SQLite)
  *
  * M2a-3f — sixth and final M2a-3 entity store. Backs the SQLite `categories`
- * table defined in apps/studio-desktop/src-tauri/src/lib.rs (Migration v3).
+ * table defined in apps/studio/desktop/src-tauri/src/lib.rs (Migration v3).
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is
  * a silent no-op and registers nothing.

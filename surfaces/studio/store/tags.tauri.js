@@ -1,7 +1,7 @@
 /* H2O Studio Store — Tags Entity (Desktop / Tauri SQLite)
  *
  * M2a-3e — fifth table-aware entity store. Backs the SQLite `tags` +
- * `tag_bindings` tables defined in apps/studio-desktop/src-tauri/src/lib.rs
+ * `tag_bindings` tables defined in apps/studio/desktop/src-tauri/src/lib.rs
  * (Migration v3).
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is

@@ -39,7 +39,7 @@
     "sharp": "^0.34.5"
   },
   "workspaces": [
-    "apps/studio-desktop",
+    "apps/studio/desktop",
     "apps/studio-mobile",
     "apps/site",
     "packages/*"
