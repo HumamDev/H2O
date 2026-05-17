@@ -1,4 +1,4 @@
-// @version 1.1.0
+// @version 1.2.0  (Phase 0H: LOADER_BUILD_TS / LOADER_BUILD_ISO honor H2O_BUILD_TS env override)
 export function makeChromeLiveLoaderJs({
   DEV_TAG,
   DEV_TITLE,
@@ -12,6 +12,15 @@ export function makeChromeLiveLoaderJs({
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
 }) {
+  // Phase 0H: prefer H2O_BUILD_TS env override (same value the rest of the
+  // build chain already honors — proxy-pack `@version`, alias URL `?v=`,
+  // etc.). Fall back to Date.now() when the env is unset / invalid, so
+  // unattended local builds keep getting a fresh timestamp. LOADER_BUILD_ISO
+  // is derived from the SAME instant as LOADER_BUILD_TS so the two fields
+  // never drift apart by milliseconds across separate `Date.now()` calls.
+  const envBuildTs = Number(process.env.H2O_BUILD_TS);
+  const buildTsMs = Number.isFinite(envBuildTs) && envBuildTs > 0 ? envBuildTs : Date.now();
+  const buildIso = new Date(buildTsMs).toISOString();
   return `(() => {
   "use strict";
 
@@ -19,8 +28,11 @@ export function makeChromeLiveLoaderJs({
   // Loader build marker — interpolated at template build time so each rebuild gets a fresh
   // timestamp. Use H2O.archiveBoot._getExtensionBridge().__loaderInfo() from a page console
   // to confirm the active loader.js, or look at the page-archive-bridge ready log.
-  const LOADER_BUILD_TS = ${Date.now()};
-  const LOADER_BUILD_ISO = ${JSON.stringify(new Date().toISOString())};
+  // Phase 0H: when H2O_BUILD_TS env is set (e.g. by a deterministic-build
+  // pipeline) both LOADER_BUILD_TS and LOADER_BUILD_ISO use it; otherwise
+  // they reflect the current wall-clock at build time (legacy behavior).
+  const LOADER_BUILD_TS = ${buildTsMs};
+  const LOADER_BUILD_ISO = ${JSON.stringify(buildIso)};
   const LOADER_LIBRARY_KV_OPS = true;
   const STATUS_LABEL = ${JSON.stringify(DEV_TITLE)};
   const LOADER_INSTANCE_KEY = "__H2O_EXT_DEV_CTRL_LOADER_V1__";
