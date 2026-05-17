@@ -1,22 +1,45 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-1 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-1 note: all path defaults are now sourced from tools/paths.mjs.
+// No env-var overrides existed on this file pre-Phase-0E-1; behavior is
+// byte-identical for the .csv output (which contains no embedded timestamps)
+// and timestamp-line-identical for the .md/.html outputs (which embed a
+// fresh `Generated:` ISO timestamp on every run). Verified at authoring
+// time by running pre-refactor twice and confirming the only variance was
+// the Generated line — see Phase 0E-1 completion report for methodology.
+
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
+import {
+  REPO_ROOT,
+  VERSIONS_CSV,
+  EDITS_CSV,
+  EDITS_V2_CSV,
+  META_LEDGER_DIR,
+  META_REPORTS_DIR,
+  VERSIONS_LATEST_CSV,
+  VERSIONS_MD,
+  VERSIONS_HTML,
+} from "../paths.mjs";
 
-const INPUT_SHIP_CSV = path.join(REPO_ROOT, "versions.csv");
-const INPUT_EDIT_CSV = path.join(REPO_ROOT, "meta", "ledger", "edits.csv");
-const INPUT_EDIT_V2_CSV = path.join(REPO_ROOT, "meta", "ledger", "edits.v2.csv");
+// Local aliases preserve pre-Phase-0E-1 variable names so the rest of this
+// file is untouched. Each resolves to the same value as before — paths.mjs
+// computes them off the same REPO_ROOT:
+//   INPUT_SHIP_CSV    === VERSIONS_CSV       (<REPO_ROOT>/versions.csv)
+//   INPUT_EDIT_CSV    === EDITS_CSV          (<REPO_ROOT>/meta/ledger/edits.csv)
+//   INPUT_EDIT_V2_CSV === EDITS_V2_CSV       (<REPO_ROOT>/meta/ledger/edits.v2.csv)
+//   OUT_LATEST_CSV    === VERSIONS_LATEST_CSV
+//   OUT_LATEST_MD     === VERSIONS_MD
+//   OUT_HTML          === VERSIONS_HTML
+// META_LEDGER_DIR and META_REPORTS_DIR are used directly via the imported names.
+const INPUT_SHIP_CSV = VERSIONS_CSV;
+const INPUT_EDIT_CSV = EDITS_CSV;
+const INPUT_EDIT_V2_CSV = EDITS_V2_CSV;
 
-const META_LEDGER_DIR = path.join(REPO_ROOT, "meta", "ledger");
-const META_REPORTS_DIR = path.join(REPO_ROOT, "meta", "reports");
-
-const OUT_LATEST_CSV = path.join(META_LEDGER_DIR, "versions-latest.csv");
-const OUT_LATEST_MD = path.join(META_REPORTS_DIR, "versions-latest.md");
-const OUT_HTML = path.join(META_REPORTS_DIR, "versions.html");
+const OUT_LATEST_CSV = VERSIONS_LATEST_CSV;
+const OUT_LATEST_MD = VERSIONS_MD;
+const OUT_HTML = VERSIONS_HTML;
 
 const REQUIRED_SHIP_HEADER = ["date", "script_id", "version", "bump", "summary"];
 const REQUIRED_EDIT_HEADER = ["ts", "kind", "script_id", "rel_path", "rev", "build", "note"];

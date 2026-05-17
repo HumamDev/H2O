@@ -1,19 +1,40 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-1 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-1 note: REPO_ROOT, META_LEDGER_DIR, EDITS_CSV, EDITS_V2_CSV,
+// VERSIONS_CSV, and TOOLS_DIR are sourced from tools/paths.mjs. DASHBOARD_SCRIPT
+// remains computed locally via path.join(TOOLS_DIR, "versioning",
+// "versions-dashboard.mjs") since it's a sibling-file reference inside this
+// versioning folder, not a top-level repo path. Local variable names
+// (REPO_ROOT, LEDGER_DIR, EDITS_FILE, EDITS_V2_FILE, VERSIONS_FILE) are
+// preserved so the rest of the file is untouched.
+
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
-const DASHBOARD_SCRIPT = path.join(REPO_ROOT, "tools", "versioning", "versions-dashboard.mjs");
+import {
+  REPO_ROOT,
+  TOOLS_DIR,
+  META_LEDGER_DIR,
+  EDITS_CSV,
+  EDITS_V2_CSV,
+  VERSIONS_CSV,
+} from "../paths.mjs";
 
-const LEDGER_DIR = path.join(REPO_ROOT, "meta", "ledger");
-const EDITS_FILE = path.join(LEDGER_DIR, "edits.csv");
-const EDITS_V2_FILE = path.join(LEDGER_DIR, "edits.v2.csv");
-const VERSIONS_FILE = path.join(REPO_ROOT, "versions.csv");
+const DASHBOARD_SCRIPT = path.join(TOOLS_DIR, "versioning", "versions-dashboard.mjs");
+
+// Local aliases preserve pre-Phase-0E-1 variable names. Each resolves to the
+// same value as before:
+//   LEDGER_DIR     === META_LEDGER_DIR  (<REPO_ROOT>/meta/ledger)
+//   EDITS_FILE     === EDITS_CSV        (<REPO_ROOT>/meta/ledger/edits.csv)
+//   EDITS_V2_FILE  === EDITS_V2_CSV     (<REPO_ROOT>/meta/ledger/edits.v2.csv)
+//   VERSIONS_FILE  === VERSIONS_CSV     (<REPO_ROOT>/versions.csv)
+// REPO_ROOT is used directly via the imported name.
+const LEDGER_DIR = META_LEDGER_DIR;
+const EDITS_FILE = EDITS_CSV;
+const EDITS_V2_FILE = EDITS_V2_CSV;
+const VERSIONS_FILE = VERSIONS_CSV;
 
 const DEFAULT_DEBOUNCE_MS = 15_000;
 const POLL_MS = 1_000;
