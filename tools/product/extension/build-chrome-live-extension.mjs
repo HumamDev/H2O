@@ -58,6 +58,7 @@ const {
   STORAGE_ORDER_OVERRIDES_KEY,
   DEV_VARIANT,
   DEV_HAS_CONTROLS,
+  STUDIO_ONLY,
   MANIFEST_PROFILE,
   DEV_VERSION,
   DEV_TITLE,
@@ -411,25 +412,39 @@ async function main() {
       IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS: identityProviderOptionalHostPermissions,
       IDENTITY_PROVIDER_REQUEST_OTP_ARMED: identityProviderRequestOtpArmed,
       IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
+      STUDIO_ONLY,
     }),
     iconOutputs,
   );
 
   // Identity surface: allow window.open('chrome-extension://…/surfaces/identity/identity.html')
-  // from the chatgpt.com content-script context.
-  manifest.web_accessible_resources.push(IDENTITY_WEB_ACCESSIBLE_ENTRY);
+  // from the chatgpt.com content-script context. Skip for studio-launcher
+  // since it has no content_scripts and no chatgpt.com host_permission — the
+  // identity surface is only reached via the page-context script which doesn't
+  // run here.
+  if (!STUDIO_ONLY) {
+    manifest.web_accessible_resources.push(IDENTITY_WEB_ACCESSIBLE_ENTRY);
+  }
 
   writeFile(path.join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
-  // Copy identity surface + Identity Core script (both lean and controls builds).
-  syncIdentitySurfaceToOut(SRC, OUT_DIR);
+  // Copy identity surface + Identity Core script. Skipped for studio-launcher:
+  // none of the packaged Studio scripts reference H2O.Identity or the identity
+  // surface URL, and identity is only reached from the chatgpt.com content
+  // script path which doesn't exist in this build.
+  let identityProviderBundle = null;
+  let identityProviderConfigStatus = null;
+  let identityProviderPrivateConfig = { emitted: false, relativePath: null };
+  if (!STUDIO_ONLY) {
+    syncIdentitySurfaceToOut(SRC, OUT_DIR);
 
-  const identityProviderPrivateConfig = syncIdentityProviderPrivateConfigToOut(
-    OUT_DIR,
-    identityProviderBuildConfig.privateConfig,
-  );
-  const identityProviderBundle = await buildIdentityProviderBundle(OUT_DIR);
-  const identityProviderConfigStatus = identityProviderBuildConfig.status;
+    identityProviderPrivateConfig = syncIdentityProviderPrivateConfigToOut(
+      OUT_DIR,
+      identityProviderBuildConfig.privateConfig,
+    );
+    identityProviderBundle = await buildIdentityProviderBundle(OUT_DIR);
+    identityProviderConfigStatus = identityProviderBuildConfig.status;
+  }
 
   writeFile(path.join(OUT_DIR, "bg.js"), makeChromeLiveBackgroundJs({
     DEV_TAG,
@@ -443,21 +458,35 @@ async function main() {
     IDENTITY_PROVIDER_PHASE_NETWORK: identityProviderPhaseNetwork,
     IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
   }));
-  writeFile(path.join(OUT_DIR, "loader.js"), makeChromeLiveLoaderJs({
-    DEV_TAG,
-    DEV_TITLE,
-    DEV_HAS_CONTROLS,
-    PROXY_PACK_URL,
-    DEV_SCRIPT_CATALOG,
-    DEV_ORDER_SECTIONS_SNAPSHOT,
-    LOADER_DEPS_SNAPSHOT,
-    STORAGE_KEY,
-    STORAGE_ORDER_OVERRIDES_KEY,
-    PAGE_FOLDER_BRIDGE_FILE,
-    PAGE_PILOT_OBSERVER_FILE,
-  }));
-  writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
-  writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());
+
+  // Studio-launcher omits the chatgpt.com loader pipeline entirely: no
+  // loader.js content-script, no folder-bridge page helper, no pilot-observer
+  // page helper. With no content_scripts in the manifest these files would
+  // never load anyway — omitting them keeps the bundle minimal and removes
+  // any chance of accidental future references.
+  if (!STUDIO_ONLY) {
+    writeFile(path.join(OUT_DIR, "loader.js"), makeChromeLiveLoaderJs({
+      DEV_TAG,
+      DEV_TITLE,
+      DEV_HAS_CONTROLS,
+      PROXY_PACK_URL,
+      DEV_SCRIPT_CATALOG,
+      DEV_ORDER_SECTIONS_SNAPSHOT,
+      LOADER_DEPS_SNAPSHOT,
+      STORAGE_KEY,
+      STORAGE_ORDER_OVERRIDES_KEY,
+      PAGE_FOLDER_BRIDGE_FILE,
+      PAGE_PILOT_OBSERVER_FILE,
+    }));
+    writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
+    writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());
+  } else {
+    // Defensive: remove stale loader / bridge / observer files from prior
+    // non-studio-launcher builds at the same OUT_DIR.
+    for (const n of ["loader.js", PAGE_FOLDER_BRIDGE_FILE, PAGE_PILOT_OBSERVER_FILE]) {
+      try { fs.unlinkSync(path.join(OUT_DIR, n)); } catch {}
+    }
+  }
 
   if (DEV_HAS_CONTROLS) {
     const panelLogoPath = copyPanelIconAsset(OUT_DIR);
@@ -506,13 +535,13 @@ async function main() {
     DEV_HAS_CONTROLS,
   }));
 
-  console.log("[H2O] " + (MANIFEST_PROFILE === "production" ? "production-safe" : (DEV_HAS_CONTROLS ? "dev controls" : "dev lean loader")) + " extension generated:");
+  console.log("[H2O] " + (STUDIO_ONLY ? "studio launcher" : (MANIFEST_PROFILE === "production" ? "production-safe" : (DEV_HAS_CONTROLS ? "dev controls" : "dev lean loader"))) + " extension generated:");
   console.log("[H2O] out:", OUT_DIR);
   console.log("[H2O] variant:", DEV_VARIANT);
   console.log("[H2O] manifest profile:", MANIFEST_PROFILE);
   console.log("[H2O] manifest:", path.join(OUT_DIR, "manifest.json"));
-  console.log("[H2O] proxy pack:", PROXY_PACK_URL);
-  console.log("[H2O] identity provider bundle:", identityProviderBundle.relativePath);
+  if (!STUDIO_ONLY) console.log("[H2O] proxy pack:", PROXY_PACK_URL);
+  console.log("[H2O] identity provider bundle:", identityProviderBundle ? identityProviderBundle.relativePath : "absent (studio-launcher)");
   console.log("[H2O] identity oauth provider:", identityProviderOAuthProvider || "disabled");
   console.log(
     "[H2O] identity provider private config:",

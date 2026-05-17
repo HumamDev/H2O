@@ -14,13 +14,31 @@ export function createChromeLiveBuildContext() {
   const DEV_VARIANT_RAW = String(process.env.H2O_EXT_DEV_VARIANT || "controls").trim().toLowerCase();
   const DEV_VARIANT = DEV_VARIANT_RAW === "lean"
     ? "lean"
-    : (DEV_VARIANT_RAW === "production" || DEV_VARIANT_RAW === "prod" ? "production" : "controls");
+    : (DEV_VARIANT_RAW === "production" || DEV_VARIANT_RAW === "prod"
+      ? "production"
+      : (DEV_VARIANT_RAW === "studio-launcher" || DEV_VARIANT_RAW === "studio" || DEV_VARIANT_RAW === "launcher"
+        ? "studio-launcher"
+        : "controls"));
   const DEV_HAS_CONTROLS = DEV_VARIANT === "controls";
-  const MANIFEST_PROFILE = DEV_VARIANT === "production" ? "production" : "development";
+  // STUDIO_ONLY = Studio launcher variant. Reuses MANIFEST_PROFILE="production"
+  // so the bg.js STUDIO_HOSTED_HERE gate activates the action.onClicked handler
+  // and Studio assets are copied. The new STUDIO_ONLY flag adds a second gate
+  // (read by chrome-live-manifest.mjs + build-chrome-live-extension.mjs) that
+  // strips everything chatgpt.com-related: content_scripts, host_permissions,
+  // loader.js, folder-bridge-page.js, pilot-observer-page.js, and the
+  // identity-surface web_accessible_resources entry.
+  const STUDIO_ONLY = DEV_VARIANT === "studio-launcher";
+  const MANIFEST_PROFILE = (DEV_VARIANT === "production" || STUDIO_ONLY) ? "production" : "development";
 
   const OUT_DIR =
     process.env.H2O_EXT_OUT_DIR ||
-    path.join(SRC, "build", DEV_VARIANT === "production" ? "chrome-ext-prod" : "chrome-ext-dev-controls");
+    path.join(
+      SRC,
+      "build",
+      STUDIO_ONLY
+        ? "chrome-ext-studio-launcher"
+        : (DEV_VARIANT === "production" ? "chrome-ext-prod" : "chrome-ext-dev-controls"),
+    );
 
   const PROXY_PACK_URL =
     process.env.H2O_EXT_PROXY_PACK_URL ||
@@ -33,23 +51,31 @@ export function createChromeLiveBuildContext() {
   const STORAGE_KEY = "h2oExtDevToggleMapV1";
   const STORAGE_ORDER_OVERRIDES_KEY = "h2oExtDevOrderOverridesV1";
   const DEV_VERSION = "1.3.0";
-  const DEV_TITLE = DEV_VARIANT === "production"
-    ? "H2O Cockpit Pro"
-    : (DEV_HAS_CONTROLS ? "H2O Dev Controls" : "H2O Dev Loader (Lean)");
-  const DEV_ACTION_TITLE = DEV_VARIANT === "production"
+  const DEV_TITLE = STUDIO_ONLY
+    ? "H2O Studio Launcher"
+    : (DEV_VARIANT === "production"
+      ? "H2O Cockpit Pro"
+      : (DEV_HAS_CONTROLS ? "H2O Dev Controls" : "H2O Dev Loader (Lean)"));
+  const DEV_ACTION_TITLE = (STUDIO_ONLY || DEV_VARIANT === "production")
     ? "Open H2O Studio"
     : DEV_TITLE;
-  const DEV_NAME = DEV_VARIANT === "production"
-    ? "H2O Cockpit Pro"
-    : (DEV_HAS_CONTROLS ? "H2O Dev Controls (Unpacked)" : "H2O Dev Loader (Lean, Unpacked)");
-  const DEV_DESCRIPTION = DEV_VARIANT === "production"
-    ? "Production-safe H2O Cockpit Pro extension profile for chatgpt.com."
-    : (DEV_HAS_CONTROLS
-      ? "Dev-only local loader with per-script toggles for H2O scripts on chatgpt.com."
-      : "Dev-only local loader for H2O scripts on chatgpt.com (lean mode, no popup toggles).");
-  const DEV_TAG = DEV_VARIANT === "production"
-    ? "[H2O PROD]"
-    : (DEV_HAS_CONTROLS ? "[H2O DEV CTRL]" : "[H2O DEV LEAN]");
+  const DEV_NAME = STUDIO_ONLY
+    ? "H2O Studio Launcher (Unpacked)"
+    : (DEV_VARIANT === "production"
+      ? "H2O Cockpit Pro"
+      : (DEV_HAS_CONTROLS ? "H2O Dev Controls (Unpacked)" : "H2O Dev Loader (Lean, Unpacked)"));
+  const DEV_DESCRIPTION = STUDIO_ONLY
+    ? "Opens H2O Studio. Does not inject anything into chatgpt.com — safe to run beside the H2O loader extension."
+    : (DEV_VARIANT === "production"
+      ? "Production-safe H2O Cockpit Pro extension profile for chatgpt.com."
+      : (DEV_HAS_CONTROLS
+        ? "Dev-only local loader with per-script toggles for H2O scripts on chatgpt.com."
+        : "Dev-only local loader for H2O scripts on chatgpt.com (lean mode, no popup toggles)."));
+  const DEV_TAG = STUDIO_ONLY
+    ? "[H2O STUDIO]"
+    : (DEV_VARIANT === "production"
+      ? "[H2O PROD]"
+      : (DEV_HAS_CONTROLS ? "[H2O DEV CTRL]" : "[H2O DEV LEAN]"));
   const DEV_ORDER_FILE = path.join(SRC, "config", "dev-order.tsv");
   const PAGE_FOLDER_BRIDGE_FILE = "folder-bridge-page.js";
   // P3-pilot WAR observer (CSP-safe; replaces inline-textContent injection
@@ -66,6 +92,7 @@ export function createChromeLiveBuildContext() {
     STORAGE_ORDER_OVERRIDES_KEY,
     DEV_VARIANT,
     DEV_HAS_CONTROLS,
+    STUDIO_ONLY,
     MANIFEST_PROFILE,
     DEV_VERSION,
     DEV_TITLE,

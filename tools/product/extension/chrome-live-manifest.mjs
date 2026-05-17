@@ -14,6 +14,7 @@ export function makeChromeLiveManifest({
   IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS = [],
   IDENTITY_PROVIDER_REQUEST_OTP_ARMED = false,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
+  STUDIO_ONLY = false,
 }) {
   function originWildcard(urlStr) {
     try {
@@ -35,11 +36,16 @@ export function makeChromeLiveManifest({
   const requestOtpArmed = IDENTITY_PROVIDER_REQUEST_OTP_ARMED === true;
   const oauthProvider = String(IDENTITY_PROVIDER_OAUTH_PROVIDER || "").trim().toLowerCase();
   const oauthGoogleEnabled = oauthProvider === "google";
-  const hostPermissions = manifestProfile === "production"
-    ? [CHAT_MATCH]
-    : (requestOtpArmed
-      ? Array.from(new Set([CHAT_MATCH, hostPerm].filter(Boolean)))
-      : Array.from(new Set([hostPerm, ...extraHostPerms])));
+  // Studio Launcher: NO chatgpt.com host_permission, NO dev-proxy host_permission.
+  // The extension purely opens its own packaged surfaces/studio/studio.html via
+  // chrome.runtime.getURL — no cross-origin reach needed at all.
+  const hostPermissions = STUDIO_ONLY
+    ? []
+    : (manifestProfile === "production"
+      ? [CHAT_MATCH]
+      : (requestOtpArmed
+        ? Array.from(new Set([CHAT_MATCH, hostPerm].filter(Boolean)))
+        : Array.from(new Set([hostPerm, ...extraHostPerms]))));
   const optionalHostPermissions = Array.from(new Set(
     (Array.isArray(IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS) ? IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS : [])
       .map((value) => String(value || "").trim().toLowerCase())
@@ -72,14 +78,24 @@ export function makeChromeLiveManifest({
       service_worker: "bg.js",
     },
     host_permissions: hostPermissions,
-    content_scripts: [
-      {
-        matches: [CHAT_MATCH],
-        js: ["loader.js"],
-        run_at: "document_start",
-      },
-    ],
-    web_accessible_resources: [
+    // Studio Launcher: NO content_scripts. The whole point of this variant is
+    // to expose Studio without injecting anything into chatgpt.com (which
+    // would race the Dev Controls / Cockpit Pro loader).
+    ...(STUDIO_ONLY ? {} : {
+      content_scripts: [
+        {
+          matches: [CHAT_MATCH],
+          js: ["loader.js"],
+          run_at: "document_start",
+        },
+      ],
+    }),
+    // Studio Launcher: empty web_accessible_resources. Both the folder bridge
+    // and the pilot observer are content-script support files for the chatgpt
+    // injection path; with no content_scripts they have nothing to talk to.
+    // (The build script also omits these files from the studio-launcher
+    // output entirely.)
+    web_accessible_resources: STUDIO_ONLY ? [] : [
       {
         resources: [PAGE_FOLDER_BRIDGE_FILE],
         matches: [CHAT_MATCH],

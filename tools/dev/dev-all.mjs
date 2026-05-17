@@ -70,23 +70,33 @@ async function main() {
   const { srcDir } = resolveEnvDefaults();
   const oauthGoogleOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls-oauth-google");
   const prodOutDir = path.join(srcDir, "build", "chrome-ext-prod");
+  const studioLauncherOutDir = path.join(srcDir, "build", "chrome-ext-studio-launcher");
 
-  await runNodeStep("1/3 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
+  await runNodeStep("1/4 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
 
-  await runNodeStep("2/3 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("2/4 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
     H2O_EXT_OUT_DIR: oauthGoogleOutDir,
     H2O_IDENTITY_PHASE_NETWORK: "request_otp",
     H2O_IDENTITY_OAUTH_PROVIDER: "google",
   });
 
-  // Prod Studio launcher extension. Same builder, different variant + out dir.
+  // Prod Cockpit Pro extension. Same builder, different variant + out dir.
   // The dev server's proxy pack URL is irrelevant in prod (the prod manifest
   // doesn't host_permission it) but the builder still consumes the env var, so
   // we leave it at the default rather than threading a separate prod-only one.
-  await runNodeStep("3/3 Build Prod Studio launcher extension", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("3/4 Build Prod Cockpit Pro extension", "tools/product/extension/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "production",
     H2O_EXT_OUT_DIR: prodOutDir,
+  });
+
+  // Studio Launcher extension — Studio assets + toolbar button only, NO
+  // content_scripts on chatgpt.com. Safe to run beside Dev Controls / Cockpit
+  // Pro without double-loading H2O into chatgpt.com. Has its own extension ID
+  // so its Studio storage is independent of Cockpit Pro's.
+  await runNodeStep("4/4 Build Studio Launcher extension", "tools/product/extension/build-chrome-live-extension.mjs", {
+    H2O_EXT_DEV_VARIANT: "studio-launcher",
+    H2O_EXT_OUT_DIR: studioLauncherOutDir,
   });
 
   console.log("\n[dev:all] done");
@@ -94,8 +104,11 @@ async function main() {
   console.log("✅ Dev Controls OAuth Google Extension:");
   console.log(`   ${oauthGoogleOutDir}`);
   console.log("");
-  console.log("✅ Prod Studio Launcher Extension:");
+  console.log("✅ Prod Cockpit Pro Extension:");
   console.log(`   ${prodOutDir}`);
+  console.log("");
+  console.log("✅ Studio Launcher Extension (no chatgpt.com injection):");
+  console.log(`   ${studioLauncherOutDir}`);
   console.log("");
   console.log(
     "[dev:all] Reminder: Open chrome://extensions and reload the relevant extension(s), then refresh the page.",
