@@ -209,6 +209,7 @@
   const STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:write-chat-registry-mirror';
   const STORAGE_VERIFY_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:verify-chat-registry-mirror';
   const STORAGE_READ_CHAT_REGISTRY_RECORD_DIAG_OP = 'h2o:library-storage:read-chat-registry-record-diagnostic';
+  const STORAGE_READ_CHAT_REGISTRY_MIRROR_ALL_DIAG_OP = 'h2o:library-storage:read-chat-registry-mirror-all-diagnostic';
   const CHAT_REGISTRY_MIRROR_WRITE_APPROVAL = 'WRITE_CHAT_REGISTRY_MIRROR_V1';
   const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
   const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
@@ -414,6 +415,11 @@
     lastResult: null,
   };
   const mirrorRecordReadState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
+    lastResult: null,
+  };
+  const mirrorAllReadState = {
     lastCheckedAt: 0,
     lastTransport: '',
     lastResult: null,
@@ -1396,6 +1402,7 @@
       return {
         present: false,
         chatId: '',
+        title: '',
         normalizedHref: '',
         updatedAt: '',
         topLevelKeys: [],
@@ -1410,6 +1417,7 @@
     return {
       present: true,
       chatId: String(rec.chatId || '').trim(),
+      title: String(rec.title || rec.chatTitle || rec.name || '').trim(),
       normalizedHref: String(rec.normalizedHref || '').trim(),
       updatedAt: String(rec.updatedAt || '').trim(),
       topLevelKeys: Object.keys(rec).sort(),
@@ -2860,6 +2868,235 @@
     return readMirrorRecord('chatRegistry', chatId, options);
   }
 
+  function rememberMirrorAllReadResult(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-mirror-all-read-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'full-mirror-read-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    mirrorAllReadState.lastCheckedAt = Date.now();
+    mirrorAllReadState.lastTransport = out.transport;
+    mirrorAllReadState.lastResult = out;
+    return out;
+  }
+
+  function normalizeMirrorAllReadEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return {
+        ok: false,
+        phase: '8N',
+        status: 'full-mirror-read-empty-result',
+        reason: 'background returned no full mirror read diagnostic payload',
+        recordsWritten: 0,
+        transport,
+      };
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return {
+          ok: false,
+          phase: '8N',
+          status: 'full-mirror-read-rejected',
+          reason: String(env.error || env.reason || 'background full mirror read diagnostic rejected'),
+          error: env.error || '',
+          recordsWritten: 0,
+          transport,
+        };
+      }
+      return { ...(env.result || {}), transport };
+    }
+    return { ...env, transport };
+  }
+
+  function normalizeReadMirrorAllOptions(domainOrOptions, opts = {}) {
+    const src = domainOrOptions && typeof domainOrOptions === 'object' && !Array.isArray(domainOrOptions)
+      ? domainOrOptions
+      : { ...(opts && typeof opts === 'object' ? opts : {}), domain: domainOrOptions };
+    const maxRecords = Number(src.maxRecords || 100);
+    return {
+      domain: String(src.domain || '').trim(),
+      mode: 'full-mirror-read-diagnostic',
+      maxRecords: Number.isFinite(maxRecords) && maxRecords > 0 ? Math.min(100, Math.floor(maxRecords)) : 100,
+    };
+  }
+
+  function localMirrorAllReadFailure(status, reason, extra = {}) {
+    return rememberMirrorAllReadResult({
+      ok: false,
+      phase: '8N',
+      status,
+      reason,
+      domain: extra.domain || 'chatRegistry',
+      mode: extra.mode || 'full-mirror-read-diagnostic',
+      recordsWritten: 0,
+      canonicalReadsEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      genericReadEnabled: false,
+      genericWriteEnabled: false,
+      legacyMutated: false,
+      ...extra,
+    }, extra.transport || 'local-validation');
+  }
+
+  function mirrorSummaryMapByChatId(summaries) {
+    const map = new Map();
+    const duplicates = [];
+    (Array.isArray(summaries) ? summaries : []).forEach((summary) => {
+      const chatId = String(summary?.chatId || '').trim();
+      if (!chatId) return;
+      if (map.has(chatId)) duplicates.push(chatId);
+      else map.set(chatId, summary);
+    });
+    return { map, duplicateIds: normalizeMirrorIdList(duplicates) };
+  }
+
+  function compareMirrorSummarySets(legacySummaries, canonicalSummaries) {
+    const legacy = mirrorSummaryMapByChatId(legacySummaries);
+    const canonical = mirrorSummaryMapByChatId(canonicalSummaries);
+    const legacyIds = normalizeMirrorIdList(Array.from(legacy.map.keys()));
+    const canonicalIds = normalizeMirrorIdList(Array.from(canonical.map.keys()));
+    const missingIds = mirrorListDiff(legacyIds, canonicalIds);
+    const extraIds = mirrorListDiff(canonicalIds, legacyIds);
+    const commonIds = legacyIds.filter((id) => canonical.map.has(id));
+    const mismatches = [];
+    const sampleRecords = [];
+    commonIds.forEach((chatId) => {
+      const legacySummary = legacy.map.get(chatId);
+      const canonicalSummary = canonical.map.get(chatId);
+      const comparison = mirrorRecordCompareSummary(legacySummary, canonicalSummary);
+      const row = {
+        chatId,
+        title: String(legacySummary?.title || canonicalSummary?.title || ''),
+        href: String(legacySummary?.normalizedHref || canonicalSummary?.normalizedHref || ''),
+        hashMatches: comparison.hashMatches,
+        shapeMatches: comparison.shapeMatches,
+        stateFlagsMatch: comparison.stateFlagsMatch,
+        legacyRecordHash: comparison.legacyRecordHash,
+        canonicalRecordHash: comparison.canonicalRecordHash,
+      };
+      if (sampleRecords.length < MIRROR_DRY_RUN_SAMPLE_LIMIT) sampleRecords.push(row);
+      if (!comparison.hashMatches || !comparison.shapeMatches || !comparison.stateFlagsMatch) {
+        mismatches.push({
+          ...row,
+          missingTopLevelKeys: comparison.missingTopLevelKeys,
+          extraTopLevelKeys: comparison.extraTopLevelKeys,
+          missingStateKeys: comparison.missingStateKeys,
+          extraStateKeys: comparison.extraStateKeys,
+        });
+      }
+    });
+    return {
+      legacyIds,
+      canonicalIds,
+      missingIds,
+      extraIds,
+      matchedCount: commonIds.length - mismatches.length,
+      mismatches,
+      sampleRecords,
+      duplicateLegacyChatIds: legacy.duplicateIds,
+      duplicateCanonicalChatIds: canonical.duplicateIds,
+    };
+  }
+
+  async function readMirrorAll(domainOrOptions, opts = {}) {
+    const options = normalizeReadMirrorAllOptions(domainOrOptions, opts);
+    if (options.domain !== 'chatRegistry') {
+      return localMirrorAllReadFailure('unsupported-domain', 'only chatRegistry full mirror read diagnostics are supported in phase 8N', { domain: options.domain, supportedDomains: ['chatRegistry'] });
+    }
+
+    const { candidate, sourceSummaries } = getChatRegistryMirrorCandidatePayload();
+    const legacySummaries = (Array.isArray(candidate.records) ? candidate.records : [])
+      .map(summarizeMirrorRecord)
+      .filter((summary) => summary.present && summary.chatId);
+    let canonical = null;
+    try {
+      const payload = { domain: 'chatRegistry', mode: 'full-mirror-read-diagnostic', maxRecords: options.maxRecords };
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageReadChatRegistryMirrorAllDiagnostic === 'function') {
+        canonical = normalizeMirrorAllReadEnvelope(await bridge.libraryStorageReadChatRegistryMirrorAllDiagnostic(payload), 'extension-archive-bridge');
+      } else if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        canonical = normalizeMirrorAllReadEnvelope(await sendRuntimeArchiveMessage(STORAGE_READ_CHAT_REGISTRY_MIRROR_ALL_DIAG_OP, payload), 'chrome.runtime.sendMessage');
+      } else {
+        return localMirrorAllReadFailure('full-mirror-read-transport-unavailable', 'no extension archive bridge or chrome.runtime transport available', { transport: 'none' });
+      }
+    } catch (e) {
+      return localMirrorAllReadFailure('full-mirror-read-error', String(e?.message || e || ''), { transport: 'error' });
+    }
+
+    const canonicalSummaries = Array.isArray(canonical?.canonicalRecordSummaries)
+      ? canonical.canonicalRecordSummaries.filter((summary) => summary && typeof summary === 'object')
+      : [];
+    const comparison = compareMirrorSummarySets(legacySummaries, canonicalSummaries);
+    const legacyCount = Number(candidate.candidateCount || legacySummaries.length) || 0;
+    const canonicalCount = Number(canonical?.canonicalCount || canonicalSummaries.length) || 0;
+    const invalidCanonicalRecords = Array.isArray(canonical?.invalidRecords) ? canonical.invalidRecords.slice(0, 50) : [];
+    const duplicateCanonicalChatIds = normalizeMirrorIdList([
+      ...(Array.isArray(canonical?.duplicateChatIds) ? canonical.duplicateChatIds : []),
+      ...comparison.duplicateCanonicalChatIds,
+    ]).slice(0, 50);
+    const blockers = [];
+    if (!canonical || canonical.ok !== true) blockers.push('canonical-mirror-all-read-failed');
+    if (legacyCount > 0 && canonicalCount === 0) blockers.push('canonical-mirror-empty');
+    if (legacyCount !== canonicalCount) blockers.push('count-mismatch');
+    if (comparison.missingIds.length) blockers.push('missing-canonical-ids');
+    if (comparison.extraIds.length) blockers.push('extra-canonical-ids');
+    if (comparison.mismatches.length) blockers.push('record-mismatches');
+    if (invalidCanonicalRecords.length) blockers.push('invalid-canonical-records');
+    if (duplicateCanonicalChatIds.length) blockers.push('duplicate-canonical-chatIds');
+    if (comparison.duplicateLegacyChatIds.length) blockers.push('duplicate-legacy-chatIds');
+    if (Number(candidate.invalidCount || 0) > 0) blockers.push('invalid-legacy-candidates');
+    if (Number(candidate.skippedCount || 0) > 0) blockers.push('skipped-legacy-candidates');
+    const verified = canonical?.ok === true
+      && legacyCount === canonicalCount
+      && comparison.missingIds.length === 0
+      && comparison.extraIds.length === 0
+      && comparison.mismatches.length === 0
+      && invalidCanonicalRecords.length === 0
+      && duplicateCanonicalChatIds.length === 0
+      && comparison.duplicateLegacyChatIds.length === 0
+      && Number(candidate.invalidCount || 0) === 0
+      && Number(candidate.skippedCount || 0) === 0;
+
+    return rememberMirrorAllReadResult({
+      ok: verified,
+      phase: '8N',
+      domain: 'chatRegistry',
+      mode: 'full-mirror-read-diagnostic',
+      status: verified ? 'full-mirror-read-verified' : 'full-mirror-read-mismatch',
+      reason: verified ? '' : 'canonical mirror records do not match the current legacy candidate set',
+      canonicalReadEnabled: false,
+      canonicalReadsEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      genericReadEnabled: false,
+      genericWriteEnabled: false,
+      recordsWritten: 0,
+      legacyMutated: false,
+      maxRecords: options.maxRecords,
+      legacyCount,
+      canonicalCount,
+      matchedCount: comparison.matchedCount,
+      mismatchedCount: comparison.mismatches.length,
+      missingIds: comparison.missingIds.slice(0, 50),
+      extraIds: comparison.extraIds.slice(0, 50),
+      mismatches: comparison.mismatches.slice(0, 20),
+      invalidCanonicalRecords,
+      duplicateCanonicalChatIds,
+      duplicateLegacyChatIds: comparison.duplicateLegacyChatIds.slice(0, 50),
+      sampleRecords: comparison.sampleRecords,
+      sourceSummaries,
+      canonical,
+      blockers: Array.from(new Set(blockers)),
+    }, canonical?.transport || 'unknown');
+  }
+
+  function readChatRegistryMirrorAll(options = {}) {
+    return readMirrorAll('chatRegistry', options);
+  }
+
   function backgroundHealthSnapshot() {
     return {
       lastCheckedAt: backgroundHealthState.lastCheckedAt,
@@ -2922,6 +3159,15 @@
     };
   }
 
+  function mirrorAllReadSnapshot() {
+    return {
+      lastCheckedAt: mirrorAllReadState.lastCheckedAt,
+      lastTransport: mirrorAllReadState.lastTransport,
+      lastResult: mirrorAllReadState.lastResult,
+      queried: mirrorAllReadState.lastCheckedAt > 0,
+    };
+  }
+
   function installStorageAdapterDiagnostics(core) {
     H2O.Library = H2O.Library || {};
     const api = Object.freeze({
@@ -2952,6 +3198,8 @@
       verifyChatRegistryMirror,
       readMirrorRecord,
       readChatRegistryMirrorRecord,
+      readMirrorAll,
+      readChatRegistryMirrorAll,
       getDomainStatus(domain) { return domainStatus(domain); },
       read(domain, key) {
         return Promise.resolve({
@@ -3005,6 +3253,8 @@
               'verifyChatRegistryMirror',
               'readMirrorRecord',
               'readChatRegistryMirrorRecord',
+              'readMirrorAll',
+              'readChatRegistryMirrorAll',
               'getDomainStatus',
               'listDomains',
               'diagnose',
@@ -3044,6 +3294,9 @@
           },
           mirrorRecordRead: {
             chatRegistry: mirrorRecordReadSnapshot(),
+          },
+          mirrorAllRead: {
+            chatRegistry: mirrorAllReadSnapshot(),
           },
           domains,
         };
