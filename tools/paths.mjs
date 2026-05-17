@@ -47,16 +47,18 @@ export const REPO_ROOT = process.env.H2O_SRC_DIR || REPO_ROOT_DEFAULT;
 
 // ─── Dev-server root ─────────────────────────────────────────────────────────
 //
-// Today: `cockpit-pro/h2o-dev-server` is a SIBLING of `cockpit-pro/h2o-source`.
-// Default resolution preserves this sibling layout. Env override:
-// H2O_SERVER_DIR.
+// Phase 5B (2026-05-17) absorbed the previously-sibling `cockpit-pro/h2o-dev-server`
+// directory into `h2o-source/apps/dev-server/`. The directory now lives under
+// git tracking (for the source: serve.py) with generated content
+// (alias/, dev_output/) gitignored. The HTTP serving endpoint
+// (http://127.0.0.1:5500) and the URL paths (/alias/..., /dev_output/...)
+// are unchanged: serve.py still serves the current working directory and
+// runs on port 5500 by default.
 //
-// AFTER PHASE 7 (absorb h2o-dev-server into the tree): the migration will
-// either (a) update the default to a new in-tree path, or (b) require
-// H2O_SERVER_DIR to be set explicitly. Until then, keep this default exactly
-// as the existing tools compute it.
+// H2O_SERVER_DIR env override is preserved for setups that want to point the
+// server root elsewhere (e.g. external CI, alternate working trees).
 
-const SERVER_ROOT_DEFAULT = path.resolve(REPO_ROOT, "..", "h2o-dev-server");
+const SERVER_ROOT_DEFAULT = path.join(REPO_ROOT, "apps", "dev-server");
 export const SERVER_ROOT = process.env.H2O_SERVER_DIR || SERVER_ROOT_DEFAULT;
 
 // ─── Top-level source directories ────────────────────────────────────────────

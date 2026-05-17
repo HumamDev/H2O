@@ -17,6 +17,18 @@ archive/.gitkeep
 build/**
 apps/extensions/chatgpt/chrome/**
 
+# Generated dev-server content. Phase 5B (2026-05-17) absorbed the sibling
+# h2o-dev-server/ into apps/dev-server/. The Python source (serve.py) is
+# tracked; the regenerated alias farm and dev_output/proxy/_paste-pack.ext.txt
+# are produced by tools/loader/make-aliases.mjs and
+# tools/loader/make-ext-proxy-pack.mjs at every dev build.
+apps/dev-server/alias/**
+apps/dev-server/dev_output/**
+
+# Python bytecode cache (created by python3 -m py_compile / running scripts).
+__pycache__/
+*.pyc
+
 # Generated reports and ledgers (keep placeholders)
 meta/reports/**
 meta/reports/.gitkeep

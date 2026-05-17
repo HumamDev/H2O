@@ -18,7 +18,9 @@ const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
 function resolveEnvDefaults() {
   const srcDir = path.resolve(process.env.H2O_SRC_DIR || REPO_ROOT);
   const orderFile = path.resolve(process.env.H2O_ORDER_FILE || path.join(srcDir, "config", "dev-order.tsv"));
-  const serverDir = path.resolve(process.env.H2O_SERVER_DIR || path.join(srcDir, "..", "h2o-dev-server"));
+  // Phase 5B (2026-05-17): default moved from `../h2o-dev-server` (sibling)
+  // to `apps/dev-server` (in-tree). H2O_SERVER_DIR override preserved.
+  const serverDir = path.resolve(process.env.H2O_SERVER_DIR || path.join(srcDir, "apps", "dev-server"));
   return { srcDir, orderFile, serverDir };
 }
 

@@ -12,14 +12,14 @@
       "label": "H2O: 1) 🟦 Common / B) Build aliases + EXT proxy pack (uses TSV master)",
       "detail": "EXT workspace prerequisite: builds aliases + EXT proxy pack directly (no TM loader generation).",
       "type": "shell",
-      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/../h2o-dev-server\" && node \"${workspaceFolder}/tools/loader/make-aliases.mjs\" && node \"${workspaceFolder}/tools/loader/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (sibling h2o-dev-server): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Current Dev Controls build: ${workspaceFolder}/build/chrome-ext-dev-controls-oauth-google\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
+      "command": "H2O_BUILD_TS=$(node -e \"process.stdout.write(String(Date.now()))\") && export H2O_BUILD_TS && export H2O_ALIAS_MODE=symlink && export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_SERVER_DIR=\"${workspaceFolder}/apps/dev-server\" && node \"${workspaceFolder}/tools/loader/make-aliases.mjs\" && node \"${workspaceFolder}/tools/loader/make-ext-proxy-pack.mjs\" && echo \"\" && echo \"✅ H2O EXT Prereqs Build Done\" && echo \"   Copied Server (apps/dev-server, in-tree): $H2O_SERVER_DIR\" && echo \"   Aliases (ON-only): $H2O_SERVER_DIR/alias\" && echo \"   EXT proxy pack: $H2O_SERVER_DIR/dev_output/proxy/_paste-pack.ext.txt\" && echo \"   Current Dev Controls build: ${workspaceFolder}/build/chrome-ext-dev-controls-oauth-google\" && echo \"   Ops Panel build: ${workspaceFolder}/build/chrome-ext-ops-panel\"",
       "problemMatcher": []
     },
     {
       "label": "H2O: 1) 🟦 Common / C) Validate loader order (deps + pack + TSV)",
       "detail": "Checks dependency manifest, critical group order, cycles, phase violations, and proxy-pack drift before extension build.",
       "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/../h2o-dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/loader/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/apps/dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/loader/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
       "problemMatcher": []
     },
     {
@@ -95,7 +95,7 @@
         "env": {
           "H2O_SRC_DIR": "${workspaceFolder}",
           "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
-          "H2O_SERVER_DIR": "${workspaceFolder}/../h2o-dev-server"
+          "H2O_SERVER_DIR": "${workspaceFolder}/apps/dev-server"
         }
       },
       "problemMatcher": []
@@ -165,7 +165,7 @@
         "env": {
           "H2O_SRC_DIR": "${workspaceFolder}",
           "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
-          "H2O_SERVER_DIR": "${workspaceFolder}/../h2o-dev-server"
+          "H2O_SERVER_DIR": "${workspaceFolder}/apps/dev-server"
         }
       },
       "problemMatcher": []
@@ -296,7 +296,7 @@
       "label": "H2O: 0) ⬜ META / A) Generate File Lists (workspace + git + parent workspace)",
       "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces.",
       "type": "shell",
-      "command": "mkdir -p \"${workspaceFolder}/meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder incl. h2o-source + h2o-dev-server) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/meta/reports/file-list.txt'",
+      "command": "mkdir -p \"${workspaceFolder}/meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder; post-5B contains only h2o-source/; dev-server absorbed into apps/dev-server/) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/meta/reports/file-list.txt'",
       "problemMatcher": []
     }
   ],
