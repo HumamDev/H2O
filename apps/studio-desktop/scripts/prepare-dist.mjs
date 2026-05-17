@@ -41,16 +41,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Phase 0G-1 migration: repo-level path constants come from tools/paths.mjs.
+// `here` and `desktopRoot` remain script-relative so this prepare-dist tool
+// stays robust to relocation INSIDE apps/studio-desktop/ (e.g. moving the
+// scripts/ subdirectory). The repo-level constants (REPO_ROOT, the prod
+// extension build dir, and surfaces/studio dir) come from paths.mjs so that
+// future migrations that rename those folders only need to update paths.mjs.
+// Behavior verified byte-identical via dist/ content shasum compared against
+// two pre-refactor reference runs.
+import {
+  REPO_ROOT,
+  SURFACES_STUDIO_DIR,
+  extensionBuildDir,
+} from '../../../tools/paths.mjs';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(here, '..');
-const repoRoot = path.resolve(desktopRoot, '..', '..');
-const studioBuilt = path.join(
-  repoRoot,
-  'build',
-  'chrome-ext-prod',
-  'surfaces',
-  'studio',
-);
+
+// Local aliases preserve pre-Phase-0G-1 variable names. Each resolves to the
+// same value as before under the standard invocation (no H2O_SRC_DIR override):
+//   repoRoot    === REPO_ROOT                                            (<repo>/)
+//   studioBuilt === path.join(extensionBuildDir('prod'),'surfaces','studio')
+//                                                                        (<repo>/build/chrome-ext-prod/surfaces/studio/)
+// `dist` keeps its original script-relative compute (<desktopRoot>/dist).
+const repoRoot = REPO_ROOT;
+const studioBuilt = path.join(extensionBuildDir('prod'), 'surfaces', 'studio');
 const dist = path.join(desktopRoot, 'dist');
 
 if (!fs.existsSync(studioBuilt)) {
@@ -97,7 +112,10 @@ function newestMtimeRecursive(dir) {
 }
 
 if (process.env.SKIP_STALENESS_CHECK !== '1') {
-  const studioSource = path.join(repoRoot, 'surfaces', 'studio');
+  // Phase 0G-1: SURFACES_STUDIO_DIR is imported from tools/paths.mjs and
+  // resolves to <REPO_ROOT>/surfaces/studio — byte-identical to the previous
+  // `path.join(repoRoot, 'surfaces', 'studio')` under standard invocation.
+  const studioSource = SURFACES_STUDIO_DIR;
   if (fs.existsSync(studioSource)) {
     const sourceMtime = newestMtimeRecursive(studioSource);
     const buildMtime = newestMtimeRecursive(studioBuilt);
