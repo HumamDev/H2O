@@ -14,7 +14,7 @@
 
 ## 1. Current Phase Status
 
-> **NO STRUCTURAL FOLDER MOVES HAVE HAPPENED YET.** All completed phases (0A through 1A) are additive path-centralization, byte-equivalent refactors, two targeted bug/determinism fixes, and documentation/contract updates. The repo's directory layout is unchanged from the pre-Phase-0A state. The runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. The actual structural migration (folder moves) begins at Phase **1B+**, which has NOT been started.
+> **STRUCTURAL CHANGES TO DATE**: exactly **one** — Phase 1B deleted the dead outer `cockpit-pro/apps/` directory (entirely outside the git repo, contained only 4 `.DS_Store` files + empty `studio-mobile/src/components/cockpit/` leaf; zero source code, zero references from any tool/build/manifest). Everything inside the `h2o-source/` git tree is unchanged from the pre-Phase-0A state: runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. **No structural changes have been made to anything inside the git repo.**
 
 | Phase | Status | Tag | Commit | Description |
 |---|---|---|---|---|
@@ -32,9 +32,10 @@
 | **0H** — deterministic loader timestamp | ✅ complete | `migration-phase-0H-complete` | `89e371e` | `tools/product/extension/chrome-live-loader.mjs` now honors `H2O_BUILD_TS` env override for `LOADER_BUILD_TS` / `LOADER_BUILD_ISO`. Reduces extension build's residual nondeterminism from 2 files to 1 (only `README.txt` remains). |
 | **0I** — migration documentation update | ✅ complete | `migration-phase-0I-complete` | `c375b15` | `docs/migration/MIGRATION.md` rewritten to record all completed phases with tag + commit cross-references, document what is stabilized / deferred / forbidden, and recommend next phases. |
 | **0J** — README.txt determinism | ✅ complete | `migration-phase-0J-complete` | `93cf846` | `tools/product/extension/chrome-live-readme.mjs` no longer embeds the absolute `OUT_DIR` path. **Full extension build is now byte-identical** across builds into any OUT_DIR with locked `H2O_BUILD_TS` (0 files differ — down from 2 at the 0G-2 baseline). |
-| **1A** — architecture contracts lock-in | 🔄 **in progress** | — | — | Updating this file to record 0I/0J completion and lock in the 6 explicit post-stabilization contracts (see §9). No code changes. |
+| **1A** — architecture contracts lock-in | ✅ complete | `migration-phase-1A-complete` | `446c39e` | Locked in the 6 post-stabilization contracts (§9.1) and recorded all 0A–0J phases in §1. Doc-only update; zero code changes. |
+| **1B** — outer `cockpit-pro/apps/` deletion | 🔄 **in progress** | pre-tag: `migration-phase-1B-pre` at `446c39e` | — | **FIRST structural change.** Deleted the dead outer `cockpit-pro/apps/` directory (4 `.DS_Store` files + 1 empty `studio-mobile/src/components/cockpit/` leaf, 32 KB total). Outside git tree → no `git revert` path; **off-disk backup at** `~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17.tar.gz` (1.5 KB) + mirror dir alongside. Zero references found via repo-wide grep prior to deletion. `dev:check` + `validate-loader-order` unchanged post-deletion. |
 
-**Latest stabilized checkpoint**: `migration-phase-0J-complete` at `93cf846`. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (`apps/studio-desktop/scripts/prepare-dist.mjs`) + **full extension-build determinism** (0 files differ across builds with locked env) are now in place.
+**Latest stabilized checkpoint**: `migration-phase-1A-complete` at `446c39e`. Phase 1B made the first structural change but is documented as **outside-git-tree only**: nothing inside `h2o-source/` was touched. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (`apps/studio-desktop/scripts/prepare-dist.mjs`) + **full extension-build determinism** (0 files differ across builds with locked env) + locked-in architecture contracts remain in place.
 
 ---
 
@@ -379,32 +380,41 @@ Single source of truth for every repo-level path constant. All consumers below i
 
 ## 13. Recommended Next Phase
 
-The stabilization track (0A–0J) and contract lock-in (1A) are complete. The next phase is the **first structural change** — and it has been deliberately split into a small, low-risk lead-off step.
+The stabilization track (0A–0J), contract lock-in (1A), and first outside-git structural cleanup (1B) are all complete. The next decision is: continue with the inside-git cleanup, or hold here and observe.
 
-### Phase 1B — outer `cockpit-pro/apps/` cleanup (FIRST structural move)
+### Phase 1B execution summary (already done)
 
-**Scope**: delete the dead outer `cockpit-pro/apps/` directory (the one above `h2o-source/` that contains only a `.DS_Store` and an empty `studio-mobile/` shell). This directory is unreferenced by every tool, build, manifest, validator, supabase function, and runtime path in the repo. Removing it is structurally the smallest possible first move.
+**Done at**: pre-tag `migration-phase-1B-pre` at `446c39e`.
 
-**Pre-conditions before starting Phase 1B**:
+Scope executed: removed outer `cockpit-pro/apps/` (entirely outside git). Pre-delete inspection found 4 `.DS_Store` files + 1 empty `studio-mobile/src/components/cockpit/` directory. No source code. No references found via repo-wide grep (only matches were in this MIGRATION.md itself documenting the deletion).
 
-1. Phase 1A is committed and tagged (this phase).
-2. Re-verify nothing references the outer `cockpit-pro/apps/` path:
-   - `grep -r "cockpit-pro/apps" .` returns zero matches in source/tools/build files.
-   - `grep -r "outer apps" docs/` returns only documentation references (which are fine).
-   - The Phase 0A investigation (see §2 + §3) explicitly identified outer `apps/` as dead cruft; this conclusion should be re-confirmed at the moment Phase 1B starts.
-3. An off-disk archive snapshot of `cockpit-pro/apps/` is taken and stored outside the git repo.
-4. A `migration-phase-1B-pre` git tag is placed at HEAD BEFORE the delete operation.
+**Off-disk backup** (rollback path):
+- `~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17.tar.gz` (1.5 KB tarball)
+- `~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17-mirror/` (directory mirror, byte-for-byte identical to original — verified via `diff -rq`)
 
-**Rollback note for Phase 1B**: because the outer `cockpit-pro/apps/` directory is **not in the git repository** (the git toplevel is `h2o-source/.git`, not the outer wrapper), `git revert` will NOT restore it. Rollback requires restoring from the off-disk archive snapshot. The pre-tag (`migration-phase-1B-pre`) marks the point of no git-revert-rollback for the structural part of the change. This is the principal reason Phase 1B is being kept as small as possible.
+**Rollback procedure**: if the deletion needs to be undone, `cp -a ~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17-mirror /Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/apps` restores the directory to its pre-deletion state. The tar.gz is the secondary copy.
 
-### Phases beyond 1B (preview, not yet authorized)
+**Validation post-deletion**: `npm run dev:check` and `node tools/loader/validate-loader-order.mjs` both passed unchanged. Working tree of h2o-source remained clean throughout (the deletion was outside git → no working-tree changes from the rm).
 
-- **Phase 1C (optional)**: evaluate and possibly relocate `tmp/`, `s-files/`, `references/` (all gitignored, all known dead/scratch directories) under `archive/_misc/` or delete them.
+### Phase 1C (recommended next — optional, scoped tightly)
+
+**Candidates inside h2o-source (all gitignored, all known dead/scratch)**:
+
+- `h2o-source/tmp/` — scratch directory (gitignored: see `.gitignore` `/tmp/`). Per §3 investigation, contained `labels-v1.0.2-fix.zip`, `labels-v1.0.2/`, `sidebar-harness/` — old throwaway artifacts.
+- `h2o-source/s-files/` — gitignored, unknown purpose; per investigation likely scratch.
+- `h2o-source/references/` — gitignored external references; may still be useful to the operator personally.
+
+**Phase 1C should follow the same pattern as 1B**: re-inspect each candidate at the moment 1C starts, verify gitignored status, search for any code references, take an off-disk backup of each, then delete only the confirmed-dead ones. Each candidate is independent — 1C could split into 1C-a / 1C-b / 1C-c per candidate.
+
+**Important**: `tmp/`, `s-files/`, `references/` are all INSIDE the h2o-source git tree but excluded by `.gitignore`. Deleting them does change the on-disk tree but does NOT change git history (since they were never tracked). Rollback is still via off-disk backup; `git revert` would not restore them.
+
+### Phases beyond 1C (preview, not yet authorized)
+
 - **Phase 2**: doc rewrites of stale repo guides (`AGENTS.md`, `CLAUDE.md`) — these still describe a Tampermonkey/Violentmonkey runtime that hasn't been current for months (see §3 for the actual MV3 + chrome-live runtime).
-- **Phase 3+**: npm workspaces enablement, `apps/site/` promotion, `packages/shared-library/` extraction, build/chrome-ext-* relocation to `apps/extensions/chatgpt/chrome/`, h2o-dev-server absorption, h2o-source flatten. See the original architectural report in the migration planning thread for the full staged plan.
+- **Phase 3+**: npm workspaces enablement, `apps/site/` promotion (move `cockpit-pro-site/` → `apps/site/`), `packages/shared-library/` extraction, `build/chrome-ext-*` relocation to `apps/extensions/chatgpt/chrome/`, h2o-dev-server absorption, h2o-source flatten. See the original architectural report in the migration planning thread for the full staged plan.
 
-**Do NOT proceed to Phase 1B (or any subsequent structural phase) without explicit operator approval.** Phase 1B is the first move that requires an off-disk snapshot for rollback. The git-only rollback story stops working at Phase 1B.
+**Do NOT proceed to Phase 1C (or any subsequent structural phase) without explicit operator approval.** Each phase from here onward requires an off-disk snapshot for rollback. The git-only rollback story does not apply to anything outside the tracked tree.
 
 ---
 
-_Last updated: 2026-05-17 (Phase 1A in progress — documentation/contracts update; locks in the 6 post-stabilization rules from §9.1 binding from `migration-phase-1A-complete`)._
+_Last updated: 2026-05-17 (Phase 1B in progress — first structural cleanup, outer `cockpit-pro/apps/` deleted; off-disk backup at `~/h2o-migration-backups/`)._
