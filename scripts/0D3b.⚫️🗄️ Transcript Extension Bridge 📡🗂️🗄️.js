@@ -61,6 +61,8 @@
       && op !== "__loaderInfo"
       && op !== "h2o:library-storage:diagnose"
       && op !== "h2o:library-storage:inspect-schema"
+      && op !== "h2o:library-storage:verify-chat-registry-mirror"
+      && op !== "h2o:library-storage:read-chat-registry-record-diagnostic"
       && op !== "h2o:library-storage:read-chat-registry-mirror-all-diagnostic";
   }
 
