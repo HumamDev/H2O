@@ -37,7 +37,7 @@ Recommended settings:
 - Framework preset: `Vite`
 - Build command: `npm run build`
 - Build output directory: `dist`
-- Root directory: `cockpit-pro-site` when connecting from the parent workspace/repository
+- Root directory: `apps/site` when connecting from the parent workspace/repository (folder is `apps/site/`; npm workspace package name is still `cockpit-pro-site` for the `-w` selector)
 - Node version: `20` or newer
 
 The site includes `public/_redirects` with:

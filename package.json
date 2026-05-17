@@ -41,7 +41,7 @@
   "workspaces": [
     "apps/studio-desktop",
     "apps/studio-mobile",
-    "cockpit-pro-site",
+    "apps/site",
     "packages/*"
   ]
 }
