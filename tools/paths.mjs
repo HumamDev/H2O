@@ -174,10 +174,32 @@ export const ALIAS_URL_BASE = `${DEV_SERVER_URL}${ALIAS_URL_REL_PATH}`;
 //   - ops-panel
 //   - studio-launcher
 //   - desk
+//
+// Phase 4B-2 adds an OPT-IN alternate root via H2O_EXT_BUILD_ROOT. The
+// default (unset) behavior is unchanged from Phase 0A-4B-1b: paths resolve
+// to <BUILD_DIR>/chrome-ext-<variant>. When H2O_EXT_BUILD_ROOT is set, paths
+// resolve to <H2O_EXT_BUILD_ROOT>/<variant> (no "chrome-ext-" prefix; bare
+// variant directory directly under the custom root). Intended to support
+// a future Phase 4C default flip to apps/extensions/chatgpt/chrome/, but
+// not used by any default path or any built-in tool today. Highest-precedence
+// override H2O_EXT_OUT_DIR continues to be honored by the build-context
+// layer (chrome-live-build-context.mjs), which checks it BEFORE calling
+// extensionBuildDir().
 
 /**
  * Returns the on-disk path for a chrome extension build variant.
- * Example: extensionBuildDir("prod") → "<repo>/build/chrome-ext-prod"
+ *
+ * Default (H2O_EXT_BUILD_ROOT unset):
+ *   extensionBuildDir("prod") → "<repo>/build/chrome-ext-prod"
+ *
+ * Opt-in (H2O_EXT_BUILD_ROOT=/some/root):
+ *   extensionBuildDir("prod") → "/some/root/prod"
+ *
+ * The env var is read at call time so callers can set/unset dynamically.
+ * The "chrome-ext-" basename prefix is intentionally OMITTED in the opt-in
+ * form — the new root is expected to be a chatgpt-extension-specific
+ * subtree (e.g. apps/extensions/chatgpt/chrome/) where the prefix is
+ * redundant.
  *
  * @param {string} variant - bare variant name (e.g. "prod", "dev-controls").
  *                           Do NOT include the "chrome-ext-" prefix.
@@ -191,6 +213,10 @@ export function extensionBuildDir(variant) {
     throw new Error(
       `extensionBuildDir: pass bare variant name, not the "chrome-ext-" prefix. Got: ${variant}`,
     );
+  }
+  const customRoot = process.env.H2O_EXT_BUILD_ROOT;
+  if (customRoot) {
+    return path.join(customRoot, variant);
   }
   return path.join(BUILD_DIR, `chrome-ext-${variant}`);
 }
