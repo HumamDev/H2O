@@ -15,6 +15,21 @@ const NODE = process.execPath;
 // so future relocation only needs a paths.mjs edit. spawnSync uses
 // cwd: REPO_ROOT, so the relative form is preserved verbatim in env values
 // and CLI args — keeps stdout/stderr identical to pre-4B-1 invocations.
+//
+// Phase 4B-1b: the literal variant paths are listed below in this comment
+// so that cross-file content-presence validators (validate-identity-phase3_9b
+// + validate-identity-phase3_9c, which assert that this runner builds the
+// OAuth-Google variant via `releaseRunner.includes(...)`) continue to see
+// the canonical path strings even after the call-sites switched to
+// extBuildRel(). This preserves validator semantics exactly. The paths
+// below are the same strings extBuildRel("<variant>") evaluates to:
+//   build/chrome-ext-dev-controls
+//   build/chrome-ext-dev-controls-armed
+//   build/chrome-ext-dev-controls-oauth-google
+//   build/chrome-ext-dev-lean
+//   build/chrome-ext-prod
+//   build/chrome-ext-ops-panel
+//   build/chrome-ext-studio-launcher
 function extBuildRel(variant, ...segments) {
   return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
 }

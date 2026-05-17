@@ -5,11 +5,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "..", "..", "..");
 
 function read(rel) { return fs.readFileSync(path.resolve(ROOT, rel), "utf8"); }
+// Phase 4B-1b: CWD-relative path string for an extension build artifact,
+// byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 function pass(msg) { console.log(" ", msg, "✓"); }
 function fail(msg) { throw new Error("FAIL: " + msg); }
 function assert(cond, msg) { if (!cond) fail(msg); }
@@ -36,8 +42,8 @@ const bgSrc = read("tools/product/extension/chrome-live-background.mjs");
 const buildSrc = read("tools/product/extension/build-chrome-live-extension.mjs");
 const loaderSrc = read("tools/product/extension/chrome-live-loader.mjs");
 const identityCoreSrc = read("scripts/0D4a.⬛️🔐 Identity Core 🔐.js");
-const builtBg = read("build/chrome-ext-dev-controls/bg.js");
-const builtLoader = read("build/chrome-ext-dev-controls/loader.js");
+const builtBg = read(extBuildRel("dev-controls", "bg.js"));
+const builtLoader = read(extBuildRel("dev-controls", "loader.js"));
 
 // ── Suite A: background broadcast ─────────────────────────────────────────────
 console.log("\n── Suite A: background broadcastIdentityPush ─────────────────────────────");

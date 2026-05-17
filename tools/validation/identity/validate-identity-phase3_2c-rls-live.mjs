@@ -7,8 +7,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Phase 4B-1b: CWD-relative path string for an extension build artifact.
+// Byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 const LIVE_FLAG = "H2O_SUPABASE_RLS_LIVE";
 const REQUIRED_FLAG = "H2O_SUPABASE_RLS_LIVE_REQUIRED";
 const ENV_URL = "H2O_SUPABASE_TEST_URL";
@@ -63,10 +70,10 @@ const EXTENSION_RUNTIME_DIRS = [
   "surfaces/identity",
 ];
 const BUILD_OUTPUT_DIRS = [
-  "build/chrome-ext-dev-controls",
-  "build/chrome-ext-dev-lean",
-  "build/chrome-ext-prod",
-  "build/chrome-ext-dev-controls-armed",
+  extBuildRel("dev-controls"),
+  extBuildRel("dev-lean"),
+  extBuildRel("prod"),
+  extBuildRel("dev-controls-armed"),
 ];
 
 function abs(rel) {

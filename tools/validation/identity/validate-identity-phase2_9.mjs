@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extensionBuildDir } from '../../paths.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -20,8 +21,11 @@ const CHUB_ACCOUNT_SRC = fs.readFileSync(path.join(REPO_ROOT, 'scripts', '0Z1e.�
 const CHUB_ACCOUNT_SURFACE = `${CHUB_SRC}\n${CHUB_ACCOUNT_SRC}`;
 const FIRST_RUN_SRC  = fs.readFileSync(path.join(REPO_ROOT, 'scripts', '0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐.js'), 'utf8');
 
-const BUILT_LOADER = fs.readFileSync(path.join(REPO_ROOT, 'build', 'chrome-ext-dev-controls', 'loader.js'), 'utf8');
-const BUILT_BG     = fs.readFileSync(path.join(REPO_ROOT, 'build', 'chrome-ext-dev-controls', 'bg.js'), 'utf8');
+// Phase 4B-1b: built-extension read paths now resolve via paths.extensionBuildDir("dev-controls"),
+// which composes paths.BUILD_DIR with "chrome-ext-dev-controls". Byte-identical resolution to the
+// legacy path.join(REPO_ROOT, 'build', 'chrome-ext-dev-controls', ...) form.
+const BUILT_LOADER = fs.readFileSync(path.join(extensionBuildDir('dev-controls'), 'loader.js'), 'utf8');
+const BUILT_BG     = fs.readFileSync(path.join(extensionBuildDir('dev-controls'), 'bg.js'), 'utf8');
 
 function assert(condition, message) {
   if (!condition) throw new Error(`FAIL: ${message}`);

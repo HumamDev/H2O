@@ -12,12 +12,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Phase 4B-1b: CWD-relative path string for an extension build artifact.
+// Byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
+
 const VARIANTS = Object.freeze([
-  { label: "controls", rel: "build/chrome-ext-dev-controls", profile: "development" },
-  { label: "lean", rel: "build/chrome-ext-dev-lean", profile: "development" },
-  { label: "production", rel: "build/chrome-ext-prod", profile: "production" },
+  { label: "controls", rel: extBuildRel("dev-controls"), profile: "development" },
+  { label: "lean", rel: extBuildRel("dev-lean"), profile: "development" },
+  { label: "production", rel: extBuildRel("prod"), profile: "production" },
 ]);
 
 const PROVIDER_BUNDLE_NAME = "identity-provider-supabase";

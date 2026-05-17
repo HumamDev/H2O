@@ -4,8 +4,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Phase 4B-1b: CWD-relative path string for an extension build artifact.
+// Byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
 const GITIGNORE_REL = ".gitignore";
@@ -15,8 +22,8 @@ const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
 const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
 const CONTROL_HUB_REL = "scripts/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
 const CONTROL_HUB_ACCOUNT_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
-const ARMED_MANIFEST_REL = "build/chrome-ext-dev-controls-armed/manifest.json";
-const PROD_MANIFEST_REL = "build/chrome-ext-prod/manifest.json";
+const ARMED_MANIFEST_REL = extBuildRel("dev-controls-armed", "manifest.json");
+const PROD_MANIFEST_REL = extBuildRel("prod", "manifest.json");
 
 const ACTIVE_VALIDATORS = [
   "tools/validation/identity/validate-identity-background-bundle.mjs",
@@ -48,10 +55,10 @@ const ACTIVE_VALIDATORS = [
 
 const ACTIVE_BUILDS = [
   "node tools/product/extension/build-chrome-live-extension.mjs",
-  "env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=build/chrome-ext-dev-lean node tools/product/extension/build-chrome-live-extension.mjs",
-  "env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=build/chrome-ext-prod node tools/product/extension/build-chrome-live-extension.mjs",
-  "env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs",
-  "env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs",
+  `env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=${extBuildRel("dev-lean")} node tools/product/extension/build-chrome-live-extension.mjs`,
+  `env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=${extBuildRel("prod")} node tools/product/extension/build-chrome-live-extension.mjs`,
+  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-armed")} node tools/product/extension/build-chrome-live-extension.mjs`,
+  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-oauth-google")} node tools/product/extension/build-chrome-live-extension.mjs`,
   "node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs",
 ];
 

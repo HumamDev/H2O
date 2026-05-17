@@ -4,8 +4,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Phase 4B-1b: CWD-relative path string for an extension build artifact.
+// Byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
@@ -18,12 +25,13 @@ const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";
 const VALIDATOR_REL = "tools/validation/identity/validate-identity-phase4_2-password-management.mjs";
 
+const PROVIDER_BUNDLE_REL = "provider/identity-provider-supabase.js";
 const GENERATED_PROVIDER_RELS = [
-  "build/chrome-ext-dev-controls/provider/identity-provider-supabase.js",
-  "build/chrome-ext-dev-lean/provider/identity-provider-supabase.js",
-  "build/chrome-ext-prod/provider/identity-provider-supabase.js",
-  "build/chrome-ext-dev-controls-armed/provider/identity-provider-supabase.js",
-  "build/chrome-ext-dev-controls-oauth-google/provider/identity-provider-supabase.js",
+  extBuildRel("dev-controls", PROVIDER_BUNDLE_REL),
+  extBuildRel("dev-lean", PROVIDER_BUNDLE_REL),
+  extBuildRel("prod", PROVIDER_BUNDLE_REL),
+  extBuildRel("dev-controls-armed", PROVIDER_BUNDLE_REL),
+  extBuildRel("dev-controls-oauth-google", PROVIDER_BUNDLE_REL),
 ];
 
 function read(rel) {

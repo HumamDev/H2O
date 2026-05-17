@@ -4,8 +4,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Phase 4B-1b: CWD-relative path string for an extension build artifact.
+// Byte-identical to legacy "build/chrome-ext-<variant>/<segments>" form.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
@@ -22,9 +29,9 @@ const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.
 const SCHEMA_VALIDATOR_REL = "tools/validation/identity/validate-identity-phase3_2b-schema.mjs";
 const OAUTH_MIGRATION_REL = "supabase/migrations/202605010005_identity_google_oauth_status.sql";
 
-const DEFAULT_MANIFEST_REL = "build/chrome-ext-dev-controls/manifest.json";
-const PROD_MANIFEST_REL = "build/chrome-ext-prod/manifest.json";
-const OAUTH_MANIFEST_REL = "build/chrome-ext-dev-controls-oauth-google/manifest.json";
+const DEFAULT_MANIFEST_REL = extBuildRel("dev-controls", "manifest.json");
+const PROD_MANIFEST_REL = extBuildRel("prod", "manifest.json");
+const OAUTH_MANIFEST_REL = extBuildRel("dev-controls-oauth-google", "manifest.json");
 
 function read(rel) {
   return fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
