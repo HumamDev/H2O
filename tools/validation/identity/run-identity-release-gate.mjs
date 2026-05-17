@@ -4,9 +4,20 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const NODE = process.execPath;
+
+// Phase 4B-1: helper that returns a CWD-relative path string for an
+// extension build variant. Equivalent in resolution to the legacy literal
+// "build/chrome-ext-<variant>" but goes through paths.extensionBuildDir()
+// so future relocation only needs a paths.mjs edit. spawnSync uses
+// cwd: REPO_ROOT, so the relative form is preserved verbatim in env values
+// and CLI args — keeps stdout/stderr identical to pre-4B-1 invocations.
+function extBuildRel(variant, ...segments) {
+  return path.relative(REPO_ROOT, path.join(extensionBuildDir(variant), ...segments));
+}
 
 const GROUPS = [
   {
@@ -21,7 +32,7 @@ const GROUPS = [
         args: ["tools/product/extension/build-chrome-live-extension.mjs"],
         env: {
           H2O_EXT_DEV_VARIANT: "lean",
-          H2O_EXT_OUT_DIR: "build/chrome-ext-dev-lean",
+          H2O_EXT_OUT_DIR: extBuildRel("dev-lean"),
         },
       },
       {
@@ -29,7 +40,7 @@ const GROUPS = [
         args: ["tools/product/extension/build-chrome-live-extension.mjs"],
         env: {
           H2O_EXT_DEV_VARIANT: "production",
-          H2O_EXT_OUT_DIR: "build/chrome-ext-prod",
+          H2O_EXT_OUT_DIR: extBuildRel("prod"),
         },
       },
       {
@@ -37,7 +48,7 @@ const GROUPS = [
         args: ["tools/product/extension/build-chrome-live-extension.mjs"],
         env: {
           H2O_IDENTITY_PHASE_NETWORK: "request_otp",
-          H2O_EXT_OUT_DIR: "build/chrome-ext-dev-controls-armed",
+          H2O_EXT_OUT_DIR: extBuildRel("dev-controls-armed"),
         },
       },
       {
@@ -46,7 +57,7 @@ const GROUPS = [
         env: {
           H2O_IDENTITY_PHASE_NETWORK: "request_otp",
           H2O_IDENTITY_OAUTH_PROVIDER: "google",
-          H2O_EXT_OUT_DIR: "build/chrome-ext-dev-controls-oauth-google",
+          H2O_EXT_OUT_DIR: extBuildRel("dev-controls-oauth-google"),
         },
       },
       {
@@ -134,25 +145,25 @@ const GROUPS = [
       { label: "5.0K mobile route-guards validator syntax", args: ["--check", "tools/validation/identity/validate-mobile-route-guards.mjs"] },
       { label: "5.0M mobile avatar-upload validator syntax", args: ["--check", "tools/validation/identity/validate-mobile-avatar-upload.mjs"] },
       { label: "Control Hub Account plugin syntax", args: ["--check", "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js"] },
-      { label: "controls bg syntax", args: ["--check", "build/chrome-ext-dev-controls/bg.js"] },
-      { label: "controls loader syntax", args: ["--check", "build/chrome-ext-dev-controls/loader.js"] },
-      { label: "controls popup syntax", args: ["--check", "build/chrome-ext-dev-controls/popup.js"] },
-      { label: "controls provider syntax", args: ["--check", "build/chrome-ext-dev-controls/provider/identity-provider-supabase.js"] },
-      { label: "lean bg syntax", args: ["--check", "build/chrome-ext-dev-lean/bg.js"] },
-      { label: "lean loader syntax", args: ["--check", "build/chrome-ext-dev-lean/loader.js"] },
-      { label: "lean provider syntax", args: ["--check", "build/chrome-ext-dev-lean/provider/identity-provider-supabase.js"] },
-      { label: "production bg syntax", args: ["--check", "build/chrome-ext-prod/bg.js"] },
-      { label: "production loader syntax", args: ["--check", "build/chrome-ext-prod/loader.js"] },
-      { label: "production provider syntax", args: ["--check", "build/chrome-ext-prod/provider/identity-provider-supabase.js"] },
-      { label: "armed bg syntax", args: ["--check", "build/chrome-ext-dev-controls-armed/bg.js"] },
-      { label: "armed loader syntax", args: ["--check", "build/chrome-ext-dev-controls-armed/loader.js"] },
-      { label: "armed popup syntax", args: ["--check", "build/chrome-ext-dev-controls-armed/popup.js"] },
-      { label: "armed provider syntax", args: ["--check", "build/chrome-ext-dev-controls-armed/provider/identity-provider-supabase.js"] },
-      { label: "Google OAuth armed bg syntax", args: ["--check", "build/chrome-ext-dev-controls-oauth-google/bg.js"] },
-      { label: "Google OAuth armed loader syntax", args: ["--check", "build/chrome-ext-dev-controls-oauth-google/loader.js"] },
-      { label: "Google OAuth armed popup syntax", args: ["--check", "build/chrome-ext-dev-controls-oauth-google/popup.js"] },
-      { label: "Google OAuth armed provider syntax", args: ["--check", "build/chrome-ext-dev-controls-oauth-google/provider/identity-provider-supabase.js"] },
-      { label: "ops panel syntax", args: ["--check", "build/chrome-ext-ops-panel/panel.js"] },
+      { label: "controls bg syntax", args: ["--check", extBuildRel("dev-controls", "bg.js")] },
+      { label: "controls loader syntax", args: ["--check", extBuildRel("dev-controls", "loader.js")] },
+      { label: "controls popup syntax", args: ["--check", extBuildRel("dev-controls", "popup.js")] },
+      { label: "controls provider syntax", args: ["--check", extBuildRel("dev-controls", "provider/identity-provider-supabase.js")] },
+      { label: "lean bg syntax", args: ["--check", extBuildRel("dev-lean", "bg.js")] },
+      { label: "lean loader syntax", args: ["--check", extBuildRel("dev-lean", "loader.js")] },
+      { label: "lean provider syntax", args: ["--check", extBuildRel("dev-lean", "provider/identity-provider-supabase.js")] },
+      { label: "production bg syntax", args: ["--check", extBuildRel("prod", "bg.js")] },
+      { label: "production loader syntax", args: ["--check", extBuildRel("prod", "loader.js")] },
+      { label: "production provider syntax", args: ["--check", extBuildRel("prod", "provider/identity-provider-supabase.js")] },
+      { label: "armed bg syntax", args: ["--check", extBuildRel("dev-controls-armed", "bg.js")] },
+      { label: "armed loader syntax", args: ["--check", extBuildRel("dev-controls-armed", "loader.js")] },
+      { label: "armed popup syntax", args: ["--check", extBuildRel("dev-controls-armed", "popup.js")] },
+      { label: "armed provider syntax", args: ["--check", extBuildRel("dev-controls-armed", "provider/identity-provider-supabase.js")] },
+      { label: "Google OAuth armed bg syntax", args: ["--check", extBuildRel("dev-controls-oauth-google", "bg.js")] },
+      { label: "Google OAuth armed loader syntax", args: ["--check", extBuildRel("dev-controls-oauth-google", "loader.js")] },
+      { label: "Google OAuth armed popup syntax", args: ["--check", extBuildRel("dev-controls-oauth-google", "popup.js")] },
+      { label: "Google OAuth armed provider syntax", args: ["--check", extBuildRel("dev-controls-oauth-google", "provider/identity-provider-supabase.js")] },
+      { label: "ops panel syntax", args: ["--check", extBuildRel("ops-panel", "panel.js")] },
     ],
   },
 ];

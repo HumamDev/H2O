@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,7 +15,11 @@ function ensureDir(dir) {
 }
 
 export async function buildIdentityProviderBundle(outDir) {
-  const outRoot = path.resolve(outDir || path.join(SCRIPT_DIR, "..", "..", "..", "build", "chrome-ext-dev-controls"));
+  // Phase 4B-1: fallback now resolves via paths.extensionBuildDir("dev-controls"),
+  // byte-identical to the legacy inline compute
+  // path.join(SCRIPT_DIR, "..", "..", "..", "build", "chrome-ext-dev-controls").
+  // The outDir parameter is still honored (highest-precedence override).
+  const outRoot = path.resolve(outDir || extensionBuildDir("dev-controls"));
   const outFile = path.join(outRoot, IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH);
   ensureDir(path.dirname(outFile));
   const staleOutFile = path.join(path.dirname(outFile), LEGACY_PROVIDER_BUNDLE_BASENAME);

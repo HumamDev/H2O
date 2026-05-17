@@ -15,6 +15,7 @@ import {
   BUILD_DIR,
   DEV_ORDER_TSV,
   PROXY_PACK_URL as PATHS_PROXY_PACK_URL,
+  extensionBuildDir,
 } from "../../paths.mjs";
 
 export function createChromeLiveBuildContext() {
@@ -42,16 +43,18 @@ export function createChromeLiveBuildContext() {
   const STUDIO_ONLY = DEV_VARIANT === "studio-launcher";
   const MANIFEST_PROFILE = (DEV_VARIANT === "production" || STUDIO_ONLY) ? "production" : "development";
 
-  // OUT_DIR fallback uses paths.BUILD_DIR (= REPO_ROOT/build, env-overridable
-  // via H2O_SRC_DIR through paths.mjs). H2O_EXT_OUT_DIR override preserved as
-  // the highest-precedence source — unchanged from pre-Phase-0G-2 semantics.
+  // OUT_DIR fallback now resolves via paths.extensionBuildDir(<variant>),
+  // which composes paths.BUILD_DIR (= REPO_ROOT/build, env-overridable via
+  // H2O_SRC_DIR through paths.mjs) with the canonical "chrome-ext-<variant>"
+  // basename. Behavior is byte-identical to the pre-Phase-4B-1 inline
+  // path.join compute. H2O_EXT_OUT_DIR override preserved as the highest-
+  // precedence source — unchanged from pre-Phase-0G-2 semantics.
   const OUT_DIR =
     process.env.H2O_EXT_OUT_DIR ||
-    path.join(
-      BUILD_DIR,
+    extensionBuildDir(
       STUDIO_ONLY
-        ? "chrome-ext-studio-launcher"
-        : (DEV_VARIANT === "production" ? "chrome-ext-prod" : "chrome-ext-dev-controls"),
+        ? "studio-launcher"
+        : (DEV_VARIANT === "production" ? "prod" : "dev-controls"),
     );
 
   // PROXY_PACK_URL: paths.PROXY_PACK_URL already encapsulates the

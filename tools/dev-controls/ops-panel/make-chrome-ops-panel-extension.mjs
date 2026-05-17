@@ -1,10 +1,10 @@
-// @version 1.1.0
+// @version 1.2.0  (Phase 4B-1: fallback OUT_DIR sourced from paths.extensionBuildDir)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeArchiveWorkbenchFromOut } from "../../product/studio/pack-studio.mjs";
 import { writeExtensionIcons } from "../../product/extension/write-extension-icons.mjs";
-// @version 1.0.0
+import { extensionBuildDir } from "../../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -14,9 +14,15 @@ const SRC =
   process.env.H2O_SRC_DIR ||
   SRC_DEFAULT;
 
+// Phase 4B-1: fallback OUT_DIR now resolves via paths.extensionBuildDir("ops-panel"),
+// which composes paths.BUILD_DIR (= REPO_ROOT/build, env-overridable via
+// H2O_SRC_DIR through paths.mjs) with "chrome-ext-ops-panel". Byte-identical
+// to the legacy path.join(SRC, "build", "chrome-ext-ops-panel") form because
+// paths.REPO_ROOT and the local SRC honor the same H2O_SRC_DIR env var with
+// the same default. H2O_PANEL_OUT_DIR override preserved as highest precedence.
 const OUT_DIR =
   process.env.H2O_PANEL_OUT_DIR ||
-  path.join(SRC, "build", "chrome-ext-ops-panel");
+  extensionBuildDir("ops-panel");
 const OPS_ICON_PACK_DIR = path.join(SRC, "assets", "chrome-ops-panel-icons");
 const ICON_SIZES = [16, 32, 48, 128, 256, 512, 1024];
 

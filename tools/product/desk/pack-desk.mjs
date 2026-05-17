@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.0.1  (Phase 4B-1: build output path now sourced from paths.extensionBuildDir)
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../../paths.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +12,10 @@ const repoRoot = path.resolve(__dirname, "..", "..", "..");
 const uiSourceDir = path.join(repoRoot, "surfaces", "desk");
 const contentSourceFile = path.join(repoRoot, "surfaces", "desk", "page-bridge.js");
 
-const buildDir = path.join(repoRoot, "build", "chrome-ext-desk");
+// Phase 4B-1: buildDir resolves via paths.extensionBuildDir("desk"), which
+// composes paths.BUILD_DIR with "chrome-ext-desk". Byte-identical to the
+// legacy path.join(repoRoot, "build", "chrome-ext-desk") form.
+const buildDir = extensionBuildDir("desk");
 const buildUiDeskDir = path.join(buildDir, "surfaces", "desk");
 const buildContentDir = path.join(buildDir, "content");
 const deskIconPackDir = path.join(repoRoot, "assets", "surface-chrome-desk-icons");

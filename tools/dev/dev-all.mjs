@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionBuildDir } from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -68,9 +69,17 @@ function runNodeStep(label, scriptPath, extraEnv = {}) {
 
 async function main() {
   const { srcDir } = resolveEnvDefaults();
-  const oauthGoogleOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls-oauth-google");
-  const prodOutDir = path.join(srcDir, "build", "chrome-ext-prod");
-  const studioLauncherOutDir = path.join(srcDir, "build", "chrome-ext-studio-launcher");
+  // Phase 4B-1: variant out-dirs now resolve via paths.extensionBuildDir(...),
+  // which composes paths.BUILD_DIR (= REPO_ROOT/build, env-overridable via
+  // H2O_SRC_DIR through paths.mjs) with the canonical "chrome-ext-<variant>"
+  // basename. Resolved paths are byte-identical to the legacy inline
+  // path.join(srcDir, "build", "chrome-ext-<variant>") form because
+  // paths.REPO_ROOT and the local srcDir honor the same H2O_SRC_DIR env var
+  // and have the same default. srcDir is kept in scope because downstream
+  // env-derivation (orderFile, serverDir) still consumes it.
+  const oauthGoogleOutDir = extensionBuildDir("dev-controls-oauth-google");
+  const prodOutDir = extensionBuildDir("prod");
+  const studioLauncherOutDir = extensionBuildDir("studio-launcher");
 
   await runNodeStep("1/4 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
 

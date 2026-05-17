@@ -1,4 +1,4 @@
-// @version 1.0.0
+// @version 1.0.1  (Phase 4B-1: extension build dirs sourced from paths.extensionBuildDir)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
   getArchiveWorkbenchPresence,
   ARCHIVE_WORKBENCH_SOURCE_FILES,
 } from "../product/studio/pack-studio.mjs";
+import { extensionBuildDir } from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -132,9 +133,16 @@ function printBrokenExamples(brokenSymlinks) {
 
 function printArchiveWorkbenchChecks(srcDir) {
   const sourceDir = archiveWorkbenchSourceDir(srcDir);
-  const devControlsOutDir = path.join(srcDir, "build", "chrome-ext-dev-controls");
-  const opsPanelOutDir = path.join(srcDir, "build", "chrome-ext-ops-panel");
-  const leanOutDir = path.join(srcDir, "build", "chrome-ext-dev-lean");
+  // Phase 4B-1: variant out-dirs now resolve via paths.extensionBuildDir(...),
+  // which composes paths.BUILD_DIR with the canonical "chrome-ext-<variant>"
+  // basename. Resolved paths are byte-identical to the legacy
+  // path.join(srcDir, "build", "chrome-ext-<variant>") form because
+  // paths.REPO_ROOT and the local srcDir honor the same H2O_SRC_DIR env var
+  // with the same default. srcDir is kept in scope because it is still used
+  // by archiveWorkbenchSourceDir(srcDir) above.
+  const devControlsOutDir = extensionBuildDir("dev-controls");
+  const opsPanelOutDir = extensionBuildDir("ops-panel");
+  const leanOutDir = extensionBuildDir("dev-lean");
   const devControlsCheck = compareArchiveWorkbenchToSource(srcDir, devControlsOutDir);
   const opsPanelPresence = getArchiveWorkbenchPresence(opsPanelOutDir);
   const leanPresence = getArchiveWorkbenchPresence(leanOutDir);
