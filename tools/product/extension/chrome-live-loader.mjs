@@ -34,6 +34,20 @@ export function makeChromeLiveLoaderJs({
     phaseOnDemand: {},
     onDemandState: {},
     currentPageLoads: {},
+    // Lightweight always-on boot timing milestones (no flag required).
+    // All values are performance.now() readings (ms since navigation start).
+    // Access from DevTools console (page world) via the loaderDiag bridge:
+    //   window.postMessage({type:"h2o-loader-diag-req",id:"x"},"*")
+    //   then listen for {type:"h2o-loader-diag-res"} on window.
+    timing: {
+      bootStartMs: null,       // When boot() begins
+      proxyPackStartMs: null,  // Before proxy-pack network fetch
+      proxyPackDoneMs: null,   // After proxy-pack text received + parsed
+      preflightDoneMs: null,   // After loaderState + resolvedSetState resolved
+      phaseIdleStartMs: null,  // When document-idle loadPhase begins
+      phaseIdleDoneMs: null,   // When document-idle loadPhase completes
+      bootDoneMs: null,        // When boot() fully completes
+    },
   };
 
   // ─── Loader V2.1 diagnostics (gated on H2O_LOADER_V3_DIAG=1) ─────────────
@@ -1754,11 +1768,31 @@ export function makeChromeLiveLoaderJs({
         ts: Number.isFinite(Number(src.ts)) ? Math.floor(Number(src.ts)) : null,
       };
     }
+    const srcTiming = loaderDiagState.timing && typeof loaderDiagState.timing === "object"
+      ? loaderDiagState.timing : {};
+    const timing = {
+      bootStartMs:      Number.isFinite(Number(srcTiming.bootStartMs))      ? Math.round(Number(srcTiming.bootStartMs))      : null,
+      proxyPackStartMs: Number.isFinite(Number(srcTiming.proxyPackStartMs)) ? Math.round(Number(srcTiming.proxyPackStartMs)) : null,
+      proxyPackDoneMs:  Number.isFinite(Number(srcTiming.proxyPackDoneMs))  ? Math.round(Number(srcTiming.proxyPackDoneMs))  : null,
+      preflightDoneMs:  Number.isFinite(Number(srcTiming.preflightDoneMs))  ? Math.round(Number(srcTiming.preflightDoneMs))  : null,
+      phaseIdleStartMs: Number.isFinite(Number(srcTiming.phaseIdleStartMs)) ? Math.round(Number(srcTiming.phaseIdleStartMs)) : null,
+      phaseIdleDoneMs:  Number.isFinite(Number(srcTiming.phaseIdleDoneMs))  ? Math.round(Number(srcTiming.phaseIdleDoneMs))  : null,
+      bootDoneMs:       Number.isFinite(Number(srcTiming.bootDoneMs))       ? Math.round(Number(srcTiming.bootDoneMs))       : null,
+    };
+    // Derived deltas — null when either endpoint is missing.
+    function delta(a, b) {
+      return (typeof a === "number" && typeof b === "number") ? (b - a) : null;
+    }
+    timing.proxyPackMs    = delta(timing.proxyPackStartMs, timing.proxyPackDoneMs);
+    timing.preflightTotalMs = delta(timing.bootStartMs, timing.preflightDoneMs);
+    timing.phaseIdleMs    = delta(timing.phaseIdleStartMs, timing.phaseIdleDoneMs);
+    timing.bootTotalMs    = delta(timing.bootStartMs, timing.bootDoneMs);
     return {
       pageStartedAt: Number(loaderDiagState.pageStartedAt) || PAGE_STARTED_AT,
       phaseOnDemand,
       onDemandState,
       currentPageLoads,
+      timing,
     };
   }
 
@@ -3462,6 +3496,13 @@ export function makeChromeLiveLoaderJs({
     const serialLane = isIdle ? "idle-serial" : ("phase-" + phase);
     if (serialList.length) v3WaveStart(serialLane);
 
+    // Yield to the browser every SERIAL_YIELD_INTERVAL scripts rather than
+    // after every single one. Each rAF is ~16 ms; with 35 serial scripts the
+    // original code paid 35 × 16 ms ≈ 560 ms of pure scheduling overhead.
+    // Yielding every 3 scripts reduces that to ~12 yields ≈ 192 ms (-368 ms).
+    // We always yield on the last script so the browser can breathe before the
+    // parallel section begins.
+    const SERIAL_YIELD_INTERVAL = 3;
     for (let i = 0; i < serialList.length; i++) {
       const it = serialList[i];
       const aliasId = it && it.aliasId ? String(it.aliasId) : "";
@@ -3475,7 +3516,9 @@ export function makeChromeLiveLoaderJs({
       const r = await loadOneScript(it, i, total, phase, runtimeSamples, progressState);
       v3Settle(aliasId, serialLane, r === 1, null);
       loaded += r;
-      await yieldToBrowser();
+      if ((i + 1) % SERIAL_YIELD_INTERVAL === 0 || i === serialList.length - 1) {
+        await yieldToBrowser();
+      }
     }
 
     if (serialList.length) v3WaveEnd(serialLane);
@@ -3521,6 +3564,7 @@ export function makeChromeLiveLoaderJs({
     // V3 diagnostics: capture boot start; phase timings populate as each
     // phase begins/ends. No-op when V3_DIAG_ENABLED=false.
     v3Diag.bootStartMs = v3Now();
+    loaderDiagState.timing.bootStartMs = v3Now();
 
     // Phase 4 Step 5b: V2 flag — single source of truth, captured once at
     // boot start. When OFF, every V2 branch below is dead code and the V1
@@ -3550,7 +3594,9 @@ export function makeChromeLiveLoaderJs({
     installPageIdentityBridge();
     installPageBillingBridge();
 
+    loaderDiagState.timing.proxyPackStartMs = v3Now();
     const packRes = await loadProxyPackText(PROXY_PACK_URL);
+    loaderDiagState.timing.proxyPackDoneMs = v3Now();
     const fromPack = parseProxyPack(packRes.text);
     const all = mergeScriptsWithCatalog(fromPack, DEV_SCRIPT_CATALOG);
     if (!all.length) {
@@ -3561,8 +3607,12 @@ export function makeChromeLiveLoaderJs({
 
     const enabled = [];
     const disabled = [];
-    const loaderState = await loadLoaderState();
-    const resolvedSetState = ENABLE_TOGGLES ? await getResolvedSetState(true) : { slot: 0, source: "global-toggles" };
+    // Parallelize two independent chrome.storage / chrome.runtime reads.
+    const [loaderState, resolvedSetState] = await Promise.all([
+      loadLoaderState(),
+      ENABLE_TOGGLES ? getResolvedSetState(true) : Promise.resolve({ slot: 0, source: "global-toggles" }),
+    ]);
+    loaderDiagState.timing.preflightDoneMs = v3Now();
     const resolvedSetSlot = Number(resolvedSetState && resolvedSetState.slot) || 0;
     const resolvedSource = String(resolvedSetState && resolvedSetState.source || "global-toggles");
     const toggleMap = ENABLE_TOGGLES
@@ -3771,6 +3821,7 @@ export function makeChromeLiveLoaderJs({
     try { performance.mark("h2o:phase:end:end"); } catch {}
     v3PhaseEnd("document-end");
     await waitDomIdle();
+    loaderDiagState.timing.phaseIdleStartMs = v3Now();
     try { performance.mark("h2o:phase:idle:start"); } catch {}
     v3PhaseStart("document-idle");
 
@@ -3818,6 +3869,7 @@ export function makeChromeLiveLoaderJs({
     }
 
     loadedTotal += await loadPhase(phaseIdleForV2x, "document-idle", runtimeSamples, progressState);
+    loaderDiagState.timing.phaseIdleDoneMs = v3Now();
     try { performance.mark("h2o:phase:idle:end"); } catch {}
     v3PhaseEnd("document-idle");
     await flushRuntimeSamples(runtimeSamples);
@@ -3825,6 +3877,7 @@ export function makeChromeLiveLoaderJs({
 
     try { performance.mark("h2o:loader:boot:end"); } catch {}
     v3Diag.bootEndMs = v3Now();
+    loaderDiagState.timing.bootDoneMs = v3Now();
     log("boot done");
     setStatus(
       STATUS_LABEL +
@@ -3989,6 +4042,40 @@ export function makeChromeLiveLoaderJs({
     sendReady("init");
     setTimeout(() => sendReady("init+200"), 200);
     setTimeout(() => sendReady("init+800"), 800);
+  })();
+
+  // ── H2O loader diagnostic bridge (content-script → page world) ───────────
+  // Allows the page world (DevTools console, H2O surfaces) to read the
+  // always-on timing milestones without requiring H2O_LOADER_V3_DIAG=1.
+  //
+  // Usage from DevTools console (page context):
+  //   const id = "d" + Date.now();
+  //   window.addEventListener("message", function h(e) {
+  //     if (e.data?.type === "h2o-loader-diag-res" && e.data?.id === id) {
+  //       window.removeEventListener("message", h);
+  //       console.table(e.data.result.timing);
+  //     }
+  //   });
+  //   window.postMessage({ type: "h2o-loader-diag-req", id }, "*");
+  //
+  // Or one-liner after boot completes:
+  //   H2O.archiveBoot._getExtensionBridge().__loaderDiag?.()
+  (() => {
+    const REQ_TYPE = "h2o-loader-diag-req";
+    const RES_TYPE = "h2o-loader-diag-res";
+    window.addEventListener("message", function (ev) {
+      if (ev.source !== window) return;
+      const data = ev && ev.data;
+      if (!data || data.type !== REQ_TYPE) return;
+      const id = String(data.id || "");
+      try {
+        window.postMessage({ type: RES_TYPE, id, ok: true, result: cloneLoaderDiagState() }, "*");
+      } catch (e) {
+        try {
+          window.postMessage({ type: RES_TYPE, id, ok: false, error: String(e && (e.message || e) || "loaderDiag failed") }, "*");
+        } catch (_) {}
+      }
+    }, false);
   })();
 
   boot().catch((e) => {
