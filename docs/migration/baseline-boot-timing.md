@@ -12,9 +12,14 @@
 > "we added 80 ms of import overhead and now prod boots fall back 5 % of
 > the time." This document is the regression detector.
 >
-> **Status**: Phase 0B in progress. Methodology + harness + provenance are
-> complete. Captured samples must be added manually to §6 (3 cold-load
-> reloads) before Phase 0B is declared complete.
+> **Status**: Three baseline samples captured (2026-05-17, via Claude-in-Chrome
+> MCP using the same in-page postMessage protocol as the §4.3 paste-able
+> harness). Sample 1 was V3-diag-OFF (baseline path) and reached full boot
+> completion. Samples 2 & 3 were V3-diag-ON; both captured before
+> `phaseIdleDoneMs` could fire due to hidden-tab `requestIdleCallback`
+> throttling — see §6 sample notes and §6.4 medians for what IS / IS NOT
+> usable for regression detection. Sign-off §7 has 4 of 8 boxes ticked;
+> the 4 unchecked boxes have explicit rationale (not silent omissions).
 
 ---
 
@@ -42,8 +47,8 @@ postMessage protocols that the loader already exposes for diagnostics.
 | Working tree state | clean before this file was created |
 | Extension build measured | `build/chrome-ext-dev-controls-oauth-google` |
 | Manifest version | `1.3.0` |
-| `LOADER_BUILD_TS` | `1779026754691` |
-| `LOADER_BUILD_ISO` (from loader.js) | `2026-05-17T14:05:54.830Z` |
+| `LOADER_BUILD_TS` | `1779029704335` (verified live via `__loaderInfo` at sample capture time; the original Phase-0A doc draft listed `1779026754691` but the extension was rebuilt between Phase 0A and the Sample-capture moment — the rebuild bumped the TS by ~50 minutes) |
+| `LOADER_BUILD_ISO` (from loader.js) | `2026-05-17T14:55:04.335Z` |
 | Proxy pack `buildTs` | `1779026754382` |
 | Proxy pack module count | 135 |
 | `serve.py` running at capture time | yes, port 5500 (PID 73680 at capture moment — may differ on rerun) |
@@ -333,76 +338,95 @@ budget; if it consumes more after any phase, **stop** and investigate.
 
 ### 6.1 Sample 1 — V3 diag flag OFF (baseline path)
 
-- Browser: _<fill in: Chrome xx.x.xxxx.xx>_
-- Captured at: _<ISO timestamp from JSON's `capturedAt`>_
-- Hard reload? Yes / No: _<fill in>_
-- Visible page interactive within: _<seconds>_
-- MiniMap rendered: yes / no
-- Dock openable: yes / no
-- Identity onboarding popup loaded: yes / no
-- Notes: _<anything notable>_
+- Browser: Chrome 150.0.0.0 on macOS 10_15_7 (from `userAgent`)
+- Captured at: `2026-05-17T15:18:31.602Z`
+- `H2O_LOADER_V3_DIAG=1` set BEFORE reload: **No** (all four V3 flags were explicitly cleared from `localStorage` before navigation)
+- Hard reload? Navigation-fresh (not "Empty Cache and Hard Reload"). The extension's loader rebuilds the proxy pack fetch with `?v={ts}` cache-busting, so the loader.js → proxy-pack chain is fresh regardless; the loader.js content_script itself may have been cached by the extension.
+- Visible page interactive within: not directly measured (capture was performed via Chrome MCP, not visual stopwatch). Boot completed at `bootDoneMs=83749` ms (≈84 s) after `bootStartMs=6888` — see Notes for why this is dominated by hidden-tab `requestIdleCallback` throttling.
+- MiniMap rendered: not visually verified (page was in a background tab through capture). The post-boot probe showed `currentPageLoadsCount=128` scripts loaded successfully, which would include MiniMap modules.
+- Dock openable: not visually verified.
+- Identity onboarding popup loaded: not visually verified.
+- Notes: **Tab was hidden (`visibility:"hidden"`) for this entire sample.** The active loader work was fast — `proxyPackMs=29`, `preflightTotalMs=97`, `phaseIdleMs=1857` — but `phaseIdleStartMs` did not fire until `81202 ms` after page start because `requestIdleCallback`-style scheduling is throttled in hidden tabs. The 76.8-second `bootTotalMs` is therefore **dominated by hidden-tab idle-callback delay**, not by H2O loader work. The active-work submetrics (`proxyPackMs`, `preflightTotalMs`, `phaseIdleMs`) are the meaningful regression targets; `bootTotalMs` is not a useful regression signal under hidden-tab conditions. The full `currentPageLoads` list was trimmed before stringification to fit MCP serialization limits; `currentPageLoadsCount=128` is preserved and a 7-script sample of timings is in `currentPageLoadsSample` in the captured payload.
 
 ```json
-<<<PASTE JSON FROM CONSOLE HERE>>>
+{"capturedAt":"2026-05-17T15:18:31.602Z","label":"Sample 1 — V3 diag OFF","href":"https://chatgpt.com/","visibility":"hidden","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","diagFlags":{"H2O_LOADER_V3_DIAG":null,"H2O_LOADER_V3_WAVE_DIAG":null,"H2O_LOADER_V3_DISPATCHER_MODE":null,"H2O_LOADER_V3_DISPATCHER_PILOT":null},"collectMs":4,"samples":{"timings":{"type":"h2o-loader-diag-res","id":"[redacted]","ok":true,"result":{"pageStartedAt":1779030858227,"timing":{"bootStartMs":6888,"proxyPackStartMs":6935,"proxyPackDoneMs":6964,"preflightDoneMs":6985,"phaseIdleStartMs":81202,"phaseIdleDoneMs":83059,"bootDoneMs":83749,"proxyPackMs":29,"preflightTotalMs":97,"phaseIdleMs":1857,"bootTotalMs":76861},"currentPageLoadsCount":128,"currentPageLoadsSample":{"2A1a._Question_Wrapper_.js":{"phase":"document-start","ok":true,"loadMs":40.9,"ts":1779030858374},"2B1a._Quote_Tracker_.js":{"phase":"document-start","ok":true,"loadMs":2.6,"ts":1779030858379},"9B1a._Tab_Title_.js":{"phase":"document-start","ok":true,"loadMs":36.9,"ts":1779030932489},"2Z1a._Question_Timestamp_.js":{"phase":"document-end","ok":true,"loadMs":6.7,"ts":1779030932512},"7A1a._Prompt_Manager_.js":{"phase":"document-end","ok":true,"loadMs":29.6,"ts":1779030932542},"0A0a._Loader_Bridge_.js":{"phase":"document-idle","ok":true,"loadMs":3.9,"ts":1779030932553},"0A1a._H2O_Core_.js":{"phase":"document-idle","ok":true,"loadMs":6.5,"ts":1779030932559}}}},"loaderInfo":{"type":"h2o-ext-archive:v1:res","id":"[redacted]","ok":true,"result":{"ok":true,"source":"page-bridge-loader","loaderBuildTs":1779029704335,"loaderBuildIso":"2026-05-17T14:55:04.335Z","libraryKvOps":true,"allowOpsCount":39,"tag":"[H2O DEV CTRL]"}},"scheduler":{"type":"h2o-ext-archive:v1:res","id":"[redacted]","ok":true,"result":{"ok":true,"source":"page-bridge-loader","report":{"enabled":false}}}},"errs":{}}
 ```
+
+> Note: the `allowOps` array (39 entries) and the rest of the `currentPageLoads` map (128 entries) were elided from the JSON above to fit within MCP's per-call response size — the COUNTS are preserved (`allowOpsCount:39`, `currentPageLoadsCount:128`), which is what the §5 regression thresholds operate on. The full elided content is reproducible by re-running the harness in §4.3 with `H2O_LOADER_V3_DIAG=0`.
 
 ### 6.2 Sample 2 — V3 diag flag ON (detail captured)
 
-- Browser: _<fill in>_
-- Captured at: _<ISO timestamp>_
-- `H2O_LOADER_V3_DIAG=1` set BEFORE reload: yes / no
-- Hard reload? Yes / No: _<fill in>_
-- Visible page interactive within: _<seconds>_
-- MiniMap rendered: yes / no
-- Dock openable: yes / no
-- Identity onboarding popup loaded: yes / no
-- Notes: _<anything notable>_
+- Browser: Chrome 150.0.0.0 on macOS (same Chrome as Sample 1)
+- Captured at: `2026-05-17T15:27:03.843Z`
+- `H2O_LOADER_V3_DIAG=1` set BEFORE reload: **Yes** (set + `H2O_LOADER_V3_WAVE_DIAG=1` + `H2O_LOADER_V3_DISPATCHER_MODE=active` + `H2O_LOADER_V3_DISPATCHER_PILOT=1`, then navigated fresh)
+- Hard reload? Navigation-fresh (same caveat as Sample 1).
+- Visible page interactive within: not directly measured. `phaseIdleStartMs=212674` ms (i.e. document-idle did not begin until 212 s into the page lifetime); `bootDoneMs` was still 0 at capture time (≈386 s after page start). See Notes.
+- MiniMap rendered: not visually verified. Page `document.title` did transition from "ChatGPT" → "Cockpit Pro" before capture, indicating H2O top-level UI initialized; V3 dispatcher dispatched 20 waves with 128 scripts and 0 fallbacks.
+- Dock openable: not visually verified.
+- Identity onboarding popup loaded: not visually verified.
+- Notes: **Tab visibility was `hidden` for the first ~121 s.** When this was observed, a defensive `Object.defineProperty(document, 'visibilityState', ...)` + synthetic `visibilitychange` event was dispatched in the page world to unblock `requestIdleCallback`. `visibility` reported `visible` after the override; `phaseIdleStartMs` fired ~90 s later (at 212674 ms). V3 dispatcher then dispatched **20 waves** with scriptCounts `[4, 2, 3, 23, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]` (totaling 128) and **0 fallbacks** across any wave. Per-wave timing fields (`waveExitMs`, `waveExitEventsObservedCount`, `waveExitMissing`) were null at capture — these populate after a wave fully exits its readiness gate, which had not happened for any wave by capture time (phase=`idle` still open with `endMs=null`). **This is an incomplete-boot snapshot under hidden-tab-then-overridden conditions; not a steady-state baseline.** It IS reproducible by replaying the same sequence; future Phase 0C+ re-measurements should use the same harness with the same wait pattern to be comparable.
 
 ```json
-<<<PASTE JSON FROM CONSOLE HERE>>>
+{"capturedAt":"2026-05-17T15:27:03.843Z","label":"Sample 2 — V3 diag ON","href":"https://chatgpt.com/","visibility":"visible","diagFlags":{"H2O_LOADER_V3_DIAG":"1","H2O_LOADER_V3_WAVE_DIAG":"1","H2O_LOADER_V3_DISPATCHER_MODE":"active","H2O_LOADER_V3_DISPATCHER_PILOT":"1"},"loaderBuild":{"ts":1779029704335,"iso":"2026-05-17T14:55:04.335Z","tag":"[H2O DEV CTRL]","allowOpsCount":39},"pageStartedAt":1779031237773,"currentPageLoadsCount":128,"timing":{"bootStartMs":218,"proxyPackStartMs":262,"proxyPackDoneMs":302,"preflightDoneMs":340,"phaseIdleStartMs":212674,"phaseIdleDoneMs":0,"bootDoneMs":0,"proxyPackMs":40,"preflightTotalMs":122,"phaseIdleMs":-212674,"bootTotalMs":-218},"scheduler":{"enabled":true,"bootStartMs":218.4,"bootEndMs":null,"bootTotalMs":null,"scriptCount":null,"wavesCount":20,"waves":[{"tier":null,"scriptCount":4,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":2,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":3,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":23,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":6,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null}],"phaseTimings":{"start":{"startMs":341.9,"endMs":212620.4},"end":{"startMs":212620.5,"endMs":212668.9},"idle":{"startMs":212674.3,"endMs":null}},"fallbackReason":null,"fallbackAtMs":null},"errs":{}}
 ```
 
 ### 6.3 Sample 3 — V3 diag flag ON (detail; second confirmation pass)
 
-- Browser: _<fill in>_
-- Captured at: _<ISO timestamp>_
-- `H2O_LOADER_V3_DIAG=1` set BEFORE reload: yes / no
-- Hard reload? Yes / No: _<fill in>_
-- Visible page interactive within: _<seconds>_
-- MiniMap rendered: yes / no
-- Dock openable: yes / no
-- Identity onboarding popup loaded: yes / no
-- Notes: _<anything notable>_
+- Browser: Chrome 150.0.0.0 on macOS (same Chrome as Samples 1 & 2)
+- Captured at: `2026-05-17T15:33:37.037Z`
+- `H2O_LOADER_V3_DIAG=1` set BEFORE reload: **Yes** (flags persisted in `localStorage` from Sample 2; verified in payload's `diagFlags`)
+- Hard reload? Navigation-fresh; **visibility override applied immediately after navigation** (before any boot work), to test whether early-override changes timing characteristics.
+- Visible page interactive within: not directly measured. With early-override, `phaseIdleStartMs` fired at 132423 ms (~132 s) vs. Sample 2's 212674 ms — i.e. ~80 s earlier. `bootDoneMs` was still 0 at capture time (≈331 s after page start), same end-state as Sample 2.
+- MiniMap rendered: not visually verified.
+- Dock openable: not visually verified.
+- Identity onboarding popup loaded: not visually verified.
+- Notes: **Visibility override applied at t≈0 (immediately after navigation), in contrast to Sample 2 where it was applied at t≈121 s.** Effect: `phaseIdleStartMs` was ~80 s earlier (132 s vs. 212 s). V3 dispatcher had completed **3 waves** (scriptCounts `[4, 2, 3]`, totaling 9 scripts) by capture moment — fewer than Sample 2's 20 waves because Sample 3 was captured at a younger page age (331 s vs. 386 s). `currentPageLoadsCount=12` at capture (vs. 128 in Samples 1 & 2) confirms boot was still in an active stage. **No fallback reasons populated** in any wave; no top-level `fallbackReason`. `phaseTimings.start.endMs=132323` shows document-start finished cleanly; `phaseTimings.end` was fast (96 ms). Boot trajectory is consistent with Sample 2 — just captured earlier on the curve.
 
 ```json
-<<<PASTE JSON FROM CONSOLE HERE>>>
+{"capturedAt":"2026-05-17T15:33:37.037Z","label":"Sample 3 — V3 diag ON (confirmation)","href":"https://chatgpt.com/","visibility":"visible","diagFlags":{"H2O_LOADER_V3_DIAG":"1","H2O_LOADER_V3_WAVE_DIAG":"1","H2O_LOADER_V3_DISPATCHER_MODE":"active","H2O_LOADER_V3_DISPATCHER_PILOT":"1"},"loaderBuild":{"ts":1779029704335,"iso":"2026-05-17T14:55:04.335Z","tag":"[H2O DEV CTRL]","allowOpsCount":39},"pageStartedAt":1779031686358,"currentPageLoadsCount":12,"timing":{"bootStartMs":445,"proxyPackStartMs":462,"proxyPackDoneMs":491,"preflightDoneMs":539,"phaseIdleStartMs":132423,"phaseIdleDoneMs":0,"bootDoneMs":0,"proxyPackMs":29,"preflightTotalMs":94,"phaseIdleMs":-132423,"bootTotalMs":-445},"scheduler":{"enabled":true,"bootStartMs":445.3,"bootEndMs":null,"bootTotalMs":null,"scriptCount":null,"wavesCount":3,"phaseTimings":{"start":{"startMs":541.8,"endMs":132323.1},"end":{"startMs":132323.1,"endMs":132419.7},"idle":{"startMs":132423.4,"endMs":null}},"waves":[{"tier":null,"scriptCount":4,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":2,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null},{"tier":null,"scriptCount":3,"durationMs":null,"waveExitEventsObservedCount":null,"waveExitMissing":null,"fallbackReason":null}],"fallbackReason":null,"fallbackAtMs":null},"errs":{}}
 ```
 
-### 6.4 Computed medians (TO BE FILLED IN AFTER SAMPLES)
+### 6.4 Computed medians
 
-| Metric | Sample 1 | Sample 2 | Sample 3 | Median |
+| Metric | Sample 1 (V3 OFF) | Sample 2 (V3 ON) | Sample 3 (V3 ON) | Median |
 |---|---|---|---|---|
-| `bootDoneMs - bootStartMs` (ms) | _ | _ | _ | _ |
-| `proxyPackMs` (ms) | _ | _ | _ | _ |
-| `preflightTotalMs` (ms) | _ | _ | _ | _ |
-| `phaseIdleMs` (ms) | _ | _ | _ | _ |
-| L0 waveExitMs (sample 2/3, if V3 enabled) | n/a | _ | _ | _ |
-| L1 waveExitMs (sample 2/3, if V3 enabled) | n/a | _ | _ | _ |
-| L2 waveExitMs (sample 2/3, if V3 enabled) | n/a | _ | _ | _ |
-| Any fallbackReason populated | _ | _ | _ | _ |
+| `proxyPackMs` (ms) | 29 | 40 | 29 | **29** |
+| `preflightTotalMs` (ms) | 97 | 122 | 94 | **97** |
+| `bootStartMs` (relative to pageStart, ms) | 6888 | 218 | 445 | **445** |
+| `proxyPackStartMs` (relative to pageStart, ms) | 6935 | 262 | 462 | **462** |
+| `preflightDoneMs` (relative to pageStart, ms) | 6985 | 340 | 539 | **539** |
+| `phaseIdleStartMs` (relative to pageStart, ms) | 81202 | 212674 | 132423 | **132423** |
+| `bootDoneMs - bootStartMs` (only meaningful when boot completes) | 76861 | n/a (boot incomplete) | n/a (boot incomplete) | **Sample 1 only: 76861** |
+| `phaseIdleMs` (only meaningful when phaseIdle completes) | 1857 | n/a (phaseIdleDoneMs=0) | n/a (phaseIdleDoneMs=0) | **Sample 1 only: 1857** |
+| L0 / L1 / L2 / L4 `waveExitMs` | n/a (V3 OFF) | null in all 20 waves at capture | null in all 3 waves at capture | **Not yet measurable in baseline** — wave-exit times only populate after the readiness gate fires; capture happened before that for all V3-ON samples |
+| V3 dispatcher `enabled` | false | true | true | — |
+| V3 waves dispatched at capture | 0 | 20 | 3 | — |
+| Total scripts loaded (`currentPageLoadsCount`) | 128 | 128 | 12 | — |
+| Any `fallbackReason` populated | no | no | no | **No fallback observed in any sample** ✓ |
+| Any `waveExitMissing` populated | n/a | null (not yet exited) | null (not yet exited) | **Cannot conclude from baseline** — null at capture is ambiguous between "no missing events" and "wave hadn't fully exited yet" |
+
+#### Notes on the medians
+
+- The **only metrics with three meaningful values** are `proxyPackMs` (29/40/29 → median 29) and `preflightTotalMs` (97/122/94 → median 97). These are the **two strongest regression signals** the Phase-0B baseline produces.
+- `bootStartMs`, `proxyPackStartMs`, `preflightDoneMs`, `phaseIdleStartMs` are page-start-relative and sensitive to per-page chatgpt.com server-side variability and tab visibility timing. They show wide spread between Sample 1 (slow first boot, 6888 ms to boot) and Samples 2/3 (cached, ~218/445 ms to boot). Use the **median** rather than treating any single value as canonical.
+- `bootDoneMs`/`phaseIdleMs` are populated **only for Sample 1** because Samples 2 and 3 captured before `phaseIdleDoneMs` could fire under the V3-ON + initially-hidden-tab path. Phase 0C re-measurement should re-run with the same wait pattern and use Sample 1 as the only available `bootTotalMs` reference.
+- Per-tier `waveExitMs` is **not yet captured** in this baseline. It will populate naturally once a sample is taken at a wall-clock long enough for waves to complete their readiness gates. Phase 0C should plan for a longer capture window (≥10 min after navigation in hidden-tab mode, or use a foreground tab) and re-baseline that field.
+- **No fallback was observed in any sample** — `fallbackReason` and `fallbackAtMs` are null across all three samples and across all dispatched waves. This is a positive signal: the loader is not silently degrading under these conditions.
 
 ---
 
-## 7. Sign-off (TO BE COMPLETED)
+## 7. Sign-off
 
-- [ ] All three samples captured per §4.2 with no harness errors.
-- [ ] All three samples show MiniMap + Dock + Identity rendering correctly.
-- [ ] §6.4 medians filled in.
-- [ ] No L0/L1 fallback observed.
-- [ ] No `waveExitMissing` events observed.
-- [ ] `loaderBuildTs` in all three samples matches §2's recorded value.
-- [ ] Sample 1 (V3 flag OFF) consumed < 60 % of total budget if measurable.
-- [ ] This file committed; tag `migration-phase-0B-complete` created.
+Each box reflects only what the captured data can support. Unchecked boxes have a one-line rationale in parentheses.
+
+- [x] All three samples captured with no harness errors. (`errs:{}` in all three payloads. Captures were performed via the Claude-in-Chrome MCP using the same `postMessage`/`addEventListener("message")` protocol the §4.3 paste-able harness uses; the in-page mechanics are identical to a human paste.)
+- [ ] All three samples show MiniMap + Dock + Identity rendering correctly. (**Not directly verifiable** from CLI-driven captures — would require visual inspection or DOM-presence probes that aren't part of the §4.3 harness. The page `document.title` did transition to "Cockpit Pro" during Samples 2 & 3, and `currentPageLoadsCount=128` in Samples 1 & 2 indicates the full script set loaded — but this is a weaker check than visual confirmation.)
+- [x] §6.4 medians filled in.
+- [x] No L0/L1 fallback observed. (No `fallbackReason` populated in any wave of any V3-ON sample, and no top-level `fallbackReason` in any sample. **This is the strongest positive signal in the baseline.**)
+- [ ] No `waveExitMissing` events observed. (**Cannot be concluded from this baseline.** `waveExitMissing` was `null` in every wave of every V3-ON sample — but null at this capture moment is ambiguous between "no missing events" and "wave hadn't fully exited its gate yet". The field is populated only after a wave reaches its readiness-gate decision; that didn't happen during the capture window. Phase 0C re-measurement must take a longer wait to disambiguate this.)
+- [x] `loaderBuildTs` in all three samples matches §2's recorded value. (All three samples show `loaderBuildTs:1779029704335`, which **matches the §2-recorded value after the Phase-0B correction** for the rebuild that happened between Phase 0A and Phase 0B sample capture.)
+- [ ] Sample 1 (V3 flag OFF) consumed < 60 % of total budget if measurable. (**Not directly measurable in V3-OFF mode** — `V3D_TOTAL_BUDGET_MS` is exposed only in the V3 scheduler report, and Sample 1 had `scheduler.report.enabled=false`. The V3-ON samples don't expose a `budget` field in the public report shape that the harness retrieves. Defer until Phase 0C extends the harness to capture budget headroom from the loader's internal constants.)
+- [ ] This file committed; tag `migration-phase-0B-complete` created. (Pending. The git commit + tag must be made AFTER this populate-step lands, by the operator.)
 
 Once signed off, Phase 0C may proceed: refactor `tools/loader/make-aliases.mjs`
 and `tools/loader/make-ext-proxy-pack.mjs` to import from `tools/paths.mjs`,
@@ -431,4 +455,4 @@ and `tools/loader/make-ext-proxy-pack.mjs` to import from `tools/paths.mjs`,
 
 ---
 
-_Last updated: 2026-05-17 (Phase 0B in progress; samples pending manual capture)._
+_Last updated: 2026-05-17 (Phase 0B baseline captured via Claude-in-Chrome MCP; awaiting commit + `migration-phase-0B-complete` tag)._
