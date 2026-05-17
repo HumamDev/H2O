@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-2 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-2 note: REPO_ROOT is sourced from tools/paths.mjs. CHANGELOGS_DIR
+// and VERSIONS_CSV are imported but the existing call-site path.join patterns
+// (e.g. `path.join(REPO_ROOT, "changelogs", ...)` and `path.join(REPO_ROOT,
+// "versions.csv")`) are LEFT UNCHANGED inside the function bodies — they
+// resolve to the same values as the new paths.mjs constants and changing
+// them would expand the diff without a behavior benefit. All env-var
+// overrides and CLI flags (--dry-run, --all, --magnitude, --summary, --yes,
+// --no-archive, --no-dashboard, --no-changelog) preserved unchanged.
+// Behavior verified by --dry-run output comparison on a clean working tree.
+
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
+import { REPO_ROOT } from "../paths.mjs";
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;

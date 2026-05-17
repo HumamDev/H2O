@@ -1,15 +1,33 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-2 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-2 note: REPO_ROOT, CHANGELOG_DIR, VERSIONS_CSV_PATH, and the helper
+// path TOOLS_DIR are sourced from tools/paths.mjs. Local TOOL_DIR computation
+// dropped (no longer needed; rebuildDashboard's path is reconstructed via
+// TOOLS_DIR — see comment at that call site about the preserved bug). All
+// env-var overrides and CLI flags (--mode, --dry-run, --dry, H2O_RELEASE_DEBUG)
+// preserved unchanged. Behavior verified by --dry-run output comparison on a
+// clean working tree.
+
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
-const CHANGELOG_DIR = path.join(REPO_ROOT, "changelogs");
-const VERSIONS_CSV_PATH = path.join(REPO_ROOT, "versions.csv");
+import {
+  REPO_ROOT,
+  TOOLS_DIR,
+  CHANGELOGS_DIR,
+  VERSIONS_CSV,
+} from "../paths.mjs";
+
+// Local aliases preserve pre-Phase-0E-2 variable names so the rest of this
+// file is untouched. Each resolves to the same value as before — paths.mjs
+// computes them off the same REPO_ROOT:
+//   CHANGELOG_DIR     === CHANGELOGS_DIR (<REPO_ROOT>/changelogs)
+//   VERSIONS_CSV_PATH === VERSIONS_CSV   (<REPO_ROOT>/versions.csv)
+// REPO_ROOT is used directly via the imported name.
+const CHANGELOG_DIR = CHANGELOGS_DIR;
+const VERSIONS_CSV_PATH = VERSIONS_CSV;
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
@@ -129,7 +147,17 @@ async function main() {
 }
 
 function rebuildDashboard() {
-  const dashboardScript = path.join(TOOL_DIR, "versions-dashboard.mjs");
+  // Phase 0E-2 note: this path is intentionally preserved BUGGY from the
+  // pre-Phase-0E-2 version. The original code used `path.join(TOOL_DIR,
+  // "versions-dashboard.mjs")` where TOOL_DIR was <repo>/tools/release —
+  // BUT versions-dashboard.mjs lives in <repo>/tools/versioning. The
+  // fs.existsSync check below silently skips when the file is missing, so
+  // rebuildDashboard() has been effectively a no-op since this code was
+  // written. The Phase 0E-2 refactor preserves this verbatim (same wrong
+  // path, same silent no-op) per the "preserve behavior exactly" rule.
+  // A future, in-scope phase should correct this to:
+  //   path.join(TOOLS_DIR, "versioning", "versions-dashboard.mjs")
+  const dashboardScript = path.join(TOOLS_DIR, "release", "versions-dashboard.mjs");
   if (!fs.existsSync(dashboardScript)) return;
   const result = spawnSync(process.execPath, [dashboardScript], {
     cwd: REPO_ROOT,

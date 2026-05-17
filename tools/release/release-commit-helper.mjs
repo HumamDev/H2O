@@ -1,14 +1,18 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-2 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-2 note: REPO_ROOT is sourced from tools/paths.mjs. This file uses
+// REPO_ROOT only as (1) cwd for git commands and (2) the base for path.join
+// with relative paths read from git output. Both are byte-identical under the
+// paths.mjs default. No env-var overrides existed pre-Phase-0E-2; behavior
+// verified by early-exit comparison on a clean working tree.
+
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
+import { REPO_ROOT } from "../paths.mjs";
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
