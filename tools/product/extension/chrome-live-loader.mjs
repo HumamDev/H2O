@@ -2499,6 +2499,7 @@ export function makeChromeLiveLoaderJs({
       "h2o:library-storage:create-empty-schema",
       "h2o:library-storage:inspect-schema",
       "h2o:library-storage:write-chat-registry-mirror",
+      "h2o:library-storage:refresh-chat-registry-mirror",
       "h2o:library-storage:verify-chat-registry-mirror",
       "h2o:library-storage:read-chat-registry-record-diagnostic",
       "h2o:library-storage:read-chat-registry-mirror-all-diagnostic",

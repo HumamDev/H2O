@@ -206,10 +206,12 @@
   const STORAGE_CREATE_EMPTY_SCHEMA_OP = 'h2o:library-storage:create-empty-schema';
   const STORAGE_INSPECT_SCHEMA_OP = 'h2o:library-storage:inspect-schema';
   const STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:write-chat-registry-mirror';
+  const STORAGE_REFRESH_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:refresh-chat-registry-mirror';
   const STORAGE_VERIFY_CHAT_REGISTRY_MIRROR_OP = 'h2o:library-storage:verify-chat-registry-mirror';
   const STORAGE_READ_CHAT_REGISTRY_RECORD_DIAG_OP = 'h2o:library-storage:read-chat-registry-record-diagnostic';
   const STORAGE_READ_CHAT_REGISTRY_MIRROR_ALL_DIAG_OP = 'h2o:library-storage:read-chat-registry-mirror-all-diagnostic';
   const CHAT_REGISTRY_MIRROR_WRITE_APPROVAL = 'WRITE_CHAT_REGISTRY_MIRROR_V1';
+  const CHAT_REGISTRY_MIRROR_REFRESH_APPROVAL = 'REFRESH_CHAT_REGISTRY_MIRROR_V1';
   const STORAGE_ARCHIVE_MSG = 'h2o-ext-archive:v1';
   const SHARED_IDB_TARGET = 'IndexedDB:h2o.library.shared';
   const STORAGE_ADAPTER_DOMAINS = Object.freeze([
@@ -397,6 +399,11 @@
     lastResult: null,
   };
   const mirrorWriteState = {
+    lastCheckedAt: 0,
+    lastTransport: '',
+    lastResult: null,
+  };
+  const mirrorRefreshState = {
     lastCheckedAt: 0,
     lastTransport: '',
     lastResult: null,
@@ -2619,6 +2626,168 @@
     return writeMirror('chatRegistry', options);
   }
 
+  function rememberMirrorRefreshResult(result, transport) {
+    const out = (result && typeof result === 'object' && !Array.isArray(result))
+      ? { ...result }
+      : { ok: false, status: 'invalid-mirror-refresh-result', reason: String(result || '') };
+    if (!out.status) out.status = out.ok === false ? 'mirror-refresh-failed' : 'ok';
+    out.transport = String(transport || out.transport || '');
+    mirrorRefreshState.lastCheckedAt = Date.now();
+    mirrorRefreshState.lastTransport = out.transport;
+    mirrorRefreshState.lastResult = out;
+    return out;
+  }
+
+  function normalizeMirrorRefreshEnvelope(raw, transport) {
+    const env = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    if (!env) {
+      return rememberMirrorRefreshResult({
+        ok: false,
+        phase: '8Q',
+        status: 'mirror-refresh-empty-result',
+        reason: 'background returned no mirror refresh payload',
+        recordsWritten: 0,
+      }, transport);
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'result')) {
+      if (env.ok === false) {
+        return rememberMirrorRefreshResult({
+          ok: false,
+          phase: '8Q',
+          status: 'mirror-refresh-rejected',
+          reason: String(env.error || env.reason || 'background mirror refresh rejected'),
+          error: env.error || '',
+          recordsWritten: 0,
+        }, transport);
+      }
+      return rememberMirrorRefreshResult(env.result, transport);
+    }
+    return rememberMirrorRefreshResult(env, transport);
+  }
+
+  function normalizeRefreshMirrorOptions(domainOrOptions, opts = {}) {
+    const src = domainOrOptions && typeof domainOrOptions === 'object' && !Array.isArray(domainOrOptions)
+      ? domainOrOptions
+      : { ...(opts && typeof opts === 'object' ? opts : {}), domain: domainOrOptions };
+    return {
+      domain: String(src.domain || '').trim(),
+      mode: String(src.mode || '').trim(),
+      explicitApproval: String(src.explicitApproval || '').trim(),
+      expectedChecksum: String(src.expectedChecksum || '').trim(),
+      expectedCandidateCount: Number(src.expectedCandidateCount),
+      batchSize: Number(src.batchSize),
+    };
+  }
+
+  function localMirrorRefreshFailure(status, reason, extra = {}) {
+    return rememberMirrorRefreshResult({
+      ok: false,
+      phase: '8Q',
+      status,
+      reason,
+      domain: extra.domain || 'chatRegistry',
+      mode: extra.mode || 'mirror-refresh-bounded',
+      recordsWritten: 0,
+      recordsCleared: 0,
+      canonicalReadsEnabled: false,
+      canonicalReadEnabled: false,
+      dualReadExecutionEnabled: false,
+      dualWriteEnabled: false,
+      genericReadEnabled: false,
+      genericWriteEnabled: false,
+      legacyMutated: false,
+      migrationStateWritten: false,
+      syncStateWritten: false,
+      ...extra,
+    }, extra.transport || 'local-validation');
+  }
+
+  async function refreshMirror(domainOrOptions, opts = {}) {
+    const options = normalizeRefreshMirrorOptions(domainOrOptions, opts);
+    if (options.domain !== 'chatRegistry') {
+      return localMirrorRefreshFailure('unsupported-domain', 'only chatRegistry mirror refreshes are supported in phase 8Q', { domain: options.domain, supportedDomains: ['chatRegistry'] });
+    }
+    if (options.mode !== 'mirror-refresh-bounded') {
+      return localMirrorRefreshFailure('invalid-mode', 'mode must be mirror-refresh-bounded', { mode: options.mode });
+    }
+    if (options.explicitApproval !== CHAT_REGISTRY_MIRROR_REFRESH_APPROVAL) {
+      return localMirrorRefreshFailure('missing-explicit-approval', 'explicit mirror refresh approval token is required');
+    }
+    if (!options.expectedChecksum) {
+      return localMirrorRefreshFailure('missing-expected-checksum', 'expectedChecksum is required');
+    }
+    if (!Number.isFinite(options.expectedCandidateCount) || options.expectedCandidateCount <= 0) {
+      return localMirrorRefreshFailure('invalid-expected-candidate-count', 'expectedCandidateCount must be a positive number', { expectedCandidateCount: options.expectedCandidateCount });
+    }
+    if (options.batchSize !== 50) {
+      return localMirrorRefreshFailure('invalid-batch-size', 'batchSize must be 50 for phase 8Q', { batchSize: options.batchSize });
+    }
+
+    const schema = await inspectCanonicalSchema('chatRegistry');
+    if (!schema || schema.ok !== true) {
+      return localMirrorRefreshFailure('schema-inspection-failed', 'canonical schema inspection failed before mirror refresh', { schema });
+    }
+    const stores = schema.stores && typeof schema.stores === 'object' ? schema.stores : {};
+    const missingStores = ['chatRegistry', 'migrationState', 'syncState'].filter((name) => !stores[name] || stores[name].exists !== true);
+    if (missingStores.length) {
+      return localMirrorRefreshFailure('required-stores-missing', 'required phase 8I stores are missing', { missingStores, schema });
+    }
+    if (Array.isArray(schema.unexpectedStores) && schema.unexpectedStores.length) {
+      return localMirrorRefreshFailure('unexpected-stores-present', 'unexpected stores block mirror refresh', { unexpectedStores: schema.unexpectedStores.slice(), schema });
+    }
+    const schemaVersion = schema.currentVersion || schema.version || null;
+    if (schemaVersion !== 1) {
+      return localMirrorRefreshFailure('canonical-db-version-not-1', 'h2o.library.shared version must be 1', { schema });
+    }
+
+    const { candidate, sourceSummaries } = getChatRegistryMirrorCandidatePayload();
+    if (candidate.checksum !== options.expectedChecksum) {
+      return localMirrorRefreshFailure('checksum-mismatch', 'expectedChecksum does not match current dry-run checksum', { expectedChecksum: options.expectedChecksum, checksum: candidate.checksum });
+    }
+    if (candidate.candidateCount !== options.expectedCandidateCount) {
+      return localMirrorRefreshFailure('candidate-count-mismatch', 'expectedCandidateCount does not match current dry-run candidate count', { expectedCandidateCount: options.expectedCandidateCount, candidateCount: candidate.candidateCount });
+    }
+    if (candidate.invalidCount || candidate.skippedCount || !candidate.candidateCount) {
+      return localMirrorRefreshFailure('candidate-set-not-refreshable', 'candidate set has invalid, skipped, or empty records', {
+        candidateCount: candidate.candidateCount,
+        invalidCount: candidate.invalidCount,
+        skippedCount: candidate.skippedCount,
+      });
+    }
+
+    const payload = {
+      domain: 'chatRegistry',
+      mode: 'mirror-refresh-bounded',
+      explicitApproval: options.explicitApproval,
+      expectedChecksum: options.expectedChecksum,
+      expectedCandidateCount: options.expectedCandidateCount,
+      batchSize: options.batchSize,
+      checksum: candidate.checksum,
+      candidateCount: candidate.candidateCount,
+      candidateKeys: Array.isArray(candidate.candidateKeys) ? candidate.candidateKeys.slice() : [],
+      records: Array.isArray(candidate.records) ? candidate.records.slice() : [],
+      sourceSummaries,
+    };
+    try {
+      const bridge = safeCall('storage-adapter.background.bridge.get', () => H2O.archiveBoot?._getExtensionBridge?.(), null);
+      if (bridge && typeof bridge.libraryStorageRefreshChatRegistryMirror === 'function') {
+        const out = await bridge.libraryStorageRefreshChatRegistryMirror(payload);
+        return normalizeMirrorRefreshEnvelope(out, 'extension-archive-bridge');
+      }
+      if (W.chrome?.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+        const out = await sendRuntimeArchiveMessage(STORAGE_REFRESH_CHAT_REGISTRY_MIRROR_OP, payload);
+        return normalizeMirrorRefreshEnvelope(out, 'chrome.runtime.sendMessage');
+      }
+      return localMirrorRefreshFailure('mirror-refresh-transport-unavailable', 'no extension archive bridge or chrome.runtime transport available', { transport: 'none' });
+    } catch (e) {
+      return localMirrorRefreshFailure('mirror-refresh-error', String(e?.message || e || ''), { transport: 'error' });
+    }
+  }
+
+  function refreshChatRegistryMirror(options = {}) {
+    return refreshMirror('chatRegistry', options);
+  }
+
   function normalizeMirrorIdList(values) {
     return Array.from(new Set((Array.isArray(values) ? values : [])
       .map((value) => String(value || '').trim())
@@ -3259,6 +3428,15 @@
     };
   }
 
+  function mirrorRefreshSnapshot() {
+    return {
+      lastCheckedAt: mirrorRefreshState.lastCheckedAt,
+      lastTransport: mirrorRefreshState.lastTransport,
+      lastResult: mirrorRefreshState.lastResult,
+      queried: mirrorRefreshState.lastCheckedAt > 0,
+    };
+  }
+
   function mirrorVerificationSnapshot() {
     return {
       lastCheckedAt: mirrorVerificationState.lastCheckedAt,
@@ -3312,6 +3490,8 @@
       getMirrorWritePreflight,
       writeMirror,
       writeChatRegistryMirror,
+      refreshMirror,
+      refreshChatRegistryMirror,
       verifyMirror,
       verifyChatRegistryMirror,
       readMirrorRecord,
@@ -3367,6 +3547,8 @@
               'getMirrorWritePreflight',
               'writeMirror',
               'writeChatRegistryMirror',
+              'refreshMirror',
+              'refreshChatRegistryMirror',
               'verifyMirror',
               'verifyChatRegistryMirror',
               'readMirrorRecord',
@@ -3406,6 +3588,9 @@
           },
           mirrorWrite: {
             chatRegistry: mirrorWriteSnapshot(),
+          },
+          mirrorRefresh: {
+            chatRegistry: mirrorRefreshSnapshot(),
           },
           mirrorVerification: {
             chatRegistry: mirrorVerificationSnapshot(),

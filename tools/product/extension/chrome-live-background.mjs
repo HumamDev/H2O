@@ -1004,6 +1004,7 @@ const LIBRARY_STORAGE_DIAG_OP = "h2o:library-storage:diagnose";
 const LIBRARY_STORAGE_CREATE_EMPTY_SCHEMA_OP = "h2o:library-storage:create-empty-schema";
 const LIBRARY_STORAGE_INSPECT_SCHEMA_OP = "h2o:library-storage:inspect-schema";
 const LIBRARY_STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP = "h2o:library-storage:write-chat-registry-mirror";
+const LIBRARY_STORAGE_REFRESH_CHAT_REGISTRY_MIRROR_OP = "h2o:library-storage:refresh-chat-registry-mirror";
 const LIBRARY_STORAGE_VERIFY_CHAT_REGISTRY_MIRROR_OP = "h2o:library-storage:verify-chat-registry-mirror";
 const LIBRARY_STORAGE_READ_CHAT_REGISTRY_RECORD_DIAG_OP = "h2o:library-storage:read-chat-registry-record-diagnostic";
 const LIBRARY_STORAGE_READ_CHAT_REGISTRY_MIRROR_ALL_DIAG_OP = "h2o:library-storage:read-chat-registry-mirror-all-diagnostic";
@@ -1011,6 +1012,7 @@ const LIBRARY_SHARED_DB_NAME = "h2o.library.shared";
 const LIBRARY_SHARED_DB_VERSION = 1;
 const LIBRARY_SHARED_EMPTY_SCHEMA_APPROVAL = "CREATE_EMPTY_H2O_LIBRARY_SHARED_V1";
 const LIBRARY_SHARED_CHAT_REGISTRY_MIRROR_WRITE_APPROVAL = "WRITE_CHAT_REGISTRY_MIRROR_V1";
+const LIBRARY_SHARED_CHAT_REGISTRY_MIRROR_REFRESH_APPROVAL = "REFRESH_CHAT_REGISTRY_MIRROR_V1";
 const LIBRARY_SHARED_MINIMAL_SCHEMA_STORES = Object.freeze([
   "chatRegistry",
   "migrationState",
@@ -5173,6 +5175,75 @@ function writeChatRegistryMirrorRecords(db, records) {
   });
 }
 
+function replaceChatRegistryMirrorRecords(db, records) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let tx = null;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      resolve(out);
+    };
+    try {
+      tx = db.transaction("chatRegistry", "readwrite");
+      const store = tx.objectStore("chatRegistry");
+      const clearReq = store.clear();
+      clearReq.onsuccess = () => {
+        for (const record of records) {
+          try {
+            store.put(record);
+          } catch (e) {
+            try { tx.abort(); } catch {}
+            done({
+              ok: false,
+              status: "mirror-refresh-record-put-failed",
+              reason: String(e && (e.message || e)) || "mirror refresh record put failed",
+              recordsWritten: 0,
+            });
+            return;
+          }
+        }
+      };
+      clearReq.onerror = () => {
+        const err = clearReq.error;
+        try { tx.abort(); } catch {}
+        done({
+          ok: false,
+          status: "mirror-refresh-clear-failed",
+          reason: String(err && (err.message || err.name || err)) || "mirror refresh clear failed",
+          recordsWritten: 0,
+        });
+      };
+      tx.oncomplete = () => done({ ok: true, recordsWritten: records.length });
+      tx.onabort = () => {
+        const err = tx.error;
+        done({
+          ok: false,
+          status: "mirror-refresh-transaction-aborted",
+          reason: String(err && (err.message || err.name || err)) || "mirror refresh transaction aborted",
+          recordsWritten: 0,
+        });
+      };
+      tx.onerror = () => {
+        const err = tx.error;
+        done({
+          ok: false,
+          status: "mirror-refresh-transaction-failed",
+          reason: String(err && (err.message || err.name || err)) || "mirror refresh transaction failed",
+          recordsWritten: 0,
+        });
+      };
+    } catch (e) {
+      done({
+        ok: false,
+        status: "mirror-refresh-threw",
+        reason: String(e && (e.message || e)) || "mirror refresh threw",
+        recordsWritten: 0,
+      });
+    }
+  });
+}
+
 async function libraryStorageWriteChatRegistryMirror(payload = {}) {
   const src = payload && typeof payload === "object" ? payload : {};
   const domain = String(src.domain || "").trim();
@@ -5338,6 +5409,210 @@ async function libraryStorageWriteChatRegistryMirror(payload = {}) {
     };
     req.onblocked = () => {
       done({ ...base, status: "indexeddb-open-blocked", reason: "opening h2o.library.shared was blocked by another connection" });
+    };
+  });
+}
+
+async function libraryStorageRefreshChatRegistryMirror(payload = {}) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const domain = String(src.domain || "").trim();
+  const mode = String(src.mode || "").trim();
+  const explicitApproval = String(src.explicitApproval || "").trim();
+  const expectedChecksum = String(src.expectedChecksum || "").trim();
+  const checksum = String(src.checksum || "").trim();
+  const expectedCandidateCount = Number(src.expectedCandidateCount);
+  const candidateCount = Number(src.candidateCount);
+  const batchSize = Number(src.batchSize);
+  const now = new Date().toISOString();
+  const base = {
+    ok: false,
+    phase: "8Q",
+    domain,
+    mode,
+    dbName: LIBRARY_SHARED_DB_NAME,
+    store: "chatRegistry",
+    recordsWritten: 0,
+    recordsCleared: 0,
+    expectedCandidateCount: Number.isFinite(expectedCandidateCount) ? expectedCandidateCount : null,
+    checksum: checksum || expectedChecksum,
+    canonicalReadsEnabled: false,
+    canonicalReadEnabled: false,
+    dualReadExecutionEnabled: false,
+    dualWriteEnabled: false,
+    genericReadEnabled: false,
+    genericWriteEnabled: false,
+    legacyMutated: false,
+    migrationStateWritten: false,
+    syncStateWritten: false,
+    at: now,
+  };
+  if (domain !== "chatRegistry") {
+    return { ...base, status: "unsupported-domain", reason: "only chatRegistry mirror refreshes are allowed in phase 8Q" };
+  }
+  if (mode !== "mirror-refresh-bounded") {
+    return { ...base, status: "invalid-mode", reason: "mode must be mirror-refresh-bounded" };
+  }
+  if (explicitApproval !== LIBRARY_SHARED_CHAT_REGISTRY_MIRROR_REFRESH_APPROVAL) {
+    return { ...base, status: "missing-explicit-approval", reason: "explicit mirror refresh approval token is required" };
+  }
+  if (!expectedChecksum || !checksum || checksum !== expectedChecksum) {
+    return { ...base, status: "checksum-mismatch", reason: "expected checksum must match the current mirror candidate checksum" };
+  }
+  if (!Number.isFinite(expectedCandidateCount) || expectedCandidateCount <= 0) {
+    return { ...base, status: "invalid-expected-candidate-count", reason: "expectedCandidateCount must be a positive number" };
+  }
+  if (!Number.isFinite(candidateCount) || candidateCount !== expectedCandidateCount) {
+    return { ...base, status: "candidate-count-mismatch", reason: "candidateCount must match expectedCandidateCount", candidateCount: Number.isFinite(candidateCount) ? candidateCount : null };
+  }
+  if (batchSize !== 50) {
+    return { ...base, status: "invalid-batch-size", reason: "batchSize must be 50 for phase 8Q" };
+  }
+  const normalized = normalizeChatRegistryMirrorRecords(src.records, src.candidateKeys);
+  if (normalized.errors.length) {
+    return { ...base, status: "invalid-records", reason: "mirror refresh payload contains invalid records", errors: normalized.errors.slice(0, 10), candidateCount: normalized.records.length };
+  }
+  if (normalized.records.length !== expectedCandidateCount) {
+    return { ...base, status: "record-count-mismatch", reason: "records length must match expectedCandidateCount", candidateCount: normalized.records.length };
+  }
+  const payloadChecksum = checksumChatRegistryMirrorPayload(normalized.records, normalized.candidateKeys);
+  if (payloadChecksum !== expectedChecksum) {
+    return { ...base, status: "payload-checksum-mismatch", reason: "mirror refresh payload checksum does not match expected checksum", payloadChecksum };
+  }
+  const inspection = await libraryStorageInspectSchema({ domain: "chatRegistry", mode: "inspect-schema-only" });
+  if (!inspection.ok) {
+    return { ...base, status: "schema-inspection-failed", reason: inspection.reason || inspection.status || "schema inspection failed", inspection };
+  }
+  const stores = inspection.stores || {};
+  const missingStores = LIBRARY_SHARED_MINIMAL_SCHEMA_STORES.filter((name) => !stores[name] || stores[name].exists !== true);
+  const schemaVersion = inspection.currentVersion || inspection.version || null;
+  if (schemaVersion !== LIBRARY_SHARED_DB_VERSION) {
+    return { ...base, status: "db-version-not-1", reason: "h2o.library.shared version must be 1", inspection };
+  }
+  if (missingStores.length) {
+    return { ...base, status: "required-stores-missing", reason: "required phase 8I stores are missing", missingStores, inspection };
+  }
+  if (Array.isArray(inspection.unexpectedStores) && inspection.unexpectedStores.length) {
+    return { ...base, status: "unexpected-stores-present", reason: "unexpected stores block mirror refresh", unexpectedStores: inspection.unexpectedStores.slice(), inspection };
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let req = null;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      resolve(out);
+    };
+    try {
+      req = indexedDB.open(LIBRARY_SHARED_DB_NAME);
+    } catch (e) {
+      done({ ...base, status: "indexeddb-open-failed", reason: String(e && (e.message || e)) || "IndexedDB open failed", inspection });
+      return;
+    }
+    req.onupgradeneeded = () => {
+      try {
+        const tx = req.transaction;
+        if (tx && typeof tx.abort === "function") tx.abort();
+      } catch {}
+      try {
+        const db = req.result;
+        if (db && typeof db.close === "function") db.close();
+      } catch {}
+      done({ ...base, status: "indexeddb-upgrade-attempted", reason: "mirror refresh aborted because IndexedDB attempted to create or upgrade h2o.library.shared", inspection });
+    };
+    req.onsuccess = async () => {
+      const db = req.result;
+      try {
+        const currentVersion = Number(db.version || 0) || null;
+        if (currentVersion !== LIBRARY_SHARED_DB_VERSION) {
+          done({ ...base, status: "db-version-not-1", reason: "opened h2o.library.shared version must be 1", currentVersion, inspection });
+          return;
+        }
+        const existing = await readChatRegistryMirrorRecords(db, 5000, "8q");
+        if (!existing.ok) {
+          done({ ...base, status: existing.status || "existing-mirror-read-failed", reason: existing.reason || "failed to read existing chatRegistry mirror", inspection });
+          return;
+        }
+        const existingSummary = summarizeChatRegistryMirrorRecords(existing.records || []);
+        if (existingSummary.invalidRecords.length) {
+          done({ ...base, status: "invalid-existing-canonical-records", reason: "existing canonical chatRegistry mirror contains invalid records", invalidCanonicalRecords: existingSummary.invalidRecords.slice(), inspection });
+          return;
+        }
+        if (existingSummary.duplicateChatIds.length) {
+          done({ ...base, status: "duplicate-existing-canonical-chatIds", reason: "existing canonical chatRegistry mirror contains duplicate chatIds", duplicateCanonicalChatIds: existingSummary.duplicateChatIds.slice(), inspection });
+          return;
+        }
+        const migrationBefore = await countLibrarySharedStore(db, "migrationState");
+        if (!migrationBefore.ok) {
+          done({ ...base, status: migrationBefore.status || "migration-state-count-failed", reason: migrationBefore.reason || "failed to count migrationState before refresh", inspection });
+          return;
+        }
+        const syncBefore = await countLibrarySharedStore(db, "syncState");
+        if (!syncBefore.ok) {
+          done({ ...base, status: syncBefore.status || "sync-state-count-failed", reason: syncBefore.reason || "failed to count syncState before refresh", inspection });
+          return;
+        }
+        const refreshed = await replaceChatRegistryMirrorRecords(db, normalized.records);
+        if (!refreshed.ok) {
+          done({ ...base, ...refreshed, ok: false, checksum: expectedChecksum, recordsCleared: 0, inspection });
+          return;
+        }
+        const after = await readChatRegistryMirrorRecords(db, 5000, "8q");
+        if (!after.ok) {
+          done({ ...base, status: after.status || "post-refresh-read-failed", reason: after.reason || "failed to read chatRegistry after refresh", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, inspection });
+          return;
+        }
+        const afterSummary = summarizeChatRegistryMirrorRecords(after.records || []);
+        if (afterSummary.canonicalCount !== expectedCandidateCount) {
+          done({ ...base, status: "post-refresh-count-mismatch", reason: "chatRegistry count after refresh does not match expected candidate count", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, canonicalExistingCount: afterSummary.canonicalCount, inspection });
+          return;
+        }
+        if (afterSummary.canonicalChecksum !== expectedChecksum) {
+          done({ ...base, status: "post-refresh-checksum-mismatch", reason: "chatRegistry checksum after refresh does not match expected checksum", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, canonicalChecksum: afterSummary.canonicalChecksum, inspection });
+          return;
+        }
+        if (afterSummary.invalidRecords.length || afterSummary.duplicateChatIds.length) {
+          done({ ...base, status: "post-refresh-invalid-canonical-records", reason: "chatRegistry mirror contains invalid or duplicate records after refresh", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, invalidCanonicalRecords: afterSummary.invalidRecords.slice(), duplicateCanonicalChatIds: afterSummary.duplicateChatIds.slice(), inspection });
+          return;
+        }
+        const migrationAfter = await countLibrarySharedStore(db, "migrationState");
+        const syncAfter = await countLibrarySharedStore(db, "syncState");
+        if (!migrationAfter.ok || migrationAfter.count !== migrationBefore.count) {
+          done({ ...base, status: "migration-state-count-changed", reason: "migrationState count changed during mirror refresh", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, migrationStateBeforeCount: migrationBefore.count, migrationStateAfterCount: migrationAfter.ok ? migrationAfter.count : null, inspection });
+          return;
+        }
+        if (!syncAfter.ok || syncAfter.count !== syncBefore.count) {
+          done({ ...base, status: "sync-state-count-changed", reason: "syncState count changed during mirror refresh", recordsWritten: refreshed.recordsWritten, recordsCleared: existingSummary.canonicalCount, syncStateBeforeCount: syncBefore.count, syncStateAfterCount: syncAfter.ok ? syncAfter.count : null, inspection });
+          return;
+        }
+        done({
+          ...base,
+          ok: true,
+          status: "mirror-refresh-complete",
+          recordsWritten: refreshed.recordsWritten,
+          recordsCleared: existingSummary.canonicalCount,
+          candidateCount: expectedCandidateCount,
+          expectedCandidateCount,
+          checksum: expectedChecksum,
+          canonicalExistingCount: afterSummary.canonicalCount,
+          canonicalChecksum: afterSummary.canonicalChecksum,
+          migrationStateBeforeCount: migrationBefore.count,
+          migrationStateAfterCount: migrationAfter.count,
+          syncStateBeforeCount: syncBefore.count,
+          syncStateAfterCount: syncAfter.count,
+        });
+      } catch (e) {
+        done({ ...base, status: "mirror-refresh-failed", reason: String(e && (e.message || e)) || "mirror refresh failed", inspection });
+      } finally {
+        try { db.close(); } catch {}
+      }
+    };
+    req.onerror = () => {
+      const err = req.error;
+      done({ ...base, status: "indexeddb-open-failed", reason: String(err && (err.message || err.name || err)) || "IndexedDB open failed", inspection });
+    };
+    req.onblocked = () => {
+      done({ ...base, status: "indexeddb-open-blocked", reason: "opening h2o.library.shared was blocked by another connection", inspection });
     };
   });
 }
@@ -5742,6 +6017,9 @@ async function handleArchiveMessage(msg) {
   }
   if (op === LIBRARY_STORAGE_WRITE_CHAT_REGISTRY_MIRROR_OP || op === "libraryStorageWriteChatRegistryMirror") {
     return { ok: true, result: await libraryStorageWriteChatRegistryMirror(payload) };
+  }
+  if (op === LIBRARY_STORAGE_REFRESH_CHAT_REGISTRY_MIRROR_OP || op === "libraryStorageRefreshChatRegistryMirror") {
+    return { ok: true, result: await libraryStorageRefreshChatRegistryMirror(payload) };
   }
   if (op === LIBRARY_STORAGE_VERIFY_CHAT_REGISTRY_MIRROR_OP || op === "libraryStorageVerifyChatRegistryMirror") {
     return { ok: true, result: await libraryStorageVerifyChatRegistryMirror(payload) };

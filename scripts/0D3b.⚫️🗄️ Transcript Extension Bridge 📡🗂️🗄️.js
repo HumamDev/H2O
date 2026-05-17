@@ -268,6 +268,7 @@
     libraryStorageCreateEmptySchema: (payload = {}) => call("h2o:library-storage:create-empty-schema", payload, { timeoutMs: 8000 }),
     libraryStorageInspectSchema: (payload = {}) => call("h2o:library-storage:inspect-schema", payload, { timeoutMs: 5000 }),
     libraryStorageWriteChatRegistryMirror: (payload = {}) => call("h2o:library-storage:write-chat-registry-mirror", payload, { timeoutMs: 12000 }),
+    libraryStorageRefreshChatRegistryMirror: (payload = {}) => call("h2o:library-storage:refresh-chat-registry-mirror", payload, { timeoutMs: 12000 }),
     libraryStorageVerifyChatRegistryMirror: (payload = {}) => call("h2o:library-storage:verify-chat-registry-mirror", payload, { timeoutMs: 8000 }),
     libraryStorageReadChatRegistryRecordDiagnostic: (payload = {}) => call("h2o:library-storage:read-chat-registry-record-diagnostic", payload, { timeoutMs: 5000 }),
     libraryStorageReadChatRegistryMirrorAllDiagnostic: (payload = {}) => call("h2o:library-storage:read-chat-registry-mirror-all-diagnostic", payload, { timeoutMs: 8000 }),
