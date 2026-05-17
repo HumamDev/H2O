@@ -154,7 +154,7 @@
     },
     {
       "label": "H2O: #) 🟥 DEV / Z) ONE-BUTTON Rebuild V3 / armed / oauth-google (scripts + aliases + proxy + extension)",
-      "detail": "One-button daily rebuild: common prereqs + V3 armed oauth-google extension into build/chrome-ext-dev-controls-oauth-google.",
+      "detail": "One-button daily rebuild: common prereqs + V3 armed oauth-google extension (build/chrome-ext-dev-controls-oauth-google) + Prod Cockpit Pro (build/chrome-ext-prod) + Studio Launcher (build/chrome-ext-studio-launcher).",
       "type": "process",
       "command": "node",
       "args": [

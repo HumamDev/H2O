@@ -80,12 +80,19 @@ export function makeChromeLiveBackgroundJs({
   IDENTITY_PROVIDER_CONFIG_STATUS = null,
   IDENTITY_PROVIDER_PHASE_NETWORK = null,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
+  STUDIO_AUTO_RESTORE_ENABLED = true,
 }) {
   // Studio is hosted in chrome-ext-prod ONLY. Non-prod builds ship without
   // surfaces/studio/* (the build script calls removeArchiveWorkbenchFromOut)
   // AND disable every code path that would try to open / focus / restore
   // Studio at runtime. ARCHIVE_WORKBENCH_ENABLED gates all those paths.
   const STUDIO_HOSTED_HERE = String(MANIFEST_PROFILE || "").trim().toLowerCase() === "production";
+  // Auto-restore is the "if Studio was open before an extension reload, bring
+  // it back on its own" path. Studio Launcher disables this because its
+  // single-purpose toolbar button is enough — and because two presence-restore
+  // wakes (sw-boot top-level + onInstalled) can race the cooldown marker and
+  // create duplicate Studio tabs.
+  const STUDIO_AUTO_RESTORE_ON = STUDIO_HOSTED_HERE && STUDIO_AUTO_RESTORE_ENABLED !== false;
   const IDENTITY_PROVIDER_OAUTH_PROVIDER_SAFE = sanitizeIdentityProviderOAuthProviderForBackground(IDENTITY_PROVIDER_OAUTH_PROVIDER);
   const IDENTITY_PROVIDER_CONFIG_STATUS_SAFE = sanitizeIdentityProviderConfigStatusForBackground(
     IDENTITY_PROVIDER_CONFIG_STATUS,
@@ -129,6 +136,13 @@ const CHAT_MATCH = ${JSON.stringify(CHAT_MATCH)};
 // path is short-circuited so the bg.js never tries to navigate a tab to
 // surfaces/studio/studio.html which does not exist in non-prod outputs.
 const ARCHIVE_WORKBENCH_ENABLED = ${JSON.stringify(STUDIO_HOSTED_HERE)};
+const STUDIO_AUTO_RESTORE_ENABLED = ${JSON.stringify(STUDIO_AUTO_RESTORE_ON)};
+// In-flight guards prevent racing creates. Both openOrFocusStudio (toolbar
+// click) and scheduleStudioPresenceRestore (sw-boot / onInstalled / onStartup)
+// can fire concurrently; without these, two queries can race the tabs API
+// before either chrome.tabs.create completes, producing duplicate Studio tabs.
+let __studioOpenInFlight = null;
+let __studioRestoreInFlight = null;
 const PAGE_DISABLE_ONCE_MAX_AGE_MS = 10 * 60 * 1000;
 const DEV_SET_SLOTS = [1, 2, 3, 4, 5, 6];
 const STORAGE_TOGGLE_SETS_KEY = "h2oExtDevToggleSetsV1";
@@ -3223,6 +3237,12 @@ async function openOrFocusStudio(routeRaw = "") {
   if (!ARCHIVE_WORKBENCH_ENABLED) {
     throw new Error("Studio is not hosted in this extension build (chrome-ext-prod only).");
   }
+  // In-flight guard: if a previous call (toolbar click or auto-restore) is
+  // mid-query-or-create, reuse its promise instead of racing a second
+  // chrome.tabs.create. The guard clears in finally so subsequent clicks
+  // (after the first resolves) work normally.
+  if (__studioOpenInFlight) return __studioOpenInFlight;
+  __studioOpenInFlight = (async () => {
   const baseUrl = chrome.runtime.getURL("surfaces/studio/studio.html");
   const callerProvidedRoute = typeof routeRaw === "string" && routeRaw.trim() !== "";
   let hash = "";
@@ -3280,6 +3300,12 @@ async function openOrFocusStudio(routeRaw = "") {
       reject(err);
     }
   });
+  })();
+  try {
+    return await __studioOpenInFlight;
+  } finally {
+    __studioOpenInFlight = null;
+  }
 }
 
 // ─── Studio auto-restore after extension reload ────────────────────────────
@@ -3354,6 +3380,18 @@ async function scheduleStudioPresenceRestore(reason) {
     // any stale presence belongs to a previous prod-ish identity anyway).
     return { ok: false, skipped: "studio-not-hosted", reason };
   }
+  if (!STUDIO_AUTO_RESTORE_ENABLED) {
+    // Auto-restore disabled by build profile (e.g. Studio Launcher). The
+    // toolbar button (openOrFocusStudio) is the only Studio entry point.
+    return { ok: false, skipped: "auto-restore-disabled", reason };
+  }
+  // In-flight guard: sw-boot top-level + chrome.runtime.onInstalled fire
+  // within milliseconds of each other on extension reload. Both pass the
+  // chrome.storage cooldown check before either writes the marker (TOCTOU),
+  // and the resulting two restoreStudioTabAfterReload calls can each create
+  // a new tab. Reusing the in-flight promise serializes them.
+  if (__studioRestoreInFlight) return __studioRestoreInFlight;
+  __studioRestoreInFlight = (async () => {
   try {
     const result = await new Promise((resolve) => {
       try {
@@ -3388,6 +3426,12 @@ async function scheduleStudioPresenceRestore(reason) {
   } catch (e) {
     console.warn(TAG, "studio auto-restore failed", e && (e.message || e));
     return { ok: false, error: String(e && (e.message || e)), reason };
+  }
+  })();
+  try {
+    return await __studioRestoreInFlight;
+  } finally {
+    __studioRestoreInFlight = null;
   }
 }
 

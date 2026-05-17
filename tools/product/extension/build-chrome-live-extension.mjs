@@ -457,6 +457,10 @@ async function main() {
     IDENTITY_PROVIDER_CONFIG_STATUS: identityProviderConfigStatus,
     IDENTITY_PROVIDER_PHASE_NETWORK: identityProviderPhaseNetwork,
     IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
+    // Studio Launcher: disable auto-restore. With only a toolbar button as
+    // entry point, presence-restore-on-reload is unnecessary and was the
+    // primary source of duplicate-tab bugs (sw-boot vs onInstalled race).
+    STUDIO_AUTO_RESTORE_ENABLED: !STUDIO_ONLY,
   }));
 
   // Studio-launcher omits the chatgpt.com loader pipeline entirely: no
