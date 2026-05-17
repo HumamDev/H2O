@@ -1,14 +1,33 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 0E-3 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0E-3 note: REPO_ROOT, ARCHIVE_DIR, EDITS_CSV, EDITS_V2_CSV are sourced
+// from tools/paths.mjs. Local STATE_DIR and STATE_FILE remain computed locally
+// because they are sub-paths of ARCHIVE_DIR specific to this tool — paths.mjs
+// does not model archive/.state. All CLI flags (--file, --id, --pick, --recent,
+// --help, -h) preserved unchanged. Behavior verified by 6-output diff on safe,
+// non-destructive code paths (--help, unknown arg, bad file, missing file,
+// missing id, no args).
+//
+// Note about the sibling tool tools/archive/archive-snapshot.mjs: it was
+// EVALUATED for Phase 0E-3 but intentionally NOT refactored. Its SRC comes
+// from process.argv[2] (caller-driven), not from a REPO_ROOT-pattern compute,
+// so its path constants do not have paths.mjs equivalents that preserve
+// behavior. Its local stripEmojiAndInvisibles is also subtly different from
+// tools/script-registry.mjs's (missing the U+1F3FB-U+1F3FF skin-tone-modifier
+// regex). See Phase 0E-3 completion report for the full deferral rationale.
+
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
+import {
+  REPO_ROOT,
+  ARCHIVE_DIR,
+  EDITS_CSV,
+  EDITS_V2_CSV,
+} from "../paths.mjs";
 
 const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
 const USER_FILE_RE = /\.user\.js$/i;
@@ -16,11 +35,19 @@ const VERSION_RE = /^\s*\/\/\s*@version\s+([^\s]+)\s*$/im;
 const ID_RE = /^\s*\/\/\s*@h2o-id\s+(.+?)\s*$/im;
 const REV_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/im;
 
-const ARCHIVE_ROOT = path.join(REPO_ROOT, "archive");
+// Local aliases preserve pre-Phase-0E-3 variable names so the rest of this
+// file is untouched. Each resolves to the same value as before — paths.mjs
+// computes them off the same REPO_ROOT:
+//   ARCHIVE_ROOT === ARCHIVE_DIR    (<REPO_ROOT>/archive)
+//   LEDGER_V1    === EDITS_CSV      (<REPO_ROOT>/meta/ledger/edits.csv)
+//   LEDGER_V2    === EDITS_V2_CSV   (<REPO_ROOT>/meta/ledger/edits.v2.csv)
+// STATE_DIR and STATE_FILE remain locally computed: they are sub-paths of
+// ARCHIVE_ROOT specific to this tool and paths.mjs does not model them.
+const ARCHIVE_ROOT = ARCHIVE_DIR;
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
-const LEDGER_V2 = path.join(REPO_ROOT, "meta", "ledger", "edits.v2.csv");
-const LEDGER_V1 = path.join(REPO_ROOT, "meta", "ledger", "edits.csv");
+const LEDGER_V2 = EDITS_V2_CSV;
+const LEDGER_V1 = EDITS_CSV;
 
 try {
   await main();
