@@ -1,15 +1,27 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 0G-2 migration: path constants imported from tools/paths.mjs)
+//
+// Phase 0G-2 note: SRC, OUT_DIR fallback, PROXY_PACK_URL fallback, and
+// DEV_ORDER_FILE are now sourced from tools/paths.mjs. All env-var overrides
+// preserved unchanged (H2O_SRC_DIR, H2O_EXT_OUT_DIR, H2O_EXT_DEV_VARIANT,
+// H2O_EXT_PROXY_PACK_URL, H2O_EXT_MATCH). Behavior verified by file-by-file
+// shasum comparison of the chrome-ext-controls build with locked H2O_BUILD_TS;
+// the only inter-run variance is in loader.js's LOADER_BUILD_TS line (sourced
+// from Date.now() inside chrome-live-loader.mjs, not from this file) — diff
+// with `-I 'LOADER_BUILD_'` returns empty.
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import {
+  REPO_ROOT,
+  BUILD_DIR,
+  DEV_ORDER_TSV,
+  PROXY_PACK_URL as PATHS_PROXY_PACK_URL,
+} from "../../paths.mjs";
 
 export function createChromeLiveBuildContext() {
-  const TOOL_FILE = fileURLToPath(import.meta.url);
-  const TOOL_DIR = path.dirname(TOOL_FILE);
-  const SRC_DEFAULT = path.resolve(TOOL_DIR, "..", "..", "..");
-
-  const SRC =
-    process.env.H2O_SRC_DIR ||
-    SRC_DEFAULT;
+  // paths.REPO_ROOT honors H2O_SRC_DIR identically to the previous inline
+  // `process.env.H2O_SRC_DIR || SRC_DEFAULT` compute. Under standard
+  // invocation (no env override), SRC === <repo>/ matches pre-Phase-0G-2.
+  const SRC = REPO_ROOT;
 
   const DEV_VARIANT_RAW = String(process.env.H2O_EXT_DEV_VARIANT || "controls").trim().toLowerCase();
   const DEV_VARIANT = DEV_VARIANT_RAW === "lean"
@@ -30,19 +42,23 @@ export function createChromeLiveBuildContext() {
   const STUDIO_ONLY = DEV_VARIANT === "studio-launcher";
   const MANIFEST_PROFILE = (DEV_VARIANT === "production" || STUDIO_ONLY) ? "production" : "development";
 
+  // OUT_DIR fallback uses paths.BUILD_DIR (= REPO_ROOT/build, env-overridable
+  // via H2O_SRC_DIR through paths.mjs). H2O_EXT_OUT_DIR override preserved as
+  // the highest-precedence source — unchanged from pre-Phase-0G-2 semantics.
   const OUT_DIR =
     process.env.H2O_EXT_OUT_DIR ||
     path.join(
-      SRC,
-      "build",
+      BUILD_DIR,
       STUDIO_ONLY
         ? "chrome-ext-studio-launcher"
         : (DEV_VARIANT === "production" ? "chrome-ext-prod" : "chrome-ext-dev-controls"),
     );
 
-  const PROXY_PACK_URL =
-    process.env.H2O_EXT_PROXY_PACK_URL ||
-    "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt";
+  // PROXY_PACK_URL: paths.PROXY_PACK_URL already encapsulates the
+  // H2O_EXT_PROXY_PACK_URL env override + default URL composition. Under the
+  // standard invocation this resolves to exactly the same string the inline
+  // fallback used to produce.
+  const PROXY_PACK_URL = PATHS_PROXY_PACK_URL;
 
   const CHAT_MATCH =
     process.env.H2O_EXT_MATCH ||
@@ -76,7 +92,11 @@ export function createChromeLiveBuildContext() {
     : (DEV_VARIANT === "production"
       ? "[H2O PROD]"
       : (DEV_HAS_CONTROLS ? "[H2O DEV CTRL]" : "[H2O DEV LEAN]"));
-  const DEV_ORDER_FILE = path.join(SRC, "config", "dev-order.tsv");
+  // DEV_ORDER_FILE: paths.DEV_ORDER_TSV honors H2O_ORDER_FILE additionally
+  // (the pre-Phase-0G-2 inline compute did not honor any env override for this
+  // path). Under the standard invocation (no env override), the resolved path
+  // is byte-identical: <REPO_ROOT>/config/dev-order.tsv.
+  const DEV_ORDER_FILE = DEV_ORDER_TSV;
   const PAGE_FOLDER_BRIDGE_FILE = "folder-bridge-page.js";
   // P3-pilot WAR observer (CSP-safe; replaces inline-textContent injection
   // that ChatGPT CSP blocked). Loaded via chrome.runtime.getURL when

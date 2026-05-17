@@ -1,7 +1,20 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 0G-2 migration: ASSETS_DIR imported from tools/paths.mjs)
+//
+// Phase 0G-2 note: DEV_CONTROLS_ICONS_DIR and DEV_LEAN_ICONS_DIR now derive
+// from paths.ASSETS_DIR instead of `path.join(SRC, "assets", ...)`. Under the
+// standard invocation (no env override), the resolved paths are byte-identical
+// to pre-Phase-0G-2. SCRIPT_DIR (used as a fallback icon-search root in
+// resolvePanelIconSourceDir) is intentionally kept script-relative — it is a
+// heuristic that benefits from anchoring to this file's location, not to a
+// centralized constant. IDENTITY_PROVIDER_LOCAL_CONFIG_REL is also left as a
+// relative-path string because it is intentionally joined with SRC at call
+// time, not a global path constant.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { ASSETS_DIR } from "../../paths.mjs";
+
 import {
   syncArchiveWorkbenchToOut,
   removeArchiveWorkbenchFromOut,
@@ -70,8 +83,11 @@ const {
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
 } = createChromeLiveBuildContext();
-const DEV_CONTROLS_ICONS_DIR = path.join(SRC, "assets", "chrome-dev-controls-icons");
-const DEV_LEAN_ICONS_DIR = path.join(SRC, "assets", "chrome-dev-lean-icons");
+// Phase 0G-2: ASSETS_DIR comes from paths.mjs (= <REPO_ROOT>/assets). Both
+// constants resolve byte-identical to the pre-Phase-0G-2 `path.join(SRC,
+// "assets", ...)` form under the standard invocation.
+const DEV_CONTROLS_ICONS_DIR = path.join(ASSETS_DIR, "chrome-dev-controls-icons");
+const DEV_LEAN_ICONS_DIR = path.join(ASSETS_DIR, "chrome-dev-lean-icons");
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
