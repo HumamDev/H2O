@@ -11,7 +11,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // will move the folder to apps/studio/mobile — only this constant needs
 // updating then. All other REL constants in this file are derived from it
 // via template literals so resolved string values stay byte-identical.
-const MOBILE_APP_REL = "apps/studio-mobile";
+const MOBILE_APP_REL = "apps/studio/mobile";
 
 const MOBILE_ROOT_REL = MOBILE_APP_REL;
 const MOBILE_SRC_REL = `${MOBILE_APP_REL}/src`;

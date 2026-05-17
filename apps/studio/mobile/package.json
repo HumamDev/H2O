@@ -14,7 +14,7 @@
     "eas:submit:internal": "npx eas-cli submit --platform ios --latest"
   },
   "dependencies": {
-    "@h2o/identity-core": "file:../../packages/identity-core",
+    "@h2o/identity-core": "file:../../../packages/identity-core",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/elements": "^2.9.10",

@@ -30,7 +30,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // updating then. All apps/studio-mobile/... paths in this validator
 // (object keys, array entries, REL constants) are derived via template
 // literals so resolved string values stay byte-identical.
-const MOBILE_APP_REL = "apps/studio-mobile";
+const MOBILE_APP_REL = "apps/studio/mobile";
 
 function read(rel) {
   return fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");

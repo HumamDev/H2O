@@ -3,7 +3,7 @@
   "compilerOptions": {
     "strict": true,
     "paths": {
-      "@h2o/identity-core": ["../../packages/identity-core/index.ts"],
+      "@h2o/identity-core": ["../../../packages/identity-core/index.ts"],
       "@/*": [
         "./src/*"
       ],

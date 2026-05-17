@@ -57,7 +57,7 @@ function extractBlockByName(source, name) {
 // Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
 // will move the folder to apps/studio/mobile — only this constant needs
 // updating then.
-const MOBILE_APP_REL = "apps/studio-mobile";
+const MOBILE_APP_REL = "apps/studio/mobile";
 
 const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
 const ACCOUNT_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;

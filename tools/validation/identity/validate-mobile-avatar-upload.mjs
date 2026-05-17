@@ -61,7 +61,7 @@ const MIGRATION_REL = "supabase/migrations/202605050001_identity_profile_avatar_
 // will move the folder to apps/studio/mobile — only this constant needs
 // updating then. All REL constants below derive from it via template literals
 // so resolved string values stay byte-identical.
-const MOBILE_APP_REL = "apps/studio-mobile";
+const MOBILE_APP_REL = "apps/studio/mobile";
 
 const MOBILE_CONFIG_REL = `${MOBILE_APP_REL}/src/identity/mobileConfig.ts`;
 const CONTRACTS_REL = "packages/identity-core/src/contracts.ts";

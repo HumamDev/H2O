@@ -40,7 +40,7 @@
   },
   "workspaces": [
     "apps/studio/desktop",
-    "apps/studio-mobile",
+    "apps/studio/mobile",
     "apps/site",
     "packages/*"
   ]

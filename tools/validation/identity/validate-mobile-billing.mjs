@@ -52,7 +52,7 @@ function assert(cond, msg) {
 // will move the folder to apps/studio/mobile — only this constant needs
 // updating then. All REL constants below derive from it via template literals
 // so resolved string values stay byte-identical.
-const MOBILE_APP_REL = "apps/studio-mobile";
+const MOBILE_APP_REL = "apps/studio/mobile";
 
 const BILLING_CONFIG_REL = `${MOBILE_APP_REL}/src/billing/billingConfig.ts`;
 const BILLING_PROVIDER_REL = `${MOBILE_APP_REL}/src/billing/MobileBillingProvider.ts`;

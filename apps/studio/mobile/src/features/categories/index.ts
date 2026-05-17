@@ -6,7 +6,7 @@ export {
   buildCategoryTextBuckets,
   classifySnapshotCategory,
   sampleCategoryTranscriptMessages,
-} from '../../../../../packages/studio-core/src/categories/classifier';
+} from '../../../../../../packages/studio-core/src/categories/classifier';
 
 export { CATEGORY_CATALOG_CREATED_AT, DEFAULT_CATEGORY_CATALOG };
 
