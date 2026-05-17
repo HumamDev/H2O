@@ -205,6 +205,39 @@
         "0C2a._Unmount_Messages_Engine_.js"
       ]
     },
+    "0B2a._Performance_Monitor_(_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "PERFORMANCE",
+      "provides": [
+        "h2o.perf.monitor"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0B1a._Performance_Governor_.js",
+        "0B1b._Performance_Store_.js"
+      ]
+    },
+    "0B2b._Performance_HUD_(_Widget)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0B2a._Performance_Monitor_(_Plugin)_.js"
+      ],
+      "group": "PERFORMANCE",
+      "provides": [
+        "h2o.perf.hud"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0B2a._Performance_Monitor_(_Plugin)_.js"
+      ]
+    },
     "0C1a._Pagination_Windowing_Engine_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -482,6 +515,184 @@
       "critical": false,
       "optionalDependsOn": []
     },
+    "0F0c._Library_Registry_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.registryCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0d._Library_Index_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.libraryIndexCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0e._Folder_Provider_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.folderProviderCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0f._Category_Provider_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.categoryProviderCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0g._Tag_Provider_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.tagProviderCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0h._Label_Provider_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.labelProviderCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F0i._Project_Provider_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.projectProviderCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0F1h._Library_Sync_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0F1a._Library_Core_.js",
+        "0F1g._Chat_Registry_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.sync"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1a._Library_Core_.js",
+        "0F1g._Chat_Registry_.js"
+      ]
+    },
+    "0F1i._Library_Sync_Consumers_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0F1h._Library_Sync_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.syncConsumers"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1h._Library_Sync_.js",
+        "0F1b._Library_Workspace_.js",
+        "0F1c._Library_Index_.js",
+        "0F1d._Library_Insights_.js",
+        "0F3a._Folders_.js",
+        "0F6a._Labels_.js",
+        "0F2a._Projects_.js"
+      ]
+    },
+    "0F1j._Library_Actions_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0F1g._Chat_Registry_.js",
+        "0F3a._Folders_.js",
+        "0D3a._Transcript_Archive_Engine_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.actions"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1g._Chat_Registry_.js",
+        "0F3a._Folders_.js",
+        "0D3a._Transcript_Archive_Engine_.js"
+      ]
+    },
+    "0F1k._Library_Canonical_Services_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0F1a._Library_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.canonicalServices"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0F1e._Library_Store_.js",
+        "0F1g._Chat_Registry_.js",
+        "0F1c._Library_Index_.js",
+        "0D3a._Transcript_Archive_Engine_.js",
+        "0F2a._Projects_.js",
+        "0F3a._Folders_.js",
+        "0F4a._Categories_.js",
+        "0F5a._Tags_.js",
+        "0F6a._Labels_.js"
+      ]
+    },
     "0X1a._Command_Bar_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -552,6 +763,22 @@
       "group": "CORE_BASE",
       "provides": [
         "h2o.controlHub.minimapTab"
+      ]
+    },
+    "0Z1d._Performance_Tab_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.performanceTab"
+      ],
+      "critical": false,
+      "optionalDependsOn": [
+        "0B1a._Performance_Governor_.js",
+        "0B2a._Performance_Monitor_(_Plugin)_.js"
       ]
     },
     "0Z1e._Account_Tab_(Control_Hub_Plugin)_.js": {
@@ -688,6 +915,19 @@
       "provides": [
         "h2o.controlHub.promptManagerTab"
       ],
+      "optionalDependsOn": []
+    },
+    "0Z1p._Interface_Controls_(Control_Hub_Plugin)_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0Z1a._Control_Hub_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.controlHub.interfaceControls"
+      ],
+      "critical": false,
       "optionalDependsOn": []
     },
     "0Z2a._Control_Hub_Tab_Tree_(Control_Hub_Add-on)_.js": {
