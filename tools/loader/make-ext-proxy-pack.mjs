@@ -1,36 +1,55 @@
 // tools/loader/make-ext-proxy-pack.mjs
-// @version 1.0.0
+// @version 1.1.0  (Phase 0C migration: path constants imported from tools/paths.mjs)
 //
 // EXT-native proxy pack generator.
 // Writes only the header pack consumed by tools/product/extension/build-chrome-live-extension.mjs
 // and avoids generating TM loader/proxy artifacts.
 //
 // Uses an EXT-specific proxy-pack filename for clearer EXT workflow semantics.
+//
+// Phase 0C note: path defaults (REPO_ROOT, SERVER_ROOT, ALIAS_DIR, DEV_ORDER_TSV,
+// LOADER_DEPS_JSON, DEV_SERVER_URL) are now sourced from tools/paths.mjs. Two
+// legacy env-var names are NOT modeled by paths.mjs and remain in-file:
+//   - H2O_DEV_DIR_NAME — selects the proxy subdirectory name under SERVER_ROOT
+//     (default "dev_output"). paths.mjs hardcodes that default; this file
+//     continues to honor the override locally so old workflows keep working.
+//   - H2O_DEV_ORIGIN  — legacy alias for the dev server URL. paths.mjs uses
+//     H2O_DEV_SERVER_URL as the env name. To stay backward-compatible, this
+//     file checks H2O_DEV_ORIGIN first and falls back to paths.DEV_SERVER_URL.
+// All other env overrides (H2O_SRC_DIR, H2O_SERVER_DIR, H2O_ORDER_FILE,
+// H2O_DEPS_FILE, H2O_BUILD_TS) continue to work identically.
+// Output is byte-identical to the pre-Phase-0C behavior when BUILD_TS is held
+// constant (verified by proxy-pack shasum during the Phase 0C migration commit).
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const SRC_DEFAULT = path.resolve(TOOL_DIR, "..", "..");
-const SERVER_DEFAULT = path.resolve(SRC_DEFAULT, "..", "h2o-dev-server");
+import {
+  REPO_ROOT,
+  SERVER_ROOT,
+  ALIAS_DIR,
+  DEV_ORDER_TSV,
+  LOADER_DEPS_JSON,
+  DEV_SERVER_URL,
+} from "../paths.mjs";
 
-const SERVER =
-  process.env.H2O_SERVER_DIR ||
-  SERVER_DEFAULT;
+// Local aliases preserve pre-Phase-0C variable names. Each resolves to the
+// same value as before under the same env-var overrides.
+const SRC = REPO_ROOT;
+const SERVER = SERVER_ROOT;
+const ORDER_FILE = DEV_ORDER_TSV;
+const DEPS_FILE = LOADER_DEPS_JSON;
 
-const SRC =
-  process.env.H2O_SRC_DIR ||
-  SRC_DEFAULT;
-
-const ORDER_FILE = process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
-const DEPS_FILE = process.env.H2O_DEPS_FILE || path.join(SRC, "config", "loader-deps.json");
+// Legacy in-file env vars (paths.mjs does not model these — see header note):
 const DEV_DIR_NAME = process.env.H2O_DEV_DIR_NAME || "dev_output";
-const DEV_ORIGIN = String(process.env.H2O_DEV_ORIGIN || "http://127.0.0.1:5500").replace(/\/$/, "");
+const DEV_ORIGIN = String(process.env.H2O_DEV_ORIGIN || DEV_SERVER_URL).replace(/\/$/, "");
 const BUILD_TS = String(process.env.H2O_BUILD_TS || Date.now());
 
-const ALIAS_DIR = path.join(SERVER, "alias");
+// ALIAS_DIR comes from paths.mjs (= path.join(SERVER_ROOT, "alias")).
+// PROXY_DIR / OUT_FILE remain in-file because they depend on the legacy
+// H2O_DEV_DIR_NAME override. When that env is unset (the default), PROXY_DIR
+// matches paths.PROXY_DIR and OUT_FILE matches paths.PROXY_PACK_FILE byte-
+// for-byte.
 const PROXY_DIR = path.join(SERVER, DEV_DIR_NAME, "proxy");
 const OUT_FILE = path.join(PROXY_DIR, "_paste-pack.ext.txt");
 const OUT_NAME = path.basename(OUT_FILE);

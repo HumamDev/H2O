@@ -1,5 +1,5 @@
 // tools/loader/make-aliases.mjs
-// @version 1.0.0
+// @version 1.1.0  (Phase 0C migration: path constants imported from tools/paths.mjs)
 //
 // Writes scripts (as alias filenames) into SERVER/alias.
 // Mode can be copy (default) or symlink (recommended for instant dev refresh).
@@ -9,26 +9,34 @@
 // - .tsv : STATUS<TAB>SOURCE_OR_ALIAS (STATUS = ON/OFF; also ✅/❌, 🟢/🔴, 🟩/🟥)
 // - .txt : ON = normal line; OFF = starts with "- "
 // - .json: { sections:[{items:[{file, enabled}]}] }
+//
+// Phase 0C note: path defaults (REPO_ROOT, SERVER_ROOT, ALIAS_DIR, DEV_ORDER_TSV)
+// are now sourced from tools/paths.mjs. All env-var overrides (H2O_SRC_DIR,
+// H2O_SERVER_DIR, H2O_ORDER_FILE, H2O_ALIAS_MODE, H2O_ALIAS_SCOPE,
+// H2O_ALLOW_ICLOUD_SYMLINK) continue to work identically — paths.mjs honors
+// the same names. Output is byte-identical to the pre-Phase-0C behavior
+// (verified by alias-farm shasum during the Phase 0C migration commit).
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const TOOL_FILE = fileURLToPath(import.meta.url);
-const TOOL_DIR = path.dirname(TOOL_FILE);
-const SRC_DEFAULT = path.resolve(TOOL_DIR, "..", "..");
-const SERVER_DEFAULT = path.resolve(SRC_DEFAULT, "..", "h2o-dev-server");
+import {
+  REPO_ROOT,
+  SERVER_ROOT,
+  ALIAS_DIR,
+  DEV_ORDER_TSV,
+} from "../paths.mjs";
 
-const SERVER =
-  process.env.H2O_SERVER_DIR ||
-  SERVER_DEFAULT;
+// Local aliases preserve the pre-Phase-0C variable names so the rest of this
+// file is untouched and downstream tools that may grep these names are
+// unaffected. Each name resolves to the same value as before:
+//   SRC    === REPO_ROOT     (process.env.H2O_SRC_DIR    || <repo>)
+//   SERVER === SERVER_ROOT   (process.env.H2O_SERVER_DIR || <repo>/../h2o-dev-server)
+//   ORDER_FILE === DEV_ORDER_TSV  (process.env.H2O_ORDER_FILE || <CONFIG_DIR>/dev-order.tsv)
+const SRC = REPO_ROOT;
+const SERVER = SERVER_ROOT;
+const ORDER_FILE = DEV_ORDER_TSV;
 
-const SRC =
-  process.env.H2O_SRC_DIR ||
-  SRC_DEFAULT;
-
-const ORDER_FILE =
-  process.env.H2O_ORDER_FILE || path.join(SRC, "config", "dev-order.tsv");
 const ALIAS_SCOPE = String(process.env.H2O_ALIAS_SCOPE || "all").trim().toLowerCase() === "on"
   ? "on"
   : "all";
@@ -56,7 +64,9 @@ const FORCE_COPY_FOR_ICLOUD =
   process.env.H2O_ALLOW_ICLOUD_SYMLINK !== "1";
 const ALIAS_MODE = FORCE_COPY_FOR_ICLOUD ? "copy" : REQUESTED_ALIAS_MODE;
 
-const ALIAS_DIR = path.join(SERVER, "alias");
+// ALIAS_DIR is now imported from tools/paths.mjs (equivalent to
+// path.join(SERVER_ROOT, "alias")). Directory creation stays here — paths.mjs
+// is side-effect-free and does not call mkdirSync.
 fs.mkdirSync(ALIAS_DIR, { recursive: true });
 
 const LEGACY_ALIAS_COMPAT = Object.freeze({
