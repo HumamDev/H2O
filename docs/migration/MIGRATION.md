@@ -14,14 +14,25 @@
 
 ## 1. Current Phase Status
 
-| Phase | Status | Date | Notes |
-|---|---|---|---|
-| Pre-Phase investigation | **complete** | 2026-05-17 | See §3 for findings |
-| Phase 0A — foundation registries | **in progress** | 2026-05-17 | `tools/paths.mjs` and `tools/script-registry.mjs` created as additive, unused foundation files |
-| Phase 0B — migrate loader tools | not started | — | Will be next micro-phase |
-| Phase 0C+ | not started | — | — |
+> **NO STRUCTURAL FOLDER MOVES HAVE HAPPENED YET.** All completed phases (0A through 0H) are additive path-centralization, byte-equivalent refactors, or a single targeted bug fix. The repo's directory layout is unchanged from the pre-Phase-0A state. The runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. The actual structural migration (folder moves) begins at Phase 1+, which has NOT been started.
 
-Latest checkpoint tag: _(none yet for this migration; pre-existing `pre-outer-reorg` is unrelated — see §3.1)_
+| Phase | Status | Tag | Commit | Description |
+|---|---|---|---|---|
+| Pre-Phase investigation | **complete** | — | — | See §3 for findings |
+| **0A** — foundation registries | ✅ complete | `migration-phase-0A-complete` | `b8aed9f` | Created `tools/paths.mjs` + `tools/script-registry.mjs` + this `docs/migration/MIGRATION.md`. Additive, no consumers yet. |
+| **0B** — boot-timing baseline | ✅ complete | `migration-phase-0B-complete` | `3336ff6` | Created `docs/migration/baseline-boot-timing.md` with methodology, paste-able harness, and 3 captured live samples (Sample 1 V3-OFF + Samples 2/3 V3-ON). |
+| **0C** — loader alias/proxy tools | ✅ complete | `migration-phase-0C-complete` | `8d3a05d` | `tools/loader/make-aliases.mjs` + `tools/loader/make-ext-proxy-pack.mjs` now import paths from `tools/paths.mjs`. Byte-identical alias farm + proxy pack proven via shasum with locked `H2O_BUILD_TS`. |
+| **0D** — sync/validate loader tools | ✅ complete | `migration-phase-0D-complete` | `00a7bff` | `tools/loader/sync-dev-order.mjs` + `tools/loader/validate-loader-order.mjs` now import paths from `tools/paths.mjs`. 6 sync-dev-order generated files + validate-loader-order stdout proven byte-identical. |
+| **0E-1** — versioning dashboard | ✅ complete | `migration-phase-0E-1-complete` | `8ae4ac9` | `tools/versioning/versions-dashboard.mjs` + `tools/versioning/dashboard-watch.mjs` migrated. Outputs byte-identical modulo `Generated:` ISO timestamp line. |
+| **0E-2** — release tools | ✅ complete | `migration-phase-0E-2-complete` | `13c68bc` | `tools/release/release.mjs` + `ship-commit.mjs` + `release-commit-helper.mjs` migrated. All 4 `--dry-run` / clean-tree-early-exit outputs byte-identical. Pre-existing `rebuildDashboard()` bug preserved verbatim (fixed in 0F). |
+| **0E-3** — archive-one + archive-snapshot decision | ✅ complete | `migration-phase-0E-3-complete` | `a336541` | `tools/archive/archive-one.mjs` migrated. `tools/archive/archive-snapshot.mjs` EVALUATED and intentionally deferred (uses `process.argv[2]`-based SRC, has subtly different `stripEmojiAndInvisibles` regex — not safely refactorable without behavior change). |
+| **0F** — release dashboard rebuild bug fix | ✅ complete | `migration-phase-0F-complete` | `6712f2f` | One-word path correction in `release.mjs`'s `rebuildDashboard()`: `"release"` → `"versioning"`. The post-release dashboard rebuild step (silently no-op'd since this code was written) now actually runs. |
+| **0G-1** — Studio desktop prepare-dist | ✅ complete | `migration-phase-0G-1-complete` | `e174603` | `apps/studio-desktop/scripts/prepare-dist.mjs` migrated. First paths.mjs consumer outside `tools/` (3-level relative import). `dist/` output byte-identical across 4 runs. |
+| **0G-2** — extension build context | ✅ complete | `migration-phase-0G-2-complete` | `c3d76d4` | `tools/product/extension/chrome-live-build-context.mjs` (primary) + `tools/product/extension/build-chrome-live-extension.mjs` (light, icons dirs only) migrated. 22 of 24 chrome-ext-dev-controls build outputs byte-identical; only `README.txt` (OUT_DIR literal embed) and `loader.js` (`LOADER_BUILD_TS = Date.now()`) varied. |
+| **0H** — deterministic loader timestamp | ✅ complete | `migration-phase-0H-complete` | `89e371e` | `tools/product/extension/chrome-live-loader.mjs` now honors `H2O_BUILD_TS` env override for `LOADER_BUILD_TS` / `LOADER_BUILD_ISO`. Reduces extension build's residual nondeterminism from 2 files to 1 (only `README.txt` remains). |
+| **0I** — migration documentation update | 🔄 **in progress** | — | — | Updating this file (`docs/migration/MIGRATION.md`) to record completed phases and current state. |
+
+**Latest stabilized checkpoint**: `migration-phase-0H-complete` at `89e371e`. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (Studio prepare-dist) + extension-build determinism are now in place.
 
 ---
 
@@ -261,42 +272,113 @@ These are the rules new code must follow during and after migration:
 
 ---
 
-## 10. Phase 0A — What Was Done
+## 10. What Is Now Stabilized (as of Phase 0H)
 
-**Files created** (additive, no consumers, no runtime behavior change):
+The following capabilities are now centralized, byte-equivalent-validated, and ready to be the foundation for any future structural moves:
 
-- `tools/paths.mjs` — central path constants with env-var overrides. Mirrors current default-resolution behavior of existing tools exactly. Not yet imported by any other tool.
-- `tools/script-registry.mjs` — pure helpers for parsing script IDs, deriving alias names, listing scripts, detecting Finder-duplicate clones. Mirrors `make-aliases.mjs` sanitization rules exactly. Not yet imported by any other tool.
-- `docs/migration/MIGRATION.md` (this file).
+### 10.1 Central path registry (`tools/paths.mjs`)
 
-**Files modified:** none.
+Single source of truth for every repo-level path constant. All consumers below import from it; future folder moves only need to update this one file. Honors every legacy env-var override (`H2O_SRC_DIR`, `H2O_SERVER_DIR`, `H2O_ORDER_FILE`, `H2O_DEPS_FILE`, `H2O_DEV_SERVER_URL`, etc.).
 
-**Runtime behavior change:** none. The two new files are dead code from the perspective of existing tools.
+### 10.2 Tools migrated to `tools/paths.mjs`
 
-**Validation performed:**
+| Tool | Phase | Validation method |
+|---|---|---|
+| `tools/loader/make-aliases.mjs` | 0C | shasum of alias farm |
+| `tools/loader/make-ext-proxy-pack.mjs` | 0C | shasum of `_paste-pack.ext.txt` with locked `H2O_BUILD_TS` |
+| `tools/loader/sync-dev-order.mjs` | 0D | shasum of 6 generated config files |
+| `tools/loader/validate-loader-order.mjs` | 0D | byte-identical stdout |
+| `tools/versioning/versions-dashboard.mjs` | 0E-1 | shasum of 3 outputs (modulo `Generated:` line) |
+| `tools/versioning/dashboard-watch.mjs` | 0E-1 | inline path-constant resolution check |
+| `tools/release/release.mjs` | 0E-2 + 0F | `--dry-run` byte-identical + post-release dashboard rebuild path corrected |
+| `tools/release/ship-commit.mjs` | 0E-2 | `--dry-run` byte-identical |
+| `tools/release/release-commit-helper.mjs` | 0E-2 | clean-tree early-exit byte-identical |
+| `tools/archive/archive-one.mjs` | 0E-3 | 6 safe-output scenarios byte-identical |
+| `tools/product/extension/chrome-live-build-context.mjs` | 0G-2 | 22 of 24 build outputs byte-identical |
+| `tools/product/extension/build-chrome-live-extension.mjs` | 0G-2 | (same suite as above) |
+| `tools/product/extension/chrome-live-loader.mjs` | 0H | `loader.js` byte-identical with locked `H2O_BUILD_TS` |
+| `apps/studio-desktop/scripts/prepare-dist.mjs` | 0G-1 | `dist/` shasum byte-identical across 4 runs |
 
-- `node --check tools/paths.mjs` and `node --check tools/script-registry.mjs` passed.
-- `npm run dev:check` and `node tools/loader/validate-loader-order.mjs` confirm pre-phase parity with pre-Phase-0A state.
-- Working tree contains exactly 3 new files; 0 modified files.
+### 10.3 Quantitative regression baselines
+
+- **Boot timing**: `docs/migration/baseline-boot-timing.md` — 3 captured samples + harness, regression thresholds defined.
+- **Extension build determinism**: with locked `H2O_BUILD_TS`, the entire `chrome-ext-dev-controls` build is now byte-identical except for `README.txt` (which embeds the OUT_DIR literal).
+
+### 10.4 Pre-existing bug fixed (in scope)
+
+- **Phase 0F**: `release.mjs` `rebuildDashboard()` was silently no-op'ing (`tools/release/versions-dashboard.mjs` vs actual `tools/versioning/versions-dashboard.mjs`). One-word path correction restored the post-release dashboard rebuild.
 
 ---
 
-## 11. Recommended Next Micro-Phase (Phase 0B)
+## 11. What Remains Deferred (out of scope for Phases 0A–0H)
 
-After Phase 0A is committed:
+### 11.1 Tools intentionally NOT refactored
 
-- **Phase 0B (½ day):** Establish boot-timing baseline. Enable `H2O_LOADER_V3_DIAG=1` in a dev profile and record per-script, per-tier, and total-budget timings for `chrome-ext-dev-controls-oauth-google`. Commit results to `docs/migration/baseline-boot-timing.md`. This is the regression detector all subsequent phases will measure against.
+| Tool | Reason for deferral | Future phase |
+|---|---|---|
+| `tools/archive/archive-snapshot.mjs` | Uses `process.argv[2]`-based SRC (caller-driven, not `REPO_ROOT`-pattern). Local `stripEmojiAndInvisibles` is subtly different from `tools/script-registry.mjs` (missing skin-tone-modifier regex). Refactor would either change CLI contract or risk helper-behavior drift. | Could be a future helper-consolidation phase. |
+| `tools/versioning/rev-stamp.mjs` | Pre-commit hook critical path; needs very careful per-step validation. | Future micro-phase (recommended only after the rest stabilizes for a release window). |
+| `tools/versioning/edit-log.mjs` | Ledger writer; small surface, low priority. | Future micro-phase. |
+| `tools/git/install-hooks.mjs` | Modifies `.git/hooks/`; high impact on developer workflow. | Future micro-phase. |
+| `tools/git/commit-auto.mjs` | Already does not use the REPO_ROOT pattern (relies on git's cwd). No paths.mjs surface to migrate. | Not in scope; leave as-is. |
+| 11 chrome-ext build helpers under `tools/product/extension/chrome-live-*.mjs` + `tools/product/{studio,identity,desk}/pack-*.mjs` + `tools/product/identity/build-identity-provider-bundle.mjs` + `tools/product/extension/write-extension-icons.mjs` | They consume `SRC`/`OUT_DIR`/etc. as parameters from the Phase-0G-2-refactored context — they receive paths.mjs-sourced values automatically. No coupling-related changes needed. | None required unless future refactors find specific issues. |
 
-After 0B:
+### 11.2 Tools/files NEVER to be touched in path-centralization phases
 
-- **Phase 0C (½ day):** Migrate `tools/loader/make-aliases.mjs` and `tools/loader/make-ext-proxy-pack.mjs` to import paths from `tools/paths.mjs`. Validate boot timing has not regressed by more than 5%. Validate alias generation is byte-equivalent.
+- `scripts/*.user.js` — frozen filenames + frozen contents during the migration window.
+- `surfaces/identity/identity.html` extension-runtime path (hardcoded inside `0D4a Identity Core`).
+- `supabase/` directory and `supabase/functions/*/` names.
+- `supabase/.temp/linked-project.json` (gitignored, must not be lost).
+- `config/loader-deps.json` runtime-order entries.
+- `versions.csv` (except via release pipeline).
 
-After 0C:
+### 11.3 Structural moves NOT YET DONE
 
-- **Phase 0D (1 day):** Migrate remaining loader tools, then validators. Per-tool soak.
-
-**Do not proceed to Phase 1 until all Phase 0X micro-phases are complete and validated.**
+**No folder moves have happened yet.** The original Phase 1+ plan (move `cockpit-pro-site/` to `apps/site/`, promote `shared/library/` to a package, restructure `build/chrome-ext-*` to `apps/extensions/chatgpt/chrome/`, absorb `h2o-dev-server/` into the tree, flatten `h2o-source/` to repo root, etc.) is **all still pending**. The Phase 0X work was preparation: it centralizes paths so that when structural moves do happen, only `tools/paths.mjs` needs updating, not dozens of tool scripts.
 
 ---
 
-_Last updated: 2026-05-17 (Phase 0A in progress)._
+## 12. Forbidden Operations (current — re-read before any commit)
+
+(See §4 above for the full forbidden-operations list. The list has NOT changed during the Phase 0A–0H window — no structural moves have happened, and no operations previously forbidden have been unlocked.)
+
+**Forever-forbidden during this migration**:
+- Renaming any file in `scripts/`
+- Renaming any script's `@h2o-id`
+- Moving `supabase/`
+- Changing the extension-runtime path of `surfaces/identity/identity.html`
+- Renaming any directory under `supabase/functions/*/`
+- Modifying `versions.csv` outside of the release pipeline
+- Modifying `config/loader-deps.json` runtime-order entries
+- Force-pushing to `main`
+- Editing built `loader.js` files in `build/` by hand
+- Disabling the pre-commit hook permanently (use `H2O_SKIP_REV_STAMP=1` per-commit)
+
+**Still forbidden until later phases**:
+- Phase 7+: moving `h2o-dev-server/` (still a sibling of `h2o-source/`).
+- Phase 8+: moving `.git/` (still inside `h2o-source/`); renaming `h2o-source/`.
+- Phase 6+: renaming any `build/chrome-ext-*` directory; changing `H2O_EXT_PROXY_PACK_URL`.
+
+---
+
+## 13. Recommended Next Phase
+
+Two reasonable paths forward, in priority order:
+
+### Option A — small clean-up sweep (low risk, optional)
+
+- **Phase 0J (optional)**: fix the `README.txt` OUT_DIR-literal nondeterminism in `chrome-live-readme.mjs` so the entire chrome-ext build is fully deterministic with locked `H2O_BUILD_TS`. Trivial change (use relative path inside README, or strip the line). Closes the "1 file still differs" gap from Phase 0H.
+
+### Option B — begin structural Phase 1 (the actual migration)
+
+- **Phase 1 — outer cleanup** (the first structural move): delete the dead outer `cockpit-pro/apps/` directory (the one with just a `.DS_Store`). Also evaluate `tmp/`, `s-files/`, `references/` for relocation under `archive/_misc/` or deletion. **This is the FIRST phase that actually moves anything.** It is low-risk (the targets are unreferenced), but it crosses the symbolic line into "we have started the structural migration."
+
+### Recommended ordering
+
+Do **0J first** (it completes the build-determinism story while still being non-structural), then **0F-style audit pass** to confirm no other small wins remain, **then** start Phase 1. This gives a clean "stabilization complete, structural migration begins at Phase 1" demarcation in the repo history.
+
+**Do NOT proceed to Phase 1 without explicit operator approval** — Phase 1 is the first irreversible-without-revert structural change.
+
+---
+
+_Last updated: 2026-05-17 (Phase 0I in progress — documentation-only update reflecting 0A–0H stabilization complete)._
