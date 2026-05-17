@@ -8,8 +8,14 @@ node_modules/
 archive/**
 archive/.gitkeep
 
-# Generated local extension outputs
+# Generated local extension outputs.
+# Phase 4C-B (2026-05-17) relocated the chrome-ext build outputs to
+# apps/extensions/chatgpt/chrome/<variant>. The legacy build/chrome-ext-*
+# paths remain as symlinks pointing at the new location to preserve Chrome
+# extension IDs for already-loaded unpacked extensions. Both roots must
+# stay gitignored so build artifacts are never tracked.
 build/**
+apps/extensions/chatgpt/chrome/**
 
 # Generated reports and ledgers (keep placeholders)
 meta/reports/**
