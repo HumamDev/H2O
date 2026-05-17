@@ -33,7 +33,8 @@
 | **0I** — migration documentation update | ✅ complete | `migration-phase-0I-complete` | `c375b15` | `docs/migration/MIGRATION.md` rewritten to record all completed phases with tag + commit cross-references, document what is stabilized / deferred / forbidden, and recommend next phases. |
 | **0J** — README.txt determinism | ✅ complete | `migration-phase-0J-complete` | `93cf846` | `tools/product/extension/chrome-live-readme.mjs` no longer embeds the absolute `OUT_DIR` path. **Full extension build is now byte-identical** across builds into any OUT_DIR with locked `H2O_BUILD_TS` (0 files differ — down from 2 at the 0G-2 baseline). |
 | **1A** — architecture contracts lock-in | ✅ complete | `migration-phase-1A-complete` | `446c39e` | Locked in the 6 post-stabilization contracts (§9.1) and recorded all 0A–0J phases in §1. Doc-only update; zero code changes. |
-| **1B** — outer `cockpit-pro/apps/` deletion | 🔄 **in progress** | pre-tag: `migration-phase-1B-pre` at `446c39e` | — | **FIRST structural change.** Deleted the dead outer `cockpit-pro/apps/` directory (4 `.DS_Store` files + 1 empty `studio-mobile/src/components/cockpit/` leaf, 32 KB total). Outside git tree → no `git revert` path; **off-disk backup at** `~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17.tar.gz` (1.5 KB) + mirror dir alongside. Zero references found via repo-wide grep prior to deletion. `dev:check` + `validate-loader-order` unchanged post-deletion. |
+| **1B** — outer `cockpit-pro/apps/` deletion | ✅ complete | `migration-phase-1B-complete` (pre: `migration-phase-1B-pre`) | `d0c71a2` | **FIRST structural change.** Deleted the dead outer `cockpit-pro/apps/` directory (4 `.DS_Store` files + 1 empty `studio-mobile/src/components/cockpit/` leaf, 32 KB total). Outside git tree → no `git revert` path; **off-disk backup at** `~/h2o-migration-backups/phase-1B-outer-cockpit-pro-apps-2026-05-17.tar.gz` (1.5 KB) + mirror dir alongside. Zero functional references found via repo-wide grep prior to deletion. |
+| **1C** — local-scratch/reference folders audit | 🔄 **in progress** | — | — | **AUDIT-ONLY phase (no deletions).** Inventoried `tmp/` (488 KB, labels-v1.0.2 release-artifact snapshot, 3+ weeks idle, gitignored) and `references/` (52 MB documented evidence library with README + `_manifest.json` — chatgpt.com DOM captures, HAR network logs, codex-analysis notes; project-critical reference material). `s-files/` is intentionally KEPT per operator policy (personal holding folder for downloaded assistant scripts) — NOT inspected during this phase. Zero code references found to `tmp/` or `references/` (only Phase 0J doc-comment mentions `/tmp/` as a build-output example). See §13 for classification. |
 
 **Latest stabilized checkpoint**: `migration-phase-1A-complete` at `446c39e`. Phase 1B made the first structural change but is documented as **outside-git-tree only**: nothing inside `h2o-source/` was touched. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (`apps/studio-desktop/scripts/prepare-dist.mjs`) + **full extension-build determinism** (0 files differ across builds with locked env) + locked-in architecture contracts remain in place.
 
@@ -396,17 +397,19 @@ Scope executed: removed outer `cockpit-pro/apps/` (entirely outside git). Pre-de
 
 **Validation post-deletion**: `npm run dev:check` and `node tools/loader/validate-loader-order.mjs` both passed unchanged. Working tree of h2o-source remained clean throughout (the deletion was outside git → no working-tree changes from the rm).
 
-### Phase 1C (recommended next — optional, scoped tightly)
+### Phase 1C — AUDIT-ONLY findings (no deletions performed)
 
-**Candidates inside h2o-source (all gitignored, all known dead/scratch)**:
+Phase 1C inventoried three gitignored top-level folders inside `h2o-source/`. **No deletions, moves, or modifications were performed** — Phase 1C was scoped audit-only by operator request. The classification below is the deliverable.
 
-- `h2o-source/tmp/` — scratch directory (gitignored: see `.gitignore` `/tmp/`). Per §3 investigation, contained `labels-v1.0.2-fix.zip`, `labels-v1.0.2/`, `sidebar-harness/` — old throwaway artifacts.
-- `h2o-source/s-files/` — gitignored, unknown purpose; per investigation likely scratch.
-- `h2o-source/references/` — gitignored external references; may still be useful to the operator personally.
+| Folder | Size | Last mtime | gitignore | Functional refs in code | **Classification** | Notes |
+|---|---|---|---|---|---|---|
+| `tmp/` | 488 KB (10 files) | 2026-04-25 (Apr 30 for `.DS_Store`) | `/tmp/` (line 81) | **0** | **archive/move later** | Contains `labels-v1.0.2-fix.zip` (74 KB) + matching extracted `labels-v1.0.2/` directory (8 generated config/headers/scripts files) — a release-artifact snapshot from a v1.0.2 patch. Plus empty `sidebar-harness/` leaf. NOT pure cruft (has historical patch-snapshot value); NOT actively in use either. Recommend the operator decide whether to move to `archive/` or delete with off-disk backup. |
+| `s-files/` | NOT INSPECTED | NOT INSPECTED | `s-files/` (line 28) | NOT SEARCHED for code refs | **keep — user-managed** | Per explicit operator policy: this is a personal holding folder for downloaded scripts from assistants. Phase 1C did NOT inspect its contents, did NOT search for references to it, and will NOT recommend any change. Treat as black-box user data. |
+| `references/` | 52 MB (144 files) | 2026-04-22 / 2026-03-27 for HARs | `references/` (line 32) | **0** | **keep** | Documented evidence library with `README.md` (explicit purpose: "evidence used to adapt H2O scripts to the current ChatGPT UI without guessing live browser state") + `_manifest.json` (machine-readable inventory). Contains 2 large HAR network captures (`www.chatgpt.com.har` 26 MB + `www.instapaper.com.har` 3.8 MB) plus organized DOM snapshots by surface (sidebar, overlays, cards, composer, etc.). Project-critical reference material. **Do NOT delete or relocate.** |
 
-**Phase 1C should follow the same pattern as 1B**: re-inspect each candidate at the moment 1C starts, verify gitignored status, search for any code references, take an off-disk backup of each, then delete only the confirmed-dead ones. Each candidate is independent — 1C could split into 1C-a / 1C-b / 1C-c per candidate.
+**Phase 1C result**: only `tmp/` is a candidate for any future cleanup, and even that is "archive/move later" rather than "safe-delete" because of the v1.0.2 release-artifact content. The right next action is for the operator to decide whether the labels-v1.0.2 snapshot is still useful — if not, a future Phase 1D can move it to `archive/_misc/` with off-disk backup, following the 1B pattern.
 
-**Important**: `tmp/`, `s-files/`, `references/` are all INSIDE the h2o-source git tree but excluded by `.gitignore`. Deleting them does change the on-disk tree but does NOT change git history (since they were never tracked). Rollback is still via off-disk backup; `git revert` would not restore them.
+### Phases beyond 1C (preview, not yet authorized)
 
 ### Phases beyond 1C (preview, not yet authorized)
 
@@ -417,4 +420,4 @@ Scope executed: removed outer `cockpit-pro/apps/` (entirely outside git). Pre-de
 
 ---
 
-_Last updated: 2026-05-17 (Phase 1B in progress — first structural cleanup, outer `cockpit-pro/apps/` deleted; off-disk backup at `~/h2o-migration-backups/`)._
+_Last updated: 2026-05-17 (Phase 1C in progress — audit-only inventory of `tmp/` + `references/` + acknowledged `s-files/` user-managed status; no deletions or moves performed)._
