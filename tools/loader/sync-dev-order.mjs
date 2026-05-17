@@ -1,5 +1,5 @@
 // tools/loader/sync-dev-order.mjs
-// @version 1.1.0
+// @version 1.2.0  (Phase 0D migration: SRC_ROOT and ORDER_FILE sourced from tools/paths.mjs)
 //
 // Purpose:
 // - Scan SRC for source script files (*.user.js or *.js)
@@ -22,17 +22,32 @@
 // - PRESERVES your previous choices from the existing TSV
 // - Adds new files with defaults (INTERFACE/EXPERIMENTAL default 🔴, others 🟢)
 // - Removes deleted files automatically (because we re-scan SRC each time)
+//
+// Phase 0D note: SRC_ROOT and ORDER_FILE defaults now come from tools/paths.mjs.
+// Env-var overrides (H2O_SRC_DIR, H2O_ORDER_FILE) are honored identically through
+// paths.mjs. Derived output paths (OUT_TXT, OUT_JSON, scripts-list.tsv, etc.)
+// continue to be computed locally from ORDER_FILE's directory + STEM so that any
+// custom ORDER_FILE location still anchors the sibling outputs correctly.
+// LOCAL toAliasName intentionally retains the legacy ".user.js" alias suffix
+// (different from make-aliases.mjs's ".js" suffix); this is required for
+// backward-compatible matching of older TSV entries and must NOT be replaced
+// with tools/script-registry.mjs's helper, which produces ".js" aliases.
 
 import fs from "node:fs";
 import path from "node:path";
+
+import { REPO_ROOT, DEV_ORDER_TSV } from "../paths.mjs";
 
 /* -----------------------------
    ENV / PATHS
 ------------------------------ */
 
-const SRC_ROOT = process.env.H2O_SRC_DIR || process.cwd();
-const ORDER_FILE =
-  process.env.H2O_ORDER_FILE || path.join(SRC_ROOT, "config", "dev-order.tsv");
+// Local aliases preserve pre-Phase-0D variable names. Each resolves to the
+// same value as before under the same env-var overrides:
+//   SRC_ROOT   === REPO_ROOT     (process.env.H2O_SRC_DIR    || <repo>)
+//   ORDER_FILE === DEV_ORDER_TSV (process.env.H2O_ORDER_FILE || <CONFIG_DIR>/dev-order.tsv)
+const SRC_ROOT = REPO_ROOT;
+const ORDER_FILE = DEV_ORDER_TSV;
 
 const DIR = path.dirname(ORDER_FILE);
 fs.mkdirSync(DIR, { recursive: true });

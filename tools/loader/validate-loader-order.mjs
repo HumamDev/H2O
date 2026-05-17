@@ -1,7 +1,30 @@
 #!/usr/bin/env node
+//
+// tools/loader/validate-loader-order.mjs
+//
+// Phase 0D migration: path defaults sourced from tools/paths.mjs while
+// preserving every input precedence rule the pre-Phase-0D version had:
+//   CLI flag (--deps/--dev-order/--proxy-pack)  >  env var  >  paths.mjs default.
+// H2O_PROXY_PACK_FILE is NOT modeled by paths.mjs, so it remains an explicit
+// in-file env check to preserve byte-identical override semantics.
+//
+// LOCAL helpers (stripEmojiAndInvisibles, toAliasName, normalizeAliasId) are
+// intentionally retained — they happen to produce identical output to
+// tools/script-registry.mjs but keeping them local minimizes the diff and
+// keeps Phase 0D scope strictly to path-constant migration. A later phase
+// can consolidate the helpers.
+
 import fs from "fs";
 import path from "path";
 import process from "process";
+
+import {
+  REPO_ROOT,
+  LOADER_DEPS_JSON,
+  DEV_ORDER_TSV,
+  PROXY_PACK_FILE as PROXY_PACK_FILE_DEFAULT,
+  LOADER_TIERS_JSON,
+} from "../paths.mjs";
 
 const PHASE_RANK = Object.freeze({
   "document-start": 0,
@@ -18,19 +41,20 @@ function hasFlag(flag) {
   return process.argv.includes(flag);
 }
 
-const SRC_DIR = process.env.H2O_SRC_DIR || process.cwd();
-const DEPS_FILE =
-  resolveArg("--deps") ||
-  process.env.H2O_DEPS_FILE ||
-  path.join(SRC_DIR, "config", "loader-deps.json");
-const ORDER_FILE =
-  resolveArg("--dev-order") ||
-  process.env.H2O_ORDER_FILE ||
-  path.join(SRC_DIR, "config", "dev-order.tsv");
+// Local aliases preserve pre-Phase-0D variable names. Precedence is identical
+// to the original: CLI flag > env var (via paths.mjs for the modeled ones,
+// or via in-file check for H2O_PROXY_PACK_FILE) > paths.mjs default.
+//   SRC_DIR         === REPO_ROOT     (H2O_SRC_DIR honored by paths.mjs)
+//   DEPS_FILE       === CLI > H2O_DEPS_FILE > REPO_ROOT/config/loader-deps.json
+//   ORDER_FILE      === CLI > H2O_ORDER_FILE > REPO_ROOT/config/dev-order.tsv
+//   PROXY_PACK_FILE === CLI > H2O_PROXY_PACK_FILE > SERVER_ROOT/dev_output/proxy/_paste-pack.ext.txt
+const SRC_DIR = REPO_ROOT;
+const DEPS_FILE = resolveArg("--deps") || LOADER_DEPS_JSON;
+const ORDER_FILE = resolveArg("--dev-order") || DEV_ORDER_TSV;
 const PROXY_PACK_FILE =
   resolveArg("--proxy-pack") ||
   process.env.H2O_PROXY_PACK_FILE ||
-  path.join(SRC_DIR, "..", "h2o-dev-server", "dev_output", "proxy", "_paste-pack.ext.txt");
+  PROXY_PACK_FILE_DEFAULT;
 const STRICT_WARN = hasFlag("--strict-warn");
 
 function readTextIfExists(fp) {
@@ -367,7 +391,12 @@ function main() {
   // Reads config/loader-tiers.json if present; otherwise prints a soft note.
   // Cross-checks kernel allowlist (L0/L1) and flags drift between tiers.json
   // and dev-order.tsv. Does NOT introduce a new failure path.
-  const TIERS_FILE = path.join(SRC_DIR, "config", "loader-tiers.json");
+  // Phase 0D: imported from paths.mjs. paths.mjs's LOADER_TIERS_JSON honors
+  // H2O_TIERS_FILE (additive — the pre-Phase-0D version had no env override
+  // for this constant). Under the default invocation (no H2O_TIERS_FILE set),
+  // this resolves to <REPO_ROOT>/config/loader-tiers.json, byte-identical to
+  // the previous hardcoded path.
+  const TIERS_FILE = LOADER_TIERS_JSON;
   const tiersText = readTextIfExists(TIERS_FILE);
   let tierLine = `[validate-loader-order] tiers: ${rel(TIERS_FILE)} (missing — using defaults)`;
   if (tiersText) {
