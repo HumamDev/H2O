@@ -147,17 +147,13 @@ async function main() {
 }
 
 function rebuildDashboard() {
-  // Phase 0E-2 note: this path is intentionally preserved BUGGY from the
-  // pre-Phase-0E-2 version. The original code used `path.join(TOOL_DIR,
-  // "versions-dashboard.mjs")` where TOOL_DIR was <repo>/tools/release —
-  // BUT versions-dashboard.mjs lives in <repo>/tools/versioning. The
-  // fs.existsSync check below silently skips when the file is missing, so
-  // rebuildDashboard() has been effectively a no-op since this code was
-  // written. The Phase 0E-2 refactor preserves this verbatim (same wrong
-  // path, same silent no-op) per the "preserve behavior exactly" rule.
-  // A future, in-scope phase should correct this to:
-  //   path.join(TOOLS_DIR, "versioning", "versions-dashboard.mjs")
-  const dashboardScript = path.join(TOOLS_DIR, "release", "versions-dashboard.mjs");
+  // Phase 0F fix: corrected the path lookup. Pre-Phase-0F code looked for
+  // versions-dashboard.mjs under tools/release/ where it does not exist,
+  // so the fs.existsSync check below always returned false and
+  // rebuildDashboard() silently no-op'd after every release. The real file
+  // is at tools/versioning/versions-dashboard.mjs. With this fix, the
+  // dashboard rebuild step now actually runs after a successful release.
+  const dashboardScript = path.join(TOOLS_DIR, "versioning", "versions-dashboard.mjs");
   if (!fs.existsSync(dashboardScript)) return;
   const result = spawnSync(process.execPath, [dashboardScript], {
     cwd: REPO_ROOT,
