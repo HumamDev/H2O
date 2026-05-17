@@ -1,4 +1,4 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 0J: README content is now deterministic — no longer embeds OUT_DIR absolute path)
 import path from "node:path";
 
 export function makeChromeLiveReadme({
@@ -6,7 +6,17 @@ export function makeChromeLiveReadme({
   PROXY_PACK_URL,
   DEV_HAS_CONTROLS,
 }) {
-  const outAbs = path.resolve(OUT_DIR);
+  // Phase 0J: was `path.resolve(OUT_DIR)`, which embedded the absolute build
+  // path into README.txt. That made the README differ across builds into
+  // different OUT_DIRs (e.g. /tmp/build-a vs /tmp/build-b vs each developer's
+  // own checkout path) even when H2O_BUILD_TS was locked, blocking full
+  // build determinism (the last remaining non-deterministic file after 0H).
+  // Replaced with a constant string. OUT_DIR + `path` import are retained for
+  // caller-signature compatibility and possible future use.
+  const outAbs = "(the directory containing this README file)";
+  // Suppress unused-import warnings under stricter lint tooling without
+  // removing the legacy import. (`path` was previously used at this site.)
+  void path; void OUT_DIR;
   if (!DEV_HAS_CONTROLS) {
     return `H2O Dev Loader Extension (Lean, Unpacked)
 ==========================================
