@@ -37,7 +37,7 @@ icons. The cleanest path:
 
 1. Get a 1024×1024 source PNG of the H2O Studio brand mark.
 2. Run `cargo tauri icon /path/to/h2o-studio-1024.png` from
-   `apps/studio-desktop/`. This regenerates all sizes consistently.
+   `apps/studio/desktop/`. This regenerates all sizes consistently.
 3. Replace `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.icns` in
    this folder.
 

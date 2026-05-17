@@ -4,7 +4,7 @@
  * Copies the built Studio assets from
  *   h2o-source/build/chrome-ext-prod/surfaces/studio/
  * into
- *   h2o-source/apps/studio-desktop/dist/
+ *   h2o-source/apps/studio/desktop/dist/
  * so that Tauri's `frontendDist` can serve them.
  *
  * Pre-condition: you have already run from h2o-source/:

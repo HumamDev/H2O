@@ -12,7 +12,7 @@ iPhone-first React Native / Expo app for browsing, searching, and reading your s
 ## Getting started
 
 ```bash
-cd apps/studio-mobile
+cd apps/studio/mobile
 npm install
 npm run ios        # open in iOS Simulator
 npm run android    # open in Android emulator

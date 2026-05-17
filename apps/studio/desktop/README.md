@@ -31,7 +31,7 @@ h2o-source/
 ├── build/chrome-ext-prod/surfaces/studio/      ← Output of `npm run dev:all`
 │                                                 (Tauri reads from here)
 │
-└── apps/studio-desktop/                        ← THIS DIRECTORY
+└── apps/studio/desktop/                       ← THIS DIRECTORY
     ├── package.json                            ← npm scripts (tauri:dev, tauri:build)
     ├── scripts/prepare-dist.mjs                ← Copies Studio assets into ./dist/
     ├── dist/                                   ← (generated; .gitignored) Tauri frontendDist
@@ -47,7 +47,7 @@ Asset flow at `npm run tauri:dev` time:
 
 ```
 1. scripts/prepare-dist.mjs:
-     copies   build/chrome-ext-prod/surfaces/studio/* → apps/studio-desktop/dist/
+     copies   build/chrome-ext-prod/surfaces/studio/* → apps/studio/desktop/dist/
      emits    dist/index.html (redirector → studio.html)
 
 2. Tauri serves dist/ via the tauri://localhost asset scheme.
@@ -100,7 +100,7 @@ xcode-select --install
 ### 3. npm dependencies
 
 ```bash
-cd h2o-source/apps/studio-desktop
+cd h2o-source/apps/studio/desktop
 npm install
 ```
 
@@ -122,7 +122,7 @@ node tools/product/extension/build-chrome-live-extension.mjs
 
 (The same build chain you run for MV3 validation.)
 
-Then from `h2o-source/apps/studio-desktop/`:
+Then from `h2o-source/apps/studio/desktop/`:
 
 ```bash
 npm run tauri:dev
@@ -252,14 +252,14 @@ implements:
 
 - **M2** — Add `tauri-plugin-sql` and migrate `store.highlights` +
   `store.libraryIndex` from localStorage to SQLite. Add the V1 schema
-  (per `apps/studio-desktop/docs/...` once created). New entity stores
+  (per `apps/studio/desktop/docs/...` once created). New entity stores
   for chats, turns, folders, labels, tags, categories, attachments,
   prefs, import_batches.
 - **M3** — Implement the ChatGPT export ZIP import pipeline. Awaiting
   Task 0 (export-schema inventory against a real export ZIP).
 
 Refer to the V1 roadmap document (in conversation history; will be
-codified in `apps/studio-desktop/docs/` in a future commit) for the
+codified in `apps/studio/desktop/docs/` in a future commit) for the
 full Milestone breakdown.
 
 ---
