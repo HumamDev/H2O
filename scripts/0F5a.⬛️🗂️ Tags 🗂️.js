@@ -3666,6 +3666,28 @@ ${out.answerText}`);
     return { ok: true, status: 'ok', chatId, turnCount: turns.length, summary };
   }
 
+  function getDeprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'turn DOM extraction, turn-level tag state, and occurrence index remain native-owned',
+        'NavTo same-chat scroller remains registered by native Tags',
+        'tag auto-pool and occurrence diagnostics remain active until tag storage migration is approved',
+      ],
+      futureDeprecated: [
+        'native tag cloud/viewer UI after Studio tag workflows are complete and release-validated',
+      ],
+      doNotRemoveUntil: [
+        'tag canonical storage strategy covers turn-derived state explicitly',
+        'Studio replacement tag UI is complete',
+        'native DOM extraction boundaries are preserved by a replacement adapter',
+      ],
+    };
+  }
+
   function selfCheck() {
     const owner = core.getOwner?.('tags') || null;
     const service = core.getService?.('tags') || null;
@@ -3689,6 +3711,7 @@ ${out.answerText}`);
       migratedTagPoolCount: storageDiag.migratedTagPoolCount,
       migratedTurnCacheCount: storageDiag.migratedTurnCacheCount,
       lastCompactStatus: storageDiag.lastCompactStatus,
+      deprecation: getDeprecationDiagnostics(),
       cfg: getCfg(),
     };
   }
@@ -5925,6 +5948,8 @@ ${out.answerText}`);
     getTagUsageRefs(chatId, tagIdOrLabel) { return getTagUsageRefs(chatId, tagIdOrLabel); },
     listAllChatTags(opts = {}) { return listAllChatTags(opts); },
     listChatsByTag(tagIdOrLabel, opts = {}) { return listChatsByTag(tagIdOrLabel, opts); },
+    // Phase 9B: native tag cloud/viewer UI is future-deprecated only after
+    // Studio replacement workflows are complete; DOM extraction stays active.
     openTagsViewer(opts = {}) { return openTagsViewer(opts); },
     openTagsCloudPopup(anchorEl, opts = {}) { return openTagsCloudPopup(anchorEl, opts); },
     closeTagsCloudPopup() { return closeTagsCloudPopup(); },
@@ -5968,6 +5993,7 @@ ${out.answerText}`);
     debugLastCloudPopupNav() {
       try { return state.lastCloudPopupClick || null; } catch (_e) { return null; }
     },
+    diagnose() { return selfCheck(); },
   };
 
   MOD.owner = owner;
@@ -6033,6 +6059,7 @@ ${out.answerText}`);
   MOD.attachTurnUi = (...args) => owner.attachTurnUi(...args);
   MOD.detachTurnUi = (...args) => owner.detachTurnUi(...args);
   MOD.selfCheck = (...args) => owner.selfCheck(...args);
+  MOD.diagnose = (...args) => owner.diagnose(...args);
   MOD.getTagUsageIndex = (...args) => owner.getTagUsageIndex(...args);
   MOD.getTagUsageRefs = (...args) => owner.getTagUsageRefs(...args);
   MOD.listAllChatTags = (...args) => owner.listAllChatTags(...args);

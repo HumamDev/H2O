@@ -491,6 +491,25 @@
         broadcastKey: NATIVE_BROADCAST_KEY,
         coalesceMs: COALESCE_MS,
         eventsListened: NATIVE_EVENTS_TO_BROADCAST.slice(),
+        deprecation: {
+          phase: '9B',
+          surface: 'native',
+          status: 'active-required',
+          behaviorChanged: false,
+          activeRequired: [
+            'native-to-Studio broadcast remains required for linked records and projectCatalog projection',
+            'Studio-to-native sync consumer events remain required while native owns folder/category/label/tag/project writes',
+            'chrome.storage broadcast keys remain transport envelopes, not canonical stores',
+          ],
+          futureDeprecated: [
+            'state-projection payloads after canonical SW-IDB cache-invalidation is explicitly designed and validated',
+          ],
+          doNotRemoveUntil: [
+            'canonical reads are enabled for migrated domains',
+            'live dual-read and cache-invalidation semantics replace projection broadcasts',
+            'Studio no longer depends on native projectCatalog or linked-record broadcast',
+          ],
+        },
         lastInbound: state.lastInbound,
         lastOutbound: state.lastOutbound,
         projection: {

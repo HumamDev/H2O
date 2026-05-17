@@ -5530,6 +5530,44 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return STORE_setShowCategoryCounts(value);
   }
 
+  function API_getDeprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'folder vault reads/writes and chat-to-folder binding remain native-owned',
+        'Add to Library and Save to Folder native menu flows remain active',
+        'sidebar injection remains required on chatgpt.com',
+      ],
+      legacyFallback: [
+        KEY_LEG_DATA,
+        KEY_LEG_UI,
+        KEY_LEG_SEE,
+        KEY_LEG_EXP,
+      ],
+      futureDeprecated: [
+        'native folder viewer/list UI after Studio folder workflows are complete and release-validated',
+      ],
+      doNotRemoveUntil: [
+        'folder canonical storage migration is explicitly approved',
+        'Studio replacement write workflows are complete',
+        'legacy fallback keys are no longer needed for rollback',
+      ],
+    };
+  }
+
+  function API_diagnose() {
+    return {
+      surface: 'native',
+      phase: 'phase-9B-deprecation-markers',
+      ownerRegistered: !!H2O.LibraryCore?.getOwner?.('folders'),
+      serviceRegistered: !!H2O.LibraryCore?.getService?.('folders'),
+      deprecation: API_getDeprecationDiagnostics(),
+    };
+  }
+
   const foldersPublicApi = {
     list: API_list,
     getBinding: API_getBinding,
@@ -5557,8 +5595,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     setShowFolderCounts: API_setShowFolderCounts,
     getShowCategoryCounts: API_getShowCategoryCounts,
     setShowCategoryCounts: API_setShowCategoryCounts,
+    // Phase 9B: native viewer/sidebar UI is future-deprecated only after Studio
+    // replacement workflows are complete; save/bind/write paths stay active.
     ensureInjected: CORE_FS_ensureInjected,
     syncFolderSidebarActiveState: CORE_FS_syncFolderSidebarActiveState,
+    diagnose: API_diagnose,
     getSidebarDiagnostics() {
       return {
         sidebarRenderCount: Number(STATE.sidebarRenderCount || 0),
@@ -5646,6 +5687,7 @@ function LIBCORE_registerFoldersOwner() {
   if (typeof H2O.folders.setShowFolderCounts !== 'function') H2O.folders.setShowFolderCounts = API_setShowFolderCounts;
   if (typeof H2O.folders.getShowCategoryCounts !== 'function') H2O.folders.getShowCategoryCounts = API_getShowCategoryCounts;
   if (typeof H2O.folders.setShowCategoryCounts !== 'function') H2O.folders.setShowCategoryCounts = API_setShowCategoryCounts;
+  if (typeof H2O.folders.diagnose !== 'function') H2O.folders.diagnose = API_diagnose;
   if (typeof H2O.folders.ensureInjected !== 'function') H2O.folders.ensureInjected = CORE_FS_ensureInjected;
   if (typeof H2O.folders.syncFolderSidebarActiveState !== 'function') H2O.folders.syncFolderSidebarActiveState = CORE_FS_syncFolderSidebarActiveState;
   if (typeof H2O.folders.getSidebarDiagnostics !== 'function') H2O.folders.getSidebarDiagnostics = foldersPublicApi.getSidebarDiagnostics;

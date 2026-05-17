@@ -3271,6 +3271,39 @@
   // snapshot. Non-blocking.
   loadCategoryOverrides().catch((e) => err('autoclass:boot-load', e));
 
+  function getDeprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'category catalog, classifier, candidate pool, and override data paths remain native-owned',
+        'archive/category metadata projection remains active',
+        'category appearance data remains readable for native sidebar rendering',
+      ],
+      futureDeprecated: [
+        'native category appearance editor and viewer UI after Studio replacement workflows are complete',
+      ],
+      doNotRemoveUntil: [
+        'category canonical storage migration is explicitly approved',
+        'Studio category review/appearance workflows are complete',
+        'legacy Store keys remain validated as rollback paths',
+      ],
+    };
+  }
+
+  function categoryDiagnose() {
+    return {
+      surface: 'native',
+      phase: 'phase-9B-deprecation-markers',
+      ownerRegistered: !!core.getOwner?.('categories'),
+      serviceRegistered: !!core.getService?.('categories'),
+      hasCategoryProviderCore: !!categoryCore(),
+      deprecation: getDeprecationDiagnostics(),
+    };
+  }
+
   const owner = {
     phase: 'phase-c6-owner-refresh-hooks',
     loadGroups() { return loadGroupsDirect(); },
@@ -3280,6 +3313,8 @@
     iconOptionForKey(key) { return iconOptionForKey(key); },
     iconSvg(key) { return categoryIconSvg(key); },
     iconSvgForAppearance(appearance) { return categoryIconSvgForAppearance(appearance); },
+    // Phase 9B: native category UI is future-deprecated once Studio can fully
+    // replace it; classifier/candidate/override data paths remain active.
     openAppearanceEditor(anchorEl, group, afterChange = null) { return openCategoryAppearanceEditor(anchorEl, group, afterChange); },
     appendPanelRow(list, group) { return appendPanelCategoryRow(list, group); },
     appendInShellRow(list, group) { return appendInShellCategoryRow(list, group); },
@@ -3311,6 +3346,7 @@
     setUserCategoryOverride(chatId, value, opts = {}) { return setUserCategoryOverride(chatId, value, opts); },
     getCategoryOverrides() { return getCategoryOverrides(); },
     getAutoClassDiagnostics() { return getAutoClassDiagnostics(); },
+    diagnose() { return categoryDiagnose(); },
   };
 
   MOD.owner = owner;
@@ -3367,6 +3403,7 @@
   MOD.setUserCategoryOverride = (...args) => owner.setUserCategoryOverride(...args);
   MOD.getCategoryOverrides = (...args) => owner.getCategoryOverrides(...args);
   MOD.getAutoClassDiagnostics = (...args) => owner.getAutoClassDiagnostics(...args);
+  MOD.diagnose = (...args) => owner.diagnose(...args);
 
   bindTagCategoryLinkRefresh();
 

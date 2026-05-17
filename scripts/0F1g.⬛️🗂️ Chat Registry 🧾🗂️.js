@@ -891,6 +891,32 @@
     if (typeof fn === 'function') state.subscribers.delete(fn);
   }
 
+  function deprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'native localStorage registry remains the live legacy registry until a canonical read trial is explicitly approved',
+        'native chatgpt.com origin remains the source for linked-record projection and current-chat discovery',
+        'registry events remain required by LibraryIndex and cross-surface sync',
+      ],
+      legacyFallback: [
+        STORAGE_KEY,
+        'wrapped and legacy flat on-disk shapes remain readable for rollback and compatibility',
+      ],
+      futureDeprecated: [
+        'direct localStorage registry ownership after canonical ChatRegistry reads are approved and release-validated',
+      ],
+      doNotRemoveUntil: [
+        'StorageAdapter.read remains disabled no longer holds',
+        'canonical ChatRegistry read trial is explicitly approved',
+        'legacy rollback path is validated for at least one release',
+      ],
+    };
+  }
+
   /* ─── self-check (lightweight, mirrors 0F1d.selfCheck pattern) ─── */
   function selfCheck() {
     const health = verifyHealth();
@@ -905,6 +931,7 @@
       registeredService: !!H2O.LibraryCore?.getService?.('chat-registry'),
       counts: stats.counts,
       meta: stats.meta,
+      deprecation: deprecationDiagnostics(),
       issues: health.issues.slice(0, 12),
       diag: { steps: diag.steps.slice(-12), errors: diag.errors.slice(-8) },
     };
@@ -954,6 +981,7 @@
     unsubscribe,
 
     selfCheck,
+    diagnose: selfCheck,
     _diag: diag,
   };
 

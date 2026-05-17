@@ -2844,6 +2844,32 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
     return ui.expanded;
   }
 
+  function getDeprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'label catalog and chat-label bindings remain native-owned',
+        'archive metadata projection remains active',
+        'native label sidebar and assignment entry points remain required on chatgpt.com',
+      ],
+      legacyFallback: [
+        KEY_LABEL_CATALOG_V1,
+        KEY_LABEL_BINDINGS_V1,
+      ],
+      futureDeprecated: [
+        'native labels viewer, sidebar UI, and assignment modal after Studio workflows are complete',
+      ],
+      doNotRemoveUntil: [
+        'label canonical storage migration is explicitly approved',
+        'Studio label catalog/binding workflows are complete',
+        'archive metadata projection replacement is validated',
+      ],
+    };
+  }
+
   function selfCheck() {
     const owner = core.getOwner?.('labels') || null;
     const service = core.getService?.('labels') || null;
@@ -2898,6 +2924,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
       lastSidebarEnsureReason: String(state.lastSidebarEnsureReason || ''),
       lastSidebarActiveSyncReason: String(state.lastSidebarActiveSyncReason || ''),
       bootDiag: snapshot.bootDiag,
+      deprecation: getDeprecationDiagnostics(),
       diag: {
         steps: diag.steps.slice(-12),
         errors: diag.errors.slice(-8),
@@ -2934,6 +2961,8 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
     setTypeExpandMode(mode) { return setTypeExpandMode(mode); },
     getSectionExpanded() { return getSectionExpanded(); },
     setSectionExpanded(value) { return setSectionExpanded(value); },
+    // Phase 9B: native Labels UI is future-deprecated once Studio replacement
+    // workflows are complete; catalog/binding/archive projection paths stay active.
     openLabelsViewer(opts = {}) { return openLabelsViewer(opts); },
     openLabelViewer(type, labelId, opts = {}) { return openLabelViewer(type, labelId, opts); },
     openAssignModal(chatId, opts = {}) { return openAssignModal(chatId, opts); },
@@ -2944,6 +2973,7 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-sub"]{ min-width:0; overflow:hidden; text-over
     projectChatMetadata(chatId, opts = {}) { return projectChatMetadata(chatId, opts); },
     debugSnapshot() { return debugSnapshot(); },
     selfCheck() { return selfCheck(); },
+    diagnose() { return selfCheck(); },
   };
 
   MOD.owner = owner;

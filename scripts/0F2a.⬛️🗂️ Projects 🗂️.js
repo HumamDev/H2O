@@ -2295,8 +2295,45 @@
     CLEAN.observers.add(() => { try { mo.disconnect(); } catch {} });
   }
 
+  function PROJECTS_deprecationDiagnostics() {
+    return {
+      phase: '9B',
+      surface: 'native',
+      status: 'active-required',
+      behaviorChanged: false,
+      activeRequired: [
+        'native project harvesting, fetch/header observation, and cache reconciliation remain required',
+        'native projectCatalog broadcast remains required by Studio project name/catalog projection',
+        'project cache remains readable until projects are migrated or explicitly mirrored',
+      ],
+      futureDeprecated: [
+        'native Projects viewer/display helpers after Studio project workflows are complete and release-validated',
+      ],
+      doNotRemoveUntil: [
+        'Studio no longer depends on native projectCatalog broadcast',
+        'project canonical storage/read path is explicitly approved',
+        'native project harvesting replacement is designed',
+      ],
+    };
+  }
+
+  function PROJECTS_diagnose() {
+    return {
+      surface: 'native',
+      phase: 'phase-9B-deprecation-markers',
+      ownerPhase: owner.phase,
+      booted: !!STATE.projectsBooted,
+      nativeHarvesting: !!STATE.projectsNativeHarvesting,
+      fetchCaptureHooked: !!STATE.projectsNativeFetchCaptureHooked,
+      morePageOverrideHooked: !!STATE.projectsMorePageOverrideHooked,
+      deprecation: PROJECTS_deprecationDiagnostics(),
+    };
+  }
+
   const owner = {
     phase: 'phase-6-projects-owner-finalized',
+    // Phase 9B: native project viewer controls are future-deprecated after
+    // Studio replacement workflows are complete; harvesting/cache paths stay active.
     openViewer(projectsRaw = null, opts = {}) { return UI_openProjectsViewer(projectsRaw, opts); },
     loadRows(projectsRaw = null, opts = {}) { return PROJECTS_loadRows(projectsRaw, opts); },
     loadRowsFast(projectsRaw = null) { return PROJECTS_loadRowsFast(projectsRaw); },
@@ -2314,6 +2351,7 @@
     hookMorePageOverrideOnce() { return OBS_hookProjectsMorePageOverrideOnce(); },
     hookCanonicalStoreOnce() { return OBS_hookProjectsCanonicalStoreOnce(); },
     mutationTouchesNativeRows(muts) { return PROJECTS_mutationTouchesNativeRows(muts); },
+    diagnose() { return PROJECTS_diagnose(); },
   };
 
   function PROJECTS_boot() {
@@ -2337,6 +2375,7 @@
   MOD.refresh = (...args) => owner.refreshFullStore(...args);
   MOD.openViewer = (...args) => owner.openViewer(...args);
   MOD.readStore = PROJECTS_readStore;
+  MOD.diagnose = (...args) => owner.diagnose(...args);
 
   try {
     core.registerOwner?.('projects', owner, { replace: true });
