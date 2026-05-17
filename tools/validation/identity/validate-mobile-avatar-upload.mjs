@@ -56,19 +56,26 @@ function fail(msg) { failures.push(msg); }
 function check(cond, msg) { if (!cond) fail(msg); }
 
 const MIGRATION_REL = "supabase/migrations/202605050001_identity_profile_avatar_path.sql";
-const MOBILE_CONFIG_REL = "apps/studio-mobile/src/identity/mobileConfig.ts";
+
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then. All REL constants below derive from it via template literals
+// so resolved string values stay byte-identical.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const MOBILE_CONFIG_REL = `${MOBILE_APP_REL}/src/identity/mobileConfig.ts`;
 const CONTRACTS_REL = "packages/identity-core/src/contracts.ts";
 const MOCK_PROVIDER_REL = "packages/identity-core/src/mock-provider.ts";
-const PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
-const CONTEXT_REL = "apps/studio-mobile/src/identity/IdentityContext.tsx";
-const AVATAR_UPLOAD_REL = "apps/studio-mobile/src/identity/avatarUpload.ts";
-const RESOLVED_AVATAR_REL = "apps/studio-mobile/src/identity/useResolvedAvatar.ts";
-const USER_AVATAR_REL = "apps/studio-mobile/src/components/common/UserAvatar.tsx";
-const COMMON_INDEX_REL = "apps/studio-mobile/src/components/common/index.ts";
-const ACCOUNT_IDENTITY_REL = "apps/studio-mobile/src/app/account-identity.tsx";
-const INFO_PLIST_REL = "apps/studio-mobile/ios/H2OStudio/Info.plist";
-const APP_JSON_REL = "apps/studio-mobile/app.json";
-const PACKAGE_JSON_REL = "apps/studio-mobile/package.json";
+const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
+const CONTEXT_REL = `${MOBILE_APP_REL}/src/identity/IdentityContext.tsx`;
+const AVATAR_UPLOAD_REL = `${MOBILE_APP_REL}/src/identity/avatarUpload.ts`;
+const RESOLVED_AVATAR_REL = `${MOBILE_APP_REL}/src/identity/useResolvedAvatar.ts`;
+const USER_AVATAR_REL = `${MOBILE_APP_REL}/src/components/common/UserAvatar.tsx`;
+const COMMON_INDEX_REL = `${MOBILE_APP_REL}/src/components/common/index.ts`;
+const ACCOUNT_IDENTITY_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;
+const INFO_PLIST_REL = `${MOBILE_APP_REL}/ios/H2OStudio/Info.plist`;
+const APP_JSON_REL = `${MOBILE_APP_REL}/app.json`;
+const PACKAGE_JSON_REL = `${MOBILE_APP_REL}/package.json`;
 
 // ─── 1. Migration ─────────────────────────────────────────────────────────
 

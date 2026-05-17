@@ -7,20 +7,26 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-const MOBILE_ROOT_REL = "apps/studio-mobile";
-const MOBILE_SRC_REL = "apps/studio-mobile/src";
-const PACKAGE_REL = "apps/studio-mobile/package.json";
-const APP_JSON_REL = "apps/studio-mobile/app.json";
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then. All other REL constants in this file are derived from it
+// via template literals so resolved string values stay byte-identical.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const MOBILE_ROOT_REL = MOBILE_APP_REL;
+const MOBILE_SRC_REL = `${MOBILE_APP_REL}/src`;
+const PACKAGE_REL = `${MOBILE_APP_REL}/package.json`;
+const APP_JSON_REL = `${MOBILE_APP_REL}/app.json`;
 const DOC_REL = "docs/identity/IDENTITY_PHASE_5_0A_MOBILE_ALIGNMENT.md";
 const RECOVERY_CLOSEOUT_REL = "docs/identity/IDENTITY_PHASE_5_0D_RECOVERY_CLOSEOUT.md";
-const MOBILE_CONFIG_REL = "apps/studio-mobile/src/identity/mobileConfig.ts";
-const SECURE_STORE_REL = "apps/studio-mobile/src/identity/secureStore.ts";
-const MOBILE_STORAGE_REL = "apps/studio-mobile/src/identity/mobileStorage.ts";
-const SELF_CHECK_REL = "apps/studio-mobile/src/identity/selfCheck.ts";
-const MOBILE_PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
-const IDENTITY_CONTEXT_REL = "apps/studio-mobile/src/identity/IdentityContext.tsx";
-const SETTINGS_REL = "apps/studio-mobile/src/app/settings.tsx";
-const IDENTITY_DEBUG_REL = "apps/studio-mobile/src/app/identity-debug.tsx";
+const MOBILE_CONFIG_REL = `${MOBILE_APP_REL}/src/identity/mobileConfig.ts`;
+const SECURE_STORE_REL = `${MOBILE_APP_REL}/src/identity/secureStore.ts`;
+const MOBILE_STORAGE_REL = `${MOBILE_APP_REL}/src/identity/mobileStorage.ts`;
+const SELF_CHECK_REL = `${MOBILE_APP_REL}/src/identity/selfCheck.ts`;
+const MOBILE_PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
+const IDENTITY_CONTEXT_REL = `${MOBILE_APP_REL}/src/identity/IdentityContext.tsx`;
+const SETTINGS_REL = `${MOBILE_APP_REL}/src/app/settings.tsx`;
+const IDENTITY_DEBUG_REL = `${MOBILE_APP_REL}/src/app/identity-debug.tsx`;
 
 const TOKEN_KEY_RE =
   /access_token|refresh_token|provider_token|provider_refresh_token|rawSession|rawUser|rawEmail|providerIdentity|identity_data|currentPassword|current_password|newPassword|confirmPassword|owner_user_id|deleted_at|^password$|token|secret|credential/i;
@@ -253,9 +259,9 @@ const mobileFiles = [
 
 // 1-2. Dependencies.
 const deps = packageJson.dependencies ?? {};
-assert(deps["@h2o/identity-core"], "apps/studio-mobile/package.json must depend on @h2o/identity-core");
-assert(deps["expo-secure-store"], "apps/studio-mobile/package.json must depend on expo-secure-store");
-assert(deps["@supabase/supabase-js"], "apps/studio-mobile/package.json must depend on @supabase/supabase-js");
+assert(deps["@h2o/identity-core"], `${MOBILE_APP_REL}/package.json must depend on @h2o/identity-core`);
+assert(deps["expo-secure-store"], `${MOBILE_APP_REL}/package.json must depend on expo-secure-store`);
+assert(deps["@supabase/supabase-js"], `${MOBILE_APP_REL}/package.json must depend on @supabase/supabase-js`);
 
 // 3. No browser-only APIs in mobile source.
 assertNoMatches(srcFiles, /\bchrome\.|\bwindow\.|\blocalStorage\b|\bsessionStorage\b/g,

@@ -54,10 +54,15 @@ function extractBlockByName(source, name) {
 
 // ─── Inputs ────────────────────────────────────────────────────────────────
 
-const PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
-const ACCOUNT_REL = "apps/studio-mobile/src/app/account-identity.tsx";
-const CONFIG_REL = "apps/studio-mobile/src/identity/mobileConfig.ts";
-const CONTEXT_REL = "apps/studio-mobile/src/identity/IdentityContext.tsx";
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
+const ACCOUNT_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;
+const CONFIG_REL = `${MOBILE_APP_REL}/src/identity/mobileConfig.ts`;
+const CONTEXT_REL = `${MOBILE_APP_REL}/src/identity/IdentityContext.tsx`;
 
 const provider = read(PROVIDER_REL);
 const accountIdentity = read(ACCOUNT_REL);

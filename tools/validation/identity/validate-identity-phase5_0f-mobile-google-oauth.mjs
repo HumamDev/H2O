@@ -63,14 +63,19 @@ function extractAsyncMethod(source, name) {
   return source.slice(start, i - 1);
 }
 
-const MOBILE_SRC_REL = "apps/studio-mobile/src";
-const PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
-const CONTEXT_REL = "apps/studio-mobile/src/identity/IdentityContext.tsx";
-const ACCOUNT_REL = "apps/studio-mobile/src/app/account-identity.tsx";
-const CONFIG_REL = "apps/studio-mobile/src/identity/mobileConfig.ts";
-const SECURESTORE_REL = "apps/studio-mobile/src/identity/secureStore.ts";
-const SETTINGS_REL = "apps/studio-mobile/src/app/settings.tsx";
-const IDENTITY_DEBUG_REL = "apps/studio-mobile/src/app/identity-debug.tsx";
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const MOBILE_SRC_REL = `${MOBILE_APP_REL}/src`;
+const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
+const CONTEXT_REL = `${MOBILE_APP_REL}/src/identity/IdentityContext.tsx`;
+const ACCOUNT_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;
+const CONFIG_REL = `${MOBILE_APP_REL}/src/identity/mobileConfig.ts`;
+const SECURESTORE_REL = `${MOBILE_APP_REL}/src/identity/secureStore.ts`;
+const SETTINGS_REL = `${MOBILE_APP_REL}/src/app/settings.tsx`;
+const IDENTITY_DEBUG_REL = `${MOBILE_APP_REL}/src/app/identity-debug.tsx`;
 const CORE_CONTRACTS_REL = "packages/identity-core/src/contracts.ts";
 const MOCK_PROVIDER_REL = "packages/identity-core/src/mock-provider.ts";
 

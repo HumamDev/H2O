@@ -35,11 +35,16 @@ function readOptional(rel) {
   }
 }
 
-const APP_JSON_REL = "apps/studio-mobile/app.json";
-const EAS_JSON_REL = "apps/studio-mobile/eas.json";
-const INFO_PLIST_REL = "apps/studio-mobile/ios/H2OStudio/Info.plist";
-const MAIN_ENTITLEMENTS_REL = "apps/studio-mobile/ios/H2OStudio/H2OStudio.entitlements";
-const SHARE_ENTITLEMENTS_REL = "apps/studio-mobile/ios/H2OShareExtension/H2OShareExtension.entitlements";
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const APP_JSON_REL = `${MOBILE_APP_REL}/app.json`;
+const EAS_JSON_REL = `${MOBILE_APP_REL}/eas.json`;
+const INFO_PLIST_REL = `${MOBILE_APP_REL}/ios/H2OStudio/Info.plist`;
+const MAIN_ENTITLEMENTS_REL = `${MOBILE_APP_REL}/ios/H2OStudio/H2OStudio.entitlements`;
+const SHARE_ENTITLEMENTS_REL = `${MOBILE_APP_REL}/ios/H2OShareExtension/H2OShareExtension.entitlements`;
 
 const PLACEHOLDER_BUNDLE = "com.anonymous.studio-mobile";
 const PLACEHOLDER_APP_GROUP = "group.com.anonymous.studio-mobile";
@@ -138,7 +143,7 @@ check(
 const easJsonText = readOptional(EAS_JSON_REL);
 let easJson = null;
 if (easJsonText === null) {
-  fail("eas.json must exist at apps/studio-mobile/eas.json");
+  fail(`eas.json must exist at ${EAS_JSON_REL}`);
 } else {
   try {
     easJson = JSON.parse(easJsonText);

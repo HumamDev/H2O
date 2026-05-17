@@ -42,9 +42,15 @@ function assert(cond, msg) {
 }
 
 const MIGRATION_REL = "supabase/migrations/202605040001_identity_device_sessions.sql";
-const PROVIDER_REL = "apps/studio-mobile/src/identity/MobileSupabaseProvider.ts";
-const ACCOUNT_REL = "apps/studio-mobile/src/app/account-identity.tsx";
-const SECURESTORE_REL = "apps/studio-mobile/src/identity/secureStore.ts";
+
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
+const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
+const ACCOUNT_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;
+const SECURESTORE_REL = `${MOBILE_APP_REL}/src/identity/secureStore.ts`;
 const BROWSER_PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const BROWSER_BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
 

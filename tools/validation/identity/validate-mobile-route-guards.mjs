@@ -25,6 +25,13 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
+// Phase 6C-1 (2026-05-17): single-source mobile-app folder path. Phase 6C-2
+// will move the folder to apps/studio/mobile — only this constant needs
+// updating then. All apps/studio-mobile/... paths in this validator
+// (object keys, array entries, REL constants) are derived via template
+// literals so resolved string values stay byte-identical.
+const MOBILE_APP_REL = "apps/studio-mobile";
+
 function read(rel) {
   return fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
@@ -43,7 +50,7 @@ function check(cond, msg) { if (!cond) fail(msg); }
 
 // ─── 1. Hook shape ─────────────────────────────────────────────────────────
 
-const HOOK_REL = "apps/studio-mobile/src/identity/useRouteGuard.tsx";
+const HOOK_REL = `${MOBILE_APP_REL}/src/identity/useRouteGuard.tsx`;
 const hookSource = readOptional(HOOK_REL);
 if (hookSource === null) {
   fail(`${HOOK_REL} must exist`);
@@ -78,22 +85,22 @@ if (hookSource === null) {
 
 const PROTECTED_ROUTES = {
   // sync_ready
-  "apps/studio-mobile/src/app/library.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/pinned.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/archived.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/search.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/tags.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/folders/index.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/folders/[id].tsx": "sync_ready",
-  "apps/studio-mobile/src/app/chat/[id].tsx": "sync_ready",
-  "apps/studio-mobile/src/app/imported-chat/[id].tsx": "sync_ready",
-  "apps/studio-mobile/src/app/import-chatgpt-link.tsx": "sync_ready",
-  "apps/studio-mobile/src/app/import-export.tsx": "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/library.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/pinned.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/archived.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/search.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/tags.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/folders/index.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/folders/[id].tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/chat/[id].tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/imported-chat/[id].tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/import-chatgpt-link.tsx`]: "sync_ready",
+  [`${MOBILE_APP_REL}/src/app/import-export.tsx`]: "sync_ready",
   // signed_in
-  "apps/studio-mobile/src/app/menu.tsx": "signed_in",
-  "apps/studio-mobile/src/app/settings.tsx": "signed_in",
-  "apps/studio-mobile/src/app/debug.tsx": "signed_in",
-  "apps/studio-mobile/src/app/identity-debug.tsx": "signed_in",
+  [`${MOBILE_APP_REL}/src/app/menu.tsx`]: "signed_in",
+  [`${MOBILE_APP_REL}/src/app/settings.tsx`]: "signed_in",
+  [`${MOBILE_APP_REL}/src/app/debug.tsx`]: "signed_in",
+  [`${MOBILE_APP_REL}/src/app/identity-debug.tsx`]: "signed_in",
 };
 
 const IMPORT_RE = /import\s+\{[^}]*\buseRouteGuard\b[^}]*\}\s+from\s+['"]@\/identity\/useRouteGuard['"]/;
@@ -134,11 +141,11 @@ for (const [rel, level] of Object.entries(PROTECTED_ROUTES)) {
 // ─── 3. Exempt routes — must NOT import or call useRouteGuard ──────────────
 
 const EXEMPT_ROUTES = [
-  "apps/studio-mobile/src/app/index.tsx",
-  "apps/studio-mobile/src/app/account-identity.tsx",
-  "apps/studio-mobile/src/app/onboarding.tsx",
-  "apps/studio-mobile/src/app/account-billing.tsx",
-  "apps/studio-mobile/src/app/_layout.tsx",
+  `${MOBILE_APP_REL}/src/app/index.tsx`,
+  `${MOBILE_APP_REL}/src/app/account-identity.tsx`,
+  `${MOBILE_APP_REL}/src/app/onboarding.tsx`,
+  `${MOBILE_APP_REL}/src/app/account-billing.tsx`,
+  `${MOBILE_APP_REL}/src/app/_layout.tsx`,
 ];
 
 for (const rel of EXEMPT_ROUTES) {
