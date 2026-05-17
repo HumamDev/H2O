@@ -14,7 +14,7 @@
 
 ## 1. Current Phase Status
 
-> **NO STRUCTURAL FOLDER MOVES HAVE HAPPENED YET.** All completed phases (0A through 0H) are additive path-centralization, byte-equivalent refactors, or a single targeted bug fix. The repo's directory layout is unchanged from the pre-Phase-0A state. The runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. The actual structural migration (folder moves) begins at Phase 1+, which has NOT been started.
+> **NO STRUCTURAL FOLDER MOVES HAVE HAPPENED YET.** All completed phases (0A through 1A) are additive path-centralization, byte-equivalent refactors, two targeted bug/determinism fixes, and documentation/contract updates. The repo's directory layout is unchanged from the pre-Phase-0A state. The runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. The actual structural migration (folder moves) begins at Phase **1B+**, which has NOT been started.
 
 | Phase | Status | Tag | Commit | Description |
 |---|---|---|---|---|
@@ -30,9 +30,11 @@
 | **0G-1** — Studio desktop prepare-dist | ✅ complete | `migration-phase-0G-1-complete` | `e174603` | `apps/studio-desktop/scripts/prepare-dist.mjs` migrated. First paths.mjs consumer outside `tools/` (3-level relative import). `dist/` output byte-identical across 4 runs. |
 | **0G-2** — extension build context | ✅ complete | `migration-phase-0G-2-complete` | `c3d76d4` | `tools/product/extension/chrome-live-build-context.mjs` (primary) + `tools/product/extension/build-chrome-live-extension.mjs` (light, icons dirs only) migrated. 22 of 24 chrome-ext-dev-controls build outputs byte-identical; only `README.txt` (OUT_DIR literal embed) and `loader.js` (`LOADER_BUILD_TS = Date.now()`) varied. |
 | **0H** — deterministic loader timestamp | ✅ complete | `migration-phase-0H-complete` | `89e371e` | `tools/product/extension/chrome-live-loader.mjs` now honors `H2O_BUILD_TS` env override for `LOADER_BUILD_TS` / `LOADER_BUILD_ISO`. Reduces extension build's residual nondeterminism from 2 files to 1 (only `README.txt` remains). |
-| **0I** — migration documentation update | 🔄 **in progress** | — | — | Updating this file (`docs/migration/MIGRATION.md`) to record completed phases and current state. |
+| **0I** — migration documentation update | ✅ complete | `migration-phase-0I-complete` | `c375b15` | `docs/migration/MIGRATION.md` rewritten to record all completed phases with tag + commit cross-references, document what is stabilized / deferred / forbidden, and recommend next phases. |
+| **0J** — README.txt determinism | ✅ complete | `migration-phase-0J-complete` | `93cf846` | `tools/product/extension/chrome-live-readme.mjs` no longer embeds the absolute `OUT_DIR` path. **Full extension build is now byte-identical** across builds into any OUT_DIR with locked `H2O_BUILD_TS` (0 files differ — down from 2 at the 0G-2 baseline). |
+| **1A** — architecture contracts lock-in | 🔄 **in progress** | — | — | Updating this file to record 0I/0J completion and lock in the 6 explicit post-stabilization contracts (see §9). No code changes. |
 
-**Latest stabilized checkpoint**: `migration-phase-0H-complete` at `89e371e`. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (Studio prepare-dist) + extension-build determinism are now in place.
+**Latest stabilized checkpoint**: `migration-phase-0J-complete` at `93cf846`. All paths.mjs centralization across `tools/` (loader, release, archive, versioning, extension-build) + first cross-folder consumer (`apps/studio-desktop/scripts/prepare-dist.mjs`) + **full extension-build determinism** (0 files differ across builds with locked env) are now in place.
 
 ---
 
@@ -257,18 +259,32 @@ Extended gate (for Phase 3+):
 
 ---
 
-## 9. Architecture Contracts (adopt before Phase 1)
+## 9. Architecture Contracts
 
-These are the rules new code must follow during and after migration:
+These are the rules new code must follow during and after the migration. Rules 9.1–9.6 are the **Phase-1A-locked-in** post-stabilization contracts that became binding once Phases 0A–0J landed. Rules 9.7–9.13 are pre-existing structural rules that already applied during the migration.
 
-1. No tool computes a top-level path via raw `path.resolve(__dirname, '..', …)` literals. All paths come from `tools/paths.mjs`.
-2. No script filename literal in tools/. Scripts are referenced by ID via `tools/script-registry.mjs`.
-3. No new package created without a real consumer. Empty seed packages are forbidden.
-4. No deep cross-folder relative import in `apps/*`. Cross-package access goes through workspace-resolved scope names (`@h2o/*`, `@h2o-studio/*`).
-5. `scripts/` does not import from `packages/`. The runtime userscripts remain self-contained.
-6. `surfaces/` and `scripts/` remain parallel implementations until adapter extraction (deferred indefinitely). Neither imports the other at runtime.
-7. All chrome extension manifest URL changes require a manifest rebuild. `H2O_EXT_PROXY_PACK_URL` is the only embedded URL; treat it as a stable contract.
-8. Filenames in `scripts/` are append-only. Adding scripts requires a new ID; renaming requires a deprecation cycle.
+### 9.1 Phase-1A-locked contracts (binding from `migration-phase-1A-complete`)
+
+These rules codify the working pattern established by Phases 0C through 0J. They apply to **all new code AND all future refactors** of existing code.
+
+1. **Tools MUST use `tools/paths.mjs` for top-level repo paths.** Every new or refactored tool that needs `REPO_ROOT`, `SCRIPTS_DIR`, `BUILD_DIR`, `META_LEDGER_DIR`, `ARCHIVE_DIR`, `VERSIONS_CSV`, `DEV_ORDER_TSV`, `LOADER_DEPS_JSON`, `ALIAS_DIR`, `PROXY_PACK_URL`, etc. MUST import them from `tools/paths.mjs`. No new tool may re-derive these from scratch.
+2. **Do NOT compute repo root via scattered `path.resolve(__dirname, "..", "..")` (or `path.resolve(TOOL_DIR, "..", "..", ...)`) literals.** All such computations are centralized in `tools/paths.mjs`. The only acceptable pattern for repo-relative paths in new code is `import { REPO_ROOT, ... } from "<relative>/tools/paths.mjs"`. Exception: a tool that ANCHORS to its own script location for legitimate reasons (e.g. `prepare-dist.mjs`'s `here`/`desktopRoot` script-local anchoring for the dist output directory) MAY keep that compute, but only for the file-local scope, not for repo-level paths.
+3. **Do NOT create new hardcoded root paths** (literal absolute paths, or new `process.cwd()`-based root assumptions). The single source of truth for repo location is `tools/paths.mjs`'s `REPO_ROOT`. If a new path constant is needed, add it to `tools/paths.mjs` first, then import it.
+4. **Preserve env-var overrides when refactoring.** Every existing `H2O_*` environment variable that affects path resolution (`H2O_SRC_DIR`, `H2O_SERVER_DIR`, `H2O_ORDER_FILE`, `H2O_DEPS_FILE`, `H2O_DEV_SERVER_URL`, `H2O_EXT_OUT_DIR`, `H2O_EXT_PROXY_PACK_URL`, `H2O_EXT_DEV_VARIANT`, `H2O_BUILD_TS`, `H2O_ALIAS_MODE`, `H2O_ALIAS_SCOPE`, `H2O_ALLOW_ICLOUD_SYMLINK`, `H2O_DEV_DIR_NAME`, `H2O_DEV_ORIGIN`, `H2O_ARCHIVE_ALL`, `H2O_SKIP_REV_STAMP`, `H2O_RELEASE_DEBUG`, etc.) MUST continue to be honored after a refactor. Refactors may **add** new env-var support (additive), but MUST NOT remove or rename existing ones.
+5. **Byte-equivalent proof required for tool refactors.** Any refactor of a tool under `tools/` (or of a tool's behavior anywhere — Studio prepare-dist, extension build, etc.) MUST include cryptographic byte-identical proof in the phase commit: shasums of generated output files (with locked timestamps where the tool embeds them), `diff` of stdout for read-only tools, or per-file file comparison for build artifacts. The exact methodology is established by Phases 0C through 0J — re-use those patterns. Refactors without byte-equivalent proof MUST NOT be tagged complete.
+6. **No structural folder moves without a phase tag + rollback note.** Any phase that moves or renames a folder, file, or `.git` location MUST: (a) be tagged with a `migration-phase-<id>-pre` tag at HEAD BEFORE the move begins; (b) include a documented rollback procedure in the phase's commit message and in this MIGRATION.md; (c) take an off-disk archive snapshot of the affected directory tree; (d) close with a `migration-phase-<id>-complete` tag only after validation. Phase 0A–1A established the no-move-yet baseline; this rule binds the moment Phase 1B (or any successor) starts.
+
+### 9.2 Pre-existing structural contracts
+
+These rules predate Phase 1A but remain in force throughout the migration:
+
+7. **No script filename literal in `tools/`.** Scripts are referenced by ID via `tools/script-registry.mjs` (canonical) or local helpers that mirror its output exactly. Tools that grep specific script filenames (e.g. some validators under `tools/validation/identity/`) are pre-existing technical debt that should migrate during their own future phase.
+8. **No new package created without a real consumer.** Empty seed packages are forbidden. The 4 existing seed packages (`@h2o-studio/{core,ui,types}`, `@h2o/identity-core`) are grandfathered; do not add more until a real consumer exists.
+9. **No deep cross-folder relative import in `apps/*`.** Cross-package access goes through workspace-resolved scope names (`@h2o/*`, `@h2o-studio/*`) — even though npm workspaces are not yet enabled at the root (deferred to a future structural phase), this contract applies prospectively so future imports remain clean.
+10. **`scripts/` does NOT import from `packages/`.** The runtime userscripts remain self-contained. (Build-time consumption via `build-identity-provider-bundle.mjs` is the only exception and is bounded to a single bundle output, not a runtime import.)
+11. **`surfaces/` and `scripts/` remain parallel implementations** until adapter extraction (deferred indefinitely). Neither imports the other at runtime.
+12. **All chrome extension manifest URL changes require a manifest rebuild.** `H2O_EXT_PROXY_PACK_URL` is the only embedded URL; treat it as a stable contract — changing its default in `tools/paths.mjs` requires a coordinated rebuild + reinstall of every dev extension variant.
+13. **Filenames in `scripts/` are append-only.** Adding scripts requires a new ID; renaming requires a deprecation cycle (and triggers a cascade through `config/dev-order.tsv`, `config/loader-deps.json`, validator hardcodes, archive history, and release tags).
 
 ---
 
@@ -363,22 +379,32 @@ Single source of truth for every repo-level path constant. All consumers below i
 
 ## 13. Recommended Next Phase
 
-Two reasonable paths forward, in priority order:
+The stabilization track (0A–0J) and contract lock-in (1A) are complete. The next phase is the **first structural change** — and it has been deliberately split into a small, low-risk lead-off step.
 
-### Option A — small clean-up sweep (low risk, optional)
+### Phase 1B — outer `cockpit-pro/apps/` cleanup (FIRST structural move)
 
-- **Phase 0J (optional)**: fix the `README.txt` OUT_DIR-literal nondeterminism in `chrome-live-readme.mjs` so the entire chrome-ext build is fully deterministic with locked `H2O_BUILD_TS`. Trivial change (use relative path inside README, or strip the line). Closes the "1 file still differs" gap from Phase 0H.
+**Scope**: delete the dead outer `cockpit-pro/apps/` directory (the one above `h2o-source/` that contains only a `.DS_Store` and an empty `studio-mobile/` shell). This directory is unreferenced by every tool, build, manifest, validator, supabase function, and runtime path in the repo. Removing it is structurally the smallest possible first move.
 
-### Option B — begin structural Phase 1 (the actual migration)
+**Pre-conditions before starting Phase 1B**:
 
-- **Phase 1 — outer cleanup** (the first structural move): delete the dead outer `cockpit-pro/apps/` directory (the one with just a `.DS_Store`). Also evaluate `tmp/`, `s-files/`, `references/` for relocation under `archive/_misc/` or deletion. **This is the FIRST phase that actually moves anything.** It is low-risk (the targets are unreferenced), but it crosses the symbolic line into "we have started the structural migration."
+1. Phase 1A is committed and tagged (this phase).
+2. Re-verify nothing references the outer `cockpit-pro/apps/` path:
+   - `grep -r "cockpit-pro/apps" .` returns zero matches in source/tools/build files.
+   - `grep -r "outer apps" docs/` returns only documentation references (which are fine).
+   - The Phase 0A investigation (see §2 + §3) explicitly identified outer `apps/` as dead cruft; this conclusion should be re-confirmed at the moment Phase 1B starts.
+3. An off-disk archive snapshot of `cockpit-pro/apps/` is taken and stored outside the git repo.
+4. A `migration-phase-1B-pre` git tag is placed at HEAD BEFORE the delete operation.
 
-### Recommended ordering
+**Rollback note for Phase 1B**: because the outer `cockpit-pro/apps/` directory is **not in the git repository** (the git toplevel is `h2o-source/.git`, not the outer wrapper), `git revert` will NOT restore it. Rollback requires restoring from the off-disk archive snapshot. The pre-tag (`migration-phase-1B-pre`) marks the point of no git-revert-rollback for the structural part of the change. This is the principal reason Phase 1B is being kept as small as possible.
 
-Do **0J first** (it completes the build-determinism story while still being non-structural), then **0F-style audit pass** to confirm no other small wins remain, **then** start Phase 1. This gives a clean "stabilization complete, structural migration begins at Phase 1" demarcation in the repo history.
+### Phases beyond 1B (preview, not yet authorized)
 
-**Do NOT proceed to Phase 1 without explicit operator approval** — Phase 1 is the first irreversible-without-revert structural change.
+- **Phase 1C (optional)**: evaluate and possibly relocate `tmp/`, `s-files/`, `references/` (all gitignored, all known dead/scratch directories) under `archive/_misc/` or delete them.
+- **Phase 2**: doc rewrites of stale repo guides (`AGENTS.md`, `CLAUDE.md`) — these still describe a Tampermonkey/Violentmonkey runtime that hasn't been current for months (see §3 for the actual MV3 + chrome-live runtime).
+- **Phase 3+**: npm workspaces enablement, `apps/site/` promotion, `packages/shared-library/` extraction, build/chrome-ext-* relocation to `apps/extensions/chatgpt/chrome/`, h2o-dev-server absorption, h2o-source flatten. See the original architectural report in the migration planning thread for the full staged plan.
+
+**Do NOT proceed to Phase 1B (or any subsequent structural phase) without explicit operator approval.** Phase 1B is the first move that requires an off-disk snapshot for rollback. The git-only rollback story stops working at Phase 1B.
 
 ---
 
-_Last updated: 2026-05-17 (Phase 0I in progress — documentation-only update reflecting 0A–0H stabilization complete)._
+_Last updated: 2026-05-17 (Phase 1A in progress — documentation/contracts update; locks in the 6 post-stabilization rules from §9.1 binding from `migration-phase-1A-complete`)._
