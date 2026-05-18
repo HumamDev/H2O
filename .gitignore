@@ -97,5 +97,9 @@ apps/**/android/app/build/
 # Local CLI caches, scratch, plans, and one-off build artifacts
 /supabase/.temp/
 /tmp/
-/artifacts/
+# Phase 7D (2026-05-18): track only artifacts/README.md as a placeholder
+# documenting future-use; keep everything else under artifacts/ ignored
+# (existing local zip archives, etc.).
+/artifacts/*
+!/artifacts/README.md
 /plans/
