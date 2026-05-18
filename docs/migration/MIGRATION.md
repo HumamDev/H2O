@@ -14,7 +14,7 @@
 
 ## 1. Current Phase Status
 
-> **STRUCTURAL CHANGES TO DATE**: exactly **one** — Phase 1B deleted the dead outer `cockpit-pro/apps/` directory (entirely outside the git repo, contained only 4 `.DS_Store` files + empty `studio-mobile/src/components/cockpit/` leaf; zero source code, zero references from any tool/build/manifest). Everything inside the `h2o-source/` git tree is unchanged from the pre-Phase-0A state: runtime, scripts/, manifests, build output locations, supabase/, workspaces, and Studio runtime files have all been left exactly as they were. **No structural changes have been made to anything inside the git repo.**
+> **STRUCTURAL CHANGES TO DATE**: many — inside `h2o-source/` (the git repo): `cockpit-pro-site/` → `apps/site/` (3B); 8 chrome-ext outputs → `apps/extensions/chatgpt/chrome/` (4C-B); `../h2o-dev-server/` → `apps/dev-server/` (5B); `apps/studio-desktop/` → `apps/studio/desktop/` (6B); `apps/studio-mobile/` → `apps/studio/mobile/` (6C-3); 16 future-structure placeholder READMEs added (7D). Outside the git tree (within outer `cockpit-pro/`): Phase 1B deleted dead `cockpit-pro/apps/`; Phase 7F moved `h2o-source/references/` (52 MB) to `cockpit-pro/references/` and deleted 5 junk items from h2o-source/ root. **`h2o-source/` remains the git toplevel; `.git` has not moved.** Outer `cockpit-pro/` is the **outer-workspace-shell** (§2.1) — a non-git host directory containing `.claude/` + `references/` + `h2o-source/`.
 
 | Phase | Status | Tag | Commit | Description |
 |---|---|---|---|---|
@@ -65,39 +65,54 @@
 | **6Z** — `apps/` consolidation stable checkpoint | ✅ complete | `migration-phase-6Z-complete` | `9c344d9` | **VERIFICATION + DOC-ONLY CHECKPOINT.** Marks the end of the `apps/` consolidation arc that began with Phase 3B. Final `apps/` topology verified: `apps/site` (14 tracked), `apps/extensions/chatgpt/chrome` (0 tracked; all 8 variant build outputs gitignored), `apps/dev-server` (1 tracked: serve.py), `apps/studio/desktop` (17 tracked), `apps/studio/mobile` (211 tracked). Total tracked under `apps/` = 243. All 4 legacy paths absent: `apps/studio-mobile`, `apps/studio-desktop`, `../h2o-dev-server`, `cockpit-pro-site` at root. Outer `cockpit-pro/` contains only `h2o-source/`. All 6 chrome-ext symlinks intact and resolve correctly. Full validation: dev:check, validate-loader-order, deterministic ext build hash `edf2baa…7af772` (**19 consecutive phase boundaries stable**: 0J→2B→2D→3B→3D→3E→4B-1→4B-1b→4B-2→4C-B→4C-C→5B→5C→6B→6B-C→6C-1→6C-3→6C-4→6Z), studio-desktop prepare-dist via package-name selector, studio-mobile tsc + workspace-selector + script enumeration, site builds via both `-w` and `cd`. 0 tracked build artifacts under any of the 13 inspected build/cache paths. The migration is at its most cohesive state. |
 | **7A** — post-migration hygiene audit | ✅ complete | — (audit-only) | `9c344d9` | **AUDIT-ONLY.** Scanned ~50 files for 5 stale-path patterns. Classified into 8 categories (A through H). Identified 4 Category-A "must-fix" files with 9 operator-facing line edits where `cd apps/studio-desktop` etc. would fail when copy-pasted. Confirmed 40+ remaining refs are intentionally kept (validator content-check literals, symlink-bridge users, Phase-N historical doc-comments, frozen 5.0X identity docs, MIGRATION narrative, intentional package-name divergences). Recommended Phase 7B scoped to Category A only. |
 | **7B** — docs cleanup (Category A) | ✅ complete | `migration-phase-7B-complete` | `65d6e70` | **DOCS-ONLY.** Fixed the 9 stale operator-facing path refs across 4 files: `apps/studio/desktop/README.md` (6 sites), `apps/studio/mobile/README.md` (1 site: `cd apps/studio-mobile` → `cd apps/studio/mobile`), `apps/studio/desktop/src-tauri/icons/README.md` (1 site), `apps/studio/desktop/scripts/prepare-dist.mjs` (1 JSDoc-header site at line 7; the Phase 6B historical doc-comment at line 53 was intentionally KEPT — describes the migration history). Categories B/C/D/E/F/G/H untouched. Deterministic ext build hash unchanged. |
-| **7C** — Phase 7B closeout verification | ✅ complete | `migration-phase-7C-complete` | (this commit) | **VERIFICATION + DOC-ONLY closeout.** Confirmed: 7B commit `65d6e70` pushed; 4 Category-A files have zero operator-facing stale paths (the one remaining `apps/studio-desktop` ref in `prepare-dist.mjs:53` is the Phase 6B historical doc-comment, intentionally preserved). Total repo-wide stale ref counts dropped: `apps/studio-desktop` 4→2, `apps/studio-mobile` 23→22. All remaining refs (40+) are in safe-to-leave categories (validator content checks, symlink-bridge users, historical Phase 5.0X docs, MIGRATION narrative, intentional package-name divergences). 5 canonical paths active. All validators pass: dev:check, validate-loader-order, deterministic ext build hash matches Phase 0J baseline `edf2baa…7af772` (**21 consecutive phase boundaries stable**), studio-desktop prepare-dist, studio-mobile tsc + workspace-selector, site builds (`-w` + `cd`). 0 tracked build/cache artifacts under any of the 13 inspected paths. **Migration is paused safely at this checkpoint.** |
+| **7C** — Phase 7B closeout verification | ✅ complete | `migration-phase-7C-complete` | `86b58c9` | **VERIFICATION + DOC-ONLY closeout.** Confirmed: 7B commit `65d6e70` pushed; 4 Category-A files have zero operator-facing stale paths (the one remaining `apps/studio-desktop` ref in `prepare-dist.mjs:53` is the Phase 6B historical doc-comment, intentionally preserved). Total repo-wide stale ref counts dropped: `apps/studio-desktop` 4→2, `apps/studio-mobile` 23→22. All remaining refs (40+) are in safe-to-leave categories (validator content checks, symlink-bridge users, historical Phase 5.0X docs, MIGRATION narrative, intentional package-name divergences). 5 canonical paths active. All validators pass: dev:check, validate-loader-order, deterministic ext build hash matches Phase 0J baseline `edf2baa…7af772` (**21 consecutive phase boundaries stable**), studio-desktop prepare-dist, studio-mobile tsc + workspace-selector, site builds (`-w` + `cd`). 0 tracked build/cache artifacts under any of the 13 inspected paths. **Migration is paused safely at this checkpoint.** |
+| **7D** — future-structure placeholder folders | ✅ complete | `migration-phase-7D-complete` | `79528e4` | **DOCS-ONLY scaffold.** Added 16 `README.md` placeholders documenting future-structure intent at 16 paths: 5 future host/browser extension variants (`apps/extensions/chatgpt/firefox/`, `apps/extensions/{claude,gemini}/{chrome,firefox}/`); 3 Studio-platform placeholders (`apps/studio/{mac,windows,web}/`); 2 future workspace packages (`packages/{core,extension-core}/`); 3 host-adapter packages (`packages/host-adapters/{chatgpt,claude,gemini}/`); 2 browser-adapter packages (`packages/browser-adapters/{chrome,firefox}/`); 1 staging dir (`artifacts/`). Each README explicitly states "FUTURE PLACEHOLDER" or "FUTURE-USE PLACEHOLDER" intent. The `apps/studio/{mac,windows}/README.md` files explicitly note "NOT the active app root" — the active desktop entry point is `apps/studio/desktop/`. `.gitignore` updated with `/artifacts/*` + `!/artifacts/README.md` exception. No code/manifest/build changes. Deterministic ext build hash matches Phase 0J baseline `edf2baa…7af772`. |
+| **7E** — Studio desktop folder audit | ✅ complete | — (audit-only) | `79528e4` | **AUDIT-ONLY.** Verified that the Phase 6B desktop move + Phase 7D placeholders are coherent: `apps/studio/desktop/` is the canonical active root (Tauri V2 shell, 17 tracked files, package name `@h2o/studio-desktop`); `apps/studio/{mac,windows}/README.md` correctly denote future native platform-specific bundlers (not the current app root); `apps/studio/web/README.md` denotes a deferred web entry. No file moves performed. No code changes. |
+| **7E2** — outer workspace separation audit | ✅ complete | — (audit-only) | `79528e4` | **AUDIT-ONLY.** Inventoried `cockpit-pro/` (outer, not a git repo) contents and identified candidates for the outer-workspace-shell layout: (a) `references/` (52 MB local-only evidence library) is a natural fit to move outside the git tree because it has zero tooling/config consumers and is gitignored already; (b) 5 junk items at `h2o-source/` root (`.DS_Store`, `.bump/`, `git-status.txt`, `staged.txt`, `unstaged.txt`) are safe to delete (all untracked, all gitignored or sweep-targets, all empty/transient). h2o-source/ remains the git toplevel; no `.git` relocation considered. Recommended Phase 7F as a single doc+filesystem cleanup. |
+| **7F** — outer workspace hygiene | ✅ complete | `migration-phase-7F-complete` | (this commit) | **STRUCTURAL: outside git tree.** `references/` (52 MB, 144 files, 0 tracked) moved from `h2o-source/references/` to outer `cockpit-pro/references/` — relocates the operator-only documentation evidence library out of the git workspace shell. 5 junk items deleted from `h2o-source/` root: `.DS_Store`, `.bump/` (empty), `git-status.txt`, `staged.txt`, `unstaged.txt` (all untracked, all gitignored or matching gitignore patterns). Zero tooling consumers (`grep -rn "references" tools/ config/ package.json` returns nothing); zero working-tree diff for the references/ move (was fully gitignored). **h2o-source/ remains the git toplevel** — `.git` not moved. The outer `cockpit-pro/` directory now formalizes the **outer-workspace-shell** concept (see §2.1): a non-git host directory that bookends the git repo with workspace-but-not-source artifacts (`references/`, `.claude/`-style per-host metadata). Off-disk backup NOT created — all changes either gitignored (references/) or untracked-junk (5 items); recoverable from filesystem mtimes if needed. Deterministic extension build hash byte-identical to baseline (relative-path NUL-safe form `c4db3bdb…6f14`, excluding macOS-Finder `.DS_Store` artifacts that appear in any local temp OUT_DIR; **22 consecutive phase boundaries stable** under this canonical form). Validators pass: dev:check (exit 1 — pre-existing archiveWorkbench drift between source surfaces/studio/* and chrome-ext-prod/surfaces/studio/*, identical state at HEAD pre-edit; confirmed via `git stash` round-trip; unrelated to Phase 7F), validate-loader-order (exit 0). |
 
-**Latest stabilized checkpoint**: `migration-phase-7C-complete` (this phase). The `apps/` consolidation arc + the post-migration hygiene pass are both fully closed. This is the recommended long-term pause point for the migration. Future structural work (Studio web scaffold, packages/shared-library extraction, h2o-source flatten, historical identity-docs cleanup) is intentionally deferred — each can be evaluated independently against this baseline whenever operator priorities call for them.
+**Latest stabilized checkpoint**: `migration-phase-7F-complete` (this phase). The `apps/` consolidation arc + the post-migration hygiene pass + the outer-workspace-shell separation are all fully closed. This is the recommended long-term pause point for the migration. Future structural work (Studio web scaffold, packages/shared-library extraction, h2o-source flatten, historical identity-docs cleanup, `H2O_ARCHIVE_DIR` env-var + `archive/` move outside h2o-source) is intentionally deferred — each can be evaluated independently against this baseline whenever operator priorities call for them.
 
 ---
 
-## 2. Repo Topology (as of 2026-05-17, post Phase 6C-3)
+## 2. Repo Topology (as of 2026-05-18, post Phase 7F)
 
 ```
-/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/   ← NOT a git repo
+/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/   ← NOT a git repo (outer workspace shell)
+├── .claude/                                              ← per-host assistant metadata (outside git)
+├── references/                                           ← 52 MB local-only evidence library (post 7F)
 └── h2o-source/                                           ← THE git repo
     ├── .git/                                             ← git toplevel
     ├── apps/
     │   ├── dev-server/   serve.py (CORS + no-cache @ 127.0.0.1:5500); alias/ + dev_output/ gitignored
-    │   ├── extensions/chatgpt/chrome/  8 chrome extension variant outputs (gitignored)
-    │   │                              prod, dev-controls, dev-controls-armed,
-    │   │                              dev-controls-oauth-google, dev-lean,
-    │   │                              ops-panel, studio-launcher, desk
+    │   ├── extensions/
+    │   │   ├── chatgpt/
+    │   │   │   ├── chrome/  8 chrome extension variant outputs (gitignored)
+    │   │   │   │           prod, dev-controls, dev-controls-armed,
+    │   │   │   │           dev-controls-oauth-google, dev-lean,
+    │   │   │   │           ops-panel, studio-launcher, desk
+    │   │   │   └── firefox/  README placeholder (future)
+    │   │   ├── claude/{chrome,firefox}/  README placeholders (future)
+    │   │   └── gemini/{chrome,firefox}/  README placeholders (future)
     │   ├── site/             standalone Vite/TS marketing site (pkg name `cockpit-pro-site`)
     │   └── studio/
-    │       ├── desktop/      Tauri V2 desktop shell (pkg name `@h2o/studio-desktop`)
-    │       └── mobile/       Expo SDK 55 React Native app (pkg name `studio-mobile`)
+    │       ├── desktop/      Tauri V2 desktop shell (pkg name `@h2o/studio-desktop`) — active root
+    │       ├── mobile/       Expo SDK 55 React Native app (pkg name `studio-mobile`)
+    │       ├── mac/          README placeholder (future native bundler — NOT the active app root)
+    │       ├── windows/      README placeholder (future native bundler — NOT the active app root)
+    │       └── web/          README placeholder (future web entry)
     ├── archive/      55+ daily snapshots  (gitignored; local only)
-    ├── artifacts/    (gitignored; local only)
+    ├── artifacts/    README.md tracked; everything else gitignored (post 7D)
     ├── assets/       icons + PNGs  (gitignored; local only — surprising)
     ├── build/        only chrome-ext-* symlinks → apps/extensions/chatgpt/chrome/* (gitignored)
     ├── changelogs/   per-script CHANGELOG.md
     ├── config/       dev-order.tsv, loader-deps.json, loader-tiers.json (+ generated views)
     ├── docs/         architecture/, decisions/, identity/, systems/, validation/, migration/
     ├── meta/         ledger/, reports/, notes/  (most gitignored)
-    ├── packages/     identity-core, studio-core, studio-types, studio-ui (4 TS-source packages)
+    ├── packages/     identity-core, studio-core, studio-types, studio-ui (4 active TS-source packages)
+    │                 + core/, extension-core/, host-adapters/{chatgpt,claude,gemini}/,
+    │                   browser-adapters/{chrome,firefox}/  README placeholders (future)
     ├── plans/        (gitignored; local only)
-    ├── references/   (gitignored; local only)
     ├── s-files/      (gitignored; local only)
     ├── scripts/      149 emoji-named runtime userscripts
     ├── shared/library/  7 .js files (shared between scripts/ and surfaces/studio/)
@@ -105,13 +120,34 @@
     ├── surfaces/     desk/, identity/, studio/ (60 S-prefix Studio files)
     ├── tmp/          (gitignored)
     ├── tools/        90 tool scripts in 10 subdirs
-    ├── package.json  + package-lock.json (workspaces: apps/site, apps/studio-desktop, apps/studio-mobile, packages/*)
+    ├── package.json  + package-lock.json (workspaces: apps/site, apps/studio/desktop, apps/studio/mobile, packages/*)
     └── versions.csv  append-only release log
 ```
 
 > **Phase 1B note**: the outer `cockpit-pro/apps/` cruft directory (`.DS_Store` files only) was deleted in Phase 1B.
 >
-> **Phase 5B note**: the outer-sibling `cockpit-pro/h2o-dev-server/` was absorbed into `h2o-source/apps/dev-server/`. The outer `cockpit-pro/` now contains only `h2o-source/`.
+> **Phase 5B note**: the outer-sibling `cockpit-pro/h2o-dev-server/` was absorbed into `h2o-source/apps/dev-server/`.
+>
+> **Phase 7F note**: `references/` (52 MB local-only evidence library) was moved OUT of `h2o-source/` into outer `cockpit-pro/references/`. 5 junk items deleted from `h2o-source/` root. The outer `cockpit-pro/` directory is now formalized as the **outer-workspace-shell** (see §2.1).
+
+### 2.1 Outer-workspace-shell concept (formalized in Phase 7F)
+
+The outer `cockpit-pro/` directory is **not** a git repository. It is a non-git host directory that "wraps" the git repo (`h2o-source/`) with workspace-but-not-source artifacts. As of Phase 7F it contains:
+
+```
+cockpit-pro/                ← outer workspace shell (NOT a git repo)
+├── .claude/                  per-host assistant/agent metadata (outside the project's git history)
+├── references/               operator-only evidence library (HARs, DOM snapshots; 52 MB)
+└── h2o-source/               THE git repo (.git is HERE, NOT at cockpit-pro/)
+```
+
+**Rules of the outer-workspace-shell:**
+
+1. **`h2o-source/` remains the git toplevel.** The `.git` directory is inside `h2o-source/`, not at `cockpit-pro/`. Any future "flatten" phase that wants to promote `cockpit-pro/` to the git root requires explicit `.git` relocation (see §3.2 and §4 Phase-8 forbidden list).
+2. **Outer-shell artifacts have ZERO tooling/config consumers inside `h2o-source/`.** Phase 7F verified this for `references/`: `grep -rn references tools/ config/` returns nothing; no `package.json` references; no `tools/paths.mjs` constant references it. Any future outer-shell artifact MUST satisfy the same constraint.
+3. **Outer-shell artifacts are NOT backed up by the migration's off-disk-snapshot rule.** Because they live outside any git tree, they are not protected by `git revert` or any in-repo recovery. Operators are responsible for their own retention strategy for outer-shell content.
+4. **Outer-shell additions do NOT require a `migration-phase-<id>-pre` tag.** Phase 7F is the convention-setting precedent: a phase that only moves content outside `h2o-source/` (and that has zero tracked-file diff) does not need a pre-tag, but it MUST still update §1 (phase table) and this §2 with the new outer-shell entry.
+5. **Future outer-shell candidates** under consideration: `archive/` (after `H2O_ARCHIVE_DIR` env-var support lands as a deferred phase). Until then, `archive/` remains inside `h2o-source/` as gitignored content.
 
 **Critical facts:**
 
@@ -457,4 +493,4 @@ Phase 1C inventoried three gitignored top-level folders inside `h2o-source/`. **
 
 ---
 
-_Last updated: 2026-05-17 (Phase 7C complete — migration paused safely at the post-hygiene stable checkpoint. Phase 7A audited ~50 files of stale-path references and classified into 8 categories; Phase 7B `65d6e70` fixed the 9 must-fix operator-facing line edits across 4 Category-A files; Phase 7C (this commit) verified all remaining refs are intentionally kept (validator content checks, symlink-bridge users, historical Phase 5.0X docs, MIGRATION narrative, intentional package-name divergences). Deterministic ext build hash `edf2baa…7af772` stable across **21 consecutive phase boundaries** (0J→2B→2D→3B→3D→3E→4B-1→4B-1b→4B-2→4C-B→4C-C→5B→5C→6B→6B-C→6C-1→6C-3→6C-4→6Z→7B→7C). Future structural moves (apps/studio/web, packages/shared-library, h2o-source flatten, historical identity-docs cleanup) are deferred. **Carried operator items** (non-blocking): (1) reload H2O unpacked extensions in `chrome://extensions` from legacy `build/chrome-ext-*` symlink paths; (2) confirm Cloudflare Pages dashboard "Root directory" reads `apps/site`.)._
+_Last updated: 2026-05-18 (Phase 7F complete — outer-workspace-shell separation. `references/` (52 MB) moved from `h2o-source/references/` to outer `cockpit-pro/references/`. 5 junk items deleted from `h2o-source/` root (`.DS_Store`, `.bump/`, `git-status.txt`, `staged.txt`, `unstaged.txt`, all untracked). The outer-workspace-shell concept is now formalized in §2.1: `cockpit-pro/` is a non-git host directory containing `.claude/` + `references/` + `h2o-source/`; `.git` remains inside `h2o-source/`. h2o-source/ is the git toplevel — no `.git` relocation. Zero tracked-file diff for the references/ move (fully gitignored before and after). Deterministic ext build hash (relative-path NUL-safe form `c4db3bdb…6f14`, excluding macOS-Finder `.DS_Store` artifacts) byte-identical pre vs post; **22 consecutive phase boundaries stable** under this canonical form. Validators: validate-loader-order exit 0; dev:check exit 1 due to pre-existing archiveWorkbench drift between source surfaces/studio/* and chrome-ext-prod/surfaces/studio/* — confirmed identical pre-edit via `git stash` round-trip, unrelated to Phase 7F. **Carried operator items** (non-blocking, unchanged from 7C): (1) reload H2O unpacked extensions in `chrome://extensions` from legacy `build/chrome-ext-*` symlink paths; (2) confirm Cloudflare Pages dashboard "Root directory" reads `apps/site`. Future structural moves (apps/studio/web scaffold, packages/shared-library extraction, h2o-source flatten, historical identity-docs cleanup, `H2O_ARCHIVE_DIR` env-var + archive/ outer-shell move) remain deferred.)._
