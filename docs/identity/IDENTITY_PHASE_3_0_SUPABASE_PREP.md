@@ -3051,7 +3051,7 @@ Exact configured dev release-gate values:
 |---|---|
 | OAuth build output | `build/chrome-ext-dev-controls-oauth-google` |
 | OAuth build flag | `H2O_IDENTITY_OAUTH_PROVIDER=google` |
-| Extension redirect URL | `https://amjponmninhldimbkdkfhcmclmjfbibi.chromiumapp.org/identity/oauth/google` |
+| Extension redirect URL | `https://ogcjkeaiicglflamhjaaimdhphjlgkbb.chromiumapp.org/identity/oauth/google` |
 | Supabase project origin | `https://kjwrrkqqtxyxtuigianr.supabase.co` |
 | Supabase optional host permission | `https://kjwrrkqqtxyxtuigianr.supabase.co/*` |
 | Supabase callback URL for Google Cloud | `https://kjwrrkqqtxyxtuigianr.supabase.co/auth/v1/callback` |
@@ -3064,8 +3064,8 @@ Dashboard setup requirements:
 | Google Cloud authorized redirect URI | `https://kjwrrkqqtxyxtuigianr.supabase.co/auth/v1/callback`. This is the Supabase callback URL, not the chromiumapp extension URL. |
 | Google Cloud scopes | Consent screen covers `openid`, `email`, and `profile`. |
 | Supabase Auth Providers | Google provider is enabled and contains the Google Client ID and Client Secret. |
-| Supabase Redirect URLs | Add the exact chromiumapp extension URL `https://amjponmninhldimbkdkfhcmclmjfbibi.chromiumapp.org/identity/oauth/google`. Do not use wildcard redirect URLs for production. |
-| Extension ID binding | The OAuth-enabled extension ID must be `amjponmninhldimbkdkfhcmclmjfbibi` for this dev release gate, because the Supabase Redirect URL is extension-ID-specific. |
+| Supabase Redirect URLs | Add the exact chromiumapp extension URL `https://ogcjkeaiicglflamhjaaimdhphjlgkbb.chromiumapp.org/identity/oauth/google`. Do not use wildcard redirect URLs for production. |
+| Extension ID binding | The OAuth-enabled extension ID must be `ogcjkeaiicglflamhjaaimdhphjlgkbb` for this dev release gate, because the Supabase Redirect URL is extension-ID-specific. |
 
 Google OAuth release-gate command:
 

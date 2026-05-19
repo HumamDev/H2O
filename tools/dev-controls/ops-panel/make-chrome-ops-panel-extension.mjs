@@ -1,10 +1,14 @@
-// @version 1.2.0  (Phase 4B-1: fallback OUT_DIR sourced from paths.extensionBuildDir)
+// @version 1.3.0  (Phase 8A-1: manifest "key" injected for stable, path-agnostic Chrome ID)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeArchiveWorkbenchFromOut } from "../../product/studio/pack-studio.mjs";
 import { writeExtensionIcons } from "../../product/extension/write-extension-icons.mjs";
 import { extensionBuildDir } from "../../paths.mjs";
+import {
+  getExtensionKey,
+  deriveVariantFromOutDir,
+} from "../../product/extension/chrome-extension-keys.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -53,11 +57,13 @@ function copyIconPack(outDir, iconPackDir) {
 }
 
 function makeManifest() {
+  const EXTENSION_KEY = getExtensionKey(deriveVariantFromOutDir(OUT_DIR));
   return {
     manifest_version: 3,
     name: "H2O Ops Panel (Preview)",
     version: "0.1.0",
     description: "Preview/scaffold for the future H2O panel extension UI.",
+    ...(EXTENSION_KEY ? { key: EXTENSION_KEY } : {}),
     permissions: ["storage", "management"],
     icons: {
       "16": "icons/icon16.png",

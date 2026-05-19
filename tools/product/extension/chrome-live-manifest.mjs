@@ -1,4 +1,8 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 8A-1: EXTENSION_KEY parameter — injects stable
+//                  manifest "key" so Chrome derives the extension ID from
+//                  the public key instead of the load-path string. The
+//                  build orchestrator looks up the per-variant key from
+//                  config/extension-keys.json.)
 export function makeChromeLiveManifest({
   PROXY_PACK_URL,
   CHAT_MATCH,
@@ -15,6 +19,7 @@ export function makeChromeLiveManifest({
   IDENTITY_PROVIDER_REQUEST_OTP_ARMED = false,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
   STUDIO_ONLY = false,
+  EXTENSION_KEY = null,
 }) {
   function originWildcard(urlStr) {
     try {
@@ -66,6 +71,7 @@ export function makeChromeLiveManifest({
     name: DEV_NAME,
     version: DEV_VERSION,
     description: DEV_DESCRIPTION,
+    ...(EXTENSION_KEY ? { key: EXTENSION_KEY } : {}),
     permissions,
     icons: {
       "16": "icon16.png",

@@ -1,0 +1,41 @@
+{
+  "_purpose": "Stable Chrome unpacked-extension public keys per variant, generated in Phase 8A-1 (2026-05-19). Pre-Phase-8A-1, extension IDs were derived from the load-path string (Chrome's default behavior when no manifest 'key' is set). The Phase 8A audit established that the planned 'h2o-source' folder rename would change every load-path string and therefore rotate every extension ID — including the OAuth-Google variant whose ID is registered as an OAuth Redirect URL in Supabase Auth. Phase 8A-1 hardens IDs by injecting a per-variant 'key' into manifest.json so Chrome derives the ID from the public key (path-agnostic) instead of from the load path.",
+  "_format": "variants.<variant>.key = base64-encoded SubjectPublicKeyInfo (DER) RSA-2048 public key, injected verbatim into the variant's manifest.json. variants.<variant>.id = the deterministic Chrome extension ID Chrome computes from sha256(key)[:16] character-mapped a-p; stored here as documentation only — the build pipeline does not consume this field.",
+  "_security": "Private keys were generated in-memory (Node crypto.generateKeyPairSync) and discarded immediately after extracting the public keys. Private keys are NOT stored on disk and are NOT in git history. Public keys are NOT secrets — they appear in every manifest.json and any installed extension can be inspected for them. For pure unpacked-extension development this is sufficient; private keys are only needed for Chrome Web Store signed packages, which this project does not currently produce.",
+  "_warning": "Do NOT regenerate these keys without coordinated updates to: (a) Supabase Auth Redirect URLs (currently registered with the dev-controls-oauth-google ID below); (b) the two hardcoded validators in tools/validation/identity/ that pin the OAuth-Google ID (validate-identity-phase3_9c-google-oauth-release-gate.mjs and validate-identity-phase3_5b-release-gate.mjs); (c) any chrome.storage.local data keyed to current IDs (data will be lost on ID rotation).",
+  "_oauth_id_rotation": "Phase 8A-1 rotated the OAuth-Google extension ID from 'amjponmninhldimbkdkfhcmclmjfbibi' (the pre-hardening path-derived value, registered in Supabase Auth) to 'ogcjkeaiicglflamhjaaimdhphjlgkbb' (the new key-derived value). The two hardcoded validators were updated atomically in this phase. The Supabase Auth Redirect URL update is the only OPERATOR action required outside this commit.",
+  "variants": {
+    "prod": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuIIidUFD8bqYsENgxGT1CwrhrLLk0G13kC9L1puCUb0amsOSUwP3c1PhwN12o03+NYPer7wp/JBq/8vbKM4dpSYWHUqCG0+4PC6Jh+voakhBSsGWwxNMUGp1yd41rlEuCMXmK5w+GSQ6FsWksvhICQxGGsRHGUWvX4SfimUGk6O5hc7mv2ZLCekUryXoNntAby8Zsej9t2VZOH8QjoeNgWgNlvrYZBbobj891bKKR8M/+EBTaTijzNKs2DNGwadCq9X2UexuykoHHiTf/TGRq+gqLlQ+p/meOfayOY1JrWdDAiFU4lb1VasPFZOe/A3oZ9abj0hl53GoCsu+ZEJkDwIDAQAB",
+      "id": "bgdapdcjckbiejckpfeinlmcdnijifpg"
+    },
+    "dev-controls": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoUHopKraFZdXxJXW0rEgnsg3+ErQLQkHg8CIZsTHgHFCY1UFoDQd5PAg0vc1jYH8RLpnk5nit0rwTzUzdRiuoJGHHHXDO/xa8RD5LDb7rYrNirzPm1ugnv5Tru4HNfDM3qq1d5A4s7b7X1N2aG2M9L41pPz522MNJFy7ChvsQauHCjF9ERMvIaN0u6oiNeAmXIZCcJVJJeG7vlGFoZ1WD/LqMtmM7BpcS9KEDp/IfID1JBMWZndBPFhb7AoociBN2iIkQu/kdIxirwAkIshPua1OpMTPAHIvIt7v2UQYx6Vqw9CRx2R1U8CePxqlHo5S5IA9grSrkQgLz4GP6GTL9QIDAQAB",
+      "id": "bkijejgemjjolmdnkgcimoaniocegkij"
+    },
+    "dev-controls-armed": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqNr6pPnWrAqxtWwTJwSHaRlG4hto9YU4tf5HGEjWI8AmEiEUabdfvil6IFtAAr8IYEwaFepEVk2mdwXT0tZTNjEhWp/inKuJMPUkLzzwOF23cR4MslgF8k5A4Nom6+raX3wy5DwJ9xH+0fHVJvlezoRwuN5IXsU0iAV4hCQQtn0OO/2E0fkpc3yPzJf5lwheQ+SEDApH/SkHMm2lJfkchCTJKoH8/LpOt2KvCwfw0OaW2KFNwEt1htK8paSkxdGhKunJEN4M3V+9bMOOdm26lTWJKCyw1thnJLhsNBLP5hjZfWbs1ceoZTf2+nCIhtH5hUvi4gTGNr3N9czzfe//IwIDAQAB",
+      "id": "ceenhihlkfdfjdolchjffpeejblnejdb"
+    },
+    "dev-controls-oauth-google": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1viKf3MF9/Ii23VR+9VnVfASflTqYEQ/THuFJJAfAHH+b4fAqh0fQUwfofOBi+68di5AWr4UOaSChgPGWCEFEIqpz/IyG/8w2S9j/zdEsyZVWxpzOyd7NK4bkmokBgtcqXuP5Jdwz0i6PSCC4LQog5n10v1LMG7szAKTMN2EX92CNQLMePl82s/zpTfdOCyAlFaUyoQSknR7u9fMyAPVfmmh8DWVEc6W4BNX2EtdIobcTQWgW+BDXig9SQnlScrZDAt0pKuVUWwamtqfY6x6wCU/M9qU4avLMWMlVe+dmtAjlrZJBG8gnBeMgOEEweaik5euia65Ei8q5L/KHkxX1wIDAQAB",
+      "id": "ogcjkeaiicglflamhjaaimdhphjlgkbb"
+    },
+    "dev-lean": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs5a3x+oENaFCzbzBT4Ut7c/jH6ZLOJ/f8HKeXFMLZQ9PWhC16ISlRUedfDUvLDBSALPyNBNdAJq+NkvuzE3zG2eNk3QyBrjZtXXzyzxlGgFmfj2DqWilgAMNtpt5PKPylRdxZ0BAPpGfWtzjtxsYTw1SsV4pU0xSw0PYwECMMUZDTE/gdqOvDwiZXLdprzycDpxooNnx0+E6eeKx0emKDwR9hKTbz+u+RsH5joZmqpAOjBoE0t1PC00mAjE3W0cEbLA+OMklbXIRvAA0H397FfTQBWcfXGuKAlNGcGC/oOgX++55r6EznokIGy+zrQ8xGWBN9ufIdbmh46OU3IoJXQIDAQAB",
+      "id": "eeebgndgehjalflefaldogahaklnlahi"
+    },
+    "ops-panel": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp9nBnridSd+F3exqMsMWFMjorI13jGJGNwR3SXJIos56c35V+DlqNNAoO8WFLs/+vCY7XEWR6oGukOLPSahD4lTHpUexzN+TkJ3Z9Vh3UoZjy8ZyOx8CMHT3bkek5YgpMS6aI7gnu8jKSdfXBDdaqhBS/9M/+w8ZnZ5MGi+NaY3R/ajNDSnZE2GZ3+tphmY4xvHvP9d5YYT0kJlzJsPQVzLLCZU0Bg4cuLUV1piHJKXUaKs+JzeatIepu01Zi+Q2UbKSYPAQ3nyit9MyM6E+tnx3JTdA8r+HQRPqzEEcyzWEFbUvIX5FoA/RxBBqFWNr8jwklV4+cDXYaxmZ2j5u/wIDAQAB",
+      "id": "golnehognopjlokldgcinoaliipodagb"
+    },
+    "studio-launcher": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApTQTZqrEeXGFpbgaNjCWY++ulJN3JHfMZl+2A/jGiYa+KqzlvT0EtW/k1zF4ECFb0P1ILbnMq7vioHNWslUwRU2f12sZdv9O20hdTcFPRr+tNVALyWw0p8c9rPQxV55yw1ouNxybsmUIE5fVdbdL/OSnWE8N5tZ+a7nxLqBHcKmji9M8DHmkubNKorOkce2SJi8H/3lRa3EcbBmZFVcVzYBtohiIcaVU0uvfzSFEhRA3FrV+Jcd08owwwPjwaa91NtRJP90TYf654QlVx7mOpPH6ekLNCPSUDvzzLt//OpvziZlH7sZoEj3CVhXcJC34ZO98ZGDr5pQ/0A4Jedg5FQIDAQAB",
+      "id": "bpobkkppdlldlkccaehmpfclmkhiemhg"
+    },
+    "desk": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmhOvqEkitQ08jMcmiQKKOIlwFI3/zK7ePdY7/46tXQlFo6M/tfdl0ceJ/9nKkGwyyxkL4tuC3bn7x7E9Xc+7Yq0Z+zVo8Uy+WM61YO8pas/seCWPDhcPOtZEqDXcLvnhMkhA1EDC9AGUEPTtpg5J8xHhloiFJ8Wvih8AwTG6W/PiDjr/cnNiYSvR9BzmnDoln28+eS5AQ/7AxRIvsnELkWI5X+cGGlgcFZrOnAcULsnRXoz/eKmYqRU3jKVpeyteWeWBcsNbu1voSVjOTjlTWAliaQHpn4O2/iadg6+vRxptRwX7YNDsSnaY3vvnVfPo7Q2FMkgS7jJB4JxjQox5yQIDAQAB",
+      "id": "kfecaemfhhhjpecildjejapfemhakhha"
+    }
+  }
+}

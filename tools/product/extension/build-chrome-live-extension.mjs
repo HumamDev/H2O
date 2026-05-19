@@ -30,6 +30,10 @@ import {
 import { createChromeLiveBuildContext } from "./chrome-live-build-context.mjs";
 import { createChromeLiveSourceSnapshots } from "./chrome-live-source-snapshots.mjs";
 import { makeChromeLiveManifest } from "./chrome-live-manifest.mjs";
+import {
+  getExtensionKey,
+  deriveVariantFromOutDir,
+} from "./chrome-extension-keys.mjs";
 import { makeChromeLiveFolderBridgePageJs } from "./chrome-live-folder-bridge.mjs";
 import { makeChromeLivePilotObserverJs } from "./chrome-live-pilot-observer.mjs";
 import { makeChromeLiveBackgroundJs } from "./chrome-live-background.mjs";
@@ -412,6 +416,14 @@ async function main() {
     readyIconDir: DEV_HAS_CONTROLS ? DEV_CONTROLS_ICONS_DIR : DEV_LEAN_ICONS_DIR,
   });
 
+  // Phase 8A-1: per-variant stable manifest "key" so Chrome derives the
+  // extension ID from the public key rather than the load-path string.
+  // Variant name is derived from OUT_DIR basename so the same logic works
+  // whether OUT_DIR comes from H2O_EXT_OUT_DIR (per-task override in
+  // .vscode/tasks.json) or from the build-context default. Returns null
+  // when the variant isn't registered (preserving pre-8A-1 behavior).
+  const EXTENSION_KEY = getExtensionKey(deriveVariantFromOutDir(OUT_DIR));
+
   const manifest = applyExtensionIconsToManifest(
     makeChromeLiveManifest({
       PROXY_PACK_URL,
@@ -429,6 +441,7 @@ async function main() {
       IDENTITY_PROVIDER_REQUEST_OTP_ARMED: identityProviderRequestOtpArmed,
       IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
       STUDIO_ONLY,
+      EXTENSION_KEY,
     }),
     iconOutputs,
   );

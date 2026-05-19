@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-// @version 1.0.1  (Phase 4B-1: build output path now sourced from paths.extensionBuildDir)
+// @version 1.1.0  (Phase 8A-1: manifest "key" injected for stable, path-agnostic Chrome ID)
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionBuildDir } from "../../paths.mjs";
+import {
+  getExtensionKey,
+  deriveVariantFromOutDir,
+} from "../extension/chrome-extension-keys.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +20,7 @@ const contentSourceFile = path.join(repoRoot, "surfaces", "desk", "page-bridge.j
 // composes paths.BUILD_DIR with "chrome-ext-desk". Byte-identical to the
 // legacy path.join(repoRoot, "build", "chrome-ext-desk") form.
 const buildDir = extensionBuildDir("desk");
+const DESK_EXTENSION_KEY = getExtensionKey(deriveVariantFromOutDir(buildDir));
 const buildUiDeskDir = path.join(buildDir, "surfaces", "desk");
 const buildContentDir = path.join(buildDir, "content");
 const deskIconPackDir = path.join(repoRoot, "assets", "surface-chrome-desk-icons");
@@ -31,6 +36,7 @@ const manifest = {
   name: "H2O Desk",
   version: "0.5.0",
   description: "Desk Phase 3 role workspace.",
+  ...(DESK_EXTENSION_KEY ? { key: DESK_EXTENSION_KEY } : {}),
   action: {
     default_title: "Open Desk",
     default_icon: {

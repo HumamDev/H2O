@@ -270,7 +270,7 @@ assert(docs.includes("Phase 3.9B - Google OAuth") &&
   docs.includes("Account linking remains deferred"),
   "docs must document Phase 3.9B Google OAuth release boundaries");
 assert(docs.includes("Phase 3.9C - Google OAuth Release Gate") &&
-  docs.includes("https://amjponmninhldimbkdkfhcmclmjfbibi.chromiumapp.org/identity/oauth/google") &&
+  docs.includes("https://ogcjkeaiicglflamhjaaimdhphjlgkbb.chromiumapp.org/identity/oauth/google") &&
   docs.includes("https://kjwrrkqqtxyxtuigianr.supabase.co/auth/v1/callback") &&
   docs.includes("Google Cloud OAuth client type") &&
   docs.includes("Web application") &&
