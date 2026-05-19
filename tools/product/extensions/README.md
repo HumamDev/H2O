@@ -33,13 +33,24 @@ tools/product/extensions/<host>/<browser>/
 
 ## What goes in `_shared/`
 
-Cross-host build helpers that aren't host-specific:
+Cross-host/cross-browser build helpers. Today:
 
-- `manifest-chrome.mjs` — Chrome MV3 manifest template
-- `manifest-firefox.mjs` — Firefox MV3 manifest template (with `browser_specific_settings.gecko.id`)
-- `icon-writer.mjs` — generic icon-pack-to-extension copier
-- `key-generator.mjs` (Phase 8G-5) — RSA-2048 key + Chrome ID generator
-- `template/` — copy-template-from for new host/browser combos
+- **`build-extension-stub.mjs`** (Phase 8G-10) — `buildExtensionStub({ host, browser })` —
+  the shared helper that all 5 stub builders (`claude/chrome`, `chatgpt/firefox`,
+  `gemini/chrome`, `claude/firefox`, `gemini/firefox`) call. Reads source from
+  `src/extensions/<host>/<browser>/`, identity from
+  `config/extensions/<host>/<browser>/keys.json`, writes deterministic output
+  to `apps/extensions/<host>/<browser>/<variant>/`. Handles both Chrome
+  (`manifest.key` SPKI scheme) and Firefox (`browser_specific_settings.gecko`)
+  identity schemes via a single browser switch.
+
+Future additions when there's a real second consumer:
+
+- `manifest-chrome.mjs` — extracted Chrome MV3 manifest template (currently inlined inside `build-extension-stub.mjs::composeManifest`)
+- `manifest-firefox.mjs` — same for Firefox
+- `icon-writer.mjs` — generic icon-pack-to-extension copier (the chatgpt+chrome legacy still uses its own `write-extension-icons.mjs`; promote when claude/gemini stubs add icons)
+- `key-generator.mjs` — RSA-2048 key + Chrome ID generator (today generated ad-hoc per phase via inline `node -e`)
+- `template/` — copy-template-from for new host/browser combos (today the 3-line wrapper at `tools/product/extensions/<host>/<browser>/build.mjs` IS the template — copy any of the 5 existing wrappers)
 
 ## Where to read more
 

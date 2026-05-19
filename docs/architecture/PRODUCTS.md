@@ -8,7 +8,7 @@
 > Reading this file before touching the build pipeline is faster than tracing the
 > dependencies by grep.
 
-Last verified: 2026-05-19 (Phase 8G-9 — added gemini+firefox dev stub as product #13; all 5 new host+browser combos now scaffolded; total products now 17).
+Last verified: 2026-05-19 (Phase 8G-10 — refactored 5 stub builders into thin wrappers over shared helper `tools/product/extensions/_shared/build-extension-stub.mjs`; manifest.json + content.js byte-identical, README.txt standardized intentionally; chatgpt+chrome hash unchanged at `77bd47cf…6e8a`; total products still 17).
 
 **Companion document**: [MULTI_HOST_ARCHITECTURE.md](MULTI_HOST_ARCHITECTURE.md)
 — full reference for adding new hosts (claude, gemini) and new browsers

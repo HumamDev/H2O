@@ -16,8 +16,11 @@
 >   claude+firefox, gemini+firefox.
 >
 > Each combo has: source root + builder + keys config + tracked README + a
-> tested generated unpacked extension. New host+browser additions from here are
-> mechanical clones of the closest sibling stub.
+> tested generated unpacked extension. As of Phase 8G-10 (2026-05-19) the 5
+> stub builders are now **3-line wrappers** over a shared helper at
+> `tools/product/extensions/_shared/build-extension-stub.mjs`. Adding a new
+> host+browser combo means: create the source folder + manifest template +
+> keys.json + a 3-line `build.mjs` wrapper. No copy-paste of builder logic.
 >
 > **Purpose**: This document is the canonical reference for how Cockpit Pro
 > grows from the current single-product reality (chatgpt+chrome with 8 variants)
