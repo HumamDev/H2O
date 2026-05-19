@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
-const ACCOUNT_PLUGIN_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
+const ACCOUNT_PLUGIN_REL = "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
-const IDENTITY_CORE_REL = "scripts/0D4a.⬛️🔐 Identity Core 🔐.js";
+const IDENTITY_CORE_REL = "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js";
 const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
 const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";

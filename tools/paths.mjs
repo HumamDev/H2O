@@ -91,7 +91,7 @@ export const TOOLS_DIR     = path.join(REPO_ROOT, "tools");
 // export names for backward compatibility during the 8K phase rollout;
 // Phase 8K-6 closeout will remove them once all consumers have
 // migrated.
-export const RUNTIME_BASE_REL = "scripts";
+export const RUNTIME_BASE_REL = "src-runtime-base";
 export const RUNTIME_BASE_DIR = path.join(REPO_ROOT, RUNTIME_BASE_REL);
 
 // Backward-compat aliases (slated for removal in Phase 8K-6 closeout).

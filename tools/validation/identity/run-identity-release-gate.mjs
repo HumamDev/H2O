@@ -159,7 +159,7 @@ const GROUPS = [
       { label: "5.0I mobile billing validator syntax", args: ["--check", "tools/validation/identity/validate-mobile-billing.mjs"] },
       { label: "5.0K mobile route-guards validator syntax", args: ["--check", "tools/validation/identity/validate-mobile-route-guards.mjs"] },
       { label: "5.0M mobile avatar-upload validator syntax", args: ["--check", "tools/validation/identity/validate-mobile-avatar-upload.mjs"] },
-      { label: "Control Hub Account plugin syntax", args: ["--check", "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js"] },
+      { label: "Control Hub Account plugin syntax", args: ["--check", "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js"] },
       { label: "controls bg syntax", args: ["--check", extBuildRel("dev-controls", "bg.js")] },
       { label: "controls loader syntax", args: ["--check", extBuildRel("dev-controls", "loader.js")] },
       { label: "controls popup syntax", args: ["--check", extBuildRel("dev-controls", "popup.js")] },

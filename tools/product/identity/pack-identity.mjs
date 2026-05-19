@@ -1,16 +1,32 @@
-// @version 1.1.0  (Phase 8K-4: identity-core source path resolves through RUNTIME_BASE_REL)
+// @version 1.2.0  (Phase 8K-5: split identity-core source vs bundle-output paths)
 import fs from "node:fs";
 import path from "node:path";
 
-// Phase 8K-4: the identity-core source filename is still hardcoded (it's a
-// load-bearing constant referenced by name across the identity validator
-// suite); only the parent-folder name resolves through RUNTIME_BASE_REL so
-// the 8K-5 rename auto-updates this path.
+// Phase 8K-5: the identity-core constant is used in TWO different contexts:
+// (a) reading from SOURCE — `identityCoreScriptSrc(srcRoot)` — must resolve
+//     under the legacy runtime base folder, which the 8K-5 rename moved
+//     from `scripts/` to `src-runtime-base/`. Uses RUNTIME_BASE_REL.
+// (b) writing to OUTPUT BUNDLE — `identityCoreScriptOut(outDir)` — must
+//     resolve under the bundle's `scripts/` subdir, because the
+//     packaged extension's `surfaces/identity/identity.html` references
+//     `../../scripts/0D4a...` (Chrome extension layout convention,
+//     decoupled from the source-folder rename).
+// Pre-8K-4 both paths happened to share the same literal "scripts" so a
+// single constant sufficed; post-8K-5 they diverge.
 import { RUNTIME_BASE_REL } from "../../paths.mjs";
+
+// Identity-core script basename — load-bearing constant referenced by name
+// across the identity validator suite.
+const IDENTITY_CORE_SCRIPT_BASENAME = "0D4a.⬛️🔐 Identity Core 🔐.js";
 
 // Surface source and output paths (relative to repo root / build root)
 export const IDENTITY_SURFACE_SOURCE_REL = path.join("surfaces", "identity");
-export const IDENTITY_CORE_SCRIPT_REL = path.join(RUNTIME_BASE_REL, "0D4a.⬛️🔐 Identity Core 🔐.js");
+
+// IDENTITY_CORE_SCRIPT_REL retains its pre-8K-5 value ("scripts/<basename>")
+// because its primary external use is as the BUNDLE OUTPUT relative path
+// (the packaged extension's scripts/ subdir). Source-side consumers use
+// `identityCoreScriptSrc()` which routes through RUNTIME_BASE_REL.
+export const IDENTITY_CORE_SCRIPT_REL = path.join("scripts", IDENTITY_CORE_SCRIPT_BASENAME);
 
 const IDENTITY_SURFACE_FILES = Object.freeze([
   "identity.html",
@@ -71,7 +87,10 @@ export function identitySurfaceOutDir(outDir) {
 }
 
 export function identityCoreScriptSrc(srcRoot) {
-  return path.join(String(srcRoot || ""), IDENTITY_CORE_SCRIPT_REL);
+  // Phase 8K-5: source path uses RUNTIME_BASE_REL (post-rename
+  // "src-runtime-base/"); diverges from IDENTITY_CORE_SCRIPT_REL which is
+  // bundle-output-relative ("scripts/").
+  return path.join(String(srcRoot || ""), RUNTIME_BASE_REL, IDENTITY_CORE_SCRIPT_BASENAME);
 }
 
 export function identityCoreScriptOut(outDir) {

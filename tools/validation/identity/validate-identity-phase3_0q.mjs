@@ -256,11 +256,11 @@ function pageFacingRels(root, files) {
     "surfaces/identity/identity.html",
     "surfaces/identity/identity.js",
     "surfaces/identity/identity.css",
-    "scripts/0D4a.⬛️🔐 Identity Core 🔐.js",
+    "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js",
   ]);
   for (const file of files) {
     const rel = toRel(root, file);
-    if (rel.startsWith("scripts/") || rel.startsWith("surfaces/")) rels.add(rel);
+    if (rel.startsWith("src-runtime-base/") || rel.startsWith("surfaces/")) rels.add(rel);
     if (/^popup\.(?:css|html|js)$/i.test(rel)) rels.add(rel);
   }
   return [...rels].filter((rel) => existsAbs(path.join(root, rel)));
@@ -377,7 +377,7 @@ function assertPageFacingClean(variant, root, files) {
     let checks = /^popup\.(?:html|js|css)$/i.test(rel)
       ? POPUP_FORBIDDEN_PATTERNS
       : PAGE_FACING_FORBIDDEN_PATTERNS;
-    if (rel === "scripts/0D4a.⬛️🔐 Identity Core 🔐.js") {
+    if (rel === "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js") {
       checks = checks.filter(([name]) => name !== "Supabase provider text");
     }
     assertNoPatterns(`${variant} ${rel}`, source, checks);
@@ -1163,7 +1163,7 @@ function assertVerifyEmailOtpSessionBoundarySafe() {
   const backgroundSource = read(BACKGROUND_SOURCE_REL);
   const providerSource = read(PROVIDER_SOURCE_REL);
   const loaderSource = read("tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs");
-  const identitySource = read("scripts/0D4a.⬛️🔐 Identity Core 🔐.js");
+  const identitySource = read("src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js");
 
   assertOtpCodeNormalizer(PROVIDER_SOURCE_REL, providerSource, "normalizeProviderOtpCode");
   assertOtpCodeNormalizer(BACKGROUND_SOURCE_REL, backgroundSource, "identityProviderVerify_normalizeCode");

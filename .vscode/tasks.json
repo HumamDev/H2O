@@ -346,8 +346,8 @@
     {
       "id": "archiveFile",
       "type": "promptString",
-      "description": "Relative userscript path (scripts/*.user.js)",
-      "default": "scripts/0Z2a.⚫️🕹️ Control Hub Tab Tree 🌳.user.js"
+      "description": "Relative userscript path (src-runtime-base/*.user.js)",
+      "default": "src-runtime-base/0Z2a.⚫️🕹️ Control Hub Tab Tree 🌳.user.js"
     }
   ]
 }

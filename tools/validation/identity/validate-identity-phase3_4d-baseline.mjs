@@ -20,8 +20,8 @@ const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-back
 const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
 const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
-const CONTROL_HUB_REL = "scripts/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
-const CONTROL_HUB_ACCOUNT_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
+const CONTROL_HUB_REL = "src-runtime-base/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
+const CONTROL_HUB_ACCOUNT_REL = "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const ARMED_MANIFEST_REL = extBuildRel("dev-controls-armed", "manifest.json");
 const PROD_MANIFEST_REL = extBuildRel("prod", "manifest.json");
 

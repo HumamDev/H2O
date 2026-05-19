@@ -787,11 +787,11 @@ function pageFacingRels(root, allFiles) {
     "surfaces/identity/identity.html",
     "surfaces/identity/identity.js",
     "surfaces/identity/identity.css",
-    "scripts/0D4a.⬛️🔐 Identity Core 🔐.js",
+    "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js",
   ]);
   for (const file of allFiles) {
     const rel = toRel(root, file);
-    if (rel.startsWith("scripts/") || rel.startsWith("surfaces/")) rels.add(rel);
+    if (rel.startsWith("src-runtime-base/") || rel.startsWith("surfaces/")) rels.add(rel);
     if (/^popup\.(?:css|html|js)$/i.test(rel)) rels.add(rel);
   }
   return [...rels].filter((rel) => existsAbs(path.join(root, rel)));

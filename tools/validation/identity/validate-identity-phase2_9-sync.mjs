@@ -41,7 +41,7 @@ function extractFunction(source, name) {
 const bgSrc = read("tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs");
 const buildSrc = read("tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs");
 const loaderSrc = read("tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs");
-const identityCoreSrc = read("scripts/0D4a.⬛️🔐 Identity Core 🔐.js");
+const identityCoreSrc = read("src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js");
 const builtBg = read(extBuildRel("dev-controls", "bg.js"));
 const builtLoader = read(extBuildRel("dev-controls", "loader.js"));
 
@@ -746,7 +746,7 @@ pass("no real provider auth calls in identity source or build surfaces");
 // ── Suite G: consumer scripts unchanged ───────────────────────────────────────
 console.log("\n── Suite G: consumer scripts unchanged ─────────────────────────────────");
 
-const firstRunSrc = read("scripts/0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐.js");
+const firstRunSrc = read("src-runtime-base/0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐.js");
 assert(firstRunSrc.includes("isReadySnapshot") && firstRunSrc.includes("READY_STATUSES"),
   "FirstRunPrompt missing isReadySnapshot/READY_STATUSES");
 pass("FirstRunPrompt retains isReadySnapshot / READY_STATUSES logic");
