@@ -62,6 +62,12 @@ const SERVER_ROOT_DEFAULT = path.join(REPO_ROOT, "apps", "dev-server");
 export const SERVER_ROOT = process.env.H2O_SERVER_DIR || SERVER_ROOT_DEFAULT;
 
 // ─── Top-level source directories ────────────────────────────────────────────
+//
+// These are IN-REPO source roots. Outer-shell state folders (ARCHIVE_DIR,
+// META_DIR, CHANGELOGS_DIR) are declared further down under
+// "Outer-shell state directories" (Phase 8C/8I-2/8J-2 progression).
+// VERSIONS_CSV (release-state registry) stays IN-REPO at the repo root by
+// design — see "Release/versioning state" section.
 
 export const TOOLS_DIR     = path.join(REPO_ROOT, "tools");
 export const SCRIPTS_DIR   = path.join(REPO_ROOT, "scripts");
@@ -70,39 +76,48 @@ export const PACKAGES_DIR  = path.join(REPO_ROOT, "packages");
 export const APPS_DIR      = path.join(REPO_ROOT, "apps");
 export const CONFIG_DIR    = path.join(REPO_ROOT, "config");
 export const BUILD_DIR     = path.join(REPO_ROOT, "build");
-export const META_DIR      = path.join(REPO_ROOT, "meta");
 export const DOCS_DIR      = path.join(REPO_ROOT, "docs");
 export const SUPABASE_DIR  = path.join(REPO_ROOT, "supabase");
 export const SHARED_DIR    = path.join(REPO_ROOT, "shared");
 export const ASSETS_DIR    = path.join(REPO_ROOT, "assets");
-export const CHANGELOGS_DIR = path.join(REPO_ROOT, "changelogs");
 
-// ─── Generated / local-only directories ──────────────────────────────────────
+// ─── Outer-shell state directories + in-repo gitignored caches ───────────────
 //
-// These are gitignored on disk but treated as canonical roots by the tooling.
-// See .gitignore.
+// This section holds two related categories of paths:
 //
-// Phase 8C (2026-05-19): ARCHIVE_DIR honors H2O_ARCHIVE_DIR env override,
-// letting operators relocate the 1.8 GB daily-snapshots tree out of the git
-// repo into the outer cockpit-pro/ workspace shell.
+//   1. OUTER-SHELL state — lives in the outer `cockpit-pro/` workspace shell,
+//      OUTSIDE the git repo. Honors env-var overrides; defaults to
+//      `path.resolve(REPO_ROOT, "..", "<name>")`. Throws at module init if
+//      the resolved path lands inside REPO_ROOT (hard-refuse pattern).
+//      Members: ARCHIVE_DIR, META_DIR, CHANGELOGS_DIR.
 //
-// Phase 8I-2 (2026-05-19): Default flipped from in-repo
-// `<REPO_ROOT>/archive` to outer `<REPO_ROOT>/../archive`
-// (cockpit-pro/archive/). Hard refusal added: if the resolved archive path
-// lands inside REPO_ROOT, this module throws at import time so every tool
-// that imports paths.mjs fails fast with a clear, actionable error. This is
-// an intentional, narrowly-scoped exception to the "no side effects at
-// import time" rule (see rules block at the top of this file) — throwing
-// for misconfiguration is the desired behavior because it surfaces the
-// problem loudly rather than silently writing to a wrong path. The throw
-// fires ONLY when the resolved path is inside REPO_ROOT; in every normal
-// configuration (env unset → outer default, env set to outer path) no throw
-// fires and importing paths.mjs is a pure pass-through.
+//   2. IN-REPO gitignored caches — generated/local-only folders that DO
+//      live inside the repo but are gitignored. No env override needed.
+//      Members: ARTIFACTS_DIR, BUMP_DIR, TMP_DIR, PLANS_DIR.
 //
-// Consumers (tools/archive/archive-one.mjs + tools/archive/archive-snapshot.mjs
-// both now import ARCHIVE_DIR from here; previously archive-snapshot.mjs
-// computed its own root with a different fallback, which was the root cause
-// of the in-repo + outer duplicate-archive bug surfaced post-8C).
+// Phase 8C (2026-05-19): ARCHIVE_DIR honored H2O_ARCHIVE_DIR env override
+// (default still in-repo at that point).
+//
+// Phase 8I-2 (2026-05-19): ARCHIVE_DIR default flipped from in-repo to
+// outer (`<REPO_ROOT>/../archive`). Hard refusal added: if the resolved
+// archive path lands inside REPO_ROOT, this module throws at import time
+// so every tool that imports paths.mjs fails fast with a clear,
+// actionable error. This is an intentional, narrowly-scoped exception to
+// the "no side effects at import time" rule (see rules block at the top
+// of this file) — throwing for misconfiguration is the desired behavior
+// because it surfaces the problem loudly rather than silently writing to
+// a wrong path. The throw fires ONLY when the resolved path is inside
+// REPO_ROOT; in every normal configuration (env unset → outer default,
+// env set to outer path) no throw fires and importing paths.mjs is a
+// pure pass-through.
+//
+// Phase 8J-2 (2026-05-19): the same env-override + hard-refuse pattern
+// extended to META_DIR (`<REPO_ROOT>/../meta`) and CHANGELOGS_DIR
+// (`<REPO_ROOT>/../changelogs`). These are operator state and release-
+// notes archives that belong in the outer shell alongside ARCHIVE_DIR.
+// VERSIONS_CSV is intentionally NOT extended — it stays at the repo
+// root because it's a TRACKED canonical version registry that must
+// travel with the source. See "Release/versioning state" section below.
 
 export const ARCHIVE_DIR = process.env.H2O_ARCHIVE_DIR
   || path.resolve(REPO_ROOT, "..", "archive");
@@ -122,6 +137,56 @@ export const ARCHIVE_DIR = process.env.H2O_ARCHIVE_DIR
     );
   }
 }
+
+// Phase 8J-2: META_DIR — operator state (ledger CSVs, generated reports,
+// commit-message scratch). Was previously in-repo at <REPO_ROOT>/meta;
+// now defaults to <REPO_ROOT>/../meta. Honors H2O_META_DIR; throws if
+// the resolved path lands inside REPO_ROOT. All derived constants
+// (META_LEDGER_DIR, META_REPORTS_DIR, META_NOTES_DIR, EDITS_CSV,
+// EDITS_V2_CSV, VERSIONS_LATEST_CSV, VERSIONS_HTML, VERSIONS_MD)
+// automatically pick up the new default through transitive path.join.
+export const META_DIR = process.env.H2O_META_DIR
+  || path.resolve(REPO_ROOT, "..", "meta");
+
+{
+  // Hard safety check — refuse any meta path inside the repo.
+  const metaAbs = path.resolve(META_DIR);
+  const repoAbs = path.resolve(REPO_ROOT);
+  const rel = path.relative(repoAbs, metaAbs);
+  const isInside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (isInside) {
+    throw new Error(
+      "[paths.mjs] Refusing to write meta inside repo.\n" +
+      `  META_DIR  = ${metaAbs}\n` +
+      `  REPO_ROOT = ${repoAbs}\n` +
+      "  Set H2O_META_DIR to a path OUTSIDE the repo (recommended: ../meta)."
+    );
+  }
+}
+
+// Phase 8J-2: CHANGELOGS_DIR — per-script release-notes archives. Was
+// previously in-repo at <REPO_ROOT>/changelogs with ~1 tracked file;
+// now defaults to <REPO_ROOT>/../changelogs. Honors H2O_CHANGELOGS_DIR;
+// throws if the resolved path lands inside REPO_ROOT.
+export const CHANGELOGS_DIR = process.env.H2O_CHANGELOGS_DIR
+  || path.resolve(REPO_ROOT, "..", "changelogs");
+
+{
+  // Hard safety check — refuse any changelogs path inside the repo.
+  const changelogsAbs = path.resolve(CHANGELOGS_DIR);
+  const repoAbs = path.resolve(REPO_ROOT);
+  const rel = path.relative(repoAbs, changelogsAbs);
+  const isInside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (isInside) {
+    throw new Error(
+      "[paths.mjs] Refusing to write changelogs inside repo.\n" +
+      `  CHANGELOGS_DIR = ${changelogsAbs}\n` +
+      `  REPO_ROOT      = ${repoAbs}\n` +
+      "  Set H2O_CHANGELOGS_DIR to a path OUTSIDE the repo (recommended: ../changelogs)."
+    );
+  }
+}
+
 export const ARTIFACTS_DIR = path.join(REPO_ROOT, "artifacts");
 export const BUMP_DIR      = path.join(REPO_ROOT, ".bump");
 export const TMP_DIR       = path.join(REPO_ROOT, "tmp");
@@ -174,6 +239,14 @@ export const SUPABASE_LINK_JSON  = path.join(SUPABASE_DIR, ".temp", "linked-proj
 export const SUPABASE_PROJECT_REF = path.join(SUPABASE_DIR, ".temp", "project-ref");
 
 // ─── Release/versioning state ────────────────────────────────────────────────
+//
+// VERSIONS_CSV stays IN-REPO by design (Phase 8J-2): it is the tracked
+// canonical per-script release-version registry, must travel with the
+// source on a fresh clone, and is currently the only "ledger" file at
+// repo root. The other release-state files (EDITS_CSV, EDITS_V2_CSV,
+// VERSIONS_LATEST_CSV, VERSIONS_HTML, VERSIONS_MD) live under
+// META_DIR — they auto-flip to outer paths through the new outer
+// META_DIR default since they're computed via path.join(META_DIR, …).
 
 export const VERSIONS_CSV       = path.join(REPO_ROOT, "versions.csv");
 export const EDITS_CSV          = path.join(META_LEDGER_DIR, "edits.csv");
