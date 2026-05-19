@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "H2O Claude (Firefox dev stub)",
+  "version": "0.0.1",
+  "description": "Phase 8G-8 proof-of-chain stub for the H2O Claude Firefox extension. Does not implement Cockpit Pro features yet.",
+  "host_permissions": [
+    "https://claude.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

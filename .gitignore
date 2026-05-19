@@ -23,6 +23,8 @@ apps/extensions/chatgpt/firefox/**
 !apps/extensions/chatgpt/firefox/README.md
 apps/extensions/claude/chrome/**
 !apps/extensions/claude/chrome/README.md
+apps/extensions/claude/firefox/**
+!apps/extensions/claude/firefox/README.md
 apps/extensions/gemini/chrome/**
 !apps/extensions/gemini/chrome/README.md
 

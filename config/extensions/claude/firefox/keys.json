@@ -1,0 +1,12 @@
+{
+  "_purpose": "Firefox unpacked-extension IDs for the Claude host on the Firefox browser. Established in Phase 8G-8 (2026-05-19) — combines the Phase 8G-5 new-host pattern (claude) with the Phase 8G-6 new-browser pattern (firefox).",
+  "_format": "variants.<variant>.gecko_id = the Firefox extension ID (string, email-style or UUID), injected verbatim into manifest.json's browser_specific_settings.gecko.id. variants.<variant>.strict_min_version = the minimum Firefox version supported (MV3 needs 109.0+).",
+  "_security": "Firefox does NOT use a public-key derivation scheme like Chrome's manifest 'key'. The gecko_id is just a string the operator chooses; Firefox uses it verbatim as the extension ID. No private key associated.",
+  "_warning": "Do NOT change a gecko_id after operators have loaded the extension — Firefox's chrome.storage.local and other per-extension state is keyed by ID. As of Phase 8G-8 the claude+firefox variants have NO external ID coupling.",
+  "variants": {
+    "dev": {
+      "gecko_id": "h2o-claude-dev-firefox@h2ocockpitpro.com",
+      "strict_min_version": "109.0"
+    }
+  }
+}
