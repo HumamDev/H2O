@@ -8,14 +8,19 @@ node_modules/
 archive/**
 archive/.gitkeep
 
-# Generated unpacked chrome extension outputs.
+# Generated unpacked chrome/firefox extension outputs.
 # Canonical location is apps/extensions/<host>/<browser>/<variant>/ (post-4C-B).
 # Phase 8E-3 (2026-05-19) removed the legacy build/chrome-ext-* symlink bridge;
 # the build/** rule is kept as a safety net in case any future tool inadvertently
 # writes a build/ folder (manifest keys make Chrome IDs path-independent, but
 # the rule prevents accidental commits of generated artifacts).
+# Phase 8G-5 (2026-05-19) added claude/chrome rule for the first new-host stub;
+# the README.md placeholders established in Phase 7D stay tracked via the
+# explicit !README.md exception per host/browser combination.
 build/**
 apps/extensions/chatgpt/chrome/**
+apps/extensions/claude/chrome/**
+!apps/extensions/claude/chrome/README.md
 
 # Generated dev-server content. Phase 5B (2026-05-17) absorbed the sibling
 # h2o-dev-server/ into apps/dev-server/. The Python source (serve.py) is

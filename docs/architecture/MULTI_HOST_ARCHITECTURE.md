@@ -1,7 +1,10 @@
 # Multi-Host / Multi-Browser Architecture
 
 > **Status**: Established in Phase 8G-2 (2026-05-19). The folder skeleton exists;
-> only the chatgpt+chrome legacy is currently populated with runtime code.
+> chatgpt+chrome legacy populates the top-level frozen folders, and as of
+> Phase 8G-5 (2026-05-19) `src/extensions/claude/chrome/` holds the first
+> minimal proof-of-chain stub (a dev variant content script that runs on
+> claude.ai). All other host/browser source roots are still empty.
 >
 > **Purpose**: This document is the canonical reference for how Cockpit Pro
 > grows from the current single-product reality (chatgpt+chrome with 8 variants)

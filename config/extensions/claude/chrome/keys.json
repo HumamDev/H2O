@@ -1,0 +1,12 @@
+{
+  "_purpose": "Chrome unpacked-extension manifest keys for the Claude host on the Chrome browser. Generated in Phase 8G-5 (2026-05-19) as part of the first claude+chrome proof-of-chain stub. Public keys are NOT secrets — they appear in every manifest.json. Private keys were generated in-memory via node:crypto.generateKeyPairSync and discarded immediately after extracting the public key.",
+  "_format": "variants.<variant>.key = base64-encoded SubjectPublicKeyInfo (DER) RSA-2048 public key, injected verbatim into the variant's manifest.json. variants.<variant>.id = the deterministic Chrome extension ID Chrome computes from sha256(key)[:16] character-mapped a-p; documentation only — the build pipeline does not consume this field.",
+  "_security": "No private keys on disk; no private keys in git history.",
+  "_warning": "Do NOT regenerate without coordinated updates to any external service (Supabase Auth, etc.) that pins this ID. As of Phase 8G-5 the claude+chrome variants have NO external ID coupling — only the local chrome.storage.local is keyed by ID.",
+  "variants": {
+    "dev": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyqy44cMHWWCpRwwEDjv7O3eGP/A0YJ9MyqNyzQy1YkPGaBWaecD/jAid9A+rT5bkY14pPoNf9gru1A2KEMYH0lLLYVj48XemsRbwt4fGsA7WA0W4SXa/FJeEwCms0YrWoRSrblCKyrmhjD8MipNKcyYG+5g8BldEGF5PNt6tZY0mmKwVRAfNjiL6dgIyxXAKYM4Lhkso5XXkPxYj4YRx56NqbD4TnxR3LadbpeOrFclcOC8gQwvhARBUGvdVzi9UCs3TuSVPerh878HRIMfb8lYjPSCLcHxW1QKWyhzd+F5iK7A5djh9lxxC7URkrxIp3w5O4vd47vopa0CVdJ77swIDAQAB",
+      "id": "pdhldppkggpefneaemodleadcgpmpmnc"
+    }
+  }
+}
