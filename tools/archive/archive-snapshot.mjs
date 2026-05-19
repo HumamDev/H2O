@@ -1,17 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-// @version 1.2.0  (Phase 8I-2: import ARCHIVE_DIR from paths.mjs; refuse in-source archive root)
+// @version 1.3.0  (Phase 8I-3: source-root descriptors extracted to tools/archive/source-roots.mjs)
 
-// Phase 8I-2 (2026-05-19): archive root now comes from the central registry
-// (tools/paths.mjs). The independent path computation here used to be the
-// root cause of the duplicate-archive bug — when H2O_ARCHIVE_DIR was unset,
-// this file silently defaulted to `<SRC>/archive` (in-repo) while sibling
-// archive-one.mjs went through paths.mjs. paths.mjs now throws if the
-// resolved path lands inside REPO_ROOT, and the belt-and-suspenders check
-// below guards against the case where SRC argv differs from REPO_ROOT
-// (e.g. archive-snapshot.mjs invoked against a sibling worktree).
+// Phase 8I-2 (2026-05-19): archive root comes from the central registry
+// (tools/paths.mjs). paths.mjs throws if the resolved path lands inside
+// REPO_ROOT; the belt-and-suspenders check below guards against the case
+// where SRC argv differs from REPO_ROOT (e.g. sibling worktree).
+//
+// Phase 8I-3 (2026-05-19): the source-roots include list, exclusion sets,
+// and exclusion patterns moved into tools/archive/source-roots.mjs as a
+// pure-data configuration module. This file consumes the descriptors and
+// dispatches to the appropriate collection helper. Behavior is byte-
+// equivalent to the pre-8I-3 inlined logic — the same set of files is
+// archived, with the same markers, into the same destination.
 import { ARCHIVE_DIR } from "../paths.mjs";
+import {
+  ADDITIONAL_TRACKED_FILES,
+  EXCLUDED_ARCHIVE_NAMES,
+  EXCLUDED_ARCHIVE_DIRS,
+  EXCLUDED_ARCHIVE_PATTERNS,
+  STUDIO_SURFACES_REL,
+  TOOLS_REL,
+  SOURCE_ROOTS,
+} from "./source-roots.mjs";
 
 const SRC = process.argv[2]; // workspaceFolder (the repo root / source tree)
 if (!SRC) throw new Error("Missing SRC arg");
@@ -41,31 +53,6 @@ const ARCHIVE_ROOT = ARCHIVE_DIR;
 }
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
-const ADDITIONAL_TRACKED_FILES = [
-  "surfaces/studio/studio.css",
-  "surfaces/studio/studio.html",
-  "surfaces/studio/studio.js",
-
-  "surfaces/desk/desk.css",
-  "surfaces/desk/desk.html",
-  "surfaces/desk/desk.js",
-  "surfaces/desk/page-bridge.js",
-
-  ".vscode/tasks.json",
-];
-const TOOLS_REL = "tools";
-const EXCLUDED_ARCHIVE_NAMES = new Set([
-  ".DS_Store",
-]);
-const EXCLUDED_ARCHIVE_DIRS = new Set([
-  ".git",
-  "artifacts",
-  "build",
-  "cache",
-  "node_modules",
-  "tmp",
-]);
-const STUDIO_SURFACES_REL = path.join("surfaces", "studio");
 
 fs.mkdirSync(ARCHIVE_ROOT, { recursive: true });
 fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -207,8 +194,7 @@ function collectRecursiveFiles(srcRoot, relDir) {
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       if (EXCLUDED_ARCHIVE_NAMES.has(entry.name)) continue;
-      if (entry.name.endsWith(".local.json") || /\.local\./i.test(entry.name)) continue;
-      if (entry.name === ".env" || entry.name.startsWith(".env.")) continue;
+      if (EXCLUDED_ARCHIVE_PATTERNS.some((p) => p.test(entry.name))) continue;
 
       const childRel = path.join(rel, entry.name);
       const childAbs = path.join(abs, entry.name);
@@ -381,17 +367,35 @@ const state = maybeMigrateStatePaths(safeReadJSON(STATE_FILE, {}), SRC);
 const todayDir = path.join(ARCHIVE_ROOT, dayStamp());
 fs.mkdirSync(todayDir, { recursive: true });
 
-const trackedUserScripts = collectUserScripts(SRC);
-const trackedStudioSurfaceFiles = collectTopLevelFiles(SRC, STUDIO_SURFACES_REL);
-const trackedToolFiles = collectRecursiveFiles(SRC, TOOLS_REL);
+// Phase 8I-3: collect candidate files by dispatching each SOURCE_ROOTS
+// descriptor to the appropriate helper. The set produced here must be
+// byte-equivalent to the pre-8I-3 inline collection of [userscripts,
+// surfaces/studio top-level, tools recursive, ADDITIONAL_TRACKED_FILES].
+function collectFromDescriptor(srcRoot, descriptor) {
+  switch (descriptor.kind) {
+    case "userscripts":
+      return collectUserScripts(srcRoot);
+    case "top-level":
+      return collectTopLevelFiles(srcRoot, descriptor.root);
+    case "recursive":
+      return collectRecursiveFiles(srcRoot, descriptor.root);
+    case "explicit":
+      return descriptor.files;
+    default:
+      throw new Error(`[archive-snapshot] Unknown source-root kind: ${descriptor.kind}`);
+  }
+}
+
+const collectedFiles = [];
+let trackedUserScripts = [];
+for (const descriptor of SOURCE_ROOTS) {
+  const files = collectFromDescriptor(SRC, descriptor);
+  collectedFiles.push(...files);
+  if (descriptor.kind === "userscripts") trackedUserScripts = files;
+}
 assertScriptArchiveCoverage(SRC, trackedUserScripts);
 
-const trackedRelPaths = uniqueSorted([
-  ...trackedUserScripts,
-  ...trackedStudioSurfaceFiles,
-  ...trackedToolFiles,
-  ...ADDITIONAL_TRACKED_FILES,
-]);
+const trackedRelPaths = uniqueSorted(collectedFiles);
 
 let archivedCount = 0;
 const skippedNoVersion = [];
