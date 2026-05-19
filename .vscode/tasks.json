@@ -237,72 +237,84 @@
       "label": "H2O: GIT / A) Auto Commit (stage + message + commit)",
       "type": "shell",
       "command": "npm run commit:auto",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: GIT / B) Auto Commit (DRY RUN)",
       "type": "shell",
       "command": "npm run commit:auto:dry",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: GIT / C) Auto Commit (USE CODEX/GITLENS MESSAGE FILE)",
       "type": "shell",
       "command": "npm run commit:auto:msg",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: GIT / D) Auto Commit (DRY RUN + FORCE)",
       "type": "shell",
       "command": "npm run commit:auto:msg:dry -- --force",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: GIT / E) Release Commit Helper (pick script + size -> commit)",
       "type": "shell",
       "command": "npm run commit:release",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: REV / Stamp @revision+@build (changed scripts)",
       "type": "shell",
       "command": "npm run rev:stamp",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: RELEASE / A) Dry Run",
       "type": "shell",
       "command": "npm run release:dry",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: SHIP / A) Release + Archive Snapshot",
       "type": "shell",
       "command": "npm run ship",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: SHIP / B) Dry",
       "type": "shell",
       "command": "npm run ship:dry",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: SHIP / Commit+Bump+Changelog+Archive+Dashboard",
       "type": "shell",
       "command": "npm run ship:commit",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: DASHBOARD / Build (Manual)",
       "type": "shell",
       "command": "npm run dashboard:build",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: DASHBOARD / Watch (Auto, 15s debounce)",
       "type": "shell",
       "command": "npm run dashboard:watch",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
@@ -313,13 +325,20 @@
       "runOptions": {
         "runOn": "folderOpen"
       },
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
       "label": "H2O: 0) ⬜ META / A) Generate File Lists (workspace + git + parent workspace)",
-      "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces.",
+      "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces. Writes to outer cockpit-pro/meta/reports/ post-8J-2.",
       "type": "shell",
-      "command": "mkdir -p \"${workspaceFolder}/meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder; post-5B contains only h2o-source/; dev-server absorbed into apps/dev-server/) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/meta/reports/file-list.txt'",
+      "command": "mkdir -p \"${workspaceFolder}/../meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder; post-5B contains only h2o-source/; dev-server absorbed into apps/dev-server/) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/../meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/../meta/reports/file-list.txt'",
+      "options": {
+        "env": {
+          "H2O_META_DIR": "${workspaceFolder}/../meta",
+          "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs"
+        }
+      },
       "problemMatcher": []
     }
   ],

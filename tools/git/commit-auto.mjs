@@ -1,7 +1,20 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 8J-3: DEFAULT_MESSAGE_FILE resolves through META_NOTES_DIR)
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+
+// Phase 8J-3 (2026-05-19): DEFAULT_MESSAGE_FILE was a relative string
+// `meta/notes/COMMIT_MESSAGE.txt` which silently fell back to in-repo
+// when cwd happened to be REPO_ROOT. It now resolves through the
+// central registry (paths.mjs::META_NOTES_DIR), so it points at the
+// outer cockpit-pro/meta/notes/ post-8J-2 regardless of cwd. The
+// SAFE_STAGE_PATHS allowlist below preserves the legacy "meta" /
+// "changelogs" entries — those are git-RELATIVE paths used during
+// staging; after 8J-4 moves the folders outer they'll never match,
+// but keeping the entries is harmless and defensive against any
+// future in-repo recreation that 8J-2's hard-refuse couldn't catch.
+import { META_NOTES_DIR } from "../paths.mjs";
 
 const SAFE_STAGE_PATHS = [
   "tools",
@@ -18,7 +31,7 @@ const SAFE_STAGE_PATHS = [
 ];
 
 const MAX_UNSAFE_PRINT = 15;
-const DEFAULT_MESSAGE_FILE = "meta/notes/COMMIT_MESSAGE.txt";
+const DEFAULT_MESSAGE_FILE = path.join(META_NOTES_DIR, "COMMIT_MESSAGE.txt");
 
 function runGitCapture(args) {
   const res = spawnSync("git", args, { encoding: "utf8" });

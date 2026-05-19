@@ -1,9 +1,22 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 8J-3: meta paths resolve through tools/paths.mjs)
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+// Phase 8J-3 (2026-05-19): the meta-related paths previously computed
+// in-repo here (LEDGER_DIR, NOTES_DIR, edits.csv, edits.v2.csv,
+// COMMIT_MESSAGE.txt, COMMIT_QUEUE.txt) now resolve through the central
+// registry tools/paths.mjs::META_DIR. Per Phase 8J-2, META_DIR defaults
+// to outer cockpit-pro/meta/ and is hard-refused if it lands inside the
+// repo, so this tool will no longer recreate h2o-cp-source/meta/.
+import {
+  META_LEDGER_DIR,
+  META_NOTES_DIR,
+  EDITS_CSV,
+  EDITS_V2_CSV,
+} from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -18,13 +31,16 @@ const H2O_ID_LINE_RE = /^\s*\/\/\s*@h2o-id\s+(.+?)\s*$/im;
 const TYPE_PREFIX_RE = /^\s*(fix|feat|perf|refactor|chore)\s*:\s*(.*)$/i;
 const FORCED_TYPES = new Set(["fix", "feat", "perf", "refactor", "chore"]);
 
-const LEDGER_DIR = path.join(REPO_ROOT, "meta", "ledger");
-const LEDGER_V1_FILE = path.join(LEDGER_DIR, "edits.csv");
-const LEDGER_V2_FILE = path.join(LEDGER_DIR, "edits.v2.csv");
+// Phase 8J-3: local aliases preserve existing variable names throughout
+// the rest of the file; only the SOURCE of the values changed (from
+// hardcoded in-repo joins to paths.mjs imports).
+const LEDGER_DIR = META_LEDGER_DIR;
+const LEDGER_V1_FILE = EDITS_CSV;
+const LEDGER_V2_FILE = EDITS_V2_CSV;
 const LEDGER_HEADER_V1 = ["ts", "kind", "script_id", "rel_path", "rev", "build", "note"];
 const LEDGER_HEADER_V2 = [...LEDGER_HEADER_V1, "msg"];
 
-const NOTES_DIR = path.join(REPO_ROOT, "meta", "notes");
+const NOTES_DIR = META_NOTES_DIR;
 const COMMIT_MESSAGE_FILE = path.join(NOTES_DIR, "COMMIT_MESSAGE.txt");
 const COMMIT_QUEUE_FILE = path.join(NOTES_DIR, "COMMIT_QUEUE.txt");
 
@@ -315,7 +331,7 @@ function resolveLedgerTarget() {
     };
   }
 
-  throw new Error("[edit:log] Header mismatch in meta/ledger/edits.csv");
+  throw new Error(`[edit:log] Header mismatch in ${LEDGER_V1_FILE}`);
 }
 
 function ensureLedgerFile(filePath, header) {

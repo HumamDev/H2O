@@ -16,7 +16,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 
-import { REPO_ROOT } from "../paths.mjs";
+import { REPO_ROOT, CHANGELOGS_DIR } from "../paths.mjs";
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
@@ -518,7 +518,11 @@ function buildPlan(selected, bumpByPath, summary) {
     const nextVersion = semver.inc(script.baseVersion, bump);
     if (!nextVersion) throw new Error(`Failed to bump ${script.scriptId} from ${script.baseVersion} (${bump}).`);
     const subject = buildCommitSubject(script.scriptId, bump, summary);
-    const changelogPath = path.join(REPO_ROOT, "changelogs", `${script.scriptId}.CHANGELOG.md`);
+    // Phase 8J-3: CHANGELOGS_DIR resolves through paths.mjs (outer
+    // cockpit-pro/changelogs/ post-8J-2). ensureDir is needed at the
+    // writer site because the outer directory may not exist on a fresh
+    // operator machine until 8J-4 lands.
+    const changelogPath = path.join(CHANGELOGS_DIR, `${script.scriptId}.CHANGELOG.md`);
     return {
       ...script,
       bump,
