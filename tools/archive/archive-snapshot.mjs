@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-// @version 1.1.0  (Phase 8C: H2O_ARCHIVE_DIR env override for outer-shell archive/)
+// @version 1.2.0  (Phase 8I-2: import ARCHIVE_DIR from paths.mjs; refuse in-source archive root)
 
-const SRC = process.argv[2]; // workspaceFolder (the repo root)
+// Phase 8I-2 (2026-05-19): archive root now comes from the central registry
+// (tools/paths.mjs). The independent path computation here used to be the
+// root cause of the duplicate-archive bug — when H2O_ARCHIVE_DIR was unset,
+// this file silently defaulted to `<SRC>/archive` (in-repo) while sibling
+// archive-one.mjs went through paths.mjs. paths.mjs now throws if the
+// resolved path lands inside REPO_ROOT, and the belt-and-suspenders check
+// below guards against the case where SRC argv differs from REPO_ROOT
+// (e.g. archive-snapshot.mjs invoked against a sibling worktree).
+import { ARCHIVE_DIR } from "../paths.mjs";
+
+const SRC = process.argv[2]; // workspaceFolder (the repo root / source tree)
 if (!SRC) throw new Error("Missing SRC arg");
 const FORCE_ALL =
   process.argv.includes("--all") ||
@@ -11,11 +21,24 @@ const FORCE_ALL =
 // Run once after filename/path renames to migrate lastVersions keys safely.
 const MIGRATE_PATHS = process.argv.includes("--migrate-paths");
 
-// Phase 8C: when H2O_ARCHIVE_DIR is set, write snapshots to that path instead
-// of the in-repo <SRC>/archive default. Mirrors the precedence in
-// tools/paths.mjs (which archive-one.mjs uses). Default behavior unchanged
-// when the env var is absent.
-const ARCHIVE_ROOT = process.env.H2O_ARCHIVE_DIR || path.join(SRC, "archive");
+const ARCHIVE_ROOT = ARCHIVE_DIR;
+{
+  // Belt-and-suspenders: refuse if the archive root lands inside the source
+  // tree even when paths.mjs's REPO_ROOT-based check would have allowed it
+  // (e.g. when SRC is a sibling worktree or a fresh-clone path).
+  const archiveAbs = path.resolve(ARCHIVE_ROOT);
+  const srcAbs = path.resolve(SRC);
+  const rel = path.relative(srcAbs, archiveAbs);
+  const isInside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (isInside) {
+    throw new Error(
+      "[archive-snapshot] Refusing to write archive inside source tree.\n" +
+      `  ARCHIVE_ROOT = ${archiveAbs}\n` +
+      `  SRC          = ${srcAbs}\n` +
+      "  Set H2O_ARCHIVE_DIR to a path OUTSIDE the source tree."
+    );
+  }
+}
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
 const ADDITIONAL_TRACKED_FILES = [

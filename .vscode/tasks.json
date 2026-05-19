@@ -172,14 +172,19 @@
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
-      "detail": "⚡ Quick local archive: saves version/hash-changed files, including the full tools tree, into the current workspace archive folder.",
+      "detail": "⚡ Quick local archive: saves version/hash-changed files, including the full tools tree, into the outer cockpit-pro/archive/ folder (Phase 8I-2 path hardening — in-repo archive paths are refused).",
       "type": "shell",
-      "command": "node \"${workspaceFolder}/tools/archive/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/archive\"",
+      "command": "node \"${workspaceFolder}/tools/archive/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/../archive\"",
+      "options": {
+        "env": {
+          "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive"
+        }
+      },
       "problemMatcher": []
     },
     {
       "label": "H2O: 5) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
-      "detail": "Local archive utility: full snapshot of scripts, UI targets, and the entire current tools tree into today's archive folder.",
+      "detail": "Local archive utility: full snapshot of scripts, UI targets, and the entire current tools tree into today's archive folder under the outer cockpit-pro/archive/ root (Phase 8I-2).",
       "type": "process",
       "command": "node",
       "args": [
@@ -188,7 +193,10 @@
         "--all"
       ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive"
+        }
       },
       "problemMatcher": []
     },
@@ -196,18 +204,33 @@
       "label": "H2O: ARCHIVE / One (Pick)",
       "type": "shell",
       "command": "npm run archive:pick",
+      "options": {
+        "env": {
+          "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive"
+        }
+      },
       "problemMatcher": []
     },
     {
       "label": "H2O: ARCHIVE / One (Recent)",
       "type": "shell",
       "command": "npm run archive:recent",
+      "options": {
+        "env": {
+          "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive"
+        }
+      },
       "problemMatcher": []
     },
     {
       "label": "H2O: ARCHIVE / One (By path prompt)",
       "type": "shell",
       "command": "npm run archive:one -- --file \"${input:archiveFile}\"",
+      "options": {
+        "env": {
+          "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive"
+        }
+      },
       "problemMatcher": []
     },
     {

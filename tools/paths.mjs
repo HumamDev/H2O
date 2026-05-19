@@ -82,16 +82,46 @@ export const CHANGELOGS_DIR = path.join(REPO_ROOT, "changelogs");
 // These are gitignored on disk but treated as canonical roots by the tooling.
 // See .gitignore.
 //
-// Phase 8C (2026-05-19): ARCHIVE_DIR now honors H2O_ARCHIVE_DIR env override,
+// Phase 8C (2026-05-19): ARCHIVE_DIR honors H2O_ARCHIVE_DIR env override,
 // letting operators relocate the 1.8 GB daily-snapshots tree out of the git
-// repo into the outer cockpit-pro/ workspace shell. Default unchanged when
-// the env var is absent. Same precedence pattern as H2O_SRC_DIR /
-// H2O_SERVER_DIR. Consumers (tools/archive/archive-one.mjs imports
-// ARCHIVE_DIR; tools/archive/archive-snapshot.mjs honors H2O_ARCHIVE_DIR
-// independently because its SRC comes from process.argv[2]) auto-pick up
-// the override.
+// repo into the outer cockpit-pro/ workspace shell.
+//
+// Phase 8I-2 (2026-05-19): Default flipped from in-repo
+// `<REPO_ROOT>/archive` to outer `<REPO_ROOT>/../archive`
+// (cockpit-pro/archive/). Hard refusal added: if the resolved archive path
+// lands inside REPO_ROOT, this module throws at import time so every tool
+// that imports paths.mjs fails fast with a clear, actionable error. This is
+// an intentional, narrowly-scoped exception to the "no side effects at
+// import time" rule (see rules block at the top of this file) — throwing
+// for misconfiguration is the desired behavior because it surfaces the
+// problem loudly rather than silently writing to a wrong path. The throw
+// fires ONLY when the resolved path is inside REPO_ROOT; in every normal
+// configuration (env unset → outer default, env set to outer path) no throw
+// fires and importing paths.mjs is a pure pass-through.
+//
+// Consumers (tools/archive/archive-one.mjs + tools/archive/archive-snapshot.mjs
+// both now import ARCHIVE_DIR from here; previously archive-snapshot.mjs
+// computed its own root with a different fallback, which was the root cause
+// of the in-repo + outer duplicate-archive bug surfaced post-8C).
 
-export const ARCHIVE_DIR   = process.env.H2O_ARCHIVE_DIR || path.join(REPO_ROOT, "archive");
+export const ARCHIVE_DIR = process.env.H2O_ARCHIVE_DIR
+  || path.resolve(REPO_ROOT, "..", "archive");
+
+{
+  // Hard safety check — refuse any archive path inside the repo.
+  const archiveAbs = path.resolve(ARCHIVE_DIR);
+  const repoAbs = path.resolve(REPO_ROOT);
+  const rel = path.relative(repoAbs, archiveAbs);
+  const isInside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (isInside) {
+    throw new Error(
+      "[paths.mjs] Refusing to write archive inside repo.\n" +
+      `  ARCHIVE_DIR = ${archiveAbs}\n` +
+      `  REPO_ROOT   = ${repoAbs}\n` +
+      "  Set H2O_ARCHIVE_DIR to a path OUTSIDE the repo (recommended: ../archive)."
+    );
+  }
+}
 export const ARTIFACTS_DIR = path.join(REPO_ROOT, "artifacts");
 export const BUMP_DIR      = path.join(REPO_ROOT, ".bump");
 export const TMP_DIR       = path.join(REPO_ROOT, "tmp");
