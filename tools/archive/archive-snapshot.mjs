@@ -20,10 +20,14 @@ import {
   EXCLUDED_ARCHIVE_NAMES,
   EXCLUDED_ARCHIVE_DIRS,
   EXCLUDED_ARCHIVE_PATTERNS,
-  STUDIO_SURFACES_REL,
   TOOLS_REL,
   SOURCE_ROOTS,
 } from "./source-roots.mjs";
+// Note: SURFACES_REL is consumed internally by source-roots.mjs in the
+// SOURCE_ROOTS descriptor; archive-snapshot.mjs doesn't reference it
+// directly so it's not imported here. (Pre-8I-4 imported
+// STUDIO_SURFACES_REL for the same reason — defensive, but unused
+// directly.)
 
 const SRC = process.argv[2]; // workspaceFolder (the repo root / source tree)
 if (!SRC) throw new Error("Missing SRC arg");
