@@ -81,8 +81,17 @@ export const CHANGELOGS_DIR = path.join(REPO_ROOT, "changelogs");
 //
 // These are gitignored on disk but treated as canonical roots by the tooling.
 // See .gitignore.
+//
+// Phase 8C (2026-05-19): ARCHIVE_DIR now honors H2O_ARCHIVE_DIR env override,
+// letting operators relocate the 1.8 GB daily-snapshots tree out of the git
+// repo into the outer cockpit-pro/ workspace shell. Default unchanged when
+// the env var is absent. Same precedence pattern as H2O_SRC_DIR /
+// H2O_SERVER_DIR. Consumers (tools/archive/archive-one.mjs imports
+// ARCHIVE_DIR; tools/archive/archive-snapshot.mjs honors H2O_ARCHIVE_DIR
+// independently because its SRC comes from process.argv[2]) auto-pick up
+// the override.
 
-export const ARCHIVE_DIR   = path.join(REPO_ROOT, "archive");
+export const ARCHIVE_DIR   = process.env.H2O_ARCHIVE_DIR || path.join(REPO_ROOT, "archive");
 export const ARTIFACTS_DIR = path.join(REPO_ROOT, "artifacts");
 export const BUMP_DIR      = path.join(REPO_ROOT, ".bump");
 export const TMP_DIR       = path.join(REPO_ROOT, "tmp");

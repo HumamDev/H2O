@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-// @version 1.0.2
+// @version 1.1.0  (Phase 8C: H2O_ARCHIVE_DIR env override for outer-shell archive/)
 
-const SRC = process.argv[2]; // workspaceFolder (h2o-source)
+const SRC = process.argv[2]; // workspaceFolder (the repo root)
 if (!SRC) throw new Error("Missing SRC arg");
 const FORCE_ALL =
   process.argv.includes("--all") ||
@@ -11,7 +11,11 @@ const FORCE_ALL =
 // Run once after filename/path renames to migrate lastVersions keys safely.
 const MIGRATE_PATHS = process.argv.includes("--migrate-paths");
 
-const ARCHIVE_ROOT = path.join(SRC, "archive");
+// Phase 8C: when H2O_ARCHIVE_DIR is set, write snapshots to that path instead
+// of the in-repo <SRC>/archive default. Mirrors the precedence in
+// tools/paths.mjs (which archive-one.mjs uses). Default behavior unchanged
+// when the env var is absent.
+const ARCHIVE_ROOT = process.env.H2O_ARCHIVE_DIR || path.join(SRC, "archive");
 const STATE_DIR = path.join(ARCHIVE_ROOT, ".state");
 const STATE_FILE = path.join(STATE_DIR, "lastVersions.json");
 const ADDITIONAL_TRACKED_FILES = [
