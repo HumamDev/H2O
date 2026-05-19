@@ -2,17 +2,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { removeArchiveWorkbenchFromOut } from "../../product/studio/pack-studio.mjs";
-import { writeExtensionIcons } from "../../product/extension/write-extension-icons.mjs";
-import { extensionBuildDir } from "../../paths.mjs";
+import { removeArchiveWorkbenchFromOut } from "../../../studio/pack-studio.mjs";
+import { writeExtensionIcons } from "./write-extension-icons.mjs";
+import { extensionBuildDir } from "../../../../paths.mjs";
 import {
   getExtensionKey,
   deriveVariantFromOutDir,
-} from "../../product/extension/chrome-extension-keys.mjs";
+} from "./chrome-extension-keys.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
-const SRC_DEFAULT = path.resolve(TOOL_DIR, "..", "..", "..");
+const SRC_DEFAULT = path.resolve(TOOL_DIR, "..", "..", "..", "..", "..");
 
 const SRC =
   process.env.H2O_SRC_DIR ||

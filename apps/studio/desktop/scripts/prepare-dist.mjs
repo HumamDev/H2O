@@ -10,7 +10,7 @@
  * Pre-condition: you have already run from h2o-source/:
  *   npm run dev:rebuild
  *   npm run dev:all
- *   node tools/product/extension/build-chrome-live-extension.mjs
+ *   node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
  * so that apps/extensions/chatgpt/chrome/prod/surfaces/studio/ exists and is current.
  *
  * ── Filename sanitization (M1 fix) ──────────────────────────────────
@@ -76,7 +76,7 @@ const dist = path.join(desktopRoot, 'dist');
 if (!fs.existsSync(studioBuilt)) {
   console.error(`[prepare-dist] missing built Studio assets at:\n  ${studioBuilt}`);
   console.error('[prepare-dist] from h2o-source/ run:');
-  console.error('  npm run dev:rebuild && npm run dev:all && node tools/product/extension/build-chrome-live-extension.mjs');
+  console.error('  npm run dev:rebuild && npm run dev:all && node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs');
   process.exit(1);
 }
 
@@ -137,7 +137,7 @@ if (process.env.SKIP_STALENESS_CHECK !== '1') {
       console.error('');
       console.error('    npm run dev:rebuild');
       console.error('    npm run dev:all');
-      console.error('    node tools/product/extension/build-chrome-live-extension.mjs');
+      console.error('    node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs');
       console.error('');
       console.error('  Then re-run `npm run tauri:dev`.');
       console.error('');

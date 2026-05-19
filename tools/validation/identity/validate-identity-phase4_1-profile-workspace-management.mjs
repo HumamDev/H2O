@@ -9,8 +9,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 
 const MIGRATION_REL = "supabase/migrations/202605020001_identity_account_security_mvp.sql";
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
-const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
-const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
+const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
+const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 const IDENTITY_CORE_REL = "scripts/0D4a.⬛️🔐 Identity Core 🔐.js";
 const CONTROL_HUB_ACCOUNT_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";

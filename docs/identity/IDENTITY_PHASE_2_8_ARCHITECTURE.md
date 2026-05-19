@@ -93,9 +93,9 @@ Supabase is the only candidate that simultaneously offers email OTP, PostgreSQL 
 | **H2O.Identity** | `scripts/0D4a.⬛️🔐 Identity Core 🔐.js` | Identity state facade; owns state machine, localStorage persistence, bridge sync | **Yes — source of truth for identity state** |
 | **H2O.IdentityFirstRunPrompt** | `scripts/0D4b.⚫️🔐 Identity First-Run Prompt 🚪🔐.js` | Soft first-run prompt UI; reads H2O.Identity snapshot only | No — consumer only |
 | **Control Hub Account tab** | `scripts/0Z1a.⬛️🕹️ Control Hub 🕹️.js` | Displays identity status and provides action buttons | No — consumer only |
-| **Ops Panel** | `tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs` | Dev/testing trigger for first-run prompt | No — testing entry only |
-| **Extension background** | `tools/product/extension/chrome-live-background.mjs` | Bridge relay: stores/retrieves mock snapshot in `chrome.storage.local`; opens onboarding window | Partial — stores mock snapshot at background request |
-| **Loader / content script** | `tools/product/extension/chrome-live-loader.mjs` | Relays `h2o-ext-identity:v1:req/res` messages between page and background | No — relay only |
+| **Ops Panel** | `tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs` | Dev/testing trigger for first-run prompt | No — testing entry only |
+| **Extension background** | `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs` | Bridge relay: stores/retrieves mock snapshot in `chrome.storage.local`; opens onboarding window | Partial — stores mock snapshot at background request |
+| **Loader / content script** | `tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs` | Relays `h2o-ext-identity:v1:req/res` messages between page and background | No — relay only |
 | **Onboarding page** | `surfaces/identity/identity.html` | Product-owned H2O / Cockpit Pro account/profile surface | No — UI surface only |
 
 ### Current Bridge Protocol (Phase 2.6 / existing)

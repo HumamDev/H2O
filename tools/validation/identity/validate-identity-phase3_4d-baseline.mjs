@@ -16,8 +16,8 @@ function extBuildRel(variant, ...segments) {
 
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
 const GITIGNORE_REL = ".gitignore";
-const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
-const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
+const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
+const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
 const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
 const CONTROL_HUB_REL = "scripts/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
@@ -54,12 +54,12 @@ const ACTIVE_VALIDATORS = [
 ];
 
 const ACTIVE_BUILDS = [
-  "node tools/product/extension/build-chrome-live-extension.mjs",
-  `env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=${extBuildRel("dev-lean")} node tools/product/extension/build-chrome-live-extension.mjs`,
-  `env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=${extBuildRel("prod")} node tools/product/extension/build-chrome-live-extension.mjs`,
-  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-armed")} node tools/product/extension/build-chrome-live-extension.mjs`,
-  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-oauth-google")} node tools/product/extension/build-chrome-live-extension.mjs`,
-  "node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs",
+  "node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs",
+  `env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=${extBuildRel("dev-lean")} node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs`,
+  `env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=${extBuildRel("prod")} node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs`,
+  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-armed")} node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs`,
+  `env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=${extBuildRel("dev-controls-oauth-google")} node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs`,
+  "node tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs",
 ];
 
 function read(rel) {

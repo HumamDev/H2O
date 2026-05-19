@@ -15,10 +15,10 @@ function extBuildRel(variant, ...segments) {
 }
 
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
-const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
-const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
-const MANIFEST_SOURCE_REL = "tools/product/extension/chrome-live-manifest.mjs";
-const BUILD_SOURCE_REL = "tools/product/extension/build-chrome-live-extension.mjs";
+const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
+const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
+const MANIFEST_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs";
+const BUILD_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
 const IDENTITY_CORE_REL = "scripts/0D4a.⬛️🔐 Identity Core 🔐.js";
 const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
 const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";

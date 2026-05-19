@@ -36,10 +36,10 @@ const LEGACY_PROVIDER_BUNDLE_NAME = ["identity", "provider", "dummy"].join("-");
 const LEGACY_PROVIDER_BUNDLE_REL = `provider/${LEGACY_PROVIDER_BUNDLE_NAME}.js`;
 const PROBE_MARKER = "H2O_IDENTITY_PROVIDER_BUNDLE_PROBE";
 const PROVIDER_SOURCE_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
-const BACKGROUND_SOURCE_REL = "tools/product/extension/chrome-live-background.mjs";
-const MANIFEST_SOURCE_REL = "tools/product/extension/chrome-live-manifest.mjs";
-const BUILD_SOURCE_REL = "tools/product/extension/build-chrome-live-extension.mjs";
-const BUILD_CONTEXT_SOURCE_REL = "tools/product/extension/chrome-live-build-context.mjs";
+const BACKGROUND_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
+const MANIFEST_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs";
+const BUILD_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
+const BUILD_CONTEXT_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-build-context.mjs";
 const GITIGNORE_REL = ".gitignore";
 const LOCAL_IDENTITY_PROVIDER_CONFIG_REL = "config/local/identity-provider.local.json";
 const SDK_PACKAGE_NAME = "@supabase/supabase-js";
@@ -1141,9 +1141,9 @@ function assertBackgroundPermissionReadinessSafe() {
 
 function assertPopupProviderPermissionActionScoped() {
   const backgroundSource = read(BACKGROUND_SOURCE_REL);
-  const popupJsSource = read("tools/dev-controls/popup/chrome-live-popup-js.mjs");
-  const popupHtmlSource = read("tools/dev-controls/popup/chrome-live-popup-html.mjs");
-  const loaderSource = read("tools/product/extension/chrome-live-loader.mjs");
+  const popupJsSource = read("tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-js.mjs");
+  const popupHtmlSource = read("tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-html.mjs");
+  const loaderSource = read("tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs");
 
   assert(backgroundSource.includes(PROVIDER_PERMISSION_ACTION),
     "background must own the provider permission request action");
@@ -1162,7 +1162,7 @@ function assertPopupProviderPermissionActionScoped() {
 function assertVerifyEmailOtpSessionBoundarySafe() {
   const backgroundSource = read(BACKGROUND_SOURCE_REL);
   const providerSource = read(PROVIDER_SOURCE_REL);
-  const loaderSource = read("tools/product/extension/chrome-live-loader.mjs");
+  const loaderSource = read("tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs");
   const identitySource = read("scripts/0D4a.⬛️🔐 Identity Core 🔐.js");
 
   assertOtpCodeNormalizer(PROVIDER_SOURCE_REL, providerSource, "normalizeProviderOtpCode");
@@ -1585,7 +1585,7 @@ async function validateExactHostOptionalPermissionSimulation() {
   fs.rmSync(prodOut, { recursive: true, force: true });
   fs.rmSync(armedProdOut, { recursive: true, force: true });
   try {
-    execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+    execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
       cwd: REPO_ROOT,
       env: {
         ...commonEnv,
@@ -1609,7 +1609,7 @@ async function validateExactHostOptionalPermissionSimulation() {
     assertGeneratedProviderPermissionActionScope("exact-host dev simulation", devOut, textFiles(devOut));
     assertNoPageFacingExactHostLeak(devOut, "exact-host dev simulation");
 
-    execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+    execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
       cwd: REPO_ROOT,
       env: {
         ...commonEnv,
@@ -1654,7 +1654,7 @@ async function validateExactHostOptionalPermissionSimulation() {
 
     let unconfiguredFailed = false;
     try {
-      execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+      execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
@@ -1673,7 +1673,7 @@ async function validateExactHostOptionalPermissionSimulation() {
     assert(unconfiguredFailed,
       "request_otp phase flag must fail the build without complete provider config");
 
-    execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+    execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
       cwd: REPO_ROOT,
       env: {
         ...commonEnv,
@@ -1698,7 +1698,7 @@ async function validateExactHostOptionalPermissionSimulation() {
     }
     let prodArmedFailed = false;
     try {
-      execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+      execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
         cwd: REPO_ROOT,
         env: {
           ...commonEnv,

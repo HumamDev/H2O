@@ -16,11 +16,11 @@ const OAUTH_STATUS_MIGRATION_REL = "supabase/migrations/202605010005_identity_go
 const ACCOUNT_SECURITY_MVP_REL = "supabase/migrations/202605020001_identity_account_security_mvp.sql";
 const TEXT_EXTENSIONS = new Set([".css", ".html", ".js", ".mjs"]);
 const EXTENSION_RUNTIME_RELS = [
-  "tools/product/extension/chrome-live-background.mjs",
-  "tools/product/extension/chrome-live-loader.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-html.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-js.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-view.mjs",
+  "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs",
+  "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-html.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-js.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-view.mjs",
   "tools/product/identity/identity-provider-supabase.entry.mjs",
 ];
 const EXTENSION_RUNTIME_DIRS = [

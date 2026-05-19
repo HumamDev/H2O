@@ -12,8 +12,8 @@ const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
 const IDENTITY_SURFACE_CSS_REL = "surfaces/identity/identity.css";
 const CONTROL_HUB_REL = "scripts/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
 const CONTROL_HUB_ACCOUNT_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
-const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
-const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
+const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
+const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
 
 function read(rel) {

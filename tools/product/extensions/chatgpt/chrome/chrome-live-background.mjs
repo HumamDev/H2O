@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const CATEGORY_CLASSIFIER_SOURCE_FILE = path.resolve(SCRIPT_DIR, "../../../packages/studio-core/src/categories/classifier.ts");
-const BILLING_PROVIDER_SOURCE_FILE = path.resolve(SCRIPT_DIR, "../billing/billing-provider-supabase.entry.mjs");
+const CATEGORY_CLASSIFIER_SOURCE_FILE = path.resolve(SCRIPT_DIR, "../../../../../packages/studio-core/src/categories/classifier.ts");
+const BILLING_PROVIDER_SOURCE_FILE = path.resolve(SCRIPT_DIR, "../../../billing/billing-provider-supabase.entry.mjs");
 
 function readCategoryClassifierRuntimeSource() {
   const source = fs.readFileSync(CATEGORY_CLASSIFIER_SOURCE_FILE, "utf8");

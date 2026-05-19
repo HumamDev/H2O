@@ -13,16 +13,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ASSETS_DIR } from "../../paths.mjs";
+import { ASSETS_DIR } from "../../../../paths.mjs";
 
 import {
   syncArchiveWorkbenchToOut,
   removeArchiveWorkbenchFromOut,
-} from "../studio/pack-studio.mjs";
+} from "../../../studio/pack-studio.mjs";
 import {
   syncIdentitySurfaceToOut,
   IDENTITY_WEB_ACCESSIBLE_ENTRY,
-} from "../identity/pack-identity.mjs";
+} from "../../../identity/pack-identity.mjs";
 import {
   applyExtensionIconsToManifest,
   writeExtensionIcons,
@@ -40,11 +40,11 @@ import { makeChromeLiveBackgroundJs } from "./chrome-live-background.mjs";
 import {
   buildIdentityProviderBundle,
   IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH,
-} from "../identity/build-identity-provider-bundle.mjs";
+} from "../../../identity/build-identity-provider-bundle.mjs";
 import { makeChromeLiveLoaderJs } from "./chrome-live-loader.mjs";
-import { makeChromeLivePopupHtml } from "../../dev-controls/popup/chrome-live-popup-html.mjs";
-import { makeChromeLivePopupCss } from "../../dev-controls/popup/chrome-live-popup-css.mjs";
-import { makeChromeLivePopupJs } from "../../dev-controls/popup/chrome-live-popup-js.mjs";
+import { makeChromeLivePopupHtml } from "./popup/chrome-live-popup-html.mjs";
+import { makeChromeLivePopupCss } from "./popup/chrome-live-popup-css.mjs";
+import { makeChromeLivePopupJs } from "./popup/chrome-live-popup-js.mjs";
 import { makeChromeLiveReadme } from "./chrome-live-readme.mjs";
 // @version 1.3.0
 

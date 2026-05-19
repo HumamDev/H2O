@@ -38,9 +38,9 @@ function extractFunction(source, name) {
   fail(`function ${name} body end missing`);
 }
 
-const bgSrc = read("tools/product/extension/chrome-live-background.mjs");
-const buildSrc = read("tools/product/extension/build-chrome-live-extension.mjs");
-const loaderSrc = read("tools/product/extension/chrome-live-loader.mjs");
+const bgSrc = read("tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs");
+const buildSrc = read("tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs");
+const loaderSrc = read("tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs");
 const identityCoreSrc = read("scripts/0D4a.⬛️🔐 Identity Core 🔐.js");
 const builtBg = read(extBuildRel("dev-controls", "bg.js"));
 const builtLoader = read(extBuildRel("dev-controls", "loader.js"));

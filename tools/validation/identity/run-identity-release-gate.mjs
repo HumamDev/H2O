@@ -40,11 +40,11 @@ const GROUPS = [
     commands: [
       {
         label: "default controls build",
-        args: ["tools/product/extension/build-chrome-live-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"],
       },
       {
         label: "lean build",
-        args: ["tools/product/extension/build-chrome-live-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"],
         env: {
           H2O_EXT_DEV_VARIANT: "lean",
           H2O_EXT_OUT_DIR: extBuildRel("dev-lean"),
@@ -52,7 +52,7 @@ const GROUPS = [
       },
       {
         label: "production build",
-        args: ["tools/product/extension/build-chrome-live-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"],
         env: {
           H2O_EXT_DEV_VARIANT: "production",
           H2O_EXT_OUT_DIR: extBuildRel("prod"),
@@ -60,7 +60,7 @@ const GROUPS = [
       },
       {
         label: "armed request_otp controls build",
-        args: ["tools/product/extension/build-chrome-live-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"],
         env: {
           H2O_IDENTITY_PHASE_NETWORK: "request_otp",
           H2O_EXT_OUT_DIR: extBuildRel("dev-controls-armed"),
@@ -68,7 +68,7 @@ const GROUPS = [
       },
       {
         label: "Google OAuth armed request_otp controls build",
-        args: ["tools/product/extension/build-chrome-live-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"],
         env: {
           H2O_IDENTITY_PHASE_NETWORK: "request_otp",
           H2O_IDENTITY_OAUTH_PROVIDER: "google",
@@ -77,7 +77,7 @@ const GROUPS = [
       },
       {
         label: "ops panel build",
-        args: ["tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs"],
+        args: ["tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs"],
       },
     ],
   },

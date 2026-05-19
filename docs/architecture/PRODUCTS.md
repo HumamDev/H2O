@@ -44,14 +44,14 @@ Every product the repo currently builds, with its full chain.
 
 | # | Product | Built by | Reads from | Output | Env-var gates | Extension ID | Validation |
 |---|---|---|---|---|---|---|---|
-| 1 | **Chrome / chatgpt / prod** | `tools/product/extension/build-chrome-live-extension.mjs` | `scripts/`, `surfaces/`, `config/dev-order.tsv`, `config/loader-deps.json`, `assets/chrome-dev-controls-icons/`, `assets/chrome-dev-lean-icons/`, `tools/product/identity/*`, `tools/product/studio/pack-studio.mjs`, `config/local/identity-provider.local.json`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/prod/` | `H2O_EXT_DEV_VARIANT=production` + `H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod` | `bgdapdcjckbiejckpfeinlmcdnijifpg` | `npm run dev:check`; `node tools/validation/identity/run-identity-release-gate.mjs` |
+| 1 | **Chrome / chatgpt / prod** | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` | `scripts/`, `surfaces/`, `config/dev-order.tsv`, `config/loader-deps.json`, `assets/chrome-dev-controls-icons/`, `assets/chrome-dev-lean-icons/`, `tools/product/identity/*`, `tools/product/studio/pack-studio.mjs`, `config/local/identity-provider.local.json`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/prod/` | `H2O_EXT_DEV_VARIANT=production` + `H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod` | `bgdapdcjckbiejckpfeinlmcdnijifpg` | `npm run dev:check`; `node tools/validation/identity/run-identity-release-gate.mjs` |
 | 2 | **Chrome / chatgpt / dev-controls** | same | same | `apps/extensions/chatgpt/chrome/dev-controls/` | `H2O_EXT_DEV_VARIANT=controls` (default) + `H2O_EXT_OUT_DIR=...dev-controls` | `bkijejgemjjolmdnkgcimoaniocegkij` | same |
 | 3 | **Chrome / chatgpt / dev-controls-armed** | same | same | `apps/extensions/chatgpt/chrome/dev-controls-armed/` | `H2O_EXT_DEV_VARIANT=controls` + `H2O_IDENTITY_PHASE_NETWORK=request_otp` + `H2O_EXT_OUT_DIR=...dev-controls-armed` | `ceenhihlkfdfjdolchjffpeejblnejdb` | same |
 | 4 | **Chrome / chatgpt / dev-controls-oauth-google** | same | same | `apps/extensions/chatgpt/chrome/dev-controls-oauth-google/` | `H2O_EXT_DEV_VARIANT=controls` + `H2O_IDENTITY_PHASE_NETWORK=request_otp` + `H2O_IDENTITY_OAUTH_PROVIDER=google` + `H2O_EXT_OUT_DIR=...dev-controls-oauth-google` | `ogcjkeaiicglflamhjaaimdhphjlgkbb` ⚠ Supabase Auth coupling | `node tools/validation/identity/validate-identity-phase3_9c-google-oauth-release-gate.mjs` |
 | 5 | **Chrome / chatgpt / dev-lean** | same | same | `apps/extensions/chatgpt/chrome/dev-lean/` | `H2O_EXT_DEV_VARIANT=lean` + `H2O_EXT_OUT_DIR=...dev-lean` | `eeebgndgehjalflefaldogahaklnlahi` | same as #1 |
 | 6 | **Chrome / chatgpt / studio-launcher** | same | `surfaces/studio/` + `assets/chrome-dev-lean-icons/` + `config/extension-keys.json` (no chatgpt.com content-script — Studio-only) | `apps/extensions/chatgpt/chrome/studio-launcher/` | `H2O_EXT_DEV_VARIANT=studio-launcher` + `H2O_EXT_OUT_DIR=...studio-launcher` | `bpobkkppdlldlkccaehmpfclmkhiemhg` | same as #1 |
-| 7 | **Chrome / chatgpt / ops-panel** | `tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs` | `assets/chrome-ops-panel-icons/`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/ops-panel/` | `H2O_PANEL_OUT_DIR=apps/extensions/chatgpt/chrome/ops-panel` | `golnehognopjlokldgcinoaliipodagb` | structural-only (no chatgpt.com integration) |
-| 8 | **Chrome / chatgpt / desk** | `tools/product/desk/pack-desk.mjs` | `surfaces/desk/`, `assets/surface-chrome-desk-icons/`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/desk/` | none (writes to default `extensionBuildDir("desk")`) | `kfecaemfhhhjpecildjejapfemhakhha` | structural-only (MV3 side panel) |
+| 7 | **Chrome / chatgpt / ops-panel** | `tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs` | `assets/chrome-ops-panel-icons/`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/ops-panel/` | `H2O_PANEL_OUT_DIR=apps/extensions/chatgpt/chrome/ops-panel` | `golnehognopjlokldgcinoaliipodagb` | structural-only (no chatgpt.com integration) |
+| 8 | **Chrome / chatgpt / desk** | `tools/product/extensions/chatgpt/chrome/pack-desk.mjs` | `surfaces/desk/`, `assets/surface-chrome-desk-icons/`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/desk/` | none (writes to default `extensionBuildDir("desk")`) | `kfecaemfhhhjpecildjejapfemhakhha` | structural-only (MV3 side panel) |
 | 9 | **Studio Desktop (Tauri V2)** | `npm --workspace @h2o/studio-desktop run prepare-dist` (copies built Studio assets) + `cd apps/studio/desktop && npm run tauri:dev` / `tauri:build` (Rust + Tauri) | `apps/extensions/chatgpt/chrome/prod/surfaces/studio/` (built first by #1) → copied into `apps/studio/desktop/dist/` | `apps/studio/desktop/dist/` (Tauri frontendDist) + Tauri app bundle in `apps/studio/desktop/src-tauri/target/` | none | n/a (Tauri app) | `npm --workspace @h2o/studio-desktop run prepare-dist` exit 0 |
 | 10 | **Studio Mobile (Expo SDK 55, React Native)** | `cd apps/studio/mobile && npm start` (Metro) or `expo prebuild`/`expo run:ios` | `apps/studio/mobile/src/`, `packages/identity-core/`, `packages/studio-core/` | Native iOS/Android bundles via Expo | none | n/a | `cd apps/studio/mobile && npx tsc --noEmit --skipLibCheck` exit 0; `pod install` for iOS (UTF-8 env) |
 | 11 | **Marketing site (Vite + React 19)** | `npm --workspace cockpit-pro-site run build` (Vite) | `apps/site/src/`, `apps/site/public/` | `apps/site/dist/` (deployed to Cloudflare Pages) | none | n/a | `npm --workspace cockpit-pro-site run build` exit 0 |
@@ -68,10 +68,10 @@ build output, but they have their own source + builder for traceability.
 | **Identity surfaces** | `tools/product/identity/pack-identity.mjs` (file-copy) | `surfaces/identity/identity.html` + `scripts/0D4a.⬛️🔐 Identity Core 🔐.js` | `<ext-out>/surfaces/identity/identity.html` + script | Same scope as identity bundle |
 | **Studio surfaces (extension-embedded)** | `tools/product/studio/pack-studio.mjs` (file-copy) | `surfaces/studio/*` (60 S-prefix files) | `<ext-out>/surfaces/studio/` | Embedded in `prod` and `studio-launcher`; consumed by Studio Desktop (#9) too |
 | **Billing provider bundle (Supabase)** | `tools/product/billing/billing-provider-supabase.entry.mjs` (esbuild, similar to identity) | source entry + Supabase config | `<ext-out>/provider/billing-provider-supabase.js` | Only in variants that have billing; same env-gating as identity |
-| **Dev-controls popup** | `tools/dev-controls/popup/chrome-live-popup-{html,css,js,view,data}.mjs` | (generated text) | `<ext-out>/popup.{html,css,js}` | Only when `DEV_HAS_CONTROLS` (i.e., variants with `H2O_EXT_DEV_VARIANT=controls`) |
-| **Folder bridge page** | `tools/product/extension/chrome-live-folder-bridge.mjs` | (generated text) | `<ext-out>/folder-bridge-page.js` | All chatgpt.com-injecting variants |
-| **Pilot observer page** | `tools/product/extension/chrome-live-pilot-observer.mjs` | (generated text) | `<ext-out>/pilot-observer-page.js` | All chatgpt.com-injecting variants |
-| **Extension icons (per variant)** | `tools/product/extension/write-extension-icons.mjs` | `assets/<icon-pack-dir>/` (chrome-dev-controls-icons, chrome-dev-lean-icons, etc.) | `<ext-out>/icons/icon{16,32,48,128}.png` + larger panel icons | Per-variant icon pack mapping in build-context |
+| **Dev-controls popup** | `tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-{html,css,js,view,data}.mjs` | (generated text) | `<ext-out>/popup.{html,css,js}` | Only when `DEV_HAS_CONTROLS` (i.e., variants with `H2O_EXT_DEV_VARIANT=controls`) |
+| **Folder bridge page** | `tools/product/extensions/chatgpt/chrome/chrome-live-folder-bridge.mjs` | (generated text) | `<ext-out>/folder-bridge-page.js` | All chatgpt.com-injecting variants |
+| **Pilot observer page** | `tools/product/extensions/chatgpt/chrome/chrome-live-pilot-observer.mjs` | (generated text) | `<ext-out>/pilot-observer-page.js` | All chatgpt.com-injecting variants |
+| **Extension icons (per variant)** | `tools/product/extensions/chatgpt/chrome/write-extension-icons.mjs` | `assets/<icon-pack-dir>/` (chrome-dev-controls-icons, chrome-dev-lean-icons, etc.) | `<ext-out>/icons/icon{16,32,48,128}.png` + larger panel icons | Per-variant icon pack mapping in build-context |
 
 ---
 
@@ -95,8 +95,8 @@ build output, but they have their own source + builder for traceability.
        ┌──────────────────────────────────────────────────────────────────────────────┐
        │                              BUILD TOOLING (tools/)                          │
        │                                                                              │
-       │   tools/product/extension/  ──┐                                              │
-       │   tools/product/desk/        ─┤                                              │
+       │   tools/product/extensions/chatgpt/chrome/  ──┐                                              │
+       │   tools/product/extensions/chatgpt/chrome/        ─┤                                              │
        │   tools/product/studio/      ─┼──► tools/loader/  (alias farm + proxy pack)  │
        │   tools/product/identity/    ─┤    tools/validation/                         │
        │   tools/product/billing/     ─┤    tools/release/                            │
@@ -141,11 +141,11 @@ output will land under `apps/extensions/chatgpt/firefox/<variant>/`. The Phase
 
 | Task | Command |
 |---|---|
-| Build the OAuth-Google variant | `H2O_EXT_DEV_VARIANT=controls H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs` |
-| Build the Lean variant | `H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extension/build-chrome-live-extension.mjs` |
-| Build the Prod variant | `H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extension/build-chrome-live-extension.mjs` |
-| Build Ops Panel | `H2O_PANEL_OUT_DIR=apps/extensions/chatgpt/chrome/ops-panel node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs` |
-| Build Desk | `node tools/product/desk/pack-desk.mjs` |
+| Build the OAuth-Google variant | `H2O_EXT_DEV_VARIANT=controls H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` |
+| Build the Lean variant | `H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` |
+| Build the Prod variant | `H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` |
+| Build Ops Panel | `H2O_PANEL_OUT_DIR=apps/extensions/chatgpt/chrome/ops-panel node tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs` |
+| Build Desk | `node tools/product/extensions/chatgpt/chrome/pack-desk.mjs` |
 | Build all (.vscode tasks) | See `.vscode/tasks.json` labels starting with `H2O: 2)` (DEV), `H2O: 3)` (OPS PANEL / DESK), `H2O: 4)` (BOTH), `H2O: #)` (one-button) |
 | Start dev server | `cd apps/dev-server && python3 serve.py 5500` |
 | Run Studio Desktop | `cd apps/studio/desktop && npm run tauri:dev` |
@@ -193,7 +193,7 @@ For each item, the constraint that pins it in place.
 | Folder | Why it must stay |
 |---|---|
 | `scripts/` | Filenames are coupled to: load order in `config/dev-order.tsv` (146 entries); `config/loader-deps.json` runtime-order invariants (MiniMap 1A1e-before-1A1b, etc.); 50+ daily archive snapshots in outer `cockpit-pro/archive/`; `versions.csv` release log; alias farm symlinks in `apps/dev-server/alias/` (relative `../../../scripts/...`); `LEGACY_ALIAS_COMPAT` map in `make-aliases.mjs`; doc-comment refs throughout `tools/`. See MIGRATION.md §4 forever-forbidden list. |
-| `surfaces/` | Path is referenced by `tools/product/identity/pack-identity.mjs` (`surfaces/identity/`), `tools/product/desk/pack-desk.mjs` (`surfaces/desk/`), `tools/product/studio/pack-studio.mjs` (`surfaces/studio/`). The Identity Core script also hardcodes `chrome.runtime.getURL('surfaces/identity/identity.html')` (see MIGRATION.md §8 #1 — extension-runtime path is shipped to installed extensions). |
+| `surfaces/` | Path is referenced by `tools/product/identity/pack-identity.mjs` (`surfaces/identity/`), `tools/product/extensions/chatgpt/chrome/pack-desk.mjs` (`surfaces/desk/`), `tools/product/studio/pack-studio.mjs` (`surfaces/studio/`). The Identity Core script also hardcodes `chrome.runtime.getURL('surfaces/identity/identity.html')` (see MIGRATION.md §8 #1 — extension-runtime path is shipped to installed extensions). |
 | `config/` | Read by every loader / build tool via `tools/paths.mjs` constants (`CONFIG_DIR`, `DEV_ORDER_TSV`, `LOADER_DEPS_JSON`, `LOADER_TIERS_JSON`, `CONFIG_LOCAL_DIR`, etc.). Also the home of `config/extension-keys.json` (Phase 8A-1) and `config/local/identity-provider.local.json` (operator-only). |
 | `supabase/` | Stripe webhook URL is bound to deployed function names. `supabase/.temp/linked-project.json` is local-only state. See MIGRATION.md §3.3 + §4. |
 | `apps/extensions/chatgpt/chrome/<variant>/` | These are the **canonical** generated extension outputs (Phase 4C-B) and the path Chrome loads from. Build pipeline writes here by default via `tools/paths.mjs::extensionBuildDir()`. |
@@ -208,8 +208,8 @@ phase.
 
 | # | Proposal | Rationale | Risk |
 |---|---|---|---|
-| 7.1 | `tools/dev-controls/ops-panel/` → `tools/product/ops-panel/` | All 8 chrome variants would live under `tools/product/<product>/`. Removes the asymmetry where 7 builders live in `tools/product/` and 1 lives in `tools/dev-controls/`. | Low. One folder rename, ~4 path updates (the builder's relative imports + .vscode/tasks.json + identity validators that mention the path + this PRODUCTS.md). No env-var or output-path changes. |
-| 7.2 | `tools/product/extension/` → `tools/product/extensions/chatgpt/chrome/` | Mirror the `apps/extensions/<host>/<browser>/<variant>/` shape on the tooling side, so adding (e.g.) `tools/product/extensions/claude/firefox/` is natural. | Medium. Many import paths to update across the build pipeline; many doc-comment refs across validators. Worth the work only when a second host/browser actually gets built. |
+| 7.1 | `tools/product/extensions/chatgpt/chrome/` → `tools/product/ops-panel/` | All 8 chrome variants would live under `tools/product/<product>/`. Removes the asymmetry where 7 builders live in `tools/product/` and 1 lives in `tools/dev-controls/`. | Low. One folder rename, ~4 path updates (the builder's relative imports + .vscode/tasks.json + identity validators that mention the path + this PRODUCTS.md). No env-var or output-path changes. |
+| 7.2 | `tools/product/extensions/chatgpt/chrome/` → `tools/product/extensions/chatgpt/chrome/` | Mirror the `apps/extensions/<host>/<browser>/<variant>/` shape on the tooling side, so adding (e.g.) `tools/product/extensions/claude/firefox/` is natural. | Medium. Many import paths to update across the build pipeline; many doc-comment refs across validators. Worth the work only when a second host/browser actually gets built. |
 | 7.3 | Document a `platform/` *concept* without moving anything | Add a `docs/architecture/PLATFORM.md` clarifying that `scripts/`+`surfaces/`+`config/` is the runtime-source quadrant. Strictly docs. | Zero risk; pure clarification. |
 | 7.4 | `tools/product/billing/` → consider parallelism with `tools/product/identity/` (it's already there but only has the entry file) | Match identity's structure if billing grows. | Wait for the actual second consumer. |
 | 7.5 | Phase 7G-3 (`H2O_META_DIR` + `meta/` outer-shell move) | Already planned. Independent of this PRODUCTS.md work. | Low (per Phase 7G audit). |
@@ -224,7 +224,7 @@ phase planning has a starting point.
 Update this file when any of these change:
 
 - A new product variant is added (new chrome-ext variant, new app, new host/browser).
-- A builder moves (e.g. `tools/dev-controls/ops-panel/` → `tools/product/ops-panel/`).
+- A builder moves (e.g. `tools/product/extensions/chatgpt/chrome/` → `tools/product/ops-panel/`).
 - The canonical output path for any product changes.
 - A new env-var gate is added.
 - The Chrome extension ID rotates (e.g. if `config/extension-keys.json` is regenerated).

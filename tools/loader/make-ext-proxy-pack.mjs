@@ -2,7 +2,7 @@
 // @version 1.1.0  (Phase 0C migration: path constants imported from tools/paths.mjs)
 //
 // EXT-native proxy pack generator.
-// Writes only the header pack consumed by tools/product/extension/build-chrome-live-extension.mjs
+// Writes only the header pack consumed by tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
 // and avoids generating TM loader/proxy artifacts.
 //
 // Uses an EXT-specific proxy-pack filename for clearer EXT workflow semantics.

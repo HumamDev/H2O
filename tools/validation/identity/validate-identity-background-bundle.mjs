@@ -438,7 +438,7 @@ function assertProviderBundleOutputSafe(label, source) {
 }
 
 function assertBackgroundOnboardingSessionBoundary() {
-  const source = read("tools/product/extension/chrome-live-background.mjs");
+  const source = read("tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs");
   assert(source.includes("identityProviderSession_storeRaw(providerVerify.providerResult)"),
     "verify success path must store the provider result raw session under the provider session key");
   assert(source.includes("function identityProviderSession_unwrapStoredSession("),
@@ -940,7 +940,7 @@ function validateDevOnlyPrivateConfigBuildSimulation() {
   fs.rmSync(devOut, { recursive: true, force: true });
   fs.rmSync(prodOut, { recursive: true, force: true });
   try {
-    execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+    execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
       cwd: REPO_ROOT,
       env: {
         ...commonEnv,
@@ -955,7 +955,7 @@ function validateDevOnlyPrivateConfigBuildSimulation() {
     assert(!flattenWarResources(devManifest).some((resource) => String(resource || "").startsWith("provider/")),
       "validator dev config simulation: provider directory must not be web-accessible");
 
-    execFileSync(process.execPath, ["tools/product/extension/build-chrome-live-extension.mjs"], {
+    execFileSync(process.execPath, ["tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs"], {
       cwd: REPO_ROOT,
       env: {
         ...commonEnv,
@@ -1000,12 +1000,12 @@ assert(exists("tools/product/identity/build-identity-provider-bundle.mjs"), "pro
 assertProviderSourceSafe("provider bundle source entry", read(SOURCE_ENTRY_REL));
 console.log("  provider source imports SDK only for lazy client smoke metadata ✓");
 
-const buildScript = read("tools/product/extension/build-chrome-live-extension.mjs");
+const buildScript = read("tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs");
 assert(buildScript.includes("buildIdentityProviderBundle"), "extension build invokes provider bundle build helper");
 assert(buildScript.includes("IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH"), "extension build passes provider bundle path to background generator");
 console.log("  extension build still wires background-owned bundle artifact ✓");
 
-const bgSrc = read("tools/product/extension/chrome-live-background.mjs");
+const bgSrc = read("tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs");
 assert(bgSrc.includes("identityProviderBundle_loadProbe"), "background source has bundle probe loader");
 assert(bgSrc.includes("importScripts(IDENTITY_PROVIDER_BUNDLE_PATH)"), "background source retains conditional importScripts path");
 assert(bgSrc.includes("identityProviderBundle_shouldLoadProbe"), "background source gates provider bundle loading on redacted injected config");

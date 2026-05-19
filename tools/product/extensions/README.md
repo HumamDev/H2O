@@ -15,8 +15,8 @@ tools/product/extensions/
 ```
 
 **Note**: `chatgpt/chrome/` builders currently live at
-`tools/product/extension/` (singular, top-level), `tools/product/desk/`,
-and `tools/dev-controls/ops-panel/`. Their move into
+`tools/product/extensions/chatgpt/chrome/` (singular, top-level), `tools/product/extensions/chatgpt/chrome/`,
+and `tools/product/extensions/chatgpt/chrome/`. Their move into
 `tools/product/extensions/chatgpt/chrome/` is a future phase (8G-4 in the
 proposed roadmap) with byte-equivalence proof. Until then, this subtree
 is empty for chatgpt+chrome.

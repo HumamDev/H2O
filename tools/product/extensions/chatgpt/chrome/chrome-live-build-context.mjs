@@ -16,7 +16,7 @@ import {
   DEV_ORDER_TSV,
   PROXY_PACK_URL as PATHS_PROXY_PACK_URL,
   extensionBuildDir,
-} from "../../paths.mjs";
+} from "../../../../paths.mjs";
 
 export function createChromeLiveBuildContext() {
   // paths.REPO_ROOT honors H2O_SRC_DIR identically to the previous inline

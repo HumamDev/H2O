@@ -85,7 +85,7 @@ async function main() {
 
   await runNodeStep("1/4 Rebuild scripts + aliases + EXT proxy (dev:rebuild)", "tools/dev/dev-rebuild.mjs");
 
-  await runNodeStep("2/4 Build V3 armed oauth-google extension (active path)", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("2/4 Build V3 armed oauth-google extension (active path)", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "controls",
     H2O_EXT_OUT_DIR: oauthGoogleOutDir,
     H2O_IDENTITY_PHASE_NETWORK: "request_otp",
@@ -96,7 +96,7 @@ async function main() {
   // The dev server's proxy pack URL is irrelevant in prod (the prod manifest
   // doesn't host_permission it) but the builder still consumes the env var, so
   // we leave it at the default rather than threading a separate prod-only one.
-  await runNodeStep("3/4 Build Prod Cockpit Pro extension", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("3/4 Build Prod Cockpit Pro extension", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "production",
     H2O_EXT_OUT_DIR: prodOutDir,
   });
@@ -105,7 +105,7 @@ async function main() {
   // content_scripts on chatgpt.com. Safe to run beside Dev Controls / Cockpit
   // Pro without double-loading H2O into chatgpt.com. Has its own extension ID
   // so its Studio storage is independent of Cockpit Pro's.
-  await runNodeStep("4/4 Build Studio Launcher extension", "tools/product/extension/build-chrome-live-extension.mjs", {
+  await runNodeStep("4/4 Build Studio Launcher extension", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
     H2O_EXT_DEV_VARIANT: "studio-launcher",
     H2O_EXT_OUT_DIR: studioLauncherOutDir,
   });

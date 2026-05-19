@@ -117,7 +117,7 @@ The Tauri shell loads Studio's BUILT assets from
 # From h2o-source/
 npm run dev:rebuild
 npm run dev:all
-node tools/product/extension/build-chrome-live-extension.mjs
+node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
 ```
 
 (The same build chain you run for MV3 validation.)

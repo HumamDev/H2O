@@ -9,7 +9,7 @@ Not yet implemented. Today the ChatGPT host knowledge lives in:
 
   - `scripts/` (the 146 emoji-named userscripts)
   - `surfaces/studio/` (Studio surface running inside chrome-ext-prod)
-  - `tools/product/extension/chrome-live-*.mjs` (manifest + loader builders)
+  - `tools/product/extensions/chatgpt/chrome/chrome-live-*.mjs` (manifest + loader builders)
 
 If/when this is extracted into a reusable package, it lives here.
 Until then this README is the only tracked content; no package.json,

@@ -16,14 +16,14 @@ function extBuildRel(variant, ...segments) {
 
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";
 const GITIGNORE_REL = ".gitignore";
-const MANIFEST_SOURCE_REL = "tools/product/extension/chrome-live-manifest.mjs";
-const BUILD_SOURCE_REL = "tools/product/extension/build-chrome-live-extension.mjs";
+const MANIFEST_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs";
+const BUILD_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
 const PROD_MANIFEST_REL = extBuildRel("prod", "manifest.json");
 const PROD_PRIVATE_CONFIG_REL = extBuildRel("prod", "provider/identity-provider-private-config.js");
-const BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
+const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const BILLING_PROVIDER_REL = "tools/product/billing/billing-provider-supabase.entry.mjs";
-const LOADER_REL = "tools/product/extension/chrome-live-loader.mjs";
+const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 const IDENTITY_CORE_REL = "scripts/0D4a.⬛️🔐 Identity Core 🔐.js";
 const ACCOUNT_PLUGIN_REL = "scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";

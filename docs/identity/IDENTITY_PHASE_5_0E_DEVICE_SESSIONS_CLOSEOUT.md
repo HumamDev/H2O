@@ -114,7 +114,7 @@ native fix below) and committed the iOS `Podfile.lock` update from
   deviceTokenHash })`. Pure SDK call with strict input validation against
   the migration's surface allow-list and the `^[0-9a-f]{64}$` hash format;
   returns only safe public fields on success.
-- `tools/product/extension/chrome-live-background.mjs`: device-session helper
+- `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs`: device-session helper
   block (`identityDeviceSession_ensureToken`,
   `identityDeviceSession_hashToken`, `identityDeviceSession_deriveLabel`,
   `identityDeviceSession_register`). Token plaintext lives only in
@@ -212,7 +212,7 @@ the list (iPhone), which is the right behavior.
 
 - **No raw access tokens, refresh tokens, raw session objects, or raw user
   objects** appear in any committed source under `apps/studio-mobile/src/`,
-  `tools/product/identity/`, or `tools/product/extension/`. Verified by 5.0B
+  `tools/product/identity/`, or `tools/product/extensions/chatgpt/chrome/`. Verified by 5.0B
   validator (mobile), 4.4 validator (browser runtime sources), and the
   background-bundle / 3.0Q / 3.2B / 3.2C validators (provider entry).
 - **No plain device token is ever sent to the server.** Both surfaces

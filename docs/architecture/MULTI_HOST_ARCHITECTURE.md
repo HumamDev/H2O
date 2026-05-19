@@ -61,7 +61,7 @@ h2o-cp-source/
   archive history under `cockpit-pro/archive/` (~50 daily snapshots), the
   `LEGACY_ALIAS_COMPAT` map, `versions.csv` release log, and identity
   validators. The freeze exists because these couplings are fragile.
-- The chatgpt+chrome legacy builders (`tools/product/extension/*` + `pack-desk`
+- The chatgpt+chrome legacy builders (`tools/product/extensions/chatgpt/chrome/*` + `pack-desk`
   + `make-chrome-ops-panel-extension`) read directly from these top-level
   folders. They will continue to do so.
 
@@ -261,7 +261,7 @@ The terminal builder layout mirrors the source layout:
 tools/product/extensions/
 ├── _shared/                   ← cross-host build helpers (manifest templates, icon writer, etc.)
 ├── chatgpt/
-│   ├── chrome/                ← (future) — current builders at tools/product/extension/ + pack-desk + ops-panel will move here in a future phase
+│   ├── chrome/                ← (future) — current builders at tools/product/extensions/chatgpt/chrome/ + pack-desk + ops-panel will move here in a future phase
 │   └── firefox/               ← NEW chatgpt+firefox builder
 ├── claude/
 │   ├── chrome/                ← NEW
@@ -281,8 +281,8 @@ tools/product/extensions/<host>/<browser>/
 └── README.md                  ← per-host build instructions
 ```
 
-The current chatgpt+chrome builders live at `tools/product/extension/`,
-`tools/product/desk/`, `tools/dev-controls/ops-panel/`. **Their move into
+The current chatgpt+chrome builders live at `tools/product/extensions/chatgpt/chrome/`,
+`tools/product/extensions/chatgpt/chrome/`, `tools/product/extensions/chatgpt/chrome/`. **Their move into
 `tools/product/extensions/chatgpt/chrome/` is a separate phase** (8G-4
 in the proposed roadmap) with byte-equivalence proof. Do NOT preemptively
 move them in 8G-2.

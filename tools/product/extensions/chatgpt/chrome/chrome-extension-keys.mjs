@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { REPO_ROOT } from "../../paths.mjs";
+import { REPO_ROOT } from "../../../../paths.mjs";
 
 const KEYS_FILE = path.join(REPO_ROOT, "config", "extension-keys.json");
 

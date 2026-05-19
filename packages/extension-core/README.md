@@ -6,7 +6,7 @@ adapters under `packages/host-adapters/` and the per-browser adapters
 under `packages/browser-adapters/`.
 
 Not yet implemented. Currently the chrome-live extension pipeline lives
-under `tools/product/extension/` as a single-host (ChatGPT), single-
+under `tools/product/extensions/chatgpt/chrome/` as a single-host (ChatGPT), single-
 browser (Chrome MV3) bundle. When Claude/Gemini host support and/or
 Firefox WebExtension support is added, the cross-cutting primitives
 will be extracted here.

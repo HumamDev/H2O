@@ -16,8 +16,8 @@ The current baseline is:
 | Area | Phase 2.9 behavior |
 |---|---|
 | Public facade | `scripts/0D4a... Identity Core` exposes `H2O.Identity` with the existing state machine and public methods. |
-| Background owner | `tools/product/extension/chrome-live-background.mjs` handles identity bridge commands and stores mock runtime state under `h2oIdentityProviderMockRuntimeV1`. |
-| Bridge relay | `tools/product/extension/chrome-live-loader.mjs` allow-lists identity commands and relays page requests to the background. |
+| Background owner | `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs` handles identity bridge commands and stores mock runtime state under `h2oIdentityProviderMockRuntimeV1`. |
+| Bridge relay | `tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs` allow-lists identity commands and relays page requests to the background. |
 | Shared snapshot | Background uses `h2oIdentityMockSnapshotV1` for a sanitized mock snapshot. Page `localStorage` keeps only a derived snapshot and audit trail. |
 | Onboarding surface | `surfaces/identity/identity.js` drives the local/mock email, verify, profile, workspace, local mode, and reset flows through `H2O.Identity`. |
 
@@ -252,7 +252,7 @@ Validation after each future Phase 3 substep must prove that the working Phase 2
 | Onboarding UI manual checks | Email request, OTP entry, resend, error display, local/dev mode, close/reset, profile/workspace creation, and product wording. |
 | `refreshSession` pull checks | Verify page refresh/hydration pulls shared state from background before local fallback. |
 | `signOut` reset checks | Verify runtime state, persisted provider material, shared snapshot, page local snapshot, and UI all reset to anonymous. |
-| Diff scope | `git diff --name-only`; the initial Phase 3.0 prep step was documentation-only. Phase 3.0A/3.0B/3.0C may modify only `tools/product/extension/chrome-live-background.mjs`, `tools/validation/identity/validate-identity-phase2_9.mjs`, `tools/validation/identity/validate-identity-phase2_9-sync.mjs`, and this document. They must not modify page runtime, loader, onboarding UI, Control Hub, First-Run Prompt, Ops Panel, `dev-order`, or add provider SDKs, keys, or network calls unless a later phase explicitly approves it. |
+| Diff scope | `git diff --name-only`; the initial Phase 3.0 prep step was documentation-only. Phase 3.0A/3.0B/3.0C may modify only `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs`, `tools/validation/identity/validate-identity-phase2_9.mjs`, `tools/validation/identity/validate-identity-phase2_9-sync.mjs`, and this document. They must not modify page runtime, loader, onboarding UI, Control Hub, First-Run Prompt, Ops Panel, `dev-order`, or add provider SDKs, keys, or network calls unless a later phase explicitly approves it. |
 
 ## 15. Step-by-Step Phase 3.0 Implementation Sequence
 
@@ -304,7 +304,7 @@ Direct use of `@supabase/supabase-js` is preferred over hand-written provider ca
 
 ### Build And Bundling Decision
 
-The current extension build writes generated files directly from `tools/product/extension/*.mjs` and approved Dev Controls helpers into `bg.js`, `loader.js`, and related extension assets. No general dependency bundling path is currently part of the identity background flow.
+The current extension build writes generated files directly from `tools/product/extensions/chatgpt/chrome/*.mjs` and approved Dev Controls helpers into `bg.js`, `loader.js`, and related extension assets. No general dependency bundling path is currently part of the identity background flow.
 
 Future Supabase integration must therefore choose one safe implementation path before adding the SDK:
 
@@ -378,10 +378,10 @@ The current extension build is generator-based:
 
 | Area | Current behavior |
 |---|---|
-| Extension build entry | `tools/product/extension/build-chrome-live-extension.mjs` creates the unpacked extension output directory and writes files directly. |
-| Background source | `tools/product/extension/chrome-live-background.mjs` exports `makeChromeLiveBackgroundJs()`, which returns generated service worker source as text. |
-| Loader source | `tools/product/extension/chrome-live-loader.mjs` generates the loader/content-script source as text. |
-| Manifest source | `tools/product/extension/chrome-live-manifest.mjs` generates a Manifest V3 manifest object. |
+| Extension build entry | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` creates the unpacked extension output directory and writes files directly. |
+| Background source | `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs` exports `makeChromeLiveBackgroundJs()`, which returns generated service worker source as text. |
+| Loader source | `tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs` generates the loader/content-script source as text. |
+| Manifest source | `tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs` generates a Manifest V3 manifest object. |
 | Built background | `build/chrome-ext-dev-controls/bg.js` is generated text, not a normal bundled module entry. |
 | Built loader | `build/chrome-ext-dev-controls/loader.js` is generated text and page-facing content-script code. |
 | Identity surface | `tools/product/identity/pack-identity.mjs` copies the identity surface and Identity Core script into extension output. |
@@ -487,10 +487,10 @@ The current extension build flow remains generator-based:
 
 | Stage | Current data flow |
 |---|---|
-| Source tools | `tools/product/extension/build-chrome-live-extension.mjs` imports local generator helpers and writes unpacked extension files directly. |
-| Generated background | `tools/product/extension/chrome-live-background.mjs` returns text for `bg.js`; the built `bg.js` is a classic MV3 service worker script. |
-| Generated loader | `tools/product/extension/chrome-live-loader.mjs` returns text for `loader.js`; the built loader is a content script and page-facing bridge. |
-| Manifest | `tools/product/extension/chrome-live-manifest.mjs` emits `background.service_worker: "bg.js"` with no module service worker type today. |
+| Source tools | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` imports local generator helpers and writes unpacked extension files directly. |
+| Generated background | `tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs` returns text for `bg.js`; the built `bg.js` is a classic MV3 service worker script. |
+| Generated loader | `tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs` returns text for `loader.js`; the built loader is a content script and page-facing bridge. |
+| Manifest | `tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs` emits `background.service_worker: "bg.js"` with no module service worker type today. |
 | Copied surfaces/assets | Identity surfaces, icons, popup files, archive workbench files, and bridge pages are copied or generated into the unpacked output. |
 
 There is no current dependency bundling stage in this flow, and package dependencies are not resolved into extension output automatically.
@@ -601,7 +601,7 @@ Phase 3.0G is a build-tool decision/specification phase only. It does not instal
 | Runtime dependencies | `package.json` currently lists `sharp` only. |
 | Development dependencies | `package.json` currently lists `semver` only. |
 | Bundler dependency | No `esbuild`, Rollup, Vite, Webpack, or equivalent bundler is installed or configured for the extension background. |
-| Extension build path | `tools/product/extension/build-chrome-live-extension.mjs` writes generated `manifest.json`, `bg.js`, `loader.js`, popup files, surfaces, and assets directly into the unpacked output. |
+| Extension build path | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` writes generated `manifest.json`, `bg.js`, `loader.js`, popup files, surfaces, and assets directly into the unpacked output. |
 | Dependency bundling | No dependency bundling path exists in the current extension build. Package dependencies are not resolved or copied into extension output. |
 | Background format | `chrome-live-background.mjs` returns text for a classic MV3 `bg.js`; the manifest does not currently mark the background service worker as a module. |
 
@@ -895,9 +895,9 @@ The future SDK-install phase must run and report:
 | Validation |
 |---|
 | The exact package install or package update command. |
-| `node tools/product/extension/build-chrome-live-extension.mjs` |
-| `H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=build/chrome-ext-dev-lean node tools/product/extension/build-chrome-live-extension.mjs` |
-| `node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs` |
+| `node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` |
+| `H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=build/chrome-ext-dev-lean node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` |
+| `node tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs` |
 | `node tools/validation/identity/validate-identity-background-bundle.mjs` |
 | `node tools/validation/identity/validate-identity-phase2_9.mjs` |
 | `node tools/validation/identity/validate-identity-phase2_9-sync.mjs` |
@@ -2223,11 +2223,11 @@ Phase 3.4D is a final stabilization checkpoint before any future persistent sign
 Active build checklist:
 
 ```sh
-node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
-node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs
+node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+node tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs
 ```
 
 Active validator checklist:
@@ -2373,12 +2373,12 @@ Phase 3.5B is a release-gate checklist for the current identity stack and now co
 Final release-gate build commands:
 
 ```sh
-node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
-node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs
+node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
+node tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs
 ```
 
 Final release-gate validator commands:
@@ -3025,7 +3025,7 @@ node tools/validation/identity/validate-identity-phase3_9b-google-oauth.mjs
 OAuth-enabled build command:
 
 ```sh
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
 ```
 
 Manual Google OAuth checklist:

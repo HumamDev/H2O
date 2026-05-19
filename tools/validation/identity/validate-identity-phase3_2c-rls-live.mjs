@@ -58,11 +58,11 @@ const TEXT_EXTENSIONS = new Set([".css", ".html", ".js", ".mjs", ".json"]);
 const PROVIDER_SOURCE_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const PROVIDER_BUNDLE_REL = "provider/identity-provider-supabase.js";
 const EXTENSION_RUNTIME_RELS = [
-  "tools/product/extension/chrome-live-background.mjs",
-  "tools/product/extension/chrome-live-loader.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-html.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-js.mjs",
-  "tools/dev-controls/popup/chrome-live-popup-view.mjs",
+  "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs",
+  "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-html.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-js.mjs",
+  "tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-view.mjs",
   "tools/product/identity/identity-provider-supabase.entry.mjs",
 ];
 const EXTENSION_RUNTIME_DIRS = [

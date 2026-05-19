@@ -52,7 +52,7 @@ const PROVIDER_REL = `${MOBILE_APP_REL}/src/identity/MobileSupabaseProvider.ts`;
 const ACCOUNT_REL = `${MOBILE_APP_REL}/src/app/account-identity.tsx`;
 const SECURESTORE_REL = `${MOBILE_APP_REL}/src/identity/secureStore.ts`;
 const BROWSER_PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
-const BROWSER_BACKGROUND_REL = "tools/product/extension/chrome-live-background.mjs";
+const BROWSER_BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
 
 const migration = read(MIGRATION_REL);
 
