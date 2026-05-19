@@ -41,13 +41,27 @@
 // content in the repo (`git ls-files | grep "/<name>/"` returned 0)
 // before being added, so the basename match is safe.
 //
-// Config files, top-level docs, and root tracked files (package.json,
-// tsconfig*.json, etc.) are intentionally NOT included in 8I-5 — they
-// belong to Phase 8I-6. The chatgpt+chrome generated extension
-// outputs under apps/extensions/<host>/<browser>/<variant>/ remain
-// uncovered by any SOURCE_ROOTS descriptor and continue to be
-// reproducible-only (Phase 8I-7 will add a hard-refusal guard against
-// that path prefix specifically).
+// Phase 8I-6 (2026-05-19): completed archive source coverage with
+// project-wide config + docs + root tracked files:
+//   - config/                     (recursive; loader-deps/loader-tiers
+//                                  /dev-order.tsv + extension-keys.json
+//                                  + config/extensions/<host>/<browser>/keys.json)
+//   - docs/                       (recursive; architecture/decisions/
+//                                  identity/migration/systems/validation MDs)
+//   - root tracked files          (.gitignore, package.json,
+//                                  package-lock.json — added to the
+//                                  explicit descriptor alongside the
+//                                  existing .vscode/tasks.json)
+// EXCLUDED_ARCHIVE_DIRS gained one basename (`local`, for config/local/
+// — verified zero tracked content). EXCLUDED_ARCHIVE_PATTERNS gained
+// one pattern (`/^__codex-/` for config/__codex-*.json scratch files;
+// gitignored at root .gitignore line 70).
+//
+// The chatgpt+chrome generated extension outputs under
+// apps/extensions/<host>/<browser>/<variant>/ remain uncovered by any
+// SOURCE_ROOTS descriptor and continue to be reproducible-only
+// (Phase 8I-7 will add a hard-refusal guard against that path prefix
+// specifically).
 //
 // This module is pure data + no side effects. Importing it does not read
 // the filesystem or write anything. The collection functions
@@ -70,12 +84,18 @@ export const ADDITIONAL_TRACKED_FILES = [
   // harmless — removing them keeps the registry honest about which
   // path is the canonical source of inclusion.
   //
-  // Only files OUTSIDE the SOURCE_ROOTS descriptor scans need to be
-  // listed here. `.vscode/tasks.json` is currently the sole such case:
-  // it's not under `tools/`, `surfaces/`, or `scripts/`, but is
-  // tracked operator-facing source that should be archived alongside
-  // the rest.
+  // Files listed here must be OUTSIDE the SOURCE_ROOTS descriptor scans.
+  //
+  // Phase 8I-6 (2026-05-19): added the 3 currently-tracked root files
+  // (.gitignore, package.json, package-lock.json) alongside the existing
+  // .vscode/tasks.json. README.md / eslint.config.js / tsconfig*.json
+  // are NOT included because none exist at the repo root today (verified
+  // via `git ls-files --error-unmatch`); add them here when/if they get
+  // created.
   ".vscode/tasks.json",
+  ".gitignore",
+  "package.json",
+  "package-lock.json",
 ];
 
 // ─── Exclusion sets (basename-matched) ─────────────────────────────────────
@@ -112,6 +132,15 @@ export const EXCLUDED_ARCHIVE_DIRS = new Set([
   "target",      // Cargo build output (apps/studio/desktop/src-tauri/target)
   "WixTools",    // Windows installer toolchain downloads
   "xcuserdata",  // Xcode per-user state (apps/studio/mobile/ios/**/xcuserdata)
+  // Phase 8I-6 addition — operator-only local config, gitignored.
+  // Verified zero tracked content (`git ls-files | grep '/local/'`
+  // returned 0). The basename match also defensively skips any other
+  // future `local/` folder that operators might create.
+  "local",       // Operator-local config (config/local/identity-provider.local.json)
+  // Phase 8I-FINAL addition — Kotlin build cache (used by future
+  // android/ prebuild). Already listed in apps/studio/mobile/.gitignore
+  // line 13; verified zero tracked content.
+  ".kotlin",
 ]);
 
 // ─── Exclusion patterns (regex-matched against basename) ───────────────────
@@ -140,6 +169,85 @@ export const EXCLUDED_ARCHIVE_PATTERNS = [
   // duplication. The pattern below matches the same set the gitignore
   // does.
   / 2\.(js|mjs|css|html|json|md)$/,
+  // Phase 8I-6 (2026-05-19): operator-scratch __codex-*.json files
+  // produced by tooling experiments. Gitignored at root .gitignore
+  // line 70 (`config/__codex-*.json`). The pattern matches any
+  // file whose basename starts with `__codex-` so the recursive
+  // config/ scan in 8I-6 skips them.
+  /^__codex-/,
+  // Phase 8I-6 (2026-05-19): operator-local test/scratch config files
+  // gitignored at root .gitignore lines 71-75. The canonical tracked
+  // counterparts are `config/dev-order.tsv` (NOT .json/.txt) and the
+  // four tracked config JSONs (loader-deps.json, loader-tiers.json,
+  // extension-keys.json, dev-order.tsv) — those remain archived. These
+  // patterns hide ONLY the operator-local variants that were observed
+  // to leak into the first 8I-6 run before this rule was added.
+  /^userscript-headers\.(html|tsv)$/,    // root .gitignore lines 71-72
+  /^dev-order\.(json|txt)$/,             // root .gitignore lines 73-74 (NB: dev-order.tsv stays tracked)
+  /^scripts-list\.tsv$/,                 // root .gitignore line 75
+  // Phase 8I-FINAL (2026-05-19): signing material and secrets. These
+  // file types should never be archived no matter where they appear
+  // in the tree. The same set is already gitignored under
+  // apps/studio/mobile/.gitignore lines 15-19 (jks/p8/p12/key/
+  // mobileprovision) + apps/studio/mobile/ios/.gitignore (keystore,
+  // mobileprovision); this rule extends the guarantee globally so
+  // a misplaced credential anywhere is structurally unarchivable.
+  /\.keystore$/i,
+  /\.jks$/i,
+  /\.p8$/i,
+  /\.p12$/i,
+  /\.key$/i,
+  /\.mobileprovision$/i,
+  /\.cer$/i,
+  /\.certSigningRequest$/i,
+  /^GoogleService-Info\.plist$/,
+];
+
+// ─── Refused path prefixes (hard guard — last line of defense) ────────────
+//
+// Phase 8I-FINAL (2026-05-19): a belt-and-suspenders refusal layer that
+// fires AFTER source-root collection. EXCLUDED_ARCHIVE_DIRS prevents
+// recursive walks from entering generated/cache subdirs by basename;
+// EXCLUDED_ARCHIVE_PATTERNS filters files by name pattern. This array
+// catches a different class of error: a future SOURCE_ROOTS descriptor
+// that accidentally includes one of these high-risk prefixes (e.g. a
+// descriptor pointing at `apps/extensions/chatgpt/chrome/prod` would
+// otherwise quietly archive 5+ MB of generated extension output).
+//
+// Match semantics: a relative path is refused if it equals a prefix
+// (with trailing slash stripped) or starts with the prefix. The check
+// is forward-slash normalized.
+//
+// Some entries (s-files/, operator-notes/, references/, plans/) point
+// to folders that no longer exist inside h2o-cp-source/ (moved to outer
+// cockpit-pro/ in Phase 7F/7G-1). Listing them anyway is defensive: if
+// archive-snapshot is ever run with SRC pointing at the outer shell or
+// a worktree where those folders accidentally appear, the guard fires.
+
+export const REFUSED_ARCHIVE_PREFIXES = [
+  // Generated extension outputs — reproducible from src/extensions/* +
+  // tools/product/extensions/* builders. Hard-refusing this prefix is
+  // the most important rule in the whole archive system: it ensures
+  // the 5 MB+ chatgpt+chrome production extension is never archived.
+  "apps/extensions/",
+  // The archive itself cannot be archived (would self-recurse).
+  "archive/",
+  // Operator state and release-notes — outer-shell concerns post-8C/
+  // Phase 8J. Refusing here prevents accidental archive even if a
+  // future tool re-creates them in-repo.
+  "meta/",
+  "changelogs/",
+  // Outer-shell content trees moved out of the repo in earlier phases
+  // (7F + 7G-1 + 7G — references/, s-files/, operator-notes/, plans/).
+  // If any reappear in-repo, refuse.
+  "s-files/",
+  "operator-notes/",
+  "references/",
+  "plans/",
+  // Scratch / cache / generated trees that should never be archived.
+  "tmp/",
+  "cache/",
+  "artifacts/",
 ];
 
 // ─── Root path constants ───────────────────────────────────────────────────
@@ -236,9 +344,34 @@ export const SOURCE_ROOTS = [
   { kind: "recursive", root: "apps/site/src" },                   // Vite source
   { kind: "recursive", root: "apps/site/public" },                // static assets
 
-  // ── 8. Build tooling ────────────────────────────────────────────
+  // ── 8. Project-wide config + docs (Phase 8I-6) ──────────────────
+  // config/ — loader-deps.json, loader-tiers.json, dev-order.tsv,
+  // extension-keys.json, config/extensions/<host>/<browser>/keys.json,
+  // config/extensions/README.md. The recursive walk skips:
+  //   - config/local/   (operator state; basename `local` in
+  //                      EXCLUDED_ARCHIVE_DIRS; also `*.local.*` and
+  //                      `*.local.json` in EXCLUDED_ARCHIVE_PATTERNS)
+  //   - config/__codex-*.json  (tooling-scratch; `^__codex-` in
+  //                              EXCLUDED_ARCHIVE_PATTERNS)
+  //   - config/dev-order.{json,txt} + config/scripts-list.tsv +
+  //     config/userscript-headers.{html,tsv}  (none tracked today, all
+  //     gitignored at root; if any appear on disk they have no version
+  //     marker so they'd be silently skipped regardless)
+  { kind: "recursive", root: "config" },
+  // docs/ — architecture, decisions, identity, migration, systems,
+  // validation MDs. Most files lack `@version` markers and will be
+  // silently skipped (the version-marker requirement is the snapshot
+  // anti-flood mechanism). Files with a `"version":` JSON field
+  // (none in docs today) would be archived; future MDs that gain
+  // explicit `@version` headers would also flow through.
+  { kind: "recursive", root: "docs" },
+
+  // ── 9. Build tooling ────────────────────────────────────────────
   { kind: "recursive", root: TOOLS_REL },                         // tools/** (sha256 fallback enabled for this root)
 
-  // ── 9. Explicit per-file inclusions ─────────────────────────────
-  { kind: "explicit", files: ADDITIONAL_TRACKED_FILES },          // currently just .vscode/tasks.json
+  // ── 10. Explicit per-file inclusions ────────────────────────────
+  // .vscode/tasks.json + root files (.gitignore, package.json,
+  // package-lock.json) — none are under any other root, so they need
+  // to be listed explicitly here.
+  { kind: "explicit", files: ADDITIONAL_TRACKED_FILES },
 ];

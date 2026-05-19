@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-// @version 1.3.0  (Phase 8I-3: source-root descriptors extracted to tools/archive/source-roots.mjs)
+// @version 1.4.0  (Phase 8I-FINAL: REFUSED_ARCHIVE_PREFIXES hard-guard layer)
 
 // Phase 8I-2 (2026-05-19): archive root comes from the central registry
 // (tools/paths.mjs). paths.mjs throws if the resolved path lands inside
@@ -20,14 +20,13 @@ import {
   EXCLUDED_ARCHIVE_NAMES,
   EXCLUDED_ARCHIVE_DIRS,
   EXCLUDED_ARCHIVE_PATTERNS,
+  REFUSED_ARCHIVE_PREFIXES,
   TOOLS_REL,
   SOURCE_ROOTS,
 } from "./source-roots.mjs";
 // Note: SURFACES_REL is consumed internally by source-roots.mjs in the
 // SOURCE_ROOTS descriptor; archive-snapshot.mjs doesn't reference it
-// directly so it's not imported here. (Pre-8I-4 imported
-// STUDIO_SURFACES_REL for the same reason — defensive, but unused
-// directly.)
+// directly so it's not imported here.
 
 const SRC = process.argv[2]; // workspaceFolder (the repo root / source tree)
 if (!SRC) throw new Error("Missing SRC arg");
@@ -399,7 +398,33 @@ for (const descriptor of SOURCE_ROOTS) {
 }
 assertScriptArchiveCoverage(SRC, trackedUserScripts);
 
-const trackedRelPaths = uniqueSorted(collectedFiles);
+// Phase 8I-FINAL: hard-refuse path-prefix guard. After source-root
+// collection but before the archive loop, filter out any candidate
+// whose relative path starts with a refused prefix (apps/extensions/,
+// archive/, meta/, changelogs/, s-files/, operator-notes/, references/,
+// plans/, tmp/, cache/, artifacts/). This is a belt-and-suspenders
+// layer on top of EXCLUDED_ARCHIVE_DIRS — it catches the case where a
+// future SOURCE_ROOTS descriptor accidentally points at one of those
+// prefixes (which the basename-match exclusion lists wouldn't catch
+// because the prefix itself is multi-segment). If anything is refused
+// here it indicates a misconfigured descriptor — warn loudly so the
+// operator notices.
+function isRefusedPath(relPath) {
+  const key = String(relPath).replace(/\\/g, "/");
+  for (const prefix of REFUSED_ARCHIVE_PREFIXES) {
+    const prefixNoSlash = prefix.replace(/\/$/, "");
+    if (key === prefixNoSlash || key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+const allCandidates = uniqueSorted(collectedFiles);
+const refusedPaths = allCandidates.filter(isRefusedPath);
+if (refusedPaths.length > 0) {
+  console.warn(`[H2O] REFUSED ${refusedPaths.length} path(s) via REFUSED_ARCHIVE_PREFIXES guard (misconfigured descriptor?):`);
+  for (const p of refusedPaths) console.warn(`  - ${p}`);
+}
+const trackedRelPaths = allCandidates.filter((p) => !isRefusedPath(p));
 
 let archivedCount = 0;
 const skippedNoVersion = [];
