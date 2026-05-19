@@ -24,6 +24,31 @@
 // trees, node_modules/, build/, etc. continue to be skipped even when
 // they appear nested under any new root.
 //
+// Phase 8I-5 (2026-05-19): first true multi-platform archive-all
+// coverage phase. Added recursive descriptors for every real
+// source tree across the multi-host/multi-app system that 8G-2..8G-10
+// established plus the Studio Mobile + Studio Desktop apps:
+//   - src/extensions/             (multi-host extension source)
+//   - packages/                   (shared workspace packages)
+//   - apps/studio/mobile/{src,assets,__tests__,docs,scripts,ios,android}
+//   - apps/studio/desktop/{src-tauri,build-tools,mac,windows}
+//   - apps/dev-server/
+//   - apps/site/{src,public}
+// EXCLUDED_ARCHIVE_DIRS was extended with 10 new basenames that match
+// generated/cache trees nested under those roots (Pods, .expo,
+// .gradle, dist, target, WixTools, xcuserdata, alias, dev_output,
+// schemas). Each new basename was verified to have ZERO tracked
+// content in the repo (`git ls-files | grep "/<name>/"` returned 0)
+// before being added, so the basename match is safe.
+//
+// Config files, top-level docs, and root tracked files (package.json,
+// tsconfig*.json, etc.) are intentionally NOT included in 8I-5 — they
+// belong to Phase 8I-6. The chatgpt+chrome generated extension
+// outputs under apps/extensions/<host>/<browser>/<variant>/ remain
+// uncovered by any SOURCE_ROOTS descriptor and continue to be
+// reproducible-only (Phase 8I-7 will add a hard-refusal guard against
+// that path prefix specifically).
+//
 // This module is pure data + no side effects. Importing it does not read
 // the filesystem or write anything. The collection functions
 // (collectUserScripts, collectTopLevelFiles, collectRecursiveFiles) live
@@ -67,12 +92,26 @@ export const EXCLUDED_ARCHIVE_NAMES = new Set([
 // skipped along with its entire contents.
 
 export const EXCLUDED_ARCHIVE_DIRS = new Set([
+  // Phase 8I-3 baseline — VCS + cache + tooling output dirs
   ".git",
   "artifacts",
   "build",
   "cache",
   "node_modules",
   "tmp",
+  // Phase 8I-5 additions — generated/cache trees nested under the
+  // multi-platform source roots added in this phase. All verified to
+  // have ZERO tracked content via `git ls-files | grep "/<name>/"`.
+  ".expo",       // Expo CLI cache (apps/studio/mobile/.expo)
+  ".gradle",     // Gradle daemon cache (apps/studio/mobile/android/.gradle)
+  "Pods",        // CocoaPods install (apps/studio/mobile/ios/Pods)
+  "alias",       // Dev-server generated symlink farm (apps/dev-server/alias)
+  "dev_output",  // Dev-server generated proxy pack (apps/dev-server/dev_output)
+  "dist",        // Generic frontend bundler output (apps/site/dist, apps/studio/desktop/dist, etc.)
+  "schemas",     // Tauri capability schema codegen (apps/studio/desktop/src-tauri/gen/schemas)
+  "target",      // Cargo build output (apps/studio/desktop/src-tauri/target)
+  "WixTools",    // Windows installer toolchain downloads
+  "xcuserdata",  // Xcode per-user state (apps/studio/mobile/ios/**/xcuserdata)
 ]);
 
 // ─── Exclusion patterns (regex-matched against basename) ───────────────────
@@ -140,18 +179,66 @@ export const SURFACES_REL = "surfaces";
 //                   (used for ADDITIONAL_TRACKED_FILES).
 //
 // Phase 8I-3 preserved the exact 4 descriptors from the inlined pre-8I-3
-// logic, in the same order, so the resulting candidate set was byte-
-// equivalent. Phase 8I-4 swapped the second descriptor from `top-level
-// surfaces/studio` to `recursive surfaces` to capture previously-missed
-// source under surfaces/studio/{platform,store,ingestion}/ +
-// surfaces/identity/ + the full surfaces/desk/ tree. Phase 8I-5 will
-// extend this list further to add multi-host source roots
-// (src/extensions/, packages/, apps/studio/mobile/src/, etc.) without
-// changing the descriptor schema.
+// logic. Phase 8I-4 swapped the second descriptor from `top-level
+// surfaces/studio` to `recursive surfaces`. Phase 8I-5 extended this
+// list with all real source trees across the multi-host/multi-app
+// system, grouped semantically and ordered so each group is easy to
+// extend in future phases:
+//
+//   1. Legacy chatgpt+chrome source (scripts/, surfaces/)
+//   2. Multi-host extension source (src/extensions/)
+//   3. Shared workspace packages (packages/)
+//   4. Studio Mobile (src, assets, __tests__, docs, scripts, ios, android)
+//   5. Studio Desktop (src-tauri, build-tools, mac, windows)
+//   6. Dev server (apps/dev-server)
+//   7. Marketing site (src, public)
+//   8. Build tooling (tools/)
+//   9. Explicit per-file inclusions
+//
+// Generated outputs are excluded structurally — not by per-root
+// excludeSubdirs, but by EXCLUDED_ARCHIVE_DIRS basename matches that
+// fire wherever those names appear (so node_modules/, target/, dist/,
+// Pods/, .expo/, etc. are skipped inside any descriptor's walk). This
+// approach avoids extending the descriptor schema while still being
+// safe — every name in EXCLUDED_ARCHIVE_DIRS was verified to have zero
+// tracked content before being added.
 
 export const SOURCE_ROOTS = [
-  { kind: "userscripts" },
-  { kind: "recursive", root: SURFACES_REL },
-  { kind: "recursive", root: TOOLS_REL },
-  { kind: "explicit", files: ADDITIONAL_TRACKED_FILES },
+  // ── 1. Legacy chatgpt+chrome source ─────────────────────────────
+  { kind: "userscripts" },                                  // scripts/*.user.js
+  { kind: "recursive", root: SURFACES_REL },                // surfaces/{studio,desk,identity}/**
+
+  // ── 2. Multi-host extension source (Phase 8G stubs) ─────────────
+  { kind: "recursive", root: "src/extensions" },            // src/extensions/{<host>/<browser>,_shared}/**
+
+  // ── 3. Shared workspace packages ────────────────────────────────
+  { kind: "recursive", root: "packages" },                  // packages/*/
+
+  // ── 4. Studio Mobile ────────────────────────────────────────────
+  { kind: "recursive", root: "apps/studio/mobile/src" },          // TypeScript app source
+  { kind: "recursive", root: "apps/studio/mobile/assets" },       // icons, fonts, splash images
+  { kind: "recursive", root: "apps/studio/mobile/__tests__" },    // tests
+  { kind: "recursive", root: "apps/studio/mobile/docs" },         // per-app docs
+  { kind: "recursive", root: "apps/studio/mobile/scripts" },      // helper scripts (placeholder after 8H-5)
+  { kind: "recursive", root: "apps/studio/mobile/ios" },          // managed-native iOS (Pods/, build/, xcuserdata/ skipped via EXCLUDED_ARCHIVE_DIRS)
+  { kind: "recursive", root: "apps/studio/mobile/android" },      // placeholder after 8H-2 (only README.md present)
+
+  // ── 5. Studio Desktop ───────────────────────────────────────────
+  { kind: "recursive", root: "apps/studio/desktop/src-tauri" },   // Rust + Tauri config (target/, gen/schemas/, WixTools/ skipped)
+  { kind: "recursive", root: "apps/studio/desktop/build-tools" }, // post-8H-3 build tooling (prepare-dist.mjs)
+  { kind: "recursive", root: "apps/studio/desktop/mac" },         // future-native macOS placeholder
+  { kind: "recursive", root: "apps/studio/desktop/windows" },     // future-native Windows placeholder
+
+  // ── 6. Dev server ───────────────────────────────────────────────
+  { kind: "recursive", root: "apps/dev-server" },                 // serve.py + READMEs (alias/, dev_output/ skipped)
+
+  // ── 7. Marketing site ───────────────────────────────────────────
+  { kind: "recursive", root: "apps/site/src" },                   // Vite source
+  { kind: "recursive", root: "apps/site/public" },                // static assets
+
+  // ── 8. Build tooling ────────────────────────────────────────────
+  { kind: "recursive", root: TOOLS_REL },                         // tools/** (sha256 fallback enabled for this root)
+
+  // ── 9. Explicit per-file inclusions ─────────────────────────────
+  { kind: "explicit", files: ADDITIONAL_TRACKED_FILES },          // currently just .vscode/tasks.json
 ];
