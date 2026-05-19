@@ -38,8 +38,14 @@ yarn-error.*
 
 app-example
 
-# generated native folders (Option B: /ios curated tracking; /android still ignored)
-/android
+# generated native folders (Option B: /ios curated tracking; /android still ignored
+# except for the placeholder README that documents the hybrid pattern — see
+# apps/studio/mobile/android/README.md and apps/studio/mobile/ios/README.md).
+# Phase 8H-2 widened the rule from `/android` to `/android/**` so the
+# `!/android/README.md` exception below can take effect (gitignore can re-include
+# a file only when its parent directory is not itself excluded).
+/android/**
+!/android/README.md
 
 # Local-only superseded icon backups (kept on disk, not tracked)
 /assets/images/icon.iphone-before-attitude-indicator.png
