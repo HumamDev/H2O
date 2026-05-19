@@ -27,6 +27,8 @@ apps/extensions/claude/firefox/**
 !apps/extensions/claude/firefox/README.md
 apps/extensions/gemini/chrome/**
 !apps/extensions/gemini/chrome/README.md
+apps/extensions/gemini/firefox/**
+!apps/extensions/gemini/firefox/README.md
 
 # Generated dev-server content. Phase 5B (2026-05-17) absorbed the sibling
 # h2o-dev-server/ into apps/dev-server/. The Python source (serve.py) is

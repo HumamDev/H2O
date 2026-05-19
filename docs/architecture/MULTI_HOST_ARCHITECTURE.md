@@ -1,16 +1,23 @@
 # Multi-Host / Multi-Browser Architecture
 
-> **Status**: Established in Phase 8G-2 (2026-05-19). The folder skeleton exists;
-> chatgpt+chrome legacy populates the top-level frozen folders. As of Phase
-> 8G-8 (2026-05-19) four proof-of-chain stubs are populated:
-> `src/extensions/claude/chrome/` (Phase 8G-5, Chrome second-host),
-> `src/extensions/chatgpt/firefox/` (Phase 8G-6, Firefox second-browser),
-> `src/extensions/gemini/chrome/` (Phase 8G-7, Chrome third-host), and
-> `src/extensions/claude/firefox/` (Phase 8G-8, combined new-host + Firefox).
-> Both identity schemes are now in use: Chrome SPKI public key in
-> `manifest.key` (chatgpt+chrome legacy, claude+chrome, gemini+chrome) and
-> Firefox `browser_specific_settings.gecko.id` (chatgpt+firefox,
-> claude+firefox). Remaining empty root: `gemini/firefox` only.
+> **Status**: Established in Phase 8G-2 (2026-05-19). The folder skeleton exists.
+> As of Phase 8G-9 (2026-05-19) **all five new host+browser combos have
+> proof-of-chain stubs in place**: `src/extensions/claude/chrome/` (Phase 8G-5),
+> `src/extensions/chatgpt/firefox/` (Phase 8G-6), `src/extensions/gemini/chrome/`
+> (Phase 8G-7), `src/extensions/claude/firefox/` (Phase 8G-8), and
+> `src/extensions/gemini/firefox/` (Phase 8G-9, this phase). The chatgpt+chrome
+> legacy continues to live at the top-level frozen folders (`scripts/`,
+> `surfaces/`, `config/`) and produces 8 production-grade variants.
+>
+> **Both identity schemes are now demonstrated**:
+> - Chrome SPKI public key in `manifest.key` — chatgpt+chrome legacy (8 variants),
+>   claude+chrome, gemini+chrome.
+> - Firefox `browser_specific_settings.gecko.id` — chatgpt+firefox,
+>   claude+firefox, gemini+firefox.
+>
+> Each combo has: source root + builder + keys config + tracked README + a
+> tested generated unpacked extension. New host+browser additions from here are
+> mechanical clones of the closest sibling stub.
 >
 > **Purpose**: This document is the canonical reference for how Cockpit Pro
 > grows from the current single-product reality (chatgpt+chrome with 8 variants)

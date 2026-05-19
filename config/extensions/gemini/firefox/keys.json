@@ -1,0 +1,12 @@
+{
+  "_purpose": "Firefox unpacked-extension IDs for the Gemini host on the Firefox browser. Established in Phase 8G-9 (2026-05-19) — the final new host+browser combo in the multi-host/multi-browser scaffolding cycle.",
+  "_format": "variants.<variant>.gecko_id = the Firefox extension ID (string, email-style or UUID), injected verbatim into manifest.json's browser_specific_settings.gecko.id. variants.<variant>.strict_min_version = the minimum Firefox version supported (MV3 needs 109.0+).",
+  "_security": "Firefox does NOT use a public-key derivation scheme like Chrome's manifest 'key'. The gecko_id is just a string the operator chooses; Firefox uses it verbatim as the extension ID. No private key associated.",
+  "_warning": "Do NOT change a gecko_id after operators have loaded the extension — Firefox's chrome.storage.local and other per-extension state is keyed by ID. As of Phase 8G-9 the gemini+firefox variants have NO external ID coupling.",
+  "variants": {
+    "dev": {
+      "gecko_id": "h2o-gemini-dev-firefox@h2ocockpitpro.com",
+      "strict_min_version": "109.0"
+    }
+  }
+}
