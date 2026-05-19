@@ -2224,9 +2224,9 @@ Active build checklist:
 
 ```sh
 node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=build/chrome-ext-dev-lean node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=build/chrome-ext-prod node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
 node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs
 ```
 
@@ -2268,7 +2268,7 @@ Stable security baseline:
 
 Manual armed-browser baseline:
 
-1. Reload `build/chrome-ext-dev-controls-armed`.
+1. Reload `apps/extensions/chatgpt/chrome/dev-controls-armed`.
 2. Confirm provider readiness and exact optional permission readiness.
 3. Request OTP from the onboarding UI.
 4. Verify OTP from the onboarding UI.
@@ -2374,10 +2374,10 @@ Final release-gate build commands:
 
 ```sh
 node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=build/chrome-ext-dev-lean node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=build/chrome-ext-prod node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=lean H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-lean node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_EXT_DEV_VARIANT=production H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-armed node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
 node tools/dev-controls/ops-panel/make-chrome-ops-panel-extension.mjs
 ```
 
@@ -2427,25 +2427,25 @@ node --check tools/validation/identity/validate-identity-phase3_9b-google-oauth.
 node --check tools/validation/identity/validate-identity-phase3_9c-google-oauth-release-gate.mjs
 node --check tools/validation/identity/validate-identity-phase4_0b-account-security-mvp.mjs
 node --check scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js
-node --check build/chrome-ext-dev-controls/bg.js
-node --check build/chrome-ext-dev-controls/loader.js
-node --check build/chrome-ext-dev-controls/popup.js
-node --check build/chrome-ext-dev-controls/provider/identity-provider-supabase.js
-node --check build/chrome-ext-dev-lean/bg.js
-node --check build/chrome-ext-dev-lean/loader.js
-node --check build/chrome-ext-dev-lean/provider/identity-provider-supabase.js
-node --check build/chrome-ext-prod/bg.js
-node --check build/chrome-ext-prod/loader.js
-node --check build/chrome-ext-prod/provider/identity-provider-supabase.js
-node --check build/chrome-ext-dev-controls-armed/bg.js
-node --check build/chrome-ext-dev-controls-armed/loader.js
-node --check build/chrome-ext-dev-controls-armed/popup.js
-node --check build/chrome-ext-dev-controls-armed/provider/identity-provider-supabase.js
-node --check build/chrome-ext-dev-controls-oauth-google/bg.js
-node --check build/chrome-ext-dev-controls-oauth-google/loader.js
-node --check build/chrome-ext-dev-controls-oauth-google/popup.js
-node --check build/chrome-ext-dev-controls-oauth-google/provider/identity-provider-supabase.js
-node --check build/chrome-ext-ops-panel/panel.js
+node --check apps/extensions/chatgpt/chrome/dev-controls/bg.js
+node --check apps/extensions/chatgpt/chrome/dev-controls/loader.js
+node --check apps/extensions/chatgpt/chrome/dev-controls/popup.js
+node --check apps/extensions/chatgpt/chrome/dev-controls/provider/identity-provider-supabase.js
+node --check apps/extensions/chatgpt/chrome/dev-lean/bg.js
+node --check apps/extensions/chatgpt/chrome/dev-lean/loader.js
+node --check apps/extensions/chatgpt/chrome/dev-lean/provider/identity-provider-supabase.js
+node --check apps/extensions/chatgpt/chrome/prod/bg.js
+node --check apps/extensions/chatgpt/chrome/prod/loader.js
+node --check apps/extensions/chatgpt/chrome/prod/provider/identity-provider-supabase.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-armed/bg.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-armed/loader.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-armed/popup.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-armed/provider/identity-provider-supabase.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-oauth-google/bg.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-oauth-google/loader.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-oauth-google/popup.js
+node --check apps/extensions/chatgpt/chrome/dev-controls-oauth-google/provider/identity-provider-supabase.js
+node --check apps/extensions/chatgpt/chrome/ops-panel/panel.js
 ```
 
 Live RLS release-gate instructions:
@@ -3025,7 +3025,7 @@ node tools/validation/identity/validate-identity-phase3_9b-google-oauth.mjs
 OAuth-enabled build command:
 
 ```sh
-env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=build/chrome-ext-dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
+env H2O_IDENTITY_PHASE_NETWORK=request_otp H2O_IDENTITY_OAUTH_PROVIDER=google H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/dev-controls-oauth-google node tools/product/extension/build-chrome-live-extension.mjs
 ```
 
 Manual Google OAuth checklist:

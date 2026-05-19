@@ -2,7 +2,7 @@
 /* prepare-dist.mjs
  *
  * Copies the built Studio assets from
- *   h2o-source/build/chrome-ext-prod/surfaces/studio/
+ *   h2o-source/apps/extensions/chatgpt/chrome/prod/surfaces/studio/
  * into
  *   h2o-source/apps/studio/desktop/dist/
  * so that Tauri's `frontendDist` can serve them.
@@ -11,7 +11,7 @@
  *   npm run dev:rebuild
  *   npm run dev:all
  *   node tools/product/extension/build-chrome-live-extension.mjs
- * so that build/chrome-ext-prod/surfaces/studio/ exists and is current.
+ * so that apps/extensions/chatgpt/chrome/prod/surfaces/studio/ exists and is current.
  *
  * ── Filename sanitization (M1 fix) ──────────────────────────────────
  * Studio's source files use spaces + emojis in their filenames, e.g.
@@ -67,7 +67,7 @@ const desktopRoot = path.resolve(here, '..');
 // same value as before under the standard invocation (no H2O_SRC_DIR override):
 //   repoRoot    === REPO_ROOT                                            (<repo>/)
 //   studioBuilt === path.join(extensionBuildDir('prod'),'surfaces','studio')
-//                                                                        (<repo>/build/chrome-ext-prod/surfaces/studio/)
+//                                                                        (<repo>/apps/extensions/chatgpt/chrome/prod/surfaces/studio/)
 // `dist` keeps its original script-relative compute (<desktopRoot>/dist).
 const repoRoot = REPO_ROOT;
 const studioBuilt = path.join(extensionBuildDir('prod'), 'surfaces', 'studio');
@@ -82,7 +82,7 @@ if (!fs.existsSync(studioBuilt)) {
 
 /* Staleness guard.
  *
- * The build artifacts at build/chrome-ext-prod/surfaces/studio/ are produced
+ * The build artifacts at apps/extensions/chatgpt/chrome/prod/surfaces/studio/ are produced
  * by a SEPARATE chain (`npm run dev:all` + `chrome-live-extension.mjs`) that
  * this script does NOT trigger. If you edit Studio source under
  * surfaces/studio/ and run `npm run tauri:dev` without re-running that
@@ -91,7 +91,7 @@ if (!fs.existsSync(studioBuilt)) {
  * debugging "why didn't my fix take effect" symptoms.
  *
  * This guard compares the newest mtime under surfaces/studio/ against the
- * newest mtime under build/chrome-ext-prod/surfaces/studio/. If the source
+ * newest mtime under apps/extensions/chatgpt/chrome/prod/surfaces/studio/. If the source
  * is newer, the build is stale — fail with a clear message that says
  * exactly what to run.
  *
@@ -129,7 +129,7 @@ if (process.env.SKIP_STALENESS_CHECK !== '1') {
       const buildWhen = new Date(buildMtime).toISOString();
       console.error('[prepare-dist] STALE BUILD DETECTED');
       console.error(`  newest source mtime: ${sourceWhen}  (surfaces/studio/)`);
-      console.error(`  newest build  mtime: ${buildWhen}  (build/chrome-ext-prod/surfaces/studio/)`);
+      console.error(`  newest build  mtime: ${buildWhen}  (apps/extensions/chatgpt/chrome/prod/surfaces/studio/)`);
       console.error('');
       console.error('  Studio source is newer than the bundled build. If you proceed, Tauri will');
       console.error('  load a pre-edit snapshot of Studio and any recent changes will not take');

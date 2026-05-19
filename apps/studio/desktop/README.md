@@ -28,7 +28,7 @@ h2o-source/
 │   ├── store/                                  ← entity stores (highlights, libraryIndex)
 │   └── (all S0*..S9* feature modules)
 │
-├── build/chrome-ext-prod/surfaces/studio/      ← Output of `npm run dev:all`
+├── apps/extensions/chatgpt/chrome/prod/surfaces/studio/      ← Output of `npm run dev:all`
 │                                                 (Tauri reads from here)
 │
 └── apps/studio/desktop/                       ← THIS DIRECTORY
@@ -47,7 +47,7 @@ Asset flow at `npm run tauri:dev` time:
 
 ```
 1. scripts/prepare-dist.mjs:
-     copies   build/chrome-ext-prod/surfaces/studio/* → apps/studio/desktop/dist/
+     copies   apps/extensions/chatgpt/chrome/prod/surfaces/studio/* → apps/studio/desktop/dist/
      emits    dist/index.html (redirector → studio.html)
 
 2. Tauri serves dist/ via the tauri://localhost asset scheme.
@@ -111,7 +111,7 @@ Installs `@tauri-apps/cli` (which orchestrates `cargo` under the hood).
 ## Build & run the boot proof
 
 The Tauri shell loads Studio's BUILT assets from
-`build/chrome-ext-prod/surfaces/studio/`. You must build them first:
+`apps/extensions/chatgpt/chrome/prod/surfaces/studio/`. You must build them first:
 
 ```bash
 # From h2o-source/
