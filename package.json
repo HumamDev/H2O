@@ -1,5 +1,5 @@
 {
-  "name": "h2o-source",
+  "name": "h2o-cp-source",
   "private": true,
   "scripts": {
     "dev:all": "node tools/dev/dev-all.mjs",
