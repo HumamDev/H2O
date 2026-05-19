@@ -8,7 +8,7 @@
 > Reading this file before touching the build pipeline is faster than tracing the
 > dependencies by grep.
 
-Last verified: 2026-05-19 (Phase 8G-10 — refactored 5 stub builders into thin wrappers over shared helper `tools/product/extensions/_shared/build-extension-stub.mjs`; manifest.json + content.js byte-identical, README.txt standardized intentionally; chatgpt+chrome hash unchanged at `77bd47cf…6e8a`; total products still 17).
+Last verified: 2026-05-19 (Phase 8H-0 — added source/generated boundary documentation to each Studio host + site + dev-server READMEs; new umbrella `apps/studio/README.md`; new `apps/dev-server/README.md`. No code or generated-output changes; chatgpt+chrome hash unchanged at `77bd47cf…6e8a`; total products still 17).
 
 **Companion document**: [MULTI_HOST_ARCHITECTURE.md](MULTI_HOST_ARCHITECTURE.md)
 — full reference for adding new hosts (claude, gemini) and new browsers

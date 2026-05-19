@@ -93,6 +93,10 @@ AGENTS.md
 # Mobile app generated artifacts (defense in depth; nested .gitignore is the primary)
 apps/**/node_modules/
 apps/**/.expo/
+# Also catch a stray top-level .expo/ if an Expo CLI invocation happens from the
+# repo root by mistake (Phase 8H-0 noted this during audit; the cache should
+# never end up tracked).
+/.expo/
 apps/**/dist/
 apps/**/web-build/
 apps/**/expo-env.d.ts
