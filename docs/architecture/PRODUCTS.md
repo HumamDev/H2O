@@ -8,7 +8,12 @@
 > Reading this file before touching the build pipeline is faster than tracing the
 > dependencies by grep.
 
-Last verified: 2026-05-19 (Phase 8F-1).
+Last verified: 2026-05-19 (Phase 8G-2 — added cross-reference to multi-host architecture).
+
+**Companion document**: [MULTI_HOST_ARCHITECTURE.md](MULTI_HOST_ARCHITECTURE.md)
+— full reference for adding new hosts (claude, gemini) and new browsers
+(firefox) without breaking the chatgpt+chrome legacy. Phase 8G-2 created the
+folder skeleton; PRODUCTS.md (this file) covers the **current** state.
 
 ---
 
