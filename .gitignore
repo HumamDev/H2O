@@ -111,6 +111,15 @@ apps/**/android/build/
 apps/**/android/.gradle/
 apps/**/android/app/build/
 
+# Desktop (Tauri / Cargo) generated artifacts (defense in depth; the nested
+# .gitignore at apps/studio/desktop/src-tauri/ is the primary). Phase 8H-4
+# (2026-05-19) added these so multi-GB Cargo target/ caches, Tauri-generated
+# capability schemas, and the Windows-only WixTools download cannot leak
+# into commits even if the nested .gitignore is removed or corrupted.
+apps/**/src-tauri/target/
+apps/**/src-tauri/gen/schemas/
+apps/**/src-tauri/WixTools/
+
 # Local CLI caches, scratch, plans, and one-off build artifacts
 /supabase/.temp/
 /tmp/
