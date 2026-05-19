@@ -1,57 +1,94 @@
-# src/extensions/chatgpt/firefox/ — FUTURE PLACEHOLDER
+# src/extensions/chatgpt/firefox/ — minimal dev stub (Phase 8G-6)
 
-ChatGPT on Firefox — source root for the future Firefox-targeted variants
-of the H2O ChatGPT extension. Not yet implemented.
+ChatGPT on Firefox — first new-browser source root in the multi-host/multi-browser
+architecture. As of Phase 8G-6 (2026-05-19) this contains a minimal proof-of-chain
+stub: the full chain from `src/extensions/chatgpt/firefox/` → builder →
+`apps/extensions/chatgpt/firefox/dev/` → Firefox `about:debugging` "Load
+Temporary Add-on" is proven to work end-to-end.
 
-## When this gets populated
+**This is not the full ChatGPT Firefox port yet.** The content script only
+logs a single console line and sets one data attribute on
+`document.documentElement`. The chatgpt+chrome legacy runtime at the top
+level (`scripts/`, `surfaces/`, `config/`) is intentionally NOT reused here
+— that's frozen for chatgpt+chrome only. The Firefox port grows fresh and
+will eventually share logic through `packages/host-adapters/chatgpt/` +
+`packages/browser-adapters/firefox/` once those packages have real code.
 
-This folder fills in when Firefox support is added to the ChatGPT product
-line. The chatgpt+chrome line lives at the repo's top-level `scripts/`,
-`surfaces/`, `config/` (frozen legacy). The Firefox line will live here as
-fresh source — NOT copied from the legacy.
-
-The shared cross-browser/cross-host primitives (DOM observer, storage
-abstraction, browser API polyfill) will be imported from
-[`../../_shared/`](../../_shared/) and/or from `packages/host-adapters/chatgpt/`
-+ `packages/browser-adapters/firefox/` (Phase 7D placeholders ready to consume).
-
-## Expected source-tree shape
+## What's here
 
 ```
-chatgpt/firefox/
-├── scripts/        runtime scripts injected into chatgpt.com
-├── surfaces/       HTML/JS surfaces packaged inside the extension
-├── config/         loader/build config (variants, dev-order, deps)
-├── assets/         icons, images
-└── README.md       this file
+src/extensions/chatgpt/firefox/
+├── scripts/
+│   └── content.js               minimal stub content script (chatgpt.com only)
+├── surfaces/                    (empty — no UI surfaces yet)
+├── config/
+│   └── manifest.dev.json        Firefox MV3 manifest template for the dev variant
+├── assets/                      (empty — no icons yet)
+└── README.md                    this file
 ```
+
+## Variants
+
+| Variant | Status | Source manifest | Output | Firefox gecko_id |
+|---|---|---|---|---|
+| `dev` | ✅ stub | `config/manifest.dev.json` | `apps/extensions/chatgpt/firefox/dev/` | `h2o-chatgpt-dev-firefox@h2ocockpitpro.com` |
+| `prod` | not yet | — | — | — |
+
+The dev variant's gecko_id comes from `config/extensions/chatgpt/firefox/keys.json`
+(Phase 8G-6). Firefox does NOT derive the ID from a public key — it uses the
+gecko_id string verbatim.
+
+## Build
+
+```sh
+node tools/product/extensions/chatgpt/firefox/build.mjs
+# writes to apps/extensions/chatgpt/firefox/dev/ (gitignored)
+```
+
+## Load in Firefox (manual)
+
+1. Build (above)
+2. Open `about:debugging#/runtime/this-firefox`
+3. Click "Load Temporary Add-on..."
+4. Select `apps/extensions/chatgpt/firefox/dev/manifest.json`
+5. Open `https://chatgpt.com/`
+6. Confirm the DevTools console shows: `[H2O ChatGPT Firefox dev stub] loaded on chatgpt.com`
+7. In the console, run `document.documentElement.dataset.h2oChatgptFirefoxDev` → should return `"loaded"`
+
+Note: "Temporary Add-on" loads are removed when Firefox restarts. For
+persistent installs an unsigned build needs Developer Edition / Nightly with
+`xpinstall.signatures.required=false`, OR a signed `.xpi` from AMO.
 
 ## Host
 
 - Target site: `https://chatgpt.com/*`
-- DOM/event adapter: `packages/host-adapters/chatgpt/` (placeholder)
+- DOM/event adapter: `packages/host-adapters/chatgpt/` (still a Phase 7D placeholder)
 
 ## Browser
 
 - Target: Firefox 109+ (MV3-capable)
-- API wrapper: `packages/browser-adapters/firefox/` (placeholder)
-- Extension ID: `browser_specific_settings.gecko.id` in `config/extensions/chatgpt/firefox/keys.json`
+- API wrapper: `packages/browser-adapters/firefox/` (placeholder; not yet needed
+  for this stub since the content script does not call `browser.*` APIs)
+- Extension ID: `browser_specific_settings.gecko.id` injected from
+  `config/extensions/chatgpt/firefox/keys.json`
 
-## How outputs flow
+## What's NOT in this stub
 
-```
-src/extensions/chatgpt/firefox/
-        ↓
-tools/product/extensions/chatgpt/firefox/build.mjs
-        ↓
-apps/extensions/chatgpt/firefox/<variant>/   (gitignored)
-        ↓
-Firefox about:debugging → Load Temporary Add-on
-```
+- No background service worker
+- No identity / OAuth
+- No Studio integration
+- No content-script feature logic
+- No popup / sidebar UI
+- No storage usage
+- No external network calls
+- No build-time bundling
+- No reuse of the chatgpt+chrome legacy source tree
+
+Adding any of the above is a later phase.
 
 ## Where to read more
 
 - [../../../docs/architecture/MULTI_HOST_ARCHITECTURE.md](../../../docs/architecture/MULTI_HOST_ARCHITECTURE.md)
-  — full multi-host/multi-browser architecture reference
 - [../../../docs/architecture/PRODUCTS.md](../../../docs/architecture/PRODUCTS.md)
-  — current product map
+- [../../../tools/product/extensions/chatgpt/firefox/README.md](../../../tools/product/extensions/chatgpt/firefox/README.md)
+  — the builder's README

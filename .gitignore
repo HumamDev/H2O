@@ -19,6 +19,8 @@ archive/.gitkeep
 # explicit !README.md exception per host/browser combination.
 build/**
 apps/extensions/chatgpt/chrome/**
+apps/extensions/chatgpt/firefox/**
+!apps/extensions/chatgpt/firefox/README.md
 apps/extensions/claude/chrome/**
 !apps/extensions/claude/chrome/README.md
 
