@@ -44,7 +44,7 @@ import { fileURLToPath } from 'node:url';
 // Phase 0G-1 migration: repo-level path constants come from tools/paths.mjs.
 // `here` and `desktopRoot` remain script-relative so this prepare-dist tool
 // stays robust to relocation INSIDE apps/studio/desktop/ (e.g. moving the
-// scripts/ subdirectory). The repo-level constants (REPO_ROOT, the prod
+// build-tools/ subdirectory). The repo-level constants (REPO_ROOT, the prod
 // extension build dir, and surfaces/studio dir) come from paths.mjs so that
 // future migrations that rename those folders only need to update paths.mjs.
 // Behavior verified byte-identical via dist/ content shasum compared against
@@ -54,6 +54,11 @@ import { fileURLToPath } from 'node:url';
 // apps/studio/desktop/, adding one extra nesting level. Import path
 // adjusted from '../../../tools/paths.mjs' (3 levels) to
 // '../../../../tools/paths.mjs' (4 levels) to compensate.
+//
+// Phase 8H-3 (2026-05-19): subfolder renamed from scripts/ to build-tools/
+// for clearer separation between desktop app source (src-tauri/) and
+// build tooling source (build-tools/). The 4-levels-up import path is
+// unchanged because the rename keeps the same depth.
 import {
   REPO_ROOT,
   SURFACES_STUDIO_DIR,

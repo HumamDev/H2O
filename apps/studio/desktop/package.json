@@ -5,7 +5,7 @@
   "description": "H2O Studio — Tauri V2 desktop shell (M1 boot proof; V1 = import-only).",
   "type": "module",
   "scripts": {
-    "prepare-dist": "node ./scripts/prepare-dist.mjs",
+    "prepare-dist": "node ./build-tools/prepare-dist.mjs",
     "tauri": "tauri",
     "tauri:dev": "npm run prepare-dist && tauri dev",
     "tauri:build": "npm run prepare-dist && tauri build"

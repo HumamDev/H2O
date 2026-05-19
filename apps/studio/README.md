@@ -21,7 +21,7 @@ For details, see each subdir's README. In summary:
 
 | Subdir | Source you edit | Generated/cache (gitignored) |
 |---|---|---|
-| `desktop/` | `src-tauri/`, `scripts/prepare-dist.mjs`, `package.json` | `dist/`, `src-tauri/target/`, `node_modules/` |
+| `desktop/` | `src-tauri/`, `build-tools/prepare-dist.mjs`, `package.json` | `dist/`, `src-tauri/target/`, `node_modules/` |
 | `mobile/` | `src/`, `assets/`, `app.json`, `babel.config.js`, `metro.config.js`, `package.json`, `tsconfig.json` + the **native managed projects** under `ios/` (and future `android/`) | `.expo/`, `ios/build/`, `ios/Pods/`, `android/build/` (future), `node_modules/` |
 | `web/` | (placeholder) | (n/a until implemented) |
 

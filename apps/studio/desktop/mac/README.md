@@ -8,7 +8,7 @@ lives directly at `apps/studio/desktop/` (one level up from here):
 
   - `apps/studio/desktop/package.json` — pkg name `@h2o/studio-desktop`
   - `apps/studio/desktop/src-tauri/`   — Tauri Rust project
-  - `apps/studio/desktop/scripts/prepare-dist.mjs` — asset copy
+  - `apps/studio/desktop/build-tools/prepare-dist.mjs` — asset copy
   - `apps/studio/desktop/dist/`        — Tauri frontendDist (gitignored)
 
 If macOS-specific native code is ever split out of the Tauri shell
