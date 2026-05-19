@@ -6,8 +6,9 @@
 > `src/extensions/chatgpt/firefox/` (Phase 8G-6), `src/extensions/gemini/chrome/`
 > (Phase 8G-7), `src/extensions/claude/firefox/` (Phase 8G-8), and
 > `src/extensions/gemini/firefox/` (Phase 8G-9, this phase). The chatgpt+chrome
-> legacy continues to live at the top-level frozen folders (`scripts/`,
-> `surfaces/`, `config/`) and produces 8 production-grade variants.
+> legacy continues to live at the top-level frozen folders (`src-runtime-base/`
+> — renamed from `scripts/` in Phase 8K-5 — plus `surfaces/`, `config/`) and
+> produces 8 production-grade variants.
 >
 > **Both identity schemes are now demonstrated**:
 > - Chrome SPKI public key in `manifest.key` — chatgpt+chrome legacy (8 variants),
@@ -40,7 +41,7 @@ quadrant. The actual physical layout is:
 
 | Quadrant | Where | What lives here |
 |---|---|---|
-| **Source (what you write)** | `scripts/`, `surfaces/`, `config/`, `src/`, `packages/`, `assets/` | Hand-written runtime, UI, config, libraries |
+| **Source (what you write)** | `src-runtime-base/`, `surfaces/`, `config/`, `src/`, `packages/`, `assets/` | Hand-written runtime, UI, config, libraries |
 | **Build tooling** | `tools/` | Generators, validators, release/archive helpers |
 | **Generated outputs** | `apps/extensions/<host>/<browser>/<variant>/`, `apps/studio/*/dist/`, `apps/site/dist/` | What builders produce; what you load into Chrome/Firefox/Tauri |
 | **Workspace apps with their own source** | `apps/studio/{desktop,mobile}/`, `apps/site/`, `apps/dev-server/` | Self-contained apps with tracked source + generated outputs co-located |
@@ -67,15 +68,15 @@ Its source lives at the **top level** of the repo:
 
 ```
 h2o-cp-source/
-├── scripts/        146 emoji-named userscripts, load-order-coupled
-├── surfaces/       desk/, identity/, studio/ HTML+JS surfaces
-├── config/         dev-order.tsv, loader-deps.json, loader-tiers.json
-└── assets/         chrome-*-icons/ packs
+├── src-runtime-base/   146 emoji-named userscripts, load-order-coupled (renamed from `scripts/` in Phase 8K-5)
+├── surfaces/           desk/, identity/, studio/ HTML+JS surfaces
+├── config/             dev-order.tsv, loader-deps.json, loader-tiers.json
+└── assets/             chrome-*-icons/ packs
 ```
 
 **These are frozen** by the migration (MIGRATION.md §4):
 
-- Renaming any file in `scripts/` cascades through `config/dev-order.tsv`,
+- Renaming any file in `src-runtime-base/` cascades through `config/dev-order.tsv`,
   `config/loader-deps.json`, the alias farm at `apps/dev-server/alias/`,
   archive history under `cockpit-pro/archive/` (~50 daily snapshots), the
   `LEGACY_ALIAS_COMPAT` map, `versions.csv` release log, and identity
@@ -126,7 +127,7 @@ into `packages/` over time.
 
 | Folder | Meaning |
 |---|---|
-| `scripts/` | **Legacy chatgpt+chrome runtime userscripts.** 146 emoji-named files loaded by the chrome+chatgpt loader. Frozen. Add new chatgpt+chrome features here following the existing convention. |
+| `src-runtime-base/` | **Legacy chatgpt+chrome runtime userscripts.** 146 emoji-named files loaded by the chrome+chatgpt loader. Frozen. Add new chatgpt+chrome features here following the existing convention. (Renamed from `scripts/` in Phase 8K-5 to disambiguate from the new-host `src/extensions/<host>/<browser>/scripts/` layout. Path resolves through `tools/paths.mjs::RUNTIME_BASE_REL`.) |
 | `surfaces/` | **Legacy chatgpt+chrome UI sources.** HTML+JS surfaces shipped inside chatgpt+chrome extension builds. Frozen. |
 | `config/` | **Loader + build configuration.** Contains the frozen chatgpt+chrome runtime configs (`dev-order.tsv`, `loader-deps.json`, `loader-tiers.json`) + Phase 8A-1 Chrome keys (`extension-keys.json`) + operator-local secrets (`local/`). New per-host configs go under `config/extensions/<host>/<browser>/`. |
 | `assets/` | **Static asset packs** (PNG icons, etc.). The current packs are chatgpt+chrome-named (`chrome-dev-controls-icons/`, etc.). New host/browser packs should go under `assets/extensions/<host>/<browser>/` to avoid name collision. |
@@ -143,7 +144,7 @@ into `packages/` over time.
 
 | What you wrote | Where it lives | Tracked in git? |
 |---|---|---|
-| chatgpt+chrome legacy runtime | `scripts/` | ✅ yes |
+| chatgpt+chrome legacy runtime | `src-runtime-base/` (renamed from `scripts/` in Phase 8K-5) | ✅ yes |
 | chatgpt+chrome legacy UI | `surfaces/` | ✅ yes |
 | chatgpt+chrome legacy config | `config/dev-order.tsv`, etc. | ✅ yes |
 | Per-host/per-browser new source | `src/extensions/<host>/<browser>/` | ✅ yes |
@@ -239,7 +240,7 @@ that's not yet stable enough to become a workspace package.
 
 - Anything host-specific (lives under `src/extensions/<host>/<browser>/`)
 - Anything truly mature with stable APIs and ≥2 consumers (graduates to `packages/`)
-- chatgpt+chrome legacy code (stays in `scripts/`)
+- chatgpt+chrome legacy code (stays in `src-runtime-base/`)
 
 ### 7.3 Graduation path: `_shared/` → `packages/`
 
@@ -396,8 +397,8 @@ For every phase that moves files or adds source:
 | Deterministic build hash drift | Compute with `H2O_BUILD_TS=9999999999999` against `apps/extensions/chatgpt/chrome/dev-controls`-named `OUT_DIR` before AND after. Hash must match `77bd47cf904c6e4b2b9062a90d8e2faaa62393d79eebfe2f105a217a64a46e8a`. |
 | Chrome extension ID rotation | All 8 chatgpt+chrome IDs are key-derived (Phase 8A-1). They survive folder renames. New variants get new keys generated when added. |
 | OAuth-Google Supabase coupling | The `ogcjkeaiicglflamhjaaimdhphjlgkbb` ID is registered in Supabase Auth. Phase 8A-1 made this path-independent. Future changes must keep this key stable in `config/extension-keys.json`. |
-| `scripts/` cascading break | Don't touch `scripts/`. Period. |
-| `surfaces/identity/identity.html` path | Hardcoded in `scripts/0D4a.⬛️🔐 Identity Core 🔐.js` via `chrome.runtime.getURL`. Path must remain `surfaces/identity/identity.html` inside built extensions forever. |
+| `src-runtime-base/` cascading break | Don't touch `src-runtime-base/`. Period. (Renamed from `scripts/` in Phase 8K-5.) |
+| `surfaces/identity/identity.html` path | Hardcoded in `src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js` via `chrome.runtime.getURL`. Path must remain `surfaces/identity/identity.html` inside built extensions forever. |
 
 Rollback for scaffolding phases: `git reset --hard <pre-phase-tag>` reverses
 empty-folder + README + .gitkeep additions completely.

@@ -9,7 +9,7 @@ Related: [ADR-0004 Library Index Source Model](../decisions/ADR-0004-library-ind
 
 Consolidate the Library system so **Studio is the primary Library application UI** and **native ChatGPT scripts shrink to thin adapters** for the capabilities that genuinely require chatgpt.com page-world (DOM observation, transcript capture, native menu injection). Shared Library business logic lives in one place and is consumed by every surface.
 
-This is **not a file-copy migration**. Moving `scripts/0F3a` into `surfaces/studio/` would relocate DOM-injection code into a context where it cannot run. The migration is by **responsibility** (pure logic vs DOM vs storage), not by file path.
+This is **not a file-copy migration**. Moving `src-runtime-base/0F3a` into `surfaces/studio/` would relocate DOM-injection code into a context where it cannot run. The migration is by **responsibility** (pure logic vs DOM vs storage), not by file path.
 
 ## What stays native, what becomes shared, what becomes Studio
 
@@ -37,7 +37,7 @@ This is **not a file-copy migration**. Moving `scripts/0F3a` into `surfaces/stud
 
 ## Current Architecture Map
 
-### Native modules (`scripts/`)
+### Native modules (`src-runtime-base/`)
 
 | Module | Global | Persists to | Reads ChatGPT DOM? | Renders UI? | Migration disposition |
 |---|---|---|:--:|:--:|---|
@@ -183,7 +183,7 @@ This is **not a file-copy migration**. Moving `scripts/0F3a` into `surfaces/stud
    └──────────────────────────────────────────────────────────┘
 ```
 
-The shared layer lives at the **repo root in `shared/library/`** — sibling to `scripts/` and `surfaces/`. Pure modules, no DOM, no localStorage, no chrome.storage. Each module accepts an injected `services` bag at construction time.
+The shared layer lives at the **repo root in `shared/library/`** — sibling to `src-runtime-base/` and `surfaces/`. Pure modules, no DOM, no localStorage, no chrome.storage. Each module accepts an injected `services` bag at construction time.
 
 ## Service Contract
 
@@ -237,7 +237,7 @@ Introduce a documented `LibrarySurfaceServices` registry pattern. Native and Stu
 **DoD:** `H2O.LibraryCore.listServices()` on both surfaces includes every canonical name; `selfCheck()` clean.
 
 **Implementation (landed):**
-- New native module: [scripts/0F1k.⬛️🗂️ Library Canonical Services 🪪🗂️.js](../../scripts/0F1k.⬛️🗂️%20Library%20Canonical%20Services%20🪪🗂️.js)
+- New native module: [src-runtime-base/0F1k.⬛️🗂️ Library Canonical Services 🪪🗂️.js](../../src-runtime-base/0F1k.⬛️🗂️%20Library%20Canonical%20Services%20🪪🗂️.js)
 - New Studio module: [surfaces/studio/S0F1k. 🎬 Library Canonical Services - Studio.js](../../surfaces/studio/S0F1k.%20🎬%20Library%20Canonical%20Services%20-%20Studio.js) (wired into `studio.html` after `S0F1h`)
 - Both modules register 14 canonical names additively over existing service registrations. Legacy names (`chat-registry`, `library-index`, `folders`, `categories`, `labels`, `tags`, `projects`, `library-sync`, `library-store`) remain registered so no caller is broken.
 - Both modules install `H2O.LibraryCore.listCanonicalServices()` and `getCanonicalServiceStatus()`, and wrap `selfCheck()` to include a `canonical` section without changing its existing shape.
@@ -279,7 +279,7 @@ Extract merge / normalize / dedup of `0F1g Chat Registry` and `0F1c Library Inde
 
 Shared module added at [shared/library/chat-registry-core.js](../../shared/library/chat-registry-core.js) — pure functions only, no DOM / no storage / no events / no side effects. Two byte-identical runtime mirrors load the same body into each surface's script-discovery scheme (the build pipeline that would let Studio reach `shared/` directly is a Phase 3 concern):
 
-- Native bundle: [scripts/0F0c.⬛️🧬 Library Registry Core 🧬.js](../../scripts/0F0c.⬛️🧬%20Library%20Registry%20Core%20🧬.js)
+- Native bundle: [src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js](../../src-runtime-base/0F0c.⬛️🧬%20Library%20Registry%20Core%20🧬.js)
 - Studio HTML: [surfaces/studio/S0F0c. 🎬 Library Registry Core - Studio.js](../../surfaces/studio/S0F0c.%20🎬%20Library%20Registry%20Core%20-%20Studio.js) (wired in `studio.html` after `S0F0a` and before `S0F1g`)
 
 All three publish to `window.H2O.Library.RegistryCore` and short-circuit when a prior loader already set up the module, so duplicate loads are no-ops.
@@ -306,13 +306,13 @@ Legacy Studio records (`{chatId, title, projectId, folderId, snapshotCount, last
 
 **Storage:** unchanged. Native still writes to `window.localStorage` under `h2o:library:chat-registry:v1`. Studio still writes through `H2O.Library.Store` under `h2o:library:chat-registry:studio:v1`. **No cross-surface storage migration in this phase** — that's Phase 3.
 
-**Mirror sync constraint:** the body of `shared/library/chat-registry-core.js`, `scripts/0F0c. …`, and `surfaces/studio/S0F0c. …` must remain byte-identical (after the IIFE wrapper). Phase 3 introduces a real shared-loader pipeline that removes this triplicate.
+**Mirror sync constraint:** the body of `shared/library/chat-registry-core.js`, `src-runtime-base/0F0c. …`, and `surfaces/studio/S0F0c. …` must remain byte-identical (after the IIFE wrapper). Phase 3 introduces a real shared-loader pipeline that removes this triplicate.
 
 #### Phase 2B — Library Index merge/normalize/facet/count logic (LANDED 2026-05-15)
 
 Same shared-core pattern as Phase 2A, this time for Library Index pure logic. Shared module added at [shared/library/library-index-core.js](../../shared/library/library-index-core.js); two byte-identical mirrors load the same body into each surface:
 
-- Native bundle: [scripts/0F0d.⬛️🧬 Library Index Core 🧬.js](../../scripts/0F0d.⬛️🧬%20Library%20Index%20Core%20🧬.js)
+- Native bundle: [src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js](../../src-runtime-base/0F0d.⬛️🧬%20Library%20Index%20Core%20🧬.js)
 - Studio HTML: [surfaces/studio/S0F0d. 🎬 Library Index Core - Studio.js](../../surfaces/studio/S0F0d.%20🎬%20Library%20Index%20Core%20-%20Studio.js) (wired in `studio.html` after `S0F0c` and before `S0F1c`; also added to `tools/product/studio/pack-studio.mjs` allowlists in both `ARCHIVE_WORKBENCH_SOURCE_FILES` and `ARCHIVE_WORKBENCH_OUT_FILES` at the same index position to avoid the Phase 2A packaging miss)
 
 All three publish to `window.H2O.Library.LibraryIndexCore` and short-circuit when a prior loader already set up the module.
@@ -334,7 +334,7 @@ All three publish to `window.H2O.Library.LibraryIndexCore` and short-circuit whe
 
 **Storage:** unchanged. Native still owns `KEY_CACHE_V1` / `KEY_REGISTRY_V2` / `KEY_SCAN_LEDGER_V1` / `KEY_PREFS_V1`; Studio still owns its own `registry:v1`. **No cross-surface storage migration in this phase.**
 
-**Mirror sync constraint:** as in Phase 2A, the three Library Index Core files (`shared/library/library-index-core.js`, `scripts/0F0d. …`, `surfaces/studio/S0F0d. …`) must remain byte-identical (after the IIFE wrapper). Verified via SHA256 (`8d005a6b…d719501`, 37600 bytes) after build.
+**Mirror sync constraint:** as in Phase 2A, the three Library Index Core files (`shared/library/library-index-core.js`, `src-runtime-base/0F0d. …`, `surfaces/studio/S0F0d. …`) must remain byte-identical (after the IIFE wrapper). Verified via SHA256 (`8d005a6b…d719501`, 37600 bytes) after build.
 
 **Smoke tests:** 25/25 pure-logic tests pass under Node (see `/tmp/h2o-phase2b-tests.mjs`). Covered: native row normalize/merge, Studio row normalize, linked-only projection (linked/saved-rejected/deleted-rejected branches), native + Studio facet builders, filter/sort/bucket, view derivation, dedupe-key precedence, source-rank merge, title-choice heuristic, identity delegation through RegistryCore.
 

@@ -21,12 +21,12 @@ folder skeleton; PRODUCTS.md (this file) covers the **current** state.
 
 Cockpit Pro is organised around four top-level concerns. **This is a conceptual
 grouping — the folders below are NOT physically merged under a `platform/`
-umbrella** (per the Phase 8F discussion, scripts/ is frozen and cannot be moved;
+umbrella** (per the Phase 8F discussion, src-runtime-base/ is frozen and cannot be moved;
 see §6 "Do not move yet").
 
 | Concept | Physical folders | Role |
 |---|---|---|
-| **Runtime source** ("platform") | `scripts/`, `surfaces/`, `config/`, parts of `assets/` | What ends up *inside* a built product. Loaded by the browser / Tauri / Expo at runtime. |
+| **Runtime source** ("platform") | `src-runtime-base/`, `surfaces/`, `config/`, parts of `assets/` | What ends up *inside* a built product. Loaded by the browser / Tauri / Expo at runtime. |
 | **Build tooling** | `tools/` | Generators, validators, release/archive helpers. Reads from runtime source + config + assets; writes to apps/extensions. |
 | **Generated / runnable products** | `apps/` | Outputs that an operator launches: chrome extensions, the Tauri desktop shell, the Expo mobile app, the marketing site, the dev server. |
 | **Reusable libraries** | `packages/` | Workspace TS/JS packages consumed by apps + tools at build/runtime. |
@@ -44,7 +44,7 @@ Every product the repo currently builds, with its full chain.
 
 | # | Product | Built by | Reads from | Output | Env-var gates | Extension ID | Validation |
 |---|---|---|---|---|---|---|---|
-| 1 | **Chrome / chatgpt / prod** | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` | `scripts/`, `surfaces/`, `config/dev-order.tsv`, `config/loader-deps.json`, `assets/chrome-dev-controls-icons/`, `assets/chrome-dev-lean-icons/`, `tools/product/identity/*`, `tools/product/studio/pack-studio.mjs`, `config/local/identity-provider.local.json`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/prod/` | `H2O_EXT_DEV_VARIANT=production` + `H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod` | `bgdapdcjckbiejckpfeinlmcdnijifpg` | `npm run dev:check`; `node tools/validation/identity/run-identity-release-gate.mjs` |
+| 1 | **Chrome / chatgpt / prod** | `tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs` | `src-runtime-base/`, `surfaces/`, `config/dev-order.tsv`, `config/loader-deps.json`, `assets/chrome-dev-controls-icons/`, `assets/chrome-dev-lean-icons/`, `tools/product/identity/*`, `tools/product/studio/pack-studio.mjs`, `config/local/identity-provider.local.json`, `config/extension-keys.json` | `apps/extensions/chatgpt/chrome/prod/` | `H2O_EXT_DEV_VARIANT=production` + `H2O_EXT_OUT_DIR=apps/extensions/chatgpt/chrome/prod` | `bgdapdcjckbiejckpfeinlmcdnijifpg` | `npm run dev:check`; `node tools/validation/identity/run-identity-release-gate.mjs` |
 | 2 | **Chrome / chatgpt / dev-controls** | same | same | `apps/extensions/chatgpt/chrome/dev-controls/` | `H2O_EXT_DEV_VARIANT=controls` (default) + `H2O_EXT_OUT_DIR=...dev-controls` | `bkijejgemjjolmdnkgcimoaniocegkij` | same |
 | 3 | **Chrome / chatgpt / dev-controls-armed** | same | same | `apps/extensions/chatgpt/chrome/dev-controls-armed/` | `H2O_EXT_DEV_VARIANT=controls` + `H2O_IDENTITY_PHASE_NETWORK=request_otp` + `H2O_EXT_OUT_DIR=...dev-controls-armed` | `ceenhihlkfdfjdolchjffpeejblnejdb` | same |
 | 4 | **Chrome / chatgpt / dev-controls-oauth-google** | same | same | `apps/extensions/chatgpt/chrome/dev-controls-oauth-google/` | `H2O_EXT_DEV_VARIANT=controls` + `H2O_IDENTITY_PHASE_NETWORK=request_otp` + `H2O_IDENTITY_OAUTH_PROVIDER=google` + `H2O_EXT_OUT_DIR=...dev-controls-oauth-google` | `ogcjkeaiicglflamhjaaimdhphjlgkbb` ⚠ Supabase Auth coupling | `node tools/validation/identity/validate-identity-phase3_9c-google-oauth-release-gate.mjs` |
@@ -60,7 +60,7 @@ Every product the repo currently builds, with its full chain.
 | 14 | **Studio Desktop (Tauri V2)** | `npm --workspace @h2o/studio-desktop run prepare-dist` (copies built Studio assets) + `cd apps/studio/desktop && npm run tauri:dev` / `tauri:build` (Rust + Tauri) | `apps/extensions/chatgpt/chrome/prod/surfaces/studio/` (built first by #1) → copied into `apps/studio/desktop/dist/` | `apps/studio/desktop/dist/` (Tauri frontendDist) + Tauri app bundle in `apps/studio/desktop/src-tauri/target/` | none | n/a (Tauri app) | `npm --workspace @h2o/studio-desktop run prepare-dist` exit 0 |
 | 15 | **Studio Mobile (Expo SDK 55, React Native)** | `cd apps/studio/mobile && npm start` (Metro) or `expo prebuild`/`expo run:ios` | `apps/studio/mobile/src/`, `packages/identity-core/`, `packages/studio-core/` | Native iOS/Android bundles via Expo | none | n/a | `cd apps/studio/mobile && npx tsc --noEmit --skipLibCheck` exit 0; `pod install` for iOS (UTF-8 env) |
 | 16 | **Marketing site (Vite + React 19)** | `npm --workspace cockpit-pro-site run build` (Vite) | `apps/site/src/`, `apps/site/public/` | `apps/site/dist/` (deployed to Cloudflare Pages) | none | n/a | `npm --workspace cockpit-pro-site run build` exit 0 |
-| 17 | **Dev server (Python HTTP, port 5500)** | `cd apps/dev-server && python3 serve.py 5500` | `apps/dev-server/alias/` (regenerated by `tools/loader/make-aliases.mjs`), `apps/dev-server/dev_output/proxy/_paste-pack.ext.txt` (regenerated by `tools/loader/make-ext-proxy-pack.mjs`), `scripts/` (referenced via alias-farm symlinks) | HTTP at `http://127.0.0.1:5500/alias/{aliasId}?v={ts}` + `/dev_output/proxy/_paste-pack.ext.txt` | `H2O_SERVER_DIR=apps/dev-server` (default; env-overridable) | n/a | `npm run dev:check` (alias farm + proxy pack consistency) |
+| 17 | **Dev server (Python HTTP, port 5500)** | `cd apps/dev-server && python3 serve.py 5500` | `apps/dev-server/alias/` (regenerated by `tools/loader/make-aliases.mjs`), `apps/dev-server/dev_output/proxy/_paste-pack.ext.txt` (regenerated by `tools/loader/make-ext-proxy-pack.mjs`), `src-runtime-base/` (referenced via alias-farm symlinks) | HTTP at `http://127.0.0.1:5500/alias/{aliasId}?v={ts}` + `/dev_output/proxy/_paste-pack.ext.txt` | `H2O_SERVER_DIR=apps/dev-server` (default; env-overridable) | n/a | `npm run dev:check` (alias farm + proxy pack consistency) |
 
 ### Embedded sub-products (shipped *inside* extensions, not standalone)
 
@@ -70,7 +70,7 @@ build output, but they have their own source + builder for traceability.
 | Sub-product | Built by | Reads from | Embedded at | Notes |
 |---|---|---|---|---|
 | **Identity provider bundle (Supabase)** | `tools/product/identity/build-identity-provider-bundle.mjs` (esbuild) | `tools/product/identity/identity-provider-supabase.entry.mjs`, `packages/identity-core/`, `config/local/identity-provider.local.json` | `<ext-out>/provider/identity-provider-supabase.js` | Built into every variant that has chatgpt.com content-script (all 6 chrome-live variants); not in ops-panel or desk |
-| **Identity surfaces** | `tools/product/identity/pack-identity.mjs` (file-copy) | `surfaces/identity/identity.html` + `scripts/0D4a.⬛️🔐 Identity Core 🔐.js` | `<ext-out>/surfaces/identity/identity.html` + script | Same scope as identity bundle |
+| **Identity surfaces** | `tools/product/identity/pack-identity.mjs` (file-copy) | `surfaces/identity/identity.html` + `src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js` | `<ext-out>/surfaces/identity/identity.html` + script | Same scope as identity bundle |
 | **Studio surfaces (extension-embedded)** | `tools/product/studio/pack-studio.mjs` (file-copy) | `surfaces/studio/*` (60 S-prefix files) | `<ext-out>/surfaces/studio/` | Embedded in `prod` and `studio-launcher`; consumed by Studio Desktop (#9) too |
 | **Billing provider bundle (Supabase)** | `tools/product/billing/billing-provider-supabase.entry.mjs` (esbuild, similar to identity) | source entry + Supabase config | `<ext-out>/provider/billing-provider-supabase.js` | Only in variants that have billing; same env-gating as identity |
 | **Dev-controls popup** | `tools/product/extensions/chatgpt/chrome/popup/chrome-live-popup-{html,css,js,view,data}.mjs` | (generated text) | `<ext-out>/popup.{html,css,js}` | Only when `DEV_HAS_CONTROLS` (i.e., variants with `H2O_EXT_DEV_VARIANT=controls`) |
@@ -86,7 +86,7 @@ build output, but they have their own source + builder for traceability.
                                  ┌─────────────────────────────────────────┐
                                  │      RUNTIME SOURCE ("platform")        │
                                  │                                         │
-                                 │   scripts/    surfaces/    config/      │
+                                 │   src-runtime-base/    surfaces/    config/      │
                                  │   ─────────   ──────────   ────────     │
                                  │   149         desk/        dev-order    │
                                  │   userscripts identity/    loader-deps  │
@@ -176,7 +176,7 @@ These hold for all current code and any new code:
 3. **`apps/extensions/<host>/<browser>/<variant>/`** is the canonical generated
    output root for every unpacked extension. Phase 4C-B established this; Phase
    8E-3 removed the legacy `build/chrome-ext-*` symlink bridge.
-4. **`scripts/`, `supabase/` are frozen.** No filename changes, no `@h2o-id`
+4. **`src-runtime-base/`, `supabase/` are frozen.** No filename changes, no `@h2o-id`
    changes, no relocations. See MIGRATION.md §4.
 5. **Outer-workspace-shell items** (`archive/`, `references/`, `s-files/`,
    `tmp/`, `plans/`, `operator-notes/`, `.claude/`) live under
@@ -197,7 +197,7 @@ For each item, the constraint that pins it in place.
 
 | Folder | Why it must stay |
 |---|---|
-| `scripts/` | Filenames are coupled to: load order in `config/dev-order.tsv` (146 entries); `config/loader-deps.json` runtime-order invariants (MiniMap 1A1e-before-1A1b, etc.); 50+ daily archive snapshots in outer `cockpit-pro/archive/`; `versions.csv` release log; alias farm symlinks in `apps/dev-server/alias/` (relative `../../../scripts/...`); `LEGACY_ALIAS_COMPAT` map in `make-aliases.mjs`; doc-comment refs throughout `tools/`. See MIGRATION.md §4 forever-forbidden list. |
+| `src-runtime-base/` | Filenames are coupled to: load order in `config/dev-order.tsv` (146 entries); `config/loader-deps.json` runtime-order invariants (MiniMap 1A1e-before-1A1b, etc.); 50+ daily archive snapshots in outer `cockpit-pro/archive/`; `versions.csv` release log; alias farm symlinks in `apps/dev-server/alias/` (relative `../../../src-runtime-base/...`); `LEGACY_ALIAS_COMPAT` map in `make-aliases.mjs`; doc-comment refs throughout `tools/`. See MIGRATION.md §4 forever-forbidden list. |
 | `surfaces/` | Path is referenced by `tools/product/identity/pack-identity.mjs` (`surfaces/identity/`), `tools/product/extensions/chatgpt/chrome/pack-desk.mjs` (`surfaces/desk/`), `tools/product/studio/pack-studio.mjs` (`surfaces/studio/`). The Identity Core script also hardcodes `chrome.runtime.getURL('surfaces/identity/identity.html')` (see MIGRATION.md §8 #1 — extension-runtime path is shipped to installed extensions). |
 | `config/` | Read by every loader / build tool via `tools/paths.mjs` constants (`CONFIG_DIR`, `DEV_ORDER_TSV`, `LOADER_DEPS_JSON`, `LOADER_TIERS_JSON`, `CONFIG_LOCAL_DIR`, etc.). Also the home of `config/extension-keys.json` (Phase 8A-1) and `config/local/identity-provider.local.json` (operator-only). |
 | `supabase/` | Stripe webhook URL is bound to deployed function names. `supabase/.temp/linked-project.json` is local-only state. See MIGRATION.md §3.3 + §4. |
@@ -215,7 +215,7 @@ phase.
 |---|---|---|---|
 | 7.1 | `tools/product/extensions/chatgpt/chrome/` → `tools/product/ops-panel/` | All 8 chrome variants would live under `tools/product/<product>/`. Removes the asymmetry where 7 builders live in `tools/product/` and 1 lives in `tools/dev-controls/`. | Low. One folder rename, ~4 path updates (the builder's relative imports + .vscode/tasks.json + identity validators that mention the path + this PRODUCTS.md). No env-var or output-path changes. |
 | 7.2 | `tools/product/extensions/chatgpt/chrome/` → `tools/product/extensions/chatgpt/chrome/` | Mirror the `apps/extensions/<host>/<browser>/<variant>/` shape on the tooling side, so adding (e.g.) `tools/product/extensions/claude/firefox/` is natural. | Medium. Many import paths to update across the build pipeline; many doc-comment refs across validators. Worth the work only when a second host/browser actually gets built. |
-| 7.3 | Document a `platform/` *concept* without moving anything | Add a `docs/architecture/PLATFORM.md` clarifying that `scripts/`+`surfaces/`+`config/` is the runtime-source quadrant. Strictly docs. | Zero risk; pure clarification. |
+| 7.3 | Document a `platform/` *concept* without moving anything | Add a `docs/architecture/PLATFORM.md` clarifying that `src-runtime-base/`+`surfaces/`+`config/` is the runtime-source quadrant. Strictly docs. | Zero risk; pure clarification. |
 | 7.4 | `tools/product/billing/` → consider parallelism with `tools/product/identity/` (it's already there but only has the entry file) | Match identity's structure if billing grows. | Wait for the actual second consumer. |
 | 7.5 | Phase 7G-3 (`H2O_META_DIR` + `meta/` outer-shell move) | Already planned. Independent of this PRODUCTS.md work. | Low (per Phase 7G audit). |
 

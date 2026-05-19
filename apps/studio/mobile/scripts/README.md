@@ -23,11 +23,14 @@ also be applied here for naming symmetry.
 
 ## What this folder is NOT
 
-- **Not the same as the top-level `scripts/` folder at the repo root.**
-  That is the frozen legacy chatgpt+chrome userscript source
-  (`scripts/0A1a._H2O_Core_.js`, etc.); it is consumed by `tools/loader/`
+- **Not the same as the top-level `src-runtime-base/` folder at the repo root**
+  (which was renamed from `scripts/` in Phase 8K-5 to disambiguate from this
+  per-app `scripts/` placeholder and from `src/extensions/<host>/<browser>/scripts/`).
+  That folder is the frozen legacy chatgpt+chrome userscript source
+  (`src-runtime-base/0A1a._H2O_Core_.js`, etc.); it is consumed by `tools/loader/`
   and `tools/product/extensions/chatgpt/chrome/` builders and is intentionally
-  not relocated. The two `scripts/` folders are unrelated.
+  not relocated. The top-level legacy runtime and this per-app placeholder are
+  unrelated despite the historical shared name.
 - **Not generated output.** Anything added here is hand-written tooling
   source and would be tracked in git.
 - **Not the place for Expo's default `reset-project.js`.** That template

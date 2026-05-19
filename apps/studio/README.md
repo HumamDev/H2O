@@ -11,9 +11,9 @@ ships as three host shells, each in its own subdirectory under this folder:
 | [`web/`](web/) | Future browser-hosted Studio | Placeholder (Phase 7D) | TBD; reserved for `cockpitpro.app/studio` or similar |
 
 The shared Studio UI source itself currently lives in **top-level legacy
-folders** (`surfaces/studio/` for HTML/JS surfaces; relevant scripts in
-`scripts/`). The desktop and mobile shells reuse those assets through
-different build chains.
+folders** (`surfaces/studio/` for HTML/JS surfaces; relevant runtime
+userscripts in `src-runtime-base/` — renamed from `scripts/` in Phase 8K-5).
+The desktop and mobile shells reuse those assets through different build chains.
 
 ## Source vs generated boundary (high-level)
 

@@ -71,31 +71,24 @@ export const SERVER_ROOT = process.env.H2O_SERVER_DIR || SERVER_ROOT_DEFAULT;
 
 export const TOOLS_DIR     = path.join(REPO_ROOT, "tools");
 
-// Phase 8K-3 (2026-05-20): legacy flat runtime userscript source folder
-// (the original chatgpt+chrome userscripts). Currently lives at
-// `<REPO_ROOT>/scripts`. Phase 8K-5 will atomically rename the on-disk
-// folder to `src-runtime-base` and update RUNTIME_BASE_REL in this file
-// — a single one-line change here. Until 8K-5 lands, this constant
-// still points at "scripts" so all existing tools keep working.
+// Phase 8K (2026-05-20): legacy flat runtime userscript source folder
+// (the original chatgpt+chrome userscripts). Lives at
+// `<REPO_ROOT>/src-runtime-base/` after Phase 8K-5 atomically renamed the
+// folder from `scripts/` to `src-runtime-base/`. The rename was driven
+// through this one-line constant — all consumers import it rather than
+// hardcoding `"scripts"` or `"src-runtime-base"`.
 //
 // New host/browser source continues to live under
 // `src/extensions/<host>/<browser>/scripts/` (Phase 8G architecture);
 // the multi-host scripts folders are NOT the same thing as this legacy
 // runtime base and are NOT controlled by these constants.
 //
-// Consumers must import RUNTIME_BASE_REL (string, for path joins with
-// the SRC argv root) or RUNTIME_BASE_DIR (absolute path) rather than
-// hardcoding `"scripts"` so the 8K-5 rename is mechanical.
-//
-// The SCRIPTS_DIR / scriptFile() aliases below preserve the pre-8K-3
-// export names for backward compatibility during the 8K phase rollout;
-// Phase 8K-6 closeout will remove them once all consumers have
-// migrated.
+// Phase 8K-6 (closeout) removed the backward-compat `SCRIPTS_DIR` /
+// `scriptFile()` aliases that existed during 8K-3..8K-5: verified zero
+// functional consumers before removal (`git grep` found only one
+// MIGRATION.md prose mention as historical narrative).
 export const RUNTIME_BASE_REL = "src-runtime-base";
 export const RUNTIME_BASE_DIR = path.join(REPO_ROOT, RUNTIME_BASE_REL);
-
-// Backward-compat aliases (slated for removal in Phase 8K-6 closeout).
-export const SCRIPTS_DIR   = RUNTIME_BASE_DIR;
 
 export const SURFACES_DIR  = path.join(REPO_ROOT, "surfaces");
 export const PACKAGES_DIR  = path.join(REPO_ROOT, "packages");
@@ -368,25 +361,9 @@ export function extensionBuildDir(variant) {
   return path.join(REPO_ROOT, "apps", "extensions", "chatgpt", "chrome", variant);
 }
 
-/**
- * Returns the on-disk path for a script in the legacy runtime base
- * folder (currently `scripts/`; will be `src-runtime-base/` after
- * Phase 8K-5).
- *
- * Thin convenience wrapper; the caller is responsible for providing
- * the full filename (emoji + extension included). Backward-compat
- * alias for pre-8K-3 callers — new code should import
- * RUNTIME_BASE_DIR directly. Slated for removal in Phase 8K-6.
- *
- * @param {string} filename - e.g. "0A0a.⬛️🚀 Loader Bridge 🚀.user.js"
- * @returns {string}
- */
-export function scriptFile(filename) {
-  if (!filename || typeof filename !== "string") {
-    throw new TypeError("scriptFile: filename must be a non-empty string");
-  }
-  return path.join(RUNTIME_BASE_DIR, filename);
-}
+// Phase 8K-6 (2026-05-20): the `scriptFile()` helper was removed alongside
+// the `SCRIPTS_DIR` alias. New code uses `path.join(RUNTIME_BASE_DIR, filename)`
+// directly. Verified zero functional consumers before removal.
 
 // ─── Defensive default-export note ───────────────────────────────────────────
 //
