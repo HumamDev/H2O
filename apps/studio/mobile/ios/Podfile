@@ -61,5 +61,24 @@ target 'H2OStudio' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+
+    # ExpoModulesJSI.podspec (expo-modules-core 55.0.25) omits
+    # CLANG_CXX_LANGUAGE_STANDARD from pod_target_xcconfig. Xcode 26.5 then
+    # falls through to the Pods project default (gnu++14) when generating the
+    # compile response file for ExpoModulesJSI, even though
+    # react_native_post_install writes c++20 into the target's pbxproj
+    # buildSettings. jsi.h's UUID::toString() calls std::snprintf with
+    # buffer.data(), which requires C++17+ (returns char*); under gnu++14 it
+    # returns const char* and the build fails. Patching both the xcconfig and
+    # the in-memory build_settings keeps the two in sync.
+    ['Debug', 'Release'].each do |config_name|
+      xcconfig_path = File.join(__dir__, 'Pods', 'Target Support Files',
+                                'ExpoModulesJSI',
+                                "ExpoModulesJSI.#{config_name.downcase}.xcconfig")
+      next unless File.exist?(xcconfig_path)
+      content = File.read(xcconfig_path)
+      next if content =~ /^CLANG_CXX_LANGUAGE_STANDARD\s*=/
+      File.write(xcconfig_path, content.chomp + "\nCLANG_CXX_LANGUAGE_STANDARD = c++20\n")
+    end
   end
 end
