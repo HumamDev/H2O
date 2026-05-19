@@ -1,0 +1,12 @@
+{
+  "_purpose": "Chrome unpacked-extension manifest keys for the Gemini host on the Chrome browser. Generated in Phase 8G-7 (2026-05-19) as part of the third proof-of-chain stub. Public keys are NOT secrets — they appear in every manifest.json. Private keys were generated in-memory via node:crypto.generateKeyPairSync and discarded immediately after extracting the public key.",
+  "_format": "variants.<variant>.key = base64-encoded SubjectPublicKeyInfo (DER) RSA-2048 public key, injected verbatim into the variant's manifest.json. variants.<variant>.id = the deterministic Chrome extension ID Chrome computes from sha256(key)[:16] character-mapped a-p; documentation only — the build pipeline does not consume this field.",
+  "_security": "No private keys on disk; no private keys in git history. Same scheme as Phase 8A-1 (chatgpt+chrome) and Phase 8G-5 (claude+chrome).",
+  "_warning": "Do NOT regenerate without coordinated updates to any external service that pins this ID. As of Phase 8G-7 the gemini+chrome variants have NO external ID coupling — only the local chrome.storage.local is keyed by ID.",
+  "variants": {
+    "dev": {
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAijsjd3d8oIX+i25BkpJaccWeFFsCo6Uk0CGVCHuvgNxDtbaW721rWNdfEnhsD23oYA/maYUayj47uWOyURfcPFCv8jzB3e7Doj8fG42IG33ZYRSQhp2rpEXcTMbthE6wmt0Idg0Ihuju4tL+8qtArqTkt2vFskiYZzJq48JzFcXcE7Pm1RvuGatljKWlckBHeN7VsqBQ3+IarmPfEqiNig0F7nCn5Q2BEFmvig5ObF3sfobvAZPZPFtih6629ygQ4ViE56pd6iDolGAyhff/4834oN3ZMqKM7zzg/y6UOxaclun+UqWlXJJ1ro8Sg5Dl60g4GqGzlXm/EYdQkj1RFwIDAQAB",
+      "id": "lmehehjmcjmnpndgehepcpggmpjcljkk"
+    }
+  }
+}

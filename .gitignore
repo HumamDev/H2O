@@ -23,6 +23,8 @@ apps/extensions/chatgpt/firefox/**
 !apps/extensions/chatgpt/firefox/README.md
 apps/extensions/claude/chrome/**
 !apps/extensions/claude/chrome/README.md
+apps/extensions/gemini/chrome/**
+!apps/extensions/gemini/chrome/README.md
 
 # Generated dev-server content. Phase 5B (2026-05-17) absorbed the sibling
 # h2o-dev-server/ into apps/dev-server/. The Python source (serve.py) is

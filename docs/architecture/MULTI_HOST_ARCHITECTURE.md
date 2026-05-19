@@ -1,14 +1,16 @@
 # Multi-Host / Multi-Browser Architecture
 
 > **Status**: Established in Phase 8G-2 (2026-05-19). The folder skeleton exists;
-> chatgpt+chrome legacy populates the top-level frozen folders, and as of
-> Phase 8G-5 + 8G-6 (2026-05-19) two proof-of-chain stubs are populated:
-> `src/extensions/claude/chrome/` (Chrome second-host pattern) and
-> `src/extensions/chatgpt/firefox/` (Firefox second-browser pattern). Each
-> demonstrates a different identity scheme: Chrome uses an SPKI public key
-> in `manifest.key` (Phase 8A-1 pattern); Firefox uses
-> `browser_specific_settings.gecko.id`. All other host/browser source roots
-> (`claude/firefox`, `gemini/chrome`, `gemini/firefox`) are still empty.
+> chatgpt+chrome legacy populates the top-level frozen folders. As of Phase
+> 8G-7 (2026-05-19) three proof-of-chain stubs are populated:
+> `src/extensions/claude/chrome/` (Phase 8G-5, Chrome second-host pattern),
+> `src/extensions/chatgpt/firefox/` (Phase 8G-6, Firefox second-browser
+> pattern), and `src/extensions/gemini/chrome/` (Phase 8G-7, Chrome
+> third-host pattern). Together they demonstrate both identity schemes:
+> Chrome uses an SPKI public key in `manifest.key` (Phase 8A-1 pattern,
+> used by claude+chrome + gemini+chrome); Firefox uses
+> `browser_specific_settings.gecko.id` (used by chatgpt+firefox). Remaining
+> empty roots: `claude/firefox`, `gemini/firefox`.
 >
 > **Purpose**: This document is the canonical reference for how Cockpit Pro
 > grows from the current single-product reality (chatgpt+chrome with 8 variants)

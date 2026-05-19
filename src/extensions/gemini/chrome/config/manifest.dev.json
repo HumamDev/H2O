@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "H2O Gemini (Chrome dev stub)",
+  "version": "0.0.1",
+  "description": "Phase 8G-7 proof-of-chain stub for the H2O Gemini Chrome extension. Does not implement Cockpit Pro features yet.",
+  "host_permissions": [
+    "https://gemini.google.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
