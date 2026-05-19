@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 // dispatches to the appropriate collection helper. Behavior is byte-
 // equivalent to the pre-8I-3 inlined logic — the same set of files is
 // archived, with the same markers, into the same destination.
-import { ARCHIVE_DIR } from "../paths.mjs";
+import { ARCHIVE_DIR, RUNTIME_BASE_REL } from "../paths.mjs";
 import {
   ADDITIONAL_TRACKED_FILES,
   EXCLUDED_ARCHIVE_NAMES,
@@ -138,7 +138,8 @@ function withVersionInName(filename, version) {
 }
 
 function pickUserScriptDir(srcRoot) {
-  const scriptsDir = path.join(srcRoot, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
@@ -216,7 +217,8 @@ function collectRecursiveFiles(srcRoot, relDir) {
 }
 
 function assertScriptArchiveCoverage(srcRoot, relPaths) {
-  const scriptsDir = path.join(srcRoot, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return;
   } catch {
@@ -303,12 +305,17 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
     if (/\.user\.js$/i.test(key)) {
       const oldPath = path.join(srcRoot, key);
       const oldExists = fs.existsSync(oldPath);
-      const isRootUserScriptKey = !key.startsWith("scripts/") && !key.includes("/");
+      // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal
+      // in the state-file key normalization. Today resolves to "scripts/"; 8K-5
+      // flips it to "src-runtime-base/" — at which point `--migrate-paths`
+      // (operator-invoked) will rewrite old "scripts/..." state keys to the
+      // new prefix on the next run.
+      const isRootUserScriptKey = !key.startsWith(`${RUNTIME_BASE_REL}/`) && !key.includes("/");
 
       let destKey = null;
 
       if (isRootUserScriptKey) {
-        const prefixed = `scripts/${key}`;
+        const prefixed = `${RUNTIME_BASE_REL}/${key}`;
         if (scriptSet.has(prefixed)) {
           destKey = prefixed;
         } else {

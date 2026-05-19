@@ -18,6 +18,7 @@ import {
   TOOLS_DIR,
   CHANGELOGS_DIR,
   VERSIONS_CSV,
+  RUNTIME_BASE_REL,
 } from "../paths.mjs";
 
 // Local aliases preserve pre-Phase-0E-2 variable names so the rest of this
@@ -232,7 +233,8 @@ function listGitTags() {
 }
 
 function pickScriptSourceDir() {
-  const scriptsDir = path.join(REPO_ROOT, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(REPO_ROOT, RUNTIME_BASE_REL);
   if (fs.existsSync(scriptsDir) && fs.statSync(scriptsDir).isDirectory()) {
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
     const hasUserScripts = entries.some((e) => e.isFile() && e.name.endsWith(".user.js"));

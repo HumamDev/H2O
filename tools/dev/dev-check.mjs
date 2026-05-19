@@ -9,7 +9,7 @@ import {
   getArchiveWorkbenchPresence,
   ARCHIVE_WORKBENCH_SOURCE_FILES,
 } from "../product/studio/pack-studio.mjs";
-import { extensionBuildDir } from "../paths.mjs";
+import { extensionBuildDir, RUNTIME_BASE_REL } from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -41,7 +41,8 @@ function listTopLevelUserScripts(dir) {
 }
 
 function pickUserScriptDir(srcDir) {
-  const scriptsDir = path.join(srcDir, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(srcDir, RUNTIME_BASE_REL);
   let scriptsCount = 0;
   let scriptsDirExists = false;
 

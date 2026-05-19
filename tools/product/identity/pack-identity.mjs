@@ -1,10 +1,16 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 8K-4: identity-core source path resolves through RUNTIME_BASE_REL)
 import fs from "node:fs";
 import path from "node:path";
 
+// Phase 8K-4: the identity-core source filename is still hardcoded (it's a
+// load-bearing constant referenced by name across the identity validator
+// suite); only the parent-folder name resolves through RUNTIME_BASE_REL so
+// the 8K-5 rename auto-updates this path.
+import { RUNTIME_BASE_REL } from "../../paths.mjs";
+
 // Surface source and output paths (relative to repo root / build root)
 export const IDENTITY_SURFACE_SOURCE_REL = path.join("surfaces", "identity");
-export const IDENTITY_CORE_SCRIPT_REL = path.join("scripts", "0D4a.⬛️🔐 Identity Core 🔐.js");
+export const IDENTITY_CORE_SCRIPT_REL = path.join(RUNTIME_BASE_REL, "0D4a.⬛️🔐 Identity Core 🔐.js");
 
 const IDENTITY_SURFACE_FILES = Object.freeze([
   "identity.html",

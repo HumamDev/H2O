@@ -25,6 +25,7 @@ import {
   SERVER_ROOT,
   ALIAS_DIR,
   DEV_ORDER_TSV,
+  RUNTIME_BASE_REL,
 } from "../paths.mjs";
 
 // Local aliases preserve the pre-Phase-0C variable names so the rest of this
@@ -42,7 +43,9 @@ const ALIAS_SCOPE = String(process.env.H2O_ALIAS_SCOPE || "all").trim().toLowerC
   : "all";
 
 function pickUserScriptDir(srcRoot) {
-  const scriptsDir = path.join(srcRoot, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  // Resolves to "scripts" today; flips to "src-runtime-base" in 8K-5.
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });

@@ -27,9 +27,16 @@ import {
   ARCHIVE_DIR,
   EDITS_CSV,
   EDITS_V2_CSV,
+  RUNTIME_BASE_REL,
+  RUNTIME_BASE_DIR,
 } from "../paths.mjs";
 
-const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
+// Phase 8K-4: USERSCRIPT_PATH_RE built dynamically from RUNTIME_BASE_REL so
+// the regex auto-tracks the 8K-5 directory rename. Today matches
+// `scripts/...user.js`; post-8K-5 will match `src-runtime-base/...user.js`.
+// RUNTIME_BASE_REL is constrained to alphanumeric + hyphen by repo convention
+// so no regex-escaping is needed.
+const USERSCRIPT_PATH_RE = new RegExp(`^${RUNTIME_BASE_REL}/.+\\.user\\.js$`, "i");
 const USER_FILE_RE = /\.user\.js$/i;
 const VERSION_RE = /^\s*\/\/\s*@version\s+([^\s]+)\s*$/im;
 const ID_RE = /^\s*\/\/\s*@h2o-id\s+(.+?)\s*$/im;
@@ -153,7 +160,8 @@ async function resolveTargetRelPath(args) {
 }
 
 function listUserscriptsWithMeta() {
-  const scriptsDir = path.join(REPO_ROOT, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_DIR (absolute) replaces the in-place hardcode.
+  const scriptsDir = RUNTIME_BASE_DIR;
   if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) {
     return [];
   }
@@ -161,7 +169,7 @@ function listUserscriptsWithMeta() {
   const out = [];
   for (const entry of entries) {
     if (!entry.isFile() || !USER_FILE_RE.test(entry.name)) continue;
-    const relPath = normalizePath(path.join("scripts", entry.name));
+    const relPath = normalizePath(path.join(RUNTIME_BASE_REL, entry.name));
     const meta = readUserscriptMeta(relPath);
     out.push({
       relPath,

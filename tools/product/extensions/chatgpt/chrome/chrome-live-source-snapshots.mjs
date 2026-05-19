@@ -1,6 +1,13 @@
-// @version 1.0.0
+// @version 1.1.0  (Phase 8K-4: runtime base path resolves through tools/paths.mjs)
 import fs from "node:fs";
 import path from "node:path";
+
+// Phase 8K-4: runtime userscript source folder name resolves through the
+// central path registry. Today "scripts"; 8K-5 flips to "src-runtime-base".
+// CRITICAL: this file participates in the chrome-live deterministic build
+// hash via the source-snapshot collection logic — the rename is safe
+// because the hash is computed over file CONTENTS, not source path strings.
+import { RUNTIME_BASE_REL } from "../../../../paths.mjs";
 
 function parseOrderEnabledToken(tokenRaw) {
   const raw = String(tokenRaw || "").trim();
@@ -105,7 +112,7 @@ function isSourceScriptName(filename) {
 
 function readAliasFilenameMap(srcRoot) {
   const out = {};
-  const scriptsDir = path.join(srcRoot, "scripts");
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   if (!fs.existsSync(scriptsDir)) return out;
   let entries = [];
   try {
@@ -199,7 +206,7 @@ function readTierMeta(srcRoot) {
 
 function readScriptCatalog(srcRoot) {
   const out = {};
-  const scriptsDir = path.join(srcRoot, "scripts");
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   if (!fs.existsSync(scriptsDir)) return out;
   const runtimeOrderMeta = readRuntimeOrderMeta(srcRoot);
   const tierMeta = readTierMeta(srcRoot);

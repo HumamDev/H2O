@@ -1,9 +1,16 @@
 #!/usr/bin/env node
-// @version 1.0.0
+// @version 1.1.0  (Phase 8K-4: hook pathspec resolves through RUNTIME_BASE_REL)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+
+// Phase 8K-4 (2026-05-20): the pre-commit hook's git pathspec for staged
+// userscripts now resolves through tools/paths.mjs::RUNTIME_BASE_REL
+// ("scripts" today, "src-runtime-base" post-8K-5). The hook is regenerated
+// by `npm run hooks:install` so operators must re-install the hook after
+// the 8K-5 rename for the new pathspec to take effect.
+import { RUNTIME_BASE_REL } from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -56,7 +63,7 @@ function installPreCommitHook() {
     "tmpf=$(mktemp -t h2o-prestamp.XXXXXX) || { echo \"[pre-commit] mktemp failed\" >&2; exit 1; }",
     "trap 'rm -f \"$tmpf\"' EXIT INT TERM HUP",
     "",
-    "git diff --cached --name-only --diff-filter=ACMR -z -- 'scripts/*.user.js' > \"$tmpf\"",
+    `git diff --cached --name-only --diff-filter=ACMR -z -- '${RUNTIME_BASE_REL}/*.user.js' > "$tmpf"`,
     "",
     "# No staged userscripts -> nothing for rev:stamp to do; do not touch the staging area.",
     "if [ ! -s \"$tmpf\" ]; then",

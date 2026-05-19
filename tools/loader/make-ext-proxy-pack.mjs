@@ -31,6 +31,7 @@ import {
   DEV_ORDER_TSV,
   LOADER_DEPS_JSON,
   DEV_SERVER_URL,
+  RUNTIME_BASE_REL,
 } from "../paths.mjs";
 
 // Local aliases preserve pre-Phase-0C variable names. Each resolves to the
@@ -187,7 +188,8 @@ function readOrderedAliases(orderFile) {
 
 function readCanonicalDisplayNameMap(srcRoot) {
   const out = {};
-  const scriptsDir = path.join(srcRoot, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   if (!fs.existsSync(scriptsDir)) return out;
   let entries = [];
   try {

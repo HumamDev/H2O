@@ -14,11 +14,16 @@ import path from "node:path";
 // staging; after 8J-4 moves the folders outer they'll never match,
 // but keeping the entries is harmless and defensive against any
 // future in-repo recreation that 8J-2's hard-refuse couldn't catch.
-import { META_NOTES_DIR } from "../paths.mjs";
+import { META_NOTES_DIR, RUNTIME_BASE_REL } from "../paths.mjs";
 
+// Phase 8K-4: the runtime-userscripts entry in this allowlist now resolves
+// through RUNTIME_BASE_REL ("scripts" today, "src-runtime-base" post-8K-5).
+// The git scope NAME "scripts" stays stable in commit messages (see
+// scopeForPath / chooseMessage below) — operators recognize that scope
+// regardless of the underlying folder rename.
 const SAFE_STAGE_PATHS = [
   "tools",
-  "scripts",
+  RUNTIME_BASE_REL,
   "config",
   "meta",
   "changelogs",
@@ -111,7 +116,7 @@ function isSafePath(filePath) {
   if (p.startsWith("archive/") && p !== "archive/.state/lastVersions.json") return false;
 
   if (p.startsWith("tools/")) return true;
-  if (p.startsWith("scripts/")) return true;
+  if (p.startsWith(`${RUNTIME_BASE_REL}/`)) return true;
   if (p.startsWith("config/")) return true;
   if (p.startsWith("meta/")) return true;
   if (p.startsWith("changelogs/")) return true;
@@ -131,7 +136,9 @@ function scopeForPath(filePath) {
 
   if (p === "archive/.state/lastVersions.json") return "archive";
   if (p.startsWith("tools/")) return "tools";
-  if (p.startsWith("scripts/")) return "scripts";
+  // Phase 8K-4: prefix check is path-aware; scope NAME stays "scripts"
+  // (stable identifier for commit-message scopes).
+  if (p.startsWith(`${RUNTIME_BASE_REL}/`)) return "scripts";
   if (p.startsWith("meta/")) return "meta";
   if (p.startsWith("config/")) return "config";
   if (p.startsWith("changelogs/")) return "changelogs";

@@ -36,7 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { REPO_ROOT, DEV_ORDER_TSV } from "../paths.mjs";
+import { REPO_ROOT, DEV_ORDER_TSV, RUNTIME_BASE_REL } from "../paths.mjs";
 
 /* -----------------------------
    ENV / PATHS
@@ -83,7 +83,8 @@ function writeTextFileAtomic(fp, text) {
 }
 
 function pickUserScriptDir(srcRoot) {
-  const scriptsDir = path.join(srcRoot, "scripts");
+  // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal.
+  const scriptsDir = path.join(srcRoot, RUNTIME_BASE_REL);
   try {
     if (!fs.existsSync(scriptsDir) || !fs.statSync(scriptsDir).isDirectory()) return srcRoot;
     const entries = fs.readdirSync(scriptsDir, { withFileTypes: true });
