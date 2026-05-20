@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -13,8 +14,8 @@ const IDENTITY_CORE_REL = "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.j
 const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs";
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
-const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
-const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
+const IDENTITY_SURFACE_JS_REL = `${SURFACES_BASE_REL}/identity/identity.js`;
+const IDENTITY_SURFACE_HTML_REL = `${SURFACES_BASE_REL}/identity/identity.html`;
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";
 const VALIDATOR_REL = "tools/validation/identity/validate-identity-phase4_3-connected-credentials.mjs";
 

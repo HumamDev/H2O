@@ -4,12 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { SURFACES_BASE_REL } from "../../paths.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '../../..');
 const corePath = path.join(repoRoot, 'shared/library/label-provider-core.js');
 const nativeMirrorPath = path.join(repoRoot, 'src-runtime-base/0F0h.⬛️🏷️ Label Provider Core 🏷️.js');
-const studioMirrorPath = path.join(repoRoot, 'surfaces/studio/S0F0h. 🎬 Label Provider Core - Studio.js');
+const studioMirrorPath = path.join(repoRoot, `${SURFACES_BASE_REL}/studio/S0F0h. 🎬 Label Provider Core - Studio.js`);
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');

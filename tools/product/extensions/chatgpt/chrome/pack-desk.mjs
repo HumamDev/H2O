@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// @version 1.1.0  (Phase 8A-1: manifest "key" injected for stable, path-agnostic Chrome ID)
+// @version 1.2.0  (Phase 8L-4: surface source paths routed through SURFACES_BASE_REL)
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { extensionBuildDir } from "../../../../paths.mjs";
+import { extensionBuildDir, SURFACES_BASE_REL } from "../../../../paths.mjs";
 import {
   getExtensionKey,
   deriveVariantFromOutDir,
@@ -13,8 +13,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const repoRoot = path.resolve(__dirname, "..", "..", "..", "..", "..");
-const uiSourceDir = path.join(repoRoot, "surfaces", "desk");
-const contentSourceFile = path.join(repoRoot, "surfaces", "desk", "page-bridge.js");
+// Phase 8L-4: source-side desk surface dir + content script source file.
+// Today resolves to <repo>/surfaces/desk/...; 8L-5 flips to
+// <repo>/src-surfaces-base/desk/... Bundle output below stays literal
+// "surfaces/desk" (Chrome extension side-panel default_path + buildUiDeskDir).
+const uiSourceDir = path.join(repoRoot, SURFACES_BASE_REL, "desk");
+const contentSourceFile = path.join(repoRoot, SURFACES_BASE_REL, "desk", "page-bridge.js");
 
 // Phase 4B-1: buildDir resolves via paths.extensionBuildDir("desk"), which
 // composes paths.BUILD_DIR with "chrome-ext-desk". Byte-identical to the

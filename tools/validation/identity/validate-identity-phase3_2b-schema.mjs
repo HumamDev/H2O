@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const MIGRATION_REL = "supabase/migrations/202604300001_identity_profile_workspace_rls.sql";
@@ -25,7 +26,7 @@ const EXTENSION_RUNTIME_RELS = [
 ];
 const EXTENSION_RUNTIME_DIRS = [
   "scripts",
-  "surfaces/identity",
+  `${SURFACES_BASE_REL}/identity`,
 ];
 
 function abs(rel) {

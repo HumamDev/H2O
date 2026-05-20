@@ -1,4 +1,4 @@
-// @version 1.2.0  (Phase 8K-5: split identity-core source vs bundle-output paths)
+// @version 1.3.0  (Phase 8L-4: surface source path routed through SURFACES_BASE_REL)
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,14 +13,22 @@ import path from "node:path";
 //     decoupled from the source-folder rename).
 // Pre-8K-4 both paths happened to share the same literal "scripts" so a
 // single constant sufficed; post-8K-5 they diverge.
-import { RUNTIME_BASE_REL } from "../../paths.mjs";
+//
+// Phase 8L-4: SURFACES_BASE_REL extends the same split to the identity
+// surface (identity.html/css/js). Source-side reads route through
+// SURFACES_BASE_REL; bundle-output writes and web_accessible_resources
+// keep the literal "surfaces/identity" (Chrome extension layout +
+// chrome.runtime.getURL contract).
+import { RUNTIME_BASE_REL, SURFACES_BASE_REL } from "../../paths.mjs";
 
 // Identity-core script basename — load-bearing constant referenced by name
 // across the identity validator suite.
 const IDENTITY_CORE_SCRIPT_BASENAME = "0D4a.⬛️🔐 Identity Core 🔐.js";
 
-// Surface source and output paths (relative to repo root / build root)
-export const IDENTITY_SURFACE_SOURCE_REL = path.join("surfaces", "identity");
+// Phase 8L-4: source-side surface path. Today resolves to "surfaces/identity";
+// 8L-5 flips to "src-surfaces-base/identity". The bundle output path stays
+// literal "surfaces/identity" via identitySurfaceOutDir() below.
+export const IDENTITY_SURFACE_SOURCE_REL = path.join(SURFACES_BASE_REL, "identity");
 
 // IDENTITY_CORE_SCRIPT_REL retains its pre-8K-5 value ("scripts/<basename>")
 // because its primary external use is as the BUNDLE OUTPUT relative path

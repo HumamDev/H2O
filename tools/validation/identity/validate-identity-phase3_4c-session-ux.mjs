@@ -4,12 +4,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
-const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
-const IDENTITY_SURFACE_CSS_REL = "surfaces/identity/identity.css";
+const IDENTITY_SURFACE_JS_REL = `${SURFACES_BASE_REL}/identity/identity.js`;
+const IDENTITY_SURFACE_HTML_REL = `${SURFACES_BASE_REL}/identity/identity.html`;
+const IDENTITY_SURFACE_CSS_REL = `${SURFACES_BASE_REL}/identity/identity.css`;
 const CONTROL_HUB_REL = "src-runtime-base/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
 const CONTROL_HUB_ACCOUNT_REL = "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";

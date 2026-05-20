@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { extensionBuildDir } from "../../paths.mjs";
+import { extensionBuildDir, SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -20,8 +20,8 @@ const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.m
 const MANIFEST_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs";
 const BUILD_SOURCE_REL = "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
 const IDENTITY_CORE_REL = "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js";
-const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
-const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
+const IDENTITY_SURFACE_JS_REL = `${SURFACES_BASE_REL}/identity/identity.js`;
+const IDENTITY_SURFACE_HTML_REL = `${SURFACES_BASE_REL}/identity/identity.html`;
 const CONTROL_HUB_REL = "src-runtime-base/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
 const CONTROL_HUB_ACCOUNT_REL = "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const DOC_REL = "docs/identity/IDENTITY_PHASE_3_0_SUPABASE_PREP.md";

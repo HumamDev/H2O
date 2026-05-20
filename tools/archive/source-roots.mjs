@@ -267,7 +267,13 @@ export const TOOLS_REL = "tools";
 // .gitignore + by the absence of an `apps/extensions/` descriptor in
 // SOURCE_ROOTS below (and will be hard-refused by a future 8I-7
 // path-prefix guard).
-export const SURFACES_REL = "surfaces";
+//
+// Phase 8L-4 (2026-05-20): SURFACES_REL now re-exports SURFACES_BASE_REL
+// from tools/paths.mjs (the 8L-3 source-folder path authority). Today
+// resolves to "surfaces"; 8L-5 flips to "src-surfaces-base". The archive
+// snapshot continues to walk the same on-disk source tree.
+import { SURFACES_BASE_REL } from "../paths.mjs";
+export const SURFACES_REL = SURFACES_BASE_REL;
 
 // ─── Source-root descriptors ───────────────────────────────────────────────
 //

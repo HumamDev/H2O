@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -11,8 +12,8 @@ const BACKGROUND_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-back
 const PROVIDER_REL = "tools/product/identity/identity-provider-supabase.entry.mjs";
 const LOADER_REL = "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 const IDENTITY_CORE_REL = "src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js";
-const IDENTITY_SURFACE_JS_REL = "surfaces/identity/identity.js";
-const IDENTITY_SURFACE_HTML_REL = "surfaces/identity/identity.html";
+const IDENTITY_SURFACE_JS_REL = `${SURFACES_BASE_REL}/identity/identity.js`;
+const IDENTITY_SURFACE_HTML_REL = `${SURFACES_BASE_REL}/identity/identity.html`;
 const CONTROL_HUB_REL = "src-runtime-base/0Z1a.⬛️🕹️ Control Hub 🕹️.js";
 const CONTROL_HUB_ACCOUNT_REL = "src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js";
 const RELEASE_RUNNER_REL = "tools/validation/identity/run-identity-release-gate.mjs";

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
-import { extensionBuildDir } from "../../paths.mjs";
+import { extensionBuildDir, SURFACES_BASE_REL } from "../../paths.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -67,7 +67,7 @@ const EXTENSION_RUNTIME_RELS = [
 ];
 const EXTENSION_RUNTIME_DIRS = [
   "scripts",
-  "surfaces/identity",
+  `${SURFACES_BASE_REL}/identity`,
 ];
 const BUILD_OUTPUT_DIRS = [
   extBuildRel("dev-controls"),
