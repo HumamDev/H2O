@@ -247,6 +247,10 @@
        default; when enabled, debounces SQLite store changes into the existing
        exportLatestSyncBundle writer. No Chrome auto-import. -->
   <script src="./sync/auto-export.tauri.js"></script>
+  <!-- Chrome/MV3-only: manual sync-folder import (R2B). Lets Studio Launcher
+       connect a read-only folder handle and manually import latest.json via the
+       existing full-bundle merge importer. No polling or folder writes. -->
+  <script src="./sync/folder-import.mv3.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>

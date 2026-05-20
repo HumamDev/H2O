@@ -71,6 +71,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: opt-in latest-bundle auto-export (R2A-2). Extends
   // H2O.Studio.sync with debounced manual-export scheduling.
   "sync/auto-export.tauri.js",
+  // Chrome/MV3-only: manual sync-folder import (R2B). Reads latest.json from
+  // a user-picked directory handle and calls the existing merge importer.
+  "sync/folder-import.mv3.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
@@ -179,6 +182,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/export-bundle.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
+  "sync/folder-import.mv3.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
   "S1A1f. 🎬 MiniMap Views - Studio.js",
