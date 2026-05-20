@@ -90,7 +90,35 @@ export const TOOLS_DIR     = path.join(REPO_ROOT, "tools");
 export const RUNTIME_BASE_REL = "src-runtime-base";
 export const RUNTIME_BASE_DIR = path.join(REPO_ROOT, RUNTIME_BASE_REL);
 
-export const SURFACES_DIR  = path.join(REPO_ROOT, "surfaces");
+// Phase 8L (2026-05-20): SOURCE-side path authority for the legacy
+// surface source folder (chatgpt+chrome runtime surfaces — `studio/`,
+// `identity/`, `desk/`). Today resolves to `<REPO_ROOT>/surfaces/`;
+// Phase 8L-5 will flip SURFACES_BASE_REL to "src-surfaces-base" and
+// atomically rename the folder. All SOURCE-side consumers must route
+// through these constants (or the SURFACES_DESK/IDENTITY/STUDIO_DIR
+// aliases below) — never hardcode the literal "surfaces".
+//
+// CRITICAL: this is a SOURCE-folder-name authority only. The BUNDLE
+// OUTPUT folder name remains the literal "surfaces/" — it is the
+// Chrome extension layout convention referenced by:
+//   - chrome.runtime.getURL("surfaces/identity/identity.html")
+//     embedded in `src-runtime-base/0D4a.⬛️🔐 Identity Core 🔐.js`
+//     and in the bundled `chrome-live-background.mjs` template.
+//   - manifest `web_accessible_resources` entries.
+//   - the `default_path` for the Desk popup browser_action.
+//   - all `<outDir>/surfaces/...` write paths inside pack-identity,
+//     pack-studio, pack-desk, and chrome-live build cleanup.
+// Those bundle-output paths must NOT route through SURFACES_BASE_REL;
+// they must continue to use the literal "surfaces" so the deterministic
+// build hash `77bd47cf904c6e4b2b9062a90d8e2faaa62393d79eebfe2f105a217a64a46e8a`
+// (chrome-ext-dev-controls) survives the 8L-5 source-folder rename.
+export const SURFACES_BASE_REL = "surfaces";
+export const SURFACES_BASE_DIR = path.join(REPO_ROOT, SURFACES_BASE_REL);
+
+// SURFACES_DIR retained as a backward-compat alias during 8L-3..8L-5;
+// scheduled for removal in 8L-6 closeout (mirrors the SCRIPTS_DIR alias
+// lifecycle from 8K-3..8K-6).
+export const SURFACES_DIR  = SURFACES_BASE_DIR;
 export const PACKAGES_DIR  = path.join(REPO_ROOT, "packages");
 export const APPS_DIR      = path.join(REPO_ROOT, "apps");
 export const CONFIG_DIR    = path.join(REPO_ROOT, "config");
@@ -213,9 +241,14 @@ export const PLANS_DIR     = path.join(REPO_ROOT, "plans");
 
 // ─── Subdirectories of stable interest ───────────────────────────────────────
 
-export const SURFACES_DESK_DIR     = path.join(SURFACES_DIR, "desk");
-export const SURFACES_IDENTITY_DIR = path.join(SURFACES_DIR, "identity");
-export const SURFACES_STUDIO_DIR   = path.join(SURFACES_DIR, "studio");
+// Phase 8L: route through SURFACES_BASE_DIR (the new path authority).
+// Today resolves to `<REPO_ROOT>/surfaces/<sub>`; 8L-5 will flip to
+// `<REPO_ROOT>/src-surfaces-base/<sub>`. Bundle-output writers continue
+// to use the literal "surfaces" subdir — these constants are for
+// SOURCE-side reads only.
+export const SURFACES_DESK_DIR     = path.join(SURFACES_BASE_DIR, "desk");
+export const SURFACES_IDENTITY_DIR = path.join(SURFACES_BASE_DIR, "identity");
+export const SURFACES_STUDIO_DIR   = path.join(SURFACES_BASE_DIR, "studio");
 
 export const META_LEDGER_DIR   = path.join(META_DIR, "ledger");
 export const META_REPORTS_DIR  = path.join(META_DIR, "reports");
