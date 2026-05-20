@@ -447,7 +447,71 @@
     return /Could not establish connection|Receiving end does not exist|folder bridge|chat-list service unavailable|open a ChatGPT tab to access folders|Extension context invalidated|context invalidated/i.test(msg);
   }
 
+  /* M2c-2 Desktop folder write. folderId truthy → store.folders.bindChat
+   * (INSERT OR REPLACE; chat_id is PK so prior binding is replaced
+   * atomically). folderId empty/null → unbind via listForChat + unbindChat
+   * for every current folder (typically 0 or 1 per V1 chat). Returns a
+   * result shape compatible with MV3's setFolderBinding so studio.js's
+   * picker handler doesn't need to branch. */
+  async function desktopSetFolderBinding(chatId, folderId, opts) {
+    const cid = String(chatId || '').trim();
+    const folder = String(folderId || '').trim();
+    if (!cid) {
+      const result = folderWriteFailure('missing-chat-id', cid, folder, 'chatId required');
+      recordWrite('folderBinding', { ...result });
+      return result;
+    }
+    const store = getStudioStores().folders;
+    if (!store) {
+      const result = folderWriteFailure('desktop-store-unavailable', cid, folder, 'store.folders unavailable');
+      recordWrite('folderBinding', { ...result });
+      return result;
+    }
+    try {
+      let folderName = '';
+      if (folder) {
+        const bindOk = await store.bindChat(folder, cid, { assignedAt: Date.now() });
+        if (!bindOk) {
+          const result = folderWriteFailure('desktop-bind-failed', cid, folder, 'bindChat returned false');
+          recordWrite('folderBinding', { ...result });
+          return result;
+        }
+        try {
+          const f = (typeof store.get === 'function') ? await store.get(folder) : null;
+          folderName = (f && f.name) || '';
+        } catch (_) { /* name lookup is best-effort */ }
+      } else {
+        /* Unbind: clear every folder currently bound to this chat. V1's
+         * folder_bindings.PRIMARY KEY (chat_id) means listForChat returns
+         * at most one row, but loop defensively in case the caller has
+         * relaxed that. */
+        const bound = (typeof store.listForChat === 'function') ? await store.listForChat(cid) : [];
+        for (const f of (Array.isArray(bound) ? bound : [])) {
+          const fid = f && f.folderId;
+          if (fid && typeof store.unbindChat === 'function') {
+            try { await store.unbindChat(fid, cid); }
+            catch (e) { err('desktopSetFolderBinding.unbind', e); }
+          }
+        }
+      }
+      bustCaches('desktop-setFolderBinding');
+      try { await getIndex()?.refresh('desktop-setFolderBinding'); } catch {}
+      emitUpdated('folder-binding-changed', {
+        chatId: cid, folderId: folder, source: (opts && opts.source) || 'desktop-sqlite',
+      });
+      const result = { ok: true, status: 'desktop-sqlite', chatId: cid, folderId: folder, folderName };
+      recordWrite('folderBinding', { ...result });
+      return result;
+    } catch (e) {
+      const result = folderWriteFailure('desktop-write-failed', cid, folder, String((e && e.message) || e));
+      recordWrite('folderBinding', { ...result, error: String((e && e.stack) || e) });
+      err('desktopSetFolderBinding', e);
+      return result;
+    }
+  }
+
   async function setFolderBinding(chatId, folderId, opts = {}) {
+    if (LW_isTauri()) return await desktopSetFolderBinding(chatId, folderId, opts);
     const cid = String(chatId || '');
     const folder = String(folderId || '');
     const cl = getChatList();
@@ -495,7 +559,65 @@
     return /Could not establish connection|Receiving end does not exist|archive bridge|category bridge|Extension context invalidated|context invalidated/i.test(msg);
   }
 
+  /* M2c-2 Desktop category write. SQLite category assignment is per-chat
+   * (chats.category_id) rather than per-snapshot — snapshotId is preserved
+   * in the result for UI/event compatibility but ignored for the write.
+   * Empty categoryId triggers clearChat. assignChat/clearChat return false
+   * if no chat row matches; that surfaces as ok:false without throwing. */
+  async function desktopSetSnapshotCategory(snapshotId, chatId, categoryId) {
+    const sid = String(snapshotId || '').trim();
+    const cid = String(chatId || '').trim();
+    const category = String(categoryId || '').trim();
+    if (!cid) {
+      const result = categoryWriteFailure('missing-chat-id', sid, cid, category, 'chatId required on Desktop');
+      recordWrite('snapshotCategory', { ...result });
+      return result;
+    }
+    const store = getStudioStores().categories;
+    if (!store) {
+      const result = categoryWriteFailure('desktop-store-unavailable', sid, cid, category, 'store.categories unavailable');
+      recordWrite('snapshotCategory', { ...result });
+      return result;
+    }
+    try {
+      let writeOk;
+      if (category) {
+        if (typeof store.assignChat !== 'function') {
+          const result = categoryWriteFailure('desktop-assign-unavailable', sid, cid, category, 'store.categories.assignChat unavailable');
+          recordWrite('snapshotCategory', { ...result });
+          return result;
+        }
+        writeOk = await store.assignChat(category, cid);
+      } else {
+        if (typeof store.clearChat !== 'function') {
+          const result = categoryWriteFailure('desktop-clear-unavailable', sid, cid, category, 'store.categories.clearChat unavailable');
+          recordWrite('snapshotCategory', { ...result });
+          return result;
+        }
+        writeOk = await store.clearChat(cid);
+      }
+      bustCaches('desktop-setSnapshotCategory');
+      try { await getIndex()?.refresh('desktop-setSnapshotCategory'); } catch {}
+      emitUpdated('category-changed', { snapshotId: sid, chatId: cid, categoryId: category });
+      const result = {
+        ok: writeOk !== false,
+        status: 'desktop-sqlite',
+        snapshotId: sid,
+        chatId: cid,
+        categoryId: category,
+      };
+      recordWrite('snapshotCategory', { ...result });
+      return result;
+    } catch (e) {
+      const result = categoryWriteFailure('desktop-write-failed', sid, cid, category, String((e && e.message) || e));
+      recordWrite('snapshotCategory', { ...result, error: String((e && e.stack) || e) });
+      err('desktopSetSnapshotCategory', e);
+      return result;
+    }
+  }
+
   async function setSnapshotCategory(snapshotId, chatId, categoryId) {
+    if (LW_isTauri()) return await desktopSetSnapshotCategory(snapshotId, chatId, categoryId);
     const sid = String(snapshotId || '').trim();
     const cid = String(chatId || '').trim();
     const category = String(categoryId || '').trim();
