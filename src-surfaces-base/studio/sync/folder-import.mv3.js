@@ -6,6 +6,9 @@
  * syncNow() that reads latest.json and calls the existing full-bundle import
  * flow in merge mode.
  *
+ * R2C adds opt-in auto-sync triggers while Studio is open/visible. This is
+ * still not a background daemon: no interval polling, no folder writes.
+ *
  * Safety invariants:
  *   - no Desktop/Tauri behavior
  *   - no background polling or interval auto-import
@@ -38,7 +41,7 @@
   H2O.Studio = H2O.Studio || {};
   H2O.Studio.sync = H2O.Studio.sync || {};
 
-  var PHASE = 'R2B';
+  var PHASE = 'R2C';
   var MODE = 'manual-sync-folder-import';
   var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var LATEST_FILE = 'latest.json';
@@ -47,6 +50,9 @@
   var IDB_STORE = 'handles';
   var IDB_KEY = 'sync-folder';
   var STATE_KEY = 'h2o:sync:folder-import:state:v1';
+  var AUTO_SYNC_MIN_INTERVAL_MS = 30000;
+  var AUTO_SYNC_DELAY_MS = 1000;
+  var AUTO_SYNC_BOOT_DELAY_MS = 1500;
   var MAX_ERRORS = 20;
 
   var state = {
@@ -67,6 +73,18 @@
     lastSyncStatus: '',
     lastSyncError: '',
     lastSyncResult: null,
+    syncInFlight: false,
+    autoSyncEnabled: false,
+    autoSyncEventsBound: false,
+    autoSyncTimer: null,
+    autoSyncScheduledAt: 0,
+    autoSyncScheduledReason: '',
+    autoSyncRunning: false,
+    lastAutoSyncAttemptAt: 0,
+    lastAutoSyncAt: '',
+    lastAutoSyncReason: '',
+    lastAutoSyncStatus: '',
+    lastAutoSyncError: '',
     errors: [],
   };
 
@@ -215,6 +233,12 @@
     state.lastSyncError = cleanString(saved.lastSyncError);
     state.lastFileLastModified = numberOrZero(saved.lastFileLastModified);
     state.lastFileSize = numberOrZero(saved.lastFileSize);
+    state.autoSyncEnabled = !!saved.autoSyncEnabled;
+    state.lastAutoSyncAttemptAt = numberOrZero(saved.lastAutoSyncAttemptAt);
+    state.lastAutoSyncAt = cleanString(saved.lastAutoSyncAt);
+    state.lastAutoSyncReason = cleanString(saved.lastAutoSyncReason);
+    state.lastAutoSyncStatus = cleanString(saved.lastAutoSyncStatus);
+    state.lastAutoSyncError = cleanString(saved.lastAutoSyncError);
   }
 
   async function persistState(patch) {
@@ -234,6 +258,13 @@
       lastSyncError: state.lastSyncError,
       lastFileLastModified: state.lastFileLastModified,
       lastFileSize: state.lastFileSize,
+      autoSyncEnabled: !!state.autoSyncEnabled,
+      lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
+      lastAutoSyncAt: state.lastAutoSyncAt,
+      lastAutoSyncReason: state.lastAutoSyncReason,
+      lastAutoSyncStatus: state.lastAutoSyncStatus,
+      lastAutoSyncError: state.lastAutoSyncError,
+      autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: false,
     }, safeObject(patch));
@@ -284,6 +315,36 @@
       pushError('request-permission', error);
       return 'denied';
     }
+  }
+
+  function clearAutoSyncTimer() {
+    if (!state.autoSyncTimer) return;
+    try { global.clearTimeout(state.autoSyncTimer); }
+    catch (_) { /* ignore */ }
+    state.autoSyncTimer = null;
+  }
+
+  function bindAutoSyncEvents() {
+    if (state.autoSyncEventsBound) return;
+    state.autoSyncEventsBound = true;
+    try {
+      global.addEventListener('focus', function () {
+        scheduleAutoSync('window-focus').catch(function (error) { pushError('auto-sync.focus', error); });
+      });
+    } catch (error) { pushError('bind.focus', error); }
+    try {
+      global.document.addEventListener('visibilitychange', function () {
+        if (global.document.visibilityState === 'visible') {
+          scheduleAutoSync('document-visible').catch(function (error) { pushError('auto-sync.visibility', error); });
+        }
+      });
+    } catch (error) { pushError('bind.visibilitychange', error); }
+  }
+
+  function throttleRemainingMs(nowMs) {
+    var last = numberOrZero(state.lastAutoSyncAttemptAt);
+    if (!last) return 0;
+    return Math.max(0, AUTO_SYNC_MIN_INTERVAL_MS - (nowMs - last));
   }
 
   function getPlatformMessaging() {
@@ -421,6 +482,9 @@
       state.lastSyncStatus = 'sync-folder-connected';
       state.lastSyncError = '';
       await persistState({ connected: true, permission: permission });
+      if (state.autoSyncEnabled) {
+        scheduleAutoSync('folder-connected').catch(function (autoError) { pushError('auto-sync.folder-connected', autoError); });
+      }
       return {
         ok: true,
         phase: PHASE,
@@ -446,6 +510,7 @@
   }
 
   async function disconnectFolder() {
+    clearAutoSyncTimer();
     try { await idbDelete(IDB_KEY); }
     catch (error) { pushError('disconnect-folder', error); }
     state.handle = null;
@@ -469,6 +534,270 @@
     return !!state.handle;
   }
 
+  async function enableAutoSync() {
+    await loadStoredHandle();
+    state.autoSyncEnabled = true;
+    state.lastAutoSyncStatus = 'auto-sync-enabled';
+    state.lastAutoSyncError = '';
+    bindAutoSyncEvents();
+    await persistState({
+      autoSyncEnabled: true,
+      lastAutoSyncStatus: state.lastAutoSyncStatus,
+      lastAutoSyncError: '',
+    });
+    return {
+      ok: true,
+      phase: PHASE,
+      mode: MODE,
+      enabled: true,
+      connected: !!state.handle,
+      minIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
+      triggerDelayMs: AUTO_SYNC_DELAY_MS,
+      bootDelayMs: AUTO_SYNC_BOOT_DELAY_MS,
+      backgroundAutoImport: false,
+      chromeWritesSyncFolder: false,
+      status: 'auto-sync-enabled',
+    };
+  }
+
+  async function disableAutoSync() {
+    clearAutoSyncTimer();
+    state.autoSyncEnabled = false;
+    state.lastAutoSyncStatus = 'auto-sync-disabled';
+    state.lastAutoSyncError = '';
+    await persistState({
+      autoSyncEnabled: false,
+      lastAutoSyncStatus: state.lastAutoSyncStatus,
+      lastAutoSyncError: '',
+    });
+    return {
+      ok: true,
+      phase: PHASE,
+      mode: MODE,
+      enabled: false,
+      scheduled: false,
+      status: 'auto-sync-disabled',
+    };
+  }
+
+  function isAutoSyncEnabled() {
+    return !!state.autoSyncEnabled;
+  }
+
+  async function runAutoSync(reason) {
+    var cleanReason = cleanString(reason) || state.autoSyncScheduledReason || 'auto-sync';
+    if (!state.autoSyncEnabled) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: false,
+        autoSync: true,
+        reason: cleanReason,
+        status: 'auto-sync-disabled',
+      };
+    }
+    await loadStoredHandle();
+    if (!state.handle) {
+      state.lastAutoSyncStatus = 'auto-sync-folder-not-connected';
+      state.lastAutoSyncError = '';
+      await persistState({ lastAutoSyncStatus: state.lastAutoSyncStatus, lastAutoSyncError: '' });
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        connected: false,
+        autoSync: true,
+        reason: cleanReason,
+        status: 'auto-sync-folder-not-connected',
+      };
+    }
+    if (state.autoSyncRunning || state.syncInFlight) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        autoSync: true,
+        reason: cleanReason,
+        status: 'auto-sync-in-flight',
+      };
+    }
+    var permission = await queryPermission(state.handle);
+    state.permission = permission;
+    if (permission !== 'granted') {
+      state.lastAutoSyncAttemptAt = Date.now();
+      state.lastAutoSyncAt = nowIso();
+      state.lastAutoSyncReason = cleanReason;
+      state.lastAutoSyncStatus = 'auto-sync-reconnect-required';
+      state.lastAutoSyncError = 'read permission not granted';
+      await persistState({
+        permission: permission,
+        lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
+        lastAutoSyncAt: state.lastAutoSyncAt,
+        lastAutoSyncReason: state.lastAutoSyncReason,
+        lastAutoSyncStatus: state.lastAutoSyncStatus,
+        lastAutoSyncError: state.lastAutoSyncError,
+      });
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        autoSync: true,
+        permission: permission,
+        reason: cleanReason,
+        error: state.lastAutoSyncError,
+        status: 'auto-sync-reconnect-required',
+      };
+    }
+
+    state.autoSyncRunning = true;
+    state.lastAutoSyncAttemptAt = Date.now();
+    state.lastAutoSyncReason = cleanReason;
+    try {
+      var result = await syncNow({ autoSync: true, reason: cleanReason });
+      state.lastAutoSyncAt = nowIso();
+      state.lastAutoSyncStatus = cleanString(result && result.status) || (result && result.ok ? 'auto-sync-ok' : 'auto-sync-failed');
+      state.lastAutoSyncError = cleanString(result && (result.error || result.reason));
+      await persistState({
+        lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
+        lastAutoSyncAt: state.lastAutoSyncAt,
+        lastAutoSyncReason: state.lastAutoSyncReason,
+        lastAutoSyncStatus: state.lastAutoSyncStatus,
+        lastAutoSyncError: state.lastAutoSyncError,
+      });
+      return Object.assign({}, result || {}, {
+        autoSync: true,
+        autoSyncReason: cleanReason,
+        lastAutoSyncAt: state.lastAutoSyncAt,
+      });
+    } catch (error) {
+      state.lastAutoSyncAt = nowIso();
+      state.lastAutoSyncStatus = 'auto-sync-failed';
+      state.lastAutoSyncError = String(error && (error.message || error));
+      pushError('run-auto-sync', error);
+      await persistState({
+        lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
+        lastAutoSyncAt: state.lastAutoSyncAt,
+        lastAutoSyncReason: state.lastAutoSyncReason,
+        lastAutoSyncStatus: state.lastAutoSyncStatus,
+        lastAutoSyncError: state.lastAutoSyncError,
+      });
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        autoSync: true,
+        reason: cleanReason,
+        error: state.lastAutoSyncError,
+        status: state.lastAutoSyncStatus,
+      };
+    } finally {
+      state.autoSyncRunning = false;
+    }
+  }
+
+  async function scheduleAutoSync(reason) {
+    var cleanReason = cleanString(reason) || 'auto-sync';
+    await loadStoredHandle();
+    if (!state.autoSyncEnabled) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: false,
+        scheduled: false,
+        reason: cleanReason,
+        status: 'auto-sync-disabled',
+      };
+    }
+    if (!state.handle) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        connected: false,
+        scheduled: false,
+        reason: cleanReason,
+        status: 'auto-sync-folder-not-connected',
+      };
+    }
+    if (state.autoSyncRunning || state.syncInFlight) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        scheduled: false,
+        reason: cleanReason,
+        status: 'auto-sync-in-flight',
+      };
+    }
+    var nowMs = Date.now();
+    var remaining = throttleRemainingMs(nowMs);
+    if (remaining > 0) {
+      state.lastAutoSyncStatus = 'auto-sync-throttled';
+      state.lastAutoSyncReason = cleanReason;
+      await persistState({
+        lastAutoSyncReason: state.lastAutoSyncReason,
+        lastAutoSyncStatus: state.lastAutoSyncStatus,
+      });
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        scheduled: false,
+        reason: cleanReason,
+        throttleRemainingMs: remaining,
+        minIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
+        status: 'auto-sync-throttled',
+      };
+    }
+    if (state.autoSyncTimer) {
+      state.autoSyncScheduledReason = cleanReason;
+      return {
+        ok: true,
+        phase: PHASE,
+        mode: MODE,
+        enabled: true,
+        scheduled: true,
+        reason: cleanReason,
+        status: 'auto-sync-already-scheduled',
+      };
+    }
+
+    state.autoSyncScheduledAt = nowMs;
+    state.autoSyncScheduledReason = cleanReason;
+    state.lastAutoSyncReason = cleanReason;
+    state.lastAutoSyncStatus = 'auto-sync-scheduled';
+    await persistState({
+      lastAutoSyncReason: cleanReason,
+      lastAutoSyncStatus: state.lastAutoSyncStatus,
+    });
+    state.autoSyncTimer = global.setTimeout(function () {
+      state.autoSyncTimer = null;
+      runAutoSync(state.autoSyncScheduledReason || cleanReason).catch(function (error) {
+        pushError('scheduled-auto-sync', error);
+      });
+    }, AUTO_SYNC_DELAY_MS);
+    return {
+      ok: true,
+      phase: PHASE,
+      mode: MODE,
+      enabled: true,
+      scheduled: true,
+      reason: cleanReason,
+      delayMs: AUTO_SYNC_DELAY_MS,
+      minIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
+      status: 'auto-sync-scheduled',
+    };
+  }
+
   function status() {
     return {
       ok: true,
@@ -484,6 +813,18 @@
       lastChecksum: state.lastChecksum,
       lastSyncStatus: state.lastSyncStatus,
       lastSyncError: state.lastSyncError,
+      syncInFlight: !!state.syncInFlight,
+      autoSyncEnabled: !!state.autoSyncEnabled,
+      autoSyncEventsBound: !!state.autoSyncEventsBound,
+      autoSyncScheduled: !!state.autoSyncTimer,
+      autoSyncRunning: !!state.autoSyncRunning,
+      autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
+      autoSyncDelayMs: AUTO_SYNC_DELAY_MS,
+      lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
+      lastAutoSyncAt: state.lastAutoSyncAt,
+      lastAutoSyncReason: state.lastAutoSyncReason,
+      lastAutoSyncStatus: state.lastAutoSyncStatus,
+      lastAutoSyncError: state.lastAutoSyncError,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: false,
     };
@@ -492,6 +833,18 @@
   async function syncNow(options) {
     var startedAt = Date.now();
     var opts = safeObject(options);
+    if (state.syncInFlight) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+        autoSync: !!opts.autoSync,
+        status: 'sync-folder-sync-in-flight',
+      };
+    }
+    state.syncInFlight = true;
+    try {
     await loadStoredHandle();
     if (!state.handle) {
       return {
@@ -533,6 +886,45 @@
         throw new Error('latest.json parse failed: ' + String(parseError && (parseError.message || parseError)));
       }
       validateBundle(bundle);
+      var signature = summarySignature(bundle);
+      if (opts.autoSync && checksum && state.lastChecksum && state.lastChecksum === checksum) {
+        var alreadyRowsAfter = await refreshLibraryIndex('sync-folder-auto-skip');
+        state.lastFileName = LATEST_FILE;
+        state.lastFileLastModified = numberOrZero(file.lastModified);
+        state.lastFileSize = numberOrZero(file.size);
+        state.lastSummarySignature = signature;
+        state.lastSyncStatus = 'auto-sync-latest-already-applied';
+        state.lastSyncError = '';
+        await persistState({
+          lastSyncStatus: state.lastSyncStatus,
+          lastSyncError: '',
+          lastChecksum: checksum,
+          lastSummarySignature: signature,
+          lastFileLastModified: state.lastFileLastModified,
+          lastFileSize: state.lastFileSize,
+        });
+        return {
+          ok: true,
+          phase: PHASE,
+          mode: MODE,
+          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+          schema: bundle.schema,
+          exportedAt: cleanString(bundle.exportedAt),
+          checksum: checksum,
+          fileLastModified: state.lastFileLastModified,
+          fileSize: state.lastFileSize,
+          summarySignature: signature,
+          importedChats: 0,
+          importedSnapshots: 0,
+          skipped: 0,
+          rowsAfter: alreadyRowsAfter,
+          autoSync: true,
+          durationMs: Date.now() - startedAt,
+          backgroundAutoImport: false,
+          chromeWritesSyncFolder: false,
+          status: 'auto-sync-latest-already-applied',
+        };
+      }
 
       var dryRun = await callArchive('dryRunImportFullBundle', { bundle: bundle });
       if (opts.dryRunOnly) {
@@ -571,7 +963,6 @@
       } catch (_) { /* ignore */ }
 
       var counts = importCounts(importResult, dryRun);
-      var signature = summarySignature(bundle);
       state.lastFileName = LATEST_FILE;
       state.lastFileLastModified = numberOrZero(file.lastModified);
       state.lastFileSize = numberOrZero(file.size);
@@ -613,6 +1004,7 @@
         dryRun: dryRun,
         importResult: importResult,
         durationMs: Date.now() - startedAt,
+        autoSync: !!opts.autoSync,
         backgroundAutoImport: false,
         chromeWritesSyncFolder: false,
         status: 'sync-folder-imported',
@@ -638,6 +1030,9 @@
         status: state.lastSyncStatus,
       };
     }
+    } finally {
+      state.syncInFlight = false;
+    }
   }
 
   function diagnose() {
@@ -654,6 +1049,9 @@
       dryRunImportAvailable: true,
       mergeImportOnly: true,
       automaticPolling: false,
+      focusTriggerEnabled: !!state.autoSyncEnabled,
+      visibilityTriggerEnabled: !!state.autoSyncEnabled,
+      bootReadyTriggerEnabled: !!state.autoSyncEnabled,
       bidirectionalSync: false,
       lastFileName: state.lastFileName,
       lastFileLastModified: state.lastFileLastModified,
@@ -670,6 +1068,10 @@
     hasFolder: hasFolder,
     status: status,
     syncNow: syncNow,
+    enableAutoSync: enableAutoSync,
+    disableAutoSync: disableAutoSync,
+    isAutoSyncEnabled: isAutoSyncEnabled,
+    scheduleAutoSync: scheduleAutoSync,
     diagnose: diagnose,
   };
 
@@ -677,7 +1079,16 @@
     folder: api,
   });
 
-  loadStoredHandle().catch(function (error) {
+  loadStoredHandle().then(function () {
+    if (!state.autoSyncEnabled) return;
+    bindAutoSyncEvents();
+    if (!state.handle) return;
+    global.setTimeout(function () {
+      scheduleAutoSync('studio-boot-ready').catch(function (error) {
+        pushError('auto-sync.boot-ready', error);
+      });
+    }, AUTO_SYNC_BOOT_DELAY_MS);
+  }).catch(function (error) {
     pushError('boot-load-folder', error);
   });
 })(typeof globalThis !== 'undefined' ? globalThis : window);
