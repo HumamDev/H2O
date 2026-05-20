@@ -215,6 +215,11 @@
       const list = await sqliteFetcher();
       const safe = Array.isArray(list) ? list : [];
       setCache(slot, safe);
+      /* Tag the slot so the cache fast-path in getFolders/Categories/Labels
+       * can tell Desktop-sourced cache from MV3-sourced cache. Without this,
+       * a stale [] left over from an MV3-fallback call would shadow the
+       * Desktop branch on subsequent reads. */
+      slot.source = 'desktop-sqlite';
       recordRead(name, { source: 'desktop-sqlite', count: safe.length, fresh: true });
       return safe;
     } catch (e) {
@@ -247,11 +252,15 @@
   }
 
   async function getFolders({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.folders)) {
+    const desktop = LW_isTauri();
+    /* On Tauri, only honor cache that was last populated by the Desktop
+     * SQLite branch — never reuse a stale MV3 chat-list cache (which on
+     * Desktop would be []) or an untagged pre-M2c-1 cache. */
+    if (!fresh && isFresh(cache.folders) && (!desktop || cache.folders.source === 'desktop-sqlite')) {
       recordRead('folders', { source: 'cache', count: itemCount(cache.folders.value), fresh: false });
       return cache.folders.value;
     }
-    if (LW_isTauri()) {
+    if (desktop) {
       return await desktopFetchCatalog(cache.folders, 'folders', async () => {
         const store = getStudioStores().folders;
         if (!store || typeof store.list !== 'function') return [];
@@ -279,11 +288,12 @@
   }
 
   async function getCategories({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.categories)) {
+    const desktop = LW_isTauri();
+    if (!fresh && isFresh(cache.categories) && (!desktop || cache.categories.source === 'desktop-sqlite')) {
       recordRead('categories', { source: 'cache', count: itemCount(cache.categories.value), fresh: false });
       return cache.categories.value;
     }
-    if (LW_isTauri()) {
+    if (desktop) {
       return await desktopFetchCatalog(cache.categories, 'categories', async () => {
         const store = getStudioStores().categories;
         if (!store || typeof store.list !== 'function') return [];
@@ -311,11 +321,12 @@
   }
 
   async function getLabels({ fresh = false } = {}) {
-    if (!fresh && isFresh(cache.labels)) {
+    const desktop = LW_isTauri();
+    if (!fresh && isFresh(cache.labels) && (!desktop || cache.labels.source === 'desktop-sqlite')) {
       recordRead('labels', { source: 'cache', count: itemCount(cache.labels.value), fresh: false });
       return cache.labels.value;
     }
-    if (LW_isTauri()) {
+    if (desktop) {
       return await desktopFetchCatalog(cache.labels, 'labels', async () => {
         const store = getStudioStores().labels;
         if (!store || typeof store.list !== 'function') return [];
