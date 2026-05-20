@@ -48,6 +48,10 @@
     'h2o:prm:cgx:library:chat-title:state:v1:',// chat title/emoji state
     'h2o:prm:cgx:library:interface-meta:v1:', // native decorator meta/heat/pin mirror
   ];
+  const STUDIO_LIBRARY_INDEX_CACHE_KEY = 'h2o:prm:cgx:library-index:studio:registry:v1';
+  const IGNORED_SELF_REFRESH_KEYS = new Set([
+    STUDIO_LIBRARY_INDEX_CACHE_KEY,
+  ]);
   // Broadcast heartbeat to avoid event storms: at most one sync per 350ms.
   const COALESCE_MS = 350;
   // Studio-originated sync key: write here, native picks up via chrome.storage.
@@ -123,6 +127,7 @@
 
   function isWatchedKey(key) {
     const k = String(key || '');
+    if (IGNORED_SELF_REFRESH_KEYS.has(k)) return false;
     return WATCHED_PREFIXES.some((p) => k.startsWith(p));
   }
 
@@ -385,6 +390,7 @@
         hasChromeStorage: hasChromeStorage(),
         lastSync: state.lastSync,
         watchedPrefixes: WATCHED_PREFIXES,
+        ignoredSelfRefreshKeys: Array.from(IGNORED_SELF_REFRESH_KEYS),
         broadcastKey: BROADCAST_KEY,
         nativeBroadcastKey: NATIVE_BROADCAST_KEY,
         coalesceMs: COALESCE_MS,
