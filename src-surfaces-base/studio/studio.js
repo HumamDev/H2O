@@ -4742,6 +4742,31 @@ function renderSettingsRoute(){
       </div>
     </div>
 
+    <h3 style="${sectionTitleStyle}">Local Sync</h3>
+    <div id="wbSettingsSyncBox" style="${cardStyle};margin:0 0 28px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div id="wbSettingsSyncTitle" style="font-weight:600">Desktop to Chrome Sync</div>
+          <div id="wbSettingsSyncSummary" style="opacity:.7;font-size:12px">Reading sync status…</div>
+        </div>
+        <button id="wbSettingsSyncRefresh" type="button" style="${btnStyle}">Refresh Status</button>
+      </div>
+      <div id="wbSettingsSyncStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+      <div id="wbSettingsSyncDesktopControls" style="display:none;gap:8px;flex-wrap:wrap">
+        <button id="wbSettingsSyncExportLatest" type="button" style="${btnStyle}">Write latest.json</button>
+        <button id="wbSettingsSyncEnableDesktopAuto" type="button" style="${btnStyle}">Enable Auto Export</button>
+        <button id="wbSettingsSyncDisableDesktopAuto" type="button" style="${btnStyle}">Disable Auto Export</button>
+      </div>
+      <div id="wbSettingsSyncChromeControls" style="display:none;gap:8px;flex-wrap:wrap">
+        <button id="wbSettingsSyncConnectFolder" type="button" style="${btnStyle}">Connect Folder</button>
+        <button id="wbSettingsSyncDisconnectFolder" type="button" style="${btnStyle}">Disconnect</button>
+        <button id="wbSettingsSyncNow" type="button" style="${btnStyle}">Sync Now</button>
+        <button id="wbSettingsSyncEnableChromeAuto" type="button" style="${btnStyle}">Enable Auto Sync</button>
+        <button id="wbSettingsSyncDisableChromeAuto" type="button" style="${btnStyle}">Disable Auto Sync</button>
+      </div>
+      <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+    </div>
+
     <h3 style="${sectionTitleStyle}">Storage Diagnostics</h3>
     <div id="wbSettingsDiagBox" style="${cardStyle}">
       <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
@@ -4758,6 +4783,7 @@ function renderSettingsRoute(){
     </div>
   `;
 
+  bindSettingsSyncControls(panel);
   refreshSettingsDiagnostics(panel);
 }
 
@@ -4803,6 +4829,210 @@ async function refreshSettingsDiagnostics(panel){
       }
     }
   }
+  refreshSettingsSync(panel).catch((err) => {
+    const log = panel.querySelector("#wbSettingsSyncLog");
+    if (log) {
+      log.hidden = false;
+      log.textContent = "Sync status refresh failed.\n" + String(err && (err.stack || err.message || err));
+    }
+  });
+}
+
+function settingsFormatBytes(value){
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function settingsIsoOrBlank(value){
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    try { return new Date(value).toLocaleString(); }
+    catch { return String(value); }
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return raw;
+  try { return new Date(ms).toLocaleString(); }
+  catch { return raw; }
+}
+
+function settingsSyncRowsHtml(rows){
+  return rows.map(([label, value]) => `
+    <div style="opacity:.6">${esc(label)}</div>
+    <div>${esc(value == null || value === "" ? "—" : value)}</div>
+  `).join("");
+}
+
+function settingsSyncLog(panel, message){
+  const log = panel && panel.querySelector("#wbSettingsSyncLog");
+  if (!log) return;
+  log.hidden = false;
+  log.textContent = String(message || "");
+}
+
+function settingsSummarizeResult(result){
+  if (!result || typeof result !== "object") return String(result ?? "");
+  const lines = [
+    `ok: ${!!result.ok}`,
+    `status: ${result.status || "(none)"}`,
+  ];
+  if (result.path) lines.push(`path: ${result.path}`);
+  if (result.bytes) lines.push(`bytes: ${result.bytes}${settingsFormatBytes(result.bytes) ? ` (${settingsFormatBytes(result.bytes)})` : ""}`);
+  if (result.chatCount != null) lines.push(`chats: ${result.chatCount}`);
+  if (result.snapshotCount != null) lines.push(`snapshots: ${result.snapshotCount}`);
+  if (result.turnCount != null) lines.push(`turns: ${result.turnCount}`);
+  if (result.importedChats != null) lines.push(`importedChats: ${result.importedChats}`);
+  if (result.importedSnapshots != null) lines.push(`importedSnapshots: ${result.importedSnapshots}`);
+  if (result.skipped != null) lines.push(`skipped: ${result.skipped}`);
+  if (result.rowsAfter != null) lines.push(`rowsAfter: ${result.rowsAfter}`);
+  if (result.error || result.reason) lines.push(`error: ${result.error || result.reason}`);
+  return lines.join("\n");
+}
+
+async function refreshSettingsSync(panel){
+  if (!panel) return;
+  const isDesktop = STUDIO_isTauri();
+  const title = panel.querySelector("#wbSettingsSyncTitle");
+  const summary = panel.querySelector("#wbSettingsSyncSummary");
+  const statusEl = panel.querySelector("#wbSettingsSyncStatus");
+  const desktopControls = panel.querySelector("#wbSettingsSyncDesktopControls");
+  const chromeControls = panel.querySelector("#wbSettingsSyncChromeControls");
+
+  if (desktopControls) desktopControls.style.display = isDesktop ? "flex" : "none";
+  if (chromeControls) chromeControls.style.display = isDesktop ? "none" : "flex";
+
+  if (isDesktop) {
+    if (title) title.textContent = "Desktop Sync Export";
+    if (summary) summary.textContent = "Write the latest Studio bundle and control the existing opt-in Desktop auto-export.";
+    const ingestion = W.H2O?.Studio?.ingestion || {};
+    const autoExport = W.H2O?.Studio?.sync?.autoExport || null;
+    const exportDiag = typeof ingestion.diagnose === "function" ? (ingestion.diagnose() || {}) : {};
+    const autoDiag = autoExport && typeof autoExport.diagnose === "function" ? (autoExport.diagnose() || {}) : {};
+    const last = autoDiag.lastResult || exportDiag.lastSyncExport || {};
+    const rows = [
+      ["Runtime", "Desktop/Tauri"],
+      ["Manual latest export", typeof ingestion.exportLatestSyncBundle === "function" ? "available" : "unavailable"],
+      ["Auto export", autoDiag.enabled ? "enabled" : "disabled"],
+      ["Pending", autoDiag.pending ? "yes" : "no"],
+      ["Last status", autoDiag.lastExportStatus || last.status || ""],
+      ["Last time", settingsIsoOrBlank(autoDiag.lastExportAt || last.exportedAt || "")],
+      ["Last path", autoDiag.lastExportPath || last.path || ""],
+      ["Last bytes", settingsFormatBytes(autoDiag.lastExportBytes || last.bytes || 0)],
+    ];
+    if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
+    const exportBtn = panel.querySelector("#wbSettingsSyncExportLatest");
+    const enableBtn = panel.querySelector("#wbSettingsSyncEnableDesktopAuto");
+    const disableBtn = panel.querySelector("#wbSettingsSyncDisableDesktopAuto");
+    if (exportBtn) exportBtn.disabled = typeof ingestion.exportLatestSyncBundle !== "function";
+    if (enableBtn) enableBtn.disabled = !(autoExport && typeof autoExport.enable === "function") || !!autoDiag.enabled;
+    if (disableBtn) disableBtn.disabled = !(autoExport && typeof autoExport.disable === "function") || !autoDiag.enabled;
+    return;
+  }
+
+  if (title) title.textContent = "Chrome Sync Folder";
+  if (summary) summary.textContent = "Connect the local sync folder, run manual Sync Now, and control existing safe auto-sync triggers.";
+  const folder = W.H2O?.Studio?.sync?.folder || null;
+  const diag = folder && typeof folder.diagnose === "function"
+    ? (folder.diagnose() || {})
+    : (folder && typeof folder.status === "function" ? (folder.status() || {}) : {});
+  const rowsAfter = W.H2O?.LibraryIndex?.getAll?.()?.length;
+  const counts = W.H2O?.LibraryIndex?.counts?.();
+  const rows = [
+    ["Runtime", "Chrome/MV3"],
+    ["Folder API", folder ? "available" : "unavailable"],
+    ["Connected", diag.connected ? "yes" : "no"],
+    ["Folder", diag.folderName || ""],
+    ["Permission", diag.permission || ""],
+    ["Auto sync", diag.autoSyncEnabled ? "enabled" : "disabled"],
+    ["Last sync", diag.lastSyncStatus || ""],
+    ["Last auto sync", diag.lastAutoSyncStatus || ""],
+    ["Last error", diag.lastSyncError || diag.lastAutoSyncError || ""],
+    ["Rows", rowsAfter != null ? String(rowsAfter) : ""],
+    ["Saved count", counts && counts.views ? String(counts.views.saved || 0) : ""],
+  ];
+  if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
+  const connectBtn = panel.querySelector("#wbSettingsSyncConnectFolder");
+  const disconnectBtn = panel.querySelector("#wbSettingsSyncDisconnectFolder");
+  const syncNowBtn = panel.querySelector("#wbSettingsSyncNow");
+  const enableBtn = panel.querySelector("#wbSettingsSyncEnableChromeAuto");
+  const disableBtn = panel.querySelector("#wbSettingsSyncDisableChromeAuto");
+  if (connectBtn) connectBtn.disabled = !(folder && typeof folder.connectFolder === "function");
+  if (disconnectBtn) disconnectBtn.disabled = !(folder && typeof folder.disconnectFolder === "function" && diag.connected);
+  if (syncNowBtn) syncNowBtn.disabled = !(folder && typeof folder.syncNow === "function" && diag.connected);
+  if (enableBtn) enableBtn.disabled = !(folder && typeof folder.enableAutoSync === "function") || !!diag.autoSyncEnabled;
+  if (disableBtn) disableBtn.disabled = !(folder && typeof folder.disableAutoSync === "function") || !diag.autoSyncEnabled;
+}
+
+function bindSettingsSyncControls(panel){
+  if (!panel || panel.dataset.syncControlsBound === "1") return;
+  panel.dataset.syncControlsBound = "1";
+
+  const run = async (label, fn) => {
+    settingsSyncLog(panel, `${label}…`);
+    try {
+      const result = await fn();
+      settingsSyncLog(panel, settingsSummarizeResult(result));
+      await refreshSettingsSync(panel);
+    } catch (err) {
+      settingsSyncLog(panel, `${label} failed.\n${String(err && (err.stack || err.message || err))}`);
+      await refreshSettingsSync(panel);
+    }
+  };
+
+  panel.querySelector("#wbSettingsSyncRefresh")?.addEventListener("click", () => {
+    refreshSettingsSync(panel).catch((err) => settingsSyncLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsSyncExportLatest")?.addEventListener("click", () => run("Writing latest sync bundle", async () => {
+    const fn = W.H2O?.Studio?.ingestion?.exportLatestSyncBundle;
+    if (typeof fn !== "function") throw new Error("exportLatestSyncBundle unavailable");
+    return fn({ reason: "settings-ui" });
+  }));
+
+  panel.querySelector("#wbSettingsSyncEnableDesktopAuto")?.addEventListener("click", () => run("Enabling Desktop auto-export", async () => {
+    const fn = W.H2O?.Studio?.sync?.autoExport?.enable;
+    if (typeof fn !== "function") throw new Error("autoExport.enable unavailable");
+    return fn();
+  }));
+
+  panel.querySelector("#wbSettingsSyncDisableDesktopAuto")?.addEventListener("click", () => run("Disabling Desktop auto-export", async () => {
+    const fn = W.H2O?.Studio?.sync?.autoExport?.disable;
+    if (typeof fn !== "function") throw new Error("autoExport.disable unavailable");
+    return fn();
+  }));
+
+  panel.querySelector("#wbSettingsSyncConnectFolder")?.addEventListener("click", () => run("Connecting sync folder", async () => {
+    const fn = W.H2O?.Studio?.sync?.folder?.connectFolder;
+    if (typeof fn !== "function") throw new Error("folder.connectFolder unavailable");
+    return fn();
+  }));
+
+  panel.querySelector("#wbSettingsSyncDisconnectFolder")?.addEventListener("click", () => run("Disconnecting sync folder", async () => {
+    const fn = W.H2O?.Studio?.sync?.folder?.disconnectFolder;
+    if (typeof fn !== "function") throw new Error("folder.disconnectFolder unavailable");
+    return fn();
+  }));
+
+  panel.querySelector("#wbSettingsSyncNow")?.addEventListener("click", () => run("Running Sync Now", async () => {
+    const fn = W.H2O?.Studio?.sync?.folder?.syncNow;
+    if (typeof fn !== "function") throw new Error("folder.syncNow unavailable");
+    return fn({ reason: "settings-ui" });
+  }));
+
+  panel.querySelector("#wbSettingsSyncEnableChromeAuto")?.addEventListener("click", () => run("Enabling Chrome auto-sync", async () => {
+    const fn = W.H2O?.Studio?.sync?.folder?.enableAutoSync;
+    if (typeof fn !== "function") throw new Error("folder.enableAutoSync unavailable");
+    return fn();
+  }));
+
+  panel.querySelector("#wbSettingsSyncDisableChromeAuto")?.addEventListener("click", () => run("Disabling Chrome auto-sync", async () => {
+    const fn = W.H2O?.Studio?.sync?.folder?.disableAutoSync;
+    if (typeof fn !== "function") throw new Error("folder.disableAutoSync unavailable");
+    return fn();
+  }));
 }
 
 function renderMigrateRoute(actionRaw){
