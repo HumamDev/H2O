@@ -131,6 +131,104 @@
     } catch {}
   }
 
+  // ── Desktop (Tauri) catalog source — M2c-1 ───────────────────────────────
+  // On Tauri Studio Desktop, the chat-list service (MV3 archive bridge) is
+  // unavailable, so the original getFolders/getCategories/getLabels paths
+  // silently return []. Branch each getter on LW_isTauri() and source the
+  // catalog rows from the SQLite-backed entity stores instead:
+  //   store.folders.list()    → workspace folder shape (id, name, kind, …)
+  //   store.categories.list() → workspace category shape (id, name, status, …)
+  //   store.labels.list()     → workspace label shape (id, name, type, …)
+  // Cache invalidation already piggybacks on the existing bindIndex →
+  // bustCaches chain: any SQLite write fires LibraryIndex subscribers
+  // (M2a-3g), which fires the Index subscriber inside Workspace, which
+  // calls bustCaches — clearing the desktop-sourced cache too. No new
+  // subscription required.
+  function LW_isTauri() {
+    try {
+      return !!(W.H2O && W.H2O.Studio && W.H2O.Studio.platform
+        && W.H2O.Studio.platform.env && W.H2O.Studio.platform.env.isTauri === true);
+    } catch { return false; }
+  }
+  function getStudioStores() {
+    try { return (W.H2O && W.H2O.Studio && W.H2O.Studio.store) || {}; }
+    catch { return {}; }
+  }
+  function epochToIso(ms) {
+    if (!ms || typeof ms !== 'number' || ms <= 0) return '';
+    try { return new Date(ms).toISOString(); }
+    catch { return ''; }
+  }
+  /* Map SQLite folder row → MV3 chat-list folder shape consumed by
+   * S0Z1g sidebar sections + studio.js folder picker + S0F3a Folders. */
+  function projectFolderRowForWorkspace(row) {
+    if (!row || !row.folderId) return null;
+    const meta = (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
+    return {
+      id: row.folderId,
+      name: row.name || '',
+      createdAt: epochToIso(row.createdAt),
+      updatedAt: epochToIso(row.updatedAt),
+      kind: meta.kind || 'local',
+      projectRef: (meta.projectRef && typeof meta.projectRef === 'object') ? meta.projectRef : null,
+      iconColor: row.color || '',
+    };
+  }
+  /* Map SQLite category row → MV3 chat-list category shape. status defaults
+   * to 'active' since our V1 schema has no separate replacement model. */
+  function projectCategoryRowForWorkspace(row) {
+    if (!row || !row.categoryId) return null;
+    const meta = (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
+    return {
+      id: row.categoryId,
+      name: row.name || '',
+      description: meta.description || '',
+      color: meta.color || '',
+      sortOrder: (typeof meta.sortOrder === 'number') ? meta.sortOrder : 0,
+      createdAt: epochToIso(row.createdAt),
+      updatedAt: epochToIso(row.updatedAt),
+      status: meta.status || 'active',
+      replacementCategoryId: meta.replacementCategoryId || null,
+      aliases: Array.isArray(meta.aliases) ? meta.aliases.slice() : [],
+    };
+  }
+  /* Map SQLite label row → MV3 chat-list label shape. type defaults to
+   * 'custom' (the MV3 fallback bucket) when not present in meta. */
+  function projectLabelRowForWorkspace(row) {
+    if (!row || !row.labelId) return null;
+    const meta = (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
+    return {
+      id: row.labelId,
+      name: row.name || '',
+      type: meta.type || 'custom',
+      color: row.color || '',
+      sortOrder: (typeof meta.sortOrder === 'number') ? meta.sortOrder : 0,
+      createdAt: epochToIso(row.createdAt),
+    };
+  }
+  /* Shared Desktop catalog fetcher used by all three getters. Caches the
+   * result and records the read source so diagnose() reports it. On error,
+   * falls back to the prior cache value (rather than throwing) so UI stays
+   * stable. */
+  async function desktopFetchCatalog(slot, name, sqliteFetcher) {
+    try {
+      const list = await sqliteFetcher();
+      const safe = Array.isArray(list) ? list : [];
+      setCache(slot, safe);
+      recordRead(name, { source: 'desktop-sqlite', count: safe.length, fresh: true });
+      return safe;
+    } catch (e) {
+      recordRead(name, {
+        source: 'desktop-sqlite-error',
+        count: itemCount(slot.value),
+        fresh: true,
+        error: String((e && e.message) || e),
+      });
+      err('desktopFetch.' + name, e);
+      return slot.value || [];
+    }
+  }
+
   // ── Model fetchers ─────────────────────────────────────────────────────────
   async function getKnownChats({ view = 'saved', folderId = '', filters = {}, fresh = false } = {}) {
     const index = getIndex();
@@ -152,6 +250,16 @@
     if (!fresh && isFresh(cache.folders)) {
       recordRead('folders', { source: 'cache', count: itemCount(cache.folders.value), fresh: false });
       return cache.folders.value;
+    }
+    if (LW_isTauri()) {
+      return await desktopFetchCatalog(cache.folders, 'folders', async () => {
+        const store = getStudioStores().folders;
+        if (!store || typeof store.list !== 'function') return [];
+        const rows = await store.list();
+        return (Array.isArray(rows) ? rows : [])
+          .map(projectFolderRowForWorkspace)
+          .filter(Boolean);
+      });
     }
     const cl = getChatList();
     if (!cl) {
@@ -175,6 +283,16 @@
       recordRead('categories', { source: 'cache', count: itemCount(cache.categories.value), fresh: false });
       return cache.categories.value;
     }
+    if (LW_isTauri()) {
+      return await desktopFetchCatalog(cache.categories, 'categories', async () => {
+        const store = getStudioStores().categories;
+        if (!store || typeof store.list !== 'function') return [];
+        const rows = await store.list();
+        return (Array.isArray(rows) ? rows : [])
+          .map(projectCategoryRowForWorkspace)
+          .filter(Boolean);
+      });
+    }
     const cl = getChatList();
     if (!cl) {
       recordRead('categories', { source: 'unavailable', count: 0, fresh: !!fresh });
@@ -196,6 +314,16 @@
     if (!fresh && isFresh(cache.labels)) {
       recordRead('labels', { source: 'cache', count: itemCount(cache.labels.value), fresh: false });
       return cache.labels.value;
+    }
+    if (LW_isTauri()) {
+      return await desktopFetchCatalog(cache.labels, 'labels', async () => {
+        const store = getStudioStores().labels;
+        if (!store || typeof store.list !== 'function') return [];
+        const rows = await store.list();
+        return (Array.isArray(rows) ? rows : [])
+          .map(projectLabelRowForWorkspace)
+          .filter(Boolean);
+      });
     }
     const cl = getChatList();
     if (!cl) {
