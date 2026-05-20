@@ -978,6 +978,7 @@
     const routeKind = kind === 'labels' ? 'label'
                     : kind === 'categories' ? 'category'
                     : kind === 'projects' ? 'project'
+                    : kind === 'folders' ? 'folder'
                     : kind;
 
     for (const item of visible) {
@@ -986,7 +987,7 @@
       if (!id || !name) continue;
       const href = routeSvc?.buildLibraryHash?.(routeKind, id) || `#/library/explorer`;
       const color = normalizeHexColor(item.color || '');
-      const menuButton = kind === 'categories'
+      const menuButton = kind === 'categories' || kind === 'folders'
         ? el('button', {
           class: 'wbSidebarSectionItemMenu',
           type: 'button',
@@ -1027,6 +1028,7 @@
       const groupBy = kind === 'labels' ? 'label'
                     : kind === 'categories' ? 'category'
                     : kind === 'projects' ? 'project'
+                    : kind === 'folders' ? 'folder'
                     : 'date';
       const moreHref = '#/library/explorer';
       const more = el('a', {
@@ -1050,6 +1052,41 @@
   }
 
   // ── Section-specific data loaders ──────────────────────────────────────────
+  async function renderFolders() {
+    const ws = getWorkspace();
+    if (!ws) return;
+    const host = D.getElementById('folderList');
+    if (!host) return;
+    let raw = [];
+    try { raw = await ws.getFolders(); } catch (e) { err('getFolders', e); }
+    const idx = getIndex();
+    const folderFacet = idx?.facets?.()?.byFolder || {};
+    const items = (Array.isArray(raw) ? raw : []).map((folder) => {
+      const id = String(folder?.id || folder?.folderId || '').trim();
+      const name = String(folder?.name || folder?.label || folder?.title || id).trim();
+      const facetCount = Array.isArray(folderFacet[id]) ? folderFacet[id].length : 0;
+      const appearance = getRowAppearance({
+        ...folder,
+        id,
+        folderId: id,
+        name,
+        kind: 'folders',
+        section: 'folders',
+      });
+      return id ? {
+        id,
+        folderId: id,
+        name: appearance.name || name || id,
+        count: facetCount,
+        color: appearance.color || normalizeHexColor(folder?.color || folder?.iconColor || ''),
+        iconKey: appearance.icon || 'folder',
+        iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
+      } : null;
+    }).filter(Boolean);
+    renderSectionList(host, 'folders', items, { emptyText: 'No saved folder contract found yet. Capture or assign a chat to a folder from chatgpt.com.' });
+    step('renderFolders', String(items.length));
+  }
+
   async function renderLabels() {
     const ws = getWorkspace();
     if (!ws) return;
@@ -1148,6 +1185,7 @@
   // ── Re-render orchestration ────────────────────────────────────────────────
   function renderAllSections() {
     // Each loader has its own error boundary; one failure doesn't block the others.
+    renderFolders().catch((e) => err('renderFolders.outer', e));
     renderLabels().catch((e) => err('renderLabels.outer', e));
     renderCategories().catch((e) => err('renderCategories.outer', e));
     try { renderProjects(); } catch (e) { err('renderProjects.outer', e); }

@@ -2875,6 +2875,33 @@ function normalizeFolderList(raw) {
   return out;
 }
 
+function mergeFolderCatalogLists(...lists) {
+  const byId = new Map();
+  for (const rawList of lists) {
+    const list = normalizeFolderList(rawList);
+    for (const item of list) {
+      const id = String(item && item.id || "").trim();
+      if (!id) continue;
+      const prev = byId.get(id) || {};
+      byId.set(id, {
+        ...prev,
+        ...item,
+        id,
+        name: String(item.name || prev.name || id).trim() || id,
+        kind: String(item.kind || prev.kind || "local").trim() || "local",
+        projectRef: item.projectRef || prev.projectRef || null,
+        iconColor: String(item.iconColor || prev.iconColor || "").trim(),
+        createdAt: String(item.createdAt || prev.createdAt || "").trim(),
+        updatedAt: String(item.updatedAt || prev.updatedAt || "").trim(),
+      });
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => (
+    String(a.name || a.id).localeCompare(String(b.name || b.id))
+    || String(a.id).localeCompare(String(b.id))
+  ));
+}
+
 function normalizeFolderBinding(raw) {
   const src = raw && typeof raw === "object" ? raw : {};
   const out = {
@@ -2888,6 +2915,8 @@ function normalizeFolderBinding(raw) {
   if (Object.prototype.hasOwnProperty.call(src, "href")) out.href = String(src.href || "").trim();
   return out;
 }
+
+const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
 
 function folderCatalogCacheKey(nsDisk = DEFAULT_NS_DISK) {
   return normalizeNsDisk(nsDisk) + ":folderCatalogCache:v1";
@@ -3018,6 +3047,34 @@ async function readFolderCatalogCache(nsDisk = DEFAULT_NS_DISK) {
   return normalizeFolderList(row && typeof row === "object" && Array.isArray(row.folders) ? row.folders : row);
 }
 
+async function readImportedFolderStateCatalog() {
+  const res = await storageGet([FOLDER_STATE_DATA_KEY]);
+  const row = res && res[FOLDER_STATE_DATA_KEY];
+  const folders = row && typeof row === "object" && Array.isArray(row.folders) ? row.folders : row;
+  return normalizeFolderList(folders);
+}
+
+async function deriveFolderCatalogFromArchiveRows(nsDisk = DEFAULT_NS_DISK) {
+  const rows = await listWorkbenchRows(nsDisk);
+  const out = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = String(row && (row.folderId || row.folder) || "").trim();
+    if (!id || seen.has(id)) continue;
+    const name = String(row && (row.folderName || row.folderLabel || row.folderTitle) || id).trim() || id;
+    out.push({
+      id,
+      name,
+      kind: "local",
+      projectRef: null,
+      createdAt: "",
+      updatedAt: String(row && (row.updatedAt || row.createdAt) || "").trim(),
+    });
+    seen.add(id);
+  }
+  return normalizeFolderList(out);
+}
+
 async function writeFolderCatalogCache(folders, nsDisk = DEFAULT_NS_DISK) {
   const key = folderCatalogCacheKey(nsDisk);
   await storageSet({
@@ -3098,12 +3155,23 @@ async function queryFolderBridge(op, payload = {}, nsDisk = DEFAULT_NS_DISK) {
 
 async function getFoldersListBridge(nsDisk = DEFAULT_NS_DISK) {
   try {
-    const list = normalizeFolderList(await queryFolderBridge("getFoldersList", {}, nsDisk));
+    const bridgeList = normalizeFolderList(await queryFolderBridge("getFoldersList", {}, nsDisk));
+    let importedList = [];
+    let archiveList = [];
+    try { importedList = await readImportedFolderStateCatalog(); } catch {}
+    try { archiveList = await deriveFolderCatalogFromArchiveRows(nsDisk); } catch {}
+    const list = mergeFolderCatalogLists(archiveList, importedList, bridgeList);
     await writeFolderCatalogCache(list, nsDisk);
     return list;
   } catch (error) {
-    const cached = await readFolderCatalogCache(nsDisk);
-    if (cached.length) return cached;
+    let cached = [];
+    let importedList = [];
+    let archiveList = [];
+    try { cached = await readFolderCatalogCache(nsDisk); } catch {}
+    try { importedList = await readImportedFolderStateCatalog(); } catch {}
+    try { archiveList = await deriveFolderCatalogFromArchiveRows(nsDisk); } catch {}
+    const list = mergeFolderCatalogLists(archiveList, importedList, cached);
+    if (list.length) return list;
     throw error;
   }
 }

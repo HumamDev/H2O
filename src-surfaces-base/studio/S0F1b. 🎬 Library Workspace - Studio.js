@@ -174,6 +174,31 @@
       iconColor: row.color || '',
     };
   }
+  function deriveFolderRowsFromIndex() {
+    const index = getIndex();
+    const rows = index && typeof index.getAll === 'function' ? index.getAll() : [];
+    const byId = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const id = String(row?.folderId || row?.folder || '').trim();
+      if (!id) continue;
+      const name = String(row?.folderName || row?.folderLabel || row?.folderTitle || id).trim() || id;
+      const prev = byId.get(id) || {};
+      byId.set(id, {
+        ...prev,
+        id,
+        folderId: id,
+        name: prev.name && prev.name !== id ? prev.name : name,
+        kind: prev.kind || 'local',
+        projectRef: prev.projectRef || null,
+        iconColor: prev.iconColor || '',
+        source: 'library-index-derived',
+      });
+    }
+    return Array.from(byId.values()).sort((a, b) => (
+      String(a.name || a.id).localeCompare(String(b.name || b.id))
+      || String(a.id).localeCompare(String(b.id))
+    ));
+  }
   /* Map SQLite category row → MV3 chat-list category shape. status defaults
    * to 'active' since our V1 schema has no separate replacement model. */
   function projectCategoryRowForWorkspace(row) {
@@ -257,8 +282,13 @@
      * SQLite branch — never reuse a stale MV3 chat-list cache (which on
      * Desktop would be []) or an untagged pre-M2c-1 cache. */
     if (!fresh && isFresh(cache.folders) && (!desktop || cache.folders.source === 'desktop-sqlite')) {
-      recordRead('folders', { source: 'cache', count: itemCount(cache.folders.value), fresh: false });
-      return cache.folders.value;
+      if (!desktop && itemCount(cache.folders.value) === 0 && deriveFolderRowsFromIndex().length > 0) {
+        // Fall through: the bridge/catalog cache is empty but archive rows have
+        // folder assignments, so derive a read-only folder catalog from them.
+      } else {
+        recordRead('folders', { source: 'cache', count: itemCount(cache.folders.value), fresh: false });
+        return cache.folders.value;
+      }
     }
     if (desktop) {
       return await desktopFetchCatalog(cache.folders, 'folders', async () => {
@@ -277,10 +307,20 @@
     }
     try {
       const list = await cl.getFoldersList();
-      setCache(cache.folders, Array.isArray(list) ? list : []);
-      recordRead('folders', { source: 'chat-list.bridge', count: itemCount(cache.folders.value), fresh: !!fresh });
+      const safe = Array.isArray(list) ? list : [];
+      const derived = safe.length ? [] : deriveFolderRowsFromIndex();
+      setCache(cache.folders, safe.length ? safe : derived);
+      cache.folders.source = safe.length ? 'chat-list.bridge' : 'library-index-derived';
+      recordRead('folders', { source: cache.folders.source, count: itemCount(cache.folders.value), fresh: !!fresh });
       return cache.folders.value;
     } catch (e) {
+      const derived = deriveFolderRowsFromIndex();
+      if (derived.length) {
+        setCache(cache.folders, derived);
+        cache.folders.source = 'library-index-derived-after-error';
+        recordRead('folders', { source: cache.folders.source, count: itemCount(cache.folders.value), fresh: !!fresh, error: String(e?.message || e) });
+        return cache.folders.value;
+      }
       recordRead('folders', { source: 'error', count: itemCount(cache.folders.value), fresh: !!fresh, error: String(e?.message || e) });
       err('getFolders', e);
       return cache.folders.value || [];
