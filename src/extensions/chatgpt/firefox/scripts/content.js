@@ -4,7 +4,8 @@
 // document.documentElement so external smoke tests can detect injection.
 //
 // This file is intentionally separate from the chatgpt+chrome legacy at
-// src-runtime-base/ (renamed from scripts/ in Phase 8K-5) + surfaces/. The
+// src-runtime-base/ (renamed from scripts/ in Phase 8K-5) +
+// src-surfaces-base/ (renamed from surfaces/ in Phase 8L-5). The
 // chatgpt+chrome legacy runtime is frozen and lives
 // at the top level; this Firefox build starts fresh and grows alongside.
 // Real ChatGPT Firefox feature logic comes in later phases.

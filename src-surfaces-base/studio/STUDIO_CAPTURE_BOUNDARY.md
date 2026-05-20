@@ -20,7 +20,7 @@ This is not a forward-looking aspiration. It is the load-bearing invariant that 
 
 ```
 chatgpt.com (web page)
-  └─ Content script (surfaces/desk, loader.js)
+  └─ Content script (src-surfaces-base/desk, loader.js)
        │  observes DOM mutations, scrapes turns
        ▼
   Archive bridge (service worker, bg.js)
@@ -79,7 +79,7 @@ Capture sends **normalized records** to Studio. Capture must not:
 - Write directly to Studio's storage keys.
 - Call into Studio entity stores.
 
-Today, the components that fulfill the capture role are the live content scripts under `surfaces/desk/` plus the archive bridge in `bg.js`. Tomorrow, those become the slim capture extension. Either way, the records they produce conform to the schemas below.
+Today, the components that fulfill the capture role are the live content scripts under `src-surfaces-base/desk/` plus the archive bridge in `bg.js`. Tomorrow, those become the slim capture extension. Either way, the records they produce conform to the schemas below.
 
 ## What Studio Owns
 
@@ -95,7 +95,7 @@ Studio must not:
 
 - Query, observe, or mutate the live chatgpt.com / claude.ai DOM.
 - Use `MutationObserver` for anything outside `studio.html`'s own document.
-- Import code from `surfaces/desk/` or content-script modules.
+- Import code from `src-surfaces-base/desk/` or content-script modules.
 - Maintain its own selectors for live pages (the capture extension owns those).
 
 ## CaptureSource Interface
@@ -165,7 +165,7 @@ These shapes are subsets/projections of `STUDIO_STORAGE_CONTRACT.md` records (sp
 ### Today (MV3 extension)
 
 - **Transport** — `chrome.runtime.sendMessage` to `bg.js`; `chrome.storage.onChanged` for upserts. Wrapped behind `platform.messaging` and `platform.broadcast`.
-- **Producer** — content scripts under `surfaces/desk/` plus `bg.js` archive routines.
+- **Producer** — content scripts under `src-surfaces-base/desk/` plus `bg.js` archive routines.
 - **Consumer** — `S0D3a` Transcript Archive Engine receives the events; `S0D3e` Transcript Studio Host orchestrates rendering.
 - **Local fallback** — `S0D3a` lines around 755–780 read legacy folder vault keys (`h2o:prm:cgx:fldrs:state:data:v1`, `h2o:folders:v1`) if the bridge is unavailable. This fallback remains until the slim capture extension exists; it goes away in the Tauri picture.
 
@@ -184,13 +184,13 @@ Studio's reader (`studio.js` + reader decorations) renders captured chats inside
 
 This is **not** a backdoor coupling to chatgpt.com — the decoration code is querying Studio's own document. The coupling is to the **attribute convention**, not the live page.
 
-The attribute convention is captured in `selectors.contract.js` (to be created under `surfaces/studio/platform/`). All selectors used by Studio reader and decorations come from there. Concrete consequence: if ChatGPT renames `data-message-author-role` to something else, the change is made once in `selectors.contract.js` and Studio's reader keeps emitting the old name (for archive compatibility) plus optionally the new name.
+The attribute convention is captured in `selectors.contract.js` (to be created under `src-surfaces-base/studio/platform/`). All selectors used by Studio reader and decorations come from there. Concrete consequence: if ChatGPT renames `data-message-author-role` to something else, the change is made once in `selectors.contract.js` and Studio's reader keeps emitting the old name (for archive compatibility) plus optionally the new name.
 
 ## Anti-Patterns
 
 - **Studio file with `https://chatgpt.com` in a fetch URL.** Studio doesn't reach chatgpt.com.
 - **Studio file with `MutationObserver` watching anything outside `studio.html`'s document.** Studio's observers watch its own DOM (e.g., the reader's replay), not live pages.
-- **Studio file that imports from `surfaces/desk/`.** The desk surface is capture-side; the import direction is forbidden.
+- **Studio file that imports from `src-surfaces-base/desk/`.** The desk surface is capture-side; the import direction is forbidden.
 - **A "shortcut" that lets Studio scrape ChatGPT directly because the capture pipeline is slow today.** Fix the capture pipeline; don't dissolve the boundary.
 - **Capture-side code that writes directly to a StudioStore entity store.** Capture writes via the capture intake path; Studio decides what becomes StudioStore content.
 

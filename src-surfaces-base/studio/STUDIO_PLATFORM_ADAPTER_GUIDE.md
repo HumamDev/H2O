@@ -12,12 +12,12 @@ The adapter is the single port-time surface. Get it right and the rest of Studio
 
 ## Naming
 
-The namespace is `H2O.Studio.platform`. It hangs off the existing `H2O` global to fit the repo's convention (see `S0A1a` H2O Core). Sub-namespaces and method names use lowerCamelCase. Adapter modules live in `surfaces/studio/platform/` (to be created) with one file per concern.
+The namespace is `H2O.Studio.platform`. It hangs off the existing `H2O` global to fit the repo's convention (see `S0A1a` H2O Core). Sub-namespaces and method names use lowerCamelCase. Adapter modules live in `src-surfaces-base/studio/platform/` (to be created) with one file per concern.
 
 Recommended module layout:
 
 ```
-surfaces/studio/
+src-surfaces-base/studio/
 └── platform/
     ├── index.js                  # binds H2O.Studio.platform and selects adapter at boot
     ├── adapter-extension-mv3.js  # current implementation (chrome.* backed)
@@ -107,7 +107,7 @@ Implementations:
 
 ```ts
 interface PlatformRuntime {
-  resolveAsset(path: string): string;      // e.g., 'surfaces/studio/icons/x.svg'
+  resolveAsset(path: string): string;      // e.g., 'src-surfaces-base/studio/icons/x.svg'
   openUrl(url: string, opts?: { external?: boolean }): void;
   env: {
     kind: 'extension-mv3' | 'tauri' | 'pwa' | 'mock';
@@ -147,10 +147,10 @@ interface PlatformAuth {
 ```
 
 Implementations:
-- **MV3 adapter** — bridges `H2O.Identity` global and `h2o:identity:*` events (defined in `surfaces/identity/`). `requestToken` is a stub today — returns `null` — and grows when remote sync is introduced.
+- **MV3 adapter** — bridges `H2O.Identity` global and `h2o:identity:*` events (defined in `src-surfaces-base/identity/`). `requestToken` is a stub today — returns `null` — and grows when remote sync is introduced.
 - **Tauri adapter** — same bridge to identity surface; `requestToken` may call into Rust for secret-store-backed tokens.
 
-Feature code uses this for read-only identity awareness only. Auth flows remain owned by `surfaces/identity/`.
+Feature code uses this for read-only identity awareness only. Auth flows remain owned by `src-surfaces-base/identity/`.
 
 ## Boot Order
 

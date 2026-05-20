@@ -11,7 +11,7 @@ ships as three host shells, each in its own subdirectory under this folder:
 | [`web/`](web/) | Future browser-hosted Studio | Placeholder (Phase 7D) | TBD; reserved for `cockpitpro.app/studio` or similar |
 
 The shared Studio UI source itself currently lives in **top-level legacy
-folders** (`surfaces/studio/` for HTML/JS surfaces; relevant runtime
+folders** (`src-surfaces-base/studio/` for HTML/JS surfaces; relevant runtime
 userscripts in `src-runtime-base/` — renamed from `scripts/` in Phase 8K-5).
 The desktop and mobile shells reuse those assets through different build chains.
 
@@ -28,7 +28,7 @@ For details, see each subdir's README. In summary:
 The shared Studio UI lives at:
 
 ```
-surfaces/studio/    ← legacy ChatGPT+Chrome source (frozen)
+src-surfaces-base/studio/    ← legacy ChatGPT+Chrome source (frozen)
 ```
 
 Both `desktop/` and `mobile/` consume those assets at build time. The

@@ -1,12 +1,12 @@
 # Studio Portability Contract
 
 Status: Active
-Audience: Anyone adding or modifying code under `surfaces/studio/`.
+Audience: Anyone adding or modifying code under `src-surfaces-base/studio/`.
 Companion: `STUDIO_ARCHITECTURE.md`, `STUDIO_PLATFORM_ADAPTER_GUIDE.md`, `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_CAPTURE_BOUNDARY.md`, `STUDIO_DEVELOPMENT_RULES.md`.
 
 ## Purpose
 
-State the rules that keep Studio portable from MV3 extension → Tauri desktop app with the smallest possible rewrite. These rules are binding on all Studio feature code (`surfaces/studio/`) effective immediately. They do not require touching existing call sites except as opportunistic clean-ups; new code must comply.
+State the rules that keep Studio portable from MV3 extension → Tauri desktop app with the smallest possible rewrite. These rules are binding on all Studio feature code (`src-surfaces-base/studio/`) effective immediately. They do not require touching existing call sites except as opportunistic clean-ups; new code must comply.
 
 ## Migration Targets Studio Must Stay Compatible With
 
@@ -20,7 +20,7 @@ For the contract to hold, **the same Studio feature code must run in any of thes
 
 ## Rule 1 — No Direct Platform APIs in Feature Code
 
-Studio feature files (any file under `surfaces/studio/` except the Platform Adapter modules listed in `STUDIO_PLATFORM_ADAPTER_GUIDE.md`) **must not** reference any of the following directly:
+Studio feature files (any file under `src-surfaces-base/studio/` except the Platform Adapter modules listed in `STUDIO_PLATFORM_ADAPTER_GUIDE.md`) **must not** reference any of the following directly:
 
 | Forbidden API | Replacement |
 |---|---|
@@ -43,7 +43,7 @@ The Platform Adapter is the only module that may touch these APIs. Everything el
 
 ## Rule 2 — Studio Does Not Capture
 
-No file in `surfaces/studio/` may query, scrape, or observe the **live chatgpt.com DOM**. Studio code may only query `studio.html`'s own DOM (which is shaped by the Studio reader to be ChatGPT-attribute-compatible). The boundary is enforced by origin in practice today; the rule is restated so it survives a future move to Tauri where the WebView might technically be cross-loadable.
+No file in `src-surfaces-base/studio/` may query, scrape, or observe the **live chatgpt.com DOM**. Studio code may only query `studio.html`'s own DOM (which is shaped by the Studio reader to be ChatGPT-attribute-compatible). The boundary is enforced by origin in practice today; the rule is restated so it survives a future move to Tauri where the WebView might technically be cross-loadable.
 
 Concretely:
 
@@ -95,7 +95,7 @@ Today there are dozens of such literals across decoration modules; the contract 
 
 ## Rule 6 — Identity Is Consumed, Not Owned
 
-Studio feature code may read identity state via `H2O.events` (`h2o:identity:ready`, `h2o:identity:changed`) and `H2O.Identity` global. Studio must not initiate auth flows, store credentials, or call identity providers (Supabase, Google OAuth, etc.) directly. Those belong to `surfaces/identity/`.
+Studio feature code may read identity state via `H2O.events` (`h2o:identity:ready`, `h2o:identity:changed`) and `H2O.Identity` global. Studio must not initiate auth flows, store credentials, or call identity providers (Supabase, Google OAuth, etc.) directly. Those belong to `src-surfaces-base/identity/`.
 
 If Studio needs an authenticated action (e.g., remote sync once that exists), it requests it via `H2O.Studio.platform.auth.requestToken(scope)` rather than touching providers.
 
@@ -133,7 +133,7 @@ Before merging any Studio change, complete the checklist in `STUDIO_DEVELOPMENT_
 
 Today: by review. The companion `STUDIO_DEVELOPMENT_RULES.md` is the checklist reviewers use.
 
-Tomorrow (recommended, optional): a lint rule (`eslint-plugin-no-restricted-syntax` or a tiny custom rule) that forbids `chrome\.` and `localStorage\.` token sequences inside `surfaces/studio/` except in files explicitly whitelisted as platform adapters. This is **not** required to comply with the contract today; it's listed in the summary as a recommended next step.
+Tomorrow (recommended, optional): a lint rule (`eslint-plugin-no-restricted-syntax` or a tiny custom rule) that forbids `chrome\.` and `localStorage\.` token sequences inside `src-surfaces-base/studio/` except in files explicitly whitelisted as platform adapters. This is **not** required to comply with the contract today; it's listed in the summary as a recommended next step.
 
 ## What This Contract Does Not Forbid
 

@@ -30,7 +30,7 @@ Expected shape:
 | `node_modules/` | Generated (gitignored) |
 
 The Studio UI itself will be shared with desktop/mobile via either
-`surfaces/studio/` (the current legacy source) or, eventually,
+`src-surfaces-base/studio/` (the current legacy source) or, eventually,
 `packages/studio-ui/` / `packages/studio-core/` (the Phase 7D placeholders
 ready to consume).
 

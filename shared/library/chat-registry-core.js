@@ -7,12 +7,12 @@
 // IMPORTANT — runtime distribution:
 //   Browser script tags cannot reach this file directly (the chrome-live
 //   build bundles native scripts into a single loader.js; Studio script
-//   tags are resolved relative to surfaces/studio/). To keep both surfaces
+//   tags are resolved relative to src-surfaces-base/studio/). To keep both surfaces
 //   on the same logic without changing the build pipeline, this file is the
 //   canonical source and TWO byte-identical mirror files exist:
 //
 //     src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js                (native bundle)
-//     surfaces/studio/S0F0c. 🎬 Library Registry Core - Studio.js   (Studio HTML)
+//     src-surfaces-base/studio/S0F0c. 🎬 Library Registry Core - Studio.js   (Studio HTML)
 //
 //   The two mirror files differ ONLY in their userscript-style header
 //   (h2o-id, name, match), which is necessary for the build / Studio loader

@@ -1,14 +1,14 @@
 # Studio Storage Contract
 
 Status: Active
-Audience: Anyone touching persistence from `surfaces/studio/`.
+Audience: Anyone touching persistence from `src-surfaces-base/studio/`.
 Companion: `STUDIO_PORTABILITY_CONTRACT.md`, `STUDIO_PLATFORM_ADAPTER_GUIDE.md`. Cross-references: `docs/architecture/storage-map.md`, `docs/systems/library/storage.md`, `docs/systems/library/sync-rules.md`.
 
 ## Purpose
 
 Define the single, portable façade through which Studio persists data, the canonical record shapes, and the conceptual mapping from the current Chrome-side storage (IndexedDB + localStorage + `chrome.storage.local`) to a future SQLite schema running under Tauri. The goal is a storage layer where a SQLite swap is mechanical, not a redesign.
 
-This document supersedes scattered storage assumptions inside `surfaces/studio/` and is consistent with the existing repo storage rules in `docs/architecture/storage-map.md` and `docs/systems/library/storage.md` (it adds the portability layer those docs do not address).
+This document supersedes scattered storage assumptions inside `src-surfaces-base/studio/` and is consistent with the existing repo storage rules in `docs/architecture/storage-map.md` and `docs/systems/library/storage.md` (it adds the portability layer those docs do not address).
 
 ## The Façade: `H2O.Studio.store`
 
@@ -82,7 +82,7 @@ const last = await H2O.Studio.store.prefs.get('studio:lastListHash'); // adapter
 
 ## Canonical Domain Models
 
-These shapes are the authority. Implementations may add optional fields but must not rename or repurpose existing ones without a `schemaVersion` bump and a migration. Types live in `@h2o-studio/types` (or — if creating the package now is too much — in `surfaces/studio/platform/types.js` as JSDoc typedefs).
+These shapes are the authority. Implementations may add optional fields but must not rename or repurpose existing ones without a `schemaVersion` bump and a migration. Types live in `@h2o-studio/types` (or — if creating the package now is too much — in `src-surfaces-base/studio/platform/types.js` as JSDoc typedefs).
 
 ### Common envelope
 
@@ -252,7 +252,7 @@ A row of this table reads as "the value behind this current storage key becomes 
 
 1. **In-record `schemaVersion`.** Every entity record carries `schemaVersion`. Migrations read the version off the row, not off the storage key. This is what makes the SQLite migration mechanical: SELECT, branch on schemaVersion, transform, UPDATE.
 2. **Storage-key versioning is preserved for back-compat.** Existing `:v1` / `:v2` / `:v3` suffixes stay; new records writing to old keys still bump `schemaVersion` if the shape changes.
-3. **Migrations live in one place.** Either `@h2o-studio/core/migrations/` or `surfaces/studio/platform/migrations.js`. Feature code does not migrate inline.
+3. **Migrations live in one place.** Either `@h2o-studio/core/migrations/` or `src-surfaces-base/studio/platform/migrations.js`. Feature code does not migrate inline.
 4. **Forward-compatibility is acceptable; backward-compatibility is required.** If a record is upgraded v1 → v2, the adapter must still be able to read pre-existing v1 records and upgrade on read. New writes are always at the current version.
 
 ## Indexing and Query Patterns

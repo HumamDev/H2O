@@ -3,10 +3,10 @@
 **Status:** Milestone M1 — Tauri shell + Studio boot proof.
 
 This is the desktop host for the H2O Studio UI. It does NOT contain
-Studio's source — that lives in `surfaces/studio/`. This app reuses the
+Studio's source — that lives in `src-surfaces-base/studio/`. This app reuses the
 exact assets the Chrome MV3 extension builds and wraps them in a Tauri V2
 native window. The platform-adapter layer (already part of
-`surfaces/studio/platform/`) auto-detects the Tauri context and swaps in
+`src-surfaces-base/studio/platform/`) auto-detects the Tauri context and swaps in
 a Tauri-flavored backend.
 
 The goal of M1 is to prove **the existing Studio UI boots inside Tauri
@@ -19,7 +19,7 @@ ChatGPT capture — those are M2 and beyond.
 
 ```
 h2o-source/
-├── surfaces/studio/                            ← Studio source (shared with MV3)
+├── src-surfaces-base/studio/                            ← Studio source (shared with MV3)
 │   ├── studio.html, studio.css, studio.js
 │   ├── platform/
 │   │   ├── index.js                            ← adapter namespace + fallback
@@ -233,7 +233,7 @@ candidates (with fixes):
 
 ## What gets stubbed
 
-The Tauri platform adapter (`surfaces/studio/platform/platform.tauri.js`)
+The Tauri platform adapter (`src-surfaces-base/studio/platform/platform.tauri.js`)
 implements:
 
 | Method | M1 behavior |
@@ -318,11 +318,11 @@ These are gitignored (see top-level `.gitignore` rules for `apps/**/...`):
 ### Asset flow (where Studio's source actually comes from)
 
 Studio's HTML/CSS/JS source does NOT live in this directory. It lives in
-the top-level `surfaces/studio/` folder (the legacy chatgpt+chrome source
+the top-level `src-surfaces-base/studio/` folder (the legacy chatgpt+chrome source
 tree). The asset flow is:
 
 ```
-surfaces/studio/*  (handwritten Studio source — frozen legacy)
+src-surfaces-base/studio/*  (handwritten Studio source — frozen legacy)
        ↓
 tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs
        ↓
@@ -335,7 +335,7 @@ apps/studio/desktop/dist/   (this app's Tauri frontendDist; gitignored)
 Tauri renders dist/studio.html in a native window
 ```
 
-So: editing Studio UI = edit `surfaces/studio/` at the repo root. Editing
+So: editing Studio UI = edit `src-surfaces-base/studio/` at the repo root. Editing
 the desktop shell = edit `src-tauri/` and/or `build-tools/prepare-dist.mjs`
 here.
 

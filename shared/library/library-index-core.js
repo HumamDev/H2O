@@ -5,7 +5,7 @@
 // filter, sort, and date bucketing. Used by both:
 //
 //   native: src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js
-//   Studio: surfaces/studio/S0F1c. 🎬 Library Index - Studio.js
+//   Studio: src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js
 //
 // through a self-publishing IIFE on `window.H2O.Library.LibraryIndexCore`.
 //
@@ -14,7 +14,7 @@
 //   the canonical source; two byte-identical mirror files exist:
 //
 //     src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js                   (native bundle)
-//     surfaces/studio/S0F0d. 🎬 Library Index Core - Studio.js     (Studio HTML)
+//     src-surfaces-base/studio/S0F0d. 🎬 Library Index Core - Studio.js     (Studio HTML)
 //
 //   If you edit this file, copy the new body into both mirrors. Phase 3 will
 //   introduce a shared/ loader pipeline that removes this triplicate.

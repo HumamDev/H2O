@@ -95,9 +95,9 @@ export const RUNTIME_BASE_DIR = path.join(REPO_ROOT, RUNTIME_BASE_REL);
 // `identity/`, `desk/`). Resolves to `<REPO_ROOT>/src-surfaces-base/`
 // after Phase 8L-5 atomically renamed the folder from `surfaces/` to
 // `src-surfaces-base/`. The rename is driven through this one-line
-// constant — all SOURCE-side consumers must route through these constants
-// (or the SURFACES_DESK/IDENTITY/STUDIO_DIR aliases below) — never
-// hardcode the literal "surfaces" or "src-surfaces-base".
+// constant — all SOURCE-side consumers must route through SURFACES_BASE_REL
+// or SURFACES_BASE_DIR (or the SURFACES_STUDIO_DIR sub-dir alias below) —
+// never hardcode the literal "surfaces" or "src-surfaces-base".
 //
 // CRITICAL: this is a SOURCE-folder-name authority only. The BUNDLE
 // OUTPUT folder name remains the literal "surfaces/" — it is the
@@ -113,13 +113,14 @@ export const RUNTIME_BASE_DIR = path.join(REPO_ROOT, RUNTIME_BASE_REL);
 // they must continue to use the literal "surfaces" so the deterministic
 // build hash `77bd47cf904c6e4b2b9062a90d8e2faaa62393d79eebfe2f105a217a64a46e8a`
 // (chrome-ext-dev-controls) survives the 8L-5 source-folder rename.
+//
+// Phase 8L-6 (closeout) removed the backward-compat `SURFACES_DIR`,
+// `SURFACES_DESK_DIR`, and `SURFACES_IDENTITY_DIR` aliases that existed
+// during 8L-3..8L-5: verified zero functional consumers before removal.
+// `SURFACES_STUDIO_DIR` retained because `apps/studio/desktop/build-tools/
+// prepare-dist.mjs` imports it for the Studio Desktop staleness check.
 export const SURFACES_BASE_REL = "src-surfaces-base";
 export const SURFACES_BASE_DIR = path.join(REPO_ROOT, SURFACES_BASE_REL);
-
-// SURFACES_DIR retained as a backward-compat alias during 8L-3..8L-5;
-// scheduled for removal in 8L-6 closeout (mirrors the SCRIPTS_DIR alias
-// lifecycle from 8K-3..8K-6).
-export const SURFACES_DIR  = SURFACES_BASE_DIR;
 export const PACKAGES_DIR  = path.join(REPO_ROOT, "packages");
 export const APPS_DIR      = path.join(REPO_ROOT, "apps");
 export const CONFIG_DIR    = path.join(REPO_ROOT, "config");
@@ -242,12 +243,15 @@ export const PLANS_DIR     = path.join(REPO_ROOT, "plans");
 
 // ─── Subdirectories of stable interest ───────────────────────────────────────
 
-// Phase 8L: route through SURFACES_BASE_DIR (the path authority).
-// Post-8L-5 resolves to `<REPO_ROOT>/src-surfaces-base/<sub>`.
-// Bundle-output writers continue to use the literal "surfaces" subdir —
-// these constants are for SOURCE-side reads only.
-export const SURFACES_DESK_DIR     = path.join(SURFACES_BASE_DIR, "desk");
-export const SURFACES_IDENTITY_DIR = path.join(SURFACES_BASE_DIR, "identity");
+// Phase 8L: SURFACES_STUDIO_DIR routes through SURFACES_BASE_DIR (the path
+// authority). Post-8L-5 resolves to `<REPO_ROOT>/src-surfaces-base/studio`.
+// Bundle-output writers continue to use the literal "surfaces/studio" subdir
+// — this constant is for SOURCE-side reads only. Currently consumed by
+// `apps/studio/desktop/build-tools/prepare-dist.mjs` for the Studio Desktop
+// staleness check. Phase 8L-6 removed the sibling SURFACES_DESK_DIR /
+// SURFACES_IDENTITY_DIR aliases (zero functional consumers); future consumers
+// of those sub-paths should compose them inline as `path.join(SURFACES_BASE_DIR,
+// "desk")` etc.
 export const SURFACES_STUDIO_DIR   = path.join(SURFACES_BASE_DIR, "studio");
 
 export const META_LEDGER_DIR   = path.join(META_DIR, "ledger");

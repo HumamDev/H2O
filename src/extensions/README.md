@@ -14,7 +14,8 @@ src/extensions/
 
 **Note**: `chatgpt/chrome/` is intentionally absent. The chatgpt+chrome
 legacy runtime lives at the top of the repo (`src-runtime-base/` — renamed
-from `scripts/` in Phase 8K-5 — plus `surfaces/`, `config/`) and is frozen. See
+from `scripts/` in Phase 8K-5 — plus `src-surfaces-base/` — renamed from
+`surfaces/` in Phase 8L-5 — plus `config/`) and is frozen. See
 [../docs/architecture/MULTI_HOST_ARCHITECTURE.md](../../docs/architecture/MULTI_HOST_ARCHITECTURE.md)
 §2.1 for the rationale.
 

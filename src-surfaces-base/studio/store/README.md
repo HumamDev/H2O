@@ -2,7 +2,7 @@
 
 Status: Active (Highlights cleanup complete on both surfaces — store is the only Studio-side persistence path; native `src-runtime-base/3H1a` is also free of legacy storage)
 Owns: `H2O.Studio.store` namespace and entity stores.
-Contracts: `surfaces/studio/STUDIO_STORAGE_CONTRACT.md`, `surfaces/studio/STUDIO_PORTABILITY_CONTRACT.md`.
+Contracts: `src-surfaces-base/studio/STUDIO_STORAGE_CONTRACT.md`, `src-surfaces-base/studio/STUDIO_PORTABILITY_CONTRACT.md`.
 
 ## What This Folder Is
 
@@ -20,8 +20,8 @@ The Studio side has no localStorage mirror, no GM_* fallback, no legacy-key boot
 
 | Layer | Lives in | Responsibility | Examples |
 |---|---|---|---|
-| Platform adapter | `surfaces/studio/platform/` | Platform/host abstraction. MV3 ↔ Tauri swap point. Speaks `chrome.*` / Tauri APIs. | `platform.messaging.send`, `platform.broadcast.emit`, `platform.broadcast.onAnyChange`, `platform.storage.{get,set}` |
-| Store (this folder) | `surfaces/studio/store/` | Domain entity layer. Speaks the language of chats / highlights / folders / etc. Calls into `platform.*`. | `store.highlights.setForAnswer`, future `store.chats.upsert` |
+| Platform adapter | `src-surfaces-base/studio/platform/` | Platform/host abstraction. MV3 ↔ Tauri swap point. Speaks `chrome.*` / Tauri APIs. | `platform.messaging.send`, `platform.broadcast.emit`, `platform.broadcast.onAnyChange`, `platform.storage.{get,set}` |
+| Store (this folder) | `src-surfaces-base/studio/store/` | Domain entity layer. Speaks the language of chats / highlights / folders / etc. Calls into `platform.*`. | `store.highlights.setForAnswer`, future `store.chats.upsert` |
 
 When you build a new feature that needs persistence:
 
@@ -38,7 +38,7 @@ When you build a new feature that needs persistence:
 
 ## Forbidden Patterns
 
-In any Studio feature code (anything under `surfaces/studio/` outside `store/` and `platform/`):
+In any Studio feature code (anything under `src-surfaces-base/studio/` outside `store/` and `platform/`):
 
 - `chrome.storage.local`, `chrome.storage.sync`, `chrome.storage.session`
 - `localStorage`, `sessionStorage`
@@ -167,7 +167,7 @@ Per-item conflicts are resolved by `mergeBlob`'s last-write-wins semantics on it
 
 ## Future: Tauri / SQLite
 
-When the platform adapter is swapped to a Tauri implementation, only `surfaces/studio/store/<entity>.js` implementations change — feature code does not. For highlights, the future path is:
+When the platform adapter is swapped to a Tauri implementation, only `src-surfaces-base/studio/store/<entity>.js` implementations change — feature code does not. For highlights, the future path is:
 
 ```
 S3H1a feature code  →  STORE_read / STORE_write / STORE_saveNow  (unchanged)

@@ -24,7 +24,7 @@ The five contracts that govern Studio development are in this folder. Read in or
 ## File Layout
 
 ```
-surfaces/studio/
+src-surfaces-base/studio/
 ├── README.md                            # this file
 ├── STUDIO_ARCHITECTURE.md
 ├── STUDIO_DEVELOPMENT_RULES.md
@@ -58,7 +58,7 @@ surfaces/studio/
 To be added (per `STUDIO_PLATFORM_ADAPTER_GUIDE.md`):
 
 ```
-surfaces/studio/
+src-surfaces-base/studio/
 └── platform/
     ├── index.js
     ├── adapter-extension-mv3.js
@@ -75,7 +75,7 @@ surfaces/studio/
 
 ## How Studio Boots Today
 
-1. Service worker (`bg.js`) opens `chrome-extension://<id>/surfaces/studio/studio.html` in a panel/window.
+1. Service worker (`bg.js`) opens `chrome-extension://<id>/src-surfaces-base/studio/studio.html` in a panel/window.
 2. `studio.html` loads `studio.js` plus the 30+ `S*.Studio.js` modules in numeric order via `<script>` tags.
 3. Each module is an IIFE that registers itself in `H2O.events`, `H2O.Library.*`, or other `H2O.*` namespaces.
 4. The reader (`studio.js`) renders captured chats inside its own DOM using ChatGPT-compatible data attributes.

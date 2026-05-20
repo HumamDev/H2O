@@ -10,7 +10,8 @@ Temporary Add-on" is proven to work end-to-end.
 logs a single console line and sets one data attribute on
 `document.documentElement`. The chatgpt+chrome legacy runtime at the top
 level (`src-runtime-base/` — renamed from `scripts/` in Phase 8K-5 — plus
-`surfaces/`, `config/`) is intentionally NOT reused here
+`src-surfaces-base/` — renamed from `surfaces/` in Phase 8L-5 — plus
+`config/`) is intentionally NOT reused here
 — that's frozen for chatgpt+chrome only. The Firefox port grows fresh and
 will eventually share logic through `packages/host-adapters/chatgpt/` +
 `packages/browser-adapters/firefox/` once those packages have real code.

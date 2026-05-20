@@ -28,7 +28,7 @@
  * with hyphens), and rewrite `<script src="...">` references in
  * dist/studio.html to match the new names. The MV3 build is unaffected
  * because it copies from the same source separately and never touches
- * dist/. The Studio source tree (surfaces/studio/) is also untouched —
+ * dist/. The Studio source tree (src-surfaces-base/studio/) is also untouched —
  * this transform is applied only to the Tauri snapshot.
  *
  * The `redirector` index.html at dist/ root immediately replace()s
@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 // `here` and `desktopRoot` remain script-relative so this prepare-dist tool
 // stays robust to relocation INSIDE apps/studio/desktop/ (e.g. moving the
 // build-tools/ subdirectory). The repo-level constants (REPO_ROOT, the prod
-// extension build dir, and surfaces/studio dir) come from paths.mjs so that
+// extension build dir, and src-surfaces-base/studio dir) come from paths.mjs so that
 // future migrations that rename those folders only need to update paths.mjs.
 // Behavior verified byte-identical via dist/ content shasum compared against
 // two pre-refactor reference runs.
@@ -90,12 +90,12 @@ if (!fs.existsSync(studioBuilt)) {
  * The build artifacts at apps/extensions/chatgpt/chrome/prod/surfaces/studio/ are produced
  * by a SEPARATE chain (`npm run dev:all` + `chrome-live-extension.mjs`) that
  * this script does NOT trigger. If you edit Studio source under
- * surfaces/studio/ and run `npm run tauri:dev` without re-running that
+ * src-surfaces-base/studio/ and run `npm run tauri:dev` without re-running that
  * chain, prepare-dist will silently copy a STALE snapshot into dist/, the
  * Tauri window will load the pre-edit Studio code, and you'll spend time
  * debugging "why didn't my fix take effect" symptoms.
  *
- * This guard compares the newest mtime under surfaces/studio/ against the
+ * This guard compares the newest mtime under src-surfaces-base/studio/ against the
  * newest mtime under apps/extensions/chatgpt/chrome/prod/surfaces/studio/. If the source
  * is newer, the build is stale — fail with a clear message that says
  * exactly what to run.
@@ -123,8 +123,8 @@ function newestMtimeRecursive(dir) {
 
 if (process.env.SKIP_STALENESS_CHECK !== '1') {
   // Phase 0G-1: SURFACES_STUDIO_DIR is imported from tools/paths.mjs and
-  // resolves to <REPO_ROOT>/surfaces/studio — byte-identical to the previous
-  // `path.join(repoRoot, 'surfaces', 'studio')` under standard invocation.
+  // resolves to <REPO_ROOT>/src-surfaces-base/studio (post-8L-5 rename) —
+  // composes from SURFACES_BASE_REL + "studio" inside paths.mjs.
   const studioSource = SURFACES_STUDIO_DIR;
   if (fs.existsSync(studioSource)) {
     const sourceMtime = newestMtimeRecursive(studioSource);
@@ -133,7 +133,7 @@ if (process.env.SKIP_STALENESS_CHECK !== '1') {
       const sourceWhen = new Date(sourceMtime).toISOString();
       const buildWhen = new Date(buildMtime).toISOString();
       console.error('[prepare-dist] STALE BUILD DETECTED');
-      console.error(`  newest source mtime: ${sourceWhen}  (surfaces/studio/)`);
+      console.error(`  newest source mtime: ${sourceWhen}  (src-surfaces-base/studio/)`);
       console.error(`  newest build  mtime: ${buildWhen}  (apps/extensions/chatgpt/chrome/prod/surfaces/studio/)`);
       console.error('');
       console.error('  Studio source is newer than the bundled build. If you proceed, Tauri will');

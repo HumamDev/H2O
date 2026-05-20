@@ -1,7 +1,7 @@
 # Studio Architecture
 
 Status: Active
-Audience: Anyone writing or modifying code under `surfaces/studio/`.
+Audience: Anyone writing or modifying code under `src-surfaces-base/studio/`.
 Companion docs: `STUDIO_PORTABILITY_CONTRACT.md`, `STUDIO_PLATFORM_ADAPTER_GUIDE.md`, `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_CAPTURE_BOUNDARY.md`, `STUDIO_DEVELOPMENT_RULES.md`.
 
 ## Purpose
@@ -31,11 +31,11 @@ Today Studio runs inside an MV3 extension page (`studio.html`). Tomorrow it shou
 | **Platform Adapter** (new layer, see `STUDIO_PLATFORM_ADAPTER_GUIDE.md`) | Storage, messaging, capture intake, file I/O, env detection, runtime URL resolution. | Domain logic. UI. |
 | **Storage Adapter** (concrete implementation behind the StudioStore façade) | Persistence implementation: today IndexedDB + localStorage + `chrome.storage.local`; tomorrow SQLite via `tauri-plugin-sql`. | Schema definitions (those live in shared domain models). |
 | **Shared Domain Models** (`@h2o-studio/types`, `@h2o-studio/core`) | Record shapes for chat, turn, snapshot, project, folder, label, tag, category, capture, import; normalizers and migrations. | Storage backend choice. UI components. |
-| **Identity Surface** (`surfaces/identity/`) | Auth UI and token state. | Studio cannot perform auth directly; it consumes `H2O.Identity` state via events only. |
+| **Identity Surface** (`src-surfaces-base/identity/`) | Auth UI and token state. | Studio cannot perform auth directly; it consumes `H2O.Identity` state via events only. |
 
 ## What Studio Owns
 
-Concretely, Studio owns these modules under `surfaces/studio/`:
+Concretely, Studio owns these modules under `src-surfaces-base/studio/`:
 
 - **Workspace runtime** — `S0F0a` Library Surface Host, `S0F1a` Library Core, `S0F1b` Library Workspace, `S0F1c` Library Index, `S0F1d` Library Insights, `S0F1e` Library Store, `S0F1f` Library Maintenance, `S0F1g` Chat Registry, `S0F1h` Library Sync.
 - **Knowledge features** — `S0F2a` Projects, `S0F3a` Folders, `S0F4a` Categories, `S0F5a` Tags, `S0F6a` Labels.
@@ -46,13 +46,13 @@ Concretely, Studio owns these modules under `surfaces/studio/`:
 - **Command palette** — `S0X1a` Command Bar, `S0X1b` Library Commands.
 - **Sidebar** — `S0Z1f`/`S0Z1g`.
 
-Studio does **not** own `surfaces/desk/` (live chatgpt.com decoration), `surfaces/identity/`, the service worker (`bg.js`), or content scripts (`loader.js`).
+Studio does **not** own `src-surfaces-base/desk/` (live chatgpt.com decoration), `src-surfaces-base/identity/`, the service worker (`bg.js`), or content scripts (`loader.js`).
 
 ## Reader Visual-Parity Convention (load-bearing invariant)
 
 Studio renders captured chats inside `studio.html` using the **same `data-*` attribute names ChatGPT uses on its live page**: `data-message-id`, `data-message-author-role`, `data-testid="conversation-turn"`, etc. This is intentional: it lets the decoration engines (MiniMap, Highlights, Wash, Timestamps, Answer Numbers) run unchanged on either chatgpt.com (native variant) or Studio's replay (Studio variant) by querying the same selectors.
 
-Implication: **the decoration engines in `surfaces/studio/` query `studio.html`'s own DOM via `document.querySelector` — they do not, and cannot, reach chatgpt.com's DOM** (different origin, different context). The same selectors work because Studio's replay is shaped that way on purpose.
+Implication: **the decoration engines in `src-surfaces-base/studio/` query `studio.html`'s own DOM via `document.querySelector` — they do not, and cannot, reach chatgpt.com's DOM** (different origin, different context). The same selectors work because Studio's replay is shaped that way on purpose.
 
 If ChatGPT ever renames its data attributes, two things move together: (a) the live capture extension's selectors, and (b) Studio's replay renderer must keep emitting the legacy attribute name (or both) so existing captures remain readable. Selector constants are documented in `STUDIO_CAPTURE_BOUNDARY.md` and must be centralized in one place — never sprinkled across decoration files.
 

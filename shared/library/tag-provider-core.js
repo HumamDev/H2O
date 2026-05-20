@@ -9,7 +9,7 @@
 //   This file is the canonical source; two runtime mirror files exist:
 //
 //     src-runtime-base/0F0g.⬛️🗂️ Tag Provider Core 🗂️.js
-//     surfaces/studio/S0F0g. 🎬 Tag Provider Core - Studio.js
+//     src-surfaces-base/studio/S0F0g. 🎬 Tag Provider Core - Studio.js
 //
 //   The IIFE bodies must remain byte-identical across all three files.
 //   Headers may differ so the existing native and Studio loaders discover

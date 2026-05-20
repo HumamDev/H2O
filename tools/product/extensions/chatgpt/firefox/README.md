@@ -42,7 +42,8 @@ via `!apps/extensions/chatgpt/firefox/README.md`).
 The chatgpt+chrome builders at
 [`../chrome/`](../chrome/) read from the **legacy top-level**
 `src-runtime-base/` (renamed from `scripts/` in Phase 8K-5),
-`surfaces/`, `config/` (frozen) and produce 8 production variants with full
+`src-surfaces-base/` (renamed from `surfaces/` in Phase 8L-5),
+`config/` (frozen) and produce 8 production variants with full
 identity / Studio / popup integration. They're complex because they ship a
 real product.
 

@@ -7,8 +7,9 @@
 > (Phase 8G-7), `src/extensions/claude/firefox/` (Phase 8G-8), and
 > `src/extensions/gemini/firefox/` (Phase 8G-9, this phase). The chatgpt+chrome
 > legacy continues to live at the top-level frozen folders (`src-runtime-base/`
-> — renamed from `scripts/` in Phase 8K-5 — plus `surfaces/`, `config/`) and
-> produces 8 production-grade variants.
+> — renamed from `scripts/` in Phase 8K-5 — plus `src-surfaces-base/` —
+> renamed from `surfaces/` in Phase 8L-5 — plus `config/`) and produces 8
+> production-grade variants.
 >
 > **Both identity schemes are now demonstrated**:
 > - Chrome SPKI public key in `manifest.key` — chatgpt+chrome legacy (8 variants),
@@ -41,7 +42,7 @@ quadrant. The actual physical layout is:
 
 | Quadrant | Where | What lives here |
 |---|---|---|
-| **Source (what you write)** | `src-runtime-base/`, `surfaces/`, `config/`, `src/`, `packages/`, `assets/` | Hand-written runtime, UI, config, libraries |
+| **Source (what you write)** | `src-runtime-base/`, `src-surfaces-base/`, `config/`, `src/`, `packages/`, `assets/` | Hand-written runtime, UI, config, libraries |
 | **Build tooling** | `tools/` | Generators, validators, release/archive helpers |
 | **Generated outputs** | `apps/extensions/<host>/<browser>/<variant>/`, `apps/studio/*/dist/`, `apps/site/dist/` | What builders produce; what you load into Chrome/Firefox/Tauri |
 | **Workspace apps with their own source** | `apps/studio/{desktop,mobile}/`, `apps/site/`, `apps/dev-server/` | Self-contained apps with tracked source + generated outputs co-located |
@@ -69,7 +70,7 @@ Its source lives at the **top level** of the repo:
 ```
 h2o-cp-source/
 ├── src-runtime-base/   146 emoji-named userscripts, load-order-coupled (renamed from `scripts/` in Phase 8K-5)
-├── surfaces/           desk/, identity/, studio/ HTML+JS surfaces
+├── src-surfaces-base/  desk/, identity/, studio/ HTML+JS surfaces (renamed from `surfaces/` in Phase 8L-5)
 ├── config/             dev-order.tsv, loader-deps.json, loader-tiers.json
 └── assets/             chrome-*-icons/ packs
 ```
@@ -128,7 +129,7 @@ into `packages/` over time.
 | Folder | Meaning |
 |---|---|
 | `src-runtime-base/` | **Legacy chatgpt+chrome runtime userscripts.** 146 emoji-named files loaded by the chrome+chatgpt loader. Frozen. Add new chatgpt+chrome features here following the existing convention. (Renamed from `scripts/` in Phase 8K-5 to disambiguate from the new-host `src/extensions/<host>/<browser>/scripts/` layout. Path resolves through `tools/paths.mjs::RUNTIME_BASE_REL`.) |
-| `surfaces/` | **Legacy chatgpt+chrome UI sources.** HTML+JS surfaces shipped inside chatgpt+chrome extension builds. Frozen. |
+| `src-surfaces-base/` | **Legacy chatgpt+chrome UI sources.** HTML+JS surfaces (`desk/`, `identity/`, `studio/`) shipped inside chatgpt+chrome extension builds. Frozen. (Renamed from `surfaces/` in Phase 8L-5 to disambiguate from the new-host `src/extensions/<host>/<browser>/surfaces/` layout. Path resolves through `tools/paths.mjs::SURFACES_BASE_REL`. Bundle output continues to use the literal `surfaces/` subdir per Chrome extension layout convention — see §11 risk row.) |
 | `config/` | **Loader + build configuration.** Contains the frozen chatgpt+chrome runtime configs (`dev-order.tsv`, `loader-deps.json`, `loader-tiers.json`) + Phase 8A-1 Chrome keys (`extension-keys.json`) + operator-local secrets (`local/`). New per-host configs go under `config/extensions/<host>/<browser>/`. |
 | `assets/` | **Static asset packs** (PNG icons, etc.). The current packs are chatgpt+chrome-named (`chrome-dev-controls-icons/`, etc.). New host/browser packs should go under `assets/extensions/<host>/<browser>/` to avoid name collision. |
 | `src/` | **NEW per-host/per-browser source root.** Only contains `src/extensions/<host>/<browser>/` subtrees + the `_shared/` incubator. Chatgpt+chrome legacy is NOT under here — it stays at the top level. |
@@ -145,7 +146,7 @@ into `packages/` over time.
 | What you wrote | Where it lives | Tracked in git? |
 |---|---|---|
 | chatgpt+chrome legacy runtime | `src-runtime-base/` (renamed from `scripts/` in Phase 8K-5) | ✅ yes |
-| chatgpt+chrome legacy UI | `surfaces/` | ✅ yes |
+| chatgpt+chrome legacy UI | `src-surfaces-base/` (renamed from `surfaces/` in Phase 8L-5) | ✅ yes |
 | chatgpt+chrome legacy config | `config/dev-order.tsv`, etc. | ✅ yes |
 | Per-host/per-browser new source | `src/extensions/<host>/<browser>/` | ✅ yes |
 | Shared incubator code | `src/extensions/_shared/` | ✅ yes |

@@ -301,7 +301,7 @@ export const SURFACES_REL = SURFACES_BASE_REL;
 // system, grouped semantically and ordered so each group is easy to
 // extend in future phases:
 //
-//   1. Legacy chatgpt+chrome source (src-runtime-base/, surfaces/)
+//   1. Legacy chatgpt+chrome source (src-runtime-base/, src-surfaces-base/)
 //   2. Multi-host extension source (src/extensions/)
 //   3. Shared workspace packages (packages/)
 //   4. Studio Mobile (src, assets, __tests__, docs, scripts, ios, android)
@@ -322,7 +322,7 @@ export const SURFACES_REL = SURFACES_BASE_REL;
 export const SOURCE_ROOTS = [
   // ── 1. Legacy chatgpt+chrome source ─────────────────────────────
   { kind: "userscripts" },                                  // src-runtime-base/*.user.js
-  { kind: "recursive", root: SURFACES_REL },                // surfaces/{studio,desk,identity}/**
+  { kind: "recursive", root: SURFACES_REL },                // src-surfaces-base/{studio,desk,identity}/**
 
   // ── 2. Multi-host extension source (Phase 8G stubs) ─────────────
   { kind: "recursive", root: "src/extensions" },            // src/extensions/{<host>/<browser>,_shared}/**

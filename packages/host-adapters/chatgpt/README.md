@@ -8,7 +8,7 @@ and (eventually) `apps/extensions/chatgpt/firefox`.
 Not yet implemented. Today the ChatGPT host knowledge lives in:
 
   - `src-runtime-base/` (the 146 emoji-named userscripts — renamed from `scripts/` in Phase 8K-5)
-  - `surfaces/studio/` (Studio surface running inside chrome-ext-prod)
+  - `src-surfaces-base/studio/` (Studio surface running inside chrome-ext-prod — renamed from `surfaces/studio/` in Phase 8L-5)
   - `tools/product/extensions/chatgpt/chrome/chrome-live-*.mjs` (manifest + loader builders)
 
 If/when this is extracted into a reusable package, it lives here.

@@ -26,7 +26,7 @@ The point of the contracts is that they make refusing the wrong shortcut easy. U
 You need to add a feature to Studio.
 
 Q: Does it need to capture chats from chatgpt.com?
-   → YES: This is capture-side work, not Studio. Belongs in surfaces/desk/ or
+   → YES: This is capture-side work, not Studio. Belongs in src-surfaces-base/desk/ or
           (in the future) the slim capture extension. STOP — wrong surface.
    → NO:  Continue.
 
@@ -54,7 +54,7 @@ Q: Does it need a CSS selector against the chat replay DOM?
 Q: Does it need to know if the user is signed in?
    → YES: Use H2O.Studio.platform.auth.getIdentity() or H2O.events
           h2o:identity:* listeners. Do NOT call Supabase / OAuth / identity
-          providers directly. Auth flows belong to surfaces/identity/.
+          providers directly. Auth flows belong to src-surfaces-base/identity/.
    → NO:  Continue.
 
 You are now free to write feature code in pure DOM + H2O.events + H2O.Studio.store.
@@ -62,7 +62,7 @@ You are now free to write feature code in pure DOM + H2O.events + H2O.Studio.sto
 
 ## Allowed Patterns
 
-Feature code under `surfaces/studio/` may freely use:
+Feature code under `src-surfaces-base/studio/` may freely use:
 
 - `document.querySelector`, `document.querySelectorAll`, `MutationObserver` — **against `studio.html`'s own DOM only**. Selectors come from `selectors.contract.js`.
 - `H2O.events.emit` / `H2O.events.on` / `H2O.bus.*` for messaging within Studio.
@@ -75,7 +75,7 @@ Feature code under `surfaces/studio/` may freely use:
 
 ## Forbidden Patterns
 
-Forbidden in feature files (anything under `surfaces/studio/` outside the platform adapter folder):
+Forbidden in feature files (anything under `src-surfaces-base/studio/` outside the platform adapter folder):
 
 - `chrome.*` API calls of any kind.
 - `localStorage`, `sessionStorage`, `indexedDB`, `idb-keyval`, `idb`.
@@ -83,7 +83,7 @@ Forbidden in feature files (anything under `surfaces/studio/` outside the platfo
 - Hardcoded `chrome-extension://` URLs.
 - `chatgpt.com`, `chat.openai.com`, `claude.ai` URLs in fetch/observer/document references.
 - `MutationObserver` against `window.top` or any non-`studio.html` document.
-- Imports from `surfaces/desk/` or content-script modules.
+- Imports from `src-surfaces-base/desk/` or content-script modules.
 - Direct Supabase / OAuth / identity-provider calls.
 - Inline migration code that reads or writes legacy storage keys outside the platform adapter's migrations module.
 
@@ -100,12 +100,12 @@ Run through this before opening a PR or marking a Studio change complete. "Must"
 
 ### Platform coupling (must)
 
-- [ ] No `chrome.*` references in the diff (outside `surfaces/studio/platform/`).
-- [ ] No `localStorage`, `sessionStorage`, `indexedDB`, or `idb-keyval` references in the diff (outside `surfaces/studio/platform/` or the adapter implementation).
+- [ ] No `chrome.*` references in the diff (outside `src-surfaces-base/studio/platform/`).
+- [ ] No `localStorage`, `sessionStorage`, `indexedDB`, or `idb-keyval` references in the diff (outside `src-surfaces-base/studio/platform/` or the adapter implementation).
 - [ ] No new direct `chrome.runtime.sendMessage` / `chrome.storage.onChanged` calls.
 - [ ] No new hardcoded `chrome-extension://` URLs.
 - [ ] No `chatgpt.com` / `claude.ai` / live host-page references inside Studio code.
-- [ ] No imports from `surfaces/desk/`.
+- [ ] No imports from `src-surfaces-base/desk/`.
 
 ### Storage (must if change touches persistence)
 
@@ -142,7 +142,7 @@ Ask each of these about the change. If the honest answer to any is "would need r
 - [ ] Is capture separate from workspace logic? (must be yes — Studio reads, Capture writes)
 - [ ] Is this UI Studio-owned or host-page-owned? (must be Studio-owned)
 - [ ] Would this still work in a Tauri WebView with `chrome.*` unavailable? (must be yes)
-- [ ] If the answer to the previous is "with a small adapter change," is the change inside `surfaces/studio/platform/`? (must be yes)
+- [ ] If the answer to the previous is "with a small adapter change," is the change inside `src-surfaces-base/studio/platform/`? (must be yes)
 
 ## Examples
 
@@ -200,7 +200,7 @@ A reviewer rejecting this can point at three rule references; no rewriting from 
 If a rule appears to block legitimate work, the answer is *not* to bypass the rule. The answer is one of:
 
 1. **The task belongs on the other side of a boundary.** Move it. (E.g., DOM scraping of chatgpt.com belongs in capture, not Studio.)
-2. **The adapter needs a new method.** Add it inside `surfaces/studio/platform/`, document it in `STUDIO_PLATFORM_ADAPTER_GUIDE.md`, then use it from feature code.
+2. **The adapter needs a new method.** Add it inside `src-surfaces-base/studio/platform/`, document it in `STUDIO_PLATFORM_ADAPTER_GUIDE.md`, then use it from feature code.
 3. **The contract has a gap.** Propose a contract amendment in the PR description. Until the amendment lands, do not ship the bypass.
 
 The contracts are designed to be cheap to follow and to point out misclassified work. Treat a rule conflict as a useful signal, not as friction.
@@ -212,6 +212,6 @@ When a Studio task lands in a fresh session, the recommended reading order is:
 1. `STUDIO_ARCHITECTURE.md` — what Studio is, what it owns.
 2. This file (`STUDIO_DEVELOPMENT_RULES.md`) — what is allowed and forbidden, the checklist.
 3. The specific companion (`STUDIO_STORAGE_CONTRACT.md`, `STUDIO_CAPTURE_BOUNDARY.md`, `STUDIO_PLATFORM_ADAPTER_GUIDE.md`) that matches the work.
-4. The actual code under `surfaces/studio/` for the relevant feature.
+4. The actual code under `src-surfaces-base/studio/` for the relevant feature.
 
 If the task description conflicts with the contracts, ask the user before bypassing. The contracts encode prior decisions; the user is the only authority to amend them.

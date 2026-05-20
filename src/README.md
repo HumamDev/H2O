@@ -17,7 +17,8 @@ Each host+browser combination has a self-contained source tree under
 
 - **The chatgpt+chrome legacy runtime** lives at the **top level** of the repo
   (`src-runtime-base/` — renamed from `scripts/` in Phase 8K-5 — plus
-  `surfaces/`, `config/`). It is frozen and intentionally not duplicated here.
+  `src-surfaces-base/` — renamed from `surfaces/` in Phase 8L-5 — plus
+  `config/`). It is frozen and intentionally not duplicated here.
   See `docs/architecture/MULTI_HOST_ARCHITECTURE.md` §2.1 for the rationale.
 - **Generated outputs** never live here — those land at
   `apps/extensions/<host>/<browser>/<variant>/` (gitignored).

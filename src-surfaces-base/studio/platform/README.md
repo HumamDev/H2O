@@ -2,11 +2,11 @@
 
 Status: Active (skeleton)
 Owns: `H2O.Studio.platform` namespace, MV3 adapter implementation, selectors contract.
-Contracts: see `surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md` (full surface area) and `STUDIO_PORTABILITY_CONTRACT.md` (rules).
+Contracts: see `src-surfaces-base/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md` (full surface area) and `STUDIO_PORTABILITY_CONTRACT.md` (rules).
 
 ## What This Folder Is
 
-The one place Studio code is allowed to touch platform APIs (`chrome.*`, `localStorage`, `indexedDB`, file dialogs, Tauri IPC, …). Everything else in `surfaces/studio/` calls through `H2O.Studio.platform.*` and `H2O.Studio.SELECTORS`.
+The one place Studio code is allowed to touch platform APIs (`chrome.*`, `localStorage`, `indexedDB`, file dialogs, Tauri IPC, …). Everything else in `src-surfaces-base/studio/` calls through `H2O.Studio.platform.*` and `H2O.Studio.SELECTORS`.
 
 This is the **skeleton** — namespace, MV3 adapter, selector contract, diagnostics. Feature call sites are NOT migrated yet; that happens in follow-up patches in the order specified by `STUDIO_PLATFORM_ADAPTER_GUIDE.md` (Migration Path section).
 
@@ -69,7 +69,7 @@ const byId = document.querySelector(H2O.Studio.SELECTORS.by.messageId(messageId)
 
 ## Forbidden in Studio Feature Code
 
-Anything under `surfaces/studio/` outside this `platform/` folder must NOT use:
+Anything under `src-surfaces-base/studio/` outside this `platform/` folder must NOT use:
 
 - `chrome.runtime`, `chrome.storage`, `chrome.tabs`, `chrome.runtime.getURL`
 - `localStorage`, `sessionStorage`, `indexedDB`, `idb-keyval`, `idb`
