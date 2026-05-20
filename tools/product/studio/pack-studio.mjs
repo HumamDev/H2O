@@ -61,6 +61,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // not-implemented (M2b-2 pending). Routed through callArchive's
   // Desktop branch in studio.js.
   "ingestion/import-bundle.tauri.js",
+  // Desktop-only: full-bundle export. Reads SQLite-backed public store
+  // adapters and emits Chrome-compatible h2o.studio.fullBundle.v2.
+  "ingestion/export-bundle.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -170,6 +173,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/tags.tauri.js",
   "store/categories.tauri.js",
   "ingestion/import-bundle.tauri.js",
+  "ingestion/export-bundle.tauri.js",
   "sync/folder-sync.tauri.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",

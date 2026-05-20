@@ -1008,9 +1008,16 @@ async function callArchive(op, payload = {}, nsDisk){
     if (op === 'listWorkbenchRows') return [];
     if (op === 'listAllChatIds') return [];
     if (op === 'listChatIds') return [];
-    // M2b-1: route the full-bundle import ops through the Desktop
-    // ingestion module so the existing #/migrate/import dry-run UI
-    // works against SQLite. importBundle is a stub until M2b-2 lands.
+    // Route full-bundle import/export ops through the Desktop ingestion
+    // modules so the existing #/migrate UI works against SQLite without
+    // changing Chrome's archive import/export implementation.
+    if (op === 'exportFullBundle') {
+      const fn = W.H2O?.Studio?.ingestion?.exportFullBundle;
+      if (typeof fn !== 'function') {
+        return Promise.reject(new Error('Desktop export module not loaded'));
+      }
+      return fn(payload || {});
+    }
     if (op === 'dryRunImportFullBundle') {
       const fn = W.H2O?.Studio?.ingestion?.dryRunImportBundle;
       if (typeof fn !== 'function') {

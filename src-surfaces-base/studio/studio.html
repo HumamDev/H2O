@@ -234,6 +234,10 @@
        #/migrate/import UI works unchanged. Must load after store/*.tauri.js
        since dry-run reads via the store public APIs. -->
   <script src="./ingestion/import-bundle.tauri.js"></script>
+  <!-- Desktop-only: full-bundle export. Reads SQLite-backed public store
+       adapters and emits Chrome-compatible h2o.studio.fullBundle.v2
+       without changing Chrome import logic or mutating Desktop data. -->
+  <script src="./ingestion/export-bundle.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
