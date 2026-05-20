@@ -273,6 +273,7 @@
     if (!id) return null;
     var meta = safeObject(row && row.meta);
     var color = cleanString((row && (row.iconColor || row.color)) || meta.iconColor || meta.color || '');
+    var icon = cleanString((row && row.icon) || meta.icon || meta.iconKey || '');
     var out = {
       id: id,
       name: cleanString((row && row.name) || meta.name || id) || id,
@@ -284,7 +285,11 @@
       updatedAt: epochToIso((row && row.updatedAt) || meta.updatedAt) || '',
       meta: meta,
     };
-    if (color) out.iconColor = color;
+    if (color) {
+      out.color = color;
+      out.iconColor = color;
+    }
+    if (icon) out.icon = icon;
     return out;
   }
 
@@ -574,6 +579,23 @@
     Object.keys(folderItems || {}).forEach(function (folderId) {
       items[folderId] = uniqStrings(folderItems[folderId]);
     });
+    var folderStore = stores && stores.folders;
+    if (folderStore && typeof folderStore.listChats === 'function') {
+      for (var i = 0; i < folders.length; i += 1) {
+        var folder = folders[i] || {};
+        var folderId = cleanString(folder.id || folder.folderId);
+        if (!folderId) continue;
+        try {
+          var rows = await folderStore.listChats(folderId);
+          var chatIds = asArray(rows).map(function (row) {
+            return cleanString(row && (row.chatId || row.id));
+          }).filter(Boolean);
+          items[folderId] = uniqStrings(chatIds.length ? chatIds : items[folderId]);
+        } catch (e) {
+          items[folderId] = uniqStrings(items[folderId]);
+        }
+      }
+    }
     return {
       schemaVersion: 1,
       exportedFrom: 'desktop-sqlite',

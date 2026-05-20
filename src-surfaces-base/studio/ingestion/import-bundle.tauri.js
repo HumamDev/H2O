@@ -64,6 +64,7 @@
     'ho:chat-meta-',
   ];
   var KV_ALLOW_PREFIX = 'h2o:prm:cgx:library:';
+  var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
 
   function isAllowedStorageKey(key) {
     var k = String(key || '');
@@ -82,6 +83,14 @@
   function isAllowedKvKey(key) {
     var k = String(key || '');
     return !!k && k.indexOf(KV_ALLOW_PREFIX) === 0;
+  }
+
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function safeMeta(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
 
   /* ── chrome.storage.local helper (Promise-based) ──────────────────── */
@@ -210,7 +219,7 @@
     var newFolderIds = [], dupFolderIds = [];
     var folderParseSrc = null;
     try {
-      var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal['h2o:prm:cgx:fldrs:state:data:v1'];
+      var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY];
       if (fldData && Array.isArray(fldData.folders)) {
         folderParseSrc = 'chromeStorageLocal';
         for (var fi = 0; fi < fldData.folders.length; fi += 1) {
@@ -560,7 +569,7 @@
   }
 
   async function importFolders(bundle, stores, result) {
-    var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal['h2o:prm:cgx:fldrs:state:data:v1'];
+    var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY];
     if (!fldData || !Array.isArray(fldData.folders)) return;
     var folderStore = stores.folders;
     if (!folderStore || typeof folderStore.upsert !== 'function') {
@@ -569,20 +578,34 @@
     }
     for (var i = 0; i < fldData.folders.length; i += 1) {
       var row = fldData.folders[i];
-      var id = String((row && row.id) || '').trim();
+      var id = cleanString(row && (row.id || row.folderId));
       if (!id) { result.warnings.push({ kind: 'folder', warn: 'missing id at index ' + i }); continue; }
       try {
         var existing = await folderStore.get(id);
-        if (existing) { result.skipped.folders += 1; continue; }
+        var incomingMeta = safeMeta(row && row.meta);
+        var existingMeta = safeMeta(existing && existing.meta);
+        var color = cleanString((row && (row.color || row.iconColor)) || (existing && existing.color) || existingMeta.color || existingMeta.iconColor);
+        var icon = cleanString((row && row.icon) || incomingMeta.icon || incomingMeta.iconKey || existingMeta.icon || existingMeta.iconKey);
+        var patchMeta = Object.assign({}, existingMeta, incomingMeta, {
+          source: cleanString((row && row.source) || incomingMeta.source || (existing && existing.source) || existingMeta.source || 'imported'),
+        });
+        if (color) {
+          patchMeta.color = color;
+          patchMeta.iconColor = color;
+        }
+        if (icon) patchMeta.icon = icon;
         await folderStore.upsert({
           folderId: id,
-          name: row.name || id,
-          parentId: row.parentId || row.parent_id || '',
-          color: row.color || '',
-          source: row.source || 'imported',
-          sortOrder: (typeof row.sortOrder === 'number') ? row.sortOrder
-                    : (typeof row.sort_order === 'number') ? row.sort_order : 0,
-          meta: (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {},
+          name: cleanString((row && (row.name || row.title)) || (existing && existing.name) || id) || id,
+          parentId: cleanString((row && (row.parentId || row.parent_id)) || (existing && existing.parentId)),
+          color: color,
+          source: cleanString((row && row.source) || (existing && existing.source) || 'imported') || 'imported',
+          sortOrder: (typeof (row && row.sortOrder) === 'number') ? row.sortOrder
+                    : (typeof (row && row.sort_order) === 'number') ? row.sort_order
+                    : (typeof (existing && existing.sortOrder) === 'number') ? existing.sortOrder : 0,
+          iconColor: color,
+          icon: icon,
+          meta: patchMeta,
         });
         result.written.folders += 1;
         if (result.sample.writtenFolderIds.length < 10) result.sample.writtenFolderIds.push(id);
@@ -696,7 +719,7 @@
   }
 
   async function importFolderBindings(bundle, stores, result, chatStateIndex) {
-    var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal['h2o:prm:cgx:fldrs:state:data:v1'];
+    var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY];
     if (!fldData || !fldData.items || typeof fldData.items !== 'object') return;
     var folderStore = stores.folders;
     if (!folderStore || typeof folderStore.bindChat !== 'function') {

@@ -164,14 +164,20 @@
   function projectFolderRowForWorkspace(row) {
     if (!row || !row.folderId) return null;
     const meta = (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
+    const color = row.color || meta.iconColor || meta.color || '';
     return {
       id: row.folderId,
       name: row.name || '',
       createdAt: epochToIso(row.createdAt),
       updatedAt: epochToIso(row.updatedAt),
       kind: meta.kind || 'local',
+      parentId: row.parentId || meta.parentId || '',
+      source: row.source || meta.source || 'desktop-sqlite',
+      sortOrder: (typeof row.sortOrder === 'number') ? row.sortOrder : ((typeof meta.sortOrder === 'number') ? meta.sortOrder : 0),
       projectRef: (meta.projectRef && typeof meta.projectRef === 'object') ? meta.projectRef : null,
-      iconColor: row.color || '',
+      color,
+      iconColor: color,
+      icon: meta.icon || meta.iconKey || '',
     };
   }
   function deriveFolderRowsFromIndex() {

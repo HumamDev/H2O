@@ -2854,11 +2854,21 @@ function normalizeFolderEntry(raw) {
     name: String(raw && (raw.name || raw.title || id) || id).trim() || id,
     kind: kindRaw === "project_backed" ? "project_backed" : "local",
     projectRef: normalizeProjectRef(raw && raw.projectRef),
+    parentId: String(raw && (raw.parentId || raw.parent_id) || "").trim(),
+    source: String(raw && raw.source || "").trim(),
+    sortOrder: Number.isFinite(Number(raw && (raw.sortOrder ?? raw.sort_order)))
+      ? Math.floor(Number(raw && (raw.sortOrder ?? raw.sort_order)))
+      : 0,
     createdAt: String(raw && raw.createdAt || "").trim(),
     updatedAt: String(raw && raw.updatedAt || "").trim(),
   };
   const iconColor = normalizeHexColor(raw && (raw.iconColor || raw.color || raw.folderColor || raw.accentColor || raw.appearance && raw.appearance.color));
-  if (iconColor) out.iconColor = iconColor;
+  if (iconColor) {
+    out.iconColor = iconColor;
+    out.color = iconColor;
+  }
+  const icon = String(raw && (raw.icon || raw.iconKey || raw.appearance && raw.appearance.icon) || "").trim();
+  if (icon) out.icon = icon;
   return out;
 }
 
@@ -2890,7 +2900,13 @@ function mergeFolderCatalogLists(...lists) {
         name: String(item.name || prev.name || id).trim() || id,
         kind: String(item.kind || prev.kind || "local").trim() || "local",
         projectRef: item.projectRef || prev.projectRef || null,
+        parentId: String(item.parentId || prev.parentId || "").trim(),
+        source: String(item.source || prev.source || "").trim(),
+        sortOrder: Number.isFinite(Number(item.sortOrder)) ? Math.floor(Number(item.sortOrder))
+          : Number.isFinite(Number(prev.sortOrder)) ? Math.floor(Number(prev.sortOrder)) : 0,
         iconColor: String(item.iconColor || prev.iconColor || "").trim(),
+        color: String(item.color || prev.color || item.iconColor || prev.iconColor || "").trim(),
+        icon: String(item.icon || prev.icon || "").trim(),
         createdAt: String(item.createdAt || prev.createdAt || "").trim(),
         updatedAt: String(item.updatedAt || prev.updatedAt || "").trim(),
       });
@@ -3864,6 +3880,66 @@ async function writeLibraryKvBatchMerge(rows, modeRaw) {
   });
 }
 
+function normalizeFolderStateItems(rawItems) {
+  const src = rawItems && typeof rawItems === "object" && !Array.isArray(rawItems) ? rawItems : {};
+  const out = {};
+  for (const [folderIdRaw, chatIdsRaw] of Object.entries(src)) {
+    const folderId = String(folderIdRaw || "").trim();
+    if (!folderId) continue;
+    const chatIds = uniqStringList(Array.isArray(chatIdsRaw) ? chatIdsRaw : []);
+    out[folderId] = chatIds.map((id) => normalizeChatId(id)).filter(Boolean);
+  }
+  return out;
+}
+
+function normalizeFolderStateData(raw) {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const schemaVersion = Number(src.schemaVersion || src.version || 1) || 1;
+  return {
+    ...src,
+    schemaVersion,
+    folders: normalizeFolderList(Array.isArray(src.folders) ? src.folders : []),
+    items: normalizeFolderStateItems(src.items),
+  };
+}
+
+function mergeFolderStateItems(existingItems, incomingItems) {
+  const out = normalizeFolderStateItems(existingItems);
+  const incoming = normalizeFolderStateItems(incomingItems);
+  for (const [folderId, chatIds] of Object.entries(incoming)) {
+    out[folderId] = uniqStringList([...(out[folderId] || []), ...chatIds])
+      .map((id) => normalizeChatId(id))
+      .filter(Boolean);
+  }
+  return out;
+}
+
+function mergeFolderStateData(existingRaw, incomingRaw, modeRaw) {
+  const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
+  const existing = normalizeFolderStateData(existingRaw);
+  const incoming = normalizeFolderStateData(incomingRaw);
+  if (!incoming.folders.length && !Object.keys(incoming.items || {}).length) return existing;
+  if (mode === "overwrite") {
+    return {
+      ...incoming,
+      schemaVersion: incoming.schemaVersion || existing.schemaVersion || 1,
+      updatedAt: nowIso(),
+    };
+  }
+  return {
+    ...existing,
+    ...incoming,
+    schemaVersion: incoming.schemaVersion || existing.schemaVersion || 1,
+    folders: mergeFolderCatalogLists(existing.folders, incoming.folders),
+    items: mergeFolderStateItems(existing.items, incoming.items),
+    updatedAt: nowIso(),
+  };
+}
+
+function stableJson(value) {
+  try { return JSON.stringify(value); } catch { return ""; }
+}
+
 async function writeChromeStorageLocalMerge(entries, modeRaw) {
   const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
   const obj = entries && typeof entries === "object" && !Array.isArray(entries) ? entries : {};
@@ -3896,6 +3972,16 @@ async function writeChromeStorageLocalMerge(entries, modeRaw) {
   let written = 0;
   let skipped = incomingKeys.length - safeKeys.length;
   for (const k of safeKeys) {
+    if (k === FOLDER_STATE_DATA_KEY) {
+      const merged = mergeFolderStateData(existing[k], safeIncoming[k], mode);
+      if (mode === "merge" && stableJson(normalizeFolderStateData(existing[k])) === stableJson(merged)) {
+        skipped += 1;
+        continue;
+      }
+      writes[k] = merged;
+      written += 1;
+      continue;
+    }
     if (mode === "merge" && Object.prototype.hasOwnProperty.call(existing, k)) {
       skipped += 1;
       continue;
