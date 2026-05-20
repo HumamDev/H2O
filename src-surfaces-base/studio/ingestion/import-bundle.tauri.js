@@ -475,20 +475,24 @@
 
   function emptySample() {
     return {
-      writtenChatIds:     [], skippedChatIds:     [],
-      writtenSnapshotIds: [], skippedSnapshotIds: [],
-      writtenCategoryIds: [], writtenLabelIds:    [],
-      writtenFolderIds:   [], writtenFolderBindings: [],
-      storageKeysWritten: [], kvKeysWritten:      [],
+      writtenChatIds:        [], skippedChatIds:        [],
+      writtenSnapshotIds:    [], skippedSnapshotIds:    [],
+      writtenCategoryIds:    [], writtenLabelIds:       [],
+      writtenFolderIds:      [], writtenFolderBindings: [],
+      /* M2c-3 — first 10 "chatId:labelId" / "chatId:tagId" tuples */
+      writtenLabelBindings:  [], writtenTagBindings:    [],
+      storageKeysWritten:    [], kvKeysWritten:         [],
     };
   }
   function emptyWritten() {
     return { chats: 0, snapshots: 0, categories: 0, labels: 0,
       folders: 0, folderBindings: 0,
+      /* M2c-3 */ labelBindings: 0, tagBindings: 0, tagsAutoCreated: 0,
       chromeStorageLocalKeys: 0, libraryKvKeys: 0 };
   }
   function emptySkipped() {
     return { chats: 0, snapshots: 0, categories: 0, labels: 0, folders: 0,
+      /* M2c-3 */ labelBindings: 0, tagBindings: 0,
       chromeStorageLocalKeysExisting: 0, libraryKvKeysExisting: 0,
       deniedByPolicy: { chromeStorageLocal: 0, libraryKv: 0 } };
   }
@@ -745,6 +749,237 @@
     }
   }
 
+  /* ── M2c-3: per-chat label/tag binding imports ───────────────────── */
+  /* Tolerant parser for the MV3 label-bindings KV blob.
+   *   Wrapped:  { bindings: { [chatId]: string[] } }
+   *   Wrapped+versioned: { schemaVersion, bindings: { [chatId]: string[] } }
+   *   Flat:     { [chatId]: string[] }   (only if every top-level value
+   *             is an array of strings — defensive against mistaking
+   *             a richer object for a binding map)
+   * Returns null if the value is unrecognized. */
+  function parseLabelBindingsMap(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (value.bindings && typeof value.bindings === 'object' && !Array.isArray(value.bindings)) {
+      return value.bindings;
+    }
+    var keys = Object.keys(value);
+    if (keys.length === 0) return {};
+    for (var i = 0; i < keys.length; i += 1) {
+      var v = value[keys[i]];
+      if (!Array.isArray(v)) return null;
+      for (var j = 0; j < v.length; j += 1) {
+        if (typeof v[j] !== 'string') return null;
+      }
+    }
+    return value;
+  }
+
+  /* Walk bundle.libraryKv[] for the label-bindings KV blob and write
+   * canonical label_bindings rows via store.labels.bindChat. Idempotent:
+   * pre-checks store.labels.listForChat(chatId) once per chat and skips
+   * already-bound (chatId, labelId) pairs. Orphan chat / orphan label IDs
+   * produce warnings but never abort. The label-bindings KV blob ALSO
+   * passes through opaque via importLibraryKvBlobs — that's intentional
+   * (legacy consumers reading the raw key still work). */
+  async function importLabelBindings(bundle, stores, result, chatStateIndex) {
+    var kvEntries = Array.isArray(bundle.libraryKv) ? bundle.libraryKv : [];
+    var entry = null;
+    for (var i = 0; i < kvEntries.length; i += 1) {
+      if (kvEntries[i] && kvEntries[i].key === 'h2o:prm:cgx:library:labels:bindings:v1') {
+        entry = kvEntries[i];
+        break;
+      }
+    }
+    if (!entry) return;
+    var map = parseLabelBindingsMap(entry.value);
+    if (!map) {
+      result.warnings.push({ kind: 'label-bindings-shape-unrecognized', key: entry.key });
+      return;
+    }
+    var chatStore = stores.chats;
+    var lblStore = stores.labels;
+    if (!lblStore || typeof lblStore.bindChat !== 'function') {
+      result.warnings.push({ kind: 'label-bindings', warn: 'store.labels.bindChat unavailable' });
+      return;
+    }
+    var chatIds = Object.keys(map);
+    for (var ci = 0; ci < chatIds.length; ci += 1) {
+      var chatId = String(chatIds[ci] || '').trim();
+      if (!chatId) continue;
+      var labelIds = Array.isArray(map[chatId]) ? map[chatId] : [];
+      if (labelIds.length === 0) continue;
+      /* Verify chat exists: in chatStateIndex (just-imported or
+       * already-present-and-skipped), or via a direct get for chats
+       * that pre-existed before this import session. */
+      var chatStateOk = chatStateIndex[chatId] === 'imported' || chatStateIndex[chatId] === 'skipped';
+      if (!chatStateOk) {
+        try {
+          var existChat = (chatStore && typeof chatStore.get === 'function') ? await chatStore.get(chatId) : null;
+          if (!existChat) {
+            result.warnings.push({ kind: 'orphan-label-binding', chatId: chatId });
+            continue;
+          }
+        } catch (_) {
+          result.warnings.push({ kind: 'orphan-label-binding', chatId: chatId });
+          continue;
+        }
+      }
+      /* Pre-fetch existing bindings once per chat; mutate the Set as we
+       * insert so multiple bundle entries for the same chat dedupe within
+       * the same import run. */
+      var existingSet = Object.create(null);
+      try {
+        var existingBindings = (typeof lblStore.listForChat === 'function') ? await lblStore.listForChat(chatId) : [];
+        (existingBindings || []).forEach(function (l) { if (l && l.labelId) existingSet[l.labelId] = true; });
+      } catch (e) {
+        result.errors.push({ kind: 'label.listForChat', chatId: chatId, error: String((e && e.message) || e) });
+        continue;
+      }
+      for (var li = 0; li < labelIds.length; li += 1) {
+        var labelId = String(labelIds[li] || '').trim();
+        if (!labelId) continue;
+        var lblRow = null;
+        try { lblRow = await lblStore.get(labelId); }
+        catch (e) {
+          result.errors.push({ kind: 'label.get', labelId: labelId, error: String((e && e.message) || e) });
+          continue;
+        }
+        if (!lblRow) {
+          result.warnings.push({ kind: 'orphan-label-id', chatId: chatId, labelId: labelId });
+          continue;
+        }
+        if (existingSet[labelId]) {
+          result.skipped.labelBindings += 1;
+          continue;
+        }
+        try {
+          await lblStore.bindChat(labelId, chatId, { assignedAt: Date.now() });
+          existingSet[labelId] = true;
+          result.written.labelBindings += 1;
+          if (result.sample.writtenLabelBindings.length < 10) {
+            result.sample.writtenLabelBindings.push(chatId + ':' + labelId);
+          }
+        } catch (e) {
+          result.errors.push({ kind: 'label-binding', chatId: chatId, labelId: labelId, error: String((e && e.message) || e) });
+        }
+      }
+    }
+  }
+
+  /* MV3 has no dedicated tag-bindings KV blob — tag bindings live on each
+   * chat record at chatIndex.organization.tagIds (or .tags[].id). Walk
+   * bundle.chatArchive.chats[] and write canonical tag_bindings rows.
+   *
+   * Tag catalog gap: V1 bundle has no canonical tags catalog. If a tagId
+   * has no matching store.tags row, we try to auto-create from chat.tags[]
+   * `{id, name}` fallback; if no name info is available, the binding is
+   * skipped with an orphan-tag-id warning. */
+  async function importTagBindings(bundle, stores, result, chatStateIndex) {
+    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
+      ? bundle.chatArchive.chats : [];
+    var chatStore = stores.chats;
+    var tagStore = stores.tags;
+    if (!tagStore || typeof tagStore.bindChat !== 'function') {
+      var anyTags = chats.some(function (c) {
+        var o = c && c.chatIndex && c.chatIndex.organization;
+        return o && ((Array.isArray(o.tagIds) && o.tagIds.length > 0)
+                  || (Array.isArray(o.tags) && o.tags.length > 0));
+      });
+      if (anyTags) result.warnings.push({ kind: 'tag-bindings', warn: 'store.tags.bindChat unavailable' });
+      return;
+    }
+    for (var i = 0; i < chats.length; i += 1) {
+      var chat = chats[i];
+      var chatId = String((chat && chat.chatId) || '').trim();
+      if (!chatId) continue;
+      var org = (chat && chat.chatIndex && chat.chatIndex.organization && typeof chat.chatIndex.organization === 'object')
+        ? chat.chatIndex.organization : null;
+      if (!org) continue;
+      var tagIds = [];
+      if (Array.isArray(org.tagIds)) {
+        org.tagIds.forEach(function (t) { var s = String(t || '').trim(); if (s) tagIds.push(s); });
+      }
+      if (Array.isArray(org.tags)) {
+        org.tags.forEach(function (t) { var s = String((t && t.id) || '').trim(); if (s) tagIds.push(s); });
+      }
+      if (tagIds.length === 0) continue;
+      var chatStateOk = chatStateIndex[chatId] === 'imported' || chatStateIndex[chatId] === 'skipped';
+      if (!chatStateOk) {
+        try {
+          var existChat2 = (chatStore && typeof chatStore.get === 'function') ? await chatStore.get(chatId) : null;
+          if (!existChat2) { result.warnings.push({ kind: 'orphan-tag-binding', chatId: chatId }); continue; }
+        } catch (_) {
+          result.warnings.push({ kind: 'orphan-tag-binding', chatId: chatId }); continue;
+        }
+      }
+      /* Build a fallback name lookup from chat.tags[] for auto-create. */
+      var nameByTagId = Object.create(null);
+      if (Array.isArray(chat.tags)) {
+        chat.tags.forEach(function (t) {
+          if (t && typeof t === 'object') {
+            var id = String(t.id || '').trim();
+            var name = String((t.name || t.label) || '').trim();
+            if (id && name) nameByTagId[id] = name;
+          }
+        });
+      }
+      var existingSet2 = Object.create(null);
+      try {
+        var existingTags = (typeof tagStore.listForChat === 'function') ? await tagStore.listForChat(chatId) : [];
+        (existingTags || []).forEach(function (t) { if (t && t.tagId) existingSet2[t.tagId] = true; });
+      } catch (e) {
+        result.errors.push({ kind: 'tag.listForChat', chatId: chatId, error: String((e && e.message) || e) });
+        continue;
+      }
+      var seenInBundle = Object.create(null);
+      for (var ti = 0; ti < tagIds.length; ti += 1) {
+        var tagId = tagIds[ti];
+        if (seenInBundle[tagId]) continue;
+        seenInBundle[tagId] = true;
+        var tagRow = null;
+        try { tagRow = await tagStore.get(tagId); }
+        catch (e) {
+          result.errors.push({ kind: 'tag.get', tagId: tagId, error: String((e && e.message) || e) });
+          continue;
+        }
+        if (!tagRow) {
+          var fallbackName = nameByTagId[tagId];
+          if (fallbackName) {
+            try {
+              await tagStore.upsert({
+                tagId: tagId,
+                name: fallbackName,
+                autoDerived: false,
+                meta: { importedFrom: 'h2o.studio.fullBundle.v2' },
+              });
+              result.written.tagsAutoCreated += 1;
+            } catch (e) {
+              result.errors.push({ kind: 'tag.upsert', tagId: tagId, error: String((e && e.message) || e) });
+              continue;
+            }
+          } else {
+            result.warnings.push({ kind: 'orphan-tag-id', chatId: chatId, tagId: tagId });
+            continue;
+          }
+        }
+        if (existingSet2[tagId]) {
+          result.skipped.tagBindings += 1;
+          continue;
+        }
+        try {
+          await tagStore.bindChat(tagId, chatId, { assignedAt: Date.now() });
+          existingSet2[tagId] = true;
+          result.written.tagBindings += 1;
+          if (result.sample.writtenTagBindings.length < 10) {
+            result.sample.writtenTagBindings.push(chatId + ':' + tagId);
+          }
+        } catch (e) {
+          result.errors.push({ kind: 'tag-binding', chatId: chatId, tagId: tagId, error: String((e && e.message) || e) });
+        }
+      }
+    }
+  }
+
   async function importChromeStorageBlobs(bundle, result) {
     var csl = (bundle.chromeStorageLocal && typeof bundle.chromeStorageLocal === 'object')
       ? bundle.chromeStorageLocal : {};
@@ -877,6 +1112,13 @@
       await importChats(bundle, stores, result, chatStateIndex);
       await importSnapshots(bundle, stores, result, chatStateIndex);
       await importFolderBindings(bundle, stores, result, chatStateIndex);
+      /* M2c-3: per-chat label/tag bindings. Label bindings come from a
+       * canonical KV blob; tag bindings come from each chat record's
+       * chatIndex.organization.tagIds (MV3 has no separate tag-bindings
+       * KV). Both need chats + their parent catalogs to already be
+       * written, hence this slot after importFolderBindings. */
+      await importLabelBindings(bundle, stores, result, chatStateIndex);
+      await importTagBindings(bundle, stores, result, chatStateIndex);
       await importChromeStorageBlobs(bundle, result);
       await importLibraryKvBlobs(bundle, result);
     } catch (e) {
@@ -895,13 +1137,14 @@
     return {
       installed: true,
       backend: 'sqlite',
-      stage: 'M2b-2',
+      stage: 'M2c-3',
       writeSide: 'merge-only',
       storesAvailable: {
         chats:      !!(stores.chats      && typeof stores.chats.get      === 'function'),
         snapshots:  !!(stores.snapshots  && typeof stores.snapshots.get  === 'function'),
         categories: !!(stores.categories && typeof stores.categories.get === 'function'),
         labels:     !!(stores.labels     && typeof stores.labels.get     === 'function'),
+        tags:       !!(stores.tags       && typeof stores.tags.get       === 'function'),
         folders:    !!(stores.folders    && typeof stores.folders.get    === 'function'),
       },
     };
