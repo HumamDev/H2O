@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 // dispatches to the appropriate collection helper. Behavior is byte-
 // equivalent to the pre-8I-3 inlined logic — the same set of files is
 // archived, with the same markers, into the same destination.
-import { ARCHIVE_DIR, RUNTIME_BASE_REL } from "../paths.mjs";
+import { ARCHIVE_DIR, RUNTIME_BASE_REL, SURFACES_BASE_REL } from "../paths.mjs";
 import {
   ADDITIONAL_TRACKED_FILES,
   EXCLUDED_ARCHIVE_NAMES,
@@ -298,9 +298,41 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
   let skippedOldStillExists = 0;
   let skippedAmbiguousUserScriptTitle = 0;
 
+  // Phase 8L-5: rewrite "surfaces/<rest>" → "<SURFACES_BASE_REL>/<rest>" when
+  // the legacy `surfaces/` prefix lingers in state and the new
+  // `src-surfaces-base/` path exists on disk (and the old one doesn't). Only
+  // applies when SURFACES_BASE_REL is something other than "surfaces" (i.e.
+  // post-rename). Steady-state runs without --migrate-paths are unaffected.
+  const SURFACES_LEGACY_PREFIX = "surfaces/";
+  const SURFACES_NEW_PREFIX = `${SURFACES_BASE_REL}/`;
+  const surfacesRewriteActive =
+    SURFACES_NEW_PREFIX !== SURFACES_LEGACY_PREFIX;
+  let surfacesMoved = 0;
+  let surfacesSkippedOldStillExists = 0;
+  let surfacesSkippedNoDest = 0;
+  let surfacesSkippedDestInState = 0;
+
   for (const [rawKey, value] of Object.entries(stateObj)) {
     const key = normalizePathKey(rawKey);
     let outKey = key;
+
+    if (surfacesRewriteActive && key.startsWith(SURFACES_LEGACY_PREFIX)) {
+      const rewritten = SURFACES_NEW_PREFIX + key.slice(SURFACES_LEGACY_PREFIX.length);
+      const oldPath = path.join(srcRoot, key);
+      const newPath = path.join(srcRoot, rewritten);
+      const oldExists = fs.existsSync(oldPath);
+      const newExists = fs.existsSync(newPath);
+      if (!newExists) {
+        surfacesSkippedNoDest++;
+      } else if (oldExists) {
+        surfacesSkippedOldStillExists++;
+      } else if (srcKeySet.has(rewritten)) {
+        surfacesSkippedDestInState++;
+      } else {
+        outKey = rewritten;
+        surfacesMoved++;
+      }
+    }
 
     if (/\.user\.js$/i.test(key)) {
       const oldPath = path.join(srcRoot, key);
@@ -350,13 +382,14 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
     next[outKey] = value;
   }
 
-  if (moved > 0) {
+  const totalMoved = moved + surfacesMoved;
+  if (totalMoved > 0) {
     const backupPath = `${STATE_FILE}.bak`;
     if (fs.existsSync(STATE_FILE)) {
       fs.copyFileSync(STATE_FILE, backupPath);
     }
     fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2));
-    console.log(`[H2O] migrated state paths (--migrate-paths): ${moved}`);
+    console.log(`[H2O] migrated state paths (--migrate-paths): ${totalMoved} (userscripts=${moved}, surfaces=${surfacesMoved})`);
     console.log(`[H2O] backup: ${backupPath}`);
   } else {
     console.log(`[H2O] migrated state paths (--migrate-paths): 0`);
@@ -368,8 +401,11 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
   if (skippedAmbiguousUserScriptTitle) {
     console.log(`[H2O] migrate skipped (ambiguous userscript title): ${skippedAmbiguousUserScriptTitle}`);
   }
+  if (surfacesSkippedDestInState) console.log(`[H2O] migrate skipped surfaces (dest key already exists): ${surfacesSkippedDestInState}`);
+  if (surfacesSkippedNoDest) console.log(`[H2O] migrate skipped surfaces (dest file missing): ${surfacesSkippedNoDest}`);
+  if (surfacesSkippedOldStillExists) console.log(`[H2O] migrate skipped surfaces (old file still exists): ${surfacesSkippedOldStillExists}`);
 
-  return moved > 0 ? next : stateObj;
+  return totalMoved > 0 ? next : stateObj;
 }
 
 const state = maybeMigrateStatePaths(safeReadJSON(STATE_FILE, {}), SRC);

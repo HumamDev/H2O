@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @version 1.2.0  (Phase 8L-4: surface source paths routed through SURFACES_BASE_REL)
+// @version 1.3.0  (Phase 8L-5: surface source folder renamed to src-surfaces-base/)
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,10 +13,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const repoRoot = path.resolve(__dirname, "..", "..", "..", "..", "..");
-// Phase 8L-4: source-side desk surface dir + content script source file.
-// Today resolves to <repo>/surfaces/desk/...; 8L-5 flips to
-// <repo>/src-surfaces-base/desk/... Bundle output below stays literal
-// "surfaces/desk" (Chrome extension side-panel default_path + buildUiDeskDir).
+// Phase 8L-5: source-side desk surface dir + content script source file.
+// Post-rename resolves to <repo>/src-surfaces-base/desk/... Bundle output
+// below stays literal "surfaces/desk" (Chrome extension side-panel
+// default_path + buildUiDeskDir).
 const uiSourceDir = path.join(repoRoot, SURFACES_BASE_REL, "desk");
 const contentSourceFile = path.join(repoRoot, SURFACES_BASE_REL, "desk", "page-bridge.js");
 

@@ -1,4 +1,4 @@
-// @version 1.3.0  (Phase 8L-4: surface source path routed through SURFACES_BASE_REL)
+// @version 1.4.0  (Phase 8L-5: surface source folder renamed to src-surfaces-base/)
 import fs from "node:fs";
 import path from "node:path";
 
@@ -25,9 +25,10 @@ import { RUNTIME_BASE_REL, SURFACES_BASE_REL } from "../../paths.mjs";
 // across the identity validator suite.
 const IDENTITY_CORE_SCRIPT_BASENAME = "0D4a.⬛️🔐 Identity Core 🔐.js";
 
-// Phase 8L-4: source-side surface path. Today resolves to "surfaces/identity";
-// 8L-5 flips to "src-surfaces-base/identity". The bundle output path stays
-// literal "surfaces/identity" via identitySurfaceOutDir() below.
+// Phase 8L-5: source-side surface path. Post-rename resolves to
+// "src-surfaces-base/identity". The bundle output path stays literal
+// "surfaces/identity" via identitySurfaceOutDir() below (Chrome extension
+// layout + chrome.runtime.getURL contract).
 export const IDENTITY_SURFACE_SOURCE_REL = path.join(SURFACES_BASE_REL, "identity");
 
 // IDENTITY_CORE_SCRIPT_REL retains its pre-8K-5 value ("scripts/<basename>")

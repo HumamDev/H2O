@@ -1,14 +1,14 @@
-// @version 2.2.0  (Phase 8L-4: source path routed through SURFACES_BASE_REL)
+// @version 2.3.0  (Phase 8L-5: source folder renamed to src-surfaces-base/)
 import fs from "node:fs";
 import path from "node:path";
 
 import { SURFACES_BASE_REL } from "../../paths.mjs";
 
-// Phase 8L-4: source-side path authority. Today resolves to "surfaces/studio";
-// 8L-5 flips to "src-surfaces-base/studio". The bundle-output path
-// `<outDir>/surfaces/studio` (see archiveWorkbenchOutDir below) is INTENTIONALLY
-// decoupled — it stays literal "surfaces/studio" so chrome.runtime.getURL
-// strings inside bundled bg.js / Studio mirrors continue to resolve.
+// Phase 8L-5: source-side path authority. Post-rename resolves to
+// "src-surfaces-base/studio". The bundle-output path `<outDir>/surfaces/studio`
+// (see archiveWorkbenchOutDir below) is INTENTIONALLY decoupled — it stays
+// literal "surfaces/studio" so chrome.runtime.getURL strings inside bundled
+// bg.js / Studio mirrors continue to resolve.
 export const ARCHIVE_WORKBENCH_SOURCE_REL = path.join(SURFACES_BASE_REL, "studio");
 export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "studio.html",
@@ -20,7 +20,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0A1a. 🎬 H2O Core - Studio.js",
 
   // Studio Platform Adapter — must load after H2O Core and before any feature
-  // module. Contracts: surfaces/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md.
+  // module. Contracts: src-surfaces-base/studio/STUDIO_PLATFORM_ADAPTER_GUIDE.md.
   // Subdir entries; pack-studio's sync step creates parent dirs on copy.
   "platform/index.js",
   "platform/platform.mv3.js",
@@ -28,7 +28,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "platform/selectors.contract.js",
 
   // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
-  // any feature module. Contracts: surfaces/studio/store/README.md,
+  // any feature module. Contracts: src-surfaces-base/studio/store/README.md,
   // STUDIO_STORAGE_CONTRACT.md.
   "store/index.js",
   "store/highlights.js",
