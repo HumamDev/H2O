@@ -43,6 +43,7 @@
     "0F1c._Library_Index_.js":    { "tier": "L2" },
     "0F1h._Library_Sync_.js":     { "tier": "L2" },
     "0F1i._Library_Sync_Consumers_.js": { "tier": "L2" },
+    "0F0j._Library_Actions_Core_.js": { "tier": "L2" },
     "0F1j._Library_Actions_.js":  { "tier": "L2" },
     "0F0i._Project_Provider_Core_.js": { "tier": "L2" },
     "8A1a._Theme_Core_.js":       { "tier": "L2" },

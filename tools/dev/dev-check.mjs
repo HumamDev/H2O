@@ -143,17 +143,26 @@ function printArchiveWorkbenchChecks(srcDir) {
   // paths.REPO_ROOT and the local srcDir honor the same H2O_SRC_DIR env var
   // with the same default. srcDir is kept in scope because it is still used
   // by archiveWorkbenchSourceDir(srcDir) above.
+  // Studio is intentionally hosted only by production and studio-launcher
+  // extension variants. The dev-controls build removes surfaces/studio so it
+  // cannot create a separate Studio storage origin.
+  const prodOutDir = extensionBuildDir("prod");
+  const studioLauncherOutDir = extensionBuildDir("studio-launcher");
   const devControlsOutDir = extensionBuildDir("dev-controls");
   const opsPanelOutDir = extensionBuildDir("ops-panel");
   const leanOutDir = extensionBuildDir("dev-lean");
-  const devControlsCheck = compareArchiveWorkbenchToSource(srcDir, devControlsOutDir);
+  const prodCheck = compareArchiveWorkbenchToSource(srcDir, prodOutDir);
+  const studioLauncherCheck = compareArchiveWorkbenchToSource(srcDir, studioLauncherOutDir);
+  const devControlsPresence = getArchiveWorkbenchPresence(devControlsOutDir);
   const opsPanelPresence = getArchiveWorkbenchPresence(opsPanelOutDir);
   const leanPresence = getArchiveWorkbenchPresence(leanOutDir);
   const sourcePresence = getArchiveWorkbenchSourcePresence(srcDir);
 
   console.log(`[dev:check] archiveWorkbench.sourceDir=${sourceDir}`);
   console.log(`[dev:check] archiveWorkbench.sourceFiles=${sourcePresence.length}`);
-  console.log(`[dev:check] archiveWorkbench.devControlsMatches=${devControlsCheck.matches}`);
+  console.log(`[dev:check] archiveWorkbench.prodMatches=${prodCheck.matches}`);
+  console.log(`[dev:check] archiveWorkbench.studioLauncherMatches=${studioLauncherCheck.matches}`);
+  console.log(`[dev:check] archiveWorkbench.devControlsFiles=${devControlsPresence.length}`);
   console.log(`[dev:check] archiveWorkbench.opsPanelFiles=${opsPanelPresence.length}`);
   console.log(`[dev:check] archiveWorkbench.devLeanFiles=${leanPresence.length}`);
 
@@ -170,12 +179,29 @@ function printArchiveWorkbenchChecks(srcDir) {
     process.exitCode = 1;
   }
 
-  const drift = devControlsCheck.files.filter((item) => !(item.sourceExists && item.outExists && item.equal));
-  if (drift.length) {
-    for (const item of drift) {
+  const prodDrift = prodCheck.files.filter((item) => !(item.sourceExists && item.outExists && item.equal));
+  const studioLauncherDrift = studioLauncherCheck.files.filter((item) => !(item.sourceExists && item.outExists && item.equal));
+  if (prodDrift.length) {
+    for (const item of prodDrift) {
       console.log(
-        `[dev:check] archiveWorkbench drift ${item.name}: source=${item.sourceExists} out=${item.outExists} equal=${item.equal}`,
+        `[dev:check] archiveWorkbench prod drift ${item.name}: source=${item.sourceExists} out=${item.outExists} equal=${item.equal}`,
       );
+    }
+    process.exitCode = 1;
+  }
+
+  if (studioLauncherDrift.length) {
+    for (const item of studioLauncherDrift) {
+      console.log(
+        `[dev:check] archiveWorkbench studio-launcher drift ${item.name}: source=${item.sourceExists} out=${item.outExists} equal=${item.equal}`,
+      );
+    }
+    process.exitCode = 1;
+  }
+
+  if (devControlsPresence.length) {
+    for (const name of devControlsPresence) {
+      console.log(`[dev:check] archiveWorkbench unexpected dev-controls host file: ${name}`);
     }
     process.exitCode = 1;
   }

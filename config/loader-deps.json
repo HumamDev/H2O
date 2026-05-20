@@ -606,6 +606,19 @@
       "critical": false,
       "optionalDependsOn": []
     },
+    "0F0j._Library_Actions_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.library.actionsCore"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
     "0F1h._Library_Sync_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -654,6 +667,7 @@
         "0A1a._H2O_Core_.js"
       ],
       "after": [
+        "0F0j._Library_Actions_Core_.js",
         "0F1g._Chat_Registry_.js",
         "0F3a._Folders_.js",
         "0D3a._Transcript_Archive_Engine_.js"
@@ -664,6 +678,7 @@
       ],
       "critical": false,
       "optionalDependsOn": [
+        "0F0j._Library_Actions_Core_.js",
         "0F1g._Chat_Registry_.js",
         "0F3a._Folders_.js",
         "0D3a._Transcript_Archive_Engine_.js"
