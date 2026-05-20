@@ -16,11 +16,11 @@ import path from "node:path";
 // future in-repo recreation that 8J-2's hard-refuse couldn't catch.
 import { META_NOTES_DIR, RUNTIME_BASE_REL } from "../paths.mjs";
 
-// Phase 8K-4: the runtime-userscripts entry in this allowlist now resolves
-// through RUNTIME_BASE_REL ("scripts" today, "src-runtime-base" post-8K-5).
-// The git scope NAME "scripts" stays stable in commit messages (see
-// scopeForPath / chooseMessage below) — operators recognize that scope
-// regardless of the underlying folder rename.
+// Phase 8K-4: the runtime-userscripts entry in this allowlist resolves
+// through RUNTIME_BASE_REL (post-8K-5: "src-runtime-base"; pre-8K-5 was
+// "scripts"). The git scope NAME "scripts" stays stable in commit messages
+// (see scopeForPath / chooseMessage below) — operators recognize that
+// scope regardless of the underlying folder rename.
 const SAFE_STAGE_PATHS = [
   "tools",
   RUNTIME_BASE_REL,

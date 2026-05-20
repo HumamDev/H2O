@@ -54,12 +54,34 @@ meta/README.md
 meta/notes/COMMIT_MESSAGE.txt
 meta/notes/COMMIT_QUEUE.txt
 
+# Phase 8N-2 defense-in-depth: outer-shell state should NEVER reappear inside
+# the source repo. The primary defense is `tools/paths.mjs` hard-refusing
+# in-repo paths for META_DIR / CHANGELOGS_DIR at module init, but if any
+# future tool ignores those env-var-overridable constants and recreates
+# `meta/` or `changelogs/` at the repo root, these rules make sure nothing
+# from inside them gets accidentally committed. `versions.csv` is unaffected
+# (lives at repo root, not under meta/changelogs).
+/meta/**
+/changelogs/**
+
+# Phase 8N-2 defense-in-depth: never commit a `.env` / `.env.*` file at the
+# repo root. Anchored to `/` so the existing tracked `apps/studio/mobile/ios/
+# .xcode.env` (nested, intentional) is unaffected. `apps/**/.env*.local` is
+# also already covered separately under the Mobile artifacts section below.
+/.env
+/.env.*
+
 # Local assistant workflow and scratch material (not for repo)
 .claude/
 s-files/
 CLAUDE.md
 "CLAUDE 2.md"
-/assets/
+# Phase 8N-2: allow a tracked /assets/README.md placeholder documenting the
+# operator-managed icon-pack convention (mirrors the /artifacts/* + README
+# exception pattern). Icon-pack subdirectories themselves stay gitignored —
+# they are large, brand-controlled, and operator-restored on fresh clones.
+/assets/*
+!/assets/README.md
 references/
 tasks-manual-*.md
 git-status.txt

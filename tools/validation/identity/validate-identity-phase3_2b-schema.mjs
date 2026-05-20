@@ -25,7 +25,7 @@ const EXTENSION_RUNTIME_RELS = [
   "tools/product/identity/identity-provider-supabase.entry.mjs",
 ];
 const EXTENSION_RUNTIME_DIRS = [
-  "scripts",
+  "src-runtime-base",
   `${SURFACES_BASE_REL}/identity`,
 ];
 
