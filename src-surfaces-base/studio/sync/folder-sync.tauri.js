@@ -69,6 +69,17 @@
   /* Browser partial-download suffixes to ignore until the rename completes. */
   var IGNORE_SUFFIXES = ['.crdownload', '.partial', '.download', '.tmp'];
 
+  /* M2d-1b watcher tuning. The polling watcher fires every intervalMs;
+   * each candidate must be seen across two ticks with the same size AND
+   * ≥ FILE_STABLE_MIN_MS apart before it's emitted, to dodge browsers'
+   * still-writing rename window even when the .crdownload extension
+   * filter doesn't catch it. */
+  var DEFAULT_INTERVAL_MS = 5000;
+  var MIN_INTERVAL_MS = 1000;
+  var MAX_INTERVAL_MS = 60000;
+  var FILE_STABLE_MIN_MS = 1500;
+  var MAX_LISTENERS = 64;
+
   var state = {
     lastScanAt:   null,
     lastImportAt: null,
@@ -76,6 +87,26 @@
     warnings:     [],
     errMax:       20,
     warnMax:      20,
+  };
+
+  /* M2d-1b watcher state — runtime-only; never persisted. */
+  var watcherState = {
+    running:        false,
+    intervalId:     null,
+    intervalMs:     DEFAULT_INTERVAL_MS,
+    scanInFlight:   false,
+    lastScanAt:     null,
+    lastEventAt:    null,
+    sizeMap:        Object.create(null),  /* path → { size, firstSeenAtMs } */
+    pending:        [],                    /* candidate objects (with fingerprint) */
+    listeners:      new Set(),
+    errors:         [],
+    errMax:         20,
+    lastError:      null,
+    /* Cached config snapshot — updated by reconcileWatcherFromConfig + the
+     * boot-time auto-start. Used so getWatcherState() can be synchronous. */
+    folderPath:     '',
+    mode:           'off',
   };
   function pushErr(op, e) {
     try {
@@ -159,6 +190,11 @@
     next.updatedAt = new Date().toISOString();
     try { await writeKv(CONFIG_KEY, next); }
     catch (e) { pushErr('setConfig', e); throw e; }
+    /* M2d-1b: auto-manage watcher based on the new mode + folderPath.
+     * Treats 'auto' as 'notify' for now — actual auto-import lands in
+     * M2d-1c (one-branch addition inside runWatcherTick). */
+    try { reconcileWatcherFromConfig(next, current); }
+    catch (e) { pushWatcherErr('setConfig.reconcile', e); }
     return next;
   }
 
@@ -505,17 +541,276 @@
     };
   }
 
+  /* ── M2d-1b: Polling watcher / Notify mode ───────────────────────── */
+
+  function pushWatcherErr(op, e) {
+    try {
+      var entry = { at: Date.now(), op: String(op), error: String((e && e.message) || e || '') };
+      watcherState.errors.push(entry);
+      if (watcherState.errors.length > watcherState.errMax) {
+        watcherState.errors.splice(0, watcherState.errors.length - watcherState.errMax);
+      }
+      watcherState.lastError = entry;
+    } catch (_) { /* ignore */ }
+  }
+
+  function emitWatcherEvent(event) {
+    try { watcherState.lastEventAt = (event && event.at) || new Date().toISOString(); }
+    catch (_) { /* ignore */ }
+    watcherState.listeners.forEach(function (fn) {
+      try { fn(event); }
+      catch (e) { pushWatcherErr('subscriber', e); }
+    });
+  }
+
+  /* Single watcher tick: scan the configured folder once, walk candidates,
+   * apply two-cycle file-stability check, emit 'new-candidate' for files
+   * that are stable + not in the pending queue + not in the ledger, and
+   * always emit 'scan-complete' at the end. NEVER calls importFromFile —
+   * Notify mode is detection only. */
+  async function runWatcherTick() {
+    if (watcherState.scanInFlight) return;       /* single-flight */
+    watcherState.scanInFlight = true;
+    try {
+      var folderPath = String(watcherState.folderPath || '').trim();
+      if (!folderPath) {
+        pushWatcherErr('tick', 'folderPath empty');
+        return;
+      }
+      var scan;
+      try { scan = await scanFolderOnce(folderPath); }
+      catch (e) {
+        pushWatcherErr('tick.scan', e);
+        emitWatcherEvent({ kind: 'error', at: new Date().toISOString(), op: 'scan', error: String((e && e.message) || e) });
+        return;
+      }
+      watcherState.lastScanAt = new Date().toISOString();
+      if (!scan || scan.ok === false) {
+        var scanErr = (scan && scan.error) || 'scan-failed';
+        pushWatcherErr('tick.scan', scanErr);
+        emitWatcherEvent({ kind: 'error', at: watcherState.lastScanAt, op: 'scan', error: String(scanErr) });
+        return;
+      }
+      var candidates = Array.isArray(scan.candidates) ? scan.candidates : [];
+      var pendingFingerprints = Object.create(null);
+      watcherState.pending.forEach(function (p) {
+        if (p && p.fingerprint) pendingFingerprints[p.fingerprint] = true;
+      });
+      var newCandidateCount = 0;
+      var stillPresentPaths = Object.create(null);
+      for (var i = 0; i < candidates.length; i += 1) {
+        var c = candidates[i];
+        if (!c || !c.path) continue;
+        /* scanFolderOnce already marks: already-imported / too-large /
+         * json-parse-failed / dry-run-rejected / read-failed / etc. via
+         * .skipped. Don't queue any of those — but DO clean up stale
+         * sizeMap entries so re-detection works after a dismiss or after
+         * a previously-failed file is replaced. */
+        if (c.skipped) {
+          /* If a previously-pending candidate is now in the ledger
+           * (status 'already-imported'), the user must have imported it
+           * since last tick — drop from pending queue. */
+          if (c.skipped === 'already-imported' && c.fingerprint && pendingFingerprints[c.fingerprint]) {
+            watcherState.pending = watcherState.pending.filter(function (p) { return p.fingerprint !== c.fingerprint; });
+            delete pendingFingerprints[c.fingerprint];
+          }
+          delete watcherState.sizeMap[c.path];
+          continue;
+        }
+        /* Live candidate (not in ledger, parses OK, dry-run OK). */
+        var size = (typeof c.sizeBytes === 'number') ? c.sizeBytes : 0;
+        var nowMs = Date.now();
+        stillPresentPaths[c.path] = true;
+        var seen = watcherState.sizeMap[c.path];
+        if (!seen) {
+          /* First time we've seen this path — record + wait for next tick. */
+          watcherState.sizeMap[c.path] = { size: size, firstSeenAtMs: nowMs };
+          continue;
+        }
+        if (seen.size !== size) {
+          /* File is still growing; reset the stability clock. */
+          watcherState.sizeMap[c.path] = { size: size, firstSeenAtMs: nowMs };
+          continue;
+        }
+        if ((nowMs - seen.firstSeenAtMs) < FILE_STABLE_MIN_MS) {
+          /* Stable size but hasn't waited long enough yet. */
+          continue;
+        }
+        /* Stable + waited long enough. */
+        if (c.fingerprint && pendingFingerprints[c.fingerprint]) {
+          continue;  /* already queued */
+        }
+        var entry = {
+          fingerprint: c.fingerprint,
+          filename:    c.filename,
+          path:        c.path,
+          sizeBytes:   size,
+          exportedAt:  c.exportedAt || '',
+          dryRun:      c.dryRun || null,
+          detectedAt:  new Date().toISOString(),
+        };
+        watcherState.pending.push(entry);
+        if (c.fingerprint) pendingFingerprints[c.fingerprint] = true;
+        newCandidateCount += 1;
+        /* Reset sizeMap entry so a future dismiss + replace cycle
+         * re-detects via fresh stability tracking. */
+        delete watcherState.sizeMap[c.path];
+        emitWatcherEvent({ kind: 'new-candidate', at: entry.detectedAt, candidate: entry });
+      }
+      /* Garbage-collect sizeMap entries for paths no longer in the folder
+       * (file was deleted / renamed / moved away). */
+      Object.keys(watcherState.sizeMap).forEach(function (path) {
+        if (!stillPresentPaths[path]) delete watcherState.sizeMap[path];
+      });
+      emitWatcherEvent({
+        kind: 'scan-complete',
+        at: watcherState.lastScanAt,
+        candidateCount: candidates.length,
+        newCandidateCount: newCandidateCount,
+      });
+    } catch (e) {
+      pushWatcherErr('tick', e);
+    } finally {
+      watcherState.scanInFlight = false;
+    }
+  }
+
+  function startWatcher(opts) {
+    var optsObj = (opts && typeof opts === 'object') ? opts : {};
+    if (watcherState.running) {
+      return { ok: true, started: false, alreadyRunning: true, intervalMs: watcherState.intervalMs };
+    }
+    var requested = (typeof optsObj.intervalMs === 'number' && isFinite(optsObj.intervalMs))
+      ? Math.floor(optsObj.intervalMs) : DEFAULT_INTERVAL_MS;
+    var intervalMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, requested));
+    watcherState.intervalMs = intervalMs;
+    watcherState.running = true;
+    watcherState.sizeMap = Object.create(null);  /* fresh stability state */
+    watcherState.scanInFlight = false;
+    var scanOnStart = optsObj.scanOnStart !== false;
+    if (scanOnStart) {
+      runWatcherTick().catch(function (e) { pushWatcherErr('startScan', e); });
+    }
+    watcherState.intervalId = global.setInterval(function () {
+      runWatcherTick().catch(function (e) { pushWatcherErr('tick', e); });
+    }, intervalMs);
+    return { ok: true, started: true, intervalMs: intervalMs };
+  }
+
+  function stopWatcher() {
+    if (!watcherState.running) {
+      return { ok: true, stopped: false, alreadyStopped: true };
+    }
+    if (watcherState.intervalId != null) {
+      try { global.clearInterval(watcherState.intervalId); } catch (_) { /* ignore */ }
+      watcherState.intervalId = null;
+    }
+    watcherState.running = false;
+    watcherState.sizeMap = Object.create(null);
+    watcherState.scanInFlight = false;
+    return { ok: true, stopped: true };
+  }
+
+  function getWatcherState() {
+    return {
+      running:        watcherState.running,
+      intervalMs:     watcherState.intervalMs,
+      folderPath:     watcherState.folderPath,
+      mode:           watcherState.mode,
+      lastScanAt:     watcherState.lastScanAt,
+      lastEventAt:    watcherState.lastEventAt,
+      pendingCount:   watcherState.pending.length,
+      listenerCount:  watcherState.listeners.size,
+      stableMs:       FILE_STABLE_MIN_MS,
+      scanInFlight:   watcherState.scanInFlight,
+      sizeMapTracking: Object.keys(watcherState.sizeMap).length,
+      errorsCount:    watcherState.errors.length,
+      lastError:      watcherState.lastError,
+    };
+  }
+
+  function subscribe(fn) {
+    if (typeof fn !== 'function') return function () { /* noop */ };
+    if (watcherState.listeners.size >= MAX_LISTENERS) {
+      pushWatcherErr('subscribe', 'listener cap reached (' + MAX_LISTENERS + '); ignoring new subscription');
+      return function () { /* noop */ };
+    }
+    watcherState.listeners.add(fn);
+    return function () { watcherState.listeners.delete(fn); };
+  }
+
+  function getPendingCandidates() {
+    /* Defensive shallow copy — caller can mutate without affecting state. */
+    return watcherState.pending.slice();
+  }
+
+  function dismissPending(fingerprint) {
+    var fp = String(fingerprint || '').trim();
+    if (!fp) return { ok: false, dismissed: false, error: 'fingerprint-required' };
+    var before = watcherState.pending.length;
+    watcherState.pending = watcherState.pending.filter(function (p) {
+      return !p || p.fingerprint !== fp;
+    });
+    var dismissed = watcherState.pending.length !== before;
+    if (dismissed) {
+      emitWatcherEvent({
+        kind: 'candidate-dismissed',
+        at: new Date().toISOString(),
+        fingerprint: fp,
+      });
+    }
+    return { ok: true, dismissed: dismissed };
+  }
+
+  /* Called from setConfig + boot. Compares the next/prev config to decide
+   * whether the watcher should be running with the right folder. Always
+   * updates the cached config snapshot first so getWatcherState() reflects
+   * reality immediately. */
+  function reconcileWatcherFromConfig(next, prev) {
+    watcherState.folderPath = String((next && next.folderPath) || '').trim();
+    watcherState.mode       = String((next && next.mode) || 'off');
+    var shouldRun = (watcherState.mode === 'notify' || watcherState.mode === 'auto')
+                 && !!watcherState.folderPath;
+    var folderPathChanged = !prev || (String(prev.folderPath || '') !== watcherState.folderPath);
+    if (!shouldRun) {
+      if (watcherState.running) {
+        stopWatcher();
+        watcherState.pending = [];   /* clear queue when stopping */
+        emitWatcherEvent({ kind: 'scan-complete', at: new Date().toISOString(), candidateCount: 0, newCandidateCount: 0, stopped: true });
+      }
+      return;
+    }
+    if (watcherState.running) {
+      if (folderPathChanged) {
+        stopWatcher();
+        watcherState.pending = [];
+        startWatcher();
+      }
+      /* else: already running with the correct folder; nothing to do */
+      return;
+    }
+    /* Not running, should be → start. */
+    startWatcher();
+  }
+
   /* ── Diagnose ─────────────────────────────────────────────────────── */
   function diagnose() {
     var ingestion = (H2O.Studio && H2O.Studio.ingestion) || null;
     return {
       installed: true,
-      stage: 'M2d-1a',
-      mode: 'manual-only',
+      stage: 'M2d-1b',
+      mode: 'manual+notify',
       keys: { config: CONFIG_KEY, ledger: LEDGER_KEY },
       limits: {
         maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
         maxLedgerEntries: MAX_LEDGER_ENTRIES,
+        intervalMs: {
+          min: MIN_INTERVAL_MS,
+          max: MAX_INTERVAL_MS,
+          default: DEFAULT_INTERVAL_MS,
+        },
+        fileStableMinMs: FILE_STABLE_MIN_MS,
+        maxListeners: MAX_LISTENERS,
       },
       filenamePatterns: FILENAME_PATTERNS.map(function (r) { return r.toString(); }),
       ignoreSuffixes: IGNORE_SUFFIXES.slice(),
@@ -526,13 +821,28 @@
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
       },
+      watcher: {
+        running:        watcherState.running,
+        intervalMs:     watcherState.intervalMs,
+        folderPath:     watcherState.folderPath,
+        mode:           watcherState.mode,
+        lastScanAt:     watcherState.lastScanAt,
+        lastEventAt:    watcherState.lastEventAt,
+        pendingCount:   watcherState.pending.length,
+        listenerCount:  watcherState.listeners.size,
+        scanInFlight:   watcherState.scanInFlight,
+        sizeMapTracking: Object.keys(watcherState.sizeMap).length,
+        errors:         watcherState.errors.slice(-5),
+        lastError:      watcherState.lastError,
+      },
     };
   }
 
   /* ── Register ────────────────────────────────────────────────────── */
   H2O.Studio.sync = {
     __installed: true,
-    __version: '0.1.0',
+    __version: '0.2.0',
+    /* M2d-1a manual API */
     getConfig:       getConfig,
     setConfig:       setConfig,
     getLedger:       getLedger,
@@ -540,5 +850,27 @@
     scanFolderOnce:  scanFolderOnce,
     importFromFile:  importFromFile,
     diagnose:        diagnose,
+    /* M2d-1b polling watcher + Notify-mode API */
+    startWatcher:         startWatcher,
+    stopWatcher:          stopWatcher,
+    getWatcherState:      getWatcherState,
+    subscribe:            subscribe,
+    getPendingCandidates: getPendingCandidates,
+    dismissPending:       dismissPending,
   };
+
+  /* Boot-time auto-start: if persisted config has mode ∈ {notify, auto}
+   * AND folderPath set, kick the watcher after the platform/stores have
+   * a chance to initialize. Wrapped in setTimeout(0) so module
+   * registration completes synchronously first. 'auto' starts the watcher
+   * in Notify behavior for M2d-1b — actual auto-import lands in M2d-1c. */
+  global.setTimeout(function () {
+    getConfig().then(function (cfg) {
+      watcherState.folderPath = cfg.folderPath || '';
+      watcherState.mode = cfg.mode || 'off';
+      if ((cfg.mode === 'notify' || cfg.mode === 'auto') && cfg.folderPath) {
+        startWatcher();
+      }
+    }).catch(function (e) { pushWatcherErr('boot', e); });
+  }, 0);
 })(typeof window !== 'undefined' ? window : globalThis);
