@@ -225,7 +225,7 @@ function assertScriptArchiveCoverage(srcRoot, relPaths) {
     return;
   }
   if (Array.isArray(relPaths) && relPaths.length > 0) return;
-  throw new Error("[H2O] archive snapshot found scripts/ but discovered 0 archiveable source scripts");
+  throw new Error(`[H2O] archive snapshot found ${RUNTIME_BASE_REL}/ but discovered 0 archiveable source scripts`);
 }
 
 function uniqueSorted(paths) {
@@ -306,10 +306,9 @@ function maybeMigrateStatePaths(stateObj, srcRoot) {
       const oldPath = path.join(srcRoot, key);
       const oldExists = fs.existsSync(oldPath);
       // Phase 8K-4: RUNTIME_BASE_REL replaces the hardcoded "scripts" literal
-      // in the state-file key normalization. Today resolves to "scripts/"; 8K-5
-      // flips it to "src-runtime-base/" — at which point `--migrate-paths`
-      // (operator-invoked) will rewrite old "scripts/..." state keys to the
-      // new prefix on the next run.
+      // in the state-file key normalization. Post-8K-5 it resolves to
+      // "src-runtime-base/"; `--migrate-paths` (operator-invoked) rewrites
+      // old "scripts/..." state keys to the new prefix on the next run.
       const isRootUserScriptKey = !key.startsWith(`${RUNTIME_BASE_REL}/`) && !key.includes("/");
 
       let destKey = null;

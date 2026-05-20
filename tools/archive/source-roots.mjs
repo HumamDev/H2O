@@ -275,8 +275,10 @@ export const SURFACES_REL = "surfaces";
 // inside archive-snapshot.mjs:
 //
 //   "userscripts" → collectUserScripts(SRC)
-//                   Walks scripts/ if it exists and contains userscript-
-//                   named files (S0A1a.* etc.), otherwise SRC itself.
+//                   Walks src-runtime-base/ if it exists and contains
+//                   userscript-named files (S0A1a.* etc.), otherwise SRC
+//                   itself. (Folder renamed from `scripts/` in Phase 8K-5;
+//                   resolves through RUNTIME_BASE_REL.)
 //   "top-level"   → collectTopLevelFiles(SRC, root)
 //                   Returns direct child files of root (no recursion).
 //   "recursive"   → collectRecursiveFiles(SRC, root)
@@ -293,7 +295,7 @@ export const SURFACES_REL = "surfaces";
 // system, grouped semantically and ordered so each group is easy to
 // extend in future phases:
 //
-//   1. Legacy chatgpt+chrome source (scripts/, surfaces/)
+//   1. Legacy chatgpt+chrome source (src-runtime-base/, surfaces/)
 //   2. Multi-host extension source (src/extensions/)
 //   3. Shared workspace packages (packages/)
 //   4. Studio Mobile (src, assets, __tests__, docs, scripts, ios, android)
@@ -313,7 +315,7 @@ export const SURFACES_REL = "surfaces";
 
 export const SOURCE_ROOTS = [
   // ── 1. Legacy chatgpt+chrome source ─────────────────────────────
-  { kind: "userscripts" },                                  // scripts/*.user.js
+  { kind: "userscripts" },                                  // src-runtime-base/*.user.js
   { kind: "recursive", root: SURFACES_REL },                // surfaces/{studio,desk,identity}/**
 
   // ── 2. Multi-host extension source (Phase 8G stubs) ─────────────

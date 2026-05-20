@@ -4,7 +4,7 @@
 // merge, dedupe, view derivation, facet computation, count computation,
 // filter, sort, and date bucketing. Used by both:
 //
-//   native: scripts/0F1c.⬛️🗂️ Library Index 🧮🗂️.js
+//   native: src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js
 //   Studio: surfaces/studio/S0F1c. 🎬 Library Index - Studio.js
 //
 // through a self-publishing IIFE on `window.H2O.Library.LibraryIndexCore`.
@@ -13,7 +13,7 @@
 //   Same triplicate pattern as Phase 2A's chat-registry-core. This file is
 //   the canonical source; two byte-identical mirror files exist:
 //
-//     scripts/0F0d.⬛️🧬 Library Index Core 🧬.js                   (native bundle)
+//     src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js                   (native bundle)
 //     surfaces/studio/S0F0d. 🎬 Library Index Core - Studio.js     (Studio HTML)
 //
 //   If you edit this file, copy the new body into both mirrors. Phase 3 will

@@ -1,9 +1,9 @@
 // tools/script-registry.mjs
 //
 // Pure helpers for parsing, classifying, and listing the userscripts in
-// `scripts/`. Mirrors the alias-derivation rules from
-// `tools/loader/make-aliases.mjs` so future tools can compute alias names
-// without duplicating that file's logic.
+// `src-runtime-base/` (renamed from `scripts/` in Phase 8K-5). Mirrors the
+// alias-derivation rules from `tools/loader/make-aliases.mjs` so future tools
+// can compute alias names without duplicating that file's logic.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 //  STATUS:  PHASE 0A (foundation only). This file is dead code from the

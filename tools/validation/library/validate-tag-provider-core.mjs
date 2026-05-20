@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '../../..');
 const corePath = path.join(repoRoot, 'shared/library/tag-provider-core.js');
-const nativeMirrorPath = path.join(repoRoot, 'scripts/0F0g.⬛️🗂️ Tag Provider Core 🗂️.js');
+const nativeMirrorPath = path.join(repoRoot, 'src-runtime-base/0F0g.⬛️🗂️ Tag Provider Core 🗂️.js');
 const studioMirrorPath = path.join(repoRoot, 'surfaces/studio/S0F0g. 🎬 Tag Provider Core - Studio.js');
 
 function read(file) {

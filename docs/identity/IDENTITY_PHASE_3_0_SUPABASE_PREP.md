@@ -2426,7 +2426,7 @@ node --check tools/validation/identity/validate-identity-phase3_8f-password-auth
 node --check tools/validation/identity/validate-identity-phase3_9b-google-oauth.mjs
 node --check tools/validation/identity/validate-identity-phase3_9c-google-oauth-release-gate.mjs
 node --check tools/validation/identity/validate-identity-phase4_0b-account-security-mvp.mjs
-node --check scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js
+node --check src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js
 node --check apps/extensions/chatgpt/chrome/dev-controls/bg.js
 node --check apps/extensions/chatgpt/chrome/dev-controls/loader.js
 node --check apps/extensions/chatgpt/chrome/dev-controls/popup.js

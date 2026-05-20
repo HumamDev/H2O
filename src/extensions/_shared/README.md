@@ -16,7 +16,7 @@ combinations but not yet stable enough to graduate to a workspace package.
 
 - Anything host-specific (lives under `src/extensions/<host>/<browser>/`).
 - Anything stable with ≥2 consumers (graduates to `packages/`).
-- chatgpt+chrome legacy code (stays in top-level `scripts/`).
+- chatgpt+chrome legacy code (stays in top-level `src-runtime-base/`).
 
 ## Graduation path (`_shared/` → `packages/`)
 

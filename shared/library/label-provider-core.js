@@ -7,7 +7,7 @@
 // IMPORTANT — runtime distribution:
 //   This file is the canonical source; two runtime mirror files exist:
 //
-//     scripts/0F0h.⬛️🏷️ Label Provider Core 🏷️.js
+//     src-runtime-base/0F0h.⬛️🏷️ Label Provider Core 🏷️.js
 //     surfaces/studio/S0F0h. 🎬 Label Provider Core - Studio.js
 //
 //   The IIFE bodies must remain byte-identical across all three files.

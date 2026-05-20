@@ -32,10 +32,9 @@ import {
 } from "../paths.mjs";
 
 // Phase 8K-4: USERSCRIPT_PATH_RE built dynamically from RUNTIME_BASE_REL so
-// the regex auto-tracks the 8K-5 directory rename. Today matches
-// `scripts/...user.js`; post-8K-5 will match `src-runtime-base/...user.js`.
-// RUNTIME_BASE_REL is constrained to alphanumeric + hyphen by repo convention
-// so no regex-escaping is needed.
+// the regex auto-tracked the 8K-5 directory rename. Today matches
+// `src-runtime-base/...user.js`. RUNTIME_BASE_REL is constrained to
+// alphanumeric + hyphen by repo convention so no regex-escaping is needed.
 const USERSCRIPT_PATH_RE = new RegExp(`^${RUNTIME_BASE_REL}/.+\\.user\\.js$`, "i");
 const USER_FILE_RE = /\.user\.js$/i;
 const VERSION_RE = /^\s*\/\/\s*@version\s+([^\s]+)\s*$/im;
@@ -132,7 +131,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log("Usage: node tools/archive/archive-one.mjs (--file <scripts/...user.js> | --id <scriptId> | --pick | --recent)");
+  console.log("Usage: node tools/archive/archive-one.mjs (--file <src-runtime-base/...user.js> | --id <scriptId> | --pick | --recent)");
 }
 
 async function resolveTargetRelPath(args) {
@@ -183,7 +182,7 @@ function listUserscriptsWithMeta() {
 
 async function pickUserscriptPath() {
   const all = listUserscriptsWithMeta();
-  if (!all.length) throw new Error("[archive:one] No scripts/*.user.js found.");
+  if (!all.length) throw new Error(`[archive:one] No ${RUNTIME_BASE_REL}/*.user.js found.`);
 
   for (let i = 0; i < all.length; i += 1) {
     const item = all[i];

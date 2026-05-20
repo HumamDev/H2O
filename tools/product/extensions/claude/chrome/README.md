@@ -41,7 +41,8 @@ tracked via `!apps/extensions/claude/chrome/README.md`).
 
 The chatgpt+chrome builders at
 [`../../chatgpt/chrome/`](../chatgpt/chrome/) read from the **legacy
-top-level** `scripts/`, `surfaces/`, `config/` (frozen). They also pull in the
+top-level** `src-runtime-base/` (renamed from `scripts/` in Phase 8K-5),
+`surfaces/`, `config/` (frozen). They also pull in the
 identity provider bundle, billing bundle, Studio surfaces, popup generators,
 and 8 variant outputs. They're complex because they ship a real product.
 

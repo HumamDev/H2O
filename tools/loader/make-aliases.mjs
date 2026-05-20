@@ -282,7 +282,7 @@ for (const entry of fs.readdirSync(ALIAS_DIR, { withFileTypes: true })) {
   }
 }
 
-// 3) Write aliases from source scripts dir (scripts/ preferred, root fallback)
+// 3) Write aliases from runtime-base dir (src-runtime-base/ preferred, root fallback)
 let copied = 0;
 let linked = 0;
 let linkFallbackToCopy = 0;
@@ -366,7 +366,7 @@ if (REQUESTED_ALIAS_MODE === "symlink" && IS_ICLOUD_SERVER) {
   console.warn("[H2O] warning: for max stability, move H2O_SERVER_DIR outside iCloud or use H2O_ALIAS_MODE=copy.");
 }
 console.log("[H2O] order:", ORDER_FILE);
-console.log("[H2O] scripts dir:", SCRIPT_SRC_DIR);
+console.log("[H2O] runtime-base dir:", SCRIPT_SRC_DIR);
 console.log("[H2O] ON entries:", ON.size);
 console.log("[H2O] cleaned alias artifacts:", cleanedAliasArtifacts);
 if (skippedAliasCleanup) console.warn("[H2O] skipped alias cleanup failures:", skippedAliasCleanup);

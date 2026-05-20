@@ -12,11 +12,13 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 
-import { REPO_ROOT } from "../paths.mjs";
+import { REPO_ROOT, RUNTIME_BASE_REL } from "../paths.mjs";
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
 const SAFE_ID_RE = /^[a-z0-9._-]+$/;
-const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
+// Phase 8K-7: regex built from RUNTIME_BASE_REL so it tracks the 8K-5 rename
+// from `scripts/` to `src-runtime-base/`.
+const USERSCRIPT_PATH_RE = new RegExp(`^${RUNTIME_BASE_REL}/.+\\.user\\.js$`, "i");
 
 main().catch((err) => fatal(err));
 
@@ -25,7 +27,7 @@ async function main() {
 
   const changedPaths = listChangedUserscriptPaths();
   if (!changedPaths.length) {
-    console.log("[release-commit-helper] No changed userscripts under scripts/*.user.js.");
+    console.log(`[release-commit-helper] No changed userscripts under ${RUNTIME_BASE_REL}/*.user.js.`);
     process.exit(0);
   }
 

@@ -11,7 +11,7 @@
 //   on the same logic without changing the build pipeline, this file is the
 //   canonical source and TWO byte-identical mirror files exist:
 //
-//     scripts/0F0c.⬛️🧬 Library Registry Core 🧬.js                (native bundle)
+//     src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js                (native bundle)
 //     surfaces/studio/S0F0c. 🎬 Library Registry Core - Studio.js   (Studio HTML)
 //
 //   The two mirror files differ ONLY in their userscript-style header

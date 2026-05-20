@@ -3,9 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 // Phase 8K-4: runtime userscript source folder name resolves through the
-// central path registry. Today "scripts"; 8K-5 flips to "src-runtime-base".
+// central path registry. Post-8K-5 resolves to "src-runtime-base".
 // CRITICAL: this file participates in the chrome-live deterministic build
-// hash via the source-snapshot collection logic — the rename is safe
+// hash via the source-snapshot collection logic — the rename was safe
 // because the hash is computed over file CONTENTS, not source path strings.
 import { RUNTIME_BASE_REL } from "../../../../paths.mjs";
 

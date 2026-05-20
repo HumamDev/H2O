@@ -548,7 +548,7 @@ function writeJSON({ fp, sections, sectioned, statusMap }) {
     notes: [
       "TSV is the master editable file.",
       "enabled=true means ON; enabled=false means OFF.",
-      "file is the real source filename from scripts/, not the derived alias filename.",
+      "file is the real source filename from src-runtime-base/, not the derived alias filename.",
       "TSV status is written as 🟢/🔴 but parsed into ON/OFF internally.",
     ],
     sections: [],

@@ -78,7 +78,7 @@ const SYNTAX_COMMANDS = [
   "node --check tools/validation/identity/validate-identity-phase3_9b-google-oauth.mjs",
   "node --check tools/validation/identity/validate-identity-phase3_9c-google-oauth-release-gate.mjs",
   "node --check tools/validation/identity/validate-identity-phase4_0b-account-security-mvp.mjs",
-  "node --check scripts/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js",
+  "node --check src-runtime-base/0Z1e.⚫️🔐 Account Tab (Control Hub 🔌 Plugin) 🔐.js",
   `node --check ${extBuildRel("dev-controls", "bg.js")}`,
   `node --check ${extBuildRel("dev-controls", "loader.js")}`,
   `node --check ${extBuildRel("dev-controls", "popup.js")}`,

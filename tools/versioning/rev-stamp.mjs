@@ -5,13 +5,16 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { appendEditRows, buildEditRowsForPaths } from "./edit-log.mjs";
+import { RUNTIME_BASE_REL } from "../paths.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
 const REPO_ROOT = path.resolve(TOOL_DIR, "..", "..");
 
 const USERSCRIPT_HEADER_RE = /\/\/\s*==H2O Module==[\s\S]*?\/\/\s*==\/H2O Module==/;
-const USERSCRIPT_PATH_RE = /^scripts\/.+\.user\.js$/i;
+// Phase 8K-7: regex built from RUNTIME_BASE_REL so it tracks the 8K-5 rename
+// from `scripts/` to `src-runtime-base/`.
+const USERSCRIPT_PATH_RE = new RegExp(`^${RUNTIME_BASE_REL}/.+\\.user\\.js$`, "i");
 const REVISION_LINE_RE = /^\s*\/\/\s*@revision\s+(\d+)\s*$/i;
 const BUILD_LINE_RE = /^\s*\/\/\s*@build\s+(.+?)\s*$/i;
 const VERSION_LINE_RE = /^\s*\/\/\s*@version\b/i;
@@ -30,7 +33,7 @@ async function main() {
 
   const targets = args.files.length > 0 ? args.files : detectChangedUserScripts();
   if (!targets.length) {
-    console.log("[rev:stamp] No changed userscripts under scripts/*.user.js.");
+    console.log(`[rev:stamp] No changed userscripts under ${RUNTIME_BASE_REL}/*.user.js.`);
     process.exit(0);
   }
 
