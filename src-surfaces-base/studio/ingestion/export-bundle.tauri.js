@@ -40,6 +40,7 @@
     lastExportAt: null,
     lastSyncExport: null,
     lastSummary: null,
+    lastFolderParity: null,
     lastWarnings: [],
     lastError: null,
   };
@@ -582,6 +583,100 @@
     };
   }
 
+  function buildFolderParityDiagnostics(folderState, chatArchive) {
+    var stateObj = folderState && typeof folderState === 'object' ? folderState : {};
+    var folders = asArray(stateObj.folders);
+    var items = stateObj.items && typeof stateObj.items === 'object' ? stateObj.items : {};
+    var folderSummaries = folders.map(function (folder) {
+      var id = cleanString(folder && (folder.id || folder.folderId));
+      var chatIds = uniqStrings(asArray(items[id]));
+      return {
+        id: id,
+        folderId: id,
+        name: cleanString((folder && folder.name) || id) || id,
+        kind: cleanString((folder && folder.kind) || 'local') || 'local',
+        source: cleanString((folder && folder.source) || stateObj.exportedFrom || 'desktop-sqlite') || 'desktop-sqlite',
+        color: cleanString(folder && (folder.color || folder.iconColor)),
+        iconColor: cleanString(folder && (folder.iconColor || folder.color)),
+        icon: cleanString(folder && folder.icon),
+        parentId: cleanString(folder && folder.parentId),
+        sortOrder: Math.floor(numberOrZero(folder && folder.sortOrder)),
+        createdAt: cleanString(folder && folder.createdAt),
+        updatedAt: cleanString(folder && folder.updatedAt),
+        bindingCount: chatIds.length,
+        empty: chatIds.length === 0,
+        chatIds: chatIds,
+      };
+    });
+    var chatFolderRows = [];
+    var snapshotFolderRows = [];
+    asArray(chatArchive && chatArchive.chats).forEach(function (chat) {
+      var org = safeObject(chat && chat.chatIndex && chat.chatIndex.organization);
+      var folderId = cleanString(org.folderId);
+      var folderName = cleanString(org.folderName);
+      var chatId = cleanString(chat && chat.chatId);
+      if (folderId || folderName) {
+        chatFolderRows.push({
+          chatId: chatId,
+          folderId: folderId,
+          folderName: folderName,
+          snapshots: asArray(chat && chat.snapshots).length,
+        });
+      }
+      asArray(chat && chat.snapshots).forEach(function (snapshot) {
+        var meta = safeObject(snapshot && snapshot.meta);
+        var snapFolderId = cleanString(meta.folderId);
+        var snapFolderName = cleanString(meta.folderName);
+        if (!snapFolderId && !snapFolderName) return;
+        snapshotFolderRows.push({
+          chatId: chatId,
+          snapshotId: cleanString(snapshot && (snapshot.snapshotId || snapshot.id)),
+          folderId: snapFolderId,
+          folderName: snapFolderName,
+          source: cleanString(meta.source),
+        });
+      });
+    });
+    var combinedFolderRows = chatFolderRows.concat(snapshotFolderRows.map(function (row) {
+      return {
+        chatId: row.chatId,
+        folderId: row.folderId,
+        folderName: row.folderName,
+        snapshots: 1,
+      };
+    }));
+    var bindingCount = folderSummaries.reduce(function (sum, folder) { return sum + folder.bindingCount; }, 0);
+    var visualFields = [];
+    folderSummaries.forEach(function (folder) {
+      if (folder.color && visualFields.indexOf('color') < 0) visualFields.push('color');
+      if (folder.iconColor && visualFields.indexOf('iconColor') < 0) visualFields.push('iconColor');
+      if (folder.icon && visualFields.indexOf('icon') < 0) visualFields.push('icon');
+    });
+    return {
+      phase: 'folder-parity-diagnostic',
+      surface: 'desktop-export',
+      source: 'H2O.Studio.store.folders + folder_bindings',
+      folderStateKey: FOLDER_STATE_KEY,
+      catalogCount: folderSummaries.length,
+      bindingCount: bindingCount,
+      emptyFolderCount: folderSummaries.filter(function (folder) { return folder.empty; }).length,
+      boundFolderCount: folderSummaries.filter(function (folder) { return !folder.empty; }).length,
+      folderNames: folderSummaries.map(function (folder) { return folder.name; }),
+      folderIds: folderSummaries.map(function (folder) { return folder.id; }),
+      visualMetadataFields: visualFields,
+      colorsModeled: visualFields.indexOf('color') >= 0 || visualFields.indexOf('iconColor') >= 0,
+      iconsModeled: visualFields.indexOf('icon') >= 0,
+      emptyFoldersRepresented: folderSummaries.some(function (folder) { return folder.empty; }),
+      chatIndexFolderReferenceCount: chatFolderRows.length,
+      chatIndexFolderReferences: chatFolderRows,
+      snapshotFolderReferenceCount: snapshotFolderRows.length,
+      snapshotFolderReferences: snapshotFolderRows,
+      chatArchiveFolderReferenceCount: combinedFolderRows.length,
+      chatArchiveFolderReferences: combinedFolderRows,
+      folders: folderSummaries,
+    };
+  }
+
   function buildLibraryKv(labelBindings) {
     var keys = Object.keys(labelBindings || {});
     if (!keys.length) return [];
@@ -637,6 +732,7 @@
 
     var collected = await buildChatArchive(stores, warnings);
     var folderState = await buildFolderState(stores, collected.folderItems);
+    var folderParity = buildFolderParityDiagnostics(folderState, collected.archive);
     var chromeStorageLocal = {};
     chromeStorageLocal[FOLDER_STATE_KEY] = folderState;
     var libraryKv = buildLibraryKv(collected.labelBindings);
@@ -675,6 +771,7 @@
           exporterVersion: EXPORTER_VERSION,
           durationMs: Date.now() - startedAt,
           storeAvailability: availability,
+          folderParity: folderParity,
           warnings: warnings,
           options: safeObject(options),
         },
@@ -685,6 +782,7 @@
     };
     state.lastExportAt = Date.now();
     state.lastSummary = summary;
+    state.lastFolderParity = folderParity;
     state.lastWarnings = warnings.slice();
     state.lastError = null;
     return bundle;
@@ -789,6 +887,7 @@
       lastExportAt: state.lastExportAt,
       lastSyncExport: state.lastSyncExport,
       lastSummary: state.lastSummary,
+      lastFolderParity: state.lastFolderParity,
       lastWarnings: state.lastWarnings.slice(),
       lastError: state.lastError,
     };

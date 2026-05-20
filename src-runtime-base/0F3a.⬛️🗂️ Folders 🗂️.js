@@ -5558,12 +5558,64 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     };
   }
 
+  function API_getFolderParityDiagnostics() {
+    const data = STORE_readData();
+    const folders = Array.isArray(data.folders) ? data.folders : [];
+    const items = (data.items && typeof data.items === 'object') ? data.items : {};
+    const folderSummaries = folders.map((folder) => {
+      const id = String(folder?.id || folder?.folderId || '').trim();
+      const bindingKeys = Array.isArray(items[id]) ? items[id].map((value) => String(value || '').trim()).filter(Boolean) : [];
+      const chatIds = bindingKeys.map((value) => DOM_parseChatIdFromHref(value) || value).filter(Boolean);
+      return {
+        id,
+        folderId: id,
+        name: String(folder?.name || folder?.title || id).trim() || id,
+        kind: String(folder?.kind || 'local').trim() || 'local',
+        source: 'native-folder-state',
+        iconColor: String(folder?.iconColor || '').trim(),
+        color: String(folder?.color || folder?.iconColor || '').trim(),
+        icon: String(folder?.icon || '').trim(),
+        createdAt: folder?.createdAt || '',
+        updatedAt: folder?.updatedAt || '',
+        bindingCount: bindingKeys.length,
+        empty: bindingKeys.length === 0,
+        chatIds,
+        bindingKeys,
+      };
+    });
+    const bindingCount = folderSummaries.reduce((sum, folder) => sum + folder.bindingCount, 0);
+    const visualMetadataFields = Array.from(new Set(folderSummaries.flatMap((folder) => {
+      const fields = [];
+      if (folder.color) fields.push('color');
+      if (folder.iconColor) fields.push('iconColor');
+      if (folder.icon) fields.push('icon');
+      return fields;
+    })));
+    return {
+      phase: 'folder-parity-diagnostic',
+      surface: 'native',
+      source: 'H2O.folders local folder state',
+      catalogCount: folderSummaries.length,
+      bindingCount,
+      emptyFolderCount: folderSummaries.filter((folder) => folder.empty).length,
+      boundFolderCount: folderSummaries.filter((folder) => !folder.empty).length,
+      folderNames: folderSummaries.map((folder) => folder.name),
+      folderIds: folderSummaries.map((folder) => folder.id),
+      visualMetadataFields,
+      colorsModeled: visualMetadataFields.includes('color') || visualMetadataFields.includes('iconColor'),
+      iconsModeled: visualMetadataFields.includes('icon'),
+      emptyFoldersRepresented: folderSummaries.some((folder) => folder.empty),
+      folders: folderSummaries,
+    };
+  }
+
   function API_diagnose() {
     return {
       surface: 'native',
       phase: 'phase-9B-deprecation-markers',
       ownerRegistered: !!H2O.LibraryCore?.getOwner?.('folders'),
       serviceRegistered: !!H2O.LibraryCore?.getService?.('folders'),
+      folderParity: API_getFolderParityDiagnostics(),
       deprecation: API_getDeprecationDiagnostics(),
     };
   }

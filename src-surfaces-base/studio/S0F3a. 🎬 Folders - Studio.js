@@ -280,6 +280,50 @@
     return getCore()?.getService?.('route')?.buildLibraryHash?.('folder', folderId) || '';
   }
 
+  function getFolderParityDiagnostics() {
+    const byFolder = getIndex()?.facets?.().byFolder || {};
+    const folders = Array.isArray(cachedFolders) ? cachedFolders : [];
+    const folderSummaries = folders.map((folder) => {
+      const id = String(folder?.id || folder?.folderId || '').trim();
+      const chatIds = Array.isArray(byFolder[id]) ? byFolder[id].map((value) => String(value || '').trim()).filter(Boolean) : [];
+      return {
+        id,
+        folderId: id,
+        name: String(folder?.name || folder?.label || folder?.title || id).trim() || id,
+        kind: String(folder?.kind || 'local').trim() || 'local',
+        source: String(folder?.source || (cachedFolders ? 'workspace-cache' : '') || ''),
+        color: String(folder?.color || folder?.iconColor || '').trim(),
+        iconColor: String(folder?.iconColor || folder?.color || '').trim(),
+        icon: String(folder?.icon || '').trim(),
+        bindingCount: chatIds.length,
+        empty: chatIds.length === 0,
+        chatIds,
+      };
+    });
+    const uncatalogedFolderIds = Object.keys(byFolder || {}).filter((folderId) => (
+      folderId && !folderSummaries.some((folder) => folder.id === folderId)
+    ));
+    const bindingCount = Object.values(byFolder || {}).reduce((sum, ids) => sum + (Array.isArray(ids) ? ids.length : 0), 0);
+    return {
+      phase: 'folder-parity-diagnostic',
+      surface: 'studio',
+      source: cachedFolders ? 'H2O.LibraryWorkspace.getFolders cached catalog + LibraryIndex facets' : 'LibraryIndex facets only until folder catalog is loaded',
+      catalogCached: !!cachedFolders,
+      catalogCount: folderSummaries.length,
+      bindingCount,
+      emptyFolderCount: folderSummaries.filter((folder) => folder.empty).length,
+      boundFolderCount: folderSummaries.filter((folder) => !folder.empty).length,
+      indexFacetCount: Object.keys(byFolder || {}).length,
+      uncatalogedFolderIds,
+      folderNames: folderSummaries.map((folder) => folder.name),
+      folderIds: folderSummaries.map((folder) => folder.id),
+      colorsModeled: folderSummaries.some((folder) => !!(folder.color || folder.iconColor)),
+      iconsModeled: folderSummaries.some((folder) => !!folder.icon),
+      emptyFoldersRepresented: folderSummaries.some((folder) => folder.empty),
+      folders: folderSummaries,
+    };
+  }
+
   const Folders = {
     surface: 'studio',
     listFolders,
@@ -307,6 +351,7 @@
           bridgeAvailable: typeof getWorkspace()?.getFolders === 'function',
           lastWriteStatus: lastWrite ? String(lastWrite.status || '') : '',
         },
+        folderParity: getFolderParityDiagnostics(),
         normalizationDiagnostics: lastFolderDiagnostics.slice(-10),
         lastWrite,
         steps: diag.steps.slice(-10),
