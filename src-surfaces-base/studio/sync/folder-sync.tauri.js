@@ -196,10 +196,71 @@
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
     return invoke('plugin:fs|read_dir', { path: path });
   }
-  function fsReadTextFile(path) {
+  /* tauri-plugin-fs v2 ships two reader commands:
+   *   plugin:fs|read_text_file  — Rust returns String
+   *   plugin:fs|read_file       — Rust returns Vec<u8>  (number[] over JSON)
+   * BUT some V2 builds / serialization paths surface read_text_file ALSO
+   * as a byte array (Vec<u8> → number[]). Passing that array straight to
+   * JSON.parse / TextEncoder.encode produces garbage ("[123,10,...]") and
+   * the bundle import fails with json-parse-failed even on a valid file.
+   * Defensive: try read_text_file, fall back to read_file on error, then
+   * coerce whatever shape we got through decodeToText. */
+  async function fsReadTextFile(path) {
     var invoke = getInvoke();
-    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
-    return invoke('plugin:fs|read_text_file', { path: path });
+    if (!invoke) throw new Error('tauri invoke unavailable');
+    var raw;
+    try {
+      raw = await invoke('plugin:fs|read_text_file', { path: path });
+    } catch (textErr) {
+      try {
+        raw = await invoke('plugin:fs|read_file', { path: path });
+      } catch (bytesErr) {
+        /* Surface the original text-read error since it's the canonical
+         * path; include the bytes-read fallback error as context. */
+        var msg = String((textErr && textErr.message) || textErr)
+          + ' / fallback read_file failed: ' + String((bytesErr && bytesErr.message) || bytesErr);
+        throw new Error(msg);
+      }
+    }
+    return decodeToText(raw, path);
+  }
+
+  /* Coerce any tauri-plugin-fs read return into a UTF-8 string. Accepts:
+   *   - string                  (read_text_file happy path)
+   *   - Uint8Array               (raw byte view)
+   *   - ArrayBuffer              (raw buffer)
+   *   - number[]                 (Vec<u8> over JSON — most common alternate)
+   *   - ArrayBufferView (other)  (DataView / Uint8ClampedArray)
+   * Throws an informative Error for anything else so the caller can record
+   * a useful diagnostic. */
+  function decodeToText(raw, contextPath) {
+    if (raw == null) {
+      throw new Error('decodeToText: null/undefined response (path=' + String(contextPath || '') + ')');
+    }
+    if (typeof raw === 'string') return raw;
+    if (raw instanceof Uint8Array) {
+      return new TextDecoder('utf-8').decode(raw);
+    }
+    if (raw instanceof ArrayBuffer) {
+      return new TextDecoder('utf-8').decode(new Uint8Array(raw));
+    }
+    if (Array.isArray(raw)) {
+      var bytes = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i += 1) {
+        var v = raw[i];
+        if (typeof v !== 'number' || v < 0 || v > 255 || (v | 0) !== v) {
+          throw new Error('decodeToText: array element ' + i + ' is not a byte (got ' + typeof v + ' = ' + JSON.stringify(v).slice(0, 32) + ')');
+        }
+        bytes[i] = v;
+      }
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+    if (raw && typeof raw === 'object' && typeof raw.byteLength === 'number' && raw.buffer instanceof ArrayBuffer) {
+      /* DataView, Uint8ClampedArray, Int8Array etc. */
+      return new TextDecoder('utf-8').decode(new Uint8Array(raw.buffer, raw.byteOffset || 0, raw.byteLength));
+    }
+    var ctor = (raw && raw.constructor && raw.constructor.name) || typeof raw;
+    throw new Error('decodeToText: unsupported response type ' + ctor + ' (typeof=' + typeof raw + ')');
   }
 
   /* ── Filename matcher ─────────────────────────────────────────────── */
@@ -316,7 +377,18 @@
       var bundle;
       try { bundle = JSON.parse(fileText); }
       catch (e) {
-        candidates.push({ filename: f.name, path: filePath, sizeBytes: sizeBytes, fingerprint: fingerprint, skipped: 'json-parse-failed', error: String((e && e.message) || e) });
+        /* Helpful diagnostic: include type + 80-char preview so future
+         * read-shape regressions are obvious in the candidate report. */
+        var preview = '';
+        try { preview = (typeof fileText === 'string') ? fileText.slice(0, 80) : ''; }
+        catch (_) { /* ignore */ }
+        candidates.push({
+          filename: f.name, path: filePath, sizeBytes: sizeBytes, fingerprint: fingerprint,
+          skipped: 'json-parse-failed',
+          error: String((e && e.message) || e),
+          rawType: typeof fileText,
+          preview: preview,
+        });
         continue;
       }
       var dry = null;
