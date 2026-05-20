@@ -40,6 +40,21 @@
     lastSave: null,
     lastOpen: null,
     errors: [],
+    core: {
+      usedFor: {
+        target: 0,
+        result: 0,
+        patch: 0,
+        plan: 0,
+        openTarget: 0,
+      },
+      lastTarget: null,
+      lastResult: null,
+      lastPatch: null,
+      lastPlan: null,
+      lastOpenTarget: null,
+      errors: [],
+    },
   };
 
   function pushError(stage, e) {
@@ -70,6 +85,61 @@
   function hasArchiveBoot() {
     const a = H2O.archiveBoot;
     return !!(a && typeof a.captureNow === 'function');
+  }
+
+  // ── Shared action core bridge (pure helpers only) ─────────────────────────
+  function actionsCore() {
+    const ActionsCore = H2O.LibraryActionsCore || H2O.Library?.ActionsCore || H2O.Library?.LibraryActionsCore || null;
+    return ActionsCore && typeof ActionsCore === 'object' ? ActionsCore : null;
+  }
+  function corePhase() {
+    const c = actionsCore();
+    return trimString(c?.__phase) || '';
+  }
+  function pushCoreError(stage, e) {
+    try {
+      diag.core.errors.push({
+        t: Math.round(performance.now() - diag.t0),
+        stage: String(stage || ''),
+        e: String(e?.message || e || ''),
+      });
+      if (diag.core.errors.length > ERR_MAX) diag.core.errors.splice(0, diag.core.errors.length - ERR_MAX);
+    } catch {}
+  }
+  function summarizeCoreValue(value) {
+    if (!value || typeof value !== 'object') return value || null;
+    return {
+      ok: value.ok === true,
+      phase: trimString(value.phase),
+      action: trimString(value.action),
+      status: trimString(value.status),
+      reason: trimString(value.reason),
+      chatId: trimString(value.chatId || value.target?.chatId || value.plan?.chatId || value.patch?.chatId),
+      folderId: trimString(value.folderId || value.target?.folderId || value.plan?.folderId),
+      url: trimString(value.url),
+    };
+  }
+  function noteCoreUse(kind, value) {
+    if (!diag.core.usedFor || !Object.prototype.hasOwnProperty.call(diag.core.usedFor, kind)) return;
+    diag.core.usedFor[kind] += 1;
+    const summarized = summarizeCoreValue(value);
+    if (kind === 'target') diag.core.lastTarget = summarized;
+    else if (kind === 'result') diag.core.lastResult = summarized;
+    else if (kind === 'patch') diag.core.lastPatch = summarized;
+    else if (kind === 'plan') diag.core.lastPlan = summarized;
+    else if (kind === 'openTarget') diag.core.lastOpenTarget = summarized;
+  }
+  function tryCore(kind, method, args, fallback = null) {
+    const c = actionsCore();
+    if (!c || typeof c[method] !== 'function') return fallback;
+    try {
+      const out = c[method](...(Array.isArray(args) ? args : []));
+      noteCoreUse(kind, out);
+      return out;
+    } catch (e) {
+      pushCoreError(`${method}:${kind}`, e);
+      return fallback;
+    }
   }
 
   // ── Identity & URL helpers ───────────────────────────────────────────────
@@ -104,11 +174,17 @@
         if (parsed) { cid = parsed; usedHref = pageHref; }
       }
     }
-    if (!cid) return { chatId: '', href: '', normalizedHref: '' };
+    if (!cid) {
+      const empty = { chatId: '', href: '', normalizedHref: '' };
+      tryCore('target', 'normalizeActionTarget', [{ chatId: '', href: usedHref }, { source: 'library-actions:resolve-identity' }]);
+      return empty;
+    }
 
     if (!usedHref) usedHref = `https://chatgpt.com/c/${cid}`;
     const nh = norm ? (norm(usedHref) || `/c/${cid}`) : `/c/${cid}`;
-    return { chatId: cid, href: usedHref, normalizedHref: nh };
+    const ident = { chatId: cid, href: usedHref, normalizedHref: nh };
+    tryCore('target', 'normalizeActionTarget', [ident, { source: 'library-actions:resolve-identity' }]);
+    return ident;
   }
 
   function resolveTitle(explicitTitle) {
@@ -142,6 +218,73 @@
 
   const D = (typeof document !== 'undefined') ? document : null;
 
+  function normalizeForDiag(action, out) {
+    tryCore('result', 'normalizeActionResult', [out, { action }]);
+    return out;
+  }
+
+  function buildAddPatchWithCore(ident, args, source, title) {
+    tryCore('patch', 'buildAddToLibraryPatch', [{
+      chatId: ident.chatId,
+      href: ident.href,
+      normalizedHref: ident.normalizedHref,
+      title,
+      titleSource: source,
+      source,
+      project: args.project,
+    }, { source, titleSource: source }]);
+
+    // Preserve the pre-7C native patch exactly; core is used only as a pure
+    // planner and all behavior-sensitive provenance fields are restored here.
+    const patch = {
+      chatId: ident.chatId,
+      href: ident.href,
+      normalizedHref: ident.normalizedHref,
+      title,
+      titleSource: source,
+      state: { isLinked: true },
+      linkedFrom: source,
+      linkSourceHref: ident.href,
+    };
+
+    const project = (args.project && typeof args.project === 'object') ? args.project : null;
+    if (project && (project.projectId || project.projectName)) {
+      patch.project = {
+        projectId: trimString(project.projectId),
+        projectName: trimString(project.projectName),
+      };
+    }
+    return patch;
+  }
+
+  function buildSaveRegistryPatchWithCore(ident, args, source) {
+    const fid = trimString(args.folderId);
+    tryCore('plan', 'buildSaveToFolderPlan', [{
+      chatId: ident.chatId,
+      href: ident.href,
+      normalizedHref: ident.normalizedHref,
+      folderId: fid,
+      source,
+    }, { source, folderId: fid }]);
+
+    // Preserve the native registry stamp shape from the pre-core facade.
+    return {
+      chatId: ident.chatId,
+      href: ident.href,
+      normalizedHref: ident.normalizedHref,
+      state: { isSaved: true, isLinked: true },
+      linkedFrom: 'save-to-folder',
+      linkSourceHref: ident.href,
+    };
+  }
+
+  function resolveOpenUrlWithCore(record, target) {
+    const legacyUrl = urlFromRecord(record);
+    const planned = tryCore('openTarget', 'resolveOpenLinkedTarget', [record || {}, { target }]);
+    if (planned && planned.ok === true && trimString(planned.url) === legacyUrl) return planned.url;
+    return legacyUrl;
+  }
+
   // ── addToLibrary ─────────────────────────────────────────────────────────
   async function addToLibrary(args = {}) {
     diag.counts.addCalls += 1;
@@ -150,14 +293,14 @@
       if (!hasChatRegistry()) {
         const out = { ok: false, error: 'chat-registry-unavailable' };
         diag.lastAdd = out;
-        return out;
+        return normalizeForDiag('addToLibrary', out);
       }
 
       const ident = resolveIdentity({ chatId: args.chatId, href: args.href });
       if (!ident.chatId) {
         const out = { ok: false, error: 'missing-chat-identity' };
         diag.lastAdd = out;
-        return out;
+        return normalizeForDiag('addToLibrary', out);
       }
 
       // Idempotency: if the record is already linked, return early with the
@@ -169,37 +312,21 @@
         diag.counts.alreadyLinkedHits += 1;
         const out = { ok: true, alreadyLinked: true, chatId: ident.chatId, record: prev };
         diag.lastAdd = out;
-        return out;
+        return normalizeForDiag('addToLibrary', out);
       }
 
       const title = resolveTitle(args.title);
-      const project = (args.project && typeof args.project === 'object') ? args.project : null;
-      const patch = {
-        chatId: ident.chatId,
-        href: ident.href,
-        normalizedHref: ident.normalizedHref,
-        title,
-        titleSource: source,
-        state: { isLinked: true },
-        linkedFrom: source,
-        linkSourceHref: ident.href,
-      };
-      if (project && (project.projectId || project.projectName)) {
-        patch.project = {
-          projectId: trimString(project.projectId),
-          projectName: trimString(project.projectName),
-        };
-      }
+      const patch = buildAddPatchWithCore(ident, args, source, title);
 
       const record = H2O.ChatRegistry.upsertRecord(patch, { source });
       const out = { ok: true, alreadyLinked: false, chatId: ident.chatId, record };
       diag.lastAdd = out;
-      return out;
+      return normalizeForDiag('addToLibrary', out);
     } catch (e) {
       pushError('addToLibrary', e);
       const out = { ok: false, error: String(e?.message || e || 'unknown') };
       diag.lastAdd = out;
-      return out;
+      return normalizeForDiag('addToLibrary', out);
     }
   }
 
@@ -212,7 +339,7 @@
       if (!ident.chatId) {
         const out = { ok: false, error: 'missing-chat-identity', chatId: '', folderId: trimString(args.folderId) };
         diag.lastSave = out;
-        return out;
+        return normalizeForDiag('saveToFolder', out);
       }
 
       const fid = trimString(args.folderId); // '' means Unfiled
@@ -225,7 +352,7 @@
         if (!hasFolders()) {
           const out = { ok: false, chatId: ident.chatId, folderId: fid, error: 'folders-unavailable' };
           diag.lastSave = out;
-          return out;
+          return normalizeForDiag('saveToFolder', out);
         }
         bindResult = await H2O.folders.saveAndBindToFolder({
           chatId: ident.chatId,
@@ -237,7 +364,7 @@
           const err = trimString(bindResult?.reason) || trimString(bindResult?.status) || 'save-and-bind-failed';
           const out = { ok: false, chatId: ident.chatId, folderId: fid, error: err, details: bindResult };
           diag.lastSave = out;
-          return out;
+          return normalizeForDiag('saveToFolder', out);
         }
         snapshotId = trimString(bindResult?.capture?.snapshotId)
           || trimString(bindResult?.capture?.snapshot?.snapshotId);
@@ -258,13 +385,13 @@
         } else {
           const out = { ok: false, chatId: ident.chatId, folderId: '', error: 'capture-unavailable' };
           diag.lastSave = out;
-          return out;
+          return normalizeForDiag('saveToFolder', out);
         }
         if (!captureResult || captureResult.ok === false) {
           const err = trimString(captureResult?.status) || 'capture-failed';
           const out = { ok: false, chatId: ident.chatId, folderId: '', error: err, details: captureResult };
           diag.lastSave = out;
-          return out;
+          return normalizeForDiag('saveToFolder', out);
         }
         snapshotId = trimString(captureResult?.capture?.snapshotId)
           || trimString(captureResult?.capture?.snapshot?.snapshotId);
@@ -282,14 +409,7 @@
       let record = null;
       try {
         if (hasChatRegistry()) {
-          record = H2O.ChatRegistry.upsertRecord({
-            chatId: ident.chatId,
-            href: ident.href,
-            normalizedHref: ident.normalizedHref,
-            state: { isSaved: true, isLinked: true },
-            linkedFrom: 'save-to-folder',
-            linkSourceHref: ident.href,
-          }, { source });
+          record = H2O.ChatRegistry.upsertRecord(buildSaveRegistryPatchWithCore(ident, args, source), { source });
         }
       } catch (e) {
         pushError('saveToFolder:registry-stamp', e);
@@ -304,12 +424,12 @@
         details: bindResult || captureResult || null,
       };
       diag.lastSave = out;
-      return out;
+      return normalizeForDiag('saveToFolder', out);
     } catch (e) {
       pushError('saveToFolder', e);
       const out = { ok: false, chatId: trimString(args.chatId), folderId: trimString(args.folderId), error: String(e?.message || e || 'unknown') };
       diag.lastSave = out;
-      return out;
+      return normalizeForDiag('saveToFolder', out);
     }
   }
 
@@ -325,18 +445,21 @@
         const id = chatIdOrRecord.trim();
         if (hasChatRegistry()) record = H2O.ChatRegistry.getRecord(id);
       }
-      const url = urlFromRecord(record);
+      const url = resolveOpenUrlWithCore(record, target);
       if (!url) {
         const out = false;
         diag.lastOpen = { ok: false, reason: 'no-url' };
+        normalizeForDiag('openLinkedChat', diag.lastOpen);
         return out;
       }
       W.open(url, target, 'noopener');
       diag.lastOpen = { ok: true, url, target };
+      normalizeForDiag('openLinkedChat', diag.lastOpen);
       return true;
     } catch (e) {
       pushError('openLinkedChat', e);
       diag.lastOpen = { ok: false, reason: 'threw' };
+      normalizeForDiag('openLinkedChat', diag.lastOpen);
       return false;
     }
   }
@@ -354,6 +477,17 @@
       hasChatRegistry: hasChatRegistry(),
       hasFolders: hasFolders(),
       hasArchiveBoot: hasArchiveBoot(),
+      coreAvailable: !!actionsCore(),
+      corePhase: corePhase(),
+      coreUsedFor: { ...diag.core.usedFor },
+      coreLast: {
+        target: diag.core.lastTarget,
+        result: diag.core.lastResult,
+        patch: diag.core.lastPatch,
+        plan: diag.core.lastPlan,
+        openTarget: diag.core.lastOpenTarget,
+      },
+      coreErrors: diag.core.errors.slice(-Math.min(10, ERR_MAX)),
     };
   }
 
