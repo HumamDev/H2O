@@ -31,10 +31,14 @@
   var LABEL_BINDINGS_KEY = 'h2o:prm:cgx:library:labels:bindings:v1';
   var DEFAULT_KEEP_LATEST = 30;
   var EXPORTER_VERSION = '0.1.0';
+  var SYNC_FOLDER_NAME = 'H2O Studio Sync';
+  var SYNC_LATEST_FILE = 'latest.json';
+  var SYNC_TMP_FILE = '.latest.json.tmp';
 
   var state = {
     installedAt: Date.now(),
     lastExportAt: null,
+    lastSyncExport: null,
     lastSummary: null,
     lastWarnings: [],
     lastError: null,
@@ -55,6 +59,93 @@
 
   function cleanString(value) {
     return String(value == null ? '' : value).trim();
+  }
+
+  function joinSyncPath(name) {
+    return SYNC_FOLDER_NAME + '/' + String(name || '').replace(/^\/+/, '');
+  }
+
+  function syncDisplayPath(name) {
+    return '~/' + joinSyncPath(name);
+  }
+
+  function getTauriInvoke() {
+    try {
+      var internals = global.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') return internals.invoke.bind(internals);
+    } catch (_) { /* ignore */ }
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return tauri.core.invoke.bind(tauri.core);
+      if (tauri && typeof tauri.invoke === 'function') return tauri.invoke.bind(tauri);
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function getHomeBaseDir() {
+    return 21;
+  }
+
+  function getTauriFsFacade() {
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.fs) return tauri.fs;
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  async function fsMkdir(path, options) {
+    var fs = getTauriFsFacade();
+    if (fs && typeof fs.mkdir === 'function') return fs.mkdir(path, options);
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs mkdir');
+    return invoke('plugin:fs|mkdir', { path: path, options: options });
+  }
+
+  async function fsWriteTextFile(path, text, options) {
+    var fs = getTauriFsFacade();
+    if (fs && typeof fs.writeTextFile === 'function') return fs.writeTextFile(path, text, options);
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs write_text_file');
+    var bytes = new TextEncoder().encode(String(text || ''));
+    return invoke('plugin:fs|write_text_file', bytes, {
+      headers: {
+        path: encodeURIComponent(path),
+        options: JSON.stringify(options || {}),
+      },
+    });
+  }
+
+  async function fsRename(oldPath, newPath, options) {
+    var fs = getTauriFsFacade();
+    if (fs && typeof fs.rename === 'function') return fs.rename(oldPath, newPath, options);
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs rename');
+    return invoke('plugin:fs|rename', {
+      oldPath: oldPath,
+      newPath: newPath,
+      options: options,
+    });
+  }
+
+  async function sha256Hex(text) {
+    try {
+      if (!global.crypto || !global.crypto.subtle || typeof TextEncoder === 'undefined') return '';
+      var bytes = new TextEncoder().encode(String(text || ''));
+      var digest = await global.crypto.subtle.digest('SHA-256', bytes);
+      return Array.prototype.map.call(new Uint8Array(digest), function (byte) {
+        return byte.toString(16).padStart(2, '0');
+      }).join('');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function byteLengthOf(text) {
+    try {
+      if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(text || '')).byteLength;
+    } catch (_) { /* ignore */ }
+    return String(text || '').length;
   }
 
   function uniqStrings(values) {
@@ -599,6 +690,79 @@
     return bundle;
   }
 
+  async function exportLatestSyncBundle(options) {
+    var startedAt = Date.now();
+    try {
+      var baseDir = getHomeBaseDir();
+      var bundle = await exportFullBundle(Object.assign({}, safeObject(options), {
+        syncLatest: true,
+        syncFolderName: SYNC_FOLDER_NAME,
+      }));
+      var exportedAt = cleanString(bundle && bundle.exportedAt) || nowIso();
+      var text = JSON.stringify(bundle, null, 2) + '\n';
+      var checksumHex = await sha256Hex(text);
+      var checksum = checksumHex ? ('sha256:' + checksumHex) : '';
+      var tmpPath = joinSyncPath(SYNC_TMP_FILE);
+      var latestPath = joinSyncPath(SYNC_LATEST_FILE);
+      var folderOptions = { baseDir: baseDir, recursive: true };
+      var fileOptions = { baseDir: baseDir, create: true, truncate: true };
+      var renameOptions = { oldPathBaseDir: baseDir, newPathBaseDir: baseDir };
+
+      await fsMkdir(SYNC_FOLDER_NAME, folderOptions);
+      await fsWriteTextFile(tmpPath, text, fileOptions);
+      await fsRename(tmpPath, latestPath, renameOptions);
+
+      var result = {
+        ok: true,
+        phase: 'R2A-1',
+        mode: 'manual-stable-sync-folder-export',
+        path: syncDisplayPath(SYNC_LATEST_FILE),
+        tmpPath: syncDisplayPath(SYNC_TMP_FILE),
+        tempPath: syncDisplayPath(SYNC_TMP_FILE),
+        bytes: byteLengthOf(text),
+        exportedAt: exportedAt,
+        chatCount: Number(bundle && bundle.summary && bundle.summary.chatCount) || 0,
+        snapshotCount: Number(bundle && bundle.summary && bundle.summary.snapshotCount) || 0,
+        turnCount: Number(bundle && bundle.summary && bundle.summary.turnCount) || 0,
+        linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
+        checksum: checksum,
+        sourceDeviceId: cleanString(bundle && bundle.exportedFromExtensionId) || 'desktop-tauri',
+        schema: FULL_BUNDLE_SCHEMA,
+        chatArchiveSchema: CHAT_ARCHIVE_SCHEMA,
+        atomicWrite: true,
+        pathResolution: 'tauri-base-directory-home',
+        autoRunOnBoot: false,
+        autoRunOnDataChange: false,
+        chromeAutoImport: false,
+        durationMs: Date.now() - startedAt,
+        status: 'latest-sync-bundle-written',
+      };
+      state.lastSyncExport = result;
+      state.lastError = null;
+      return result;
+    } catch (error) {
+      var failure = {
+        ok: false,
+        phase: 'R2A-1',
+        mode: 'manual-stable-sync-folder-export',
+        path: syncDisplayPath(SYNC_LATEST_FILE),
+        tmpPath: syncDisplayPath(SYNC_TMP_FILE),
+        tempPath: syncDisplayPath(SYNC_TMP_FILE),
+        error: String(error && (error.message || error)),
+        status: 'latest-sync-bundle-write-failed',
+        atomicWrite: true,
+        pathResolution: 'tauri-base-directory-home',
+        autoRunOnBoot: false,
+        autoRunOnDataChange: false,
+        chromeAutoImport: false,
+        durationMs: Date.now() - startedAt,
+      };
+      state.lastSyncExport = failure;
+      state.lastError = failure.error;
+      return failure;
+    }
+  }
+
   function diagnose() {
     var stores = getStores();
     return {
@@ -609,8 +773,21 @@
       exporterVersion: EXPORTER_VERSION,
       readOnly: true,
       writesData: false,
+      syncLatest: {
+        api: 'H2O.Studio.ingestion.exportLatestSyncBundle',
+        folderName: SYNC_FOLDER_NAME,
+        fileName: SYNC_LATEST_FILE,
+        path: syncDisplayPath(SYNC_LATEST_FILE),
+        atomicWrite: true,
+        autoRunOnBoot: false,
+        autoRunOnDataChange: false,
+        chromeAutoImport: false,
+        writesSyncFile: true,
+        lastResult: state.lastSyncExport,
+      },
       storeAvailability: storeAvailability(stores),
       lastExportAt: state.lastExportAt,
+      lastSyncExport: state.lastSyncExport,
       lastSummary: state.lastSummary,
       lastWarnings: state.lastWarnings.slice(),
       lastError: state.lastError,
@@ -626,6 +803,7 @@
         throw error;
       });
     },
+    exportLatestSyncBundle: exportLatestSyncBundle,
     diagnoseExportBundle: diagnose,
     diagnose: function () {
       var base = {};

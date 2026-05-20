@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/capabilities/2",
   "identifier": "default",
-  "description": "Default capability for the H2O Studio main window. M1 grants the minimum needed to boot Studio's UI and open external URLs via tauri-plugin-shell. M2d-1a adds read-only filesystem access (download folder + home) for manual Browser Studio bundle sync.",
+  "description": "Default capability for the H2O Studio main window. M1 grants the minimum needed to boot Studio's UI and open external URLs via tauri-plugin-shell. M2d-1a adds read-only filesystem access (download folder + home) for manual Browser Studio bundle sync. R2A-1 adds narrowly scoped write access for the Desktop latest sync bundle.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -23,6 +23,27 @@
       "allow": [
         { "path": "$DOWNLOAD/**" },
         { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$HOME/H2O Studio Sync" },
+        { "path": "$HOME/H2O Studio Sync/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$HOME/H2O Studio Sync/.latest.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/latest.json" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        { "path": "$HOME/H2O Studio Sync/.latest.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/latest.json" }
       ]
     }
   ]
