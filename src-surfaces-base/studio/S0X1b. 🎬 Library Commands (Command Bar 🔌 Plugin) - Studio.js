@@ -206,10 +206,10 @@
     });
 
     // ── Group: Library Actions (Add to Library / Save to Folder / open) ──────
-    // Thin wrappers over H2O.LibraryActions so the same business logic is
-    // reachable from the Command Bar, the native menu (Phase 3), and any
-    // future Studio row action. Each command degrades to a console warning
-    // if H2O.LibraryActions is not yet registered (e.g. before 0F1j boots).
+    // Thin wrappers over H2O.LibraryActions so command consumers receive the
+    // same structured facade result as any future Studio row action. Each
+    // command degrades to a console warning if H2O.LibraryActions is not yet
+    // registered (e.g. before S0F1j boots).
     cb.registerGroup('library-actions', { label: 'Library Actions', icon: '🎯' });
     const getActions = () => H2O.LibraryActions || null;
     cb.registerCommand('library-actions', {
@@ -239,7 +239,7 @@
         const chatId = active?.dataset?.chatId || '';
         if (!chatId) {
           try { console.info('[H2O.LibraryActions] open-linked-chat: no chat row available'); } catch {}
-          return false;
+          return a.openLinkedChat?.({ title: 'Current Library row' }, { source: 'studio-command-bar:no-active-row' });
         }
         return a.openLinkedChat?.(chatId);
       },
@@ -347,6 +347,7 @@
       };
     },
   };
+  H2O.LibraryCommands = Plugin;
   H2O.Library.CommandsPlugin = Plugin;
 
   // ── Boot ──────────────────────────────────────────────────────────────────
