@@ -117,6 +117,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
   "S0F1c. 🎬 Library Index - Studio.js",
+  // Phase 7D — Studio LibraryActions facade. Must load after core/registry/index
+  // and before command/feature consumers. Same index position in the OUT list.
+  "S0F1j. 🎬 Library Actions - Studio.js",
   "S0F2a. 🎬 Projects - Studio.js",
   "S0F3a. 🎬 Folders - Studio.js",
   "S0F4a. 🎬 Categories - Studio.js",
@@ -201,6 +204,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F1e. 🎬 Library Store - Studio.js",
   "S0F1g. 🎬 Chat Registry - Studio.js",
   "S0F1c. 🎬 Library Index - Studio.js",
+  "S0F1j. 🎬 Library Actions - Studio.js",
   "S0F2a. 🎬 Projects - Studio.js",
   "S0F3a. 🎬 Folders - Studio.js",
   "S0F4a. 🎬 Categories - Studio.js",
