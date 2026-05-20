@@ -243,6 +243,10 @@
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
        yet — that lands in M2d-1b. -->
   <script src="./sync/folder-sync.tauri.js"></script>
+  <!-- Desktop-only: opt-in latest-bundle auto-export (R2A-2). Disabled by
+       default; when enabled, debounces SQLite store changes into the existing
+       exportLatestSyncBundle writer. No Chrome auto-import. -->
+  <script src="./sync/auto-export.tauri.js"></script>
 
   <script src="./S1A1a. 🎬 MiniMap Kernel - Studio.js"></script>
   <script src="./S1A1f. 🎬 MiniMap Views - Studio.js"></script>
