@@ -1,0 +1,32 @@
+{
+  "name": "@h2o/host-adapter-claude",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude.ai DOM/URL host adapter for H2O extensions (Phase 9A-3 scaffolding).",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./types.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./types.d.ts",
+      "default": "./index.js"
+    },
+    "./selectors": "./src/selectors.js",
+    "./url-parser": "./src/url-parser.js",
+    "./text-extract": "./src/text-extract.js"
+  },
+  "files": [
+    "index.js",
+    "types.d.ts",
+    "src/**/*.js",
+    "fixtures/**/*",
+    "README.md"
+  ],
+  "keywords": [
+    "h2o",
+    "host-adapter",
+    "claude.ai"
+  ],
+  "license": "UNLICENSED"
+}
