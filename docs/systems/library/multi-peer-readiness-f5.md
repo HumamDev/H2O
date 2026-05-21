@@ -535,6 +535,65 @@ The default preview includes active and restored tombstones. Passing
 `includeSensitive: false` redacts peer IDs in the preview output, but record IDs
 remain present because they are the tombstone identity keys.
 
+## F5E.1 Read-Only Tombstones In Exported Bundle
+
+F5E.1 adds local tombstones to the Desktop full-bundle export as read-only wire
+payload:
+
+```js
+{
+  schema: 'h2o.studio.fullBundle.v2',
+  exportSchemaVersion: 'h2o.studio.export-envelope.v1',
+  tombstoneSchemaVersion: 'h2o.studio.tombstone.v1',
+  tombstones: []
+}
+```
+
+`exportFullBundle()` calls `H2O.Studio.store.tombstones.previewExport()` with:
+
+```js
+{
+  includeRestored: true,
+  includeSensitive: true,
+  limit: 5000
+}
+```
+
+`exportLatestSyncBundle()` inherits the same bundle through `exportFullBundle()`.
+No tombstone rows are mutated during export. Stored `sourceExportId` and
+`sourceSequenceNumber` values are preserved as-is; F5E.1 does not overlay the
+current export event onto tombstone rows.
+
+The exporter always includes `tombstoneSchemaVersion` and `tombstones: []`. If
+the tombstone preview API is unavailable, throws, or returns malformed data, the
+root export still succeeds with an empty tombstone array and diagnostics under:
+
+```js
+diagnostics.desktopExport.tombstones
+```
+
+That diagnostics block includes:
+
+```js
+{
+  supported: true,
+  exported,
+  schema: 'h2o.studio.tombstone.v1',
+  total,
+  active,
+  restored,
+  skipped,
+  byKind,
+  warnings
+}
+```
+
+F5E.1 does not change any importer. Chrome and Desktop import paths may ignore
+the top-level `tombstones` array. Tombstones are included before F3
+`contentSha256` calculation, so exported checksums cover the tombstone payload.
+F5E.1 does not apply tombstones, propagate deletes, add a conflict queue, add UI,
+purge, restore, write Chrome data, or enable bidirectional sync.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

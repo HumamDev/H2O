@@ -36,6 +36,8 @@
   var EXPORT_SCHEMA_VERSION = 'h2o.studio.export-envelope.v1';
   var PEER_TRANSPORT_VERSION = 'h2o.studio.sync.peer-transport.v1';
   var PEER_STATE_SCHEMA = 'h2o.studio.sync.peer-state.v1';
+  var TOMBSTONE_SCHEMA_VERSION = 'h2o.studio.tombstone.v1';
+  var TOMBSTONE_EXPORT_LIMIT = 5000;
   var SYNC_FOLDER_NAME = 'H2O Studio Sync';
   var SYNC_LATEST_FILE = 'latest.json';
   var SYNC_TMP_FILE = '.latest.json.tmp';
@@ -1091,6 +1093,72 @@
     };
   }
 
+  function emptyTombstoneExportDiagnostics(warnings) {
+    return {
+      supported: true,
+      exported: false,
+      schema: TOMBSTONE_SCHEMA_VERSION,
+      total: 0,
+      active: 0,
+      restored: 0,
+      skipped: 0,
+      byKind: [],
+      warnings: asArray(warnings),
+    };
+  }
+
+  async function buildTombstoneExportPayloadSafely(stores) {
+    var api = stores && stores.tombstones;
+    if (!api || typeof api.previewExport !== 'function') {
+      return {
+        tombstones: [],
+        diagnostics: emptyTombstoneExportDiagnostics([{
+          code: 'tombstone-preview-unavailable',
+          warning: 'store.tombstones.previewExport unavailable; exporting empty tombstones array',
+        }]),
+      };
+    }
+    try {
+      var preview = await api.previewExport({
+        includeRestored: true,
+        includeSensitive: true,
+        limit: TOMBSTONE_EXPORT_LIMIT,
+      });
+      if (!preview || typeof preview !== 'object' || !Array.isArray(preview.tombstones)) {
+        return {
+          tombstones: [],
+          diagnostics: emptyTombstoneExportDiagnostics([{
+            code: 'tombstone-preview-malformed',
+            warning: 'store.tombstones.previewExport returned malformed payload; exporting empty tombstones array',
+          }]),
+        };
+      }
+      return {
+        tombstones: preview.tombstones,
+        diagnostics: {
+          supported: true,
+          exported: true,
+          schema: cleanString(preview.tombstoneSchemaVersion) || TOMBSTONE_SCHEMA_VERSION,
+          total: Number(preview.total) || preview.tombstones.length,
+          active: Number(preview.active) || 0,
+          restored: Number(preview.restored) || 0,
+          skipped: Number(preview.skipped) || 0,
+          byKind: asArray(preview.byKind),
+          warnings: asArray(preview.warnings),
+        },
+      };
+    } catch (e) {
+      return {
+        tombstones: [],
+        diagnostics: emptyTombstoneExportDiagnostics([{
+          code: 'tombstone-preview-failed',
+          warning: 'store.tombstones.previewExport failed; exporting empty tombstones array',
+          error: String((e && e.message) || e),
+        }]),
+      };
+    }
+  }
+
   async function exportFullBundle(options) {
     var startedAt = Date.now();
     var warnings = [];
@@ -1110,6 +1178,8 @@
     var manifest = getManifestInfo();
     var chatArchive = collected.archive;
     var snapshotCount = collected.diagnostics.snapshotCount;
+    var tombstoneExport = await buildTombstoneExportPayloadSafely(stores);
+    var tombstoneDiagnostics = tombstoneExport.diagnostics || emptyTombstoneExportDiagnostics();
     var summary = {
       chatCount: chatArchive.chatCount,
       snapshotCount: snapshotCount,
@@ -1125,6 +1195,9 @@
       libraryKvKeyCount: libraryKv.length,
       linkedOnlyCount: collected.diagnostics.linkedOnlyCount,
       noMessageSnapshotCount: collected.diagnostics.noMessageSnapshotCount,
+      tombstoneCount: Number(tombstoneDiagnostics.total) || 0,
+      activeTombstoneCount: Number(tombstoneDiagnostics.active) || 0,
+      restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
     };
     var bundle = {
       schema: FULL_BUNDLE_SCHEMA,
@@ -1136,6 +1209,8 @@
       chatArchive: chatArchive,
       chromeStorageLocal: chromeStorageLocal,
       libraryKv: libraryKv,
+      tombstoneSchemaVersion: TOMBSTONE_SCHEMA_VERSION,
+      tombstones: asArray(tombstoneExport.tombstones),
       diagnostics: {
         desktopExport: {
           ok: true,
@@ -1150,6 +1225,7 @@
             folderCount: Number(folderFallback && folderFallback.folderCount) || 0,
             bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
           },
+          tombstones: tombstoneDiagnostics,
           warnings: warnings,
           options: safeObject(options),
         },
