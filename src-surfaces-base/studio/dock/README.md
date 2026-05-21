@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B landed (`dock-keys.js`). Further modules (`dock-shell.studio.js`, `tabs/*`) land in Phase 1+.
+Status: Phase 0B and Phase 1a landed (`dock-keys.js`, `dock-shell.studio.js`). Further modules (`tabs/*`, persistence wiring) land in Phase 1b+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -12,7 +12,8 @@ Companion docs:
 ## What lives here
 
 - **Phase 0B (landed)**: `dock-keys.js` — passive constants module that mirrors native storage-key and event-name strings used by Dock Panel features. Studio-local. No native code touched. Exposes `H2O.Studio.DockKeys`, `H2O.Studio.DockEvents`, and `H2O.Studio.DockKeyFor`.
-- **Phase 1a**: `dock-shell.studio.js` — defines `H2O.Studio.dock` and its `registerTab` API per the contract above. `mount/open/close` are no-ops in 1a.
+- **Phase 1a (landed)**: `dock-shell.studio.js` — defines `H2O.Studio.dock` and its `registerTab` API per the contract above. `mount/unmount/open/close/toggle/setView/getView` are no-op or in-memory-only state mutators; no DOM, no storage. Tabs registered through it are tracked in `H2O.Studio.dock.tabs` but not rendered yet.
+- **Phase 1b**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` start syncing to `H2O.Studio.store.prefs('studio:dock:*')` so they survive reload.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -115,3 +116,32 @@ finderUiPerChatPrefix       ←→ src-runtime-base/3Y2a.…Finder.js:59
 ```
 
 A reviewer must be able to spot-grep any 3 entries and confirm the strings match.
+
+## Phase 1a — what landed
+
+`dock-shell.studio.js` is the second runtime file in this directory. It publishes the `H2O.Studio.dock` namespace as a passive, mountless tab registry and state holder. Loading it has no user-visible effect.
+
+| Surface | Type | Behavior in 1a |
+|---|---|---|
+| `registerTab(id, def)` | function | Adds/replaces a tab def in the registry; emits `h2o:studio:dock:tab-registered`. |
+| `getTab(id)` | function | Returns the stored def or `null`. |
+| `tabs` | getter | Fresh shallow copy of the registry on each read. |
+| `mount(container)` | function | No-op stub. Stashes the reference, marks `state.mounted = true`, emits `h2o:studio:dock:ready`. No DOM attached. |
+| `unmount()` | function | Clears the reference and `state.mounted`. |
+| `open()` / `close()` / `toggle()` | functions | Mutate `state.open` in memory only; emit `h2o:studio:dock:open-changed`. |
+| `setView(id)` / `getView()` | functions | Mutate `state.view` in memory only; emit `h2o:studio:dock:view-changed`. |
+| `state` | frozen getter object | `state.open`, `state.view`, `state.mounted` — read-only views over the live internal state. |
+| `events` | frozen constants | The four event-name strings above. |
+
+The internal state is **in-memory only** in 1a. Reloading `studio.html` resets `state.open = false` and `state.view = null`. Phase 1b adds persistence through `H2O.Studio.store.prefs('studio:dock:*')`.
+
+Event delivery uses `H2O.events.emit` when available and silently drops the call otherwise — the shell never throws to a caller. This keeps the file safe to load in any environment, including isolated node smoke tests.
+
+### Why mount/open/setView are no-ops
+
+Phase 1a explicitly avoids any side effect beyond updating the in-memory registry and state object. Concretely:
+- `mount(container)` does **not** attach DOM, does **not** call `appendChild`, does **not** register listeners on the container, and does **not** read or write storage.
+- `open()` / `close()` / `setView()` do **not** modify any DOM element, do **not** persist to storage, and do **not** notify any feature engine. Their only side effect is the H2O.events emit (which currently has no subscribers).
+- `registerTab()` stores the def but never invokes its `render` function.
+
+Phase 2 lands the real `mount()` (DOM container in `studio.html` + tab dispatch). Phase 3 lands the per-tab render wiring.

@@ -198,6 +198,18 @@
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./dock/dock-keys.js"></script>
 
+  <!-- ── Studio Dock Shell (Phase 1a) ───────────────────────────────────
+       Publishes H2O.Studio.dock — passive, mountless tab registry plus
+       no-op shell methods (mount/open/close/toggle/setView). No DOM,
+       no storage, no rendering. Phase 1b will wire persistence;
+       Phase 2 will wire the actual mount. Loads AFTER dock-keys.js so
+       future implementations can reference DockKeys/DockEvents, and
+       BEFORE store/ + any feature module.
+       Contracts: docs/contracts/studio-dock-tab-registration.md,
+                  surfaces/studio/dock/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./dock/dock-shell.studio.js"></script>
+
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
        AFTER platform/ so the store can use platform.broadcast.onAnyChange,
