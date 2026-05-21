@@ -1154,6 +1154,200 @@
     return result;
   }
 
+  /* ── Folder-state-only import (Phase A) ──────────────────────────────
+   *
+   * Lighter entry point over the existing importFolders + importFolderBindings
+   * private helpers. Lets callers (e.g. a future folder-sync watcher) apply
+   * just the folder catalog + bindings section without constructing a full
+   * fullBundle.v2 envelope.
+   *
+   * Accepts three input shapes:
+   *   (a) raw folder-state          { folders:[...], items:{folderId:chatId[]} }
+   *   (b) chromeStorageLocal wrapper { chromeStorageLocal: { [FOLDER_STATE_KEY]: <raw> } }
+   *   (c) full bundle               { schema, chatArchive, chromeStorageLocal: { [FOLDER_STATE_KEY]: <raw> }, ... }
+   *
+   * Persists through the existing Desktop folder store adapters via the
+   * existing importFolders + importFolderBindings code paths — no new
+   * write logic, no SQLite schema change, no chat/snapshot/catalog touch.
+   *
+   * Optionally mirrors the normalized folder-state back into the existing
+   * fallback key h2o:prm:cgx:fldrs:state:data:v1 via the chrome.storage.local
+   * shim, so the Desktop exporter's fallback-source ordering finds the same
+   * data on the next re-export. The mirror is best-effort — if the shim
+   * isn't available the SQLite write to folders/folder_bindings still
+   * happened, and fallbackKvUpdated reports false.
+   *
+   * Safety invariants (all reused from the existing import path):
+   *   - ID-primary, non-deleting merge (folders by folderId; bindings by
+   *     PRIMARY KEY (chat_id) so a chat re-binding to its current folder is
+   *     idempotent).
+   *   - Same-name / different-id folders kept as two distinct rows.
+   *   - Empty folders preserved: catalog row written even when items list
+   *     is empty.
+   *   - Visual metadata (color, iconColor, icon) merged via existing
+   *     importFolders rules.
+   *   - No chats/snapshots/labels/tags/categories/library-kv touched —
+   *     the stub bundle's chatArchive.chats[] is empty so none of those
+   *     code paths execute.
+   *   - Tauri-gated by the outer IIFE: this function is unreachable on
+   *     MV3/web.
+   *   - No Chrome write-back, no bidirectional sync, no archive DB
+   *     schema change. */
+
+  function normalizeFolderStatePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, source: '', state: null, error: 'invalid-payload' };
+    }
+    /* Shape (c): a full bundle with chromeStorageLocal section. */
+    if (payload.chromeStorageLocal && typeof payload.chromeStorageLocal === 'object'
+        && !Array.isArray(payload.chromeStorageLocal)) {
+      var nested = payload.chromeStorageLocal[FOLDER_STATE_KEY];
+      if (nested && typeof nested === 'object') {
+        var sourceLabel = payload.schema && typeof payload.schema === 'string'
+          ? 'full-bundle:' + payload.schema
+          : 'chromeStorageLocal-wrapper';
+        return {
+          ok: true,
+          source: sourceLabel,
+          state: {
+            schemaVersion: Number(nested.schemaVersion || nested.version || 1) || 1,
+            exportedFrom: cleanString(nested.exportedFrom || nested.source || ''),
+            exportedAt: cleanString(nested.exportedAt || nested.updatedAt || ''),
+            folders: Array.isArray(nested.folders) ? nested.folders.slice() : [],
+            items: (nested.items && typeof nested.items === 'object' && !Array.isArray(nested.items))
+              ? nested.items
+              : {},
+          },
+        };
+      }
+    }
+    /* Shape (a): raw folder-state object. */
+    if (Array.isArray(payload.folders) || (payload.items && typeof payload.items === 'object' && !Array.isArray(payload.items))) {
+      return {
+        ok: true,
+        source: 'raw-folder-state',
+        state: {
+          schemaVersion: Number(payload.schemaVersion || payload.version || 1) || 1,
+          exportedFrom: cleanString(payload.exportedFrom || payload.source || ''),
+          exportedAt: cleanString(payload.exportedAt || payload.updatedAt || ''),
+          folders: Array.isArray(payload.folders) ? payload.folders.slice() : [],
+          items: (payload.items && typeof payload.items === 'object' && !Array.isArray(payload.items))
+            ? payload.items
+            : {},
+        },
+      };
+    }
+    return { ok: false, source: '', state: null, error: 'unrecognized-folder-state-shape' };
+  }
+
+  async function importFolderStateOnly(payload, options) {
+    var startedAt = new Date().toISOString();
+    var startedAtMs = Date.now();
+    var opts = (options && typeof options === 'object') ? options : {};
+    var mirrorToChromeStorage = opts.mirrorToChromeStorage !== false; /* default: true */
+
+    var sample = emptySample();
+    var written = emptyWritten();
+    var skipped = emptySkipped();
+    var warnings = [];
+    var errors = [];
+
+    var parsed = normalizeFolderStatePayload(payload);
+    if (!parsed.ok) {
+      return {
+        schema: 'h2o.studio.fullBundle.v2',
+        mode: 'merge',
+        source: 'folder-state-only',
+        ok: false,
+        destinationVersion: 'v1-sqlite',
+        destinationBackend: 'sqlite',
+        startedAt: startedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAtMs,
+        written: written,
+        skipped: skipped,
+        warnings: warnings,
+        errors: [{ kind: 'parse', error: parsed.error || 'invalid-folder-state-payload' }],
+        sample: sample,
+        fallbackKvUpdated: false,
+      };
+    }
+
+    var folderState = parsed.state;
+    /* Build a stub bundle wrapper so we can reuse the existing
+     * importFolders + importFolderBindings code paths byte-for-byte.
+     * chatArchive.chats is intentionally empty: importFolderBindings's
+     * chatStateIndex lookup falls through to its defensive
+     * stores.chats.get(chatId) check, which preserves pre-existing
+     * bindings without orphaning anything. */
+    var stubBundle = {
+      schema: 'h2o.studio.fullBundle.v2',
+      chromeStorageLocal: {},
+      chatArchive: { schema: 'h2o.chatArchive.bundle.v1', chats: [] },
+    };
+    stubBundle.chromeStorageLocal[FOLDER_STATE_KEY] = folderState;
+
+    var stores = (H2O.Studio && H2O.Studio.store) || {};
+    var result = {
+      schema: 'h2o.studio.fullBundle.v2',
+      mode: 'merge',
+      source: 'folder-state-only',
+      ok: true,
+      payloadSource: parsed.source,
+      destinationVersion: 'v1-sqlite',
+      destinationBackend: 'sqlite',
+      startedAt: startedAt,
+      completedAt: '',
+      durationMs: 0,
+      written: written,
+      skipped: skipped,
+      warnings: warnings,
+      errors: errors,
+      sample: sample,
+      fallbackKvUpdated: false,
+    };
+
+    /* Empty per-chat state index — importFolderBindings will fall through
+     * to stores.chats.get(chatId) for any chatId not in the index, and
+     * record an orphan-folder-binding warning if the chat row truly
+     * doesn't exist. No chat data is written. */
+    var emptyChatStateIndex = Object.create(null);
+
+    try {
+      await importFolders(stubBundle, stores, result);
+      await importFolderBindings(stubBundle, stores, result, emptyChatStateIndex);
+    } catch (e) {
+      result.errors.push({ kind: 'fatal', error: String((e && e.message) || e) });
+    }
+
+    /* Best-effort mirror back into the fallback key so the Desktop
+     * exporter's source-ordering fallback (#2 chrome.storage.local) finds
+     * the same data on the next re-export. SQLite writes above are the
+     * canonical truth; this mirror is for round-trip durability only. */
+    if (mirrorToChromeStorage) {
+      try {
+        var mirrorPayload = {};
+        mirrorPayload[FOLDER_STATE_KEY] = {
+          schemaVersion: folderState.schemaVersion,
+          exportedFrom: cleanString(folderState.exportedFrom || 'folder-state-only-import') || 'folder-state-only-import',
+          exportedAt: cleanString(folderState.exportedAt) || new Date().toISOString(),
+          folders: folderState.folders,
+          items: folderState.items,
+        };
+        await chromeStorageSet(mirrorPayload);
+        result.fallbackKvUpdated = true;
+      } catch (e) {
+        result.warnings.push({ kind: 'fallback-kv-mirror', warn: String((e && e.message) || e) });
+        result.fallbackKvUpdated = false;
+      }
+    }
+
+    result.ok = result.errors.length === 0;
+    result.completedAt = new Date().toISOString();
+    result.durationMs = Date.now() - startedAtMs;
+    return result;
+  }
+
   /* ── Diagnostics ─────────────────────────────────────────────────── */
   function diagnose() {
     var stores = (H2O.Studio && H2O.Studio.store) || {};
@@ -1179,6 +1373,7 @@
     __version: '0.1.0',
     dryRunImportBundle: dryRunImportBundle,
     importBundle: importBundle,
+    importFolderStateOnly: importFolderStateOnly,
     diagnose: diagnose,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
