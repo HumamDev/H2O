@@ -48,7 +48,7 @@
   var GATE_FLAG_NAME = 'experimentalMultiPeer';
   var GATE_HASH      = '#/dev/multi-peer-readiness';
   var HOST_ID        = 'h2o-mp-readiness-host';
-  var RUNNER_VERSION = '0.1.0-f1b';
+  var RUNNER_VERSION = '0.1.1-f1b';
 
   /* ─── In-memory state (reset on refresh) ──────────────────────────── */
 
@@ -285,6 +285,14 @@
     if (state.inFlight) return;
     if (!elements.status) return;
 
+    /* F1B.1 — re-check the gate at click time. If either condition has gone
+     * false since mount (e.g. dev flipped the flag without changing the hash),
+     * unmount cleanly and abort without running anything. */
+    if (!isGated()) {
+      unmount();
+      return;
+    }
+
     var surface = detectSurface();
     if (!analyzerAvailable()) {
       setText(elements.status, 'analyzer not loaded');
@@ -393,6 +401,11 @@
   /* ─── Wire listeners (once at module load) ────────────────────────── */
 
   try { global.addEventListener('hashchange', reconcile); }
+  catch (_) { /* ignore */ }
+  /* F1B.1 — visibilitychange fires when the tab regains focus, which is a
+   * natural moment to re-check the gate (e.g. after a dev flipped the flag
+   * in DevTools and switched back to the page). */
+  try { global.document.addEventListener('visibilitychange', reconcile); }
   catch (_) { /* ignore */ }
 
   function bootReconcile() {
