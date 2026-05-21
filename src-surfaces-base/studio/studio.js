@@ -2830,6 +2830,49 @@ function projectLibraryIndexRowToWorkbenchInput(liRow){
   };
 }
 
+function hasLibraryIndexRowsApi(){
+  const raw = W.H2O?.LibraryIndex?.getAll;
+  return typeof raw === "function"
+    || Array.isArray(raw)
+    || !!(raw && typeof raw.length === "number");
+}
+
+function readLibraryIndexRows(){
+  const idx = W.H2O?.LibraryIndex;
+  const raw = idx?.getAll;
+  try {
+    const rows = typeof raw === "function" ? raw.call(idx) : raw;
+    if (Array.isArray(rows)) return rows.slice();
+    if (rows && typeof rows.length === "number") return Array.from(rows);
+  } catch {}
+  return [];
+}
+
+function readLinkedWorkbenchRowsFromLibraryIndex(){
+  return readLibraryIndexRows()
+    .filter((row) => String(row?.view || "").toLowerCase() === "linked")
+    .map(projectLibraryIndexRowToWorkbenchInput)
+    .filter(Boolean)
+    .map(normalizeWorkbenchRow)
+    .filter(Boolean);
+}
+
+function mergeLinkedLibraryIndexRows(baseRows){
+  const out = Array.isArray(baseRows) ? baseRows.slice() : [];
+  const seenChatIds = new Set();
+  for (const row of out){
+    const chatId = String(row?.chatId || "").trim();
+    if (chatId) seenChatIds.add(chatId);
+  }
+  for (const row of readLinkedWorkbenchRowsFromLibraryIndex()){
+    const chatId = String(row?.chatId || "").trim();
+    if (!chatId || seenChatIds.has(chatId)) continue;
+    out.push(row);
+    seenChatIds.add(chatId);
+  }
+  return out;
+}
+
 async function fetchWorkbenchRows(force = false){
   if (!force && Array.isArray(state.rowsCache)) return state.rowsCache.slice();
 
@@ -2843,9 +2886,9 @@ async function fetchWorkbenchRows(force = false){
   // happens to be unavailable. On failure here we fall through to the
   // archive path (which on Desktop returns [] via the M2a-3i sidebar
   // interceptors), preserving the empty-state UI rather than throwing.
-  if (STUDIO_isTauri() && W.H2O?.LibraryIndex && typeof W.H2O.LibraryIndex.getAll === 'function') {
+  if (STUDIO_isTauri() && hasLibraryIndexRowsApi()) {
     try {
-      const liRows = W.H2O.LibraryIndex.getAll() || [];
+      const liRows = readLibraryIndexRows();
       const raw = liRows.map(projectLibraryIndexRowToWorkbenchInput).filter(Boolean);
       state.rowsCache = raw.map(normalizeWorkbenchRow).filter(Boolean);
       state.lastFetchDiag = { source: 'desktop-library-index', directOk: true, idsOk: false, errors: [] };
@@ -2859,7 +2902,7 @@ async function fetchWorkbenchRows(force = false){
   const direct = await tryArchiveOps(LIST_ROW_OPS, {});
   if (direct.ok && Array.isArray(direct.result)){
     state.lastFetchDiag = { source: direct.op, directOk: true, idsOk: false, errors: [] };
-    state.rowsCache = direct.result.map(normalizeWorkbenchRow).filter(Boolean);
+    state.rowsCache = mergeLinkedLibraryIndexRows(direct.result.map(normalizeWorkbenchRow).filter(Boolean));
     return state.rowsCache.slice();
   }
 
@@ -2867,11 +2910,17 @@ async function fetchWorkbenchRows(force = false){
   const idsAttempt = await tryArchiveOps(CHAT_ID_OPS, {});
   if (idsAttempt.ok && Array.isArray(idsAttempt.result)){
     state.lastFetchDiag = { source: idsAttempt.op, directOk: false, idsOk: true, errors: directErr ? [directErr] : [] };
-    state.rowsCache = await buildRowsFromChatIds(idsAttempt.result);
+    state.rowsCache = mergeLinkedLibraryIndexRows(await buildRowsFromChatIds(idsAttempt.result));
     return state.rowsCache.slice();
   }
 
   const errors = [directErr, idsAttempt.error?.message || ""].filter(Boolean);
+  const linkedRows = readLinkedWorkbenchRowsFromLibraryIndex();
+  if (linkedRows.length){
+    state.lastFetchDiag = { source: "library-index-linked", directOk: false, idsOk: false, errors };
+    state.rowsCache = linkedRows;
+    return state.rowsCache.slice();
+  }
   state.lastFetchDiag = { source: "", directOk: false, idsOk: false, errors };
   throw new Error(errors.join(" · ") || "Studio listing is unavailable because the archive background does not expose a list operation yet.");
 }
@@ -6045,7 +6094,15 @@ function boot(){
       });
     } catch {}
   }
-  ["h2o:chat-title:changed", "h2o:chat-title:emoji-updated", "evt:h2o:chat-title:changed", "evt:h2o:chat-title:emoji-updated", "evt:h2o:library:cross-surface-sync"].forEach((eventName) => {
+  [
+    "h2o:chat-title:changed",
+    "h2o:chat-title:emoji-updated",
+    "evt:h2o:chat-title:changed",
+    "evt:h2o:chat-title:emoji-updated",
+    "evt:h2o:library:cross-surface-sync",
+    "evt:h2o:library-index:updated",
+    "h2o:library-index:updated",
+  ].forEach((eventName) => {
     window.addEventListener(eventName, scheduleNativeMetaRefresh);
   });
 
