@@ -4702,6 +4702,20 @@ function settingsOverlayEnsure(){
     panel.style.margin = "0 auto";
     panel.style.fontSize = "14px";
     panel.style.lineHeight = "1.55";
+    /* Settings scroll fix. With the Local Sync section now carrying
+     * Phase E/H folder-state import controls + extended status grid,
+     * Settings content can exceed the viewport. Bound the panel to
+     * viewport height (minus a small safe margin for surrounding
+     * chrome) and let it scroll vertically inside its own box.
+     * box-sizing:border-box keeps the existing padding inside the
+     * max-height calc. overscroll-behavior:contain stops scroll
+     * chaining into the parent (.wbMain) when the user reaches the
+     * top/bottom. Works identically in Desktop/Tauri and MV3 Studio
+     * Launcher — no platform-specific branching. */
+    panel.style.maxHeight = "calc(100vh - 40px)";
+    panel.style.overflowY = "auto";
+    panel.style.overscrollBehavior = "contain";
+    panel.style.boxSizing = "border-box";
     main.appendChild(panel);
   }
   return panel;
@@ -4820,6 +4834,19 @@ function renderSettingsRoute(){
 
   bindSettingsSyncControls(panel);
   refreshSettingsDiagnostics(panel);
+
+  /* Phase I — restore the last-picked folder-state import path if one
+   * was persisted in a prior session. Fire-and-forget: the template
+   * already pre-fills the input with the runbook example path, so a
+   * cold cache or storage failure simply keeps that default. Read
+   * happens once per panel build (the renderSettingsRoute first-render
+   * branch); subsequent refreshes do not re-read so a user's in-flight
+   * edits are never clobbered by focus/visibility re-entries. */
+  STUDIO_settingsReadFolderStateLastPath().then((stored) => {
+    if (!stored) return;
+    const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
+    if (input) input.value = stored;
+  }).catch(() => { /* ignore */ });
 }
 
 async function refreshSettingsDiagnostics(panel){
@@ -4906,6 +4933,45 @@ function settingsSyncLog(panel, message){
   if (!log) return;
   log.hidden = false;
   log.textContent = String(message || "");
+}
+
+/* Phase I — persist the last-picked folder-state JSON path so the
+ * import input does not always default to the runbook example path.
+ * Storage backend: chrome.storage.local (callback API; shimmed onto
+ * localStorage in Tauri via platform.tauri.js, so the same key works
+ * in MV3 and Desktop without branching). Self-contained dedicated
+ * key — does NOT touch the folder-sync config schema. Read happens
+ * once at Settings panel first-render; writes happen on successful
+ * picker selection and on Import-folder-state click (best-effort
+ * persistence so a typed path is remembered too). All operations
+ * are best-effort: any storage failure is swallowed and the UI
+ * falls back to the template default. */
+const STUDIO_SETTINGS_FOLDER_STATE_LAST_PATH_KEY = "h2o:studio:settings:folder-state-import:last-path:v1";
+
+function STUDIO_settingsReadFolderStateLastPath(){
+  return new Promise((resolve) => {
+    try {
+      if (!W.chrome || !W.chrome.storage || !W.chrome.storage.local) { resolve(""); return; }
+      W.chrome.storage.local.get([STUDIO_SETTINGS_FOLDER_STATE_LAST_PATH_KEY], (items) => {
+        try {
+          const raw = items && items[STUDIO_SETTINGS_FOLDER_STATE_LAST_PATH_KEY];
+          resolve(typeof raw === "string" ? raw : "");
+        } catch (_) { resolve(""); }
+      });
+    } catch (_) { resolve(""); }
+  });
+}
+
+function STUDIO_settingsWriteFolderStateLastPath(path){
+  return new Promise((resolve) => {
+    try {
+      const trimmed = String(path || "").trim();
+      if (!trimmed) { resolve(); return; }
+      if (!W.chrome || !W.chrome.storage || !W.chrome.storage.local) { resolve(); return; }
+      const obj = {}; obj[STUDIO_SETTINGS_FOLDER_STATE_LAST_PATH_KEY] = trimmed;
+      W.chrome.storage.local.set(obj, () => resolve());
+    } catch (_) { resolve(); }
+  });
 }
 
 function settingsSummarizeResult(result){
@@ -5182,6 +5248,12 @@ function bindSettingsSyncControls(panel){
       }
       const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
       if (input) input.value = pathStr;
+      /* Phase I — persist the picked path so the next Settings render
+       * pre-fills the input with this value instead of the hardcoded
+       * runbook default. Only persisted on successful pick (we already
+       * returned early on cancel and on unexpected-shape). Errors are
+       * swallowed inside the helper. */
+      STUDIO_settingsWriteFolderStateLastPath(pathStr);
     } catch (err) {
       settingsSyncLog(panel, "Choose file failed.\n" + String((err && (err.message || err)) || err));
     }
@@ -5201,6 +5273,12 @@ function bindSettingsSyncControls(panel){
     const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
     const path = String((input && input.value) || "").trim();
     if (!path) throw new Error("Path required — paste an absolute path to the folder-state JSON file.");
+    /* Phase I — best-effort persistence on import attempt so a
+     * manually-typed (not-picked) path is also remembered for the next
+     * Settings render. Fire-and-forget; storage failures don't block
+     * the import. Writes happen before the import call so the value is
+     * captured even if the import then fails (e.g. read-failed). */
+    STUDIO_settingsWriteFolderStateLastPath(path);
     const result = await sync.importFromFile(path);
     /* Read Phase D state so the log can show a small orphan sample
      * alongside the wrapper summary. Diagnose is sync; never throws. */
