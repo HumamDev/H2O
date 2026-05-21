@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, and Phase 1b landed (`dock-keys.js`, `dock-shell.studio.js`, and `../store/prefs.js`). Further modules (`tabs/*`, real DOM mount, feature stores) land in Phase 2+.
+Status: Phase 0B, Phase 1a, Phase 1b, and Phase 1c landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores) land in Phase 2+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -14,6 +14,7 @@ Companion docs:
 - **Phase 0B (landed)**: `dock-keys.js` — passive constants module that mirrors native storage-key and event-name strings used by Dock Panel features. Studio-local. No native code touched. Exposes `H2O.Studio.DockKeys`, `H2O.Studio.DockEvents`, and `H2O.Studio.DockKeyFor`.
 - **Phase 1a (landed)**: `dock-shell.studio.js` — defines `H2O.Studio.dock` and its `registerTab` API per the contract above. `mount/unmount/open/close/toggle/setView/getView` are no-op or in-memory-only state mutators; no DOM, no storage. Tabs registered through it are tracked in `H2O.Studio.dock.tabs` but not rendered yet.
 - **Phase 1b (landed)**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` now persist through `H2O.Studio.store.prefs` (Studio-local keys `h2o:studio:dock:open:v1` and `h2o:studio:dock:view:v1`). The prefs entity itself lives at `../store/prefs.js`. `unregisterTab(id)`, `getState()`, and `selfCheck()` are added to the shell. Still no DOM, no native keys, no feature stores. See "Phase 1b — what landed" below.
+- **Phase 1c (landed)**: first read-only feature store — `H2O.Studio.store.context`. Reads native Context Engine keys (`h2o:prm:cgx:ctxeng:meta/items/ui/history`) through `H2O.Studio.platform.storage`. No write API. No Dock UI. No native edits. Lives at `../store/context.js`. See "Phase 1c — what landed" below.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -197,4 +198,50 @@ selfCheck() → { ok, version, phase,
 - No feature stores for highlights / bookmarks / notes / navigator / context / capture (highlights remains the only entity store today, under `../store/highlights.js`).
 - No cross-surface sync. The contract's "UI state never syncs" rule applies — `h2o:studio:dock:*` is Studio-only and is NOT mirrored to native chatgpt.com pages.
 - No writes to native `h2o:prm:cgx:dckpnl:*` keys (prefs.js refuses them).
+- No extension of `fullBundle.v2`.
+
+## Phase 1c — what landed
+
+`store/context.js` is the first read-only Studio Dock feature store façade. It exposes `H2O.Studio.store.context`, reading native Context Engine state (written by `src-runtime-base/3W1a.…Context Engine.js`) through `H2O.Studio.platform.storage`. No write API. No Dock UI. No native edits.
+
+### `H2O.Studio.store.context` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1c-readonly'`. |
+| `readonly` | boolean | Always `true` — this façade has no public write methods. |
+| `getMeta()` | function | Returns the cached value at `h2o:prm:cgx:ctxeng:meta:v1`, or `null`. Lazy-fetches on first call. |
+| `getItems(chatId)` | function | Returns cached `h2o:prm:cgx:ctxeng:items:v1:${chatId\|'unknown'}`, or `null`. |
+| `getUi(chatId)` | function | Returns cached `h2o:prm:cgx:ctxeng:ui:v1:${chatId\|'unknown'}`, or `null`. |
+| `getHistory(chatId)` | function | Returns cached `h2o:prm:cgx:ctxeng:history:v1:${chatId\|'unknown'}`, or `null`. |
+| `getBundle(chatId)` | function | Returns `{ chatId, meta, items, ui, history, keys, found: { meta, items, ui, history } }`. The `found` booleans indicate whether each piece was non-null in the cache. |
+| `getAll(chatId)` | function | Alias of `getBundle(chatId)`. |
+| `keysFor(chatId)` | function | Returns the frozen object `{ meta, items, ui, history }` of full storage keys for the given chatId. Pure string-builder; no I/O. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, chatId, value, oldValue, at, source }`. |
+| `selfCheck()` | function | Returns `{ ok, version, readonly, hasPlatformStorage, hasDockKeys, hasDockKeyFor, registeredWithStoreIndex, errors[] }`. |
+
+### Chat-id fallback
+
+The native engine (3W1a.js:38-40) uses `'unknown'` as the bucket name when chatId is empty or missing. This façade matches that fallback verbatim. Passing an empty string or `null` to `getItems` / `getUi` / `getHistory` reads from the same `…:v1:unknown` bucket the native engine writes.
+
+### Read flow (sync API, async hydrate)
+
+`getMeta` / `getItems` / `getUi` / `getHistory` return immediately from the in-memory cache. On the first read of an unseen key, the façade kicks off an async `platform.storage.get(key)`. When it resolves, the cache is populated and any subscribers receive a `'change'` event with `source: 'fetch'`. Subsequent calls return the cached value synchronously.
+
+### Subscription filter
+
+`subscribe(fn)` is filtered to context keys only. The internal `platform.broadcast.onAnyChange` handler classifies each changed key and silently drops non-context keys before any subscriber is invoked. Subscribers never see Dock UI changes, highlights changes, or any other key shape.
+
+### Registration with store index
+
+If `H2O.Studio.store.__registerEntity` is available at load time (i.e., `store/index.js` has run), the façade registers as the entity `'context'`. Otherwise it attaches directly as `H2O.Studio.store.context = api` so callers still find it. `selfCheck().registeredWithStoreIndex` reports which path was used.
+
+### What is still NOT in Phase 1c
+
+- No public write API (`set` / `update` / `remove` / `saveNow` are absent).
+- No Dock UI. No DOM. No CSS.
+- No tabs. No `dock/tabs/` directory yet.
+- No additional feature stores. Bookmarks / Notes / Navigator / Capture are deferred to later 1c-style read-only phases.
+- No schema migration. The façade reads whatever shape the native engine writes; it does not normalize or upgrade.
+- No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
 - No extension of `fullBundle.v2`.
