@@ -39,6 +39,17 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // STUDIO_STORAGE_CONTRACT.md.
   "store/index.js",
   "store/highlights.js",
+  // Dock Panel read-only feature store façades (Phase 1b-1e). Each is a
+  // passive, sync-API/async-hydrate facade over a native engine's
+  // chrome.storage keys. studio.html references all four; without these
+  // entries the build emits silent 404s and H2O.Studio.store.{prefs,
+  // context, bookmarks, notes} remain undefined at runtime. Order
+  // matches the studio.html script ordering (prefs → context →
+  // bookmarks → notes).
+  "store/prefs.js",
+  "store/context.js",
+  "store/bookmarks.js",
+  "store/notes.js",
   "store/libraryIndex.js",
   // Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
   // and silently no-ops on MV3 / web; safe to ship in chrome-live build.
@@ -209,6 +220,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Studio Store — see SOURCE_FILES list above for context.
   "store/index.js",
   "store/highlights.js",
+  // Dock Panel read-only feature store façades (Phase 1b-1e). See SOURCE_FILES.
+  "store/prefs.js",
+  "store/context.js",
+  "store/bookmarks.js",
+  "store/notes.js",
   "store/libraryIndex.js",
   "store/chats.tauri.js",
   "store/snapshots.tauri.js",
