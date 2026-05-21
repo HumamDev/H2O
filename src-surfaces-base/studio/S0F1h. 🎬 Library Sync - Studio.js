@@ -50,6 +50,7 @@
   ];
   const STUDIO_LIBRARY_INDEX_CACHE_KEY = 'h2o:prm:cgx:library-index:studio:registry:v1';
   const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const EXTERNAL_NATIVE_FOLDER_MERGE_DIAG_KEY = 'h2o:library:native-folder-state:external-merge:diagnostic:v1';
   const IGNORED_SELF_REFRESH_KEYS = new Set([
     STUDIO_LIBRARY_INDEX_CACHE_KEY,
   ]);
@@ -98,6 +99,12 @@
     lastNativeFolderMergeDuplicateNameDifferentIdCount: 0,
     lastNativeFolderMergeDuplicateNameDifferentIdSample: [],
     lastNativeFolderMergeCaseArrived: false,
+    lastNativeFolderMergePath: '',
+    lastNativeFolderMergeDiagnosticKey: '',
+    lastNativeFolderMergeSourceExtensionId: '',
+    lastNativeFolderMergeReadAt: 0,
+    lastNativeFolderMergeReadSource: '',
+    lastNativeFolderMergeReadError: '',
     lastRefreshOwners: [],
     lastStudioBroadcastAt: 0,
     lastStudioBroadcastReason: '',
@@ -384,6 +391,64 @@
     }
   }
 
+  function asFiniteNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function rememberExternalNativeFolderMergeDiagnostic(raw, reason = '') {
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    state.lastNativeFolderMergeReadAt = Date.now();
+    state.lastNativeFolderMergeReadSource = String(reason || 'external-folder-merge-diagnostic');
+    if (!src) {
+      state.lastNativeFolderMergeReadError = 'external-folder-merge-diagnostic-empty';
+      return false;
+    }
+    state.lastNativeFolderMergeAt = asFiniteNumber(src.at || src.ts, Date.now());
+    state.lastNativeFolderMergeStatus = String(src.status || 'external-background-observed');
+    state.lastNativeFolderMergeError = String(src.error || src.diagnosticWriteError || '');
+    state.lastNativeFolderMergeIncomingChecksum = String(src.incomingChecksum || '');
+    state.lastNativeFolderMergeChecksum = String(src.mergedChecksum || src.checksum || '');
+    state.lastNativeFolderMergeIncomingFolderCount = asFiniteNumber(src.incomingFolderCount, 0);
+    state.lastNativeFolderMergeIncomingBindingCount = asFiniteNumber(src.incomingBindingCount, 0);
+    state.lastNativeFolderMergeMergedFolderCount = asFiniteNumber(src.mergedFolderCount || src.afterFolderCount, 0);
+    state.lastNativeFolderMergeMergedBindingCount = asFiniteNumber(src.mergedBindingCount, 0);
+    state.lastNativeFolderMergeDuplicateNameDifferentIdCount = asFiniteNumber(src.duplicateNameDifferentIdCount, 0);
+    state.lastNativeFolderMergeDuplicateNameDifferentIdSample = Array.isArray(src.duplicateNameDifferentIdSample)
+      ? src.duplicateNameDifferentIdSample.slice(0, 8)
+      : [];
+    state.lastNativeFolderMergeCaseArrived = src.caseArrived === true;
+    state.lastNativeFolderMergePath = 'external-background';
+    state.lastNativeFolderMergeDiagnosticKey = String(src.diagnosticKey || EXTERNAL_NATIVE_FOLDER_MERGE_DIAG_KEY);
+    state.lastNativeFolderMergeSourceExtensionId = String(src.sourceExtensionId || src.senderId || '');
+    state.lastNativeFolderMergeReadError = '';
+    step('folder-state.merge.external-diagnostic', state.lastNativeFolderMergeStatus);
+    return true;
+  }
+
+  async function refreshExternalNativeFolderMergeDiagnostic(reason = '') {
+    if (!hasChromeStorageRead()) {
+      state.lastNativeFolderMergeReadAt = Date.now();
+      state.lastNativeFolderMergeReadSource = 'chrome.storage.local-unavailable';
+      state.lastNativeFolderMergeReadError = 'chrome.storage.local read unavailable';
+      return null;
+    }
+    try {
+      const raw = await chromeStorageGet(EXTERNAL_NATIVE_FOLDER_MERGE_DIAG_KEY);
+      state.lastNativeFolderMergeReadAt = Date.now();
+      state.lastNativeFolderMergeReadSource = raw ? 'chrome.storage.local' : 'chrome.storage.local-empty';
+      if (!raw) return null;
+      rememberExternalNativeFolderMergeDiagnostic(raw, reason || 'refresh-external-folder-merge-diagnostic');
+      return raw;
+    } catch (e) {
+      state.lastNativeFolderMergeReadAt = Date.now();
+      state.lastNativeFolderMergeReadSource = 'error';
+      state.lastNativeFolderMergeReadError = String(e?.message || e || 'external-folder-merge-diagnostic-read-error');
+      err('folder-state.merge.external-diagnostic.read', e);
+      return null;
+    }
+  }
+
   function emitNativeBroadcastUpdated(payload, reason) {
     const detail = {
       key: NATIVE_BROADCAST_KEY,
@@ -459,6 +524,9 @@
     const changedKeys = Object.keys(changes || {});
     state.lastChangeKeys = changedKeys.slice(-24);
     for (const key of changedKeys) {
+      if (key === EXTERNAL_NATIVE_FOLDER_MERGE_DIAG_KEY) {
+        rememberExternalNativeFolderMergeDiagnostic(changes[key]?.newValue || null, 'storage.onChanged');
+      }
       if (isWatchedKey(key)) hits.push(key);
       if (key === BROADCAST_KEY) {
         // chrome.storage.onChanged fires in the writing context too, so
@@ -623,11 +691,16 @@
     getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
     refreshNativeBroadcast,
     refreshNativeFolderState(reason) {
-      return refreshNativeBroadcast(reason || 'manual-folder-state-refresh');
+      const why = reason || 'manual-folder-state-refresh';
+      try { refreshExternalNativeFolderMergeDiagnostic(why).catch(() => {}); } catch {}
+      return refreshNativeBroadcast(why);
     },
     diagnose() {
       if (!state.lastNativeBroadcastAt || (!state.lastNativeFolderMergeAt && !state.lastNativeBroadcastFolderCount)) {
         try { refreshNativeBroadcast('diagnose').catch(() => {}); } catch {}
+      }
+      if (!state.lastNativeFolderMergeAt) {
+        try { refreshExternalNativeFolderMergeDiagnostic('diagnose').catch(() => {}); } catch {}
       }
       const pb = getPlatformBroadcast();
       const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
@@ -669,6 +742,8 @@
           },
           nativeFolderStateMerge: {
             key: FOLDER_STATE_DATA_KEY,
+            diagnosticKey: state.lastNativeFolderMergeDiagnosticKey || EXTERNAL_NATIVE_FOLDER_MERGE_DIAG_KEY,
+            path: state.lastNativeFolderMergePath || (state.lastNativeFolderMergeAt ? 'same-extension-broadcast' : ''),
             at: state.lastNativeFolderMergeAt,
             status: state.lastNativeFolderMergeStatus,
             error: state.lastNativeFolderMergeError,
@@ -681,6 +756,10 @@
             duplicateNameDifferentIdCount: state.lastNativeFolderMergeDuplicateNameDifferentIdCount,
             duplicateNameDifferentIdSample: state.lastNativeFolderMergeDuplicateNameDifferentIdSample.slice(),
             caseArrived: !!state.lastNativeFolderMergeCaseArrived,
+            sourceExtensionId: state.lastNativeFolderMergeSourceExtensionId,
+            readAt: state.lastNativeFolderMergeReadAt,
+            readSource: state.lastNativeFolderMergeReadSource,
+            readError: state.lastNativeFolderMergeReadError,
           },
           studioBroadcast: {
             at: state.lastStudioBroadcastAt,
@@ -701,6 +780,7 @@
   function bootBindings() {
     bindTransport();
     refreshNativeBroadcast('boot').catch(() => {});
+    refreshExternalNativeFolderMergeDiagnostic('boot').catch(() => {});
     bindWorkspaceEvents() || W.setTimeout(bindWorkspaceEvents, 350);
   }
 

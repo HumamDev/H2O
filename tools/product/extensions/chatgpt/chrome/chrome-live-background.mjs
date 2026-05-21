@@ -113,6 +113,7 @@ const MSG_ARCHIVE = "h2o-ext-archive:v1";
 const MSG_ARCHIVE_PORT = "h2o-ext-archive:v1:port";
 const MSG_FOLDERS = "h2o-ext-folders:v1";
 const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
+const NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY = "h2o:library:native-folder-state:external-merge:diagnostic:v1";
 const MSG_CONTROL_HUB_OPEN = "h2o-ext-live:control-hub-open";
 const MSG_IDENTITY = "h2o-ext-identity:v1";
 const MSG_IDENTITY_FIRST_RUN_PROMPT = "h2o-ext-identity-first-run:v1";
@@ -3948,6 +3949,44 @@ function stableJson(value) {
   try { return JSON.stringify(value); } catch { return ""; }
 }
 
+function checksumFolderState(value) {
+  const text = stableJson(value || null);
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+  return "h2o-folder-" + ((hash >>> 0).toString(16));
+}
+
+function countFolderStateBindings(itemsRaw) {
+  const items = normalizeFolderStateItems(itemsRaw);
+  return Object.values(items).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
+}
+
+function findFolderDuplicateNameDifferentIdCandidates(existingFoldersRaw, incomingFoldersRaw) {
+  const byName = new Map();
+  const add = (folder, source) => {
+    const id = String(folder && folder.id || "").trim();
+    const name = String(folder && (folder.name || folder.title || folder.label) || "").trim().toLowerCase();
+    if (!id || !name) return;
+    const row = byName.get(name) || {
+      name: String(folder.name || folder.title || folder.label || name).trim(),
+      ids: new Set(),
+      sources: new Set(),
+    };
+    row.ids.add(id);
+    row.sources.add(String(source || ""));
+    byName.set(name, row);
+  };
+  normalizeFolderList(existingFoldersRaw).forEach((folder) => add(folder, "existing"));
+  normalizeFolderList(incomingFoldersRaw).forEach((folder) => add(folder, "incoming"));
+  return Array.from(byName.values())
+    .filter((row) => row.ids.size > 1)
+    .map((row) => ({
+      name: String(row.name || ""),
+      ids: Array.from(row.ids).slice(0, 8),
+      sources: Array.from(row.sources).filter(Boolean),
+    }));
+}
+
 async function writeChromeStorageLocalMerge(entries, modeRaw) {
   const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
   const obj = entries && typeof entries === "object" && !Array.isArray(entries) ? entries : {};
@@ -4026,19 +4065,64 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
   const after = await storageGet([FOLDER_STATE_DATA_KEY]);
   const afterState = normalizeFolderStateData(after && after[FOLDER_STATE_DATA_KEY]);
   const incomingState = normalizeFolderStateData(folderState);
+  const status = result.written > 0 ? "merged" : "unchanged";
+  const duplicateNameDifferentIdSample = findFolderDuplicateNameDifferentIdCandidates(beforeState.folders, incomingState.folders).slice(0, 8);
+  const incomingChecksum = String(folderState.checksum || checksumFolderState({ folders: incomingState.folders, items: incomingState.items }));
+  const mergedChecksum = checksumFolderState({ folders: afterState.folders, items: afterState.items });
+  const diagnostic = {
+    key: FOLDER_STATE_DATA_KEY,
+    diagnosticKey: NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY,
+    at: Date.now(),
+    status,
+    error: "",
+    senderId,
+    source: String(msg.source || "native-content-bridge"),
+    sourceExtensionId: String(msg.sourceExtensionId || senderId),
+    sourceLabel: String(msg.sourceLabel || ""),
+    incomingChecksum,
+    beforeChecksum: checksumFolderState({ folders: beforeState.folders, items: beforeState.items }),
+    mergedChecksum,
+    incomingFolderCount: incomingState.folders.length,
+    incomingBindingCount: countFolderStateBindings(incomingState.items),
+    beforeFolderCount: beforeState.folders.length,
+    beforeBindingCount: countFolderStateBindings(beforeState.items),
+    mergedFolderCount: afterState.folders.length,
+    mergedBindingCount: countFolderStateBindings(afterState.items),
+    written: result.written,
+    skipped: result.skipped,
+    duplicateNameDifferentIdCount: duplicateNameDifferentIdSample.length,
+    duplicateNameDifferentIdSample,
+    caseArrived: incomingState.folders.some((folder) => String(folder && folder.name || "").trim().toLowerCase() === "case"),
+    emptyFolderCount: afterState.folders.filter((folder) => {
+      const id = String(folder && folder.id || "").trim();
+      return id && !(Array.isArray(afterState.items[id]) && afterState.items[id].length);
+    }).length,
+  };
+  try {
+    await storageSet({ [NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY]: diagnostic });
+  } catch (e) {
+    diagnostic.diagnosticWriteError = String(e && (e.message || e) || "diagnostic-write-failed");
+  }
   return {
     ok: true,
-    status: result.written > 0 ? "merged" : "unchanged",
+    status,
     senderId,
     key: FOLDER_STATE_DATA_KEY,
     incomingFolderCount: incomingState.folders.length,
-    incomingBindingCount: Object.values(incomingState.items || {}).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0),
+    incomingBindingCount: diagnostic.incomingBindingCount,
     beforeFolderCount: beforeState.folders.length,
     afterFolderCount: afterState.folders.length,
+    mergedFolderCount: diagnostic.mergedFolderCount,
+    mergedBindingCount: diagnostic.mergedBindingCount,
+    incomingChecksum,
+    mergedChecksum,
+    caseArrived: diagnostic.caseArrived,
     written: result.written,
     skipped: result.skipped,
     source: String(msg.source || "native-content-bridge"),
     sourceExtensionId: String(msg.sourceExtensionId || senderId),
+    diagnosticKey: NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY,
+    diagnosticWriteError: diagnostic.diagnosticWriteError || "",
   };
 }
 
