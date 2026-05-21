@@ -326,6 +326,43 @@ F5C because tombstones are not exported or imported yet.
 `updated_at`; it never deletes the tombstone row. `diagnose()` is content-free
 and redacts peer IDs by default.
 
+## F5D Local Folder-Binding Unbind Routing
+
+F5D is the first local delete-routing step. It routes only successful explicit
+Desktop folder-binding unbinds through the tombstone store:
+
+```js
+H2O.Studio.store.folders.unbindChat(folderId, chatId)
+```
+
+F5D does not route folder deletion cascades, `bindChat()` replacement,
+tags, labels, categories, chats, snapshots, archive deletes, UI delete flows,
+export, import, remote apply, conflict queues, purge, or bidirectional sync.
+
+When `unbindChat(folderId, chatId)` deletes one existing `folder_bindings` row,
+it attempts a best-effort tombstone:
+
+```js
+{
+  recordKind: 'folderBinding',
+  recordId: `folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}`,
+  deleteReason: 'user-unbind',
+  meta: {
+    chatId,
+    folderId,
+    recordIdFormat: 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}',
+    source: 'store.folders.unbindChat'
+  }
+}
+```
+
+The SQL delete remains the source of truth. If no binding row is deleted,
+`unbindChat()` returns `false` as before and no tombstone is created. If the
+SQL delete succeeds but the tombstone write fails because of a duplicate active
+tombstone, unavailable tombstone store, missing identity, or another local
+storage error, `unbindChat()` still returns `true` and records a warning in the
+folders store diagnostics.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

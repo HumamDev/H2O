@@ -62,6 +62,8 @@
   var SCHEMA_VERSION = 1;
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
+  var F5D_FOLDER_BINDING_TOMBSTONES = true;
+  var F5D_FOLDER_BINDING_RECORD_ID_FORMAT = 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}';
 
   /* ── State ────────────────────────────────────────────────────────── */
   var state = {
@@ -219,6 +221,41 @@
       return v ? v.trim() || null : null;
     }
     return null;
+  }
+
+  function buildFolderBindingTombstone(folderId, chatId) {
+    var fid = String(folderId || '').trim();
+    var cid = String(chatId || '').trim();
+    return {
+      recordKind: 'folderBinding',
+      recordId: 'folderBinding:' + encodeURIComponent(cid) + ':' + encodeURIComponent(fid),
+      deleteReason: 'user-unbind',
+      meta: {
+        chatId: cid,
+        folderId: fid,
+        recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+        source: 'store.folders.unbindChat',
+      },
+    };
+  }
+
+  function writeFolderBindingTombstoneSafely(folderId, chatId) {
+    if (!F5D_FOLDER_BINDING_TOMBSTONES) return Promise.resolve(null);
+    var tombstones = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstones;
+    if (!tombstones || typeof tombstones.createTombstone !== 'function') {
+      recordWarning('F5D folderBinding tombstone skipped: tombstone store unavailable');
+      return Promise.resolve(null);
+    }
+    try {
+      return tombstones.createTombstone(buildFolderBindingTombstone(folderId, chatId))
+        .catch(function (e) {
+          recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
+          return null;
+        });
+    } catch (e) {
+      recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
+      return Promise.resolve(null);
+    }
   }
 
   function generateFolderId() {
@@ -417,8 +454,9 @@
       if (ok) {
         recordWrite('unbindChat');
         notifySubscribers({ source: 'local', op: 'unbindChat', folderId: folderId, chatId: chatId });
+        return writeFolderBindingTombstoneSafely(folderId, chatId).then(function () { return true; });
       }
-      return ok;
+      return false;
     }).catch(function (e) { recordError('unbindChat', e); return false; });
   }
 
