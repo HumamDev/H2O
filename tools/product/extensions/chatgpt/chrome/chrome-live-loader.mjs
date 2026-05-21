@@ -3943,6 +3943,12 @@ export function makeChromeLiveLoaderJs({
     const NATIVE_KEY = "h2o:library:cross-surface:broadcast:native:v1";
     const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
     const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
+    /* Phase K-2.6 — cross-extension linked-records bridge. Parallel to the
+     * folder-state bridge above. Forwards value.linkedRecords from prod
+     * Cockpit Pro's NATIVE_KEY write to the Studio Launcher extension, so
+     * its own chrome.storage.local namespace can carry the same linked-only
+     * records the prod broadcast already builds via snapshotLinkedRecords. */
+    const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
     const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
     const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY]);
     const DIAG = (typeof TAG === "string" ? TAG : "[H2O cs-bridge]");
@@ -3988,6 +3994,7 @@ export function makeChromeLiveLoaderJs({
     function handleWrite(srcLabel, key, value) {
       if (!WATCHED.has(String(key || ""))) return;
       forwardNativeFolderStateToStudioLauncher(srcLabel, key, value);
+      forwardNativeLinkedRecordsToStudioLauncher(srcLabel, key, value);
       if (!hasStorage) {
         dlog("write.skip", srcLabel + " no chrome.storage");
         return;
@@ -4035,6 +4042,50 @@ export function makeChromeLiveLoaderJs({
         });
       } catch (e) {
         dlog("folderState.external.throw", String(e && (e.message || e)));
+      }
+    }
+
+    /* Phase K-2.6 — parallel of forwardNativeFolderStateToStudioLauncher
+     * for linkedRecords. Extracts value.linkedRecords (array, including
+     * empty so removals propagate) from the NATIVE_KEY write and
+     * sendMessage's it cross-extension to the Studio Launcher. The
+     * receiver (chrome-live-background.mjs) merges the array into
+     * Studio Launcher's own NATIVE_BROADCAST_KEY so S0F1c can read it
+     * via its existing readNativeChatRegistryRecords() path. Empty
+     * arrays are forwarded (D2) so a chat being unlinked on native
+     * also clears Studio's linked view on the next broadcast. */
+    function forwardNativeLinkedRecordsToStudioLauncher(srcLabel, key, value) {
+      if (String(key || "") !== NATIVE_KEY) return;
+      const linkedRecords = value && typeof value === "object" && Array.isArray(value.linkedRecords)
+        ? value.linkedRecords
+        : null;
+      if (linkedRecords === null) return;
+      if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") return;
+      const ownId = String(chrome.runtime.id || "");
+      if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) return;
+      try {
+        chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+          type: MSG_NATIVE_LINKED_RECORDS,
+          key: NATIVE_KEY,
+          source: "native-content-bridge",
+          sourceExtensionId: ownId,
+          sourceLabel: String(srcLabel || ""),
+          ts: Date.now(),
+          linkedRecords,
+        }, (resp) => {
+          const le = chrome.runtime && chrome.runtime.lastError;
+          if (le) {
+            dlog("linkedRecords.external.skip", String(le.message || le));
+            return;
+          }
+          if (!resp || resp.ok === false) {
+            dlog("linkedRecords.external.err", String((resp && resp.error) || "no-response"));
+            return;
+          }
+          dlog("linkedRecords.external.ok", String(resp.status || "ok"));
+        });
+      } catch (e) {
+        dlog("linkedRecords.external.throw", String(e && (e.message || e)));
       }
     }
 

@@ -113,6 +113,13 @@ const MSG_ARCHIVE = "h2o-ext-archive:v1";
 const MSG_ARCHIVE_PORT = "h2o-ext-archive:v1:port";
 const MSG_FOLDERS = "h2o-ext-folders:v1";
 const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
+/* Phase K-2.6 — cross-extension linked-records bridge. Parallel of the
+ * folder-state cross-extension message above. The receiver merges
+ * msg.linkedRecords into Studio Launcher's NATIVE_BROADCAST_KEY so
+ * S0F1c's existing readNativeChatRegistryRecords() can pick up
+ * linked-only records propagated from prod Cockpit Pro's native broadcast. */
+const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+const NATIVE_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:native:v1";
 const NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY = "h2o:library:native-folder-state:external-merge:diagnostic:v1";
 const MSG_CONTROL_HUB_OPEN = "h2o-ext-live:control-hub-open";
 const MSG_IDENTITY = "h2o-ext-identity:v1";
@@ -4124,6 +4131,69 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
     diagnosticKey: NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY,
     diagnosticWriteError: diagnostic.diagnosticWriteError || "",
   };
+}
+
+/* Phase K-2.6 — receiver for cross-extension linked-records messages
+ * forwarded by the prod Cockpit Pro content-script (chrome-live-loader's
+ * forwardNativeLinkedRecordsToStudioLauncher). Merges msg.linkedRecords
+ * into Studio Launcher's own NATIVE_BROADCAST_KEY value (chrome.storage
+ * is per-extension; the prod-side key is never directly readable here).
+ * S0F1h's chrome.storage.onChanged listener then fires, dispatches
+ * evt:h2o:library:cross-surface-sync, and K-2.5's S0F1c listener
+ * re-runs refreshFromArchive — which pulls the merged linkedRecords
+ * via readNativeChatRegistryRecords() and populates the LibraryIndex.
+ *
+ * Sender allowlist reuses NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS so
+ * only the prod Cockpit Pro extension can write into the Studio
+ * Launcher's namespace.
+ *
+ * Merge strategy: spread { ...prev } then overlay linkedRecords / ts /
+ * surface / source fields. This preserves the folder-state subtree if
+ * a future forward writes one (today folder-state lives at a separate
+ * FOLDER_STATE_DATA_KEY, but the merge is forward-compat). Empty
+ * arrays are accepted and propagated (D2) so unlink removals surface
+ * in Studio. No diagnostic key written this phase (D3). */
+async function handleExternalNativeLinkedRecordsMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const linkedRecords = msg && Array.isArray(msg.linkedRecords) ? msg.linkedRecords : null;
+  if (linkedRecords === null) {
+    return { ok: false, status: "invalid-linked-records", senderId };
+  }
+  const source = String((msg && msg.source) || "native-content-bridge");
+  const sourceExtensionId = String((msg && msg.sourceExtensionId) || senderId);
+  try {
+    const before = await storageGet([NATIVE_BROADCAST_KEY]);
+    const prev = (before && before[NATIVE_BROADCAST_KEY] && typeof before[NATIVE_BROADCAST_KEY] === "object" && !Array.isArray(before[NATIVE_BROADCAST_KEY]))
+      ? before[NATIVE_BROADCAST_KEY]
+      : {};
+    const next = {
+      ...prev,
+      linkedRecords,
+      ts: Date.now(),
+      surface: "native",
+      source,
+      sourceExtensionId,
+    };
+    await storageSet({ [NATIVE_BROADCAST_KEY]: next });
+    return {
+      ok: true,
+      status: linkedRecords.length ? "merged" : "merged-empty",
+      senderId,
+      key: NATIVE_BROADCAST_KEY,
+      linkedRecordsCount: linkedRecords.length,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "merge-failed",
+      senderId,
+      error: String((e && (e.stack || e.message || e)) || "merge-failed"),
+      linkedRecordsCount: linkedRecords.length,
+    };
+  }
 }
 
 function validateFullBundleShape(bundleRaw) {
@@ -11322,6 +11392,19 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         sendResponse(await handleExternalNativeFolderStateMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
+
+  /* Phase K-2.6 — parallel dispatch arm for cross-extension linked-records
+   * messages. Same async sendResponse pattern as the folder-state arm. */
+  if (msg.type === MSG_NATIVE_LINKED_RECORDS) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalNativeLinkedRecordsMessage(msg, _sender));
       } catch (e) {
         sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
       }
