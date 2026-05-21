@@ -460,10 +460,66 @@
     };
   }
 
+  /* ── Folder-only fast-path detector ────────────────────────────────
+   *
+   * Returns true when the parsed bundle clearly carries ONLY folder state
+   * (no chats, no snapshots, no other entity sections). The folder-only
+   * fast-path then routes through H2O.Studio.ingestion.importFolderStateOnly
+   * (Phase A entry point), which skips the dryRunImportBundle full-bundle
+   * validator (which would otherwise reject a folder-state payload because
+   * it requires chatArchive.schema === 'h2o.chatArchive.bundle.v1').
+   *
+   * Three shapes are recognized — these mirror the input shapes
+   * normalizeFolderStatePayload() inside import-bundle.tauri.js accepts:
+   *
+   *   (a) Raw folder-state:
+   *         { folders: [...], items: { folderId: chatId[] }, ... }
+   *       Recognized when `bundle.folders` is an array OR `bundle.items`
+   *       is a plain object AND no `chatArchive.chats` are present.
+   *
+   *   (b) chromeStorageLocal wrapper containing only the folder-state key:
+   *         { chromeStorageLocal: { 'h2o:prm:cgx:fldrs:state:data:v1': {...} } }
+   *       Recognized when the wrapper carries the folder-state key AND
+   *       no `chatArchive.chats` are present.
+   *
+   * Full bundles (schema=h2o.studio.fullBundle.v2 with non-empty
+   * chatArchive.chats[]) return false even if they also carry folder
+   * state — those continue to use the existing importBundle path so
+   * chats / snapshots / catalogs are all processed end-to-end.
+   *
+   * Safety: this is a STRICT detector. When in doubt, return false so
+   * the existing importBundle path runs. */
+  var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
+  function isFolderOnlyPayload(bundle) {
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) return false;
+    var chats = bundle.chatArchive && bundle.chatArchive.chats;
+    if (Array.isArray(chats) && chats.length > 0) return false;
+    /* Shape (a): raw folder-state object. */
+    if (Array.isArray(bundle.folders)) return true;
+    if (bundle.items && typeof bundle.items === 'object' && !Array.isArray(bundle.items)) return true;
+    /* Shape (b): chromeStorageLocal wrapper with folder-state key. */
+    var csl = bundle.chromeStorageLocal;
+    if (csl && typeof csl === 'object' && !Array.isArray(csl)) {
+      var folderState = csl[FOLDER_STATE_KEY_LOCAL];
+      if (folderState && typeof folderState === 'object'
+          && (Array.isArray(folderState.folders) || (folderState.items && typeof folderState.items === 'object'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /* ── importFromFile ───────────────────────────────────────────────── */
   /* Read + fingerprint + dedupe + dry-run + importBundle('merge') in one
    * call. Returns { ok, status: 'imported' | 'already-imported' | error,
-   * result, ledgerEntry, ... }. Mode is always 'manual' for M2d-1a. */
+   * result, ledgerEntry, ... }. Mode is always 'manual' for M2d-1a.
+   *
+   * Folder-only payloads (detected via isFolderOnlyPayload) take a
+   * fast-path through H2O.Studio.ingestion.importFolderStateOnly and
+   * skip the full-bundle dry-run (which would reject the missing
+   * chatArchive). Full bundles continue to dry-run + importBundle. The
+   * result + ledger entry carry a `routedVia` field so diagnostics can
+   * tell which path ran. */
   async function importFromFile(filePathArg) {
     var filePath = String(filePathArg || '').trim();
     if (!filePath) return { ok: false, error: 'path-required' };
@@ -496,21 +552,35 @@
       return { ok: false, error: 'ingestion-unavailable' };
     }
 
+    /* Folder-only fast-path: when the payload carries only folder state
+     * (no chats), route through importFolderStateOnly. This skips the
+     * full-bundle dry-run validator (which requires a chatArchive
+     * section) and writes folders + folder_bindings + the fallback KV
+     * mirror via the existing private importFolders + importFolderBindings
+     * code paths. The folder-only entry point is Phase A's narrow API. */
+    var folderOnly = isFolderOnlyPayload(bundle)
+      && typeof ingestion.importFolderStateOnly === 'function';
+    var routedVia = folderOnly ? 'importFolderStateOnly' : 'importBundle';
+
     /* Defensive dry-run before the actual write — gives early rejection
      * for parse errors that JSON.parse didn't catch and surfaces orphan
-     * counts before write commits. */
-    if (typeof ingestion.dryRunImportBundle === 'function') {
+     * counts before write commits. Skipped on the folder-only fast-path
+     * because dryRunImportBundle requires a chatArchive section. */
+    if (!folderOnly && typeof ingestion.dryRunImportBundle === 'function') {
       var dry;
       try { dry = await ingestion.dryRunImportBundle(bundle); }
-      catch (e) { return { ok: false, error: 'dry-run-failed', detail: String((e && e.message) || e) }; }
+      catch (e) { return { ok: false, error: 'dry-run-failed', detail: String((e && e.message) || e), routedVia: routedVia }; }
       if (!dry || dry.ok === false) {
-        return { ok: false, error: 'dry-run-rejected', dryRunReport: dry };
+        return { ok: false, error: 'dry-run-rejected', dryRunReport: dry, routedVia: routedVia };
       }
     }
 
     var result;
-    try { result = await ingestion.importBundle(bundle, 'merge'); }
-    catch (e) { return { ok: false, error: 'import-failed', detail: String((e && e.message) || e) }; }
+    try {
+      result = folderOnly
+        ? await ingestion.importFolderStateOnly(bundle)
+        : await ingestion.importBundle(bundle, 'merge');
+    } catch (e) { return { ok: false, error: 'import-failed', detail: String((e && e.message) || e), routedVia: routedVia }; }
 
     state.lastImportAt = new Date().toISOString();
 
@@ -522,6 +592,7 @@
       detectedAt: state.lastImportAt,
       importedAt: state.lastImportAt,
       mode: 'manual',
+      routedVia: routedVia,
       bundleExportedAt: (bundle && typeof bundle.exportedAt === 'string') ? bundle.exportedAt : '',
       resultSummary: result ? {
         ok: !!result.ok,
@@ -536,6 +607,7 @@
       ok: !!(result && result.ok !== false),
       status: 'imported',
       fingerprint: fingerprint,
+      routedVia: routedVia,
       result: result,
       ledgerEntry: entry,
     };
@@ -815,6 +887,7 @@
       filenamePatterns: FILENAME_PATTERNS.map(function (r) { return r.toString(); }),
       ignoreSuffixes: IGNORE_SUFFIXES.slice(),
       ingestionAvailable: !!(ingestion && typeof ingestion.importBundle === 'function'),
+      folderOnlyApiAvailable: !!(ingestion && typeof ingestion.importFolderStateOnly === 'function'),
       state: {
         lastScanAt: state.lastScanAt,
         lastImportAt: state.lastImportAt,
