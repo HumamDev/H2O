@@ -2,7 +2,7 @@
 
 Phase: Folders-P2
 
-Status: report template with screenshot-derived preliminary evidence
+Status: filled with Folders-P1 runtime probe results
 
 Related inventory runbook: `docs/architecture/STUDIO_FOLDER_PARITY_INVENTORY_RUNBOOK.md`
 
@@ -37,50 +37,62 @@ Expected canonical folder count: 6.
 
 ## Evidence Summary
 
-This section records screenshot-derived evidence only. It is not a final runtime inventory.
+This section records both screenshot-derived evidence and the collected Folders-P1 runtime probe summaries.
 
-| Surface | Visual evidence | Preliminary reading |
+| Surface | Visual evidence | Runtime probe result | Reading |
+| --- | --- | --- | --- |
+| Native ChatGPT | Folder page shows 6 folders: Study, Case, Dev, Code, Tech, English with counts 4/0/0/1/2/1. | `folderCount: 6`, `bindingCount: 8`, `duplicateGroups: []`, `testFolderCandidates: []`. | Clean canonical catalog confirmed. |
+| Chrome Studio / Studio Launcher | Library header shows about 4 saved, 3 linked, 12 folders, 15 labels, 12 categories, 0 projects. Sidebar includes repeated `Case`, repeated `English`, and test-like folders. | `storedFolderCount: 12`, `storedBindingCount: 8`, `workspaceFolderCount: 12`, duplicate groups `Case` and `English`. | Chrome mirrors native bindings but also carries extra duplicate/test folder rows. |
+| Desktop Studio | Sidebar includes duplicate/test folders plus `F5D Test Folder`, `Study`, `Tech`, and virtual `Unfiled`. | `sqliteFolderCount: 15`, `sqliteBindingCount: 0`, `fallbackFolderCount: 0`, `fallbackBindingCount: 0`, duplicate groups `Case` and `English`. | Desktop has canonical folder rows plus extra/test rows, but native memberships are not present in SQLite `folder_bindings`. |
+
+## Runtime Inventory Inputs
+
+The three Folders-P1 probe outputs have been collected and summarized here:
+
+| Probe | Status | Summary |
 | --- | --- | --- |
-| Native ChatGPT | Folder page shows 6 folders: Study, Case, Dev, Code, Tech, English with counts 4/0/0/1/2/1. | Looks like the clean canonical catalog. |
-| Chrome Studio / Studio Launcher | Library header shows about 4 saved, 3 linked, 12 folders, 15 labels, 12 categories, 0 projects. Sidebar includes repeated `Case`, repeated `English`, and test-like folders such as `Case-RT`, `Empty Test Folder`, `Empty-RT`, `English-RT`. | Derived mirror appears polluted by preserved test/import history. |
-| Desktop Studio | Sidebar includes duplicate/test folders plus `F5D Test Folder`, `Study`, `Tech`, and `Unfiled`. | Desktop SQLite/fallback state appears to contain additional local-only rows. |
+| Native ChatGPT: `window.__folderParityNativeProbe` | Collected | 6 folders, 8 bindings, no duplicates, no test candidates. |
+| Chrome Studio: `window.__folderParityChromeStudioProbe` | Collected | 12 stored/workspace folders, 8 stored bindings, duplicate `Case` and `English`, several extra test folders. |
+| Desktop Studio: `window.__folderParityDesktopProbe` | Collected | 15 SQLite folders, 0 SQLite bindings, no fallback folder-state, duplicate `Case` and `English`, additional F5D test folders. |
 
-## Required Runtime Inventory Inputs
+### Canonical Native Folder IDs
 
-P2 needs the three probe outputs defined in the Folders-P1 runbook:
+| Folder | Native folder ID | Native count |
+| --- | --- | ---: |
+| Study | `f_7050f49d3f341819dba53d547` | 4 |
+| Case | `f_5d9431084707f19dba53d548` | 0 |
+| Dev | `f_0606ea698948f19dba53d548` | 0 |
+| Code | `f_e301f3506938c19dbac0e304` | 1 |
+| Tech | `f_3bf15f43b835d19dbac0fb13` | 2 |
+| English | `f_2bb1037f88b2719dbac10c22` | 1 |
 
-- Native ChatGPT probe output: `window.__folderParityNativeProbe`
-- Chrome Studio probe output: `window.__folderParityChromeStudioProbe`
-- Desktop Studio probe output: `window.__folderParityDesktopProbe`
-
-### Pending Data
-
-The runtime probe outputs are not yet available in this report. Before filling the canonical matrix:
-
-1. Run the Native ChatGPT probe from `STUDIO_FOLDER_PARITY_INVENTORY_RUNBOOK.md`.
-2. Run the Chrome Studio / Studio Launcher probe from that runbook.
-3. Run the Desktop Studio probe from that runbook.
-4. Paste the three complete returned objects into the working notes for P2.
-5. Fill the comparison matrix below from those objects.
-
-## Comparison Table Template
+## Canonical Comparison Matrix
 
 Use one row per normalized folder name and additional rows for orphan binding groups if needed.
 
 | normalizedName | canonical folder name | native folderId | native count | native bindings | Chrome folder IDs | Chrome counts | Chrome bindings | Desktop folder IDs | Desktop counts | Desktop bindings | classification | recommended action | risk level | notes |
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `study` | Study | pending | 4 visual | pending | pending | pending | pending | pending | pending | pending | `preserve-canonical` / pending probe | Preserve native ID; mirror if missing. | Medium until IDs verified | Visual evidence only. |
-| `case` | Case | pending | 0 visual | pending | pending | pending | pending | pending | pending | pending | `same-name-id-conflict` if multiple IDs | Review duplicate IDs; do not merge by name. | High | Duplicate visible in Chrome/Desktop. |
-| `dev` | Dev | pending | 0 visual | pending | pending | pending | pending | pending | pending | pending | `preserve-canonical` / pending probe | Preserve native ID; mirror if missing. | Medium until IDs verified | Visual evidence only. |
-| `code` | Code | pending | 1 visual | pending | pending | pending | pending | pending | pending | pending | `preserve-canonical` / pending probe | Preserve native ID; compare binding format. | Medium until IDs verified | Visual evidence only. |
-| `tech` | Tech | pending | 2 visual | pending | pending | pending | pending | pending | pending | pending | `preserve-canonical` / pending probe | Preserve native ID; mirror if missing. | Medium until IDs verified | Visual evidence only. |
-| `english` | English | pending | 1 visual | pending | pending | pending | pending | pending | pending | pending | `same-name-id-conflict` if multiple IDs | Review duplicate IDs; do not merge by name. | High | Duplicate visible in Chrome/Desktop. |
-| `case-rt` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `test-folder-candidate` | Review native absence and zero bindings before cleanup proposal. | Medium | Candidate only. |
-| `empty test folder` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `test-folder-candidate` | Review native absence and zero bindings before cleanup proposal. | Medium | Candidate only. |
-| `empty-rt` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `test-folder-candidate` | Review native absence and zero bindings before cleanup proposal. | Medium | Candidate only. |
-| `english-rt` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `test-folder-candidate` | Review native absence and zero bindings before cleanup proposal. | Medium | Candidate only. |
-| `f5d test folder` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `test-folder-candidate` | Review native absence and zero bindings before cleanup proposal. | Medium | Visible in Desktop only. |
-| `unfiled` | none | absent visual | 0 visual | pending | pending | pending | pending | pending | pending | pending | `unfiled-review` | Determine whether this is a real synthetic bucket or local UI category. | Medium | Visible in Desktop. |
+| `study` | Study | `f_7050f49d3f341819dba53d547` | 4 | Included in native total of 8. | canonical ID present | Stored mirror count included in Chrome total of 8. | Stored folder-state mirrors native bindings. | canonical ID present | 0 SQLite bindings | 0 | `preserve-canonical` | Preserve native `f_*` ID; later mirror canonical count separately from known-row count. | Low | Canonical row exists in all surfaces; Desktop lacks SQLite bindings. |
+| `case` | Case | `f_5d9431084707f19dba53d548` | 0 | Empty canonical folder. | canonical ID present; duplicate `fld-case` also present | 0 canonical count expected. | No canonical binding expected. | canonical ID present; duplicate `fld-case` also present | 0 SQLite bindings | 0 | `preserve-canonical` plus `same-name-id-conflict` | Preserve native `f_*` ID; review duplicate `fld-case` separately. | High for duplicate cleanup | Duplicate visible in Chrome/Desktop, but canonical row is clean. |
+| `dev` | Dev | `f_0606ea698948f19dba53d548` | 0 | Empty canonical folder. | canonical ID present | 0 canonical count expected. | No canonical binding expected. | canonical ID present | 0 SQLite bindings | 0 | `preserve-canonical` | Preserve native `f_*` ID. | Low | Canonical row exists in all surfaces. |
+| `code` | Code | `f_e301f3506938c19dbac0e304` | 1 | Included in native total of 8. | canonical ID present | Stored mirror count included in Chrome total of 8. | Stored folder-state mirrors native bindings. | canonical ID present | 0 SQLite bindings | 0 | `preserve-canonical` plus `count-mismatch` | Preserve native `f_*` ID; P3 should handle canonical vs SQLite-known count split. | Medium | Desktop saved/indexed rows are not bound to canonical folder in SQLite. |
+| `tech` | Tech | `f_3bf15f43b835d19dbac0fb13` | 2 | Included in native total of 8. | canonical ID present | Stored mirror count included in Chrome total of 8. | Stored folder-state mirrors native bindings. | canonical ID present | 0 SQLite bindings | 0 | `preserve-canonical` plus `count-mismatch` | Preserve native `f_*` ID; P3 should handle canonical vs SQLite-known count split. | Medium | Desktop lacks folder bindings for native memberships. |
+| `english` | English | `f_2bb1037f88b2719dbac10c22` | 1 | Included in native total of 8. | canonical ID present; duplicate `fld-english` also present | Stored mirror count included in Chrome total of 8. | Stored folder-state mirrors native bindings. | canonical ID present; duplicate `fld-english` also present | 0 SQLite bindings | 0 | `preserve-canonical` plus `same-name-id-conflict` | Preserve native `f_*` ID; review duplicate `fld-english` separately. | High for duplicate cleanup | Duplicate visible in Chrome/Desktop. |
+
+## Duplicate And Test Folder Matrix
+
+| folder ID / bucket | display name | Native presence | Chrome presence | Desktop presence | classification | recommended action | risk level | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `fld-case` | Case | absent | present | present | `same-name-id-conflict` | Review duplicate against canonical Case `f_5d9431084707f19dba53d548`; do not merge automatically. | High | Same display name as canonical `Case`. |
+| `fld-english` | English | absent | present | present | `same-name-id-conflict` | Review duplicate against canonical English `f_2bb1037f88b2719dbac10c22`; do not merge automatically. | High | Same display name as canonical `English`. |
+| `fld-rt-case` | Case-RT | absent | present | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Runtime test folder. |
+| `fld-empty-1779324991364` | Empty Test Folder | absent | present | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Test folder with generated ID. |
+| `fld-rt-empty` | Empty-RT | absent | present | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Runtime test folder. |
+| `fld-rt-eng` | English-RT | absent | present | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Runtime test folder. |
+| `f5d-test-folder-001` | F5D Test Folder | absent | absent in provided Chrome summary | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Desktop-only test folder. |
+| `f5d1-test-folder-a` | F5D.1 Test Folder A | absent | absent in provided Chrome summary | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Desktop-only test folder. |
+| `f5d1-test-folder-b` | F5D.1 Test Folder B | absent | absent in provided Chrome summary | present | `test-folder-candidate` | Candidate for later cleanup only if empty/native-absent after review. | Medium | Desktop-only test folder. |
+| `__none__` / virtual bucket | Unfiled | not a native folder row | virtual or UI-derived | visible as virtual bucket with 4 saved chats | `unfiled-review` | Treat as virtual bucket, not a cleanup target, unless a real folder row is later found. | Low | Explains why Desktop saved chats appear separate from folder rows. |
 
 ## Classification Rules
 
@@ -99,33 +111,38 @@ Use these statuses in the filled P2 matrix.
 | `binding-format-mismatch` | Same binding appears with incompatible forms, such as `/c/<id>` vs bare `<id>`, and equivalence must be normalized before comparison. |
 | `unfiled-review` | Folder/bucket is synthetic or local-only and should not be treated as a native user folder without review. |
 
-## Initial Expected Classification
+## Final P2 Classification From Runtime Probes
 
-Based on screenshots only:
+Based on the collected probes:
 
-| Folder/name | Preliminary classification | Reason |
+| Folder/name | Classification | Reason |
 | --- | --- | --- |
-| Study | `preserve-canonical` | Present in native canonical visual evidence. |
-| Case | `preserve-canonical` plus possible `same-name-id-conflict` | Native has one `Case`; Chrome/Desktop show duplicate `Case`. |
-| Dev | `preserve-canonical` | Present in native canonical visual evidence. |
-| Code | `preserve-canonical` | Present in native canonical visual evidence. |
-| Tech | `preserve-canonical` | Present in native canonical visual evidence. |
-| English | `preserve-canonical` plus possible `same-name-id-conflict` | Native has one `English`; Chrome/Desktop show duplicate `English`. |
-| Case-RT | `test-folder-candidate` | Test-like suffix, not visible in native screenshot. |
-| Empty Test Folder | `test-folder-candidate` | Test-like name, not visible in native screenshot. |
-| Empty-RT | `test-folder-candidate` | Test-like suffix, not visible in native screenshot. |
-| English-RT | `test-folder-candidate` | Test-like suffix, not visible in native screenshot. |
-| F5D Test Folder | `test-folder-candidate` | Test-like name, visible in Desktop screenshot only. |
-| Unfiled | `unfiled-review` | Likely synthetic/local bucket; not part of native folder catalog. |
+| Study | `preserve-canonical` | Native ID is present in Chrome and Desktop. |
+| Case | `preserve-canonical` plus `same-name-id-conflict` | Native canonical ID is present; extra `fld-case` is also present. |
+| Dev | `preserve-canonical` | Native ID is present in Chrome and Desktop. |
+| Code | `preserve-canonical` plus `count-mismatch` | Native ID is present; Desktop has no SQLite binding for native membership. |
+| Tech | `preserve-canonical` plus `count-mismatch` | Native ID is present; Desktop has no SQLite binding for native memberships. |
+| English | `preserve-canonical` plus `same-name-id-conflict` | Native canonical ID is present; extra `fld-english` is also present. |
+| Case-RT | `test-folder-candidate` | Native-absent runtime/test folder. |
+| Empty Test Folder | `test-folder-candidate` | Native-absent runtime/test folder. |
+| Empty-RT | `test-folder-candidate` | Native-absent runtime/test folder. |
+| English-RT | `test-folder-candidate` | Native-absent runtime/test folder. |
+| F5D Test Folder | `test-folder-candidate` | Desktop-only native-absent test folder. |
+| F5D.1 Test Folder A | `test-folder-candidate` | Desktop-only native-absent test folder. |
+| F5D.1 Test Folder B | `test-folder-candidate` | Desktop-only native-absent test folder. |
+| Unfiled | `unfiled-review` | Desktop virtual bucket with 4 saved chats; not a real folder row in the probe summary. |
 | Any folder with bindings but absent from native | `extra-local` plus review status | Could contain real local data; do not delete automatically. |
 
 ## Binding And Count Analysis
 
-Likely reasons counts differ:
+Runtime-proven count split:
 
-- Native counts come from native folder-state memberships in `items[folderId]`.
-- Chrome Studio sidebar counts currently may reflect `H2O.LibraryIndex.facets().byFolder`, which counts only known Studio rows.
-- Desktop counts may reflect SQLite-known chats through `folders.listChats(folderId)`.
+- Native binding count is 8.
+- Chrome stored binding count is 8 because Chrome mirrors native folder-state.
+- Desktop SQLite binding count is 0 because Desktop has folder catalog rows but no `folder_bindings` rows for those native memberships.
+- Desktop fallback folder-state is empty: `fallbackFolderCount: 0`, `fallbackBindingCount: 0`.
+- Desktop saved rows show in `Unfiled` because those saved chats are not bound in SQLite to the canonical native folder IDs.
+- Chrome/Desktop visible folder counts can show 0 when they count known saved/indexed rows instead of canonical native memberships.
 - Native bindings may be stored as `/c/<id>` or full ChatGPT hrefs, while Studio/Desktop may use bare chat IDs.
 - Orphan bindings can be preserved in fallback state but skipped by UI counts.
 - Some native folder members may not exist as saved or linked Studio records yet.
@@ -139,7 +156,7 @@ For parity reporting, distinguish:
 | Desktop SQLite count | Number of Desktop `folder_bindings` rows that hydrate to known Desktop chats. |
 | Fallback binding count | Number of bindings stored in the fallback folder-state key. |
 
-Count mismatch is not automatically data loss. It becomes a repair candidate only after binding identities are compared and missing chats are classified.
+Count mismatch is not automatically data loss. In this probe set, Chrome has the canonical binding total in stored folder-state, while Desktop has the canonical catalog rows without SQLite bindings. P3 should explicitly separate canonical membership count from known-in-Studio row count.
 
 ## Canonical Parity Strategy
 
@@ -183,29 +200,38 @@ Recommended handling:
 | Unfiled | Confirm synthetic bucket vs persisted folder row. | Usually preserve as UI bucket, not native folder. |
 | Orphan binding | Confirm target folder absence and chat existence. | Repair only in a later non-destructive plan. |
 
+## Preliminary Cleanup Recommendation
+
+No deletion, merge, or repair is approved in P2.
+
+Future cleanup buckets for a later reviewed phase:
+
+| Bucket | Folder IDs / names | P2 recommendation |
+| --- | --- | --- |
+| Preserve canonical | `f_7050f49d3f341819dba53d547` Study; `f_5d9431084707f19dba53d548` Case; `f_0606ea698948f19dba53d548` Dev; `f_e301f3506938c19dbac0e304` Code; `f_3bf15f43b835d19dbac0fb13` Tech; `f_2bb1037f88b2719dbac10c22` English. | Keep all native `f_*` IDs. |
+| Conflict review | `fld-case`; `fld-english`. | Review same-name/different-ID conflicts before any merge or delete. |
+| Safe deletion candidates if empty/native-absent | `fld-rt-case`; `fld-empty-1779324991364`; `fld-rt-empty`; `fld-rt-eng`; `f5d-test-folder-001`; `f5d1-test-folder-a`; `f5d1-test-folder-b`. | Candidate only; require explicit approval after evidence review. |
+| Virtual bucket | `__none__` / Unfiled. | Do not treat as a real folder row. Preserve UI bucket semantics. |
+
 ## Proposed P3 Input
 
-Folders-P3 should not start until P2 has:
+Folders-P3 can now use this filled P2 report as input. It should design non-destructive normalization around:
 
-- Complete Native ChatGPT probe output.
-- Complete Chrome Studio probe output.
-- Complete Desktop Studio probe output.
-- Filled comparison table.
-- Candidate cleanup list.
-- Same-name conflict groups.
-- Missing mirror list.
-- Extra local-only list.
-- Orphan binding list.
-- Binding format mismatch list.
+- Canonical native snapshot mirror using the six native `f_*` folder IDs.
+- Explicit marking of extra local folders instead of deleting them.
+- Separate canonical membership count from known Studio row count.
+- Cleanup review list for test folders and duplicate IDs.
+- User approval gate before deletion or merge.
+- Desktop plan for native memberships that currently exist in Chrome stored folder-state but not in SQLite `folder_bindings`.
+- Binding format normalization across full href, `/c/<id>`, and bare chat ID.
 
 ## Proposed Next Actions
 
-1. Run the Native ChatGPT probe from the Folders-P1 runbook.
-2. Run the Chrome Studio probe from the Folders-P1 runbook.
-3. Run the Desktop Studio probe from the Folders-P1 runbook.
-4. Paste the three outputs into the P2 working notes.
-5. Build the filled parity matrix.
-6. Only then plan cleanup or normalization.
+1. Start Folders-P3 with a non-destructive normalization plan.
+2. Use native `f_*` IDs as canonical folder identities.
+3. Plan how Chrome and Desktop should display canonical count versus known-row count.
+4. Generate a cleanup review list for duplicate/test folders.
+5. Require explicit user approval before any cleanup or merge.
 
 ## Safety Boundaries
 
@@ -221,4 +247,4 @@ Folders-P3 should not start until P2 has:
 - No source behavior changes.
 - No unrelated dirty files.
 
-P2 remains a reporting phase until runtime inventory data is collected and reviewed.
+P2 remains a reporting phase. Runtime inventory data is collected and summarized here, but no cleanup or repair is authorized by this report.
