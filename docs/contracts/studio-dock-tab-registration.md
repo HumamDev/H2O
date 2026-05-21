@@ -1,6 +1,6 @@
 # Studio Dock Tab Registration Contract
 
-Status: Pending implementation (Phase 1a). This document defines the API; the implementation does not yet exist.
+Status: Implemented as a passive, mountless shell in Phase 1a (`src-surfaces-base/studio/dock/dock-shell.studio.js`). `mount/open/close/setView` are no-op or in-memory only in Phase 1a; persistence lands in Phase 1b; real DOM mounting lands in Phase 2.
 Audience: anyone implementing or porting a Dock Panel tab into Studio.
 Companion docs:
 - `src-surfaces-base/studio/STUDIO_DOCK_PANEL_CONTRACT.md` — ownership, conflict, and surface-policy rules.
