@@ -5100,10 +5100,21 @@ async function refreshSettingsSync(panel){
     const enableBtn = panel.querySelector("#wbSettingsSyncEnableDesktopAuto");
     const disableBtn = panel.querySelector("#wbSettingsSyncDisableDesktopAuto");
     const folderStateBtn = panel.querySelector("#wbSettingsSyncFolderStateImportBtn");
+    /* Phase J — defensive capability gate for the Choose-file button.
+     * The surrounding sub-section is already hidden when STUDIO_isTauri()
+     * is false, but the button can still be reachable if Tauri reports
+     * isTauri=true while the invoke surface is mid-initialization (see
+     * feedback_tauri_webview_boot_race). Probe STUDIO_getTauriInvoke()
+     * as a capability check only — no plugin call, no logging — and
+     * disable the button when invoke is unavailable. The path input and
+     * Import button stay usable so a manually-typed path can still
+     * route through H2O.Studio.sync.importFromFile. */
+    const folderStatePickBtn = panel.querySelector("#wbSettingsSyncFolderStatePickBtn");
     if (exportBtn) exportBtn.disabled = typeof ingestion.exportLatestSyncBundle !== "function";
     if (enableBtn) enableBtn.disabled = !(autoExport && typeof autoExport.enable === "function") || !!autoDiag.enabled;
     if (disableBtn) disableBtn.disabled = !(autoExport && typeof autoExport.disable === "function") || !autoDiag.enabled;
     if (folderStateBtn) folderStateBtn.disabled = !(sync && typeof sync.importFromFile === "function");
+    if (folderStatePickBtn) folderStatePickBtn.disabled = !STUDIO_getTauriInvoke();
     return;
   }
 
