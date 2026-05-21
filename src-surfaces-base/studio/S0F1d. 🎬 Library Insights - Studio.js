@@ -1127,6 +1127,14 @@
     { key: 'explorer',  label: 'Explorer' },
     { key: 'recents',   label: 'Recents' },
     { key: 'saved',     label: 'Saved' },
+    /* Phase K-2 — Linked Chats page-level tab. Sits next to Saved so
+     * the two data-tier siblings (Linked = registered-only, Saved =
+     * captured-snapshot) read as a pair. Routes to #/library/linked,
+     * dispatched into renderExplorer({ forceView: 'linked' }) — the
+     * same code path the existing conditional Linked chip already
+     * drives. The standalone #/linked workbench route (K-1) remains
+     * independent. */
+    { key: 'linked',    label: 'Linked' },
     { key: 'organize',  label: 'Organize' },
   ];
 
@@ -1169,11 +1177,16 @@
   function renderPageHeader(idx) {
     const counts = idx.counts();
     const savedCount   = counts.views?.saved || 0;
+    /* Phase K-2 — Linked chat count exposed alongside Saved in the
+     * Library page header so the new Linked tab has visible parity
+     * with Saved at the stats-line level. Reads from the same
+     * idx.counts().views bucket that Saved already uses. */
+    const linkedCount  = counts.views?.linked || 0;
     const folderCount  = pageData.folders.length;
     const labelCount   = pageData.labels.length;
     const catCount     = pageData.categories.length;
     const projectCount = Object.keys(idx.facets().byProject || {}).length;
-    const statsLine = `${formatNumber(savedCount)} saved chats · ${formatNumber(folderCount)} folders · ${formatNumber(labelCount)} labels · ${formatNumber(catCount)} categories · ${formatNumber(projectCount)} projects`;
+    const statsLine = `${formatNumber(savedCount)} saved · ${formatNumber(linkedCount)} linked · ${formatNumber(folderCount)} folders · ${formatNumber(labelCount)} labels · ${formatNumber(catCount)} categories · ${formatNumber(projectCount)} projects`;
 
     const refreshBtn = el('button', {
       type: 'button',
@@ -1516,7 +1529,12 @@
     else if (view === 'analytics')   bodyContent = renderAnalytics(idx);
     else if (view === 'recents')     bodyContent = renderRecents(idx);
     else if (view === 'organize')    bodyContent = renderOrganize(idx);
-    else if (view === 'saved' || view === 'pinned' || view === 'archive') {
+    else if (view === 'saved' || view === 'pinned' || view === 'archive' || view === 'linked') {
+      /* Phase K-2 — 'linked' joins the saved/pinned/archive branch so
+       * #/library/linked renders the same forceView Explorer view that
+       * the existing Linked chip already drives. hideViewChips is set
+       * by FilterChips when forceView is truthy, so the chip row hides
+       * automatically and the active page tab carries the filter. */
       bodyContent = renderExplorer(idx, { forceView: view, hideInternalSearch: true });
     }
     else if (['folder','category','label','tag'].includes(view) && state.lastRoute?.id) {
