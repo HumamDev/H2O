@@ -4757,6 +4757,21 @@ function renderSettingsRoute(){
         <button id="wbSettingsSyncEnableDesktopAuto" type="button" style="${btnStyle}">Enable Auto Export</button>
         <button id="wbSettingsSyncDisableDesktopAuto" type="button" style="${btnStyle}">Disable Auto Export</button>
       </div>
+      <div id="wbSettingsSyncFolderStateImport" style="display:none;flex-direction:column;gap:8px;padding-top:10px;margin-top:4px;border-top:1px solid rgba(255,255,255,.06)">
+        <div style="font-size:12px;opacity:.7;line-height:1.4">
+          Import a manually captured Chrome/Studio folder-state JSON file. Routes through
+          <code>H2O.Studio.sync.importFromFile()</code>; folder-only payloads take the
+          <code>importFolderStateOnly</code> fast path. Read-only on the source file; no Chrome
+          write-back, no daemon, no bidirectional sync.
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="wbSettingsSyncFolderStatePath" type="text" spellcheck="false" autocomplete="off"
+                 value="/Users/hobayda/H2O Studio Sync/real-folder-state.json"
+                 placeholder="/absolute/path/to/folder-state.json"
+                 style="flex:1;min-width:240px;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+          <button id="wbSettingsSyncFolderStateImportBtn" type="button" style="${btnStyle}">Import folder-state</button>
+        </div>
+      </div>
       <div id="wbSettingsSyncChromeControls" style="display:none;gap:8px;flex-wrap:wrap">
         <button id="wbSettingsSyncConnectFolder" type="button" style="${btnStyle}">Connect Folder</button>
         <button id="wbSettingsSyncDisconnectFolder" type="button" style="${btnStyle}">Disconnect</button>
@@ -4888,6 +4903,47 @@ function settingsSummarizeResult(result){
   if (result.importedSnapshots != null) lines.push(`importedSnapshots: ${result.importedSnapshots}`);
   if (result.skipped != null) lines.push(`skipped: ${result.skipped}`);
   if (result.rowsAfter != null) lines.push(`rowsAfter: ${result.rowsAfter}`);
+  /* Phase E — folder-state import wrapper fields (importFromFile return).
+   * All additive: any non-folder-state caller of this summarizer simply
+   * lacks these fields and the branches are skipped. */
+  if (result.routedVia) lines.push(`routedVia: ${result.routedVia}`);
+  if (result.orphanFolderBindings != null) lines.push(`orphan folder bindings: ${result.orphanFolderBindings}`);
+  if (result.result && typeof result.result === "object") {
+    const inner = result.result;
+    if (inner.written && typeof inner.written === "object") {
+      if (inner.written.folders != null) lines.push(`folders written: ${inner.written.folders}`);
+      if (inner.written.folderBindings != null) lines.push(`folder bindings written: ${inner.written.folderBindings}`);
+    }
+    if (Array.isArray(inner.warnings)) lines.push(`warnings: ${inner.warnings.length}`);
+    if (Array.isArray(inner.errors))   lines.push(`errors: ${inner.errors.length}`);
+    if (inner.fallbackKvUpdated != null) lines.push(`fallbackKvUpdated: ${!!inner.fallbackKvUpdated}`);
+  }
+  const ledgerEntry = result.ledgerEntry;
+  if (ledgerEntry && typeof ledgerEntry === "object") {
+    if (ledgerEntry.filename)   lines.push(`filename: ${ledgerEntry.filename}`);
+    if (ledgerEntry.path)       lines.push(`path: ${ledgerEntry.path}`);
+    if (ledgerEntry.sizeBytes) {
+      const fmt = settingsFormatBytes(ledgerEntry.sizeBytes);
+      lines.push(`size: ${ledgerEntry.sizeBytes}${fmt ? ` (${fmt})` : ""}`);
+    }
+    if (ledgerEntry.importedAt) lines.push(`imported at: ${settingsIsoOrBlank(ledgerEntry.importedAt)}`);
+    if (ledgerEntry.fingerprint) lines.push(`fingerprint: ${String(ledgerEntry.fingerprint).slice(0, 16)}…`);
+  }
+  /* Orphan-binding sample. Attached by the folder-state import handler
+   * from H2O.Studio.sync.diagnose().state.lastImportOrphanBindingSample.
+   * Capped at 3 entries by the caller; sample objects preserve their
+   * original { kind, folderId, chatId? } shape from import-bundle. */
+  if (Array.isArray(result.orphanSample) && result.orphanSample.length > 0) {
+    const totalOrphans = (result.orphanFolderBindings != null) ? result.orphanFolderBindings : result.orphanSample.length;
+    lines.push(`orphan sample (first ${result.orphanSample.length} of ${totalOrphans}):`);
+    for (const o of result.orphanSample) {
+      const folderId = String((o && o.folderId) || "");
+      const chatId   = String((o && o.chatId)   || "");
+      const fShort = folderId ? folderId.slice(0, 18) + (folderId.length > 18 ? "…" : "") : "(none)";
+      const cShort = chatId   ? chatId.slice(0, 18)   + (chatId.length   > 18 ? "…" : "") : "(none)";
+      lines.push(`  - folder=${fShort} chat=${cShort}`);
+    }
+  }
   if (result.error || result.reason) lines.push(`error: ${result.error || result.reason}`);
   return lines.join("\n");
 }
@@ -4900,18 +4956,45 @@ async function refreshSettingsSync(panel){
   const statusEl = panel.querySelector("#wbSettingsSyncStatus");
   const desktopControls = panel.querySelector("#wbSettingsSyncDesktopControls");
   const chromeControls = panel.querySelector("#wbSettingsSyncChromeControls");
+  /* Phase E — Desktop-only folder-state import sub-section. */
+  const folderStateBox = panel.querySelector("#wbSettingsSyncFolderStateImport");
 
   if (desktopControls) desktopControls.style.display = isDesktop ? "flex" : "none";
   if (chromeControls) chromeControls.style.display = isDesktop ? "none" : "flex";
+  if (folderStateBox) folderStateBox.style.display = isDesktop ? "flex" : "none";
 
   if (isDesktop) {
     if (title) title.textContent = "Desktop Sync Export";
     if (summary) summary.textContent = "Write the latest Studio bundle and control the existing opt-in Desktop auto-export.";
     const ingestion = W.H2O?.Studio?.ingestion || {};
-    const autoExport = W.H2O?.Studio?.sync?.autoExport || null;
+    const sync = W.H2O?.Studio?.sync || null;
+    const autoExport = sync && sync.autoExport || null;
     const exportDiag = typeof ingestion.diagnose === "function" ? (ingestion.diagnose() || {}) : {};
     const autoDiag = autoExport && typeof autoExport.diagnose === "function" ? (autoExport.diagnose() || {}) : {};
     const last = autoDiag.lastResult || exportDiag.lastSyncExport || {};
+    /* Phase E — pull the last import's routedVia from the ledger (last
+     * entry is always most recent — append-only with MAX cap), and the
+     * orphan-binding state from sync.diagnose() (Phase D). Both wrapped
+     * defensively so the status grid never crashes the settings refresh. */
+    let lastImportEntry = null;
+    try {
+      if (sync && typeof sync.getLedger === "function") {
+        const ledger = await sync.getLedger();
+        if (ledger && Array.isArray(ledger.entries) && ledger.entries.length > 0) {
+          lastImportEntry = ledger.entries[ledger.entries.length - 1];
+        }
+      }
+    } catch (_) { /* ignore — diagnostic surface, never throw */ }
+    let lastOrphanBindings = null;
+    let lastOrphanBindingsAt = null;
+    try {
+      if (sync && typeof sync.diagnose === "function") {
+        const d = sync.diagnose() || {};
+        const st = (d && d.state) || {};
+        lastOrphanBindings   = st.lastImportOrphanBindings;
+        lastOrphanBindingsAt = st.lastImportOrphanBindingsAt;
+      }
+    } catch (_) { /* ignore */ }
     const rows = [
       ["Runtime", "Desktop/Tauri"],
       ["Manual latest export", typeof ingestion.exportLatestSyncBundle === "function" ? "available" : "unavailable"],
@@ -4921,14 +5004,20 @@ async function refreshSettingsSync(panel){
       ["Last time", settingsIsoOrBlank(autoDiag.lastExportAt || last.exportedAt || "")],
       ["Last path", autoDiag.lastExportPath || last.path || ""],
       ["Last bytes", settingsFormatBytes(autoDiag.lastExportBytes || last.bytes || 0)],
+      /* Phase E — most-recent folder-state import diagnostics. */
+      ["Last import route",   (lastImportEntry && lastImportEntry.routedVia) || ""],
+      ["Last orphan bindings", (lastOrphanBindings != null) ? String(lastOrphanBindings) : ""],
+      ["Last import time",    settingsIsoOrBlank(lastOrphanBindingsAt || (lastImportEntry && lastImportEntry.importedAt) || "")],
     ];
     if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
     const exportBtn = panel.querySelector("#wbSettingsSyncExportLatest");
     const enableBtn = panel.querySelector("#wbSettingsSyncEnableDesktopAuto");
     const disableBtn = panel.querySelector("#wbSettingsSyncDisableDesktopAuto");
+    const folderStateBtn = panel.querySelector("#wbSettingsSyncFolderStateImportBtn");
     if (exportBtn) exportBtn.disabled = typeof ingestion.exportLatestSyncBundle !== "function";
     if (enableBtn) enableBtn.disabled = !(autoExport && typeof autoExport.enable === "function") || !!autoDiag.enabled;
     if (disableBtn) disableBtn.disabled = !(autoExport && typeof autoExport.disable === "function") || !autoDiag.enabled;
+    if (folderStateBtn) folderStateBtn.disabled = !(sync && typeof sync.importFromFile === "function");
     return;
   }
 
@@ -5032,6 +5121,36 @@ function bindSettingsSyncControls(panel){
     const fn = W.H2O?.Studio?.sync?.folder?.disableAutoSync;
     if (typeof fn !== "function") throw new Error("folder.disableAutoSync unavailable");
     return fn();
+  }));
+
+  /* Phase E — manual folder-state JSON import. Routes through the
+   * already-proven H2O.Studio.sync.importFromFile() (Phase B); attaches
+   * the orphan-binding sample from diagnose() (Phase D) to the result
+   * so settingsSummarizeResult renders it inline. No new ingestion API,
+   * no Tauri dialog plugin — the user pastes an absolute path into the
+   * input. Desktop-only; the surrounding sub-section is hidden on MV3. */
+  panel.querySelector("#wbSettingsSyncFolderStateImportBtn")?.addEventListener("click", () => run("Importing folder-state JSON", async () => {
+    const sync = W.H2O?.Studio?.sync;
+    if (!sync || typeof sync.importFromFile !== "function") {
+      throw new Error("H2O.Studio.sync.importFromFile unavailable");
+    }
+    const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
+    const path = String((input && input.value) || "").trim();
+    if (!path) throw new Error("Path required — paste an absolute path to the folder-state JSON file.");
+    const result = await sync.importFromFile(path);
+    /* Read Phase D state so the log can show a small orphan sample
+     * alongside the wrapper summary. Diagnose is sync; never throws. */
+    try {
+      if (result && typeof result === "object" && typeof sync.diagnose === "function") {
+        const d = sync.diagnose() || {};
+        const st = (d && d.state) || {};
+        const sample = Array.isArray(st.lastImportOrphanBindingSample) ? st.lastImportOrphanBindingSample : [];
+        /* Cap at 3 for the inline log; the full sample (up to 5) remains
+         * accessible via H2O.Studio.sync.diagnose() in DevTools. */
+        result.orphanSample = sample.slice(0, 3);
+      }
+    } catch (_) { /* ignore — diagnostic enrichment, never blocks the return */ }
+    return result;
   }));
 }
 
