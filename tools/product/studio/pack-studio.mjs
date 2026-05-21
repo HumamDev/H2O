@@ -96,6 +96,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // devices/<encodeURIComponent(syncPeerId)> after the canonical root
   // latest.json commit succeeds.
   "sync/peer-transport.js",
+  // F4.x: Desktop-only read-only peer discovery diagnostics for devices/*
+  // state/checksum integrity. No imports, writes, polling, manifests, or history.
+  "sync/peer-discovery.js",
   // F1A: pure, synchronous multi-peer diff analyzer. Surface-agnostic.
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
@@ -221,6 +224,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",
+  "sync/peer-discovery.js",
   "sync/multi-peer-diff.js",
   "sync/multi-peer-runner.js",
 
