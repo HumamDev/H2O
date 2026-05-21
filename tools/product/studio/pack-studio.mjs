@@ -27,6 +27,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "platform/platform.tauri.js",
   "platform/selectors.contract.js",
 
+  // Dock Panel shell — passive, mountless tab registry. studio.html references
+  // dock/dock-keys.js and dock/dock-shell.studio.js between platform/ and
+  // store/; without this entry the extension build emits ERR_FILE_NOT_FOUND
+  // for those <script> tags. Contracts: src-surfaces-base/studio/dock/README.md.
+  "dock/dock-keys.js",
+  "dock/dock-shell.studio.js",
+
   // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
   // any feature module. Contracts: src-surfaces-base/studio/store/README.md,
   // STUDIO_STORAGE_CONTRACT.md.
@@ -187,6 +194,10 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "platform/platform.mv3.js",
   "platform/platform.tauri.js",
   "platform/selectors.contract.js",
+
+  // Dock Panel shell — see SOURCE_FILES list above for context.
+  "dock/dock-keys.js",
+  "dock/dock-shell.studio.js",
 
   // Studio Store — see SOURCE_FILES list above for context.
   "store/index.js",
