@@ -157,6 +157,19 @@
         </div>
       </header>
 
+      <!-- ── Studio Ribbon (Phase 1a — passive shell) ─────────────────────
+           OneNote-inspired tabbed action bar for the currently opened chat.
+           Owned by S0Y1a. 🎬 Studio Ribbon - Studio.js; populated only when
+           studio.js calls H2O.Studio.ribbon.setContext({ chatType: ... }).
+           Default state is hidden; no DOM is mounted until a chat reader
+           context is active. -->
+      <section id="studioRibbon"
+               class="wbRibbon"
+               role="region"
+               aria-label="Studio ribbon"
+               data-chat-type=""
+               hidden></section>
+
       <main class="wbMain">
         <section id="viewListPanel" class="wbPanel wbPanel--list">
           <header class="wbPanelHead">
@@ -198,17 +211,55 @@
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./dock/dock-keys.js"></script>
 
-  <!-- ── Studio Dock Shell (Phase 1a) ───────────────────────────────────
+  <!-- ── Studio Ribbon Keys (Phase 1a) ───────────────────────────────────
+       Studio-local constants for the Studio Ribbon (storage keys, event
+       names, tab ids, chat-type constants). Passive: loading this file has
+       no side effects beyond attaching frozen objects to H2O.Studio.*.
+       Loads BEFORE store/prefs.js so future consumers can read constants
+       at install time, and BEFORE ribbon-shell.studio.js which depends on
+       these constants.
+       Contracts: src-surfaces-base/studio/ribbon/README.md. -->
+  <script src="./ribbon/ribbon-keys.js"></script>
+
+  <!-- ── Studio Store: Prefs (Phase 1b) ─────────────────────────────────
+       Studio-local key-value preferences store. Backs the dock shell's
+       open/view persistence and is available as generic KV for future
+       Studio UI prefs. Writes routed through H2O.Studio.platform.storage
+       when a real adapter is bound; in-memory fallback otherwise.
+       Loads BEFORE dock-shell.studio.js so the shell can hydrate
+       open/view at install time. The later store/index.js bootstrap
+       performs an unconditional H2O.Studio.store reassignment; prefs.js
+       installs a property accessor to survive that replacement so the
+       script-tag order in this file does not have to move.
+       Contracts: surfaces/studio/store/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./store/prefs.js"></script>
+
+  <!-- ── Studio Dock Shell (Phase 1a + 1b) ──────────────────────────────
        Publishes H2O.Studio.dock — passive, mountless tab registry plus
-       no-op shell methods (mount/open/close/toggle/setView). No DOM,
-       no storage, no rendering. Phase 1b will wire persistence;
-       Phase 2 will wire the actual mount. Loads AFTER dock-keys.js so
-       future implementations can reference DockKeys/DockEvents, and
-       BEFORE store/ + any feature module.
+       open/close/toggle/setView state methods. As of Phase 1b the open
+       flag and active view id are persisted through
+       H2O.Studio.store.prefs (Studio-local keys h2o:studio:dock:*).
+       mount/unmount remain no-op stubs; no DOM is touched, no tab is
+       painted, no native key is written. Phase 2 will wire the actual
+       mount. Loads AFTER dock-keys.js and store/prefs.js, BEFORE store/
+       feature entities.
        Contracts: docs/contracts/studio-dock-tab-registration.md,
                   surfaces/studio/dock/README.md,
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./dock/dock-shell.studio.js"></script>
+
+  <!-- ── Studio Ribbon Shell (Phase 1a) ─────────────────────────────────
+       Publishes H2O.Studio.ribbon — a passive registry of ribbon tabs,
+       groups, and actions, plus a chat-type context tracker and
+       Studio-local UI state (active tab, collapsed) persisted through
+       H2O.Studio.store.prefs. mount/unmount are no-op stubs; DOM is owned
+       by the S0Y1a surface module. No chat / snapshot / metadata data is
+       mutated. Loads AFTER ribbon-keys.js, store/prefs.js, and the dock
+       shell.
+       Contracts: src-surfaces-base/studio/ribbon/README.md,
+                  src-surfaces-base/studio/STUDIO_DEVELOPMENT_RULES.md. -->
+  <script src="./ribbon/ribbon-shell.studio.js"></script>
 
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
@@ -395,6 +446,15 @@
   <!-- Library Commands plugin: registers Workspace / Index / Sync / Registry /
        Navigation / System command groups on the Command Bar. -->
   <script src="./S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js"></script>
+  <!-- ── S0Y1a Studio Ribbon (Phase 1a — passive shell) ────────────────
+       Surface module that registers the seven default ribbon tabs and
+       their placeholder actions on H2O.Studio.ribbon, then mounts the
+       ribbon DOM into <section id="studioRibbon">. All actions render
+       disabled with title "Coming soon"; no chat / snapshot / metadata
+       mutation occurs. Reacts to context changes pushed from studio.js
+       (renderRoute + renderLinkedReaderPlaceholder).
+       Contracts: src-surfaces-base/studio/ribbon/README.md. -->
+  <script src="./S0Y1a. 🎬 Studio Ribbon - Studio.js"></script>
   <!-- Sidebar entry point: adds Library section to Studio sidebar. -->
   <script src="./S0Z1f. 🎬 Library Sidebar Tab - Studio.js"></script>
   <!-- Sidebar facet sections: populates Labels / Categories / Projects from

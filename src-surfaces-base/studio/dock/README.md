@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B and Phase 1a landed (`dock-keys.js`, `dock-shell.studio.js`). Further modules (`tabs/*`, persistence wiring) land in Phase 1b+.
+Status: Phase 0B, Phase 1a, and Phase 1b landed (`dock-keys.js`, `dock-shell.studio.js`, and `../store/prefs.js`). Further modules (`tabs/*`, real DOM mount, feature stores) land in Phase 2+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -13,7 +13,7 @@ Companion docs:
 
 - **Phase 0B (landed)**: `dock-keys.js` — passive constants module that mirrors native storage-key and event-name strings used by Dock Panel features. Studio-local. No native code touched. Exposes `H2O.Studio.DockKeys`, `H2O.Studio.DockEvents`, and `H2O.Studio.DockKeyFor`.
 - **Phase 1a (landed)**: `dock-shell.studio.js` — defines `H2O.Studio.dock` and its `registerTab` API per the contract above. `mount/unmount/open/close/toggle/setView/getView` are no-op or in-memory-only state mutators; no DOM, no storage. Tabs registered through it are tracked in `H2O.Studio.dock.tabs` but not rendered yet.
-- **Phase 1b**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` start syncing to `H2O.Studio.store.prefs('studio:dock:*')` so they survive reload.
+- **Phase 1b (landed)**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` now persist through `H2O.Studio.store.prefs` (Studio-local keys `h2o:studio:dock:open:v1` and `h2o:studio:dock:view:v1`). The prefs entity itself lives at `../store/prefs.js`. `unregisterTab(id)`, `getState()`, and `selfCheck()` are added to the shell. Still no DOM, no native keys, no feature stores. See "Phase 1b — what landed" below.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -145,3 +145,56 @@ Phase 1a explicitly avoids any side effect beyond updating the in-memory registr
 - `registerTab()` stores the def but never invokes its `render` function.
 
 Phase 2 lands the real `mount()` (DOM container in `studio.html` + tab dispatch). Phase 3 lands the per-tab render wiring.
+
+## Phase 1b — what landed
+
+`store/prefs.js` is a new sibling under `../store/`. It exposes a synchronous read/write KV API backed by `H2O.Studio.platform.storage` (when a real adapter is bound) or by an in-memory `Map` (when only the fallback adapter is present). Studio Dock UI state — open flag and active view id — now persists through this store.
+
+### `H2O.Studio.store.prefs` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1b'`. |
+| `keys` | frozen object | `{ dockOpen: 'h2o:studio:dock:open:v1', dockView: 'h2o:studio:dock:view:v1' }`. |
+| `get(key, fallback)` | function | Returns the cache value or `fallback`. Synchronous. |
+| `set(key, value)` | function | Writes to the cache; schedules a debounced (250 ms) async write to `H2O.Studio.platform.storage`. **Refuses keys that do not start with `h2o:studio:`** — errors are recorded but not thrown. |
+| `remove(key)` | function | Removes from cache; schedules an async delete. Same Studio-prefix guard as `set`. |
+| `getAll(prefix)` | function | Returns a plain object of cache entries whose key starts with `prefix` (or all entries if `prefix` is empty). Cache-only; does not hit storage. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, value, oldValue, at, source }`. Listener errors are caught and recorded. |
+| `isReady()` | function | `true` once boot hydration has completed (or failed). |
+| `selfCheck()` | function | `{ ok, version, hasPlatformStorage, fallback: 'platform' \| 'memory', keyCount, errors[] }`. |
+
+### Dock shell ↔ prefs wiring (Phase 1b)
+
+| Action | Persistence behavior |
+|---|---|
+| `H2O.Studio.dock.open()` / `close()` / `toggle()` | Updates in-memory state, calls `prefs.set('h2o:studio:dock:open:v1', boolean)`. |
+| `H2O.Studio.dock.setView(id)` with registered id | Calls `prefs.set('h2o:studio:dock:view:v1', id)`. Returns `true`. |
+| `H2O.Studio.dock.setView(null)` | Calls `prefs.set('h2o:studio:dock:view:v1', null)`. Returns `true`. |
+| `H2O.Studio.dock.setView('missing')` for an unregistered id | Returns `false`. Does not persist. Does not emit. |
+| `H2O.Studio.dock.unregisterTab(id)` removing the active view's tab | Clears the view and persists `null`. |
+| Boot of `dock-shell.studio.js` | Sync hydrate from cache; subscribe to prefs `ready` event for async hydrate. Hydrated writes are suppressed so prefs is not re-written from itself. A persisted view id that is not yet registered is silently skipped (no ghost view). |
+
+### `H2O.Studio.dock.getState()` / `selfCheck()`
+
+```
+getState() → { open, view, mounted, tabCount, phase, version, persisted }
+selfCheck() → { ok, version, phase,
+                hasDockKeys, hasDockEvents, hasPrefsStore,
+                persisted, tabCount, open, view, mounted, errors }
+```
+
+`persisted` is `true` only when the platform adapter is non-fallback. In Studio MV3 builds today that means `chrome.storage.local`; in node smoke tests it is `false`.
+
+### Load order and clobber defense
+
+`store/prefs.js` must load *before* `dock-shell.studio.js` (so the shell can hydrate at install time). It therefore loads *before* `store/index.js` in `studio.html`. To survive `store/index.js`'s unconditional `H2O.Studio.store = store;` reassignment, prefs.js installs a property accessor on `H2O.Studio` that re-attaches the `prefs` entity whenever `H2O.Studio.store` is reassigned. After `store/index.js` runs, the new store carries `prefs` alongside `__registerEntity` and any other entities register normally.
+
+### What is still NOT in Phase 1b
+
+- No Dock UI / DOM container in `studio.html` or `studio.css`.
+- No `tabs/` subdirectory; no individual tab implementations.
+- No feature stores for highlights / bookmarks / notes / navigator / context / capture (highlights remains the only entity store today, under `../store/highlights.js`).
+- No cross-surface sync. The contract's "UI state never syncs" rule applies — `h2o:studio:dock:*` is Studio-only and is NOT mirrored to native chatgpt.com pages.
+- No writes to native `h2o:prm:cgx:dckpnl:*` keys (prefs.js refuses them).
+- No extension of `fullBundle.v2`.
