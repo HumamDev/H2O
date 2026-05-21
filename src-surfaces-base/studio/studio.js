@@ -921,6 +921,25 @@ function STUDIO_isTauri(){
   } catch { return false; }
 }
 
+/* Phase H — Tauri V2 invoke resolver. Mirrors the same probe used by
+ * platform.tauri.js and sync/folder-sync.tauri.js so studio.js can call
+ * tauri-plugin-dialog directly from the Settings UI without taking a
+ * dependency on the platform adapter (which has no MV3 file-picker
+ * counterpart). Returns a bound invoke(...) or null when not running
+ * inside a Tauri WebView. Probe order matches Tauri V2 → V1 fallback. */
+function STUDIO_getTauriInvoke(){
+  try {
+    const internals = W.__TAURI_INTERNALS__;
+    if (internals && typeof internals.invoke === "function") return internals.invoke.bind(internals);
+  } catch (_) { /* ignore */ }
+  try {
+    const tauri = W.__TAURI__;
+    if (tauri && tauri.core && typeof tauri.core.invoke === "function") return tauri.core.invoke.bind(tauri.core);
+    if (tauri && typeof tauri.invoke === "function") return tauri.invoke.bind(tauri);
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
 // Pure mapper: { snapshot, turns } from store.snapshots.get → canonical
 // snapshot shape produced by S0D3a's canonicalSnapshot. Only includes
 // meta.richTurns when at least one turn has non-empty outerHtml, so HTML-less
@@ -4769,6 +4788,7 @@ function renderSettingsRoute(){
                  value="/Users/hobayda/H2O Studio Sync/real-folder-state.json"
                  placeholder="/absolute/path/to/folder-state.json"
                  style="flex:1;min-width:240px;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+          <button id="wbSettingsSyncFolderStatePickBtn" type="button" style="${btnStyle}" title="Open native file picker to select a folder-state JSON">Choose file…</button>
           <button id="wbSettingsSyncFolderStateImportBtn" type="button" style="${btnStyle}">Import folder-state</button>
         </div>
       </div>
@@ -5123,12 +5143,56 @@ function bindSettingsSyncControls(panel){
     return fn();
   }));
 
+  /* Phase H — native file picker. Calls tauri-plugin-dialog's open
+   * command (capability: dialog:allow-open). Select-only: the picker
+   * returns an absolute path; we write it into the existing path input
+   * and stop. No auto-import — the user still must click Import
+   * folder-state below. Intentionally outside the run() helper because
+   * there is no result to summarize and refreshing the status grid
+   * after a select-only operation is wasted work. Errors and
+   * unexpected-shape responses are written to the existing sync log. */
+  panel.querySelector("#wbSettingsSyncFolderStatePickBtn")?.addEventListener("click", async () => {
+    const invoke = STUDIO_getTauriInvoke();
+    if (!invoke) {
+      settingsSyncLog(panel, "Choose file unavailable: Tauri invoke not present (non-Desktop runtime?).");
+      return;
+    }
+    try {
+      const picked = await invoke("plugin:dialog|open", {
+        options: {
+          multiple: false,
+          directory: false,
+          filters: [{ name: "JSON folder-state", extensions: ["json"] }],
+        },
+      });
+      if (picked == null) {
+        /* User cancelled the OS picker — leave the path input as-is.
+         * Silent; no log noise. */
+        return;
+      }
+      /* Tauri V2 dialog returns string for single-file selection in
+       * current builds; future builds may wrap it as { path, name }.
+       * Probe both shapes. Anything else is logged as unexpected. */
+      const pathStr = (typeof picked === "string") ? picked
+                    : (picked && typeof picked.path === "string") ? picked.path
+                    : "";
+      if (!pathStr) {
+        settingsSyncLog(panel, "Choose file: unexpected picker response shape: " + JSON.stringify(picked).slice(0, 200));
+        return;
+      }
+      const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
+      if (input) input.value = pathStr;
+    } catch (err) {
+      settingsSyncLog(panel, "Choose file failed.\n" + String((err && (err.message || err)) || err));
+    }
+  });
+
   /* Phase E — manual folder-state JSON import. Routes through the
    * already-proven H2O.Studio.sync.importFromFile() (Phase B); attaches
    * the orphan-binding sample from diagnose() (Phase D) to the result
-   * so settingsSummarizeResult renders it inline. No new ingestion API,
-   * no Tauri dialog plugin — the user pastes an absolute path into the
-   * input. Desktop-only; the surrounding sub-section is hidden on MV3. */
+   * so settingsSummarizeResult renders it inline. The Phase H picker
+   * above only writes to the path input; this Import handler runs the
+   * actual import on explicit click. */
   panel.querySelector("#wbSettingsSyncFolderStateImportBtn")?.addEventListener("click", () => run("Importing folder-state JSON", async () => {
     const sync = W.H2O?.Studio?.sync;
     if (!sync || typeof sync.importFromFile !== "function") {
