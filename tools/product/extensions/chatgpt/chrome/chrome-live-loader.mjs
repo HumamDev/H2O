@@ -3941,6 +3941,9 @@ export function makeChromeLiveLoaderJs({
     const EV_EVENT = "h2o-ext-cs:event";
     const STUDIO_KEY = "h2o:library:cross-surface:broadcast:v1";
     const NATIVE_KEY = "h2o:library:cross-surface:broadcast:native:v1";
+    const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
+    const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
+    const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
     const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY]);
     const DIAG = (typeof TAG === "string" ? TAG : "[H2O cs-bridge]");
     const dlog = (...args) => { try { console.info(DIAG, "cs-bridge", ...args); } catch (_) {} };
@@ -3984,6 +3987,7 @@ export function makeChromeLiveLoaderJs({
 
     function handleWrite(srcLabel, key, value) {
       if (!WATCHED.has(String(key || ""))) return;
+      forwardNativeFolderStateToStudioLauncher(srcLabel, key, value);
       if (!hasStorage) {
         dlog("write.skip", srcLabel + " no chrome.storage");
         return;
@@ -3998,6 +4002,39 @@ export function makeChromeLiveLoaderJs({
         });
       } catch (e) {
         dlog("write.throw", String(e && (e.message || e)));
+      }
+    }
+
+    function forwardNativeFolderStateToStudioLauncher(srcLabel, key, value) {
+      if (String(key || "") !== NATIVE_KEY) return;
+      const folderState = value && typeof value === "object" ? value.folderState : null;
+      if (!folderState || typeof folderState !== "object" || !Array.isArray(folderState.folders)) return;
+      if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") return;
+      const ownId = String(chrome.runtime.id || "");
+      if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) return;
+      try {
+        chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+          type: MSG_NATIVE_FOLDER_STATE,
+          key: FOLDER_STATE_DATA_KEY,
+          source: "native-content-bridge",
+          sourceExtensionId: ownId,
+          sourceLabel: String(srcLabel || ""),
+          ts: Date.now(),
+          folderState,
+        }, (resp) => {
+          const le = chrome.runtime && chrome.runtime.lastError;
+          if (le) {
+            dlog("folderState.external.skip", String(le.message || le));
+            return;
+          }
+          if (!resp || resp.ok === false) {
+            dlog("folderState.external.err", String((resp && resp.error) || "no-response"));
+            return;
+          }
+          dlog("folderState.external.ok", String(resp.status || "ok"));
+        });
+      } catch (e) {
+        dlog("folderState.external.throw", String(e && (e.message || e)));
       }
     }
 

@@ -112,6 +112,7 @@ const MSG_PAGE_SET_LINK = "h2o-ext-live:page-set-link";
 const MSG_ARCHIVE = "h2o-ext-archive:v1";
 const MSG_ARCHIVE_PORT = "h2o-ext-archive:v1:port";
 const MSG_FOLDERS = "h2o-ext-folders:v1";
+const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
 const MSG_CONTROL_HUB_OPEN = "h2o-ext-live:control-hub-open";
 const MSG_IDENTITY = "h2o-ext-identity:v1";
 const MSG_IDENTITY_FIRST_RUN_PROMPT = "h2o-ext-identity-first-run:v1";
@@ -129,6 +130,13 @@ const IDENTITY_PROVIDER_PRIVATE_CONFIG_GLOBAL = "H2O_IDENTITY_PROVIDER_PRIVATE_C
 const IDENTITY_PROVIDER_OPTIONAL_HOST_PATTERN = ${JSON.stringify(IDENTITY_PROVIDER_OPTIONAL_HOST_PATTERN_SAFE)};
 const IDENTITY_PROVIDER_PHASE_NETWORK = ${JSON.stringify(IDENTITY_PROVIDER_PHASE_NETWORK_SAFE)};
 const IDENTITY_PROVIDER_OAUTH_PROVIDER = ${JSON.stringify(IDENTITY_PROVIDER_OAUTH_PROVIDER_SAFE)};
+const NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS = new Set([
+  "bgdapdcjckbiejckpfeinlmcdnijifpg",
+  "bkijejgemjjolmdnkgcimoaniocegkij",
+  "ceenhihlkfdfjdolchjffpeejblnejdb",
+  "ogcjkeaiicglflamhjaaimdhphjlgkbb",
+  "eeebgndgehjalflefaldogahaklnlahi",
+]);
 const CHAT_MATCH = ${JSON.stringify(CHAT_MATCH)};
 // Studio (a.k.a. "archive workbench") is the user-facing surface and lives in
 // chrome-ext-prod ONLY. Flag is true for production builds and false for
@@ -4001,6 +4009,37 @@ async function writeChromeStorageLocalMerge(entries, modeRaw) {
     });
   }
   return { written, skipped };
+}
+
+async function handleExternalNativeFolderStateMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const folderState = msg && msg.folderState && typeof msg.folderState === "object" ? msg.folderState : null;
+  if (!folderState || !Array.isArray(folderState.folders)) {
+    return { ok: false, status: "invalid-folder-state", senderId };
+  }
+  const before = await storageGet([FOLDER_STATE_DATA_KEY]);
+  const beforeState = normalizeFolderStateData(before && before[FOLDER_STATE_DATA_KEY]);
+  const result = await writeChromeStorageLocalMerge({ [FOLDER_STATE_DATA_KEY]: folderState }, "merge");
+  const after = await storageGet([FOLDER_STATE_DATA_KEY]);
+  const afterState = normalizeFolderStateData(after && after[FOLDER_STATE_DATA_KEY]);
+  const incomingState = normalizeFolderStateData(folderState);
+  return {
+    ok: true,
+    status: result.written > 0 ? "merged" : "unchanged",
+    senderId,
+    key: FOLDER_STATE_DATA_KEY,
+    incomingFolderCount: incomingState.folders.length,
+    incomingBindingCount: Object.values(incomingState.items || {}).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0),
+    beforeFolderCount: beforeState.folders.length,
+    afterFolderCount: afterState.folders.length,
+    written: result.written,
+    skipped: result.skipped,
+    source: String(msg.source || "native-content-bridge"),
+    sourceExtensionId: String(msg.sourceExtensionId || senderId),
+  };
 }
 
 function validateFullBundleShape(bundleRaw) {
@@ -11195,6 +11234,16 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === MSG_NATIVE_FOLDER_STATE) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalNativeFolderStateMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
 
   if (msg.type === MSG_IDENTITY_FIRST_RUN_PROMPT) {
     (async () => {

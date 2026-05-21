@@ -49,6 +49,7 @@
     'h2o:prm:cgx:library:interface-meta:v1:', // native decorator meta/heat/pin mirror
   ];
   const STUDIO_LIBRARY_INDEX_CACHE_KEY = 'h2o:prm:cgx:library-index:studio:registry:v1';
+  const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   const IGNORED_SELF_REFRESH_KEYS = new Set([
     STUDIO_LIBRARY_INDEX_CACHE_KEY,
   ]);
@@ -78,10 +79,25 @@
     lastNativeBroadcastLinkedRecordsCount: 0,
     lastNativeBroadcastProjectCatalogCount: 0,
     lastNativeBroadcastProjectCatalogSource: '',
+    lastNativeBroadcastFolderCount: 0,
+    lastNativeBroadcastFolderBindingCount: 0,
+    lastNativeBroadcastFolderSource: '',
     lastNativeBroadcastPayload: null,
     lastNativeBroadcastReadAt: 0,
     lastNativeBroadcastReadSource: '',
     lastNativeBroadcastReadError: '',
+    lastNativeFolderMergeAt: 0,
+    lastNativeFolderMergeStatus: '',
+    lastNativeFolderMergeError: '',
+    lastNativeFolderMergeChecksum: '',
+    lastNativeFolderMergeIncomingChecksum: '',
+    lastNativeFolderMergeIncomingFolderCount: 0,
+    lastNativeFolderMergeIncomingBindingCount: 0,
+    lastNativeFolderMergeMergedFolderCount: 0,
+    lastNativeFolderMergeMergedBindingCount: 0,
+    lastNativeFolderMergeDuplicateNameDifferentIdCount: 0,
+    lastNativeFolderMergeDuplicateNameDifferentIdSample: [],
+    lastNativeFolderMergeCaseArrived: false,
     lastRefreshOwners: [],
     lastStudioBroadcastAt: 0,
     lastStudioBroadcastReason: '',
@@ -125,6 +141,44 @@
     } catch { return false; }
   }
 
+  function chromeStorageGet(key) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.get(key, (items) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          if (runtimeError) { reject(new Error(runtimeError.message || String(runtimeError))); return; }
+          resolve(items ? items[key] : undefined);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function chromeStorageSet(items) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.set(items, () => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          if (runtimeError) { reject(new Error(runtimeError.message || String(runtimeError))); return; }
+          resolve(true);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function stableStringify(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+
+  function stableChecksum(value) {
+    let text = '';
+    try { text = stableStringify(value || null); } catch { text = String(value || ''); }
+    let hash = 5381;
+    for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    return `h2o-folder-${(hash >>> 0).toString(16)}`;
+  }
+
   function isWatchedKey(key) {
     const k = String(key || '');
     if (IGNORED_SELF_REFRESH_KEYS.has(k)) return false;
@@ -134,12 +188,200 @@
   function normalizeNativeBroadcastPayload(value) {
     const raw = value && typeof value === 'object' ? value : null;
     if (!raw) return null;
-    if (raw.projectCatalog || Array.isArray(raw.linkedRecords) || raw.surface === 'native' || Array.isArray(raw.reasons)) return raw;
+    if (raw.projectCatalog || raw.folderState || Array.isArray(raw.linkedRecords) || raw.surface === 'native' || Array.isArray(raw.reasons)) return raw;
     const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : null;
-    if (payload && (payload.projectCatalog || Array.isArray(payload.linkedRecords) || payload.surface === 'native' || Array.isArray(payload.reasons))) return payload;
+    if (payload && (payload.projectCatalog || payload.folderState || Array.isArray(payload.linkedRecords) || payload.surface === 'native' || Array.isArray(payload.reasons))) return payload;
     const nestedValue = raw.value && typeof raw.value === 'object' ? raw.value : null;
-    if (nestedValue && (nestedValue.projectCatalog || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native' || Array.isArray(nestedValue.reasons))) return nestedValue;
+    if (nestedValue && (nestedValue.projectCatalog || nestedValue.folderState || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native' || Array.isArray(nestedValue.reasons))) return nestedValue;
     return raw;
+  }
+
+  function normalizeFolderRow(row, index, fallbackSource = '') {
+    const src = row && typeof row === 'object' ? row : {};
+    const id = String(src.id || src.folderId || '').trim();
+    if (!id) return null;
+    const name = String(src.name || src.title || id).trim() || id;
+    const iconColor = String(src.iconColor || src.color || '').trim();
+    const color = String(src.color || src.iconColor || '').trim();
+    const out = {
+      id,
+      folderId: id,
+      name,
+      title: name,
+      source: String(src.source || fallbackSource || '').trim() || 'folder-state',
+      index: Number.isFinite(Number(src.index)) ? Number(src.index) : index,
+    };
+    if (String(src.kind || '').trim()) out.kind = String(src.kind || '').trim();
+    if (src.projectRef && typeof src.projectRef === 'object') out.projectRef = src.projectRef;
+    if (iconColor) out.iconColor = iconColor;
+    if (color) out.color = color;
+    if (String(src.icon || '').trim()) out.icon = String(src.icon || '').trim();
+    if (String(src.parentId || '').trim()) out.parentId = String(src.parentId || '').trim();
+    if (Object.prototype.hasOwnProperty.call(src, 'sortOrder')) out.sortOrder = src.sortOrder;
+    if (Object.prototype.hasOwnProperty.call(src, 'createdAt')) out.createdAt = src.createdAt;
+    if (Object.prototype.hasOwnProperty.call(src, 'updatedAt')) out.updatedAt = src.updatedAt;
+    return out;
+  }
+
+  function normalizeFolderState(raw, fallbackSource = '') {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const rows = Array.isArray(src.folders) ? src.folders : [];
+    const folders = [];
+    const seen = new Set();
+    rows.forEach((row, index) => {
+      const folder = normalizeFolderRow(row, index, fallbackSource || src.source || '');
+      if (!folder || seen.has(folder.id)) return;
+      seen.add(folder.id);
+      folders.push(folder);
+    });
+    const inputItems = src.items && typeof src.items === 'object' ? src.items : {};
+    const items = {};
+    folders.forEach((folder) => {
+      const values = Array.isArray(inputItems[folder.id]) ? inputItems[folder.id] : [];
+      items[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+    });
+    return { folders, items };
+  }
+
+  function countFolderBindings(items) {
+    if (!items || typeof items !== 'object') return 0;
+    return Object.keys(items).reduce((sum, key) => sum + (Array.isArray(items[key]) ? items[key].length : 0), 0);
+  }
+
+  function mergeFolderRows(existing, incoming) {
+    const out = { ...(existing || {}) };
+    out.id = incoming.id;
+    out.folderId = incoming.id;
+    if (incoming.name) {
+      out.name = incoming.name;
+      out.title = incoming.title || incoming.name;
+    }
+    if (incoming.source) out.source = incoming.source;
+    if (incoming.kind) out.kind = incoming.kind;
+    if (incoming.projectRef) out.projectRef = incoming.projectRef;
+    if (incoming.iconColor) out.iconColor = incoming.iconColor;
+    if (incoming.color) out.color = incoming.color;
+    if (!out.color && incoming.iconColor) out.color = incoming.iconColor;
+    if (!out.iconColor && incoming.color) out.iconColor = incoming.color;
+    if (incoming.icon) out.icon = incoming.icon;
+    if (incoming.parentId) out.parentId = incoming.parentId;
+    if (Object.prototype.hasOwnProperty.call(incoming, 'sortOrder')) out.sortOrder = incoming.sortOrder;
+    if (!Object.prototype.hasOwnProperty.call(out, 'createdAt') && Object.prototype.hasOwnProperty.call(incoming, 'createdAt')) out.createdAt = incoming.createdAt;
+    if (Object.prototype.hasOwnProperty.call(incoming, 'updatedAt')) out.updatedAt = incoming.updatedAt;
+    if (Object.prototype.hasOwnProperty.call(incoming, 'index')) out.index = incoming.index;
+    return out;
+  }
+
+  function findDuplicateNameDifferentIdCandidates(currentFolders, incomingFolders) {
+    const byName = new Map();
+    const add = (folder, source) => {
+      const name = String(folder?.name || folder?.title || '').trim().toLowerCase();
+      const id = String(folder?.id || folder?.folderId || '').trim();
+      if (!name || !id) return;
+      const row = byName.get(name) || { name: folder.name || folder.title || name, ids: new Set(), sources: new Set() };
+      row.ids.add(id);
+      row.sources.add(source);
+      byName.set(name, row);
+    };
+    currentFolders.forEach((folder) => add(folder, 'existing'));
+    incomingFolders.forEach((folder) => add(folder, 'incoming'));
+    return Array.from(byName.values())
+      .filter((row) => row.ids.size > 1)
+      .map((row) => ({
+        name: String(row.name || ''),
+        ids: Array.from(row.ids).slice(0, 8),
+        sources: Array.from(row.sources),
+      }));
+  }
+
+  async function mergeNativeFolderState(nativeFolderState, reason = '') {
+    try {
+      const raw = nativeFolderState && typeof nativeFolderState === 'object' ? nativeFolderState : null;
+      if (!raw || !Array.isArray(raw.folders)) {
+        state.lastNativeFolderMergeAt = Date.now();
+        state.lastNativeFolderMergeStatus = 'no-native-folder-state';
+        state.lastNativeFolderMergeError = '';
+        return { ok: false, status: state.lastNativeFolderMergeStatus };
+      }
+      if (!hasChromeStorageRead() || !hasChromeStorage()) {
+        state.lastNativeFolderMergeAt = Date.now();
+        state.lastNativeFolderMergeStatus = 'chrome-storage-unavailable';
+        state.lastNativeFolderMergeError = 'chrome.storage.local read/write unavailable';
+        return { ok: false, status: state.lastNativeFolderMergeStatus, error: state.lastNativeFolderMergeError };
+      }
+
+      const incoming = normalizeFolderState(raw, raw.source || 'native-folder-catalog');
+      const currentRaw = await chromeStorageGet(FOLDER_STATE_DATA_KEY);
+      const current = normalizeFolderState(currentRaw, 'existing-folder-state');
+      const duplicates = findDuplicateNameDifferentIdCandidates(current.folders, incoming.folders);
+      const currentById = new Map(current.folders.map((folder) => [folder.id, folder]));
+      const incomingById = new Map(incoming.folders.map((folder) => [folder.id, folder]));
+      const mergedFolders = [];
+      const seen = new Set();
+
+      current.folders.forEach((folder) => {
+        const incomingFolder = incomingById.get(folder.id);
+        mergedFolders.push(incomingFolder ? mergeFolderRows(folder, incomingFolder) : folder);
+        seen.add(folder.id);
+      });
+      incoming.folders.forEach((folder) => {
+        if (seen.has(folder.id)) return;
+        mergedFolders.push(mergeFolderRows(currentById.get(folder.id), folder));
+        seen.add(folder.id);
+      });
+
+      const mergedItems = {};
+      mergedFolders.forEach((folder) => {
+        const existingItems = Array.isArray(current.items[folder.id]) ? current.items[folder.id] : [];
+        const incomingItems = Array.isArray(incoming.items[folder.id]) ? incoming.items[folder.id] : [];
+        mergedItems[folder.id] = Array.from(new Set([...existingItems, ...incomingItems].map((value) => String(value || '').trim()).filter(Boolean)));
+      });
+
+      const beforeChecksum = stableChecksum({ folders: current.folders, items: current.items });
+      const afterChecksum = stableChecksum({ folders: mergedFolders, items: mergedItems });
+      const incomingChecksum = String(raw.checksum || stableChecksum({ folders: incoming.folders, items: incoming.items }));
+      const incomingBindingCount = countFolderBindings(incoming.items);
+      const mergedBindingCount = countFolderBindings(mergedItems);
+
+      state.lastNativeFolderMergeAt = Date.now();
+      state.lastNativeFolderMergeIncomingChecksum = incomingChecksum;
+      state.lastNativeFolderMergeIncomingFolderCount = incoming.folders.length;
+      state.lastNativeFolderMergeIncomingBindingCount = incomingBindingCount;
+      state.lastNativeFolderMergeMergedFolderCount = mergedFolders.length;
+      state.lastNativeFolderMergeMergedBindingCount = mergedBindingCount;
+      state.lastNativeFolderMergeDuplicateNameDifferentIdCount = duplicates.length;
+      state.lastNativeFolderMergeDuplicateNameDifferentIdSample = duplicates.slice(0, 8);
+      state.lastNativeFolderMergeCaseArrived = incoming.folders.some((folder) => String(folder.name || '').trim().toLowerCase() === 'case');
+
+      if (beforeChecksum === afterChecksum) {
+        state.lastNativeFolderMergeStatus = 'unchanged';
+        state.lastNativeFolderMergeChecksum = afterChecksum;
+        state.lastNativeFolderMergeError = '';
+        step('folder-state.merge.skip', reason || 'unchanged');
+        return { ok: true, status: 'unchanged', checksum: afterChecksum };
+      }
+
+      await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: { folders: mergedFolders, items: mergedItems } });
+      state.lastNativeFolderMergeStatus = 'merged';
+      state.lastNativeFolderMergeChecksum = afterChecksum;
+      state.lastNativeFolderMergeError = '';
+      step('folder-state.merge', `${incoming.folders.length}->${mergedFolders.length}`);
+      return {
+        ok: true,
+        status: 'merged',
+        checksum: afterChecksum,
+        incomingFolderCount: incoming.folders.length,
+        incomingBindingCount,
+        mergedFolderCount: mergedFolders.length,
+        mergedBindingCount,
+      };
+    } catch (e) {
+      state.lastNativeFolderMergeAt = Date.now();
+      state.lastNativeFolderMergeStatus = 'error';
+      state.lastNativeFolderMergeError = String(e?.message || e || 'folder-state-merge-error');
+      err('folder-state.merge', e);
+      return { ok: false, status: 'error', error: state.lastNativeFolderMergeError };
+    }
   }
 
   function emitNativeBroadcastUpdated(payload, reason) {
@@ -164,7 +406,13 @@
       state.lastNativeBroadcastLinkedRecordsCount = Array.isArray(p?.linkedRecords) ? p.linkedRecords.length : 0;
       state.lastNativeBroadcastProjectCatalogCount = Array.isArray(p?.projectCatalog?.rows) ? p.projectCatalog.rows.length : 0;
       state.lastNativeBroadcastProjectCatalogSource = String(p?.projectCatalog?.source || '');
+      state.lastNativeBroadcastFolderCount = Array.isArray(p?.folderState?.folders) ? p.folderState.folders.length : 0;
+      state.lastNativeBroadcastFolderBindingCount = Number(p?.folderState?.counts?.bindingCount || countFolderBindings(p?.folderState?.items)) || 0;
+      state.lastNativeBroadcastFolderSource = String(p?.folderState?.source || '');
       state.lastNativeBroadcastPayload = p || null;
+      if (p?.folderState) {
+        mergeNativeFolderState(p.folderState, reason || 'native-broadcast').catch((e) => err('folder-state.merge.async', e));
+      }
       emitNativeBroadcastUpdated(p, reason);
     } catch {}
   }
@@ -374,8 +622,11 @@
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
     getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
     refreshNativeBroadcast,
+    refreshNativeFolderState(reason) {
+      return refreshNativeBroadcast(reason || 'manual-folder-state-refresh');
+    },
     diagnose() {
-      if (!state.lastNativeBroadcastAt) {
+      if (!state.lastNativeBroadcastAt || (!state.lastNativeFolderMergeAt && !state.lastNativeBroadcastFolderCount)) {
         try { refreshNativeBroadcast('diagnose').catch(() => {}); } catch {}
       }
       const pb = getPlatformBroadcast();
@@ -409,9 +660,27 @@
             linkedRecordsCount: state.lastNativeBroadcastLinkedRecordsCount,
             projectCatalogCount: state.lastNativeBroadcastProjectCatalogCount,
             projectCatalogSource: state.lastNativeBroadcastProjectCatalogSource,
+            folderCount: state.lastNativeBroadcastFolderCount,
+            folderBindingCount: state.lastNativeBroadcastFolderBindingCount,
+            folderSource: state.lastNativeBroadcastFolderSource,
             readAt: state.lastNativeBroadcastReadAt,
             readSource: state.lastNativeBroadcastReadSource,
             readError: state.lastNativeBroadcastReadError,
+          },
+          nativeFolderStateMerge: {
+            key: FOLDER_STATE_DATA_KEY,
+            at: state.lastNativeFolderMergeAt,
+            status: state.lastNativeFolderMergeStatus,
+            error: state.lastNativeFolderMergeError,
+            incomingChecksum: state.lastNativeFolderMergeIncomingChecksum,
+            mergedChecksum: state.lastNativeFolderMergeChecksum,
+            incomingFolderCount: state.lastNativeFolderMergeIncomingFolderCount,
+            incomingBindingCount: state.lastNativeFolderMergeIncomingBindingCount,
+            mergedFolderCount: state.lastNativeFolderMergeMergedFolderCount,
+            mergedBindingCount: state.lastNativeFolderMergeMergedBindingCount,
+            duplicateNameDifferentIdCount: state.lastNativeFolderMergeDuplicateNameDifferentIdCount,
+            duplicateNameDifferentIdSample: state.lastNativeFolderMergeDuplicateNameDifferentIdSample.slice(),
+            caseArrived: !!state.lastNativeFolderMergeCaseArrived,
           },
           studioBroadcast: {
             at: state.lastStudioBroadcastAt,

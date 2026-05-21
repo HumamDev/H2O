@@ -44,6 +44,7 @@
   const STUDIO_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:v1';
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
   const COALESCE_MS = 350;
+  const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
 
   // Native Library state-change events the module fans into the outbound
   // broadcast. New events can be added without code changes elsewhere — Studio
@@ -113,6 +114,16 @@
     lastProjectCatalogCount: 0,
     lastProjectCatalogCapped: false,
     lastProjectCatalogSource: '',
+    lastFolderCatalogCount: 0,
+    lastFolderBindingCount: 0,
+    lastFolderCatalogCapped: false,
+    lastFolderBindingCapped: false,
+    lastFolderCatalogSource: '',
+    lastFolderCatalogNamesSample: [],
+    lastFolderCatalogChecksum: '',
+    folderBridgeReadyBroadcasted: false,
+    lastFolderBridgeReadyBroadcastAt: 0,
+    lastFolderBridgeReadyBroadcastReason: '',
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -186,6 +197,14 @@
     if (state.bridgeReady) return;
     state.bridgeReady = true;
     step('bridge.ready', String(via || ''));
+    if (!state.folderBridgeReadyBroadcasted) {
+      state.folderBridgeReadyBroadcasted = true;
+      state.lastFolderBridgeReadyBroadcastAt = Date.now();
+      state.lastFolderBridgeReadyBroadcastReason = String(via || 'bridge-ready');
+      W.setTimeout(() => {
+        broadcastImmediately('bridge-ready:folder-state');
+      }, 50);
+    }
   }
 
   function handleInboundEvent(key, newValue, source) {
@@ -254,6 +273,9 @@
   // share the key with the existing reasons array).
   const LINKED_SNAPSHOT_MAX = 500;
   const PROJECT_CATALOG_MAX = 250;
+  const FOLDER_CATALOG_MAX = 250;
+  const FOLDER_BINDING_MAX = 1200;
+  const FOLDER_BINDINGS_PER_FOLDER_MAX = 250;
   function snapshotLinkedRecords() {
     try {
       const reg = W.H2O && W.H2O.ChatRegistry;
@@ -384,6 +406,153 @@
     }
   }
 
+  function normalizeFolderBridgeRow(row, index) {
+    const src = row && typeof row === 'object' ? row : {};
+    const id = String(src.id || src.folderId || '').trim();
+    if (!id) return null;
+    const name = String(src.name || src.title || id).trim() || id;
+    const iconColor = String(src.iconColor || src.color || '').trim();
+    const color = String(src.color || src.iconColor || '').trim();
+    const out = {
+      id,
+      folderId: id,
+      name,
+      title: name,
+      source: String(src.source || 'native-folder-catalog').trim() || 'native-folder-catalog',
+      index,
+    };
+    if (String(src.kind || '').trim()) out.kind = String(src.kind || '').trim();
+    if (src.projectRef && typeof src.projectRef === 'object') out.projectRef = src.projectRef;
+    if (iconColor) out.iconColor = iconColor;
+    if (color) out.color = color;
+    if (String(src.icon || '').trim()) out.icon = String(src.icon || '').trim();
+    if (String(src.parentId || '').trim()) out.parentId = String(src.parentId || '').trim();
+    if (Object.prototype.hasOwnProperty.call(src, 'sortOrder')) out.sortOrder = src.sortOrder;
+    if (Object.prototype.hasOwnProperty.call(src, 'createdAt')) out.createdAt = src.createdAt;
+    if (Object.prototype.hasOwnProperty.call(src, 'updatedAt')) out.updatedAt = src.updatedAt;
+    return out;
+  }
+
+  function stableFolderStateChecksum(value) {
+    let text = '';
+    try { text = JSON.stringify(value || null); } catch { text = String(value || ''); }
+    let hash = 5381;
+    for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    return `h2o-folder-${(hash >>> 0).toString(16)}`;
+  }
+
+  function snapshotFolderState() {
+    try {
+      const foldersApi = W.H2O && (W.H2O.folders || W.H2O.LibraryFolders || W.H2O.Library?.Folders);
+      const rowsRaw = typeof foldersApi?.list === 'function'
+        ? foldersApi.list()
+        : (Array.isArray(foldersApi?.folders) ? foldersApi.folders : []);
+      const folders = [];
+      const seen = new Set();
+      const sourceRows = Array.isArray(rowsRaw) ? rowsRaw : [];
+      let folderCapped = false;
+      for (let i = 0; i < sourceRows.length; i += 1) {
+        const row = normalizeFolderBridgeRow(sourceRows[i], i);
+        if (!row || seen.has(row.id)) continue;
+        seen.add(row.id);
+        folders.push(row);
+        if (folders.length >= FOLDER_CATALOG_MAX) {
+          folderCapped = sourceRows.length > (i + 1);
+          break;
+        }
+      }
+
+      const parity = typeof foldersApi?.diagnose === 'function' ? foldersApi.diagnose()?.folderParity : null;
+      const parityFolders = Array.isArray(parity?.folders) ? parity.folders : [];
+      const parityById = new Map();
+      parityFolders.forEach((folder) => {
+        const id = String(folder?.id || folder?.folderId || '').trim();
+        if (id) parityById.set(id, folder);
+      });
+
+      const items = {};
+      let bindingCount = 0;
+      let eligibleBindingCount = 0;
+      let bindingCapped = false;
+      for (const folder of folders) {
+        const parityFolder = parityById.get(folder.id);
+        const bindingKeys = Array.isArray(parityFolder?.bindingKeys)
+          ? parityFolder.bindingKeys.map((value) => String(value || '').trim()).filter(Boolean)
+          : [];
+        eligibleBindingCount += bindingKeys.length;
+        const values = [];
+        for (const value of bindingKeys) {
+          if (values.length >= FOLDER_BINDINGS_PER_FOLDER_MAX) { bindingCapped = true; break; }
+          if (bindingCount >= FOLDER_BINDING_MAX) { bindingCapped = true; break; }
+          if (!values.includes(value)) {
+            values.push(value);
+            bindingCount += 1;
+          }
+        }
+        items[folder.id] = values;
+      }
+
+      const payload = {
+        source: 'native-folder-catalog',
+        key: FOLDER_STATE_DATA_KEY,
+        folders,
+        items,
+        counts: {
+          folderCount: folders.length,
+          eligibleFolderCount: sourceRows.length,
+          bindingCount,
+          eligibleBindingCount,
+          emptyFolderCount: folders.filter((folder) => !items[folder.id]?.length).length,
+          boundFolderCount: folders.filter((folder) => !!items[folder.id]?.length).length,
+        },
+        capped: {
+          folders: folderCapped,
+          bindings: bindingCapped || eligibleBindingCount > bindingCount,
+        },
+        caps: {
+          folders: FOLDER_CATALOG_MAX,
+          bindings: FOLDER_BINDING_MAX,
+          bindingsPerFolder: FOLDER_BINDINGS_PER_FOLDER_MAX,
+        },
+        samples: {
+          folderNames: folders.map((folder) => folder.name).slice(0, 12),
+          folderIds: folders.map((folder) => folder.id).slice(0, 12),
+        },
+      };
+      payload.checksum = stableFolderStateChecksum({ folders: payload.folders, items: payload.items });
+
+      state.lastFolderCatalogCount = folders.length;
+      state.lastFolderBindingCount = bindingCount;
+      state.lastFolderCatalogCapped = !!payload.capped.folders;
+      state.lastFolderBindingCapped = !!payload.capped.bindings;
+      state.lastFolderCatalogSource = folders.length ? 'H2O.folders.list' : 'none';
+      state.lastFolderCatalogNamesSample = payload.samples.folderNames.slice();
+      state.lastFolderCatalogChecksum = payload.checksum;
+      return payload;
+    } catch (e) {
+      state.lastFolderCatalogCount = 0;
+      state.lastFolderBindingCount = 0;
+      state.lastFolderCatalogCapped = false;
+      state.lastFolderBindingCapped = false;
+      state.lastFolderCatalogSource = 'error';
+      state.lastFolderCatalogNamesSample = [];
+      state.lastFolderCatalogChecksum = '';
+      err('snapshotFolderState', e);
+      return {
+        source: 'native-folder-catalog',
+        key: FOLDER_STATE_DATA_KEY,
+        folders: [],
+        items: {},
+        counts: { folderCount: 0, eligibleFolderCount: 0, bindingCount: 0, eligibleBindingCount: 0, emptyFolderCount: 0, boundFolderCount: 0 },
+        capped: { folders: false, bindings: false },
+        caps: { folders: FOLDER_CATALOG_MAX, bindings: FOLDER_BINDING_MAX, bindingsPerFolder: FOLDER_BINDINGS_PER_FOLDER_MAX },
+        samples: { folderNames: [], folderIds: [] },
+        checksum: '',
+        error: String(e?.message || e || 'folder-state-snapshot-error'),
+      };
+    }
+  }
+
   // ── Outbound: native → Studio ──────────────────────────────────────────────
   function broadcastNow() {
     const reasons = Array.from(state.pendingReasons);
@@ -401,6 +570,9 @@
       // page localStorage. Studio cannot read that origin, so expose a bounded
       // catalog summary through the existing cross-surface sync envelope.
       projectCatalog: snapshotProjectCatalog(),
+      // Folder catalog bridge: project the native folder catalog/state into
+      // Studio's existing folder-state key. This is read-only on native.
+      folderState: snapshotFolderState(),
     };
     state.lastOutboundReasons = reasons.slice(0, 24);
     state.lastOutboundPayloadKeys = Object.keys(body).slice(0, 24);
@@ -478,6 +650,7 @@
       scheduleBroadcast(reason || 'manual');
     },
     pingStudio(reason) { scheduleBroadcast(reason || 'manual.ping'); broadcastNow(); },
+    flushFolderState(reason) { broadcastImmediately(reason || 'manual.folder-state'); return true; },
     diagnose() {
       return {
         surface: 'native',
@@ -543,6 +716,22 @@
             cap: PROJECT_CATALOG_MAX,
             source: String(state.lastProjectCatalogSource || ''),
           },
+          folderState: {
+            source: String(state.lastFolderCatalogSource || ''),
+            key: FOLDER_STATE_DATA_KEY,
+            folderCount: Number(state.lastFolderCatalogCount || 0) || 0,
+            bindingCount: Number(state.lastFolderBindingCount || 0) || 0,
+            folderCapped: !!state.lastFolderCatalogCapped,
+            bindingCapped: !!state.lastFolderBindingCapped,
+            folderCap: FOLDER_CATALOG_MAX,
+            bindingCap: FOLDER_BINDING_MAX,
+            bindingPerFolderCap: FOLDER_BINDINGS_PER_FOLDER_MAX,
+            checksum: String(state.lastFolderCatalogChecksum || ''),
+            folderNamesSample: state.lastFolderCatalogNamesSample.slice(),
+            bridgeReadyBroadcasted: !!state.folderBridgeReadyBroadcasted,
+            bridgeReadyBroadcastAt: state.lastFolderBridgeReadyBroadcastAt,
+            bridgeReadyBroadcastReason: state.lastFolderBridgeReadyBroadcastReason,
+          },
         },
         subscribers: state.subscribers.size,
         steps: diag.steps.slice(-15),
@@ -564,6 +753,9 @@
     W.setTimeout(() => {
       scheduleBroadcast('boot:initial-snapshot');
     }, 1200);
+    W.setTimeout(() => {
+      scheduleBroadcast('boot:folder-state-projection');
+    }, 2600);
   }
 
   function registerOnCore() {
