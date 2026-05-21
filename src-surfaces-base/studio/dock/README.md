@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, and Phase 1d landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores for Notes / Navigator / Capture) land in Phase 2+.
+Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, and Phase 1e landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores for Navigator / Capture) land in Phase 2+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -16,6 +16,7 @@ Companion docs:
 - **Phase 1b (landed)**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` now persist through `H2O.Studio.store.prefs` (Studio-local keys `h2o:studio:dock:open:v1` and `h2o:studio:dock:view:v1`). The prefs entity itself lives at `../store/prefs.js`. `unregisterTab(id)`, `getState()`, and `selfCheck()` are added to the shell. Still no DOM, no native keys, no feature stores. See "Phase 1b — what landed" below.
 - **Phase 1c (landed)**: first read-only feature store — `H2O.Studio.store.context`. Reads native Context Engine keys (`h2o:prm:cgx:ctxeng:meta/items/ui/history`) through `H2O.Studio.platform.storage`. No write API. No Dock UI. No native edits. Lives at `../store/context.js`. See "Phase 1c — what landed" below.
 - **Phase 1d (landed)**: second read-only feature store — `H2O.Studio.store.bookmarks`. Reads native Bookmarks Engine per-chat key (`h2o:prm:cgx:bkmrksngne:state:bookmarks_${chatId}:v1`) through `H2O.Studio.platform.storage`. Exposes `get(chatId)` / `list(chatId)` / `getBookmark(chatId, id)` / `keysFor(chatId)` / `subscribe(fn)` / `selfCheck()`. No write API. No Dock UI. No native edits. Lives at `../store/bookmarks.js`. See "Phase 1d — what landed" below.
+- **Phase 1e (landed)**: third read-only feature store — `H2O.Studio.store.notes`. Reads native Notes Engine per-chat notes blob (`h2o:prm:cgx:ntsngn:store:notes:v1:${chatId}`) **and** scratchpad string (`…store:scratch:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `getNotes` / `getScratch` / `getBundle` / `getAll` / `list` / `getNote` / `keysFor` / `subscribe` / `selfCheck`. No write API, no body-version model, no conflict-resolution editing in Phase 1e. Lives at `../store/notes.js`. See "Phase 1e — what landed" below.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -288,5 +289,60 @@ If `H2O.Studio.store.__registerEntity` is available at load time, the façade re
 - No tabs. No `dock/tabs/` directory yet.
 - No remaining feature stores. Notes / Navigator / Capture are deferred to later 1c-style read-only phases.
 - No schema migration. The façade preserves the native blob shape; it does not normalize bookmarks or fix legacy ids.
+- No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
+- No extension of `fullBundle.v2`.
+
+## Phase 1e — what landed
+
+`store/notes.js` is the third read-only Studio Dock feature store façade. It exposes `H2O.Studio.store.notes`, reading both the per-chat notes blob and the per-chat scratchpad string written by `src-runtime-base/3N1a.…Notes Engine.js`. Same passive pattern as `store/context.js` and `store/bookmarks.js`: sync API, async hydrate on first read, filtered subscription via `platform.broadcast.onAnyChange`, no write API.
+
+### `H2O.Studio.store.notes` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1e-readonly'`. |
+| `readonly` | boolean | Always `true`. |
+| `getNotes(chatId)` | function | Returns the cached notes array (or `null`). Native blob is `Array<Note>`. Lazy-fetches on first call. |
+| `getScratch(chatId)` | function | Returns the cached scratchpad string (or `null`). Native blob is a plain `string`, not JSON. |
+| `getBundle(chatId)` | function | Returns `{ chatId, notes, scratch, entries, keys, found: { notes, scratch } }`. `entries` is `normalizeEntries(notes)` — a shallow-copied array view. The `found` booleans reflect cache state per key. |
+| `getAll(chatId)` | function | Alias of `getBundle(chatId)`. |
+| `list(chatId)` | function | Returns just the entries array (best-effort: native shape is `Array<Note>`; missing or non-array values yield `[]`). |
+| `getNote(chatId, noteId)` | function | Returns the entry whose `id === noteId`, or `null`. |
+| `keysFor(chatId)` | function | Returns the frozen object `{ notes: '…ntsngn:store:notes:v1:${chatId\|"unknown"}', scratch: '…ntsngn:store:scratch:v1:${chatId\|"unknown"}' }`. Pure string-builder; no I/O. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, chatId, value, oldValue, at, source }`. |
+| `selfCheck()` | function | Returns `{ ok, version, readonly, hasPlatformStorage, hasDockKeys, hasDockKeyFor, registeredWithStoreIndex, errors[] }`. |
+
+### Native blob shapes
+
+| Blob | Type | Per-record fields (from 3N1a.js:246-256) |
+|---|---|---|
+| Notes | `Array<Note>` | `id, type:'note', title, text, tags[], pinned, createdAt, updatedAt, source?:{msgId,role,…}` |
+| Scratch | `string` | plain text, no JSON wrapping |
+
+### Chat-id fallback
+
+The native engine (3N1a.js:93 + 177-178) uses `STR_NOTES.unknown = 'unknown'` as the bucket name when chatId is empty or missing. This façade matches that fallback verbatim via `H2O.Studio.DockKeyFor.notesKey` / `scratchKey` (both already use `safeId(chatId, 'unknown')`). Passing an empty string or `null` to `getNotes` / `getScratch` / `getNote` reads from the same `…notes/scratch:v1:unknown` buckets the native engine writes.
+
+### Read flow (sync API, async hydrate)
+
+Same pattern as `store/context.js` and `store/bookmarks.js`. `getNotes` / `getScratch` / `list` / `getNote` return immediately from the in-memory cache. On the first read of an unseen chatId, the façade kicks off `platform.storage.get(key)` for each underlying key. When each resolves, the cache is populated and any subscribers receive a `'change'` event with `source: 'fetch'`. Subsequent calls return the cached value synchronously.
+
+### Subscription filter
+
+`subscribe(fn)` is filtered to notes/scratch keys only. The internal `platform.broadcast.onAnyChange` handler checks each changed key against the two notes-engine prefixes; non-matching keys are silently dropped. Subscribers never see Bookmarks changes, Context changes, Dock UI changes, highlights changes, or any other key shape. Both notes and scratch changes fire under the same `subscribe(fn)`; the event's `kind` (returned in `classifyKey` internally — not exposed) is reflected by the `key` field on the event.
+
+### Registration with store index
+
+If `H2O.Studio.store.__registerEntity` is available at load time, the façade registers as the entity `'notes'`. Otherwise it attaches directly as `H2O.Studio.store.notes = api`. `selfCheck().registeredWithStoreIndex` reports which path was used.
+
+### What is still NOT in Phase 1e
+
+- No public write API (`set` / `update` / `remove` / `saveNow` are absent).
+- **No body-version (`bodyVersions`) model.** The future preserve-both note-body conflict semantics described in `STUDIO_DOCK_PANEL_CONTRACT.md` are write-back-time concerns and are deferred to Phase 3e.
+- No conflict-resolution UI; no editing affordance of any kind.
+- No Dock UI. No DOM. No CSS.
+- No tabs. No `dock/tabs/` directory yet.
+- No remaining feature stores. Navigator and Capture are deferred to later 1c-style read-only phases.
+- No schema migration. The façade preserves the native blob shapes; it does not normalize notes, scratchpad text, or fix legacy fields.
 - No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
 - No extension of `fullBundle.v2`.
