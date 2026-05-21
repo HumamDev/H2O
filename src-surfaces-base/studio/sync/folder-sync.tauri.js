@@ -80,6 +80,10 @@
   var FILE_STABLE_MIN_MS = 1500;
   var MAX_LISTENERS = 64;
 
+  /* Diagnostic-only sample cap for orphan-folder-binding visibility
+   * (Phase D). Visibility only — never affects import behavior. */
+  var MAX_ORPHAN_SAMPLE = 5;
+
   var state = {
     lastScanAt:   null,
     lastImportAt: null,
@@ -87,6 +91,12 @@
     warnings:     [],
     errMax:       20,
     warnMax:      20,
+    /* Phase D — orphan-folder-binding visibility. Updated by importFromFile
+     * after each completed import (even when result.ok === false), reset to
+     * 0/[]/null on a fresh boot. These fields are read-only diagnostics. */
+    lastImportOrphanBindings:      0,
+    lastImportOrphanBindingSample: [],
+    lastImportOrphanBindingsAt:    null,
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -584,6 +594,34 @@
 
     state.lastImportAt = new Date().toISOString();
 
+    /* Phase D — orphan-folder-binding visibility. Count warnings whose
+     * `kind === "orphan-folder-binding"` and stash a small sample so
+     * diagnose() can surface the latest count. Orphans are NOT errors:
+     * the import path persists the binding row and emits the warning so
+     * the missing chat ref can be resolved later (e.g. once the chat is
+     * imported through a separate ingestion phase). This block is purely
+     * additive — it never changes whether the import is treated as ok,
+     * never deletes or rewrites bindings, never creates missing chats. */
+    var orphanCount = 0;
+    var orphanSample = [];
+    try {
+      var rawWarnings = (result && Array.isArray(result.warnings)) ? result.warnings : [];
+      for (var wi = 0; wi < rawWarnings.length; wi += 1) {
+        var w = rawWarnings[wi];
+        if (w && w.kind === 'orphan-folder-binding') {
+          orphanCount += 1;
+          if (orphanSample.length < MAX_ORPHAN_SAMPLE) {
+            /* Keep the original warning shape (kind/folderId/chatId?) —
+             * caller may want to map back to the source binding. */
+            orphanSample.push(w);
+          }
+        }
+      }
+    } catch (_) { /* visibility-only; never throw from the diagnostic path */ }
+    state.lastImportOrphanBindings      = orphanCount;
+    state.lastImportOrphanBindingSample = orphanSample;
+    state.lastImportOrphanBindingsAt    = state.lastImportAt;
+
     var entry = {
       fingerprint: fingerprint,
       filename: basename(filePath),
@@ -600,6 +638,7 @@
         skipped: result.skipped || null,
         warningsCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
         errorsCount:   Array.isArray(result.errors)   ? result.errors.length   : 0,
+        orphanFolderBindingsCount: orphanCount,
       } : null,
     };
     await appendLedgerEntry(entry);
@@ -608,6 +647,7 @@
       status: 'imported',
       fingerprint: fingerprint,
       routedVia: routedVia,
+      orphanFolderBindings: orphanCount,
       result: result,
       ledgerEntry: entry,
     };
@@ -893,6 +933,13 @@
         lastImportAt: state.lastImportAt,
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
+        /* Phase D — orphan-folder-binding visibility (visibility only,
+         * does not change import semantics). 0 means the last import
+         * produced no orphans (or no import has run since boot, in which
+         * case lastImportOrphanBindingsAt is null). */
+        lastImportOrphanBindings:      state.lastImportOrphanBindings,
+        lastImportOrphanBindingSample: state.lastImportOrphanBindingSample.slice(),
+        lastImportOrphanBindingsAt:    state.lastImportOrphanBindingsAt,
       },
       watcher: {
         running:        watcherState.running,
