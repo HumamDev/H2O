@@ -6759,6 +6759,27 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   align-self:stretch;
 }
 
+/* Phase 1b — in-ribbon status label. Lives between the tab strip and the
+   collapse chevron. Hidden via :empty when no message; soft fade managed
+   by JS clearing textContent after ~2.4s. Right-aligned, single line,
+   ellipsis on overflow. */
+.wbRibbonStatus{
+  flex:1 1 auto;
+  min-width:0;
+  padding:0 12px;
+  font-size:11.5px;
+  color:var(--wb-text-soft);
+  text-align:right;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  user-select:none;
+  transition:opacity 200ms ease;
+}
+.wbRibbonStatus:empty{
+  visibility:hidden;
+}
+
 /* Collapsed state — only the tab strip remains. The .wbRibbonPanels element
    is not rendered at all (S0Y1a omits it when collapsed=true), so this rule
    is a defensive fallback for any stray panel that might still be in the

@@ -64,6 +64,12 @@
     files: { available: false },
     capture: { available: false },
     auth: { available: false },
+    /* Phase 1b — one-shot text writes for actions like Studio Ribbon's
+     * "Copy title". readText is intentionally not part of the contract
+     * today; add it only when a feature genuinely needs paste support. */
+    clipboard: {
+      writeText: unavailableAsync('clipboard.writeText'),
+    },
   };
 
   var current = fallback;
@@ -87,6 +93,15 @@
     platform.files = current.files;
     platform.capture = current.capture;
     platform.auth = current.auth;
+    /* Phase 1b — clipboard contract. Defaults to the fallback rejecter
+     * if the adapter doesn't expose its own clipboard. */
+    platform.clipboard = current.clipboard || fallback.clipboard;
+    /* Tauri-specific extension: openUrl. Mirror onto the public surface
+     * when the adapter provides it so feature code can feature-detect
+     * via `platform.openUrl`. Pre-existing precedent in studio.js
+     * (line 4301) already feature-detects this; the assignment here
+     * just makes it discoverable on the public object too. */
+    if (typeof current.openUrl === 'function') platform.openUrl = current.openUrl;
     /* Notify listeners that a real adapter is now bound. */
     try {
       if (H2O.events && typeof H2O.events.emit === 'function') {
@@ -137,6 +152,9 @@
     files: fallback.files,
     capture: fallback.capture,
     auth: fallback.auth,
+    /* Phase 1b — clipboard contract. Starts at the fallback rejecter and
+     * is re-bound by registerAdapter when a real adapter is installed. */
+    clipboard: fallback.clipboard,
     diagnose: diagnose,
   };
 

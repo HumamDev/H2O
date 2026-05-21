@@ -181,6 +181,118 @@
       }
     } catch (_) { /* swallow */ }
   }
+  function getPlatform() {
+    try { return (H2O && H2O.Studio && H2O.Studio.platform) || null; }
+    catch (_) { return null; }
+  }
+  function getRibbonBridge() {
+    try { return (H2O && H2O.Studio && H2O.Studio.RibbonBridge) || null; }
+    catch (_) { return null; }
+  }
+
+  /* ── Phase 1b — wired action handlers ────────────────────────────────
+   * Map of actionId -> { isEnabled(ctx), onClick(ctx, setStatus) }.
+   * Actions NOT present in this map render disabled with "Coming soon"
+   * tooltip (the Phase 1a default). All handlers are no-mutation: they
+   * only read ribbon context + call H2O.Studio.platform.* APIs.
+   *
+   * Enabled rules:
+   *   - copy-title:         ctx.title is a non-empty string.
+   *   - open-original:      ctx.chatType === 'indexed' AND ctx.originalUrl non-empty.
+   *   - copy-clean-transcript: ctx.chatType === 'saved' AND the bridge
+   *                         is installed AND getCleanTranscript() returns
+   *                         non-empty text.
+   */
+  const ACTION_HANDLERS = {
+    'copy-title': {
+      isEnabled: function (ctx) { return !!(ctx && ctx.title && String(ctx.title).trim()); },
+      onClick: function (ctx, setStatus) {
+        const text = String((ctx && ctx.title) || '').trim();
+        if (!text) { setStatus('No title available'); return; }
+        const platform = getPlatform();
+        const clip = platform && platform.clipboard;
+        if (!clip || typeof clip.writeText !== 'function') {
+          setStatus('Clipboard unavailable');
+          return;
+        }
+        setStatus('Copying title…');
+        Promise.resolve(clip.writeText(text)).then(
+          function () { setStatus('Title copied'); },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Copy failed: ' + msg);
+          }
+        );
+      },
+    },
+    'open-original': {
+      isEnabled: function (ctx) {
+        if (!ctx) return false;
+        if (ctx.chatType !== 'indexed') return false;
+        return !!(ctx.originalUrl && String(ctx.originalUrl).trim());
+      },
+      onClick: function (ctx, setStatus) {
+        const href = String((ctx && ctx.originalUrl) || '').trim();
+        if (!href) { setStatus('No source URL'); return; }
+        const platform = getPlatform();
+        setStatus('Opening original…');
+        if (platform && typeof platform.openUrl === 'function') {
+          Promise.resolve(platform.openUrl(href)).then(
+            function () { setStatus(''); },
+            function (err) {
+              /* Mirror existing studio.js linked-reader precedent: fall back
+               * to window.open when platform.openUrl rejects. */
+              try { window.open(href, '_blank', 'noopener'); setStatus(''); }
+              catch (_) {
+                const msg = (err && (err.message || String(err))) || 'unknown error';
+                setStatus('Open failed: ' + msg);
+              }
+            }
+          );
+          return;
+        }
+        try { window.open(href, '_blank', 'noopener'); setStatus(''); }
+        catch (e) {
+          const msg = (e && (e.message || String(e))) || 'unknown error';
+          setStatus('Open failed: ' + msg);
+        }
+      },
+    },
+    'copy-clean-transcript': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.getCleanTranscript !== 'function') return false;
+        try { return !!String(bridge.getCleanTranscript() || '').trim(); }
+        catch (_) { return false; }
+      },
+      onClick: function (ctx, setStatus) {
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.getCleanTranscript !== 'function') {
+          setStatus('Transcript bridge unavailable');
+          return;
+        }
+        let text = '';
+        try { text = String(bridge.getCleanTranscript() || ''); }
+        catch (e) { setStatus('Transcript read failed'); return; }
+        if (!text.trim()) { setStatus('No transcript content'); return; }
+        const platform = getPlatform();
+        const clip = platform && platform.clipboard;
+        if (!clip || typeof clip.writeText !== 'function') {
+          setStatus('Clipboard unavailable');
+          return;
+        }
+        setStatus('Copying transcript…');
+        Promise.resolve(clip.writeText(text)).then(
+          function () { setStatus('Transcript copied'); },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Copy failed: ' + msg);
+          }
+        );
+      },
+    },
+  };
 
   /* ── Registration of the default catalogue ────────────────────────── */
   function registerCatalogue(shell) {
@@ -249,6 +361,17 @@
 
     strip.appendChild(tablist);
 
+    /* Phase 1b — non-invasive status label between tab strip and collapse
+     * chevron. role="status" + aria-live="polite" so screen readers
+     * announce action results. Hidden via CSS :empty when no message. */
+    const statusEl = el('div', {
+      class: 'wbRibbonStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      'data-testid': 'wbRibbonStatus',
+    });
+    strip.appendChild(statusEl);
+
     const collapseBtn = el('button', {
       type: 'button',
       class: 'wbRibbonCollapse',
@@ -267,6 +390,8 @@
 
   function buildPanels(shell, visibleTabs, activeTabId) {
     const panels = el('div', { class: 'wbRibbonPanels' });
+    /* Phase 1b — context-aware enabled/disabled decision per action. */
+    const ctx = shell.getContext();
     visibleTabs.forEach(function (tab) {
       const isActive = (tab.id === activeTabId);
       const panel = el('div', {
@@ -287,14 +412,26 @@
         const actions = shell.actionsForGroup(tab.id, group.id);
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
-          const btn = el('button', {
+          const handler = ACTION_HANDLERS[action.id];
+          let enabled = false;
+          if (handler && typeof handler.isEnabled === 'function') {
+            try { enabled = !!handler.isEnabled(ctx); }
+            catch (_) { enabled = false; }
+          }
+          const attrs = {
             type: 'button',
             class: 'wbRibbonAction',
             'data-action-id': action.id,
-            title: action.tooltip || '',
-            'aria-disabled': 'true',
-            disabled: 'disabled',
-          }, action.label);
+            'aria-disabled': enabled ? 'false' : 'true',
+          };
+          if (enabled) {
+            /* Drop the "Coming soon" placeholder tooltip when the action is wired. */
+            attrs.title = '';
+          } else {
+            attrs.title = action.tooltip || '';
+            attrs.disabled = 'disabled';
+          }
+          const btn = el('button', attrs, action.label);
           actionsRow.appendChild(btn);
         });
         groupEl.appendChild(actionsRow);
@@ -390,8 +527,37 @@
     });
   }
 
-  /* ── Click handlers (tab switch + collapse toggle only) ───────────── */
+  /* ── Status feedback ──────────────────────────────────────────────────
+   * In-ribbon status label between tab strip and collapse chevron. Phase
+   * 1b uses this for Copy/Open action feedback because Studio does not
+   * have a shared toast surface. Auto-clears after 2400ms unless
+   * { persist: true }. Re-queries the element on each fire so a
+   * mid-fade re-render (e.g. context change) does not crash the timer. */
+  let statusFadeTimer = null;
+  function makeSetStatus(container) {
+    return function setStatus(text, opts) {
+      const el = container.querySelector('.wbRibbonStatus');
+      if (!el) return;
+      el.textContent = String(text || '');
+      if (statusFadeTimer) {
+        try { clearTimeout(statusFadeTimer); } catch (_) { /* swallow */ }
+        statusFadeTimer = null;
+      }
+      if (text && !(opts && opts.persist)) {
+        statusFadeTimer = setTimeout(function () {
+          try {
+            const fresh = container.querySelector('.wbRibbonStatus');
+            if (fresh) fresh.textContent = '';
+          } catch (_) { /* swallow */ }
+          statusFadeTimer = null;
+        }, 2400);
+      }
+    };
+  }
+
+  /* ── Click handlers (tab switch + collapse toggle + wired actions) ─ */
   function bindClicks(container, shell) {
+    const setStatus = makeSetStatus(container);
     container.addEventListener('click', function (ev) {
       const target = ev.target;
       if (!target || !target.closest) return;
@@ -413,7 +579,26 @@
         return;
       }
 
-      /* All action buttons are disabled in Phase 1a; nothing else to do. */
+      /* Phase 1b — wired action handlers. The [disabled] attribute already
+       * blocks clicks on placeholder actions at the browser level; we
+       * defensively also check :not([disabled]) in the selector. */
+      const actionBtn = target.closest('.wbRibbonAction:not([disabled])');
+      if (actionBtn) {
+        const actionId = actionBtn.getAttribute('data-action-id');
+        const handler = actionId && ACTION_HANDLERS[actionId];
+        if (handler && typeof handler.onClick === 'function') {
+          ev.preventDefault();
+          let ctx = null;
+          try { ctx = shell.getContext(); } catch (_) { ctx = null; }
+          try { handler.onClick(ctx, setStatus); }
+          catch (e) {
+            const msg = (e && (e.message || String(e))) || 'unknown error';
+            setStatus('Action failed: ' + msg);
+          }
+          safeEmit('evt:h2o:studio:ribbon:action-invoked', { action: actionId });
+        }
+        return;
+      }
     });
   }
 

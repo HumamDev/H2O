@@ -86,6 +86,10 @@
       chatType: null,
       snapshotId: null,
       chatId: null,
+      /* Phase 1b — title for Copy title action; originalUrl for
+       * Open original action. Both nullable. */
+      title: null,
+      originalUrl: null,
       readOnly: false,
     },
   };
@@ -291,16 +295,29 @@
       : null;
     const snapshotId = isNonEmptyString(safe.snapshotId) ? safe.snapshotId : null;
     const chatId = isNonEmptyString(safe.chatId) ? safe.chatId : null;
+    /* Phase 1b — title + originalUrl. Both default to null. */
+    const title = isNonEmptyString(safe.title) ? safe.title : null;
+    const originalUrl = isNonEmptyString(safe.originalUrl) ? safe.originalUrl : null;
     const readOnly = !!safe.readOnly;
 
     const prev = Object.assign({}, internalState.context);
-    const next = { route: route, chatType: chatType, snapshotId: snapshotId, chatId: chatId, readOnly: readOnly };
+    const next = {
+      route: route,
+      chatType: chatType,
+      snapshotId: snapshotId,
+      chatId: chatId,
+      title: title,
+      originalUrl: originalUrl,
+      readOnly: readOnly,
+    };
 
     const unchanged =
       prev.route === next.route &&
       prev.chatType === next.chatType &&
       prev.snapshotId === next.snapshotId &&
       prev.chatId === next.chatId &&
+      prev.title === next.title &&
+      prev.originalUrl === next.originalUrl &&
       prev.readOnly === next.readOnly;
     if (unchanged) return;
 

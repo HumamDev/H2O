@@ -299,6 +299,34 @@
     }
   }
 
+  /* ── clipboard.writeText ────────────────────────────────────────── */
+  /* Phase 1b — one-shot text write. Prefer tauri-plugin-clipboard-manager
+   * if it happens to be wired into this build (no new dependency added in
+   * Phase 1b — we just attempt the invoke; if the plugin isn't present
+   * the promise rejects and we fall back to navigator.clipboard.writeText).
+   * Final fallback rejects with a clear, descriptive error. */
+  function clipboardWriteText(text) {
+    var s = String(text == null ? '' : text);
+    var nav = global.navigator;
+    var hasNavClipboard = !!(nav && nav.clipboard && typeof nav.clipboard.writeText === 'function');
+
+    function navFallback() {
+      if (hasNavClipboard) return nav.clipboard.writeText(s);
+      return Promise.reject(new Error('platform.clipboard.writeText: tauri-plugin-clipboard-manager not wired and navigator.clipboard unavailable'));
+    }
+
+    var invoke = getTauriInvoke();
+    if (invoke) {
+      try {
+        var p = invoke('plugin:clipboard-manager|write_text', { label: s });
+        if (p && typeof p.then === 'function') {
+          return p.then(undefined, function () { return navFallback(); });
+        }
+      } catch (_) { /* fall through to navFallback */ }
+    }
+    return navFallback();
+  }
+
   /* ── Public adapter ─────────────────────────────────────────────── */
   var adapter = {
     name: ADAPTER_NAME,
@@ -322,6 +350,7 @@
     files: { available: false },
     capture: { available: false },
     auth: { available: false },
+    clipboard: { writeText: clipboardWriteText },
     /* Tauri-specific extension (not part of the fallback shape; callers
      * may feature-detect via `platform.openUrl` or `platform.env.isTauri`). */
     openUrl: openUrl,

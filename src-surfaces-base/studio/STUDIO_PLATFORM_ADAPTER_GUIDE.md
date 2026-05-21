@@ -152,6 +152,21 @@ Implementations:
 
 Feature code uses this for read-only identity awareness only. Auth flows remain owned by `src-surfaces-base/identity/`.
 
+### `H2O.Studio.platform.clipboard` (text-only clipboard writes)
+
+```ts
+interface PlatformClipboard {
+  writeText(text: string): Promise<void>;
+}
+```
+
+Implementations:
+- **MV3 adapter** — `navigator.clipboard.writeText` (extension pages get this from the `clipboardWrite` permission). Rejects with a clear message when `navigator.clipboard` is unavailable (older browsers, non-secure contexts).
+- **Tauri adapter** — attempts `invoke('plugin:clipboard-manager|write_text', { label })` first; if the plugin isn't wired into the current Tauri build the promise rejects and we fall back to `navigator.clipboard.writeText`. Final fallback rejects with a descriptive error. **No new Tauri plugin dependency is added by this contract** — wire `tauri-plugin-clipboard-manager` only when a feature requires native clipboard semantics that the web API can't satisfy.
+- **Fallback adapter** — rejects with `platform.clipboard.writeText: unavailable`.
+
+Feature code uses this strictly for one-shot text writes (e.g. "Copy title" and "Copy clean transcript" actions in the Studio Ribbon). `readText` is intentionally **not** part of this contract today — add it only when a feature genuinely needs paste support, and only behind explicit user gesture handling.
+
 ## Boot Order
 
 The adapter must be bound before any feature module reads from it. In `studio.html`, the script load order already runs `S0A1a` H2O Core early; the platform adapter module should sit immediately after H2O Core and before any feature service. Add a `<script src="./platform/index.js">` tag right after the H2O Core scripts.

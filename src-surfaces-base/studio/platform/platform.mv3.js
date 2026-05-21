@@ -243,6 +243,25 @@
     reason: 'platform.auth interface stub; identity surface remains the owner of auth flows',
   };
 
+  /* ───────────────────────── clipboard ───────────────────────── */
+  /* Phase 1b — one-shot text writes for Studio Ribbon actions. MV3
+   * extension pages have access to navigator.clipboard.writeText when the
+   * `clipboardWrite` permission is granted. Returns a rejected Promise
+   * with a clear message if navigator.clipboard is unavailable (e.g. an
+   * older browser, or the page was not loaded in a secure context). */
+  function clipboardWriteText(text) {
+    var s = String(text == null ? '' : text);
+    try {
+      var nav = global.navigator;
+      if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+        return nav.clipboard.writeText(s);
+      }
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    return Promise.reject(new Error('platform.clipboard.writeText: navigator.clipboard.writeText unavailable in this context'));
+  }
+
   /* ───────────────────────── register ───────────────────────── */
 
   var adapter = {
@@ -267,6 +286,7 @@
     files: files,
     capture: capture,
     auth: auth,
+    clipboard: { writeText: clipboardWriteText },
   };
 
   platform.__registerAdapter(adapter);

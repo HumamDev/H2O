@@ -4361,6 +4361,10 @@ function renderLinkedReaderPlaceholder(row){
         chatType: 'indexed',
         snapshotId: null,
         chatId: row && row.chatId ? String(row.chatId) : null,
+        /* Phase 1b — title and source URL for Copy title / Open original
+         * actions on linked-reader. Both come from the row record. */
+        title: row && (row.title || row.chatId) ? String(row.title || row.chatId) : null,
+        originalUrl: row && row.href ? String(row.href) : null,
         readOnly: false,
       });
     }
@@ -4935,11 +4939,17 @@ async function renderRoute(opts = {}){
         const __isRead = !!(__r && __r.name === 'read');
         const __snap = __isRead ? state.currentReaderSnapshot : null;
         const __hasSnap = !!(__snap && typeof __snap === 'object' && __snap.snapshotId);
+        const __meta = (__hasSnap && __snap.meta && typeof __snap.meta === 'object') ? __snap.meta : null;
+        const __title = __hasSnap ? String((__meta && __meta.title) || __snap.chatId || '') : null;
         __ribbon.setContext({
           route: __r && __r.name ? String(__r.name) : null,
           chatType: (__isRead && __hasSnap) ? 'saved' : null,
           snapshotId: __hasSnap ? String(__snap.snapshotId || '') : null,
           chatId: __hasSnap ? String(__snap.chatId || '') : null,
+          /* Phase 1b — title for Copy title action. Saved snapshots have
+           * no source URL field; originalUrl stays null. */
+          title: __title || null,
+          originalUrl: null,
           readOnly: false,
         });
       }
@@ -6169,3 +6179,64 @@ function boot(){
 }
 
 boot();
+
+/* ─── Phase 1b — Studio Ribbon read-only bridge ───────────────────────────
+ * Narrow accessor exposed to the Studio Ribbon's "Copy clean transcript"
+ * action so the ribbon does not have to walk state.currentReaderSnapshot
+ * directly. Serializes the canonical messages of the currently-open saved
+ * snapshot into deterministic plain text.
+ *
+ * Format (per Phase 1b spec):
+ *   User:
+ *   <text>
+ *
+ *   A:
+ *   <text>
+ *
+ *   System:
+ *   <text>
+ *
+ * Rules:
+ *   - Skip empty messages (no text after trim).
+ *   - Skip messages whose role is neither user/assistant/system.
+ *   - Use the saved message text as-is (msg.text already reflects edits
+ *     that have been persisted to the snapshot in this session — see
+ *     persistEditToExtensionSnapshot above).
+ *   - No metadata, timestamps, message IDs, turn IDs, or internal fields.
+ *   - Returns '' when no snapshot is open or messages array is empty.
+ *   - Never throws — wraps the entire body in try/catch and returns ''.
+ */
+function __ribbonBridge_getCleanTranscript(){
+  try {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || typeof snap !== 'object') return '';
+    const messages = Array.isArray(snap.messages) ? snap.messages : [];
+    if (!messages.length) return '';
+    const out = [];
+    for (let i = 0; i < messages.length; i += 1) {
+      const msg = messages[i];
+      if (!msg || typeof msg !== 'object') continue;
+      const text = String(msg.text || '').trim();
+      if (!text) continue;
+      const role = String(msg.role || '').toLowerCase();
+      let label;
+      if (role === 'user') label = 'User:';
+      else if (role === 'assistant') label = 'A:';
+      else if (role === 'system') label = 'System:';
+      else continue;
+      out.push(label + '\n' + text);
+    }
+    return out.join('\n\n');
+  } catch (_) { return ''; }
+}
+try {
+  W.H2O = W.H2O || {};
+  W.H2O.Studio = W.H2O.Studio || {};
+  if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
+    W.H2O.Studio.RibbonBridge = {
+      __installed: true,
+      version: '0.1.0-phase-1b',
+      getCleanTranscript: __ribbonBridge_getCleanTranscript,
+    };
+  }
+} catch (_) { /* swallow */ }
