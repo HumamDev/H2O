@@ -251,6 +251,12 @@
        connect a read-only folder handle and manually import latest.json via the
        existing full-bundle merge importer. No polling or folder writes. -->
   <script src="./sync/folder-import.mv3.js"></script>
+  <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
+       identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
+       appKind / storeKind). Identity-only — no envelope stamping, no
+       transport, no R-phase behavior change. Loads BEFORE the multi-peer
+       diagnostics so future consumers find H2O.Studio.identity available. -->
+  <script src="./sync/peer-identity.js"></script>
   <!-- F1A: pure read-only multi-peer diff analyzer (surface-agnostic).
        Registers H2O.Studio.diagnostics.multiPeerDiff and
        H2O.Studio.diagnostics.collectLocalState. No IO; safe to load on every

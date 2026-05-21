@@ -74,6 +74,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Chrome/MV3-only: manual sync-folder import (R2B). Reads latest.json from
   // a user-picked directory handle and calls the existing merge importer.
   "sync/folder-import.mv3.js",
+  // F2: peer-identity scaffold. Mints + persists per-install peer identity
+  // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
+  // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
+  // chrome.storage.local (Tauri kv shim on Desktop). Loads BEFORE the
+  // multi-peer diagnostics so consumers find H2O.Studio.identity available.
+  "sync/peer-identity.js",
   // F1A: pure, synchronous multi-peer diff analyzer. Surface-agnostic.
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
@@ -192,6 +198,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
+  "sync/peer-identity.js",
   "sync/multi-peer-diff.js",
   "sync/multi-peer-runner.js",
 
