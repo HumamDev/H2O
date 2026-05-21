@@ -227,6 +227,7 @@
 
   // menu capture
   STATE.lastChatHrefForMenu = STATE.lastChatHrefForMenu || '';
+  STATE.lastChatMenuContext = STATE.lastChatMenuContext || null;
   STATE.savedLibraryRows = Array.isArray(STATE.savedLibraryRows) ? STATE.savedLibraryRows : [];
 
   // active UI elements (owned)
@@ -251,20 +252,30 @@
   // located an anchor menu item to clone, and (d) appended "Save to Folder"
   // / "Add to Library". A regression in any one of these surfaces as a
   // counter that stops climbing.
-  STATE.menuDiag = STATE.menuDiag || {
+  STATE.menuDiag = Object.assign({
     observerInstalled: false,
+    menuCandidatesSeen: 0,
     menusSeen: 0,
     signatureHits: 0,
+    signatureMisses: 0,
+    triggerContextResolved: 0,
+    triggerContextMisses: 0,
+    menuContextResolved: 0,
+    menuContextMisses: 0,
     saveToFolderAttempts: 0,
     saveToFolderInjected: 0,
     addToLibraryAttempts: 0,
     addToLibraryInjected: 0,
     anchorMisses: 0,
     hrefMisses: 0,
+    lastContextSource: '',
+    lastContextHref: '',
+    lastContextTitle: '',
     lastAnchorText: '',
     lastSignatureSample: '',
+    lastSkipReason: '',
     lastErrorMessage: '',
-  };
+  }, STATE.menuDiag || {});
   STATE.retryTimer = 0;
   STATE.ensureTimer = 0;
   STATE.building = false;
@@ -389,14 +400,16 @@
     sidebarItemAnchor: 'a.__menu-item[href]',
     sidebarItemDiv: 'div.__menu-item',
     sidebarTruncate: '.truncate,[class*="truncate"]',
-    radixMenu: '[role="menu"]',
+    radixMenu: '[role="menu"],[data-radix-menu-content],[data-slot*="dropdown"],[data-state="open"]',
     radixMenuItem: '[role="menuitem"]',
     menuCaptureBtn:
       'button.__menu-item-trailing-btn,' +
       'button[data-testid*="history-item"][data-testid$="options"],' +
       'button[data-testid$="options"],' +
       'button[aria-label*="conversation options"],' +
-      'button[aria-label*="Open conversation options"]',
+      'button[aria-label*="Open conversation options"],' +
+      'button[aria-haspopup="menu"],' +
+      'button[data-state="open"]',
     currentChatAnchor: 'a[aria-current="page"][href*="/c/"]',
   };
 
@@ -735,6 +748,169 @@
       if (DOM_parseChatIdFromHref(href) === id) return href;
     }
     return '';
+  }
+
+  function DOM_getChatAnchors() {
+    return [...D.querySelectorAll('a[href*="/c/"]')]
+      .filter((a) => a instanceof HTMLElement && DOM_parseChatIdFromHref(a.getAttribute('href') || ''));
+  }
+
+  function DOM_rectSnapshot(el) {
+    try {
+      const r = el?.getBoundingClientRect?.();
+      if (!r) return null;
+      return {
+        left: Math.round(r.left),
+        top: Math.round(r.top),
+        right: Math.round(r.right),
+        bottom: Math.round(r.bottom),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function DOM_menuContextFromAnchor(anchor, source, triggerRect = null) {
+    if (!(anchor instanceof HTMLElement)) return null;
+    const href = anchor.getAttribute('href') || '';
+    const chatId = DOM_parseChatIdFromHref(href) || '';
+    if (!href || !chatId) return null;
+    const title = UTIL_normText(anchor.innerText || anchor.textContent || DOM_findChatTitleInSidebarByHref(href) || '').slice(0, 200);
+    return {
+      href,
+      chatId,
+      title,
+      source: String(source || 'unknown'),
+      triggerRect: triggerRect || DOM_rectSnapshot(anchor),
+      ts: Date.now(),
+    };
+  }
+
+  function DOM_anchorFromNearbyContainer(btn) {
+    if (!(btn instanceof HTMLElement)) return null;
+    const direct = btn.closest('a[href*="/c/"]');
+    if (direct) return direct;
+
+    const seen = new Set();
+    let node = btn;
+    for (let depth = 0; node && node !== D.body && depth < 8; depth += 1, node = node.parentElement) {
+      if (!(node instanceof HTMLElement) || seen.has(node)) continue;
+      seen.add(node);
+
+      const ownAnchors = [...node.querySelectorAll?.('a[href*="/c/"]') || []]
+        .filter((a) => DOM_parseChatIdFromHref(a.getAttribute('href') || ''));
+      if (ownAnchors.length === 1) return ownAnchors[0];
+
+      const siblings = [node.previousElementSibling, node.nextElementSibling].filter(Boolean);
+      for (const sib of siblings) {
+        if (!(sib instanceof HTMLElement)) continue;
+        if (sib.matches?.('a[href*="/c/"]') && DOM_parseChatIdFromHref(sib.getAttribute('href') || '')) return sib;
+        const anchors = [...sib.querySelectorAll?.('a[href*="/c/"]') || []]
+          .filter((a) => DOM_parseChatIdFromHref(a.getAttribute('href') || ''));
+        if (anchors.length === 1) return anchors[0];
+      }
+    }
+    return null;
+  }
+
+  function DOM_anchorFromGeometry(rectLike) {
+    if (!rectLike) return null;
+    const cx = Number(rectLike.left || 0) + Number(rectLike.width || 0) / 2;
+    const cy = Number(rectLike.top || 0) + Number(rectLike.height || 0) / 2;
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+
+    const anchors = DOM_getChatAnchors()
+      .map((a) => {
+        const r = DOM_rectSnapshot(a);
+        if (!r || r.width <= 0 || r.height <= 0) return null;
+        const sidebarish = !!a.closest?.('nav,aside,#stage-slideover-sidebar,[aria-label*="Chat history" i]');
+        const ay = r.top + r.height / 2;
+        const ax = r.left + r.width / 2;
+        const vertical = Math.abs(ay - cy);
+        const horizontal = Math.max(0, ax - cx);
+        const score = vertical + (sidebarish ? 0 : 500) + horizontal * 0.2;
+        return { a, score };
+      })
+      .filter(Boolean)
+      .sort((x, y) => x.score - y.score);
+    return anchors[0]?.a || null;
+  }
+
+  function DOM_captureMenuContext(ctx, reason = '') {
+    if (!ctx || !ctx.href) return false;
+    STATE.lastChatHrefForMenu = ctx.href;
+    STATE.lastChatMenuContext = ctx;
+    STATE.menuDiag.lastContextSource = String(ctx.source || reason || '');
+    STATE.menuDiag.lastContextHref = String(ctx.href || '');
+    STATE.menuDiag.lastContextTitle = String(ctx.title || '').slice(0, 120);
+    return true;
+  }
+
+  function DOM_resolveMenuContextFromTrigger(btn) {
+    const triggerRect = DOM_rectSnapshot(btn);
+    const nearby = DOM_anchorFromNearbyContainer(btn);
+    if (nearby) return DOM_menuContextFromAnchor(nearby, nearby.closest?.('a[href*="/c/"]') === btn ? 'trigger-direct-anchor' : 'trigger-nearby-container', triggerRect);
+
+    const byGeometry = DOM_anchorFromGeometry(triggerRect);
+    if (byGeometry) return DOM_menuContextFromAnchor(byGeometry, 'trigger-geometry', triggerRect);
+
+    const current = D.querySelector(SEL.currentChatAnchor);
+    if (current) return DOM_menuContextFromAnchor(current, 'trigger-current-active', triggerRect);
+
+    if (DOM_parseChatIdFromHref(W.location?.pathname || '')) {
+      const href = W.location.pathname;
+      return {
+        href,
+        chatId: DOM_parseChatIdFromHref(href) || '',
+        title: UTIL_normText(D.title || ''),
+        source: 'trigger-current-url',
+        triggerRect,
+        ts: Date.now(),
+      };
+    }
+    return null;
+  }
+
+  function DOM_resolveMenuContextFromMenu(menuEl) {
+    const prior = STATE.lastChatMenuContext;
+    if (prior?.href && Date.now() - Number(prior.ts || 0) < 10000) return prior;
+    const menuRect = DOM_rectSnapshot(menuEl);
+    const byGeometry = DOM_anchorFromGeometry(menuRect);
+    if (byGeometry) return DOM_menuContextFromAnchor(byGeometry, 'menu-geometry', menuRect);
+    const current = D.querySelector(SEL.currentChatAnchor);
+    if (current) return DOM_menuContextFromAnchor(current, 'menu-current-active', menuRect);
+    if (DOM_parseChatIdFromHref(W.location?.pathname || '')) {
+      const href = W.location.pathname;
+      return {
+        href,
+        chatId: DOM_parseChatIdFromHref(href) || '',
+        title: UTIL_normText(D.title || ''),
+        source: 'menu-current-url',
+        triggerRect: menuRect,
+        ts: Date.now(),
+      };
+    }
+    return null;
+  }
+
+  function DOM_ensureMenuContext(menuEl, reason = '') {
+    const prior = STATE.lastChatMenuContext;
+    if (
+      STATE.lastChatHrefForMenu &&
+      prior?.href === STATE.lastChatHrefForMenu &&
+      Date.now() - Number(prior.ts || 0) < 10000
+    ) return true;
+    if (STATE.lastChatHrefForMenu && !prior) return true;
+    const ctx = DOM_resolveMenuContextFromMenu(menuEl);
+    if (DOM_captureMenuContext(ctx, reason || 'menu')) {
+      STATE.menuDiag.menuContextResolved += 1;
+      return true;
+    }
+    STATE.menuDiag.menuContextMisses += 1;
+    STATE.menuDiag.lastSkipReason = 'missing-menu-context';
+    return false;
   }
 
   /* ───────────────────────────── 🟪 UI BOUNDARY — CSS RULES 📄🔓💧 ───────────────────────────── */
@@ -3595,11 +3771,7 @@ function ROUTE_clearPageRoute_LOCAL() {
     if (!menuEl) return;
     STATE.menuDiag.saveToFolderAttempts += 1;
 
-    // fallback capture: current chat
-    if (!STATE.lastChatHrefForMenu) {
-      const a = D.querySelector(SEL.currentChatAnchor);
-      if (a) STATE.lastChatHrefForMenu = a.getAttribute('href') || '';
-    }
+    DOM_ensureMenuContext(menuEl, 'save-to-folder');
 
     if (menuEl.querySelector(`[${ATTR_CGXUI}="${SkID}-add-to-folder"]`)) return;
 
@@ -3646,12 +3818,8 @@ function ROUTE_clearPageRoute_LOCAL() {
     const moveItem = DOM_findMenuAnchorItem(menuEl);
     if (!moveItem) { STATE.menuDiag.anchorMisses += 1; return; }
 
-    // Reuse the same chat-identity STATE the existing menu uses. Fallback
-    // capture (current-chat anchor) mirrors ENGINE_injectAddToFolder above.
-    if (!STATE.lastChatHrefForMenu) {
-      const a = D.querySelector(SEL.currentChatAnchor);
-      if (a) STATE.lastChatHrefForMenu = a.getAttribute('href') || '';
-    }
+    // Reuse the same chat-identity STATE the existing menu uses.
+    DOM_ensureMenuContext(menuEl, 'add-to-library');
     const href = STATE.lastChatHrefForMenu;
     if (!href) { STATE.menuDiag.hrefMisses += 1; return; }
 
@@ -3689,6 +3857,8 @@ function ROUTE_clearPageRoute_LOCAL() {
      or 'Untitled chat'. */
   function DOM_findTitleForHref(href) {
     if (!href || typeof href !== 'string') return '';
+    const ctx = STATE.lastChatMenuContext;
+    if (ctx?.href === href && ctx.title) return String(ctx.title || '').trim().slice(0, 200);
     try {
       const safe = href.replace(/"/g, '\\"');
       const a = D.querySelector(`a[href="${safe}"]`);
@@ -4632,22 +4802,105 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     );
   }
 
+  function DOM_collectNativeMenuCandidates(root) {
+    const out = [];
+    const seen = new Set();
+    const add = (node) => {
+      if (!(node instanceof HTMLElement) || seen.has(node)) return;
+      seen.add(node);
+      if (node.closest?.(`[${ATTR_CGXUI_OWNER}="${SkID}"]`)) return;
+      out.push(node);
+    };
+    if (root instanceof HTMLElement) {
+      if (root.matches?.(SEL.radixMenu)) add(root);
+      root.querySelectorAll?.(SEL.radixMenu).forEach(add);
+    }
+    return out;
+  }
+
+  function DOM_nativeChatMenuSignatureScore(menuEl) {
+    const txt = UTIL_normText(menuEl?.innerText || menuEl?.textContent || '');
+    const patterns = [
+      /share/i,
+      /start a group chat/i,
+      /rename/i,
+      /move to project/i,
+      /add label/i,
+      /pin chat/i,
+      /archive/i,
+      /delete/i,
+    ];
+    return patterns.reduce((n, re) => n + (re.test(txt) ? 1 : 0), 0);
+  }
+
+  function ENGINE_tryInjectNativeChatMenu(menu, reason = '') {
+    if (!(menu instanceof HTMLElement)) return false;
+    STATE.menuDiag.menuCandidatesSeen += 1;
+    const txt = UTIL_normText(menu.innerText || menu.textContent || '');
+    STATE.menuDiag.lastSignatureSample = txt.slice(0, 120);
+    if (DOM_nativeChatMenuSignatureScore(menu) < 2) {
+      STATE.menuDiag.signatureMisses += 1;
+      STATE.menuDiag.lastSkipReason = `signature-miss:${String(reason || '')}`;
+      return false;
+    }
+    if (!menu.__h2oFoldersSignatureHit) {
+      STATE.menuDiag.signatureHits += 1;
+      menu.__h2oFoldersSignatureHit = true;
+    }
+    DOM_ensureMenuContext(menu, `inject:${reason || 'menu'}`);
+    ENGINE_injectAddToFolder(menu);
+    ENGINE_injectAddToLibrary(menu);
+    return true;
+  }
+
+  function ENGINE_scheduleNativeChatMenuInjection(menu, reason = '') {
+    if (!(menu instanceof HTMLElement)) return;
+    if (!menu.__h2oFoldersInjectionScheduled) {
+      menu.__h2oFoldersInjectionScheduled = true;
+      requestAnimationFrame(() => ENGINE_tryInjectNativeChatMenu(menu, `${reason}:raf`));
+      W.setTimeout(() => ENGINE_tryInjectNativeChatMenu(menu, `${reason}:timeout`), 80);
+      return;
+    }
+    ENGINE_tryInjectNativeChatMenu(menu, reason || 'rescan');
+  }
+
   function OBS_hookRadixMenuInjectionOnce() {
     if (STATE.menuHooked) return;
     STATE.menuHooked = true;
 
     // capture which chat the "..." menu belongs to
     const onPointerDown = (e) => {
-      const btn = e.target?.closest?.(SEL.menuCaptureBtn);
+      const btn = e.target?.closest?.(SEL.menuCaptureBtn) || e.target?.closest?.('button');
       if (!btn) return;
-      const a = btn.closest('a[href*="/c/"]');
-      if (!a) return;
-      STATE.lastChatHrefForMenu = a.getAttribute('href') || '';
+      const buttonHint = [
+        btn.getAttribute?.('aria-label') || '',
+        btn.getAttribute?.('data-testid') || '',
+        btn.getAttribute?.('aria-haspopup') || '',
+        btn.getAttribute?.('data-state') || '',
+        UTIL_normText(btn.textContent || ''),
+      ].join(' ');
+      if (!btn.matches?.(SEL.menuCaptureBtn) && !/options|conversation|history|more|menu|open/i.test(buttonHint)) return;
+
+      const ctx = DOM_resolveMenuContextFromTrigger(btn);
+      if (DOM_captureMenuContext(ctx, 'trigger')) {
+        STATE.menuDiag.triggerContextResolved += 1;
+      } else {
+        STATE.lastChatHrefForMenu = '';
+        STATE.lastChatMenuContext = null;
+        STATE.menuDiag.triggerContextMisses += 1;
+        STATE.menuDiag.lastSkipReason = 'missing-trigger-context';
+      }
     };
+
+    const onClick = (e) => onPointerDown(e);
 
     TIME_addListener(
       () => D.addEventListener('pointerdown', onPointerDown, true),
       () => D.removeEventListener('pointerdown', onPointerDown, true)
+    );
+    TIME_addListener(
+      () => D.addEventListener('click', onClick, true),
+      () => D.removeEventListener('click', onClick, true)
     );
 
     const mo = new MutationObserver((muts) => {
@@ -4655,29 +4908,18 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         for (const node of mu.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
 
-          const menus = [];
-          if (node.getAttribute?.('role') === 'menu') menus.push(node);
-          else if (node.querySelectorAll) menus.push(...node.querySelectorAll(SEL.radixMenu));
+          const menus = DOM_collectNativeMenuCandidates(node);
+          if (!menus.length) menus.push(...DOM_collectNativeMenuCandidates(D.body).slice(0, 8));
 
           if (!menus.length) continue;
 
           for (const menu of menus) {
             STATE.menuDiag.menusSeen += 1;
-            requestAnimationFrame(() => {
-              const txt = UTIL_normText(menu.innerText || '');
-              STATE.menuDiag.lastSignatureSample = txt.slice(0, 120);
-              // lightweight signature check (same as your original intention)
-              if (/move to project/i.test(txt) || /pin chat/i.test(txt) || /archive/i.test(txt) || /delete/i.test(txt)) {
-                STATE.menuDiag.signatureHits += 1;
-                // Add-to-Folder first, Add-to-Library second. The Add-to-
-                // Library injector then inserts itself BEFORE Add-to-Folder
-                // so the on-screen order is "Add to Library" → "Add to
-                // Folder". See ENGINE_injectAddToLibrary for the insertion
-                // logic.
-                ENGINE_injectAddToFolder(menu);
-                ENGINE_injectAddToLibrary(menu);
-              }
-            });
+            // Add-to-Folder first, Add-to-Library second. The Add-to-
+            // Library injector then inserts itself BEFORE Add-to-Folder
+            // so the on-screen order is "Add to Library" → "Save to Folder".
+            // See ENGINE_injectAddToLibrary for the insertion logic.
+            ENGINE_scheduleNativeChatMenuInjection(menu, 'mutation');
           }
         }
       }
