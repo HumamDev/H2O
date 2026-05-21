@@ -36,10 +36,13 @@
   var TABLE = 'sync_tombstones';
   var SCHEMA_VERSION = 1;
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
+  var TOMBSTONE_EXPORT_PREVIEW_SCHEMA = 'h2o.studio.tombstone-export-preview.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 100;
   var MAX_LIST_LIMIT = 1000;
+  var DEFAULT_PREVIEW_EXPORT_LIMIT = 5000;
+  var MAX_PREVIEW_EXPORT_LIMIT = 5000;
 
   var RECORD_KINDS = {
     chat: true,
@@ -196,6 +199,22 @@
       return {};
     }
   }
+  function parseMetaForPreview(raw, warnings, rowId) {
+    if (raw == null || raw === '') return {};
+    if (typeof raw === 'object') return Array.isArray(raw) ? {} : raw;
+    if (typeof raw !== 'string') return {};
+    try {
+      var v = JSON.parse(raw);
+      return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+    } catch (e) {
+      warnings.push({
+        code: 'invalid-meta-json',
+        tombstoneId: cleanString(rowId),
+        detail: String((e && e.message) || e),
+      });
+      return {};
+    }
+  }
   function normalizeMetaJson(input) {
     var raw = input && Object.prototype.hasOwnProperty.call(input, 'metaJson')
       ? input.metaJson
@@ -323,6 +342,20 @@
     if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_LIST_LIMIT;
     return Math.min(Math.floor(raw), MAX_LIST_LIMIT);
   }
+  function readPreviewExportLimit(options, warnings) {
+    var raw = Number(options && options.limit);
+    if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PREVIEW_EXPORT_LIMIT;
+    var limit = Math.floor(raw);
+    if (limit > MAX_PREVIEW_EXPORT_LIMIT) {
+      warnings.push({
+        code: 'preview-limit-capped',
+        requestedLimit: limit,
+        effectiveLimit: MAX_PREVIEW_EXPORT_LIMIT,
+      });
+      return MAX_PREVIEW_EXPORT_LIMIT;
+    }
+    return limit;
+  }
 
   function countRows(filters) {
     var w = buildWhere(filters);
@@ -436,6 +469,140 @@
         });
       })
       .catch(function (e) { recordError('countByKind', e); return []; });
+  }
+
+  function previewRowToExport(row, warnings, includeSensitive) {
+    if (!row || typeof row !== 'object') return null;
+    var meta = parseMetaForPreview(row.meta_json, warnings, row.tombstone_id);
+    var tombstone = {
+      schema: cleanString(row.schema),
+      tombstoneId: cleanString(row.tombstone_id),
+      recordKind: cleanString(row.record_kind),
+      recordId: cleanString(row.record_id),
+      deletedAt: cleanString(row.deleted_at),
+      deletedBySyncPeerId: cleanString(row.deleted_by_sync_peer_id),
+      deleteReason: cleanString(row.delete_reason),
+      priorDigest: nullableString(row.prior_digest),
+      priorUpdatedAt: nullableString(row.prior_updated_at),
+      sourceExportId: nullableString(row.source_export_id),
+      sourceSequenceNumber: row.source_sequence_number == null || row.source_sequence_number === ''
+        ? null
+        : Number(row.source_sequence_number),
+      cascadeFrom: nullableString(row.cascade_from),
+      restoredAt: nullableString(row.restored_at),
+      restoredBySyncPeerId: nullableString(row.restored_by_sync_peer_id),
+      meta: meta,
+    };
+    if (!includeSensitive) {
+      tombstone.deletedBySyncPeerId = redactPeerId(tombstone.deletedBySyncPeerId);
+      tombstone.restoredBySyncPeerId = tombstone.restoredBySyncPeerId
+        ? redactPeerId(tombstone.restoredBySyncPeerId)
+        : tombstone.restoredBySyncPeerId;
+    }
+    var validation = validateTombstone(tombstone);
+    if (!validation.ok) {
+      warnings.push({
+        code: 'invalid-tombstone-row-skipped',
+        tombstoneId: tombstone.tombstoneId,
+        errors: validation.errors,
+      });
+      return null;
+    }
+    return tombstone;
+  }
+
+  function summarizeExportPreview(tombstones) {
+    var byKindMap = Object.create(null);
+    var active = 0;
+    var restored = 0;
+    tombstones.forEach(function (tombstone) {
+      var kind = cleanString(tombstone && tombstone.recordKind) || 'unknown';
+      if (!byKindMap[kind]) byKindMap[kind] = { recordKind: kind, total: 0, active: 0, restored: 0 };
+      byKindMap[kind].total += 1;
+      if (cleanString(tombstone && tombstone.restoredAt)) {
+        restored += 1;
+        byKindMap[kind].restored += 1;
+      } else {
+        active += 1;
+        byKindMap[kind].active += 1;
+      }
+    });
+    return {
+      active: active,
+      restored: restored,
+      byKind: Object.keys(byKindMap).sort().map(function (kind) { return byKindMap[kind]; }),
+    };
+  }
+
+  function previewExport(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var includeRestored = opts.includeRestored !== false;
+    var includeSensitive = opts.includeSensitive !== false;
+    var warnings = [];
+    var limit = readPreviewExportLimit(opts, warnings);
+    var where = includeRestored ? '' : ' WHERE restored_at IS NULL';
+    return ensureReady()
+      .then(function () {
+        return Promise.all([
+          sqlSelect('SELECT COUNT(*) AS n FROM ' + TABLE + where, []),
+          sqlSelect('SELECT * FROM ' + TABLE + where + ' ORDER BY deleted_at DESC, created_at DESC LIMIT ?', [limit]),
+        ]);
+      })
+      .then(function (parts) {
+        var available = Array.isArray(parts[0]) && parts[0].length ? Number(parts[0][0].n) || 0 : 0;
+        var rows = Array.isArray(parts[1]) ? parts[1] : [];
+        if (available > rows.length) {
+          warnings.push({
+            code: 'preview-result-capped',
+            available: available,
+            exported: rows.length,
+            skipped: available - rows.length,
+            limit: limit,
+          });
+        }
+        var tombstones = [];
+        rows.forEach(function (row) {
+          var tombstone = previewRowToExport(row, warnings, includeSensitive);
+          if (tombstone) tombstones.push(tombstone);
+        });
+        var summary = summarizeExportPreview(tombstones);
+        return {
+          schema: TOMBSTONE_EXPORT_PREVIEW_SCHEMA,
+          tombstoneSchemaVersion: TOMBSTONE_SCHEMA,
+          generatedAt: nowIso(),
+          redacted: !includeSensitive,
+          includeRestored: includeRestored,
+          limit: limit,
+          total: tombstones.length,
+          active: summary.active,
+          restored: summary.restored,
+          skipped: Math.max(0, available - rows.length) + (rows.length - tombstones.length),
+          byKind: summary.byKind,
+          warnings: warnings,
+          tombstones: tombstones,
+        };
+      })
+      .catch(function (e) {
+        recordError('previewExport', e);
+        return {
+          schema: TOMBSTONE_EXPORT_PREVIEW_SCHEMA,
+          tombstoneSchemaVersion: TOMBSTONE_SCHEMA,
+          generatedAt: nowIso(),
+          redacted: !includeSensitive,
+          includeRestored: includeRestored,
+          limit: limit,
+          total: 0,
+          active: 0,
+          restored: 0,
+          skipped: 0,
+          byKind: [],
+          warnings: warnings.concat([{
+            code: 'preview-export-failed',
+            detail: String((e && e.message) || e),
+          }]),
+          tombstones: [],
+        };
+      });
   }
 
   function createTombstone(record) {
@@ -609,8 +776,10 @@
     countByKind: countByKind,
     markRestored: markRestored,
     validateTombstone: validateTombstone,
+    previewExport: previewExport,
     constants: Object.freeze({
       schema: TOMBSTONE_SCHEMA,
+      exportPreviewSchema: TOMBSTONE_EXPORT_PREVIEW_SCHEMA,
       table: TABLE,
       recordKinds: Object.freeze(Object.keys(RECORD_KINDS).slice()),
     }),

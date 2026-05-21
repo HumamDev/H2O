@@ -484,6 +484,57 @@ snapshots, route tag/label/category deletes, route archive/UI delete flows,
 export tombstones, import tombstones, apply remote tombstones, create a conflict
 queue, add UI, purge, or enable bidirectional sync.
 
+## F5E.0 Tombstone Export Preview
+
+F5E.0 adds a read-only Desktop developer API for previewing the tombstones that
+would later be eligible for bundle export:
+
+```js
+await H2O.Studio.store.tombstones.previewExport({
+  includeRestored: true,
+  includeSensitive: true,
+  limit: 5000
+})
+```
+
+F5E.0 does not add `tombstones` to `h2o.studio.fullBundle.v2`, does not modify
+`latest.json`, does not change `exportLatestSyncBundle()`, and does not change
+any importer. It is a local read-only preview over `sync_tombstones`.
+
+The preview report shape is:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-export-preview.v1',
+  tombstoneSchemaVersion: 'h2o.studio.tombstone.v1',
+  generatedAt,
+  redacted: false,
+  includeRestored: true,
+  limit: 5000,
+  total,
+  active,
+  restored,
+  skipped,
+  byKind,
+  warnings: [],
+  tombstones: []
+}
+```
+
+Each preview tombstone preserves stored provenance fields as-is. F5E.0 does not
+overlay a current `exportId`, does not assign a current `sourceSequenceNumber`,
+and does not mutate local tombstone rows.
+
+Rows with invalid `meta_json` are previewed with `meta: {}` and a warning. Rows
+that fail required tombstone validation are skipped with a warning. Synthetic or
+test tombstones are not filtered by ID or reason; the preview reflects local
+store contents.
+
+The default preview includes active and restored tombstones. Passing
+`includeRestored: false` previews active tombstones only. Passing
+`includeSensitive: false` redacts peer IDs in the preview output, but record IDs
+remain present because they are the tombstone identity keys.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
