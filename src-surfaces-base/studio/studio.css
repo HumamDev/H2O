@@ -716,7 +716,12 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   overflow:hidden;
   display:grid;
   grid-template-columns:minmax(0,1fr);
-  grid-template-rows:auto minmax(0,1fr);
+  /* Three rows: .wbTop (header) · .wbRibbon (Studio Ribbon, hidden when no
+     chat is open and collapses to 0 via [hidden]) · .wbMain (content). The
+     middle row is `auto`, so when .wbRibbon[hidden] applies display:none it
+     contributes 0 height to the grid and the layout reverts to the prior
+     two-row behaviour without further changes. */
+  grid-template-rows:auto auto minmax(0,1fr);
   background:var(--wb-page);
   /* Pin to the third column of .wbShell so that when .wbSide--sidebar becomes
      position:fixed at <=960px (overlay), auto-placement does not drop the stage
@@ -6548,4 +6553,233 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   font-size: 11.5px;
   color: var(--wb-dim);
   padding: 4px 10px;
+}
+
+/* ── Studio Ribbon (Phase 1a — passive shell) ──────────────────────────────
+   OneNote-inspired tabbed action bar that sits above the Studio reader. The
+   ribbon is rendered only for opened-chat contexts (saved snapshot reader or
+   linked-reader placeholder). When no chat is open the [hidden] attribute is
+   applied by S0Y1a's render(), the rule below collapses display, and the
+   .wbStage grid's middle `auto` row contributes 0 height — restoring the
+   prior two-row layout without further CSS gymnastics.
+   Tokens reused: --wb-surface, --wb-surface-soft, --wb-surface-hover,
+   --wb-border, --wb-text, --wb-text-soft, --wb-muted, --wb-focus,
+   --wb-space-*. No new colour tokens introduced. */
+.wbRibbon[hidden]{
+  display:none !important;
+}
+
+.wbRibbon{
+  display:flex;
+  flex-direction:column;
+  z-index:1;
+  min-width:0;
+  border-bottom:1px solid var(--wb-border);
+  background:rgba(33,33,33,.78);
+  backdrop-filter:blur(14px);
+  color:var(--wb-text);
+  font-size:13px;
+  line-height:1.3;
+}
+
+.wbRibbonBar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--wb-space-3);
+  min-height:36px;
+  padding:0 14px;
+  border-bottom:1px solid var(--wb-border);
+}
+
+.wbRibbonTabs{
+  display:flex;
+  align-items:stretch;
+  gap:2px;
+  min-width:0;
+  overflow-x:auto;
+  scrollbar-width:none;
+}
+.wbRibbonTabs::-webkit-scrollbar{ display:none; }
+
+.wbRibbonTab{
+  appearance:none;
+  -webkit-appearance:none;
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  height:30px;
+  padding:0 12px;
+  border:1px solid transparent;
+  border-radius:8px 8px 0 0;
+  background:transparent;
+  color:var(--wb-text-soft);
+  font:inherit;
+  font-size:12.5px;
+  font-weight:500;
+  letter-spacing:.01em;
+  cursor:pointer;
+  white-space:nowrap;
+  transition:background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.wbRibbonTab:hover{
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+}
+.wbRibbonTab:focus-visible{
+  outline:none;
+  border-color:var(--wb-focus);
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+.wbRibbonTab[aria-selected="true"],
+.wbRibbonTab.is-active{
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+  border-color:var(--wb-border);
+  border-bottom-color:transparent;
+}
+
+.wbRibbonCollapse{
+  appearance:none;
+  -webkit-appearance:none;
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:28px;
+  height:28px;
+  border:1px solid transparent;
+  border-radius:6px;
+  background:transparent;
+  color:var(--wb-text-soft);
+  cursor:pointer;
+  transition:transform 160ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.wbRibbonCollapse:hover{
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+}
+.wbRibbonCollapse:focus-visible{
+  outline:none;
+  border-color:var(--wb-focus);
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+.wbRibbon[data-collapsed="true"] .wbRibbonCollapse{
+  transform:rotate(-90deg);
+}
+
+.wbRibbonPanels{
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+}
+
+.wbRibbonPanel{
+  display:flex;
+  align-items:stretch;
+  gap:var(--wb-space-3);
+  min-width:0;
+  padding:10px 14px 12px;
+  overflow-x:auto;
+  scrollbar-width:thin;
+}
+.wbRibbonPanel[hidden]{
+  display:none;
+}
+.wbRibbonPanel:focus-visible{
+  outline:none;
+}
+
+.wbRibbonGroup{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:6px;
+  flex:0 0 auto;
+  min-width:0;
+}
+
+.wbRibbonGroupActions{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  flex-wrap:nowrap;
+}
+
+.wbRibbonGroupLabel{
+  font-size:10.5px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--wb-muted);
+  padding:0 2px;
+  user-select:none;
+}
+
+.wbRibbonAction{
+  appearance:none;
+  -webkit-appearance:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:30px;
+  padding:0 10px;
+  border:1px solid var(--wb-border);
+  border-radius:6px;
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+  font:inherit;
+  font-size:12px;
+  font-weight:500;
+  white-space:nowrap;
+  cursor:pointer;
+  transition:background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.wbRibbonAction:hover:not([disabled]):not([aria-disabled="true"]){
+  background:var(--wb-surface-hover);
+  border-color:rgba(255,255,255,.14);
+}
+.wbRibbonAction:focus-visible{
+  outline:none;
+  border-color:var(--wb-focus);
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+.wbRibbonAction[disabled],
+.wbRibbonAction[aria-disabled="true"]{
+  opacity:.45;
+  cursor:not-allowed;
+  background:transparent;
+}
+
+.wbRibbonSeparator{
+  flex:0 0 auto;
+  width:1px;
+  margin:4px 4px;
+  background:var(--wb-border);
+  align-self:stretch;
+}
+
+/* Collapsed state — only the tab strip remains. The .wbRibbonPanels element
+   is not rendered at all (S0Y1a omits it when collapsed=true), so this rule
+   is a defensive fallback for any stray panel that might still be in the
+   DOM. */
+.wbRibbon[data-collapsed="true"] .wbRibbonPanels{
+  display:none;
+}
+
+/* Responsive — at narrow widths drop the group label to one row to keep the
+   ribbon below ~88px. No layout rework, no overflow menu wired in Phase 1a;
+   the panel itself scrolls horizontally. */
+@media (max-width: 900px){
+  .wbRibbonPanel{
+    padding:8px 12px 10px;
+  }
+  .wbRibbonGroupLabel{
+    font-size:10px;
+  }
+  .wbRibbonAction{
+    height:28px;
+    padding:0 8px;
+    font-size:11.5px;
+  }
 }

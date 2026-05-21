@@ -4347,6 +4347,24 @@ function renderLinkedReaderPlaceholder(row){
 
   setRouteMeta("Studio", "Linked chat", title);
   try { document.body.dataset.route = "reader"; } catch (_) { /* ignore */ }
+  /* Phase 1a Studio Ribbon — narrow, explicit setContext call. The linked
+   * placeholder is reached via in-page row click (Phase K-1) without a URL
+   * change, so renderRoute does NOT fire for this transition and the
+   * try/finally tail in renderRoute cannot pick it up. Do not add other
+   * call sites in this file; this is the only routing quirk that bypasses
+   * renderRoute. */
+  try {
+    const __ribbon = W?.H2O?.Studio?.ribbon;
+    if (__ribbon && typeof __ribbon.setContext === 'function') {
+      __ribbon.setContext({
+        route: 'linked',
+        chatType: 'indexed',
+        snapshotId: null,
+        chatId: row && row.chatId ? String(row.chatId) : null,
+        readOnly: false,
+      });
+    }
+  } catch (_) { /* swallow */ }
 }
 
 function buildReaderDOM(snap){
@@ -4830,7 +4848,13 @@ function focusSearch(){
 }
 
 async function renderRoute(opts = {}){
+  /* Phase 1a Studio Ribbon — capture the resolved route here so the
+   * try/finally tail can sync ribbon context exactly once regardless of
+   * which branch returned early. Initialised null in case parseHash throws. */
+  let __ribbonRoute = null;
+  try {
   const route = parseHash();
+  __ribbonRoute = route;
   // Hide the migration / settings panels by default on every route change;
   // their respective renderers un-hide as needed. This avoids adding cleanup
   // calls inside every other render path.
@@ -4893,6 +4917,34 @@ async function renderRoute(opts = {}){
     chatId: route.chatId,
     snapshotId: route.snapshotId,
   });
+  } finally {
+    /* Phase 1a Studio Ribbon — single guarded context sync. Runs after
+     * every branch (read / library / migrate / settings / list) regardless
+     * of which one returned early. The ribbon hides itself when chatType
+     * resolves to null (Library / Settings / Migrate / list / snapshot
+     * load failure) and shows itself when chatType resolves to 'saved'
+     * (opened snapshot reader). The linked-reader placeholder has its own
+     * narrow setContext call inside renderLinkedReaderPlaceholder() — it
+     * is reached without a URL change so renderRoute does not fire for it.
+     * Reads state.currentReaderSnapshot which renderReader has already
+     * settled by the time await returns. */
+    try {
+      const __ribbon = W?.H2O?.Studio?.ribbon;
+      if (__ribbon && typeof __ribbon.setContext === 'function') {
+        const __r = __ribbonRoute;
+        const __isRead = !!(__r && __r.name === 'read');
+        const __snap = __isRead ? state.currentReaderSnapshot : null;
+        const __hasSnap = !!(__snap && typeof __snap === 'object' && __snap.snapshotId);
+        __ribbon.setContext({
+          route: __r && __r.name ? String(__r.name) : null,
+          chatType: (__isRead && __hasSnap) ? 'saved' : null,
+          snapshotId: __hasSnap ? String(__snap.snapshotId || '') : null,
+          chatId: __hasSnap ? String(__snap.chatId || '') : null,
+          readOnly: false,
+        });
+      }
+    } catch (_) { /* swallow — ribbon sync must never break routing */ }
+  }
 }
 
 // ─── Migration UI (full-bundle export / import) ────────────────────────────
