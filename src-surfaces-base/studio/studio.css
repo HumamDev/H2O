@@ -23,7 +23,7 @@
   --wb-focus:#7ab6ff;
   --wb-focus-ring:rgba(122,182,255,.38);
   --wb-danger:#fca5a5;
-  --wb-user-bg:#323232d9;
+  --wb-user-bg:#2f2f2f;
   --wb-code-bg:#171717;
   --wb-code-border:rgba(255,255,255,.07);
   --wb-shadow:0 12px 32px rgba(0,0,0,.28);
@@ -45,7 +45,7 @@
   --wb-control-size:36px;
   --wb-rail-w:56px;
   --wb-thread-w:48rem;
-  --wb-thread-wide:48rem;
+  --wb-thread-wide:54rem;
   --wb-thread-gap:1.25rem;
   --wb-user-w:70%;
   --wb-list-w:52rem;
@@ -2105,12 +2105,11 @@ body[data-layout="wide"] .cgScroll > *{
 }
 
 .cgMsg--user{
-  width:min(var(--wb-user-w), 44rem);
-  padding:14px 18px;
+  max-width:min(var(--wb-user-w), 44rem);
+  width:fit-content;
+  padding:10px 20px;
   border-radius:var(--wb-radius-xl);
   background:var(--wb-user-bg);
-  border:1px solid rgba(255,255,255,.05);
-  box-shadow:0 4px 12px rgba(0,0,0,.18);
 }
 
 .cgMsg--assistant{
@@ -2123,14 +2122,13 @@ body[data-layout="wide"] .cgScroll > *{
 
 .cgMsgBody{
   font-size:16px;
-  line-height:1.75;
+  line-height:1.625;
   color:var(--wb-text);
   word-break:break-word;
 }
 
 .cgMsgBody .p{
   margin:0 0 12px;
-  white-space:pre-wrap;
 }
 
 .cgMsgBody .p:last-child{
@@ -2215,23 +2213,21 @@ body[data-layout="wide"] .cgScroll > *{
 }
 
 .wbRichRoot :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)){
-  width:min(var(--wb-user-w), 44rem);
+  max-width:min(var(--wb-user-w), 44rem);
+  width:fit-content;
   margin-left:auto;
-  padding:14px 18px;
+  padding:10px 20px;
   border-radius:var(--wb-radius-xl);
   background:var(--wb-user-bg);
-  border:1px solid rgba(255,255,255,.05);
-  box-shadow:0 4px 12px rgba(0,0,0,.18);
 }
 
 .wbRichRoot :where(.user-message-bubble-color){
-  width:min(var(--wb-user-w), 44rem);
+  max-width:min(var(--wb-user-w), 44rem);
+  width:fit-content;
   margin-left:auto;
-  padding:14px 18px;
+  padding:10px 20px;
   border-radius:var(--wb-radius-xl);
   background:var(--wb-user-bg);
-  border:1px solid rgba(255,255,255,.05);
-  box-shadow:0 4px 12px rgba(0,0,0,.18);
 }
 
 .wbRichRoot :where([data-message-author-role="assistant"]){
@@ -2240,7 +2236,7 @@ body[data-layout="wide"] .cgScroll > *{
 }
 
 .wbRichRoot :where(p, li, blockquote){
-  line-height:1.75;
+  line-height:1.625;
 }
 
 .wbRichRoot :where(ul, ol){
@@ -2288,9 +2284,9 @@ body[data-layout="wide"] .cgScroll > *{
   color: var(--wb-text) !important;
 }
 /* Force heading sizes */
-.wbRichRoot h1 { font-size: 1.875rem !important; font-weight: 700 !important; }
-.wbRichRoot h2 { font-size: 1.5rem !important; font-weight: 700 !important; }
-.wbRichRoot h3 { font-size: 1.25rem !important; font-weight: 600 !important; }
+.wbRichRoot h1 { font-size: 1.25rem !important; font-weight: 700 !important; }
+.wbRichRoot h2 { font-size: 1.125rem !important; font-weight: 700 !important; }
+.wbRichRoot h3 { font-size: 1.05rem !important; font-weight: 600 !important; }
 
 .wbRichRoot :where(h1, h2, h3, h4){
   margin:1.15rem 0 .5rem;
@@ -2992,7 +2988,7 @@ body[data-route="reader"] .cgScroll .cgxui-mnmp-wash-orange::before{ background:
 .markdown,
 div[class*="prose"] {
   font-size:16px;
-  line-height:1.75;
+  line-height:1.625;
   color:var(--wb-text);
   max-width:100%;
   word-break:break-word;
@@ -3691,11 +3687,26 @@ body[data-route="reader"][data-layout="wide"] .cgScroll > :where(
   margin: 8px 0;
 }
 
-/* Image generation result */
+/* Image rendering — saved-chat images bounded to message column.
+   Covers DALLE results, image-asset testids, canonical Studio bodies,
+   and any <img> inside a rich-replay turn. */
 .dalle-image-container img,
-[data-testid="image-asset"] img {
+[data-testid="image-asset"] img,
+.wbRichRoot img,
+.cgMsgBody img,
+[data-message-author-role] img {
   max-width: 100%;
+  height: auto;
   border-radius: 8px;
+}
+
+/* Multi-image attachments: ChatGPT groups inline images in a `.grid`
+   container; let them wrap responsively without forcing full width. */
+.wbRichRoot .grid:has(> img),
+.wbRichRoot [data-message-attachment-id]:has(> img) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
 }
 
 /* Cited sources list at bottom of web-search turns */
