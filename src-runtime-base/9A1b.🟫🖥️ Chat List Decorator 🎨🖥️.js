@@ -2328,4 +2328,35 @@ window.addEventListener("h2o:interface:meta-mirror", (event) => {
 window.addEventListener("evt:h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
 window.addEventListener("h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
 window.__h2o_interface_decorator_booted = true;
+
+// Diagnostics: snapshot of decorator state. Call from the DevTools console as
+// `H2O.diag.sidebar()` to see how many native chat rows the decorator sees,
+// how many got a heat pill, and how many were skipped as "H2O-internal". A
+// non-zero rowsFound with rowsDecorated==0 and skippedAsInternal>0 is the
+// classic signature of the Categories-section enclosure regression (the
+// isInsideH2OInternalSurface tight-scoping fix in 9A1a addresses this).
+try {
+  window.H2O = window.H2O || {};
+  window.H2O.diag = window.H2O.diag || {};
+  window.H2O.diag.sidebar = function () {
+    const allLinks = [...document.querySelectorAll('nav a[href], aside a[href], main a[href]')];
+    const chatLinks = allLinks.filter((a) => /\/(c|chat)\//.test(a.getAttribute('href') || ''));
+    const skippedAsInternal = chatLinks.filter((a) => I.utils && I.utils.isInsideH2OInternalSurface && I.utils.isInsideH2OInternalSurface(a)).length;
+    const decoratedSide = document.querySelectorAll('a.ho-has-colorbtn-side').length;
+    const decoratedMain = document.querySelectorAll('a.ho-has-colorbtn-main').length;
+    const pills = document.querySelectorAll('.ho-colorbtn').length;
+    const menu = (window.H2O && window.H2O.folders && typeof window.H2O.folders.menuDiag === 'function')
+      ? window.H2O.folders.menuDiag()
+      : null;
+    return {
+      rowsFound: chatLinks.length,
+      rowsDecoratedSide: decoratedSide,
+      rowsDecoratedMain: decoratedMain,
+      pillCount: pills,
+      skippedAsInternal,
+      menu,
+      timestamp: Date.now(),
+    };
+  };
+} catch (_e) { /* diag is best-effort */ }
 })();

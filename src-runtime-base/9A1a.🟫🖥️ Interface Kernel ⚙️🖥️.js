@@ -407,19 +407,36 @@
       // Enricher (9A1c) to skip rows that look like native ChatGPT chat-link rows but
       // are actually injected by H2O's own UI — preventing duplicate "Open once · — answers"
       // meta rows + decorator pills inside the Tag Viewer / Bubble Cloud candidate popup.
+      //
+      // The generic `data-cgxui` / `data-cgxui-owner` markers are TIGHT-SCOPED to the
+      // element itself or its immediate parent. Unbounded `closest()` on these used to
+      // false-positive on every native chat row once 0F3a Folders' Categories section
+      // started grouping native /c/ rows under a [data-cgxui="flsc-categories-root"]
+      // container several ancestor levels up. The H2O-injected look-alike chat-link
+      // clones (Tag Viewer, Bubble Cloud popups) stamp `data-cgxui` directly on the
+      // anchor or its immediate row wrapper, so depth ≤ 1 catches them without bleeding
+      // into section containers. The specific `data-h2o-*` markers below stay unbounded
+      // because they only appear inside genuine H2O surfaces.
       isInsideH2OInternalSurface(el) {
         if (!el || typeof el.closest !== 'function') return false;
         try {
-          return !!(
-            el.closest('[data-cgxui-owner]') ||           // generic H2O cgxui ownership marker
-            el.closest('[data-cgxui]') ||                  // generic H2O cgxui element marker
+          if (
             el.closest('[data-h2o-tags-chat-header]') ||   // Tag Viewer per-chat header rows
             el.closest('[data-h2o-tags-turn-row]') ||      // Tag Viewer per-turn rows
             el.closest('[data-h2o-tags-nonce]') ||         // Tag Viewer / Bubble Cloud list container
             el.closest('[data-h2o-tags-open-btn]') ||      // Tag Viewer "Open" button row
             el.closest('[data-h2o-shell]') ||              // generic H2O shell containers
             el.closest('[data-h2o-page]')                  // generic H2O page containers
-          );
+          ) return true;
+
+          let cur = el;
+          for (let depth = 0; depth <= 1 && cur; depth++) {
+            if (cur.hasAttribute && (cur.hasAttribute('data-cgxui') || cur.hasAttribute('data-cgxui-owner'))) {
+              return true;
+            }
+            cur = cur.parentElement;
+          }
+          return false;
         } catch (_e) { return false; }
       },
     },

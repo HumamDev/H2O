@@ -244,6 +244,27 @@
   // injection observer
   STATE.sidebarMO = null;
   STATE.menuMO = null;
+
+  // Menu-injection diagnostics. Exposed via H2O.folders.menuDiag() so an
+  // operator can verify, after opening a row's three-dot menu, that we (a)
+  // saw the Radix menu, (b) matched the lightweight signature regex, (c)
+  // located an anchor menu item to clone, and (d) appended "Save to Folder"
+  // / "Add to Library". A regression in any one of these surfaces as a
+  // counter that stops climbing.
+  STATE.menuDiag = STATE.menuDiag || {
+    observerInstalled: false,
+    menusSeen: 0,
+    signatureHits: 0,
+    saveToFolderAttempts: 0,
+    saveToFolderInjected: 0,
+    addToLibraryAttempts: 0,
+    addToLibraryInjected: 0,
+    anchorMisses: 0,
+    hrefMisses: 0,
+    lastAnchorText: '',
+    lastSignatureSample: '',
+    lastErrorMessage: '',
+  };
   STATE.retryTimer = 0;
   STATE.ensureTimer = 0;
   STATE.building = false;
@@ -619,19 +640,56 @@
     return items.find((it) => re.test(UTIL_normText(it.textContent || ''))) || null;
   }
 
+  // Find the best menu-item anchor to clone for an injected H2O item. Tries
+  // "Move to project" first (visual + a11y parity with the original design),
+  // then falls back to other safe non-destructive items, finally to ANY menu
+  // item. Returns null only when the menu has zero menu items.
+  //
+  // Resilience: ChatGPT periodically renames row-menu items (e.g. "Move to
+  // project" → "Project" or removed for non-project accounts). Pre-Phase-5
+  // we returned null on first miss and the entire injection bailed silently,
+  // so "Save to Folder" and "Add to Library" disappeared from the menu.
+  function DOM_findMenuAnchorItem(menuEl) {
+    const tries = [
+      /move to project/i,
+      /move chat to project/i,
+      /add to project/i,
+      /pin chat/i,
+      /^pin$/i,
+      /share/i,
+      /rename/i,
+    ];
+    for (const re of tries) {
+      const it = DOM_findMenuItemByText(menuEl, re);
+      if (it) return it;
+    }
+    const items = [...menuEl.querySelectorAll(SEL.radixMenuItem)];
+    const safe = items.find((it) => !/delete|archive/i.test(UTIL_normText(it.textContent || '')));
+    return safe || items[0] || null;
+  }
+
   function DOM_setMenuItemLabel(menuItemEl, newText) {
+    // Prefer the .truncate child (every ChatGPT menu item uses one for the
+    // label) — direct, schema-free relabel that works regardless of the
+    // cloned source text.
+    const trunc = menuItemEl.querySelector(SEL.sidebarTruncate);
+    if (trunc) {
+      trunc.textContent = newText;
+      return;
+    }
+    // Fallback: replace the largest text node in the menu item. The
+    // pre-Phase-5 implementation only matched source text "move to project"
+    // / "add to folder", which silently no-op'd when the cloned anchor came
+    // from a different menu item (Pin chat / Share / etc).
     const tw = D.createTreeWalker(menuItemEl, NodeFilter.SHOW_TEXT);
     let n;
+    let best = null;
+    let bestLen = 0;
     while ((n = tw.nextNode())) {
       const t = UTIL_normText(n.nodeValue || '');
-      if (!t) continue;
-      if (/move to project/i.test(t) || /add to folder/i.test(t)) {
-        n.nodeValue = newText;
-        return;
-      }
+      if (t.length > bestLen) { best = n; bestLen = t.length; }
     }
-    const el = menuItemEl.querySelector(SEL.sidebarTruncate);
-    if (el) el.textContent = newText;
+    if (best) best.nodeValue = newText;
   }
 
   function DOM_getChatTitleFromSidebar(href) {
@@ -3535,6 +3593,7 @@ function ROUTE_clearPageRoute_LOCAL() {
   /* Radix "..." menu injection: Add "Add to Folder" item */
   function ENGINE_injectAddToFolder(menuEl) {
     if (!menuEl) return;
+    STATE.menuDiag.saveToFolderAttempts += 1;
 
     // fallback capture: current chat
     if (!STATE.lastChatHrefForMenu) {
@@ -3544,11 +3603,12 @@ function ROUTE_clearPageRoute_LOCAL() {
 
     if (menuEl.querySelector(`[${ATTR_CGXUI}="${SkID}-add-to-folder"]`)) return;
 
-    const moveItem = DOM_findMenuItemByText(menuEl, /move to project/i);
-    if (!moveItem) return;
+    const moveItem = DOM_findMenuAnchorItem(menuEl);
+    if (!moveItem) { STATE.menuDiag.anchorMisses += 1; return; }
+    STATE.menuDiag.lastAnchorText = UTIL_normText(moveItem.textContent || '').slice(0, 60);
 
     const href = STATE.lastChatHrefForMenu;
-    if (!href) return;
+    if (!href) { STATE.menuDiag.hrefMisses += 1; return; }
 
     const addItem = moveItem.cloneNode(true);
     // Internal selector kept as `${SkID}-add-to-folder` (Phase 4): we
@@ -3566,6 +3626,7 @@ function ROUTE_clearPageRoute_LOCAL() {
     }, true);
 
     moveItem.parentNode.insertBefore(addItem, moveItem.nextSibling);
+    STATE.menuDiag.saveToFolderInjected += 1;
   }
 
   /* Radix "..." menu injection: Add "Add to Library" item (Phase 3).
@@ -3575,14 +3636,15 @@ function ROUTE_clearPageRoute_LOCAL() {
      capture, no folder binding, no archive write. */
   function ENGINE_injectAddToLibrary(menuEl) {
     if (!menuEl) return;
+    STATE.menuDiag.addToLibraryAttempts += 1;
 
     // Same idempotency guard pattern as ENGINE_injectAddToFolder.
     if (menuEl.querySelector(`[${ATTR_CGXUI}="${SkID}-add-to-library"]`)) return;
 
     // Same anchor as Add-to-Folder so styling, focus rings, and keyboard
     // navigation match native menu items byte-for-byte.
-    const moveItem = DOM_findMenuItemByText(menuEl, /move to project/i);
-    if (!moveItem) return;
+    const moveItem = DOM_findMenuAnchorItem(menuEl);
+    if (!moveItem) { STATE.menuDiag.anchorMisses += 1; return; }
 
     // Reuse the same chat-identity STATE the existing menu uses. Fallback
     // capture (current-chat anchor) mirrors ENGINE_injectAddToFolder above.
@@ -3591,7 +3653,7 @@ function ROUTE_clearPageRoute_LOCAL() {
       if (a) STATE.lastChatHrefForMenu = a.getAttribute('href') || '';
     }
     const href = STATE.lastChatHrefForMenu;
-    if (!href) return;
+    if (!href) { STATE.menuDiag.hrefMisses += 1; return; }
 
     const item = moveItem.cloneNode(true);
     item.setAttribute(ATTR_CGXUI, `${SkID}-add-to-library`);
@@ -3616,6 +3678,7 @@ function ROUTE_clearPageRoute_LOCAL() {
     } else {
       moveItem.parentNode.insertBefore(item, moveItem.nextSibling);
     }
+    STATE.menuDiag.addToLibraryInjected += 1;
   }
 
   /* Best-effort title resolution for a sidebar row by href. The radix menu
@@ -4599,10 +4662,13 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
           if (!menus.length) continue;
 
           for (const menu of menus) {
+            STATE.menuDiag.menusSeen += 1;
             requestAnimationFrame(() => {
               const txt = UTIL_normText(menu.innerText || '');
+              STATE.menuDiag.lastSignatureSample = txt.slice(0, 120);
               // lightweight signature check (same as your original intention)
               if (/move to project/i.test(txt) || /pin chat/i.test(txt) || /archive/i.test(txt) || /delete/i.test(txt)) {
+                STATE.menuDiag.signatureHits += 1;
                 // Add-to-Folder first, Add-to-Library second. The Add-to-
                 // Library injector then inserts itself BEFORE Add-to-Folder
                 // so the on-screen order is "Add to Library" → "Add to
@@ -4619,6 +4685,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     mo.observe(D.body, { childList: true, subtree: true });
     STATE.menuMO = mo;
+    STATE.menuDiag.observerInstalled = true;
     CLEAN.observers.add(() => { try { mo.disconnect(); } catch {} });
   }
 
@@ -5713,6 +5780,11 @@ function LIBCORE_registerFoldersOwner() {
 
   H2O.folders = H2O.folders || {};
   // Non-destructive merge: don't overwrite if something already set properties
+  if (typeof H2O.folders.menuDiag !== 'function') {
+    H2O.folders.menuDiag = function () {
+      return Object.assign({}, STATE.menuDiag || {});
+    };
+  }
   if (typeof H2O.folders.list !== 'function') H2O.folders.list = API_list;
   if (typeof H2O.folders.getBinding !== 'function') H2O.folders.getBinding = API_getBinding;
   if (typeof H2O.folders.setBinding !== 'function') H2O.folders.setBinding = API_setBinding;
