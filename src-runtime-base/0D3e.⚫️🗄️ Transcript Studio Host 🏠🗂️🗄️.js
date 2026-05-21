@@ -229,5 +229,18 @@
     isStudio: true,
   };
 
-  setStudioFlags(true);
+  // Only mark the page as Studio mode if we are actually loaded inside the
+  // Studio surface document. This module also ships in the chatgpt.com
+  // proxy pack (so H2O.studioHost is callable from chatgpt.com code), but
+  // on that surface the host stays passive until a snapshot is mounted via
+  // H2O.studioHost.mount(...). Pre-fix the call below was unconditional
+  // and leaked window.H2O_STUDIO_MODE=true + <body data-h2o-studio-mode="1">
+  // onto chatgpt.com, which confused runtime diagnostics.
+  try {
+    const inStudioSurface =
+      typeof location !== "undefined" &&
+      location.protocol === "chrome-extension:" &&
+      /\/surfaces\/studio\//.test(location.pathname || "");
+    if (inStudioSurface) setStudioFlags(true);
+  } catch (_) { /* best-effort gate */ }
 }());
