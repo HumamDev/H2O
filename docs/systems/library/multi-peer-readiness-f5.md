@@ -413,6 +413,77 @@ existing F5D behavior, tags, labels, categories, chats, snapshots, archive
 deletes, UI delete flows, export, import, remote apply, conflict queues, purge,
 or bidirectional sync.
 
+## F5D.2 Local Folder Delete Cascade Routing
+
+F5D.2 extends only the local Desktop folder deletion path:
+
+```js
+H2O.Studio.store.folders.remove(folderId)
+```
+
+Desktop deletes `folder_bindings` for the folder first, then deletes the
+`folders` row. The folder-row delete remains the authoritative success signal.
+F5D.2 pre-reads the folder row and affected bindings, preserves the existing SQL
+delete order, and creates best-effort tombstones only after the folder row delete
+succeeds.
+
+F5D.2 creates one folder tombstone:
+
+```js
+{
+  recordKind: 'folder',
+  recordId: `folder:${encodeURIComponent(folderId)}`,
+  deleteReason: 'folder-delete',
+  meta: {
+    folderId,
+    source: 'store.folders.remove',
+    cascade: true,
+    bindingCount,
+    parentId,
+    createdAt,
+    updatedAt,
+    folderNamePresent: true
+  }
+}
+```
+
+The folder name is intentionally not stored in tombstone metadata. The boolean
+`folderNamePresent` is enough for diagnostics without leaking user-visible
+folder labels.
+
+F5D.2 also creates one folder-binding tombstone for each pre-read binding removed
+by the folder delete:
+
+```js
+{
+  recordKind: 'folderBinding',
+  recordId: `folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}`,
+  deleteReason: 'folder-delete-cascade',
+  cascadeFrom: `folder:${encodeURIComponent(folderId)}`,
+  meta: {
+    chatId,
+    folderId,
+    assignedAt,
+    source: 'store.folders.remove',
+    cascade: true,
+    cascadeKind: 'folder-delete',
+    recordIdFormat: 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}'
+  }
+}
+```
+
+If the folder does not exist or the folder-row delete fails, no tombstones are
+created. If pre-reading bindings fails, the folder delete still proceeds; a
+successful folder delete creates only the folder tombstone and records a warning
+that cascade binding tombstones were skipped. Tombstone failures, duplicate
+active tombstones, unavailable tombstone store, or missing identity never break a
+successful folder delete and are reported through folders diagnostics warnings.
+
+F5D.2 does not tombstone child folders, reparent children, delete chats, delete
+snapshots, route tag/label/category deletes, route archive/UI delete flows,
+export tombstones, import tombstones, apply remote tombstones, create a conflict
+queue, add UI, purge, or enable bidirectional sync.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

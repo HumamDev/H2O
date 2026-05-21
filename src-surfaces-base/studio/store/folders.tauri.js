@@ -63,6 +63,7 @@
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var F5D_FOLDER_BINDING_TOMBSTONES = true;
+  var F5D_FOLDER_REMOVE_TOMBSTONES = true;
   var F5D_FOLDER_BINDING_RECORD_ID_FORMAT = 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}';
 
   /* ── State ────────────────────────────────────────────────────────── */
@@ -237,27 +238,98 @@
       recordKind: 'folderBinding',
       recordId: 'folderBinding:' + encodeURIComponent(cid) + ':' + encodeURIComponent(fid),
       deleteReason: String(opts.deleteReason || '').trim() || 'user-unbind',
+      cascadeFrom: String(opts.cascadeFrom || '').trim() || undefined,
       meta: meta,
     };
   }
 
-  function writeFolderBindingTombstoneSafely(folderId, chatId, opts) {
-    if (!F5D_FOLDER_BINDING_TOMBSTONES) return Promise.resolve(null);
+  function buildFolderTombstone(folderId, folder, bindingCount) {
+    var fid = String(folderId || '').trim();
+    var meta = {
+      folderId: fid,
+      source: 'store.folders.remove',
+      cascade: true,
+      bindingCount: Number(bindingCount) || 0,
+      parentId: folder && folder.parentId != null ? folder.parentId : null,
+      createdAt: folder && folder.createdAt != null ? folder.createdAt : null,
+      updatedAt: folder && folder.updatedAt != null ? folder.updatedAt : null,
+      folderNamePresent: !!(folder && folder.name),
+    };
+    return {
+      recordKind: 'folder',
+      recordId: 'folder:' + encodeURIComponent(fid),
+      deleteReason: 'folder-delete',
+      meta: meta,
+    };
+  }
+
+  function writeTombstoneSafely(record, label) {
     var tombstones = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstones;
     if (!tombstones || typeof tombstones.createTombstone !== 'function') {
-      recordWarning('F5D folderBinding tombstone skipped: tombstone store unavailable');
+      recordWarning(label + ' tombstone skipped: tombstone store unavailable');
       return Promise.resolve(null);
     }
     try {
-      return tombstones.createTombstone(buildFolderBindingTombstone(folderId, chatId, opts))
+      return tombstones.createTombstone(record)
         .catch(function (e) {
-          recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
+          recordWarning(label + ' tombstone failed: ' + ((e && e.message) || e));
           return null;
         });
     } catch (e) {
-      recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
+      recordWarning(label + ' tombstone failed: ' + ((e && e.message) || e));
       return Promise.resolve(null);
     }
+  }
+
+  function writeFolderBindingTombstoneSafely(folderId, chatId, opts) {
+    if (!F5D_FOLDER_BINDING_TOMBSTONES) return Promise.resolve(null);
+    return writeTombstoneSafely(
+      buildFolderBindingTombstone(folderId, chatId, opts),
+      'F5D folderBinding'
+    );
+  }
+
+  function writeFolderRemoveTombstonesSafely(folderId, folder, bindings, bindingsReadOk) {
+    if (!F5D_FOLDER_REMOVE_TOMBSTONES) return Promise.resolve(null);
+    var fid = String(folderId || '').trim();
+    var rows = Array.isArray(bindings) ? bindings : [];
+    var cascadeFrom = 'folder:' + encodeURIComponent(fid);
+    if (!bindingsReadOk) {
+      recordWarning('F5D.2 folder remove binding pre-read unavailable; cascade binding tombstones skipped');
+    }
+    return writeTombstoneSafely(
+      buildFolderTombstone(fid, folder, bindingsReadOk ? rows.length : 0),
+      'F5D.2 folder remove'
+    ).then(function () {
+      if (!bindingsReadOk || rows.length === 0) return null;
+      var failures = 0;
+      var writes = rows.map(function (row) {
+        var chatId = String((row && row.chatId) || '').trim();
+        if (!chatId) return Promise.resolve(null);
+        return writeTombstoneSafely(buildFolderBindingTombstone(fid, chatId, {
+          deleteReason: 'folder-delete-cascade',
+          cascadeFrom: cascadeFrom,
+          meta: {
+            chatId: chatId,
+            folderId: fid,
+            assignedAt: row.assignedAt,
+            source: 'store.folders.remove',
+            cascade: true,
+            cascadeKind: 'folder-delete',
+            recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+          },
+        }), 'F5D.2 folderBinding cascade').then(function (result) {
+          if (!result) failures += 1;
+          return result;
+        });
+      });
+      return Promise.all(writes).then(function () {
+        if (failures > 0) {
+          recordWarning('F5D.2 folderBinding cascade tombstones failed: ' + failures + ' of ' + rows.length);
+        }
+        return null;
+      });
+    });
   }
 
   function readFolderBindingForChatSafely(chatId) {
@@ -274,6 +346,35 @@
       }).catch(function (e) {
         recordWarning('F5D.1 folderBinding pre-read failed: ' + ((e && e.message) || e));
         return null;
+      });
+  }
+
+  function readFolderForRemoveSafely(folderId) {
+    return sqlSelect('SELECT * FROM folders WHERE id = ? LIMIT 1', [folderId])
+      .then(function (rows) {
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+        return rowToJs(rows[0]);
+      }).catch(function (e) {
+        recordWarning('F5D.2 folder remove pre-read failed: ' + ((e && e.message) || e));
+        return null;
+      });
+  }
+
+  function readFolderBindingsForRemoveSafely(folderId) {
+    return sqlSelect('SELECT chat_id, assigned_at FROM folder_bindings WHERE folder_id = ? ORDER BY assigned_at DESC', [folderId])
+      .then(function (rows) {
+        return {
+          ok: true,
+          bindings: (rows || []).map(function (row) {
+            return {
+              chatId: String((row && row.chat_id) || '').trim(),
+              assignedAt: row && row.assigned_at != null ? Number(row.assigned_at) : null,
+            };
+          }).filter(function (row) { return !!row.chatId; }),
+        };
+      }).catch(function (e) {
+        recordWarning('F5D.2 folder remove binding pre-read failed: ' + ((e && e.message) || e));
+        return { ok: false, bindings: [] };
       });
   }
 
@@ -425,18 +526,27 @@
     /* Delete bindings first so a partial failure doesn't leave orphan binding
      * rows pointing at a missing folder. The folder row delete is the
      * authoritative success indicator. */
-    return sqlExecute('DELETE FROM folder_bindings WHERE folder_id = ?', [id])
-      .then(function () {
-        return sqlExecute('DELETE FROM folders WHERE id = ?', [id]);
-      })
-      .then(function (result) {
-        var ok = readRowsAffected(result) > 0;
-        if (ok) {
-          recordWrite('remove');
-          notifySubscribers({ source: 'local', op: 'remove', folderId: id });
-        }
-        return ok;
-      })
+    return Promise.all([
+      readFolderForRemoveSafely(id),
+      readFolderBindingsForRemoveSafely(id),
+    ]).then(function (pre) {
+      var folder = pre[0];
+      var bindingRead = pre[1] || { ok: false, bindings: [] };
+      return sqlExecute('DELETE FROM folder_bindings WHERE folder_id = ?', [id])
+        .then(function () {
+          return sqlExecute('DELETE FROM folders WHERE id = ?', [id]);
+        })
+        .then(function (result) {
+          var ok = readRowsAffected(result) > 0;
+          if (ok) {
+            recordWrite('remove');
+            notifySubscribers({ source: 'local', op: 'remove', folderId: id });
+            return writeFolderRemoveTombstonesSafely(id, folder, bindingRead.bindings, bindingRead.ok)
+              .then(function () { return true; });
+          }
+          return false;
+        });
+    })
       .catch(function (e) { recordError('remove', e); return false; });
   }
 
