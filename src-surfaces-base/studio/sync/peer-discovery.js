@@ -139,11 +139,20 @@
 
   function decodeToText(raw) {
     if (typeof raw === 'string') return raw;
+    if (raw instanceof ArrayBuffer) return new TextDecoder('utf-8').decode(new Uint8Array(raw));
     if (raw instanceof Uint8Array) return new TextDecoder('utf-8').decode(raw);
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(raw)) {
+      return new TextDecoder('utf-8').decode(new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength));
+    }
     if (Array.isArray(raw)) return new TextDecoder('utf-8').decode(new Uint8Array(raw));
     if (raw && typeof raw === 'object') {
+      if (Object.prototype.toString.call(raw) === '[object ArrayBuffer]') {
+        return new TextDecoder('utf-8').decode(new Uint8Array(raw));
+      }
       if (typeof raw.value === 'string') return raw.value;
       if (typeof raw.data === 'string') return raw.data;
+      if (raw.value && raw.value !== raw) return decodeToText(raw.value);
+      if (raw.data && raw.data !== raw) return decodeToText(raw.data);
       if (Array.isArray(raw.data)) return new TextDecoder('utf-8').decode(new Uint8Array(raw.data));
     }
     return String(raw == null ? '' : raw);
