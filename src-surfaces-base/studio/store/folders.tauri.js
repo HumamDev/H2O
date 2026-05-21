@@ -223,23 +223,25 @@
     return null;
   }
 
-  function buildFolderBindingTombstone(folderId, chatId) {
+  function buildFolderBindingTombstone(folderId, chatId, opts) {
+    opts = opts || {};
     var fid = String(folderId || '').trim();
     var cid = String(chatId || '').trim();
+    var meta = Object.assign({
+      chatId: cid,
+      folderId: fid,
+      recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+      source: 'store.folders.unbindChat',
+    }, opts.meta || {});
     return {
       recordKind: 'folderBinding',
       recordId: 'folderBinding:' + encodeURIComponent(cid) + ':' + encodeURIComponent(fid),
-      deleteReason: 'user-unbind',
-      meta: {
-        chatId: cid,
-        folderId: fid,
-        recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
-        source: 'store.folders.unbindChat',
-      },
+      deleteReason: String(opts.deleteReason || '').trim() || 'user-unbind',
+      meta: meta,
     };
   }
 
-  function writeFolderBindingTombstoneSafely(folderId, chatId) {
+  function writeFolderBindingTombstoneSafely(folderId, chatId, opts) {
     if (!F5D_FOLDER_BINDING_TOMBSTONES) return Promise.resolve(null);
     var tombstones = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstones;
     if (!tombstones || typeof tombstones.createTombstone !== 'function') {
@@ -247,7 +249,7 @@
       return Promise.resolve(null);
     }
     try {
-      return tombstones.createTombstone(buildFolderBindingTombstone(folderId, chatId))
+      return tombstones.createTombstone(buildFolderBindingTombstone(folderId, chatId, opts))
         .catch(function (e) {
           recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
           return null;
@@ -256,6 +258,23 @@
       recordWarning('F5D folderBinding tombstone failed: ' + ((e && e.message) || e));
       return Promise.resolve(null);
     }
+  }
+
+  function readFolderBindingForChatSafely(chatId) {
+    return sqlSelect('SELECT folder_id, assigned_at FROM folder_bindings WHERE chat_id = ? LIMIT 1', [chatId])
+      .then(function (rows) {
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+        var row = rows[0] || {};
+        var folderId = String(row.folder_id || '').trim();
+        if (!folderId) return null;
+        return {
+          folderId: folderId,
+          assignedAt: row.assigned_at == null ? null : Number(row.assigned_at),
+        };
+      }).catch(function (e) {
+        recordWarning('F5D.1 folderBinding pre-read failed: ' + ((e && e.message) || e));
+        return null;
+      });
   }
 
   function generateFolderId() {
@@ -432,13 +451,28 @@
     if (!chatId) return Promise.reject(new Error('bindChat: chatId required'));
     var assignedAt = (opts && typeof opts.assignedAt === 'number' && opts.assignedAt > 0)
       ? opts.assignedAt : Date.now();
-    return sqlExecute(
-      'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
-      [chatId, folderId, assignedAt]
-    ).then(function () {
-      recordWrite('bindChat');
-      notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId });
-      return true;
+    return readFolderBindingForChatSafely(chatId).then(function (previous) {
+      return sqlExecute(
+        'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
+        [chatId, folderId, assignedAt]
+      ).then(function () {
+        recordWrite('bindChat');
+        notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId });
+        if (!previous || !previous.folderId || previous.folderId === folderId) return true;
+        return writeFolderBindingTombstoneSafely(previous.folderId, chatId, {
+          deleteReason: 'folder-rebind',
+          meta: {
+            chatId: chatId,
+            folderId: previous.folderId,
+            oldFolderId: previous.folderId,
+            newFolderId: folderId,
+            assignedAt: previous.assignedAt,
+            recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+            source: 'store.folders.bindChat',
+            replacement: true,
+          },
+        }).then(function () { return true; });
+      });
     }).catch(function (e) { recordError('bindChat', e); return false; });
   }
 

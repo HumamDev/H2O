@@ -363,6 +363,56 @@ tombstone, unavailable tombstone store, missing identity, or another local
 storage error, `unbindChat()` still returns `true` and records a warning in the
 folders store diagnostics.
 
+## F5D.1 Local Folder-Binding Replacement Routing
+
+F5D.1 extends only the local Desktop folder-binding move path:
+
+```js
+H2O.Studio.store.folders.bindChat(newFolderId, chatId)
+```
+
+Desktop currently stores one folder binding per chat. `bindChat()` uses
+`INSERT OR REPLACE`, so moving a chat from folder A to folder B removes the old
+folder A binding by replacement. F5D.1 creates a best-effort tombstone for that
+old binding only when all of these are true:
+
+- a previous binding exists for the chat,
+- the previous `folder_id` differs from the new `folderId`,
+- the new bind succeeds.
+
+No tombstone is created for the first bind, for rebinding to the same folder, or
+when the SQL bind fails.
+
+Replacement tombstones use this shape:
+
+```js
+{
+  recordKind: 'folderBinding',
+  recordId: `folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(oldFolderId)}`,
+  deleteReason: 'folder-rebind',
+  meta: {
+    chatId,
+    folderId: oldFolderId,
+    oldFolderId,
+    newFolderId,
+    assignedAt,
+    recordIdFormat: 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}',
+    source: 'store.folders.bindChat',
+    replacement: true
+  }
+}
+```
+
+The bind remains the source of truth. Tombstone creation runs only after the new
+binding succeeds, and tombstone failures never break a successful bind. Duplicate
+active tombstones, unavailable tombstone store, missing identity, or local
+storage errors are reported as folders diagnostics warnings only.
+
+F5D.1 still does not route folder deletion cascades, explicit unbinds beyond the
+existing F5D behavior, tags, labels, categories, chats, snapshots, archive
+deletes, UI delete flows, export, import, remote apply, conflict queues, purge,
+or bidirectional sync.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
