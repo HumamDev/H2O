@@ -364,6 +364,13 @@ function normalizeArchiveView(raw){
   const view = String(raw || "").trim().toLowerCase();
   if (view === "pinned") return "pinned";
   if (view === "archive") return "archive";
+  /* Phase K-1 — Linked Chats view. Records with state.isLinked && !state.isSaved
+   * (registered via Add-to-Library but never captured as a snapshot) carry
+   * view: 'linked' end-to-end through Library Index, the row normalizers,
+   * filterRows, and renderRow. The visible tab pill is the responsibility
+   * of a separate Library Insights touch — studio.js owns only the hash
+   * route + list + reader placeholder for #/linked. */
+  if (view === "linked") return "linked";
   return "saved";
 }
 
@@ -1134,6 +1141,7 @@ function viewLabel(view){
   const next = normalizeArchiveView(view);
   if (next === "pinned") return "Pinned";
   if (next === "archive") return "Archive";
+  if (next === "linked") return "Linked";
   return "Saved";
 }
 
@@ -1141,6 +1149,7 @@ function viewCopy(view){
   const next = normalizeArchiveView(view);
   if (next === "pinned") return "Pinned snapshots";
   if (next === "archive") return "Archived conversations";
+  if (next === "linked") return "Linked Chats";
   return "Saved chats";
 }
 
@@ -1152,6 +1161,18 @@ function buildEmptyListState(view, folderId, query){
   if (folderLabel) scope.push(`inside ${folderLabel}`);
   if (query) scope.push(`matching "${query}"`);
   const scopeText = scope.length ? ` ${scope.join(" ")}` : "";
+  /* Phase K-1 — Linked Chats has a distinct discoverability story:
+   * the user populates it via Add-to-Library on chatgpt.com, not via
+   * capture/refresh. Match the copy to that flow. */
+  const normalized = normalizeArchiveView(view);
+  if (normalized === "linked") {
+    return `
+      <div class="wbState">
+        <div><strong>No linked chats yet${esc(scopeText)}.</strong></div>
+        <div style="margin-top:8px;">Use Add-to-Library on chatgpt.com to register a chat link here.</div>
+      </div>
+    `;
+  }
   return `
     <div class="wbState">
       <div><strong>No ${esc(viewCopy(view).toLowerCase())}${esc(scopeText)}.</strong></div>
@@ -1199,6 +1220,34 @@ function renderInlineMarkdown(text){
         s = s.slice(end + 1);
         continue;
       }
+    }
+    // Image: ![alt](https://example.com/x.png). Must be dispatched BEFORE the
+    // link branch so the leading "!" doesn't get consumed as plain text.
+    // Unsafe / malformed URLs fall back to consuming a literal "!" and
+    // re-entering the loop; the link branch then handles the remaining
+    // "[alt](url)" (escaping or linking as appropriate). Phase 2A: pre-2026-05
+    // the renderer silently skipped past `![` so markdown images were dropped.
+    if (s[0] === "!" && s[1] === "["){
+      const labelEnd = s.indexOf("]", 2);
+      if (labelEnd > 1 && s[labelEnd + 1] === "("){
+        const hrefEnd = s.indexOf(")", labelEnd + 2);
+        if (hrefEnd > labelEnd + 2){
+          const alt = s.slice(2, labelEnd);
+          const rawHref = s.slice(labelEnd + 2, hrefEnd);
+          const href = normalizeSafeMarkdownHref(rawHref);
+          if (href){
+            out += `<img src="${esc(href)}" alt="${esc(alt)}" loading="lazy" decoding="async">`;
+            s = s.slice(hrefEnd + 1);
+            continue;
+          }
+        }
+      }
+      // Malformed or unsafe URL: emit literal "!" and let the link branch
+      // (next iteration) handle the remaining "[alt](url)" as a normal link
+      // if the URL parses, or escape it as literal text if not.
+      out += esc("!");
+      s = s.slice(1);
+      continue;
     }
     // Link: [label](https://example.com). Unsafe hrefs stay literal text.
     if (s[0] === "["){
@@ -2455,7 +2504,14 @@ function normalizeWorkbenchRow(raw){
   const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
   const snapshotId = String(row.snapshotId || meta.snapshotId || "").trim();
   const chatId = String(row.chatId || meta.chatId || "").trim();
-  if (!snapshotId || !chatId) return null;
+  /* Phase K-1 — Linked rows (view: 'linked') are accepted without
+   * snapshotId. Saved rows still require both ids. The view value
+   * comes from projectLibraryIndexRowToWorkbenchInput; any other
+   * caller-provided shape without a view defaults to saved-rules. */
+  const rowView = String(row.view || meta.view || "").trim().toLowerCase();
+  const isLinkedRow = rowView === "linked";
+  if (!chatId) return null;
+  if (!snapshotId && !isLinkedRow) return null;
 
   const title = String(row.title || meta.title || chatId).trim() || chatId;
   const excerpt = String(row.excerpt || meta.excerpt || buildExcerptFromMessages(messages)).trim();
@@ -2481,6 +2537,10 @@ function normalizeWorkbenchRow(raw){
   return {
     snapshotId,
     chatId,
+    /* Phase K-1 — view tier ('saved' | 'linked'). Defaults to 'saved'
+     * for legacy callers; only set to 'linked' when explicitly tagged
+     * by projectLibraryIndexRowToWorkbenchInput. */
+    view: isLinkedRow ? "linked" : "saved",
     title,
     excerpt,
     createdAt,
@@ -2501,6 +2561,12 @@ function normalizeWorkbenchRow(raw){
     category,
     labels,
     keywords,
+    /* Phase K-1 — linked-chat provenance fields. Empty strings on
+     * saved rows; populated on linked rows from the Library Index
+     * projection. */
+    href: String(row.href || meta.href || ""),
+    linkedAt: String(row.linkedAt || meta.linkedAt || ""),
+    linkedFrom: String(row.linkedFrom || meta.linkedFrom || ""),
   };
 }
 
@@ -2644,15 +2710,20 @@ async function buildRowsFromChatIds(chatIds){
 // H2O.LibraryIndex (which already reads from store.chats + folder/label/
 // tag/category binding stores via M2a-3g). This pure mapper translates a
 // LibraryIndex compact row into the raw shape that normalizeWorkbenchRow
-// accepts. Linked-only chats (Add-to-Library without snapshot) have
-// snapshotId === null and are filtered by normalizeWorkbenchRow's guard,
-// so this V1 surface shows saved snapshots only. A separate "linked
-// chats" view is a future stage.
+// accepts. Saved rows must carry snapshotId; linked-only rows
+// (view === 'linked', state.isLinked && !state.isSaved) are passed
+// through with snapshotId === '' — Phase K-1 widens the previous
+// snapshot-required guard so the Linked Chats view (#/linked) can
+// render Add-to-Library records without a captured transcript.
 function projectLibraryIndexRowToWorkbenchInput(liRow){
   if (!liRow || typeof liRow !== 'object') return null;
   const chatId = String(liRow.chatId || '').trim();
   const snapshotId = String(liRow.snapshotId || '').trim();
-  if (!chatId || !snapshotId) return null;
+  const liView = String(liRow.view || '').toLowerCase();
+  const isLinkedRow = liView === 'linked';
+  /* Saved rows still require snapshotId; linked-only rows do not. */
+  if (!chatId) return null;
+  if (!snapshotId && !isLinkedRow) return null;
 
   // LI carries timestamps as epoch ms (capturedAt, updatedAt);
   // normalizeWorkbenchRow expects ISO strings. Same conversion edge as
@@ -2669,8 +2740,9 @@ function projectLibraryIndexRowToWorkbenchInput(liRow){
   const tagNames   = Array.isArray(liRow.tags)   ? liRow.tags   : [];
 
   return {
-    snapshotId,
+    snapshotId: snapshotId || '',
     chatId,
+    view: isLinkedRow ? 'linked' : 'saved',
     title: liRow.title || '',
     createdAt: capturedAtIso || updatedAtIso || '',
     updatedAt: updatedAtIso || '',
@@ -2686,6 +2758,12 @@ function projectLibraryIndexRowToWorkbenchInput(liRow){
       ? { id: liRow.categoryId || '', name: liRow.categoryName || '', label: liRow.categoryName || liRow.categoryId || '' }
       : null,
     keywords: [],
+    /* Phase K-1 — propagate linked-chat provenance so the row renderer
+     * can surface "Open original" + Linked-from metadata without re-
+     * reading the Chat Registry. Empty strings on saved rows. */
+    href: String(liRow.href || liRow.normalizedHref || ''),
+    linkedAt: typeof liRow.linkedAt === 'number' ? toIso(liRow.linkedAt) : String(liRow.linkedAt || ''),
+    linkedFrom: String(liRow.linkedFrom || ''),
     meta: {
       title: liRow.title || '',
       folderId: liRow.folderId || '',
@@ -3073,7 +3151,14 @@ function matchesView(row, view){
   const next = normalizeArchiveView(view);
   if (next === "pinned") return !!row.pinned;
   if (next === "archive") return !!row.archived;
-  if (next === "saved") return !row.archived;
+  /* Phase K-1 — Linked view: only rows projected as linked-only by
+   * Library Index (state.isLinked && !state.isSaved). Saved rows
+   * (even if they also carry linked metadata) belong in #/saved by
+   * the precedence rule documented in normalizeLinkedOnlyProjection. */
+  if (next === "linked") return String(row.view || "").toLowerCase() === "linked";
+  /* Saved view: explicitly exclude linked-only rows so a chat without
+   * a snapshot does not surface alongside Saved snapshots. */
+  if (next === "saved") return !row.archived && String(row.view || "").toLowerCase() !== "linked";
   return true;
 }
 
@@ -3094,6 +3179,11 @@ function filterRows(rows, view, query, folderId = "", tagFilter = ""){
 
     if (!q) return true;
     const labels = row?.labels || {};
+    /* Phase K-1 — Linked rows carry href + linkedFrom (canonical URL +
+     * provenance source). Include both in the search haystack so the
+     * Linked Chats view can be filtered by URL or origin. Empty for
+     * Saved rows, so the only change for non-linked rows is two extra
+     * empty tokens — no behavioral difference. */
     const haystack = [
       row.title,
       row.excerpt,
@@ -3101,6 +3191,8 @@ function filterRows(rows, view, query, folderId = "", tagFilter = ""){
       row.folderId,
       row.folderName,
       row.originSource,
+      row.href || "",
+      row.linkedFrom || "",
       row?.category?.primaryCategoryId,
       row?.category?.secondaryCategoryId,
       ...labelSearchTokens(labels),
@@ -3339,10 +3431,19 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
   list.slice(0, 30).forEach((row) => {
     const link = document.createElement("a");
     link.className = "wbSidebarChatItem";
-    link.href = `#/read/${encodeURIComponent(row.snapshotId)}`;
-    link.dataset.snapshotId = row.snapshotId;
+    /* Phase K-1 — linked rows have no snapshotId. Point the sidebar
+     * link to the Linked Chats list (#/linked) so a click doesn't
+     * trigger #/read/<empty> (which has no handler). */
+    const sidebarRowIsLinked = String(row?.view || "").toLowerCase() === "linked";
+    if (sidebarRowIsLinked) {
+      link.href = buildListHash("linked", state.lastFolderId || "");
+      link.classList.add("wbSidebarChatItem--linked");
+    } else {
+      link.href = `#/read/${encodeURIComponent(row.snapshotId)}`;
+    }
+    link.dataset.snapshotId = String(row.snapshotId || "");
     link.dataset.chatId = row.chatId;
-    if (row.snapshotId === activeSnapshotId) link.classList.add("active");
+    if (!sidebarRowIsLinked && row.snapshotId === activeSnapshotId) link.classList.add("active");
 
     const meta = rowMetaParts(row).join(" · ");
 
@@ -3942,8 +4043,12 @@ function openTitlePalette(row, article, anchor){
 function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""){
   const article = document.createElement("article");
   article.className = "wbHistoryRow";
-  article.dataset.snapshotId = row.snapshotId;
+  /* Phase K-1 — linked rows have no snapshotId. Use "" rather than
+   * the string "undefined" so downstream lookups stay clean. */
+  const rowIsLinked = String(row?.view || "").toLowerCase() === "linked";
+  article.dataset.snapshotId = String(row.snapshotId || "");
   article.dataset.chatId = row.chatId;
+  if (rowIsLinked) article.classList.add("wbHistoryRow--linked");
   if (isSelected) article.classList.add("is-selected");
 
   const button = document.createElement("button");
@@ -4055,11 +4160,137 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
   });
   button.addEventListener("click", () => {
     selectRow(row, article);
+    /* Phase K-1 — linked rows have no snapshot to read. Render the
+     * placeholder reader pane inline (no URL change) instead of
+     * routing to #/read/<empty>. */
+    if (rowIsLinked) {
+      renderLinkedReaderPlaceholder(row);
+      return;
+    }
     location.hash = `#/read/${encodeURIComponent(row.snapshotId)}`;
   });
   syncRowTools(article, row);
 
   return article;
+}
+
+/* Phase K-1 — Linked-chat reader placeholder. Replaces the snapshot
+ * reader for rows with view: 'linked' (no captured transcript). Shows
+ * title + linked-at + linked-from + the original URL, plus three
+ * action buttons:
+ *   - Open original: routes through H2O.Studio.platform.openUrl ->
+ *     plugin:shell|open. Falls back to window.open in MV3.
+ *   - Save to Folder: invokes H2O.Library.actions.saveToFolder if the
+ *     canonical action surface is present (S0F0j). Hidden otherwise.
+ *   - Back to Linked: returns to the list view at #/linked.
+ * No URL change is performed when this pane is shown — the hash
+ * remains #/linked so a page reload returns the user to the list. */
+function renderLinkedReaderPlaceholder(row){
+  const readerEl = document.getElementById("viewReader");
+  const listPanel = document.getElementById("viewListPanel");
+  if (!readerEl) return;
+  if (listPanel) listPanel.hidden = true;
+  readerEl.hidden = false;
+
+  const title = String(row?.title || row?.chatId || "Linked chat");
+  const href = String(row?.href || "").trim();
+  const linkedAtRaw = String(row?.linkedAt || "").trim();
+  const linkedAtFmt = linkedAtRaw ? (fmtDateMeta(linkedAtRaw) || linkedAtRaw) : "";
+  const linkedFrom = String(row?.linkedFrom || "").trim();
+  const folder = String(row?.folderName || row?.folderId || "").trim();
+
+  const actions = (W.H2O && W.H2O.Library && W.H2O.Library.actions) || null;
+  const saveToFolderAvailable = !!(actions && typeof actions.saveToFolder === "function");
+
+  readerEl.innerHTML = `
+    <section class="wbLinkedReader" style="padding:24px 28px;max-width:760px;margin:0 auto">
+      <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin-bottom:6px">Linked chat</div>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;line-height:1.3">${esc(title)}</h2>
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:13px;margin:0 0 20px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        ${href ? `<div style="opacity:.55">URL</div><div><a href="${esc(href)}" class="wbLinkedReader-hrefLink" style="color:inherit;text-decoration:underline;word-break:break-all">${esc(href)}</a></div>` : ""}
+        ${linkedAtFmt ? `<div style="opacity:.55">Linked at</div><div>${esc(linkedAtFmt)}</div>` : ""}
+        ${linkedFrom ? `<div style="opacity:.55">Linked from</div><div>${esc(linkedFrom)}</div>` : ""}
+        ${folder ? `<div style="opacity:.55">Folder</div><div>${esc(folder)}</div>` : ""}
+        <div style="opacity:.55">Chat ID</div><div>${esc(row?.chatId || "")}</div>
+      </div>
+      <div style="padding:14px 16px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.02);margin:0 0 16px;font-size:13px;line-height:1.55;opacity:.85">
+        Linked chat — no snapshot saved. The conversation lives at the URL above on chatgpt.com.
+        Open the original to view it, or capture a snapshot by using Save to Folder on chatgpt.com.
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="wbLinkedReader-openOriginal" type="button"
+          ${href ? "" : "disabled"}
+          style="padding:8px 16px;border-radius:6px;cursor:${href ? "pointer" : "not-allowed"};background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;font-weight:600">Open original</button>
+        ${saveToFolderAvailable ? `<button id="wbLinkedReader-saveToFolder" type="button"
+          style="padding:8px 16px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit">Save to Folder</button>` : ""}
+        <button id="wbLinkedReader-back" type="button"
+          style="padding:8px 16px;border-radius:6px;cursor:pointer;background:transparent;border:1px solid rgba(255,255,255,.08);color:inherit;font:inherit;opacity:.75">Back to Linked Chats</button>
+      </div>
+      <div id="wbLinkedReader-status" style="margin-top:12px;font-size:12px;opacity:.7;min-height:16px"></div>
+    </section>
+  `;
+
+  const statusEl = readerEl.querySelector("#wbLinkedReader-status");
+  const setStatus = (msg) => { if (statusEl) statusEl.textContent = String(msg || ""); };
+
+  /* Open original — prefer platform.openUrl (Tauri shell|open in
+   * Desktop, in-tab navigation in MV3); fall back to window.open. */
+  const openBtn = readerEl.querySelector("#wbLinkedReader-openOriginal");
+  const hrefLink = readerEl.querySelector(".wbLinkedReader-hrefLink");
+  const openOriginal = (ev) => {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    if (!href) return;
+    setStatus("Opening original…");
+    const platform = (W.H2O && W.H2O.Studio && W.H2O.Studio.platform) || null;
+    if (platform && typeof platform.openUrl === "function") {
+      platform.openUrl(href).then(() => setStatus("")).catch((err) => {
+        setStatus("Open failed: " + String((err && (err.message || err)) || err));
+      });
+      return;
+    }
+    try { window.open(href, "_blank", "noopener"); setStatus(""); }
+    catch (err) { setStatus("Open failed: " + String(err)); }
+  };
+  if (openBtn) openBtn.addEventListener("click", openOriginal);
+  if (hrefLink) hrefLink.addEventListener("click", openOriginal);
+
+  /* Save to Folder — only wired when the canonical action is present.
+   * No-op stub if absent (button is hidden by the template). */
+  const saveBtn = readerEl.querySelector("#wbLinkedReader-saveToFolder");
+  if (saveBtn && saveToFolderAvailable) {
+    saveBtn.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setStatus("Requesting Save to Folder…");
+      try {
+        const result = await actions.saveToFolder({ chatId: row.chatId });
+        if (result && result.ok === false) {
+          setStatus("Save to Folder failed: " + String(result.error || result.reason || "unknown"));
+        } else {
+          setStatus("Save to Folder requested. The chat will appear under Saved on the next refresh.");
+        }
+      } catch (err) {
+        setStatus("Save to Folder failed: " + String((err && (err.message || err)) || err));
+      }
+    });
+  }
+
+  /* Back — re-enter the Linked list. renderList unhides the list
+   * panel and re-hides the reader pane. */
+  const backBtn = readerEl.querySelector("#wbLinkedReader-back");
+  if (backBtn) {
+    backBtn.addEventListener("click", () => {
+      const folderId = state.lastFolderId || "";
+      if (location.hash.startsWith("#/linked")) {
+        renderList("linked", folderId).catch(console.warn);
+      } else {
+        location.hash = buildListHash("linked", folderId);
+      }
+    });
+  }
+
+  setRouteMeta("Studio", "Linked chat", title);
+  try { document.body.dataset.route = "reader"; } catch (_) { /* ignore */ }
 }
 
 function buildReaderDOM(snap){
