@@ -360,12 +360,19 @@
           labelIds:  asArray(row.labelIds).map(safeString),
           categoryId: safeString(row.categoryId),
           projectId:  safeString(row.projectId),
+          /* F1B.3: localState state flags can live either nested
+           * (row.state.{isLinked,...}) or as top-level boolean columns
+           * (row.isLinked / row.is_linked) depending on the store adapter.
+           * SQLite-backed adapters expose them top-level; older callers
+           * pass a nested state object. Read from BOTH shapes so the
+           * conflict comparator does not flag wire-vs-local shape
+           * differences as needs-review noise. */
           state: {
-            isLinked:   !!state.isLinked,
-            isSaved:    !!state.isSaved,
-            isPinned:   !!state.isPinned,
-            isArchived: !!state.isArchived,
-            isDeleted:  !!(state.isDeleted || row.isDeleted || row.is_deleted)
+            isLinked:   !!(state.isLinked   || row.isLinked   || row.is_linked),
+            isSaved:    !!(state.isSaved    || row.isSaved    || row.is_saved),
+            isPinned:   !!(state.isPinned   || row.isPinned   || row.is_pinned),
+            isArchived: !!(state.isArchived || row.isArchived || row.is_archived),
+            isDeleted:  !!(state.isDeleted  || row.isDeleted  || row.is_deleted)
           }
         };
       });
@@ -1001,6 +1008,6 @@
   H2O.Studio.diagnostics.multiPeerDiff = multiPeerDiff;
   H2O.Studio.diagnostics.collectLocalState = collectLocalState;
   H2O.Studio.diagnostics.__multiPeerDiffInstalled = true;
-  H2O.Studio.diagnostics.__multiPeerDiffVersion = '0.1.0-f1a';
+  H2O.Studio.diagnostics.__multiPeerDiffVersion = '0.1.1-f1b.3';
 
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
