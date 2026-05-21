@@ -338,6 +338,10 @@
        lives in chats.category_id. assignChat / clearChat write directly
        to chats via raw SQL; listChats delegates to store.chats. -->
   <script src="./store/categories.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed tombstones entity (F5C). Inert local
+       scaffold for future explicit delete records. No existing delete path
+       calls it; no export/import/apply behavior is changed. -->
+  <script src="./store/tombstones.tauri.js"></script>
   <!-- Desktop-only: full-bundle ingestion (M2b-1). Self-bails on MV3 / web.
        Registers H2O.Studio.ingestion with dryRunImportBundle (read-only) +
        importBundle stub. Routes through callArchive's Desktop branch for

@@ -307,6 +307,58 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v6 — F5C: inert local tombstone store scaffold. This table records
+        // explicit local delete intent for future multi-peer sync phases, but
+        // F5C does not route existing delete paths through it and does not
+        // export, import, apply, purge, or restore tombstones automatically.
+        Migration {
+            version: 6,
+            description: "init sync tombstones",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS sync_tombstones (
+                  tombstone_id             TEXT PRIMARY KEY,
+                  schema                   TEXT NOT NULL,
+                  record_kind              TEXT NOT NULL,
+                  record_id                TEXT NOT NULL,
+                  deleted_at               TEXT NOT NULL,
+                  deleted_by_sync_peer_id  TEXT NOT NULL,
+                  delete_reason            TEXT NOT NULL,
+                  prior_digest             TEXT,
+                  prior_updated_at         TEXT,
+                  source_export_id         TEXT,
+                  source_sequence_number   INTEGER,
+                  cascade_from             TEXT,
+                  restored_at              TEXT,
+                  restored_by_sync_peer_id TEXT,
+                  meta_json                TEXT NOT NULL DEFAULT '{}',
+                  created_at               TEXT NOT NULL,
+                  updated_at               TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_record
+                  ON sync_tombstones(record_kind, record_id);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_tombstones_active_record
+                  ON sync_tombstones(record_kind, record_id)
+                  WHERE restored_at IS NULL;
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_deleted_at
+                  ON sync_tombstones(deleted_at);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_deleted_by_peer
+                  ON sync_tombstones(deleted_by_sync_peer_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_source_export
+                  ON sync_tombstones(source_export_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_restored_at
+                  ON sync_tombstones(restored_at);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstones_cascade_from
+                  ON sync_tombstones(cascade_from);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

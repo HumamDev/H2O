@@ -281,6 +281,51 @@ Chrome should eventually use IndexedDB for tombstones rather than
 `chrome.storage`, because tombstones are durable sync records and can grow over
 time. Mobile can mirror the Desktop SQLite model when mobile sync is in scope.
 
+## F5C Local Store Scaffold
+
+F5C adds the inert Desktop-local storage scaffold:
+
+- SQLite table: `sync_tombstones`
+- Desktop store module: `H2O.Studio.store.tombstones`
+- Module file: `src-surfaces-base/studio/store/tombstones.tauri.js`
+
+F5C keeps all existing delete behavior unchanged. No `remove`, `unbindChat`,
+`replaceForChat`, `clearChat`, or archive delete path calls the tombstone store.
+Tombstones are written only when `createTombstone(record)` is called directly.
+
+The table uses `tombstone_id` as the primary key and keeps history by allowing
+multiple tombstones for the same `record_kind + record_id` over time. A partial
+unique index prevents duplicate active tombstones while still allowing a new
+active tombstone after a previous one is marked restored:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_tombstones_active_record
+  ON sync_tombstones(record_kind, record_id)
+  WHERE restored_at IS NULL;
+```
+
+F5C API:
+
+```js
+H2O.Studio.store.tombstones.createTombstone(record)
+H2O.Studio.store.tombstones.getTombstone(recordKind, recordId)
+H2O.Studio.store.tombstones.getById(tombstoneId)
+H2O.Studio.store.tombstones.listTombstones(filters)
+H2O.Studio.store.tombstones.countByKind(filters)
+H2O.Studio.store.tombstones.markRestored(tombstoneId, restoredBySyncPeerId)
+H2O.Studio.store.tombstones.validateTombstone(record)
+await H2O.Studio.store.tombstones.diagnose(options)
+```
+
+`deletedBySyncPeerId` is resolved from `H2O.Studio.identity.whenReady()` unless
+the caller supplies it. If identity is unavailable, direct tombstone creation
+fails clearly. `sourceExportId` and `sourceSequenceNumber` remain optional in
+F5C because tombstones are not exported or imported yet.
+
+`markRestored()` only sets `restored_at`, `restored_by_sync_peer_id`, and
+`updated_at`; it never deletes the tombstone row. `diagnose()` is content-free
+and redacts peer IDs by default.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
