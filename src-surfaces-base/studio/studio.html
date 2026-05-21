@@ -279,6 +279,15 @@
        Contracts: surfaces/studio/store/README.md,
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./store/context.js"></script>
+  <!-- ── Studio Store: Bookmarks (Phase 1d, read-only) ──────────────────
+       Read-only Studio-side façade over the native Bookmarks Engine
+       per-chat key (h2o:prm:cgx:bkmrksngne:state:bookmarks_${id}:v1).
+       No write API, no Dock UI, no native edits. Loads after
+       store/index.js + store/context.js so it can register as an entity
+       via __registerEntity alongside its sibling read-only stores.
+       Contracts: surfaces/studio/store/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./store/bookmarks.js"></script>
   <script src="./store/libraryIndex.js"></script>
   <!-- Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
        and silently no-ops on MV3 / web. Backs the `chats` table defined in
@@ -351,6 +360,11 @@
        only after the root latest.json commit succeeds. No Chrome device reads,
        no bidirectional sync, no tombstones, no polling. -->
   <script src="./sync/peer-transport.js"></script>
+  <!-- F4.x: Desktop-only read-only peer discovery diagnostics. Scans the
+       existing devices/* peer mirror layout and reports state/checksum
+       integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,
+       manifests, or history. -->
+  <script src="./sync/peer-discovery.js"></script>
   <!-- F1A: pure read-only multi-peer diff analyzer (surface-agnostic).
        Registers H2O.Studio.diagnostics.multiPeerDiff and
        H2O.Studio.diagnostics.collectLocalState. No IO; safe to load on every

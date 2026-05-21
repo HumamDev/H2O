@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, Phase 1b, and Phase 1c landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores) land in Phase 2+.
+Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, and Phase 1d landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores for Notes / Navigator / Capture) land in Phase 2+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -15,6 +15,7 @@ Companion docs:
 - **Phase 1a (landed)**: `dock-shell.studio.js` — defines `H2O.Studio.dock` and its `registerTab` API per the contract above. `mount/unmount/open/close/toggle/setView/getView` are no-op or in-memory-only state mutators; no DOM, no storage. Tabs registered through it are tracked in `H2O.Studio.dock.tabs` but not rendered yet.
 - **Phase 1b (landed)**: persistence wiring — `H2O.Studio.dock.state.open` and `.view` now persist through `H2O.Studio.store.prefs` (Studio-local keys `h2o:studio:dock:open:v1` and `h2o:studio:dock:view:v1`). The prefs entity itself lives at `../store/prefs.js`. `unregisterTab(id)`, `getState()`, and `selfCheck()` are added to the shell. Still no DOM, no native keys, no feature stores. See "Phase 1b — what landed" below.
 - **Phase 1c (landed)**: first read-only feature store — `H2O.Studio.store.context`. Reads native Context Engine keys (`h2o:prm:cgx:ctxeng:meta/items/ui/history`) through `H2O.Studio.platform.storage`. No write API. No Dock UI. No native edits. Lives at `../store/context.js`. See "Phase 1c — what landed" below.
+- **Phase 1d (landed)**: second read-only feature store — `H2O.Studio.store.bookmarks`. Reads native Bookmarks Engine per-chat key (`h2o:prm:cgx:bkmrksngne:state:bookmarks_${chatId}:v1`) through `H2O.Studio.platform.storage`. Exposes `get(chatId)` / `list(chatId)` / `getBookmark(chatId, id)` / `keysFor(chatId)` / `subscribe(fn)` / `selfCheck()`. No write API. No Dock UI. No native edits. Lives at `../store/bookmarks.js`. See "Phase 1d — what landed" below.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -243,5 +244,49 @@ If `H2O.Studio.store.__registerEntity` is available at load time (i.e., `store/i
 - No tabs. No `dock/tabs/` directory yet.
 - No additional feature stores. Bookmarks / Notes / Navigator / Capture are deferred to later 1c-style read-only phases.
 - No schema migration. The façade reads whatever shape the native engine writes; it does not normalize or upgrade.
+- No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
+- No extension of `fullBundle.v2`.
+
+## Phase 1d — what landed
+
+`store/bookmarks.js` is the second read-only Studio Dock feature store façade. It exposes `H2O.Studio.store.bookmarks`, reading the per-chat Bookmarks Engine blob written by `src-runtime-base/3B1a.…Bookmarks Engine.js`. Same passive pattern as `store/context.js`: sync API, async hydrate on first read, filtered subscription via `platform.broadcast.onAnyChange`, no write API.
+
+### `H2O.Studio.store.bookmarks` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1d-readonly'`. |
+| `readonly` | boolean | Always `true`. |
+| `get(chatId)` | function | Returns `{ chatId, raw, entries, key, found }`. `raw` is the unmodified cached blob (or `null`). `entries` is `normalizeEntries(raw)` — a shallow-copied array view of the native blob. `key` is the full storage key. `found` reflects whether the cache had a non-null value. Lazy-fetches on first call. |
+| `getAll(chatId)` | function | Alias of `get(chatId)`. |
+| `list(chatId)` | function | Returns just the entries array (best-effort: native shape is `Array<{msgId, primaryAId, pairNo, snapText, title, …}>`; missing or non-array values yield `[]`). |
+| `getBookmark(chatId, bookmarkId)` | function | Returns the entry whose `msgId === bookmarkId`, falling back to `primaryAId === bookmarkId`. Otherwise returns `null`. |
+| `keysFor(chatId)` | function | Returns the frozen object `{ bookmarks: 'h2o:prm:cgx:bkmrksngne:state:bookmarks_${chatId\|"unknown"}:v1' }`. Pure string-builder; no I/O. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, chatId, value, oldValue, at, source }`. |
+| `selfCheck()` | function | Returns `{ ok, version, readonly, hasPlatformStorage, hasDockKeys, hasDockKeyFor, registeredWithStoreIndex, errors[] }`. |
+
+### Chat-id fallback
+
+The native engine (3B1a.js:97 + 144-145) uses `STR.chatUnknown = 'unknown'` as the bucket name when chatId is empty or missing. This façade matches that fallback verbatim via `H2O.Studio.DockKeyFor.bookmarkKey` (which already uses `'unknown'`). Passing an empty string or `null` to `get` / `list` / `getBookmark` reads from the same `…bookmarks_unknown:v1` bucket the native engine writes.
+
+### Read flow (sync API, async hydrate)
+
+Same pattern as `store/context.js`. `get` / `list` / `getBookmark` return immediately from the in-memory cache. On the first read of an unseen chatId, the façade kicks off `platform.storage.get(key)`. When it resolves, the cache is populated and any subscribers receive a `'change'` event with `source: 'fetch'`. Subsequent calls return the cached value synchronously.
+
+### Subscription filter
+
+`subscribe(fn)` is filtered to bookmark keys only. The internal `platform.broadcast.onAnyChange` handler checks each changed key against the bookmark prefix + `:v1` suffix; non-matching keys are silently dropped. Subscribers never see Context changes, Dock UI changes, highlights changes, or any other key shape.
+
+### Registration with store index
+
+If `H2O.Studio.store.__registerEntity` is available at load time, the façade registers as the entity `'bookmarks'`. Otherwise it attaches directly as `H2O.Studio.store.bookmarks = api`. `selfCheck().registeredWithStoreIndex` reports which path was used.
+
+### What is still NOT in Phase 1d
+
+- No public write API (`set` / `update` / `remove` / `saveNow` are absent).
+- No Dock UI. No DOM. No CSS.
+- No tabs. No `dock/tabs/` directory yet.
+- No remaining feature stores. Notes / Navigator / Capture are deferred to later 1c-style read-only phases.
+- No schema migration. The façade preserves the native blob shape; it does not normalize bookmarks or fix legacy ids.
 - No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
 - No extension of `fullBundle.v2`.
