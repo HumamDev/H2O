@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, and Phase 1e landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`). Further modules (`tabs/*`, real DOM mount, additional read-only feature stores for Navigator / Capture) land in Phase 2+.
+Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, Phase 1e, and Phase 1f landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`, `../store/navigator.js`). Further modules (`tabs/*`, real DOM mount, read-only Capture store) land in Phase 2+.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -17,6 +17,7 @@ Companion docs:
 - **Phase 1c (landed)**: first read-only feature store — `H2O.Studio.store.context`. Reads native Context Engine keys (`h2o:prm:cgx:ctxeng:meta/items/ui/history`) through `H2O.Studio.platform.storage`. No write API. No Dock UI. No native edits. Lives at `../store/context.js`. See "Phase 1c — what landed" below.
 - **Phase 1d (landed)**: second read-only feature store — `H2O.Studio.store.bookmarks`. Reads native Bookmarks Engine per-chat key (`h2o:prm:cgx:bkmrksngne:state:bookmarks_${chatId}:v1`) through `H2O.Studio.platform.storage`. Exposes `get(chatId)` / `list(chatId)` / `getBookmark(chatId, id)` / `keysFor(chatId)` / `subscribe(fn)` / `selfCheck()`. No write API. No Dock UI. No native edits. Lives at `../store/bookmarks.js`. See "Phase 1d — what landed" below.
 - **Phase 1e (landed)**: third read-only feature store — `H2O.Studio.store.notes`. Reads native Notes Engine per-chat notes blob (`h2o:prm:cgx:ntsngn:store:notes:v1:${chatId}`) **and** scratchpad string (`…store:scratch:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `getNotes` / `getScratch` / `getBundle` / `getAll` / `list` / `getNote` / `keysFor` / `subscribe` / `selfCheck`. No write API, no body-version model, no conflict-resolution editing in Phase 1e. Lives at `../store/notes.js`. See "Phase 1e — what landed" below.
+- **Phase 1f (landed)**: fourth read-only feature store — `H2O.Studio.store.navigator`. Reads native Navigator Engine per-chat state blob (`h2o:prm:cgx:nvgngn:state:navigator:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `get` / `getAll` / `getState` / `listPinned` / `listAliases` / `listCollapsed` / `keysFor` / `subscribe` / `selfCheck`. No write API, no pin/alias/collapse editing, no turn-model abstraction, no DOM-derived outline. Lives at `../store/navigator.js`. See "Phase 1f — what landed" below.
 - **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
@@ -344,5 +345,66 @@ If `H2O.Studio.store.__registerEntity` is available at load time, the façade re
 - No tabs. No `dock/tabs/` directory yet.
 - No remaining feature stores. Navigator and Capture are deferred to later 1c-style read-only phases.
 - No schema migration. The façade preserves the native blob shapes; it does not normalize notes, scratchpad text, or fix legacy fields.
+- No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
+- No extension of `fullBundle.v2`.
+
+## Phase 1f — what landed
+
+`store/navigator.js` is the fourth read-only Studio Dock feature store façade. It exposes `H2O.Studio.store.navigator`, reading the per-chat Navigator Engine state blob written by `src-runtime-base/3V1a.…Navigator Engine.js`. Same passive pattern as `store/context.js`, `store/bookmarks.js`, and `store/notes.js`: sync API, async hydrate on first read, filtered subscription via `platform.broadcast.onAnyChange`, no write API.
+
+### `H2O.Studio.store.navigator` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1f-readonly'`. |
+| `readonly` | boolean | Always `true`. |
+| `get(chatId)` | function | Returns the cached raw navigator blob (or `null`). Lazy-fetches on first call. |
+| `getAll(chatId)` | function | Alias of `get(chatId)`. |
+| `getState(chatId)` | function | Returns `{ chatId, raw, key, found }`. |
+| `listPinned(chatId)` | function | Returns a shallow-copied array of `raw.pins`. Each entry preserves the native shape (`{turnId, kind:'question'\|'answer', answerId?}`). Returns `[]` if shape is missing/invalid. |
+| `listAliases(chatId)` | function | Returns `Array<{ key, value }>` derived from `raw.aliases`. Alias keys may include the `::a:<answerId>` suffix for answer-level aliases — preserved verbatim. |
+| `listCollapsed(chatId)` | function | Returns `Array<{ turnId, collapsed: true }>` — filtered to truthy values only, because the native engine may store `false` after a toggle. |
+| `keysFor(chatId)` | function | Returns the frozen object `{ navigator: 'h2o:prm:cgx:nvgngn:state:navigator:v1:${chatId\|"unknown"}' }`. Pure string-builder; no I/O. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, chatId, value, oldValue, at, source }`. |
+| `selfCheck()` | function | Returns `{ ok, version, readonly, hasPlatformStorage, hasDockKeys, hasDockKeyFor, registeredWithStoreIndex, errors[] }`. |
+
+### Native blob shape (from 3V1a.js:55-56, 248-249, 431-469)
+
+```
+{
+  pins:      Array<{ turnId: string,
+                     kind:   'question' | 'answer',
+                     answerId?: string }>,
+  aliases:   { [turnId | 'turnId::a:answerId']: string },
+  collapsed: { [turnId]: boolean }
+}
+```
+
+### Chat-id fallback
+
+The native engine (3V1a.js:84) uses the literal string `'unknown'` when chatId is empty or missing. This façade matches that fallback verbatim via `H2O.Studio.DockKeyFor.navigatorKey` (which uses `safeId(chatId, 'unknown')`). Passing an empty string or `null` to `get` / `getState` / `listPinned` / `listAliases` / `listCollapsed` reads from the same `…navigator:v1:unknown` bucket the native engine writes.
+
+### Read flow (sync API, async hydrate)
+
+Same pattern as the other read-only stores. `get` / `getState` / `listPinned` / `listAliases` / `listCollapsed` return immediately from the in-memory cache. On the first read of an unseen chatId, the façade kicks off `platform.storage.get(key)`. When it resolves, the cache is populated and any subscribers receive a `'change'` event with `source: 'fetch'`. Subsequent calls return the cached value synchronously.
+
+### Subscription filter
+
+`subscribe(fn)` is filtered to navigator keys only. The internal `platform.broadcast.onAnyChange` handler checks each changed key against the navigator prefix; non-matching keys are silently dropped. Subscribers never see Notes/Bookmarks/Context/Dock-UI/highlights changes or any other key shape.
+
+### Registration with store index
+
+If `H2O.Studio.store.__registerEntity` is available at load time, the façade registers as the entity `'navigator'`. Otherwise it attaches directly as `H2O.Studio.store.navigator = api`. `selfCheck().registeredWithStoreIndex` reports which path was used.
+
+### What is still NOT in Phase 1f
+
+- No public write API (`set` / `update` / `remove` / `saveNow` are absent).
+- No pin / alias / collapse editing of any kind.
+- **No turn-model abstraction.** The façade reads the persisted blob only; it does not infer a turn outline from the Studio reader DOM, does not derive Q→A structure, and does not generate a navigable outline. That belongs in Phase 2 alongside the real Dock UI mount.
+- No outline rendering. No Navigator tab UI.
+- No Dock UI. No DOM. No CSS.
+- No tabs. No `dock/tabs/` directory yet.
+- No remaining feature stores. Capture is deferred to the next read-only phase.
+- No schema migration. The façade preserves the native blob shape; it does not normalize pins/aliases/collapsed or fix legacy fields.
 - No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
 - No extension of `fullBundle.v2`.

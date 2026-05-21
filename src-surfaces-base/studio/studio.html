@@ -299,6 +299,16 @@
        Contracts: surfaces/studio/store/README.md,
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./store/notes.js"></script>
+  <!-- ── Studio Store: Navigator (Phase 1f, read-only) ──────────────────
+       Read-only Studio-side façade over the native Navigator Engine
+       per-chat state key (h2o:prm:cgx:nvgngn:state:navigator:v1:${id}).
+       No write API, no Dock UI, no native edits, no turn-model
+       abstraction, no DOM-derived outline. Loads after store/index.js
+       + sibling read-only stores so it can register as an entity via
+       __registerEntity alongside context, bookmarks, and notes.
+       Contracts: surfaces/studio/store/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./store/navigator.js"></script>
   <script src="./store/libraryIndex.js"></script>
   <!-- Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
        and silently no-ops on MV3 / web. Backs the `chats` table defined in
