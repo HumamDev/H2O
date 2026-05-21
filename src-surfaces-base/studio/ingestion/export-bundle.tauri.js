@@ -30,7 +30,10 @@
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var LABEL_BINDINGS_KEY = 'h2o:prm:cgx:library:labels:bindings:v1';
   var DEFAULT_KEEP_LATEST = 30;
-  var EXPORTER_VERSION = '0.1.0';
+  var EXPORTER_VERSION = '0.2.0-f3';
+  /* F3: opt-in identity-aware envelope stamping. Bundle schema stays
+   * 'h2o.studio.fullBundle.v2'; this string marks the stamping convention. */
+  var EXPORT_SCHEMA_VERSION = 'h2o.studio.export-envelope.v1';
   var SYNC_FOLDER_NAME = 'H2O Studio Sync';
   var SYNC_LATEST_FILE = 'latest.json';
   var SYNC_TMP_FILE = '.latest.json.tmp';
@@ -147,6 +150,37 @@
       if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(text || '')).byteLength;
     } catch (_) { /* ignore */ }
     return String(text || '').length;
+  }
+
+  /* F3: read F2 peer identity defensively. Returns null if the identity
+   * module is unavailable or its whenReady() fails. Never throws. */
+  async function readIdentitySafely() {
+    try {
+      var api = H2O && H2O.Studio && H2O.Studio.identity;
+      if (api && typeof api.whenReady === 'function') {
+        var id = await api.whenReady();
+        if (id && typeof id === 'object') return id;
+      }
+    } catch (_) { /* swallow */ }
+    return null;
+  }
+
+  /* F3: ask the producer-side export log to mint a new export event.
+   * Returns { exportId, sequenceNumber, previousExportId, exportedAt } on
+   * success or null if the log module is unavailable / fails. Caller
+   * stamps the bundle on success and falls back to pre-F3 envelope on null. */
+  async function recordExportEventSafely(syncPeerId, outboundPath) {
+    try {
+      var api = H2O && H2O.Studio && H2O.Studio.exportLog;
+      if (api && typeof api.recordExport === 'function') {
+        var event = await api.recordExport({
+          syncPeerId: cleanString(syncPeerId),
+          outboundPath: cleanString(outboundPath)
+        });
+        if (event && typeof event === 'object') return event;
+      }
+    } catch (_) { /* swallow */ }
+    return null;
   }
 
   function uniqStrings(values) {
@@ -1071,6 +1105,19 @@
       },
       summary: summary,
     };
+    /* F3 (identity-only stamps). Pulled from F2's H2O.Studio.identity if
+     * available. Does NOT mint exportId / sequenceNumber / previousExportId /
+     * contentSha256 — those are reserved for exportLatestSyncBundle (the
+     * disk-writing path). exportFullBundle must not look like a real export
+     * event. */
+    bundle.exportSchemaVersion = EXPORT_SCHEMA_VERSION;
+    var identity = await readIdentitySafely();
+    if (identity) {
+      bundle.sourceSyncPeerId  = cleanString(identity.syncPeerId);
+      bundle.sourceSurfaceKind = cleanString(identity.surfaceKind);
+      bundle.sourceAppKind     = cleanString(identity.appKind);
+      bundle.sourceStoreKind   = cleanString(identity.storeKind);
+    }
     state.lastExportAt = Date.now();
     state.lastSummary = summary;
     state.lastFolderParity = folderParity;
@@ -1088,6 +1135,34 @@
         syncFolderName: SYNC_FOLDER_NAME,
       }));
       var exportedAt = cleanString(bundle && bundle.exportedAt) || nowIso();
+
+      /* F3 — disk-writing exporter mints the per-export event tuple and
+       * stamps it on the envelope. Order is:
+       *   1. recordExport() persists the log (sequence consumed BEFORE file
+       *      write; if the file write later fails the sequence is "burned"
+       *      and gaps are tolerated).
+       *   2. Patch bundle with exportId / sequenceNumber / previousExportId.
+       *   3. Compute contentSha256 over the bundle WITHOUT the contentSha256
+       *      field (so consumers can verify by stripping it back out).
+       *   4. Patch bundle.contentSha256.
+       * If H2O.Studio.exportLog is unavailable, F3 stamping is skipped
+       * cleanly and the existing pre-F3 envelope shape is written. */
+      var syncPeerIdForEvent = cleanString(bundle && bundle.sourceSyncPeerId);
+      var outboundDisplayPath = syncDisplayPath(SYNC_LATEST_FILE);
+      var exportEvent = await recordExportEventSafely(syncPeerIdForEvent, outboundDisplayPath);
+      if (exportEvent) {
+        bundle.exportId         = exportEvent.exportId;
+        bundle.sequenceNumber   = exportEvent.sequenceNumber;
+        bundle.previousExportId = exportEvent.previousExportId;
+        /* contentSha256 = SHA-256 of canonical bundle JSON minus the
+         * contentSha256 field itself. Consumers verify by stripping the
+         * field, serializing with JSON.stringify(bundle, null, 2) + '\n',
+         * hashing, and comparing. */
+        var preimageText = JSON.stringify(bundle, null, 2) + '\n';
+        var contentHex   = await sha256Hex(preimageText);
+        bundle.contentSha256 = contentHex ? ('sha256:' + contentHex) : '';
+      }
+
       var text = JSON.stringify(bundle, null, 2) + '\n';
       var checksumHex = await sha256Hex(text);
       var checksum = checksumHex ? ('sha256:' + checksumHex) : '';
@@ -1118,6 +1193,17 @@
         sourceDeviceId: cleanString(bundle && bundle.exportedFromExtensionId) || 'desktop-tauri',
         schema: FULL_BUNDLE_SCHEMA,
         chatArchiveSchema: CHAT_ARCHIVE_SCHEMA,
+        /* F3 — additive diagnostic fields. Null/'' when the export-log was
+         * unavailable and stamping was skipped. */
+        exportSchemaVersion: cleanString(bundle && bundle.exportSchemaVersion),
+        exportId: cleanString(bundle && bundle.exportId),
+        sequenceNumber: (bundle && typeof bundle.sequenceNumber === 'number') ? bundle.sequenceNumber : null,
+        previousExportId: bundle && bundle.previousExportId ? cleanString(bundle.previousExportId) : null,
+        contentSha256: cleanString(bundle && bundle.contentSha256),
+        sourceSyncPeerId: cleanString(bundle && bundle.sourceSyncPeerId),
+        sourceSurfaceKind: cleanString(bundle && bundle.sourceSurfaceKind),
+        sourceAppKind: cleanString(bundle && bundle.sourceAppKind),
+        sourceStoreKind: cleanString(bundle && bundle.sourceStoreKind),
         atomicWrite: true,
         pathResolution: 'tauri-base-directory-home',
         autoRunOnBoot: false,

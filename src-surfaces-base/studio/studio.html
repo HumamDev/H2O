@@ -257,6 +257,14 @@
        transport, no R-phase behavior change. Loads BEFORE the multi-peer
        diagnostics so future consumers find H2O.Studio.identity available. -->
   <script src="./sync/peer-identity.js"></script>
+  <!-- F3: outbound export log. Mints exportId / sequenceNumber and tracks
+       previousExportId on every disk-writing export (only mutated by
+       H2O.Studio.ingestion.exportLatestSyncBundle). Single persistent key
+       'h2o:sync:export-log:v1'. The export-bundle.tauri.js exporter calls
+       H2O.Studio.exportLog.recordExport() at runtime; load order between
+       this file and export-bundle.tauri.js is irrelevant for correctness
+       (the IIFEs only register; the consumer call happens later). -->
+  <script src="./sync/export-log.js"></script>
   <!-- F1A: pure read-only multi-peer diff analyzer (surface-agnostic).
        Registers H2O.Studio.diagnostics.multiPeerDiff and
        H2O.Studio.diagnostics.collectLocalState. No IO; safe to load on every

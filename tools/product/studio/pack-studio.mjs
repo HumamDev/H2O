@@ -80,6 +80,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // chrome.storage.local (Tauri kv shim on Desktop). Loads BEFORE the
   // multi-peer diagnostics so consumers find H2O.Studio.identity available.
   "sync/peer-identity.js",
+  // F3: outbound export log. Mints exportId / sequenceNumber on every
+  // disk-writing export and tracks previousExportId. Single persistent
+  // key 'h2o:sync:export-log:v1'. Only mutated by exportLatestSyncBundle.
+  // exportFullBundle (in-memory) never touches this log.
+  "sync/export-log.js",
   // F1A: pure, synchronous multi-peer diff analyzer. Surface-agnostic.
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
@@ -199,6 +204,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
   "sync/peer-identity.js",
+  "sync/export-log.js",
   "sync/multi-peer-diff.js",
   "sync/multi-peer-runner.js",
 
