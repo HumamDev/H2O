@@ -809,6 +809,12 @@
       folderName: state.folderName,
       permission: state.permission,
       latestFile: LATEST_FILE,
+      /* F3.1: expose lastAppliedExportId so consumers can see which producer
+       * export this peer most recently applied. The value is already read
+       * from bundle.exportId at line ~969, persisted to chrome.storage.local
+       * via persistState(), and restored on boot via loadState(). diagnose()
+       * wraps status() with Object.assign, so it automatically picks this up. */
+      lastAppliedExportId: state.lastAppliedExportId,
       lastAppliedAt: state.lastAppliedAt,
       lastChecksum: state.lastChecksum,
       lastSyncStatus: state.lastSyncStatus,
