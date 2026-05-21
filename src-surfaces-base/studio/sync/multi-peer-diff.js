@@ -154,27 +154,37 @@
    * ──────────────────────────────────────────────────────────────────── */
 
   function extractChats(bundle) {
+    /* The real wire shape nests chat metadata under `chatIndex` (observed on
+     * `~/H2O Studio Sync/latest.json` from the Desktop exporter). We probe
+     * top-level first, then fall through to `chatIndex.*` so the analyzer
+     * reports against actual wire data, not a hypothetical top-level shape. */
     var archive = safeObject(safeObject(bundle).chatArchive);
     var chats = asArray(archive.chats);
     var out = [];
     for (var i = 0; i < chats.length; i++) {
       var c = safeObject(chats[i]);
+      var idx = safeObject(c.chatIndex);
       var state = safeObject(c.state);
+      var idxState = safeObject(idx.state);
       out.push({
         chatId:      safeString(c.chatId || c.id),
-        title:       safeString(c.title),
-        href:        safeString(c.href || c.url),
-        createdAt:   c.createdAt || c.created_at,
-        updatedAt:   c.updatedAt || c.updated_at,
+        title:       safeString(c.title || idx.title),
+        href:        safeString(c.href || c.url || idx.href || idx.linkSourceHref),
+        createdAt:   c.createdAt || c.created_at || idx.linkedAt,
+        updatedAt:   c.updatedAt || c.updated_at || idx.lastCapturedAt,
+        linkedAt:       idx.linkedAt,
+        lastCapturedAt: idx.lastCapturedAt,
+        lastDigest:     safeString(idx.lastDigest),
+        lastSnapshotId: safeString(idx.lastSnapshotId),
         source:      safeString(c.source),
         host:        safeString(c.host || c.captureHost || c.origin || safeObject(c.meta).host),
         captureSource: safeString(c.captureSource || safeObject(c.meta).captureSource),
         state: {
-          isLinked:   !!state.isLinked,
-          isSaved:    !!state.isSaved,
-          isPinned:   !!state.isPinned,
-          isArchived: !!state.isArchived,
-          isDeleted:  !!state.isDeleted
+          isLinked:   !!(state.isLinked   || idxState.isLinked),
+          isSaved:    !!(state.isSaved    || idxState.isSaved),
+          isPinned:   !!(state.isPinned   || idxState.isPinned),
+          isArchived: !!(state.isArchived || idxState.isArchived),
+          isDeleted:  !!(state.isDeleted  || idxState.isDeleted)
         },
         categoryId:  safeString(c.categoryId),
         projectId:   safeString(c.projectId),
@@ -460,8 +470,8 @@
         var r = rows[j];
         var id = safeString(r.id || r.chatId || r.snapshotId);
         if (!id) c.missingStableId++;
-        if (!isIsoLike(r.createdAt) && !isIsoLike(r.firstSeenAt) && !isIsoLike(r.capturedAt) && !isIsoLike(r.boundAt)) c.missingCreatedAt++;
-        if (!isIsoLike(r.updatedAt) && !isIsoLike(r.lastSeenAt) && !isIsoLike(r.cachedAt)) c.missingUpdatedAt++;
+        if (!isIsoLike(r.createdAt) && !isIsoLike(r.firstSeenAt) && !isIsoLike(r.capturedAt) && !isIsoLike(r.boundAt) && !isIsoLike(r.linkedAt)) c.missingCreatedAt++;
+        if (!isIsoLike(r.updatedAt) && !isIsoLike(r.lastSeenAt) && !isIsoLike(r.cachedAt) && !isIsoLike(r.lastCapturedAt)) c.missingUpdatedAt++;
         /* Digests are only meaningful for snapshots today. */
         if (kind === 'snapshot' && !safeString(r.digest)) c.missingDigest++;
         if (kind !== 'snapshot') c.missingDigest++; /* signals "no per-record digest concept yet" */
