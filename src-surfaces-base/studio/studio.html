@@ -189,6 +189,15 @@
   <script src="./platform/platform.tauri.js"></script>
   <script src="./platform/selectors.contract.js"></script>
 
+  <!-- ── Studio Dock Constants (Phase 0B) ───────────────────────────────
+       Passive: attaches H2O.Studio.DockKeys / DockEvents / DockKeyFor.
+       No state, no I/O. Loads AFTER platform/ (consistent ordering, no
+       runtime dependency on platform) and BEFORE store/ + future dock
+       modules so any consumer can read the canonical key strings.
+       Contracts: surfaces/studio/dock/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./dock/dock-keys.js"></script>
+
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
        AFTER platform/ so the store can use platform.broadcast.onAnyChange,

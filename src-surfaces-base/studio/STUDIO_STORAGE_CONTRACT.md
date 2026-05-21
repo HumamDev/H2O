@@ -295,3 +295,16 @@ Examples: chat metadata, label bindings, highlight marks per turn, chat-title st
 - `docs/systems/library/storage.md` — defines Library-specific storage boundaries. Compatible: catalogs remain feature-owned; this contract reorganizes the access path through StudioStore but does not move ownership.
 - `docs/systems/library/sync-rules.md` — defines one-way sync into Index. Unchanged: StudioStore subscriptions are the medium for the same one-way flow.
 - `docs/systems/archive/contract.md`, `metadata-schema.md`, `capture-flow.md` — currently drafts. When filled in, they should reference `SnapshotRecord` and `TurnRecord` here as the canonical shapes.
+
+## Companion: Studio Dock Panel
+
+The Studio Dock Panel introduces per-feature state for Highlights, Bookmarks, Notes (with preserve-both body history), Navigator, Context, Capture, Finder, and Attachments. Its ownership, conflict, and surface-policy rules are governed by a separate contract that builds on this one:
+
+- `STUDIO_DOCK_PANEL_CONTRACT.md` — source-of-truth ownership table, per-feature conflict rules (including the non-LWW preserve-both model for note bodies and the scratchpad), UI-state-never-syncs rule, and the Capture / Smart Highlight V1 stance.
+- `../../docs/contracts/studio-dock-tab-registration.md` — the Studio-local `H2O.Studio.dock.registerTab` API. Studio-local only; the native runtime's `H2O.Dock.registerTab` is not unified with it.
+- `dock/README.md` — code-level conventions for modules under `src-surfaces-base/studio/dock/` (IIFE pattern; no ES module syntax; constants attach to `H2O.Studio.dock.*`).
+- `../../docs/architecture/studio-dock-panel-plan.md` — the phased plan. Read this for sequence (Phase 0A → 0B → 1 → … → 6) and what is in/out of each phase.
+
+Where the Dock Panel contract introduces new entity stores (Bookmarks, Notes, Navigator, Context), they follow the storage-key, schemaVersion, and migration rules already declared in this document. Where it diverges (notes-body preserve-both), the divergence is documented in `STUDIO_DOCK_PANEL_CONTRACT.md` and is treated as a refinement to the generic LWW guidance here, not a contradiction.
+
+`fullBundle.v2` schema extension to carry Dock Panel feature state is **deferred to Phase 5** of that plan. Until then, bundle round-trips do not carry feature state. This document will be updated to reflect the new bundle fields when Phase 5 lands.
