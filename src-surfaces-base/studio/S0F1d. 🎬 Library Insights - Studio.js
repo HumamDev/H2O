@@ -75,6 +75,7 @@
     renderToken: 0,
     lastRoute: null,
     visible: false,
+    activeLinkedRow: null,
   };
 
   // ── Pure helpers ───────────────────────────────────────────────────────────
@@ -292,14 +293,160 @@
     return '';
   }
 
+  function isLinkedOnlyRow(row) {
+    if (!row || resolveSnapshotId(row)) return false;
+    const raw = row.raw || {};
+    const view = String(row.view || raw.view || '').toLowerCase();
+    const st = getRowState(row);
+    return view === 'linked' || !!st.isLinked;
+  }
+
+  function sameChatRow(a, b) {
+    const aChat = String(a?.chatId || a?.raw?.chatId || '').trim();
+    const bChat = String(b?.chatId || b?.raw?.chatId || '').trim();
+    if (aChat && bChat) return aChat === bChat;
+    const aUrl = resolveLinkedUrl(a);
+    const bUrl = resolveLinkedUrl(b);
+    return !!(aUrl && bUrl && aUrl === bUrl);
+  }
+
+  function formatLinkedDetailDate(value) {
+    const ts = asTs(value);
+    return ts ? formatDateShort(ts) : String(value || '').trim();
+  }
+
+  function getSaveToFolderAction() {
+    const actions = H2O.LibraryActions || H2O.Library?.Actions || H2O.Library?.actions || null;
+    if (!actions || typeof actions.saveToFolder !== 'function') return null;
+    try {
+      const supported = actions.diagnose?.()?.supportedActions?.saveToFolder;
+      if (supported === false) return null;
+    } catch {}
+    return actions.saveToFolder.bind(actions);
+  }
+
+  function openOriginalUrl(url, setStatus) {
+    if (!url) return;
+    try { setStatus?.('Opening original...'); } catch {}
+    const platform = H2O.Studio?.platform || null;
+    if (platform && typeof platform.openUrl === 'function') {
+      Promise.resolve(platform.openUrl(url)).then(
+        () => { try { setStatus?.(''); } catch {} },
+        (openErr) => {
+          try { W.open(url, '_blank', 'noopener'); setStatus?.(''); }
+          catch (fallbackErr) {
+            const msg = fallbackErr?.message || openErr?.message || fallbackErr || openErr || 'unknown error';
+            try { setStatus?.(`Open failed: ${String(msg)}`); } catch {}
+          }
+        }
+      );
+      return;
+    }
+    try { W.open(url, '_blank', 'noopener'); setStatus?.(''); }
+    catch (e) { try { setStatus?.(`Open failed: ${String(e?.message || e || 'unknown error')}`); } catch {} }
+  }
+
+  function renderLinkedDetailsPanel(row) {
+    const raw = row?.raw || {};
+    const title = String(row?.title || raw.title || row?.chatId || raw.chatId || 'Linked chat');
+    const url = resolveLinkedUrl(row);
+    const linkedAt = formatLinkedDetailDate(row?.linkedAt || raw.linkedAt || row?.capturedAt || raw.capturedAt || row?.updatedAt || raw.updatedAt);
+    const linkedFrom = String(row?.linkedFrom || raw.linkedFrom || '').trim();
+    const chatId = String(row?.chatId || raw.chatId || '').trim();
+    const saveToFolder = getSaveToFolderAction();
+    const status = el('div', {
+      class: 'wbLinkedDetailsStatus',
+      style: 'min-height:16px;margin-top:12px;font-size:12px;opacity:.7',
+      'aria-live': 'polite',
+    });
+    const setStatus = (msg) => { status.textContent = String(msg || ''); };
+
+    const metaRows = [
+      ['URL', el('code', { style: 'white-space:normal;word-break:break-all' }, url || 'Unavailable')],
+      ['Linked at', linkedAt || 'Unavailable'],
+      ['Linked from', linkedFrom || 'Unavailable'],
+      ['Chat ID', el('code', { style: 'word-break:break-all' }, chatId || 'Unavailable')],
+    ].map(([label, value]) => [
+      el('div', { style: 'opacity:.58' }, label),
+      value instanceof Node ? el('div', {}, value) : el('div', {}, value),
+    ]).flat();
+
+    const openBtn = el('button', {
+      type: 'button',
+      class: 'wbLinkedDetailsOpen',
+      data: { linkedAction: 'open-original' },
+      style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.07);color:inherit;font:inherit;font-weight:600;cursor:pointer',
+    }, 'Open original');
+    if (!url) openBtn.disabled = true;
+    openBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openOriginalUrl(url, setStatus);
+    });
+
+    const closeBtn = el('button', {
+      type: 'button',
+      class: 'wbLinkedDetailsClose',
+      data: { linkedAction: 'close' },
+      style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:transparent;color:inherit;font:inherit;cursor:pointer;opacity:.78',
+    }, 'Back to Linked list');
+    closeBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.activeLinkedRow = null;
+      render();
+    });
+
+    const actions = [openBtn];
+    if (saveToFolder) {
+      const saveBtn = el('button', {
+        type: 'button',
+        class: 'wbLinkedDetailsSave',
+        data: { linkedAction: 'save-to-folder' },
+        style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:inherit;font:inherit;cursor:pointer',
+      }, 'Save to Folder');
+      saveBtn.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setStatus('Requesting Save to Folder...');
+        try {
+          const result = await saveToFolder({ chatId, href: url, title });
+          if (result?.ok === false) setStatus(`Save to Folder failed: ${String(result.reason || result.error || 'unknown')}`);
+          else setStatus('Save to Folder requested.');
+        } catch (e) {
+          setStatus(`Save to Folder failed: ${String(e?.message || e || 'unknown')}`);
+        }
+      });
+      actions.push(saveBtn);
+    }
+    actions.push(closeBtn);
+
+    return el('section', {
+      class: 'wbLinkedDetailsPanel',
+      role: 'region',
+      'aria-label': 'Linked chat details',
+      style: 'margin:0 0 14px;padding:18px 20px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:rgba(255,255,255,.035)',
+      data: { chatId },
+    }, [
+      el('div', { style: 'font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.56;margin-bottom:6px' }, 'Linked chat'),
+      el('h2', { style: 'margin:0 0 12px;font-size:20px;line-height:1.3;font-weight:650' }, title),
+      el('div', {
+        class: 'wbLinkedDetailsMeta',
+        style: 'display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0 0 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
+      }, metaRows),
+      el('div', { style: 'display:flex;gap:10px;flex-wrap:wrap' }, actions),
+      status,
+    ]);
+  }
+
   function ChatRow(row, idx) {
     const sid = resolveSnapshotId(row);
     const st = getRowState(row);
     const linkedUrl = resolveLinkedUrl(row);
+    const opensLinkedDetails = isLinkedOnlyRow(row);
     // Click target priority: saved+snapshot → Studio reader; linked-only →
-    // original ChatGPT chat; otherwise the row is inert.
+    // in-page details; otherwise the row is inert.
     const opensReader = !!sid && !st.isDeleted;
-    const opensExternal = !opensReader && !!(st.isLinked && linkedUrl);
 
     const meta = [];
     if (row.folderName) meta.push(`📁 ${row.folderName}`);
@@ -318,16 +465,16 @@
     // native source URL to fall back to.
     const chips = [];
     if (st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
-    else if (st.isLinked) chips.push(['Linked', 'wbRowChip--linked']);
+    else if (st.isLinked || opensLinkedDetails) chips.push(['Linked', 'wbRowChip--linked']);
     if (st.isImported) chips.push(['Imported', 'wbRowChip--imported']);
 
     // Anchor href: prefer the reader hash for saved rows so cmd-click "open
-    // in new tab" stays inside Studio; for linked-only rows the href IS the
-    // original ChatGPT URL so cmd-click opens it natively.
+    // in new tab" stays inside Studio; for linked-only rows keep the primary
+    // click in Studio and expose the native URL through the details panel.
     const anchorHref = opensReader
       ? `#/read/${encodeURIComponent(sid)}`
-      : (opensExternal ? linkedUrl : '#');
-    const inertAria = (opensReader || opensExternal) ? null : 'true';
+      : (opensLinkedDetails ? '#/library/linked' : '#');
+    const inertAria = (opensReader || opensLinkedDetails) ? null : 'true';
 
     const titleRow = el('div', { class: 'wbChatRowTitleRow' }, [
       el('div', { class: 'wbChatRowTitle' }, row.title || row.chatId || 'Untitled chat'),
@@ -351,9 +498,8 @@
 
     // Secondary action: a compact "Open original ChatGPT chat" button shown
     // when the row is a SAVED record that also has a source URL. Linked-only
-    // rows already open the original on primary click, so no secondary
-    // affordance is needed for them. Imported-only saves with no source URL
-    // omit the button entirely.
+    // rows expose the same action from their in-page details panel. Imported-
+    // only saves with no source URL omit the button entirely.
     if (opensReader && linkedUrl) {
       const openExt = el('button', {
         type: 'button',
@@ -380,9 +526,9 @@
         snapshotId: sid,
         view:       row.view || '',
         idx:        String(idx),
-        linked:     st.isLinked ? '1' : '0',
+        linked:     (st.isLinked || opensLinkedDetails) ? '1' : '0',
         saved:      st.isSaved  ? '1' : '0',
-        opens:      opensReader ? 'reader' : (opensExternal ? 'external' : 'none'),
+        opens:      opensReader ? 'reader' : (opensLinkedDetails ? 'linked-details' : 'none'),
       },
       title: row.title || row.chatId || '',
       'aria-disabled': inertAria,
@@ -390,21 +536,18 @@
 
     anchor.addEventListener('click', (ev) => {
       // Inert rows: nothing to do.
-      if (!opensReader && !opensExternal) { ev.preventDefault(); return; }
-      // Preserve modifier/middle-click semantics for both branches: cmd-click
-      // on a saved row opens the reader in a new tab; cmd-click on a linked
-      // row opens the native chat in a new tab.
-      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      if (!opensReader && !opensLinkedDetails) { ev.preventDefault(); return; }
 
-      if (opensExternal) {
-        // Linked-only: programmatically open the native URL so the in-Studio
-        // hash doesn't move. Anchor href IS already the URL so default
-        // navigation would also try; we preventDefault to keep Studio's
-        // route stable and explicitly use noopener.
+      if (opensLinkedDetails) {
         ev.preventDefault();
-        try { W.open(linkedUrl, '_blank', 'noopener'); } catch {}
+        state.activeLinkedRow = row;
+        render();
         return;
       }
+
+      // Preserve modifier/middle-click semantics for saved rows: cmd-click
+      // opens the reader in a new tab.
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
 
       // Saved path — identical to the prior implementation. Anchor's default
       // navigation sets location.hash; studio.js's hashchange listener calls
@@ -985,6 +1128,11 @@
     const filtered = filterRowsForExplorer(rows, opts);
     const grouped = groupRows(filtered);
     const activeView = String(opts.forceView || prefs.view || 'saved').toLowerCase();
+    let activeLinkedRow = null;
+    if (activeView === 'linked' && state.activeLinkedRow) {
+      activeLinkedRow = filtered.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
+      if (!activeLinkedRow) state.activeLinkedRow = null;
+    }
     // "Rich" mode = dedicated Explorer tab. The Saved / Pinned / Archive tabs
     // (forceView set) keep the simpler chip-only layout.
     const rich = !opts.forceView;
@@ -1012,6 +1160,7 @@
     ]);
 
     const body = el('section', { class: 'wbExpBody' });
+    if (activeLinkedRow) body.appendChild(renderLinkedDetailsPanel(activeLinkedRow));
     if (grouped.length === 0 || grouped.every((g) => g.rows.length === 0)) {
       body.appendChild(el('div', { class: 'wbExpEmpty' }, [
         el('div', { class: 'wbExpEmptyTitle' }, 'No chats match'),
@@ -1524,6 +1673,7 @@
   }
 
   function renderLibraryShell(view, idx) {
+    if (view !== 'linked' && state.activeLinkedRow) state.activeLinkedRow = null;
     let bodyContent;
     if (view === 'explorer')        bodyContent = renderExplorer(idx, { hideInternalSearch: true });
     else if (view === 'analytics')   bodyContent = renderAnalytics(idx);
