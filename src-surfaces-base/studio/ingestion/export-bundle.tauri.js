@@ -293,6 +293,169 @@
     return out;
   }
 
+  function normalizeFolderItems(rawItems) {
+    var out = Object.create(null);
+    var src = rawItems && typeof rawItems === 'object' && !Array.isArray(rawItems) ? rawItems : {};
+    Object.keys(src).forEach(function (folderIdRaw) {
+      var folderId = cleanString(folderIdRaw);
+      if (!folderId) return;
+      out[folderId] = uniqStrings(asArray(src[folderId]));
+    });
+    return out;
+  }
+
+  function normalizeFolderState(raw, fallbackSource) {
+    var src = safeObject(raw);
+    var source = cleanString(src.exportedFrom || src.source || fallbackSource || 'folder-state-cache') || 'folder-state-cache';
+    var seen = Object.create(null);
+    var folders = [];
+    asArray(src.folders).forEach(function (row) {
+      var projected = projectFolder(Object.assign({}, safeObject(row), {
+        source: cleanString(row && row.source) || source,
+      }));
+      if (!projected || seen[projected.id]) return;
+      seen[projected.id] = true;
+      folders.push(projected);
+    });
+    var items = normalizeFolderItems(src.items);
+    folders.forEach(function (folder) {
+      var id = cleanString(folder && folder.id);
+      if (id && !Object.prototype.hasOwnProperty.call(items, id)) items[id] = [];
+    });
+    return {
+      schemaVersion: Number(src.schemaVersion || src.version || 1) || 1,
+      exportedFrom: source,
+      exportedAt: cleanString(src.exportedAt || src.updatedAt || '') || nowIso(),
+      folders: folders,
+      items: items,
+    };
+  }
+
+  function countFolderBindings(items) {
+    return Object.keys(items || {}).reduce(function (sum, folderId) {
+      return sum + asArray(items[folderId]).length;
+    }, 0);
+  }
+
+  function mergeFolderRows(primary, fallback) {
+    var p = safeObject(primary);
+    var f = safeObject(fallback);
+    var id = cleanString(p.id || p.folderId || f.id || f.folderId);
+    if (!id) return null;
+    var pMeta = safeObject(p.meta);
+    var fMeta = safeObject(f.meta);
+    var color = cleanString(p.color || p.iconColor || pMeta.color || pMeta.iconColor || f.color || f.iconColor || fMeta.color || fMeta.iconColor);
+    var icon = cleanString(p.icon || pMeta.icon || pMeta.iconKey || f.icon || fMeta.icon || fMeta.iconKey);
+    var out = {
+      id: id,
+      name: cleanString(p.name || p.title || pMeta.name || f.name || f.title || fMeta.name || id) || id,
+      kind: cleanString(p.kind || pMeta.kind || f.kind || fMeta.kind || 'local') || 'local',
+      parentId: cleanString(p.parentId || pMeta.parentId || f.parentId || fMeta.parentId),
+      source: cleanString(p.source || pMeta.source || f.source || fMeta.source || 'desktop-sqlite') || 'desktop-sqlite',
+      sortOrder: Math.floor(numberOrZero(
+        p.sortOrder != null ? p.sortOrder
+          : pMeta.sortOrder != null ? pMeta.sortOrder
+          : f.sortOrder != null ? f.sortOrder
+          : fMeta.sortOrder
+      )),
+      createdAt: cleanString(p.createdAt || pMeta.createdAt || f.createdAt || fMeta.createdAt),
+      updatedAt: cleanString(p.updatedAt || pMeta.updatedAt || f.updatedAt || fMeta.updatedAt),
+      meta: Object.assign({}, fMeta, pMeta),
+    };
+    if (color) {
+      out.color = color;
+      out.iconColor = color;
+    }
+    if (icon) out.icon = icon;
+    return out;
+  }
+
+  function mergeFolderStates(primaryStateRaw, fallbackStateRaw) {
+    var primary = normalizeFolderState(primaryStateRaw, 'desktop-sqlite');
+    var fallback = normalizeFolderState(fallbackStateRaw, 'folder-state-cache');
+    var byId = Object.create(null);
+    var order = [];
+    primary.folders.forEach(function (folder) {
+      var id = cleanString(folder && folder.id);
+      if (!id || byId[id]) return;
+      byId[id] = folder;
+      order.push(id);
+    });
+    var addedFolderCount = 0;
+    var filledVisualMetadataCount = 0;
+    fallback.folders.forEach(function (folder) {
+      var id = cleanString(folder && folder.id);
+      if (!id) return;
+      if (!byId[id]) {
+        byId[id] = mergeFolderRows(null, folder);
+        order.push(id);
+        addedFolderCount += 1;
+        return;
+      }
+      var before = byId[id];
+      var merged = mergeFolderRows(before, folder);
+      if (merged && (!cleanString(before.color || before.iconColor) && cleanString(merged.color || merged.iconColor))) {
+        filledVisualMetadataCount += 1;
+      }
+      byId[id] = merged || before;
+    });
+    var items = Object.create(null);
+    var addItems = function (rawItems) {
+      var normalized = normalizeFolderItems(rawItems);
+      Object.keys(normalized).forEach(function (folderId) {
+        items[folderId] = uniqStrings((items[folderId] || []).concat(normalized[folderId]));
+      });
+    };
+    addItems(primary.items);
+    addItems(fallback.items);
+    order.forEach(function (folderId) {
+      if (!Object.prototype.hasOwnProperty.call(items, folderId)) items[folderId] = [];
+    });
+    var folders = order.map(function (folderId) { return byId[folderId]; }).filter(Boolean);
+    var primaryBindingCount = countFolderBindings(primary.items);
+    var fallbackBindingCount = countFolderBindings(fallback.items);
+    var mergedBindingCount = countFolderBindings(items);
+    var fallbackAvailable = fallback.folders.length > 0 || fallbackBindingCount > 0;
+    var fallbackUsed = fallbackAvailable && (
+      addedFolderCount > 0 ||
+      fallbackBindingCount > primaryBindingCount ||
+      mergedBindingCount > primaryBindingCount ||
+      filledVisualMetadataCount > 0 ||
+      primary.folders.length === 0
+    );
+    var exportedFrom = fallbackUsed
+      ? (primary.folders.length ? 'desktop-sqlite+folder-state-cache' : fallback.exportedFrom)
+      : 'desktop-sqlite';
+    return {
+      state: {
+        schemaVersion: 1,
+        exportedFrom: exportedFrom,
+        exportedAt: nowIso(),
+        folders: folders,
+        items: items,
+        sources: {
+          primary: 'desktop-sqlite',
+          fallback: fallback.folders.length ? fallback.exportedFrom : '',
+          fallbackUsed: fallbackUsed,
+          sourceOrder: ['desktop-sqlite', 'studio-folder-state-cache'],
+        },
+      },
+      diagnostics: {
+        primaryFolderCount: primary.folders.length,
+        primaryBindingCount: primaryBindingCount,
+        fallbackAvailable: fallbackAvailable,
+        fallbackSource: fallbackAvailable ? fallback.exportedFrom : '',
+        fallbackFolderCount: fallback.folders.length,
+        fallbackBindingCount: fallbackBindingCount,
+        fallbackUsed: fallbackUsed,
+        addedFolderCount: addedFolderCount,
+        filledVisualMetadataCount: filledVisualMetadataCount,
+        mergedFolderCount: folders.length,
+        mergedBindingCount: mergedBindingCount,
+      },
+    };
+  }
+
   function projectTag(row) {
     var id = cleanString(row && (row.tagId || row.id));
     if (!id) return null;
@@ -378,6 +541,89 @@
     return meta;
   }
 
+  async function readChromeStorageLocalValue(key) {
+    return new Promise(function (resolve) {
+      try {
+        if (!global.chrome || !global.chrome.storage || !global.chrome.storage.local || typeof global.chrome.storage.local.get !== 'function') {
+          resolve(null); return;
+        }
+        global.chrome.storage.local.get([key], function (items) {
+          resolve(items && Object.prototype.hasOwnProperty.call(items, key) ? items[key] : null);
+        });
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  async function readLibraryStoreValue(key) {
+    try {
+      var store = H2O.Library && H2O.Library.Store;
+      if (!store || typeof store.get !== 'function') return null;
+      return await store.get(key);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readLocalStorageValue(key) {
+    try {
+      if (!global.localStorage || typeof global.localStorage.getItem !== 'function') return null;
+      var raw = global.localStorage.getItem(key);
+      if (raw == null) return null;
+      try { return JSON.parse(raw); }
+      catch (_) { return raw; }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function readAvailableFolderStateFallback() {
+    var candidates = [
+      { source: 'chrome.storage.local', value: await readChromeStorageLocalValue(FOLDER_STATE_KEY) },
+      { source: 'H2O.Library.Store', value: await readLibraryStoreValue(FOLDER_STATE_KEY) },
+      { source: 'localStorage', value: readLocalStorageValue(FOLDER_STATE_KEY) },
+    ];
+    for (var i = 0; i < candidates.length; i += 1) {
+      var candidate = candidates[i];
+      var normalized = normalizeFolderState(candidate.value, candidate.source);
+      var bindingCount = countFolderBindings(normalized.items);
+      if (normalized.folders.length || bindingCount) {
+        normalized.exportedFrom = candidate.source;
+        return {
+          source: candidate.source,
+          state: normalized,
+          folderCount: normalized.folders.length,
+          bindingCount: bindingCount,
+        };
+      }
+    }
+    return {
+      source: '',
+      state: null,
+      folderCount: 0,
+      bindingCount: 0,
+    };
+  }
+
+  function findFolderForChat(folderStateRaw, chatIdRaw) {
+    var chatId = cleanString(chatIdRaw);
+    if (!chatId) return null;
+    var stateObj = normalizeFolderState(folderStateRaw, 'folder-state-cache');
+    var folderById = Object.create(null);
+    stateObj.folders.forEach(function (folder) {
+      var id = cleanString(folder && folder.id);
+      if (id) folderById[id] = folder;
+    });
+    var folderIds = Object.keys(stateObj.items || {});
+    for (var i = 0; i < folderIds.length; i += 1) {
+      var folderId = folderIds[i];
+      var chatIds = uniqStrings(stateObj.items[folderId]);
+      if (chatIds.indexOf(chatId) >= 0) {
+        return folderById[folderId] || projectFolder({ id: folderId, name: folderId, source: stateObj.exportedFrom });
+      }
+    }
+    return null;
+  }
+
   function sortSnapshotsAscending(a, b) {
     var av = numberOrZero(a && a.snapshot && a.snapshot.capturedAt);
     var bv = numberOrZero(b && b.snapshot && b.snapshot.capturedAt);
@@ -425,11 +671,23 @@
     };
   }
 
-  async function collectRelated(stores, chat) {
+  async function collectRelated(stores, chat, folderStateFallback) {
     var chatId = cleanString(chat && chat.chatId);
     var folderRows = await listForChat(stores.folders, chatId);
     var folder = folderRows[0] || null;
     if (!folder && chat && chat.folderId) folder = await getStoreRow(stores.folders, chat.folderId);
+    if (!folder) folder = findFolderForChat(folderStateFallback, chatId);
+    if (!folder && chat && chat.folderId) {
+      var fallbackState = normalizeFolderState(folderStateFallback, 'folder-state-cache');
+      var fallbackFolders = asArray(fallbackState.folders);
+      var wantedId = cleanString(chat.folderId);
+      for (var fi = 0; fi < fallbackFolders.length; fi += 1) {
+        if (cleanString(fallbackFolders[fi] && fallbackFolders[fi].id) === wantedId) {
+          folder = fallbackFolders[fi];
+          break;
+        }
+      }
+    }
     var category = null;
     if (stores.categories && typeof stores.categories.getForChat === 'function') {
       try { category = await stores.categories.getForChat(chatId); }
@@ -488,7 +746,7 @@
     };
   }
 
-  async function buildChatArchive(stores, warnings) {
+  async function buildChatArchive(stores, warnings, folderStateFallback) {
     var chats = await listFromStore(stores.chats, { sort: { field: 'updatedAt', dir: 'DESC' } });
     var categories = (await listFromStore(stores.categories)).map(projectCategoryCatalog).filter(Boolean);
     var labels = (await listFromStore(stores.labels)).map(projectLabelCatalog).filter(Boolean);
@@ -507,7 +765,7 @@
         warnings.push({ kind: 'chat', warning: 'skipped chat without chatId', index: i });
         continue;
       }
-      var related = await collectRelated(stores, chat);
+      var related = await collectRelated(stores, chat, folderStateFallback);
       var snapshotsCombined = await collectSnapshotRecords(stores, chatId);
       var bundleSnapshots = [];
       for (var si = 0; si < snapshotsCombined.length; si += 1) {
@@ -573,7 +831,7 @@
     };
   }
 
-  async function buildFolderState(stores, folderItems) {
+  async function buildFolderState(stores, folderItems, folderStateFallback) {
     var folders = (await listFromStore(stores.folders)).map(projectFolder).filter(Boolean);
     var items = Object.create(null);
     Object.keys(folderItems || {}).forEach(function (folderId) {
@@ -596,13 +854,14 @@
         }
       }
     }
-    return {
+    var primaryState = {
       schemaVersion: 1,
       exportedFrom: 'desktop-sqlite',
       exportedAt: nowIso(),
       folders: folders,
       items: items,
     };
+    return mergeFolderStates(primaryState, folderStateFallback || null);
   }
 
   function buildFolderParityDiagnostics(folderState, chatArchive) {
@@ -677,7 +936,8 @@
     return {
       phase: 'folder-parity-diagnostic',
       surface: 'desktop-export',
-      source: 'H2O.Studio.store.folders + folder_bindings',
+      source: cleanString(stateObj.exportedFrom || 'H2O.Studio.store.folders + folder_bindings'),
+      sources: safeObject(stateObj.sources),
       folderStateKey: FOLDER_STATE_KEY,
       catalogCount: folderSummaries.length,
       bindingCount: bindingCount,
@@ -752,8 +1012,10 @@
     if (!availability.chats) throw new Error('Desktop export unavailable: store.chats missing');
     if (!availability.snapshots) warnings.push({ kind: 'store', warning: 'store.snapshots unavailable; exporting chat records without snapshots' });
 
-    var collected = await buildChatArchive(stores, warnings);
-    var folderState = await buildFolderState(stores, collected.folderItems);
+    var folderFallback = await readAvailableFolderStateFallback();
+    var collected = await buildChatArchive(stores, warnings, folderFallback.state);
+    var folderStateBuild = await buildFolderState(stores, collected.folderItems, folderFallback.state);
+    var folderState = folderStateBuild.state;
     var folderParity = buildFolderParityDiagnostics(folderState, collected.archive);
     var chromeStorageLocal = {};
     chromeStorageLocal[FOLDER_STATE_KEY] = folderState;
@@ -794,6 +1056,13 @@
           durationMs: Date.now() - startedAt,
           storeAvailability: availability,
           folderParity: folderParity,
+          folderSource: folderStateBuild.diagnostics,
+          folderFallback: {
+            available: !!(folderFallback && (folderFallback.folderCount || folderFallback.bindingCount)),
+            source: cleanString(folderFallback && folderFallback.source),
+            folderCount: Number(folderFallback && folderFallback.folderCount) || 0,
+            bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
+          },
           warnings: warnings,
           options: safeObject(options),
         },
