@@ -220,6 +220,10 @@
     lastWriteAt: 0,
     writes: 0,
     flushes: 0,
+    adoptionBlocked: false,
+    adoptionBlockReason: '',
+    lastDiskRecordCount: 0,
+    lastAdoptedRecordCount: 0,
   };
   state.readyPromise = new Promise((resolve) => { state.readyResolve = resolve; });
 
@@ -240,6 +244,19 @@
     };
   }
 
+  function countRawDiskRecords(raw) {
+    if (!raw || typeof raw !== 'object') return 0;
+    if (raw.recordsById && typeof raw.recordsById === 'object') {
+      return Object.keys(raw.recordsById).length;
+    }
+    let count = 0;
+    for (const [id, rec] of Object.entries(raw)) {
+      if (id === 'schemaVersion' || id === 'meta' || id === 'idByHref' || id === 'tombstonesById') continue;
+      if (rec && typeof rec === 'object') count += 1;
+    }
+    return count;
+  }
+
   // adoptShape now delegates to the shared core when available so disk-loaded
   // snapshots are normalized identically on both surfaces. The shared
   // implementation also handles legacy flat snapshot maps (Studio-style) for
@@ -253,18 +270,45 @@
 
   function loadFromDisk() {
     const raw = storage.readJson(STORAGE_KEY, null);
+    const diskRecordCount = countRawDiskRecords(raw);
+    state.lastDiskRecordCount = diskRecordCount;
+    if (diskRecordCount > 0 && !core()) {
+      state.adoptionBlocked = true;
+      state.adoptionBlockReason = 'registry-core-missing';
+      state.lastAdoptedRecordCount = 0;
+      step('load:blocked-no-registry-core', `diskRecords=${diskRecordCount}`);
+      return false;
+    }
     const shape = adoptShape(raw);
+    const adoptedRecordCount = Object.keys(shape.recordsById || {}).length;
+    state.lastAdoptedRecordCount = adoptedRecordCount;
+    if (diskRecordCount > 0 && adoptedRecordCount === 0) {
+      state.adoptionBlocked = true;
+      state.adoptionBlockReason = 'adopted-zero-from-non-empty-disk';
+      step('load:blocked-empty-adoption', `diskRecords=${diskRecordCount}`);
+      return false;
+    }
     state.recordsById = shape.recordsById;
     state.idByHref = shape.idByHref;
     state.tombstonesById = shape.tombstonesById;
     state.meta = shape.meta;
     state.loaded = true;
+    state.adoptionBlocked = false;
+    state.adoptionBlockReason = '';
     state.lastReadAt = nowMs();
     step('load', `records=${state.meta.recordCount}`);
+    return true;
   }
 
   function flushToDisk(reason = 'flush') {
     if (!state.loaded) return false;
+    if (state.adoptionBlocked) {
+      const diskRecordCount = countRawDiskRecords(storage.readJson(STORAGE_KEY, null));
+      if (diskRecordCount > 0) {
+        step('flush:suppressed-adoption-blocked', `${reason} | diskRecords=${diskRecordCount} | currentRecords=${Object.keys(state.recordsById).length}`);
+        return false;
+      }
+    }
     const payload = {
       schemaVersion: SCHEMA_VERSION,
       recordsById: state.recordsById,
@@ -456,7 +500,7 @@
   }
 
   function applyMerge(rawInput, options = {}) {
-    if (!state.loaded) loadFromDisk();
+    if (!state.loaded && loadFromDisk() === false) return null;
     const stamped = buildPatchedRecord(getRecord(normalizeChatId(rawInput?.chatId || rawInput?.id || '')) || null, rawInput);
     if (!stamped) return null;
     const id = stamped.chatId;
@@ -717,6 +761,12 @@
         lastWriteAt: state.lastWriteAt,
         flushes: state.flushes,
       },
+      adoption: {
+        blocked: state.adoptionBlocked,
+        reason: state.adoptionBlockReason,
+        lastDiskRecordCount: state.lastDiskRecordCount,
+        lastAdoptedRecordCount: state.lastAdoptedRecordCount,
+      },
       subscribers: state.subscribers.size,
     };
   }
@@ -931,6 +981,7 @@
       registeredService: !!H2O.LibraryCore?.getService?.('chat-registry'),
       counts: stats.counts,
       meta: stats.meta,
+      adoption: stats.adoption,
       deprecation: deprecationDiagnostics(),
       issues: health.issues.slice(0, 12),
       diag: { steps: diag.steps.slice(-12), errors: diag.errors.slice(-8) },
@@ -985,20 +1036,39 @@
     _diag: diag,
   };
 
-  /* ─── boot: wait for Library Core, then register & load ─── */
+  /* ─── boot: wait for Library Core + Registry Core, then register & load ─── */
   function bootWhenLibraryCoreReady(attempt = 0) {
     if (H2O[BOOT_LOCK]) return;
-    const core = H2O.LibraryCore;
-    if (!core) {
+    const libraryCore = H2O.LibraryCore;
+    const registryCore = core();
+    if (!libraryCore || !registryCore) {
       if (attempt >= BOOT_MAX_ATTEMPTS) {
-        try { H2O.ChatRegistryBootDiag = { ok: false, status: 'library-core-not-found', attempts: attempt, ts: nowMs() }; } catch {}
-        // Still expose the API so callers don't crash; just won't be registered with core.
+        const raw = storage.readJson(STORAGE_KEY, null);
+        const diskRecordCount = countRawDiskRecords(raw);
+        const status = !libraryCore ? 'library-core-not-found' : 'registry-core-not-found';
+        try { H2O.ChatRegistryBootDiag = { ok: false, status, attempts: attempt, diskRecordCount, ts: nowMs() }; } catch {}
+        if (!registryCore && diskRecordCount > 0) {
+          publishApi();
+          if (libraryCore) registerWithCore(libraryCore);
+          state.adoptionBlocked = true;
+          state.adoptionBlockReason = 'registry-core-missing';
+          state.lastDiskRecordCount = diskRecordCount;
+          state.lastAdoptedRecordCount = 0;
+          step('boot:blocked-no-registry-core', `diskRecords=${diskRecordCount}`);
+          return;
+        }
+        // Still expose the API so callers don't crash; only load a genuine empty disk
+        // in degraded mode because non-empty adoption requires RegistryCore.
         publishApi();
-        loadAndComplete('boot:no-core');
+        if (libraryCore) registerWithCore(libraryCore);
+        loadAndComplete(`boot:${status}`);
         return;
       }
       if (!H2O[BOOT_TIMER_SET]) H2O[BOOT_TIMER_SET] = new Set();
       const delay = Math.min(1400, 70 + attempt * 30);
+      if (attempt === 0 || attempt % 20 === 0) {
+        step('boot:wait-for-cores', `libraryCore=${!!libraryCore} registryCore=${!!registryCore} attempt=${attempt}`);
+      }
       const timer = W.setTimeout(() => {
         try { H2O[BOOT_TIMER_SET]?.delete?.(timer); } catch {}
         bootWhenLibraryCoreReady(attempt + 1);
@@ -1006,10 +1076,10 @@
       try { H2O[BOOT_TIMER_SET].add(timer); } catch {}
       return;
     }
-    try { H2O.ChatRegistryBootDiag = { ok: true, status: 'library-core-ready', attempts: attempt, ts: nowMs() }; } catch {}
+    try { H2O.ChatRegistryBootDiag = { ok: true, status: 'registry-core-ready', attempts: attempt, waitedForRegistryCore: attempt > 0, ts: nowMs() }; } catch {}
     publishApi();
-    registerWithCore(core);
-    loadAndComplete('boot:core-ready');
+    registerWithCore(libraryCore);
+    loadAndComplete('boot:registry-core-ready');
   }
 
   function publishApi() {
@@ -1028,8 +1098,13 @@
 
   function loadAndComplete(reason) {
     if (H2O[BOOT_LOCK]) return;
+    let loaded = false;
+    try { loaded = loadFromDisk() !== false; } catch (e) { err('load-from-disk', e); }
+    if (!loaded) {
+      step('boot:load-deferred', reason);
+      return;
+    }
     H2O[BOOT_LOCK] = true;
-    try { loadFromDisk(); } catch (e) { err('load-from-disk', e); }
     // Phase 1: one-shot backfill of the saved-implies-linked invariant.
     // Defensive — only runs if records actually loaded, and silently swallows
     // any error so a broken backfill cannot block boot. Idempotent on repeat.
