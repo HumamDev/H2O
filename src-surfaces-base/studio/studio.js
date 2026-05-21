@@ -1296,11 +1296,16 @@ function renderInlineMarkdown(text){
         continue;
       }
     }
-    // Plain text — consume up to the next potential marker character
+    // Plain text — consume up to the next potential marker character. If the
+    // next marker is `[` preceded by `!`, stop one character BEFORE the `!`
+    // so the image branch (which dispatches on `s[0] === "!" && s[1] === "["`)
+    // gets a chance next iteration. Phase 2A: pre-2026-05 the scanner did the
+    // opposite — it advanced PAST `![` to suppress image parsing entirely,
+    // which silently dropped every markdown image in canonical saved chats.
     const nextMarker = s.search(/[`*_\[]/);
     if (nextMarker > 0){
-      const skipImageMarker = s[nextMarker] === "[" && s[nextMarker - 1] === "!";
-      const end = skipImageMarker ? nextMarker + 1 : nextMarker;
+      const isImageStart = s[nextMarker] === "[" && s[nextMarker - 1] === "!";
+      const end = isImageStart ? nextMarker - 1 : nextMarker;
       out += esc(s.slice(0, end));
       s = s.slice(end);
     } else {
