@@ -866,10 +866,61 @@ function writeUiPrefs(){
   } catch {}
 }
 
+// Phase 2B: adaptive wide-mode for the saved-chat reader. Phase 1 armed the
+// CSS variable --wb-thread-wide (54rem) but no JS toggled body[data-layout].
+// We respect the existing user-explicit preference (`state.layout`) — toggling
+// to "wide" via toggleLayout() always wins everywhere — and ONLY upgrade the
+// default "focused" preference to "wide" while the user is on the reader
+// route at viewports ≥ 1280px. The original CSS variable mapping is
+// preserved: focused → --wb-thread-w (48rem), wide → --wb-thread-wide (54rem).
+const ADAPTIVE_READER_LAYOUT_QUERY = "(min-width: 1280px)";
+let adaptiveReaderLayoutMq = null;
+
+function computeEffectiveLayout(){
+  if (state.layout === "wide") return "wide"; // user-explicit; never undo
+  const isReaderRoute = !!state.currentReaderSnapshot;
+  if (isReaderRoute && adaptiveReaderLayoutMq && adaptiveReaderLayoutMq.matches) return "wide";
+  return state.layout || "focused";
+}
+
+function applyAdaptiveReaderLayoutMarker(){
+  const effective = computeEffectiveLayout();
+  document.body.dataset.layout = effective;
+  if (effective === "wide" && state.layout !== "wide") {
+    document.body.dataset.readerLayoutAuto = "wide";
+  } else if (document.body.dataset.readerLayoutAuto) {
+    delete document.body.dataset.readerLayoutAuto;
+  }
+}
+
+function installAdaptiveReaderLayout(){
+  if (state.adaptiveReaderLayoutInstalled) return;
+  state.adaptiveReaderLayoutInstalled = true;
+
+  try {
+    adaptiveReaderLayoutMq = window.matchMedia(ADAPTIVE_READER_LAYOUT_QUERY);
+  } catch { adaptiveReaderLayoutMq = null; }
+
+  const onChange = () => applyAdaptiveReaderLayoutMarker();
+  if (adaptiveReaderLayoutMq) {
+    if (typeof adaptiveReaderLayoutMq.addEventListener === "function") {
+      adaptiveReaderLayoutMq.addEventListener("change", onChange);
+    } else if (typeof adaptiveReaderLayoutMq.addListener === "function") {
+      // Safari < 14 legacy MediaQueryList API.
+      adaptiveReaderLayoutMq.addListener(onChange);
+    }
+  }
+  // Resize covers width changes the matchMedia query crosses-over, plus the
+  // gradual changes a user makes by dragging the window edge. Passive so we
+  // never block the layout thread.
+  window.addEventListener("resize", onChange, { passive: true });
+}
+
 function applyUiState(){
+  installAdaptiveReaderLayout();
   document.body.dataset.sidebar = state.sidebarExpanded ? "open" : "closed";
   document.body.dataset.density = state.density;
-  document.body.dataset.layout = state.layout;
+  applyAdaptiveReaderLayoutMarker();
   document.body.dataset.route = state.currentReaderSnapshot ? "reader" : "list";
 
   const sidebarOpen = !!state.sidebarExpanded;
