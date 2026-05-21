@@ -64,11 +64,12 @@
   const STUDIO_KEY_PREFIX = 'h2o:studio:';
   const SAVE_DEBOUNCE_MS = 250;
 
+  /* Phase 1b is Dock-scoped only. The ribbon UI ships its own constants
+   * module (src-surfaces-base/studio/ribbon/ribbon-keys.js) and does not
+   * read these. Adding ribbon keys here would conflate scopes. */
   const KEYS = Object.freeze({
     dockOpen: 'h2o:studio:dock:open:v1',
     dockView: 'h2o:studio:dock:view:v1',
-    ribbonActiveTab: 'h2o:studio:ribbon:active-tab:v1',
-    ribbonCollapsed: 'h2o:studio:ribbon:collapsed:v1',
   });
 
   /* ── State ────────────────────────────────────────────────────────── */
@@ -244,7 +245,7 @@
       return;
     }
 
-    const keysToLoad = [KEYS.dockOpen, KEYS.dockView, KEYS.ribbonActiveTab, KEYS.ribbonCollapsed];
+    const keysToLoad = [KEYS.dockOpen, KEYS.dockView];
     let remaining = keysToLoad.length;
 
     function done() {
