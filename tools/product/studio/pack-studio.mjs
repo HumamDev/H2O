@@ -92,6 +92,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // key 'h2o:sync:export-log:v1'. Only mutated by exportLatestSyncBundle.
   // exportFullBundle (in-memory) never touches this log.
   "sync/export-log.js",
+  // F4: producer-side per-peer local transport mirror. Writes only
+  // devices/<encodeURIComponent(syncPeerId)> after the canonical root
+  // latest.json commit succeeds.
+  "sync/peer-transport.js",
   // F1A: pure, synchronous multi-peer diff analyzer. Surface-agnostic.
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
@@ -216,6 +220,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-import.mv3.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
+  "sync/peer-transport.js",
   "sync/multi-peer-diff.js",
   "sync/multi-peer-runner.js",
 

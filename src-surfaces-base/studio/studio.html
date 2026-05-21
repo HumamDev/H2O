@@ -337,6 +337,11 @@
        this file and export-bundle.tauri.js is irrelevant for correctness
        (the IIFEs only register; the consumer call happens later). -->
   <script src="./sync/export-log.js"></script>
+  <!-- F4: producer-side per-peer local transport mirror. Mirrors the exact
+       root latest.json bytes into devices/<encodeURIComponent(syncPeerId)>/
+       only after the root latest.json commit succeeds. No Chrome device reads,
+       no bidirectional sync, no tombstones, no polling. -->
+  <script src="./sync/peer-transport.js"></script>
   <!-- F1A: pure read-only multi-peer diff analyzer (surface-agnostic).
        Registers H2O.Studio.diagnostics.multiPeerDiff and
        H2O.Studio.diagnostics.collectLocalState. No IO; safe to load on every

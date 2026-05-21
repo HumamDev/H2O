@@ -34,6 +34,8 @@
   /* F3: opt-in identity-aware envelope stamping. Bundle schema stays
    * 'h2o.studio.fullBundle.v2'; this string marks the stamping convention. */
   var EXPORT_SCHEMA_VERSION = 'h2o.studio.export-envelope.v1';
+  var PEER_TRANSPORT_VERSION = 'h2o.studio.sync.peer-transport.v1';
+  var PEER_STATE_SCHEMA = 'h2o.studio.sync.peer-state.v1';
   var SYNC_FOLDER_NAME = 'H2O Studio Sync';
   var SYNC_LATEST_FILE = 'latest.json';
   var SYNC_TMP_FILE = '.latest.json.tmp';
@@ -658,6 +660,57 @@
     return null;
   }
 
+  function peerTransportFailure(input, error, status) {
+    var inp = safeObject(input);
+    var syncPeerId = cleanString(inp.syncPeerId);
+    var safePeerDir = '';
+    try { if (syncPeerId) safePeerDir = encodeURIComponent(syncPeerId); }
+    catch (_) { safePeerDir = ''; }
+    return {
+      ok: false,
+      phase: 'F4',
+      mode: 'per-peer-local-transport-mirror',
+      transportVersion: PEER_TRANSPORT_VERSION,
+      stateSchema: PEER_STATE_SCHEMA,
+      syncPeerId: syncPeerId,
+      safePeerDir: safePeerDir,
+      path: safePeerDir ? syncDisplayPath('devices/' + safePeerDir + '/' + SYNC_LATEST_FILE) : '',
+      error: String(error && (error.message || error)),
+      status: status || 'peer-transport-mirror-write-failed',
+      atomicWrite: true,
+      manifestCreated: false,
+      historyCreated: false,
+    };
+  }
+
+  async function writePeerTransportMirrorSafely(input) {
+    try {
+      var api = H2O && H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.peerTransport;
+      if (api && typeof api.writeLatestMirror === 'function') {
+        var result = await api.writeLatestMirror(input);
+        if (result && typeof result === 'object') return result;
+        return peerTransportFailure(input, 'peer transport returned no result', 'peer-transport-mirror-no-result');
+      }
+      return peerTransportFailure(input, 'H2O.Studio.sync.peerTransport.writeLatestMirror unavailable', 'peer-transport-unavailable');
+    } catch (error) {
+      return peerTransportFailure(input, error, 'peer-transport-mirror-write-failed');
+    }
+  }
+
+  function peerTransportWarning(result) {
+    var r = safeObject(result);
+    if (r.ok) return null;
+    return {
+      kind: 'peer-transport',
+      warning: 'per-peer local transport mirror failed after root latest.json commit',
+      status: cleanString(r.status),
+      error: cleanString(r.error),
+      syncPeerId: cleanString(r.syncPeerId),
+      safePeerDir: cleanString(r.safePeerDir),
+      transportVersion: cleanString(r.transportVersion || PEER_TRANSPORT_VERSION),
+    };
+  }
+
   function sortSnapshotsAscending(a, b) {
     var av = numberOrZero(a && a.snapshot && a.snapshot.capturedAt);
     var bv = numberOrZero(b && b.snapshot && b.snapshot.capturedAt);
@@ -1176,6 +1229,24 @@
       await fsWriteTextFile(tmpPath, text, fileOptions);
       await fsRename(tmpPath, latestPath, renameOptions);
 
+      var peerTransport = await writePeerTransportMirrorSafely({
+        syncPeerId: cleanString(bundle && bundle.sourceSyncPeerId),
+        latestText: text,
+        bundle: bundle,
+        exporterVersion: EXPORTER_VERSION,
+        exportSchemaVersion: cleanString(bundle && bundle.exportSchemaVersion),
+        exportedAt: exportedAt,
+        exportId: cleanString(bundle && bundle.exportId),
+        sequenceNumber: (bundle && typeof bundle.sequenceNumber === 'number') ? bundle.sequenceNumber : null,
+        previousExportId: bundle && bundle.previousExportId ? cleanString(bundle.previousExportId) : null,
+        contentSha256: cleanString(bundle && bundle.contentSha256),
+        surfaceKind: cleanString(bundle && bundle.sourceSurfaceKind),
+        appKind: cleanString(bundle && bundle.sourceAppKind),
+        storeKind: cleanString(bundle && bundle.sourceStoreKind),
+      });
+      var peerWarning = peerTransportWarning(peerTransport);
+      if (peerWarning) state.lastWarnings = state.lastWarnings.concat([peerWarning]);
+
       var result = {
         ok: true,
         phase: 'R2A-1',
@@ -1190,6 +1261,8 @@
         turnCount: Number(bundle && bundle.summary && bundle.summary.turnCount) || 0,
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
         checksum: checksum,
+        peerTransport: peerTransport,
+        peerTransportWarning: peerWarning,
         sourceDeviceId: cleanString(bundle && bundle.exportedFromExtensionId) || 'desktop-tauri',
         schema: FULL_BUNDLE_SCHEMA,
         chatArchiveSchema: CHAT_ARCHIVE_SCHEMA,
@@ -1258,6 +1331,16 @@
         autoRunOnDataChange: false,
         chromeAutoImport: false,
         writesSyncFile: true,
+        peerTransport: {
+          api: 'H2O.Studio.sync.peerTransport.writeLatestMirror',
+          transportVersion: PEER_TRANSPORT_VERSION,
+          stateSchema: PEER_STATE_SCHEMA,
+          safePeerDirRule: 'encodeURIComponent(syncPeerId)',
+          pathTemplate: syncDisplayPath('devices/<safePeerDir>/' + SYNC_LATEST_FILE),
+          rootLatestRemainsCanonical: true,
+          writesDevicesOnlyAfterRootCommit: true,
+          lastResult: state.lastSyncExport && state.lastSyncExport.peerTransport ? state.lastSyncExport.peerTransport : null,
+        },
         lastResult: state.lastSyncExport,
       },
       storeAvailability: storeAvailability(stores),
