@@ -31,6 +31,7 @@
       "allow": [
         { "path": "$HOME/H2O Studio Sync" },
         { "path": "$HOME/H2O Studio Sync/devices" },
+        { "path": "$HOME/H2O Studio Sync/devices/*" },
         { "path": "$HOME/H2O Studio Sync/devices/**" }
       ]
     },
@@ -39,6 +40,12 @@
       "allow": [
         { "path": "$HOME/H2O Studio Sync/.latest.json.tmp" },
         { "path": "$HOME/H2O Studio Sync/latest.json" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.latest.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.latest.sha256.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.state.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/latest.json" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/latest.sha256" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/state.json" },
         { "path": "$HOME/H2O Studio Sync/devices/**" }
       ]
     },
@@ -47,6 +54,12 @@
       "allow": [
         { "path": "$HOME/H2O Studio Sync/.latest.json.tmp" },
         { "path": "$HOME/H2O Studio Sync/latest.json" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.latest.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.latest.sha256.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/.state.json.tmp" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/latest.json" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/latest.sha256" },
+        { "path": "$HOME/H2O Studio Sync/devices/*/state.json" },
         { "path": "$HOME/H2O Studio Sync/devices/**" }
       ]
     }
