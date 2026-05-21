@@ -22,6 +22,27 @@
   H2O.Library = H2O.Library || {};
 
   const LAYOUT_KEY = 'h2o:prm:cgx:library-workspace:sidebar-layout:v1';
+  const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
+
+  const KNOWN_NATIVE_CANONICAL_FOLDERS = [
+    { id: 'f_7050f49d3f341819dba53d547', folderId: 'f_7050f49d3f341819dba53d547', name: 'Study' },
+    { id: 'f_5d9431084707f19dba53d548', folderId: 'f_5d9431084707f19dba53d548', name: 'Case' },
+    { id: 'f_0606ea698948f19dba53d548', folderId: 'f_0606ea698948f19dba53d548', name: 'Dev' },
+    { id: 'f_e301f3506938c19dbac0e304', folderId: 'f_e301f3506938c19dbac0e304', name: 'Code' },
+    { id: 'f_3bf15f43b835d19dbac0fb13', folderId: 'f_3bf15f43b835d19dbac0fb13', name: 'Tech' },
+    { id: 'f_2bb1037f88b2719dbac10c22', folderId: 'f_2bb1037f88b2719dbac10c22', name: 'English' },
+  ];
+  const KNOWN_NATIVE_CANONICAL_BINDING_COUNT = 8;
+  const KNOWN_TEST_FOLDER_NAMES = new Set([
+    'case-rt',
+    'empty test folder',
+    'empty-rt',
+    'english-rt',
+    'f5d test folder',
+    'f5d.1 test folder a',
+    'f5d.1 test folder b',
+  ]);
 
   const diag = { t0: performance.now(), steps: [], errors: [], bufMax: 100, errMax: 25 };
   const step = (s, o = '') => {
@@ -56,6 +77,141 @@
   function getPageHost() { return getCore()?.getService?.('page-host') || null; }
   function getSidebarSvc() { return getCore()?.getService?.('native-sidebar') || null; }
   function getRegistry() { return H2O.ChatRegistry || null; }
+
+  function normalizeFolderName(name) {
+    return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function folderIdOf(row) {
+    return String(row?.id || row?.folderId || '').trim();
+  }
+
+  function folderNameOf(row) {
+    const id = folderIdOf(row);
+    return String(row?.name || row?.title || row?.label || id).trim() || id;
+  }
+
+  function normalizeFolderRow(row, index = 0, source = '') {
+    const id = folderIdOf(row);
+    if (!id) return null;
+    const name = folderNameOf(row);
+    const color = String(row?.color || row?.iconColor || '').trim();
+    const iconColor = String(row?.iconColor || row?.color || '').trim();
+    const icon = String(row?.icon || row?.iconKey || '').trim();
+    const out = {
+      id,
+      folderId: id,
+      name,
+      normalizedName: normalizeFolderName(name),
+      source: String(row?.source || source || '').trim(),
+      index,
+    };
+    if (color) out.color = color;
+    if (iconColor) out.iconColor = iconColor;
+    if (icon) out.icon = icon;
+    return out;
+  }
+
+  function normalizeFolderStateForParity(raw, source = '') {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const folders = (Array.isArray(src.folders) ? src.folders : [])
+      .map((row, index) => normalizeFolderRow(row, index, source || src.source || 'folder-state'))
+      .filter(Boolean);
+    const inputItems = src.items && typeof src.items === 'object' ? src.items : {};
+    const items = {};
+    for (const folder of folders) {
+      const values = Array.isArray(inputItems[folder.id]) ? inputItems[folder.id] : [];
+      items[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+    }
+    return { folders, items };
+  }
+
+  function countFolderStateBindings(items) {
+    if (!items || typeof items !== 'object') return 0;
+    return Object.values(items).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
+  }
+
+  function normalizeNativeBroadcastPayload(value) {
+    const raw = value && typeof value === 'object' ? value : null;
+    if (!raw) return null;
+    if (raw.folderState || raw.projectCatalog || Array.isArray(raw.linkedRecords) || raw.surface === 'native') return raw;
+    const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : null;
+    if (payload && (payload.folderState || payload.projectCatalog || Array.isArray(payload.linkedRecords) || payload.surface === 'native')) return payload;
+    const nestedValue = raw.value && typeof raw.value === 'object' ? raw.value : null;
+    if (nestedValue && (nestedValue.folderState || nestedValue.projectCatalog || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native')) return nestedValue;
+    return raw;
+  }
+
+  function readStorageKey(key) {
+    return new Promise((resolve) => {
+      try {
+        const chromeLocal = W.chrome?.storage?.local;
+        if (chromeLocal && typeof chromeLocal.get === 'function') {
+          chromeLocal.get([key], (items) => {
+            try {
+              const lastError = W.chrome?.runtime?.lastError;
+              if (lastError) {
+                resolve({ source: 'chrome.storage.local', error: String(lastError.message || lastError) });
+                return;
+              }
+              resolve({ source: 'chrome.storage.local', value: items ? items[key] : undefined });
+            } catch (e) {
+              resolve({ source: 'chrome.storage.local', error: String(e?.message || e) });
+            }
+          });
+          return;
+        }
+      } catch (e) {
+        resolve({ source: 'chrome.storage.local', error: String(e?.message || e) });
+        return;
+      }
+      try {
+        const raw = W.localStorage?.getItem?.(key);
+        resolve({ source: 'localStorage', value: raw ? JSON.parse(raw) : undefined });
+      } catch (e) {
+        resolve({ source: 'localStorage', error: String(e?.message || e) });
+      }
+    });
+  }
+
+  function groupDuplicateFolderNames(folders) {
+    const byName = new Map();
+    for (const folder of Array.isArray(folders) ? folders : []) {
+      const normalizedName = normalizeFolderName(folder?.normalizedName || folderNameOf(folder));
+      if (!normalizedName || normalizedName === 'unfiled') continue;
+      const row = byName.get(normalizedName) || { normalizedName, name: folderNameOf(folder), ids: [], folders: [] };
+      const id = folderIdOf(folder);
+      if (id && !row.ids.includes(id)) row.ids.push(id);
+      row.folders.push(folder);
+      byName.set(normalizedName, row);
+    }
+    return Array.from(byName.values()).filter((row) => row.ids.length > 1);
+  }
+
+  function detectTestFolderCandidates(folders) {
+    return (Array.isArray(folders) ? folders : [])
+      .filter((folder) => {
+        const name = normalizeFolderName(folder?.normalizedName || folderNameOf(folder));
+        const id = folderIdOf(folder).toLowerCase();
+        if (!name || name === 'unfiled') return false;
+        return KNOWN_TEST_FOLDER_NAMES.has(name) || /^f5d/.test(id) || /^fld-rt-/.test(id) || /^fld-empty-/.test(id);
+      })
+      .map((folder) => ({
+        id: folderIdOf(folder),
+        folderId: folderIdOf(folder),
+        name: folderNameOf(folder),
+        normalizedName: normalizeFolderName(folder?.normalizedName || folderNameOf(folder)),
+      }));
+  }
+
+  function summarizeKnownRowsByFolder() {
+    const byFolder = getIndex()?.facets?.()?.byFolder || {};
+    const out = {};
+    for (const [folderId, chatIds] of Object.entries(byFolder || {})) {
+      out[folderId] = Array.isArray(chatIds) ? chatIds.length : 0;
+    }
+    return out;
+  }
 
   // ── Layout persistence ─────────────────────────────────────────────────────
   function loadLayout() {
@@ -791,6 +947,154 @@
     };
   }
 
+  async function countDesktopFolderBindings(folders) {
+    if (!LW_isTauri()) return null;
+    const store = getStudioStores().folders;
+    if (!store || typeof store.listChats !== 'function') return null;
+    let total = 0;
+    const byFolder = {};
+    for (const folder of Array.isArray(folders) ? folders : []) {
+      const id = folderIdOf(folder);
+      if (!id) continue;
+      try {
+        const rows = await store.listChats(id);
+        const count = Array.isArray(rows) ? rows.length : 0;
+        byFolder[id] = count;
+        total += count;
+      } catch (e) {
+        byFolder[id] = 0;
+        err('folderParity.desktopBindings', e);
+      }
+    }
+    return { total, byFolder };
+  }
+
+  async function diagnoseFolderParity(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const warnings = ['Read-only. No cleanup performed. Cleanup requires reviewed approval.'];
+    const surface = LW_isTauri() ? 'desktop-studio' : 'chrome-studio';
+    const syncDiag = (() => {
+      try { return H2O.Library?.Sync?.diagnose?.() || null; }
+      catch (e) { warnings.push('Library Sync diagnostics unavailable: ' + String(e?.message || e)); return null; }
+    })();
+
+    const localFoldersRaw = await getFolders({ fresh: !!opts.fresh });
+    const localFolders = (Array.isArray(localFoldersRaw) ? localFoldersRaw : [])
+      .map((folder, index) => normalizeFolderRow(folder, index, surface))
+      .filter(Boolean);
+
+    const storedRead = await readStorageKey(FOLDER_STATE_DATA_KEY);
+    if (storedRead.error) warnings.push('Folder-state key read failed: ' + storedRead.error);
+    const storedState = normalizeFolderStateForParity(storedRead.value, storedRead.source || 'stored-folder-state');
+
+    const nativeRead = await readStorageKey(NATIVE_BROADCAST_KEY);
+    if (nativeRead.error) warnings.push('Native broadcast read failed: ' + nativeRead.error);
+    const nativePayload = normalizeNativeBroadcastPayload(nativeRead.value);
+    const nativeState = normalizeFolderStateForParity(nativePayload?.folderState, 'native-broadcast');
+
+    const canonicalFromBroadcast = nativeState.folders.length > 0;
+    const canonicalFolders = canonicalFromBroadcast
+      ? nativeState.folders
+      : KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical')).filter(Boolean);
+    const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
+    const canonicalBindingCount = canonicalFromBroadcast
+      ? countFolderStateBindings(nativeState.items)
+      : Number(syncDiag?.projection?.nativeBroadcast?.folderBindingCount
+        || syncDiag?.projection?.nativeFolderStateMerge?.incomingBindingCount
+        || KNOWN_NATIVE_CANONICAL_BINDING_COUNT
+        || 0);
+    if (!canonicalFromBroadcast) warnings.push('Canonical folders are using the current known native fallback list; run native probes if this differs from live ChatGPT.');
+
+    const knownStudioRowCountByFolder = summarizeKnownRowsByFolder();
+    const knownStudioRowTotal = Object.values(knownStudioRowCountByFolder).reduce((sum, value) => sum + (Number(value) || 0), 0);
+    const canonicalKnownRowCount = canonicalFolders.reduce((sum, folder) => sum + (Number(knownStudioRowCountByFolder[folder.id]) || 0), 0);
+    const desktopBindings = await countDesktopFolderBindings(localFolders);
+    const storedBindingCount = countFolderStateBindings(storedState.items);
+    const localBindingCount = desktopBindings ? desktopBindings.total : (storedBindingCount || knownStudioRowTotal);
+
+    const duplicateGroups = groupDuplicateFolderNames(localFolders).map((group) => ({
+      normalizedName: group.normalizedName,
+      name: group.name,
+      ids: group.ids,
+    }));
+    const testFolderCandidates = detectTestFolderCandidates(localFolders);
+    const missingCanonicalFolders = canonicalFolders
+      .filter((folder) => !localFolders.some((local) => local.id === folder.id))
+      .map((folder) => ({ id: folder.id, folderId: folder.id, name: folder.name, normalizedName: folder.normalizedName }));
+    const extraLocalFolders = localFolders
+      .filter((folder) => {
+        const name = normalizeFolderName(folder.name);
+        return name !== 'unfiled' && folder.id && !canonicalIds.has(folder.id);
+      })
+      .map((folder) => ({
+        id: folder.id,
+        folderId: folder.id,
+        name: folder.name,
+        normalizedName: folder.normalizedName,
+        bindingCount: Number(knownStudioRowCountByFolder[folder.id] || 0),
+      }));
+    const orphanBindingCount = Math.max(0, canonicalBindingCount - canonicalKnownRowCount);
+    const riskLevel = (missingCanonicalFolders.length || duplicateGroups.length || testFolderCandidates.length || extraLocalFolders.length || orphanBindingCount)
+      ? 'review-required'
+      : 'ok';
+
+    return {
+      readOnly: true,
+      surface,
+      generatedAt: new Date().toISOString(),
+      canonicalSource: canonicalFromBroadcast ? 'native-broadcast' : 'known-current-canonical-fallback',
+      canonicalFolderCount: canonicalFolders.length,
+      localFolderCount: localFolders.length,
+      canonicalBindingCount,
+      localBindingCount,
+      knownStudioRowCountByFolder,
+      knownStudioRowTotal,
+      desktopSqliteBindingCount: desktopBindings ? desktopBindings.total : null,
+      storedFolderState: {
+        key: FOLDER_STATE_DATA_KEY,
+        source: storedRead.source || '',
+        folderCount: storedState.folders.length,
+        bindingCount: storedBindingCount,
+      },
+      nativeBroadcast: {
+        key: NATIVE_BROADCAST_KEY,
+        source: nativeRead.source || '',
+        folderCount: nativeState.folders.length,
+        bindingCount: countFolderStateBindings(nativeState.items),
+        ts: nativePayload?.ts || '',
+        sourceExtensionId: nativePayload?.sourceExtensionId || '',
+      },
+      canonicalFolders,
+      localFolders,
+      duplicateGroups,
+      testFolderCandidates,
+      extraLocalFolders,
+      missingCanonicalFolders,
+      orphanBindingCount,
+      riskLevel,
+      recommendedNextStep: riskLevel === 'ok'
+        ? 'No folder parity action required.'
+        : 'Review the folder parity report before any cleanup; P4a does not delete, merge, repair, or normalize folders.',
+      warnings,
+      sourceDiagnostics: {
+        workspace: getFolderParityDiagnostics(),
+        sync: syncDiag?.projection ? {
+          nativeBroadcast: syncDiag.projection.nativeBroadcast || null,
+          nativeFolderStateMerge: syncDiag.projection.nativeFolderStateMerge || null,
+        } : null,
+        desktopFolders: (() => {
+          try { return getStudioStores().folders?.diagnose?.() || null; }
+          catch { return null; }
+        })(),
+      },
+    };
+  }
+
+  const FolderParity = {
+    surface: 'studio',
+    diagnose: diagnoseFolderParity,
+  };
+
   // ── Public API ─────────────────────────────────────────────────────────────
   const Workspace = {
     surface: 'studio',
@@ -808,6 +1112,7 @@
     setFolderBinding,
     setSnapshotCategory,
     reclassifySnapshotCategory,
+    folderParity: FolderParity,
 
     // Layout
     getLayout: loadLayout,
@@ -889,6 +1194,7 @@
 
   H2O.LibraryWorkspace = Workspace;
   H2O.Library.Workspace = Workspace;
+  H2O.Library.FolderParity = FolderParity;
 
   // Register on Library Core
   function registerOnCore() {

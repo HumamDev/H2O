@@ -5214,6 +5214,24 @@ function renderSettingsRoute(){
       <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
 
+    <h3 style="${sectionTitleStyle}">Folder Parity</h3>
+    <div id="wbSettingsFolderParityBox" style="${cardStyle};margin:0 0 28px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:600">Folder Parity</div>
+          <div id="wbSettingsFolderParitySummary" style="opacity:.7;font-size:12px">Reading read-only folder parity diagnostics…</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="wbSettingsFolderParityRefresh" type="button" style="${btnStyle}">Refresh diagnostics</button>
+          <button id="wbSettingsFolderParityCopy" type="button" style="${btnStyle}">Copy report JSON</button>
+        </div>
+      </div>
+      <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+      <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+      <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
+      <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+    </div>
+
     <h3 style="${sectionTitleStyle}">Storage Diagnostics</h3>
     <div id="wbSettingsDiagBox" style="${cardStyle}">
       <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
@@ -5296,6 +5314,9 @@ async function refreshSettingsDiagnostics(panel){
       log.textContent = "Sync status refresh failed.\n" + String(err && (err.stack || err.message || err));
     }
   });
+  refreshSettingsFolderParity(panel).catch((err) => {
+    settingsFolderParityLog(panel, "Folder parity diagnostics failed.\n" + String(err && (err.stack || err.message || err)));
+  });
 }
 
 function settingsFormatBytes(value){
@@ -5324,6 +5345,98 @@ function settingsSyncRowsHtml(rows){
     <div style="opacity:.6">${esc(label)}</div>
     <div>${esc(value == null || value === "" ? "—" : value)}</div>
   `).join("");
+}
+
+function settingsFolderParityLog(panel, message){
+  const log = panel && panel.querySelector("#wbSettingsFolderParityLog");
+  if (!log) return;
+  log.hidden = false;
+  log.textContent = String(message || "");
+}
+
+function settingsFolderParityNames(items, emptyLabel = "none"){
+  const arr = Array.isArray(items) ? items : [];
+  if (!arr.length) return `<span style="opacity:.65">${esc(emptyLabel)}</span>`;
+  return arr.map((item) => {
+    const name = String(item?.name || item?.normalizedName || item || "").trim() || "(unnamed)";
+    const ids = Array.isArray(item?.ids) ? item.ids : (item?.id || item?.folderId ? [item.id || item.folderId] : []);
+    const suffix = ids.length ? ` <span style="opacity:.55">(${esc(ids.join(", "))})</span>` : "";
+    return `<span>${esc(name)}${suffix}</span>`;
+  }).join(", ");
+}
+
+async function refreshSettingsFolderParity(panel){
+  if (!panel) return;
+  const summary = panel.querySelector("#wbSettingsFolderParitySummary");
+  const statusEl = panel.querySelector("#wbSettingsFolderParityStatus");
+  const listsEl = panel.querySelector("#wbSettingsFolderParityLists");
+  const warnEl = panel.querySelector("#wbSettingsFolderParityWarn");
+  const copyBtn = panel.querySelector("#wbSettingsFolderParityCopy");
+  const parity = W.H2O?.Library?.FolderParity;
+  if (!parity || typeof parity.diagnose !== "function") {
+    if (summary) summary.textContent = "Folder parity diagnostics unavailable.";
+    if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml([["Status", "unavailable"]]);
+    if (copyBtn) copyBtn.disabled = true;
+    return;
+  }
+
+  if (summary) summary.textContent = "Refreshing read-only folder parity diagnostics…";
+  if (copyBtn) copyBtn.disabled = true;
+  const report = await parity.diagnose({ fresh: true });
+  panel.__h2oFolderParityReport = report;
+
+  const rows = [
+    ["Surface", report.surface || ""],
+    ["Risk", report.riskLevel || ""],
+    ["Native canonical folders", report.canonicalFolderCount],
+    ["Local mirror folders", report.localFolderCount],
+    ["Canonical memberships", report.canonicalBindingCount],
+    ["Local bindings", report.localBindingCount],
+    ["Known Studio rows", report.knownStudioRowTotal],
+    ["Orphan memberships", report.orphanBindingCount],
+    ["Canonical source", report.canonicalSource || ""],
+  ];
+  if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
+  if (summary) {
+    summary.textContent = report.riskLevel === "ok"
+      ? "Folder parity looks clean. No cleanup performed."
+      : "Folder parity requires review. No cleanup performed.";
+  }
+  if (listsEl) {
+    listsEl.innerHTML = `
+      <div><strong>Duplicate groups:</strong> ${settingsFolderParityNames(report.duplicateGroups)}</div>
+      <div><strong>Test folder candidates:</strong> ${settingsFolderParityNames(report.testFolderCandidates)}</div>
+      <div><strong>Missing canonical folders:</strong> ${settingsFolderParityNames(report.missingCanonicalFolders)}</div>
+      <div><strong>Extra local folders:</strong> ${settingsFolderParityNames(report.extraLocalFolders)}</div>
+      <div><strong>Recommended next step:</strong> ${esc(report.recommendedNextStep || "")}</div>
+    `;
+  }
+  if (warnEl) {
+    const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+    warnEl.textContent = warnings[0] || "Read-only. No cleanup performed. Cleanup requires reviewed approval.";
+  }
+  if (copyBtn) copyBtn.disabled = false;
+}
+
+async function copySettingsFolderParityReport(panel){
+  if (!panel) return;
+  let report = panel.__h2oFolderParityReport;
+  if (!report) {
+    await refreshSettingsFolderParity(panel);
+    report = panel.__h2oFolderParityReport;
+  }
+  const text = JSON.stringify(report || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Folder parity report JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; report printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_PARITY_REPORT", report); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; folder parity report printed to console as H2O_FOLDER_PARITY_REPORT.");
 }
 
 function settingsSyncLog(panel, message){
@@ -5568,6 +5681,14 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsSyncRefresh")?.addEventListener("click", () => {
     refreshSettingsSync(panel).catch((err) => settingsSyncLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderParityRefresh")?.addEventListener("click", () => {
+    refreshSettingsFolderParity(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderParityCopy")?.addEventListener("click", () => {
+    copySettingsFolderParityReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsSyncExportLatest")?.addEventListener("click", () => run("Writing latest sync bundle", async () => {
