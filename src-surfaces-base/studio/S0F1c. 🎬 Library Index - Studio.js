@@ -742,5 +742,23 @@
     runRefresh(String(e?.detail?.reason || 'refresh-request')).catch(() => {});
   });
 
+  // Phase K-2.5 — cross-surface broadcast trigger. When the user runs
+  // Add-to-Library on chatgpt.com, native 0F1g emits chat-registry:changed;
+  // native 0F1h consumes that event and writes a payload (including a
+  // snapshotLinkedRecords() projection) into
+  // chrome.storage.local['h2o:library:cross-surface:broadcast:native:v1'].
+  // Studio S0F1h hears chrome.storage.onChanged on that key and dispatches
+  // evt:h2o:library:cross-surface-sync on this window. Every other Studio
+  // Library consumer (S0F1d / S0F2a / S0Z1g / studio.js) already listens
+  // and re-renders on that event — S0F1c was the lone holdout, so the
+  // newly-linked record sat unread in the broadcast key until boot/manual
+  // refresh. This listener closes the loop so H2O.LibraryIndex.getAll()
+  // picks up linked-only records automatically. runRefresh is single-
+  // flight (refreshInFlight guard inside refreshFromArchive), so coalesced
+  // bursts collapse to at most one in-flight refresh.
+  W.addEventListener('evt:h2o:library:cross-surface-sync', () => {
+    runRefresh('cross-surface-sync').catch(() => {});
+  });
+
   step('boot', 'studio-library-index-ready');
 })();
