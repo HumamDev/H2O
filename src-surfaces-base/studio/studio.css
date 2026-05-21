@@ -6780,6 +6780,32 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   visibility:hidden;
 }
 
+/* Phase 1c — pulse highlight for the topbar category picker.
+   Triggered by the Studio Ribbon's Metadata → Category action; routes
+   user attention to the canonical existing widget rather than
+   duplicating a picker inside the ribbon. ~1.2s soft focus pulse using
+   the existing --wb-focus token. */
+@keyframes wbRibbonPulse{
+  0%   { box-shadow: 0 0 0 0 rgba(122,182,255,.55); }
+  40%  { box-shadow: 0 0 0 4px rgba(122,182,255,.20); }
+  100% { box-shadow: 0 0 0 0 rgba(122,182,255,0); }
+}
+.wbCategoryTopbar.is-pulsing{
+  animation: wbRibbonPulse 1200ms ease-out 1;
+  /* Existing wrap already has a pill rounded shape via inner controls;
+     a small radius keeps the pulse box-shadow visually anchored. */
+  border-radius: 999px;
+}
+@media (prefers-reduced-motion: reduce){
+  .wbCategoryTopbar.is-pulsing{
+    animation: none;
+    /* Provide a non-animated visual cue: a brief outline that the JS
+       still removes via the same setTimeout window. */
+    outline: 2px solid var(--wb-focus);
+    outline-offset: 2px;
+  }
+}
+
 /* Collapsed state — only the tab strip remains. The .wbRibbonPanels element
    is not rendered at all (S0Y1a omits it when collapsed=true), so this rule
    is a defensive fallback for any stray panel that might still be in the

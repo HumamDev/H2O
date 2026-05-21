@@ -114,10 +114,13 @@
       chatTypes: ['saved', 'indexed', 'imported', 'readonly'],
       groups: [
         { id: 'labels', label: 'Labels', actions: [
-          { id: 'add-tags', label: 'Tags' },
+          /* Phase 1c — placeholder tooltips updated with specific reason
+           * for why these stay disabled (no public Workspace mutation API
+           * yet; provider modules are read-only at the Studio surface). */
+          { id: 'add-tags', label: 'Tags',     tooltip: 'No public Tags/Labels API yet' },
           { id: 'category', label: 'Category' },
-          { id: 'project',  label: 'Project' },
-          { id: 'status',   label: 'Status' },
+          { id: 'project',  label: 'Project',  tooltip: 'No public Project API yet' },
+          { id: 'status',   label: 'Status',   tooltip: 'Chat status is not in Studio schema yet' },
         ] },
         { id: 'source', label: 'Source', actions: [
           { id: 'source-link', label: 'Source link' },
@@ -292,6 +295,82 @@
         );
       },
     },
+    /* Phase 1c — Metadata → Category.
+     * Does NOT mutate category itself; instead routes focus + brief
+     * pulse highlight onto the existing topbar category picker
+     * (#categoryAssignWrap, populated by studio.js renderCategoryInspector
+     * when a saved snapshot reader opens). The picker is the canonical
+     * mutation UI for category — the ribbon entry is a navigation aid for
+     * users who don't know the topbar widget exists. Enabled only when
+     * the picker is present and contains an interactive control. */
+    'category': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        let wrap = null;
+        try { wrap = document.getElementById('categoryAssignWrap'); }
+        catch (_) { return false; }
+        if (!wrap || wrap.hidden) return false;
+        /* "Has interactive content" — at least one focusable descendant. */
+        try {
+          return !!wrap.querySelector('button, select, input, [role="button"], [tabindex]:not([tabindex="-1"])');
+        } catch (_) { return false; }
+      },
+      onClick: function (ctx, setStatus) {
+        let wrap = null;
+        try { wrap = document.getElementById('categoryAssignWrap'); }
+        catch (_) { wrap = null; }
+        if (!wrap) { setStatus('Category picker not available'); return; }
+        let interactive = null;
+        try {
+          interactive = wrap.querySelector('button, select, input, [role="button"], [tabindex]:not([tabindex="-1"])');
+        } catch (_) { interactive = null; }
+        if (interactive && typeof interactive.focus === 'function') {
+          try { interactive.focus(); } catch (_) { /* swallow */ }
+        }
+        /* Pulse the picker briefly so the user sees where the action
+         * routed to. Force reflow by reading offsetWidth so a repeat
+         * click restarts the animation. */
+        try {
+          wrap.classList.remove('is-pulsing');
+          /* eslint-disable-next-line no-unused-expressions */
+          wrap.offsetWidth;
+          wrap.classList.add('is-pulsing');
+          setTimeout(function () {
+            try { wrap.classList.remove('is-pulsing'); } catch (_) { /* swallow */ }
+          }, 1300);
+        } catch (_) { /* swallow */ }
+        setStatus('Category picker is in the top bar');
+      },
+    },
+    /* Phase 1c — Metadata → Source link.
+     * Copies the source URL of an indexed (linked) chat to the clipboard.
+     * Uses Phase 1b's H2O.Studio.platform.clipboard.writeText contract.
+     * Saved chats have no source URL field — disabled there. */
+    'source-link': {
+      isEnabled: function (ctx) {
+        if (!ctx) return false;
+        if (ctx.chatType !== 'indexed') return false;
+        return !!(ctx.originalUrl && String(ctx.originalUrl).trim());
+      },
+      onClick: function (ctx, setStatus) {
+        const href = String((ctx && ctx.originalUrl) || '').trim();
+        if (!href) { setStatus('No source URL'); return; }
+        const platform = getPlatform();
+        const clip = platform && platform.clipboard;
+        if (!clip || typeof clip.writeText !== 'function') {
+          setStatus('Clipboard unavailable');
+          return;
+        }
+        setStatus('Copying source URL…');
+        Promise.resolve(clip.writeText(href)).then(
+          function () { setStatus('Source URL copied'); },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Copy failed: ' + msg);
+          }
+        );
+      },
+    },
   };
 
   /* ── Registration of the default catalogue ────────────────────────── */
@@ -304,7 +383,10 @@
           shell.registerAction(tab.id, group.id, action.id, {
             label: action.label,
             disabled: true,
-            tooltip: 'Coming soon',
+            /* Phase 1c — per-action tooltip override. When a catalogue
+             * entry specifies its own tooltip (e.g. "No public Tags/Labels
+             * API yet"), use that instead of the generic placeholder. */
+            tooltip: action.tooltip || 'Coming soon',
             phase: '1a',
           });
         });
