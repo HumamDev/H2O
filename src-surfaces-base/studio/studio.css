@@ -24,7 +24,7 @@
   --wb-focus-ring:rgba(122,182,255,.38);
   --wb-danger:#fca5a5;
   --wb-user-bg:#2f2f2f;
-  --wb-code-bg:#171717;
+  --wb-code-bg:#2f2f2f;
   --wb-code-border:rgba(255,255,255,.07);
   --wb-shadow:0 12px 32px rgba(0,0,0,.28);
 
@@ -2132,11 +2132,14 @@ body[data-layout="wide"] .cgScroll > *{
   word-break:break-word;
 }
 
-.cgMsgBody .p{
+/* Canonical renderer emits plain <p> (no class), so target the tag.
+   Pre-fix this rule targeted `.cgMsgBody .p` which never matched, and
+   paragraphs fell back to the browser-default 1em margin. */
+.cgMsgBody p{
   margin:0 0 12px;
 }
 
-.cgMsgBody .p:last-child{
+.cgMsgBody p:last-child{
   margin-bottom:0;
 }
 
@@ -2181,7 +2184,6 @@ body[data-layout="wide"] .cgScroll > *{
   padding:.12em .4em;
   border-radius:8px;
   background:rgba(255,255,255,.08);
-  border:1px solid rgba(255,255,255,.06);
 }
 
 .cgMsgBody a{
@@ -2791,7 +2793,7 @@ body[data-route="reader"] .cgScroll .cgxui-mnmp-wash-orange::before{ background:
   --border-light:                    var(--wb-border);
 
   /* Code/prose inline bg */
-  --tw-prose-inline-code-bg:         #181818;
+  --tw-prose-inline-code-bg:         rgba(255,255,255,.08);
 }
 
 /* — Utility class definitions for ChatGPT token names — */
@@ -3129,7 +3131,6 @@ div[class*="prose"] {
   padding:.12em .4em;
   border-radius:6px;
   background:var(--tw-prose-inline-code-bg, rgba(255,255,255,.08));
-  border:1px solid rgba(255,255,255,.06);
   font-family:var(--mono);
   font-size:.875em;
   word-break:break-all;
