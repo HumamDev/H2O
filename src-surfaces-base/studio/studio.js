@@ -5311,6 +5311,20 @@ function renderSettingsRoute(){
             <pre id="wbSettingsFolderConflictDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
           </div>
         </div>
+        <div id="wbSettingsFolderDesktopReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:600">Desktop Cleanup Review</div>
+              <div id="wbSettingsFolderDesktopReviewSummary" style="opacity:.72;font-size:12px">Review-only. No Desktop cleanup performed.</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="wbSettingsFolderDesktopReviewRefresh" type="button" style="${btnStyle}">Refresh Desktop review</button>
+              <button id="wbSettingsFolderDesktopReviewCopy" type="button" style="${btnStyle}">Copy Desktop cleanup report JSON</button>
+            </div>
+          </div>
+          <div id="wbSettingsFolderDesktopReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
+          <div id="wbSettingsFolderDesktopReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -6540,6 +6554,658 @@ async function deleteSelectedEmptyDuplicateConflictFolders(panel){
   }
 }
 
+function settingsFolderDesktopFolderIdOf(row){
+  return String(row?.folderId || row?.id || row?.folder_id || "").trim();
+}
+
+function settingsFolderDesktopNameOf(row){
+  const id = settingsFolderDesktopFolderIdOf(row);
+  return String(row?.name || row?.title || row?.label || id || "Folder").trim();
+}
+
+function settingsFolderDesktopNormalizeFolder(row){
+  const src = row && typeof row === "object" ? row : {};
+  const folderId = settingsFolderDesktopFolderIdOf(src);
+  if (!folderId) return null;
+  return {
+    folderId,
+    id: folderId,
+    name: settingsFolderDesktopNameOf(src),
+    source: String(src.source || src.originSource || "").trim(),
+    color: String(src.color || src.iconColor || "").trim(),
+    sortOrder: settingsFolderCleanupNumber(src.sortOrder ?? src.sort_order),
+    createdAt: src.createdAt ?? src.created_at ?? null,
+    updatedAt: src.updatedAt ?? src.updated_at ?? null,
+    raw: settingsFolderCleanupClone(src),
+  };
+}
+
+async function settingsFolderDesktopCallMaybe(obj, names, ...args){
+  const list = Array.isArray(names) ? names : [];
+  for (const name of list) {
+    if (typeof obj?.[name] !== "function") continue;
+    try {
+      return { method: name, ok: true, value: await obj[name](...args) };
+    } catch (err) {
+      return { method: name, ok: false, error: String(err && (err.stack || err.message || err)) };
+    }
+  }
+  return { method: null, ok: false, error: "no method available" };
+}
+
+async function settingsFolderDesktopSqlSelect(query, values = []){
+  if (!STUDIO_isTauri()) {
+    return { ok: false, error: "not desktop runtime", rows: [] };
+  }
+  const invoke = STUDIO_getTauriInvoke();
+  if (typeof invoke !== "function") {
+    return { ok: false, error: "Tauri invoke unavailable", rows: [] };
+  }
+  try {
+    const rows = await invoke("plugin:sql|select", {
+      db: "sqlite:studio-v1.db",
+      query: String(query || ""),
+      values: Array.isArray(values) ? values : [],
+    });
+    return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+  } catch (err) {
+    return { ok: false, error: String(err && (err.stack || err.message || err)), rows: [] };
+  }
+}
+
+async function settingsFolderDesktopListFolders(){
+  const foldersStore = W.H2O?.Studio?.store?.folders;
+  const viaStore = await settingsFolderDesktopCallMaybe(foldersStore, ["list", "getAll", "listFolders"]);
+  if (viaStore.ok && Array.isArray(viaStore.value)) {
+    return {
+      source: `store.folders.${viaStore.method}`,
+      folders: viaStore.value.map(settingsFolderDesktopNormalizeFolder).filter(Boolean),
+      warnings: [],
+    };
+  }
+  const sql = await settingsFolderDesktopSqlSelect(
+    "SELECT id, name, source, color, sort_order, created_at, updated_at, meta_json FROM folders ORDER BY id",
+    []
+  );
+  if (sql.ok) {
+    return {
+      source: "sqlite-readonly",
+      folders: sql.rows.map(settingsFolderDesktopNormalizeFolder).filter(Boolean),
+      warnings: viaStore.error && viaStore.error !== "no method available" ? [`Store folder list failed: ${viaStore.error}`] : [],
+    };
+  }
+  return {
+    source: "unavailable",
+    folders: [],
+    warnings: [
+      viaStore.error ? `Store folder list unavailable: ${viaStore.error}` : "Store folder list unavailable.",
+      sql.error ? `SQLite folder list unavailable: ${sql.error}` : "SQLite folder list unavailable.",
+    ],
+  };
+}
+
+function settingsFolderDesktopNormalizeBinding(row, folderId = ""){
+  const src = row && typeof row === "object" ? row : {};
+  const chatId = String(src.chatId || src.chat_id || src.id || "").trim();
+  const fid = String(src.folderId || src.folder_id || folderId || "").trim();
+  if (!chatId || !fid) return null;
+  return {
+    chatId,
+    folderId: fid,
+    assignedAt: src.assignedAt ?? src.assigned_at ?? null,
+    raw: settingsFolderCleanupClone(src),
+  };
+}
+
+async function settingsFolderDesktopBindingsForFolder(folderId){
+  const id = String(folderId || "").trim();
+  if (!id) return { source: "missing-folder-id", bindings: [], warnings: ["Missing folder ID."] };
+  const foldersStore = W.H2O?.Studio?.store?.folders;
+  const direct = await settingsFolderDesktopCallMaybe(foldersStore, [
+    "listBindings",
+    "getBindings",
+    "listFolderBindings",
+    "bindingsForFolder",
+    "getFolderBindings",
+  ], id);
+  if (direct.ok && Array.isArray(direct.value)) {
+    return {
+      source: `store.folders.${direct.method}`,
+      bindings: direct.value.map((row) => settingsFolderDesktopNormalizeBinding(row, id)).filter(Boolean),
+      warnings: [],
+    };
+  }
+  const sql = await settingsFolderDesktopSqlSelect(
+    "SELECT chat_id, folder_id, assigned_at FROM folder_bindings WHERE folder_id = ? ORDER BY assigned_at DESC",
+    [id]
+  );
+  if (sql.ok) {
+    return {
+      source: "sqlite-readonly",
+      bindings: sql.rows.map((row) => settingsFolderDesktopNormalizeBinding(row, id)).filter(Boolean),
+      warnings: direct.error && direct.error !== "no method available" ? [`Store binding read failed: ${direct.error}`] : [],
+    };
+  }
+  const listChats = await settingsFolderDesktopCallMaybe(foldersStore, ["listChats"], id);
+  if (listChats.ok && Array.isArray(listChats.value)) {
+    return {
+      source: "store.folders.listChats",
+      bindings: listChats.value.map((chat) => settingsFolderDesktopNormalizeBinding({
+        chatId: chat?.id || chat?.chatId || chat?.sourceId || chat?.source_id,
+        folderId: id,
+      }, id)).filter(Boolean),
+      warnings: [
+        "Binding source hydrated known chats only; orphan bindings may be hidden.",
+        sql.error ? `SQLite binding read unavailable: ${sql.error}` : "",
+      ].filter(Boolean),
+    };
+  }
+  return {
+    source: "unavailable",
+    bindings: [],
+    warnings: [
+      direct.error ? `Store binding API unavailable: ${direct.error}` : "Store binding API unavailable.",
+      sql.error ? `SQLite binding read unavailable: ${sql.error}` : "SQLite binding read unavailable.",
+      listChats.error ? `Known-chat fallback unavailable: ${listChats.error}` : "",
+    ].filter(Boolean),
+  };
+}
+
+function settingsFolderDesktopNormalizeKnownChat(row){
+  const src = row && typeof row === "object" ? row : {};
+  const id = String(src.id || src.chatId || src.source_id || src.sourceId || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    sourceId: String(src.sourceId || src.source_id || "").trim(),
+    title: String(src.title || "").trim(),
+    folderId: String(src.folderId || src.folder_id || "").trim(),
+    isSaved: !!(src.isSaved ?? src.is_saved),
+    isLinked: !!(src.isLinked ?? src.is_linked),
+    href: String(src.href || "").trim(),
+  };
+}
+
+async function settingsFolderDesktopKnownRowsForBindings(bindings){
+  const chatsStore = W.H2O?.Studio?.store?.chats;
+  const out = [];
+  for (const binding of Array.isArray(bindings) ? bindings : []) {
+    const chatId = String(binding?.chatId || "").trim();
+    if (!chatId) continue;
+    let known = null;
+    if (typeof chatsStore?.get === "function") {
+      try { known = settingsFolderDesktopNormalizeKnownChat(await chatsStore.get(chatId)); }
+      catch { known = null; }
+    }
+    if (!known) {
+      const sql = await settingsFolderDesktopSqlSelect(
+        "SELECT id, source_id, title, folder_id, is_saved, is_linked, href, normalized_href FROM chats WHERE id = ? OR source_id = ? LIMIT 1",
+        [chatId, chatId]
+      );
+      if (sql.ok && sql.rows[0]) known = settingsFolderDesktopNormalizeKnownChat(sql.rows[0]);
+    }
+    out.push({
+      chatId,
+      folderId: binding.folderId,
+      assignedAt: binding.assignedAt ?? null,
+      known: !!known,
+      chat: known,
+    });
+  }
+  return out;
+}
+
+async function settingsFolderDesktopLoadFacts(){
+  if (!STUDIO_isTauri()) {
+    return {
+      available: false,
+      surface: "chrome-studio",
+      source: "not-desktop",
+      folders: [],
+      f5dFolders: [],
+      bindingsByFolder: {},
+      knownRowsByFolder: {},
+      warnings: ["Desktop SQLite review is available only in Desktop Studio."],
+      diagnose: null,
+      storeMethods: [],
+      deleteMethodsAvailable: [],
+    };
+  }
+  const foldersStore = W.H2O?.Studio?.store?.folders;
+  const listResult = await settingsFolderDesktopListFolders();
+  const f5dFolders = listResult.folders.filter(settingsFolderCleanupIsF5DReviewCandidate);
+  const bindingsByFolder = {};
+  const knownRowsByFolder = {};
+  const warnings = listResult.warnings.slice();
+  for (const folder of f5dFolders) {
+    const bindingResult = await settingsFolderDesktopBindingsForFolder(folder.folderId);
+    bindingsByFolder[folder.folderId] = bindingResult.bindings;
+    if (bindingResult.warnings.length) {
+      warnings.push(...bindingResult.warnings.map((msg) => `${folder.folderId}: ${msg}`));
+    }
+    knownRowsByFolder[folder.folderId] = await settingsFolderDesktopKnownRowsForBindings(bindingResult.bindings);
+  }
+  let diagnose = null;
+  try { diagnose = typeof foldersStore?.diagnose === "function" ? await foldersStore.diagnose() : null; } catch {}
+  const storeMethods = Object.keys(foldersStore || {}).filter((key) => typeof foldersStore[key] === "function").sort();
+  return {
+    available: true,
+    surface: "desktop-studio",
+    source: listResult.source,
+    folders: listResult.folders,
+    f5dFolders,
+    bindingsByFolder,
+    knownRowsByFolder,
+    warnings: Array.from(new Set(warnings.filter(Boolean))),
+    diagnose,
+    storeMethods,
+    deleteMethodsAvailable: storeMethods.filter((key) => /delete|remove/i.test(key)),
+  };
+}
+
+function settingsFolderDesktopReadChromeStorage(keys){
+  if (!hasChromeStorage()) return Promise.resolve({ ok: false, values: {}, error: "chrome.storage.local unavailable" });
+  return new Promise((resolve) => {
+    try {
+      W.chrome.storage.local.get(keys, (result) => {
+        const lastError = W.chrome?.runtime?.lastError;
+        if (lastError) {
+          resolve({ ok: false, values: {}, error: String(lastError.message || lastError) });
+          return;
+        }
+        resolve({ ok: true, values: result || {}, error: "" });
+      });
+    } catch (err) {
+      resolve({ ok: false, values: {}, error: String(err && (err.stack || err.message || err)) });
+    }
+  });
+}
+
+async function settingsFolderDesktopLoadChromeFacts(){
+  const storage = await settingsFolderDesktopReadChromeStorage([FOLDER_STATE_DATA_KEY, FOLDER_CLEANUP_AUDIT_KEY]);
+  if (!storage.ok) {
+    return {
+      available: false,
+      source: "unavailable",
+      state: null,
+      f5dFolders: [],
+      auditTail: [],
+      warnings: [storage.error],
+      summary: null,
+    };
+  }
+  const stateObj = storage.values?.[FOLDER_STATE_DATA_KEY] || {};
+  const state = stateObj && typeof stateObj === "object" && !Array.isArray(stateObj) ? stateObj : {};
+  const folders = Array.isArray(state.folders) ? state.folders : [];
+  const items = state.items && typeof state.items === "object" && !Array.isArray(state.items) ? state.items : {};
+  const f5dFolders = folders.filter(settingsFolderCleanupIsF5DReviewCandidate).map((folder) => {
+    const id = String(folder?.id || folder?.folderId || "").trim();
+    const bucket = items[id];
+    const bucketExists = Object.prototype.hasOwnProperty.call(items, id);
+    return {
+      folderId: id,
+      id,
+      name: settingsFolderDesktopNameOf(folder),
+      raw: settingsFolderCleanupClone(folder),
+      bucketExists,
+      bucketIsArray: Array.isArray(bucket),
+      bucketCount: Array.isArray(bucket) ? bucket.length : 0,
+      bucket: Array.isArray(bucket) ? settingsFolderCleanupClone(bucket) : (bucket == null ? null : settingsFolderCleanupClone(bucket)),
+    };
+  }).filter((folder) => !!folder.folderId);
+  const auditRaw = storage.values?.[FOLDER_CLEANUP_AUDIT_KEY];
+  const auditTail = Array.isArray(auditRaw) ? auditRaw.slice(-10).map((entry) => ({
+    timestamp: entry?.timestamp || "",
+    action: entry?.action || "",
+    surface: entry?.surface || "",
+    result: entry?.result || "",
+    selectedFolderIds: entry?.selectedFolderIds || entry?.selectedDuplicateFolderIds || [],
+  })) : auditRaw;
+  return {
+    available: true,
+    source: STUDIO_isTauri() ? "desktop-storage-shim" : "chrome.storage.local",
+    state,
+    f5dFolders,
+    auditTail,
+    warnings: [],
+    summary: settingsFolderCleanupFolderStateSummary(state),
+  };
+}
+
+function settingsFolderDesktopSurfaceBadges(candidate){
+  const badges = [];
+  if (candidate?.existsInDesktopSqlite) badges.push("Desktop SQLite");
+  if (candidate?.existsInChromeMirror) badges.push("Chrome mirror");
+  if (candidate?.surface === "cross-surface") badges.push("cross-surface");
+  if (candidate?.bindingCount > 0) badges.push("bound");
+  if (candidate?.orphanBindingCount > 0) badges.push("orphan");
+  badges.push("review");
+  return badges;
+}
+
+function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = null, chromeFolder = null, displayRow = null, desktopFacts = null }){
+  const id = String(folderId || "").trim();
+  const bindings = Array.isArray(desktopFacts?.bindingsByFolder?.[id]) ? desktopFacts.bindingsByFolder[id] : [];
+  const knownChatRows = Array.isArray(desktopFacts?.knownRowsByFolder?.[id]) ? desktopFacts.knownRowsByFolder[id] : [];
+  const orphanBindings = knownChatRows.filter((row) => row && row.known === false);
+  const existsInDesktopSqlite = !!desktopFolder;
+  const existsInChromeMirror = !!chromeFolder;
+  const existsInNative = !!displayRow?.isCanonical;
+  const bindingCount = bindings.length;
+  const blockers = [];
+  const warnings = [];
+  if (existsInNative) blockers.push("native/canonical folder");
+  if (bindingCount > 0) blockers.push("Desktop SQLite binding exists");
+  if (orphanBindings.length > 0) blockers.push("binding does not resolve to a known chat row");
+  if (existsInChromeMirror) blockers.push("also present in Chrome mirror; review cross-surface state separately");
+  if (!existsInDesktopSqlite && !existsInChromeMirror) blockers.push("folder not found in Desktop or Chrome facts");
+  if (settingsFolderCleanupIsF5DReviewCandidate({ folderId: id, name })) {
+    warnings.push("F5D/Desktop test folder. P7d-a is review-only.");
+  }
+  if (id === "f5d1-test-folder-b" && bindingCount > 0) {
+    warnings.push("Known bound review candidate: f5d1-test-chat-001 has been observed on this folder.");
+  }
+  const surface = existsInDesktopSqlite && existsInChromeMirror
+    ? "cross-surface"
+    : (existsInDesktopSqlite ? "desktop" : "chrome-studio");
+  const store = existsInDesktopSqlite ? "sqlite" : "chrome-storage";
+  const className = bindingCount > 0
+    ? "desktop-bound-review-candidate"
+    : (existsInDesktopSqlite && existsInChromeMirror
+      ? "cross-surface-candidate"
+      : (existsInDesktopSqlite ? "desktop-empty-test-candidate" : "chrome-only-extra-candidate"));
+  const futureEligible = !existsInNative
+    && existsInDesktopSqlite
+    && bindingCount === 0
+    && knownChatRows.length === 0
+    && !existsInChromeMirror;
+  return {
+    folderId: id,
+    name: String(name || desktopFolder?.name || chromeFolder?.name || id).trim() || id,
+    normalizedName: String(displayRow?.normalizedName || name || id).trim().toLowerCase(),
+    classification: className,
+    surface,
+    store,
+    storeBadges: settingsFolderDesktopSurfaceBadges({
+      existsInDesktopSqlite,
+      existsInChromeMirror,
+      surface,
+      bindingCount,
+      orphanBindingCount: orphanBindings.length,
+    }),
+    existsInNative,
+    existsInChromeMirror,
+    existsInDesktopSqlite,
+    bindingCount,
+    bindings,
+    knownChatRows,
+    chromeBucket: chromeFolder ? {
+      bucketExists: !!chromeFolder.bucketExists,
+      bucketIsArray: !!chromeFolder.bucketIsArray,
+      bucketCount: settingsFolderCleanupNumber(chromeFolder.bucketCount),
+      bucket: chromeFolder.bucket,
+    } : null,
+    proposedAction: bindingCount > 0
+      ? "Review exact binding before any future Desktop action."
+      : "Review-only in P7d-a. Future Desktop action would require explicit confirmation and audit.",
+    riskLevel: bindingCount > 0 || orphanBindings.length > 0 ? "high-review-required" : "review-required",
+    requiresApproval: true,
+    warnings,
+    deletionEligible: false,
+    futureDeletionEligible: futureEligible,
+    blockers: Array.from(new Set([
+      "P7d-a is review-only; no mutation controls are available.",
+      ...blockers,
+      ...(futureEligible ? [] : ["not eligible for a future empty Desktop action until blockers are resolved"]),
+    ].filter(Boolean))),
+  };
+}
+
+function settingsFolderDesktopBuildReviewReport(selfCheck, displayModel, desktopFacts, chromeFacts){
+  const displayRows = Array.isArray(displayModel?.rows) ? displayModel.rows : [];
+  const displayById = new Map(displayRows.map((row) => [String(row?.folderId || row?.id || "").trim(), row]));
+  const desktopById = new Map((Array.isArray(desktopFacts?.f5dFolders) ? desktopFacts.f5dFolders : []).map((folder) => [folder.folderId, folder]));
+  const chromeById = new Map((Array.isArray(chromeFacts?.f5dFolders) ? chromeFacts.f5dFolders : []).map((folder) => [folder.folderId, folder]));
+  const ids = Array.from(new Set([...desktopById.keys(), ...chromeById.keys()])).filter(Boolean).sort();
+  const allCandidates = ids.map((id) => settingsFolderDesktopBuildCandidate({
+    folderId: id,
+    name: desktopById.get(id)?.name || chromeById.get(id)?.name || id,
+    desktopFolder: desktopById.get(id) || null,
+    chromeFolder: chromeById.get(id) || null,
+    displayRow: displayById.get(id) || null,
+    desktopFacts,
+  }));
+  const desktopCandidates = allCandidates.filter((row) => row.existsInDesktopSqlite);
+  const chromeCandidates = allCandidates.filter((row) => row.existsInChromeMirror);
+  const crossSurfaceCandidates = allCandidates.filter((row) => row.existsInDesktopSqlite && row.existsInChromeMirror);
+  const boundReviewCandidates = allCandidates.filter((row) => row.bindingCount > 0);
+  const orphanBindings = [];
+  for (const candidate of allCandidates) {
+    const rows = Array.isArray(candidate.knownChatRows) ? candidate.knownChatRows : [];
+    for (const row of rows) {
+      if (row && row.known === false) {
+        orphanBindings.push({
+          folderId: candidate.folderId,
+          name: candidate.name,
+          chatId: row.chatId,
+          binding: `${row.chatId} -> ${row.folderId}`,
+          surface: "desktop",
+          store: "sqlite",
+          riskLevel: "high-review-required",
+          proposedAction: "Review orphan binding before any future folder action.",
+          blockers: ["Binding exists in Desktop SQLite but no matching chat row was found."],
+        });
+      }
+    }
+  }
+  return {
+    readOnly: true,
+    noMutation: true,
+    generatedAt: new Date().toISOString(),
+    surface: STUDIO_isTauri() ? "desktop-studio" : "chrome-studio",
+    selfCheckSummary: selfCheck?.summary || null,
+    desktopAvailable: !!desktopFacts?.available,
+    chromeMirrorAvailable: !!chromeFacts?.available,
+    desktopSource: desktopFacts?.source || "",
+    chromeSource: chromeFacts?.source || "",
+    counts: {
+      desktopCandidates: desktopCandidates.length,
+      chromeCandidates: chromeCandidates.length,
+      crossSurface: crossSurfaceCandidates.length,
+      boundReview: boundReviewCandidates.length,
+      orphanBindings: orphanBindings.length,
+    },
+    desktopCandidates,
+    chromeCandidates,
+    crossSurfaceCandidates,
+    boundReviewCandidates,
+    orphanBindings,
+    diagnostics: {
+      desktopWarnings: desktopFacts?.warnings || [],
+      chromeWarnings: chromeFacts?.warnings || [],
+      desktopDiagnose: desktopFacts?.diagnose || null,
+      desktopStoreMethods: desktopFacts?.storeMethods || [],
+      desktopDeleteMethodsAvailable: desktopFacts?.deleteMethodsAvailable || [],
+      chromeFolderStateSummary: chromeFacts?.summary || null,
+      chromeAuditTail: chromeFacts?.auditTail || [],
+    },
+    safetyRules: [
+      "P7d-a is review-only.",
+      "No Desktop SQLite writes are performed.",
+      "No Chrome storage writes are performed.",
+      "No native ChatGPT folder-state mutation is performed.",
+      "Chrome and Desktop cleanup must remain separate future actions.",
+      "Folders with bindings are never candidates for empty-folder cleanup.",
+    ],
+    futurePhases: [
+      "P7d-b may later handle Desktop empty test folder cleanup with explicit confirmation and audit.",
+      "P7d-c may later review bound test folder bindings.",
+      "P7d-d may later compare Chrome/Desktop consistency after Desktop review.",
+    ],
+  };
+}
+
+async function settingsFolderDesktopLoadReviewInputs(seed = null){
+  const parity = W.H2O?.Library?.FolderParity;
+  const selfCheck = seed?.selfCheck || (typeof parity?.selfCheck === "function" ? await parity.selfCheck({ fresh: true }) : null);
+  const displayModel = seed?.displayModel || (typeof parity?.getDisplayModel === "function" ? await parity.getDisplayModel({ fresh: true }) : { rows: [] });
+  const desktopFacts = await settingsFolderDesktopLoadFacts();
+  const chromeFacts = await settingsFolderDesktopLoadChromeFacts();
+  return {
+    selfCheck,
+    displayModel,
+    desktopFacts,
+    chromeFacts,
+    report: settingsFolderDesktopBuildReviewReport(selfCheck, displayModel, desktopFacts, chromeFacts),
+  };
+}
+
+function settingsFolderDesktopBindingHtml(candidate){
+  const bindings = Array.isArray(candidate?.bindings) ? candidate.bindings : [];
+  if (!bindings.length) return `<div style="font-size:12px;opacity:.72"><strong>Bindings:</strong> none</div>`;
+  const knownRows = Array.isArray(candidate?.knownChatRows) ? candidate.knownChatRows : [];
+  return `
+    <div style="display:flex;flex-direction:column;gap:3px;font-size:12px">
+      <strong>Bindings:</strong>
+      ${bindings.map((binding) => {
+        const known = knownRows.find((row) => row?.chatId === binding.chatId);
+        const resolution = known?.known ? `known chat${known.chat?.title ? `: ${known.chat.title}` : ""}` : "no matching chat row";
+        return `<span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">${esc(binding.chatId)} -&gt; ${esc(binding.folderId)} <span style="opacity:.68">(${esc(resolution)})</span></span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function settingsFolderDesktopCandidateHtml(candidate){
+  const blockers = Array.isArray(candidate?.blockers) ? candidate.blockers : [];
+  const warnings = Array.isArray(candidate?.warnings) ? candidate.warnings : [];
+  const chromeBucket = candidate?.chromeBucket;
+  const bucketText = chromeBucket
+    ? `${chromeBucket.bucketExists ? "present" : "missing"} · ${chromeBucket.bucketIsArray ? "array" : "not-array"} · ${chromeBucket.bucketCount || 0} item(s)`
+    : "not present";
+  const badges = Array.isArray(candidate?.storeBadges) ? candidate.storeBadges : [];
+  return `
+    <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <strong>${esc(candidate?.name || "(unnamed)")}</strong>
+        <span>${settingsFolderCleanupBadgesHtml({ badges, classification: candidate?.classification })}</span>
+      </div>
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "(no folder id)")}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 12px;font-size:12px">
+        <span>surface ${esc(candidate?.surface || "unknown")}</span>
+        <span>store ${esc(candidate?.store || "unknown")}</span>
+        <span>Desktop ${candidate?.existsInDesktopSqlite ? "yes" : "no"}</span>
+        <span>Chrome ${candidate?.existsInChromeMirror ? "yes" : "no"}</span>
+        <span>native ${candidate?.existsInNative ? "yes" : "no"}</span>
+        <span>bindings ${esc(candidate?.bindingCount || 0)}</span>
+      </div>
+      <div style="font-size:12px"><strong>Chrome bucket:</strong> ${esc(bucketText)}</div>
+      ${settingsFolderDesktopBindingHtml(candidate)}
+      <div style="font-size:12px"><strong>Review:</strong> ${esc(candidate?.proposedAction || "Review only.")}</div>
+      <div style="font-size:12px"><strong>Risk:</strong> ${esc(candidate?.riskLevel || "review")}</div>
+      <div style="font-size:12px"><strong>P7d-a action eligibility:</strong> ${candidate?.deletionEligible ? "available" : "not available; review-only"}</div>
+      ${warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Warnings:</strong> ${esc(warnings.join(" "))}</div>` : ""}
+      ${blockers.length ? `<div style="font-size:12px;opacity:.78"><strong>Blockers:</strong> ${esc(blockers.join(" "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function settingsFolderDesktopGroupHtml(title, candidates, emptyText){
+  const rows = Array.isArray(candidates) ? candidates : [];
+  return `
+    <details open style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+      <summary style="cursor:pointer;font-weight:600">${esc(title)} <span style="opacity:.65">(${rows.length})</span></summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        ${rows.length ? rows.map(settingsFolderDesktopCandidateHtml).join("") : `<div style="opacity:.65;font-size:12px">${esc(emptyText || "No candidates.")}</div>`}
+      </div>
+    </details>
+  `;
+}
+
+function settingsFolderDesktopOrphanHtml(item){
+  const blockers = Array.isArray(item?.blockers) ? item.blockers : [];
+  return `
+    <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
+      <strong>${esc(item?.binding || "orphan binding")}</strong>
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(item?.folderId || "")}</div>
+      <div style="font-size:12px"><strong>Review:</strong> ${esc(item?.proposedAction || "Review only.")}</div>
+      <div style="font-size:12px"><strong>Risk:</strong> ${esc(item?.riskLevel || "review")}</div>
+      ${blockers.length ? `<div style="font-size:12px;opacity:.78"><strong>Blockers:</strong> ${esc(blockers.join(" "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function settingsFolderDesktopRenderReport(panel, report){
+  const summary = panel?.querySelector("#wbSettingsFolderDesktopReviewSummary");
+  const chips = panel?.querySelector("#wbSettingsFolderDesktopReviewChips");
+  const groups = panel?.querySelector("#wbSettingsFolderDesktopReviewGroups");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderDesktopReviewCopy");
+  if (summary) {
+    summary.textContent = `Review-only. Desktop ${report?.desktopAvailable ? "available" : "unavailable"} · Chrome mirror ${report?.chromeMirrorAvailable ? "available" : "unavailable"}. No Desktop cleanup performed.`;
+  }
+  if (chips) {
+    chips.innerHTML = [
+      settingsFolderCleanupChip("Desktop F5D", report?.counts?.desktopCandidates || 0),
+      settingsFolderCleanupChip("Chrome F5D", report?.counts?.chromeCandidates || 0),
+      settingsFolderCleanupChip("cross-surface", report?.counts?.crossSurface || 0),
+      settingsFolderCleanupChip("bound review", report?.counts?.boundReview || 0),
+      settingsFolderCleanupChip("orphan bindings", report?.counts?.orphanBindings || 0),
+    ].join("");
+  }
+  if (groups) {
+    const diagnostics = report?.diagnostics || {};
+    const warnings = [...(diagnostics.desktopWarnings || []), ...(diagnostics.chromeWarnings || [])].filter(Boolean);
+    groups.innerHTML = [
+      warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Read warnings:</strong> ${esc(warnings.join(" "))}</div>` : "",
+      settingsFolderDesktopGroupHtml("Desktop F5D candidates", report?.desktopCandidates, "No Desktop F5D candidates detected on this surface."),
+      settingsFolderDesktopGroupHtml("Chrome mirror F5D candidates", report?.chromeCandidates, "No Chrome mirror F5D candidates detected."),
+      settingsFolderDesktopGroupHtml("Cross-surface candidates", report?.crossSurfaceCandidates, "No F5D folders are present in both Desktop and Chrome mirror facts."),
+      settingsFolderDesktopGroupHtml("Bound review candidates", report?.boundReviewCandidates, "No bound F5D review candidates detected."),
+      `
+        <details open style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+          <summary style="cursor:pointer;font-weight:600">Orphan bindings <span style="opacity:.65">(${(report?.orphanBindings || []).length})</span></summary>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            ${(report?.orphanBindings || []).length
+              ? report.orphanBindings.map(settingsFolderDesktopOrphanHtml).join("")
+              : `<div style="opacity:.65;font-size:12px">No F5D orphan bindings detected.</div>`}
+          </div>
+        </details>
+      `,
+    ].join("");
+  }
+  if (copyBtn) copyBtn.disabled = false;
+}
+
+async function refreshSettingsFolderDesktopReview(panel, seed = null){
+  if (!panel) return null;
+  const summary = panel.querySelector("#wbSettingsFolderDesktopReviewSummary");
+  const copyBtn = panel.querySelector("#wbSettingsFolderDesktopReviewCopy");
+  if (summary) summary.textContent = "Refreshing read-only Desktop cleanup review…";
+  if (copyBtn) copyBtn.disabled = true;
+  const loaded = await settingsFolderDesktopLoadReviewInputs(seed);
+  panel.__h2oFolderDesktopReviewReport = loaded.report;
+  settingsFolderDesktopRenderReport(panel, loaded.report);
+  return loaded.report;
+}
+
+async function copySettingsFolderDesktopReviewReport(panel){
+  if (!panel) return;
+  let report = panel.__h2oFolderDesktopReviewReport;
+  if (!report) report = await refreshSettingsFolderDesktopReview(panel);
+  const text = JSON.stringify(report || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Desktop cleanup review report JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; Desktop cleanup review report printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT", report); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; Desktop cleanup review report printed to console as H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT.");
+}
+
 function settingsFolderCleanupUpdateDeleteControls(panel){
   const chromeSurface = settingsFolderCleanupIsChromeSurface();
   const selectedIds = settingsFolderCleanupSelectedIds(panel);
@@ -6579,6 +7245,10 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
     selfCheck: loaded.selfCheck,
     displayModel: loaded.displayModel,
   }).catch((err) => settingsFolderParityLog(panel, "Folder conflict review failed.\n" + String(err && (err.stack || err.message || err))));
+  await refreshSettingsFolderDesktopReview(panel, {
+    selfCheck: loaded.selfCheck,
+    displayModel: loaded.displayModel,
+  }).catch((err) => settingsFolderParityLog(panel, "Desktop cleanup review failed.\n" + String(err && (err.stack || err.message || err))));
   return plan;
 }
 
@@ -7092,6 +7762,14 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderConflictCopy")?.addEventListener("click", () => {
     copySettingsFolderConflictPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopReviewRefresh")?.addEventListener("click", () => {
+    refreshSettingsFolderDesktopReview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopReviewCopy")?.addEventListener("click", () => {
+    copySettingsFolderDesktopReviewReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderConflictDeleteList")?.addEventListener("change", () => {
