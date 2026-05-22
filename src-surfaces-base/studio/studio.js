@@ -5280,6 +5280,19 @@ function renderSettingsRoute(){
           <button id="wbSettingsFolderCleanupDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected safe empty folders</button>
           <pre id="wbSettingsFolderCleanupDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
         </div>
+        <div id="wbSettingsFolderConflictReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:600">Same-name Conflict Resolution</div>
+              <div id="wbSettingsFolderConflictSummary" style="opacity:.72;font-size:12px">Review-only. No merge or deletion performed.</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="wbSettingsFolderConflictRefresh" type="button" style="${btnStyle}">Refresh conflict review</button>
+              <button id="wbSettingsFolderConflictCopy" type="button" style="${btnStyle}">Copy conflict plan JSON</button>
+            </div>
+          </div>
+          <div id="wbSettingsFolderConflictGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -5943,6 +5956,228 @@ function settingsFolderCleanupRenderDeletePanel(panel, plan){
   settingsFolderCleanupUpdateDeleteControls(panel);
 }
 
+function settingsFolderConflictNormalizeName(row){
+  const src = row && typeof row === "object" ? row : {};
+  return String(src.normalizedName || src.name || "").trim().toLowerCase();
+}
+
+function settingsFolderConflictBucketSummary(mirror, folderId){
+  const id = String(folderId || "").trim();
+  const items = mirror?.items && typeof mirror.items === "object" ? mirror.items : null;
+  if (!items || !id) return { state: "unavailable", count: 0, bindings: [] };
+  if (!Object.prototype.hasOwnProperty.call(items, id)) return { state: "missing", count: 0, bindings: [] };
+  const bucket = items[id];
+  if (Array.isArray(bucket)) {
+    return {
+      state: "array",
+      count: bucket.length,
+      bindings: settingsFolderCleanupClone(bucket) || [],
+    };
+  }
+  return { state: "malformed", count: 0, bindings: [] };
+}
+
+function settingsFolderConflictFolderFromRow(row, role, mirror){
+  const src = row && typeof row === "object" ? row : {};
+  const folderId = String(src.folderId || src.id || "").trim();
+  const bucket = settingsFolderConflictBucketSummary(mirror, folderId);
+  const badges = Array.isArray(src.badges) ? src.badges.slice() : [];
+  if (role === "canonical" && !badges.includes("canonical")) badges.push("canonical");
+  if (role === "duplicate") {
+    if (!badges.includes("extra")) badges.push("extra");
+    if (!badges.includes("conflict")) badges.push("conflict");
+    if (!badges.includes("review")) badges.push("review");
+  }
+  return {
+    folderId,
+    name: String(src.name || folderId || "Folder").trim(),
+    canonicalCount: settingsFolderCleanupNumber(src.canonicalCount),
+    knownCount: settingsFolderCleanupNumber(src.knownCount),
+    localBindingCount: Math.max(settingsFolderCleanupRowBindingCount(src), bucket.count),
+    nativePresence: !!src.isCanonical,
+    bindings: bucket.bindings,
+    bucketState: bucket.state,
+    bucketCount: bucket.count,
+    isExtra: !!src.isExtra,
+    isConflict: !!src.isConflict,
+    isTestCandidate: !!src.isTestCandidate,
+    badges,
+    riskLevel: role === "canonical" ? "protected" : "high-review-required",
+    proposedAction: role === "canonical"
+      ? "Preserve canonical folder."
+      : "Review-only. Keep both until bindings and intent are confirmed.",
+    warnings: role === "canonical"
+      ? ["Canonical native folder. Not a conflict cleanup target."]
+      : ["Same-name/different-ID conflict.", "No merge/delete/move performed."],
+  };
+}
+
+function settingsFolderConflictBuildPlan(selfCheck, displayModel, mirror = null, mirrorWarning = ""){
+  const rows = Array.isArray(displayModel?.rows) ? displayModel.rows : [];
+  const surface = String(selfCheck?.surface || displayModel?.surface || "");
+  const groups = new Map();
+  for (const row of rows) {
+    const normalizedName = settingsFolderConflictNormalizeName(row);
+    if (!normalizedName) continue;
+    if (!groups.has(normalizedName)) groups.set(normalizedName, []);
+    groups.get(normalizedName).push(row);
+  }
+
+  const conflicts = [];
+  for (const [normalizedName, groupRows] of groups.entries()) {
+    const canonicalRows = groupRows.filter((row) => !!row?.isCanonical);
+    const duplicateRows = groupRows.filter((row) => !row?.isCanonical && (!!row?.isConflict || canonicalRows.length > 0));
+    if (!canonicalRows.length || !duplicateRows.length) continue;
+    const canonicalRow = canonicalRows[0];
+    conflicts.push({
+      normalizedName,
+      canonicalFolder: settingsFolderConflictFolderFromRow(canonicalRow, "canonical", mirror),
+      duplicateFolders: duplicateRows.map((row) => settingsFolderConflictFolderFromRow(row, "duplicate", mirror)),
+      proposedResolution: "keep-both-until-reviewed",
+      allowedActions: ["keep-both", "copy-conflict-plan"],
+      blockedActions: [
+        "delete-duplicate",
+        "merge-duplicate-into-canonical",
+        "move-bindings-to-canonical",
+        "merge-metadata-to-canonical",
+      ],
+      requiresApproval: true,
+    });
+  }
+
+  conflicts.sort((a, b) => String(a.normalizedName).localeCompare(String(b.normalizedName)));
+  return {
+    readOnly: true,
+    noMutation: true,
+    generatedAt: new Date().toISOString(),
+    surface,
+    conflictCount: conflicts.length,
+    mirrorAvailable: !!mirror,
+    mirrorWarning: String(mirrorWarning || ""),
+    conflicts,
+    safetyRules: [
+      "P7c-a is review-only.",
+      "No merge/delete/move is performed.",
+      "No Chrome storage, SQLite, or native folder-state writes are performed.",
+      "Canonical f_* folders are protected.",
+      "Same-name conflicts require explicit future approval before any action.",
+    ],
+    futurePhases: [
+      "P7c-b may later remove an empty duplicate only after explicit confirmation and audit.",
+      "P7c-c may later reassign bindings only after exact binding review and audit.",
+      "P7d handles Desktop cleanup separately.",
+    ],
+  };
+}
+
+function settingsFolderConflictFolderHtml(folder, label){
+  const bindings = Array.isArray(folder?.bindings) ? folder.bindings : [];
+  const bindingSample = bindings.length
+    ? `<div style="font-size:12px;opacity:.72"><strong>Binding sample:</strong> ${esc(bindings.slice(0, 3).map((item) => typeof item === "string" ? item : JSON.stringify(item)).join(", "))}${bindings.length > 3 ? "…" : ""}</div>`
+    : "";
+  return `
+    <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <strong>${esc(label)}: ${esc(folder?.name || "(unnamed)")}</strong>
+        <span>${settingsFolderCleanupBadgesHtml(folder)}</span>
+      </div>
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(folder?.folderId || "(no folder id)")}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:4px 12px;font-size:12px">
+        <span>native ${esc(folder?.canonicalCount ?? 0)}</span>
+        <span>known ${esc(folder?.knownCount ?? 0)}</span>
+        <span>local bindings ${esc(folder?.localBindingCount ?? 0)}</span>
+        <span>bucket ${esc(folder?.bucketState || "unavailable")} (${esc(folder?.bucketCount ?? 0)})</span>
+      </div>
+      <div style="font-size:12px"><strong>Review:</strong> ${esc(folder?.proposedAction || "Review only.")}</div>
+      <div style="font-size:12px"><strong>Risk:</strong> ${esc(folder?.riskLevel || "review")}</div>
+      ${Array.isArray(folder?.warnings) && folder.warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Why:</strong> ${esc(folder.warnings.join(" "))}</div>` : ""}
+      ${bindingSample}
+    </div>
+  `;
+}
+
+function settingsFolderConflictHtml(conflict){
+  const duplicateRows = Array.isArray(conflict?.duplicateFolders) ? conflict.duplicateFolders : [];
+  return `
+    <details open style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+      <summary style="cursor:pointer;font-weight:600">${esc(conflict?.normalizedName || "folder")} <span style="opacity:.65">(${duplicateRows.length} duplicate${duplicateRows.length === 1 ? "" : "s"})</span></summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        <div style="font-size:12px;opacity:.76">Recommendation: Review-only. Keep both until bindings and intent are confirmed. No merge/delete/move performed.</div>
+        ${settingsFolderConflictFolderHtml(conflict?.canonicalFolder, "Canonical")}
+        ${duplicateRows.map((folder) => settingsFolderConflictFolderHtml(folder, "Duplicate")).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function settingsFolderConflictRenderPlan(panel, plan){
+  const summary = panel?.querySelector("#wbSettingsFolderConflictSummary");
+  const groups = panel?.querySelector("#wbSettingsFolderConflictGroups");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderConflictCopy");
+  const conflicts = Array.isArray(plan?.conflicts) ? plan.conflicts : [];
+  if (summary) {
+    const mirrorText = plan?.mirrorWarning ? ` Mirror buckets unavailable: ${plan.mirrorWarning}` : "";
+    summary.textContent = `${conflicts.length} same-name conflict group${conflicts.length === 1 ? "" : "s"}. Review-only. No merge or deletion performed.${mirrorText}`;
+  }
+  if (groups) {
+    groups.innerHTML = conflicts.length
+      ? conflicts.map(settingsFolderConflictHtml).join("")
+      : `<div style="opacity:.72;font-size:12px">No same-name folder conflicts detected.</div>`;
+  }
+  if (copyBtn) copyBtn.disabled = false;
+}
+
+async function settingsFolderConflictLoadInputs(seed = null){
+  const parity = W.H2O?.Library?.FolderParity;
+  if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
+    throw new Error("FolderParity conflict review APIs unavailable");
+  }
+  const selfCheck = seed?.selfCheck || await parity.selfCheck({ fresh: true });
+  const displayModel = seed?.displayModel || await parity.getDisplayModel({ fresh: true });
+  let mirror = null;
+  let mirrorWarning = "";
+  if (settingsFolderCleanupIsChromeSurface()) {
+    try { mirror = await settingsFolderCleanupReadChromeMirror(); }
+    catch (err) { mirrorWarning = String(err && (err.message || err)); }
+  }
+  return {
+    selfCheck,
+    displayModel,
+    mirror,
+    plan: settingsFolderConflictBuildPlan(selfCheck, displayModel, mirror, mirrorWarning),
+  };
+}
+
+async function refreshSettingsFolderConflictReview(panel, seed = null){
+  if (!panel) return null;
+  const summary = panel.querySelector("#wbSettingsFolderConflictSummary");
+  const copyBtn = panel.querySelector("#wbSettingsFolderConflictCopy");
+  if (summary) summary.textContent = "Refreshing same-name conflict review…";
+  if (copyBtn) copyBtn.disabled = true;
+  const loaded = await settingsFolderConflictLoadInputs(seed);
+  panel.__h2oFolderConflictReviewPlan = loaded.plan;
+  settingsFolderConflictRenderPlan(panel, loaded.plan);
+  return loaded.plan;
+}
+
+async function copySettingsFolderConflictPlan(panel){
+  if (!panel) return;
+  let plan = panel.__h2oFolderConflictReviewPlan;
+  if (!plan) plan = await refreshSettingsFolderConflictReview(panel);
+  const text = JSON.stringify(plan || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Folder conflict review plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; conflict review plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CONFLICT_REVIEW_PLAN", plan); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; folder conflict review plan printed to console as H2O_FOLDER_CONFLICT_REVIEW_PLAN.");
+}
+
 function settingsFolderCleanupUpdateDeleteControls(panel){
   const chromeSurface = settingsFolderCleanupIsChromeSurface();
   const selectedIds = settingsFolderCleanupSelectedIds(panel);
@@ -5978,6 +6213,10 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   const plan = loaded.plan || settingsFolderCleanupBuildReviewPlan(loaded.selfCheck, loaded.displayModel);
   panel.__h2oFolderCleanupReviewPlan = plan;
   settingsFolderCleanupRenderPlan(panel, plan);
+  await refreshSettingsFolderConflictReview(panel, {
+    selfCheck: loaded.selfCheck,
+    displayModel: loaded.displayModel,
+  }).catch((err) => settingsFolderParityLog(panel, "Folder conflict review failed.\n" + String(err && (err.stack || err.message || err))));
   return plan;
 }
 
@@ -6483,6 +6722,14 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderCleanupReviewCopy")?.addEventListener("click", () => {
     copySettingsFolderCleanupReviewPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictRefresh")?.addEventListener("click", () => {
+    refreshSettingsFolderConflictReview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictCopy")?.addEventListener("click", () => {
+    copySettingsFolderConflictPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderCleanupDeleteList")?.addEventListener("change", () => {
