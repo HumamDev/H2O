@@ -47,6 +47,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
+  var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var DEFAULT_LIST_LIMIT = 100;
   var MAX_LIST_LIMIT = 1000;
@@ -70,6 +71,12 @@
     rejected: true,
     superseded: true,
     resolved: true,
+  };
+  var DECISION_ACTIONS = {
+    ignored: { status: 'ignored', decision: 'ignored-by-operator' },
+    rejected: { status: 'rejected', decision: 'rejected-by-operator' },
+    acceptedLater: { status: 'accepted-later', decision: 'accepted-for-later-apply' },
+    resolved: { status: 'resolved', decision: 'resolved-without-apply' },
   };
   var KNOWN_TOMBSTONE_KINDS = {
     chat: true,
@@ -875,6 +882,22 @@
     }
   }
 
+  function readLocalSyncPeerIdForDecision() {
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      return Promise.reject(new Error('local identity unavailable for decision audit'));
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanScalar(value && value.syncPeerId);
+        if (!peerId) throw new Error('local identity unavailable for decision audit');
+        return peerId;
+      });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
   function isCascadeRelated(tombstone, metaObject) {
     var deleteReason = cleanScalar(tombstone && tombstone.deleteReason);
     return !!(
@@ -1664,32 +1687,88 @@
     });
   }
 
-  function markStatus(reviewIdInput, status, reason) {
+  function requireDecisionReason(reason) {
+    var value = cleanString(reason);
+    if (!value) throw new Error('decision reason required');
+    return value;
+  }
+
+  function canApplyDecisionTransition(currentStatus, nextStatus) {
+    if (currentStatus === 'pending') {
+      return nextStatus === 'ignored' ||
+        nextStatus === 'rejected' ||
+        nextStatus === 'accepted-later' ||
+        nextStatus === 'resolved';
+    }
+    if (currentStatus === 'accepted-later') {
+      return nextStatus === 'ignored' ||
+        nextStatus === 'rejected' ||
+        nextStatus === 'resolved';
+    }
+    return false;
+  }
+
+  function appendDecisionAuditWarning(rawWarnings, decision) {
+    var warnings = parseWarnings(rawWarnings);
+    warnings.push({
+      code: 'decision-reason-recorded',
+      action: decision,
+      reasonPresent: true,
+    });
+    return JSON.stringify(warnings);
+  }
+
+  function makeDecisionResult(status, decision, decidedAt, peerId) {
+    return {
+      schema: DECISION_SCHEMA,
+      ok: true,
+      reviewFound: true,
+      status: status,
+      decision: decision,
+      decidedAt: decidedAt,
+      decidedBySyncPeerIdPresent: !!peerId,
+      warnings: [],
+    };
+  }
+
+  function markDecision(reviewIdInput, action, reason) {
     var reviewId = cleanString(reviewIdInput);
     if (!reviewId) return Promise.reject(new Error('reviewId required'));
-    var nextStatus = cleanString(status);
-    if (!STATUSES[nextStatus]) return Promise.reject(new Error('invalid status: ' + nextStatus));
+    var spec = DECISION_ACTIONS[action];
+    if (!spec || !STATUSES[spec.status]) return Promise.reject(new Error('invalid decision action: ' + action));
+    try { requireDecisionReason(reason); }
+    catch (e) { return Promise.reject(e); }
     return ensureReady()
       .then(function () { return idbGet(reviewId); })
       .then(function (existing) {
-        if (!existing) return null;
-        var now = nowIso();
-        var next = Object.assign({}, existing, {
-          status: nextStatus,
-          decision: nullableString(reason),
-          decidedAt: now,
-          updatedAt: now,
-        });
-        return idbPut(next).then(function () {
-          recordWrite('markStatus');
-          notifySubscribers({ source: 'local', op: 'markStatus', reviewId: reviewId, status: nextStatus });
-          return getReview(reviewId);
+        if (!existing) throw new Error('review not found');
+        var currentStatus = cleanScalar(existing.status);
+        if (!canApplyDecisionTransition(currentStatus, spec.status)) {
+          throw new Error('review status not decisionable: ' + (currentStatus || 'unknown'));
+        }
+        return readLocalSyncPeerIdForDecision().then(function (peerId) {
+          var now = nowIso();
+          var next = Object.assign({}, existing, {
+            status: spec.status,
+            decision: spec.decision,
+            decidedAt: now,
+            decidedBySyncPeerId: peerId,
+            warningsJson: appendDecisionAuditWarning(existing.warningsJson || existing.warnings, spec.decision),
+            updatedAt: now,
+          });
+          return idbPut(next).then(function () {
+            recordWrite('markDecision');
+            notifySubscribers({ source: 'local', op: 'markDecision', reviewId: reviewId, status: spec.status });
+            return makeDecisionResult(spec.status, spec.decision, now, peerId);
+          });
         });
       })
-      .catch(function (e) { recordError('markStatus', e); throw e; });
+      .catch(function (e) { recordError('markDecision', e); throw e; });
   }
-  function markIgnored(reviewId, reason) { return markStatus(reviewId, 'ignored', reason); }
-  function markRejected(reviewId, reason) { return markStatus(reviewId, 'rejected', reason); }
+  function markIgnored(reviewId, reason) { return markDecision(reviewId, 'ignored', reason); }
+  function markRejected(reviewId, reason) { return markDecision(reviewId, 'rejected', reason); }
+  function markAcceptedLater(reviewId, reason) { return markDecision(reviewId, 'acceptedLater', reason); }
+  function markResolved(reviewId, reason) { return markDecision(reviewId, 'resolved', reason); }
 
   function countMap(rows, keyField) {
     var out = {};
@@ -1804,7 +1883,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.1',
+    __version: '0.1.0-f5g.2',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1822,6 +1901,8 @@
     countByStatus: countByStatus,
     markIgnored: markIgnored,
     markRejected: markRejected,
+    markAcceptedLater: markAcceptedLater,
+    markResolved: markResolved,
     ingestBundleTombstones: ingestBundleTombstones,
     previewApply: previewApply,
     diagnose: diagnose,
@@ -1832,6 +1913,7 @@
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
+      decisionSchema: DECISION_SCHEMA,
       tombstoneSchema: TOMBSTONE_SCHEMA,
       dbName: DB_NAME,
       dbVersion: DB_VERSION,

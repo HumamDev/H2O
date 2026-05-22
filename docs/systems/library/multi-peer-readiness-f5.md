@@ -1629,6 +1629,75 @@ folder IDs, remote peer IDs, remote tombstone IDs, raw tombstone JSON, metadata,
 names, titles, or transcript content. `includeSensitive: true` is accepted but
 ignored in F5G.1 and returns a warning.
 
+## F5G.2 Decision-Only Review Actions
+
+F5G.2 adds operator decision actions to the Desktop and Chrome tombstone review
+stores. These actions update review-row intent only. They do not apply
+tombstones, unbind folders, delete records, create local tombstones, restore
+records, change import/export/sync behavior, or mutate Library data.
+
+The decision API surface is:
+
+```js
+await H2O.Studio.store.tombstoneReviews.markIgnored(reviewId, reason)
+await H2O.Studio.store.tombstoneReviews.markRejected(reviewId, reason)
+await H2O.Studio.store.tombstoneReviews.markAcceptedLater(reviewId, reason)
+await H2O.Studio.store.tombstoneReviews.markResolved(reviewId, reason)
+```
+
+Status and decision strings are normalized:
+
+| Action | Status | Decision |
+| --- | --- | --- |
+| `markIgnored` | `ignored` | `ignored-by-operator` |
+| `markRejected` | `rejected` | `rejected-by-operator` |
+| `markAcceptedLater` | `accepted-later` | `accepted-for-later-apply` |
+| `markResolved` | `resolved` | `resolved-without-apply` |
+
+Allowed transitions are deliberately narrow. `pending` reviews can become
+`ignored`, `rejected`, `accepted-later`, or `resolved`. `accepted-later` reviews
+can become `ignored`, `rejected`, or `resolved`. `ignored`, `rejected`,
+`resolved`, and `superseded` are terminal in F5G.2; there is no reopen or
+override option.
+
+Every decision requires a non-empty string reason and an available local
+`H2O.Studio.identity.whenReady().syncPeerId`. If identity is unavailable, the
+action fails and no unaudited write is made. Successful decisions set only
+review-row audit fields: `status`, `decision`, `decidedAt`,
+`decidedBySyncPeerId`, `warningsJson`, and `updatedAt`.
+
+The free-form reason is not returned and is not exposed in diagnostics. The
+review `warningsJson` receives a redacted code-only audit entry such as:
+
+```js
+{
+  code: 'decision-reason-recorded',
+  action: 'accepted-for-later-apply',
+  reasonPresent: true
+}
+```
+
+Decision calls return a redacted summary:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-decision.v1',
+  ok: true,
+  reviewFound: true,
+  status: 'accepted-later',
+  decision: 'accepted-for-later-apply',
+  decidedAt,
+  decidedBySyncPeerIdPresent: true,
+  warnings: []
+}
+```
+
+The return value does not expose raw tombstone JSON, record IDs, tombstone IDs,
+full peer IDs, metadata, chat/folder names, or transcript content. Diagnostics
+continue to report counts by status/classification, so decision-only status
+changes are visible as queue health changes without implying any delete was
+applied.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
