@@ -762,6 +762,87 @@ count, and module warnings. They must not expose full record IDs, tombstone IDs,
 remote peer IDs, raw tombstone JSON, metadata contents, chat/folder names, or
 transcript content.
 
+## F5F.2 Manual Remote Tombstone Review Ingestion
+
+F5F.2 adds a manual developer API for loading remote tombstone evidence into the
+review queue:
+
+```js
+await H2O.Studio.store.tombstoneReviews.ingestBundleTombstones(bundle, {
+  source: 'manual-test',
+  dryRun: false,
+  allowSelfOrigin: false
+})
+```
+
+This API is manual only. It is not called from Desktop import, Chrome folder
+import, export, sync, or delete paths. It does not apply tombstones, delete
+records, mutate folders/chats/snapshots/tags/labels/categories, export review
+records, add UI, or enable bidirectional sync.
+
+The method accepts a full bundle object or a minimal object containing
+`tombstoneSchemaVersion`, `tombstones`, `sourceSyncPeerId`, `exportId`, and
+`sequenceNumber`. Missing `tombstones` returns `ok: true` with
+`missing-tombstone-array`. A non-array `tombstones` value returns `ok: true`
+with `tombstones-not-array`. A non-object bundle returns `ok: false`.
+
+By default, if `bundle.sourceSyncPeerId` matches local
+`H2O.Studio.identity.whenReady().syncPeerId`, rows are skipped and counted under
+`selfOriginatedIgnored`; no pending review rows are created. If local identity is
+unavailable, F5F.2 warns and treats the bundle as remote evidence.
+
+Remote tombstones are validated independently. Required fields are `schema`,
+`tombstoneId`, `recordKind`, `recordId`, `deletedAt`,
+`deletedBySyncPeerId`, and `deleteReason`. Malformed tombstones become
+`malformed-remote-tombstone` reviews when enough data exists to build a dedupe
+key; otherwise they are counted as `skippedMalformed`. Known but unsupported
+record kinds become `unsupported-record-kind` reviews. F5F.2 performs read-only
+local comparison only for `folder` and `folderBinding` tombstones.
+
+Folder tombstones are classified as `missing-local-record`, `delete-vs-edit`, or
+`safe-review` based on whether the local folder exists and whether its
+`updated_at` is newer than the remote `deletedAt`. Folder-binding tombstones
+prefer `meta.chatId` and `meta.folderId`, falling back to
+`folderBinding:<encodedChatId>:<encodedFolderId>`, then read
+`folder_bindings` without mutation. Cascade-related folder-binding tombstones
+are classified as `cascade-review` unless malformed. Missing cascade parents are
+reported as warnings only.
+
+Dedupe uses `remoteSyncPeerId + remoteTombstoneId` first and falls back to
+`remoteSyncPeerId + recordKind + recordId + deletedAt`. Re-ingesting the same
+remote tombstone updates `lastSeenAt`, increments `seenCount`, updates
+`lastSeenExportId`, and does not create duplicate pending rows.
+
+The ingest result uses schema `h2o.studio.tombstone-review-ingest.v1` and is
+redacted/counts-only by default:
+
+```js
+{
+  ok,
+  dryRun,
+  source,
+  sourceSyncPeerIdPresent,
+  exportIdPresent,
+  sequenceNumberPresent,
+  found,
+  inserted,
+  updated,
+  skipped,
+  selfOriginatedIgnored,
+  malformed,
+  skippedMalformed,
+  unsupported,
+  failed,
+  byClassification,
+  byStatus,
+  warnings
+}
+```
+
+The result must not expose full record IDs, tombstone IDs, remote peer IDs, raw
+tombstones, metadata, user-visible names, or transcript content. Passing
+`dryRun: true` performs validation and classification but writes no review rows.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
