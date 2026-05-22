@@ -894,6 +894,66 @@ delete behavior, export review records, add public UI/settings, or change root
 record IDs, peer IDs, raw tombstone JSON, metadata, user-visible names, or
 transcript content.
 
+## F5F.4a Desktop Importer Manual Review-Ingest Gate
+
+F5F.4a adds an explicit Desktop-only importer option that can queue remote
+tombstones as review evidence after a normal Desktop import:
+
+```js
+await H2O.Studio.ingestion.importBundle(bundle, 'merge', {
+  ingestTombstoneReviews: true
+})
+```
+
+The option defaults to off. Calls that omit the third argument keep the existing
+Desktop import behavior and return shape. Chrome folder sync, Chrome
+`syncNow()`, export, delete paths, and public UI/settings are unchanged.
+
+When enabled, Desktop import still runs the normal merge importer first. After
+that import completes, it calls:
+
+```js
+H2O.Studio.store.tombstoneReviews.ingestBundleTombstones(bundle, {
+  source: 'desktop-import-bundle',
+  dryRun: false,
+  allowSelfOrigin: false,
+  importMode: mode,
+  bundleExportId: bundle.exportId,
+  bundleSourceSyncPeerId: bundle.sourceSyncPeerId
+})
+```
+
+The review ingest is best-effort and cannot change the normal import result's
+`ok` value. If the review store is unavailable or throws, the importer returns a
+redacted `tombstoneReviewIngest` warning object and normal import success/failure
+still reflects only the normal importer.
+
+The gated result shape is counts-only:
+
+```js
+{
+  tombstoneReviewIngest: {
+    attempted: true,
+    ok,
+    found,
+    inserted,
+    updated,
+    skipped,
+    selfOriginatedIgnored,
+    malformed,
+    unsupported,
+    failed,
+    warnings
+  }
+}
+```
+
+The result must not expose full record IDs, tombstone IDs, peer IDs, raw
+tombstones, metadata, user-visible names, or transcript content. F5F.4a does not
+apply tombstones, delete local records, mutate Library records from tombstone
+evidence, add conflict/apply UI, purge, restore, bidirectional sync, WebDAV, or
+Chrome importer integration.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

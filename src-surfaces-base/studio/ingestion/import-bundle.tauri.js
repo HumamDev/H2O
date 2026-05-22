@@ -1063,19 +1063,97 @@
     }
   }
 
-  async function importBundle(bundleInput, mode) {
+  function shouldIngestTombstoneReviews(options) {
+    return !!(options && typeof options === 'object' && options.ingestTombstoneReviews === true);
+  }
+
+  function tombstoneReviewIngestUnavailable(code) {
+    return {
+      attempted: true,
+      ok: false,
+      found: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      selfOriginatedIgnored: 0,
+      malformed: 0,
+      unsupported: 0,
+      failed: 0,
+      warnings: [{ code: code || 'tombstone-review-ingest-unavailable' }],
+    };
+  }
+
+  function normalizeTombstoneReviewWarnings(warnings) {
+    var counts = Object.create(null);
+    var out = [];
+    if (!Array.isArray(warnings)) return out;
+    for (var i = 0; i < warnings.length; i += 1) {
+      var code = cleanString(warnings[i] && warnings[i].code) || 'warning';
+      counts[code] = Number(counts[code] || 0) + Number((warnings[i] && warnings[i].count) || 1);
+    }
+    Object.keys(counts).sort().forEach(function (code) {
+      out.push({ code: code, count: counts[code] });
+    });
+    return out;
+  }
+
+  function normalizeTombstoneReviewIngest(raw) {
+    if (!raw || typeof raw !== 'object') return tombstoneReviewIngestUnavailable();
+    return {
+      attempted: true,
+      ok: raw.ok !== false,
+      found: Number(raw.found || 0),
+      inserted: Number(raw.inserted || 0),
+      updated: Number(raw.updated || 0),
+      skipped: Number(raw.skipped || 0),
+      selfOriginatedIgnored: Number(raw.selfOriginatedIgnored || 0),
+      malformed: Number(raw.malformed || 0),
+      unsupported: Number(raw.unsupported || 0),
+      failed: Number(raw.failed || 0),
+      warnings: normalizeTombstoneReviewWarnings(raw.warnings),
+    };
+  }
+
+  async function attachTombstoneReviewIngest(result, bundle, requestedMode, options) {
+    if (!shouldIngestTombstoneReviews(options)) return result;
+    if (!bundle || typeof bundle !== 'object') {
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+      return result;
+    }
+    var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+    if (!reviews || typeof reviews.ingestBundleTombstones !== 'function') {
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+      return result;
+    }
+    try {
+      var ingest = await reviews.ingestBundleTombstones(bundle, {
+        source: 'desktop-import-bundle',
+        dryRun: false,
+        allowSelfOrigin: false,
+        importMode: requestedMode,
+        bundleExportId: bundle.exportId,
+        bundleSourceSyncPeerId: bundle.sourceSyncPeerId,
+      });
+      result.tombstoneReviewIngest = normalizeTombstoneReviewIngest(ingest);
+    } catch (_) {
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+    }
+    return result;
+  }
+
+  async function importBundle(bundleInput, mode, options) {
     var requestedMode = String(mode || 'merge');
     /* Desktop V1 is append-only: overwrite/replace is intentionally
      * rejected to prevent accidental data loss across an MV3-bundle
      * re-import. Merge stays the only mode the migrate UI exposes too. */
     if (requestedMode !== 'merge') {
-      return {
+      return attachTombstoneReviewIngest({
         schema: 'h2o.studio.fullBundle.v2',
         mode: 'rejected',
         ok: false,
         requestedMode: requestedMode,
         error: 'overwrite mode not supported in Desktop V1',
-      };
+      }, null, requestedMode, options);
     }
 
     var startedAt = new Date().toISOString();
@@ -1088,7 +1166,7 @@
 
     var parsed = parseBundle(bundleInput);
     if (!parsed.bundle) {
-      return {
+      return attachTombstoneReviewIngest({
         schema: 'h2o.studio.fullBundle.v2',
         mode: 'merge',
         ok: false,
@@ -1100,7 +1178,7 @@
         warnings: warnings,
         errors: [{ kind: 'parse', error: parsed.error }],
         sample: sample,
-      };
+      }, null, requestedMode, options);
     }
 
     var bundle = parsed.bundle;
@@ -1151,7 +1229,7 @@
     result.ok = result.errors.length === 0;
     result.completedAt = new Date().toISOString();
     result.durationMs = Date.now() - startedAtMs;
-    return result;
+    return attachTombstoneReviewIngest(result, bundle, requestedMode, options);
   }
 
   /* ── Folder-state-only import (Phase A) ──────────────────────────────
