@@ -5383,6 +5383,26 @@ function settingsFolderParityNames(items, emptyLabel = "none"){
   }).join(", ");
 }
 
+function settingsFolderParityChecksHtml(selfCheck){
+  const checks = Array.isArray(selfCheck?.checks) ? selfCheck.checks : [];
+  const attention = checks.filter((check) => {
+    const sev = String(check?.severity || "");
+    return !check?.ok || sev === "warning" || sev === "review-required" || sev === "error";
+  });
+  if (!attention.length) return `<span style="opacity:.65">none</span>`;
+  return attention.map((check) => {
+    const severity = String(check?.severity || "warning");
+    const id = String(check?.id || "");
+    const message = String(check?.message || "");
+    return `
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 8px;align-items:start">
+        <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;opacity:.75">${esc(severity)}</span>
+        <span><strong>${esc(id)}</strong>: ${esc(message)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
 async function refreshSettingsFolderParity(panel){
   if (!panel) return;
   const summary = panel.querySelector("#wbSettingsFolderParitySummary");
@@ -5401,10 +5421,15 @@ async function refreshSettingsFolderParity(panel){
   if (summary) summary.textContent = "Refreshing read-only folder parity diagnostics…";
   if (copyBtn) copyBtn.disabled = true;
   const report = await parity.diagnose({ fresh: true });
-  panel.__h2oFolderParityReport = report;
+  const selfCheck = typeof parity.selfCheck === "function"
+    ? await parity.selfCheck({ report })
+    : null;
+  panel.__h2oFolderParityReport = { selfCheck, diagnostics: report };
 
   const rows = [
     ["Surface", report.surface || ""],
+    ["Self-check severity", selfCheck?.severity || report.riskLevel || ""],
+    ["Self-check ok", selfCheck ? String(!!selfCheck.ok) : "unavailable"],
     ["Risk", report.riskLevel || ""],
     ["Native canonical folders", report.canonicalFolderCount],
     ["Local mirror folders", report.localFolderCount],
@@ -5416,17 +5441,19 @@ async function refreshSettingsFolderParity(panel){
   ];
   if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
   if (summary) {
-    summary.textContent = report.riskLevel === "ok"
-      ? "Folder parity looks clean. No cleanup performed."
-      : "Folder parity requires review. No cleanup performed.";
+    const severity = String(selfCheck?.severity || report.riskLevel || "");
+    summary.textContent = severity === "ok"
+      ? "Folder parity self-check passed. No cleanup performed."
+      : `Folder parity self-check: ${severity || "unknown"}. No cleanup performed.`;
   }
   if (listsEl) {
     listsEl.innerHTML = `
+      <div><strong>Checks needing attention:</strong> ${settingsFolderParityChecksHtml(selfCheck)}</div>
       <div><strong>Duplicate groups:</strong> ${settingsFolderParityNames(report.duplicateGroups)}</div>
       <div><strong>Test folder candidates:</strong> ${settingsFolderParityNames(report.testFolderCandidates)}</div>
       <div><strong>Missing canonical folders:</strong> ${settingsFolderParityNames(report.missingCanonicalFolders)}</div>
       <div><strong>Extra local folders:</strong> ${settingsFolderParityNames(report.extraLocalFolders)}</div>
-      <div><strong>Recommended next step:</strong> ${esc(report.recommendedNextStep || "")}</div>
+      <div><strong>Recommended next step:</strong> ${esc(selfCheck?.recommendedNextStep || report.recommendedNextStep || "")}</div>
     `;
   }
   if (warnEl) {

@@ -1219,9 +1219,198 @@
     };
   }
 
+  function folderParitySeverityRank(severity) {
+    const s = String(severity || 'ok');
+    if (s === 'error') return 4;
+    if (s === 'review-required') return 3;
+    if (s === 'warning') return 2;
+    if (s === 'info') return 1;
+    return 0;
+  }
+
+  function folderParityMaxSeverity(checks) {
+    let out = 'ok';
+    for (const check of Array.isArray(checks) ? checks : []) {
+      if (check?.ok) continue;
+      const severity = String(check?.severity || 'ok');
+      if (folderParitySeverityRank(severity) > folderParitySeverityRank(out)) out = severity;
+    }
+    return out;
+  }
+
+  async function selfCheckFolderParity(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const report = opts.report && typeof opts.report === 'object'
+      ? opts.report
+      : await diagnoseFolderParity({ fresh: !!opts.fresh });
+    const now = new Date().toISOString();
+    const surface = String(report?.surface || (LW_isTauri() ? 'desktop-studio' : 'chrome-studio'));
+    const summary = {
+      canonicalFolderCount: Number(report?.canonicalFolderCount || 0),
+      localFolderCount: Number(report?.localFolderCount || 0),
+      canonicalBindingCount: Number(report?.canonicalBindingCount || 0),
+      localBindingCount: Number(report?.localBindingCount || 0),
+      duplicateGroupCount: Array.isArray(report?.duplicateGroups) ? report.duplicateGroups.length : 0,
+      testCandidateCount: Array.isArray(report?.testFolderCandidates) ? report.testFolderCandidates.length : 0,
+      missingCanonicalCount: Array.isArray(report?.missingCanonicalFolders) ? report.missingCanonicalFolders.length : 0,
+      extraLocalCount: Array.isArray(report?.extraLocalFolders) ? report.extraLocalFolders.length : 0,
+      orphanMembershipCount: Number(report?.orphanBindingCount || 0),
+    };
+    const checks = [];
+    const addCheck = (id, ok, severity, message, details = null) => {
+      checks.push({
+        id: String(id || ''),
+        ok: !!ok,
+        severity: ok ? (severity === 'info' ? 'info' : 'ok') : String(severity || 'warning'),
+        message: String(message || ''),
+        details,
+      });
+    };
+
+    addCheck(
+      'folder.canonical.available',
+      !!report?.canonicalMirrorAvailable,
+      'warning',
+      report?.canonicalMirrorAvailable
+        ? 'Canonical folder mirror is available.'
+        : 'Canonical folder mirror is unavailable; using fallback diagnostics.',
+      { canonicalSource: report?.canonicalSource || '', storedFolderState: report?.storedFolderState || null, nativeBroadcast: report?.nativeBroadcast || null }
+    );
+    addCheck(
+      'folder.canonical.count',
+      Number.isFinite(summary.canonicalFolderCount) && summary.canonicalFolderCount > 0,
+      'warning',
+      summary.canonicalFolderCount > 0
+        ? `Canonical folder count is ${summary.canonicalFolderCount}.`
+        : 'Canonical folder count is unavailable or zero.',
+      { count: summary.canonicalFolderCount }
+    );
+    addCheck(
+      'folder.local.count',
+      Number.isFinite(summary.localFolderCount),
+      'warning',
+      Number.isFinite(summary.localFolderCount)
+        ? `Local folder count is ${summary.localFolderCount}.`
+        : 'Local folder count is unavailable.',
+      { count: summary.localFolderCount }
+    );
+    addCheck(
+      'folder.missingCanonical',
+      summary.missingCanonicalCount === 0,
+      'review-required',
+      summary.missingCanonicalCount === 0
+        ? 'No canonical folders are missing locally.'
+        : `${summary.missingCanonicalCount} canonical folder(s) are missing locally.`,
+      report?.missingCanonicalFolders || []
+    );
+    addCheck(
+      'folder.extraLocal',
+      summary.extraLocalCount === 0,
+      'review-required',
+      summary.extraLocalCount === 0
+        ? 'No extra local folders are present.'
+        : `${summary.extraLocalCount} extra local folder(s) require review.`,
+      report?.extraLocalFolders || []
+    );
+    addCheck(
+      'folder.duplicateName',
+      summary.duplicateGroupCount === 0,
+      'review-required',
+      summary.duplicateGroupCount === 0
+        ? 'No duplicate normalized folder names are present.'
+        : `${summary.duplicateGroupCount} duplicate normalized folder name group(s) require review.`,
+      report?.duplicateGroups || []
+    );
+    addCheck(
+      'folder.testCandidate',
+      summary.testCandidateCount === 0,
+      'review-required',
+      summary.testCandidateCount === 0
+        ? 'No test-folder candidates are present.'
+        : `${summary.testCandidateCount} test-folder candidate(s) require review.`,
+      report?.testFolderCandidates || []
+    );
+    addCheck(
+      'folder.binding.canonicalVsLocal',
+      summary.canonicalBindingCount === summary.localBindingCount,
+      'warning',
+      summary.canonicalBindingCount === summary.localBindingCount
+        ? 'Canonical membership count matches local binding count.'
+        : `Canonical memberships (${summary.canonicalBindingCount}) differ from local bindings (${summary.localBindingCount}).`,
+      { canonicalBindingCount: summary.canonicalBindingCount, localBindingCount: summary.localBindingCount }
+    );
+    addCheck(
+      'folder.binding.orphan',
+      summary.orphanMembershipCount === 0,
+      'review-required',
+      summary.orphanMembershipCount === 0
+        ? 'No canonical memberships are orphaned from known Studio rows.'
+        : `${summary.orphanMembershipCount} canonical membership(s) are not represented by known Studio rows.`,
+      { orphanMembershipCount: summary.orphanMembershipCount, knownStudioRowTotal: report?.knownStudioRowTotal || 0 }
+    );
+    addCheck(
+      'folder.displayModel.available',
+      Array.isArray(report?.folderDisplayRows),
+      'error',
+      Array.isArray(report?.folderDisplayRows)
+        ? `Folder display model is available with ${report.folderDisplayRows.length} row(s).`
+        : 'Folder display model is unavailable.',
+      { rowCount: Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows.length : null }
+    );
+    if (surface === 'desktop-studio') {
+      addCheck(
+        'folder.desktop.sqliteBindings',
+        typeof report?.desktopSqliteBindingCount === 'number',
+        'warning',
+        typeof report?.desktopSqliteBindingCount === 'number'
+          ? `Desktop SQLite binding count is ${report.desktopSqliteBindingCount}.`
+          : 'Desktop SQLite binding count is unavailable.',
+        { desktopSqliteBindingCount: report?.desktopSqliteBindingCount ?? null }
+      );
+    } else {
+      addCheck(
+        'folder.desktop.sqliteBindings',
+        true,
+        'info',
+        'Desktop SQLite binding check is not applicable on this surface.',
+        { surface }
+      );
+    }
+    addCheck(
+      'folder.cleanupControls.absent',
+      true,
+      'info',
+      'FolderParity exposes read-only diagnostics only; no cleanup, delete, merge, repair, or normalize API is exposed.',
+      { apiMethods: ['diagnose', 'getDisplayModel', 'selfCheck'] }
+    );
+
+    const severity = folderParityMaxSeverity(checks);
+    const ok = !checks.some((check) => !check.ok && folderParitySeverityRank(check.severity) >= folderParitySeverityRank('warning'));
+    const recommendedNextStep = severity === 'error'
+      ? 'Folder parity self-check could not complete; inspect diagnostics before any action.'
+      : severity === 'review-required'
+        ? 'Review duplicate, extra, test, and orphan folder findings before any cleanup; no cleanup was performed.'
+        : severity === 'warning'
+          ? 'Review folder parity warnings and refresh diagnostics after the next cross-surface sync.'
+          : 'No folder parity action required.';
+
+    return {
+      ok,
+      readOnly: true,
+      noMutation: true,
+      severity,
+      checkedAt: now,
+      surface,
+      summary,
+      checks,
+      recommendedNextStep,
+    };
+  }
+
   const FolderParity = {
     surface: 'studio',
     diagnose: diagnoseFolderParity,
+    selfCheck: selfCheckFolderParity,
     async getDisplayModel(options = {}) {
       const report = await diagnoseFolderParity(options);
       return {
