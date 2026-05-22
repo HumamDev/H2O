@@ -616,6 +616,8 @@ payload health:
     byDeleteReason,
     cascadeCount,
     cascadeByKind,
+    cascadeRootCount,
+    cascadeChildCount,
     cascadeMissingParentRefCount,
     malformedCount,
     missingRequiredFields: {
@@ -653,9 +655,16 @@ Restored tombstones are counted when either `restoredAt` or
 `restoredBySyncPeerId` is present. If only one restore field is present, the row
 still counts as restored and increments `inconsistentRestoreCount`.
 
-Cascade tombstones are counted when `cascadeFrom` is present or
-`meta.cascade === true`. If `meta.cascade === true` but `cascadeFrom` is missing,
-the analyzer increments `cascadeMissingParentRefCount`.
+Cascade-related tombstones are counted when `cascadeFrom` is present,
+`deleteReason` ends with `-cascade`, `meta.cascade === true`, or
+`meta.cascadeKind` is present. `cascadeRootCount` covers root tombstones such as
+the F5D.2 `folder` tombstone with `deleteReason: 'folder-delete'`,
+`meta.cascade === true`, and no `cascadeFrom`. `cascadeChildCount` covers
+dependent tombstones such as `folderBinding` rows removed by that folder delete.
+
+Only child cascade tombstones require `cascadeFrom`. The analyzer increments
+`cascadeMissingParentRefCount` when a child cascade tombstone is missing
+`cascadeFrom`; it does not warn for valid cascade roots.
 
 The F5E.2a analyzer report is redacted and counts-only. It must not expose
 `tombstoneId`, `recordId`, peer IDs, `cascadeFrom`, `meta` contents, chat IDs,

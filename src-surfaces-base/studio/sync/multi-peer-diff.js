@@ -88,6 +88,7 @@
     'linkedOnlyChat',
     'savedSnapshot'
   ];
+  var BINDING_TOMBSTONE_KINDS = ['folderBinding', 'tagBinding', 'labelBinding'];
   var REQUIRED_TOMBSTONE_FIELDS = [
     'schema',
     'tombstoneId',
@@ -182,6 +183,9 @@
   }
   function knownTombstoneKind(kind) {
     return TOMBSTONE_KINDS.indexOf(kind) !== -1;
+  }
+  function isBindingTombstoneKind(kind) {
+    return BINDING_TOMBSTONE_KINDS.indexOf(kind) !== -1;
   }
 
   /* ─────────────────────────────────────────────────────────────────────
@@ -513,6 +517,8 @@
       byDeleteReason: {},
       cascadeCount: 0,
       cascadeByKind: {},
+      cascadeRootCount: 0,
+      cascadeChildCount: 0,
       cascadeMissingParentRefCount: 0,
       malformedCount: 0,
       missingRequiredFields: missingRequiredFields,
@@ -610,10 +616,20 @@
 
       var cascadeFromPresent = safeString(row.cascadeFrom) !== '';
       var metaCascade = metaObject && row.meta.cascade === true;
-      if (cascadeFromPresent || metaCascade) {
+      var metaCascadeKindPresent = metaObject && safeString(row.meta.cascadeKind) !== '';
+      var deleteReasonCascade = /-cascade$/.test(deleteReason);
+      var bindingCascade = metaCascade && isBindingTombstoneKind(kind);
+      var cascadeChild = cascadeFromPresent || deleteReasonCascade || bindingCascade || metaCascadeKindPresent;
+      var cascadeRoot = metaCascade && !cascadeChild;
+      if (cascadeChild || cascadeRoot) {
         report.cascadeCount++;
         bumpCounter(report.cascadeByKind, kind || 'missing');
-        if (metaCascade && !cascadeFromPresent) {
+        if (cascadeChild) {
+          report.cascadeChildCount++;
+        } else {
+          report.cascadeRootCount++;
+        }
+        if (cascadeChild && !cascadeFromPresent) {
           report.cascadeMissingParentRefCount++;
         }
       }
