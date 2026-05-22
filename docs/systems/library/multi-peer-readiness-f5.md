@@ -843,6 +843,57 @@ The result must not expose full record IDs, tombstone IDs, remote peer IDs, raw
 tombstones, metadata, user-visible names, or transcript content. Passing
 `dryRun: true` performs validation and classification but writes no review rows.
 
+## F5F.3b Hidden Runner Review Diagnostics
+
+F5F.3b exposes remote tombstone review queue health in the hidden F1B readiness
+runner as counts-only diagnostics. It keeps `multi-peer-diff.js` pure: the
+analyzer still reads only the in-memory bundle/local-state input, while the
+runner separately calls:
+
+```js
+await H2O.Studio.store.tombstoneReviews.diagnose()
+```
+
+when the review store is available. The runner normalizes that diagnostic into
+an in-memory `report.tombstoneReviews` section:
+
+```js
+{
+  supported: true,
+  available: true,
+  total,
+  pending,
+  byClassification,
+  byStatus,
+  malformedCount,
+  selfOriginatedIgnoredCount,
+  duplicateCount,
+  cascadeReviewCount,
+  deleteVsEditCount,
+  unsupportedKindCount,
+  warnings
+}
+```
+
+If the review store is unavailable or `diagnose()` fails, the runner reports
+`available: false`, zero counts, and a warning code. The readiness check still
+runs and no exception is surfaced to users.
+
+The hidden panel displays a separate section labeled:
+
+`Remote tombstone reviews (evidence only; no apply)`
+
+Displayed fields are counts only: availability, total, pending,
+`cascade-review`, `delete-vs-edit`, malformed, unsupported, and warning count.
+This section is intentionally separate from exported `tombstones` payload
+diagnostics and `tombstoneCandidates` absence-risk diagnostics.
+
+F5F.3b does not wire importers, apply tombstones, mutate Library records, change
+delete behavior, export review records, add public UI/settings, or change root
+`latest.json` behavior. It must not display review IDs, remote tombstone IDs,
+record IDs, peer IDs, raw tombstone JSON, metadata, user-visible names, or
+transcript content.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

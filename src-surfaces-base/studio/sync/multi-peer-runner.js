@@ -48,7 +48,7 @@
   var GATE_FLAG_NAME = 'experimentalMultiPeer';
   var GATE_HASH      = '#/dev/multi-peer-readiness';
   var HOST_ID        = 'h2o-mp-readiness-host';
-  var RUNNER_VERSION = '0.1.1-f1b';
+  var RUNNER_VERSION = '0.1.2-f5f.3b';
 
   /* ─── In-memory state (reset on refresh) ──────────────────────────── */
 
@@ -115,6 +115,87 @@
     if (!node) return;
     while (node.firstChild) node.removeChild(node.firstChild);
     node.appendChild(txt(s));
+  }
+  function asCountMap(rows, keyField) {
+    var out = {};
+    if (!Array.isArray(rows)) return out;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {};
+      var key = String(row[keyField] || 'unknown');
+      out[key] = Number(row.total || 0);
+    }
+    return out;
+  }
+  function warningCodesOnly(warnings) {
+    var counts = {};
+    var out = [];
+    if (!Array.isArray(warnings)) return out;
+    for (var i = 0; i < warnings.length; i++) {
+      var code = String((warnings[i] && warnings[i].code) || 'warning');
+      counts[code] = Number(counts[code] || 0) + Number((warnings[i] && warnings[i].count) || 1);
+    }
+    Object.keys(counts).sort().forEach(function (code) {
+      out.push({ code: code, count: counts[code] });
+    });
+    return out;
+  }
+  function warningCount(warnings) {
+    if (!Array.isArray(warnings)) return 0;
+    var total = 0;
+    for (var i = 0; i < warnings.length; i++) {
+      total += Number((warnings[i] && warnings[i].count) || 1);
+    }
+    return total;
+  }
+  function unavailableTombstoneReviews(code) {
+    return {
+      supported: true,
+      available: false,
+      total: 0,
+      pending: 0,
+      byClassification: {},
+      byStatus: {},
+      malformedCount: 0,
+      selfOriginatedIgnoredCount: 0,
+      duplicateCount: 0,
+      cascadeReviewCount: 0,
+      deleteVsEditCount: 0,
+      unsupportedKindCount: 0,
+      warnings: [{ code: code || 'tombstone-review-store-unavailable' }]
+    };
+  }
+  function normalizeTombstoneReviews(diag) {
+    if (!diag || typeof diag !== 'object') {
+      return unavailableTombstoneReviews('tombstone-review-diagnose-unavailable');
+    }
+    return {
+      supported: true,
+      available: true,
+      total: Number(diag.total || 0),
+      pending: Number(diag.pending || 0),
+      byClassification: asCountMap(diag.byClassification, 'classification'),
+      byStatus: asCountMap(diag.byStatus, 'status'),
+      malformedCount: Number(diag.malformedCount || 0),
+      selfOriginatedIgnoredCount: Number(diag.selfOriginatedIgnoredCount || 0),
+      duplicateCount: Number(diag.duplicateCount || 0),
+      cascadeReviewCount: Number(diag.cascadeReviewCount || 0),
+      deleteVsEditCount: Number(diag.deleteVsEditCount || 0),
+      unsupportedKindCount: Number(diag.unsupportedKindCount || 0),
+      warnings: warningCodesOnly(diag.warnings)
+    };
+  }
+  function readTombstoneReviewDiagnostics() {
+    var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+    if (!reviews || typeof reviews.diagnose !== 'function') {
+      return Promise.resolve(unavailableTombstoneReviews('tombstone-review-store-unavailable'));
+    }
+    try {
+      return Promise.resolve(reviews.diagnose()).then(normalizeTombstoneReviews, function () {
+        return unavailableTombstoneReviews('tombstone-review-diagnose-failed');
+      });
+    } catch (_) {
+      return Promise.resolve(unavailableTombstoneReviews('tombstone-review-diagnose-failed'));
+    }
   }
 
   /* ─── Panel construction (counts only) ────────────────────────────── */
@@ -215,6 +296,12 @@
     );
     root.appendChild(tombEl.block);
 
+    var reviewEl = makeKvBlock(
+      'Remote tombstone reviews  (evidence only; no apply)',
+      ['available', 'total', 'pending', 'cascade-review', 'delete-vs-edit', 'malformed', 'unsupported', 'warnings']
+    );
+    root.appendChild(reviewEl.block);
+
     var confEl = makeKvBlock(
       'Conflicts  (by bucket — F1A merge-rule table)',
       ['merge:union', 'merge:visual-lww', 'conflict:needs-review', 'conflict:hard']
@@ -248,6 +335,7 @@
       envelope:   envEl.values,
       coverage:   covEl.values,
       tombstones: tombEl.values,
+      tombstoneReviews: reviewEl.values,
       conflicts:  confEl.values,
       invariants: invEl.values,
       readiness:  readEl.values
@@ -328,11 +416,14 @@
           bundle: pair.bundle,
           localState: pair.localState
         });
-        state.lastReport = report;
-        state.lastRunAt = new Date().toISOString();
-        state.lastError = null;
-        renderCounts(report);
-        setText(elements.status, 'done');
+        return readTombstoneReviewDiagnostics().then(function (reviewDiag) {
+          report.tombstoneReviews = reviewDiag;
+          state.lastReport = report;
+          state.lastRunAt = new Date().toISOString();
+          state.lastError = null;
+          renderCounts(report);
+          setText(elements.status, 'done');
+        });
       })
       .catch(function (err) {
         state.lastError = String((err && err.message) || err);
@@ -377,6 +468,16 @@
       var n = (byKind[k] && Number(byKind[k].count)) || 0;
       setText(elements.tombstones[k], String(n));
     });
+
+    var reviews = (report && report.tombstoneReviews) || unavailableTombstoneReviews();
+    setText(elements.tombstoneReviews.available, reviews.available ? 'yes' : 'no');
+    setText(elements.tombstoneReviews.total, String(Number(reviews.total || 0)));
+    setText(elements.tombstoneReviews.pending, String(Number(reviews.pending || 0)));
+    setText(elements.tombstoneReviews['cascade-review'], String(Number(reviews.cascadeReviewCount || 0)));
+    setText(elements.tombstoneReviews['delete-vs-edit'], String(Number(reviews.deleteVsEditCount || 0)));
+    setText(elements.tombstoneReviews.malformed, String(Number(reviews.malformedCount || 0)));
+    setText(elements.tombstoneReviews.unsupported, String(Number(reviews.unsupportedKindCount || 0)));
+    setText(elements.tombstoneReviews.warnings, String(warningCount(reviews.warnings)));
 
     var conf = (report && report.conflicts) || {};
     var cbk = conf.countsByBucket || {};
