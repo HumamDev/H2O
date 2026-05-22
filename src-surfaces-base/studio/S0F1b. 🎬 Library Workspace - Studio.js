@@ -213,6 +213,24 @@
     return out;
   }
 
+  function summarizeIndexRowsByFolder() {
+    const idx = getIndex();
+    const rows = idx && typeof idx.getAll === 'function' ? idx.getAll() : [];
+    const out = {};
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const folderId = String(row?.folderId || row?.folder || '').trim();
+      if (!folderId) continue;
+      const bucket = out[folderId] || { known: 0, saved: 0, linked: 0, chatIds: [] };
+      bucket.known += 1;
+      const view = String(row?.view || '').trim().toLowerCase();
+      if (view === 'saved') bucket.saved += 1;
+      if (view === 'linked') bucket.linked += 1;
+      if (row?.chatId) bucket.chatIds.push(String(row.chatId));
+      out[folderId] = bucket;
+    }
+    return out;
+  }
+
   // ── Layout persistence ─────────────────────────────────────────────────────
   function loadLayout() {
     if (cache.layout) return cache.layout;
@@ -969,6 +987,100 @@
     return { total, byFolder };
   }
 
+  function countItemsForFolder(items, folderId) {
+    const values = items && typeof items === 'object' ? items[String(folderId || '').trim()] : null;
+    return Array.isArray(values) ? values.length : 0;
+  }
+
+  function buildFolderDisplayRows({
+    canonicalFolders,
+    localFolders,
+    canonicalItems,
+    storedItems,
+    canonicalMirrorAvailable,
+    rowStatsByFolder,
+    desktopBindings,
+    duplicateGroups,
+    testFolderCandidates,
+  }) {
+    const canonicalRows = Array.isArray(canonicalFolders) ? canonicalFolders : [];
+    const localRows = Array.isArray(localFolders) ? localFolders : [];
+    const canonicalIds = new Set(canonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
+    const canonicalNames = new Set(canonicalRows.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
+    const duplicateNames = new Set((Array.isArray(duplicateGroups) ? duplicateGroups : []).map((group) => normalizeFolderName(group.name || group.normalizedName)).filter(Boolean));
+    const testIds = new Set((Array.isArray(testFolderCandidates) ? testFolderCandidates : []).map((folder) => folderIdOf(folder)).filter(Boolean));
+    const localById = new Map(localRows.map((folder) => [folderIdOf(folder), folder]));
+    const localBindingByFolder = desktopBindings?.byFolder || Object.fromEntries(
+      Object.keys(storedItems || {}).map((folderId) => [folderId, countItemsForFolder(storedItems, folderId)])
+    );
+    const statsFor = (folderId) => rowStatsByFolder?.[folderId] || { known: 0, saved: 0, linked: 0, chatIds: [] };
+    const common = (folder, isCanonical) => {
+      const folderId = folderIdOf(folder);
+      const name = folderNameOf(folder);
+      const stats = statsFor(folderId);
+      const knownCount = Number(stats.known || 0);
+      const savedCount = Number(stats.saved || 0);
+      const linkedCount = Number(stats.linked || 0);
+      const localBindingCount = Number(localBindingByFolder[folderId] || 0);
+      const canonicalCount = isCanonical && canonicalMirrorAvailable ? countItemsForFolder(canonicalItems, folderId) : 0;
+      const isTestCandidate = testIds.has(folderId);
+      const isExtra = !isCanonical;
+      const isConflict = isExtra && canonicalNames.has(normalizeFolderName(name));
+      const badges = [];
+      if (isExtra) badges.push('extra');
+      if (isTestCandidate) badges.push('test');
+      if (isConflict || (isCanonical && duplicateNames.has(normalizeFolderName(name)))) badges.push('conflict');
+      if (isCanonical && canonicalMirrorAvailable && knownCount > canonicalCount) badges.push('count-mismatch');
+      if (isTestCandidate && localBindingCount > 0) badges.push('review');
+      let displayCountLabel = '';
+      if (isCanonical) {
+        displayCountLabel = canonicalMirrorAvailable
+          ? `${canonicalCount} native · ${knownCount} known`
+          : `canonical mirror unavailable${localBindingCount ? ` · ${localBindingCount} local` : ''}`;
+        if (badges.includes('count-mismatch')) displayCountLabel += ' · count-mismatch';
+      } else {
+        const base = localBindingCount > 0 ? `${localBindingCount} local` : `${knownCount} known`;
+        displayCountLabel = [base, ...badges.filter((badge) => ['extra', 'test', 'conflict', 'review'].includes(badge))].join(' · ');
+      }
+      return {
+        folderId,
+        id: folderId,
+        name,
+        normalizedName: normalizeFolderName(name),
+        source: String(folder?.source || '').trim(),
+        color: String(folder?.color || folder?.iconColor || '').trim(),
+        iconColor: String(folder?.iconColor || folder?.color || '').trim(),
+        icon: String(folder?.icon || '').trim(),
+        isCanonical,
+        isExtra,
+        isTestCandidate,
+        isConflict,
+        canonicalMirrorAvailable: !!canonicalMirrorAvailable,
+        canonicalCount,
+        knownCount,
+        savedCount,
+        linkedCount,
+        orphanCount: isCanonical && canonicalMirrorAvailable ? Math.max(0, canonicalCount - knownCount) : 0,
+        localBindingCount,
+        badges,
+        displayCountLabel,
+      };
+    };
+
+    const out = [];
+    for (const folder of canonicalRows) {
+      const id = folderIdOf(folder);
+      out.push(common({ ...(localById.get(id) || {}), ...folder }, true));
+    }
+    for (const folder of localRows) {
+      const id = folderIdOf(folder);
+      const normalizedName = normalizeFolderName(folderNameOf(folder));
+      if (!id || canonicalIds.has(id) || normalizedName === 'unfiled') continue;
+      out.push(common(folder, false));
+    }
+    return out;
+  }
+
   async function diagnoseFolderParity(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const warnings = ['Read-only. No cleanup performed. Cleanup requires reviewed approval.'];
@@ -1005,7 +1117,8 @@
         || 0);
     if (!canonicalFromBroadcast) warnings.push('Canonical folders are using the current known native fallback list; run native probes if this differs from live ChatGPT.');
 
-    const knownStudioRowCountByFolder = summarizeKnownRowsByFolder();
+    const rowStatsByFolder = summarizeIndexRowsByFolder();
+    const knownStudioRowCountByFolder = Object.fromEntries(Object.entries(rowStatsByFolder).map(([folderId, stats]) => [folderId, Number(stats.known || 0)]));
     const knownStudioRowTotal = Object.values(knownStudioRowCountByFolder).reduce((sum, value) => sum + (Number(value) || 0), 0);
     const canonicalKnownRowCount = canonicalFolders.reduce((sum, folder) => sum + (Number(knownStudioRowCountByFolder[folder.id]) || 0), 0);
     const desktopBindings = await countDesktopFolderBindings(localFolders);
@@ -1037,17 +1150,32 @@
     const riskLevel = (missingCanonicalFolders.length || duplicateGroups.length || testFolderCandidates.length || extraLocalFolders.length || orphanBindingCount)
       ? 'review-required'
       : 'ok';
+    const canonicalMirrorAvailable = canonicalFromBroadcast || storedState.folders.length > 0;
+    const canonicalItems = canonicalFromBroadcast ? nativeState.items : storedState.items;
+    const folderDisplayRows = buildFolderDisplayRows({
+      canonicalFolders,
+      localFolders,
+      canonicalItems,
+      storedItems: storedState.items,
+      canonicalMirrorAvailable,
+      rowStatsByFolder,
+      desktopBindings,
+      duplicateGroups,
+      testFolderCandidates,
+    });
 
     return {
       readOnly: true,
       surface,
       generatedAt: new Date().toISOString(),
       canonicalSource: canonicalFromBroadcast ? 'native-broadcast' : 'known-current-canonical-fallback',
+      canonicalMirrorAvailable,
       canonicalFolderCount: canonicalFolders.length,
       localFolderCount: localFolders.length,
       canonicalBindingCount,
       localBindingCount,
       knownStudioRowCountByFolder,
+      rowStatsByFolder,
       knownStudioRowTotal,
       desktopSqliteBindingCount: desktopBindings ? desktopBindings.total : null,
       storedFolderState: {
@@ -1066,6 +1194,7 @@
       },
       canonicalFolders,
       localFolders,
+      folderDisplayRows,
       duplicateGroups,
       testFolderCandidates,
       extraLocalFolders,
@@ -1093,6 +1222,22 @@
   const FolderParity = {
     surface: 'studio',
     diagnose: diagnoseFolderParity,
+    async getDisplayModel(options = {}) {
+      const report = await diagnoseFolderParity(options);
+      return {
+        readOnly: true,
+        surface: report.surface,
+        generatedAt: report.generatedAt,
+        canonicalMirrorAvailable: report.canonicalMirrorAvailable,
+        canonicalFolderCount: report.canonicalFolderCount,
+        localFolderCount: report.localFolderCount,
+        canonicalBindingCount: report.canonicalBindingCount,
+        localBindingCount: report.localBindingCount,
+        riskLevel: report.riskLevel,
+        rows: report.folderDisplayRows || [],
+        warnings: report.warnings || [],
+      };
+    },
   };
 
   // ── Public API ─────────────────────────────────────────────────────────────

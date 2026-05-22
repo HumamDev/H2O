@@ -137,6 +137,12 @@
     return String(v);
   }
 
+  function countLabelForItem(item = {}) {
+    const display = String(item.displayCountLabel || '').trim();
+    if (display) return display;
+    return item.count != null ? formatNumber(item.count) : '';
+  }
+
   function normalizeHexColor(raw = '') {
     const value = String(raw || '').trim();
     return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : '';
@@ -965,6 +971,8 @@
         color: appearance.color || raw.color || '',
         iconKey: appearance.icon || raw.iconKey || '',
         iconSvg: appearance.iconSvg || raw.iconSvg || '',
+        displayCountLabel: String(raw.displayCountLabel || '').trim(),
+        badges: Array.isArray(raw.badges) ? raw.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [],
       };
     }).filter(Boolean);
 
@@ -987,6 +995,10 @@
       if (!id || !name) continue;
       const href = routeSvc?.buildLibraryHash?.(routeKind, id) || `#/library/explorer`;
       const color = normalizeHexColor(item.color || '');
+      const countLabel = countLabelForItem(item);
+      const hasDetailedCount = !!String(item.displayCountLabel || '').trim();
+      const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
+      const title = hasDetailedCount ? `${name} — ${countLabel}` : name;
       const menuButton = kind === 'categories' || kind === 'folders'
         ? el('button', {
           class: 'wbSidebarSectionItemMenu',
@@ -1008,16 +1020,24 @@
       const link = el('a', {
         class: `wbSidebarSectionItem wbSidebarSectionItem--${kind}`,
         href,
-        title: name,
+        title,
         'data-section': kind,
         'data-id': id,
         'data-icon': item.iconKey || '',
         'data-color': color || '',
+        'data-badges': badges.length ? badges.join(',') : null,
+        'data-canonical-count': item.canonicalCount != null ? item.canonicalCount : null,
+        'data-known-count': item.knownCount != null ? item.knownCount : null,
+        'data-local-binding-count': item.localBindingCount != null ? item.localBindingCount : null,
         style: color ? `--wb-sidebar-item-color:${color};` : '',
       }, [
         makeItemIcon(item, kind),
         el('span', { class: 'wbSidebarSectionItemLabel' }, name),
-        (item.count != null) ? el('span', { class: 'wbSidebarSectionItemCount' }, formatNumber(item.count)) : null,
+        countLabel ? el('span', {
+          class: `wbSidebarSectionItemCount${hasDetailedCount ? ' wbSidebarSectionItemCount--folderParity' : ''}`,
+          title: hasDetailedCount ? countLabel : null,
+          style: hasDetailedCount ? 'height:auto;min-height:18px;max-width:116px;white-space:normal;text-align:right;line-height:1.15;padding:2px 6px;' : null,
+        }, countLabel) : null,
         menuButton,
       ]);
       host.appendChild(link);
@@ -1057,6 +1077,49 @@
     if (!ws) return;
     const host = D.getElementById('folderList');
     if (!host) return;
+    let displayRows = [];
+    try {
+      const model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
+      displayRows = Array.isArray(model?.rows) ? model.rows : [];
+    } catch (e) { err('folderParity.getDisplayModel', e); }
+    if (displayRows.length) {
+      const items = displayRows.map((row) => {
+        const id = String(row?.folderId || row?.id || '').trim();
+        const name = String(row?.name || id).trim();
+        const appearance = getRowAppearance({
+          ...row,
+          id,
+          folderId: id,
+          name,
+          kind: 'folders',
+          section: 'folders',
+        });
+        return id ? {
+          id,
+          folderId: id,
+          name: appearance.name || name || id,
+          count: Number(row?.knownCount || 0),
+          displayCountLabel: String(row?.displayCountLabel || '').trim(),
+          canonicalCount: Number(row?.canonicalCount || 0),
+          knownCount: Number(row?.knownCount || 0),
+          savedCount: Number(row?.savedCount || 0),
+          linkedCount: Number(row?.linkedCount || 0),
+          orphanCount: Number(row?.orphanCount || 0),
+          localBindingCount: Number(row?.localBindingCount || 0),
+          badges: Array.isArray(row?.badges) ? row.badges : [],
+          isCanonical: row?.isCanonical === true,
+          isExtra: row?.isExtra === true,
+          isTestCandidate: row?.isTestCandidate === true,
+          isConflict: row?.isConflict === true,
+          color: appearance.color || normalizeHexColor(row?.color || row?.iconColor || ''),
+          iconKey: appearance.icon || 'folder',
+          iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
+        } : null;
+      }).filter(Boolean);
+      renderSectionList(host, 'folders', items, { emptyText: 'No saved folder contract found yet. Capture or assign a chat to a folder from chatgpt.com.' });
+      step('renderFolders.parity', String(items.length));
+      return;
+    }
     let raw = [];
     try { raw = await ws.getFolders(); } catch (e) { err('getFolders', e); }
     const idx = getIndex();
