@@ -37,6 +37,7 @@
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
+  var APPLY_DRY_RUN_SCHEMA = 'h2o.studio.tombstone-review-apply-dry-run.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
@@ -720,6 +721,149 @@
       },
       warnings: [],
     };
+  }
+
+  function makeApplyDryRunResult(review, dryRun) {
+    return {
+      schema: APPLY_DRY_RUN_SCHEMA,
+      ok: true,
+      dryRun: dryRun === true,
+      realApplyImplemented: false,
+      reviewFound: !!review,
+      supported: false,
+      action: 'blocked-real-apply-not-implemented',
+      mutationType: null,
+      wouldMutateOnApply: false,
+      writesPerformed: 0,
+      blockers: [],
+      preview: null,
+      plannedWrites: {
+        libraryMutation: {
+          type: null,
+          wouldRun: false,
+        },
+        localTombstone: {
+          wouldCreate: false,
+          recordKind: null,
+          deleteReason: null,
+        },
+        reviewUpdate: {
+          wouldUpdateStatus: false,
+          futureStatus: null,
+          futureDecision: null,
+        },
+      },
+      auditPreview: {
+        wouldRecordSourceReview: false,
+        wouldRecordRemoteTombstone: false,
+        wouldRecordRemotePeer: false,
+        wouldRecordOperatorPeer: false,
+        wouldRequireOperatorConfirmation: false,
+        localPeerIdentityAvailable: false,
+      },
+      warnings: [],
+    };
+  }
+
+  function copyCodeWarnings(warnings) {
+    var out = [];
+    (Array.isArray(warnings) ? warnings : []).forEach(function (warning) {
+      var code = cleanScalar(warning && warning.code);
+      if (code) pushCodeWarning(out, code);
+    });
+    return out;
+  }
+
+  function copyBlockers(blockers) {
+    var out = [];
+    (Array.isArray(blockers) ? blockers : []).forEach(function (blocker) {
+      var code = cleanScalar(blocker && blocker.code);
+      if (code) out.push({ code: code });
+    });
+    return out;
+  }
+
+  function makePreviewSummary(preview) {
+    var p = preview || {};
+    return {
+      schema: PREVIEW_SCHEMA,
+      ok: p.ok === true,
+      reviewFound: p.reviewFound === true,
+      supported: p.supported === true,
+      action: cleanScalar(p.action) || null,
+      mutationType: nullableString(p.mutationType),
+      wouldMutateOnApply: p.wouldMutateOnApply === true,
+      blockers: copyBlockers(p.blockers),
+      warnings: copyCodeWarnings(p.warnings),
+    };
+  }
+
+  function mergeCodeWarnings(target, warnings) {
+    (Array.isArray(warnings) ? warnings : []).forEach(function (warning) {
+      pushCodeWarning(target, warning && warning.code);
+    });
+  }
+
+  function applyPreviewAudit(result, preview, review) {
+    var audit = (preview && preview.auditPreview) || {};
+    result.auditPreview = {
+      wouldRecordSourceReview: true,
+      wouldRecordRemoteTombstone: !!audit.remoteTombstoneSourcePresent,
+      wouldRecordRemotePeer: !!cleanScalar(review && review.remoteSyncPeerId),
+      wouldRecordOperatorPeer: !!audit.localPeerIdentityAvailable,
+      wouldRequireOperatorConfirmation: true,
+      localPeerIdentityAvailable: !!audit.localPeerIdentityAvailable,
+    };
+  }
+
+  function setApplyDryRunPlan(result, preview, review) {
+    applyPreviewAudit(result, preview, review);
+    result.supported = preview && preview.supported === true;
+    result.action = cleanScalar(preview && preview.action) || 'blocked-preview';
+    result.mutationType = nullableString(preview && preview.mutationType);
+    result.wouldMutateOnApply = preview && preview.wouldMutateOnApply === true;
+    if (result.action === 'would-unbind-folder-binding') {
+      result.plannedWrites = {
+        libraryMutation: {
+          type: 'folderBinding.unbind',
+          wouldRun: true,
+        },
+        localTombstone: {
+          wouldCreate: true,
+          recordKind: 'folderBinding',
+          deleteReason: 'remote-review-apply',
+        },
+        reviewUpdate: {
+          wouldUpdateStatus: true,
+          futureStatus: 'resolved',
+          futureDecision: 'applied-folder-binding',
+        },
+      };
+      return;
+    }
+    if (result.action === 'no-op-already-missing') {
+      result.plannedWrites.reviewUpdate = {
+        wouldUpdateStatus: true,
+        futureStatus: 'resolved',
+        futureDecision: 'already-local-missing',
+      };
+    }
+  }
+
+  function blockApplyDryRunFromPreview(result, preview, review) {
+    result.ok = false;
+    result.supported = preview && preview.supported === true;
+    result.action = cleanScalar(preview && preview.action) || 'blocked-preview';
+    result.mutationType = nullableString(preview && preview.mutationType);
+    result.wouldMutateOnApply = false;
+    applyPreviewAudit(result, preview, review);
+    pushBlocker(result, 'preview-blocked');
+    (Array.isArray(preview && preview.blockers) ? preview.blockers : []).forEach(function (blocker) {
+      pushBlocker(result, blocker && blocker.code);
+    });
+    mergeCodeWarnings(result.warnings, preview && preview.warnings);
+    result.preview = makePreviewSummary(preview);
+    return result;
   }
 
   function parseReviewTombstone(review, result) {
@@ -1444,6 +1588,67 @@
     });
   }
 
+  function applyReview(reviewIdInput, options) {
+    var opts = options || {};
+    var dryRun = opts && opts.dryRun === true;
+    var reviewId = cleanString(reviewIdInput);
+    if (!reviewId) {
+      var missingId = makeApplyDryRunResult(null, dryRun);
+      missingId.ok = false;
+      missingId.reviewFound = false;
+      missingId.action = 'blocked-review-not-found';
+      pushBlocker(missingId, 'review-not-found');
+      return Promise.resolve(missingId);
+    }
+    return getReview(reviewId).then(function (review) {
+      var result = makeApplyDryRunResult(review, dryRun);
+      if (!review) {
+        result.ok = false;
+        result.reviewFound = false;
+        result.action = 'blocked-review-not-found';
+        pushBlocker(result, 'review-not-found');
+        return result;
+      }
+      if (!dryRun) {
+        result.ok = false;
+        result.action = 'blocked-real-apply-not-implemented';
+        pushBlocker(result, 'real-apply-not-implemented');
+        return result;
+      }
+      var status = cleanScalar(review.status);
+      if (status !== 'pending' && status !== 'accepted-later') {
+        result.ok = false;
+        result.action = 'blocked-review-status-not-previewable';
+        pushBlocker(result, 'review-status-not-previewable');
+        return result;
+      }
+      return previewApply(reviewId, { refreshLocalState: true, includeSensitive: false }).then(function (preview) {
+        result.preview = makePreviewSummary(preview);
+        mergeCodeWarnings(result.warnings, preview && preview.warnings);
+        if (!preview || (Array.isArray(preview.blockers) && preview.blockers.length)) {
+          return blockApplyDryRunFromPreview(result, preview, review);
+        }
+        if (preview.action !== 'would-unbind-folder-binding' && preview.action !== 'no-op-already-missing') {
+          pushBlocker(preview, 'unsupported-record-kind');
+          return blockApplyDryRunFromPreview(result, preview, review);
+        }
+        setApplyDryRunPlan(result, preview, review);
+        if (opts && opts.includeSensitive === true) {
+          pushCodeWarning(result.warnings, 'include-sensitive-ignored');
+        }
+        return result;
+      });
+    }).catch(function (e) {
+      recordError('applyReview', e);
+      var result = makeApplyDryRunResult(null, dryRun);
+      result.ok = false;
+      result.action = 'blocked-preview';
+      pushBlocker(result, 'preview-blocked');
+      pushCodeWarning(result.warnings, 'apply-dry-run-failed');
+      return result;
+    });
+  }
+
   function countMap(rows, keyField) {
     var out = {};
     (Array.isArray(rows) ? rows : []).forEach(function (row) {
@@ -1528,7 +1733,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.2',
+    __version: '0.1.0-f5g.3',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1550,6 +1755,7 @@
     markResolved: markResolved,
     ingestBundleTombstones: ingestBundleTombstones,
     previewApply: previewApply,
+    applyReview: applyReview,
     diagnose: diagnose,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
@@ -1559,6 +1765,7 @@
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
+      applyDryRunSchema: APPLY_DRY_RUN_SCHEMA,
       tombstoneSchema: TOMBSTONE_SCHEMA,
       table: TABLE,
       classifications: Object.freeze(Object.keys(CLASSIFICATIONS).slice()),

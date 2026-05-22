@@ -1698,6 +1698,119 @@ continue to report counts by status/classification, so decision-only status
 changes are visible as queue health changes without implying any delete was
 applied.
 
+## F5G.3 Dry-Run Apply Simulation
+
+F5G.3 adds a dry-run-only apply API to both Desktop and Chrome tombstone review
+stores:
+
+```js
+await H2O.Studio.store.tombstoneReviews.applyReview(reviewId, {
+  dryRun: true,
+  requireAcceptedLater: false,
+  includeSensitive: false
+})
+```
+
+The API simulates the future reviewed apply transaction for `folderBinding`
+reviews. It does not apply tombstones, unbind folders, delete records, create
+local tombstones, update review rows, change sync/import/export state, or call
+folder/chat/snapshot/tag/label/category mutation APIs.
+
+Real apply remains unimplemented. If `dryRun !== true`, the API returns a
+blocked result with `real-apply-not-implemented`.
+
+Supported dry-run target:
+
+- `folderBinding`
+
+Deferred:
+
+- `folder` returns `folder-apply-deferred`
+
+Unsupported:
+
+- `chat`
+- `snapshot`
+- `tag`
+- `tagBinding`
+- `label`
+- `labelBinding`
+- `category`
+- `project`
+- `visualMetadata`
+- `linkedOnlyChat`
+- `savedSnapshot`
+
+Dry-run status eligibility matches preview eligibility. `pending` and
+`accepted-later` can be simulated. `ignored`, `rejected`, `resolved`, and
+`superseded` return `review-status-not-previewable`.
+
+`applyReview({ dryRun: true })` is intentionally stronger than `previewApply()`.
+It first calls `previewApply(reviewId, { refreshLocalState: true,
+includeSensitive: false })` to reuse fresh read-only local comparison. If the
+preview has blockers, the dry-run result includes `preview-blocked` plus the
+preview blocker codes. If preview action is `would-unbind-folder-binding`, the
+dry-run returns the planned future transaction:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-apply-dry-run.v1',
+  ok: true,
+  dryRun: true,
+  realApplyImplemented: false,
+  reviewFound: true,
+  supported: true,
+  action: 'would-unbind-folder-binding',
+  mutationType: 'folderBinding.unbind',
+  wouldMutateOnApply: true,
+  writesPerformed: 0,
+  blockers: [],
+  preview: {
+    schema: 'h2o.studio.tombstone-review-apply-preview.v1',
+    action: 'would-unbind-folder-binding'
+  },
+  plannedWrites: {
+    libraryMutation: {
+      type: 'folderBinding.unbind',
+      wouldRun: true
+    },
+    localTombstone: {
+      wouldCreate: true,
+      recordKind: 'folderBinding',
+      deleteReason: 'remote-review-apply'
+    },
+    reviewUpdate: {
+      wouldUpdateStatus: true,
+      futureStatus: 'resolved',
+      futureDecision: 'applied-folder-binding'
+    }
+  },
+  auditPreview: {
+    wouldRecordSourceReview: true,
+    wouldRecordRemoteTombstone: true,
+    wouldRecordRemotePeer: true,
+    wouldRecordOperatorPeer: true,
+    wouldRequireOperatorConfirmation: true,
+    localPeerIdentityAvailable: true
+  },
+  warnings: []
+}
+```
+
+If local identity is unavailable, dry-run does not fail solely for that reason.
+It returns `local-identity-unavailable` and sets
+`auditPreview.localPeerIdentityAvailable` to `false`. Real apply later must
+require operator identity before writing any audit fields.
+
+The dry-run output is redacted by default. It must not expose full review IDs,
+record IDs, chat IDs, folder IDs, remote peer IDs, remote tombstone IDs, raw
+tombstone JSON, metadata, folder/chat names, transcript text, or user content.
+
+F5G.3 validation must prove zero writes: no Desktop SQL update/insert/delete, no
+Chrome IndexedDB add/put/delete, no folder mutation method calls, no local
+tombstone creation, no review row updates, and no import/export/sync/delete
+behavior changes.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
