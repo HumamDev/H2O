@@ -356,6 +356,10 @@
        scaffold for future explicit delete records. No existing delete path
        calls it; no export/import/apply behavior is changed. -->
   <script src="./store/tombstones.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed tombstone review queue (F5F.1). Inert
+       scaffold for future remote tombstone review. No bundle ingestion,
+       delete apply, importer wiring, or Library record mutation. -->
+  <script src="./store/tombstone-reviews.tauri.js"></script>
   <!-- Desktop-only: full-bundle ingestion (M2b-1). Self-bails on MV3 / web.
        Registers H2O.Studio.ingestion with dryRunImportBundle (read-only) +
        importBundle stub. Routes through callArchive's Desktop branch for

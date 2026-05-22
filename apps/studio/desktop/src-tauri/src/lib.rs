@@ -359,6 +359,68 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v7 — F5F.0/F5F.1: inert remote tombstone review scaffold.
+        // Stores remote tombstone evidence for later manual review without
+        // importing, applying, deleting, or mutating Library records.
+        Migration {
+            version: 7,
+            description: "init sync tombstone reviews",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS sync_tombstone_reviews (
+                  review_id                 TEXT PRIMARY KEY,
+                  schema                    TEXT NOT NULL,
+                  remote_tombstone_id       TEXT,
+                  remote_sync_peer_id       TEXT,
+                  remote_export_id          TEXT,
+                  remote_sequence_number    INTEGER,
+                  record_kind               TEXT,
+                  record_id                 TEXT,
+                  delete_reason             TEXT,
+                  remote_deleted_at         TEXT,
+                  received_at               TEXT NOT NULL,
+                  first_seen_at             TEXT NOT NULL,
+                  last_seen_at              TEXT NOT NULL,
+                  seen_count                INTEGER NOT NULL DEFAULT 1,
+                  last_seen_export_id       TEXT,
+                  local_record_exists       INTEGER,
+                  local_record_digest       TEXT,
+                  local_updated_at          TEXT,
+                  local_has_newer_edit      INTEGER,
+                  classification            TEXT NOT NULL,
+                  status                    TEXT NOT NULL,
+                  decision                  TEXT,
+                  decided_at                TEXT,
+                  decided_by_sync_peer_id   TEXT,
+                  dedupe_key                TEXT NOT NULL UNIQUE,
+                  raw_tombstone_json        TEXT NOT NULL,
+                  warnings_json             TEXT NOT NULL DEFAULT '[]',
+                  created_at                TEXT NOT NULL,
+                  updated_at                TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_status
+                  ON sync_tombstone_reviews(status);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_classification
+                  ON sync_tombstone_reviews(classification);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_record
+                  ON sync_tombstone_reviews(record_kind, record_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_remote_peer
+                  ON sync_tombstone_reviews(remote_sync_peer_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_remote_export
+                  ON sync_tombstone_reviews(remote_export_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_received_at
+                  ON sync_tombstone_reviews(received_at);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_last_seen_at
+                  ON sync_tombstone_reviews(last_seen_at);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

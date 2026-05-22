@@ -672,6 +672,96 @@ folder IDs, user-visible names, transcript text, or sample IDs. A missing
 `deleteReason` is counted under the `missing` delete-reason bucket so aggregate
 counts remain explainable without exposing record identity.
 
+## F5F.0/F5F.1 Remote Tombstone Review Scaffold
+
+F5F.0/F5F.1 adds a Desktop-local review queue scaffold for future remote
+tombstone imports:
+
+- SQLite table: `sync_tombstone_reviews`
+- Desktop store module: `H2O.Studio.store.tombstoneReviews`
+- Module file: `src-surfaces-base/studio/store/tombstone-reviews.tauri.js`
+
+This scaffold is inert. It does not ingest bundle tombstones automatically,
+does not call Desktop or Chrome importers, does not apply remote tombstones,
+does not delete or mutate Library records, does not export review records, and
+does not add UI or conflict-queue behavior. Remote tombstones remain evidence,
+not commands.
+
+The review row schema is:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review.v1',
+  reviewId,
+  remoteTombstoneId,
+  remoteSyncPeerId,
+  remoteExportId,
+  remoteSequenceNumber,
+  recordKind,
+  recordId,
+  deleteReason,
+  remoteDeletedAt,
+  receivedAt,
+  firstSeenAt,
+  lastSeenAt,
+  seenCount,
+  lastSeenExportId,
+  localRecordExists,
+  localRecordDigest,
+  localUpdatedAt,
+  localHasNewerEdit,
+  classification,
+  status,
+  decision,
+  decidedAt,
+  decidedBySyncPeerId,
+  dedupeKey,
+  rawTombstoneJson,
+  warningsJson,
+  createdAt,
+  updatedAt
+}
+```
+
+Allowed classifications are `safe-review`, `delete-vs-edit`,
+`already-deleted-local`, `missing-local-record`, `cascade-review`,
+`duplicate-remote-tombstone`, `malformed-remote-tombstone`,
+`unsupported-record-kind`, `self-originated`, and
+`local-comparison-unavailable`.
+
+Allowed statuses are `pending`, `ignored`, `accepted-later`, `rejected`,
+`superseded`, and `resolved`. `accepted-later` is only a placeholder status for
+future reviewed-apply phases; no F5F.1 API applies deletes.
+
+The F5F.1 API is:
+
+```js
+H2O.Studio.store.tombstoneReviews.createReview(record)
+H2O.Studio.store.tombstoneReviews.upsertReviewSighting(record)
+H2O.Studio.store.tombstoneReviews.getReview(reviewId)
+H2O.Studio.store.tombstoneReviews.getByDedupeKey(dedupeKey)
+H2O.Studio.store.tombstoneReviews.listReviews(filters)
+H2O.Studio.store.tombstoneReviews.countByClassification(filters)
+H2O.Studio.store.tombstoneReviews.countByStatus(filters)
+H2O.Studio.store.tombstoneReviews.markIgnored(reviewId, reason)
+H2O.Studio.store.tombstoneReviews.markRejected(reviewId, reason)
+await H2O.Studio.store.tombstoneReviews.diagnose(options)
+H2O.Studio.store.tombstoneReviews.validateReview(record)
+H2O.Studio.store.tombstoneReviews.buildDedupeKey(input)
+```
+
+`upsertReviewSighting()` inserts a new row when `dedupeKey` is new. If the same
+dedupe key already exists, it updates only `lastSeenAt`, increments `seenCount`,
+updates `lastSeenExportId`, and preserves `firstSeenAt`.
+
+Diagnostics use schema `h2o.studio.tombstone-review.diagnostic.v1` and are
+redacted/content-free by default. They report totals, pending count,
+classification counts, status counts, malformed count, self-originated count,
+duplicate count, cascade review count, delete-vs-edit count, unsupported-kind
+count, and module warnings. They must not expose full record IDs, tombstone IDs,
+remote peer IDs, raw tombstone JSON, metadata contents, chat/folder names, or
+transcript content.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
