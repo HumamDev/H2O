@@ -29,6 +29,7 @@ const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
 const FOLDER_CLEANUP_AUDIT_KEY = "h2o:studio:folder-cleanup-audit:v1";
 const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
 const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
+const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
 const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
 const INTERFACE_COLORS = [
   { name: "gold", value: "rgba(212,175,55,1)" },
@@ -5324,6 +5325,23 @@ function renderSettingsRoute(){
           </div>
           <div id="wbSettingsFolderDesktopReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
           <div id="wbSettingsFolderDesktopReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+          <div id="wbSettingsFolderDesktopDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <div>
+              <div style="font-weight:600">Delete Empty Desktop Folders</div>
+              <div id="wbSettingsFolderDesktopDeleteSummary" style="opacity:.72;font-size:12px">Desktop SQLite only. Chrome mirror, native folder-state, and sync folder are not modified.</div>
+            </div>
+            <div id="wbSettingsFolderDesktopDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button id="wbSettingsFolderDesktopPreviewDelete" type="button" style="${btnStyle}">Preview Desktop deletion JSON</button>
+              <button id="wbSettingsFolderDesktopCopyDeletePlan" type="button" style="${btnStyle}">Copy Desktop deletion plan JSON</button>
+            </div>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+              <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT)}</code> to enable Desktop deletion.</span>
+              <input id="wbSettingsFolderDesktopDeleteConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+            </label>
+            <button id="wbSettingsFolderDesktopDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected empty Desktop folders</button>
+            <pre id="wbSettingsFolderDesktopDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+          </div>
         </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
@@ -6897,10 +6915,10 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
   if (existsInNative) blockers.push("native/canonical folder");
   if (bindingCount > 0) blockers.push("Desktop SQLite binding exists");
   if (orphanBindings.length > 0) blockers.push("binding does not resolve to a known chat row");
-  if (existsInChromeMirror) blockers.push("also present in Chrome mirror; review cross-surface state separately");
+  if (existsInChromeMirror) warnings.push("Also present in Chrome mirror; Desktop cleanup does not remove Chrome mirror rows.");
   if (!existsInDesktopSqlite && !existsInChromeMirror) blockers.push("folder not found in Desktop or Chrome facts");
   if (settingsFolderCleanupIsF5DReviewCandidate({ folderId: id, name })) {
-    warnings.push("F5D/Desktop test folder. P7d-a is review-only.");
+    warnings.push("F5D/Desktop test folder. Desktop mutation requires P7d-b guards, typed confirmation, and audit.");
   }
   if (id === "f5d1-test-folder-b" && bindingCount > 0) {
     warnings.push("Known bound review candidate: f5d1-test-chat-001 has been observed on this folder.");
@@ -6917,8 +6935,7 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
   const futureEligible = !existsInNative
     && existsInDesktopSqlite
     && bindingCount === 0
-    && knownChatRows.length === 0
-    && !existsInChromeMirror;
+    && knownChatRows.length === 0;
   return {
     folderId: id,
     name: String(name || desktopFolder?.name || chromeFolder?.name || id).trim() || id,
@@ -6947,14 +6964,13 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
     } : null,
     proposedAction: bindingCount > 0
       ? "Review exact binding before any future Desktop action."
-      : "Review-only in P7d-a. Future Desktop action would require explicit confirmation and audit.",
+      : "P7d-b Desktop deletion is allowed only after explicit preview, typed confirmation, fresh revalidation, and audit.",
     riskLevel: bindingCount > 0 || orphanBindings.length > 0 ? "high-review-required" : "review-required",
     requiresApproval: true,
     warnings,
     deletionEligible: false,
     futureDeletionEligible: futureEligible,
     blockers: Array.from(new Set([
-      "P7d-a is review-only; no mutation controls are available.",
       ...blockers,
       ...(futureEligible ? [] : ["not eligible for a future empty Desktop action until blockers are resolved"]),
     ].filter(Boolean))),
@@ -7030,15 +7046,14 @@ function settingsFolderDesktopBuildReviewReport(selfCheck, displayModel, desktop
       chromeAuditTail: chromeFacts?.auditTail || [],
     },
     safetyRules: [
-      "P7d-a is review-only.",
-      "No Desktop SQLite writes are performed.",
+      "Desktop review refresh is read-only.",
+      "Desktop deletion is available only in the Delete Empty Desktop Folders subsection after preview, typed confirmation, fresh revalidation, and audit.",
       "No Chrome storage writes are performed.",
       "No native ChatGPT folder-state mutation is performed.",
       "Chrome and Desktop cleanup must remain separate future actions.",
       "Folders with bindings are never candidates for empty-folder cleanup.",
     ],
     futurePhases: [
-      "P7d-b may later handle Desktop empty test folder cleanup with explicit confirmation and audit.",
       "P7d-c may later review bound test folder bindings.",
       "P7d-d may later compare Chrome/Desktop consistency after Desktop review.",
     ],
@@ -7103,7 +7118,7 @@ function settingsFolderDesktopCandidateHtml(candidate){
       ${settingsFolderDesktopBindingHtml(candidate)}
       <div style="font-size:12px"><strong>Review:</strong> ${esc(candidate?.proposedAction || "Review only.")}</div>
       <div style="font-size:12px"><strong>Risk:</strong> ${esc(candidate?.riskLevel || "review")}</div>
-      <div style="font-size:12px"><strong>P7d-a action eligibility:</strong> ${candidate?.deletionEligible ? "available" : "not available; review-only"}</div>
+      <div style="font-size:12px"><strong>P7d-b empty-folder eligibility:</strong> ${candidate?.futureDeletionEligible ? "possible after guards" : "not eligible"}</div>
       ${warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Warnings:</strong> ${esc(warnings.join(" "))}</div>` : ""}
       ${blockers.length ? `<div style="font-size:12px;opacity:.78"><strong>Blockers:</strong> ${esc(blockers.join(" "))}</div>` : ""}
     </div>
@@ -7174,6 +7189,210 @@ function settingsFolderDesktopRenderReport(panel, report){
     ].join("");
   }
   if (copyBtn) copyBtn.disabled = false;
+  settingsFolderDesktopRenderDeletePanel(panel, report);
+}
+
+function settingsFolderDesktopDeleteBlockers(candidate){
+  const folderId = String(candidate?.folderId || "").trim();
+  const blockers = [];
+  const knownChatRows = Array.isArray(candidate?.knownChatRows) ? candidate.knownChatRows : [];
+  if (!STUDIO_isTauri()) blockers.push("Desktop runtime required.");
+  if (!folderId) blockers.push("missing folder ID");
+  if (!candidate?.existsInDesktopSqlite) blockers.push("not present in Desktop SQLite");
+  if (!settingsFolderCleanupIsF5DReviewCandidate(candidate)) blockers.push("not in Desktop/F5D review set");
+  if (/^f_/.test(folderId)) blockers.push("canonical native folder ID prefix");
+  if (candidate?.existsInNative) blockers.push("native-present folder");
+  if (settingsFolderCleanupNumber(candidate?.bindingCount) !== 0) blockers.push("Desktop SQLite bindings exist");
+  if (knownChatRows.some((row) => row && row.known)) blockers.push("known chat row depends on this folder");
+  if (folderId === "f5d1-test-folder-b" && settingsFolderCleanupNumber(candidate?.bindingCount) > 0) {
+    blockers.push("known bound F5D review folder");
+  }
+  return Array.from(new Set(blockers.filter(Boolean)));
+}
+
+function settingsFolderDesktopEligibleDeleteRows(report){
+  const rows = Array.isArray(report?.desktopCandidates) ? report.desktopCandidates : [];
+  return rows.filter((candidate) => settingsFolderDesktopDeleteBlockers(candidate).length === 0);
+}
+
+function settingsFolderDesktopSelectedDeleteIds(panel){
+  const boxes = Array.from(panel?.querySelectorAll?.("#wbSettingsFolderDesktopDeleteList input[data-folder-id]") || []);
+  return boxes
+    .filter((box) => !!box.checked)
+    .map((box) => String(box.dataset.folderId || "").trim())
+    .filter(Boolean);
+}
+
+function settingsFolderDesktopDeleteRowHtml(candidate){
+  const badges = settingsFolderCleanupBadgesHtml({
+    badges: candidate?.storeBadges || ["Desktop SQLite"],
+    classification: "desktop-empty-delete-eligible",
+  });
+  const chromeNote = candidate?.existsInChromeMirror
+    ? "Chrome mirror row also exists; Chrome cleanup is separate and not performed."
+    : "No Chrome mirror row detected.";
+  return `
+    <label style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:flex-start;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px">
+      <input type="checkbox" data-folder-id="${esc(candidate?.folderId || "")}" />
+      <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
+        <span style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <strong>${esc(candidate?.name || "(unnamed)")}</strong>
+          <span>${badges}</span>
+        </span>
+        <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "")}</span>
+        <span style="font-size:12px;opacity:.78">Desktop bindings ${esc(candidate?.bindingCount || 0)} · known chats 0 · native ${candidate?.existsInNative ? "yes" : "no"}</span>
+        <span style="font-size:12px;opacity:.72">${esc(chromeNote)}</span>
+      </span>
+    </label>
+  `;
+}
+
+function settingsFolderDesktopRenderDeletePanel(panel, report){
+  const summary = panel?.querySelector("#wbSettingsFolderDesktopDeleteSummary");
+  const list = panel?.querySelector("#wbSettingsFolderDesktopDeleteList");
+  const previewEl = panel?.querySelector("#wbSettingsFolderDesktopDeletePreview");
+  const eligible = settingsFolderDesktopEligibleDeleteRows(report);
+  if (summary) {
+    summary.textContent = STUDIO_isTauri()
+      ? `Desktop SQLite only. ${eligible.length} zero-binding F5D folder(s) are selectable. Chrome mirror, native folder-state, and sync folder are not modified.`
+      : "Desktop empty folder cleanup is only available in Desktop Studio. Chrome mirror cleanup is separate and not performed.";
+  }
+  if (list) {
+    list.innerHTML = eligible.length
+      ? eligible.map(settingsFolderDesktopDeleteRowHtml).join("")
+      : `<div style="opacity:.65;font-size:12px">${STUDIO_isTauri() ? "No zero-binding Desktop F5D folders are eligible for deletion." : "Unavailable outside Desktop Studio."}</div>`;
+  }
+  if (previewEl && !panel?.__h2oFolderDesktopDeletionPreview) {
+    previewEl.hidden = true;
+    previewEl.textContent = "";
+  }
+  settingsFolderDesktopUpdateDeleteControls(panel);
+}
+
+function settingsFolderDesktopValidateDeleteSelection(selectedIds, report){
+  const ids = Array.from(new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+  if (!STUDIO_isTauri()) return { ok: false, error: "Desktop folder cleanup is only available in Desktop Studio.", selectedFolderIds: ids, candidates: [] };
+  if (!ids.length) return { ok: false, error: "Select at least one empty Desktop F5D folder.", selectedFolderIds: ids, candidates: [] };
+  const eligibleById = new Map(settingsFolderDesktopEligibleDeleteRows(report).map((row) => [String(row.folderId || "").trim(), row]));
+  const candidates = [];
+  for (const folderId of ids) {
+    const candidate = eligibleById.get(folderId);
+    if (!candidate) return { ok: false, error: `${folderId} is not currently eligible for Desktop empty-folder deletion.`, selectedFolderIds: ids, candidates };
+    const blockers = settingsFolderDesktopDeleteBlockers(candidate);
+    if (blockers.length) return { ok: false, error: `${folderId} failed Desktop deletion guards: ${blockers.join("; ")}`, selectedFolderIds: ids, candidates };
+    candidates.push({
+      folderId,
+      name: candidate.name,
+      bindingCount: settingsFolderCleanupNumber(candidate.bindingCount),
+      knownChatRows: settingsFolderCleanupClone(candidate.knownChatRows || []),
+      nativePresence: !!candidate.existsInNative,
+      existsInChromeMirror: !!candidate.existsInChromeMirror,
+      riskLevel: "low-review-required",
+      eligibilityReason: "Desktop F5D folder has zero SQLite bindings, no known chat rows, and is native-absent.",
+    });
+  }
+  return { ok: true, selectedFolderIds: ids, candidates };
+}
+
+function settingsFolderDesktopSummaryFromFacts(facts){
+  const folders = Array.isArray(facts?.folders) ? facts.folders : [];
+  const f5dFolders = Array.isArray(facts?.f5dFolders) ? facts.f5dFolders : [];
+  const bindingsByFolder = facts?.bindingsByFolder && typeof facts.bindingsByFolder === "object" ? facts.bindingsByFolder : {};
+  const bindingCount = Object.values(bindingsByFolder).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
+  return {
+    surface: facts?.surface || (STUDIO_isTauri() ? "desktop-studio" : "chrome-studio"),
+    source: facts?.source || "",
+    folderCount: folders.length,
+    f5dFolderCount: f5dFolders.length,
+    f5dBindingCount: bindingCount,
+  };
+}
+
+function settingsFolderDesktopBuildDeletePreview(selectedIds, loaded){
+  const validation = settingsFolderDesktopValidateDeleteSelection(selectedIds, loaded?.report);
+  if (!validation.ok) return { ok: false, error: validation.error, selectedFolderIds: validation.selectedFolderIds || [] };
+  const beforeSummary = settingsFolderDesktopSummaryFromFacts(loaded?.desktopFacts);
+  return {
+    ok: true,
+    readOnly: false,
+    noMutation: true,
+    mutation: "preview-only",
+    generatedAt: new Date().toISOString(),
+    surface: "desktop-studio",
+    action: "delete-empty-desktop-folders",
+    targetStore: "Desktop SQLite",
+    selectedFolderIds: validation.selectedFolderIds,
+    selectedFolders: validation.candidates,
+    beforeDesktopFolderCount: beforeSummary.folderCount,
+    predictedAfterDesktopFolderCount: Math.max(0, beforeSummary.folderCount - validation.selectedFolderIds.length),
+    beforeDesktopFoldersSummary: beforeSummary,
+    confirmationText: FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT,
+    chromeMirrorNote: "Chrome mirror cleanup is separate and not performed.",
+    nativeStateNote: "Native ChatGPT folder-state is not modified.",
+  };
+}
+
+function settingsFolderDesktopStorageGetStrict(keys){
+  if (!STUDIO_isTauri()) return Promise.reject(new Error("Desktop cleanup audit is available only in Desktop Studio."));
+  if (!hasChromeStorage()) return Promise.reject(new Error("Desktop storage shim unavailable for cleanup audit."));
+  return new Promise((resolve, reject) => {
+    try {
+      W.chrome.storage.local.get(keys, (result) => {
+        const lastError = W.chrome?.runtime?.lastError;
+        if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+        resolve(result || {});
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function settingsFolderDesktopStorageSetStrict(obj){
+  if (!STUDIO_isTauri()) return Promise.reject(new Error("Desktop cleanup audit is available only in Desktop Studio."));
+  if (!hasChromeStorage()) return Promise.reject(new Error("Desktop storage shim unavailable for cleanup audit."));
+  return new Promise((resolve, reject) => {
+    try {
+      W.chrome.storage.local.set(obj || {}, () => {
+        const lastError = W.chrome?.runtime?.lastError;
+        if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+        resolve(true);
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function settingsFolderDesktopAppendAudit(entry){
+  const values = await settingsFolderDesktopStorageGetStrict([FOLDER_CLEANUP_AUDIT_KEY]);
+  const existing = Array.isArray(values?.[FOLDER_CLEANUP_AUDIT_KEY]) ? values[FOLDER_CLEANUP_AUDIT_KEY] : [];
+  const next = existing.concat([entry]).slice(-50);
+  await settingsFolderDesktopStorageSetStrict({ [FOLDER_CLEANUP_AUDIT_KEY]: next });
+  return next.length;
+}
+
+function settingsFolderDesktopResolveRemoveMethod(){
+  const foldersStore = W.H2O?.Studio?.store?.folders;
+  if (typeof foldersStore?.remove === "function") return { method: "remove", fn: foldersStore.remove.bind(foldersStore) };
+  if (typeof foldersStore?.delete === "function") return { method: "delete", fn: foldersStore.delete.bind(foldersStore) };
+  return { method: "", fn: null };
+}
+
+function settingsFolderDesktopUpdateDeleteControls(panel){
+  const selectedIds = settingsFolderDesktopSelectedDeleteIds(panel);
+  panel.__h2oFolderDesktopDeleteSelectedIds = selectedIds;
+  const preview = panel?.__h2oFolderDesktopDeletionPreview;
+  const previewBtn = panel?.querySelector("#wbSettingsFolderDesktopPreviewDelete");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderDesktopCopyDeletePlan");
+  const confirmInput = panel?.querySelector("#wbSettingsFolderDesktopDeleteConfirm");
+  const deleteBtn = panel?.querySelector("#wbSettingsFolderDesktopDeleteSelected");
+  const confirmationOk = String(confirmInput?.value || "") === FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT;
+  const selectedMatchesPreview = !!preview?.ok
+    && JSON.stringify((preview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (previewBtn) previewBtn.disabled = !STUDIO_isTauri() || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !STUDIO_isTauri() || !selectedMatchesPreview || !confirmationOk;
 }
 
 async function refreshSettingsFolderDesktopReview(panel, seed = null){
@@ -7204,6 +7423,178 @@ async function copySettingsFolderDesktopReviewReport(panel){
   }
   try { console.log("H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT", report); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; Desktop cleanup review report printed to console as H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT.");
+}
+
+async function previewSettingsFolderDesktopDeletion(panel){
+  if (!panel) return null;
+  const previewEl = panel.querySelector("#wbSettingsFolderDesktopDeletePreview");
+  const selectedIds = settingsFolderDesktopSelectedDeleteIds(panel);
+  const loaded = await settingsFolderDesktopLoadReviewInputs();
+  const preview = settingsFolderDesktopBuildDeletePreview(selectedIds, loaded);
+  panel.__h2oFolderDesktopReviewReport = loaded.report;
+  panel.__h2oFolderDesktopDeletionPreview = preview.ok ? preview : null;
+  settingsFolderDesktopRenderReport(panel, loaded.report);
+  const selectedSet = new Set(selectedIds);
+  Array.from(panel.querySelectorAll("#wbSettingsFolderDesktopDeleteList input[data-folder-id]") || [])
+    .forEach((box) => { box.checked = selectedSet.has(String(box.dataset.folderId || "").trim()); });
+  if (previewEl) {
+    previewEl.hidden = false;
+    previewEl.textContent = JSON.stringify(preview, null, 2);
+  }
+  if (!preview.ok) settingsFolderParityLog(panel, "Desktop deletion preview blocked.\n" + String(preview.error || "Unknown guard failure"));
+  settingsFolderDesktopUpdateDeleteControls(panel);
+  return preview;
+}
+
+async function copySettingsFolderDesktopDeletionPlan(panel){
+  if (!panel) return;
+  let preview = panel.__h2oFolderDesktopDeletionPreview;
+  if (!preview) preview = await previewSettingsFolderDesktopDeletion(panel);
+  const text = JSON.stringify(preview || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Desktop deletion plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; Desktop deletion plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_DESKTOP_FOLDER_DELETE_PLAN", preview); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; Desktop deletion plan printed to console as H2O_DESKTOP_FOLDER_DELETE_PLAN.");
+}
+
+async function deleteSelectedEmptyDesktopFolders(panel){
+  if (!panel) return;
+  const previewEl = panel.querySelector("#wbSettingsFolderDesktopDeletePreview");
+  const confirmValue = String(panel.querySelector("#wbSettingsFolderDesktopDeleteConfirm")?.value || "");
+  if (confirmValue !== FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT) {
+    settingsFolderParityLog(panel, "Desktop deletion blocked. Confirmation text does not match.");
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
+  const selectedIds = settingsFolderDesktopSelectedDeleteIds(panel);
+  const existingPreview = panel.__h2oFolderDesktopDeletionPreview;
+  const previewMatchesSelection = !!existingPreview?.ok
+    && JSON.stringify((existingPreview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (!previewMatchesSelection) {
+    settingsFolderParityLog(panel, "Desktop deletion blocked. Generate a fresh Desktop deletion preview for the selected folders first.");
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
+
+  const loaded = await settingsFolderDesktopLoadReviewInputs();
+  const validation = settingsFolderDesktopValidateDeleteSelection(selectedIds, loaded.report);
+  if (!validation.ok) {
+    settingsFolderParityLog(panel, "Desktop deletion aborted before mutation.\n" + String(validation.error || "Guard failed"));
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
+  const remove = settingsFolderDesktopResolveRemoveMethod();
+  if (typeof remove.fn !== "function") {
+    settingsFolderParityLog(panel, "Desktop deletion aborted before mutation. H2O.Studio.store.folders.remove is unavailable.");
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
+
+  const beforeSummary = settingsFolderDesktopSummaryFromFacts(loaded.desktopFacts);
+  const pendingAudit = {
+    timestamp: new Date().toISOString(),
+    surface: "desktop-studio",
+    action: "delete-empty-desktop-folders",
+    selectedFolderIds: validation.selectedFolderIds,
+    selectedFolders: validation.candidates,
+    beforeSelfCheck: loaded.selfCheck,
+    beforeDesktopFolders: settingsFolderCleanupClone(loaded.desktopFacts?.f5dFolders || []),
+    beforeDesktopBindings: settingsFolderCleanupClone(loaded.desktopFacts?.bindingsByFolder || {}),
+    beforeCandidateModel: settingsFolderCleanupClone(loaded.report),
+    result: "pending",
+    afterSelfCheck: null,
+    afterDesktopFolders: null,
+    afterDesktopBindings: null,
+    errors: [],
+  };
+
+  try {
+    await settingsFolderDesktopAppendAudit(pendingAudit);
+  } catch (auditErr) {
+    settingsFolderParityLog(panel, "Desktop deletion aborted before mutation. Cleanup audit could not be written.\n" + String(auditErr && (auditErr.stack || auditErr.message || auditErr)));
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
+
+  let resultAudit = {
+    ...pendingAudit,
+    timestamp: new Date().toISOString(),
+    beforeCandidateModel: null,
+    beforeDesktopFoldersSummary: beforeSummary,
+  };
+  try {
+    const removed = [];
+    for (const folderId of validation.selectedFolderIds) {
+      const ok = await remove.fn(folderId);
+      if (!ok) throw new Error(`store.folders.${remove.method} returned false for ${folderId}`);
+      removed.push(folderId);
+    }
+    try { W.H2O?.LibraryWorkspace?._bustCaches?.("folder-desktop-delete-empty-f5d-folders"); } catch {}
+    try { await W.H2O?.LibraryIndex?.refresh?.("folder-desktop-delete-empty-f5d-folders"); } catch {}
+    const afterLoaded = await settingsFolderDesktopLoadReviewInputs();
+    resultAudit = {
+      ...resultAudit,
+      result: "ok",
+      removedFolderIds: removed,
+      afterSelfCheck: afterLoaded.selfCheck,
+      afterDesktopFolders: settingsFolderCleanupClone(afterLoaded.desktopFacts?.f5dFolders || []),
+      afterDesktopBindings: settingsFolderCleanupClone(afterLoaded.desktopFacts?.bindingsByFolder || {}),
+      afterDesktopFoldersSummary: settingsFolderDesktopSummaryFromFacts(afterLoaded.desktopFacts),
+      errors: [],
+    };
+    try { await settingsFolderDesktopAppendAudit(resultAudit); }
+    catch (auditErr) {
+      resultAudit.errors = ["Result audit append failed: " + String(auditErr && (auditErr.message || auditErr))];
+    }
+    const result = {
+      ok: true,
+      action: "delete-empty-desktop-folders",
+      selectedFolderIds: validation.selectedFolderIds,
+      removedFolderIds: removed,
+      beforeDesktopFoldersSummary: beforeSummary,
+      afterDesktopFoldersSummary: resultAudit.afterDesktopFoldersSummary,
+      auditWarning: resultAudit.errors[0] || "",
+      auditKey: FOLDER_CLEANUP_AUDIT_KEY,
+      chromeMirrorNote: "Chrome mirror cleanup is separate and was not performed.",
+      nativeStateNote: "Native ChatGPT folder-state was not modified.",
+    };
+    if (previewEl) {
+      previewEl.hidden = false;
+      previewEl.textContent = JSON.stringify(result, null, 2);
+    }
+    settingsFolderParityLog(panel, "Selected empty Desktop F5D folder(s) deleted. Chrome mirror, native folder-state, and sync folder were not modified.");
+    panel.__h2oFolderDesktopDeletionPreview = null;
+    panel.__h2oFolderDesktopDeleteSelectedIds = [];
+    const input = panel.querySelector("#wbSettingsFolderDesktopDeleteConfirm");
+    if (input) input.value = "";
+    await refreshSettingsFolderParity(panel);
+    const refreshedPreviewEl = panel.querySelector("#wbSettingsFolderDesktopDeletePreview");
+    if (refreshedPreviewEl) {
+      refreshedPreviewEl.hidden = false;
+      refreshedPreviewEl.textContent = JSON.stringify(result, null, 2);
+    }
+  } catch (err) {
+    resultAudit = {
+      ...resultAudit,
+      result: "failed",
+      afterSelfCheck: null,
+      afterDesktopFolders: null,
+      afterDesktopBindings: null,
+      errors: [String(err && (err.stack || err.message || err))],
+    };
+    try { await settingsFolderDesktopAppendAudit(resultAudit); } catch {}
+    settingsFolderParityLog(panel, "Desktop deletion failed after pending audit.\n" + String(err && (err.stack || err.message || err)));
+    throw err;
+  } finally {
+    settingsFolderDesktopUpdateDeleteControls(panel);
+  }
 }
 
 function settingsFolderCleanupUpdateDeleteControls(panel){
@@ -7770,6 +8161,32 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderDesktopReviewCopy")?.addEventListener("click", () => {
     copySettingsFolderDesktopReviewReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopDeleteList")?.addEventListener("change", () => {
+    panel.__h2oFolderDesktopDeletionPreview = null;
+    const previewEl = panel.querySelector("#wbSettingsFolderDesktopDeletePreview");
+    if (previewEl) {
+      previewEl.hidden = true;
+      previewEl.textContent = "";
+    }
+    settingsFolderDesktopUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopDeleteConfirm")?.addEventListener("input", () => {
+    settingsFolderDesktopUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopPreviewDelete")?.addEventListener("click", () => {
+    previewSettingsFolderDesktopDeletion(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopCopyDeletePlan")?.addEventListener("click", () => {
+    copySettingsFolderDesktopDeletionPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopDeleteSelected")?.addEventListener("click", () => {
+    deleteSelectedEmptyDesktopFolders(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderConflictDeleteList")?.addEventListener("change", () => {
