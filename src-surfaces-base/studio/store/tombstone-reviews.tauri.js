@@ -1649,6 +1649,16 @@
     });
   }
 
+  function proveApplyTransaction(options) {
+    var invoke = getInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
+    var opts = isObject(options) ? options : {};
+    var failAt = cleanString(opts.failAt || opts.fail_at);
+    return invoke('f5g4_prove_tombstone_review_apply_transaction', {
+      failAt: failAt || null,
+    });
+  }
+
   function countMap(rows, keyField) {
     var out = {};
     (Array.isArray(rows) ? rows : []).forEach(function (row) {
@@ -1733,7 +1743,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.3',
+    __version: '0.1.0-f5g.4.0',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1756,6 +1766,7 @@
     ingestBundleTombstones: ingestBundleTombstones,
     previewApply: previewApply,
     applyReview: applyReview,
+    proveApplyTransaction: proveApplyTransaction,
     diagnose: diagnose,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,

@@ -3,7 +3,81 @@
 // mobile target (which compiles through the cdylib declared in Cargo.toml's
 // [lib] section). This is the canonical Tauri V2 template shape.
 
+use serde::Serialize;
+use sqlx::{Connection, Row, SqliteConnection};
 use tauri_plugin_sql::{Migration, MigrationKind};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum F5g4ProofFailure {
+    TombstoneInsert,
+    BindingDelete,
+    ReviewUpdate,
+    DuplicateTombstone,
+    MissingBinding,
+}
+
+impl F5g4ProofFailure {
+    fn from_option(value: Option<String>) -> Result<Option<Self>, String> {
+        let Some(raw) = value else {
+            return Ok(None);
+        };
+        let normalized = raw.trim();
+        if normalized.is_empty() || normalized == "none" || normalized == "success" {
+            return Ok(None);
+        }
+        match normalized {
+            "tombstone-insert" => Ok(Some(Self::TombstoneInsert)),
+            "binding-delete" => Ok(Some(Self::BindingDelete)),
+            "review-update" => Ok(Some(Self::ReviewUpdate)),
+            "duplicate-tombstone" => Ok(Some(Self::DuplicateTombstone)),
+            "missing-binding" => Ok(Some(Self::MissingBinding)),
+            _ => Err(format!("unsupported F5G.4 proof failure stage: {normalized}")),
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::TombstoneInsert => "tombstone-insert",
+            Self::BindingDelete => "binding-delete",
+            Self::ReviewUpdate => "review-update",
+            Self::DuplicateTombstone => "duplicate-tombstone",
+            Self::MissingBinding => "missing-binding",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ProofCounts {
+    tombstones: i64,
+    bindings: i64,
+    reviews_accepted_later: i64,
+    reviews_resolved: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ProofResult {
+    schema: &'static str,
+    ok: bool,
+    synthetic: bool,
+    transaction_used: bool,
+    committed: bool,
+    rolled_back: bool,
+    failure_stage: Option<String>,
+    before: F5g4ProofCounts,
+    after: F5g4ProofCounts,
+    all_three_writes_visible: bool,
+    no_partial_state: bool,
+    no_real_library_data_touched: bool,
+    warnings: Vec<F5g4ProofWarning>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ProofWarning {
+    code: &'static str,
+}
 
 /// V1 SQLite schema migrations.
 ///
@@ -424,6 +498,364 @@ fn studio_migrations() -> Vec<Migration> {
     ]
 }
 
+async fn f5g4_setup_proof_schema(conn: &mut SqliteConnection) -> Result<(), String> {
+    let statements = [
+        r#"
+        CREATE TABLE sync_tombstones (
+          tombstone_id             TEXT PRIMARY KEY,
+          schema                   TEXT NOT NULL,
+          record_kind              TEXT NOT NULL,
+          record_id                TEXT NOT NULL,
+          deleted_at               TEXT NOT NULL,
+          deleted_by_sync_peer_id  TEXT NOT NULL,
+          delete_reason            TEXT NOT NULL,
+          prior_digest             TEXT,
+          prior_updated_at         TEXT,
+          source_export_id         TEXT,
+          source_sequence_number   INTEGER,
+          cascade_from             TEXT,
+          restored_at              TEXT,
+          restored_by_sync_peer_id TEXT,
+          meta_json                TEXT NOT NULL DEFAULT '{}',
+          created_at               TEXT NOT NULL,
+          updated_at               TEXT NOT NULL
+        )
+        "#,
+        r#"
+        CREATE UNIQUE INDEX idx_sync_tombstones_active_record
+          ON sync_tombstones(record_kind, record_id)
+          WHERE restored_at IS NULL
+        "#,
+        r#"
+        CREATE TABLE folder_bindings (
+          chat_id     TEXT    NOT NULL,
+          folder_id   TEXT    NOT NULL,
+          assigned_at INTEGER NOT NULL,
+          PRIMARY KEY (chat_id)
+        )
+        "#,
+        r#"
+        CREATE TABLE sync_tombstone_reviews (
+          review_id                 TEXT PRIMARY KEY,
+          schema                    TEXT NOT NULL,
+          remote_tombstone_id       TEXT,
+          remote_sync_peer_id       TEXT,
+          remote_export_id          TEXT,
+          remote_sequence_number    INTEGER,
+          record_kind               TEXT,
+          record_id                 TEXT,
+          delete_reason             TEXT,
+          remote_deleted_at         TEXT,
+          received_at               TEXT NOT NULL,
+          first_seen_at             TEXT NOT NULL,
+          last_seen_at              TEXT NOT NULL,
+          seen_count                INTEGER NOT NULL DEFAULT 1,
+          last_seen_export_id       TEXT,
+          local_record_exists       INTEGER,
+          local_record_digest       TEXT,
+          local_updated_at          TEXT,
+          local_has_newer_edit      INTEGER,
+          classification            TEXT NOT NULL,
+          status                    TEXT NOT NULL,
+          decision                  TEXT,
+          decided_at                TEXT,
+          decided_by_sync_peer_id   TEXT,
+          dedupe_key                TEXT NOT NULL UNIQUE,
+          raw_tombstone_json        TEXT NOT NULL,
+          warnings_json             TEXT NOT NULL DEFAULT '[]',
+          created_at                TEXT NOT NULL,
+          updated_at                TEXT NOT NULL
+        )
+        "#,
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| format!("F5G.4 proof schema failed: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn f5g4_seed_proof_rows(
+    conn: &mut SqliteConnection,
+    failure: Option<F5g4ProofFailure>,
+) -> Result<(), String> {
+    let now = "2026-05-22T00:00:00.000Z";
+    if failure != Some(F5g4ProofFailure::MissingBinding) {
+        sqlx::query(
+            "INSERT INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)",
+        )
+        .bind("f5g4-proof-chat-001")
+        .bind("f5g4-proof-folder-001")
+        .bind(1_779_408_000_000_i64)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("F5G.4 proof binding seed failed: {e}"))?;
+    }
+    if failure == Some(F5g4ProofFailure::DuplicateTombstone) {
+        sqlx::query(
+            r#"
+            INSERT INTO sync_tombstones (
+              tombstone_id, schema, record_kind, record_id, deleted_at, deleted_by_sync_peer_id,
+              delete_reason, meta_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("f5g4-proof-tombstone-001")
+        .bind("h2o.studio.tombstone.v1")
+        .bind("folderBinding")
+        .bind("folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001")
+        .bind(now)
+        .bind("f5g4-proof-local-peer-001")
+        .bind("remote-review-apply")
+        .bind(r#"{"source":"f5g4-proof-existing"}"#)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("F5G.4 proof duplicate seed failed: {e}"))?;
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO sync_tombstone_reviews (
+          review_id, schema, remote_tombstone_id, remote_sync_peer_id, remote_export_id,
+          remote_sequence_number, record_kind, record_id, delete_reason, remote_deleted_at,
+          received_at, first_seen_at, last_seen_at, seen_count, last_seen_export_id,
+          local_record_exists, local_record_digest, local_updated_at, local_has_newer_edit,
+          classification, status, decision, decided_at, decided_by_sync_peer_id,
+          dedupe_key, raw_tombstone_json, warnings_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("f5g4-proof-review-001")
+    .bind("h2o.studio.tombstone-review.v1")
+    .bind("f5g4-proof-remote-tombstone-001")
+    .bind("f5g4-proof-remote-peer-001")
+    .bind("f5g4-proof-export-001")
+    .bind(1_i64)
+    .bind("folderBinding")
+    .bind("folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001")
+    .bind("folder-delete-cascade")
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(1_i64)
+    .bind("f5g4-proof-export-001")
+    .bind(1_i64)
+    .bind(Option::<String>::None)
+    .bind(now)
+    .bind(0_i64)
+    .bind("safe-review")
+    .bind("accepted-later")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind("f5g4-proof-dedupe-001")
+    .bind(
+        r#"{"schema":"h2o.studio.tombstone.v1","tombstoneId":"f5g4-proof-remote-tombstone-001","recordKind":"folderBinding","recordId":"folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001","deletedAt":"2026-05-22T00:00:00.000Z","deletedBySyncPeerId":"f5g4-proof-remote-peer-001","deleteReason":"folder-delete-cascade","meta":{"chatId":"f5g4-proof-chat-001","folderId":"f5g4-proof-folder-001"}}"#,
+    )
+    .bind("[]")
+    .bind(now)
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("F5G.4 proof review seed failed: {e}"))?;
+    Ok(())
+}
+
+async fn f5g4_proof_counts(conn: &mut SqliteConnection) -> Result<F5g4ProofCounts, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+          (SELECT COUNT(*) FROM sync_tombstones) AS tombstones,
+          (SELECT COUNT(*) FROM folder_bindings) AS bindings,
+          (SELECT COUNT(*) FROM sync_tombstone_reviews WHERE status = 'accepted-later') AS reviews_accepted_later,
+          (SELECT COUNT(*) FROM sync_tombstone_reviews WHERE status = 'resolved' AND decision = 'applied-folder-binding') AS reviews_resolved
+        "#,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|e| format!("F5G.4 proof count failed: {e}"))?;
+    Ok(F5g4ProofCounts {
+        tombstones: row.try_get("tombstones").unwrap_or(0),
+        bindings: row.try_get("bindings").unwrap_or(0),
+        reviews_accepted_later: row.try_get("reviews_accepted_later").unwrap_or(0),
+        reviews_resolved: row.try_get("reviews_resolved").unwrap_or(0),
+    })
+}
+
+async fn f5g4_run_future_apply_transaction(
+    conn: &mut SqliteConnection,
+    failure: Option<F5g4ProofFailure>,
+) -> Result<(), String> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|e| format!("F5G.4 proof transaction begin failed: {e}"))?;
+
+    let binding_exists: i64 = sqlx::query(
+        "SELECT COUNT(*) AS n FROM folder_bindings WHERE chat_id = ? AND folder_id = ?",
+    )
+    .bind("f5g4-proof-chat-001")
+    .bind("f5g4-proof-folder-001")
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("F5G.4 proof binding pre-read failed: {e}"))?
+    .try_get("n")
+    .unwrap_or(0);
+    if binding_exists != 1 {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("F5G.4 proof missing-binding rollback failed: {e}"))?;
+        return Err("missing-binding".to_string());
+    }
+
+    let tombstone_record_kind = if failure == Some(F5g4ProofFailure::TombstoneInsert) {
+        None
+    } else {
+        Some("folderBinding")
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO sync_tombstones (
+          tombstone_id, schema, record_kind, record_id, deleted_at, deleted_by_sync_peer_id,
+          delete_reason, meta_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("f5g4-proof-tombstone-001")
+    .bind("h2o.studio.tombstone.v1")
+    .bind(tombstone_record_kind)
+    .bind("folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001")
+    .bind("2026-05-22T00:00:00.000Z")
+    .bind("f5g4-proof-local-peer-001")
+    .bind("remote-review-apply")
+    .bind(
+        r#"{"source":"tombstoneReviews.applyReview","sourceReviewId":"f5g4-proof-review-001","remoteTombstoneId":"f5g4-proof-remote-tombstone-001","remoteSyncPeerId":"f5g4-proof-remote-peer-001","remoteExportId":"f5g4-proof-export-001","appliedBySyncPeerId":"f5g4-proof-local-peer-001","appliedAt":"2026-05-22T00:00:00.000Z","applyReason":"f5g4-proof","originalDeleteReason":"folder-delete-cascade","targetKind":"folderBinding"}"#,
+    )
+    .bind("2026-05-22T00:00:00.000Z")
+    .bind("2026-05-22T00:00:00.000Z")
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("tombstone-insert: {e}"))?;
+
+    if failure == Some(F5g4ProofFailure::BindingDelete) {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("F5G.4 proof binding-delete rollback failed: {e}"))?;
+        return Err("binding-delete".to_string());
+    }
+
+    let deleted = sqlx::query("DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?")
+        .bind("f5g4-proof-chat-001")
+        .bind("f5g4-proof-folder-001")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("binding-delete: {e}"))?
+        .rows_affected();
+    if deleted != 1 {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("F5G.4 proof binding-delete rollback failed: {e}"))?;
+        return Err("binding-delete".to_string());
+    }
+
+    if failure == Some(F5g4ProofFailure::ReviewUpdate) {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("F5G.4 proof review-update rollback failed: {e}"))?;
+        return Err("review-update".to_string());
+    }
+
+    let updated = sqlx::query(
+        r#"
+        UPDATE sync_tombstone_reviews
+        SET status = 'resolved',
+            decision = 'applied-folder-binding',
+            decided_at = ?,
+            decided_by_sync_peer_id = ?,
+            warnings_json = ?,
+            updated_at = ?
+        WHERE review_id = ? AND status = 'accepted-later'
+        "#,
+    )
+    .bind("2026-05-22T00:00:00.000Z")
+    .bind("f5g4-proof-local-peer-001")
+    .bind(r#"[{"code":"proof-applied-folder-binding","action":"applied-folder-binding"}]"#)
+    .bind("2026-05-22T00:00:00.000Z")
+    .bind("f5g4-proof-review-001")
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("review-update: {e}"))?
+    .rows_affected();
+    if updated != 1 {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("F5G.4 proof review-update rollback failed: {e}"))?;
+        return Err("review-update".to_string());
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("F5G.4 proof transaction commit failed: {e}"))?;
+    Ok(())
+}
+
+async fn f5g4_run_transaction_proof(
+    failure: Option<F5g4ProofFailure>,
+) -> Result<F5g4ProofResult, String> {
+    let mut conn = SqliteConnection::connect("sqlite::memory:")
+        .await
+        .map_err(|e| format!("F5G.4 proof sqlite open failed: {e}"))?;
+    f5g4_setup_proof_schema(&mut conn).await?;
+    f5g4_seed_proof_rows(&mut conn, failure).await?;
+    let before = f5g4_proof_counts(&mut conn).await?;
+    let outcome = f5g4_run_future_apply_transaction(&mut conn, failure).await;
+    let after = f5g4_proof_counts(&mut conn).await?;
+    let committed = outcome.is_ok();
+    let rolled_back = !committed && after == before;
+    let all_three_writes_visible = after.tombstones == before.tombstones + 1
+        && after.bindings == before.bindings - 1
+        && after.reviews_accepted_later == before.reviews_accepted_later - 1
+        && after.reviews_resolved == before.reviews_resolved + 1;
+    let no_partial_state = if committed {
+        all_three_writes_visible
+    } else {
+        after == before
+    };
+    let mut warnings = Vec::new();
+    if outcome.is_err() && !rolled_back {
+        warnings.push(F5g4ProofWarning {
+            code: "proof-partial-state-detected",
+        });
+    }
+    Ok(F5g4ProofResult {
+        schema: "h2o.studio.tombstone-review-apply-transaction-proof.v1",
+        ok: if committed { all_three_writes_visible } else { rolled_back },
+        synthetic: true,
+        transaction_used: true,
+        committed,
+        rolled_back,
+        failure_stage: failure.map(|f| f.code().to_string()),
+        before,
+        after,
+        all_three_writes_visible,
+        no_partial_state,
+        no_real_library_data_touched: true,
+        warnings,
+    })
+}
+
+#[tauri::command]
+async fn f5g4_prove_tombstone_review_apply_transaction(
+    fail_at: Option<String>,
+) -> Result<F5g4ProofResult, String> {
+    let failure = F5g4ProofFailure::from_option(fail_at)?;
+    f5g4_run_transaction_proof(failure).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -435,7 +867,87 @@ pub fn run() {
                 .add_migrations("sqlite:studio-v1.db", studio_migrations())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![
+            f5g4_prove_tombstone_review_apply_transaction
+        ])
         .run(tauri::generate_context!())
         .expect("error while running H2O Studio desktop")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_proof(failure: Option<F5g4ProofFailure>) -> F5g4ProofResult {
+        tauri::async_runtime::block_on(async { f5g4_run_transaction_proof(failure).await })
+            .expect("F5G.4 proof should run")
+    }
+
+    #[test]
+    fn f5g4_success_commits_all_three_writes() {
+        let result = run_proof(None);
+        assert!(result.ok);
+        assert!(result.committed);
+        assert!(!result.rolled_back);
+        assert!(result.all_three_writes_visible);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before.tombstones, 0);
+        assert_eq!(result.before.bindings, 1);
+        assert_eq!(result.before.reviews_accepted_later, 1);
+        assert_eq!(result.after.tombstones, 1);
+        assert_eq!(result.after.bindings, 0);
+        assert_eq!(result.after.reviews_resolved, 1);
+    }
+
+    #[test]
+    fn f5g4_tombstone_insert_failure_rolls_back() {
+        let result = run_proof(Some(F5g4ProofFailure::TombstoneInsert));
+        assert!(result.ok);
+        assert!(!result.committed);
+        assert!(result.rolled_back);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before, result.after);
+    }
+
+    #[test]
+    fn f5g4_binding_delete_failure_rolls_back() {
+        let result = run_proof(Some(F5g4ProofFailure::BindingDelete));
+        assert!(result.ok);
+        assert!(!result.committed);
+        assert!(result.rolled_back);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before, result.after);
+    }
+
+    #[test]
+    fn f5g4_review_update_failure_rolls_back() {
+        let result = run_proof(Some(F5g4ProofFailure::ReviewUpdate));
+        assert!(result.ok);
+        assert!(!result.committed);
+        assert!(result.rolled_back);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before, result.after);
+    }
+
+    #[test]
+    fn f5g4_duplicate_tombstone_failure_rolls_back() {
+        let result = run_proof(Some(F5g4ProofFailure::DuplicateTombstone));
+        assert!(result.ok);
+        assert!(!result.committed);
+        assert!(result.rolled_back);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before, result.after);
+        assert_eq!(result.before.tombstones, 1);
+    }
+
+    #[test]
+    fn f5g4_missing_binding_blocks_without_partial_state() {
+        let result = run_proof(Some(F5g4ProofFailure::MissingBinding));
+        assert!(result.ok);
+        assert!(!result.committed);
+        assert!(result.rolled_back);
+        assert!(result.no_partial_state);
+        assert_eq!(result.before, result.after);
+        assert_eq!(result.before.bindings, 0);
+    }
 }

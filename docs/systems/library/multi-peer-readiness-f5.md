@@ -1811,6 +1811,64 @@ Chrome IndexedDB add/put/delete, no folder mutation method calls, no local
 tombstone creation, no review row updates, and no import/export/sync/delete
 behavior changes.
 
+## F5G.4.0 Desktop Transaction Proof
+
+F5G.4.0 proves the transaction strategy needed before any real reviewed apply
+is enabled. It does not expose real apply, does not change `applyReview()` real
+apply behavior, does not mutate user Library records, and does not touch Chrome.
+
+Desktop now has a narrow diagnostic proof command:
+
+```js
+await H2O.Studio.store.tombstoneReviews.proveApplyTransaction({
+  failAt: 'review-update'
+})
+```
+
+The proof path runs against an in-memory synthetic SQLite database. It creates
+only synthetic `f5g4-proof-*` rows and exercises the future folderBinding apply
+transaction shape:
+
+```txt
+BEGIN
+  INSERT INTO sync_tombstones (...)
+  DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?
+  UPDATE sync_tombstone_reviews
+    SET status = 'resolved',
+        decision = 'applied-folder-binding',
+        decided_at = ?,
+        decided_by_sync_peer_id = ?,
+        warnings_json = ?,
+        updated_at = ?
+COMMIT
+```
+
+The proof command reports schema
+`h2o.studio.tombstone-review-apply-transaction-proof.v1` and returns counts
+before and after the transaction. It is synthetic and redacted; it does not
+return real review IDs, record IDs, peer IDs, folder/chat names, or content.
+
+Supported forced failure stages are:
+
+- `tombstone-insert`
+- `binding-delete`
+- `review-update`
+- `duplicate-tombstone`
+- `missing-binding`
+
+Validation expectations:
+
+- success commits all three writes together
+- tombstone insert failure rolls back all state
+- binding delete failure rolls back the already-inserted tombstone
+- review update failure rolls back tombstone insert and binding delete
+- duplicate tombstone failure rolls back all state
+- missing binding blocks before writes and leaves state unchanged
+
+F5G.4.1 must still be Desktop-only and must not proceed unless it uses a
+transactional path equivalent to this proof. Chrome remains dry-run-only until a
+separate Chrome mutation and audit model is designed.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
