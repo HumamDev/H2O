@@ -96,6 +96,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: SQLite-backed tombstone review queue (F5F.1). Inert
   // scaffold; no importer integration and no remote delete apply.
   "store/tombstone-reviews.tauri.js",
+  // Chrome/MV3-only: IndexedDB-backed tombstone review queue scaffold
+  // (F5F.4c.1). API parity with Desktop scaffold, excluding ingestion/apply.
+  "store/tombstone-reviews.mv3.js",
   // Desktop-only: full-bundle ingestion (M2b-1). dryRunImportBundle is
   // read-only; importBundle write side ships as stub returning
   // not-implemented (M2b-2 pending). Routed through callArchive's
@@ -271,6 +274,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/categories.tauri.js",
   "store/tombstones.tauri.js",
   "store/tombstone-reviews.tauri.js",
+  "store/tombstone-reviews.mv3.js",
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
   "sync/folder-sync.tauri.js",

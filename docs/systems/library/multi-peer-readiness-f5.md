@@ -1003,6 +1003,103 @@ continues to pass `dryRun: false`. Review dry-run failure does not affect normal
 import `ok`. F5F.4b does not apply tombstones, mutate Library records from
 tombstone evidence, change Chrome sync, export paths, delete stores, or UI.
 
+## F5F.4c.1 Chrome Tombstone Review Store Scaffold
+
+F5F.4c.1 adds a Chrome/MV3 durable review-store scaffold backed by IndexedDB.
+It registers the same store path used by Desktop:
+
+```js
+H2O.Studio.store.tombstoneReviews
+```
+
+The Chrome module is `src-surfaces-base/studio/store/tombstone-reviews.mv3.js`.
+It self-detects Chrome extension/MV3 runtime and silently no-ops on Tauri
+Desktop. The Desktop SQLite module remains authoritative on Desktop.
+
+Chrome storage uses:
+
+```js
+{
+  dbName: 'h2o.studio.tombstone-reviews.mv3',
+  dbVersion: 1,
+  storeName: 'reviews',
+  keyPath: 'reviewId'
+}
+```
+
+Indexes:
+
+- `dedupeKey` (unique)
+- `status`
+- `classification`
+- `recordKind_recordId`
+- `remoteSyncPeerId`
+- `remoteExportId`
+- `receivedAt`
+- `lastSeenAt`
+
+The logical review record shape matches the Desktop
+`sync_tombstone_reviews` table: remote tombstone identity, source peer/export
+fields, local comparison placeholders, classification/status, dedupe key, raw
+tombstone JSON, warnings JSON, and lifecycle timestamps.
+
+The Chrome scaffold exposes API parity with the Desktop scaffold for direct
+review-store operations:
+
+```js
+createReview(record)
+upsertReviewSighting(record)
+getReview(reviewId)
+getByDedupeKey(dedupeKey)
+listReviews(filters)
+countByClassification(filters)
+countByStatus(filters)
+markIgnored(reviewId, reason)
+markRejected(reviewId, reason)
+diagnose(options)
+validateReview(record)
+buildDedupeKey(input)
+```
+
+It intentionally does not expose `ingestBundleTombstones()`, `applyDelete()`,
+`acceptAndApply()`, `applyTombstone()`, or any method that applies remote
+deletes. Chrome `syncNow()` and `folder-import.mv3.js` remain unchanged and do
+not ingest tombstones in F5F.4c.1.
+
+Diagnostics are counts-only and redacted by default:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review.diagnostic.v1',
+  installed: true,
+  ready: true,
+  backend: 'indexeddb',
+  dbName: 'h2o.studio.tombstone-reviews.mv3',
+  storeName: 'reviews',
+  redacted: true,
+  total,
+  pending,
+  byClassification,
+  byStatus,
+  malformedCount,
+  selfOriginatedIgnoredCount,
+  duplicateCount,
+  cascadeReviewCount,
+  deleteVsEditCount,
+  unsupportedKindCount,
+  warnings
+}
+```
+
+Diagnostics must not expose full review IDs, tombstone IDs, record IDs, peer
+IDs, raw tombstone JSON, warning JSON, metadata, folder/chat names, or transcript
+content. IndexedDB open failures are reported as `ready: false` diagnostics and
+must not crash Studio.
+
+F5F.4c.1 is a prerequisite only. Future Chrome tombstone ingestion requires a
+separate gated phase, and remote tombstones remain evidence rather than
+commands.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
