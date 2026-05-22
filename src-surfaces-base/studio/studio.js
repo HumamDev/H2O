@@ -5247,6 +5247,20 @@ function renderSettingsRoute(){
       <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
       <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
       <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
+      <div id="wbSettingsFolderCleanupReview" style="display:flex;flex-direction:column;gap:10px;padding-top:12px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:600">Cleanup Candidate Review</div>
+            <div id="wbSettingsFolderCleanupReviewSummary" style="opacity:.7;font-size:12px">Review-only. No cleanup performed.</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button id="wbSettingsFolderCleanupReviewRefresh" type="button" style="${btnStyle}">Refresh review</button>
+            <button id="wbSettingsFolderCleanupReviewCopy" type="button" style="${btnStyle}">Copy cleanup plan JSON</button>
+          </div>
+        </div>
+        <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
+        <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+      </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
 
@@ -5403,6 +5417,267 @@ function settingsFolderParityChecksHtml(selfCheck){
   }).join("");
 }
 
+function settingsFolderCleanupNumber(value){
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function settingsFolderCleanupRowBindingCount(row){
+  return Math.max(
+    settingsFolderCleanupNumber(row?.bindingCount),
+    settingsFolderCleanupNumber(row?.localBindingCount)
+  );
+}
+
+function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
+  const src = row && typeof row === "object" ? row : {};
+  const folderId = String(src.folderId || src.id || opts.folderId || "").trim();
+  const name = String(src.name || opts.name || folderId || "Folder review item").trim();
+  const knownCount = settingsFolderCleanupNumber(src.knownCount);
+  const localBindingCount = settingsFolderCleanupRowBindingCount(src);
+  const bindingCount = Math.max(localBindingCount, knownCount);
+  const canonicalCount = settingsFolderCleanupNumber(src.canonicalCount);
+  const orphanCount = settingsFolderCleanupNumber(src.orphanCount || opts.orphanCount);
+  const warnings = Array.isArray(opts.warnings) ? opts.warnings.slice() : [];
+  const badges = Array.isArray(src.badges) ? src.badges.map((badge) => String(badge || "").trim()).filter(Boolean) : [];
+  const isCanonical = !!src.isCanonical || !!opts.isCanonical;
+  const isConflict = !!src.isConflict || classification === "same-name-conflict";
+  const isTestCandidate = !!src.isTestCandidate;
+  const isExtra = !!src.isExtra;
+  const nativePresence = isCanonical || !!opts.nativePresence;
+
+  if (isCanonical) warnings.push("Protected canonical folder. Never a cleanup candidate.");
+  if (isConflict) warnings.push("Same-name/different-ID conflict. Review-only; no automatic merge.");
+  if (bindingCount > 0 && !isCanonical) warnings.push("Folder has local bindings or known rows. Review-only.");
+  if (orphanCount > 0) warnings.push("Native memberships are not represented by known Studio rows.");
+
+  let proposedAction = "Review only. No P7a mutation is available.";
+  let riskLevel = "review";
+  let requiresApproval = true;
+  if (classification === "safe-empty") {
+    proposedAction = "Future P7b candidate only after explicit preview and typed approval.";
+    riskLevel = "low-review-required";
+  } else if (classification === "orphan-membership") {
+    proposedAction = "Review membership coverage. Not a folder removal candidate.";
+    riskLevel = "review-required";
+  } else if (classification === "canonical-protected") {
+    proposedAction = "Preserve canonical folder.";
+    riskLevel = "protected";
+    requiresApproval = false;
+  } else if (classification === "bound-review") {
+    proposedAction = "Inspect bindings before any future action.";
+    riskLevel = "high-review-required";
+  } else if (classification === "same-name-conflict") {
+    proposedAction = "Resolve only through a future conflict review plan.";
+    riskLevel = "high-review-required";
+  }
+
+  return {
+    folderId,
+    name,
+    normalizedName: String(src.normalizedName || name).trim().toLowerCase(),
+    classification,
+    surface: String(opts.surface || src.surface || ""),
+    isCanonical,
+    isExtra,
+    isTestCandidate,
+    isConflict,
+    bindingCount,
+    canonicalCount,
+    knownCount,
+    localBindingCount,
+    savedCount: settingsFolderCleanupNumber(src.savedCount),
+    linkedCount: settingsFolderCleanupNumber(src.linkedCount),
+    orphanCount,
+    badges,
+    nativePresence,
+    proposedAction,
+    riskLevel,
+    requiresApproval,
+    reversible: false,
+    warnings: Array.from(new Set(warnings.filter(Boolean))),
+  };
+}
+
+function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
+  const rows = Array.isArray(displayModel?.rows) ? displayModel.rows : [];
+  const surface = String(selfCheck?.surface || displayModel?.surface || "");
+  const rowCandidate = (row, classification, opts = {}) => settingsFolderCleanupReviewCandidate(row, classification, { ...opts, surface });
+  const isSafeEmpty = (row) => {
+    const bindingCount = settingsFolderCleanupRowBindingCount(row);
+    const knownCount = settingsFolderCleanupNumber(row?.knownCount);
+    return !row?.isCanonical
+      && (!!row?.isExtra || !!row?.isTestCandidate)
+      && !row?.isConflict
+      && bindingCount === 0
+      && knownCount === 0;
+  };
+  const safeEmptyCandidates = rows
+    .filter(isSafeEmpty)
+    .map((row) => rowCandidate(row, "safe-empty", { nativePresence: false }));
+  const sameNameConflicts = rows
+    .filter((row) => !row?.isCanonical && !!row?.isConflict)
+    .map((row) => rowCandidate(row, "same-name-conflict", { nativePresence: false }));
+  const boundReviewCandidates = rows
+    .filter((row) => {
+      const bindingCount = settingsFolderCleanupRowBindingCount(row);
+      const knownCount = settingsFolderCleanupNumber(row?.knownCount);
+      return !row?.isCanonical
+        && (!!row?.isExtra || !!row?.isTestCandidate)
+        && !row?.isConflict
+        && (bindingCount > 0 || knownCount > 0);
+    })
+    .map((row) => rowCandidate(row, "bound-review", { nativePresence: false }));
+  const orphanRows = rows
+    .filter((row) => !!row?.isCanonical && settingsFolderCleanupNumber(row?.orphanCount) > 0)
+    .map((row) => rowCandidate(row, "orphan-membership", {
+      isCanonical: true,
+      nativePresence: true,
+      orphanCount: settingsFolderCleanupNumber(row?.orphanCount),
+    }));
+  const orphanCheck = (Array.isArray(selfCheck?.checks) ? selfCheck.checks : [])
+    .find((check) => String(check?.id || "") === "folder.binding.orphan");
+  const orphanCount = settingsFolderCleanupNumber(selfCheck?.summary?.orphanMembershipCount || orphanCheck?.details?.orphanMembershipCount);
+  const orphanMemberships = orphanRows.length || orphanCount === 0
+    ? orphanRows
+    : [settingsFolderCleanupReviewCandidate({
+      name: "Canonical orphan memberships",
+      orphanCount,
+      knownCount: settingsFolderCleanupNumber(orphanCheck?.details?.knownStudioRowTotal),
+    }, "orphan-membership", {
+      surface,
+      orphanCount,
+      nativePresence: true,
+      warnings: ["Aggregate self-check item. It is not a folder deletion candidate."],
+    })];
+  const canonicalProtected = rows
+    .filter((row) => !!row?.isCanonical)
+    .map((row) => rowCandidate(row, "canonical-protected", { isCanonical: true, nativePresence: true }));
+
+  const groups = {
+    safeEmptyCandidates,
+    sameNameConflicts,
+    boundReviewCandidates,
+    orphanMemberships,
+    canonicalProtected,
+  };
+  return {
+    readOnly: true,
+    noMutation: true,
+    generatedAt: new Date().toISOString(),
+    surface,
+    selfCheckSummary: selfCheck?.summary || null,
+    selfCheckSeverity: selfCheck?.severity || "",
+    counts: {
+      safeEmpty: safeEmptyCandidates.length,
+      conflicts: sameNameConflicts.length,
+      boundReview: boundReviewCandidates.length,
+      orphanMemberships: orphanMemberships.length,
+      canonicalProtected: canonicalProtected.length,
+    },
+    groups,
+    safetyRules: [
+      "P7a is review-only.",
+      "No folder cleanup is performed.",
+      "No Chrome storage, SQLite, or native folder-state writes are performed.",
+      "Canonical f_* folders are protected.",
+      "Conflicts and bound folders are review-only.",
+    ],
+  };
+}
+
+function settingsFolderCleanupChip(label, value){
+  return `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);border-radius:999px;padding:4px 8px"><strong>${esc(label)}</strong><span>${esc(value)}</span></span>`;
+}
+
+function settingsFolderCleanupBadgesHtml(candidate){
+  const badges = Array.isArray(candidate?.badges) ? candidate.badges : [];
+  const withClass = [candidate?.classification, ...badges].filter(Boolean);
+  if (!withClass.length) return "";
+  return withClass.map((badge) => `<span style="display:inline-flex;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);border-radius:999px;padding:2px 6px;font-size:11px">${esc(badge)}</span>`).join(" ");
+}
+
+function settingsFolderCleanupCandidateHtml(candidate){
+  const warnings = Array.isArray(candidate?.warnings) ? candidate.warnings : [];
+  return `
+    <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <strong>${esc(candidate?.name || "(unnamed)")}</strong>
+        <span>${settingsFolderCleanupBadgesHtml(candidate)}</span>
+      </div>
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "(no folder id)")}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:4px 12px;font-size:12px">
+        <span>native ${esc(candidate?.canonicalCount ?? 0)}</span>
+        <span>known ${esc(candidate?.knownCount ?? 0)}</span>
+        <span>local bindings ${esc(candidate?.localBindingCount ?? candidate?.bindingCount ?? 0)}</span>
+        <span>orphan ${esc(candidate?.orphanCount ?? 0)}</span>
+      </div>
+      <div style="font-size:12px"><strong>Review:</strong> ${esc(candidate?.proposedAction || "Review only.")}</div>
+      <div style="font-size:12px"><strong>Risk:</strong> ${esc(candidate?.riskLevel || "review")}</div>
+      ${warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Why:</strong> ${esc(warnings.join(" "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function settingsFolderCleanupGroupHtml(title, candidates, emptyText){
+  const rows = Array.isArray(candidates) ? candidates : [];
+  return `
+    <details open style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+      <summary style="cursor:pointer;font-weight:600">${esc(title)} <span style="opacity:.65">(${rows.length})</span></summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        ${rows.length ? rows.map(settingsFolderCleanupCandidateHtml).join("") : `<div style="opacity:.65;font-size:12px">${esc(emptyText || "No candidates.")}</div>`}
+      </div>
+    </details>
+  `;
+}
+
+function settingsFolderCleanupRenderPlan(panel, plan){
+  const summary = panel?.querySelector("#wbSettingsFolderCleanupReviewSummary");
+  const chips = panel?.querySelector("#wbSettingsFolderCleanupReviewChips");
+  const groups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroups");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupReviewCopy");
+  if (summary) {
+    summary.textContent = `Review-only cleanup plan generated. Severity: ${plan?.selfCheckSeverity || "unknown"}. No cleanup performed.`;
+  }
+  if (chips) {
+    chips.innerHTML = [
+      settingsFolderCleanupChip("safe empty", plan?.counts?.safeEmpty || 0),
+      settingsFolderCleanupChip("conflicts", plan?.counts?.conflicts || 0),
+      settingsFolderCleanupChip("bound review", plan?.counts?.boundReview || 0),
+      settingsFolderCleanupChip("orphan memberships", plan?.counts?.orphanMemberships || 0),
+    ].join("");
+  }
+  if (groups) {
+    groups.innerHTML = [
+      settingsFolderCleanupGroupHtml("Safe empty candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup."),
+      settingsFolderCleanupGroupHtml("Same-name conflicts", plan?.groups?.sameNameConflicts, "No same-name conflicts detected."),
+      settingsFolderCleanupGroupHtml("Bound review candidates", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected."),
+      settingsFolderCleanupGroupHtml("Orphan memberships", plan?.groups?.orphanMemberships, "No orphan native memberships detected."),
+    ].join("");
+  }
+  if (copyBtn) copyBtn.disabled = false;
+}
+
+async function refreshSettingsFolderCleanupReview(panel, seed = null){
+  if (!panel) return null;
+  const summary = panel.querySelector("#wbSettingsFolderCleanupReviewSummary");
+  const copyBtn = panel.querySelector("#wbSettingsFolderCleanupReviewCopy");
+  const parity = W.H2O?.Library?.FolderParity;
+  if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
+    if (summary) summary.textContent = "Cleanup Candidate Review unavailable.";
+    if (copyBtn) copyBtn.disabled = true;
+    return null;
+  }
+  if (summary) summary.textContent = "Refreshing review-only cleanup candidates…";
+  if (copyBtn) copyBtn.disabled = true;
+  const selfCheck = seed?.selfCheck || await parity.selfCheck({ fresh: true });
+  const displayModel = await parity.getDisplayModel({ fresh: true });
+  const plan = settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel);
+  panel.__h2oFolderCleanupReviewPlan = plan;
+  settingsFolderCleanupRenderPlan(panel, plan);
+  return plan;
+}
+
 async function refreshSettingsFolderParity(panel){
   if (!panel) return;
   const summary = panel.querySelector("#wbSettingsFolderParitySummary");
@@ -5461,6 +5736,7 @@ async function refreshSettingsFolderParity(panel){
     warnEl.textContent = warnings[0] || "Read-only. No cleanup performed. Cleanup requires reviewed approval.";
   }
   if (copyBtn) copyBtn.disabled = false;
+  await refreshSettingsFolderCleanupReview(panel, { selfCheck, report });
 }
 
 async function copySettingsFolderParityReport(panel){
@@ -5482,6 +5758,24 @@ async function copySettingsFolderParityReport(panel){
   }
   try { console.log("H2O_FOLDER_PARITY_REPORT", report); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; folder parity report printed to console as H2O_FOLDER_PARITY_REPORT.");
+}
+
+async function copySettingsFolderCleanupReviewPlan(panel){
+  if (!panel) return;
+  let plan = panel.__h2oFolderCleanupReviewPlan;
+  if (!plan) plan = await refreshSettingsFolderCleanupReview(panel);
+  const text = JSON.stringify(plan || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Folder cleanup review plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; cleanup review plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CLEANUP_REVIEW_PLAN", plan); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; cleanup review plan printed to console as H2O_FOLDER_CLEANUP_REVIEW_PLAN.");
 }
 
 function settingsSyncLog(panel, message){
@@ -5734,6 +6028,14 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderParityCopy")?.addEventListener("click", () => {
     copySettingsFolderParityReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupReviewRefresh")?.addEventListener("click", () => {
+    refreshSettingsFolderCleanupReview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupReviewCopy")?.addEventListener("click", () => {
+    copySettingsFolderCleanupReviewPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsSyncExportLatest")?.addEventListener("click", () => run("Writing latest sync bundle", async () => {
