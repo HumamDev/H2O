@@ -954,6 +954,55 @@ apply tombstones, delete local records, mutate Library records from tombstone
 evidence, add conflict/apply UI, purge, restore, bidirectional sync, WebDAV, or
 Chrome importer integration.
 
+## F5F.4b Desktop Review-Ingest Dry Run
+
+F5F.4b adds a dry-run option for only the tombstone review ingestion portion of
+Desktop import:
+
+```js
+await H2O.Studio.ingestion.importBundle(bundle, 'merge', {
+  ingestTombstoneReviews: true,
+  tombstoneReviewDryRun: true
+})
+```
+
+This is not a full import dry-run. The normal Desktop import still runs exactly
+as requested by the caller. Only the follow-up
+`tombstoneReviews.ingestBundleTombstones()` call receives `dryRun: true`, so it
+classifies the bundle's tombstones without writing review rows.
+
+The gated result includes `dryRun: true`:
+
+```js
+{
+  tombstoneReviewIngest: {
+    attempted: true,
+    dryRun: true,
+    ok,
+    found,
+    inserted,
+    updated,
+    skipped,
+    selfOriginatedIgnored,
+    malformed,
+    unsupported,
+    failed,
+    warnings
+  }
+}
+```
+
+In F5F.4b, `inserted` and `updated` reflect whatever
+`ingestBundleTombstones(..., { dryRun: true })` reports. The current review-store
+dry run validates and classifies tombstones, prevents writes, and may return zero
+for insert/update prediction. More precise dedupe prediction can be added later
+without changing this importer gate.
+
+Default import calls still omit `tombstoneReviewIngest`, and F5F.4a write mode
+continues to pass `dryRun: false`. Review dry-run failure does not affect normal
+import `ok`. F5F.4b does not apply tombstones, mutate Library records from
+tombstone evidence, change Chrome sync, export paths, delete stores, or UI.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

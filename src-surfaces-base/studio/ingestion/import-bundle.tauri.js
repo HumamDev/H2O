@@ -1066,10 +1066,14 @@
   function shouldIngestTombstoneReviews(options) {
     return !!(options && typeof options === 'object' && options.ingestTombstoneReviews === true);
   }
+  function shouldDryRunTombstoneReviews(options) {
+    return !!(options && typeof options === 'object' && options.tombstoneReviewDryRun === true);
+  }
 
-  function tombstoneReviewIngestUnavailable(code) {
+  function tombstoneReviewIngestUnavailable(code, dryRun) {
     return {
       attempted: true,
+      dryRun: dryRun === true,
       ok: false,
       found: 0,
       inserted: 0,
@@ -1097,10 +1101,11 @@
     return out;
   }
 
-  function normalizeTombstoneReviewIngest(raw) {
-    if (!raw || typeof raw !== 'object') return tombstoneReviewIngestUnavailable();
+  function normalizeTombstoneReviewIngest(raw, dryRun) {
+    if (!raw || typeof raw !== 'object') return tombstoneReviewIngestUnavailable(null, dryRun);
     return {
       attempted: true,
+      dryRun: dryRun === true,
       ok: raw.ok !== false,
       found: Number(raw.found || 0),
       inserted: Number(raw.inserted || 0),
@@ -1116,27 +1121,28 @@
 
   async function attachTombstoneReviewIngest(result, bundle, requestedMode, options) {
     if (!shouldIngestTombstoneReviews(options)) return result;
+    var dryRun = shouldDryRunTombstoneReviews(options);
     if (!bundle || typeof bundle !== 'object') {
-      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable(null, dryRun);
       return result;
     }
     var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
     if (!reviews || typeof reviews.ingestBundleTombstones !== 'function') {
-      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable(null, dryRun);
       return result;
     }
     try {
       var ingest = await reviews.ingestBundleTombstones(bundle, {
         source: 'desktop-import-bundle',
-        dryRun: false,
+        dryRun: dryRun,
         allowSelfOrigin: false,
         importMode: requestedMode,
         bundleExportId: bundle.exportId,
         bundleSourceSyncPeerId: bundle.sourceSyncPeerId,
       });
-      result.tombstoneReviewIngest = normalizeTombstoneReviewIngest(ingest);
+      result.tombstoneReviewIngest = normalizeTombstoneReviewIngest(ingest, dryRun);
     } catch (_) {
-      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable();
+      result.tombstoneReviewIngest = tombstoneReviewIngestUnavailable(null, dryRun);
     }
     return result;
   }
