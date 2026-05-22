@@ -594,6 +594,75 @@ the top-level `tombstones` array. Tombstones are included before F3
 F5E.1 does not apply tombstones, propagate deletes, add a conflict queue, add UI,
 purge, restore, write Chrome data, or enable bidirectional sync.
 
+## F5E.2a Tombstone Payload Diagnostics
+
+F5E.2a extends the pure `multi-peer-diff.js` analyzer with a top-level
+`report.tombstones` section. This is diagnostic-only. It does not change bundle
+export, import, delete routing, UI, conflict handling, or Chrome sync behavior.
+
+The analyzer preserves `report.envelope.hasTombstoneArray` and adds aggregate
+payload health:
+
+```js
+{
+  tombstones: {
+    supported: true,
+    hasTombstoneArray: true,
+    tombstoneSchemaVersion: 'h2o.studio.tombstone.v1',
+    total,
+    active,
+    restored,
+    byKind,
+    byDeleteReason,
+    cascadeCount,
+    cascadeByKind,
+    cascadeMissingParentRefCount,
+    malformedCount,
+    missingRequiredFields: {
+      schema,
+      tombstoneId,
+      recordKind,
+      recordId,
+      deletedAt,
+      deletedBySyncPeerId,
+      deleteReason
+    },
+    wrongSchemaCount,
+    unknownRecordKindCount,
+    metaPresentCount,
+    metaObjectCount,
+    metaMalformedCount,
+    inconsistentRestoreCount,
+    warnings
+  }
+}
+```
+
+If `tombstones` is absent, diagnostics report `supported: false`,
+`hasTombstoneArray: false`, `total: 0`, and a
+`missing-tombstone-array` warning. If `tombstones` exists but is not an array,
+diagnostics report `supported: false`, `hasTombstoneArray: false`,
+`malformedCount: 1`, and a `tombstones-not-array` warning.
+
+Required tombstone fields are `schema`, `tombstoneId`, `recordKind`, `recordId`,
+`deletedAt`, `deletedBySyncPeerId`, and `deleteReason`. Missing required fields
+are counted by field name only. `malformedCount` counts each malformed row once,
+even if that row has multiple missing fields.
+
+Restored tombstones are counted when either `restoredAt` or
+`restoredBySyncPeerId` is present. If only one restore field is present, the row
+still counts as restored and increments `inconsistentRestoreCount`.
+
+Cascade tombstones are counted when `cascadeFrom` is present or
+`meta.cascade === true`. If `meta.cascade === true` but `cascadeFrom` is missing,
+the analyzer increments `cascadeMissingParentRefCount`.
+
+The F5E.2a analyzer report is redacted and counts-only. It must not expose
+`tombstoneId`, `recordId`, peer IDs, `cascadeFrom`, `meta` contents, chat IDs,
+folder IDs, user-visible names, transcript text, or sample IDs. A missing
+`deleteReason` is counted under the `missing` delete-reason bucket so aggregate
+counts remain explainable without exposing record identity.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

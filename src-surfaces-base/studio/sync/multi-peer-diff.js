@@ -69,9 +69,34 @@
   var REPORT_SCHEMA = 'h2o.studio.diagnostics.multi-peer-diff.v1';
   var EXPECTED_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var EXPECTED_CHAT_ARCHIVE_SCHEMA = 'h2o.chatArchive.bundle.v1';
+  var EXPECTED_TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var DEFAULT_MAX_SAMPLES = 25;
   var SAMPLE_SCALAR_MAX_LEN = 80;
   var KINDS = ['chat', 'snapshot', 'folder', 'category', 'label', 'tag', 'project', 'folderBinding'];
+  var TOMBSTONE_KINDS = [
+    'chat',
+    'snapshot',
+    'folder',
+    'folderBinding',
+    'tag',
+    'tagBinding',
+    'label',
+    'labelBinding',
+    'category',
+    'project',
+    'visualMetadata',
+    'linkedOnlyChat',
+    'savedSnapshot'
+  ];
+  var REQUIRED_TOMBSTONE_FIELDS = [
+    'schema',
+    'tombstoneId',
+    'recordKind',
+    'recordId',
+    'deletedAt',
+    'deletedBySyncPeerId',
+    'deleteReason'
+  ];
   var NATIVE_HOST_PATTERN = /(chatgpt|openai\.com|claude\.ai|anthropic|gemini|bard|google\.com)/i;
 
   /* Field-to-bucket map for the conflict classifier. */
@@ -144,6 +169,19 @@
       return true;
     }
     return safeString(a) === safeString(b);
+  }
+  function bumpCounter(obj, key, amount) {
+    var k = safeString(key) || 'unknown';
+    obj[k] = (Number(obj[k] || 0) + (amount == null ? 1 : Number(amount)));
+  }
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(Object(obj), key);
+  }
+  function hasNonEmptyField(obj, key) {
+    return hasOwn(obj, key) && safeString(obj[key]) !== '';
+  }
+  function knownTombstoneKind(kind) {
+    return TOMBSTONE_KINDS.indexOf(kind) !== -1;
   }
 
   /* ─────────────────────────────────────────────────────────────────────
@@ -456,6 +494,151 @@
       hasRecordSchemaVersion: false, /* per-record; checked in coverage */
       notes: notes
     };
+  }
+
+  function emptyTombstonePayloadReport(bundle) {
+    var b = safeObject(bundle);
+    var missingRequiredFields = {};
+    for (var i = 0; i < REQUIRED_TOMBSTONE_FIELDS.length; i++) {
+      missingRequiredFields[REQUIRED_TOMBSTONE_FIELDS[i]] = 0;
+    }
+    return {
+      supported: false,
+      hasTombstoneArray: false,
+      tombstoneSchemaVersion: safeString(b.tombstoneSchemaVersion),
+      total: 0,
+      active: 0,
+      restored: 0,
+      byKind: {},
+      byDeleteReason: {},
+      cascadeCount: 0,
+      cascadeByKind: {},
+      cascadeMissingParentRefCount: 0,
+      malformedCount: 0,
+      missingRequiredFields: missingRequiredFields,
+      wrongSchemaCount: 0,
+      unknownRecordKindCount: 0,
+      metaPresentCount: 0,
+      metaObjectCount: 0,
+      metaMalformedCount: 0,
+      inconsistentRestoreCount: 0,
+      warnings: []
+    };
+  }
+
+  function buildTombstonePayloadReport(bundle) {
+    var b = safeObject(bundle);
+    var report = emptyTombstonePayloadReport(b);
+
+    if (!hasOwn(b, 'tombstones')) {
+      report.warnings.push({ code: 'missing-tombstone-array' });
+      return report;
+    }
+    if (!Array.isArray(b.tombstones)) {
+      report.malformedCount = 1;
+      report.warnings.push({ code: 'tombstones-not-array' });
+      return report;
+    }
+
+    report.supported = true;
+    report.hasTombstoneArray = true;
+    report.total = b.tombstones.length;
+
+    if (!report.tombstoneSchemaVersion) {
+      report.warnings.push({ code: 'missing-tombstone-schema-version' });
+    } else if (report.tombstoneSchemaVersion !== EXPECTED_TOMBSTONE_SCHEMA) {
+      report.warnings.push({ code: 'unexpected-tombstone-schema-version' });
+    }
+
+    for (var i = 0; i < b.tombstones.length; i++) {
+      var raw = b.tombstones[i];
+      var rowIsObject = isObject(raw);
+      var row = rowIsObject ? raw : {};
+      var rowMalformed = !rowIsObject;
+      var kind = safeString(row.recordKind);
+      var deleteReason = safeString(row.deleteReason);
+
+      for (var f = 0; f < REQUIRED_TOMBSTONE_FIELDS.length; f++) {
+        var field = REQUIRED_TOMBSTONE_FIELDS[f];
+        if (!hasNonEmptyField(row, field)) {
+          report.missingRequiredFields[field]++;
+          rowMalformed = true;
+        }
+      }
+
+      if (hasNonEmptyField(row, 'schema') && safeString(row.schema) !== EXPECTED_TOMBSTONE_SCHEMA) {
+        report.wrongSchemaCount++;
+        rowMalformed = true;
+      }
+
+      if (kind) {
+        bumpCounter(report.byKind, kind);
+        if (!knownTombstoneKind(kind)) {
+          report.unknownRecordKindCount++;
+          rowMalformed = true;
+        }
+      } else {
+        bumpCounter(report.byKind, 'missing');
+      }
+
+      bumpCounter(report.byDeleteReason, deleteReason || 'missing');
+
+      var restoredAt = safeString(row.restoredAt);
+      var restoredBy = safeString(row.restoredBySyncPeerId);
+      var hasRestoredAt = restoredAt !== '';
+      var hasRestoredBy = restoredBy !== '';
+      if (hasRestoredAt || hasRestoredBy) {
+        report.restored++;
+        if (hasRestoredAt !== hasRestoredBy) {
+          report.inconsistentRestoreCount++;
+        }
+      } else if (rowIsObject) {
+        report.active++;
+      }
+
+      var metaPresent = hasOwn(row, 'meta') && row.meta != null;
+      var metaObject = metaPresent && isObject(row.meta);
+      if (metaPresent) {
+        report.metaPresentCount++;
+        if (metaObject) {
+          report.metaObjectCount++;
+        } else {
+          report.metaMalformedCount++;
+          rowMalformed = true;
+        }
+      }
+
+      var cascadeFromPresent = safeString(row.cascadeFrom) !== '';
+      var metaCascade = metaObject && row.meta.cascade === true;
+      if (cascadeFromPresent || metaCascade) {
+        report.cascadeCount++;
+        bumpCounter(report.cascadeByKind, kind || 'missing');
+        if (metaCascade && !cascadeFromPresent) {
+          report.cascadeMissingParentRefCount++;
+        }
+      }
+
+      if (rowMalformed) {
+        report.malformedCount++;
+      }
+    }
+
+    if (report.missingRequiredFields.schema ||
+        report.missingRequiredFields.tombstoneId ||
+        report.missingRequiredFields.recordKind ||
+        report.missingRequiredFields.recordId ||
+        report.missingRequiredFields.deletedAt ||
+        report.missingRequiredFields.deletedBySyncPeerId ||
+        report.missingRequiredFields.deleteReason) {
+      report.warnings.push({ code: 'missing-required-tombstone-fields' });
+    }
+    if (report.wrongSchemaCount) report.warnings.push({ code: 'wrong-tombstone-schema' });
+    if (report.unknownRecordKindCount) report.warnings.push({ code: 'unknown-tombstone-record-kind' });
+    if (report.metaMalformedCount) report.warnings.push({ code: 'malformed-tombstone-meta' });
+    if (report.inconsistentRestoreCount) report.warnings.push({ code: 'inconsistent-tombstone-restore-fields' });
+    if (report.cascadeMissingParentRefCount) report.warnings.push({ code: 'cascade-tombstone-missing-parent-ref' });
+
+    return report;
   }
 
   function buildCoverage(bundle, localState, maxSamples) {
@@ -950,6 +1133,7 @@
       generatedAt: nowIso(),
       inputSummary: buildInputSummary(bundle, localState),
       envelope: buildEnvelopeReport(bundle),
+      tombstones: buildTombstonePayloadReport(bundle),
       coverage: buildCoverage(bundle, localState, maxSamples),
       peers: buildPeerEnumeration(bundle, localState),
       tombstoneCandidates: buildTombstoneCandidates(bundle, localState, maxSamples),
