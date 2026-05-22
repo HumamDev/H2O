@@ -1125,15 +1125,16 @@ ingestion gate, so they do not create review rows.
 
 Chrome `H2O.Studio.store.tombstoneReviews.ingestBundleTombstones(bundle,
 sourceContext)` mirrors the Desktop ingestion result shape but uses conservative
-Chrome classification:
+Chrome classification in F5F.4d:
 
 - malformed tombstones -> `malformed-remote-tombstone`
 - unknown record kinds -> `unsupported-record-kind`
 - cascade-related tombstones -> `cascade-review`
 - known non-cascade tombstones -> `local-comparison-unavailable`
 
-Chrome local folder/folderBinding existence comparison is intentionally deferred
-to a later phase. F5F.4d never applies tombstones, deletes Library records,
+F5F.4e supersedes the final two fallback rules for `folder` and
+`folderBinding` only by adding read-only local comparison. F5F.4d never applies
+tombstones, deletes Library records,
 modifies folders/chats/snapshots/tags/labels/categories, or exposes apply
 methods.
 
@@ -1167,6 +1168,66 @@ bundles are skipped by default via `H2O.Studio.identity.whenReady()`.
 
 The sync result must not expose full peer IDs, record IDs, tombstone IDs, raw
 tombstones, metadata, user-visible names, or transcript content.
+
+## F5F.4e Chrome Local Review Classification
+
+F5F.4e improves Chrome/MV3 tombstone review ingestion by reading local state for
+only the tombstone kinds currently authored by F5D:
+
+- `folder`
+- `folderBinding`
+
+The comparison is read-only and remains evidence-only. It does not call folder,
+chat, snapshot, tag, label, category, or archive setters/deleters. Default
+Chrome `syncNow()` remains unchanged; the comparison runs only inside the
+explicit F5F.4d gate:
+
+```js
+await H2O.Studio.sync.folder.syncNow({
+  reason: 'manual-review-ingest',
+  ingestTombstoneReviews: true
+})
+```
+
+Folder tombstones parse `recordId` as either `folder:<encodedFolderId>` or a raw
+folder ID. Chrome reads local folders through `H2O.Library.Folders.getFolderById`
+when available, with `H2O.LibraryWorkspace.getFolders()` as fallback. Local
+folders classify as:
+
+- missing locally -> `missing-local-record`
+- local timestamp is parseable and newer than remote `deletedAt` -> `delete-vs-edit`
+- local folder exists but timestamp is unavailable or unparseable -> `local-comparison-unavailable`
+- local folder exists and is not newer -> `safe-review`
+
+Folder binding tombstones prefer `meta.chatId` and `meta.folderId`, with
+`folderBinding:<encodedChatId>:<encodedFolderId>` as fallback. Chrome checks
+binding presence through `H2O.LibraryWorkspace.resolveFolderBindings([chatId])`,
+then `H2O.Library.Folders.getChatsInFolder(folderId)`, then
+`H2O.LibraryIndex.facets().byFolder`. Local folder bindings classify as:
+
+- missing locally -> `missing-local-record`
+- local assigned/bound timestamp is parseable and newer than remote `deletedAt`
+  -> `delete-vs-edit`
+- cascade-related binding exists with no newer local edit -> `cascade-review`
+- non-cascade binding exists but timestamp is unavailable -> `local-comparison-unavailable`
+- non-cascade binding exists and is not newer -> `safe-review`
+
+Timestamp comparison accepts ISO strings and numeric millisecond values. Chrome
+only classifies `delete-vs-edit` when both timestamps parse cleanly and the local
+timestamp is strictly newer. Missing or invalid timestamps never imply a newer
+local edit.
+
+Review rows may populate only safe derived fields:
+
+- `localRecordExists`
+- `localUpdatedAt`
+- `localHasNewerEdit`
+- `localRecordDigest: null`
+
+Warnings remain code-only and redacted. F5F.4e does not expose raw IDs, names,
+metadata contents, or record content in gated sync results or diagnostics. Local
+read failures classify as `local-comparison-unavailable` with warning codes and
+do not change normal sync `ok`.
 
 ## Future Envelope Model
 

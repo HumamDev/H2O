@@ -186,6 +186,61 @@
     return Number.isFinite(ms) ? ms : null;
   }
 
+  function decodeComponentSafe(value) {
+    var s = cleanScalar(value);
+    if (!s) return '';
+    try { return decodeURIComponent(s); }
+    catch (_) { return s; }
+  }
+
+  function pushCodeWarning(warnings, code) {
+    if (!Array.isArray(warnings)) return;
+    var c = cleanScalar(code);
+    if (!c) return;
+    for (var i = 0; i < warnings.length; i += 1) {
+      if (warnings[i] && warnings[i].code === c) return;
+    }
+    warnings.push({ code: c });
+  }
+
+  function readTimestampCandidate(record, fields) {
+    var row = isObject(record) ? record : {};
+    for (var i = 0; i < fields.length; i += 1) {
+      var value = row[fields[i]];
+      if (value == null || value === '') continue;
+      var ms = parseTimeMs(value);
+      return {
+        value: cleanScalar(value) || null,
+        ms: ms,
+        parseable: ms != null,
+      };
+    }
+    return { value: null, ms: null, parseable: false };
+  }
+
+  function makeClassification(classification, localRecordExists, localUpdatedAt, localHasNewerEdit, warnings) {
+    return {
+      classification: classification,
+      localRecordExists: localRecordExists == null ? null : !!localRecordExists,
+      localRecordDigest: null,
+      localUpdatedAt: nullableString(localUpdatedAt),
+      localHasNewerEdit: localHasNewerEdit == null ? null : !!localHasNewerEdit,
+      warnings: Array.isArray(warnings) ? warnings.slice() : [],
+    };
+  }
+
+  function getLibraryFoldersApi() {
+    return (H2O && H2O.Library && H2O.Library.Folders) || null;
+  }
+
+  function getLibraryWorkspaceApi() {
+    return (H2O && H2O.LibraryWorkspace) || null;
+  }
+
+  function getLibraryIndexApi() {
+    return (H2O && H2O.LibraryIndex) || null;
+  }
+
   function generateReviewId() {
     try {
       var c = global.crypto || null;
@@ -759,6 +814,221 @@
     );
   }
 
+  function isLocallyComparableKind(kind) {
+    return kind === 'folder' || kind === 'folderBinding';
+  }
+
+  function parseFolderRecordId(recordIdInput) {
+    var recordId = cleanScalar(recordIdInput);
+    if (!recordId) return '';
+    if (recordId.indexOf('folder:') === 0) return decodeComponentSafe(recordId.slice('folder:'.length));
+    return recordId;
+  }
+
+  function parseFolderBindingRecordId(recordIdInput) {
+    var recordId = cleanScalar(recordIdInput);
+    var prefix = 'folderBinding:';
+    if (recordId.indexOf(prefix) !== 0) return { chatId: '', folderId: '' };
+    var rest = recordId.slice(prefix.length);
+    var sep = rest.indexOf(':');
+    if (sep < 0) return { chatId: '', folderId: '' };
+    return {
+      chatId: decodeComponentSafe(rest.slice(0, sep)),
+      folderId: decodeComponentSafe(rest.slice(sep + 1)),
+    };
+  }
+
+  function parseFolderBindingIds(tombstone, metaObject) {
+    var meta = metaObject || {};
+    var chatId = cleanScalar(meta.chatId);
+    var folderId = cleanScalar(meta.folderId) || cleanScalar(meta.oldFolderId);
+    if (chatId && folderId) return { chatId: chatId, folderId: folderId };
+    var parsed = parseFolderBindingRecordId(tombstone && tombstone.recordId);
+    return {
+      chatId: chatId || parsed.chatId,
+      folderId: folderId || parsed.folderId,
+    };
+  }
+
+  function normalizeFolderIdFromRecord(folder) {
+    return cleanScalar(folder && (folder.id || folder.folderId || folder.folder_id));
+  }
+
+  function normalizeBindingFolderId(binding) {
+    if (binding == null) return '';
+    if (typeof binding === 'string' || typeof binding === 'number') return cleanScalar(binding);
+    if (!isObject(binding)) return '';
+    if (binding.folderId || binding.folder_id || binding.id) {
+      return cleanScalar(binding.folderId || binding.folder_id || binding.id);
+    }
+    if (typeof binding.folder === 'string' || typeof binding.folder === 'number') return cleanScalar(binding.folder);
+    if (isObject(binding.folder)) return cleanScalar(binding.folder.id || binding.folder.folderId || binding.folder.folder_id);
+    return '';
+  }
+
+  function normalizeBindingChatId(binding) {
+    if (binding == null) return '';
+    if (typeof binding === 'string' || typeof binding === 'number') return cleanScalar(binding);
+    if (!isObject(binding)) return '';
+    return cleanScalar(binding.chatId || binding.chat_id || binding.id || binding.href || binding.chatHref);
+  }
+
+  function valuesFromObject(input) {
+    if (!input || typeof input !== 'object') return [];
+    return Object.keys(input).map(function (key) { return input[key]; });
+  }
+
+  function readFoldersList() {
+    var workspace = getLibraryWorkspaceApi();
+    var foldersApi = getLibraryFoldersApi();
+    var legacyFoldersApi = H2O && H2O.folders;
+    if (workspace && typeof workspace.getFolders === 'function') {
+      try {
+        return Promise.resolve(workspace.getFolders({ fresh: false })).then(function (rows) {
+          return Array.isArray(rows) ? rows : [];
+        });
+      } catch (_) { /* fall through */ }
+    }
+    if (foldersApi && typeof foldersApi.listFolders === 'function') {
+      try {
+        return Promise.resolve(foldersApi.listFolders({ fresh: false })).then(function (rows) {
+          return Array.isArray(rows) ? rows : [];
+        });
+      } catch (_) { /* fall through */ }
+    }
+    if (legacyFoldersApi && typeof legacyFoldersApi.list === 'function') {
+      try {
+        return Promise.resolve(legacyFoldersApi.list()).then(function (rows) {
+          return Array.isArray(rows) ? rows : [];
+        });
+      } catch (_) { /* fall through */ }
+    }
+    return Promise.resolve(null);
+  }
+
+  function readLocalFolder(folderId) {
+    var id = cleanScalar(folderId);
+    var foldersApi = getLibraryFoldersApi();
+    var triedApi = false;
+    var readError = false;
+    var chain = Promise.resolve(null);
+    if (foldersApi && typeof foldersApi.getFolderById === 'function') {
+      triedApi = true;
+      chain = Promise.resolve().then(function () {
+        return foldersApi.getFolderById(id);
+      }).catch(function () {
+        readError = true;
+        return null;
+      });
+    }
+    return chain.then(function (folder) {
+      if (folder) return { available: true, exists: true, record: folder };
+      return readFoldersList().then(function (folders) {
+        if (folders === null) return { available: triedApi && !readError, exists: false, record: null };
+        var match = null;
+        for (var i = 0; i < folders.length; i += 1) {
+          if (normalizeFolderIdFromRecord(folders[i]) === id) {
+            match = folders[i];
+            break;
+          }
+        }
+        return { available: true, exists: !!match, record: match };
+      });
+    });
+  }
+
+  function findBindingInResolved(result, chatId, folderId) {
+    var value = null;
+    if (result && typeof result.get === 'function') {
+      value = result.get(chatId) || result.get(String(chatId));
+    } else if (Array.isArray(result)) {
+      for (var i = 0; i < result.length; i += 1) {
+        var candidate = result[i];
+        if (normalizeBindingChatId(candidate) === chatId || normalizeBindingFolderId(candidate) === folderId) {
+          value = candidate;
+          break;
+        }
+      }
+    } else if (isObject(result)) {
+      value = result[chatId] || result[String(chatId)];
+      if (!value && (normalizeBindingChatId(result) === chatId || normalizeBindingFolderId(result) === folderId)) {
+        value = result;
+      }
+    }
+    var valueFolderId = normalizeBindingFolderId(value);
+    if (valueFolderId && valueFolderId === folderId) return { exists: true, record: value };
+    if (!valueFolderId && value && cleanScalar(value) === folderId) return { exists: true, record: value };
+    return { exists: false, record: null };
+  }
+
+  function rowMatchesChatId(row, chatId) {
+    if (row == null) return false;
+    if (typeof row === 'string' || typeof row === 'number') return cleanScalar(row) === chatId;
+    if (!isObject(row)) return false;
+    return cleanScalar(row.chatId || row.chat_id || row.id || row.href || row.chatHref) === chatId;
+  }
+
+  function readBindingFromFolderChats(chatId, folderId) {
+    var foldersApi = getLibraryFoldersApi();
+    if (!foldersApi || typeof foldersApi.getChatsInFolder !== 'function') return Promise.resolve(null);
+    try {
+      return Promise.resolve(foldersApi.getChatsInFolder(folderId)).then(function (rows) {
+        var list = Array.isArray(rows) ? rows : [];
+        for (var i = 0; i < list.length; i += 1) {
+          if (rowMatchesChatId(list[i], chatId)) return { available: true, exists: true, record: list[i] };
+        }
+        return { available: true, exists: false, record: null };
+      }).catch(function () { return null; });
+    } catch (_) {
+      return Promise.resolve(null);
+    }
+  }
+
+  function readBindingFromIndexFacets(chatId, folderId) {
+    var index = getLibraryIndexApi();
+    if (!index || typeof index.facets !== 'function') return null;
+    try {
+      var facets = index.facets() || {};
+      var byFolder = facets.byFolder || {};
+      var rows = byFolder[folderId] || byFolder[String(folderId)] || [];
+      if (!Array.isArray(rows)) rows = valuesFromObject(rows);
+      for (var i = 0; i < rows.length; i += 1) {
+        if (rowMatchesChatId(rows[i], chatId)) return { available: true, exists: true, record: rows[i] };
+      }
+      return { available: true, exists: false, record: null };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readLocalFolderBinding(chatId, folderId) {
+    var workspace = getLibraryWorkspaceApi();
+    var triedApi = false;
+    var readError = false;
+    var chain = Promise.resolve(null);
+    if (workspace && typeof workspace.resolveFolderBindings === 'function') {
+      triedApi = true;
+      chain = Promise.resolve().then(function () {
+        return workspace.resolveFolderBindings([chatId]);
+      }).then(function (result) {
+        var found = findBindingInResolved(result, chatId, folderId);
+        return found.exists ? { available: true, exists: true, record: found.record } : { available: true, exists: false, record: null };
+      }).catch(function () {
+        readError = true;
+        return null;
+      });
+    }
+    return chain.then(function (resolved) {
+      if (resolved && resolved.exists) return resolved;
+      return readBindingFromFolderChats(chatId, folderId).then(function (fromFolder) {
+        if (fromFolder && fromFolder.exists) return fromFolder;
+        var fromIndex = readBindingFromIndexFacets(chatId, folderId);
+        if (fromIndex) return fromIndex.exists ? fromIndex : (resolved || fromFolder || fromIndex);
+        return resolved || fromFolder || { available: triedApi && !readError, exists: false, record: null };
+      });
+    });
+  }
+
   function validateRemoteTombstone(tombstone, parentRecordIds) {
     var warnings = [];
     var errors = [];
@@ -812,41 +1082,114 @@
     };
   }
 
-  function classifyRemoteTombstone(tombstone, validation) {
-    if (validation.malformed) {
-      return {
-        classification: 'malformed-remote-tombstone',
-        localRecordExists: null,
-        localUpdatedAt: null,
-        localHasNewerEdit: null,
-        warnings: validation.errors.concat(validation.warnings),
-      };
-    }
-    if (validation.unsupported) {
-      return {
-        classification: 'unsupported-record-kind',
-        localRecordExists: null,
-        localUpdatedAt: null,
-        localHasNewerEdit: null,
-        warnings: validation.warnings.slice(),
-      };
-    }
-    if (validation.cascadeRelated) {
-      return {
-        classification: 'cascade-review',
-        localRecordExists: null,
-        localUpdatedAt: null,
-        localHasNewerEdit: null,
-        warnings: validation.warnings.slice(),
-      };
+  function compareTimestampsForReview(localTimestamp, remoteDeletedAt) {
+    var remoteMs = parseTimeMs(remoteDeletedAt);
+    if (!localTimestamp || !localTimestamp.parseable || remoteMs == null) {
+      return { comparable: false, newer: false };
     }
     return {
-      classification: 'local-comparison-unavailable',
-      localRecordExists: null,
-      localUpdatedAt: null,
-      localHasNewerEdit: null,
-      warnings: validation.warnings.slice(),
+      comparable: true,
+      newer: localTimestamp.ms > remoteMs,
     };
+  }
+
+  function compareLocalFolder(tombstone, validation) {
+    var warnings = validation.warnings.slice();
+    var folderId = parseFolderRecordId(tombstone && tombstone.recordId);
+    if (!folderId) {
+      pushCodeWarning(warnings, 'local-folder-id-unavailable');
+      return Promise.resolve(makeClassification('local-comparison-unavailable', null, null, null, warnings));
+    }
+    return readLocalFolder(folderId).then(function (local) {
+      if (!local || !local.available) {
+        pushCodeWarning(warnings, 'local-folder-read-unavailable');
+        return makeClassification('local-comparison-unavailable', null, null, null, warnings);
+      }
+      if (!local.exists) {
+        return makeClassification('missing-local-record', false, null, false, warnings);
+      }
+      var timestamp = readTimestampCandidate(local.record, ['updatedAt', 'updated_at', 'modifiedAt', 'modified_at']);
+      var compared = compareTimestampsForReview(timestamp, tombstone && tombstone.deletedAt);
+      if (!timestamp.value || !compared.comparable) {
+        pushCodeWarning(warnings, 'local-timestamp-unavailable');
+        return makeClassification('local-comparison-unavailable', true, timestamp.value, false, warnings);
+      }
+      if (compared.newer) {
+        return makeClassification('delete-vs-edit', true, timestamp.value, true, warnings);
+      }
+      return makeClassification('safe-review', true, timestamp.value, false, warnings);
+    }).catch(function () {
+      pushCodeWarning(warnings, 'local-folder-read-failed');
+      return makeClassification('local-comparison-unavailable', null, null, null, warnings);
+    });
+  }
+
+  function compareLocalFolderBinding(tombstone, validation) {
+    var warnings = validation.warnings.slice();
+    var ids = parseFolderBindingIds(tombstone, validation.metaObject);
+    if (!ids.chatId || !ids.folderId) {
+      pushCodeWarning(warnings, 'local-folder-binding-id-unavailable');
+      return Promise.resolve(makeClassification('local-comparison-unavailable', null, null, null, warnings));
+    }
+    return readLocalFolderBinding(ids.chatId, ids.folderId).then(function (local) {
+      if (!local || !local.available) {
+        pushCodeWarning(warnings, 'local-folder-binding-read-unavailable');
+        return makeClassification('local-comparison-unavailable', null, null, null, warnings);
+      }
+      if (!local.exists) {
+        return makeClassification('missing-local-record', false, null, false, warnings);
+      }
+      var timestamp = readTimestampCandidate(local.record, [
+        'assignedAt',
+        'assigned_at',
+        'boundAt',
+        'bound_at',
+        'updatedAt',
+        'updated_at',
+        'createdAt',
+        'created_at',
+      ]);
+      var compared = compareTimestampsForReview(timestamp, tombstone && tombstone.deletedAt);
+      if (timestamp.value && compared.comparable && compared.newer) {
+        return makeClassification('delete-vs-edit', true, timestamp.value, true, warnings);
+      }
+      if (validation.cascadeRelated) {
+        if (!timestamp.value || !compared.comparable) pushCodeWarning(warnings, 'local-timestamp-unavailable');
+        return makeClassification('cascade-review', true, timestamp.value, false, warnings);
+      }
+      if (!timestamp.value || !compared.comparable) {
+        pushCodeWarning(warnings, 'local-timestamp-unavailable');
+        return makeClassification('local-comparison-unavailable', true, timestamp.value, false, warnings);
+      }
+      return makeClassification('safe-review', true, timestamp.value, false, warnings);
+    }).catch(function () {
+      pushCodeWarning(warnings, 'local-folder-binding-read-failed');
+      return makeClassification('local-comparison-unavailable', null, null, null, warnings);
+    });
+  }
+
+  function classifyRemoteTombstone(tombstone, validation) {
+    if (validation.malformed) {
+      return Promise.resolve(makeClassification(
+        'malformed-remote-tombstone',
+        null,
+        null,
+        null,
+        validation.errors.concat(validation.warnings)
+      ));
+    }
+    if (validation.unsupported) {
+      return Promise.resolve(makeClassification('unsupported-record-kind', null, null, null, validation.warnings));
+    }
+    var kind = cleanScalar(tombstone && tombstone.recordKind);
+    if (!isLocallyComparableKind(kind)) {
+      var warnings = validation.warnings.slice();
+      pushCodeWarning(warnings, 'unsupported-record-kind');
+      return Promise.resolve(makeClassification('unsupported-record-kind', null, null, null, warnings));
+    }
+    if (kind === 'folder') return compareLocalFolder(tombstone, validation);
+    if (kind === 'folderBinding') return compareLocalFolderBinding(tombstone, validation);
+    return Promise.resolve(makeClassification('local-comparison-unavailable', null, null, null, validation.warnings));
   }
 
   function readSourceInfo(bundle) {
@@ -886,6 +1229,7 @@
       remoteDeletedAt: nullableString(tombstone && tombstone.deletedAt),
       lastSeenExportId: nullableString(sourceInfo.exportId),
       localRecordExists: classification.localRecordExists,
+      localRecordDigest: classification.localRecordDigest == null ? null : classification.localRecordDigest,
       localUpdatedAt: classification.localUpdatedAt,
       localHasNewerEdit: classification.localHasNewerEdit,
       classification: classification.classification,
@@ -907,33 +1251,34 @@
 
   function handleIngestRow(tombstone, sourceInfo, parentRecordIds, result) {
     var validation = validateRemoteTombstone(tombstone, parentRecordIds);
-    var classification = classifyRemoteTombstone(tombstone, validation);
     var row = isObject(tombstone) ? tombstone : {};
     var reviewRecord = null;
-    (classification.warnings || []).forEach(function (warning) {
-      pushIngestWarning(result, warning && warning.code);
-    });
-    try {
-      reviewRecord = buildReviewRecordFromTombstone(row, sourceInfo, classification);
-    } catch (_) {
-      reviewRecord = null;
-    }
-    addIngestCount(result, classification.classification, 'pending');
-    if (!reviewRecord || !reviewRecord.dedupeKey) {
-      result.skipped += 1;
-      if (classification.classification === 'malformed-remote-tombstone') result.skippedMalformed += 1;
-      pushIngestWarning(result, 'review-dedupe-key-unavailable');
-      return Promise.resolve(null);
-    }
-    return getByDedupeKey(reviewRecord.dedupeKey).then(function (existing) {
-      return upsertReviewSighting(reviewRecord).then(function () {
-        if (existing) result.updated += 1;
-        else result.inserted += 1;
+    return classifyRemoteTombstone(tombstone, validation).then(function (classification) {
+      (classification.warnings || []).forEach(function (warning) {
+        pushIngestWarning(result, warning && warning.code);
       });
-    }).catch(function () {
-      result.failed += 1;
-      result.ok = false;
-      pushIngestWarning(result, 'review-write-failed');
+      try {
+        reviewRecord = buildReviewRecordFromTombstone(row, sourceInfo, classification);
+      } catch (_) {
+        reviewRecord = null;
+      }
+      addIngestCount(result, classification.classification, 'pending');
+      if (!reviewRecord || !reviewRecord.dedupeKey) {
+        result.skipped += 1;
+        if (classification.classification === 'malformed-remote-tombstone') result.skippedMalformed += 1;
+        pushIngestWarning(result, 'review-dedupe-key-unavailable');
+        return null;
+      }
+      return getByDedupeKey(reviewRecord.dedupeKey).then(function (existing) {
+        return upsertReviewSighting(reviewRecord).then(function () {
+          if (existing) result.updated += 1;
+          else result.inserted += 1;
+        });
+      }).catch(function () {
+        result.failed += 1;
+        result.ok = false;
+        pushIngestWarning(result, 'review-write-failed');
+      });
     });
   }
 
@@ -1131,7 +1476,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5f.4d',
+    __version: '0.1.0-f5f.4e',
     init: init,
     dispose: dispose,
     isReady: isReady,
