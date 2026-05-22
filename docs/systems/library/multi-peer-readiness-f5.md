@@ -1229,6 +1229,302 @@ metadata contents, or record content in gated sync results or diagnostics. Local
 read failures classify as `local-comparison-unavailable` with warning codes and
 do not change normal sync `ok`.
 
+## F5G.0 Reviewed Apply/Restore Model
+
+F5G defines reviewed apply/restore semantics before any preview or apply API is
+implemented. Remote tombstones are evidence until a human/operator explicitly
+decides what action to take. There is no automatic apply, no apply-all behavior,
+and no remote delete propagation. The first real apply target is limited to
+`folderBinding`; folder deletes remain preview/planning only until cascade and
+child-folder policy is explicit.
+
+F5G.0 is documentation only. It does not add `previewApply`, `applyReview`,
+restore APIs, migrations, UI, import/export changes, sync changes, or Library
+mutation.
+
+### Apply Scope
+
+Allowed future review actions:
+
+- mark ignored
+- mark rejected
+- mark accepted-later
+- mark resolved
+- preview apply
+- later apply a `folderBinding` delete only
+
+Not allowed in the first apply model:
+
+- apply-all
+- automatic apply
+- chat delete
+- snapshot delete
+- folder delete
+- purge
+- remote delete propagation
+
+### Supported Record Kinds
+
+Initial real apply support:
+
+- `folderBinding`
+
+Preview/defer:
+
+- `folder`
+
+Unsupported for the initial apply model:
+
+- `chat`
+- `snapshot`
+- `tag`
+- `tagBinding`
+- `label`
+- `labelBinding`
+- `category`
+- `project`
+- `visualMetadata`
+- `linkedOnlyChat`
+- `savedSnapshot`
+
+### Status And Decision Model
+
+Current review statuses remain:
+
+- `pending`
+- `ignored`
+- `accepted-later`
+- `rejected`
+- `superseded`
+- `resolved`
+
+Future decision values may record operator intent/result:
+
+- `previewed`
+- `accepted-for-later-apply`
+- `blocked`
+- `already-local-missing`
+- `applied-folder-binding`
+- `apply-failed`
+
+Do not add new statuses such as `applied` or `apply-failed` until a real
+mutation phase exists. Until then, use `status` for queue lifecycle and
+`decision` for the reviewed outcome.
+
+### Mandatory Safety Gates
+
+Any future apply path must require:
+
+- explicit operator action
+- review status is `pending` or `accepted-later`
+- supported record kind
+- fresh local comparison immediately before apply
+- source peer is not self
+- no malformed tombstone
+- no unsupported tombstone kind
+- no `delete-vs-edit`
+- no `local-comparison-unavailable`
+- no missing cascade parent
+- dry-run has no blockers
+
+### FolderBinding Apply Model
+
+Future `folderBinding` apply is the first and only real apply candidate:
+
+- If the matching local binding exists, applying means unbinding that binding
+  only.
+- Chat rows and snapshots remain untouched.
+- The local device creates or links a local tombstone with remote review
+  provenance.
+- If the binding is already missing, mark the review
+  `resolved`/`already-local-missing` and perform no mutation.
+- If the local binding differs from the remote tombstone target, block.
+- If the local binding is newer than the remote delete evidence, block.
+
+### Folder Apply Model
+
+Remote folder delete apply is deferred. A future folder apply model must define:
+
+- child folder policy
+- cascade binding handling
+- complete cascade group review
+- no chat deletion
+- no snapshot deletion
+- explicit operator confirmation
+
+Folder apply without complete child review coverage is blocked.
+
+### Restore Model
+
+Restore is separate from apply:
+
+- Restoring a local tombstone marks `restoredAt` and
+  `restoredBySyncPeerId`.
+- Rejecting a remote review does not restore anything by itself.
+- Restoring folder or folderBinding rows requires enough payload to reconstruct
+  the row.
+- If payload is unavailable, restore is blocked or requires manual
+  reconstruction.
+- Restore must never infer missing content from tombstone metadata alone.
+
+### Conflict And Blocker Model
+
+Apply must be blocked for:
+
+- `delete-vs-edit`
+- `malformed-remote-tombstone`
+- `unsupported-record-kind`
+- `local-comparison-unavailable`
+- missing cascade parent
+- self-originated evidence
+- ambiguous source peer
+- stale local comparison
+- local target differs from the remote tombstone target
+
+Potentially safe later:
+
+- `safe-review`
+- `missing-local-record`
+- `already-deleted-local`
+- `cascade-review`, only when the cascade group is reviewed
+
+### Cascade Model
+
+Cascade reviews are grouped by `cascadeFrom`:
+
+- Parent and child reviews are linked, not auto-applied.
+- Child `folderBinding` apply may be allowed independently only if it is safe.
+- Folder apply without complete child review coverage is blocked.
+- No automatic cascade apply is part of F5G.0 or the first implementation
+  phases.
+
+### Local Tombstone Linkage And Audit
+
+Every future reviewed action must be auditable:
+
+- `sourceReviewId`
+- `remoteTombstoneId`
+- `remoteSyncPeerId`
+- `remoteExportId`
+- `appliedBySyncPeerId`
+- `appliedAt`
+- `applyReason`
+- before/after local state summary
+
+Short-term storage may use:
+
+- local tombstone `meta_json`
+- review `decision`
+- review `warnings_json`
+
+Longer-term storage may add a dedicated audit table or explicit audit fields if
+review history outgrows the current review/tombstone records.
+
+### Future API Names
+
+Planned future API names:
+
+```js
+previewApply(reviewId)
+markAcceptedLater(reviewId, reason)
+markResolved(reviewId, reason)
+applyReview(reviewId, options)
+restoreFromReview(reviewId, options)
+```
+
+Forbidden API names/patterns:
+
+```js
+applyAll()
+forceApplyAll()
+deleteRemote()
+applyTombstone()
+```
+
+### Dry-Run Strategy
+
+Every apply path must support dry-run before mutation:
+
+```js
+await tombstoneReviews.previewApply(reviewId)
+await tombstoneReviews.applyReview(reviewId, { dryRun: true })
+```
+
+Dry-run must return:
+
+- action type
+- redacted target summary
+- local state summary
+- blockers
+- proposed local tombstone
+- audit preview
+- exact mutation that would occur
+
+Dry-run must have zero Library writes and zero review/tombstone writes unless an
+explicit future design allows recording a preview event.
+
+### Future UI/UX Notes For Reviewed Apply
+
+Future UI may include:
+
+- review queue panel
+- evidence vs applied state labels
+- diff/explanation
+- cascade group view
+- explicit confirmation
+- persistent no-auto-apply language
+
+No UI is part of F5G.0.
+
+### Likely Future Files
+
+Future implementation phases may touch:
+
+- `src-surfaces-base/studio/store/tombstone-reviews.tauri.js`
+- `src-surfaces-base/studio/store/tombstone-reviews.mv3.js`
+- `src-surfaces-base/studio/store/tombstones.tauri.js`
+- folder store modules for explicit `folderBinding` apply only
+- future audit/migration docs
+
+### Future Validation Strategy
+
+Future reviewed-apply validation must prove:
+
+- preview has zero writes
+- safe `folderBinding` apply unbinds only the binding
+- chat rows remain intact
+- snapshots remain intact
+- local tombstone is created and linked
+- review status/decision is audited
+- duplicate apply is blocked
+- blockers block apply
+- dry-run has zero writes
+- audit trail is present
+
+### Risks And Mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Accidental data loss | Start with `folderBinding` only and require dry-run first. |
+| Apply-all pressure | Do not expose apply-all APIs or UI controls. |
+| Stale comparison | Re-read local state immediately before apply. |
+| Cascade overreach | Require cascade group review and block folder apply initially. |
+| Restore impossible | Require sufficient payload; otherwise block or require manual reconstruction. |
+| Status ambiguity | Keep lifecycle in `status` and reviewed outcome in `decision`. |
+| Self-origin apply | Block self-origin evidence. |
+| Privacy leakage | Keep diagnostics and dry-run summaries redacted by default. |
+| UI confusion | Label review evidence separately from applied state. |
+
+### F5G Roadmap
+
+1. F5G.0: reviewed apply/restore model documentation only.
+2. F5G.1: `previewApply` API, no mutation.
+3. F5G.2: decision-only actions: accepted-later, ignored, rejected, resolved.
+4. F5G.3: dry-run apply for `folderBinding`.
+5. F5G.4: real `folderBinding` apply behind explicit dev gate.
+6. F5G.5: cascade grouping diagnostics.
+7. F5G.6: folder apply planning only.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
