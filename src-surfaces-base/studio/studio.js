@@ -5449,6 +5449,17 @@ function settingsFolderCleanupRowBindingCount(row){
   );
 }
 
+function settingsFolderCleanupIsF5DReviewCandidate(row){
+  const src = row && typeof row === "object" ? row : {};
+  const parts = [
+    src.folderId,
+    src.id,
+    src.name,
+    src.normalizedName,
+  ].map((value) => String(value || ""));
+  return parts.some((value) => /f5d/i.test(value));
+}
+
 function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
   const src = row && typeof row === "object" ? row : {};
   const folderId = String(src.folderId || src.id || opts.folderId || "").trim();
@@ -5470,6 +5481,10 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
   if (isConflict) warnings.push("Same-name/different-ID conflict. Review-only; no automatic merge.");
   if (bindingCount > 0 && !isCanonical) warnings.push("Folder has local bindings or known rows. Review-only.");
   if (orphanCount > 0) warnings.push("Native memberships are not represented by known Studio rows.");
+  if (settingsFolderCleanupIsF5DReviewCandidate(src)) {
+    warnings.push("Desktop/F5D review required.");
+    warnings.push("Not eligible for Chrome mirror P7b deletion.");
+  }
 
   let proposedAction = "Review only. No P7a mutation is available.";
   let riskLevel = "review";
@@ -5529,6 +5544,7 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
     return !row?.isCanonical
       && (!!row?.isExtra || !!row?.isTestCandidate)
       && !row?.isConflict
+      && !settingsFolderCleanupIsF5DReviewCandidate(row)
       && bindingCount === 0
       && knownCount === 0;
   };
@@ -5545,7 +5561,7 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
       return !row?.isCanonical
         && (!!row?.isExtra || !!row?.isTestCandidate)
         && !row?.isConflict
-        && (bindingCount > 0 || knownCount > 0);
+        && (bindingCount > 0 || knownCount > 0 || settingsFolderCleanupIsF5DReviewCandidate(row));
     })
     .map((row) => rowCandidate(row, "bound-review", { nativePresence: false }));
   const orphanRows = rows
@@ -5602,6 +5618,7 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
       "No Chrome storage, SQLite, or native folder-state writes are performed.",
       "Canonical f_* folders are protected.",
       "Conflicts and bound folders are review-only.",
+      "Desktop/F5D test folders are review-only in P7b.",
     ],
   };
 }
@@ -5718,8 +5735,14 @@ function settingsFolderCleanupValidateDeletionSelection(selectedIds, reviewPlan,
   const items = mirror?.items && typeof mirror.items === "object" ? mirror.items : {};
   const candidates = [];
   for (const folderId of ids) {
+    if (settingsFolderCleanupIsF5DReviewCandidate({ folderId })) {
+      return { ok: false, error: `${folderId} is a Desktop/F5D review folder and is not eligible for Chrome mirror P7b deletion.`, candidates, selectedFolderIds: ids };
+    }
     const candidate = safeById.get(folderId);
     if (!candidate) return { ok: false, error: `${folderId} is not in the current safe empty candidate group.`, candidates, selectedFolderIds: ids };
+    if (settingsFolderCleanupIsF5DReviewCandidate(candidate)) {
+      return { ok: false, error: `${folderId} is a Desktop/F5D review folder and is not eligible for Chrome mirror P7b deletion.`, candidates, selectedFolderIds: ids };
+    }
     if (/^f_/.test(folderId)) return { ok: false, error: `${folderId} looks like a canonical native folder and cannot be deleted.`, candidates, selectedFolderIds: ids };
     if (folderId === "fld-case" || folderId === "fld-english") return { ok: false, error: `${folderId} is a same-name conflict and cannot be deleted in P7b.`, candidates, selectedFolderIds: ids };
     if (candidate.isCanonical) return { ok: false, error: `${folderId} is canonical and cannot be deleted.`, candidates, selectedFolderIds: ids };
@@ -5892,7 +5915,7 @@ function settingsFolderCleanupRenderDeletePanel(panel, plan){
   if (copyBtn) copyBtn.disabled = true;
   if (summary) {
     summary.textContent = chromeSurface
-      ? "Chrome mirror only. Native folders and Desktop SQLite are not modified."
+      ? "Chrome mirror only. Native folders and Desktop SQLite are not modified. F5D/Desktop test folders are review-only in this phase."
       : "Chrome mirror cleanup is only available in Studio Launcher. Desktop cleanup is separate and not performed.";
   }
   if (list) {
