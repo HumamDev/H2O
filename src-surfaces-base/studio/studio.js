@@ -25,6 +25,9 @@ const HEAT_OVERRIDE_KEY_PREFIX = "ho:chat-heat-override:";
 const PIN_KEY_PREFIX = "ho:chat-pin:";
 const ROW_TINT_KEY_PREFIX = "ho:chat-row-idx:";
 const LIBRARY_SYNC_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
+const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
+const FOLDER_CLEANUP_AUDIT_KEY = "h2o:studio:folder-cleanup-audit:v1";
+const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
 const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
 const INTERFACE_COLORS = [
   { name: "gold", value: "rgba(212,175,55,1)" },
@@ -5260,6 +5263,23 @@ function renderSettingsRoute(){
         </div>
         <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
         <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        <div id="wbSettingsFolderCleanupDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div>
+            <div style="font-weight:600">Safe Empty Chrome Mirror Cleanup</div>
+            <div id="wbSettingsFolderCleanupDeleteSummary" style="opacity:.72;font-size:12px">Chrome mirror only. Native folders and Desktop SQLite are not modified.</div>
+          </div>
+          <div id="wbSettingsFolderCleanupDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button id="wbSettingsFolderCleanupPreview" type="button" style="${btnStyle}">Preview deletion JSON</button>
+            <button id="wbSettingsFolderCleanupCopyDeletePlan" type="button" style="${btnStyle}">Copy deletion plan JSON</button>
+          </div>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+            <span style="opacity:.72">Type <code>${esc("DELETE EMPTY CHROME FOLDERS")}</code> to enable deletion.</span>
+            <input id="wbSettingsFolderCleanupConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+          </label>
+          <button id="wbSettingsFolderCleanupDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected safe empty folders</button>
+          <pre id="wbSettingsFolderCleanupDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+        </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -5586,6 +5606,202 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
   };
 }
 
+async function settingsFolderCleanupLoadReviewInputs(){
+  const parity = W.H2O?.Library?.FolderParity;
+  if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
+    throw new Error("FolderParity review APIs unavailable");
+  }
+  const selfCheck = await parity.selfCheck({ fresh: true });
+  const displayModel = await parity.getDisplayModel({ fresh: true });
+  return {
+    selfCheck,
+    displayModel,
+    plan: settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel),
+  };
+}
+
+function settingsFolderCleanupIsChromeSurface(){
+  return hasChromeStorage() && !STUDIO_isTauri();
+}
+
+function settingsFolderCleanupChromeGetStrict(keys){
+  if (!settingsFolderCleanupIsChromeSurface()) return Promise.reject(new Error("Chrome storage unavailable for folder cleanup."));
+  return new Promise((resolve, reject) => {
+    try {
+      W.chrome.storage.local.get(keys, (result) => {
+        const lastError = W.chrome?.runtime?.lastError;
+        if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+        resolve(result || {});
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function settingsFolderCleanupChromeSetStrict(obj){
+  if (!settingsFolderCleanupIsChromeSurface()) return Promise.reject(new Error("Chrome storage unavailable for folder cleanup."));
+  return new Promise((resolve, reject) => {
+    try {
+      W.chrome.storage.local.set(obj || {}, () => {
+        const lastError = W.chrome?.runtime?.lastError;
+        if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+        resolve(true);
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function settingsFolderCleanupClone(value){
+  if (value == null) return value;
+  try { return JSON.parse(JSON.stringify(value)); }
+  catch { return value; }
+}
+
+function settingsFolderCleanupSelectedIds(panel){
+  const boxes = Array.from(panel?.querySelectorAll?.("#wbSettingsFolderCleanupDeleteList input[data-folder-id]") || []);
+  return boxes
+    .filter((box) => !!box.checked)
+    .map((box) => String(box.dataset.folderId || "").trim())
+    .filter(Boolean);
+}
+
+function settingsFolderCleanupFolderStateSummary(stateObj){
+  const src = stateObj && typeof stateObj === "object" ? stateObj : {};
+  const folders = Array.isArray(src.folders) ? src.folders : [];
+  const items = src.items && typeof src.items === "object" && !Array.isArray(src.items) ? src.items : {};
+  const bindingCount = Object.values(items).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
+  return {
+    key: FOLDER_STATE_DATA_KEY,
+    folderCount: folders.length,
+    itemBucketCount: Object.keys(items).length,
+    bindingCount,
+  };
+}
+
+async function settingsFolderCleanupReadChromeMirror(){
+  if (!settingsFolderCleanupIsChromeSurface()) {
+    throw new Error("Chrome mirror cleanup is only available in Studio Launcher / MV3.");
+  }
+  const values = await settingsFolderCleanupChromeGetStrict([FOLDER_STATE_DATA_KEY]);
+  const raw = values && values[FOLDER_STATE_DATA_KEY];
+  const stateObj = settingsFolderCleanupClone(raw);
+  if (!stateObj || typeof stateObj !== "object" || Array.isArray(stateObj)) {
+    throw new Error("Chrome folder mirror is missing or malformed.");
+  }
+  if (!Array.isArray(stateObj.folders)) {
+    throw new Error("Chrome folder mirror has no folders[] array.");
+  }
+  if (!stateObj.items || typeof stateObj.items !== "object" || Array.isArray(stateObj.items)) {
+    stateObj.items = {};
+  }
+  return {
+    state: stateObj,
+    folders: stateObj.folders,
+    items: stateObj.items,
+    summary: settingsFolderCleanupFolderStateSummary(stateObj),
+  };
+}
+
+function settingsFolderCleanupValidateDeletionSelection(selectedIds, reviewPlan, mirror){
+  const ids = Array.from(new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+  if (!settingsFolderCleanupIsChromeSurface()) {
+    return { ok: false, error: "Chrome mirror cleanup is unavailable on this surface.", candidates: [], selectedFolderIds: ids };
+  }
+  if (!ids.length) return { ok: false, error: "Select at least one safe empty candidate.", candidates: [], selectedFolderIds: ids };
+  const safeRows = Array.isArray(reviewPlan?.groups?.safeEmptyCandidates) ? reviewPlan.groups.safeEmptyCandidates : [];
+  const safeById = new Map(safeRows.map((row) => [String(row.folderId || "").trim(), row]));
+  const folders = Array.isArray(mirror?.folders) ? mirror.folders : [];
+  const folderById = new Map(folders.map((folder) => [String(folder?.id || folder?.folderId || "").trim(), folder]));
+  const items = mirror?.items && typeof mirror.items === "object" ? mirror.items : {};
+  const candidates = [];
+  for (const folderId of ids) {
+    const candidate = safeById.get(folderId);
+    if (!candidate) return { ok: false, error: `${folderId} is not in the current safe empty candidate group.`, candidates, selectedFolderIds: ids };
+    if (/^f_/.test(folderId)) return { ok: false, error: `${folderId} looks like a canonical native folder and cannot be deleted.`, candidates, selectedFolderIds: ids };
+    if (folderId === "fld-case" || folderId === "fld-english") return { ok: false, error: `${folderId} is a same-name conflict and cannot be deleted in P7b.`, candidates, selectedFolderIds: ids };
+    if (candidate.isCanonical) return { ok: false, error: `${folderId} is canonical and cannot be deleted.`, candidates, selectedFolderIds: ids };
+    if (candidate.nativePresence) return { ok: false, error: `${folderId} is native-present and cannot be deleted.`, candidates, selectedFolderIds: ids };
+    if (candidate.isConflict) return { ok: false, error: `${folderId} is a conflict and cannot be deleted in P7b.`, candidates, selectedFolderIds: ids };
+    if (settingsFolderCleanupNumber(candidate.bindingCount) > 0
+      || settingsFolderCleanupNumber(candidate.knownCount) > 0
+      || settingsFolderCleanupNumber(candidate.localBindingCount) > 0) {
+      return { ok: false, error: `${folderId} has bindings or known rows and cannot be deleted.`, candidates, selectedFolderIds: ids };
+    }
+    if (!folderById.has(folderId)) return { ok: false, error: `${folderId} is not present in the Chrome mirror folders[].`, candidates, selectedFolderIds: ids };
+    const bucket = items[folderId];
+    if (Array.isArray(bucket) && bucket.length > 0) {
+      return { ok: false, error: `${folderId} has non-empty mirror items and cannot be deleted.`, candidates, selectedFolderIds: ids };
+    }
+    if (bucket != null && !Array.isArray(bucket)) {
+      return { ok: false, error: `${folderId} has malformed mirror items and cannot be deleted safely.`, candidates, selectedFolderIds: ids };
+    }
+    candidates.push({
+      folderId,
+      name: candidate.name,
+      normalizedName: candidate.normalizedName,
+      badges: candidate.badges || [],
+      nativePresence: !!candidate.nativePresence,
+      bindingCount: settingsFolderCleanupNumber(candidate.bindingCount),
+      knownCount: settingsFolderCleanupNumber(candidate.knownCount),
+      localBindingCount: settingsFolderCleanupNumber(candidate.localBindingCount),
+      riskLevel: candidate.riskLevel || "low-review-required",
+      eligibilityReason: "Empty local extra/test folder in Chrome mirror; no native presence, conflict, bindings, known rows, or mirror items.",
+    });
+  }
+  return { ok: true, candidates, selectedFolderIds: ids };
+}
+
+function settingsFolderCleanupBuildDeletionPreview(selectedIds, reviewPlan, mirror){
+  const validation = settingsFolderCleanupValidateDeletionSelection(selectedIds, reviewPlan, mirror);
+  if (!validation.ok) return { ok: false, error: validation.error, selectedFolderIds: validation.selectedFolderIds || [] };
+  const beforeSummary = settingsFolderCleanupFolderStateSummary(mirror.state);
+  return {
+    ok: true,
+    readOnly: false,
+    noMutation: true,
+    mutation: "preview-only",
+    generatedAt: new Date().toISOString(),
+    surface: "chrome-studio",
+    action: "delete-empty-chrome-mirror-folders",
+    key: FOLDER_STATE_DATA_KEY,
+    selectedFolderIds: validation.selectedFolderIds,
+    selectedFolders: validation.candidates,
+    beforeFolderCount: beforeSummary.folderCount,
+    predictedAfterFolderCount: beforeSummary.folderCount - validation.selectedFolderIds.length,
+    beforeFolderStateSummary: beforeSummary,
+    confirmationText: FOLDER_CLEANUP_CONFIRM_TEXT,
+  };
+}
+
+async function settingsFolderCleanupAppendAudit(entry){
+  const values = await settingsFolderCleanupChromeGetStrict([FOLDER_CLEANUP_AUDIT_KEY]);
+  const existing = Array.isArray(values?.[FOLDER_CLEANUP_AUDIT_KEY]) ? values[FOLDER_CLEANUP_AUDIT_KEY] : [];
+  const next = existing.concat([entry]).slice(-50);
+  await settingsFolderCleanupChromeSetStrict({ [FOLDER_CLEANUP_AUDIT_KEY]: next });
+  return next.length;
+}
+
+function settingsFolderCleanupBuildNextState(mirror, folderIds){
+  const ids = new Set((Array.isArray(folderIds) ? folderIds : []).map((id) => String(id || "").trim()).filter(Boolean));
+  const before = settingsFolderCleanupClone(mirror.state);
+  const next = {
+    ...before,
+    folders: (Array.isArray(before.folders) ? before.folders : []).filter((folder) => {
+      const id = String(folder?.id || folder?.folderId || "").trim();
+      return !ids.has(id);
+    }),
+    items: { ...(before.items && typeof before.items === "object" && !Array.isArray(before.items) ? before.items : {}) },
+  };
+  for (const id of ids) {
+    const bucket = next.items[id];
+    if (bucket == null || (Array.isArray(bucket) && bucket.length === 0)) delete next.items[id];
+  }
+  return next;
+}
+
 function settingsFolderCleanupChip(label, value){
   return `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);border-radius:999px;padding:4px 8px"><strong>${esc(label)}</strong><span>${esc(value)}</span></span>`;
 }
@@ -5656,6 +5872,69 @@ function settingsFolderCleanupRenderPlan(panel, plan){
     ].join("");
   }
   if (copyBtn) copyBtn.disabled = false;
+  settingsFolderCleanupRenderDeletePanel(panel, plan);
+}
+
+function settingsFolderCleanupRenderDeletePanel(panel, plan){
+  const summary = panel?.querySelector("#wbSettingsFolderCleanupDeleteSummary");
+  const list = panel?.querySelector("#wbSettingsFolderCleanupDeleteList");
+  const previewEl = panel?.querySelector("#wbSettingsFolderCleanupDeletePreview");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupCopyDeletePlan");
+  const candidates = Array.isArray(plan?.groups?.safeEmptyCandidates) ? plan.groups.safeEmptyCandidates : [];
+  const chromeSurface = settingsFolderCleanupIsChromeSurface();
+  const previousSelected = new Set(Array.isArray(panel?.__h2oFolderCleanupDeleteSelectedIds) ? panel.__h2oFolderCleanupDeleteSelectedIds : []);
+
+  panel.__h2oFolderCleanupDeletionPreview = null;
+  if (previewEl) {
+    previewEl.hidden = true;
+    previewEl.textContent = "";
+  }
+  if (copyBtn) copyBtn.disabled = true;
+  if (summary) {
+    summary.textContent = chromeSurface
+      ? "Chrome mirror only. Native folders and Desktop SQLite are not modified."
+      : "Chrome mirror cleanup is only available in Studio Launcher. Desktop cleanup is separate and not performed.";
+  }
+  if (list) {
+    if (!chromeSurface) {
+      list.innerHTML = `<div style="opacity:.72;font-size:12px">Unavailable on this surface. No SQLite writes are performed.</div>`;
+    } else if (!candidates.length) {
+      list.innerHTML = `<div style="opacity:.72;font-size:12px">No currently eligible safe empty Chrome mirror candidates.</div>`;
+    } else {
+      list.innerHTML = candidates.map((candidate) => {
+        const id = String(candidate.folderId || "").trim();
+        const checked = previousSelected.has(id) ? " checked" : "";
+        return `
+          <label style="display:grid;grid-template-columns:max-content 1fr;gap:8px;align-items:start;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+            <input type="checkbox" data-folder-id="${esc(id)}"${checked} />
+            <span style="display:flex;flex-direction:column;gap:3px">
+              <strong>${esc(candidate.name || id)}</strong>
+              <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(id)}</span>
+              <span style="font-size:12px;opacity:.76">${esc(candidate.knownCount || 0)} known · ${esc(candidate.localBindingCount || 0)} local bindings · Chrome mirror only</span>
+            </span>
+          </label>
+        `;
+      }).join("");
+    }
+  }
+  settingsFolderCleanupUpdateDeleteControls(panel);
+}
+
+function settingsFolderCleanupUpdateDeleteControls(panel){
+  const chromeSurface = settingsFolderCleanupIsChromeSurface();
+  const selectedIds = settingsFolderCleanupSelectedIds(panel);
+  panel.__h2oFolderCleanupDeleteSelectedIds = selectedIds;
+  const preview = panel?.__h2oFolderCleanupDeletionPreview;
+  const previewBtn = panel?.querySelector("#wbSettingsFolderCleanupPreview");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupCopyDeletePlan");
+  const confirmInput = panel?.querySelector("#wbSettingsFolderCleanupConfirm");
+  const deleteBtn = panel?.querySelector("#wbSettingsFolderCleanupDeleteSelected");
+  const confirmationOk = String(confirmInput?.value || "") === FOLDER_CLEANUP_CONFIRM_TEXT;
+  const selectedMatchesPreview = !!preview?.ok
+    && JSON.stringify((preview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (previewBtn) previewBtn.disabled = !chromeSurface || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !chromeSurface || !selectedMatchesPreview || !confirmationOk;
 }
 
 async function refreshSettingsFolderCleanupReview(panel, seed = null){
@@ -5670,9 +5949,10 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   }
   if (summary) summary.textContent = "Refreshing review-only cleanup candidates…";
   if (copyBtn) copyBtn.disabled = true;
-  const selfCheck = seed?.selfCheck || await parity.selfCheck({ fresh: true });
-  const displayModel = await parity.getDisplayModel({ fresh: true });
-  const plan = settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel);
+  const loaded = seed?.selfCheck
+    ? { selfCheck: seed.selfCheck, displayModel: await parity.getDisplayModel({ fresh: true }) }
+    : await settingsFolderCleanupLoadReviewInputs();
+  const plan = loaded.plan || settingsFolderCleanupBuildReviewPlan(loaded.selfCheck, loaded.displayModel);
   panel.__h2oFolderCleanupReviewPlan = plan;
   settingsFolderCleanupRenderPlan(panel, plan);
   return plan;
@@ -5776,6 +6056,150 @@ async function copySettingsFolderCleanupReviewPlan(panel){
   }
   try { console.log("H2O_FOLDER_CLEANUP_REVIEW_PLAN", plan); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; cleanup review plan printed to console as H2O_FOLDER_CLEANUP_REVIEW_PLAN.");
+}
+
+async function previewSettingsFolderCleanupDeletion(panel){
+  if (!panel) return null;
+  const previewEl = panel.querySelector("#wbSettingsFolderCleanupDeletePreview");
+  const selectedIds = settingsFolderCleanupSelectedIds(panel);
+  const loaded = await settingsFolderCleanupLoadReviewInputs();
+  const mirror = await settingsFolderCleanupReadChromeMirror();
+  const preview = settingsFolderCleanupBuildDeletionPreview(selectedIds, loaded.plan, mirror);
+  panel.__h2oFolderCleanupReviewPlan = loaded.plan;
+  panel.__h2oFolderCleanupDeletionPreview = preview.ok ? preview : null;
+  if (previewEl) {
+    previewEl.hidden = false;
+    previewEl.textContent = JSON.stringify(preview, null, 2);
+  }
+  if (!preview.ok) settingsFolderParityLog(panel, "Folder cleanup preview blocked.\n" + String(preview.error || "Unknown guard failure"));
+  settingsFolderCleanupUpdateDeleteControls(panel);
+  return preview;
+}
+
+async function copySettingsFolderCleanupDeletionPlan(panel){
+  if (!panel) return;
+  let preview = panel.__h2oFolderCleanupDeletionPreview;
+  if (!preview) preview = await previewSettingsFolderCleanupDeletion(panel);
+  const text = JSON.stringify(preview || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Folder cleanup deletion plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; deletion plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CLEANUP_DELETE_PLAN", preview); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; deletion plan printed to console as H2O_FOLDER_CLEANUP_DELETE_PLAN.");
+}
+
+async function deleteSelectedSafeChromeMirrorFolders(panel){
+  if (!panel) return;
+  const previewEl = panel.querySelector("#wbSettingsFolderCleanupDeletePreview");
+  const confirmValue = String(panel.querySelector("#wbSettingsFolderCleanupConfirm")?.value || "");
+  if (confirmValue !== FOLDER_CLEANUP_CONFIRM_TEXT) {
+    settingsFolderParityLog(panel, "Deletion blocked. Confirmation text does not match.");
+    settingsFolderCleanupUpdateDeleteControls(panel);
+    return;
+  }
+  const selectedIds = settingsFolderCleanupSelectedIds(panel);
+  const existingPreview = panel.__h2oFolderCleanupDeletionPreview;
+  const previewMatchesSelection = !!existingPreview?.ok
+    && JSON.stringify((existingPreview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (!previewMatchesSelection) {
+    settingsFolderParityLog(panel, "Deletion blocked. Generate a fresh deletion preview for the selected folders first.");
+    settingsFolderCleanupUpdateDeleteControls(panel);
+    return;
+  }
+  const loaded = await settingsFolderCleanupLoadReviewInputs();
+  const mirror = await settingsFolderCleanupReadChromeMirror();
+  const validation = settingsFolderCleanupValidateDeletionSelection(selectedIds, loaded.plan, mirror);
+  if (!validation.ok) {
+    settingsFolderParityLog(panel, "Deletion aborted before mutation.\n" + String(validation.error || "Guard failed"));
+    settingsFolderCleanupUpdateDeleteControls(panel);
+    return;
+  }
+
+  const beforeSummary = settingsFolderCleanupFolderStateSummary(mirror.state);
+  const pendingAudit = {
+    timestamp: new Date().toISOString(),
+    surface: "chrome-studio",
+    action: "delete-empty-chrome-mirror-folders",
+    selectedFolderIds: validation.selectedFolderIds,
+    selectedFolders: validation.candidates,
+    beforeSelfCheck: loaded.selfCheck,
+    beforeFolderStateSummary: beforeSummary,
+    beforeFolderStateSnapshot: settingsFolderCleanupClone(mirror.state),
+    result: "pending",
+    afterSelfCheck: null,
+    afterFolderStateSummary: null,
+    errors: [],
+  };
+
+  await settingsFolderCleanupAppendAudit(pendingAudit);
+
+  let resultAudit = {
+    ...pendingAudit,
+    timestamp: new Date().toISOString(),
+    beforeFolderStateSnapshot: null,
+  };
+  try {
+    const nextState = settingsFolderCleanupBuildNextState(mirror, validation.selectedFolderIds);
+    await settingsFolderCleanupChromeSetStrict({ [FOLDER_STATE_DATA_KEY]: nextState });
+    try { W.H2O?.LibraryWorkspace?._bustCaches?.("folder-cleanup-delete-empty-chrome-mirror-folders"); } catch {}
+    try { await W.H2O?.LibraryIndex?.refresh?.("folder-cleanup-delete-empty-chrome-mirror-folders"); } catch {}
+    const afterLoaded = await settingsFolderCleanupLoadReviewInputs();
+    const afterMirror = await settingsFolderCleanupReadChromeMirror();
+    resultAudit = {
+      ...resultAudit,
+      result: "ok",
+      afterSelfCheck: afterLoaded.selfCheck,
+      afterFolderStateSummary: settingsFolderCleanupFolderStateSummary(afterMirror.state),
+      errors: [],
+    };
+    try { await settingsFolderCleanupAppendAudit(resultAudit); }
+    catch (auditErr) {
+      resultAudit.errors = ["Result audit append failed: " + String(auditErr && (auditErr.message || auditErr))];
+    }
+    const result = {
+      ok: true,
+      action: "delete-empty-chrome-mirror-folders",
+      selectedFolderIds: validation.selectedFolderIds,
+      beforeFolderStateSummary: beforeSummary,
+      afterFolderStateSummary: resultAudit.afterFolderStateSummary,
+      auditWarning: resultAudit.errors[0] || "",
+      auditKey: FOLDER_CLEANUP_AUDIT_KEY,
+    };
+    if (previewEl) {
+      previewEl.hidden = false;
+      previewEl.textContent = JSON.stringify(result, null, 2);
+    }
+    settingsFolderParityLog(panel, "Selected safe empty Chrome mirror folder(s) deleted. Native folders and Desktop SQLite were not modified.");
+    panel.__h2oFolderCleanupDeletionPreview = null;
+    panel.__h2oFolderCleanupDeleteSelectedIds = [];
+    const input = panel.querySelector("#wbSettingsFolderCleanupConfirm");
+    if (input) input.value = "";
+    await refreshSettingsFolderParity(panel);
+    const refreshedPreviewEl = panel.querySelector("#wbSettingsFolderCleanupDeletePreview");
+    if (refreshedPreviewEl) {
+      refreshedPreviewEl.hidden = false;
+      refreshedPreviewEl.textContent = JSON.stringify(result, null, 2);
+    }
+  } catch (err) {
+    resultAudit = {
+      ...resultAudit,
+      result: "failed",
+      afterSelfCheck: null,
+      afterFolderStateSummary: null,
+      errors: [String(err && (err.stack || err.message || err))],
+    };
+    try { await settingsFolderCleanupAppendAudit(resultAudit); } catch {}
+    settingsFolderParityLog(panel, "Deletion failed after pending audit.\n" + String(err && (err.stack || err.message || err)));
+    throw err;
+  } finally {
+    settingsFolderCleanupUpdateDeleteControls(panel);
+  }
 }
 
 function settingsSyncLog(panel, message){
@@ -6036,6 +6460,32 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderCleanupReviewCopy")?.addEventListener("click", () => {
     copySettingsFolderCleanupReviewPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupDeleteList")?.addEventListener("change", () => {
+    panel.__h2oFolderCleanupDeletionPreview = null;
+    const previewEl = panel.querySelector("#wbSettingsFolderCleanupDeletePreview");
+    if (previewEl) {
+      previewEl.hidden = true;
+      previewEl.textContent = "";
+    }
+    settingsFolderCleanupUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupConfirm")?.addEventListener("input", () => {
+    settingsFolderCleanupUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupPreview")?.addEventListener("click", () => {
+    previewSettingsFolderCleanupDeletion(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupCopyDeletePlan")?.addEventListener("click", () => {
+    copySettingsFolderCleanupDeletionPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupDeleteSelected")?.addEventListener("click", () => {
+    deleteSelectedSafeChromeMirrorFolders(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsSyncExportLatest")?.addEventListener("click", () => run("Writing latest sync bundle", async () => {
