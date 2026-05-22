@@ -34,6 +34,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
 
+  // Studio Ribbon shell — passive constants and registry. studio.html
+  // references these before the visible S0Y1a ribbon surface module.
+  "ribbon/ribbon-keys.js",
+  "ribbon/ribbon-shell.studio.js",
+
   // Studio Edit Overlay (Phase 2a) — passive constants and no-op applier.
   // studio.html references these before store/editOverlay.js; keep copied
   // with the same subdir names to avoid runtime script 404s.
@@ -59,6 +64,8 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "store/context.js",
   "store/bookmarks.js",
   "store/notes.js",
+  "store/navigator.js",
+  "store/capture.js",
   "store/libraryIndex.js",
   // Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
   // and silently no-ops on MV3 / web; safe to ship in chrome-live build.
@@ -210,6 +217,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
   "S0Z1g. 🎬 Library Sidebar Sections - Studio.js",
 
+  // Studio Ribbon visible surface module. Loads after core reader/router
+  // surfaces so it can observe reader context without owning it.
+  "S0Y1a. 🎬 Studio Ribbon - Studio.js",
+
   // Standalone Studio decorations referenced by studio.html.
   "S9D1a. 🎬 Auto Emoji Title - Studio.js",
 ]);
@@ -232,6 +243,10 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
 
+  // Studio Ribbon shell — see SOURCE_FILES list above for context.
+  "ribbon/ribbon-keys.js",
+  "ribbon/ribbon-shell.studio.js",
+
   // Studio Edit Overlay — see SOURCE_FILES list above for context.
   "overlay/overlay-keys.js",
   "overlay/overlay-applier.studio.js",
@@ -245,6 +260,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/context.js",
   "store/bookmarks.js",
   "store/notes.js",
+  "store/navigator.js",
+  "store/capture.js",
   "store/libraryIndex.js",
   "store/chats.tauri.js",
   "store/snapshots.tauri.js",
@@ -318,6 +335,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
   "S0Z1g. 🎬 Library Sidebar Sections - Studio.js",
+
+  // Studio Ribbon visible surface module — see SOURCE_FILES list above.
+  "S0Y1a. 🎬 Studio Ribbon - Studio.js",
 
   // Standalone Studio decorations referenced by studio.html.
   "S9D1a. 🎬 Auto Emoji Title - Studio.js",
