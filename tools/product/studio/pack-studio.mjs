@@ -34,11 +34,20 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
 
+  // Studio Edit Overlay (Phase 2a) — passive constants and no-op applier.
+  // studio.html references these before store/editOverlay.js; keep copied
+  // with the same subdir names to avoid runtime script 404s.
+  "overlay/overlay-keys.js",
+  "overlay/overlay-applier.studio.js",
+
   // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
   // any feature module. Contracts: src-surfaces-base/studio/store/README.md,
   // STUDIO_STORAGE_CONTRACT.md.
   "store/index.js",
   "store/highlights.js",
+  // Studio-local edit overlay records. Passive until future ribbon phases
+  // create overlay operations.
+  "store/editOverlay.js",
   // Dock Panel read-only feature store façades (Phase 1b-1e). Each is a
   // passive, sync-API/async-hydrate facade over a native engine's
   // chrome.storage keys. studio.html references all four; without these
@@ -223,9 +232,14 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
 
+  // Studio Edit Overlay — see SOURCE_FILES list above for context.
+  "overlay/overlay-keys.js",
+  "overlay/overlay-applier.studio.js",
+
   // Studio Store — see SOURCE_FILES list above for context.
   "store/index.js",
   "store/highlights.js",
+  "store/editOverlay.js",
   // Dock Panel read-only feature store façades (Phase 1b-1e). See SOURCE_FILES.
   "store/prefs.js",
   "store/context.js",

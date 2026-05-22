@@ -4467,6 +4467,24 @@ function buildReaderDOM(snap){
     }
   } catch {}
 
+  /* Phase 2a — edit-overlay foundation hook.
+   * Fetches the per-snapshot overlay (if any) and calls the no-op
+   * applier. Async and fire-and-forget: the reader render never waits
+   * on the overlay, and the applier is guaranteed not to mutate DOM in
+   * Phase 2a (it only logs drift / counts ops). This is the single
+   * integration point future phases extend. */
+  try {
+    const __sid = String(snap?.snapshotId || "");
+    const __store = W.H2O?.Studio?.store?.editOverlay;
+    const __applier = W.H2O?.Studio?.overlay?.applyOverlay;
+    if (__sid && __store && typeof __store.get === "function" && typeof __applier === "function") {
+      Promise.resolve(__store.get(__sid)).then((__overlay) => {
+        try { __applier(root, snap, __overlay || null); }
+        catch (_) { /* applier never throws, but defensive catch anyway */ }
+      }, () => { /* swallow get rejection — reader continues without overlay */ });
+    }
+  } catch (_) { /* swallow — overlay must never break the reader */ }
+
   return root;
 }
 
@@ -6407,14 +6425,37 @@ function __ribbonBridge_getCleanTranscript(){
     return out.join('\n\n');
   } catch (_) { return ''; }
 }
+/* Phase 2a — narrow read-only accessor for the per-snapshot edit
+ * overlay. Returns a Promise resolving to the EditOverlay record or
+ * null. Never throws. Used by future Phase 2b+ ribbon code to discover
+ * whether the current reader has an active overlay; for now it gives
+ * test harnesses and selfCheck readers a clean accessor without
+ * reaching into the entity store directly. */
+function __ribbonBridge_getOverlay(snapshotId){
+  try {
+    const sid = String(snapshotId == null ? '' : snapshotId);
+    if (!sid) return Promise.resolve(null);
+    const ovStore = W.H2O && W.H2O.Studio && W.H2O.Studio.store && W.H2O.Studio.store.editOverlay;
+    if (!ovStore || typeof ovStore.get !== 'function') return Promise.resolve(null);
+    const r = ovStore.get(sid);
+    return (r && typeof r.then === 'function') ? r : Promise.resolve(r || null);
+  } catch (_) { return Promise.resolve(null); }
+}
+
 try {
   W.H2O = W.H2O || {};
   W.H2O.Studio = W.H2O.Studio || {};
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-1b',
+      version: '0.1.0-phase-2a',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
+      getOverlay: __ribbonBridge_getOverlay,
     };
+  } else if (!W.H2O.Studio.RibbonBridge.getOverlay) {
+    /* Idempotent additive upgrade: a previously-installed Phase 1b
+     * bridge gets the new accessor without losing the existing one. */
+    W.H2O.Studio.RibbonBridge.getOverlay = __ribbonBridge_getOverlay;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2a';
   }
 } catch (_) { /* swallow */ }

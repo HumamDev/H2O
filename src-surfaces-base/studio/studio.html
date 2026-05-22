@@ -221,6 +221,17 @@
        Contracts: src-surfaces-base/studio/ribbon/README.md. -->
   <script src="./ribbon/ribbon-keys.js"></script>
 
+  <!-- ── Studio Overlay Keys (Phase 2a) ─────────────────────────────────
+       Studio-local constants for the edit-overlay subsystem (storage key
+       prefix, schema version, event names, reserved op-type and
+       target-kind strings). Passive: loading this file has no side
+       effects beyond attaching frozen objects to H2O.Studio.*.
+       Loads BEFORE store/prefs.js and overlay-applier.studio.js which
+       both reference these constants.
+       Contracts: src-surfaces-base/studio/overlay/README.md,
+                  src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md. -->
+  <script src="./overlay/overlay-keys.js"></script>
+
   <!-- ── Studio Store: Prefs (Phase 1b) ─────────────────────────────────
        Studio-local key-value preferences store. Backs the dock shell's
        open/view persistence and is available as generic KV for future
@@ -261,6 +272,18 @@
                   src-surfaces-base/studio/STUDIO_DEVELOPMENT_RULES.md. -->
   <script src="./ribbon/ribbon-shell.studio.js"></script>
 
+  <!-- ── Studio Overlay Applier (Phase 2a — passive no-op) ──────────────
+       Publishes H2O.Studio.overlay — a no-op applier and a baseDigest
+       helper for the edit-overlay subsystem. Phase 2a establishes the
+       integration point and the drift-detection contract; future
+       Phase 2b+ will add the operation dispatch table. Never mutates
+       snap.messages or captured DOM. Loads AFTER overlay-keys.js and
+       BEFORE store/editOverlay.js (so the store can reuse
+       computeBaseDigest if needed).
+       Contracts: src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md,
+                  src-surfaces-base/studio/overlay/README.md. -->
+  <script src="./overlay/overlay-applier.studio.js"></script>
+
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
        AFTER platform/ so the store can use platform.broadcast.onAnyChange,
@@ -270,6 +293,17 @@
        STUDIO_STORAGE_CONTRACT.md. -->
   <script src="./store/index.js"></script>
   <script src="./store/highlights.js"></script>
+  <!-- ── Studio Store: Edit Overlay (Phase 2a) ──────────────────────────
+       Per-snapshot non-destructive overlay store. One record per
+       snapshotId under h2o:studio:edit-overlay:v1:${snapshotId}. Phase 2a
+       exposes get/upsert/remove/list/subscribe/selfCheck; no UI wired,
+       no ops dispatched. Loads after store/index.js so it can register
+       as an entity via __registerEntity, and after
+       overlay/overlay-applier.studio.js so it shares the schemaVersion
+       constant.
+       Contracts: src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md,
+                  src-surfaces-base/studio/STUDIO_STORAGE_CONTRACT.md. -->
+  <script src="./store/editOverlay.js"></script>
   <!-- ── Studio Store: Context (Phase 1c, read-only) ────────────────────
        Read-only Studio-side façade over native Context Engine keys
        (h2o:prm:cgx:ctxeng:meta/items/ui/history). No write API, no

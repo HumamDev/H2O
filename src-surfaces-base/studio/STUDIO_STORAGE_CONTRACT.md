@@ -48,6 +48,7 @@ H2O.Studio.store.projects     : EntityStore<ProjectRecord>
 H2O.Studio.store.highlights   : EntityStore<HighlightRecord>
 H2O.Studio.store.chatTitles   : EntityStore<ChatTitleRecord>
 H2O.Studio.store.captures     : EntityStore<CaptureEventRecord>
+H2O.Studio.store.editOverlay  : EntityStore<EditOverlayRecord>   // Phase 2a — non-destructive overlay over saved snapshots; see STUDIO_OVERLAY_CONTRACT.md
 ```
 
 Generic KV (for UI prefs, sidebar layout, sentinel, etc.):
