@@ -46,6 +46,7 @@
   var REVIEW_SCHEMA = 'h2o.studio.tombstone-review.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
+  var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var DEFAULT_LIST_LIMIT = 100;
   var MAX_LIST_LIMIT = 1000;
@@ -772,6 +773,87 @@
     result.warnings.push({ code: c });
   }
 
+  function pushBlocker(result, code) {
+    var c = cleanScalar(code);
+    if (!c || !result || !Array.isArray(result.blockers)) return;
+    for (var i = 0; i < result.blockers.length; i += 1) {
+      if (result.blockers[i] && result.blockers[i].code === c) return;
+    }
+    result.blockers.push({ code: c });
+  }
+
+  function makePreviewResult(review) {
+    return {
+      schema: PREVIEW_SCHEMA,
+      ok: true,
+      reviewFound: !!review,
+      supported: false,
+      dryRunOnly: true,
+      wouldMutateOnApply: false,
+      mutationType: null,
+      action: 'blocked-malformed-review',
+      recordKind: nullableString(review && review.recordKind),
+      classification: nullableString(review && review.classification),
+      status: nullableString(review && review.status),
+      blockers: [],
+      local: {
+        exists: null,
+        hasNewerEdit: null,
+        targetMatches: null,
+        timestampComparable: null,
+      },
+      auditPreview: {
+        wouldCreateLocalTombstone: false,
+        wouldUpdateReviewDecision: false,
+        wouldRequireOperatorConfirmation: false,
+        remoteTombstoneSourcePresent: false,
+        remoteExportSourcePresent: false,
+        localPeerIdentityAvailable: false,
+      },
+      warnings: [],
+    };
+  }
+
+  function parseReviewTombstone(review, result) {
+    var raw = review && review.rawTombstoneJson;
+    if (!raw) {
+      pushBlocker(result, 'malformed-remote-tombstone');
+      result.action = 'blocked-malformed-review';
+      return null;
+    }
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!isObject(parsed)) throw new Error('raw tombstone not object');
+      return parsed;
+    } catch (_) {
+      pushBlocker(result, 'malformed-remote-tombstone');
+      result.action = 'blocked-malformed-review';
+      return null;
+    }
+  }
+
+  function readLocalSyncPeerIdForPreview(result) {
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      pushCodeWarning(result.warnings, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanScalar(value && value.syncPeerId);
+        if (!peerId) pushCodeWarning(result.warnings, 'local-identity-unavailable');
+        result.auditPreview.localPeerIdentityAvailable = !!peerId;
+        return peerId;
+      }).catch(function () {
+        pushCodeWarning(result.warnings, 'local-identity-unavailable');
+        return '';
+      });
+    } catch (_) {
+      pushCodeWarning(result.warnings, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+  }
+
   function readLocalSyncPeerIdForIngest(result) {
     var identity = H2O && H2O.Studio && H2O.Studio.identity;
     if (!identity || typeof identity.whenReady !== 'function') {
@@ -1026,6 +1108,66 @@
         if (fromIndex) return fromIndex.exists ? fromIndex : (resolved || fromFolder || fromIndex);
         return resolved || fromFolder || { available: triedApi && !readError, exists: false, record: null };
       });
+    });
+  }
+
+  function readCurrentFolderBindingForPreview(chatId, folderId) {
+    var workspace = getLibraryWorkspaceApi();
+    if (workspace && typeof workspace.resolveFolderBindings === 'function') {
+      try {
+        return Promise.resolve(workspace.resolveFolderBindings([chatId])).then(function (result) {
+          var value = null;
+          if (result && typeof result.get === 'function') {
+            value = result.get(chatId) || result.get(String(chatId));
+          } else if (isObject(result)) {
+            value = result[chatId] || result[String(chatId)];
+          } else if (Array.isArray(result)) {
+            for (var i = 0; i < result.length; i += 1) {
+              if (normalizeBindingChatId(result[i]) === chatId || (result.length === 1 && normalizeBindingFolderId(result[i]))) {
+                value = result[i];
+                break;
+              }
+            }
+          }
+          var currentFolderId = normalizeBindingFolderId(value);
+          if (currentFolderId) {
+            return {
+              available: true,
+              complete: true,
+              exists: true,
+              targetMatches: currentFolderId === folderId,
+              record: value,
+            };
+          }
+          return {
+            available: true,
+            complete: true,
+            exists: false,
+            targetMatches: false,
+            record: null,
+          };
+        }).catch(function () {
+          return null;
+        });
+      } catch (_) { /* fall through */ }
+    }
+    return readLocalFolderBinding(chatId, folderId).then(function (exact) {
+      if (exact && exact.exists) {
+        return {
+          available: true,
+          complete: false,
+          exists: true,
+          targetMatches: true,
+          record: exact.record,
+        };
+      }
+      return {
+        available: false,
+        complete: false,
+        exists: null,
+        targetMatches: null,
+        record: null,
+      };
     });
   }
 
@@ -1336,6 +1478,192 @@
     });
   }
 
+  function previewFolderBindingApply(review, tombstone, validation, result) {
+    var ids = parseFolderBindingIds(tombstone, validation.metaObject);
+    if (!ids.chatId || !ids.folderId) {
+      result.action = 'blocked-malformed-review';
+      pushBlocker(result, 'malformed-remote-tombstone');
+      return Promise.resolve(result);
+    }
+    return readCurrentFolderBindingForPreview(ids.chatId, ids.folderId).then(function (local) {
+      if (!local || !local.available) {
+        result.action = 'blocked-local-comparison-unavailable';
+        pushBlocker(result, 'local-comparison-unavailable');
+        pushCodeWarning(result.warnings, 'folder-binding-local-comparison-failed');
+        return result;
+      }
+      result.supported = true;
+      result.local.exists = local.exists === null ? null : !!local.exists;
+      result.local.targetMatches = local.targetMatches === null ? null : !!local.targetMatches;
+
+      if (!local.exists) {
+        result.action = 'no-op-already-missing';
+        result.wouldMutateOnApply = false;
+        result.mutationType = null;
+        result.local.hasNewerEdit = false;
+        result.local.timestampComparable = false;
+        result.auditPreview.wouldUpdateReviewDecision = true;
+        result.auditPreview.wouldRequireOperatorConfirmation = true;
+        return result;
+      }
+      if (!local.targetMatches) {
+        result.action = 'blocked-target-mismatch';
+        pushBlocker(result, 'local-target-mismatch');
+        return result;
+      }
+
+      var timestamp = readTimestampCandidate(local.record, [
+        'assignedAt',
+        'assigned_at',
+        'boundAt',
+        'bound_at',
+        'updatedAt',
+        'updated_at',
+        'createdAt',
+        'created_at',
+      ]);
+      var compared = compareTimestampsForReview(timestamp, tombstone && tombstone.deletedAt);
+      result.local.timestampComparable = compared.comparable;
+      result.local.hasNewerEdit = compared.newer;
+      if (!compared.comparable) {
+        result.action = 'blocked-local-comparison-unavailable';
+        pushBlocker(result, 'local-comparison-unavailable');
+        pushCodeWarning(result.warnings, 'local-timestamp-unavailable');
+        return result;
+      }
+      if (compared.newer) {
+        result.action = 'blocked-delete-vs-edit';
+        pushBlocker(result, 'delete-vs-edit');
+        return result;
+      }
+
+      result.action = 'would-unbind-folder-binding';
+      result.wouldMutateOnApply = true;
+      result.mutationType = 'folderBinding.unbind';
+      result.auditPreview.wouldCreateLocalTombstone = true;
+      result.auditPreview.wouldUpdateReviewDecision = true;
+      result.auditPreview.wouldRequireOperatorConfirmation = true;
+      return result;
+    }).catch(function () {
+      result.action = 'blocked-local-comparison-unavailable';
+      pushBlocker(result, 'local-comparison-unavailable');
+      pushCodeWarning(result.warnings, 'folder-binding-local-comparison-failed');
+      return result;
+    });
+  }
+
+  function previewApply(reviewIdInput, options) {
+    var opts = options || {};
+    var reviewId = cleanString(reviewIdInput);
+    if (!reviewId) {
+      var missingId = makePreviewResult(null);
+      missingId.ok = false;
+      missingId.reviewFound = false;
+      missingId.action = 'blocked-review-not-found';
+      pushBlocker(missingId, 'review-not-found');
+      return Promise.resolve(missingId);
+    }
+    return getReview(reviewId).then(function (review) {
+      var result = makePreviewResult(review);
+      if (!review) {
+        result.ok = false;
+        result.reviewFound = false;
+        result.action = 'blocked-review-not-found';
+        pushBlocker(result, 'review-not-found');
+        return result;
+      }
+
+      var tombstone = parseReviewTombstone(review, result);
+      if (!tombstone) return result;
+
+      var kind = cleanScalar(tombstone.recordKind || review.recordKind);
+      result.recordKind = kind || null;
+      if (kind === 'folderBinding') result.supported = true;
+      result.classification = nullableString(review.classification);
+      result.status = nullableString(review.status);
+      result.auditPreview.remoteTombstoneSourcePresent = !!(cleanScalar(review.remoteTombstoneId) || cleanScalar(tombstone.tombstoneId));
+      result.auditPreview.remoteExportSourcePresent = !!cleanScalar(review.remoteExportId);
+
+      var status = cleanScalar(review.status);
+      if (status !== 'pending' && status !== 'accepted-later') {
+        result.action = 'blocked-review-status-not-previewable';
+        pushBlocker(result, 'review-status-not-previewable');
+        return result;
+      }
+
+      var classification = cleanScalar(review.classification);
+      if (classification === 'malformed-remote-tombstone') {
+        result.action = 'blocked-malformed-review';
+        pushBlocker(result, 'malformed-remote-tombstone');
+        return result;
+      }
+      if (classification === 'unsupported-record-kind') {
+        result.action = 'blocked-unsupported-kind';
+        pushBlocker(result, 'unsupported-record-kind');
+        return result;
+      }
+      if (classification === 'self-originated') {
+        result.action = 'blocked-self-originated';
+        pushBlocker(result, 'self-originated');
+        return result;
+      }
+      if (classification === 'delete-vs-edit') {
+        result.action = 'blocked-delete-vs-edit';
+        pushBlocker(result, 'delete-vs-edit');
+        return result;
+      }
+      if (classification === 'local-comparison-unavailable') {
+        result.action = 'blocked-local-comparison-unavailable';
+        pushBlocker(result, 'local-comparison-unavailable');
+        return result;
+      }
+
+      if (kind === 'folder') {
+        result.action = 'blocked-folder-apply-deferred';
+        pushBlocker(result, 'folder-apply-deferred');
+        return result;
+      }
+      if (kind !== 'folderBinding') {
+        result.action = 'blocked-unsupported-kind';
+        pushBlocker(result, 'unsupported-record-kind');
+        return result;
+      }
+
+      var validation = validateRemoteTombstone(tombstone, null);
+      if (validation.malformed) {
+        result.action = 'blocked-malformed-review';
+        pushBlocker(result, 'malformed-remote-tombstone');
+        validation.errors.concat(validation.warnings).forEach(function (warning) {
+          pushCodeWarning(result.warnings, warning && warning.code);
+        });
+        return result;
+      }
+
+      return readLocalSyncPeerIdForPreview(result).then(function (localPeerId) {
+        var remotePeerId = cleanScalar(review.remoteSyncPeerId) || cleanScalar(tombstone.deletedBySyncPeerId);
+        if (localPeerId && remotePeerId && localPeerId === remotePeerId) {
+          result.action = 'blocked-self-originated';
+          pushBlocker(result, 'self-originated');
+          return result;
+        }
+        if (!remotePeerId) pushCodeWarning(result.warnings, 'source-peer-ambiguous');
+        return previewFolderBindingApply(review, tombstone, validation, result);
+      });
+    }).catch(function (e) {
+      recordError('previewApply', e);
+      var result = makePreviewResult(null);
+      result.action = 'blocked-local-comparison-unavailable';
+      pushBlocker(result, 'local-comparison-unavailable');
+      pushCodeWarning(result.warnings, 'preview-apply-failed');
+      return result;
+    }).then(function (result) {
+      if (opts && opts.includeSensitive === true) {
+        pushCodeWarning(result.warnings, 'include-sensitive-ignored');
+      }
+      return result;
+    });
+  }
+
   function markStatus(reviewIdInput, status, reason) {
     var reviewId = cleanString(reviewIdInput);
     if (!reviewId) return Promise.reject(new Error('reviewId required'));
@@ -1476,7 +1804,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5f.4e',
+    __version: '0.1.0-f5g.1',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1495,6 +1823,7 @@
     markIgnored: markIgnored,
     markRejected: markRejected,
     ingestBundleTombstones: ingestBundleTombstones,
+    previewApply: previewApply,
     diagnose: diagnose,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
@@ -1502,6 +1831,7 @@
       schema: REVIEW_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
+      previewSchema: PREVIEW_SCHEMA,
       tombstoneSchema: TOMBSTONE_SCHEMA,
       dbName: DB_NAME,
       dbVersion: DB_VERSION,

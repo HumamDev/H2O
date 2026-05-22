@@ -1525,6 +1525,110 @@ Future reviewed-apply validation must prove:
 6. F5G.5: cascade grouping diagnostics.
 7. F5G.6: folder apply planning only.
 
+## F5G.1 Read-Only Apply Preview
+
+F5G.1 adds a read-only preview API to both Desktop and Chrome tombstone review
+stores:
+
+```js
+await H2O.Studio.store.tombstoneReviews.previewApply(reviewId, {
+  refreshLocalState: true,
+  includeSensitive: false
+})
+```
+
+The API accepts only `reviewId`, fetches the stored review, parses the stored raw
+remote tombstone JSON, performs fresh read-only local comparison, and returns a
+redacted action plan. It never mutates Library records, creates tombstones,
+updates review rows, updates sync state, or calls folder/chat/snapshot/tag/label
+mutation APIs.
+
+Supported preview target:
+
+- `folderBinding`
+
+Deferred:
+
+- `folder` returns `folder-apply-deferred`
+
+Unsupported:
+
+- `chat`
+- `snapshot`
+- `tag`
+- `tagBinding`
+- `label`
+- `labelBinding`
+- `category`
+- `project`
+- `visualMetadata`
+- `linkedOnlyChat`
+- `savedSnapshot`
+
+Preview result schema:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-apply-preview.v1',
+  ok: true,
+  reviewFound: true,
+  supported: true,
+  dryRunOnly: true,
+  wouldMutateOnApply: true,
+  mutationType: 'folderBinding.unbind',
+  action: 'would-unbind-folder-binding',
+  recordKind: 'folderBinding',
+  classification,
+  status,
+  blockers: [],
+  local: {
+    exists: true,
+    hasNewerEdit: false,
+    targetMatches: true,
+    timestampComparable: true
+  },
+  auditPreview: {
+    wouldCreateLocalTombstone: true,
+    wouldUpdateReviewDecision: true,
+    wouldRequireOperatorConfirmation: true,
+    remoteTombstoneSourcePresent: true,
+    remoteExportSourcePresent: true,
+    localPeerIdentityAvailable: true
+  },
+  warnings: []
+}
+```
+
+FolderBinding preview parses `meta.chatId` and `meta.folderId`, with
+`folderBinding:<encodedChatId>:<encodedFolderId>` as fallback. Desktop uses
+read-only SQLite queries against `folder_bindings`. Chrome uses the F5F.4e
+read-only folder binding lookup path. If a matching local binding exists and has
+no newer local edit, the action is `would-unbind-folder-binding`. If the binding
+is already missing, the action is `no-op-already-missing`. If the current local
+binding differs, the blocker is `local-target-mismatch`. If the local binding is
+newer, the blocker is `delete-vs-edit`.
+
+Blockers are code-only and redacted:
+
+```js
+[
+  { code: 'review-not-found' },
+  { code: 'review-status-not-previewable' },
+  { code: 'unsupported-record-kind' },
+  { code: 'folder-apply-deferred' },
+  { code: 'malformed-remote-tombstone' },
+  { code: 'delete-vs-edit' },
+  { code: 'local-target-mismatch' },
+  { code: 'local-comparison-unavailable' },
+  { code: 'self-originated' }
+]
+```
+
+Default preview output does not expose full review IDs, record IDs, chat IDs,
+folder IDs, remote peer IDs, remote tombstone IDs, raw tombstone JSON, metadata,
+names, titles, or transcript content. `includeSensitive: true` is accepted but
+ignored in F5G.1 and returns a warning.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

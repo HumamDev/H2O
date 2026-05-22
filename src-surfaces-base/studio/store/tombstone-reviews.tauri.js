@@ -35,6 +35,7 @@
   var REVIEW_SCHEMA = 'h2o.studio.tombstone-review.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
+  var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
@@ -663,6 +664,106 @@
     result.warnings.push({ code: c });
   }
 
+  function pushCodeWarning(warnings, code) {
+    if (!Array.isArray(warnings)) return;
+    var c = cleanScalar(code);
+    if (!c) return;
+    for (var i = 0; i < warnings.length; i += 1) {
+      if (warnings[i] && warnings[i].code === c) return;
+    }
+    warnings.push({ code: c });
+  }
+
+  function pushBlocker(result, code) {
+    var c = cleanScalar(code);
+    if (!c || !result || !Array.isArray(result.blockers)) return;
+    for (var i = 0; i < result.blockers.length; i += 1) {
+      if (result.blockers[i] && result.blockers[i].code === c) return;
+    }
+    result.blockers.push({ code: c });
+  }
+
+  function makePreviewResult(review) {
+    return {
+      schema: PREVIEW_SCHEMA,
+      ok: true,
+      reviewFound: !!review,
+      supported: false,
+      dryRunOnly: true,
+      wouldMutateOnApply: false,
+      mutationType: null,
+      action: 'blocked-malformed-review',
+      recordKind: nullableString(review && review.recordKind),
+      classification: nullableString(review && review.classification),
+      status: nullableString(review && review.status),
+      blockers: [],
+      local: {
+        exists: null,
+        hasNewerEdit: null,
+        targetMatches: null,
+        timestampComparable: null,
+      },
+      auditPreview: {
+        wouldCreateLocalTombstone: false,
+        wouldUpdateReviewDecision: false,
+        wouldRequireOperatorConfirmation: false,
+        remoteTombstoneSourcePresent: false,
+        remoteExportSourcePresent: false,
+        localPeerIdentityAvailable: false,
+      },
+      warnings: [],
+    };
+  }
+
+  function parseReviewTombstone(review, result) {
+    var raw = review && review.rawTombstoneJson;
+    if (!raw) {
+      pushBlocker(result, 'malformed-remote-tombstone');
+      result.action = 'blocked-malformed-review';
+      return null;
+    }
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!isObject(parsed)) throw new Error('raw tombstone not object');
+      return parsed;
+    } catch (_) {
+      pushBlocker(result, 'malformed-remote-tombstone');
+      result.action = 'blocked-malformed-review';
+      return null;
+    }
+  }
+
+  function readLocalSyncPeerIdForPreview(result) {
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      pushCodeWarning(result.warnings, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanScalar(value && value.syncPeerId);
+        if (!peerId) pushCodeWarning(result.warnings, 'local-identity-unavailable');
+        result.auditPreview.localPeerIdentityAvailable = !!peerId;
+        return peerId;
+      }).catch(function () {
+        pushCodeWarning(result.warnings, 'local-identity-unavailable');
+        return '';
+      });
+    } catch (_) {
+      pushCodeWarning(result.warnings, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+  }
+
+  function previewTimestampComparison(localValue, remoteDeletedAt) {
+    var localMs = parseTimeMs(localValue);
+    var remoteMs = parseTimeMs(remoteDeletedAt);
+    return {
+      comparable: localMs != null && remoteMs != null,
+      newer: localMs != null && remoteMs != null && localMs > remoteMs,
+    };
+  }
+
   function readLocalSyncPeerIdForIngest(result) {
     var identity = H2O && H2O.Studio && H2O.Studio.identity;
     if (!identity || typeof identity.whenReady !== 'function') {
@@ -1079,6 +1180,189 @@
   function markIgnored(reviewId, reason) { return markStatus(reviewId, 'ignored', reason); }
   function markRejected(reviewId, reason) { return markStatus(reviewId, 'rejected', reason); }
 
+  function previewFolderBindingApply(review, tombstone, validation, result) {
+    var ids = parseFolderBindingIds(tombstone, validation.metaObject);
+    if (!ids.ok) {
+      pushBlocker(result, 'malformed-remote-tombstone');
+      result.action = 'blocked-malformed-review';
+      return Promise.resolve(result);
+    }
+    return sqlSelect(
+      'SELECT chat_id, folder_id, assigned_at FROM folder_bindings WHERE chat_id = ? LIMIT 1',
+      [ids.chatId]
+    ).then(function (rows) {
+      var row = Array.isArray(rows) && rows.length ? (rows[0] || {}) : null;
+      if (!row) {
+        result.supported = true;
+        result.action = 'no-op-already-missing';
+        result.wouldMutateOnApply = false;
+        result.mutationType = null;
+        result.local = {
+          exists: false,
+          hasNewerEdit: false,
+          targetMatches: false,
+          timestampComparable: false,
+        };
+        result.auditPreview.wouldUpdateReviewDecision = true;
+        result.auditPreview.wouldRequireOperatorConfirmation = true;
+        return result;
+      }
+
+      var localFolderId = cleanScalar(row.folder_id || row.folderId);
+      var targetMatches = localFolderId === ids.folderId;
+      result.supported = true;
+      result.local.exists = true;
+      result.local.targetMatches = targetMatches;
+
+      if (!targetMatches) {
+        result.action = 'blocked-target-mismatch';
+        pushBlocker(result, 'local-target-mismatch');
+        return result;
+      }
+
+      var assignedAt = row.assigned_at == null ? row.assignedAt : row.assigned_at;
+      var compared = previewTimestampComparison(assignedAt, tombstone.deletedAt);
+      result.local.timestampComparable = compared.comparable;
+      result.local.hasNewerEdit = compared.newer;
+      if (!compared.comparable) {
+        result.action = 'blocked-local-comparison-unavailable';
+        pushBlocker(result, 'local-comparison-unavailable');
+        pushCodeWarning(result.warnings, 'local-timestamp-unavailable');
+        return result;
+      }
+      if (compared.newer) {
+        result.action = 'blocked-delete-vs-edit';
+        pushBlocker(result, 'delete-vs-edit');
+        return result;
+      }
+
+      result.action = 'would-unbind-folder-binding';
+      result.wouldMutateOnApply = true;
+      result.mutationType = 'folderBinding.unbind';
+      result.auditPreview.wouldCreateLocalTombstone = true;
+      result.auditPreview.wouldUpdateReviewDecision = true;
+      result.auditPreview.wouldRequireOperatorConfirmation = true;
+      return result;
+    }).catch(function () {
+      result.action = 'blocked-local-comparison-unavailable';
+      pushBlocker(result, 'local-comparison-unavailable');
+      pushCodeWarning(result.warnings, 'folder-binding-local-comparison-failed');
+      return result;
+    });
+  }
+
+  function previewApply(reviewIdInput, options) {
+    var opts = options || {};
+    var reviewId = cleanString(reviewIdInput);
+    if (!reviewId) {
+      var missingId = makePreviewResult(null);
+      missingId.ok = false;
+      missingId.reviewFound = false;
+      missingId.action = 'blocked-review-not-found';
+      pushBlocker(missingId, 'review-not-found');
+      return Promise.resolve(missingId);
+    }
+    return getReview(reviewId).then(function (review) {
+      var result = makePreviewResult(review);
+      if (!review) {
+        result.ok = false;
+        result.reviewFound = false;
+        result.action = 'blocked-review-not-found';
+        pushBlocker(result, 'review-not-found');
+        return result;
+      }
+
+      var tombstone = parseReviewTombstone(review, result);
+      if (!tombstone) return result;
+
+      var kind = cleanScalar(tombstone.recordKind || review.recordKind);
+      result.recordKind = kind || null;
+      if (kind === 'folderBinding') result.supported = true;
+      result.classification = nullableString(review.classification);
+      result.status = nullableString(review.status);
+      result.auditPreview.remoteTombstoneSourcePresent = !!(cleanScalar(review.remoteTombstoneId) || cleanScalar(tombstone.tombstoneId));
+      result.auditPreview.remoteExportSourcePresent = !!cleanScalar(review.remoteExportId);
+
+      var status = cleanScalar(review.status);
+      if (status !== 'pending' && status !== 'accepted-later') {
+        result.action = 'blocked-review-status-not-previewable';
+        pushBlocker(result, 'review-status-not-previewable');
+        return result;
+      }
+
+      var classification = cleanScalar(review.classification);
+      if (classification === 'malformed-remote-tombstone') {
+        result.action = 'blocked-malformed-review';
+        pushBlocker(result, 'malformed-remote-tombstone');
+        return result;
+      }
+      if (classification === 'unsupported-record-kind') {
+        result.action = 'blocked-unsupported-kind';
+        pushBlocker(result, 'unsupported-record-kind');
+        return result;
+      }
+      if (classification === 'self-originated') {
+        result.action = 'blocked-self-originated';
+        pushBlocker(result, 'self-originated');
+        return result;
+      }
+      if (classification === 'delete-vs-edit') {
+        result.action = 'blocked-delete-vs-edit';
+        pushBlocker(result, 'delete-vs-edit');
+        return result;
+      }
+      if (classification === 'local-comparison-unavailable') {
+        result.action = 'blocked-local-comparison-unavailable';
+        pushBlocker(result, 'local-comparison-unavailable');
+        return result;
+      }
+
+      if (kind === 'folder') {
+        result.action = 'blocked-folder-apply-deferred';
+        pushBlocker(result, 'folder-apply-deferred');
+        return result;
+      }
+      if (kind !== 'folderBinding') {
+        result.action = 'blocked-unsupported-kind';
+        pushBlocker(result, 'unsupported-record-kind');
+        return result;
+      }
+
+      var validation = validateRemoteTombstone(tombstone, null);
+      if (validation.malformed) {
+        result.action = 'blocked-malformed-review';
+        pushBlocker(result, 'malformed-remote-tombstone');
+        validation.errors.concat(validation.warnings).forEach(function (warning) {
+          pushCodeWarning(result.warnings, warning && warning.code);
+        });
+        return result;
+      }
+
+      return readLocalSyncPeerIdForPreview(result).then(function (localPeerId) {
+        var remotePeerId = cleanScalar(review.remoteSyncPeerId) || cleanScalar(tombstone.deletedBySyncPeerId);
+        if (localPeerId && remotePeerId && localPeerId === remotePeerId) {
+          result.action = 'blocked-self-originated';
+          pushBlocker(result, 'self-originated');
+          return result;
+        }
+        if (!remotePeerId) pushCodeWarning(result.warnings, 'source-peer-ambiguous');
+        return previewFolderBindingApply(review, tombstone, validation, result);
+      });
+    }).catch(function (e) {
+      recordError('previewApply', e);
+      var result = makePreviewResult(null);
+      result.action = 'blocked-local-comparison-unavailable';
+      pushBlocker(result, 'local-comparison-unavailable');
+      pushCodeWarning(result.warnings, 'preview-apply-failed');
+      return result;
+    }).then(function (result) {
+      if (opts && opts.includeSensitive === true) {
+        pushCodeWarning(result.warnings, 'include-sensitive-ignored');
+      }
+      return result;
+    });
+  }
+
   function countMap(rows, keyField) {
     var out = {};
     (Array.isArray(rows) ? rows : []).forEach(function (row) {
@@ -1163,7 +1447,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5f.2',
+    __version: '0.1.0-f5g.1',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1182,6 +1466,7 @@
     markIgnored: markIgnored,
     markRejected: markRejected,
     ingestBundleTombstones: ingestBundleTombstones,
+    previewApply: previewApply,
     diagnose: diagnose,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
@@ -1189,6 +1474,7 @@
       schema: REVIEW_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
+      previewSchema: PREVIEW_SCHEMA,
       tombstoneSchema: TOMBSTONE_SCHEMA,
       table: TABLE,
       classifications: Object.freeze(Object.keys(CLASSIFICATIONS).slice()),
