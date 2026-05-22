@@ -1050,23 +1050,25 @@
                     : kind === 'projects' ? 'project'
                     : kind === 'folders' ? 'folder'
                     : 'date';
-      const moreHref = '#/library/explorer';
+      const moreHref = kind === 'folders' ? '#/library/folders' : '#/library/explorer';
       const more = el('a', {
         class: 'wbSidebarSectionMore',
         href: moreHref,
         'data-groupby': groupBy,
       }, `More · ${formatNumber(moreCount)}`);
-      // Switch the Explorer's group-by to this kind when the user clicks More,
-      // so the Explorer opens already organized along this facet.
-      more.addEventListener('click', () => {
-        try {
-          const prefsKey = 'h2o:prm:cgx:library-insights:studio:prefs:v2';
-          const raw = W.localStorage.getItem(prefsKey);
-          const prefs = raw ? JSON.parse(raw) : {};
-          prefs.groupBy = groupBy;
-          W.localStorage.setItem(prefsKey, JSON.stringify(prefs));
-        } catch (e) { err('more.prefs', e); }
-      });
+      // Switch non-folder sections into Explorer grouping. Folders have a
+      // dedicated catalog page because their native/known counts need room.
+      if (kind !== 'folders') {
+        more.addEventListener('click', () => {
+          try {
+            const prefsKey = 'h2o:prm:cgx:library-insights:studio:prefs:v2';
+            const raw = W.localStorage.getItem(prefsKey);
+            const prefs = raw ? JSON.parse(raw) : {};
+            prefs.groupBy = groupBy;
+            W.localStorage.setItem(prefsKey, JSON.stringify(prefs));
+          } catch (e) { err('more.prefs', e); }
+        });
+      }
       host.appendChild(more);
     }
   }

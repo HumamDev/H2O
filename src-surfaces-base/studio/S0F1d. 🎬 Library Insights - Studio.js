@@ -76,6 +76,13 @@
     lastRoute: null,
     visible: false,
     activeLinkedRow: null,
+    folderDisplay: {
+      model: null,
+      loading: false,
+      error: '',
+      ts: 0,
+      requestId: 0,
+    },
   };
 
   // ── Pure helpers ───────────────────────────────────────────────────────────
@@ -1267,6 +1274,193 @@
     return el('div', { class: 'wbDetailBodyWrap' }, [head, body]);
   }
 
+  function currentLibraryView() {
+    const route = getRouteSvc()?.current?.() || null;
+    return route?.name === 'library' ? String(route.view || 'dashboard').trim().toLowerCase() : '';
+  }
+
+  function invalidateFolderDisplayModel() {
+    state.folderDisplay.model = null;
+    state.folderDisplay.error = '';
+    state.folderDisplay.ts = 0;
+  }
+
+  function loadFolderDisplayModel(force = false) {
+    const bucket = state.folderDisplay;
+    const stale = !bucket.model || (Date.now() - Number(bucket.ts || 0)) > 30_000;
+    if (!force && !stale) return;
+    if (bucket.loading) return;
+    const api = H2O.Library?.FolderParity;
+    if (typeof api?.getDisplayModel !== 'function') {
+      bucket.error = 'Folder parity model unavailable';
+      bucket.model = null;
+      bucket.ts = Date.now();
+      return;
+    }
+    const requestId = ++bucket.requestId;
+    bucket.loading = true;
+    bucket.error = '';
+    Promise.resolve(api.getDisplayModel({ fresh: true })).then((model) => {
+      if (requestId !== bucket.requestId) return;
+      bucket.model = model && typeof model === 'object' ? model : null;
+      bucket.error = bucket.model ? '' : 'Folder parity model returned no data';
+      bucket.ts = Date.now();
+    }).catch((e) => {
+      if (requestId !== bucket.requestId) return;
+      bucket.model = null;
+      bucket.error = String(e?.message || e || 'Folder parity model failed');
+      bucket.ts = Date.now();
+      err('folderParity.displayModel', e);
+    }).finally(() => {
+      if (requestId !== bucket.requestId) return;
+      bucket.loading = false;
+      if (state.visible && currentLibraryView() === 'folders') render();
+    });
+  }
+
+  function fallbackFolderDisplayRows(idx) {
+    const facets = idx?.facets?.()?.byFolder || {};
+    return (Array.isArray(pageData.folders) ? pageData.folders : []).map((folder) => {
+      const folderId = String(folder?.id || folder?.folderId || '').trim();
+      const name = String(folder?.name || folder?.label || folder?.folderName || folderId).trim();
+      const knownCount = Array.isArray(facets[folderId]) ? facets[folderId].length : 0;
+      return folderId ? {
+        folderId,
+        name: name || folderId,
+        normalizedName: name.toLowerCase(),
+        isCanonical: false,
+        isExtra: false,
+        isTestCandidate: false,
+        isConflict: false,
+        canonicalCount: 0,
+        knownCount,
+        savedCount: 0,
+        linkedCount: 0,
+        orphanCount: 0,
+        localBindingCount: 0,
+        badges: ['degraded'],
+        displayCountLabel: `${formatNumber(knownCount)} known`,
+        color: String(folder?.color || folder?.iconColor || '').trim(),
+        iconColor: String(folder?.iconColor || folder?.color || '').trim(),
+      } : null;
+    }).filter(Boolean);
+  }
+
+  function folderBadgeNodes(row) {
+    const values = new Set((Array.isArray(row?.badges) ? row.badges : [])
+      .map((badge) => String(badge || '').trim().toLowerCase())
+      .filter(Boolean));
+    if (row?.isCanonical) values.add('canonical');
+    if (row?.isExtra) values.add('extra');
+    if (row?.isTestCandidate) values.add('test');
+    if (row?.isConflict) values.add('conflict');
+    if (Number(row?.localBindingCount || 0) > 0 && values.has('test')) values.add('review');
+    return Array.from(values).map((badge) => el('span', {
+      class: `wbFolderPageBadge wbFolderPageBadge--${badge}`,
+      style: 'display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)',
+    }, badge));
+  }
+
+  function folderIconNode(row) {
+    const color = String(row?.iconColor || row?.color || '').trim();
+    const icon = el('span', {
+      class: 'wbFolderPageIcon',
+      'aria-hidden': 'true',
+      style: `display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:${color || 'currentColor'};background:rgba(255,255,255,.035);flex:0 0 auto`,
+    });
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>';
+    return icon;
+  }
+
+  function renderFolderCatalogRow(row) {
+    const folderId = String(row?.folderId || row?.id || '').trim();
+    const name = String(row?.name || folderId).trim() || folderId;
+    const href = getRouteSvc()?.buildLibraryHash?.('folder', folderId) || `#/library/folder/${encodeURIComponent(folderId)}`;
+    const label = String(row?.displayCountLabel || '').trim() || `${formatNumber(row?.knownCount || 0)} known`;
+    const secondary = [
+      folderId ? `ID ${folderId}` : '',
+      Number(row?.orphanCount || 0) > 0 ? `${formatNumber(row.orphanCount)} orphan membership${Number(row.orphanCount) === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(' · ');
+    return el('a', {
+      class: 'wbFolderPageRow',
+      href,
+      title: `${name} — ${label}`,
+      data: {
+        folderId,
+        canonical: row?.isCanonical === true ? 'true' : 'false',
+        badges: (Array.isArray(row?.badges) ? row.badges : []).join(','),
+      },
+      style: 'display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.08);color:inherit;text-decoration:none',
+    }, [
+      folderIconNode(row),
+      el('div', { style: 'min-width:0' }, [
+        el('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap' }, [
+          el('span', { style: 'font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
+          ...folderBadgeNodes(row),
+        ]),
+        el('div', { style: 'margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all' }, secondary),
+      ]),
+      el('div', { style: 'text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:160px' }, label),
+    ]);
+  }
+
+  function renderFoldersPage(idx) {
+    loadFolderDisplayModel(false);
+    const bucket = state.folderDisplay;
+    const model = bucket.model;
+    const modelRows = Array.isArray(model?.rows) ? model.rows : [];
+    const fallbackRows = modelRows.length ? [] : fallbackFolderDisplayRows(idx);
+    const rows = (modelRows.length ? modelRows : fallbackRows).slice();
+    const degraded = !modelRows.length;
+    const canonicalCount = Number(model?.canonicalFolderCount ?? rows.filter((row) => row?.isCanonical).length) || 0;
+    const localCount = Number(model?.localFolderCount ?? rows.length) || 0;
+    const membershipCount = Number(model?.canonicalBindingCount ?? rows.reduce((sum, row) => sum + (Number(row?.canonicalCount || 0) || 0), 0)) || 0;
+    const localBindingCount = Number(model?.localBindingCount ?? rows.reduce((sum, row) => sum + (Number(row?.localBindingCount || 0) || 0), 0)) || 0;
+    const summary = [
+      `${formatNumber(canonicalCount)} canonical`,
+      `${formatNumber(localCount || rows.length)} local`,
+      `${formatNumber(membershipCount)} memberships`,
+      `${formatNumber(localBindingCount)} local bindings`,
+    ].join(' · ');
+    const warnings = Array.isArray(model?.warnings) ? model.warnings : [];
+    const head = el('section', { class: 'wbDetailHead' }, [
+      el('a', { class: 'wbDetailBack', href: '#/library/explorer' }, '← Back to Explorer'),
+      el('div', { class: 'wbDetailEyebrow' }, degraded ? 'folders · degraded' : 'folders'),
+      el('h2', { class: 'wbDetailTitle' }, 'Folders'),
+      el('div', { class: 'wbDetailMeta' }, summary),
+      el('div', { style: 'margin-top:10px;color:rgba(255,255,255,.64);font-size:12px;line-height:1.45' }, [
+        'Read-only. No cleanup performed.',
+        degraded ? el('span', {}, ` ${bucket.loading ? 'Loading folder parity model.' : (bucket.error || 'Folder parity model unavailable.')}`) : null,
+      ]),
+    ]);
+
+    const body = el('section', { class: 'wbDetailBody' });
+    if (bucket.loading && !rows.length) {
+      body.appendChild(el('div', { class: 'wbExpEmpty' }, [
+        el('div', { class: 'wbExpEmptyTitle' }, 'Loading folders'),
+        el('div', { class: 'wbExpEmptySub' }, 'Reading the folder parity display model.'),
+      ]));
+    } else if (!rows.length) {
+      body.appendChild(el('div', { class: 'wbExpEmpty' }, [
+        el('div', { class: 'wbExpEmptyTitle' }, 'No folders found'),
+        el('div', { class: 'wbExpEmptySub' }, bucket.error || 'Folder parity model unavailable.'),
+      ]));
+    } else {
+      body.appendChild(el('div', {
+        class: 'wbFolderPageList',
+        role: 'list',
+        style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.025)',
+      }, rows.map(renderFolderCatalogRow)));
+      if (warnings.length) {
+        body.appendChild(el('div', {
+          class: 'wbFolderPageWarnings',
+          style: 'margin-top:12px;color:rgba(255,255,255,.58);font-size:11.5px;line-height:1.45',
+        }, warnings.slice(0, 3).join(' ')));
+      }
+    }
+    return el('div', { class: 'wbDetailBodyWrap wbFolderPage' }, [head, body]);
+  }
+
   // ── Mount / dispatch ───────────────────────────────────────────────────────
   // Tab catalog — declared once so the dispatch and the rendered tab nav can't
   // drift apart. Order matches the native ChatGPT Library page layout.
@@ -1679,6 +1873,7 @@
     else if (view === 'analytics')   bodyContent = renderAnalytics(idx);
     else if (view === 'recents')     bodyContent = renderRecents(idx);
     else if (view === 'organize')    bodyContent = renderOrganize(idx);
+    else if (view === 'folders')     bodyContent = renderFoldersPage(idx);
     else if (view === 'saved' || view === 'pinned' || view === 'archive' || view === 'linked') {
       /* Phase K-2 — 'linked' joins the saved/pinned/archive branch so
        * #/library/linked renders the same forceView Explorer view that
@@ -1812,6 +2007,7 @@
       if (!state.visible) return;
       const reason = String(evt && evt.reason || '');
       if (CATALOG_REASONS.has(reason)) {
+        invalidateFolderDisplayModel();
         refreshPageData().then(() => { if (state.visible) render(); });
       } else {
         render();
@@ -1824,6 +2020,7 @@
     // tab mutates state.
     W.addEventListener('evt:h2o:library:cross-surface-sync', () => {
       if (!state.visible) return;
+      invalidateFolderDisplayModel();
       refreshPageData().then(() => { if (state.visible) render(); });
     });
     return true;
