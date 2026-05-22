@@ -309,6 +309,20 @@
        Contracts: surfaces/studio/store/README.md,
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./store/navigator.js"></script>
+  <!-- ── Studio Store: Capture (Phase 1g, read-only) ────────────────────
+       Read-only Studio-side façade over the native Capture Engine
+       per-chat store + ui keys
+       (h2o:prm:cgx:capture:store:v1:${id}, …:ui:v1:${id}).
+       No write API, no Dock UI, no item creation, no conversion to
+       Notes/Bookmarks/Context, no archiving, no live selection.
+       Completes the read-only Studio Dock feature-store foundation
+       (highlights / context / bookmarks / notes / navigator / capture)
+       before Phase 2A introduces the visible Dock UI shell. Loads
+       after store/index.js + all sibling read-only stores so it can
+       register as an entity via __registerEntity alongside them.
+       Contracts: surfaces/studio/store/README.md,
+                  surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
+  <script src="./store/capture.js"></script>
   <script src="./store/libraryIndex.js"></script>
   <!-- Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
        and silently no-ops on MV3 / web. Backs the `chats` table defined in

@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, Phase 1e, and Phase 1f landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`, `../store/navigator.js`). Further modules (`tabs/*`, real DOM mount, read-only Capture store) land in Phase 2+.
+Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, Phase 1e, Phase 1f, and Phase 1g landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`, `../store/navigator.js`, `../store/capture.js`). Read-only Dock feature-store foundation is now complete (six native engines → six Studio façades). Next phase: Phase 2A — visible Dock UI shell (`tabs/*`, real DOM mount).
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -18,7 +18,8 @@ Companion docs:
 - **Phase 1d (landed)**: second read-only feature store — `H2O.Studio.store.bookmarks`. Reads native Bookmarks Engine per-chat key (`h2o:prm:cgx:bkmrksngne:state:bookmarks_${chatId}:v1`) through `H2O.Studio.platform.storage`. Exposes `get(chatId)` / `list(chatId)` / `getBookmark(chatId, id)` / `keysFor(chatId)` / `subscribe(fn)` / `selfCheck()`. No write API. No Dock UI. No native edits. Lives at `../store/bookmarks.js`. See "Phase 1d — what landed" below.
 - **Phase 1e (landed)**: third read-only feature store — `H2O.Studio.store.notes`. Reads native Notes Engine per-chat notes blob (`h2o:prm:cgx:ntsngn:store:notes:v1:${chatId}`) **and** scratchpad string (`…store:scratch:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `getNotes` / `getScratch` / `getBundle` / `getAll` / `list` / `getNote` / `keysFor` / `subscribe` / `selfCheck`. No write API, no body-version model, no conflict-resolution editing in Phase 1e. Lives at `../store/notes.js`. See "Phase 1e — what landed" below.
 - **Phase 1f (landed)**: fourth read-only feature store — `H2O.Studio.store.navigator`. Reads native Navigator Engine per-chat state blob (`h2o:prm:cgx:nvgngn:state:navigator:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `get` / `getAll` / `getState` / `listPinned` / `listAliases` / `listCollapsed` / `keysFor` / `subscribe` / `selfCheck`. No write API, no pin/alias/collapse editing, no turn-model abstraction, no DOM-derived outline. Lives at `../store/navigator.js`. See "Phase 1f — what landed" below.
-- **Phase 1c–1f**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
+- **Phase 1g (landed)**: fifth read-only feature store — `H2O.Studio.store.capture`. Reads native Capture Engine per-chat store blob (`h2o:prm:cgx:capture:store:v1:${chatId}`) **and** UI state (`…:ui:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `getStore` / `getUi` / `getBundle` / `getAll` / `list` / `getItem` / `keysFor` / `subscribe` / `selfCheck`. No write API, no Capture item creation, no conversion to Notes/Bookmarks/Context, no archiving, no live selection. Capture stays inert in Studio V1 per `STUDIO_DOCK_PANEL_CONTRACT.md`. Lives at `../store/capture.js`. See "Phase 1g — what landed" below. **Read-only foundation complete.**
+- **Phase 1c–1g**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
 ## Code pattern (mandatory)
@@ -407,4 +408,72 @@ If `H2O.Studio.store.__registerEntity` is available at load time, the façade re
 - No remaining feature stores. Capture is deferred to the next read-only phase.
 - No schema migration. The façade preserves the native blob shape; it does not normalize pins/aliases/collapsed or fix legacy fields.
 - No write-back, no cross-surface sync beyond the existing `chrome.storage.onChanged` propagation that any reader on the same backend benefits from.
+- No extension of `fullBundle.v2`.
+
+## Phase 1g — what landed
+
+`store/capture.js` is the **fifth and final** read-only Studio Dock feature store façade. It exposes `H2O.Studio.store.capture`, reading the per-chat Capture Engine store blob and UI state written by `src-runtime-base/3X1a.…Capture Engine.js`. Same passive pattern as the sibling read-only stores: sync API, async hydrate on first read, filtered subscription via `platform.broadcast.onAnyChange`, no write API.
+
+With Phase 1g, the read-only Studio Dock feature-store foundation is **complete**. The six native Dock-feature engines (highlights, context, bookmarks, notes, navigator, capture) each have a Studio façade. The next phase (Phase 2A) introduces the actual visible Dock UI mount that consumes them.
+
+### `H2O.Studio.store.capture` API
+
+| Surface | Type | Behavior |
+|---|---|---|
+| `version` | string | `'0.1.0-phase-1g-readonly'`. |
+| `readonly` | boolean | Always `true`. |
+| `getStore(chatId)` | function | Returns the cached Capture store blob (or `null`). Native shape is `{version, items:Array<Item>, meta}`. Lazy-fetches on first call. |
+| `getUi(chatId)` | function | Returns the cached Capture UI state (or `null`). Native shape is `{version, subTab, sortBy, filter, query}`. |
+| `getBundle(chatId)` | function | Returns `{ chatId, store, ui, items, keys, found: { store, ui } }`. `items` is `normalizeItems(store)` — a shallow-copied array view. |
+| `getAll(chatId)` | function | Alias of `getBundle(chatId)`. |
+| `list(chatId)` | function | Returns just the items array (best-effort: native shape is `{items:[…]}`; missing fields yield `[]`). |
+| `getItem(chatId, itemId)` | function | Returns the item whose `id === itemId`, or `null`. |
+| `keysFor(chatId)` | function | Returns the frozen object `{ store: '…capture:store:v1:${chatId\|"unknown"}', ui: '…capture:ui:v1:${chatId\|"unknown"}' }`. Pure string-builder; no I/O. |
+| `subscribe(fn)` | function | Returns an unsubscribe function. Listener receives `{ type, key, chatId, value, oldValue, at, source }`. |
+| `selfCheck()` | function | Returns `{ ok, version, readonly, hasPlatformStorage, hasDockKeys, hasCapturePrefix, registeredWithStoreIndex, errors[] }`. |
+
+### Native blob shapes (from 3X1a.js:78, 82, 206-228)
+
+```
+store: { version: 1,
+         items:   Array<Item>,
+         meta:    { createdAt, updatedAt, lastReviewAt } }
+
+Item:  { id, chatId, kind, text, title, source,
+         routeSuggestion, status, tags, pinned,
+         createdAt, updatedAt, reviewedAt,
+         convertedTo, dismissed }
+
+ui:    { version, subTab: 'capture'|'review',
+         sortBy: 'newest'|…, filter: 'all'|…, query: string }
+```
+
+### Chat-id fallback
+
+The native engine (3X1a.js:44, 56) uses `STR.unknownChat = 'unknown'` as the bucket name when chatId is empty or missing. This façade matches that fallback verbatim. Passing an empty string or `null` reads from the same `…capture:store:v1:unknown` and `…capture:ui:v1:unknown` buckets the native engine writes.
+
+### Key construction (`dock-keys.js` untouched)
+
+`DockKeys.capturePrefix = 'h2o:prm:cgx:capture'` is just the namespace root — Phase 0B did not add `captureStoreKey` / `captureUiKey` helpers to `DockKeyFor`. Rather than edit `dock-keys.js` mid-foundation, `store/capture.js` builds the full keys locally from the verified native `':store:v1:'` / `':ui:v1:'` infixes. The infix value `:v1:` matches the native engine's `CFG.storeVersion = 1` (3X1a.js:35). If the native engine bumps that version in a future migration, this façade will need to update in lock-step.
+
+### Subscription filter
+
+`subscribe(fn)` is filtered to Capture store + UI keys only. The internal `platform.broadcast.onAnyChange` handler classifies each changed key against the two infix prefixes; non-matching keys are silently dropped. The migration marker `h2o:prm:cgx:capture:migrate:slot8-to-slot7:v1` (3X2a.js:28) is NOT a per-chat key and is correctly filtered out.
+
+### Registration with store index
+
+If `H2O.Studio.store.__registerEntity` is available at load time, the façade registers as the entity `'capture'`. Otherwise it attaches directly as `H2O.Studio.store.capture = api`. `selfCheck().registeredWithStoreIndex` reports which path was used.
+
+### What is still NOT in Phase 1g
+
+- No public write API (`set` / `update` / `remove` / `saveNow` / `convert` / `archive` / `create` are absent).
+- **No Capture item creation.** Studio cannot capture new items in V1.
+- **No conversion to Notes / Bookmarks / Context.** The native engine's "Capture → Notes/Bookmarks/Context" routing logic is not mirrored.
+- **No archiving / review-state mutation.**
+- **No live text selection.** Studio renders snapshots, not live chat; there is no live capture surface in V1 per `STUDIO_DOCK_PANEL_CONTRACT.md`.
+- No Dock UI. No DOM. No CSS. The Phase 2A Capture tab will be **inert** — it can render the cached items list but not mutate anything.
+- No tabs. No `dock/tabs/` directory yet.
+- No more feature stores after this — the foundation is complete.
+- No schema migration. The façade preserves the native blob shape.
+- No write-back, no cross-surface sync beyond `chrome.storage.onChanged` propagation.
 - No extension of `fullBundle.v2`.
