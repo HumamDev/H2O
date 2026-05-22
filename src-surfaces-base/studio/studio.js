@@ -28,6 +28,7 @@ const LIBRARY_SYNC_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
 const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
 const FOLDER_CLEANUP_AUDIT_KEY = "h2o:studio:folder-cleanup-audit:v1";
 const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
+const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
 const INTERFACE_COLORS = [
   { name: "gold", value: "rgba(212,175,55,1)" },
@@ -5292,6 +5293,23 @@ function renderSettingsRoute(){
             </div>
           </div>
           <div id="wbSettingsFolderConflictGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+          <div id="wbSettingsFolderConflictDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <div>
+              <div style="font-weight:600">Delete Empty Duplicate Conflicts</div>
+              <div id="wbSettingsFolderConflictDeleteSummary" style="opacity:.72;font-size:12px">Chrome mirror only. Canonical folders, Desktop SQLite, and native folder-state are not modified.</div>
+            </div>
+            <div id="wbSettingsFolderConflictDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button id="wbSettingsFolderConflictPreviewDelete" type="button" style="${btnStyle}">Preview conflict deletion JSON</button>
+              <button id="wbSettingsFolderConflictCopyDeletePlan" type="button" style="${btnStyle}">Copy conflict deletion plan JSON</button>
+            </div>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+              <span style="opacity:.72">Type <code>${esc("DELETE EMPTY DUPLICATE FOLDERS")}</code> to enable duplicate deletion.</span>
+              <input id="wbSettingsFolderConflictDeleteConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+            </label>
+            <button id="wbSettingsFolderConflictDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected empty duplicate folders</button>
+            <pre id="wbSettingsFolderConflictDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+          </div>
         </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
@@ -6125,6 +6143,7 @@ function settingsFolderConflictRenderPlan(panel, plan){
       : `<div style="opacity:.72;font-size:12px">No same-name folder conflicts detected.</div>`;
   }
   if (copyBtn) copyBtn.disabled = false;
+  settingsFolderConflictRenderDeletePanel(panel, plan);
 }
 
 async function settingsFolderConflictLoadInputs(seed = null){
@@ -6176,6 +6195,349 @@ async function copySettingsFolderConflictPlan(panel){
   }
   try { console.log("H2O_FOLDER_CONFLICT_REVIEW_PLAN", plan); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; folder conflict review plan printed to console as H2O_FOLDER_CONFLICT_REVIEW_PLAN.");
+}
+
+function settingsFolderConflictDeletionRows(plan){
+  const conflicts = Array.isArray(plan?.conflicts) ? plan.conflicts : [];
+  const rows = [];
+  for (const conflict of conflicts) {
+    const canonical = conflict?.canonicalFolder || null;
+    const duplicates = Array.isArray(conflict?.duplicateFolders) ? conflict.duplicateFolders : [];
+    for (const duplicate of duplicates) {
+      rows.push({
+        ...duplicate,
+        normalizedName: String(conflict?.normalizedName || duplicate?.normalizedName || duplicate?.name || "").trim().toLowerCase(),
+        canonicalFolderId: String(canonical?.folderId || "").trim(),
+        canonicalFolderName: String(canonical?.name || "").trim(),
+        canonicalFolder: canonical,
+      });
+    }
+  }
+  return rows;
+}
+
+function settingsFolderConflictDeletionBlockers(row, mirror = null){
+  const candidate = row && typeof row === "object" ? row : {};
+  const folderId = String(candidate.folderId || "").trim();
+  const blockers = [];
+  if (!folderId) blockers.push("missing duplicate folder ID");
+  if (!candidate.canonicalFolderId) blockers.push("missing canonical counterpart");
+  if (candidate.isCanonical) blockers.push("duplicate marked canonical");
+  if (/^f_/.test(folderId)) blockers.push("duplicate has canonical native ID prefix");
+  if (candidate.nativePresence) blockers.push("duplicate native-present");
+  if (settingsFolderCleanupIsF5DReviewCandidate(candidate)) blockers.push("F5D/Desktop review item");
+  if (settingsFolderCleanupNumber(candidate.knownCount) > 0) blockers.push("known rows present");
+  if (settingsFolderCleanupNumber(candidate.localBindingCount) > 0) blockers.push("local bindings present");
+  if (!mirror) blockers.push("Chrome mirror unavailable");
+  if (mirror) {
+    const folders = Array.isArray(mirror.folders) ? mirror.folders : [];
+    const folderExists = folders.some((folder) => String(folder?.id || folder?.folderId || "").trim() === folderId);
+    if (!folderExists) blockers.push("duplicate not present in Chrome mirror folders[]");
+    const items = mirror.items && typeof mirror.items === "object" ? mirror.items : {};
+    const bucket = items[folderId];
+    if (Array.isArray(bucket) && bucket.length > 0) blockers.push("items bucket non-empty");
+    if (bucket != null && !Array.isArray(bucket)) blockers.push("items bucket malformed");
+  }
+  return blockers;
+}
+
+function settingsFolderConflictEligibleDeletionRows(plan, mirror = null){
+  return settingsFolderConflictDeletionRows(plan)
+    .map((row) => ({
+      ...row,
+      deletionBlockers: settingsFolderConflictDeletionBlockers(row, mirror),
+    }))
+    .filter((row) => row.deletionBlockers.length === 0);
+}
+
+function settingsFolderConflictLooksEmptyDuplicate(row){
+  const candidate = row && typeof row === "object" ? row : {};
+  const folderId = String(candidate.folderId || "").trim();
+  if (!folderId || !candidate.canonicalFolderId) return false;
+  if (candidate.isCanonical || /^f_/.test(folderId) || candidate.nativePresence) return false;
+  if (settingsFolderCleanupIsF5DReviewCandidate(candidate)) return false;
+  if (settingsFolderCleanupNumber(candidate.knownCount) > 0) return false;
+  if (settingsFolderCleanupNumber(candidate.localBindingCount) > 0) return false;
+  return candidate.bucketState === "missing"
+    || (candidate.bucketState === "array" && settingsFolderCleanupNumber(candidate.bucketCount) === 0);
+}
+
+function settingsFolderConflictSelectedIds(panel){
+  const boxes = Array.from(panel?.querySelectorAll?.("#wbSettingsFolderConflictDeleteList input[data-folder-id]") || []);
+  return boxes
+    .filter((box) => !!box.checked)
+    .map((box) => String(box.dataset.folderId || "").trim())
+    .filter(Boolean);
+}
+
+function settingsFolderConflictRenderDeletePanel(panel, plan){
+  const summary = panel?.querySelector("#wbSettingsFolderConflictDeleteSummary");
+  const list = panel?.querySelector("#wbSettingsFolderConflictDeleteList");
+  const previewEl = panel?.querySelector("#wbSettingsFolderConflictDeletePreview");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderConflictCopyDeletePlan");
+  const chromeSurface = settingsFolderCleanupIsChromeSurface();
+  const mirrorUnavailable = !!plan?.mirrorWarning || !plan?.mirrorAvailable;
+  const candidates = chromeSurface && !mirrorUnavailable
+    ? settingsFolderConflictDeletionRows(plan).filter(settingsFolderConflictLooksEmptyDuplicate)
+    : [];
+  const previousSelected = new Set(Array.isArray(panel?.__h2oFolderConflictDeleteSelectedIds) ? panel.__h2oFolderConflictDeleteSelectedIds : []);
+
+  panel.__h2oFolderConflictDeletionPreview = null;
+  if (previewEl) {
+    previewEl.hidden = true;
+    previewEl.textContent = "";
+  }
+  if (copyBtn) copyBtn.disabled = true;
+  if (summary) {
+    summary.textContent = chromeSurface
+      ? "Chrome mirror only. Canonical folders, Desktop SQLite, and native folder-state are not modified."
+      : "Duplicate conflict cleanup is only available in Studio Launcher. Desktop cleanup is separate and not performed.";
+  }
+  if (list) {
+    if (!chromeSurface) {
+      list.innerHTML = `<div style="opacity:.72;font-size:12px">Unavailable on this surface. No SQLite writes are performed.</div>`;
+    } else if (mirrorUnavailable) {
+      list.innerHTML = `<div style="opacity:.72;font-size:12px">Chrome mirror buckets are unavailable, so duplicate deletion is disabled.</div>`;
+    } else if (!candidates.length) {
+      list.innerHTML = `<div style="opacity:.72;font-size:12px">No empty duplicate conflict folders are currently eligible for deletion.</div>`;
+    } else {
+      list.innerHTML = candidates.map((candidate) => {
+        const id = String(candidate.folderId || "").trim();
+        const checked = previousSelected.has(id) ? " checked" : "";
+        return `
+          <label style="display:grid;grid-template-columns:max-content 1fr;gap:8px;align-items:start;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+            <input type="checkbox" data-folder-id="${esc(id)}"${checked} />
+            <span style="display:flex;flex-direction:column;gap:3px">
+              <strong>${esc(candidate.name || id)}</strong>
+              <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(id)}</span>
+              <span style="font-size:12px;opacity:.76">Canonical counterpart ${esc(candidate.canonicalFolderId || "missing")} · ${esc(candidate.knownCount || 0)} known · ${esc(candidate.localBindingCount || 0)} local bindings</span>
+            </span>
+          </label>
+        `;
+      }).join("");
+    }
+  }
+  settingsFolderConflictUpdateDeleteControls(panel);
+}
+
+function settingsFolderConflictValidateDeletionSelection(selectedIds, plan, mirror){
+  const ids = Array.from(new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+  if (!settingsFolderCleanupIsChromeSurface()) {
+    return { ok: false, error: "Duplicate conflict cleanup is unavailable on this surface.", candidates: [], selectedDuplicateFolderIds: ids };
+  }
+  if (!ids.length) return { ok: false, error: "Select at least one empty duplicate conflict folder.", candidates: [], selectedDuplicateFolderIds: ids };
+  const duplicateRows = settingsFolderConflictDeletionRows(plan);
+  const byId = new Map(duplicateRows.map((row) => [String(row.folderId || "").trim(), row]));
+  const candidates = [];
+  for (const folderId of ids) {
+    const candidate = byId.get(folderId);
+    if (!candidate) return { ok: false, error: `${folderId} is not in the current same-name conflict model.`, candidates, selectedDuplicateFolderIds: ids };
+    const blockers = settingsFolderConflictDeletionBlockers(candidate, mirror);
+    if (blockers.length) {
+      return { ok: false, error: `${folderId} is not eligible: ${blockers.join(", ")}.`, candidates, selectedDuplicateFolderIds: ids };
+    }
+    candidates.push({
+      folderId,
+      name: candidate.name,
+      normalizedName: candidate.normalizedName,
+      canonicalFolderId: candidate.canonicalFolderId,
+      canonicalFolderName: candidate.canonicalFolderName,
+      bucketState: candidate.bucketState,
+      bucketCount: settingsFolderCleanupNumber(candidate.bucketCount),
+      knownCount: settingsFolderCleanupNumber(candidate.knownCount),
+      localBindingCount: settingsFolderCleanupNumber(candidate.localBindingCount),
+      nativePresence: !!candidate.nativePresence,
+      riskLevel: candidate.riskLevel || "high-review-required",
+      eligibilityReason: "Empty non-canonical same-name duplicate in Chrome mirror; canonical counterpart exists and no native presence, known rows, local bindings, F5D marker, or mirror items were found.",
+    });
+  }
+  return { ok: true, candidates, selectedDuplicateFolderIds: ids };
+}
+
+function settingsFolderConflictBuildDeletionPreview(selectedIds, plan, mirror){
+  const validation = settingsFolderConflictValidateDeletionSelection(selectedIds, plan, mirror);
+  if (!validation.ok) return { ok: false, error: validation.error, selectedDuplicateFolderIds: validation.selectedDuplicateFolderIds || [] };
+  const beforeSummary = settingsFolderCleanupFolderStateSummary(mirror.state);
+  return {
+    ok: true,
+    readOnly: false,
+    noMutation: true,
+    mutation: "preview-only",
+    generatedAt: new Date().toISOString(),
+    surface: "chrome-studio",
+    action: "delete-empty-duplicate-conflict-folders",
+    key: FOLDER_STATE_DATA_KEY,
+    selectedDuplicateFolderIds: validation.selectedDuplicateFolderIds,
+    canonicalCounterpartIds: Array.from(new Set(validation.candidates.map((row) => row.canonicalFolderId).filter(Boolean))),
+    selectedDuplicates: validation.candidates,
+    beforeFolderCount: beforeSummary.folderCount,
+    predictedAfterFolderCount: beforeSummary.folderCount - validation.selectedDuplicateFolderIds.length,
+    beforeFolderStateSummary: beforeSummary,
+    confirmationText: FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT,
+  };
+}
+
+function settingsFolderConflictUpdateDeleteControls(panel){
+  const chromeSurface = settingsFolderCleanupIsChromeSurface();
+  const selectedIds = settingsFolderConflictSelectedIds(panel);
+  panel.__h2oFolderConflictDeleteSelectedIds = selectedIds;
+  const preview = panel?.__h2oFolderConflictDeletionPreview;
+  const previewBtn = panel?.querySelector("#wbSettingsFolderConflictPreviewDelete");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderConflictCopyDeletePlan");
+  const confirmInput = panel?.querySelector("#wbSettingsFolderConflictDeleteConfirm");
+  const deleteBtn = panel?.querySelector("#wbSettingsFolderConflictDeleteSelected");
+  const confirmationOk = String(confirmInput?.value || "") === FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT;
+  const selectedMatchesPreview = !!preview?.ok
+    && JSON.stringify((preview.selectedDuplicateFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (previewBtn) previewBtn.disabled = !chromeSurface || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !chromeSurface || !selectedMatchesPreview || !confirmationOk;
+}
+
+async function previewSettingsFolderConflictDeletion(panel){
+  if (!panel) return null;
+  const previewEl = panel.querySelector("#wbSettingsFolderConflictDeletePreview");
+  const selectedIds = settingsFolderConflictSelectedIds(panel);
+  const loaded = await settingsFolderConflictLoadInputs();
+  if (!loaded.mirror) throw new Error(loaded.plan?.mirrorWarning || "Chrome mirror unavailable.");
+  const preview = settingsFolderConflictBuildDeletionPreview(selectedIds, loaded.plan, loaded.mirror);
+  panel.__h2oFolderConflictReviewPlan = loaded.plan;
+  panel.__h2oFolderConflictDeletionPreview = preview.ok ? preview : null;
+  if (previewEl) {
+    previewEl.hidden = false;
+    previewEl.textContent = JSON.stringify(preview, null, 2);
+  }
+  if (!preview.ok) settingsFolderParityLog(panel, "Folder conflict deletion preview blocked.\n" + String(preview.error || "Unknown guard failure"));
+  settingsFolderConflictUpdateDeleteControls(panel);
+  return preview;
+}
+
+async function copySettingsFolderConflictDeletionPlan(panel){
+  if (!panel) return;
+  let preview = panel.__h2oFolderConflictDeletionPreview;
+  if (!preview) preview = await previewSettingsFolderConflictDeletion(panel);
+  const text = JSON.stringify(preview || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Folder conflict deletion plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; conflict deletion plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CONFLICT_DELETE_PLAN", preview); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; folder conflict deletion plan printed to console as H2O_FOLDER_CONFLICT_DELETE_PLAN.");
+}
+
+async function deleteSelectedEmptyDuplicateConflictFolders(panel){
+  if (!panel) return;
+  const previewEl = panel.querySelector("#wbSettingsFolderConflictDeletePreview");
+  const confirmValue = String(panel.querySelector("#wbSettingsFolderConflictDeleteConfirm")?.value || "");
+  if (confirmValue !== FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT) {
+    settingsFolderParityLog(panel, "Duplicate deletion blocked. Confirmation text does not match.");
+    settingsFolderConflictUpdateDeleteControls(panel);
+    return;
+  }
+  const selectedIds = settingsFolderConflictSelectedIds(panel);
+  const existingPreview = panel.__h2oFolderConflictDeletionPreview;
+  const previewMatchesSelection = !!existingPreview?.ok
+    && JSON.stringify((existingPreview.selectedDuplicateFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
+  if (!previewMatchesSelection) {
+    settingsFolderParityLog(panel, "Duplicate deletion blocked. Generate a fresh deletion preview for the selected folders first.");
+    settingsFolderConflictUpdateDeleteControls(panel);
+    return;
+  }
+
+  const loaded = await settingsFolderConflictLoadInputs();
+  if (!loaded.mirror) throw new Error(loaded.plan?.mirrorWarning || "Chrome mirror unavailable.");
+  const validation = settingsFolderConflictValidateDeletionSelection(selectedIds, loaded.plan, loaded.mirror);
+  if (!validation.ok) {
+    settingsFolderParityLog(panel, "Duplicate deletion aborted before mutation.\n" + String(validation.error || "Guard failed"));
+    settingsFolderConflictUpdateDeleteControls(panel);
+    return;
+  }
+
+  const beforeSummary = settingsFolderCleanupFolderStateSummary(loaded.mirror.state);
+  const canonicalCounterpartIds = Array.from(new Set(validation.candidates.map((row) => row.canonicalFolderId).filter(Boolean)));
+  const pendingAudit = {
+    timestamp: new Date().toISOString(),
+    surface: "chrome-studio",
+    action: "delete-empty-duplicate-conflict-folders",
+    selectedDuplicateFolderIds: validation.selectedDuplicateFolderIds,
+    canonicalCounterpartIds,
+    beforeSelfCheck: loaded.selfCheck,
+    beforeConflictModel: loaded.plan,
+    beforeFolderStateSummary: beforeSummary,
+    beforeFolderStateSnapshot: settingsFolderCleanupClone(loaded.mirror.state),
+    result: "pending",
+    errors: [],
+  };
+
+  await settingsFolderCleanupAppendAudit(pendingAudit);
+
+  let resultAudit = {
+    ...pendingAudit,
+    timestamp: new Date().toISOString(),
+    beforeFolderStateSnapshot: null,
+  };
+  try {
+    const nextState = settingsFolderCleanupBuildNextState(loaded.mirror, validation.selectedDuplicateFolderIds);
+    await settingsFolderCleanupChromeSetStrict({ [FOLDER_STATE_DATA_KEY]: nextState });
+    try { W.H2O?.LibraryWorkspace?._bustCaches?.("folder-conflict-delete-empty-duplicates"); } catch {}
+    try { await W.H2O?.LibraryIndex?.refresh?.("folder-conflict-delete-empty-duplicates"); } catch {}
+
+    const afterLoaded = await settingsFolderConflictLoadInputs();
+    resultAudit = {
+      ...resultAudit,
+      result: "ok",
+      afterSelfCheck: afterLoaded.selfCheck,
+      afterFolderStateSummary: afterLoaded.mirror ? settingsFolderCleanupFolderStateSummary(afterLoaded.mirror.state) : null,
+      errors: [],
+    };
+    try { await settingsFolderCleanupAppendAudit(resultAudit); }
+    catch (auditErr) {
+      resultAudit.errors = ["Result audit append failed: " + String(auditErr && (auditErr.message || auditErr))];
+    }
+    const result = {
+      ok: true,
+      action: "delete-empty-duplicate-conflict-folders",
+      selectedDuplicateFolderIds: validation.selectedDuplicateFolderIds,
+      canonicalCounterpartIds,
+      beforeFolderStateSummary: beforeSummary,
+      afterFolderStateSummary: resultAudit.afterFolderStateSummary,
+      auditWarning: resultAudit.errors[0] || "",
+      auditKey: FOLDER_CLEANUP_AUDIT_KEY,
+    };
+    if (previewEl) {
+      previewEl.hidden = false;
+      previewEl.textContent = JSON.stringify(result, null, 2);
+    }
+    settingsFolderParityLog(panel, "Selected empty duplicate conflict folder(s) deleted. Canonical folders, native folder-state, and Desktop SQLite were not modified.");
+    panel.__h2oFolderConflictDeletionPreview = null;
+    panel.__h2oFolderConflictDeleteSelectedIds = [];
+    const input = panel.querySelector("#wbSettingsFolderConflictDeleteConfirm");
+    if (input) input.value = "";
+    await refreshSettingsFolderParity(panel);
+    const refreshedPreviewEl = panel.querySelector("#wbSettingsFolderConflictDeletePreview");
+    if (refreshedPreviewEl) {
+      refreshedPreviewEl.hidden = false;
+      refreshedPreviewEl.textContent = JSON.stringify(result, null, 2);
+    }
+  } catch (err) {
+    resultAudit = {
+      ...resultAudit,
+      result: "failed",
+      afterSelfCheck: null,
+      afterFolderStateSummary: null,
+      errors: [String(err && (err.stack || err.message || err))],
+    };
+    try { await settingsFolderCleanupAppendAudit(resultAudit); } catch {}
+    settingsFolderParityLog(panel, "Duplicate deletion failed after pending audit.\n" + String(err && (err.stack || err.message || err)));
+    throw err;
+  } finally {
+    settingsFolderConflictUpdateDeleteControls(panel);
+  }
 }
 
 function settingsFolderCleanupUpdateDeleteControls(panel){
@@ -6730,6 +7092,32 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderConflictCopy")?.addEventListener("click", () => {
     copySettingsFolderConflictPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictDeleteList")?.addEventListener("change", () => {
+    panel.__h2oFolderConflictDeletionPreview = null;
+    const previewEl = panel.querySelector("#wbSettingsFolderConflictDeletePreview");
+    if (previewEl) {
+      previewEl.hidden = true;
+      previewEl.textContent = "";
+    }
+    settingsFolderConflictUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictDeleteConfirm")?.addEventListener("input", () => {
+    settingsFolderConflictUpdateDeleteControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictPreviewDelete")?.addEventListener("click", () => {
+    previewSettingsFolderConflictDeletion(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictCopyDeletePlan")?.addEventListener("click", () => {
+    copySettingsFolderConflictDeletionPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderConflictDeleteSelected")?.addEventListener("click", () => {
+    deleteSelectedEmptyDuplicateConflictFolders(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderCleanupDeleteList")?.addEventListener("change", () => {
