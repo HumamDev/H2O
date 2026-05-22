@@ -836,6 +836,70 @@
     };
   }
 
+  function tombstoneReviewIngestUnavailable(code) {
+    return {
+      attempted: true,
+      dryRun: false,
+      ok: false,
+      found: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      selfOriginatedIgnored: 0,
+      malformed: 0,
+      unsupported: 0,
+      failed: 0,
+      warnings: [{ code: cleanString(code) || 'tombstone-review-store-unavailable' }],
+    };
+  }
+
+  function normalizeTombstoneReviewIngestResult(raw) {
+    var r = safeObject(raw);
+    return {
+      attempted: true,
+      dryRun: false,
+      ok: r.ok !== false,
+      found: numberOrZero(r.found),
+      inserted: numberOrZero(r.inserted),
+      updated: numberOrZero(r.updated),
+      skipped: numberOrZero(r.skipped),
+      selfOriginatedIgnored: numberOrZero(r.selfOriginatedIgnored),
+      malformed: numberOrZero(r.malformed),
+      unsupported: numberOrZero(r.unsupported),
+      failed: numberOrZero(r.failed),
+      warnings: Array.isArray(r.warnings)
+        ? r.warnings.map(function (warning) {
+          var out = { code: cleanString(warning && warning.code) || 'warning' };
+          if (warning && warning.count != null) out.count = numberOrZero(warning.count);
+          return out;
+        }).filter(function (warning) { return warning.code; })
+        : [],
+    };
+  }
+
+  async function maybeIngestTombstoneReviews(bundle, options) {
+    var opts = safeObject(options);
+    if (opts.ingestTombstoneReviews !== true) return null;
+    try {
+      var reviews = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      if (!reviews || typeof reviews.ingestBundleTombstones !== 'function') {
+        return tombstoneReviewIngestUnavailable('tombstone-review-store-unavailable');
+      }
+      var result = await reviews.ingestBundleTombstones(bundle, {
+        source: 'chrome-folder-sync',
+        dryRun: false,
+        allowSelfOrigin: false,
+        syncReason: cleanString(opts.reason),
+        bundleExportId: cleanString(bundle && bundle.exportId),
+        bundleSourceSyncPeerId: cleanString(bundle && bundle.sourceSyncPeerId),
+      });
+      return normalizeTombstoneReviewIngestResult(result);
+    } catch (error) {
+      pushError('tombstone-review-ingest', error);
+      return tombstoneReviewIngestUnavailable('tombstone-review-ingest-failed');
+    }
+  }
+
   async function syncNow(options) {
     var startedAt = Date.now();
     var opts = safeObject(options);
@@ -990,7 +1054,8 @@
         lastFileSize: state.lastFileSize,
       });
 
-      return {
+      var tombstoneReviewIngest = await maybeIngestTombstoneReviews(bundle, opts);
+      var result = {
         ok: true,
         phase: PHASE,
         mode: MODE,
@@ -1015,6 +1080,8 @@
         chromeWritesSyncFolder: false,
         status: 'sync-folder-imported',
       };
+      if (tombstoneReviewIngest) result.tombstoneReviewIngest = tombstoneReviewIngest;
+      return result;
     } catch (error) {
       state.lastSyncStatus = 'sync-folder-import-failed';
       state.lastSyncError = String(error && (error.message || error));

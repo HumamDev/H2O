@@ -1,8 +1,9 @@
 /* H2O Studio Store - Tombstone Reviews (Chrome / MV3 IndexedDB)
  *
- * F5F.4c.1 - inert Chrome-side review-store scaffold for future remote
- * tombstone review. This module does not ingest bundles automatically, apply
- * remote tombstones, delete Library records, or mutate entity stores.
+ * F5F.4c.1 - Chrome-side review-store scaffold for future remote tombstone
+ * review. F5F.4d adds explicit, gated bundle tombstone ingestion. This module
+ * never applies remote tombstones, deletes Library records, or mutates entity
+ * stores.
  *
  * Chrome/MV3-only: gates on extension runtime detection and silently no-ops on
  * Tauri Desktop. The Desktop implementation remains tombstone-reviews.tauri.js.
@@ -44,6 +45,8 @@
   var SCHEMA_VERSION = 1;
   var REVIEW_SCHEMA = 'h2o.studio.tombstone-review.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
+  var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
+  var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var DEFAULT_LIST_LIMIT = 100;
   var MAX_LIST_LIMIT = 1000;
 
@@ -67,6 +70,35 @@
     superseded: true,
     resolved: true,
   };
+  var KNOWN_TOMBSTONE_KINDS = {
+    chat: true,
+    snapshot: true,
+    folder: true,
+    folderBinding: true,
+    tag: true,
+    tagBinding: true,
+    label: true,
+    labelBinding: true,
+    category: true,
+    project: true,
+    visualMetadata: true,
+    linkedOnlyChat: true,
+    savedSnapshot: true,
+  };
+  var BINDING_TOMBSTONE_KINDS = {
+    folderBinding: true,
+    tagBinding: true,
+    labelBinding: true,
+  };
+  var REQUIRED_REMOTE_TOMBSTONE_FIELDS = [
+    'schema',
+    'tombstoneId',
+    'recordKind',
+    'recordId',
+    'deletedAt',
+    'deletedBySyncPeerId',
+    'deleteReason',
+  ];
 
   var state = {
     ready: false,
@@ -125,8 +157,33 @@
     return !!(value && typeof value === 'object' && !Array.isArray(value));
   }
 
+  function hasOwn(input, key) {
+    return Object.prototype.hasOwnProperty.call(Object(input), key);
+  }
+
   function nowIso() {
     return new Date().toISOString();
+  }
+
+  function bumpCounter(map, key, amount) {
+    var k = cleanScalar(key) || 'unknown';
+    map[k] = Number(map[k] || 0) + (amount == null ? 1 : Number(amount));
+  }
+
+  function isIsoLike(value) {
+    var s = cleanScalar(value);
+    return !!s && (/^\d{4}-\d{2}-\d{2}T/.test(s) || /^\d{10,}$/.test(s));
+  }
+
+  function parseTimeMs(value) {
+    var s = cleanScalar(value);
+    if (!s) return null;
+    if (/^\d{10,}$/.test(s)) {
+      var n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    }
+    var ms = Date.parse(s);
+    return Number.isFinite(ms) ? ms : null;
   }
 
   function generateReviewId() {
@@ -620,6 +677,320 @@
       .catch(function (e) { recordError('upsertReviewSighting', e); throw e; });
   }
 
+  function makeIngestResult(bundle, options) {
+    var opts = isObject(options) ? options : {};
+    var sourceProvided = cleanScalar(opts.source) !== '';
+    var source = sourceProvided ? cleanScalar(opts.source) : 'manual';
+    return {
+      schema: INGEST_SCHEMA,
+      ok: true,
+      dryRun: false,
+      source: source,
+      sourceSyncPeerIdPresent: !!cleanScalar(bundle && bundle.sourceSyncPeerId),
+      exportIdPresent: !!cleanScalar(bundle && bundle.exportId),
+      sequenceNumberPresent: bundle && bundle.sequenceNumber != null && bundle.sequenceNumber !== '',
+      tombstoneSchemaVersion: cleanScalar(bundle && bundle.tombstoneSchemaVersion),
+      found: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      selfOriginatedIgnored: 0,
+      malformed: 0,
+      skippedMalformed: 0,
+      unsupported: 0,
+      failed: 0,
+      byClassification: {},
+      byStatus: {},
+      warnings: sourceProvided ? [] : [{ code: 'missing-source-defaulted' }],
+    };
+  }
+
+  function pushIngestWarning(result, code) {
+    var c = cleanScalar(code);
+    if (!c) return;
+    for (var i = 0; i < result.warnings.length; i += 1) {
+      if (result.warnings[i] && result.warnings[i].code === c) {
+        result.warnings[i].count = Number(result.warnings[i].count || 1) + 1;
+        return;
+      }
+    }
+    result.warnings.push({ code: c });
+  }
+
+  function readLocalSyncPeerIdForIngest(result) {
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      pushIngestWarning(result, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanScalar(value && value.syncPeerId);
+        if (!peerId) pushIngestWarning(result, 'local-identity-unavailable');
+        return peerId;
+      }).catch(function () {
+        pushIngestWarning(result, 'local-identity-unavailable');
+        return '';
+      });
+    } catch (_) {
+      pushIngestWarning(result, 'local-identity-unavailable');
+      return Promise.resolve('');
+    }
+  }
+
+  function isCascadeRelated(tombstone, metaObject) {
+    var deleteReason = cleanScalar(tombstone && tombstone.deleteReason);
+    return !!(
+      cleanScalar(tombstone && tombstone.cascadeFrom) ||
+      /-cascade$/.test(deleteReason) ||
+      (metaObject && metaObject.cascade === true) ||
+      (metaObject && cleanScalar(metaObject.cascadeKind))
+    );
+  }
+
+  function isCascadeChild(tombstone, metaObject) {
+    var kind = cleanScalar(tombstone && tombstone.recordKind);
+    var deleteReason = cleanScalar(tombstone && tombstone.deleteReason);
+    return !!(
+      cleanScalar(tombstone && tombstone.cascadeFrom) ||
+      /-cascade$/.test(deleteReason) ||
+      (metaObject && metaObject.cascade === true && BINDING_TOMBSTONE_KINDS[kind]) ||
+      (metaObject && cleanScalar(metaObject.cascadeKind))
+    );
+  }
+
+  function validateRemoteTombstone(tombstone, parentRecordIds) {
+    var warnings = [];
+    var errors = [];
+    if (!isObject(tombstone)) {
+      errors.push({ code: 'tombstone-not-object' });
+      return {
+        ok: false,
+        malformed: true,
+        unsupported: false,
+        warnings: warnings,
+        errors: errors,
+        metaObject: null,
+        cascadeRelated: false,
+        cascadeChild: false,
+      };
+    }
+    for (var i = 0; i < REQUIRED_REMOTE_TOMBSTONE_FIELDS.length; i += 1) {
+      var field = REQUIRED_REMOTE_TOMBSTONE_FIELDS[i];
+      if (!cleanScalar(tombstone[field])) errors.push({ code: 'missing-' + field });
+    }
+    if (cleanScalar(tombstone.schema) && cleanScalar(tombstone.schema) !== TOMBSTONE_SCHEMA) {
+      errors.push({ code: 'invalid-tombstone-schema' });
+    }
+    var kind = cleanScalar(tombstone.recordKind);
+    var unsupported = !!(kind && !KNOWN_TOMBSTONE_KINDS[kind]);
+    if (unsupported) warnings.push({ code: 'unsupported-record-kind' });
+    if (hasOwn(tombstone, 'meta') && tombstone.meta != null && !isObject(tombstone.meta)) {
+      errors.push({ code: 'invalid-meta' });
+    }
+    if (cleanScalar(tombstone.deletedAt) && !isIsoLike(tombstone.deletedAt) && parseTimeMs(tombstone.deletedAt) == null) {
+      errors.push({ code: 'invalid-deleted-at' });
+    }
+    var metaObject = isObject(tombstone.meta) ? tombstone.meta : null;
+    var cascadeRelated = isCascadeRelated(tombstone, metaObject);
+    var cascadeChild = isCascadeChild(tombstone, metaObject);
+    if (cascadeChild && !cleanScalar(tombstone.cascadeFrom)) {
+      warnings.push({ code: 'missing-cascade-from' });
+    }
+    if (cleanScalar(tombstone.cascadeFrom) && parentRecordIds && !parentRecordIds[cleanScalar(tombstone.cascadeFrom)]) {
+      warnings.push({ code: 'missing-cascade-parent' });
+    }
+    return {
+      ok: errors.length === 0 && !unsupported,
+      malformed: errors.length > 0,
+      unsupported: unsupported,
+      warnings: warnings,
+      errors: errors,
+      metaObject: metaObject,
+      cascadeRelated: cascadeRelated,
+      cascadeChild: cascadeChild,
+    };
+  }
+
+  function classifyRemoteTombstone(tombstone, validation) {
+    if (validation.malformed) {
+      return {
+        classification: 'malformed-remote-tombstone',
+        localRecordExists: null,
+        localUpdatedAt: null,
+        localHasNewerEdit: null,
+        warnings: validation.errors.concat(validation.warnings),
+      };
+    }
+    if (validation.unsupported) {
+      return {
+        classification: 'unsupported-record-kind',
+        localRecordExists: null,
+        localUpdatedAt: null,
+        localHasNewerEdit: null,
+        warnings: validation.warnings.slice(),
+      };
+    }
+    if (validation.cascadeRelated) {
+      return {
+        classification: 'cascade-review',
+        localRecordExists: null,
+        localUpdatedAt: null,
+        localHasNewerEdit: null,
+        warnings: validation.warnings.slice(),
+      };
+    }
+    return {
+      classification: 'local-comparison-unavailable',
+      localRecordExists: null,
+      localUpdatedAt: null,
+      localHasNewerEdit: null,
+      warnings: validation.warnings.slice(),
+    };
+  }
+
+  function readSourceInfo(bundle) {
+    return {
+      sourceSyncPeerId: cleanScalar(bundle && bundle.sourceSyncPeerId),
+      exportId: cleanScalar(bundle && bundle.exportId),
+      sequenceNumber: bundle && bundle.sequenceNumber != null && bundle.sequenceNumber !== ''
+        ? Number(bundle.sequenceNumber)
+        : null,
+      tombstoneSchemaVersion: cleanScalar(bundle && bundle.tombstoneSchemaVersion),
+    };
+  }
+
+  function buildParentRecordIdSet(tombstones) {
+    var parents = {};
+    for (var i = 0; i < tombstones.length; i += 1) {
+      var row = tombstones[i];
+      if (isObject(row)) {
+        var recordId = cleanScalar(row.recordId);
+        if (recordId) parents[recordId] = true;
+      }
+    }
+    return parents;
+  }
+
+  function buildReviewRecordFromTombstone(tombstone, sourceInfo, classification) {
+    var remoteSyncPeerId = cleanScalar(sourceInfo.sourceSyncPeerId) || cleanScalar(tombstone && tombstone.deletedBySyncPeerId);
+    var record = {
+      schema: REVIEW_SCHEMA,
+      remoteTombstoneId: cleanScalar(tombstone && tombstone.tombstoneId),
+      remoteSyncPeerId: remoteSyncPeerId,
+      remoteExportId: nullableString(sourceInfo.exportId),
+      remoteSequenceNumber: sourceInfo.sequenceNumber == null || sourceInfo.sequenceNumber === '' ? null : Number(sourceInfo.sequenceNumber),
+      recordKind: nullableString(tombstone && tombstone.recordKind),
+      recordId: nullableString(tombstone && tombstone.recordId),
+      deleteReason: nullableString(tombstone && tombstone.deleteReason),
+      remoteDeletedAt: nullableString(tombstone && tombstone.deletedAt),
+      lastSeenExportId: nullableString(sourceInfo.exportId),
+      localRecordExists: classification.localRecordExists,
+      localUpdatedAt: classification.localUpdatedAt,
+      localHasNewerEdit: classification.localHasNewerEdit,
+      classification: classification.classification,
+      status: 'pending',
+      dedupeKey: '',
+      rawTombstoneJson: JSON.stringify(tombstone),
+      warningsJson: JSON.stringify(classification.warnings || []),
+    };
+    record.dedupeKey = buildDedupeKey(record);
+    return record;
+  }
+
+  function addIngestCount(result, classification, status) {
+    bumpCounter(result.byClassification, classification || 'unknown');
+    bumpCounter(result.byStatus, status || 'unknown');
+    if (classification === 'malformed-remote-tombstone') result.malformed += 1;
+    if (classification === 'unsupported-record-kind') result.unsupported += 1;
+  }
+
+  function handleIngestRow(tombstone, sourceInfo, parentRecordIds, result) {
+    var validation = validateRemoteTombstone(tombstone, parentRecordIds);
+    var classification = classifyRemoteTombstone(tombstone, validation);
+    var row = isObject(tombstone) ? tombstone : {};
+    var reviewRecord = null;
+    (classification.warnings || []).forEach(function (warning) {
+      pushIngestWarning(result, warning && warning.code);
+    });
+    try {
+      reviewRecord = buildReviewRecordFromTombstone(row, sourceInfo, classification);
+    } catch (_) {
+      reviewRecord = null;
+    }
+    addIngestCount(result, classification.classification, 'pending');
+    if (!reviewRecord || !reviewRecord.dedupeKey) {
+      result.skipped += 1;
+      if (classification.classification === 'malformed-remote-tombstone') result.skippedMalformed += 1;
+      pushIngestWarning(result, 'review-dedupe-key-unavailable');
+      return Promise.resolve(null);
+    }
+    return getByDedupeKey(reviewRecord.dedupeKey).then(function (existing) {
+      return upsertReviewSighting(reviewRecord).then(function () {
+        if (existing) result.updated += 1;
+        else result.inserted += 1;
+      });
+    }).catch(function () {
+      result.failed += 1;
+      result.ok = false;
+      pushIngestWarning(result, 'review-write-failed');
+    });
+  }
+
+  function ingestBundleTombstones(bundleInput, sourceContext) {
+    var bundle = isObject(bundleInput) ? bundleInput : null;
+    var result = makeIngestResult(bundle || {}, sourceContext);
+    var opts = isObject(sourceContext) ? sourceContext : {};
+    if (!bundle) {
+      result.ok = false;
+      pushIngestWarning(result, 'bundle-not-object');
+      return Promise.resolve(result);
+    }
+    if (!hasOwn(bundle, 'tombstones')) {
+      pushIngestWarning(result, 'missing-tombstone-array');
+      return Promise.resolve(result);
+    }
+    if (!Array.isArray(bundle.tombstones)) {
+      pushIngestWarning(result, 'tombstones-not-array');
+      return Promise.resolve(result);
+    }
+    var sourceInfo = readSourceInfo(bundle);
+    result.sourceSyncPeerIdPresent = !!sourceInfo.sourceSyncPeerId;
+    result.exportIdPresent = !!sourceInfo.exportId;
+    result.sequenceNumberPresent = sourceInfo.sequenceNumber != null;
+    result.tombstoneSchemaVersion = sourceInfo.tombstoneSchemaVersion;
+    result.found = bundle.tombstones.length;
+    if (!sourceInfo.sourceSyncPeerId) pushIngestWarning(result, 'missing-source-sync-peer-id');
+    var parentRecordIds = buildParentRecordIdSet(bundle.tombstones);
+    return readLocalSyncPeerIdForIngest(result).then(function (localPeerId) {
+      var selfOrigin = !!(
+        sourceInfo.sourceSyncPeerId &&
+        localPeerId &&
+        sourceInfo.sourceSyncPeerId === localPeerId &&
+        opts.allowSelfOrigin !== true
+      );
+      if (selfOrigin) {
+        result.selfOriginatedIgnored = bundle.tombstones.length;
+        result.skipped += bundle.tombstones.length;
+        return result;
+      }
+      return ensureReady().then(function () {
+        var chain = Promise.resolve();
+        bundle.tombstones.forEach(function (tombstone) {
+          chain = chain.then(function () {
+            return handleIngestRow(tombstone, sourceInfo, parentRecordIds, result);
+          });
+        });
+        return chain.then(function () { return result; });
+      });
+    }).catch(function (e) {
+      recordError('ingestBundleTombstones', e);
+      result.ok = false;
+      pushIngestWarning(result, 'ingest-failed');
+      return result;
+    });
+  }
+
   function markStatus(reviewIdInput, status, reason) {
     var reviewId = cleanString(reviewIdInput);
     if (!reviewId) return Promise.reject(new Error('reviewId required'));
@@ -760,7 +1131,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5f.4c.1',
+    __version: '0.1.0-f5f.4d',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -778,12 +1149,15 @@
     countByStatus: countByStatus,
     markIgnored: markIgnored,
     markRejected: markRejected,
+    ingestBundleTombstones: ingestBundleTombstones,
     diagnose: diagnose,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
+      ingestSchema: INGEST_SCHEMA,
+      tombstoneSchema: TOMBSTONE_SCHEMA,
       dbName: DB_NAME,
       dbVersion: DB_VERSION,
       storeName: STORE_NAME,

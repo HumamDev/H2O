@@ -1100,6 +1100,74 @@ F5F.4c.1 is a prerequisite only. Future Chrome tombstone ingestion requires a
 separate gated phase, and remote tombstones remain evidence rather than
 commands.
 
+## F5F.4d Chrome Gated Review Ingest
+
+F5F.4d adds Chrome/MV3 tombstone review ingestion as an explicit, default-off
+developer option on folder sync:
+
+```js
+await H2O.Studio.sync.folder.syncNow({
+  reason: 'f5f4d-gated-review-ingest',
+  ingestTombstoneReviews: true
+})
+```
+
+The default call remains unchanged:
+
+```js
+await H2O.Studio.sync.folder.syncNow()
+```
+
+Default sync does not ingest tombstones and does not include
+`tombstoneReviewIngest` in its result. Focus, visibility, and boot auto-sync
+triggers continue to call `syncNow({ autoSync: true, reason })` without the
+ingestion gate, so they do not create review rows.
+
+Chrome `H2O.Studio.store.tombstoneReviews.ingestBundleTombstones(bundle,
+sourceContext)` mirrors the Desktop ingestion result shape but uses conservative
+Chrome classification:
+
+- malformed tombstones -> `malformed-remote-tombstone`
+- unknown record kinds -> `unsupported-record-kind`
+- cascade-related tombstones -> `cascade-review`
+- known non-cascade tombstones -> `local-comparison-unavailable`
+
+Chrome local folder/folderBinding existence comparison is intentionally deferred
+to a later phase. F5F.4d never applies tombstones, deletes Library records,
+modifies folders/chats/snapshots/tags/labels/categories, or exposes apply
+methods.
+
+When gated, `syncNow()` calls review ingestion only after normal bundle import
+succeeds. Review ingestion is best-effort and cannot change the normal sync
+`ok` value. The returned result is redacted and counts-only:
+
+```js
+{
+  tombstoneReviewIngest: {
+    attempted: true,
+    dryRun: false,
+    ok,
+    found,
+    inserted,
+    updated,
+    skipped,
+    selfOriginatedIgnored,
+    malformed,
+    unsupported,
+    failed,
+    warnings
+  }
+}
+```
+
+If the review store is unavailable or ingestion throws, normal sync behavior is
+unchanged and the gated result reports an unavailable/failed warning. Missing or
+non-array `tombstones` fields produce warnings and zero writes. Self-origin
+bundles are skipped by default via `H2O.Studio.identity.whenReady()`.
+
+The sync result must not expose full peer IDs, record IDs, tombstone IDs, raw
+tombstones, metadata, user-visible names, or transcript content.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
