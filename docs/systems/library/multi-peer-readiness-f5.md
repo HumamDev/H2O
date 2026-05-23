@@ -3418,3 +3418,12 @@ The optional teardown command removes only the fixed validation IDs and only
 when `is_synthetic = 1`. It never deletes by prefix alone. It is intended for
 removing the intentionally blocked pending review after final validation, or
 for exact-ID rollback if validation is interrupted.
+
+## Next Phase Pointer — F6 Conflict Queue
+
+F6 starts the non-delete conflict queue model. F5/F5H remain responsible for
+tombstones, delete evidence, reviewed delete apply, lifecycle, and cleanup.
+The F6 model is documented separately in
+[sync-conflict-queue-f6.md](sync-conflict-queue-f6.md). F6.0 is docs-only:
+no schema, store, analyzer, UI, import/export/sync, apply, or cleanup behavior
+changes.
