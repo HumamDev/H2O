@@ -365,23 +365,39 @@ Avoid dangerous or premature APIs entirely:
 - `forceRemoteWins()`
 - `deleteLocal()`
 
-## 16. Registration And Loading Plan For F6.1b.1
+## 16. F6.1b.1 Read-Only Store Registration
 
-Preferred future module:
+F6.1b.1 adds the Desktop-only read-only store module:
 
 ```txt
 src-surfaces-base/studio/store/conflicts.tauri.js
 ```
+
+It registers `H2O.Studio.store.conflicts` and exposes only observation helpers:
+
+- `init()`
+- `dispose()`
+- `isReady()`
+- `diagnose()`
+- `listConflicts(filters)`
+- `getConflict(conflictId)`
+- `countByStatus()`
+- `countByKind()`
+- `countBySeverity()`
+- `validateConflict(record)`
+- `constants`
 
 Rules:
 
 - Do not bloat `studio.js`.
 - Do not put conflict logic in `tombstone-reviews.tauri.js`.
 - Do not touch F5 cleanup/apply modules.
-- Avoid `studio.html` and packer touches while active Studio WIP exists.
-- Coordinate with the FolderParity/Ribbon/Dock/Overlay lane before adding
-  script registration.
+- Registration/loading diffs must be minimal and limited to script/packer
+  inclusion. Unrelated Studio/Ribbon/Dock/Overlay work must not be staged.
 - Chrome conflict store is deferred.
+- The store must remain read-only: table checks, counts, `SELECT` queries, and
+  redacted row summaries only. It must not expose conflict creation, ingestion,
+  merge/apply, or generic SQL helpers.
 
 ## 17. Diagnostics Model
 
@@ -459,9 +475,12 @@ F6.1b.0-specific validation should prove:
 F6.1b.1-specific validation should prove:
 
 - Empty-table diagnostics return `total: 0`.
+- Missing-table diagnostics return `ready: false` and
+  `sync-conflicts-table-missing`.
 - Enum validation accepts only the allowed sets listed above.
 - `listConflicts()` filters cannot inject SQL and return redacted summaries.
 - `getConflict()` redacts raw JSON by default.
+- The store module contains no SQL row or schema mutation statements.
 - No import/export/sync/F5/FolderParity files are touched.
 
 ## 21. F6.1b Acceptance Criteria
@@ -485,6 +504,8 @@ F6.1b.1 is acceptable only if:
 - No `studio.js` bloat.
 - No FolderParity/Ribbon/Dock/Overlay conflict.
 - No Chrome conflict store.
+- Registration is limited to the focused module entry and packer/script
+  inclusion.
 
 ## 22. Risks And Mitigations
 
@@ -514,7 +535,7 @@ F6.1b.1 is acceptable only if:
 
 ## 24. Recommendation
 
-The next implementation after this document should still be conservative:
-F6.1b.0 may add only the inert Desktop SQLite migration. F6.1b.1 should wait
-until Studio loader/packer ownership is clear. Do not touch FolderParity
-renderer work from the other lane.
+The next implementation after F6.1b.1 should remain conservative. F6.2 may add
+an analyzer-only conflict candidate report, but it must not ingest conflict rows
+automatically, merge, apply, or start bidirectional sync. Do not touch
+FolderParity renderer work from the other lane.

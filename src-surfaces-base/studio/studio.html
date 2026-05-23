@@ -439,6 +439,10 @@
        scaffold for future remote tombstone review. No bundle ingestion,
        delete apply, importer wiring, or Library record mutation. -->
   <script src="./store/tombstone-reviews.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed general sync conflict queue (F6.1b.1).
+       Read-only diagnostics/list/get scaffold over sync_conflicts; no
+       ingestion, analyzer hook, merge/apply, or sync behavior change. -->
+  <script src="./store/conflicts.tauri.js"></script>
   <!-- Chrome/MV3-only: IndexedDB-backed tombstone review queue scaffold
        (F5F.4c.1). Registers the same H2O.Studio.store.tombstoneReviews API on
        Chrome only, without sync ingestion, delete apply, or Library mutation. -->
