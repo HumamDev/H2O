@@ -16,10 +16,13 @@
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::synthetic_marker;
+
+pub const PREVIEW_TOKEN_PREFIX: &str = "ptok1:";
 
 pub const DRY_RUN_RESULT_SCHEMA: &str = "h2o.studio.synthetic-cleanup-transaction-dry-run.v1";
 pub const AUDIT_SCHEMA: &str = "h2o.studio.sync.maintenance.v1";
@@ -85,6 +88,32 @@ pub struct RollbackState {
     pub rollback_reason: Option<String>,
 }
 
+// F5H.3b.1a — opt-in candidate ID + token surface. These fields are
+// populated ONLY when the caller passes `include_candidate_ids = true`.
+// Default behavior (no flag) returns the F5H.3b.0d shape exactly.
+
+#[derive(Serialize, Clone, Debug)]
+pub struct CandidateIds {
+    #[serde(rename = "syncTombstoneReviewIds")]
+    pub sync_tombstone_review_ids: Vec<String>,
+    #[serde(rename = "syncTombstoneIds")]
+    pub sync_tombstone_ids: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ExpectedCounts {
+    pub reviews: i64,
+    pub tombstones: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct DbFingerprint {
+    #[serde(rename = "schemaUserVersion")]
+    pub schema_user_version: i64,
+    #[serde(rename = "migrationCount")]
+    pub migration_count: i64,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct DryRunResult {
     pub schema: &'static str,
@@ -107,6 +136,17 @@ pub struct DryRunResult {
     pub actions: ActionsState,
     pub rollback: RollbackState,
     pub warnings: Vec<String>,
+
+    // F5H.3b.1a — populated only when include_candidate_ids = true.
+    // Skipped from JSON output otherwise to keep default redaction.
+    #[serde(rename = "candidateIds", skip_serializing_if = "Option::is_none")]
+    pub candidate_ids: Option<CandidateIds>,
+    #[serde(rename = "expectedCounts", skip_serializing_if = "Option::is_none")]
+    pub expected_counts: Option<ExpectedCounts>,
+    #[serde(rename = "previewToken", skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
+    #[serde(rename = "dbFingerprint", skip_serializing_if = "Option::is_none")]
+    pub db_fingerprint: Option<DbFingerprint>,
 }
 
 impl DryRunResult {
@@ -140,6 +180,10 @@ impl DryRunResult {
                 rollback_reason: None,
             },
             warnings: vec![],
+            candidate_ids: None,
+            expected_counts: None,
+            preview_token: None,
+            db_fingerprint: None,
         }
     }
 
@@ -212,6 +256,79 @@ async fn table_exists(conn: &mut SqliteConnection, table: &str) -> bool {
     rows.map(|r| !r.is_empty()).unwrap_or(false)
 }
 
+// F5H.3b.1a — sort + dedupe a vector of IDs. Stable in-place sort (Rust
+// std uses Timsort). Dedupe drops consecutive equals after sort, which
+// is equivalent to set-uniqueness because the sort puts duplicates
+// adjacent. Used both for the returned candidate ID lists and as input
+// to the deterministic preview token.
+fn sort_dedupe(mut ids: Vec<String>) -> Vec<String> {
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// F5H.3b.1a — deterministic preview token. Recomputable from
+/// caller-supplied + DB-queried inputs alone; no timestamps, no randomness.
+/// F5H.3b.1b cleanup will call this with the caller-provided candidate
+/// IDs/counts and the current DB fingerprint, and reject if the result
+/// does not match the token the caller passed back.
+pub fn compute_preview_token(
+    schema_user_version: i64,
+    migration_count: i64,
+    sorted_review_ids: &[String],
+    sorted_tombstone_ids: &[String],
+    expected_reviews: i64,
+    expected_tombstones: i64,
+) -> String {
+    let mut input = String::new();
+    input.push_str(synthetic_marker::SYNTHETIC_PREDICATE_VERSION);
+    input.push('\n');
+    input.push_str(&format!("schemaUserVersion={schema_user_version}"));
+    input.push('\n');
+    input.push_str(&format!("migrationCount={migration_count}"));
+    input.push('\n');
+    input.push_str(&format!("reviews={}", sorted_review_ids.join(",")));
+    input.push('\n');
+    input.push_str(&format!("tombstones={}", sorted_tombstone_ids.join(",")));
+    input.push('\n');
+    input.push_str(&format!("expectedReviews={expected_reviews}"));
+    input.push('\n');
+    input.push_str(&format!("expectedTombstones={expected_tombstones}"));
+
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let bytes = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for b in bytes.iter() {
+        hex.push_str(&format!("{:02x}", b));
+    }
+    format!("{}{}", PREVIEW_TOKEN_PREFIX, hex)
+}
+
+/// F5H.3b.1a — read the DB fingerprint inputs for the preview token.
+/// `schema_user_version` from `PRAGMA user_version` (tauri-plugin-sql
+/// bumps this with each migration; currently 9 after F5H.3b.0d).
+/// `migration_count` from `_sqlx_migrations` if present; defaults to 0
+/// when the table is missing (e.g. ad-hoc test schema setups).
+pub async fn read_db_fingerprint(
+    conn: &mut SqliteConnection,
+) -> Result<DbFingerprint, sqlx::Error> {
+    let (user_version,): (i64,) = sqlx::query_as("PRAGMA user_version")
+        .fetch_one(&mut *conn)
+        .await?;
+    let migration_count: i64 = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM _sqlx_migrations",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map(|(c,)| c)
+    .unwrap_or(0);
+    Ok(DbFingerprint {
+        schema_user_version: user_version,
+        migration_count,
+    })
+}
+
 /// Failure mode injection — TEST USE ONLY. Production callers always pass
 /// `None`. Used by the F5H.3b.0d unit suite to simulate audit-insert and
 /// delete-count-mismatch races.
@@ -225,12 +342,21 @@ pub enum DryRunFailure {
 /// Run the dry-run transaction. Always ROLLBACKs (even on apparent success).
 /// `now_iso` controls the age-floor cutoff used by SYNTHETIC_PREDICATE_V1.
 /// `requested_by` and `reason` go into the (rolled-back) audit row only.
+///
+/// F5H.3b.1a — when `include_candidate_ids` is true and the dry-run
+/// succeeds, the returned result additionally carries `candidate_ids`,
+/// `expected_counts`, `preview_token`, and `db_fingerprint` populated.
+/// These give a future F5H.3b.1b real-cleanup caller the exact inputs
+/// it must echo back, plus a deterministic token Rust will recompute
+/// at cleanup time to detect drift. Default behavior (flag false) is
+/// byte-identical to F5H.3b.0d.
 pub async fn run_dry_run(
     conn: &mut SqliteConnection,
     now_iso: String,
     requested_by: String,
     reason: String,
     inject_failure: Option<DryRunFailure>,
+    include_candidate_ids: bool,
 ) -> DryRunResult {
     let mut result = DryRunResult::skeleton(&now_iso);
 
@@ -411,6 +537,8 @@ pub async fn run_dry_run(
         Ok(InnerSuccess {
             tombstone_count: tombstone_deleted,
             review_count: review_deleted,
+            tombstone_ids,
+            review_ids,
         })
     }
     .await;
@@ -450,6 +578,51 @@ pub async fn run_dry_run(
                 reviews: success.review_count,
                 total: success.tombstone_count + success.review_count,
             };
+
+            // F5H.3b.1a — opt-in candidate-id + token surface. Only
+            // populated on successful dry-run when the caller requested
+            // it. Default callers (flag false) get the F5H.3b.0d shape.
+            //
+            // Token is computed AFTER rollback so the DB fingerprint we
+            // read reflects committed state, not the rolled-back txn.
+            // The candidate IDs were captured inside the txn (snapshot
+            // consistent) and survive rollback since they're just Vec<String>.
+            if include_candidate_ids {
+                let sorted_reviews = sort_dedupe(success.review_ids);
+                let sorted_tombstones = sort_dedupe(success.tombstone_ids);
+                match read_db_fingerprint(conn).await {
+                    Ok(fp) => {
+                        let token = compute_preview_token(
+                            fp.schema_user_version,
+                            fp.migration_count,
+                            &sorted_reviews,
+                            &sorted_tombstones,
+                            success.review_count,
+                            success.tombstone_count,
+                        );
+                        result.candidate_ids = Some(CandidateIds {
+                            sync_tombstone_review_ids: sorted_reviews,
+                            sync_tombstone_ids: sorted_tombstones,
+                        });
+                        result.expected_counts = Some(ExpectedCounts {
+                            reviews: success.review_count,
+                            tombstones: success.tombstone_count,
+                        });
+                        result.preview_token = Some(token);
+                        result.db_fingerprint = Some(fp);
+                    }
+                    Err(e) => {
+                        // Don't fail the whole dry-run — emit a warning
+                        // and leave the optional fields unset. ok stays
+                        // true because the predicate + transaction shape
+                        // still proved out; only the token surface failed.
+                        result
+                            .warnings
+                            .push(format!("preview-token-skipped: fingerprint read failed: {e}"));
+                    }
+                }
+            }
+
             result
         }
         Err(failure) => {
@@ -471,6 +644,12 @@ pub async fn run_dry_run(
 struct InnerSuccess {
     tombstone_count: i64,
     review_count: i64,
+    // F5H.3b.1a — carry the eligible ID lists out of the inner closure
+    // so the outer function can return them when include_candidate_ids
+    // is set. The lists are SQL-snapshot consistent with the txn that
+    // produced them; rollback does not invalidate them.
+    tombstone_ids: Vec<String>,
+    review_ids: Vec<String>,
 }
 
 struct InnerFailure {
@@ -535,5 +714,126 @@ mod dryrun_tests {
         assert_ne!(a, b);
         assert!(a.starts_with("f5h3b0d-dry-"));
         assert!(b.starts_with("f5h3b0d-dry-"));
+    }
+
+    // ── F5H.3b.1a — pure-function tests for the preview token surface.
+    // DB-touching tests live in lib.rs (the F5H.3b.1a integration suite)
+    // because they need the migrated SqliteConnection from set_pool.
+
+    #[test]
+    fn f5h3b1a_sort_dedupe_sorts_and_drops_duplicates() {
+        let v = sort_dedupe(vec![
+            "f5h-zeta".into(),
+            "f5h-alpha".into(),
+            "f5h-zeta".into(),
+            "f5h-beta".into(),
+            "f5h-alpha".into(),
+        ]);
+        assert_eq!(v, vec!["f5h-alpha", "f5h-beta", "f5h-zeta"]);
+    }
+
+    #[test]
+    fn f5h3b1a_sort_dedupe_preserves_case() {
+        // The contract SQL uses LOWER() for prefix matching, but the
+        // returned IDs preserve as-stored case. We must not lowercase
+        // here or token recomputation in F5H.3b.1b will diverge.
+        let v = sort_dedupe(vec!["F5H-Aaa".into(), "f5h-bbb".into()]);
+        assert_eq!(v, vec!["F5H-Aaa", "f5h-bbb"]);
+    }
+
+    #[test]
+    fn f5h3b1a_token_has_v1_prefix_and_hex_body() {
+        let t = compute_preview_token(9, 9, &[], &[], 0, 0);
+        assert!(t.starts_with("ptok1:"), "expected ptok1: prefix, got {t}");
+        let body = &t["ptok1:".len()..];
+        assert_eq!(body.len(), 64, "expected sha256 hex (64 chars)");
+        assert!(
+            body.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "expected lowercase hex only, got {body}"
+        );
+    }
+
+    #[test]
+    fn f5h3b1a_token_is_deterministic_for_same_inputs() {
+        let a = compute_preview_token(
+            9, 9,
+            &["f5h-r1".into(), "f5h-r2".into()],
+            &["f5h-t1".into()],
+            2, 1,
+        );
+        let b = compute_preview_token(
+            9, 9,
+            &["f5h-r1".into(), "f5h-r2".into()],
+            &["f5h-t1".into()],
+            2, 1,
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn f5h3b1a_token_changes_when_id_set_changes() {
+        let a = compute_preview_token(9, 9, &["f5h-r1".into()], &["f5h-t1".into()], 1, 1);
+        let b = compute_preview_token(
+            9, 9,
+            &["f5h-r1".into(), "f5h-r2".into()],
+            &["f5h-t1".into()],
+            2, 1,
+        );
+        assert_ne!(a, b, "adding a review must change the token");
+    }
+
+    #[test]
+    fn f5h3b1a_token_changes_when_expected_counts_change() {
+        let ids = vec!["f5h-r1".to_string()];
+        let a = compute_preview_token(9, 9, &ids, &[], 1, 0);
+        let b = compute_preview_token(9, 9, &ids, &[], 1, 1);
+        assert_ne!(a, b, "expected-counts skew must change the token");
+    }
+
+    #[test]
+    fn f5h3b1a_token_changes_when_schema_version_changes() {
+        let a = compute_preview_token(9, 9, &[], &[], 0, 0);
+        let b = compute_preview_token(10, 9, &[], &[], 0, 0);
+        assert_ne!(a, b, "schema user_version bump must change the token");
+    }
+
+    #[test]
+    fn f5h3b1a_token_changes_when_migration_count_changes() {
+        let a = compute_preview_token(9, 9, &[], &[], 0, 0);
+        let b = compute_preview_token(9, 10, &[], &[], 0, 0);
+        assert_ne!(a, b, "migration count bump must change the token");
+    }
+
+    #[test]
+    fn f5h3b1a_token_is_order_independent_via_sort_dedupe() {
+        // The function itself takes already-sorted inputs by contract.
+        // Verify that sort_dedupe gives the same token for two inputs
+        // that differ only in order/duplicates.
+        let a_ids = sort_dedupe(vec!["f5h-r2".into(), "f5h-r1".into()]);
+        let b_ids = sort_dedupe(vec!["f5h-r1".into(), "f5h-r2".into(), "f5h-r1".into()]);
+        let a = compute_preview_token(9, 9, &a_ids, &[], 2, 0);
+        let b = compute_preview_token(9, 9, &b_ids, &[], 2, 0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn f5h3b1a_skeleton_omits_optional_token_fields() {
+        let r = DryRunResult::skeleton("2026-06-01T00:00:00Z");
+        assert!(r.candidate_ids.is_none());
+        assert!(r.expected_counts.is_none());
+        assert!(r.preview_token.is_none());
+        assert!(r.db_fingerprint.is_none());
+    }
+
+    #[test]
+    fn f5h3b1a_default_json_does_not_leak_candidate_fields() {
+        // skip_serializing_if = "Option::is_none" — when the optional
+        // fields are None (default path), they MUST NOT appear in JSON.
+        let r = DryRunResult::skeleton("2026-06-01T00:00:00Z");
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(!s.contains("candidateIds"), "candidateIds leaked: {s}");
+        assert!(!s.contains("expectedCounts"), "expectedCounts leaked: {s}");
+        assert!(!s.contains("previewToken"), "previewToken leaked: {s}");
+        assert!(!s.contains("dbFingerprint"), "dbFingerprint leaked: {s}");
     }
 }

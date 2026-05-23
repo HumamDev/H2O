@@ -147,7 +147,7 @@ the loose heuristic flags.
 - Does not backfill `is_synthetic = 1` on existing rows.
 - Does not add a UI control or settings entry.
 - Does not enable Chrome-side cleanup. Ever.
-- Does not start F5H.3b.0d, F5H.3b.1, F6, or F7.
+- Does not start F5H.3b.1b, F6, or F7.
 
 ## Future phases that depend on this contract
 
@@ -159,11 +159,36 @@ the loose heuristic flags.
   Adds migration v9 (`sync_maintenance_log`). Returns redacted counts-only
   envelope with schema `h2o.studio.synthetic-cleanup-transaction-dry-run.v1`.
   No deletes commit, no row mutates.
-- **F5H.3b.1** — real cleanup. Single tiny diff against F5H.3b.0d: swap
-  ROLLBACK for COMMIT under a triple gate (long gate string + non-empty
-  reason + Desktop-only surface check). Predicate unchanged.
+- **F5H.3b.1a — DONE.** Opt-in candidate ID + previewToken surface.
+  Extends the F5H.3b.0d Tauri command with an additional payload flag
+  `includeCandidateIds: true`. When set, the same always-rollback dry-run
+  additionally returns:
+  - `candidateIds: { syncTombstoneIds, syncTombstoneReviewIds }` — sorted,
+    deduped, exactly the rows the v1 predicate selected.
+  - `expectedCounts: { tombstones, reviews }` — mirrors `wouldDeleteRows`.
+  - `previewToken: "ptok1:<sha256-hex>"` — deterministic over the
+    predicate version + DB fingerprint (`schemaUserVersion`,
+    `migrationCount`) + sorted candidate IDs + expected counts. No
+    timestamps, no randomness. F5H.3b.1b will recompute the token at
+    cleanup time and reject if the caller-supplied value mismatches.
+  - `dbFingerprint: { schemaUserVersion, migrationCount }` — the inputs
+    the caller must echo back so F5H.3b.1b can recompute the token.
 
-Both phases use exactly the predicate defined here. Neither may relax it
+  Default behavior (flag omitted / `false`) is **byte-identical** to
+  F5H.3b.0d: the four optional fields are `Option::None` server-side and
+  `skip_serializing_if = "Option::is_none"` means they never appear in
+  the JSON response. The dry-run STILL rolls back when IDs are included;
+  no row mutates whether the flag is set or not. No new Tauri command,
+  no Chrome path, no UI, no real cleanup, no COMMIT.
+- **F5H.3b.1b** — real cleanup. Single tiny diff against F5H.3b.1a: a
+  new Tauri command that takes the F5H.3b.1a-issued `previewToken` +
+  `candidateIds` + `dbFingerprint`, re-runs the v1 predicate, recomputes
+  the token, asserts equality (and ID-set equality, and dbFingerprint
+  equality), and only then performs the id-pinned DELETE under COMMIT.
+  Triple gate: long gate string + non-empty reason + Desktop-only
+  surface check. Predicate unchanged.
+
+All phases use exactly the predicate defined here. None may relax it
 without bumping the version string.
 
 ## Optional CI follow-up

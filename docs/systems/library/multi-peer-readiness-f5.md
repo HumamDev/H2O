@@ -3182,9 +3182,99 @@ F5H.3b.0d does **not** add any DELETE commit, no `cleanupSynthetic({
 dryRun: false })` API, no real row mutation, no UI, no
 import/export/sync/apply changes.
 
-F5H.3b.1 (real cleanup) is the next phase. It becomes a small diff against
-F5H.3b.0d: swap ROLLBACK for COMMIT under a triple gate (long gate string
-+ non-empty reason + Desktop-only surface check) and add the candidate-id
-pinning / previewToken contract.
+F5H.3b.1 is split into two phases. F5H.3b.1a is the candidate ID +
+previewToken surface (additive, still preview-only, no DELETE commit).
+F5H.3b.1b is the small remaining diff that commits.
 
 Full specification: [docs/systems/sync/synthetic-marker-contract-v1.md](../sync/synthetic-marker-contract-v1.md).
+
+## F5H.3b.1a — Synthetic cleanup candidate IDs + previewToken
+
+Additive, opt-in extension of F5H.3b.0d. No new Tauri command, no DELETE
+commit, no UI, no Chrome surface, no schema change. The same
+`preview_cleanup_synthetic_transactional` command takes an additional
+payload field:
+
+```ts
+type PreviewCleanupTransactionalPayload = {
+  requestedBySyncPeerId?: string | null;
+  reason?: string | null;
+  // F5H.3b.1a — opt-in.
+  includeCandidateIds?: boolean;  // default false
+};
+```
+
+JS facade exposure (Desktop only):
+
+```js
+await H2O.Studio.store.tombstoneReviews.previewCleanupSynthetic({
+  dryRun: true,
+  transactional: true,
+  includeCandidateIds: true,   // F5H.3b.1a — opt-in
+});
+```
+
+When `includeCandidateIds: true`, the same always-rollback transactional
+dry-run additionally returns four new fields on success:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `candidateIds.syncTombstoneIds` | `string[]` | Sorted, deduped, exactly the rows the v1 predicate would have deleted |
+| `candidateIds.syncTombstoneReviewIds` | `string[]` | Sorted, deduped, same |
+| `expectedCounts.tombstones` | `i64` | Mirrors `wouldDeleteRows.tombstones` |
+| `expectedCounts.reviews` | `i64` | Mirrors `wouldDeleteRows.reviews` |
+| `previewToken` | `"ptok1:<sha256-hex>"` | Deterministic over predicate version + DB fingerprint + sorted IDs + expected counts |
+| `dbFingerprint.schemaUserVersion` | `i64` | `PRAGMA user_version` after rollback |
+| `dbFingerprint.migrationCount` | `i64` | `COUNT(*) FROM _sqlx_migrations` (0 if absent) |
+
+Default (flag omitted / `false`) returns the F5H.3b.0d envelope
+byte-for-byte: the four optional fields are `Option::None` server-side
+and `#[serde(skip_serializing_if = "Option::is_none")]` means they never
+appear in the JSON response. There is no leaking of IDs when the caller
+didn't ask for them.
+
+`previewToken` properties:
+
+- Deterministic for the same DB state + same candidate set — two
+  back-to-back calls produce the same token. Verified by
+  `f5h3b1a_token_is_stable_across_calls_for_same_db_state`.
+- Changes when the eligible set changes (rows added or removed). Verified
+  by `f5h3b1a_token_changes_when_eligible_set_changes`.
+- Changes when `schemaUserVersion` bumps (a new migration ran), even if
+  the candidate IDs are identical. Verified by
+  `f5h3b1a_token_changes_when_schema_version_changes`.
+- Changes when `migrationCount` bumps. Verified by
+  `f5h3b1a_token_changes_when_migration_count_changes`.
+- Changes when the predicate version string changes (this is the
+  contract version bump). Tested in `compute_preview_token` directly.
+- No timestamps, no randomness, no nonces — recomputable by any caller
+  who has the same fingerprint + sorted ID lists + counts.
+
+Rollback semantics are unchanged. The DELETE-by-id calls still run
+inside the transaction, the COUNT() checks still verify rows-affected,
+and the transaction still `ROLLBACK`s unconditionally. Verified by
+`f5h3b1a_include_true_returns_ids_token_and_fingerprint` (which checks
+all three table counts after the call equal the seed counts).
+
+Predicate parity: the IDs returned are exactly the set
+`eligible_synthetic_tombstone_ids` + `eligible_synthetic_review_ids`
+from [`synthetic_marker.rs`](../../../apps/studio/desktop/src-tauri/src/synthetic_marker.rs).
+Prefix-only (`is_synthetic = 0`), pending/accepted-later reviews,
+restored tombstones, protected `delete_reason`, and within-age-floor
+rows are all excluded. Verified by
+`f5h3b1a_returned_ids_exclude_prefix_only_pending_and_protected`.
+
+F5H.3b.1a does **not** add any DELETE commit, no `cleanupSynthetic({
+dryRun: false })` API, no `H2O.Studio.maintenance.cleanupSynthetic` exposure,
+no real row mutation, no UI, no settings entry, no import/export/sync/apply
+changes, and no Chrome surface. Chrome's `previewCleanupSynthetic` continues
+to ignore `transactional: true` and `includeCandidateIds: true`.
+
+F5H.3b.1b (the cleanup commit) is the next phase. It will be a small
+additive diff: a new Tauri command that takes the F5H.3b.1a-issued
+`previewToken` + `candidateIds` + `dbFingerprint`, re-runs the v1
+predicate, recomputes the token, asserts equality (predicate version +
+fingerprint + ID-set + counts all match), and only then performs the
+id-pinned DELETE under COMMIT. Triple gate retained from the earlier
+F5H.3b.1 plan: long gate string + non-empty reason + Desktop-only
+surface check.

@@ -2630,9 +2630,21 @@
         predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
       });
     }
+    // F5H.3b.1a — opt-in. When the caller passes includeCandidateIds: true,
+    // the Rust command additionally returns:
+    //   - candidateIds: { syncTombstoneIds, syncTombstoneReviewIds } (sorted, deduped)
+    //   - expectedCounts: { tombstones, reviews }
+    //   - previewToken: "ptok1:<sha256-hex>" deterministic over predicate
+    //                   version + DB fingerprint + sorted candidate IDs +
+    //                   expected counts. F5H.3b.1b will require the caller
+    //                   to echo this token back; cleanup will recompute it
+    //                   and reject on mismatch.
+    //   - dbFingerprint: { schemaUserVersion, migrationCount }
+    // Default (omitted / false) preserves the F5H.3b.0d redacted shape.
     var payload = {
       requestedBySyncPeerId: cleanScalar(opts && opts.requestedBySyncPeerId) || null,
       reason: cleanScalar(opts && opts.reason) || null,
+      includeCandidateIds: !!(opts && opts.includeCandidateIds === true),
     };
     return invoke('preview_cleanup_synthetic_transactional', { payload: payload })
       .then(function (result) {
