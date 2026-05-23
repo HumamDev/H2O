@@ -27,15 +27,32 @@ const ROW_TINT_KEY_PREFIX = "ho:chat-row-idx:";
 const LIBRARY_SYNC_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
 const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
 const FOLDER_CLEANUP_AUDIT_KEY = "h2o:studio:folder-cleanup-audit:v1";
+const FOLDER_MIRROR_REFRESH_AUDIT_KEY = "h2o:studio:folder-mirror-refresh-audit:v1";
 const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
 const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
+const FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT = "REFRESH DESKTOP FOLDER MIRROR";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
 const FOLDER_LOCAL_REVIEW_EXPLANATION = "These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.";
 const FOLDER_LOCAL_REVIEW_BADGE_ORDER = ["extra", "test", "conflict", "desktop-only", "chrome-only", "review-required"];
+const FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS = Object.freeze([
+  Object.freeze({ folderId: "f_7050f49d3f341819dba53d547", name: "Study" }),
+  Object.freeze({ folderId: "f_5d9431084707f19dba53d548", name: "Case" }),
+  Object.freeze({ folderId: "f_0606ea698948f19dba53d548", name: "Dev" }),
+  Object.freeze({ folderId: "f_e301f3506938c19dbac0e304", name: "Code" }),
+  Object.freeze({ folderId: "f_3bf15f43b835d19dbac0fb13", name: "Tech" }),
+  Object.freeze({ folderId: "f_2bb1037f88b2719dbac10c22", name: "English" }),
+]);
+const FOLDER_DESKTOP_MIRROR_REFRESH_STATE = {
+  path: "",
+  pastedJson: "",
+  confirmation: "",
+  preview: null,
+  status: "",
+};
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
   selected: false,
   confirmation: "",
@@ -5495,6 +5512,35 @@ function renderSettingsRoute(){
       <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
       <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
       <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
+      <div id="wbSettingsFolderMirrorRefresh" style="${STUDIO_isTauri() ? "display:flex" : "display:none"};flex-direction:column;gap:8px;padding:10px;margin-top:10px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px">
+        <div>
+          <div style="font-weight:600">Refresh Desktop folder mirror</div>
+          <div id="wbSettingsFolderMirrorRefreshSummary" style="opacity:.72;font-size:12px">Refreshes only this Desktop mirror key from a reviewed folder-state JSON. Desktop SQLite folders and bindings are not changed.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="wbSettingsFolderMirrorRefreshPath" type="text" spellcheck="false" autocomplete="off"
+                 value="${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.path || "")}"
+                 placeholder="/absolute/path/to/folder-state.json"
+                 style="flex:1;min-width:240px;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+          <button id="wbSettingsFolderMirrorRefreshPick" type="button" style="${btnStyle}">Choose file...</button>
+        </div>
+        <textarea id="wbSettingsFolderMirrorRefreshJson" spellcheck="false" autocomplete="off"
+                  placeholder="Or paste raw Native/Chrome folder-state JSON here"
+                  style="min-height:76px;resize:vertical;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.pastedJson || "")}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button id="wbSettingsFolderMirrorRefreshPreview" type="button" style="${btnStyle}">Preview Desktop mirror refresh</button>
+          <button id="wbSettingsFolderMirrorRefreshCopyPlan" type="button" style="${btnStyle}">Copy refresh plan JSON</button>
+        </div>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT)}</code> to enable mirror refresh.</span>
+          <input id="wbSettingsFolderMirrorRefreshConfirm" type="text" autocomplete="off" spellcheck="false"
+                 value="${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.confirmation || "")}"
+                 style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+        </label>
+        <button id="wbSettingsFolderMirrorRefreshRun" type="button" style="${btnStyle}" disabled>Refresh Desktop folder mirror</button>
+        <div id="wbSettingsFolderMirrorRefreshStatus" style="font-size:12px;opacity:.72">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status || "Desktop mirror only. Native, Chrome, folders, and folder_bindings are not changed.")}</div>
+        <pre id="wbSettingsFolderMirrorRefreshPreviewOut" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+      </div>
       <div id="wbSettingsFolderCleanupReview" style="display:flex;flex-direction:column;gap:10px;padding-top:12px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div>
@@ -6032,6 +6078,416 @@ function settingsFolderCleanupFolderStateSummary(stateObj){
     itemBucketCount: Object.keys(items).length,
     bindingCount,
   };
+}
+
+function settingsFolderMirrorStableStringify(value){
+  if (value == null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(settingsFolderMirrorStableStringify).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${settingsFolderMirrorStableStringify(value[key])}`).join(",")}}`;
+}
+
+async function settingsFolderMirrorChecksum(value){
+  const text = settingsFolderMirrorStableStringify(value);
+  try {
+    const bytes = new TextEncoder().encode(text);
+    const digest = await W.crypto.subtle.digest("SHA-256", bytes);
+    return "sha256:" + Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch (_) {
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  }
+}
+
+function settingsFolderMirrorDecodeText(raw){
+  if (typeof raw === "string") return raw;
+  if (raw instanceof ArrayBuffer) return new TextDecoder("utf-8").decode(new Uint8Array(raw));
+  if (ArrayBuffer.isView(raw)) return new TextDecoder("utf-8").decode(raw);
+  if (Array.isArray(raw)) return new TextDecoder("utf-8").decode(new Uint8Array(raw));
+  throw new Error("Unsupported file read result.");
+}
+
+async function settingsFolderMirrorReadTextFile(path){
+  const invoke = STUDIO_getTauriInvoke();
+  if (!invoke) throw new Error("Tauri file read unavailable.");
+  try {
+    return settingsFolderMirrorDecodeText(await invoke("plugin:fs|read_text_file", { path }));
+  } catch (textErr) {
+    try {
+      return settingsFolderMirrorDecodeText(await invoke("plugin:fs|read_file", { path }));
+    } catch (bytesErr) {
+      throw new Error(String(textErr && (textErr.message || textErr)) + " / fallback read_file failed: " + String(bytesErr && (bytesErr.message || bytesErr)));
+    }
+  }
+}
+
+function settingsFolderMirrorFolderId(row){
+  return String(row?.id || row?.folderId || "").trim();
+}
+
+function settingsFolderMirrorFolderName(row, fallback = ""){
+  return String(row?.name || row?.title || fallback || "").trim();
+}
+
+function settingsFolderMirrorNormalizeState(raw, sourceKind){
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return {
+    sourceKind: String(sourceKind || "folder-state"),
+    schemaVersion: Number(src.schemaVersion || src.version || 1) || 1,
+    exportedFrom: String(src.exportedFrom || src.source || "").trim(),
+    exportedAt: String(src.exportedAt || src.updatedAt || "").trim(),
+    folders: Array.isArray(src.folders) ? src.folders.slice() : null,
+    items: src.items && typeof src.items === "object" && !Array.isArray(src.items) ? src.items : null,
+  };
+}
+
+function settingsFolderMirrorExtractState(payload){
+  const raw = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : null;
+  if (!raw) return { ok: false, error: "Folder-state JSON must be an object." };
+  const csl = raw.chromeStorageLocal && typeof raw.chromeStorageLocal === "object" && !Array.isArray(raw.chromeStorageLocal)
+    ? raw.chromeStorageLocal
+    : null;
+  if (csl && csl[FOLDER_STATE_DATA_KEY] && typeof csl[FOLDER_STATE_DATA_KEY] === "object") {
+    return { ok: true, state: settingsFolderMirrorNormalizeState(csl[FOLDER_STATE_DATA_KEY], "chromeStorageLocal-wrapper") };
+  }
+  if (raw.folderState && typeof raw.folderState === "object" && !Array.isArray(raw.folderState)) {
+    return { ok: true, state: settingsFolderMirrorNormalizeState(raw.folderState, "folderState-wrapper") };
+  }
+  if (raw.payload?.folderState && typeof raw.payload.folderState === "object" && !Array.isArray(raw.payload.folderState)) {
+    return { ok: true, state: settingsFolderMirrorNormalizeState(raw.payload.folderState, "payload.folderState-wrapper") };
+  }
+  if (raw.value?.folderState && typeof raw.value.folderState === "object" && !Array.isArray(raw.value.folderState)) {
+    return { ok: true, state: settingsFolderMirrorNormalizeState(raw.value.folderState, "value.folderState-wrapper") };
+  }
+  if (Array.isArray(raw.folders) || (raw.items && typeof raw.items === "object" && !Array.isArray(raw.items))) {
+    return { ok: true, state: settingsFolderMirrorNormalizeState(raw, "raw-folder-state") };
+  }
+  return { ok: false, error: "Unrecognized folder-state shape." };
+}
+
+function settingsFolderMirrorSourceSummary(state){
+  const folders = Array.isArray(state?.folders) ? state.folders : [];
+  const items = state?.items && typeof state.items === "object" && !Array.isArray(state.items) ? state.items : {};
+  return {
+    sourceKind: state?.sourceKind || "",
+    exportedAt: state?.exportedAt || "",
+    exportedFrom: state?.exportedFrom || "",
+    folderCount: folders.length,
+    bindingCount: Object.values(items).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
+    canonicalFolderCount: folders.filter((row) => FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.some((known) => known.folderId === settingsFolderMirrorFolderId(row))).length,
+  };
+}
+
+function settingsFolderMirrorProjectCanonicalState(sourceState){
+  const blockers = [];
+  if (!Array.isArray(sourceState?.folders)) blockers.push("Source folders[] is missing or malformed.");
+  if (!sourceState?.items || typeof sourceState.items !== "object" || Array.isArray(sourceState.items)) blockers.push("Source items object is missing or malformed.");
+  if (blockers.length) return { ok: false, error: blockers.join(" "), blockers };
+
+  const folders = sourceState.folders;
+  const items = sourceState.items;
+  const byId = new Map();
+  folders.forEach((row) => {
+    const id = settingsFolderMirrorFolderId(row);
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  const missing = FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.filter((known) => !byId.has(known.folderId));
+  if (missing.length) blockers.push("Missing canonical folder row(s): " + missing.map((row) => row.name).join(", "));
+
+  const projectedFolders = [];
+  const projectedItems = {};
+  FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.forEach((known, index) => {
+    const row = byId.get(known.folderId);
+    if (!row) return;
+    const copy = settingsFolderCleanupClone(row) || {};
+    copy.id = known.folderId;
+    copy.name = settingsFolderMirrorFolderName(copy, known.name) || known.name;
+    if (!Number.isFinite(Number(copy.sortOrder)) && !Number.isFinite(Number(copy.sort_order))) copy.sortOrder = index + 1;
+    projectedFolders.push(copy);
+    const bucket = items[known.folderId];
+    if (bucket != null && !Array.isArray(bucket)) {
+      blockers.push(`Items bucket for ${known.name} is not an array.`);
+      projectedItems[known.folderId] = [];
+      return;
+    }
+    projectedItems[known.folderId] = Array.from(new Set((Array.isArray(bucket) ? bucket : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)));
+  });
+
+  if (blockers.length) return { ok: false, error: blockers.join(" "), blockers };
+  return {
+    ok: true,
+    ignoredFolderCount: Math.max(0, folders.length - projectedFolders.length),
+    state: {
+      schemaVersion: Number(sourceState.schemaVersion || 1) || 1,
+      exportedFrom: sourceState.exportedFrom || sourceState.sourceKind || "desktop-folder-mirror-refresh",
+      exportedAt: sourceState.exportedAt || new Date().toISOString(),
+      refreshedAt: new Date().toISOString(),
+      folders: projectedFolders,
+      items: projectedItems,
+    },
+  };
+}
+
+function settingsFolderMirrorSummary(stateObj){
+  const src = stateObj && typeof stateObj === "object" ? stateObj : {};
+  const folders = Array.isArray(src.folders) ? src.folders : [];
+  const items = src.items && typeof src.items === "object" && !Array.isArray(src.items) ? src.items : {};
+  const perFolder = FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => ({
+    folderId: known.folderId,
+    name: known.name,
+    membershipCount: Array.isArray(items[known.folderId]) ? items[known.folderId].length : 0,
+  }));
+  return {
+    key: FOLDER_STATE_DATA_KEY,
+    folderCount: folders.length,
+    itemBucketCount: Object.keys(items).length,
+    bindingCount: Object.values(items).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
+    studyBucketCount: perFolder.find((row) => row.folderId === "f_7050f49d3f341819dba53d547")?.membershipCount || 0,
+    exportedAt: src.exportedAt || "",
+    refreshedAt: src.refreshedAt || "",
+    perFolder,
+  };
+}
+
+async function settingsFolderMirrorReadSourceFromPanel(panel){
+  const pasted = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshJson")?.value || "").trim();
+  const path = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPath")?.value || "").trim();
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.pastedJson = pasted;
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.path = path;
+  const text = pasted || (path ? await settingsFolderMirrorReadTextFile(path) : "");
+  if (!text) throw new Error("Paste folder-state JSON or choose a source file.");
+  let payload;
+  try { payload = JSON.parse(text); }
+  catch (err) { throw new Error("Folder-state JSON parse failed: " + String(err && (err.message || err))); }
+  const extracted = settingsFolderMirrorExtractState(payload);
+  if (!extracted.ok) throw new Error(extracted.error || "Folder-state extraction failed.");
+  return {
+    sourceKind: pasted ? "pasted-json:" + extracted.state.sourceKind : "file:" + extracted.state.sourceKind,
+    sourcePath: pasted ? "" : path,
+    sourceState: extracted.state,
+  };
+}
+
+async function settingsFolderMirrorBuildPreview(panel){
+  if (!STUDIO_isTauri()) return { ok: false, error: "Desktop folder mirror refresh is only available in Desktop Studio." };
+  const source = await settingsFolderMirrorReadSourceFromPanel(panel);
+  const projection = settingsFolderMirrorProjectCanonicalState(source.sourceState);
+  if (!projection.ok) return { ok: false, error: projection.error || "Canonical projection failed.", blockers: projection.blockers || [] };
+  const values = await settingsFolderDesktopStorageGetStrict([FOLDER_STATE_DATA_KEY]);
+  const beforeState = settingsFolderCleanupClone(values?.[FOLDER_STATE_DATA_KEY] || {});
+  const afterState = projection.state;
+  const beforeSummary = settingsFolderMirrorSummary(beforeState);
+  const afterSummary = settingsFolderMirrorSummary(afterState);
+  const beforeChecksum = await settingsFolderMirrorChecksum(beforeState || {});
+  const afterChecksum = await settingsFolderMirrorChecksum(afterState);
+  const preview = {
+    readOnly: false,
+    noMutationUntilRefresh: true,
+    generatedAt: new Date().toISOString(),
+    surface: "desktop-studio",
+    action: "refresh-desktop-folder-state-mirror",
+    targetKey: FOLDER_STATE_DATA_KEY,
+    sourceKind: source.sourceKind,
+    sourcePath: source.sourcePath,
+    sourceSummary: settingsFolderMirrorSourceSummary(source.sourceState),
+    importedRows: afterSummary.perFolder.map((row) => ({ folderId: row.folderId, name: row.name })),
+    ignoredSourceFolderCount: projection.ignoredFolderCount,
+    beforeSummary,
+    afterSummary,
+    perFolderMembershipCounts: FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => ({
+      folderId: known.folderId,
+      name: known.name,
+      before: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
+      after: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
+    })),
+    beforeChecksum,
+    afterChecksum,
+    confirmationText: FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT,
+    warnings: [
+      "Desktop SQLite folders and folder_bindings are not changed.",
+      "Native ChatGPT folder-state is not modified.",
+      "Chrome storage is not modified.",
+      "Only the Desktop mirror key is refreshed.",
+    ],
+  };
+  return { ok: true, preview, beforeState, afterState };
+}
+
+function settingsFolderMirrorSetPreview(panel, preview){
+  panel.__h2oFolderMirrorRefreshPreview = preview || null;
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview = preview || null;
+  const pre = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPreviewOut");
+  if (pre) {
+    pre.hidden = !preview;
+    pre.textContent = preview ? JSON.stringify(preview, null, 2) : "";
+  }
+}
+
+function settingsFolderMirrorUpdateControls(panel){
+  const sourceAvailable = !!String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshJson")?.value || panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPath")?.value || "").trim();
+  const confirmation = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.confirmation = confirmation;
+  const preview = panel?.__h2oFolderMirrorRefreshPreview || FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview;
+  const previewBtn = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPreview");
+  const copyBtn = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshCopyPlan");
+  const runBtn = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshRun");
+  if (previewBtn) previewBtn.disabled = !STUDIO_isTauri() || !sourceAvailable;
+  if (copyBtn) copyBtn.disabled = !preview;
+  if (runBtn) runBtn.disabled = !STUDIO_isTauri() || !preview || confirmation !== FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT;
+}
+
+async function settingsFolderMirrorAppendAudit(entry){
+  const values = await settingsFolderDesktopStorageGetStrict([FOLDER_MIRROR_REFRESH_AUDIT_KEY]);
+  const existing = Array.isArray(values?.[FOLDER_MIRROR_REFRESH_AUDIT_KEY]) ? values[FOLDER_MIRROR_REFRESH_AUDIT_KEY] : [];
+  const next = existing.concat([entry]).slice(-50);
+  await settingsFolderDesktopStorageSetStrict({ [FOLDER_MIRROR_REFRESH_AUDIT_KEY]: next });
+  return next.length;
+}
+
+async function previewSettingsFolderMirrorRefresh(panel){
+  let result;
+  try {
+    result = await settingsFolderMirrorBuildPreview(panel);
+  } catch (err) {
+    result = { ok: false, error: String(err && (err.stack || err.message || err)) };
+  }
+  if (!result.ok) {
+    settingsFolderMirrorSetPreview(panel, null);
+    settingsFolderParityLog(panel, "Desktop mirror refresh preview blocked.\n" + String(result.error || "Unknown guard failure"));
+    settingsFolderMirrorUpdateControls(panel);
+    return result;
+  }
+  settingsFolderMirrorSetPreview(panel, result.preview);
+  const status = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshStatus");
+  const message = `Preview ready. Study ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.before ?? 0} -> ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.after ?? 0}. Desktop SQLite folders and folder_bindings are not changed.`;
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status = message;
+  if (status) status.textContent = message;
+  settingsFolderMirrorUpdateControls(panel);
+  return result;
+}
+
+async function copySettingsFolderMirrorRefreshPlan(panel){
+  let preview = panel?.__h2oFolderMirrorRefreshPreview || FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview;
+  if (!preview) {
+    const result = await previewSettingsFolderMirrorRefresh(panel);
+    preview = result?.preview || null;
+  }
+  if (!preview) return;
+  const text = JSON.stringify(preview, null, 2);
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Desktop mirror refresh plan JSON copied to clipboard.");
+      return;
+    } catch (err) {
+      console.info("H2O_DESKTOP_FOLDER_MIRROR_REFRESH_PLAN", preview);
+      settingsFolderParityLog(panel, "Clipboard copy failed; Desktop mirror refresh plan printed to console.\n" + String(err && (err.message || err)));
+      return;
+    }
+  }
+  console.info("H2O_DESKTOP_FOLDER_MIRROR_REFRESH_PLAN", preview);
+  settingsFolderParityLog(panel, "Clipboard unavailable; Desktop mirror refresh plan printed to console as H2O_DESKTOP_FOLDER_MIRROR_REFRESH_PLAN.");
+}
+
+async function refreshDesktopFolderMirror(panel){
+  const confirmation = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
+  if (confirmation !== FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT) {
+    settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Confirmation text does not match.");
+    return;
+  }
+  const existingPreview = panel?.__h2oFolderMirrorRefreshPreview || FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview;
+  if (!existingPreview) {
+    settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Generate a fresh refresh preview first.");
+    return;
+  }
+  let fresh;
+  try {
+    fresh = await settingsFolderMirrorBuildPreview(panel);
+  } catch (err) {
+    settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(err && (err.stack || err.message || err)));
+    return;
+  }
+  if (!fresh.ok) {
+    settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(fresh.error || "Guard failed"));
+    return;
+  }
+  if (fresh.preview.afterChecksum !== existingPreview.afterChecksum || fresh.preview.beforeChecksum !== existingPreview.beforeChecksum) {
+    settingsFolderMirrorSetPreview(panel, fresh.preview);
+    settingsFolderMirrorUpdateControls(panel);
+    settingsFolderParityLog(panel, "Desktop mirror refresh aborted. Source or Desktop mirror changed since preview; review the new preview before refreshing.");
+    return;
+  }
+  const pending = {
+    timestamp: new Date().toISOString(),
+    surface: "desktop-studio",
+    action: "refresh-desktop-folder-state-mirror",
+    targetKey: FOLDER_STATE_DATA_KEY,
+    sourceKind: fresh.preview.sourceKind,
+    beforeSummary: fresh.preview.beforeSummary,
+    afterSummary: fresh.preview.afterSummary,
+    beforeChecksum: fresh.preview.beforeChecksum,
+    afterChecksum: fresh.preview.afterChecksum,
+    beforeSnapshot: settingsFolderCleanupClone(fresh.beforeState),
+    result: "pending",
+    errors: [],
+  };
+  try {
+    await settingsFolderMirrorAppendAudit(pending);
+  } catch (auditErr) {
+    settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation. Mirror refresh audit could not be written.\n" + String(auditErr && (auditErr.stack || auditErr.message || auditErr)));
+    return;
+  }
+  try {
+    await settingsFolderDesktopStorageSetStrict({ [FOLDER_STATE_DATA_KEY]: fresh.afterState });
+    const afterValues = await settingsFolderDesktopStorageGetStrict([FOLDER_STATE_DATA_KEY]);
+    const afterSummary = settingsFolderMirrorSummary(afterValues?.[FOLDER_STATE_DATA_KEY] || {});
+    await settingsFolderMirrorAppendAudit({
+      timestamp: new Date().toISOString(),
+      surface: "desktop-studio",
+      action: "refresh-desktop-folder-state-mirror",
+      targetKey: FOLDER_STATE_DATA_KEY,
+      sourceKind: fresh.preview.sourceKind,
+      beforeSummary: fresh.preview.beforeSummary,
+      afterSummary,
+      beforeChecksum: fresh.preview.beforeChecksum,
+      afterChecksum: await settingsFolderMirrorChecksum(afterValues?.[FOLDER_STATE_DATA_KEY] || {}),
+      result: "ok",
+      errors: [],
+    });
+    try { W.H2O?.LibraryWorkspace?._bustCaches?.("desktop-folder-mirror-refresh"); } catch {}
+    try { state.folderCatalog = []; state.folderLocalReview = []; await fetchFolderCatalog(true); renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId); } catch {}
+    settingsFolderMirrorSetPreview(panel, null);
+    const status = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshStatus");
+    const message = `Desktop folder mirror refreshed. Study is now ${afterSummary.studyBucketCount}. Desktop SQLite folders and folder_bindings were not changed.`;
+    FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status = message;
+    if (status) status.textContent = message;
+    settingsFolderParityLog(panel, "Desktop folder mirror refreshed. Desktop SQLite folders, folder_bindings, native state, and Chrome storage were not modified.");
+    await refreshSettingsFolderParity(panel);
+    await refreshSettingsFolderDesktopReview(panel);
+  } catch (err) {
+    try {
+      await settingsFolderMirrorAppendAudit({
+        timestamp: new Date().toISOString(),
+        surface: "desktop-studio",
+        action: "refresh-desktop-folder-state-mirror",
+        targetKey: FOLDER_STATE_DATA_KEY,
+        sourceKind: fresh.preview.sourceKind,
+        beforeSummary: fresh.preview.beforeSummary,
+        afterSummary: fresh.preview.afterSummary,
+        beforeChecksum: fresh.preview.beforeChecksum,
+        afterChecksum: fresh.preview.afterChecksum,
+        result: "failed",
+        errors: [String(err && (err.stack || err.message || err))],
+      });
+    } catch (_) { /* best-effort result audit after pending entry */ }
+    settingsFolderParityLog(panel, "Desktop mirror refresh failed after pending audit.\n" + String(err && (err.stack || err.message || err)));
+  }
 }
 
 async function settingsFolderCleanupReadChromeMirror(){
@@ -9242,6 +9698,68 @@ function bindSettingsSyncControls(panel){
   panel.querySelector("#wbSettingsFolderParityCopy")?.addEventListener("click", () => {
     copySettingsFolderParityReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshPick")?.addEventListener("click", async () => {
+    const invoke = STUDIO_getTauriInvoke();
+    if (!invoke) {
+      settingsFolderParityLog(panel, "Choose file unavailable: Tauri invoke not present.");
+      return;
+    }
+    try {
+      const picked = await invoke("plugin:dialog|open", {
+        options: {
+          multiple: false,
+          directory: false,
+          filters: [{ name: "JSON folder-state", extensions: ["json"] }],
+        },
+      });
+      if (picked == null) return;
+      const pathStr = (typeof picked === "string") ? picked
+        : (picked && typeof picked.path === "string") ? picked.path
+        : "";
+      if (!pathStr) {
+        settingsFolderParityLog(panel, "Choose file: unexpected picker response shape: " + JSON.stringify(picked).slice(0, 200));
+        return;
+      }
+      const input = panel.querySelector("#wbSettingsFolderMirrorRefreshPath");
+      if (input) input.value = pathStr;
+      FOLDER_DESKTOP_MIRROR_REFRESH_STATE.path = pathStr;
+      settingsFolderMirrorSetPreview(panel, null);
+      settingsFolderMirrorUpdateControls(panel);
+    } catch (err) {
+      settingsFolderParityLog(panel, "Choose file failed.\n" + String(err && (err.stack || err.message || err)));
+    }
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshPath")?.addEventListener("input", () => {
+    FOLDER_DESKTOP_MIRROR_REFRESH_STATE.path = String(panel.querySelector("#wbSettingsFolderMirrorRefreshPath")?.value || "");
+    settingsFolderMirrorSetPreview(panel, null);
+    settingsFolderMirrorUpdateControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshJson")?.addEventListener("input", () => {
+    FOLDER_DESKTOP_MIRROR_REFRESH_STATE.pastedJson = String(panel.querySelector("#wbSettingsFolderMirrorRefreshJson")?.value || "");
+    settingsFolderMirrorSetPreview(panel, null);
+    settingsFolderMirrorUpdateControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshConfirm")?.addEventListener("input", () => {
+    FOLDER_DESKTOP_MIRROR_REFRESH_STATE.confirmation = String(panel.querySelector("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
+    settingsFolderMirrorUpdateControls(panel);
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshPreview")?.addEventListener("click", () => {
+    previewSettingsFolderMirrorRefresh(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshCopyPlan")?.addEventListener("click", () => {
+    copySettingsFolderMirrorRefreshPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderMirrorRefreshRun")?.addEventListener("click", () => {
+    refreshDesktopFolderMirror(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+  settingsFolderMirrorUpdateControls(panel);
 
   panel.querySelector("#wbSettingsFolderCleanupReviewRefresh")?.addEventListener("click", () => {
     refreshSettingsFolderCleanupReview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
