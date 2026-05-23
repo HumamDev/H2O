@@ -151,16 +151,20 @@ the loose heuristic flags.
 
 ## Future phases that depend on this contract
 
-- **F5H.3b.0d** — true-dry-run cleanup. Runs the full transaction shape
-  proven in F5H.3b.0 against the real schema with the v1 predicate, then
-  unconditionally ROLLBACKs. No real deletes; verifies that the predicate
-  selects the right rows on real data.
+- **F5H.3b.0d — DONE.** True-dry-run cleanup. Runs the full transaction
+  shape proven in F5H.3b.0 against the real Desktop SQLite DB with the v1
+  predicate, then unconditionally ROLLBACKs. Implemented as Tauri command
+  `preview_cleanup_synthetic_transactional` and surfaced via
+  `previewCleanupSynthetic({ dryRun: true, transactional: true })`.
+  Adds migration v9 (`sync_maintenance_log`). Returns redacted counts-only
+  envelope with schema `h2o.studio.synthetic-cleanup-transaction-dry-run.v1`.
+  No deletes commit, no row mutates.
 - **F5H.3b.1** — real cleanup. Single tiny diff against F5H.3b.0d: swap
   ROLLBACK for COMMIT under a triple gate (long gate string + non-empty
   reason + Desktop-only surface check). Predicate unchanged.
 
-Both later phases use exactly the predicate defined here. Neither may
-relax it without bumping the version string.
+Both phases use exactly the predicate defined here. Neither may relax it
+without bumping the version string.
 
 ## Optional CI follow-up
 

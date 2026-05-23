@@ -2661,6 +2661,22 @@
     if (opts.dryRun !== true) {
       return Promise.resolve(syntheticCleanupBlockedResult('chrome-mv3', false, 'dry-run-required'));
     }
+    // F5H.3b.0d — transactional dry-run is Desktop-only. Chrome has no
+    // Tauri runtime and no SQLite-backed maintenance log. Hard guard so
+    // a caller never accidentally thinks the heuristic-preview counts
+    // came from the v1 contract.
+    if (opts.transactional === true) {
+      return Promise.resolve({
+        schema: 'h2o.studio.synthetic-cleanup-transaction-dry-run.v1',
+        ok: false,
+        blocker: 'desktop-transactional-cleanup-preview-only',
+        redacted: true,
+        dryRun: true,
+        transactional: true,
+        platform: 'chrome-mv3',
+        predicateVersion: 'h2o.studio.sync.synthetic-prefix-heuristic',
+      });
+    }
     var warnings = [];
     var blockers = [];
     if (opts.includeSensitive === true) pushCodeWarning(warnings, 'include-sensitive-ignored');

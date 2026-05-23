@@ -2612,10 +2612,71 @@
     });
   }
 
+  // F5H.3b.0d — bridge from JS preview to Rust transactional dry-run.
+  // Always rolls back; returns a redacted counts-only envelope with its
+  // own schema string. No deletes commit. No row mutates. No
+  // import/export/sync/apply behavior changes.
+  function invokeTransactionalCleanupDryRun(opts) {
+    var invoke = getInvoke();
+    if (typeof invoke !== 'function') {
+      return Promise.resolve({
+        schema: 'h2o.studio.synthetic-cleanup-transaction-dry-run.v1',
+        ok: false,
+        blocker: 'tauri-invoke-unavailable',
+        redacted: true,
+        dryRun: true,
+        transactional: true,
+        platform: 'desktop-tauri',
+        predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+      });
+    }
+    var payload = {
+      requestedBySyncPeerId: cleanScalar(opts && opts.requestedBySyncPeerId) || null,
+      reason: cleanScalar(opts && opts.reason) || null,
+    };
+    return invoke('preview_cleanup_synthetic_transactional', { payload: payload })
+      .then(function (result) {
+        if (!result || typeof result !== 'object') {
+          return {
+            schema: 'h2o.studio.synthetic-cleanup-transaction-dry-run.v1',
+            ok: false,
+            blocker: 'invalid-tauri-result',
+            redacted: true,
+            dryRun: true,
+            transactional: true,
+            platform: 'desktop-tauri',
+            predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+          };
+        }
+        return result;
+      })
+      .catch(function (e) {
+        recordError('previewCleanupSynthetic:transactional', e);
+        return {
+          schema: 'h2o.studio.synthetic-cleanup-transaction-dry-run.v1',
+          ok: false,
+          blocker: 'tauri-command-failed',
+          redacted: true,
+          dryRun: true,
+          transactional: true,
+          platform: 'desktop-tauri',
+          predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+        };
+      });
+  }
+
   function previewCleanupSynthetic(options) {
     var opts = options || {};
     if (opts.dryRun !== true) {
       return Promise.resolve(syntheticCleanupBlockedResult('desktop-tauri', false, 'dry-run-required'));
+    }
+    // F5H.3b.0d — opt-in true transactional dry-run path. When set, route
+    // to the Rust Tauri command that runs the future cleanup transaction
+    // shape against the real loaded SQLite DB, then rolls back. The
+    // existing heuristic-preview path is unchanged for callers without
+    // this opt-in.
+    if (opts.transactional === true) {
+      return invokeTransactionalCleanupDryRun(opts);
     }
     var warnings = [];
     var blockers = [];

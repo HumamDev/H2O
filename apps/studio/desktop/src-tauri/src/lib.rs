@@ -15,6 +15,12 @@ use tauri_plugin_sql::{DbInstances, DbPool, Migration, MigrationKind};
 // No DELETE statements live in this module; it is contract + read-only.
 pub mod synthetic_marker;
 
+// F5H.3b.0d — true transactional synthetic cleanup dry-run. Runs the
+// same transaction shape future cleanup will run against the real
+// Desktop SQLite DB, then unconditionally rolls back. No COMMIT path.
+// No real-cleanup API. See synthetic_cleanup_dryrun.rs for the contract.
+pub mod synthetic_cleanup_dryrun;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
     TombstoneInsert,
@@ -649,6 +655,42 @@ fn studio_migrations() -> Vec<Migration> {
 
                 CREATE INDEX IF NOT EXISTS idx_sync_tombstone_reviews_is_synthetic
                   ON sync_tombstone_reviews(is_synthetic, status);
+            "#,
+            kind: MigrationKind::Up,
+        },
+        // v9 — F5H.3b.0d: sync_maintenance_log production table.
+        // Required by the transactional cleanup dry-run (which inserts an
+        // audit row inside the txn it then rolls back) and by future real
+        // cleanup (F5H.3b.1) which will COMMIT. This migration is
+        // non-destructive — the table is new. Schema mirrors the F5H.3b.0
+        // proven test fixture exactly so the transaction shape transfers.
+        Migration {
+            version: 9,
+            description: "init sync maintenance log",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS sync_maintenance_log (
+                  maintenance_id              TEXT PRIMARY KEY,
+                  schema                      TEXT NOT NULL,
+                  operation                   TEXT NOT NULL,
+                  policy_version              TEXT NOT NULL,
+                  reason                      TEXT NOT NULL,
+                  requested_at                TEXT NOT NULL,
+                  requested_by_sync_peer_id   TEXT NOT NULL,
+                  platform                    TEXT NOT NULL,
+                  dry_run                     INTEGER NOT NULL,
+                  affected_tombstone_count    INTEGER NOT NULL DEFAULT 0,
+                  affected_review_count       INTEGER NOT NULL DEFAULT 0,
+                  skipped_count               INTEGER NOT NULL DEFAULT 0,
+                  warnings_json               TEXT NOT NULL DEFAULT '[]',
+                  result_json                 TEXT NOT NULL DEFAULT '{}',
+                  created_at                  TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sync_maintenance_log_operation_requested_at
+                  ON sync_maintenance_log (operation, requested_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_maintenance_log_dry_run
+                  ON sync_maintenance_log (dry_run, requested_at DESC);
             "#,
             kind: MigrationKind::Up,
         },
@@ -1401,6 +1443,94 @@ async fn f5g4_apply_reviewed_folder_binding_tombstone(
     Ok(f5g4_run_real_apply_transaction(&mut conn, &payload, None).await)
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCleanupTransactionalPayload {
+    #[serde(default)]
+    pub requested_by_sync_peer_id: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+// F5H.3b.0d — true transactional cleanup dry-run. Runs the same future
+// cleanup transaction shape against the real loaded SQLite DB, always
+// rolls back. Returns redacted counts-only result. NEVER COMMITS.
+#[tauri::command]
+async fn preview_cleanup_synthetic_transactional(
+    db_instances: State<'_, DbInstances>,
+    payload: Option<PreviewCleanupTransactionalPayload>,
+) -> Result<synthetic_cleanup_dryrun::DryRunResult, String> {
+    let payload = payload.unwrap_or_default();
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(synthetic_cleanup_dryrun::DryRunResult::skeleton_blocked(
+                "desktop-db-unavailable",
+            ));
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(synthetic_cleanup_dryrun::DryRunResult::skeleton_blocked(
+                    "desktop-db-unavailable",
+                ));
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(synthetic_cleanup_dryrun::DryRunResult::skeleton_blocked(
+                &format!("desktop-db-acquire-failed: {e}"),
+            ));
+        }
+    };
+
+    let now_iso = nowish_iso();
+    let requested_by = payload
+        .requested_by_sync_peer_id
+        .unwrap_or_else(|| "unknown".to_string());
+    let reason = payload
+        .reason
+        .unwrap_or_else(|| "F5H.3b.0d dry-run".to_string());
+
+    Ok(synthetic_cleanup_dryrun::run_dry_run(
+        &mut conn,
+        now_iso,
+        requested_by,
+        reason,
+        None,
+    )
+    .await)
+}
+
+fn nowish_iso() -> String {
+    // Lightweight ISO timestamp via SystemTime. Precision-second is fine
+    // for the safety age floor (1h) and audit row created_at.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Convert seconds-since-epoch to ISO using Howard Hinnant's algorithm
+    // implemented in synthetic_marker (subtract_seconds_iso uses civil/days).
+    // For simplicity here we just format from the epoch and let the predicate
+    // handle the rest; the predicate compares with strict-less-than on the
+    // ISO string, so any monotonic ISO works as long as it's later than the
+    // synthetic rows under test. Use a coarse seconds-precision UTC stamp.
+    let days = now.div_euclid(86_400);
+    let secs_of_day = now.rem_euclid(86_400);
+    let (y, m, d) = synthetic_marker::civil_from_days_pub(days);
+    let hh = secs_of_day / 3600;
+    let mm = (secs_of_day % 3600) / 60;
+    let ss = secs_of_day % 60;
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y, m, d, hh, mm, ss
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1414,7 +1544,8 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             f5g4_prove_tombstone_review_apply_transaction,
-            f5g4_apply_reviewed_folder_binding_tombstone
+            f5g4_apply_reviewed_folder_binding_tombstone,
+            preview_cleanup_synthetic_transactional
         ])
         .run(tauri::generate_context!())
         .expect("error while running H2O Studio desktop")
@@ -3060,5 +3191,389 @@ mod tests {
         // No assert! beyond presence — full enforcement lives in the
         // separate CI grep script (see docs/systems/sync/synthetic-marker-contract-v1.md).
         let _ = offenders;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // F5H.3b.0d — true transactional dry-run integration tests.
+    //
+    // These call crate::synthetic_cleanup_dryrun::run_dry_run against a
+    // real in-memory SQLite with the F5H.3b.0 schema setup (which now
+    // includes is_synthetic + sync_maintenance_log after F5H.3b.0c).
+    // The contract:
+    //   - The transaction starts, runs the audit insert + DELETE
+    //     simulation, then ALWAYS rolls back.
+    //   - Row counts before == row counts after on all 3 tables.
+    //   - wouldDeleteRows reflects only contract-eligible rows.
+    // ──────────────────────────────────────────────────────────────────
+
+    use crate::synthetic_cleanup_dryrun;
+
+    fn f5h3b0d_now() -> String { "2026-06-01T00:00:00Z".to_string() }
+    fn f5h3b0d_old() -> String { "2026-05-01T00:00:00Z".to_string() }
+    fn f5h3b0d_recent() -> String { "2026-05-31T23:30:00Z".to_string() }
+
+    fn f5h3b0d_run<F, Fut, T>(f: F) -> T
+    where
+        F: FnOnce(SqliteConnection) -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        tauri::async_runtime::block_on(async move {
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite");
+            f5h3_setup_cleanup_proof_schema(&mut conn)
+                .await
+                .expect("schema setup");
+            f(conn).await
+        })
+    }
+
+    async fn f5h3b0d_table_count(conn: &mut SqliteConnection, table: &str) -> i64 {
+        let q = format!("SELECT COUNT(*) FROM {table}");
+        let (c,): (i64,) = sqlx::query_as(&q).fetch_one(&mut *conn).await.unwrap();
+        c
+    }
+
+    #[test]
+    fn f5h3b0d_dry_run_with_no_eligible_rows_succeeds_and_rolls_back() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "f5h3b0d no-eligible test".to_string(),
+                None,
+            )
+            .await
+        });
+        assert!(r.ok, "expected ok=true for empty-eligible dry-run; blocker={:?}", r.blocker);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+        assert_eq!(r.would_delete_rows.reviews, 0);
+        assert_eq!(r.would_delete_rows.total, 0);
+        assert!(r.rollback.performed);
+        assert!(r.rollback.verified);
+        assert!(r.audit.inserted_in_transaction);
+        assert!(!r.audit.persisted);
+        assert!(r.audit.audit_maintenance_id.is_some());
+        assert!(!r.actions.deleted_rows);
+        assert!(!r.actions.mutated_rows);
+        assert!(!r.actions.real_cleanup_implemented);
+    }
+
+    #[test]
+    fn f5h3b0d_dry_run_with_eligible_rows_returns_counts_and_rolls_back() {
+        let (r, after_t, after_r, after_m): (
+            synthetic_cleanup_dryrun::DryRunResult,
+            i64, i64, i64,
+        ) = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-tomb-1", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-tomb-2", "folderBinding:f5h-a:f5h-b", "f5h-test", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            f5h3b0c_seed_review(&mut conn, "f5h-rev-1", Some("f5h-remote-1"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-rev-1", "resolved", Some("rejected"), "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            let r = synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "f5h3b0d eligible test".to_string(),
+                None,
+            )
+            .await;
+            let t = f5h3b0d_table_count(&mut conn, "sync_tombstones").await;
+            let v = f5h3b0d_table_count(&mut conn, "sync_tombstone_reviews").await;
+            let m = f5h3b0d_table_count(&mut conn, "sync_maintenance_log").await;
+            (r, t, v, m)
+        });
+        assert!(r.ok, "blocker={:?}", r.blocker);
+        assert_eq!(r.would_delete_rows.tombstones, 2);
+        assert_eq!(r.would_delete_rows.reviews, 1);
+        assert_eq!(r.would_delete_rows.total, 3);
+        assert!(r.rollback.performed);
+        assert!(r.rollback.verified);
+        // Rollback verification — rows still present on the real DB.
+        assert_eq!(after_t, 2, "tombstones must be preserved after rollback");
+        assert_eq!(after_r, 1, "reviews must be preserved after rollback");
+        assert_eq!(after_m, 0, "maintenance log row must be rolled back");
+    }
+
+    #[test]
+    fn f5h3b0d_prefix_only_row_not_in_would_delete_counts() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5g-prefix-only", "folderBinding:f5g-x:f5g-y", "f5g-test", "{}", 0, &f5h3b0d_old(), None).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+        assert_eq!(r.would_delete_rows.reviews, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_marker_without_safe_prefix_not_in_would_delete_counts() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "abc-no-prefix", "folderBinding:abc:def", "plain-reason", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_pending_synthetic_review_not_in_would_delete_counts() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_review(&mut conn, "f5h-pending-rev", Some("f5h-remote"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-pending-rev", "pending", None, "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.reviews, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_accepted_later_review_not_in_would_delete_counts() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_review(&mut conn, "f5h-al-rev", Some("f5h-remote"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-al-rev", "accepted-later", None, "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.reviews, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_restored_tombstone_not_in_would_delete_counts() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-restored", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_old(), Some("2026-05-15T00:00:00Z")).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_protected_delete_reason_not_in_would_delete_counts() {
+        for reason in ["folder-delete", "folder-delete-cascade", "user-unbind", "remote-review-apply", "remote-tombstone-applied"] {
+            let r_str = reason.to_string();
+            let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| {
+                let r = r_str.clone();
+                async move {
+                    f5h3b0c_seed_tombstone(&mut conn, "f5h-prot", "folderBinding:f5h-x:f5h-y", &r, "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+                    synthetic_cleanup_dryrun::run_dry_run(
+                        &mut conn,
+                        f5h3b0d_now(),
+                        "test-peer".to_string(),
+                        "test".to_string(),
+                        None,
+                    ).await
+                }
+            });
+            assert!(r.ok);
+            assert_eq!(r.would_delete_rows.tombstones, 0, "reason {} must be blocked", reason);
+        }
+    }
+
+    #[test]
+    fn f5h3b0d_recent_row_blocked_by_age_floor() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-recent", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_recent(), None).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_review_attached_to_real_tombstone_blocked() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "real-tomb", "folderBinding:real:real", "folder-delete", "{}", 0, &f5h3b0d_old(), None).await.unwrap();
+            f5h3b0c_seed_review(&mut conn, "f5h-attached", Some("real-tomb"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-attached", "resolved", Some("rejected"), "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.reviews, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_tombstone_with_live_review_blocked() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-with-live", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            f5h3b0c_seed_review(&mut conn, "f5h-live", Some("f5h-with-live"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-live", "pending", None, "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(r.ok);
+        assert_eq!(r.would_delete_rows.tombstones, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_audit_insert_failure_rolls_back() {
+        let (r, m_count): (synthetic_cleanup_dryrun::DryRunResult, i64) = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-tomb", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            let r = synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                Some(synthetic_cleanup_dryrun::DryRunFailure::AuditInsert),
+            ).await;
+            let m = f5h3b0d_table_count(&mut conn, "sync_maintenance_log").await;
+            (r, m)
+        });
+        assert!(!r.ok);
+        assert_eq!(r.blocker.as_deref(), Some("audit-insert-failed"));
+        assert!(r.rollback.performed);
+        assert_eq!(m_count, 0);
+    }
+
+    #[test]
+    fn f5h3b0d_review_delete_count_mismatch_rolls_back_cleanly() {
+        let (r, after_r): (synthetic_cleanup_dryrun::DryRunResult, i64) = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_review(&mut conn, "f5h-rev", Some("f5h-remote"), "folderBinding:f5h-x:f5h-y", "dedupe-f5h-rev", "resolved", Some("rejected"), "{}", "[]", 1, &f5h3b0d_old()).await.unwrap();
+            let r = synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                Some(synthetic_cleanup_dryrun::DryRunFailure::ReviewDeleteMismatch),
+            ).await;
+            let v = f5h3b0d_table_count(&mut conn, "sync_tombstone_reviews").await;
+            (r, v)
+        });
+        assert!(r.ok);
+        assert_eq!(r.rollback.rollback_reason.as_deref(), Some("review-delete-count-mismatch"));
+        assert!(r.rollback.performed);
+        assert!(r.rollback.verified);
+        assert_eq!(after_r, 1);
+    }
+
+    #[test]
+    fn f5h3b0d_tombstone_delete_count_mismatch_rolls_back_cleanly() {
+        let (r, after_t): (synthetic_cleanup_dryrun::DryRunResult, i64) = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(&mut conn, "f5h-tomb", "folderBinding:f5h-x:f5h-y", "f5h-test", "{}", 1, &f5h3b0d_old(), None).await.unwrap();
+            let r = synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                Some(synthetic_cleanup_dryrun::DryRunFailure::TombstoneDeleteMismatch),
+            ).await;
+            let t = f5h3b0d_table_count(&mut conn, "sync_tombstones").await;
+            (r, t)
+        });
+        assert!(r.ok);
+        assert_eq!(r.rollback.rollback_reason.as_deref(), Some("tombstone-delete-count-mismatch"));
+        assert!(r.rollback.performed);
+        assert!(r.rollback.verified);
+        assert_eq!(after_t, 1);
+    }
+
+    #[test]
+    fn f5h3b0d_missing_marker_migration_returns_blocked() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = tauri::async_runtime::block_on(async {
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite");
+            // Create only sync_tombstones WITHOUT is_synthetic column.
+            sqlx::query(
+                "CREATE TABLE sync_tombstones (tombstone_id TEXT PRIMARY KEY, record_kind TEXT, record_id TEXT, delete_reason TEXT, meta_json TEXT, created_at TEXT)"
+            ).execute(&mut conn).await.unwrap();
+            sqlx::query(
+                "CREATE TABLE sync_tombstone_reviews (review_id TEXT PRIMARY KEY, classification TEXT, status TEXT, dedupe_key TEXT, raw_tombstone_json TEXT, warnings_json TEXT)"
+            ).execute(&mut conn).await.unwrap();
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(!r.ok);
+        assert_eq!(r.blocker.as_deref(), Some("synthetic-marker-migration-missing"));
+    }
+
+    #[test]
+    fn f5h3b0d_missing_maintenance_log_migration_returns_blocked() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = tauri::async_runtime::block_on(async {
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite");
+            sqlx::query(
+                "CREATE TABLE sync_tombstones (tombstone_id TEXT PRIMARY KEY, record_kind TEXT, record_id TEXT, delete_reason TEXT, meta_json TEXT, is_synthetic INTEGER NOT NULL DEFAULT 0, restored_at TEXT, created_at TEXT)"
+            ).execute(&mut conn).await.unwrap();
+            sqlx::query(
+                "CREATE TABLE sync_tombstone_reviews (review_id TEXT PRIMARY KEY, classification TEXT NOT NULL, status TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, raw_tombstone_json TEXT NOT NULL, warnings_json TEXT, is_synthetic INTEGER NOT NULL DEFAULT 0, created_at TEXT)"
+            ).execute(&mut conn).await.unwrap();
+            // No sync_maintenance_log table.
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert!(!r.ok);
+        assert_eq!(r.blocker.as_deref(), Some("maintenance-log-migration-missing"));
+    }
+
+    #[test]
+    fn f5h3b0d_return_schema_string_is_v1() {
+        let r: synthetic_cleanup_dryrun::DryRunResult = f5h3b0d_run(|mut conn| async move {
+            synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "test".to_string(),
+                None,
+            ).await
+        });
+        assert_eq!(r.schema, "h2o.studio.synthetic-cleanup-transaction-dry-run.v1");
+        assert_eq!(r.predicate_version, "h2o.studio.sync.synthetic-marker.v1");
+        assert!(r.transactional);
+        assert!(r.dry_run);
+        assert_eq!(r.platform, "desktop-tauri");
     }
 }

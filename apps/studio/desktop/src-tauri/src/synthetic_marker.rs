@@ -278,6 +278,13 @@ fn subtract_seconds_iso(iso: &str, seconds: i64) -> String {
     out
 }
 
+/// Public wrapper around the civil-from-days conversion so callers
+/// outside this module (e.g. lib.rs's `nowish_iso` helper) can format
+/// ISO timestamps without re-implementing the algorithm.
+pub fn civil_from_days_pub(days: i64) -> (i64, i64, i64) {
+    civil_from_days(days)
+}
+
 // Howard Hinnant's algorithms (public domain) for civil↔days.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };

@@ -3133,3 +3133,58 @@ import/export/sync/apply change. It enables F5H.3b.0d (true dry-run
 cleanup) and F5H.3b.1 (real cleanup) to be implemented safely on top.
 
 Full specification: [docs/systems/sync/synthetic-marker-contract-v1.md](../sync/synthetic-marker-contract-v1.md).
+
+---
+
+## F5H.3b.0d — True transactional synthetic cleanup dry-run
+
+Migration v9 adds the production `sync_maintenance_log` table (mirrors the
+F5H.3b.0 proven test fixture). New Rust module
+[`apps/studio/desktop/src-tauri/src/synthetic_cleanup_dryrun.rs`](../../../apps/studio/desktop/src-tauri/src/synthetic_cleanup_dryrun.rs)
+exposes `run_dry_run(...)`; a new Tauri command
+`preview_cleanup_synthetic_transactional` calls it against the real loaded
+`sqlite:studio-v1.db` pool.
+
+Public API (Desktop only):
+
+```js
+await H2O.Studio.store.tombstoneReviews.previewCleanupSynthetic({
+  dryRun: true,
+  transactional: true
+});
+```
+
+Behavior:
+
+- Pre-flight: probe `is_synthetic` columns + `sync_maintenance_log` presence.
+  Missing → `blocker: 'synthetic-marker-migration-missing'` or
+  `'maintenance-log-migration-missing'`. No txn started.
+- Capture before-counts of all 3 tables.
+- BEGIN. Audit row insert first (lock upgrade to RESERVED). SELECT
+  eligible IDs via `eligible_synthetic_*_ids`. Run the same DELETE
+  statements F5H.3b.1 will run, id-pinned. Verify rows-affected matches
+  candidate count. UPDATE audit row.
+- ROLLBACK unconditionally.
+- Capture after-counts. Verify before == after on all 3 tables.
+- Return redacted counts-only envelope, schema
+  `h2o.studio.synthetic-cleanup-transaction-dry-run.v1`.
+
+Failure semantics: every failure after BEGIN attempts rollback and reports
+`rollback.performed`. Count mismatches surface as `rollback.rollbackReason`
+with `ok: true` (the txn rolled back cleanly; the caller learns drift
+would have aborted real cleanup).
+
+Chrome: `previewCleanupSynthetic({ transactional: true })` returns
+`blocker: 'desktop-transactional-cleanup-preview-only'` with no Tauri
+invoke. Chrome cleanup remains forever unplanned.
+
+F5H.3b.0d does **not** add any DELETE commit, no `cleanupSynthetic({
+dryRun: false })` API, no real row mutation, no UI, no
+import/export/sync/apply changes.
+
+F5H.3b.1 (real cleanup) is the next phase. It becomes a small diff against
+F5H.3b.0d: swap ROLLBACK for COMMIT under a triple gate (long gate string
++ non-empty reason + Desktop-only surface check) and add the candidate-id
+pinning / previewToken contract.
+
+Full specification: [docs/systems/sync/synthetic-marker-contract-v1.md](../sync/synthetic-marker-contract-v1.md).
