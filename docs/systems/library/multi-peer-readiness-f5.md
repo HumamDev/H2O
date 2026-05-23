@@ -2167,6 +2167,97 @@ apply do not exist. `childApplyCandidates` only identifies child
 actual Desktop apply still requires the F5G.4.1 exact dev gate and fresh
 transaction preconditions.
 
+## F5G.6.1 Folder Apply Preview Diagnostics
+
+F5G.6.1 keeps folder apply deferred and adds redacted diagnostics to
+`previewApply(reviewId)` for folder tombstone reviews. It does not add folder
+apply, cascade apply, apply-all, UI, import/export/sync behavior, tombstone
+creation, review-row mutation, folder mutation, binding mutation, chat deletion,
+or snapshot deletion.
+
+For a folder review, `previewApply()` continues to return a blocked preview:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-apply-preview.v1',
+  ok: true,
+  reviewFound: true,
+  supported: false,
+  dryRunOnly: true,
+  wouldMutateOnApply: false,
+  action: 'blocked-folder-apply-deferred',
+  recordKind: 'folder',
+  blockers: [{ code: 'folder-apply-deferred' }],
+  local: {
+    exists,
+    hasNewerEdit,
+    timestampComparable,
+    childFolderCount,
+    activeBindingCount
+  },
+  cascade: {
+    groupFound,
+    childCount,
+    pendingChildCount,
+    acceptedLaterChildCount,
+    resolvedChildCount,
+    blockedChildCount,
+    missingParent,
+    complete,
+    partial,
+    orphan,
+    warningsCount
+  },
+  auditPreview: {
+    wouldCreateLocalTombstone: false,
+    wouldUpdateReviewDecision: false,
+    wouldRequireOperatorConfirmation: true
+  },
+  warnings: []
+}
+```
+
+Desktop diagnostics use read-only SQLite queries:
+
+- check whether the local folder row exists
+- count child folders by `parent_id`
+- count active folder bindings by `folder_id`
+- compare folder `updated_at` against remote `deletedAt` when both timestamps
+  parse cleanly
+
+Chrome diagnostics use read-only Library APIs when available:
+
+- `H2O.Library.Folders.getFolderById(folderId)`
+- `H2O.LibraryWorkspace.getFolders()`
+- `H2O.Library.Folders.getChatsInFolder(folderId)`
+- `H2O.LibraryIndex.facets().byFolder`
+
+If local folder diagnostics are unavailable, the preview remains blocked and
+adds `local-comparison-unavailable` plus a code-only warning. Timestamp
+comparison only reports `hasNewerEdit: true` when both local and remote
+timestamps parse and the local timestamp is strictly newer.
+
+The cascade summary is derived from the existing review queue and uses the same
+redacted grouping semantics as `diagnoseCascadeGroups()`. It returns counts and
+booleans only. It must not expose group keys, folder ids, chat ids, record ids,
+peer ids, tombstone ids, raw tombstone JSON, metadata, names, titles,
+transcripts, or content.
+
+Additional folder preview blockers may include:
+
+- `local-folder-has-child-folders`
+- `cascade-group-incomplete`
+- `cascade-child-delete-vs-edit`
+- `cascade-child-malformed`
+- `cascade-child-unsupported`
+- `local-folder-newer-edit`
+- `local-comparison-unavailable`
+- `missing-local-record`
+
+These blockers are explanatory only. Folder apply remains unavailable; real
+folder apply must be planned separately and would require a new transaction
+proof before any mutation is considered.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

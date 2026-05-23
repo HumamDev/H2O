@@ -1720,6 +1720,277 @@
     });
   }
 
+  function makeFolderCascadePreviewSummary(summary) {
+    if (!summary) {
+      return {
+        groupFound: false,
+        childCount: 0,
+        pendingChildCount: 0,
+        acceptedLaterChildCount: 0,
+        resolvedChildCount: 0,
+        blockedChildCount: 0,
+        missingParent: null,
+        complete: false,
+        partial: true,
+        orphan: null,
+        warningsCount: 0,
+      };
+    }
+    var warnings = Array.isArray(summary.warnings) ? summary.warnings : [];
+    return {
+      groupFound: true,
+      childCount: Number(summary.childCount) || 0,
+      pendingChildCount: Number(summary.pendingChildCount) || 0,
+      acceptedLaterChildCount: Number(summary.acceptedLaterChildCount) || 0,
+      resolvedChildCount: Number(summary.resolvedChildCount) || 0,
+      blockedChildCount: Number(summary.blockedChildCount) || 0,
+      missingParent: summary.missingParent === true,
+      complete: summary.rootPresent === true && Number(summary.childCount) > 0,
+      partial: !(summary.rootPresent === true && Number(summary.childCount) > 0),
+      orphan: summary.missingParent === true,
+      warningsCount: warnings.length,
+    };
+  }
+
+  function buildCascadeGroupsForPreview(rows) {
+    var groups = {};
+    (Array.isArray(rows) ? rows : []).forEach(function (review, index) {
+      var rowWarnings = [];
+      var tombstone = parseCascadeTombstone(review, rowWarnings);
+      var meta = cascadeMeta(tombstone);
+      var root = isCascadeRootReview(review, tombstone, meta);
+      var child = isCascadeChildReview(review, tombstone, meta);
+      if (!root && !child) return;
+      var peer = cleanScalar(review && review.remoteSyncPeerId) ||
+        cleanScalar(tombstone && tombstone.deletedBySyncPeerId) ||
+        'unknown-peer';
+      var rootRecordId = root
+        ? cascadeRecordId(review, tombstone)
+        : inferCascadeRootRecordId(review, tombstone, meta);
+      if (!rootRecordId) {
+        rootRecordId = 'unknown-root:' + (cleanScalar(review && review.dedupeKey) || cleanScalar(review && review.reviewId) || String(index));
+      }
+      var group = ensureCascadeGroup(groups, peer + '\u0000' + rootRecordId);
+      var member = makeCascadeMember(review, tombstone, meta, rootRecordId);
+      if (root) addCascadeMemberOnce(group, 'root', member);
+      if (child) addCascadeMemberOnce(group, 'children', member);
+    });
+    return groups;
+  }
+
+  function readCascadePreviewForFolder(review, tombstone) {
+    var peer = cleanScalar(review && review.remoteSyncPeerId) ||
+      cleanScalar(tombstone && tombstone.deletedBySyncPeerId) ||
+      'unknown-peer';
+    var rootRecordId = cascadeRecordId(review, tombstone);
+    if (!rootRecordId) return Promise.resolve(makeFolderCascadePreviewSummary(null));
+    return readAllReviewsForCascadeDiagnostics()
+      .then(function (rows) {
+        var groups = buildCascadeGroupsForPreview(rows);
+        var group = groups[peer + '\u0000' + rootRecordId] || null;
+        return makeFolderCascadePreviewSummary(group ? summarizeCascadeGroup(group, 0) : null);
+      })
+      .catch(function () {
+        return makeFolderCascadePreviewSummary(null);
+      });
+  }
+
+  function applyFolderCascadePreview(result, cascade) {
+    result.cascade = cascade;
+    if (!cascade || !cascade.groupFound || cascade.partial || cascade.missingParent) {
+      pushBlocker(result, 'cascade-group-incomplete');
+    }
+    if (cascade && cascade.blockedChildCount > 0) {
+      pushBlocker(result, 'cascade-group-incomplete');
+    }
+  }
+
+  function normalizeFolderParentId(folder) {
+    if (!isObject(folder)) return '';
+    return cleanScalar(folder.parentId || folder.parent_id || folder.parentFolderId || folder.parent_folder_id);
+  }
+
+  function countChildFoldersFromList(folderId) {
+    return readFoldersList().then(function (folders) {
+      if (folders === null) return null;
+      var count = 0;
+      (Array.isArray(folders) ? folders : []).forEach(function (folder) {
+        if (normalizeFolderParentId(folder) === folderId) count += 1;
+      });
+      return count;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function countBindingsFromFolderChats(folderId) {
+    var foldersApi = getLibraryFoldersApi();
+    if (!foldersApi || typeof foldersApi.getChatsInFolder !== 'function') return Promise.resolve(null);
+    try {
+      return Promise.resolve(foldersApi.getChatsInFolder(folderId)).then(function (rows) {
+        if (Array.isArray(rows)) return rows.length;
+        if (isObject(rows)) return valuesFromObject(rows).length;
+        return null;
+      }).catch(function () { return null; });
+    } catch (_) {
+      return Promise.resolve(null);
+    }
+  }
+
+  function countBindingsFromIndex(folderId) {
+    var index = getLibraryIndexApi();
+    if (!index || typeof index.facets !== 'function') return null;
+    try {
+      var facets = index.facets() || {};
+      var byFolder = facets.byFolder || {};
+      var rows = byFolder[folderId] || byFolder[String(folderId)] || null;
+      if (Array.isArray(rows)) return rows.length;
+      if (isObject(rows)) return valuesFromObject(rows).length;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readFolderActiveBindingCount(folderId) {
+    return countBindingsFromFolderChats(folderId).then(function (count) {
+      if (count != null) return count;
+      return countBindingsFromIndex(folderId);
+    });
+  }
+
+  function readChromeFolderDiagnostics(folderId, tombstone, result) {
+    var id = cleanScalar(folderId);
+    if (!id) {
+      result.local.exists = null;
+      result.local.hasNewerEdit = null;
+      result.local.timestampComparable = null;
+      result.local.childFolderCount = null;
+      result.local.activeBindingCount = null;
+      pushBlocker(result, 'malformed-remote-tombstone');
+      pushCodeWarning(result.warnings, 'local-folder-id-unavailable');
+      return Promise.resolve(result);
+    }
+    return readLocalFolder(id).then(function (local) {
+      if (!local || !local.available) {
+        result.local.exists = null;
+        result.local.hasNewerEdit = null;
+        result.local.timestampComparable = null;
+        result.local.childFolderCount = null;
+        result.local.activeBindingCount = null;
+        pushBlocker(result, 'local-comparison-unavailable');
+        pushCodeWarning(result.warnings, 'local-folder-diagnostics-unavailable');
+        return result;
+      }
+      if (!local.exists) {
+        result.local.exists = false;
+        result.local.hasNewerEdit = false;
+        result.local.timestampComparable = false;
+        result.local.childFolderCount = 0;
+        result.local.activeBindingCount = 0;
+        pushBlocker(result, 'missing-local-record');
+        return result;
+      }
+      result.local.exists = true;
+      var timestamp = readTimestampCandidate(local.record, [
+        'updatedAt',
+        'updated_at',
+        'modifiedAt',
+        'modified_at',
+        'createdAt',
+        'created_at',
+      ]);
+      var compared = compareTimestampsForReview(timestamp, tombstone && tombstone.deletedAt);
+      result.local.hasNewerEdit = compared.newer;
+      result.local.timestampComparable = compared.comparable;
+      if (!timestamp.value || !compared.comparable) {
+        pushBlocker(result, 'local-comparison-unavailable');
+        pushCodeWarning(result.warnings, 'local-timestamp-unavailable');
+      }
+      if (compared.newer) pushBlocker(result, 'local-folder-newer-edit');
+      return Promise.all([
+        countChildFoldersFromList(id),
+        readFolderActiveBindingCount(id),
+      ]).then(function (counts) {
+        var childFolderCount = counts[0];
+        var activeBindingCount = counts[1];
+        result.local.childFolderCount = childFolderCount == null ? null : Number(childFolderCount) || 0;
+        result.local.activeBindingCount = activeBindingCount == null ? null : Number(activeBindingCount) || 0;
+        if (childFolderCount == null || activeBindingCount == null) {
+          pushCodeWarning(result.warnings, 'local-folder-diagnostics-unavailable');
+        }
+        if (Number(childFolderCount) > 0) pushBlocker(result, 'local-folder-has-child-folders');
+        return result;
+      });
+    }).catch(function () {
+      result.local.exists = null;
+      result.local.hasNewerEdit = null;
+      result.local.timestampComparable = null;
+      result.local.childFolderCount = null;
+      result.local.activeBindingCount = null;
+      pushBlocker(result, 'local-comparison-unavailable');
+      pushCodeWarning(result.warnings, 'local-folder-diagnostics-unavailable');
+      return result;
+    });
+  }
+
+  function applyFolderClassificationBlockers(review, validation, result) {
+    var classification = cleanScalar(review && review.classification);
+    if (validation && validation.malformed) pushBlocker(result, 'malformed-remote-tombstone');
+    if (classification === 'malformed-remote-tombstone') pushBlocker(result, 'malformed-remote-tombstone');
+    if (classification === 'unsupported-record-kind') pushBlocker(result, 'unsupported-record-kind');
+    if (classification === 'self-originated') pushBlocker(result, 'self-originated');
+    if (classification === 'delete-vs-edit') pushBlocker(result, 'local-folder-newer-edit');
+    if (classification === 'local-comparison-unavailable') pushBlocker(result, 'local-comparison-unavailable');
+  }
+
+  function applyFolderCascadeBlockerDetails(result, rows, review, tombstone) {
+    var peer = cleanScalar(review && review.remoteSyncPeerId) ||
+      cleanScalar(tombstone && tombstone.deletedBySyncPeerId) ||
+      'unknown-peer';
+    var rootRecordId = cascadeRecordId(review, tombstone);
+    if (!rootRecordId) return;
+    var groups = buildCascadeGroupsForPreview(rows);
+    var group = groups[peer + '\u0000' + rootRecordId] || null;
+    if (!group) return;
+    var children = group.children || [];
+    children.forEach(function (child) {
+      if (child.deleteVsEdit) pushBlocker(result, 'cascade-child-delete-vs-edit');
+      if (child.malformed) pushBlocker(result, 'cascade-child-malformed');
+      if (child.unsupported) pushBlocker(result, 'cascade-child-unsupported');
+    });
+  }
+
+  function previewFolderApply(review, tombstone, validation, result) {
+    result.supported = false;
+    result.action = 'blocked-folder-apply-deferred';
+    result.wouldMutateOnApply = false;
+    result.mutationType = null;
+    result.local.targetMatches = null;
+    result.auditPreview.wouldCreateLocalTombstone = false;
+    result.auditPreview.wouldUpdateReviewDecision = false;
+    result.auditPreview.wouldRequireOperatorConfirmation = true;
+    pushBlocker(result, 'folder-apply-deferred');
+    applyFolderClassificationBlockers(review, validation, result);
+    (validation.errors || []).concat(validation.warnings || []).forEach(function (warning) {
+      pushCodeWarning(result.warnings, warning && warning.code);
+    });
+    var folderId = parseFolderRecordId(tombstone && tombstone.recordId);
+    return readChromeFolderDiagnostics(folderId, tombstone, result)
+      .then(function () {
+        return readCascadePreviewForFolder(review, tombstone).then(function (cascade) {
+          applyFolderCascadePreview(result, cascade);
+          return readAllReviewsForCascadeDiagnostics().then(function (rows) {
+            applyFolderCascadeBlockerDetails(result, rows, review, tombstone);
+            return result;
+          }).catch(function () {
+            pushCodeWarning(result.warnings, 'cascade-diagnostics-unavailable');
+            return result;
+          });
+        });
+      });
+  }
+
   function previewApply(reviewIdInput, options) {
     var opts = options || {};
     var reviewId = cleanString(reviewIdInput);
@@ -1759,6 +2030,11 @@
         return result;
       }
 
+      if (kind === 'folder') {
+        var folderValidation = validateRemoteTombstone(tombstone, null);
+        return previewFolderApply(review, tombstone, folderValidation, result);
+      }
+
       var classification = cleanScalar(review.classification);
       if (classification === 'malformed-remote-tombstone') {
         result.action = 'blocked-malformed-review';
@@ -1786,11 +2062,6 @@
         return result;
       }
 
-      if (kind === 'folder') {
-        result.action = 'blocked-folder-apply-deferred';
-        pushBlocker(result, 'folder-apply-deferred');
-        return result;
-      }
       if (kind !== 'folderBinding') {
         result.action = 'blocked-unsupported-kind';
         pushBlocker(result, 'unsupported-record-kind');
@@ -2445,7 +2716,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.5',
+    __version: '0.1.0-f5g.6.1',
     init: init,
     dispose: dispose,
     isReady: isReady,
