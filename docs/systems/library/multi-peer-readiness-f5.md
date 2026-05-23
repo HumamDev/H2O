@@ -2258,6 +2258,299 @@ These blockers are explanatory only. Folder apply remains unavailable; real
 folder apply must be planned separately and would require a new transaction
 proof before any mutation is considered.
 
+## F5H.0 Tombstone Lifecycle Policy
+
+F5H.0 defines lifecycle, cleanup, retention, purge, and compaction policy before
+any maintenance code exists. Retention defaults to preserving evidence because
+purging tombstones before peer watermarks risks stale-peer resurrection: an old
+or offline peer could reintroduce a record if the local delete evidence has
+already disappeared. The next safe implementation after this policy is a
+counts-only `diagnoseLifecycle()` API with no cleanup or purge behavior.
+
+F5H.0 does not add cleanup APIs, purge APIs, automatic cleanup, migrations, UI,
+settings, import/export/sync behavior, apply behavior, or destructive deletion.
+
+### Data Classes
+
+Local tombstones must be classified separately:
+
+- active tombstones with no `restoredAt`
+- restored tombstones with `restoredAt` and `restoredBySyncPeerId`
+- tombstones created from local user actions
+- tombstones created from reviewed remote apply
+- cascade parent and child tombstones linked by `cascadeFrom`
+- synthetic/test rows created during validation
+
+Remote tombstone review rows must be classified separately:
+
+- `pending`
+- `accepted-later`
+- `ignored`
+- `rejected`
+- `resolved`
+- `superseded`
+- malformed and unsupported reviews
+- duplicate sightings represented by `seenCount`, `firstSeenAt`, `lastSeenAt`,
+  and `lastSeenExportId`
+- self-origin skipped evidence if stored in a future diagnostic row
+- applied/resolved audit rows such as `decision: 'applied-folder-binding'`
+
+### Retention Principles
+
+The default policy is preserve, not prune:
+
+- active tombstones are retained indefinitely
+- pending and accepted-later reviews are retained indefinitely
+- delete-vs-edit, malformed, unsupported, and unresolved cascade evidence is
+  preserved until explicitly resolved
+- applied audit evidence is preserved
+- cleanup is never automatic
+- destructive maintenance must be explicit, dry-run-first, gated, and audited
+
+### Peer Watermark Prerequisite
+
+General tombstone compaction requires peer watermarks that do not exist yet.
+Future safe compaction needs:
+
+- a known-peers list
+- per-peer last seen export identity and sequence
+- tombstone observed-by-peer tracking
+- restore-event observation per peer
+- a minimum peer waterline for each tombstone family
+- an offline-peer risk model
+
+Before peer watermarks exist, there is no automatic tombstone purge and no
+automatic review purge.
+
+### Local Tombstone Retention Policy
+
+Active tombstones are retained indefinitely until peer-watermark compaction is
+implemented and validated. Restored tombstones are also retained indefinitely for
+now; future compaction may be considered only after a retention window and after
+all known peers have observed the restore event.
+
+Tombstones created by reviewed remote apply are audit-critical and must be kept
+long-term. Cascade tombstones must retain parent/child linkage together; child
+cascade evidence should not be compacted without enough parent context to
+explain it.
+
+Synthetic/test tombstones are eligible only for explicit dry-run-first cleanup
+when they are clearly marked by safe prefixes or reasons. Known F5 validation
+prefixes are:
+
+- `f5c-`
+- `f5d-`
+- `f5d1-`
+- `f5d2-`
+- `f5f-`
+- `f5g-`
+
+These prefixes are candidates for future synthetic cleanup only. F5H.0 does not
+delete or mark any rows.
+
+### Review Row Retention Policy
+
+Pending and accepted-later reviews are never auto-deleted. Rejected and ignored
+reviews are retained for audit and may only become archive candidates later.
+Resolved reviews are retained, especially if linked to real apply, cascade
+diagnostics, or a local tombstone.
+
+Superseded reviews are future compaction candidates only if the duplicate chain
+is preserved. Malformed and unsupported reviews are retained until explicitly
+rejected or resolved because they may explain bad remote evidence or ingestion
+health.
+
+Duplicate sightings should be compacted by preserving summary metadata, not by
+dropping evidence needed for dedupe:
+
+- `seenCount`
+- `firstSeenAt`
+- `lastSeenAt`
+- `lastSeenExportId`
+
+Per-sighting rows should not be introduced unless a later audit requirement
+needs them.
+
+### Cleanup, Purge, Compaction, And Archive
+
+Cleanup means an explicit operator action for safe noise or synthetic/test data.
+It is not automatic.
+
+Purge means destructive deletion of tombstone or review records. Purge should be
+rare, exact-gated, audited, and blocked for unresolved or anti-resurrection
+evidence.
+
+Compaction means non-destructive summarization or retention trimming that
+preserves enough metadata to prevent resurrection, preserve conflicts, and
+maintain audit history.
+
+Archive means moving old audit rows to archive storage instead of deleting them.
+Archive is preferable to purge for applied, resolved, rejected, and ignored
+review history.
+
+### Synthetic/Test Cleanup Model
+
+Future APIs may include:
+
+```js
+previewCleanupSynthetic({ dryRun: true })
+cleanupSynthetic({ dryRun: true, devGate })
+```
+
+Rules for any future synthetic cleanup:
+
+- match safe prefixes or explicit test reasons only
+- dry-run first
+- never clean non-test rows
+- never clean real pending reviews by default
+- require an exact dev gate for destructive cleanup
+- return redacted counts only
+
+### Lifecycle Diagnostics Model
+
+A future diagnostics API should be counts-only and redacted:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-lifecycle-diagnostic.v1',
+  tombstones: {
+    total,
+    active,
+    restored,
+    syntheticCandidates,
+    purgeBlocked,
+    byKind,
+    byDeleteReason,
+    oldestDeletedAt,
+    newestDeletedAt
+  },
+  reviews: {
+    total,
+    pending,
+    acceptedLater,
+    resolved,
+    rejected,
+    ignored,
+    syntheticCandidates,
+    purgeBlocked,
+    byClassification,
+    byStatus
+  },
+  watermarks: {
+    supported: false,
+    reason: 'peer-watermarks-not-implemented'
+  },
+  recommendations: []
+}
+```
+
+Lifecycle diagnostics must not expose record ids, review ids, tombstone ids,
+peer ids, raw tombstone JSON, metadata contents, folder names, chat titles,
+transcript text, prompt/answer bodies, or content.
+
+### Future APIs
+
+Reasonable future APIs:
+
+- `diagnoseLifecycle()`
+- `previewRetentionPlan(options)`
+- `previewCleanupSynthetic(options)`
+- `cleanupSynthetic(options)`
+- `archiveResolvedReviews(options)`
+- `compactDuplicateSightings(options)`
+
+Dangerous APIs to avoid:
+
+- `purgeAll()`
+- `deleteAllReviews()`
+- `clearTombstones()`
+- `forceCompact()`
+
+### Purge Blockers
+
+Any future purge must block when evidence is unresolved or unsafe to remove:
+
+- pending or accepted-later reviews
+- delete-vs-edit, malformed, or unsupported reviews
+- active tombstones
+- unresolved cascade relations
+- records linked to applied reviews
+- missing peer watermarks
+- unknown source peer
+- unresolved linked review
+- ambiguous restore state
+
+### Audit Requirements
+
+Any future cleanup, purge, archive, or compaction action must record:
+
+- operator identity
+- timestamp
+- reason
+- dry-run result
+- counts by category
+- policy version
+- archive/redaction behavior
+- warnings
+
+A future `sync_maintenance_log` table may be appropriate, but F5H.0 does not
+add one.
+
+### Desktop Vs Chrome Policy
+
+Desktop lifecycle diagnostics should eventually cover both SQLite tables:
+`sync_tombstones` and `sync_tombstone_reviews`.
+
+Chrome lifecycle diagnostics cover IndexedDB review rows only until Chrome has
+a local tombstone store. Chrome cleanup remains review-only and non-apply.
+Chrome real apply remains out of scope.
+
+### Export And Import Implications
+
+Tombstones are exported read-only. Review rows are not exported.
+
+Purging local tombstones changes future exports and is therefore blocked until
+peer watermarks exist. Review cleanup does not directly affect exports, but it
+can erase audit and review context, so it remains explicit and conservative.
+
+### Validation Strategy
+
+Future implementation must prove:
+
+- pending reviews are blocked from purge
+- active tombstones are blocked from purge
+- synthetic candidates are detected narrowly
+- dry-run returns counts only
+- destructive cleanup requires an exact gate
+- no ids or content leak in diagnostics
+- no content is deleted
+- watermark absence blocks compaction
+- applied-review-linked tombstones block cleanup
+- Desktop and Chrome diagnostics differ safely
+
+### Risks And Mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Unsafe resurrection | Require peer watermarks before general tombstone compaction. |
+| Audit loss | Prefer archive over purge and keep applied/resolved evidence. |
+| Synthetic overmatch | Match strict test prefixes/reasons and require dry-run first. |
+| Unresolved review loss | Block pending, accepted-later, malformed, unsupported, and delete-vs-edit purges. |
+| Privacy leakage | Use counts-only diagnostics and redact ids, metadata, names, and content. |
+| Operator confusion | Separate cleanup, purge, compaction, and archive terminology. |
+| Desktop/Chrome parity drift | Document Desktop tombstone+review scope and Chrome review-only scope separately. |
+
+### F5H Roadmap
+
+1. F5H.0: lifecycle/retention docs only.
+2. F5H.1: `diagnoseLifecycle()` counts-only, no cleanup.
+3. F5H.2: synthetic cleanup preview only.
+4. F5H.3: synthetic cleanup with exact dev gate.
+5. F5H.4: duplicate sighting compaction preview.
+6. F5H.5: peer watermark model planning.
+7. F5H.6: retention/archive strategy after watermarks.
+8. F5H.7: real purge policy much later, if ever.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
