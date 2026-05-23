@@ -704,6 +704,74 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v10 — F6.1b.0: inert non-delete sync conflict queue table.
+        // This migration creates evidence storage only. It does not add a
+        // JS store, candidate ingestion, analyzer hooks, merge/apply logic,
+        // bidirectional sync, UI, or any import/export/sync behavior change.
+        Migration {
+            version: 10,
+            description: "init sync conflicts",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS sync_conflicts (
+                  conflict_id             TEXT PRIMARY KEY,
+                  schema                  TEXT NOT NULL,
+                  conflict_kind           TEXT NOT NULL,
+                  entity_kind             TEXT NOT NULL,
+                  entity_id               TEXT,
+                  local_peer_id           TEXT,
+                  remote_peer_id          TEXT,
+                  remote_export_id        TEXT,
+                  remote_sequence_number  INTEGER,
+                  local_version_digest    TEXT,
+                  remote_version_digest   TEXT,
+                  local_updated_at        TEXT,
+                  remote_updated_at       TEXT,
+                  classification          TEXT NOT NULL,
+                  status                  TEXT NOT NULL,
+                  severity                TEXT NOT NULL,
+                  first_seen_at           TEXT NOT NULL,
+                  last_seen_at            TEXT NOT NULL,
+                  seen_count              INTEGER NOT NULL DEFAULT 1,
+                  dedupe_key              TEXT NOT NULL UNIQUE,
+                  raw_local_summary_json  TEXT NOT NULL DEFAULT '{}',
+                  raw_remote_summary_json TEXT NOT NULL DEFAULT '{}',
+                  warnings_json           TEXT NOT NULL DEFAULT '[]',
+                  decision                TEXT,
+                  decided_at              TEXT,
+                  decided_by_sync_peer_id TEXT,
+                  created_at              TEXT NOT NULL,
+                  updated_at              TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status
+                  ON sync_conflicts(status);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_classification
+                  ON sync_conflicts(classification);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_severity
+                  ON sync_conflicts(severity);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_conflict_kind
+                  ON sync_conflicts(conflict_kind);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity_kind
+                  ON sync_conflicts(entity_kind);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity
+                  ON sync_conflicts(entity_kind, entity_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_remote_peer
+                  ON sync_conflicts(remote_peer_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_remote_export
+                  ON sync_conflicts(remote_export_id);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_last_seen_at
+                  ON sync_conflicts(last_seen_at);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -1712,6 +1780,47 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f6_sync_conflicts_migration_defines_inert_table_and_indexes() {
+        let migrations = studio_migrations();
+        let migration = migrations
+            .iter()
+            .find(|m| m.version == 10)
+            .expect("F6.1b.0 sync_conflicts migration exists");
+        assert_eq!(migration.description, "init sync conflicts");
+        assert!(migration
+            .sql
+            .contains("CREATE TABLE IF NOT EXISTS sync_conflicts"));
+        assert!(migration
+            .sql
+            .contains("conflict_id             TEXT PRIMARY KEY"));
+        assert!(migration
+            .sql
+            .contains("dedupe_key              TEXT NOT NULL UNIQUE"));
+        for index in [
+            "idx_sync_conflicts_status",
+            "idx_sync_conflicts_classification",
+            "idx_sync_conflicts_severity",
+            "idx_sync_conflicts_conflict_kind",
+            "idx_sync_conflicts_entity_kind",
+            "idx_sync_conflicts_entity",
+            "idx_sync_conflicts_remote_peer",
+            "idx_sync_conflicts_remote_export",
+            "idx_sync_conflicts_last_seen_at",
+        ] {
+            assert!(
+                migration.sql.contains(index),
+                "sync_conflicts migration missing {index}"
+            );
+        }
+        assert!(
+            !migration.sql.contains("INSERT INTO sync_conflicts")
+                && !migration.sql.contains("UPDATE sync_conflicts")
+                && !migration.sql.contains("DELETE FROM sync_conflicts"),
+            "F6.1b.0 migration must not seed, mutate, or delete conflict rows"
+        );
+    }
 
     fn run_proof(failure: Option<F5g4ProofFailure>) -> F5g4ProofResult {
         tauri::async_runtime::block_on(async { f5g4_run_transaction_proof(failure).await })

@@ -61,7 +61,30 @@ F6.1a must not touch `studio.html`, `pack-studio.mjs`, `studio.js`,
 `studio.css`, Dock, Ribbon, Overlay, FolderParity files, F5 tombstone/apply
 files, import/export modules, or sync runtime modules.
 
-## 5. Final Table Name
+## 5. F6.1b.0 Migration-Only Scope
+
+F6.1b.0 is the first runtime-adjacent step, but it is migration-only. It adds
+the Desktop SQLite `sync_conflicts` table and indexes so later phases can build
+read-only diagnostics on a stable schema.
+
+F6.1b.0 does not add:
+
+- JS store files.
+- Store registration or loading.
+- Runtime APIs.
+- Conflict ingestion.
+- Analyzer hooks.
+- Merge/apply behavior.
+- Import/export/sync behavior changes.
+- UI/settings.
+- Chrome conflict storage.
+
+F6.1b.1 will add `src-surfaces-base/studio/store/conflicts.tauri.js` later,
+after Studio loader/packer ownership is clear. That store must remain modular
+and must not be added to `studio.js`, `tombstone-reviews.tauri.js`, or any
+F5 cleanup/apply file.
+
+## 6. Final Table Name
 
 The proposed table name is `sync_conflicts`.
 
@@ -72,7 +95,7 @@ evidence, and delete-vs-edit references that point back to F5. The table is
 still evidence-only; the broader name must not be interpreted as permission to
 apply or merge conflicts.
 
-## 6. Final Proposed Schema
+## 7. Final Proposed Schema
 
 Future Desktop schema candidate:
 
@@ -111,7 +134,9 @@ sync_conflicts (
 
 This is future schema only. F6.1a does not add the table.
 
-## 7. Proposed Indexes
+F6.1b.0 implements this schema as an inert Desktop migration only.
+
+## 8. Proposed Indexes
 
 F6.1b should add these indexes with the table:
 
@@ -147,7 +172,9 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_last_seen_at
 `dedupe_key` is already unique in the table definition and does not need a
 separate named index unless a later migration needs one for diagnostics.
 
-## 8. Schema Constants
+F6.1b.0 implements these indexes with the table.
+
+## 9. Schema Constants
 
 Future F6.1b store constants:
 
@@ -156,7 +183,7 @@ const CONFLICT_SCHEMA = "h2o.studio.sync-conflict.v1";
 const DIAGNOSTIC_SCHEMA = "h2o.studio.sync-conflict.diagnostic.v1";
 ```
 
-## 9. Enum Validation
+## 10. Enum Validation
 
 Allowed statuses:
 
@@ -218,7 +245,7 @@ Initial `entity_kind` values:
 - `savedSnapshot`
 - `unknown`
 
-## 10. Status And Decision Model
+## 11. Status And Decision Model
 
 Statuses:
 
@@ -243,7 +270,7 @@ No F6 phase should imply or perform mutation until a later phase explicitly
 plans and gates mutation. Decision strings are review evidence, not merge
 execution.
 
-## 11. Detection Strategy
+## 12. Detection Strategy
 
 Future candidate sources:
 
@@ -261,7 +288,7 @@ Preferred path:
 - Normal sync must not automatically ingest conflict rows until the queue is
   validated.
 
-## 12. Dedupe Strategy
+## 13. Dedupe Strategy
 
 Candidate same-record dedupe form:
 
@@ -282,7 +309,7 @@ Repeated sightings should:
 - Update `last_seen_at`.
 - Update latest remote export and sequence metadata.
 
-## 13. Redaction Policy
+## 14. Redaction Policy
 
 Default diagnostics and list summaries must not expose:
 
@@ -299,7 +326,7 @@ Use counts, classifications, severities, and code-level summaries only. Any
 future sensitive mode must be explicit, dev-only, and excluded from default
 diagnostics.
 
-## 14. Future Store API
+## 15. Future Store API
 
 Future Desktop store namespace:
 
@@ -338,7 +365,7 @@ Avoid dangerous or premature APIs entirely:
 - `forceRemoteWins()`
 - `deleteLocal()`
 
-## 15. Registration And Loading Plan For F6.1b
+## 16. Registration And Loading Plan For F6.1b.1
 
 Preferred future module:
 
@@ -356,7 +383,7 @@ Rules:
   script registration.
 - Chrome conflict store is deferred.
 
-## 16. Diagnostics Model
+## 17. Diagnostics Model
 
 Future counts-only diagnostic shape:
 
@@ -384,9 +411,9 @@ Future counts-only diagnostic shape:
 Diagnostics are observation-only. They must not merge, apply, update review
 state, or trigger sync writes.
 
-## 17. Future Failure Semantics
+## 18. Future Failure Semantics
 
-Future F6.1b read-only store behavior:
+Future F6.1b.1 read-only store behavior:
 
 - Missing table returns `ready: false` plus a code-level warning.
 - SQL unavailable returns a warning and does not crash the caller.
@@ -395,7 +422,7 @@ Future F6.1b read-only store behavior:
   result, not broad SQL interpolation.
 - All F6.1b methods are read-only. No writes are allowed.
 
-## 18. Desktop Vs Chrome
+## 19. Desktop Vs Chrome
 
 Recommended sequence:
 
@@ -408,7 +435,7 @@ Desktop-first keeps the model anchored to the durable local database while
 avoiding premature Chrome/Desktop parity work before conflict semantics are
 stable.
 
-## 19. Validation Strategy For Future Phases
+## 20. Validation Strategy For Future Phases
 
 Future validation must prove:
 
@@ -420,18 +447,34 @@ Future validation must prove:
 - Malformed records become conflict evidence, not crashes.
 - Import/export/sync behavior remains unchanged.
 
-F6.1b-specific validation should prove:
+F6.1b.0-specific validation should prove:
+
+- The migration defines `sync_conflicts`.
+- The migration defines all planned indexes.
+- The migration is idempotent by using `IF NOT EXISTS`.
+- No conflict rows are seeded.
+- No JS/runtime/store files are added.
+- No import/export/sync/F5/FolderParity files are touched.
+
+F6.1b.1-specific validation should prove:
 
 - Empty-table diagnostics return `total: 0`.
-- The migration creates `sync_conflicts` and all planned indexes.
 - Enum validation accepts only the allowed sets listed above.
 - `listConflicts()` filters cannot inject SQL and return redacted summaries.
 - `getConflict()` redacts raw JSON by default.
 - No import/export/sync/F5/FolderParity files are touched.
 
-## 20. F6.1b Acceptance Criteria
+## 21. F6.1b Acceptance Criteria
 
-F6.1b is acceptable only if:
+F6.1b.0 is acceptable only if:
+
+- Desktop SQLite migration only.
+- `sync_conflicts` table and indexes exist.
+- No store, runtime API, ingestion, analyzer hook, merge, or apply behavior.
+- No import/export/sync behavior change.
+- No FolderParity/Ribbon/Dock/Overlay conflict.
+
+F6.1b.1 is acceptable only if:
 
 - Desktop-only inert scaffold.
 - No automatic conflict creation.
@@ -443,7 +486,7 @@ F6.1b is acceptable only if:
 - No FolderParity/Ribbon/Dock/Overlay conflict.
 - No Chrome conflict store.
 
-## 21. Risks And Mitigations
+## 22. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
 - F5 overlap: reference delete evidence by code and leave actionable delete
@@ -455,11 +498,12 @@ F6.1b is acceptable only if:
 - Folder parity lane conflict: do not touch renderer, Ribbon, Dock, Overlay,
   or FolderParity files during F6 model work.
 
-## 22. Phased Roadmap
+## 23. Phased Roadmap
 
 - F6.0: Conflict queue model docs only.
 - F6.1a: Schema/store refinement docs only.
-- F6.1b: Desktop conflict table/read-only store scaffold, inert.
+- F6.1b.0: Desktop `sync_conflicts` migration only.
+- F6.1b.1: Desktop read-only `conflicts.tauri.js` store registration.
 - F6.2: Analyzer-only conflict candidate detection.
 - F6.3: Hidden runner counts-only display.
 - F6.4: Manual conflict candidate ingestion.
@@ -468,9 +512,9 @@ F6.1b is acceptable only if:
 - F6.7: Chrome conflict store scaffold if needed.
 - F7: First gated bidirectional prototype.
 
-## 23. Recommendation
+## 24. Recommendation
 
 The next implementation after this document should still be conservative:
-F6.1b may add an inert Desktop table/read-only store scaffold only after file
-ownership is clear. Do not build conflict tables or stores in F6.1a. Do not
-touch FolderParity renderer work from the other lane.
+F6.1b.0 may add only the inert Desktop SQLite migration. F6.1b.1 should wait
+until Studio loader/packer ownership is clear. Do not touch FolderParity
+renderer work from the other lane.
