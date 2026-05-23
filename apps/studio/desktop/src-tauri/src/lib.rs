@@ -1414,6 +1414,670 @@ mod tests {
         result.blockers.iter().any(|b| b.code == code)
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum F5h3ProofFailure {
+        AuditInsert,
+        ReviewDelete,
+        TombstoneDelete,
+        ReviewDeleteMismatch,
+        TombstoneDeleteMismatch,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct F5h3CleanupWriteCounts {
+        tombstones: u64,
+        reviews: u64,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct F5h3ProofCounts {
+        maintenance_logs: i64,
+        tombstones: i64,
+        reviews: i64,
+        pending_reviews: i64,
+        accepted_later_reviews: i64,
+        non_synthetic_reviews: i64,
+        non_synthetic_tombstones: i64,
+        remote_review_applied_tombstones: i64,
+        cascade_tombstones: i64,
+    }
+
+    async fn f5h3_setup_cleanup_proof_schema(conn: &mut SqliteConnection) -> Result<(), String> {
+        let statements = [
+            r#"
+            CREATE TABLE sync_maintenance_log (
+              maintenance_id TEXT PRIMARY KEY,
+              schema TEXT NOT NULL,
+              operation TEXT NOT NULL,
+              policy_version TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              requested_at TEXT NOT NULL,
+              requested_by_sync_peer_id TEXT NOT NULL,
+              platform TEXT NOT NULL,
+              dry_run INTEGER NOT NULL,
+              affected_tombstone_count INTEGER NOT NULL DEFAULT 0,
+              affected_review_count INTEGER NOT NULL DEFAULT 0,
+              skipped_count INTEGER NOT NULL DEFAULT 0,
+              warnings_json TEXT NOT NULL DEFAULT '[]',
+              result_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL
+            )
+            "#,
+            r#"
+            CREATE TABLE sync_tombstones (
+              tombstone_id TEXT PRIMARY KEY,
+              record_kind TEXT NOT NULL,
+              record_id TEXT NOT NULL,
+              delete_reason TEXT NOT NULL,
+              cascade_from TEXT,
+              meta_json TEXT NOT NULL DEFAULT '{}'
+            )
+            "#,
+            r#"
+            CREATE TABLE sync_tombstone_reviews (
+              review_id TEXT PRIMARY KEY,
+              remote_tombstone_id TEXT,
+              record_kind TEXT,
+              record_id TEXT,
+              delete_reason TEXT,
+              classification TEXT NOT NULL,
+              status TEXT NOT NULL,
+              decision TEXT,
+              dedupe_key TEXT NOT NULL UNIQUE,
+              raw_tombstone_json TEXT NOT NULL,
+              warnings_json TEXT NOT NULL DEFAULT '[]'
+            )
+            "#,
+        ];
+        for statement in statements {
+            sqlx::query(statement)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| format!("F5H.3 proof schema failed: {e}"))?;
+        }
+        Ok(())
+    }
+
+    async fn f5h3_seed_review(
+        conn: &mut SqliteConnection,
+        review_id: &str,
+        record_id: &str,
+        classification: &str,
+        status: &str,
+        decision: Option<&str>,
+        raw_tombstone_json: &str,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            INSERT INTO sync_tombstone_reviews (
+              review_id, remote_tombstone_id, record_kind, record_id, delete_reason,
+              classification, status, decision, dedupe_key, raw_tombstone_json, warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(review_id)
+        .bind(format!("remote-{review_id}"))
+        .bind("folderBinding")
+        .bind(record_id)
+        .bind("user-unbind")
+        .bind(classification)
+        .bind(status)
+        .bind(decision)
+        .bind(format!("dedupe-{review_id}"))
+        .bind(raw_tombstone_json)
+        .bind("[]")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("F5H.3 proof review seed failed: {e}"))?;
+        Ok(())
+    }
+
+    async fn f5h3_seed_tombstone(
+        conn: &mut SqliteConnection,
+        tombstone_id: &str,
+        record_id: &str,
+        delete_reason: &str,
+        cascade_from: Option<&str>,
+        meta_json: &str,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            INSERT INTO sync_tombstones (
+              tombstone_id, record_kind, record_id, delete_reason, cascade_from, meta_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(tombstone_id)
+        .bind("folderBinding")
+        .bind(record_id)
+        .bind(delete_reason)
+        .bind(cascade_from)
+        .bind(meta_json)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("F5H.3 proof tombstone seed failed: {e}"))?;
+        Ok(())
+    }
+
+    async fn f5h3_seed_cleanup_proof_rows(
+        conn: &mut SqliteConnection,
+        include_eligible: bool,
+    ) -> Result<(), String> {
+        if include_eligible {
+            f5h3_seed_review(
+                conn,
+                "f5g-review-eligible-001",
+                "folderBinding:f5g-chat-001:f5g-folder-001",
+                "safe-review",
+                "resolved",
+                Some("resolved-without-apply"),
+                "{}",
+            )
+            .await?;
+            f5h3_seed_review(
+                conn,
+                "f5g-review-eligible-002",
+                "folderBinding:ordinary-chat-002:ordinary-folder-002",
+                "safe-review",
+                "ignored",
+                Some("ignored-by-operator"),
+                r#"{"meta":{"source":"f5g-live-validation"}}"#,
+            )
+            .await?;
+            f5h3_seed_tombstone(
+                conn,
+                "f5g-tombstone-eligible-001",
+                "folderBinding:f5g-chat-101:f5g-folder-101",
+                "user-unbind",
+                None,
+                "{}",
+            )
+            .await?;
+            f5h3_seed_tombstone(
+                conn,
+                "ordinary-tombstone-eligible-002",
+                "folderBinding:ordinary-chat-102:ordinary-folder-102",
+                "user-unbind",
+                None,
+                r#"{"source":"f5d-live-validation"}"#,
+            )
+            .await?;
+        }
+
+        f5h3_seed_review(
+            conn,
+            "f5g-review-pending",
+            "folderBinding:f5g-chat-003:f5g-folder-003",
+            "safe-review",
+            "pending",
+            None,
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-accepted-later",
+            "folderBinding:f5g-chat-004:f5g-folder-004",
+            "safe-review",
+            "accepted-later",
+            Some("accepted-for-later-apply"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-delete-vs-edit",
+            "folderBinding:f5g-chat-005:f5g-folder-005",
+            "delete-vs-edit",
+            "rejected",
+            Some("rejected-by-operator"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-malformed",
+            "folderBinding:f5g-chat-006:f5g-folder-006",
+            "malformed-remote-tombstone",
+            "rejected",
+            Some("rejected-by-operator"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-unsupported",
+            "folderBinding:f5g-chat-007:f5g-folder-007",
+            "unsupported-record-kind",
+            "rejected",
+            Some("rejected-by-operator"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-cascade",
+            "folderBinding:f5g-chat-008:f5g-folder-008",
+            "cascade-review",
+            "resolved",
+            Some("resolved-without-apply"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "f5g-review-applied",
+            "folderBinding:f5g-chat-009:f5g-folder-009",
+            "safe-review",
+            "resolved",
+            Some("applied-folder-binding"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_review(
+            conn,
+            "ordinary-review-001",
+            "folderBinding:ordinary-chat-001:ordinary-folder-001",
+            "safe-review",
+            "resolved",
+            Some("resolved-without-apply"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_tombstone(
+            conn,
+            "f5g-tombstone-remote-review-applied",
+            "folderBinding:f5g-chat-103:f5g-folder-103",
+            "remote-review-apply",
+            None,
+            "{}",
+        )
+        .await?;
+        f5h3_seed_tombstone(
+            conn,
+            "f5g-tombstone-cascade",
+            "folderBinding:f5g-chat-104:f5g-folder-104",
+            "folder-delete-cascade",
+            Some("folder:f5g-folder-104"),
+            "{}",
+        )
+        .await?;
+        f5h3_seed_tombstone(
+            conn,
+            "ordinary-tombstone-001",
+            "folderBinding:ordinary-chat-105:ordinary-folder-105",
+            "user-unbind",
+            None,
+            "{}",
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn f5h3_has_synthetic_marker(value: &str) -> bool {
+        let lower = value.trim().to_ascii_lowercase();
+        ["f5c-", "f5d-", "f5d1-", "f5d2-", "f5f-", "f5g-"]
+            .iter()
+            .any(|prefix| lower.contains(prefix))
+    }
+
+    fn f5h3_json_has_synthetic_marker(raw: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<JsonValue>(raw) else {
+            return false;
+        };
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        let mut candidates = Vec::new();
+        for key in [
+            "tombstoneId",
+            "recordId",
+            "deleteReason",
+            "cascadeFrom",
+            "sourceExportId",
+            "schema",
+            "source",
+            "sourceReviewId",
+            "remoteTombstoneId",
+            "remoteExportId",
+            "applyReason",
+            "validation",
+            "testId",
+            "targetKind",
+            "originalDeleteReason",
+        ] {
+            if let Some(value) = object.get(key).and_then(|v| v.as_str()) {
+                candidates.push(value.to_string());
+            }
+        }
+        if let Some(meta) = object.get("meta").and_then(|v| v.as_object()) {
+            for key in [
+                "source",
+                "sourceReviewId",
+                "remoteTombstoneId",
+                "remoteExportId",
+                "applyReason",
+                "validation",
+                "testId",
+                "targetKind",
+                "originalDeleteReason",
+            ] {
+                if let Some(value) = meta.get(key).and_then(|v| v.as_str()) {
+                    candidates.push(value.to_string());
+                }
+            }
+        }
+        candidates
+            .iter()
+            .any(|value| f5h3_has_synthetic_marker(value))
+    }
+
+    async fn f5h3_select_eligible_review_ids(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<Vec<String>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT review_id, remote_tombstone_id, record_id, classification, status,
+                   decision, dedupe_key, raw_tombstone_json, warnings_json
+            FROM sync_tombstone_reviews
+            ORDER BY review_id ASC
+            "#,
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("F5H.3 proof review select failed: {e}"))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let review_id = row.try_get::<String, _>("review_id").unwrap_or_default();
+            let remote_tombstone_id = row
+                .try_get::<Option<String>, _>("remote_tombstone_id")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let record_id = row
+                .try_get::<Option<String>, _>("record_id")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let classification = row
+                .try_get::<String, _>("classification")
+                .unwrap_or_default();
+            let status = row.try_get::<String, _>("status").unwrap_or_default();
+            let decision = row
+                .try_get::<Option<String>, _>("decision")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let dedupe_key = row.try_get::<String, _>("dedupe_key").unwrap_or_default();
+            let raw_tombstone_json = row
+                .try_get::<String, _>("raw_tombstone_json")
+                .unwrap_or_default();
+            let warnings_json = row
+                .try_get::<String, _>("warnings_json")
+                .unwrap_or_default();
+            let synthetic = f5h3_has_synthetic_marker(&review_id)
+                || f5h3_has_synthetic_marker(&remote_tombstone_id)
+                || f5h3_has_synthetic_marker(&record_id)
+                || f5h3_has_synthetic_marker(&dedupe_key)
+                || f5h3_json_has_synthetic_marker(&raw_tombstone_json)
+                || f5h3_json_has_synthetic_marker(&warnings_json);
+            let terminal = matches!(
+                status.as_str(),
+                "ignored" | "rejected" | "resolved" | "superseded"
+            );
+            let blocked_classification = matches!(
+                classification.as_str(),
+                "delete-vs-edit"
+                    | "malformed-remote-tombstone"
+                    | "unsupported-record-kind"
+                    | "cascade-review"
+            );
+            if synthetic
+                && terminal
+                && !blocked_classification
+                && decision != "applied-folder-binding"
+            {
+                ids.push(review_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    async fn f5h3_select_eligible_tombstone_ids(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<Vec<String>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT tombstone_id, record_id, delete_reason, cascade_from, meta_json
+            FROM sync_tombstones
+            ORDER BY tombstone_id ASC
+            "#,
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("F5H.3 proof tombstone select failed: {e}"))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let tombstone_id = row
+                .try_get::<String, _>("tombstone_id")
+                .unwrap_or_default();
+            let record_id = row.try_get::<String, _>("record_id").unwrap_or_default();
+            let delete_reason = row
+                .try_get::<String, _>("delete_reason")
+                .unwrap_or_default();
+            let cascade_from = row
+                .try_get::<Option<String>, _>("cascade_from")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let meta_json = row.try_get::<String, _>("meta_json").unwrap_or_default();
+            let synthetic = f5h3_has_synthetic_marker(&tombstone_id)
+                || f5h3_has_synthetic_marker(&record_id)
+                || f5h3_has_synthetic_marker(&delete_reason)
+                || f5h3_json_has_synthetic_marker(&meta_json);
+            let audit_critical = delete_reason == "remote-review-apply"
+                || meta_json.contains("remote-review-apply")
+                || meta_json.contains("tombstoneReviews.applyReview");
+            let cascade_linked = !cascade_from.trim().is_empty()
+                || delete_reason.ends_with("-cascade")
+                || meta_json.contains("cascade");
+            if synthetic && !audit_critical && !cascade_linked {
+                ids.push(tombstone_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    async fn f5h3_cleanup_proof_counts(
+        conn: &mut SqliteConnection,
+    ) -> Result<F5h3ProofCounts, String> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+              (SELECT COUNT(*) FROM sync_maintenance_log) AS maintenance_logs,
+              (SELECT COUNT(*) FROM sync_tombstones) AS tombstones,
+              (SELECT COUNT(*) FROM sync_tombstone_reviews) AS reviews,
+              (SELECT COUNT(*) FROM sync_tombstone_reviews WHERE status = 'pending') AS pending_reviews,
+              (SELECT COUNT(*) FROM sync_tombstone_reviews WHERE status = 'accepted-later') AS accepted_later_reviews,
+              (SELECT COUNT(*) FROM sync_tombstone_reviews WHERE review_id = 'ordinary-review-001') AS non_synthetic_reviews,
+              (SELECT COUNT(*) FROM sync_tombstones WHERE tombstone_id = 'ordinary-tombstone-001') AS non_synthetic_tombstones,
+              (SELECT COUNT(*) FROM sync_tombstones WHERE delete_reason = 'remote-review-apply') AS remote_review_applied_tombstones,
+              (SELECT COUNT(*) FROM sync_tombstones WHERE cascade_from IS NOT NULL AND cascade_from != '') AS cascade_tombstones
+            "#,
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| format!("F5H.3 proof count failed: {e}"))?;
+        Ok(F5h3ProofCounts {
+            maintenance_logs: row.try_get("maintenance_logs").unwrap_or(0),
+            tombstones: row.try_get("tombstones").unwrap_or(0),
+            reviews: row.try_get("reviews").unwrap_or(0),
+            pending_reviews: row.try_get("pending_reviews").unwrap_or(0),
+            accepted_later_reviews: row.try_get("accepted_later_reviews").unwrap_or(0),
+            non_synthetic_reviews: row.try_get("non_synthetic_reviews").unwrap_or(0),
+            non_synthetic_tombstones: row.try_get("non_synthetic_tombstones").unwrap_or(0),
+            remote_review_applied_tombstones: row
+                .try_get("remote_review_applied_tombstones")
+                .unwrap_or(0),
+            cascade_tombstones: row.try_get("cascade_tombstones").unwrap_or(0),
+        })
+    }
+
+    async fn f5h3_run_future_cleanup_transaction(
+        conn: &mut SqliteConnection,
+        failure: Option<F5h3ProofFailure>,
+    ) -> Result<F5h3CleanupWriteCounts, String> {
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| format!("F5H.3 proof transaction begin failed: {e}"))?;
+        let review_ids = f5h3_select_eligible_review_ids(&mut tx).await?;
+        let tombstone_ids = f5h3_select_eligible_tombstone_ids(&mut tx).await?;
+        if review_ids.is_empty() && tombstone_ids.is_empty() {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("F5H.3 proof no-op rollback failed: {e}"))?;
+            return Ok(F5h3CleanupWriteCounts {
+                tombstones: 0,
+                reviews: 0,
+            });
+        }
+
+        let audit_schema: Option<&str> = if failure == Some(F5h3ProofFailure::AuditInsert) {
+            None
+        } else {
+            Some("h2o.studio.maintenance-log.v1")
+        };
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO sync_maintenance_log (
+              maintenance_id, schema, operation, policy_version, reason, requested_at,
+              requested_by_sync_peer_id, platform, dry_run, affected_tombstone_count,
+              affected_review_count, skipped_count, warnings_json, result_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("f5h3-maintenance-001")
+        .bind(audit_schema)
+        .bind("synthetic-cleanup")
+        .bind("f5h.synthetic-cleanup.v1")
+        .bind("f5h3 proof")
+        .bind("2026-05-23T00:00:00.000Z")
+        .bind("f5h3-proof-operator-peer")
+        .bind("desktop-tauri")
+        .bind(0_i64)
+        .bind(tombstone_ids.len() as i64)
+        .bind(review_ids.len() as i64)
+        .bind(0_i64)
+        .bind("[]")
+        .bind(json!({
+            "redacted": true,
+            "eligibleTombstones": tombstone_ids.len(),
+            "eligibleReviews": review_ids.len()
+        })
+        .to_string())
+        .bind("2026-05-23T00:00:00.000Z")
+        .execute(&mut *tx)
+        .await
+        {
+            let _ = tx.rollback().await;
+            return Err(format!("audit-insert: {e}"));
+        }
+
+        if failure == Some(F5h3ProofFailure::ReviewDelete) {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("F5H.3 proof review-delete rollback failed: {e}"))?;
+            return Err("review-delete".to_string());
+        }
+        let mut deleted_reviews = 0_u64;
+        for (index, review_id) in review_ids.iter().enumerate() {
+            let delete_id = if failure == Some(F5h3ProofFailure::ReviewDeleteMismatch)
+                && index == 0
+            {
+                "__f5h3_missing_review__"
+            } else {
+                review_id.as_str()
+            };
+            let affected = sqlx::query("DELETE FROM sync_tombstone_reviews WHERE review_id = ?")
+                .bind(delete_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("review-delete: {e}"))?
+                .rows_affected();
+            if affected != 1 {
+                tx.rollback()
+                    .await
+                    .map_err(|e| format!("F5H.3 proof review-delete rollback failed: {e}"))?;
+                return Err("review-delete-count-mismatch".to_string());
+            }
+            deleted_reviews += affected;
+        }
+
+        if failure == Some(F5h3ProofFailure::TombstoneDelete) {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("F5H.3 proof tombstone-delete rollback failed: {e}"))?;
+            return Err("tombstone-delete".to_string());
+        }
+        let mut deleted_tombstones = 0_u64;
+        for (index, tombstone_id) in tombstone_ids.iter().enumerate() {
+            let delete_id = if failure == Some(F5h3ProofFailure::TombstoneDeleteMismatch)
+                && index == 0
+            {
+                "__f5h3_missing_tombstone__"
+            } else {
+                tombstone_id.as_str()
+            };
+            let affected = sqlx::query("DELETE FROM sync_tombstones WHERE tombstone_id = ?")
+                .bind(delete_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("tombstone-delete: {e}"))?
+                .rows_affected();
+            if affected != 1 {
+                tx.rollback()
+                    .await
+                    .map_err(|e| format!("F5H.3 proof tombstone-delete rollback failed: {e}"))?;
+                return Err("tombstone-delete-count-mismatch".to_string());
+            }
+            deleted_tombstones += affected;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| format!("F5H.3 proof transaction commit failed: {e}"))?;
+        Ok(F5h3CleanupWriteCounts {
+            tombstones: deleted_tombstones,
+            reviews: deleted_reviews,
+        })
+    }
+
+    fn run_f5h3_cleanup_proof(
+        include_eligible: bool,
+        failure: Option<F5h3ProofFailure>,
+    ) -> (Result<F5h3CleanupWriteCounts, String>, F5h3ProofCounts, F5h3ProofCounts) {
+        tauri::async_runtime::block_on(async {
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("F5H.3 cleanup proof sqlite open");
+            f5h3_setup_cleanup_proof_schema(&mut conn)
+                .await
+                .expect("F5H.3 cleanup proof schema");
+            f5h3_seed_cleanup_proof_rows(&mut conn, include_eligible)
+                .await
+                .expect("F5H.3 cleanup proof seed");
+            let before = f5h3_cleanup_proof_counts(&mut conn)
+                .await
+                .expect("F5H.3 cleanup proof before count");
+            let result = f5h3_run_future_cleanup_transaction(&mut conn, failure).await;
+            let after = f5h3_cleanup_proof_counts(&mut conn)
+                .await
+                .expect("F5H.3 cleanup proof after count");
+            (result, before, after)
+        })
+    }
+
     fn run_real_apply_test(
         seed_failure: Option<F5g4ProofFailure>,
         tx_failure: Option<F5g4ProofFailure>,
@@ -1669,6 +2333,90 @@ mod tests {
         let (result, before, after) = run_real_apply_test(None, None, None, Some("chat"), None);
         assert!(!result.ok);
         assert!(has_blocker(&result, "unsupported-record-kind"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_synthetic_cleanup_transaction_success_deletes_only_eligible_rows_and_audits() {
+        let (result, before, after) = run_f5h3_cleanup_proof(true, None);
+        let writes = result.expect("F5H.3 proof success should commit");
+        assert_eq!(writes.reviews, 2);
+        assert_eq!(writes.tombstones, 2);
+        assert_eq!(after.maintenance_logs, before.maintenance_logs + 1);
+        assert_eq!(after.reviews, before.reviews - 2);
+        assert_eq!(after.tombstones, before.tombstones - 2);
+        assert_eq!(after.pending_reviews, before.pending_reviews);
+        assert_eq!(after.accepted_later_reviews, before.accepted_later_reviews);
+        assert_eq!(after.non_synthetic_reviews, before.non_synthetic_reviews);
+        assert_eq!(after.non_synthetic_tombstones, before.non_synthetic_tombstones);
+        assert_eq!(
+            after.remote_review_applied_tombstones,
+            before.remote_review_applied_tombstones
+        );
+        assert_eq!(after.cascade_tombstones, before.cascade_tombstones);
+    }
+
+    #[test]
+    fn f5h3_audit_insert_failure_rolls_back_all_deletes() {
+        let (result, before, after) =
+            run_f5h3_cleanup_proof(true, Some(F5h3ProofFailure::AuditInsert));
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_review_delete_failure_rolls_back_audit_and_tombstone_deletes() {
+        let (result, before, after) =
+            run_f5h3_cleanup_proof(true, Some(F5h3ProofFailure::ReviewDelete));
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_tombstone_delete_failure_rolls_back_audit_and_review_deletes() {
+        let (result, before, after) =
+            run_f5h3_cleanup_proof(true, Some(F5h3ProofFailure::TombstoneDelete));
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_review_delete_count_mismatch_rolls_back() {
+        let (result, before, after) =
+            run_f5h3_cleanup_proof(true, Some(F5h3ProofFailure::ReviewDeleteMismatch));
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_tombstone_delete_count_mismatch_rolls_back() {
+        let (result, before, after) =
+            run_f5h3_cleanup_proof(true, Some(F5h3ProofFailure::TombstoneDeleteMismatch));
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5h3_blocked_rows_are_not_selected_for_cleanup() {
+        let (result, before, after) = run_f5h3_cleanup_proof(true, None);
+        assert!(result.is_ok());
+        assert_eq!(after.pending_reviews, before.pending_reviews);
+        assert_eq!(after.accepted_later_reviews, before.accepted_later_reviews);
+        assert_eq!(after.non_synthetic_reviews, before.non_synthetic_reviews);
+        assert_eq!(after.non_synthetic_tombstones, before.non_synthetic_tombstones);
+        assert_eq!(
+            after.remote_review_applied_tombstones,
+            before.remote_review_applied_tombstones
+        );
+        assert_eq!(after.cascade_tombstones, before.cascade_tombstones);
+    }
+
+    #[test]
+    fn f5h3_no_eligible_rows_is_safe_no_op() {
+        let (result, before, after) = run_f5h3_cleanup_proof(false, None);
+        let writes = result.expect("F5H.3 no-eligible proof should return no-op success");
+        assert_eq!(writes.reviews, 0);
+        assert_eq!(writes.tombstones, 0);
         assert_eq!(before, after);
     }
 }

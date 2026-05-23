@@ -2967,6 +2967,46 @@ Before real cleanup can ship, validation must prove:
 F5H.3b may implement a Desktop transaction proof or real gated cleanup only
 after the audit table and transaction command are explicitly approved.
 
+### F5H.3b.0 Transaction Proof
+
+F5H.3b.0 adds a Rust test-only in-memory proof for the future Desktop cleanup
+transaction. It does not add a production cleanup API, Tauri cleanup command,
+real Studio DB migration, JavaScript wrapper, Chrome cleanup behavior, or row
+deletion in the real application database.
+
+The proof creates a synthetic SQLite database with:
+
+- `sync_maintenance_log`
+- `sync_tombstone_reviews`
+- `sync_tombstones`
+
+The proof validates this future transaction shape:
+
+```sql
+BEGIN;
+  INSERT INTO sync_maintenance_log (... synthetic cleanup audit ...);
+  DELETE FROM sync_tombstone_reviews WHERE review_id IN (...eligible synthetic reviews...);
+  DELETE FROM sync_tombstones WHERE tombstone_id IN (...eligible synthetic tombstones...);
+COMMIT;
+```
+
+The proof covers:
+
+- success commits audit plus eligible synthetic review/tombstone deletes
+- audit insert failure rolls back all deletes
+- review delete failure rolls back audit and tombstone deletes
+- tombstone delete failure rolls back audit and review deletes
+- delete count mismatch rolls back
+- pending synthetic reviews are not selected
+- accepted-later synthetic reviews are not selected
+- non-synthetic reviews and tombstones are not selected
+- remote-review-applied tombstones are not selected
+- cascade tombstones are not selected
+- no eligible rows is a safe no-op
+
+Real cleanup remains deferred until a later phase explicitly adds the production
+audit schema/command and wires the exact-gated Desktop API.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
