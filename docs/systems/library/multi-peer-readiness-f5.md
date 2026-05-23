@@ -3094,3 +3094,42 @@ No UI is part of F5A/F5B. Later UI should include:
 - No runtime behavior changes are made.
 - No migrations are added.
 - No export/import behavior is changed.
+
+---
+
+## F5H.3b.0c — Synthetic marker contract v1
+
+Migration v8 adds an explicit `is_synthetic INTEGER NOT NULL DEFAULT 0`
+column to `sync_tombstones` and `sync_tombstone_reviews`. The canonical
+predicate, prefixes, age floor, and protected lists are owned by a new
+Rust module `src/synthetic_marker.rs`.
+
+Key rules:
+
+- Cleanup eligibility requires `is_synthetic = 1`. Prefix matching alone
+  is **not** sufficient; it is preview-only.
+- Prefix corroboration uses safe top-level fields only. JSON content
+  fields (`meta_json`, `raw_tombstone_json`, `warnings_json`) are never
+  scanned by the contract.
+- Only `#[cfg(test)]`-gated fixture seeders (`f5h3_seed_*`) may set
+  `is_synthetic = 1`. Production writers omit the column (DEFAULT 0).
+- Existing rows after the migration default to `is_synthetic = 0` and
+  are NOT cleanable. No backfill.
+
+Desktop `previewCleanupSynthetic` now stamps:
+
+- `predicateVersion: "h2o.studio.sync.synthetic-marker.v1"` (contract)
+- `predicateHeuristicVersion: "h2o.studio.sync.synthetic-prefix-heuristic"` (legacy)
+
+…and each section adds `syntheticContractCount` + `cleanupContractEligible`
+alongside the existing prefix-heuristic counts.
+
+Chrome `previewCleanupSynthetic` stamps a distinct
+`predicateVersion: "h2o.studio.sync.synthetic-prefix-heuristic"` and
+continues to use the prefix heuristic. Chrome cleanup is not planned.
+
+F5H.3b.0c does **not** add any DELETE statement, cleanup API, or
+import/export/sync/apply change. It enables F5H.3b.0d (true dry-run
+cleanup) and F5H.3b.1 (real cleanup) to be implemented safely on top.
+
+Full specification: [docs/systems/sync/synthetic-marker-contract-v1.md](../sync/synthetic-marker-contract-v1.md).

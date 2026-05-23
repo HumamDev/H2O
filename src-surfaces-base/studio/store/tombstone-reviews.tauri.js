@@ -2496,6 +2496,33 @@
       cleanupWarningsMarkerHit(readField(row, 'warningsJson', 'warnings_json'), prefixes, section);
   }
 
+  // F5H.3b.0c: synthetic marker contract v1 helpers. The column gate
+  // (`is_synthetic = 1`) is required for cleanup eligibility. Prefix
+  // corroboration is restricted to SAFE TOP-LEVEL FIELDS only — JSON
+  // content fields (metaJson / rawTombstoneJson / warningsJson) are not
+  // scanned by the contract because inbound bundles can legitimately
+  // carry arbitrary strings there. See synthetic-marker-contract-v1.md.
+  function isMarkedSynthetic(row) {
+    if (!row || typeof row !== 'object') return false;
+    var v = (row.is_synthetic !== undefined) ? row.is_synthetic : row.isSynthetic;
+    return v === 1 || v === '1' || v === true;
+  }
+
+  function isCleanupContractTombstone(row, prefixes) {
+    if (!isMarkedSynthetic(row)) return false;
+    return cleanupHasSyntheticMarker(readField(row, 'tombstoneId', 'tombstone_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'recordId', 'record_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'deleteReason', 'delete_reason'), prefixes);
+  }
+
+  function isCleanupContractReview(row, prefixes) {
+    if (!isMarkedSynthetic(row)) return false;
+    return cleanupHasSyntheticMarker(readField(row, 'reviewId', 'review_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'remoteTombstoneId', 'remote_tombstone_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'recordId', 'record_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'dedupeKey', 'dedupe_key'), prefixes);
+  }
+
   function isCleanupReviewTerminal(status) {
     return status === 'ignored' || status === 'rejected' || status === 'resolved' || status === 'superseded';
   }
@@ -2508,17 +2535,27 @@
 
   function buildSyntheticCleanupTombstoneSection(rows, prefixes) {
     var section = makeSyntheticCleanupTombstoneSection();
+    // F5H.3b.0c: contract-aware counts. syntheticContractCount and
+    // cleanupContractEligible are additive — they coexist with the
+    // pre-existing prefix-heuristic counts so consumers can compare.
+    section.syntheticContractCount = 0;
+    section.cleanupContractEligible = 0;
     (Array.isArray(rows) ? rows : []).forEach(function (row) {
       var kind = cleanScalar(readField(row, 'recordKind', 'record_kind')) || 'unknown';
       var reason = cleanScalar(readField(row, 'deleteReason', 'delete_reason')) || 'unknown';
       var synthetic = isSyntheticCleanupTombstone(row, prefixes, section);
       var auditCritical = isLifecycleRemoteReviewAppliedTombstone(row);
       var cascadeLinked = isLifecycleCascadeTombstone(row);
+      var contractSynthetic = isCleanupContractTombstone(row, prefixes);
       section.scanned += 1;
       bumpMap(section.byKind, kind);
       bumpMap(section.byDeleteReason, reason);
       if (synthetic) section.syntheticCandidates += 1;
       if (synthetic && !auditCritical && !cascadeLinked) section.cleanupEligible += 1;
+      if (contractSynthetic) section.syntheticContractCount += 1;
+      if (contractSynthetic && !auditCritical && !cascadeLinked) {
+        section.cleanupContractEligible += 1;
+      }
     });
     section.cleanupBlocked = section.scanned - section.cleanupEligible;
     return section;
@@ -2526,12 +2563,20 @@
 
   function buildSyntheticCleanupReviewSection(rows, prefixes) {
     var section = makeSyntheticCleanupReviewSection();
+    // F5H.3b.0c: contract-aware counts (additive — see tombstone counterpart).
+    section.syntheticContractCount = 0;
+    section.cleanupContractEligible = 0;
     (Array.isArray(rows) ? rows : []).forEach(function (row) {
       var status = cleanScalar(readField(row, 'status', null)) || 'unknown';
       var classification = cleanScalar(readField(row, 'classification', null)) || 'unknown';
       var decision = cleanScalar(readField(row, 'decision', null));
       var synthetic = isSyntheticCleanupReview(row, prefixes, section);
+      var contractSynthetic = isCleanupContractReview(row, prefixes);
       var eligible = synthetic &&
+        isCleanupReviewTerminal(status) &&
+        !isCleanupReviewBlockedClassification(classification) &&
+        decision !== 'applied-folder-binding';
+      var contractEligible = contractSynthetic &&
         isCleanupReviewTerminal(status) &&
         !isCleanupReviewBlockedClassification(classification) &&
         decision !== 'applied-folder-binding';
@@ -2540,6 +2585,8 @@
       bumpMap(section.byClassification, classification);
       if (synthetic) section.syntheticCandidates += 1;
       if (eligible) section.cleanupEligible += 1;
+      if (contractSynthetic) section.syntheticContractCount += 1;
+      if (contractEligible) section.cleanupContractEligible += 1;
     });
     section.cleanupBlocked = section.scanned - section.cleanupEligible;
     return section;
@@ -2607,6 +2654,16 @@
         redacted: true,
         dryRun: true,
         platform: 'desktop-tauri',
+        // F5H.3b.0c — both predicate version strings surfaced so consumers
+        // can tell which counts came from which contract. The current
+        // section counts (syntheticCandidates / cleanupEligible) are the
+        // prefix-heuristic numbers; the contract-aware numbers live as
+        // syntheticContractCount / cleanupContractEligible inside each
+        // section. predicateVersion is the v1 contract; predicateHeuristicVersion
+        // identifies the prefix-only heuristic used to compute the legacy
+        // count fields.
+        predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+        predicateHeuristicVersion: 'h2o.studio.sync.synthetic-prefix-heuristic',
         tombstones: parts[0],
         reviews: parts[1],
         actions: syntheticCleanupActions(),

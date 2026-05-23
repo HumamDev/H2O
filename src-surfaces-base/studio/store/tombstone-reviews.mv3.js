@@ -2688,6 +2688,13 @@
         redacted: true,
         dryRun: true,
         platform: 'chrome-mv3',
+        // F5H.3b.0c — Chrome preview is forever a prefix-only heuristic.
+        // It does NOT have access to the Desktop synthetic_marker contract
+        // because the is_synthetic column lives in Desktop SQLite. Chrome
+        // cleanup is not planned. This distinct version stamp prevents a
+        // consumer from confusing Chrome's heuristic counts with the
+        // Desktop v1 contract counts.
+        predicateVersion: 'h2o.studio.sync.synthetic-prefix-heuristic',
         tombstones: unsupportedChromeSyntheticCleanupTombstones(),
         reviews: reviews,
         actions: syntheticCleanupActions(),
