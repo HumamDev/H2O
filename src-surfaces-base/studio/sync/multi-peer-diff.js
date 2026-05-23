@@ -70,7 +70,9 @@
   var EXPECTED_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var EXPECTED_CHAT_ARCHIVE_SCHEMA = 'h2o.chatArchive.bundle.v1';
   var EXPECTED_TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
+  var CONFLICT_CANDIDATE_SCHEMA = 'h2o.studio.sync-conflict-candidate.v1';
   var DEFAULT_MAX_SAMPLES = 25;
+  var DEFAULT_MAX_CONFLICT_CANDIDATES = 20;
   var SAMPLE_SCALAR_MAX_LEN = 80;
   var KINDS = ['chat', 'snapshot', 'folder', 'category', 'label', 'tag', 'project', 'folderBinding'];
   var TOMBSTONE_KINDS = [
@@ -140,6 +142,18 @@
     if (!s) return false;
     /* Accept ISO-8601 or epoch-ms; both are seen in current shapes. */
     return /^\d{4}-\d{2}-\d{2}T/.test(s) || /^\d{10,}$/.test(s);
+  }
+  function parseTimeMs(v) {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number' && isFinite(v)) return v;
+    var s = safeString(v);
+    if (!s) return null;
+    if (/^\d{10,}$/.test(s)) {
+      var n = Number(s);
+      return isFinite(n) ? n : null;
+    }
+    var ms = Date.parse(s);
+    return isNaN(ms) ? null : ms;
   }
   function nowIso() {
     try { return new Date().toISOString(); }
@@ -380,9 +394,16 @@
       norm[k] = asArray(localState[key]).map(function (r) {
         var row = safeObject(r);
         var state = safeObject(row.state);
+        var chatId = safeString(row.chatId || row.chat_id);
+        var folderId = safeString(row.folderId || row.folder_id);
+        var genericId = safeString(row.id || row.chatId || row.snapshotId || row.folderId || row.categoryId || row.labelId || row.tagId || row.projectId);
+        var id = k === 'folderBinding' && chatId && folderId
+          ? chatId + '|' + folderId
+          : genericId;
         return {
-          id:        safeString(row.id || row.chatId || row.snapshotId || row.folderId || row.categoryId || row.labelId || row.tagId || row.projectId),
-          chatId:    safeString(row.chatId),
+          id:        id,
+          chatId:    chatId,
+          folderId:  folderId,
           title:     safeString(row.title || row.name),
           name:      safeString(row.name),
           href:      safeString(row.href || row.url),
@@ -465,6 +486,292 @@
       hasChromeStorageLocal: !!b.chromeStorageLocal,
       hasLibraryKv:          Array.isArray(b.libraryKv) && b.libraryKv.length > 0
     };
+  }
+
+  function emptyConflictCandidateReport(maxCandidates) {
+    return {
+      supported: true,
+      generatedAt: nowIso(),
+      redacted: true,
+      total: 0,
+      byKind: {},
+      byEntityKind: {},
+      byClassification: {},
+      bySeverity: {},
+      deleteVsEditReferenceCount: 0,
+      unsupportedCount: 0,
+      candidates: [],
+      warnings: [],
+      maxCandidates: maxCandidates
+    };
+  }
+
+  function mapCandidateEntityKind(kind) {
+    if (kind === 'chat' ||
+        kind === 'snapshot' ||
+        kind === 'folder' ||
+        kind === 'folderBinding' ||
+        kind === 'label' ||
+        kind === 'category' ||
+        kind === 'visualMetadata') {
+      return kind;
+    }
+    return 'unknown';
+  }
+
+  function buildDedupePresenceInput(parts) {
+    return asArray(parts).map(function (part) { return safeString(part); }).join('|');
+  }
+
+  function digestPresent(kind, row) {
+    row = safeObject(row);
+    if (kind === 'chat') return !!safeString(row.lastDigest || row.digest);
+    if (kind === 'snapshot') return !!safeString(row.digest);
+    return false;
+  }
+
+  function addConflictCandidate(report, seen, maxCandidates, descriptor) {
+    descriptor = safeObject(descriptor);
+    var conflictKind = safeString(descriptor.conflictKind) || 'unsupported-merge-kind';
+    var entityKind = mapCandidateEntityKind(descriptor.entityKind);
+    var classification = safeString(descriptor.classification) || 'needs-human-review';
+    var severity = safeString(descriptor.severity) || 'medium';
+    var dedupeInput = safeString(descriptor.dedupeInput || buildDedupePresenceInput([
+      conflictKind,
+      entityKind,
+      descriptor.entityId,
+      descriptor.localDigest,
+      descriptor.remoteDigest,
+      descriptor.localUpdatedAt,
+      descriptor.remoteUpdatedAt
+    ]));
+    if (dedupeInput && seen[dedupeInput]) return;
+    if (dedupeInput) seen[dedupeInput] = true;
+
+    report.total++;
+    bumpCounter(report.byKind, conflictKind);
+    bumpCounter(report.byEntityKind, entityKind);
+    bumpCounter(report.byClassification, classification);
+    bumpCounter(report.bySeverity, severity);
+    if (conflictKind === 'delete-vs-edit-reference') report.deleteVsEditReferenceCount++;
+    if (conflictKind === 'unsupported-merge-kind' || classification === 'unsupported-record-kind') report.unsupportedCount++;
+
+    if (report.candidates.length < maxCandidates) {
+      report.candidates.push({
+        schema: CONFLICT_CANDIDATE_SCHEMA,
+        conflictKind: conflictKind,
+        entityKind: entityKind,
+        classification: classification,
+        severity: severity,
+        localUpdatedAtPresent: safeString(descriptor.localUpdatedAt) !== '',
+        remoteUpdatedAtPresent: safeString(descriptor.remoteUpdatedAt) !== '',
+        localDigestPresent: !!descriptor.localDigestPresent,
+        remoteDigestPresent: !!descriptor.remoteDigestPresent,
+        dedupeKeyHashPresent: true,
+        source: 'multi-peer-diff',
+        warnings: Array.isArray(descriptor.warnings) ? descriptor.warnings : []
+      });
+    }
+  }
+
+  function addFreshnessCandidate(report, seen, maxCandidates, kind, id, bundleRow, localRow) {
+    var localUpdatedAt = safeObject(localRow).updatedAt || safeObject(localRow).lastSeenAt || safeObject(localRow).capturedAt;
+    var remoteUpdatedAt = safeObject(bundleRow).updatedAt || safeObject(bundleRow).lastSeenAt || safeObject(bundleRow).capturedAt;
+    var localMs = parseTimeMs(localUpdatedAt);
+    var remoteMs = parseTimeMs(remoteUpdatedAt);
+    if (localMs == null || remoteMs == null || localMs === remoteMs) return;
+    addConflictCandidate(report, seen, maxCandidates, {
+      conflictKind: localMs > remoteMs ? 'local-newer-than-remote' : 'remote-newer-than-local',
+      entityKind: kind,
+      classification: 'safe-review',
+      severity: 'low',
+      entityId: id,
+      localUpdatedAt: localUpdatedAt,
+      remoteUpdatedAt: remoteUpdatedAt,
+      localDigestPresent: digestPresent(kind, localRow),
+      remoteDigestPresent: digestPresent(kind, bundleRow),
+      localDigest: safeObject(localRow).digest,
+      remoteDigest: safeObject(bundleRow).digest || safeObject(bundleRow).lastDigest,
+      dedupeInput: buildDedupePresenceInput([
+        'freshness',
+        kind,
+        id,
+        localMs > remoteMs ? 'local' : 'remote',
+        localUpdatedAt,
+        remoteUpdatedAt
+      ])
+    });
+  }
+
+  function addMetadataCandidate(report, seen, maxCandidates, kind, id, field, bundleRow, localRow) {
+    if (kind === 'tag' || kind === 'project') {
+      addConflictCandidate(report, seen, maxCandidates, {
+        conflictKind: 'unsupported-merge-kind',
+        entityKind: 'unknown',
+        classification: 'unsupported-record-kind',
+        severity: 'info',
+        entityId: id,
+        localUpdatedAt: safeObject(localRow).updatedAt,
+        remoteUpdatedAt: safeObject(bundleRow).updatedAt,
+        localDigestPresent: digestPresent(kind, localRow),
+        remoteDigestPresent: digestPresent(kind, bundleRow),
+        dedupeInput: buildDedupePresenceInput(['unsupported', kind, id, field])
+      });
+      return;
+    }
+    addConflictCandidate(report, seen, maxCandidates, {
+      conflictKind: 'same-record-divergent-metadata',
+      entityKind: kind,
+      classification: 'needs-human-review',
+      severity: 'medium',
+      entityId: id,
+      localUpdatedAt: safeObject(localRow).updatedAt,
+      remoteUpdatedAt: safeObject(bundleRow).updatedAt,
+      localDigestPresent: digestPresent(kind, localRow),
+      remoteDigestPresent: digestPresent(kind, bundleRow),
+      dedupeInput: buildDedupePresenceInput(['metadata', kind, id, field])
+    });
+  }
+
+  function buildConflictCandidates(bundle, localState, maxCandidates) {
+    var report = emptyConflictCandidateReport(maxCandidates);
+    var seen = Object.create(null);
+    if (!localState) {
+      report.warnings.push({ code: 'local-state-required-for-conflict-candidates' });
+      return report;
+    }
+
+    var bundleChats = extractChats(bundle);
+    var localChats = asArray(localState.chat);
+    var localChatById = indexById(localChats);
+    var b;
+    var l;
+    var id;
+    var i;
+    var f;
+
+    for (i = 0; i < bundleChats.length; i++) {
+      b = bundleChats[i];
+      id = b.chatId;
+      if (!id) continue;
+      l = localChatById[id];
+      if (!l) continue;
+      addFreshnessCandidate(report, seen, maxCandidates, 'chat', id, b, l);
+
+      var chatFields = ['title', 'href', 'categoryId', 'projectId'];
+      for (f = 0; f < chatFields.length; f++) {
+        if (!deepEqualScalar(b[chatFields[f]], l[chatFields[f]])) {
+          addMetadataCandidate(report, seen, maxCandidates, 'chat', id, chatFields[f], b, l);
+        }
+      }
+      var stateKeys = ['isSaved', 'isLinked', 'isPinned', 'isArchived'];
+      for (var si = 0; si < stateKeys.length; si++) {
+        var sk = stateKeys[si];
+        if (!!safeObject(b.state)[sk] !== !!safeObject(l.state)[sk]) {
+          addMetadataCandidate(report, seen, maxCandidates, 'chat', id, 'state.' + sk, b, l);
+        }
+      }
+      var localDeleted = !!safeObject(l.state).isDeleted;
+      var bundleDeleted = !!safeObject(b.state).isDeleted;
+      if (localDeleted !== bundleDeleted) {
+        addConflictCandidate(report, seen, maxCandidates, {
+          conflictKind: 'delete-vs-edit-reference',
+          entityKind: 'chat',
+          classification: 'delete-vs-edit-owned-by-f5',
+          severity: 'critical',
+          entityId: id,
+          localUpdatedAt: l.updatedAt,
+          remoteUpdatedAt: b.updatedAt,
+          localDigestPresent: digestPresent('chat', l),
+          remoteDigestPresent: digestPresent('chat', b),
+          dedupeInput: buildDedupePresenceInput(['delete-vs-edit', 'chat', id, localDeleted, bundleDeleted])
+        });
+      }
+    }
+
+    var visualishKinds = ['folder', 'category', 'label', 'tag', 'project'];
+    for (var vi = 0; vi < visualishKinds.length; vi++) {
+      var kind = visualishKinds[vi];
+      var bundleRows = extractByKind(bundle, kind);
+      var localRows = asArray(localState[kind]);
+      var localById = indexById(localRows);
+      for (var bi = 0; bi < bundleRows.length; bi++) {
+        b = bundleRows[bi];
+        id = b.id;
+        if (!id) continue;
+        l = localById[id];
+        if (!l) continue;
+        if (kind === 'tag' || kind === 'project') {
+          var unsupportedField = null;
+          if (parseTimeMs(b.updatedAt) != null && parseTimeMs(l.updatedAt) != null && parseTimeMs(b.updatedAt) !== parseTimeMs(l.updatedAt)) {
+            unsupportedField = 'updatedAt';
+          } else if (!deepEqualScalar(b.name, l.name) && (b.name || l.name)) {
+            unsupportedField = 'name';
+          } else if (!deepEqualScalar(b.parentId, l.parentId)) {
+            unsupportedField = 'parentId';
+          }
+          if (unsupportedField) {
+            addMetadataCandidate(report, seen, maxCandidates, kind, id, unsupportedField, b, l);
+          }
+          continue;
+        }
+        addFreshnessCandidate(report, seen, maxCandidates, kind, id, b, l);
+        var fields = ['name', 'parentId'];
+        for (f = 0; f < fields.length; f++) {
+          if (!deepEqualScalar(b[fields[f]], l[fields[f]]) && (b[fields[f]] || l[fields[f]])) {
+            addMetadataCandidate(report, seen, maxCandidates, kind, id, fields[f], b, l);
+          }
+        }
+      }
+    }
+
+    var bundleBindings = extractByKind(bundle, 'folderBinding');
+    var localBindings = asArray(localState.folderBinding);
+    if (bundleBindings.length && localBindings.length) {
+      var bundleBindingById = indexById(bundleBindings);
+      var localBindingById = indexById(localBindings);
+      Object.keys(bundleBindingById).forEach(function (bindingId) {
+        if (!localBindingById[bindingId]) {
+          addConflictCandidate(report, seen, maxCandidates, {
+            conflictKind: 'folder-membership-divergence',
+            entityKind: 'folderBinding',
+            classification: 'needs-human-review',
+            severity: 'high',
+            entityId: bindingId,
+            dedupeInput: buildDedupePresenceInput(['folderBinding-missing-local', bindingId])
+          });
+        }
+      });
+      Object.keys(localBindingById).forEach(function (bindingId) {
+        if (!bundleBindingById[bindingId]) {
+          addConflictCandidate(report, seen, maxCandidates, {
+            conflictKind: 'folder-membership-divergence',
+            entityKind: 'folderBinding',
+            classification: 'needs-human-review',
+            severity: 'high',
+            entityId: bindingId,
+            dedupeInput: buildDedupePresenceInput(['folderBinding-missing-remote', bindingId])
+          });
+        }
+      });
+    } else if (bundleBindings.length && !localBindings.length) {
+      report.warnings.push({ code: 'folder-binding-local-input-unavailable' });
+    }
+
+    var catalogs = safeObject(safeObject(safeObject(bundle).chatArchive).catalogs);
+    Object.keys(catalogs).forEach(function (key) {
+      if (['categories', 'labels', 'tags', 'projects', 'folders'].indexOf(key) !== -1) return;
+      if (!Array.isArray(catalogs[key]) || catalogs[key].length === 0) return;
+      addConflictCandidate(report, seen, maxCandidates, {
+        conflictKind: 'unsupported-merge-kind',
+        entityKind: 'unknown',
+        classification: 'unsupported-record-kind',
+        severity: 'info',
+        dedupeInput: buildDedupePresenceInput(['unsupported-catalog', key, catalogs[key].length])
+      });
+    });
+
+    return report;
   }
 
   function buildEnvelopeReport(bundle) {
@@ -1133,6 +1440,9 @@
     var maxSamples = (isObject(inp.options) && typeof inp.options.maxSamplesPerBucket === 'number' && inp.options.maxSamplesPerBucket > 0)
       ? inp.options.maxSamplesPerBucket
       : DEFAULT_MAX_SAMPLES;
+    var maxConflictCandidates = (isObject(inp.options) && typeof inp.options.maxConflictCandidates === 'number' && inp.options.maxConflictCandidates >= 0)
+      ? Math.min(Math.floor(inp.options.maxConflictCandidates), 100)
+      : DEFAULT_MAX_CONFLICT_CANDIDATES;
 
     if (!isObject(bundle)) {
       return {
@@ -1154,6 +1464,7 @@
       peers: buildPeerEnumeration(bundle, localState),
       tombstoneCandidates: buildTombstoneCandidates(bundle, localState, maxSamples),
       conflicts: buildConflicts(bundle, localState, maxSamples),
+      conflictCandidates: buildConflictCandidates(bundle, localState, maxConflictCandidates),
       invariants: buildInvariants(bundle, localState),
       readiness: null
     };
@@ -1208,6 +1519,6 @@
   H2O.Studio.diagnostics.multiPeerDiff = multiPeerDiff;
   H2O.Studio.diagnostics.collectLocalState = collectLocalState;
   H2O.Studio.diagnostics.__multiPeerDiffInstalled = true;
-  H2O.Studio.diagnostics.__multiPeerDiffVersion = '0.1.1-f1b.3';
+  H2O.Studio.diagnostics.__multiPeerDiffVersion = '0.1.2-f6.2';
 
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));

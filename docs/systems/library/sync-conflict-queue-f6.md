@@ -427,7 +427,65 @@ Future counts-only diagnostic shape:
 Diagnostics are observation-only. They must not merge, apply, update review
 state, or trigger sync writes.
 
-## 18. Future Failure Semantics
+## 18. F6.2 Analyzer-Only Conflict Candidates
+
+F6.2 adds in-memory conflict candidate detection to the pure
+`multi-peer-diff.js` analyzer. These candidates are report evidence only:
+
+- They are not inserted into `sync_conflicts`.
+- They do not call `H2O.Studio.store.conflicts`.
+- They do not create conflict records.
+- They do not merge, apply, import, export, or sync anything.
+- They are redacted and capped by default.
+
+Analyzer report shape:
+
+```js
+report.conflictCandidates = {
+  supported: true,
+  generatedAt,
+  redacted: true,
+  total,
+  byKind,
+  byEntityKind,
+  byClassification,
+  bySeverity,
+  deleteVsEditReferenceCount,
+  unsupportedCount,
+  candidates: [],
+  warnings: []
+}
+```
+
+Candidate summaries must not expose raw record IDs, peer IDs, folder IDs, chat
+IDs, folder names, chat titles, hrefs, raw JSON, transcript content,
+prompt/answer text, or raw dedupe keys. The default summaries expose only
+candidate codes, presence booleans for timestamps/digests, and
+`dedupeKeyHashPresent: true`.
+
+Initial F6.2 candidate kinds:
+
+- `same-record-divergent-metadata`
+- `local-newer-than-remote`
+- `remote-newer-than-local`
+- `folder-membership-divergence` when both bundle and local binding inputs are
+  already available.
+- `unsupported-merge-kind`
+- `delete-vs-edit-reference`
+
+`delete-vs-edit-reference` is classified as `delete-vs-edit-owned-by-f5`.
+F6.2 must not duplicate F5 tombstone review logic or create an F6 action path
+for delete conflicts.
+
+Deferred from F6.2:
+
+- Conflict queue ingestion.
+- Hidden runner display.
+- Duplicate identity heuristics.
+- Chat/snapshot content merge.
+- Any resolution recommendation.
+
+## 19. Future Failure Semantics
 
 Future F6.1b.1 read-only store behavior:
 
@@ -438,7 +496,7 @@ Future F6.1b.1 read-only store behavior:
   result, not broad SQL interpolation.
 - All F6.1b methods are read-only. No writes are allowed.
 
-## 19. Desktop Vs Chrome
+## 20. Desktop Vs Chrome
 
 Recommended sequence:
 
@@ -451,7 +509,7 @@ Desktop-first keeps the model anchored to the durable local database while
 avoiding premature Chrome/Desktop parity work before conflict semantics are
 stable.
 
-## 20. Validation Strategy For Future Phases
+## 21. Validation Strategy For Future Phases
 
 Future validation must prove:
 
@@ -483,7 +541,21 @@ F6.1b.1-specific validation should prove:
 - The store module contains no SQL row or schema mutation statements.
 - No import/export/sync/F5/FolderParity files are touched.
 
-## 21. F6.1b Acceptance Criteria
+F6.2-specific validation should prove:
+
+- `report.conflictCandidates.total === 0` for no-conflict fixtures.
+- Local-newer and remote-newer candidates are emitted only when both timestamps
+  parse cleanly.
+- Same-record metadata divergence candidates are redacted.
+- Folder membership divergence is emitted only when both local and bundle
+  binding inputs are available.
+- Delete-vs-edit references are counted as F5-owned critical candidates.
+- Unsupported kinds become `unsupported-merge-kind` candidates.
+- Candidate summaries contain no raw IDs, names, titles, hrefs, raw JSON, or
+  content.
+- No SQL, store write, import/export/sync, or F5 mutation path is called.
+
+## 22. F6.1b Acceptance Criteria
 
 F6.1b.0 is acceptable only if:
 
@@ -507,7 +579,17 @@ F6.1b.1 is acceptable only if:
 - Registration is limited to the focused module entry and packer/script
   inclusion.
 
-## 22. Risks And Mitigations
+F6.2 is acceptable only if:
+
+- Analyzer/report only.
+- No writes to `sync_conflicts`.
+- No ingestion or automatic conflict creation.
+- Redacted candidate counts and capped summaries.
+- No merge/apply/import/export/sync behavior change.
+- No F5 tombstone/review/apply/cleanup behavior change.
+- No FolderParity/Ribbon/Dock/Overlay file changes.
+
+## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
 - F5 overlap: reference delete evidence by code and leave actionable delete
@@ -519,7 +601,7 @@ F6.1b.1 is acceptable only if:
 - Folder parity lane conflict: do not touch renderer, Ribbon, Dock, Overlay,
   or FolderParity files during F6 model work.
 
-## 23. Phased Roadmap
+## 24. Phased Roadmap
 
 - F6.0: Conflict queue model docs only.
 - F6.1a: Schema/store refinement docs only.
@@ -533,9 +615,9 @@ F6.1b.1 is acceptable only if:
 - F6.7: Chrome conflict store scaffold if needed.
 - F7: First gated bidirectional prototype.
 
-## 24. Recommendation
+## 25. Recommendation
 
-The next implementation after F6.1b.1 should remain conservative. F6.2 may add
-an analyzer-only conflict candidate report, but it must not ingest conflict rows
-automatically, merge, apply, or start bidirectional sync. Do not touch
-FolderParity renderer work from the other lane.
+The next implementation after F6.2 should remain conservative. F6.3 may display
+counts in the hidden runner, but it must not ingest conflict rows automatically,
+merge, apply, or start bidirectional sync. Do not touch FolderParity renderer
+work from the other lane.
