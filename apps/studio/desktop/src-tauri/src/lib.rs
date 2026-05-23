@@ -26,6 +26,11 @@ pub mod synthetic_cleanup_dryrun;
 // row with SYNTHETIC_PREDICATE_V1 inside one SQLite transaction.
 pub mod synthetic_cleanup_commit;
 
+// F5H final validation — debug/Desktop-only seed helpers for controlled
+// live validation fixtures. Not compiled or registered in production builds.
+#[cfg(debug_assertions)]
+pub mod f5h_final_validation_seed;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
     TombstoneInsert,
@@ -1562,6 +1567,84 @@ async fn cleanup_synthetic_commit(
     Ok(synthetic_cleanup_commit::run_commit(&mut conn, payload, nowish_iso(), None).await)
 }
 
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn dev_seed_f5h_final_validation_synthetic_rows(
+    db_instances: State<'_, DbInstances>,
+    payload: Option<f5h_final_validation_seed::DevSeedPayload>,
+) -> Result<f5h_final_validation_seed::DevSeedResult, String> {
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                "seed",
+                "desktop-db-unavailable",
+            ));
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                    "seed",
+                    "desktop-db-unavailable",
+                ));
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                "seed",
+                "desktop-db-unavailable",
+            ));
+        }
+    };
+
+    Ok(f5h_final_validation_seed::run_seed(&mut conn, payload.unwrap_or_default()).await)
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn dev_teardown_f5h_final_validation_synthetic_rows(
+    db_instances: State<'_, DbInstances>,
+    payload: Option<f5h_final_validation_seed::DevSeedPayload>,
+) -> Result<f5h_final_validation_seed::DevSeedResult, String> {
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                "teardown",
+                "desktop-db-unavailable",
+            ));
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                    "teardown",
+                    "desktop-db-unavailable",
+                ));
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(f5h_final_validation_seed::DevSeedResult::blocked(
+                "teardown",
+                "desktop-db-unavailable",
+            ));
+        }
+    };
+
+    Ok(f5h_final_validation_seed::run_teardown(&mut conn, payload.unwrap_or_default()).await)
+}
+
 fn nowish_iso() -> String {
     // Lightweight ISO timestamp via SystemTime. Precision-second is fine
     // for the safety age floor (1h) and audit row created_at.
@@ -1584,6 +1667,32 @@ fn nowish_iso() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
+#[cfg(debug_assertions)]
+macro_rules! h2o_studio_invoke_handler {
+    () => {
+        tauri::generate_handler![
+            f5g4_prove_tombstone_review_apply_transaction,
+            f5g4_apply_reviewed_folder_binding_tombstone,
+            preview_cleanup_synthetic_transactional,
+            cleanup_synthetic_commit,
+            dev_seed_f5h_final_validation_synthetic_rows,
+            dev_teardown_f5h_final_validation_synthetic_rows
+        ]
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! h2o_studio_invoke_handler {
+    () => {
+        tauri::generate_handler![
+            f5g4_prove_tombstone_review_apply_transaction,
+            f5g4_apply_reviewed_folder_binding_tombstone,
+            preview_cleanup_synthetic_transactional,
+            cleanup_synthetic_commit
+        ]
+    };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1595,12 +1704,7 @@ pub fn run() {
                 .add_migrations("sqlite:studio-v1.db", studio_migrations())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![
-            f5g4_prove_tombstone_review_apply_transaction,
-            f5g4_apply_reviewed_folder_binding_tombstone,
-            preview_cleanup_synthetic_transactional,
-            cleanup_synthetic_commit
-        ])
+        .invoke_handler(h2o_studio_invoke_handler!())
         .run(tauri::generate_context!())
         .expect("error while running H2O Studio desktop")
 }

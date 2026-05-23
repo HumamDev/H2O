@@ -3350,3 +3350,71 @@ Default responses and audit `result_json` do not expose raw tombstone IDs,
 review IDs, record IDs, peer IDs, raw JSON, metadata, or content. The audit
 stores only hashes for the gate, token, review ID set, and tombstone ID set,
 plus counts and DB fingerprint values.
+
+## F5H final validation — debug synthetic seeder
+
+F5H final live validation needs at least one cleanup-eligible synthetic
+tombstone and one cleanup-eligible synthetic review in the live Desktop DB.
+Real user rows must not be repurposed for this. Debug Desktop builds now
+register two direct Tauri commands for controlled validation fixtures only:
+
+```txt
+dev_seed_f5h_final_validation_synthetic_rows
+dev_teardown_f5h_final_validation_synthetic_rows
+```
+
+These commands are compiled and registered only under Rust
+`debug_assertions`. They are not production APIs, are not exposed on Chrome,
+and have no JS facade under `H2O.Studio`. They are intended to be invoked
+directly from Desktop DevTools through Tauri.
+
+Seed gate:
+
+```txt
+I_UNDERSTAND_THIS_SEEDS_SYNTHETIC_F5H_VALIDATION_ROWS
+```
+
+Teardown gate:
+
+```txt
+I_UNDERSTAND_THIS_REMOVES_F5H_VALIDATION_SEED_ROWS
+```
+
+The seeder uses one SQLite transaction and `INSERT`/`INSERT OR ABORT`
+semantics only. It refuses to run if any fixed `f5h-final-validation-*`
+validation row already exists in the target tombstone/review ID fields.
+It creates:
+
+| Purpose | Fixed ID | Cleanup eligibility |
+|---|---|---|
+| Eligible tombstone | `f5h-final-validation-tombstone-eligible-001` | `is_synthetic = 1`, un-restored, old timestamp, unprotected reason |
+| Eligible review | `f5h-final-validation-review-eligible-001` | `is_synthetic = 1`, `status = rejected`, `decision = rejected`, old timestamp |
+| Blocked review | `f5h-final-validation-review-pending-001` | `is_synthetic = 1`, `status = pending`, must survive cleanup |
+
+All seeded rows use top-level `f5h-final-validation-*` IDs so
+`SYNTHETIC_PREDICATE_V1` has both required signals: the explicit
+`is_synthetic = 1` marker and safe-field prefix corroboration. The seeder
+does not create folders, chats, snapshots, folder bindings, or content rows.
+It does not touch import/export/sync/apply behavior.
+
+Validation protocol after seeding:
+
+1. Confirm baseline lifecycle counts.
+2. Invoke the seed command with the exact seed gate.
+3. Run `previewCleanupSynthetic({ dryRun: true, transactional: true, includeCandidateIds: true })`.
+4. Expect one candidate tombstone and one candidate review, plus a
+   `previewToken`.
+5. Run cleanup with a wrong gate and verify it blocks.
+6. Run `H2O.Studio.maintenance.cleanupSynthetic(...)` with the exact cleanup
+   gate, candidate IDs, expected counts, and token.
+7. Confirm the eligible tombstone and eligible review are deleted.
+8. Confirm the pending synthetic review remains.
+9. Confirm one `sync_maintenance_log` audit row was added.
+10. Retry the stale token and confirm it blocks.
+11. Run a fresh transactional preview and confirm the seeded eligible set is gone.
+12. Run export and diagnostics smoke checks.
+
+The optional teardown command removes only the fixed validation IDs and only
+when `is_synthetic = 1`. It never deletes by prefix alone. It is intended for
+removing the intentionally blocked pending review after final validation, or
+for exact-ID rollback if validation is interrupted.
