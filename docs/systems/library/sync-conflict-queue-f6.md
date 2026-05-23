@@ -50,7 +50,29 @@ conflict intersects with delete evidence, F6 may reference F5 through redacted
 diagnostic codes such as `delete-vs-edit-owned-by-f5`, but F5 remains the
 source of truth for the actionable delete review.
 
-## 4. Candidate Data Model
+## 4. F6.1a Purpose
+
+F6.1a refines the conflict queue schema/store plan only. It adds no runtime
+code, no SQLite migration, no JS store, no analyzer hook, no script
+registration, and no UI. The purpose is to make F6.1b a narrow implementation
+step: Desktop table plus read-only modular store scaffold.
+
+F6.1a must not touch `studio.html`, `pack-studio.mjs`, `studio.js`,
+`studio.css`, Dock, Ribbon, Overlay, FolderParity files, F5 tombstone/apply
+files, import/export modules, or sync runtime modules.
+
+## 5. Final Table Name
+
+The proposed table name is `sync_conflicts`.
+
+Use `sync_conflicts` rather than `sync_conflict_reviews` because the queue is
+broader than manual review rows. It can hold divergent metadata evidence,
+assignment disagreement, duplicate identity evidence, unsupported merge
+evidence, and delete-vs-edit references that point back to F5. The table is
+still evidence-only; the broader name must not be interpreted as permission to
+apply or merge conflicts.
+
+## 6. Final Proposed Schema
 
 Future Desktop schema candidate:
 
@@ -84,13 +106,87 @@ sync_conflicts (
   decided_by_sync_peer_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
-)
+);
 ```
 
-This is future schema only. F6.0 does not add a table, migration, store, API,
-or analyzer hook.
+This is future schema only. F6.1a does not add the table.
 
-## 5. Conflict Kinds
+## 7. Proposed Indexes
+
+F6.1b should add these indexes with the table:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status
+  ON sync_conflicts(status);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_classification
+  ON sync_conflicts(classification);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_severity
+  ON sync_conflicts(severity);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_conflict_kind
+  ON sync_conflicts(conflict_kind);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity_kind
+  ON sync_conflicts(entity_kind);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity
+  ON sync_conflicts(entity_kind, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_remote_peer
+  ON sync_conflicts(remote_peer_id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_remote_export
+  ON sync_conflicts(remote_export_id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_last_seen_at
+  ON sync_conflicts(last_seen_at);
+```
+
+`dedupe_key` is already unique in the table definition and does not need a
+separate named index unless a later migration needs one for diagnostics.
+
+## 8. Schema Constants
+
+Future F6.1b store constants:
+
+```js
+const CONFLICT_SCHEMA = "h2o.studio.sync-conflict.v1";
+const DIAGNOSTIC_SCHEMA = "h2o.studio.sync-conflict.diagnostic.v1";
+```
+
+## 9. Enum Validation
+
+Allowed statuses:
+
+- `pending`
+- `accepted-later`
+- `ignored`
+- `rejected`
+- `resolved`
+- `superseded`
+
+Allowed severities:
+
+- `info`
+- `low`
+- `medium`
+- `high`
+- `critical`
+
+Allowed classifications:
+
+- `safe-review`
+- `needs-human-review`
+- `dangerous-auto-merge`
+- `unsupported-record-kind`
+- `delete-vs-edit-owned-by-f5`
+- `local-comparison-unavailable`
+- `malformed-remote-record`
+- `duplicate-candidate`
+
+Allowed conflict kinds:
 
 Initial `conflict_kind` values:
 
@@ -105,7 +201,7 @@ Initial `conflict_kind` values:
 - `unsupported-merge-kind`
 - `delete-vs-edit-reference`
 
-## 6. Entity Kinds
+Allowed entity kinds:
 
 Initial `entity_kind` values:
 
@@ -122,7 +218,7 @@ Initial `entity_kind` values:
 - `savedSnapshot`
 - `unknown`
 
-## 7. Status And Decision Model
+## 10. Status And Decision Model
 
 Statuses:
 
@@ -147,7 +243,7 @@ No F6 phase should imply or perform mutation until a later phase explicitly
 plans and gates mutation. Decision strings are review evidence, not merge
 execution.
 
-## 8. Detection Strategy
+## 11. Detection Strategy
 
 Future candidate sources:
 
@@ -165,7 +261,7 @@ Preferred path:
 - Normal sync must not automatically ingest conflict rows until the queue is
   validated.
 
-## 9. Dedupe Strategy
+## 12. Dedupe Strategy
 
 Candidate same-record dedupe form:
 
@@ -186,37 +282,55 @@ Repeated sightings should:
 - Update `last_seen_at`.
 - Update latest remote export and sequence metadata.
 
-## 10. Redaction Policy
+## 13. Redaction Policy
 
-Default diagnostics must not expose:
+Default diagnostics and list summaries must not expose:
 
-- Full chat, folder, or record IDs.
+- Raw chat, folder, or record IDs.
 - Peer IDs.
 - Raw content.
 - Prompt or answer text.
 - Folder names.
 - Chat titles.
 - Raw JSON payloads.
+- Metadata blobs.
 
 Use counts, classifications, severities, and code-level summaries only. Any
 future sensitive mode must be explicit, dev-only, and excluded from default
 diagnostics.
 
-## 11. Future APIs
+## 14. Future Store API
 
-Possible future APIs:
+Future Desktop store namespace:
 
 ```js
+H2O.Studio.store.conflicts
+```
+
+F6.1b should expose read-only/inert methods:
+
+```js
+H2O.Studio.store.conflicts.init()
+H2O.Studio.store.conflicts.isReady()
 H2O.Studio.store.conflicts.diagnose()
 H2O.Studio.store.conflicts.listConflicts(filters)
 H2O.Studio.store.conflicts.getConflict(conflictId)
-H2O.Studio.store.conflicts.ingestConflictCandidates(candidates, sourceContext)
-H2O.Studio.store.conflicts.markIgnored(conflictId, reason)
-H2O.Studio.store.conflicts.markResolved(conflictId, decision, reason)
-H2O.Studio.store.conflicts.previewResolution(conflictId, options)
+H2O.Studio.store.conflicts.countByStatus()
+H2O.Studio.store.conflicts.countByKind()
+H2O.Studio.store.conflicts.countBySeverity()
+H2O.Studio.store.conflicts.validateConflict(record)
 ```
 
-Avoid dangerous or premature APIs:
+Explicitly defer write/ingest APIs:
+
+- `createConflict()`
+- `upsertConflictSighting()`
+- `ingestConflictCandidates()`
+- `markIgnored()`
+- `markResolved()`
+- `previewResolution()`
+
+Avoid dangerous or premature APIs entirely:
 
 - `applyConflict()`
 - `resolveAll()`
@@ -224,7 +338,25 @@ Avoid dangerous or premature APIs:
 - `forceRemoteWins()`
 - `deleteLocal()`
 
-## 12. Diagnostics Model
+## 15. Registration And Loading Plan For F6.1b
+
+Preferred future module:
+
+```txt
+src-surfaces-base/studio/store/conflicts.tauri.js
+```
+
+Rules:
+
+- Do not bloat `studio.js`.
+- Do not put conflict logic in `tombstone-reviews.tauri.js`.
+- Do not touch F5 cleanup/apply modules.
+- Avoid `studio.html` and packer touches while active Studio WIP exists.
+- Coordinate with the FolderParity/Ribbon/Dock/Overlay lane before adding
+  script registration.
+- Chrome conflict store is deferred.
+
+## 16. Diagnostics Model
 
 Future counts-only diagnostic shape:
 
@@ -232,7 +364,11 @@ Future counts-only diagnostic shape:
 {
   schema: "h2o.studio.sync-conflict.diagnostic.v1",
   generatedAt,
+  installed: true,
+  ready: true,
   redacted: true,
+  platform: "desktop-tauri",
+  table: "sync_conflicts",
   total,
   pending,
   byKind,
@@ -248,7 +384,18 @@ Future counts-only diagnostic shape:
 Diagnostics are observation-only. They must not merge, apply, update review
 state, or trigger sync writes.
 
-## 13. Desktop Vs Chrome
+## 17. Future Failure Semantics
+
+Future F6.1b read-only store behavior:
+
+- Missing table returns `ready: false` plus a code-level warning.
+- SQL unavailable returns a warning and does not crash the caller.
+- Malformed stored JSON summaries produce warnings only.
+- Invalid filters are handled safely with a clear code-level error or empty
+  result, not broad SQL interpolation.
+- All F6.1b methods are read-only. No writes are allowed.
+
+## 18. Desktop Vs Chrome
 
 Recommended sequence:
 
@@ -261,7 +408,7 @@ Desktop-first keeps the model anchored to the durable local database while
 avoiding premature Chrome/Desktop parity work before conflict semantics are
 stable.
 
-## 14. Validation Strategy For Future Phases
+## 19. Validation Strategy For Future Phases
 
 Future validation must prove:
 
@@ -273,7 +420,30 @@ Future validation must prove:
 - Malformed records become conflict evidence, not crashes.
 - Import/export/sync behavior remains unchanged.
 
-## 15. Risks And Mitigations
+F6.1b-specific validation should prove:
+
+- Empty-table diagnostics return `total: 0`.
+- The migration creates `sync_conflicts` and all planned indexes.
+- Enum validation accepts only the allowed sets listed above.
+- `listConflicts()` filters cannot inject SQL and return redacted summaries.
+- `getConflict()` redacts raw JSON by default.
+- No import/export/sync/F5/FolderParity files are touched.
+
+## 20. F6.1b Acceptance Criteria
+
+F6.1b is acceptable only if:
+
+- Desktop-only inert scaffold.
+- No automatic conflict creation.
+- No merge or apply behavior.
+- No import/export/sync behavior change.
+- Redacted diagnostics.
+- Modular store file.
+- No `studio.js` bloat.
+- No FolderParity/Ribbon/Dock/Overlay conflict.
+- No Chrome conflict store.
+
+## 21. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
 - F5 overlap: reference delete evidence by code and leave actionable delete
@@ -285,10 +455,11 @@ Future validation must prove:
 - Folder parity lane conflict: do not touch renderer, Ribbon, Dock, Overlay,
   or FolderParity files during F6 model work.
 
-## 16. Phased Roadmap
+## 22. Phased Roadmap
 
 - F6.0: Conflict queue model docs only.
-- F6.1: Desktop conflict table/store scaffold, inert.
+- F6.1a: Schema/store refinement docs only.
+- F6.1b: Desktop conflict table/read-only store scaffold, inert.
 - F6.2: Analyzer-only conflict candidate detection.
 - F6.3: Hidden runner counts-only display.
 - F6.4: Manual conflict candidate ingestion.
@@ -297,9 +468,9 @@ Future validation must prove:
 - F6.7: Chrome conflict store scaffold if needed.
 - F7: First gated bidirectional prototype.
 
-## 17. Recommendation
+## 23. Recommendation
 
 The next implementation after this document should still be conservative:
-F6.1 may add an inert Desktop table/store scaffold only after the schema and
-file ownership are accepted. Do not build conflict tables or stores in F6.0.
-Do not touch FolderParity renderer work from the other lane.
+F6.1b may add an inert Desktop table/read-only store scaffold only after file
+ownership is clear. Do not build conflict tables or stores in F6.1a. Do not
+touch FolderParity renderer work from the other lane.
