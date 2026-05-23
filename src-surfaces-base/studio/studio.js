@@ -33,6 +33,12 @@ const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
+const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
+  selected: false,
+  confirmation: "",
+  preview: null,
+  status: "",
+};
 const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
 const INTERFACE_COLORS = [
   { name: "gold", value: "rgba(212,175,55,1)" },
@@ -7567,13 +7573,25 @@ function settingsFolderDesktopOrphanBindingRemovalBlockers(report){
   return Array.from(new Set(blockers.filter(Boolean)));
 }
 
+function settingsFolderDesktopOrphanBindingTargetSelection(){
+  return {
+    chatId: FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID,
+    folderId: FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID,
+  };
+}
+
 function settingsFolderDesktopOrphanBindingSelected(panel){
   const box = panel?.querySelector?.("#wbSettingsFolderDesktopOrphanBindingRemoveList input[data-chat-id][data-folder-id]");
-  if (!box || !box.checked) return null;
-  return {
-    chatId: String(box.dataset.chatId || "").trim(),
-    folderId: String(box.dataset.folderId || "").trim(),
-  };
+  if (box) {
+    if (!box.checked) return null;
+    return {
+      chatId: String(box.dataset.chatId || "").trim(),
+      folderId: String(box.dataset.folderId || "").trim(),
+    };
+  }
+  return FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected
+    ? settingsFolderDesktopOrphanBindingTargetSelection()
+    : null;
 }
 
 function settingsFolderDesktopOrphanBindingRemovalRowHtml(report){
@@ -7581,10 +7599,11 @@ function settingsFolderDesktopOrphanBindingRemovalRowHtml(report){
   const review = report?.review || {};
   const blockers = settingsFolderDesktopOrphanBindingRemovalBlockers(report);
   const eligible = blockers.length === 0;
+  const checked = eligible && !!FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected;
   const badges = settingsFolderCleanupBadgesHtml({ badges: ["Desktop SQLite", "orphan", "review"], classification: eligible ? "orphan-removal-eligible" : "review-required" });
   return `
     <label style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:flex-start;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px">
-      <input type="checkbox" data-chat-id="${esc(target.chatId)}" data-folder-id="${esc(target.folderId)}" ${eligible ? "" : "disabled"} />
+      <input type="checkbox" data-chat-id="${esc(target.chatId)}" data-folder-id="${esc(target.folderId)}" ${checked ? "checked" : ""} ${eligible ? "" : "disabled"} />
       <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
         <span style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
           <strong>${esc(target.chatId)} -&gt; ${esc(target.folderId)}</strong>
@@ -7602,18 +7621,33 @@ function settingsFolderDesktopRenderOrphanBindingRemovalPanel(panel, report){
   const summary = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveSummary");
   const list = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveList");
   const previewEl = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
+  const confirmInput = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm");
   const blockers = settingsFolderDesktopOrphanBindingRemovalBlockers(report);
+  const eligible = blockers.length === 0;
+  if (!eligible) {
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview = null;
+  }
   if (summary) {
+    const status = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.status ? ` ${FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.status}` : "";
     summary.textContent = STUDIO_isTauri()
       ? (blockers.length
-        ? `Desktop SQLite binding only. Removal blocked: ${blockers.join(" ")}`
-        : "Desktop SQLite binding only. Exact orphan binding is selectable. The folder row, Chrome mirror, native folder-state, and sync folder are not modified.")
+        ? `Desktop SQLite binding only. Removal blocked: ${blockers.join(" ")}${status}`
+        : `Desktop SQLite binding only. Exact orphan binding is selectable. The folder row, Chrome mirror, native folder-state, and sync folder are not modified.${status}`)
       : "Orphan binding removal is only available in Desktop Studio.";
   }
   if (list) list.innerHTML = settingsFolderDesktopOrphanBindingRemovalRowHtml(report);
-  if (previewEl && !panel?.__h2oFolderDesktopOrphanBindingRemovalPreview) {
-    previewEl.hidden = true;
-    previewEl.textContent = "";
+  if (confirmInput && confirmInput.value !== FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation) {
+    confirmInput.value = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation;
+  }
+  panel.__h2oFolderDesktopOrphanBindingRemovalPreview = eligible ? FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview : null;
+  if (previewEl) {
+    if (panel.__h2oFolderDesktopOrphanBindingRemovalPreview) {
+      previewEl.hidden = false;
+      previewEl.textContent = JSON.stringify(panel.__h2oFolderDesktopOrphanBindingRemovalPreview, null, 2);
+    } else {
+      previewEl.hidden = true;
+      previewEl.textContent = "";
+    }
   }
   settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel);
 }
@@ -7674,13 +7708,17 @@ function settingsFolderDesktopResolveUnbindMethod(){
 
 function settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel){
   const selected = settingsFolderDesktopOrphanBindingSelected(panel);
+  FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected = !!selected;
   panel.__h2oFolderDesktopOrphanBindingSelected = selected;
-  const preview = panel?.__h2oFolderDesktopOrphanBindingRemovalPreview;
+  const preview = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview || panel?.__h2oFolderDesktopOrphanBindingRemovalPreview;
   const previewBtn = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingPreviewRemove");
   const copyBtn = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingCopyRemovePlan");
   const confirmInput = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm");
   const removeBtn = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveSelected");
-  const confirmationOk = String(confirmInput?.value || "") === FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT;
+  if (confirmInput && confirmInput.value !== FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation) {
+    confirmInput.value = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation;
+  }
+  const confirmationOk = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation === FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT;
   const selectedMatchesPreview = !!preview?.ok
     && !!selected
     && (preview.selectedBindings || []).length === 1
@@ -8025,6 +8063,9 @@ async function refreshSettingsFolderDesktopOrphanBindingReview(panel, seed = nul
   if (summary) summary.textContent = "Refreshing read-only orphan binding review…";
   if (copyBtn) copyBtn.disabled = true;
   const report = await settingsFolderDesktopLoadOrphanBindingReview(seed);
+  if (settingsFolderDesktopOrphanBindingRemovalBlockers(report).length) {
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview = null;
+  }
   panel.__h2oFolderDesktopOrphanBindingReport = report;
   settingsFolderDesktopRenderOrphanBindingReport(panel, report);
   return report;
@@ -8050,18 +8091,21 @@ async function copySettingsFolderDesktopOrphanBindingReport(panel){
 
 async function previewSettingsFolderDesktopOrphanBindingRemoval(panel){
   if (!panel) return null;
-  const previewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
   const selected = settingsFolderDesktopOrphanBindingSelected(panel);
   const report = await settingsFolderDesktopLoadOrphanBindingReview();
   const preview = settingsFolderDesktopBuildOrphanBindingRemovalPreview(selected, report);
+  FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected = !!selected;
+  FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview = preview.ok ? preview : null;
+  FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.status = preview.ok ? "Removal preview is ready." : "Removal preview is blocked.";
   panel.__h2oFolderDesktopOrphanBindingReport = report;
-  panel.__h2oFolderDesktopOrphanBindingRemovalPreview = preview.ok ? preview : null;
+  panel.__h2oFolderDesktopOrphanBindingRemovalPreview = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview;
   settingsFolderDesktopRenderOrphanBindingReport(panel, report);
   if (selected) {
     const box = Array.from(panel.querySelectorAll("#wbSettingsFolderDesktopOrphanBindingRemoveList input[data-chat-id][data-folder-id]") || [])
       .find((input) => String(input.dataset.chatId || "").trim() === selected.chatId && String(input.dataset.folderId || "").trim() === selected.folderId);
     if (box) box.checked = true;
   }
+  const previewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
   if (previewEl) {
     previewEl.hidden = false;
     previewEl.textContent = JSON.stringify(preview, null, 2);
@@ -8073,7 +8117,7 @@ async function previewSettingsFolderDesktopOrphanBindingRemoval(panel){
 
 async function copySettingsFolderDesktopOrphanBindingRemovalPlan(panel){
   if (!panel) return;
-  let preview = panel.__h2oFolderDesktopOrphanBindingRemovalPreview;
+  let preview = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview || panel.__h2oFolderDesktopOrphanBindingRemovalPreview;
   if (!preview) preview = await previewSettingsFolderDesktopOrphanBindingRemoval(panel);
   const text = JSON.stringify(preview || {}, null, 2);
   try {
@@ -8092,14 +8136,16 @@ async function copySettingsFolderDesktopOrphanBindingRemovalPlan(panel){
 async function removeSelectedOrphanDesktopBinding(panel){
   if (!panel) return;
   const previewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
-  const confirmValue = String(panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm")?.value || "");
+  const confirmInput = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm");
+  if (confirmInput) FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation = String(confirmInput.value || "");
+  const confirmValue = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation;
   if (confirmValue !== FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT) {
     settingsFolderParityLog(panel, "Orphan binding removal blocked. Confirmation text does not match.");
     settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel);
     return;
   }
   const selected = settingsFolderDesktopOrphanBindingSelected(panel);
-  const existingPreview = panel.__h2oFolderDesktopOrphanBindingRemovalPreview;
+  const existingPreview = FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview || panel.__h2oFolderDesktopOrphanBindingRemovalPreview;
   const previewMatchesSelection = !!existingPreview?.ok
     && !!selected
     && (existingPreview.selectedBindings || []).length === 1
@@ -8195,10 +8241,13 @@ async function removeSelectedOrphanDesktopBinding(panel){
       previewEl.textContent = JSON.stringify(result, null, 2);
     }
     settingsFolderParityLog(panel, "Selected orphan Desktop binding removed. Folder row, Chrome mirror, native folder-state, and sync folder were not modified.");
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected = false;
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation = "";
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview = null;
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.status = "Binding removal completed.";
     panel.__h2oFolderDesktopOrphanBindingRemovalPreview = null;
     panel.__h2oFolderDesktopOrphanBindingSelected = null;
-    const input = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm");
-    if (input) input.value = "";
+    if (confirmInput) confirmInput.value = "";
     await refreshSettingsFolderParity(panel);
     const refreshedPreviewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
     if (refreshedPreviewEl) {
@@ -8968,9 +9017,15 @@ function bindSettingsSyncControls(panel){
   });
 
   panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveList")?.addEventListener("change", () => {
-    panel.__h2oFolderDesktopOrphanBindingRemovalPreview = null;
+    const selected = settingsFolderDesktopOrphanBindingSelected(panel);
+    const wasSelected = !!FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected;
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected = !!selected;
+    if (!selected || wasSelected !== !!selected) {
+      FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview = null;
+      panel.__h2oFolderDesktopOrphanBindingRemovalPreview = null;
+    }
     const previewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
-    if (previewEl) {
+    if (previewEl && !FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.preview) {
       previewEl.hidden = true;
       previewEl.textContent = "";
     }
@@ -8978,6 +9033,7 @@ function bindSettingsSyncControls(panel){
   });
 
   panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm")?.addEventListener("input", () => {
+    FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation = String(panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm")?.value || "");
     settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel);
   });
 
