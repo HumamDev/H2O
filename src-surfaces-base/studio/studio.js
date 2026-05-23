@@ -34,6 +34,8 @@ const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
+const FOLDER_LOCAL_REVIEW_EXPLANATION = "These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.";
+const FOLDER_LOCAL_REVIEW_BADGE_ORDER = ["extra", "test", "conflict", "desktop-only", "chrome-only", "review-required"];
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
   selected: false,
   confirmation: "",
@@ -75,6 +77,27 @@ const state = {
 
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function localReviewBadgeValues(item = {}){
+  const values = new Set((Array.isArray(item.badges) ? item.badges : [])
+    .map((badge) => String(badge || "").trim().toLowerCase())
+    .filter(Boolean));
+  if (item.isExtra) values.add("extra");
+  if (item.isTestCandidate) values.add("test");
+  if (item.isConflict) values.add("conflict");
+  const bucket = String(item.reviewBucket || "").trim().toLowerCase();
+  if (bucket) values.add(bucket);
+  values.add("review-required");
+  return FOLDER_LOCAL_REVIEW_BADGE_ORDER.filter((badge) => values.has(badge));
+}
+
+function localReviewBadgesHtml(item = {}){
+  const badges = localReviewBadgeValues(item);
+  if (!badges.length) return "";
+  return `<span class="wbFolderLocalReviewBadges" style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;min-width:0">${badges.map((badge) => (
+    `<span class="wbFolderLocalReviewBadge wbFolderLocalReviewBadge--${esc(badge)}" title="${esc(badge)}" style="display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(255,255,255,.68);background:rgba(255,255,255,.045);text-transform:none;letter-spacing:0">${esc(badge)}</span>`
+  )).join("")}</span>`;
 }
 
 function studioHostUnmount(reason = "studio:unmount") {
@@ -2577,6 +2600,7 @@ function normalizeFolderRecord(raw){
   ["isCanonical", "isExtra", "isTestCandidate", "isConflict"].forEach((key) => {
     if (row[key] === true) folder[key] = true;
   });
+  if (row.reviewBucket) folder.reviewBucket = String(row.reviewBucket || "").trim();
   if (row.source) folder.source = String(row.source || "").trim();
   return folder;
 }
@@ -3120,6 +3144,7 @@ function mapFolderParityRowsToCatalog(rows){
       isExtra: row?.isExtra === true,
       isTestCandidate: row?.isTestCandidate === true,
       isConflict: row?.isConflict === true,
+      reviewBucket: String(row?.reviewBucket || "").trim(),
     };
   }).filter(Boolean);
 }
@@ -3552,12 +3577,16 @@ function renderFolderSidebarRow(view, item, opts){
     link.dataset.color = iconColor;
     link.style.setProperty("--wb-sidebar-item-color", iconColor);
   }
-  const folderMenuHtml = item.kind === "folder"
+  const reviewBadgesHtml = opts && opts.review ? localReviewBadgesHtml(item) : "";
+  const folderMenuHtml = item.kind === "folder" && !(opts && opts.review)
     ? `<button class="wbFolderMenuBtn" type="button" aria-label="More options for ${esc(displayLabel)}" aria-haspopup="menu" aria-expanded="false" title="More options for ${esc(displayLabel)}">...</button>`
     : `<span class="wbFolderMenuSlot" aria-hidden="true"></span>`;
   link.innerHTML = `
     <span class="wbFolderIcon" aria-hidden="true">${folderIconSvg}</span>
-    <span class="wbFolderLabel">${esc(displayLabel)}</span>
+    <span class="wbFolderLabel"${reviewBadgesHtml ? ' style="display:flex;flex-direction:column;gap:0;min-width:0;white-space:normal;line-height:1.25"' : ""}>
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayLabel)}</span>
+      ${reviewBadgesHtml}
+    </span>
     <span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}">${esc(countText)}</span>
     ${folderMenuHtml}
   `;
@@ -3627,9 +3656,14 @@ function renderFolderSidebar(rows, view, selectedFolderId){
     summary.textContent = `Local Review · ${reviewEntries.length}`;
     summary.style.cssText = "cursor:pointer;padding:6px 10px;margin-top:6px;font-size:11px;color:rgba(255,255,255,.5);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,.06)";
     details.appendChild(summary);
+    const explanation = document.createElement("div");
+    explanation.className = "wbFolderLocalReviewExplanation";
+    explanation.textContent = FOLDER_LOCAL_REVIEW_EXPLANATION;
+    explanation.style.cssText = "padding:0 10px 4px;color:rgba(255,255,255,.56);font-size:10.5px;line-height:1.35";
+    details.appendChild(explanation);
     const reviewHost = document.createElement("div");
     reviewHost.className = "wbFolderLocalReviewList";
-    reviewHost.style.cssText = "opacity:0.72;padding-top:4px";
+    reviewHost.style.cssText = "opacity:0.84;padding-top:4px";
     reviewEntries.forEach((item) => {
       const link = renderFolderSidebarRow(view, item, { review: true });
       if (link) reviewHost.appendChild(link);

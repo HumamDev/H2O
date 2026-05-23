@@ -84,6 +84,8 @@
       requestId: 0,
     },
   };
+  const LOCAL_REVIEW_EXPLANATION = 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.';
+  const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
 
   // ── Pure helpers ───────────────────────────────────────────────────────────
   function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;' }[c])); }
@@ -1314,8 +1316,28 @@
     }).finally(() => {
       if (requestId !== bucket.requestId) return;
       bucket.loading = false;
-      if (state.visible && currentLibraryView() === 'folders') render();
+      if (state.visible && ['folders', 'organize'].includes(currentLibraryView())) render();
     });
+  }
+
+  function canonicalAssignmentFolders() {
+    const canonicalRows = Array.isArray(state.folderDisplay.model?.canonicalRows)
+      ? state.folderDisplay.model.canonicalRows
+      : [];
+    const source = canonicalRows.length ? canonicalRows : pageData.folders.filter((folder) => {
+      const folderId = String(folder?.id || folder?.folderId || '').trim();
+      const badges = Array.isArray(folder?.badges)
+        ? folder.badges.map((badge) => String(badge || '').trim().toLowerCase())
+        : [];
+      if (folder?.isCanonical === true) return true;
+      if (folder?.isCanonical === false || folder?.isExtra || folder?.isTestCandidate || folder?.isConflict) return false;
+      if (badges.some((badge) => ['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required'].includes(badge))) return false;
+      return /^f_/.test(folderId);
+    });
+    return source.map((folder) => ({
+      value: String(folder?.id || folder?.folderId || '').trim(),
+      label: String(folder?.name || folder?.label || folder?.folderName || folder?.id || folder?.folderId || '').trim(),
+    })).filter((item) => item.value && item.label);
   }
 
   function fallbackFolderDisplayRows(idx) {
@@ -1354,8 +1376,16 @@
     if (row?.isExtra) values.add('extra');
     if (row?.isTestCandidate) values.add('test');
     if (row?.isConflict) values.add('conflict');
-    if (Number(row?.localBindingCount || 0) > 0 && values.has('test')) values.add('review');
-    return Array.from(values).map((badge) => el('span', {
+    const reviewBucket = String(row?.reviewBucket || '').trim().toLowerCase();
+    if (reviewBucket) values.add(reviewBucket);
+    if (!row?.isCanonical) values.add('review-required');
+    if (Number(row?.localBindingCount || 0) > 0 && values.has('test')) values.add('review-required');
+    const ordered = [
+      'canonical',
+      ...LOCAL_REVIEW_BADGE_ORDER,
+      ...Array.from(values).filter((badge) => badge !== 'canonical' && !LOCAL_REVIEW_BADGE_ORDER.includes(badge)),
+    ].filter((badge, index, arr) => values.has(badge) && arr.indexOf(badge) === index);
+    return ordered.map((badge) => el('span', {
       class: `wbFolderPageBadge wbFolderPageBadge--${badge}`,
       style: 'display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)',
     }, badge));
@@ -1463,7 +1493,10 @@
         body.appendChild(el('div', {
           class: 'wbFolderPageLocalReviewExplanation',
           style: 'margin:0 0 10px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.45',
-        }, 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.'));
+        }, [
+          LOCAL_REVIEW_EXPLANATION,
+          el('span', { style: 'display:block;margin-top:3px;color:rgba(255,255,255,.48)' }, 'Manage review details in Settings → Folder Parity.'),
+        ]));
         body.appendChild(el('div', {
           class: 'wbFolderPageList wbFolderPageList--review',
           role: 'list',
@@ -1700,6 +1733,7 @@
   }
 
   function renderOrganize(idx) {
+    loadFolderDisplayModel(false);
     const all = idx.getAll();
     // Prune stale selections against the full data set (not the filtered one)
     // so search/filter changes don't quietly destroy user intent.
@@ -1719,11 +1753,9 @@
     const folderOpts = [
       { value: '', label: '— Folder: leave unchanged —' },
       { value: '__none__', label: 'Move to Unfiled' },
-      ...pageData.folders.map((f) => ({
-        value: String(f.id || f.folderId || ''),
-        label: String(f.name || f.label || f.folderName || f.id || ''),
-      })).filter((o) => o.value && o.label),
+      ...canonicalAssignmentFolders(),
     ];
+    if (organize.pending.folderId && !folderOpts.some((o) => o.value === organize.pending.folderId)) organize.pending.folderId = '';
     const categoryOpts = [
       { value: '', label: '— Category: leave unchanged —' },
       { value: '__none__', label: 'Clear category' },

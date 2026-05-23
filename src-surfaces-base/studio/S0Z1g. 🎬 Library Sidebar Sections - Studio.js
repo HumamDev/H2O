@@ -36,6 +36,8 @@
   ];
   const SIDEBAR_APPEARANCE_KEY = 'h2o:studio:sidebar:row-appearance:v1';
   const TAG_CATEGORY_LINKS_KEY = 'h2o:prm:cgx:library:tag-category-links:v1';
+  const LOCAL_REVIEW_EXPLANATION = 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.';
+  const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
   const SIDEBAR_MENU_COLORS = Object.freeze([
     { key: 'default', label: 'Default', color: '', value: '' },
     { key: 'blue', label: 'Blue', color: '#3B82F6', value: '#3B82F6' },
@@ -141,6 +143,32 @@
     const display = String(item.displayCountLabel || '').trim();
     if (display) return display;
     return item.count != null ? formatNumber(item.count) : '';
+  }
+
+  function localReviewBadgeValues(item = {}) {
+    const values = new Set((Array.isArray(item.badges) ? item.badges : [])
+      .map((badge) => String(badge || '').trim().toLowerCase())
+      .filter(Boolean));
+    if (item.isExtra) values.add('extra');
+    if (item.isTestCandidate) values.add('test');
+    if (item.isConflict) values.add('conflict');
+    const bucket = String(item.reviewBucket || '').trim().toLowerCase();
+    if (bucket) values.add(bucket);
+    values.add('review-required');
+    return LOCAL_REVIEW_BADGE_ORDER.filter((badge) => values.has(badge));
+  }
+
+  function localReviewBadgeNodes(item = {}) {
+    const badges = localReviewBadgeValues(item);
+    if (!badges.length) return null;
+    return el('span', {
+      class: 'wbSidebarLocalReviewBadges',
+      style: 'display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;min-width:0',
+    }, badges.map((badge) => el('span', {
+      class: `wbSidebarLocalReviewBadge wbSidebarLocalReviewBadge--${badge}`,
+      style: 'display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(255,255,255,.68);background:rgba(255,255,255,.045);text-transform:none;letter-spacing:0',
+      title: badge,
+    }, badge)));
   }
 
   function normalizeHexColor(raw = '') {
@@ -999,7 +1027,7 @@
       const hasDetailedCount = !!String(item.displayCountLabel || '').trim();
       const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
       const title = hasDetailedCount ? `${name} — ${countLabel}` : name;
-      const menuButton = kind === 'categories' || kind === 'folders'
+      const menuButton = !opts.disableMenu && (kind === 'categories' || kind === 'folders')
         ? el('button', {
           class: 'wbSidebarSectionItemMenu',
           type: 'button',
@@ -1032,7 +1060,13 @@
         style: color ? `--wb-sidebar-item-color:${color};` : '',
       }, [
         makeItemIcon(item, kind),
-        el('span', { class: 'wbSidebarSectionItemLabel' }, name),
+        opts.review ? el('span', {
+          class: 'wbSidebarSectionItemLabel',
+          style: 'display:flex;flex-direction:column;gap:0;min-width:0;white-space:normal;line-height:1.25',
+        }, [
+          el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
+          localReviewBadgeNodes(item),
+        ]) : el('span', { class: 'wbSidebarSectionItemLabel' }, name),
         countLabel ? el('span', {
           class: `wbSidebarSectionItemCount${hasDetailedCount ? ' wbSidebarSectionItemCount--folderParity' : ''}`,
           title: hasDetailedCount ? countLabel : null,
@@ -1146,14 +1180,20 @@
         style: 'cursor:pointer;padding:6px 10px;margin-top:6px;font-size:11px;color:rgba(255,255,255,.5);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,.06)',
       }, `Local Review · ${formatNumber(reviewItems.length)}`);
       details.appendChild(summary);
+      details.appendChild(el('div', {
+        class: 'wbSidebarLocalReviewExplanation',
+        style: 'padding:0 10px 4px;color:rgba(255,255,255,.56);font-size:10.5px;line-height:1.35',
+      }, LOCAL_REVIEW_EXPLANATION));
       const reviewHost = el('div', {
         class: 'wbSidebarLocalReviewList',
-        style: 'opacity:0.72;padding-top:4px',
+        style: 'opacity:0.84;padding-top:4px',
       });
       details.appendChild(reviewHost);
       renderSectionList(reviewHost, 'folders', reviewItems, {
         emptyText: 'No items in Local Review',
         limit: Math.max(reviewItems.length, 1),
+        review: true,
+        disableMenu: true,
       });
       reviewHost.querySelectorAll('.wbSidebarSectionItem').forEach((node) => {
         node.classList.add('wbSidebarSectionItem--review');
