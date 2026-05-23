@@ -30,6 +30,8 @@ const FOLDER_CLEANUP_AUDIT_KEY = "h2o:studio:folder-cleanup-audit:v1";
 const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
 const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
+const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
+const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const HEAT_LEVELS = new Set(["auto", "hot", "warm", "off"]);
 const INTERFACE_COLORS = [
   { name: "gold", value: "rgba(212,175,55,1)" },
@@ -5440,6 +5442,19 @@ function renderSettingsRoute(){
             <button id="wbSettingsFolderDesktopDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected empty Desktop folders</button>
             <pre id="wbSettingsFolderDesktopDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
           </div>
+          <div id="wbSettingsFolderDesktopOrphanBindingBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+              <div>
+                <div style="font-weight:600">Orphan Desktop Binding Review</div>
+                <div id="wbSettingsFolderDesktopOrphanBindingSummary" style="opacity:.72;font-size:12px">Review-only. No binding removed.</div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button id="wbSettingsFolderDesktopOrphanBindingRefresh" type="button" style="${btnStyle}">Refresh orphan binding review</button>
+                <button id="wbSettingsFolderDesktopOrphanBindingCopy" type="button" style="${btnStyle}">Copy orphan binding report JSON</button>
+              </div>
+            </div>
+            <div id="wbSettingsFolderDesktopOrphanBindingBody" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+          </div>
         </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
@@ -7158,6 +7173,230 @@ function settingsFolderDesktopBuildReviewReport(selfCheck, displayModel, desktop
   };
 }
 
+function settingsFolderDesktopTargetOrphanBinding(){
+  return {
+    chatId: FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID,
+    folderId: FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID,
+  };
+}
+
+function settingsFolderDesktopSqlOkRows(result){
+  return result?.ok && Array.isArray(result.rows) ? result.rows : [];
+}
+
+function settingsFolderDesktopRegistryMatches(chatId){
+  const id = String(chatId || "").trim();
+  if (!id) return [];
+  let rows = [];
+  try { rows = W.H2O?.LibraryIndex?.getAll?.() || []; } catch { rows = []; }
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const values = [
+      row?.chatId,
+      row?.sourceId,
+      row?.source_id,
+      row?.id,
+      row?.snapshotId,
+      row?.href,
+    ].map((value) => String(value || "").trim());
+    return values.includes(id);
+  }).slice(0, 8).map((row) => ({
+    chatId: String(row?.chatId || "").trim(),
+    sourceId: String(row?.sourceId || row?.source_id || "").trim(),
+    snapshotId: String(row?.snapshotId || row?.id || "").trim(),
+    title: String(row?.title || "").trim(),
+    folderId: String(row?.folderId || row?.folder_id || "").trim(),
+    view: String(row?.view || "").trim(),
+  }));
+}
+
+async function settingsFolderDesktopLoadOrphanBindingReview(seed = null){
+  const target = settingsFolderDesktopTargetOrphanBinding();
+  const foldersStore = W.H2O?.Studio?.store?.folders;
+  const storeMethods = Object.keys(foldersStore || {}).filter((key) => typeof foldersStore[key] === "function").sort();
+  const selfCheck = seed?.selfCheck || (typeof W.H2O?.Library?.FolderParity?.selfCheck === "function"
+    ? await W.H2O.Library.FolderParity.selfCheck({ fresh: true })
+    : null);
+
+  if (!STUDIO_isTauri()) {
+    const review = {
+      ...target,
+      folderName: "",
+      bindingExists: false,
+      chatExistsById: false,
+      chatExistsBySourceId: false,
+      knownChatRows: [],
+      folderExists: false,
+      otherBindingsForFolder: [],
+      classification: "not-eligible",
+      classifications: ["not-eligible"],
+      proposedAction: "Open Desktop Studio to review Desktop SQLite folder bindings.",
+      riskLevel: "unavailable",
+      requiresApproval: true,
+      blockers: ["Desktop runtime required."],
+      warnings: ["Review-only. No binding removed.", "Folder deletion is blocked until this binding is reviewed."],
+    };
+    return settingsFolderDesktopOrphanBindingReport(review, selfCheck, { storeMethods });
+  }
+
+  const [bindingResult, folderResult, chatByIdResult, chatBySourceIdResult, folderBindingsResult] = await Promise.all([
+    settingsFolderDesktopSqlSelect(
+      "SELECT chat_id, folder_id, assigned_at FROM folder_bindings WHERE chat_id = ? AND folder_id = ? LIMIT 1",
+      [target.chatId, target.folderId]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, name, source, color, sort_order, created_at, updated_at, meta_json FROM folders WHERE id = ? LIMIT 1",
+      [target.folderId]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, source_id, title, folder_id, is_saved, is_linked, href, normalized_href FROM chats WHERE id = ? LIMIT 1",
+      [target.chatId]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, source_id, title, folder_id, is_saved, is_linked, href, normalized_href FROM chats WHERE source_id = ? LIMIT 1",
+      [target.chatId]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT chat_id, folder_id, assigned_at FROM folder_bindings WHERE folder_id = ? ORDER BY assigned_at DESC",
+      [target.folderId]
+    ),
+  ]);
+  let snapshotsResult = await settingsFolderDesktopSqlSelect(
+    "SELECT * FROM snapshots WHERE chat_id = ? OR source_id = ? OR id = ? LIMIT 5",
+    [target.chatId, target.chatId, target.chatId]
+  );
+  if (!snapshotsResult.ok) {
+    snapshotsResult = await settingsFolderDesktopSqlSelect(
+      "SELECT * FROM snapshots WHERE chat_id = ? LIMIT 5",
+      [target.chatId]
+    );
+  }
+
+  const bindingRows = settingsFolderDesktopSqlOkRows(bindingResult).map((row) => settingsFolderDesktopNormalizeBinding(row, target.folderId)).filter(Boolean);
+  const folderRows = settingsFolderDesktopSqlOkRows(folderResult).map(settingsFolderDesktopNormalizeFolder).filter(Boolean);
+  const chatByIdRows = settingsFolderDesktopSqlOkRows(chatByIdResult).map(settingsFolderDesktopNormalizeKnownChat).filter(Boolean);
+  const chatBySourceIdRows = settingsFolderDesktopSqlOkRows(chatBySourceIdResult).map(settingsFolderDesktopNormalizeKnownChat).filter(Boolean);
+  const snapshotRows = settingsFolderDesktopSqlOkRows(snapshotsResult).map((row) => ({
+    id: String(row?.id || row?.snapshot_id || "").trim(),
+    chatId: String(row?.chat_id || row?.chatId || "").trim(),
+    sourceId: String(row?.source_id || row?.sourceId || "").trim(),
+    title: String(row?.title || "").trim(),
+  }));
+  const registryRows = settingsFolderDesktopRegistryMatches(target.chatId);
+  const otherBindings = settingsFolderDesktopSqlOkRows(folderBindingsResult)
+    .map((row) => settingsFolderDesktopNormalizeBinding(row, target.folderId))
+    .filter(Boolean);
+
+  const bindingExists = bindingRows.length > 0;
+  const folderExists = folderRows.length > 0;
+  const chatExistsById = chatByIdRows.length > 0;
+  const chatExistsBySourceId = chatBySourceIdRows.length > 0;
+  const hasSnapshotOrRegistryMatch = snapshotRows.length > 0 || registryRows.length > 0;
+  const knownChatRows = [
+    ...chatByIdRows.map((row) => ({ source: "chats.id", known: true, chat: row })),
+    ...chatBySourceIdRows.map((row) => ({ source: "chats.source_id", known: true, chat: row })),
+    ...snapshotRows.map((row) => ({ source: "snapshots", known: true, chat: row })),
+    ...registryRows.map((row) => ({ source: "LibraryIndex", known: true, chat: row })),
+  ];
+  const warnings = ["Review-only. No binding removed.", "Folder deletion is blocked until this binding is reviewed."];
+  const blockers = [];
+  const classifications = [];
+  let classification = "not-eligible";
+  let proposedAction = "No action available until the binding state can be trusted.";
+  let riskLevel = "review-required";
+  const sqlErrors = [bindingResult, folderResult, chatByIdResult, chatBySourceIdResult, folderBindingsResult, snapshotsResult]
+    .filter((result) => result && result.ok === false)
+    .map((result) => result.error)
+    .filter(Boolean);
+
+  if (!bindingExists) {
+    classification = "not-eligible";
+    blockers.push("Target binding row was not found.");
+  } else if (!folderExists) {
+    classification = "orphan-binding-folder-missing";
+    classifications.push(classification);
+    riskLevel = "high-review-required";
+    proposedAction = "Review the missing folder before any binding change.";
+  } else if (chatExistsById || chatExistsBySourceId || hasSnapshotOrRegistryMatch) {
+    classification = "valid-binding";
+    classifications.push(classification);
+    blockers.push("Chat resolves to an existing row or registry/snapshot match.");
+    proposedAction = "Keep binding unless a future review proves it should move or be removed.";
+  } else if (sqlErrors.length) {
+    classification = "ambiguous-binding";
+    classifications.push(classification);
+    blockers.push("One or more read-only lookups failed.");
+    proposedAction = "Rerun review after lookup errors are resolved.";
+  } else {
+    classification = "orphan-binding-chat-missing";
+    classifications.push(classification);
+    proposedAction = "Future P7d-c-b may remove only this exact binding after typed confirmation and audit.";
+  }
+  if (/f5d/i.test(`${target.chatId} ${target.folderId} ${folderRows[0]?.name || ""}`) && bindingExists && !knownChatRows.length) {
+    classifications.push("test-binding-candidate");
+    warnings.push("F5D/test binding candidate. Review before any removal.");
+  }
+  if (!classifications.length) classifications.push(classification);
+
+  const review = {
+    chatId: target.chatId,
+    folderId: target.folderId,
+    folderName: folderRows[0]?.name || target.folderId,
+    bindingExists,
+    chatExistsById,
+    chatExistsBySourceId,
+    knownChatRows,
+    folderExists,
+    otherBindingsForFolder: otherBindings,
+    classification,
+    classifications: Array.from(new Set(classifications)),
+    proposedAction,
+    riskLevel,
+    requiresApproval: true,
+    blockers: Array.from(new Set(blockers.filter(Boolean))),
+    warnings: Array.from(new Set(warnings.filter(Boolean))),
+    lookupResults: {
+      exactBinding: { ok: !!bindingResult.ok, rows: bindingRows, error: bindingResult.error || "" },
+      folder: { ok: !!folderResult.ok, rows: folderRows, error: folderResult.error || "" },
+      chatsById: { ok: !!chatByIdResult.ok, rows: chatByIdRows, error: chatByIdResult.error || "" },
+      chatsBySourceId: { ok: !!chatBySourceIdResult.ok, rows: chatBySourceIdRows, error: chatBySourceIdResult.error || "" },
+      snapshots: { ok: !!snapshotsResult.ok, rows: snapshotRows, error: snapshotsResult.error || "" },
+      registryRows,
+      folderBindings: { ok: !!folderBindingsResult.ok, rows: otherBindings, error: folderBindingsResult.error || "" },
+    },
+    storeApi: {
+      storeMethods,
+      hasUnbindChat: typeof foldersStore?.unbindChat === "function",
+      futureMutationMethod: "H2O.Studio.store.folders.unbindChat(folderId, chatId)",
+    },
+  };
+  return settingsFolderDesktopOrphanBindingReport(review, selfCheck, { storeMethods });
+}
+
+function settingsFolderDesktopOrphanBindingReport(review, selfCheck, extra = {}){
+  return {
+    readOnly: true,
+    noMutation: true,
+    generatedAt: new Date().toISOString(),
+    surface: STUDIO_isTauri() ? "desktop-studio" : "chrome-studio",
+    review,
+    selfCheckSummary: selfCheck?.summary || null,
+    diagnostics: {
+      storeMethods: extra.storeMethods || [],
+    },
+    safetyRules: [
+      "P7d-c-a is review-only.",
+      "No Desktop SQLite writes are performed.",
+      "No binding is removed.",
+      "No folder is deleted.",
+      "No Chrome storage, sync folder, or native folder-state mutation is performed.",
+    ],
+    futurePhases: [
+      "P7d-c-b may later remove this exact orphan binding with typed confirmation and audit.",
+      "P7d-d may later delete the now-empty folder after binding removal, as a separate action.",
+    ],
+  };
+}
+
 async function settingsFolderDesktopLoadReviewInputs(seed = null){
   const parity = W.H2O?.Library?.FolderParity;
   const selfCheck = seed?.selfCheck || (typeof parity?.selfCheck === "function" ? await parity.selfCheck({ fresh: true }) : null);
@@ -7246,6 +7485,70 @@ function settingsFolderDesktopOrphanHtml(item){
       ${blockers.length ? `<div style="font-size:12px;opacity:.78"><strong>Blockers:</strong> ${esc(blockers.join(" "))}</div>` : ""}
     </div>
   `;
+}
+
+function settingsFolderDesktopOrphanBindingRow(label, value){
+  return `<span style="display:flex;gap:6px;min-width:0"><strong>${esc(label)}:</strong> <span style="min-width:0;word-break:break-word">${esc(value)}</span></span>`;
+}
+
+function settingsFolderDesktopOrphanBindingRenderLookup(title, rows, emptyText){
+  const list = Array.isArray(rows) ? rows : [];
+  return `
+    <details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
+      <summary style="cursor:pointer;font-weight:600">${esc(title)} <span style="opacity:.65">(${list.length})</span></summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;font-size:12px">
+        ${list.length ? list.map((row) => `<code style="white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(row))}</code>`).join("") : `<span style="opacity:.65">${esc(emptyText || "No rows.")}</span>`}
+      </div>
+    </details>
+  `;
+}
+
+function settingsFolderDesktopRenderOrphanBindingReport(panel, report){
+  const summary = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingSummary");
+  const body = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingBody");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderDesktopOrphanBindingCopy");
+  const review = report?.review || {};
+  if (summary) {
+    const classes = Array.isArray(review.classifications) && review.classifications.length
+      ? review.classifications.join(", ")
+      : (review.classification || "unknown");
+    summary.textContent = `Review-only. No binding removed. Classification: ${classes}.`;
+  }
+  if (body) {
+    const lookups = review.lookupResults || {};
+    const blockers = Array.isArray(review.blockers) ? review.blockers : [];
+    const warnings = Array.isArray(review.warnings) ? review.warnings : [];
+    body.innerHTML = `
+      <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <strong>${esc(review.chatId || FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID)} -&gt; ${esc(review.folderId || FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID)}</strong>
+          <span>${settingsFolderCleanupBadgesHtml({ badges: ["Desktop SQLite", "orphan", "review"], classification: review.classification || "review" })}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 12px;font-size:12px">
+          ${settingsFolderDesktopOrphanBindingRow("folder", `${review.folderName || ""} (${review.folderId || ""})`)}
+          ${settingsFolderDesktopOrphanBindingRow("binding exists", review.bindingExists ? "yes" : "no")}
+          ${settingsFolderDesktopOrphanBindingRow("folder exists", review.folderExists ? "yes" : "no")}
+          ${settingsFolderDesktopOrphanBindingRow("chat by id", review.chatExistsById ? "found" : "missing")}
+          ${settingsFolderDesktopOrphanBindingRow("chat by source_id", review.chatExistsBySourceId ? "found" : "missing")}
+          ${settingsFolderDesktopOrphanBindingRow("other folder bindings", String((review.otherBindingsForFolder || []).length))}
+          ${settingsFolderDesktopOrphanBindingRow("risk", review.riskLevel || "review")}
+          ${settingsFolderDesktopOrphanBindingRow("future API", review.storeApi?.hasUnbindChat ? review.storeApi.futureMutationMethod : "unbindChat unavailable")}
+        </div>
+        <div style="font-size:12px"><strong>Proposed future action:</strong> ${esc(review.proposedAction || "Review only.")}</div>
+        ${warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Warnings:</strong> ${esc(warnings.join(" "))}</div>` : ""}
+        ${blockers.length ? `<div style="font-size:12px;opacity:.78"><strong>Blockers:</strong> ${esc(blockers.join(" "))}</div>` : ""}
+        <div style="font-size:12px;opacity:.72">P7d-c-b may later remove this exact binding with typed confirmation and audit. P7d-c-a does not call unbindChat.</div>
+      </div>
+      ${settingsFolderDesktopOrphanBindingRenderLookup("Exact binding row", lookups.exactBinding?.rows, "Binding row not found.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("Folder row", lookups.folder?.rows, "Folder row not found.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("Chat lookup by id", lookups.chatsById?.rows, "No chats.id match.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("Chat lookup by source_id", lookups.chatsBySourceId?.rows, "No chats.source_id match.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("Snapshot lookup", lookups.snapshots?.rows, "No snapshot rows found or snapshots unavailable.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("LibraryIndex lookup", lookups.registryRows, "No LibraryIndex rows found.")}
+      ${settingsFolderDesktopOrphanBindingRenderLookup("All bindings for folder", lookups.folderBindings?.rows, "No folder bindings found.")}
+    `;
+  }
+  if (copyBtn) copyBtn.disabled = false;
 }
 
 function settingsFolderDesktopRenderReport(panel, report){
@@ -7502,6 +7805,8 @@ async function refreshSettingsFolderDesktopReview(panel, seed = null){
   const loaded = await settingsFolderDesktopLoadReviewInputs(seed);
   panel.__h2oFolderDesktopReviewReport = loaded.report;
   settingsFolderDesktopRenderReport(panel, loaded.report);
+  refreshSettingsFolderDesktopOrphanBindingReview(panel, { selfCheck: loaded.selfCheck })
+    .catch((err) => settingsFolderParityLog(panel, "Orphan binding review failed.\n" + String(err && (err.stack || err.message || err))));
   return loaded.report;
 }
 
@@ -7521,6 +7826,36 @@ async function copySettingsFolderDesktopReviewReport(panel){
   }
   try { console.log("H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT", report); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; Desktop cleanup review report printed to console as H2O_DESKTOP_FOLDER_CLEANUP_REVIEW_REPORT.");
+}
+
+async function refreshSettingsFolderDesktopOrphanBindingReview(panel, seed = null){
+  if (!panel) return null;
+  const summary = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingSummary");
+  const copyBtn = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingCopy");
+  if (summary) summary.textContent = "Refreshing read-only orphan binding review…";
+  if (copyBtn) copyBtn.disabled = true;
+  const report = await settingsFolderDesktopLoadOrphanBindingReview(seed);
+  panel.__h2oFolderDesktopOrphanBindingReport = report;
+  settingsFolderDesktopRenderOrphanBindingReport(panel, report);
+  return report;
+}
+
+async function copySettingsFolderDesktopOrphanBindingReport(panel){
+  if (!panel) return;
+  let report = panel.__h2oFolderDesktopOrphanBindingReport;
+  if (!report) report = await refreshSettingsFolderDesktopOrphanBindingReview(panel);
+  const text = JSON.stringify(report || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Orphan Desktop binding review report JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; orphan binding report printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_ORPHAN_BINDING_REVIEW_REPORT", report); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; orphan binding report printed to console as H2O_ORPHAN_BINDING_REVIEW_REPORT.");
 }
 
 async function previewSettingsFolderDesktopDeletion(panel){
@@ -8259,6 +8594,14 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderDesktopReviewCopy")?.addEventListener("click", () => {
     copySettingsFolderDesktopReviewReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRefresh")?.addEventListener("click", () => {
+    refreshSettingsFolderDesktopOrphanBindingReview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderDesktopOrphanBindingCopy")?.addEventListener("click", () => {
+    copySettingsFolderDesktopOrphanBindingReport(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderDesktopDeleteList")?.addEventListener("change", () => {
