@@ -2556,6 +2556,17 @@ function normalizeFolderRecord(raw){
   const iconColor = normalizeSidebarIconColor(row.iconColor || row.color || row.folderColor || row.accentColor || row.appearance?.color || "");
   const folder = { id, name, createdAt, updatedAt, kind, projectRef };
   if (iconColor) folder.iconColor = iconColor;
+  const displayCountLabel = String(row.displayCountLabel || "").trim();
+  if (displayCountLabel) folder.displayCountLabel = displayCountLabel;
+  const badges = Array.isArray(row.badges) ? row.badges.map((badge) => String(badge || "").trim()).filter(Boolean) : [];
+  if (badges.length) folder.badges = badges;
+  ["canonicalCount", "knownCount", "savedCount", "linkedCount", "orphanCount", "localBindingCount"].forEach((key) => {
+    if (row[key] != null) folder[key] = Number(row[key] || 0) || 0;
+  });
+  ["isCanonical", "isExtra", "isTestCandidate", "isConflict"].forEach((key) => {
+    if (row[key] === true) folder[key] = true;
+  });
+  if (row.source) folder.source = String(row.source || "").trim();
   return folder;
 }
 
@@ -2961,6 +2972,18 @@ function mergeFolderCatalogs(...lists){
         if (existing && !existing.iconColor && item.iconColor) {
           existing.iconColor = item.iconColor;
         }
+        if (existing && !existing.displayCountLabel && item.displayCountLabel) {
+          existing.displayCountLabel = item.displayCountLabel;
+        }
+        ["canonicalCount", "knownCount", "savedCount", "linkedCount", "orphanCount", "localBindingCount"].forEach((key) => {
+          if (existing && existing[key] == null && item[key] != null) existing[key] = item[key];
+        });
+        if (existing && Array.isArray(item.badges) && item.badges.length) {
+          existing.badges = Array.from(new Set([...(existing.badges || []), ...item.badges]));
+        }
+        ["isCanonical", "isExtra", "isTestCandidate", "isConflict"].forEach((key) => {
+          if (existing && item[key] === true) existing[key] = true;
+        });
         continue;
       }
       out.push({ ...item });
@@ -3060,8 +3083,60 @@ function getLibraryWorkspace(){
   try { return W.H2O?.LibraryWorkspace || null; } catch { return null; }
 }
 
+function mapFolderParityRowsToCatalog(rows){
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const folderId = String(row?.folderId || row?.id || "").trim();
+    if (!folderId) return null;
+    return {
+      id: folderId,
+      folderId,
+      name: String(row?.name || folderId).trim() || folderId,
+      createdAt: "",
+      updatedAt: "",
+      kind: "local",
+      projectRef: null,
+      iconColor: normalizeSidebarIconColor(row?.iconColor || row?.color || ""),
+      source: String(row?.source || "folder-parity-display-model").trim(),
+      displayCountLabel: String(row?.displayCountLabel || "").trim(),
+      canonicalCount: Number(row?.canonicalCount || 0) || 0,
+      knownCount: Number(row?.knownCount || 0) || 0,
+      savedCount: Number(row?.savedCount || 0) || 0,
+      linkedCount: Number(row?.linkedCount || 0) || 0,
+      orphanCount: Number(row?.orphanCount || 0) || 0,
+      localBindingCount: Number(row?.localBindingCount || 0) || 0,
+      badges: Array.isArray(row?.badges) ? row.badges.map((badge) => String(badge || "").trim()).filter(Boolean) : [],
+      isCanonical: row?.isCanonical === true,
+      isExtra: row?.isExtra === true,
+      isTestCandidate: row?.isTestCandidate === true,
+      isConflict: row?.isConflict === true,
+    };
+  }).filter(Boolean);
+}
+
+async function fetchFolderParityCatalog(force = false){
+  const api = W.H2O?.Library?.FolderParity;
+  if (typeof api?.getDisplayModel !== "function") return [];
+  const model = await api.getDisplayModel({ fresh: !!force });
+  const rows = mapFolderParityRowsToCatalog(model?.rows || []);
+  return rows.length ? rows : [];
+}
+
 async function fetchFolderCatalog(force = false){
-  if (!force && Array.isArray(state.folderCatalog) && state.folderCatalog.length) return state.folderCatalog.slice();
+  const cachedCatalog = Array.isArray(state.folderCatalog) ? state.folderCatalog : [];
+  const cachedUsesParity = cachedCatalog.some((folder) => (
+    String(folder?.displayCountLabel || "").trim()
+    || folder?.isCanonical === true
+    || String(folder?.source || "").includes("folder-parity")
+  ));
+  if (!force && cachedCatalog.length && cachedUsesParity) return cachedCatalog.slice();
+  try {
+    const parityCatalog = await fetchFolderParityCatalog(force);
+    if (parityCatalog.length) {
+      state.folderCatalog = normalizeFolderCatalog(parityCatalog);
+      return Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [];
+    }
+  } catch { /* fall through to legacy workspace catalog */ }
+  if (!force && cachedCatalog.length) return cachedCatalog.slice();
   const ws = getLibraryWorkspace();
   if (ws?.getFolders){
     try {
@@ -3384,10 +3459,26 @@ function collectFolderSidebarItems(rows, view){
   const catalog = mergeFolderCatalogs(state.folderCatalog, deriveFolderCatalogFromRows(base));
   const out = [{ folderId: "", label: "All folders", count: base.length, kind: "all" }];
   for (const folder of catalog){
+    const rowCount = counts.get(folder.id) || 0;
+    const canonicalCount = Number(folder.canonicalCount || 0) || 0;
+    const knownCount = Number(folder.knownCount || 0) || 0;
+    const localBindingCount = Number(folder.localBindingCount || 0) || 0;
     out.push({
       folderId: folder.id,
       label: folder.name || folder.id,
-      count: counts.get(folder.id) || 0,
+      count: Math.max(rowCount, canonicalCount, knownCount, localBindingCount),
+      displayCountLabel: String(folder.displayCountLabel || "").trim(),
+      canonicalCount,
+      knownCount,
+      savedCount: Number(folder.savedCount || 0) || 0,
+      linkedCount: Number(folder.linkedCount || 0) || 0,
+      orphanCount: Number(folder.orphanCount || 0) || 0,
+      localBindingCount,
+      badges: Array.isArray(folder.badges) ? folder.badges.slice() : [],
+      isCanonical: folder.isCanonical === true,
+      isExtra: folder.isExtra === true,
+      isTestCandidate: folder.isTestCandidate === true,
+      isConflict: folder.isConflict === true,
       kind: "folder",
       folderKind: folder.kind || "local",
       iconColor: normalizeSidebarIconColor(folder.iconColor || ""),
@@ -3443,10 +3534,17 @@ function renderFolderSidebar(rows, view, selectedFolderId){
     const folderIconSvg = appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG;
     const link = document.createElement("a");
     link.className = "wbFolderItem";
-    if (!item.count) link.classList.add("is-empty");
+    const countText = String(item.displayCountLabel || "").trim() || String(item.count || 0);
+    const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
+    if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
     if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
     link.href = buildListHash(view, item.folderId);
     link.dataset.folderId = String(item.folderId || "");
+    if (hasDetailedCount) link.dataset.countLabel = countText;
+    if (Array.isArray(item.badges) && item.badges.length) link.dataset.badges = item.badges.join(",");
+    if (item.canonicalCount != null) link.dataset.canonicalCount = String(item.canonicalCount);
+    if (item.knownCount != null) link.dataset.knownCount = String(item.knownCount);
+    if (item.localBindingCount != null) link.dataset.localBindingCount = String(item.localBindingCount);
     const iconColor = normalizeSidebarIconColor(appearance?.color || item.iconColor || "");
     if (iconColor) {
       link.dataset.color = iconColor;
@@ -3458,7 +3556,7 @@ function renderFolderSidebar(rows, view, selectedFolderId){
     link.innerHTML = `
       <span class="wbFolderIcon" aria-hidden="true">${folderIconSvg}</span>
       <span class="wbFolderLabel">${esc(displayLabel)}</span>
-      <span class="wbFolderCount">${esc(String(item.count || 0))}</span>
+      <span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}">${esc(countText)}</span>
       ${folderMenuHtml}
     `;
     const menuBtn = link.querySelector(".wbFolderMenuBtn");
