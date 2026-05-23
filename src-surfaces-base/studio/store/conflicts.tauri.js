@@ -8,8 +8,9 @@
  *
  * This module is intentionally conservative. It lists and diagnoses evidence
  * already present in SQLite. F6.4a adds manual candidate ingest validation as
- * dry-run only; it predicts counts with SELECTs and still exposes no real
- * candidate ingestion, merge, apply, or row mutation API.
+ * dry-run only. F6.4b adds explicit manual ingestion through a narrow Rust
+ * transaction command. There is still no automatic candidate ingestion, merge,
+ * apply, resolve, delete, or analyzer/runner persistence.
  */
 (function (global) {
   'use strict';
@@ -581,6 +582,10 @@
       wouldInsert: 0,
       wouldUpdate: 0,
       wouldReject: 0,
+      inserted: 0,
+      updated: 0,
+      rejected: 0,
+      failed: 0,
       writesPerformed: 0,
       byKind: {},
       byEntityKind: {},
@@ -599,6 +604,7 @@
     result.dryRun = opts.dryRun === true ? true : false;
     result.accepted = 0;
     result.wouldReject = received;
+    result.rejected = received;
     result.blockers = [warning(code || 'dry-run-required')];
     if (received) result.rejectionCodes[code || 'dry-run-required'] = received;
     return result;
@@ -613,6 +619,15 @@
     if (reason == null || reason === '') return null;
     if (typeof reason !== 'string') return 'invalid-reason';
     if (reason.length > 256) return 'invalid-reason';
+    if (/[\u0000-\u001f\u007f]/.test(reason)) return 'invalid-reason';
+    return null;
+  }
+
+  function validateRequiredReason(reason) {
+    if (typeof reason !== 'string') return 'invalid-reason';
+    var trimmed = reason.trim();
+    if (!trimmed) return 'invalid-reason';
+    if (trimmed.length > 256) return 'invalid-reason';
     if (/[\u0000-\u001f\u007f]/.test(reason)) return 'invalid-reason';
     return null;
   }
@@ -679,6 +694,127 @@
     };
   }
 
+  function safeTimestamp(value) {
+    var s = cleanString(value);
+    return /^[0-9T:Z.+-]{1,64}$/.test(s) ? s : null;
+  }
+
+  function safeInteger(value) {
+    if (value == null || value === '') return null;
+    var n = Number(value);
+    if (!Number.isFinite(n) || Math.floor(n) !== n || n < 0) return null;
+    return n;
+  }
+
+  function safeSummaryJson(candidate, side) {
+    var c = candidate || {};
+    return JSON.stringify({
+      redacted: true,
+      side: side === 'remote' ? 'remote' : 'local',
+      schema: CONFLICT_CANDIDATE_SCHEMA,
+      source: cleanString(c.source) || null,
+      conflictKind: cleanString(c.conflictKind) || null,
+      entityKind: cleanString(c.entityKind) || null,
+      classification: cleanString(c.classification) || null,
+      severity: cleanString(c.severity) || null,
+      updatedAtPresent: side === 'remote'
+        ? (c.remoteUpdatedAtPresent === true || !!safeTimestamp(c.remoteUpdatedAt))
+        : (c.localUpdatedAtPresent === true || !!safeTimestamp(c.localUpdatedAt)),
+      digestPresent: side === 'remote'
+        ? (c.remoteDigestPresent === true || !!safeCodeString(c.remoteDigest))
+        : (c.localDigestPresent === true || !!safeCodeString(c.localDigest)),
+    });
+  }
+
+  function safeWarningsJson(candidate) {
+    var warnings = [];
+    var raw = candidate && Array.isArray(candidate.warnings) ? candidate.warnings : [];
+    for (var i = 0; i < raw.length && warnings.length < 50; i++) {
+      var item = raw[i];
+      var code = null;
+      if (typeof item === 'string') code = safeCodeString(item);
+      else if (item && typeof item === 'object') code = safeCodeString(item.code);
+      if (code) warnings.push({ code: code });
+    }
+    return JSON.stringify(warnings);
+  }
+
+  function buildWritePlan(candidate, validation) {
+    return {
+      dedupeKey: validation.dedupeKey,
+      conflictKind: cleanString(candidate.conflictKind),
+      entityKind: cleanString(candidate.entityKind),
+      classification: cleanString(candidate.classification),
+      severity: cleanString(candidate.severity),
+      remoteExportId: safeCodeString(candidate.remoteExportId) || null,
+      remoteSequenceNumber: safeInteger(candidate.remoteSequenceNumber),
+      localVersionDigest: safeCodeString(candidate.localDigest) || null,
+      remoteVersionDigest: safeCodeString(candidate.remoteDigest) || null,
+      localUpdatedAt: safeTimestamp(candidate.localUpdatedAt),
+      remoteUpdatedAt: safeTimestamp(candidate.remoteUpdatedAt),
+      rawLocalSummaryJson: safeSummaryJson(candidate, 'local'),
+      rawRemoteSummaryJson: safeSummaryJson(candidate, 'remote'),
+      warningsJson: safeWarningsJson(candidate),
+    };
+  }
+
+  function mergeCommitResult(base, commandResult) {
+    if (!commandResult || typeof commandResult !== 'object' || commandResult.schema !== INGEST_SCHEMA) {
+      base.ok = false;
+      base.blockers = [warning('desktop-conflict-ingest-unavailable')];
+      base.failed = base.accepted;
+      return base;
+    }
+    if (commandResult.ok !== true) {
+      base.ok = false;
+      base.blockers = Array.isArray(commandResult.blockers) ? commandResult.blockers : [warning('desktop-conflict-ingest-failed')];
+      base.failed = Number(commandResult.failed || base.accepted || 0) || 0;
+      return base;
+    }
+    base.ok = true;
+    base.inserted = Number(commandResult.inserted) || 0;
+    base.updated = Number(commandResult.updated) || 0;
+    base.failed = Number(commandResult.failed) || 0;
+    base.writesPerformed = Number(commandResult.writesPerformed) || (base.inserted + base.updated);
+    if (Array.isArray(commandResult.warnings)) {
+      commandResult.warnings.forEach(function (w) {
+        if (typeof w === 'string') base.warnings.push(warning(w));
+        else if (w && typeof w === 'object' && w.code) base.warnings.push(warning(w.code));
+      });
+    }
+    return base;
+  }
+
+  function invokeRealIngest(base, source, reason, writePlans) {
+    if (!writePlans.length) {
+      base.ok = true;
+      base.rejected = base.wouldReject;
+      return Promise.resolve(base);
+    }
+    var invoke = getInvoke();
+    if (typeof invoke !== 'function' || !detectTauri()) {
+      base.ok = false;
+      base.failed = base.accepted;
+      base.blockers = [warning('desktop-conflict-ingest-unavailable')];
+      return Promise.resolve(base);
+    }
+    return invoke('ingest_conflict_candidates', {
+      payload: {
+        source: source,
+        reason: reason,
+        plans: writePlans,
+      },
+    }).then(function (commandResult) {
+      return mergeCommitResult(base, commandResult);
+    }).catch(function (e) {
+      recordError('ingestConflictCandidates:commit', e);
+      base.ok = false;
+      base.failed = base.accepted;
+      base.blockers = [warning('desktop-conflict-ingest-unavailable')];
+      return base;
+    });
+  }
+
   function predictExistingDedupe(dedupeKey) {
     return ensureReady().then(function (ok) {
       if (!ok) return false;
@@ -694,8 +830,8 @@
   function ingestConflictCandidates(candidates, options) {
     var opts = options || {};
     var received = Array.isArray(candidates) ? candidates.length : 0;
-    if (opts.dryRun !== true) {
-      return Promise.resolve(makeBlockedIngestResult(candidates, opts, 'real-ingest-not-implemented'));
+    if (opts.dryRun !== true && opts.dryRun !== false) {
+      return Promise.resolve(makeBlockedIngestResult(candidates, opts, 'dry-run-required'));
     }
     if (!Array.isArray(candidates)) {
       return Promise.resolve(makeBlockedIngestResult([], opts, 'invalid-candidates'));
@@ -708,14 +844,22 @@
     if (reasonBlocker) {
       return Promise.resolve(makeBlockedIngestResult(candidates, opts, reasonBlocker));
     }
+    if (opts.dryRun === false) {
+      var requiredReasonBlocker = validateRequiredReason(opts.reason);
+      if (requiredReasonBlocker) {
+        return Promise.resolve(makeBlockedIngestResult(candidates, opts, requiredReasonBlocker));
+      }
+    }
 
-    var result = makeIngestResult(true, source, received);
+    var result = makeIngestResult(opts.dryRun === true, source, received);
     var accepted = [];
+    var writePlans = [];
     for (var i = 0; i < candidates.length; i++) {
       var candidate = candidates[i];
       var validation = validateCandidate(candidate);
       if (!validation.ok) {
         result.wouldReject += 1;
+        result.rejected += 1;
         validation.blockers.forEach(function (blocker) {
           bumpResultCounter(result.rejectionCodes, blocker.code);
         });
@@ -728,6 +872,11 @@
       bumpResultCounter(result.bySeverity, candidate.severity);
       validation.warnings.forEach(function (w) { result.warnings.push(w); });
       accepted.push({ candidate: candidate, dedupeKey: validation.dedupeKey });
+      writePlans.push(buildWritePlan(candidate, validation));
+    }
+
+    if (opts.dryRun === false) {
+      return invokeRealIngest(result, source, cleanString(opts.reason), writePlans);
     }
 
     var seenInBatch = Object.create(null);
@@ -786,7 +935,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.1-f6.4a',
+    __version: '0.1.2-f6.4b',
     init: init,
     dispose: dispose,
     isReady: isReady,

@@ -26,6 +26,11 @@ pub mod synthetic_cleanup_dryrun;
 // row with SYNTHETIC_PREDICATE_V1 inside one SQLite transaction.
 pub mod synthetic_cleanup_commit;
 
+// F6.4b — explicit manual conflict candidate ingestion. This is the first
+// sync_conflicts write path; it is Desktop-only, transactional, and never
+// called automatically by analyzer/runner/sync code.
+pub mod sync_conflict_ingest;
+
 // F5H final validation — debug/Desktop-only seed helpers for controlled
 // live validation fixtures. Not compiled or registered in production builds.
 #[cfg(debug_assertions)]
@@ -1635,6 +1640,41 @@ async fn cleanup_synthetic_commit(
     Ok(synthetic_cleanup_commit::run_commit(&mut conn, payload, nowish_iso(), None).await)
 }
 
+#[tauri::command]
+async fn ingest_conflict_candidates(
+    db_instances: State<'_, DbInstances>,
+    payload: sync_conflict_ingest::SyncConflictIngestPayload,
+) -> Result<sync_conflict_ingest::SyncConflictIngestResult, String> {
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(sync_conflict_ingest::SyncConflictIngestResult::rejected(
+                "desktop-db-unavailable",
+            ));
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(sync_conflict_ingest::SyncConflictIngestResult::rejected(
+                    "desktop-db-unavailable",
+                ));
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(sync_conflict_ingest::SyncConflictIngestResult::rejected(
+                "desktop-db-unavailable",
+            ));
+        }
+    };
+
+    Ok(sync_conflict_ingest::run_ingest(&mut conn, payload, nowish_iso(), None).await)
+}
+
 #[cfg(debug_assertions)]
 #[tauri::command]
 async fn dev_seed_f5h_final_validation_synthetic_rows(
@@ -1743,6 +1783,7 @@ macro_rules! h2o_studio_invoke_handler {
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
             cleanup_synthetic_commit,
+            ingest_conflict_candidates,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -1756,7 +1797,8 @@ macro_rules! h2o_studio_invoke_handler {
             f5g4_prove_tombstone_review_apply_transaction,
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
-            cleanup_synthetic_commit
+            cleanup_synthetic_commit,
+            ingest_conflict_candidates
         ]
     };
 }

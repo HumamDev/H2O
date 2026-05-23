@@ -603,7 +603,7 @@ F6.4a is acceptable only if:
 - `H2O.Studio.store.conflicts.ingestConflictCandidates()` exists as a manual
   dry-run validator only.
 - `dryRun: true` is required.
-- `dryRun: false` returns `real-ingest-not-implemented`.
+- At this phase, `dryRun: false` returns `real-ingest-not-implemented`.
 - Candidate validation rejects invalid enums, missing dedupe material, and
   content-like fields.
 - Analyzer summaries that only expose `dedupeKeyHashPresent: true` remain
@@ -613,6 +613,27 @@ F6.4a is acceptable only if:
 - `writesPerformed` is always `0`.
 - No analyzer, runner, import/export/sync, UI, Chrome, or F5 path calls the API.
 - No rows are inserted, updated, or deleted.
+
+F6.4b is acceptable only if:
+
+- `dryRun: false` is supported only through the same explicit manual
+  `H2O.Studio.store.conflicts.ingestConflictCandidates()` API.
+- Candidate validation remains the F6.4a validation contract; analyzer
+  summaries with only `dedupeKeyHashPresent: true` are still rejected.
+- Real ingestion requires a non-empty safe reason and actual durable safe
+  `dedupeKeyHash`.
+- JS passes only sanitized write plans to a narrow Desktop Rust command.
+- Rust writes in one transaction and only inserts pending evidence rows or
+  updates duplicate sighting metadata.
+- Duplicate sightings preserve `status`, `decision`, `decided_at`,
+  `decided_by_sync_peer_id`, and `first_seen_at`; terminal rows are not
+  reopened.
+- Results remain counts-only/redacted and do not expose conflict IDs, raw
+  record IDs, peer IDs, raw dedupe keys, names, titles, hrefs, raw JSON, or
+  content.
+- No analyzer, runner, import/export/sync, UI, Chrome, or F5 path calls the API.
+- No merge, apply, resolve, delete, bidirectional sync, or public UI behavior
+  is added.
 
 ## 23. Risks And Mitigations
 
@@ -635,8 +656,7 @@ F6.4a is acceptable only if:
 - F6.2: Analyzer-only conflict candidate detection.
 - F6.3: Hidden runner counts-only display.
 - F6.4a: Manual conflict candidate ingestion dry-run validation.
-- F6.4b: Manual conflict candidate write ingestion, only after transaction/write
-  strategy is settled.
+- F6.4b: Explicit manual conflict candidate write ingestion.
 - F6.5: Decision-only actions.
 - F6.6: `previewResolution()` only, no mutation.
 - F6.7: Chrome conflict store scaffold if needed.
@@ -644,7 +664,6 @@ F6.4a is acceptable only if:
 
 ## 25. Recommendation
 
-The next implementation after F6.4a should remain conservative. F6.4b may add
-manual write ingestion only after the candidate contract and transaction/write
-strategy are settled. It must not merge, apply, or start bidirectional sync. Do
-not touch FolderParity renderer work from the other lane.
+The next implementation after F6.4b should remain conservative. F6.5 may add
+decision-only actions, but it must not merge, apply, delete, or start
+bidirectional sync. Do not touch FolderParity renderer work from the other lane.
