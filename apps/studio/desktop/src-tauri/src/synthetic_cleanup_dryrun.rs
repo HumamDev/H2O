@@ -14,7 +14,7 @@
 // predicate + transaction work end-to-end on real data without writing
 // anything.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection};
@@ -92,7 +92,7 @@ pub struct RollbackState {
 // populated ONLY when the caller passes `include_candidate_ids = true`.
 // Default behavior (no flag) returns the F5H.3b.0d shape exactly.
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct CandidateIds {
     #[serde(rename = "syncTombstoneReviewIds")]
     pub sync_tombstone_review_ids: Vec<String>,
@@ -100,7 +100,7 @@ pub struct CandidateIds {
     pub sync_tombstone_ids: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ExpectedCounts {
     pub reviews: i64,
     pub tombstones: i64,
@@ -161,8 +161,16 @@ impl DryRunResult {
             predicate_version: synthetic_marker::SYNTHETIC_PREDICATE_VERSION,
             ok: false,
             blocker: None,
-            would_delete_rows: DryRunCounts { tombstones: 0, reviews: 0, total: 0 },
-            scanned: ScannedCounts { tombstones: 0, reviews: 0, maintenance_log: 0 },
+            would_delete_rows: DryRunCounts {
+                tombstones: 0,
+                reviews: 0,
+                total: 0,
+            },
+            scanned: ScannedCounts {
+                tombstones: 0,
+                reviews: 0,
+                maintenance_log: 0,
+            },
             audit: AuditState {
                 inserted_in_transaction: false,
                 persisted: false,
@@ -230,11 +238,7 @@ async fn capture_counts(conn: &mut SqliteConnection) -> Result<CountSnapshot, sq
     })
 }
 
-async fn table_exists_with_column(
-    conn: &mut SqliteConnection,
-    table: &str,
-    column: &str,
-) -> bool {
+async fn table_exists_with_column(conn: &mut SqliteConnection, table: &str, column: &str) -> bool {
     let query = format!("PRAGMA table_info({table})");
     let Ok(rows) = sqlx::query(&query).fetch_all(&mut *conn).await else {
         return false;
@@ -247,12 +251,10 @@ async fn table_exists_with_column(
 }
 
 async fn table_exists(conn: &mut SqliteConnection, table: &str) -> bool {
-    let rows = sqlx::query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .bind(table)
-    .fetch_all(&mut *conn)
-    .await;
+    let rows = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .bind(table)
+        .fetch_all(&mut *conn)
+        .await;
     rows.map(|r| !r.is_empty()).unwrap_or(false)
 }
 
@@ -316,13 +318,11 @@ pub async fn read_db_fingerprint(
     let (user_version,): (i64,) = sqlx::query_as("PRAGMA user_version")
         .fetch_one(&mut *conn)
         .await?;
-    let migration_count: i64 = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM _sqlx_migrations",
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map(|(c,)| c)
-    .unwrap_or(0);
+    let migration_count: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM _sqlx_migrations")
+        .fetch_one(&mut *conn)
+        .await
+        .map(|(c,)| c)
+        .unwrap_or(0);
     Ok(DbFingerprint {
         schema_user_version: user_version,
         migration_count,
@@ -436,34 +436,29 @@ pub async fn run_dry_run(
         })?;
 
         // 2. Eligible candidate IDs from the v1 predicate. Read-only.
-        let tombstone_ids = synthetic_marker::eligible_synthetic_tombstone_ids(
-            &mut *tx,
-            &now_iso,
-        )
-        .await
-        .map_err(|e| InnerFailure {
-            blocker: format!("candidate-select-failed: tombstones: {e}"),
-            rollback_reason: None,
-        })?;
-        let review_ids = synthetic_marker::eligible_synthetic_review_ids(
-            &mut *tx,
-            &now_iso,
-        )
-        .await
-        .map_err(|e| InnerFailure {
-            blocker: format!("candidate-select-failed: reviews: {e}"),
-            rollback_reason: None,
-        })?;
+        let tombstone_ids = synthetic_marker::eligible_synthetic_tombstone_ids(&mut *tx, &now_iso)
+            .await
+            .map_err(|e| InnerFailure {
+                blocker: format!("candidate-select-failed: tombstones: {e}"),
+                rollback_reason: None,
+            })?;
+        let review_ids = synthetic_marker::eligible_synthetic_review_ids(&mut *tx, &now_iso)
+            .await
+            .map_err(|e| InnerFailure {
+                blocker: format!("candidate-select-failed: reviews: {e}"),
+                rollback_reason: None,
+            })?;
 
         // 3. Simulated DELETEs (id-pinned). These are the same statements
         // F5H.3b.1 will execute under COMMIT. Here they run only to
         // verify count parity and exercise the path.
-        let review_deleted = delete_by_ids(&mut tx, "sync_tombstone_reviews", "review_id", &review_ids)
-            .await
-            .map_err(|e| InnerFailure {
-                blocker: format!("review-delete-failed: {e}"),
-                rollback_reason: None,
-            })?;
+        let review_deleted =
+            delete_by_ids(&mut tx, "sync_tombstone_reviews", "review_id", &review_ids)
+                .await
+                .map_err(|e| InnerFailure {
+                    blocker: format!("review-delete-failed: {e}"),
+                    rollback_reason: None,
+                })?;
         let expected_reviews = if inject_failure == Some(DryRunFailure::ReviewDeleteMismatch) {
             // Pretend we expected one more than we actually got. This
             // triggers the count-mismatch rollback path so callers can
@@ -482,13 +477,15 @@ pub async fn run_dry_run(
             });
         }
 
-        let tombstone_deleted = delete_by_ids(&mut tx, "sync_tombstones", "tombstone_id", &tombstone_ids)
-            .await
-            .map_err(|e| InnerFailure {
-                blocker: format!("tombstone-delete-failed: {e}"),
-                rollback_reason: None,
-            })?;
-        let expected_tombstones = if inject_failure == Some(DryRunFailure::TombstoneDeleteMismatch) {
+        let tombstone_deleted =
+            delete_by_ids(&mut tx, "sync_tombstones", "tombstone_id", &tombstone_ids)
+                .await
+                .map_err(|e| InnerFailure {
+                    blocker: format!("tombstone-delete-failed: {e}"),
+                    rollback_reason: None,
+                })?;
+        let expected_tombstones = if inject_failure == Some(DryRunFailure::TombstoneDeleteMismatch)
+        {
             tombstone_ids.len() as i64 + 1
         } else {
             tombstone_ids.len() as i64
@@ -508,9 +505,15 @@ pub async fn run_dry_run(
         let result_json = serde_json::to_string(&JsonValue::Object({
             let mut m = serde_json::Map::new();
             m.insert("dryRun".into(), JsonValue::Bool(true));
-            m.insert("wouldDeleteTombstones".into(), JsonValue::from(tombstone_deleted));
+            m.insert(
+                "wouldDeleteTombstones".into(),
+                JsonValue::from(tombstone_deleted),
+            );
             m.insert("wouldDeleteReviews".into(), JsonValue::from(review_deleted));
-            m.insert("predicateVersion".into(), JsonValue::from(synthetic_marker::SYNTHETIC_PREDICATE_VERSION));
+            m.insert(
+                "predicateVersion".into(),
+                JsonValue::from(synthetic_marker::SYNTHETIC_PREDICATE_VERSION),
+            );
             m
         }))
         .unwrap_or_else(|_| "{}".to_string());
@@ -616,9 +619,9 @@ pub async fn run_dry_run(
                         // and leave the optional fields unset. ok stays
                         // true because the predicate + transaction shape
                         // still proved out; only the token surface failed.
-                        result
-                            .warnings
-                            .push(format!("preview-token-skipped: fingerprint read failed: {e}"));
+                        result.warnings.push(format!(
+                            "preview-token-skipped: fingerprint read failed: {e}"
+                        ));
                     }
                 }
             }
@@ -686,11 +689,11 @@ mod dryrun_tests {
     #[test]
     fn skeleton_has_v1_schema_and_v1_predicate_version() {
         let r = DryRunResult::skeleton("2026-06-01T00:00:00Z");
-        assert_eq!(r.schema, "h2o.studio.synthetic-cleanup-transaction-dry-run.v1");
         assert_eq!(
-            r.predicate_version,
-            "h2o.studio.sync.synthetic-marker.v1"
+            r.schema,
+            "h2o.studio.synthetic-cleanup-transaction-dry-run.v1"
         );
+        assert_eq!(r.predicate_version, "h2o.studio.sync.synthetic-marker.v1");
         assert_eq!(r.platform, "desktop-tauri");
         assert!(r.redacted);
         assert!(r.dry_run);
@@ -748,7 +751,8 @@ mod dryrun_tests {
         let body = &t["ptok1:".len()..];
         assert_eq!(body.len(), 64, "expected sha256 hex (64 chars)");
         assert!(
-            body.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            body.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "expected lowercase hex only, got {body}"
         );
     }
@@ -756,16 +760,20 @@ mod dryrun_tests {
     #[test]
     fn f5h3b1a_token_is_deterministic_for_same_inputs() {
         let a = compute_preview_token(
-            9, 9,
+            9,
+            9,
             &["f5h-r1".into(), "f5h-r2".into()],
             &["f5h-t1".into()],
-            2, 1,
+            2,
+            1,
         );
         let b = compute_preview_token(
-            9, 9,
+            9,
+            9,
             &["f5h-r1".into(), "f5h-r2".into()],
             &["f5h-t1".into()],
-            2, 1,
+            2,
+            1,
         );
         assert_eq!(a, b);
     }
@@ -774,10 +782,12 @@ mod dryrun_tests {
     fn f5h3b1a_token_changes_when_id_set_changes() {
         let a = compute_preview_token(9, 9, &["f5h-r1".into()], &["f5h-t1".into()], 1, 1);
         let b = compute_preview_token(
-            9, 9,
+            9,
+            9,
             &["f5h-r1".into(), "f5h-r2".into()],
             &["f5h-t1".into()],
-            2, 1,
+            2,
+            1,
         );
         assert_ne!(a, b, "adding a review must change the token");
     }

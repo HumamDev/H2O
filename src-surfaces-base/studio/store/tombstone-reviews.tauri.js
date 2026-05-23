@@ -44,6 +44,10 @@
   var APPLY_RESULT_SCHEMA = 'h2o.studio.tombstone-review-apply-result.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
   var REAL_APPLY_DEV_GATE = 'I_UNDERSTAND_THIS_MUTATES_FOLDER_BINDING';
+  var SYNTHETIC_CLEANUP_COMMIT_SCHEMA = 'h2o.studio.maintenance.cleanup-synthetic.v1';
+  var SYNTHETIC_CLEANUP_DEV_GATE = 'I_UNDERSTAND_THIS_DELETES_SYNTHETIC_TOMBSTONE_DATA';
+  var SYNTHETIC_CLEANUP_TOKEN_RE = /^ptok1:[0-9a-f]{64}$/;
+  var MAX_SYNTHETIC_CLEANUP_CANDIDATES = 10000;
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 100;
@@ -2752,6 +2756,165 @@
     });
   }
 
+  function cleanupSyntheticActions(deleted) {
+    return {
+      deletedRows: !!deleted,
+      mutatedRows: !!deleted,
+      realCleanupImplemented: true,
+    };
+  }
+
+  function cleanupSyntheticCounts(reviews, tombstones) {
+    var r = Number(reviews) || 0;
+    var t = Number(tombstones) || 0;
+    return {
+      reviewsDeleted: r,
+      tombstonesDeleted: t,
+      totalDeleted: r + t,
+    };
+  }
+
+  function cleanupSyntheticFailure(code, status) {
+    return {
+      schema: SYNTHETIC_CLEANUP_COMMIT_SCHEMA,
+      status: status || 'rejected',
+      ok: false,
+      redacted: true,
+      platform: 'desktop-tauri',
+      predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+      counts: cleanupSyntheticCounts(0, 0),
+      audit: {
+        recorded: false,
+        maintenanceIdPresent: false,
+        operatorPeerRecorded: false,
+      },
+      actions: cleanupSyntheticActions(false),
+      blockers: [{ code: String(code || 'desktop-maintenance-unavailable') }],
+      warnings: [],
+    };
+  }
+
+  function cleanupSyntheticNoop() {
+    return {
+      schema: SYNTHETIC_CLEANUP_COMMIT_SCHEMA,
+      status: 'no-op',
+      ok: true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
+      counts: cleanupSyntheticCounts(0, 0),
+      audit: {
+        recorded: false,
+        maintenanceIdPresent: false,
+        operatorPeerRecorded: false,
+      },
+      actions: cleanupSyntheticActions(false),
+      blockers: [],
+      warnings: ['no-eligible-synthetic-rows'],
+    };
+  }
+
+  function cleanupHasControlCharacters(value) {
+    return /[\u0000-\u001f\u007f]/.test(String(value || ''));
+  }
+
+  function cleanupNormalizeCandidateArray(value) {
+    if (!Array.isArray(value)) return null;
+    var out = [];
+    for (var i = 0; i < value.length; i += 1) {
+      if (typeof value[i] !== 'string') return null;
+      var id = value[i].trim();
+      if (!id || cleanupHasControlCharacters(id)) return null;
+      out.push(id);
+    }
+    return out;
+  }
+
+  function cleanupExpectedCount(value) {
+    var n = Number(value);
+    if (!Number.isFinite(n) || Math.floor(n) !== n || n < 0) return null;
+    return n;
+  }
+
+  function cleanupSynthetic(options) {
+    var opts = isObject(options) ? options : {};
+    if (opts.dryRun !== false) {
+      return Promise.resolve(cleanupSyntheticFailure('dry-run-false-required'));
+    }
+    if (opts.devGate !== SYNTHETIC_CLEANUP_DEV_GATE) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-dev-gate'));
+    }
+    var reason = cleanString(opts.reason);
+    if (reason.length < 12 || reason.length > 256 || cleanupHasControlCharacters(reason)) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-reason'));
+    }
+    if (!isObject(opts.candidateIds)) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-candidate-ids'));
+    }
+    var reviewIds = cleanupNormalizeCandidateArray(opts.candidateIds.syncTombstoneReviewIds);
+    var tombstoneIds = cleanupNormalizeCandidateArray(opts.candidateIds.syncTombstoneIds);
+    if (!reviewIds || !tombstoneIds) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-candidate-ids'));
+    }
+    if ((reviewIds.length + tombstoneIds.length) > MAX_SYNTHETIC_CLEANUP_CANDIDATES) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-candidate-ids'));
+    }
+    if (!isObject(opts.expectedCounts)) {
+      return Promise.resolve(cleanupSyntheticFailure('expected-count-mismatch'));
+    }
+    var expectedReviews = cleanupExpectedCount(opts.expectedCounts.reviews);
+    var expectedTombstones = cleanupExpectedCount(opts.expectedCounts.tombstones);
+    if (expectedReviews == null || expectedTombstones == null ||
+        expectedReviews !== reviewIds.length || expectedTombstones !== tombstoneIds.length) {
+      return Promise.resolve(cleanupSyntheticFailure('expected-count-mismatch'));
+    }
+    if (reviewIds.length === 0 && tombstoneIds.length === 0) {
+      return Promise.resolve(cleanupSyntheticNoop());
+    }
+    var previewToken = cleanString(opts.previewToken);
+    if (!SYNTHETIC_CLEANUP_TOKEN_RE.test(previewToken)) {
+      return Promise.resolve(cleanupSyntheticFailure('invalid-preview-token'));
+    }
+    var invoke = getInvoke();
+    if (typeof invoke !== 'function' || !detectTauri()) {
+      return Promise.resolve(cleanupSyntheticFailure('desktop-maintenance-unavailable'));
+    }
+
+    return readLocalSyncPeerIdForDecision()
+      .then(function (peerId) {
+        return invoke('cleanup_synthetic_commit', {
+          payload: {
+            dryRun: false,
+            devGate: SYNTHETIC_CLEANUP_DEV_GATE,
+            reason: reason,
+            requestedBySyncPeerId: peerId,
+            candidateIds: {
+              syncTombstoneReviewIds: reviewIds,
+              syncTombstoneIds: tombstoneIds,
+            },
+            expectedCounts: {
+              reviews: expectedReviews,
+              tombstones: expectedTombstones,
+            },
+            previewToken: previewToken,
+          },
+        });
+      })
+      .then(function (result) {
+        if (!isObject(result) || result.schema !== SYNTHETIC_CLEANUP_COMMIT_SCHEMA) {
+          return cleanupSyntheticFailure('desktop-maintenance-unavailable');
+        }
+        if (result.ok === true && result.status === 'committed') {
+          recordWrite('cleanupSynthetic');
+        }
+        return result;
+      })
+      .catch(function (e) {
+        recordError('cleanupSynthetic', e);
+        return cleanupSyntheticFailure('desktop-maintenance-unavailable');
+      });
+  }
+
   function readAllReviewsForCascadeDiagnostics() {
     return ensureReady()
       .then(function () {
@@ -3196,6 +3359,10 @@
     }),
   };
   store.__registerEntity('tombstoneReviews', api);
+
+  H2O.Studio.maintenance = H2O.Studio.maintenance || {};
+  H2O.Studio.maintenance.cleanupSynthetic = cleanupSynthetic;
+  H2O.Studio.maintenance.__syntheticCleanupInstalled = true;
 
   global.setTimeout(function () {
     init().catch(function (e) { recordError('autoInit', e); });

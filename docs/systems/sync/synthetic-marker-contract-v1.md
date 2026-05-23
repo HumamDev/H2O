@@ -180,13 +180,17 @@ the loose heuristic flags.
   the JSON response. The dry-run STILL rolls back when IDs are included;
   no row mutates whether the flag is set or not. No new Tauri command,
   no Chrome path, no UI, no real cleanup, no COMMIT.
-- **F5H.3b.1b** — real cleanup. Single tiny diff against F5H.3b.1a: a
-  new Tauri command that takes the F5H.3b.1a-issued `previewToken` +
-  `candidateIds` + `dbFingerprint`, re-runs the v1 predicate, recomputes
-  the token, asserts equality (and ID-set equality, and dbFingerprint
-  equality), and only then performs the id-pinned DELETE under COMMIT.
-  Triple gate: long gate string + non-empty reason + Desktop-only
-  surface check. Predicate unchanged.
+- **F5H.3b.1b — DONE.** Desktop-only real cleanup commit. Exposes
+  `H2O.Studio.maintenance.cleanupSynthetic({ dryRun: false, ... })` behind
+  the exact gate
+  `I_UNDERSTAND_THIS_DELETES_SYNTHETIC_TOMBSTONE_DATA`. The caller must echo
+  the F5H.3b.1a-issued `candidateIds`, `expectedCounts`, and `previewToken`.
+  Rust recomputes the token from the current DB fingerprint and supplied
+  candidate set before opening the write transaction. Inside the transaction,
+  each DELETE is both candidate-pinned and guarded by the same
+  `SYNTHETIC_PREDICATE_V1` subquery. Audit is written to
+  `sync_maintenance_log` with hash-only result metadata. Chrome remains
+  preview-only and registers no cleanup function.
 
 All phases use exactly the predicate defined here. None may relax it
 without bumping the version string.

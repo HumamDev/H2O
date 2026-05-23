@@ -25,10 +25,13 @@
 //   - F5H.3b.0d true-dry-run cleanup (transaction + ROLLBACK).
 //   - F5H.3b.1 real cleanup (transaction + COMMIT).
 //
-// F5H.3b.0c implements only the contract. No cleanup, no DELETE statements,
-// no apply behavior change. See docs/systems/sync/synthetic-marker-contract-v1.md.
+// F5H.3b.0c implements only the contract. F5H.3b.1b adds candidate-pinned
+// DELETE helpers here so the destructive path can embed the same predicate
+// rather than copy it. This module still exposes no cleanup API and changes
+// no apply/import/export/sync behavior. See
+// docs/systems/sync/synthetic-marker-contract-v1.md.
 
-use sqlx::{Row, SqliteConnection};
+use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
 
 /// Canonical predicate version. Stamp this in every preview / cleanup
 /// return so consumers can compare what predicate version produced a
@@ -39,8 +42,7 @@ pub const SYNTHETIC_PREDICATE_VERSION: &str = "h2o.studio.sync.synthetic-marker.
 /// Chrome has no SQLite-side `is_synthetic` column and cannot apply the
 /// real contract. Its preview is a heuristic forever; this string keeps it
 /// unambiguously separate from the Rust v1 contract.
-pub const SYNTHETIC_PREFIX_HEURISTIC_VERSION: &str =
-    "h2o.studio.sync.synthetic-prefix-heuristic";
+pub const SYNTHETIC_PREFIX_HEURISTIC_VERSION: &str = "h2o.studio.sync.synthetic-prefix-heuristic";
 
 /// Allowed prefixes used by approved fixture seeders. These prefixes
 /// corroborate the column marker for cleanup eligibility but never
@@ -90,7 +92,7 @@ pub fn has_synthetic_prefix(value: &str) -> bool {
 ///   - `created_at < ?` (now - SAFETY_AGE_FLOOR_SECONDS, ISO string)
 ///   - `delete_reason NOT IN` (protected list)
 ///   - no live (pending / accepted-later) review attached
-const ELIGIBLE_TOMBSTONE_SQL: &str = r#"
+pub(crate) const ELIGIBLE_TOMBSTONE_SQL: &str = r#"
     SELECT tombstone_id
     FROM sync_tombstones t
     WHERE t.is_synthetic = 1
@@ -142,7 +144,7 @@ const ELIGIBLE_TOMBSTONE_SQL: &str = r#"
 ///     applied-folder-binding})
 ///   - `created_at < ?`
 ///   - the referenced remote tombstone (if any) is NOT a real non-synthetic row
-const ELIGIBLE_REVIEW_SQL: &str = r#"
+pub(crate) const ELIGIBLE_REVIEW_SQL: &str = r#"
     SELECT review_id
     FROM sync_tombstone_reviews r
     WHERE r.is_synthetic = 1
@@ -220,6 +222,73 @@ pub async fn eligible_synthetic_review_ids(
     Ok(rows.into_iter().map(|r| r.get::<String, _>(0)).collect())
 }
 
+/// Candidate-pinned DELETE for real cleanup. The DELETE itself embeds the
+/// exact SYNTHETIC_PREDICATE_V1 subquery, so a candidate ID is deleted only
+/// when it still satisfies the canonical predicate inside the transaction.
+pub async fn delete_eligible_synthetic_review_ids(
+    tx: &mut Transaction<'_, Sqlite>,
+    ids: &[String],
+    now_iso: &str,
+) -> Result<i64, sqlx::Error> {
+    delete_candidate_ids_with_predicate(
+        tx,
+        "sync_tombstone_reviews",
+        "review_id",
+        ids,
+        ELIGIBLE_REVIEW_SQL,
+        now_iso,
+    )
+    .await
+}
+
+/// Candidate-pinned DELETE for real cleanup. The DELETE itself embeds the
+/// exact SYNTHETIC_PREDICATE_V1 subquery, so a candidate ID is deleted only
+/// when it still satisfies the canonical predicate inside the transaction.
+pub async fn delete_eligible_synthetic_tombstone_ids(
+    tx: &mut Transaction<'_, Sqlite>,
+    ids: &[String],
+    now_iso: &str,
+) -> Result<i64, sqlx::Error> {
+    delete_candidate_ids_with_predicate(
+        tx,
+        "sync_tombstones",
+        "tombstone_id",
+        ids,
+        ELIGIBLE_TOMBSTONE_SQL,
+        now_iso,
+    )
+    .await
+}
+
+async fn delete_candidate_ids_with_predicate(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    id_column: &str,
+    ids: &[String],
+    predicate_select_sql: &str,
+    now_iso: &str,
+) -> Result<i64, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "DELETE FROM {table} \
+         WHERE {id_column} IN ({placeholders}) \
+           AND {id_column} IN ({predicate_select_sql})"
+    );
+    let mut query = sqlx::query(&sql);
+    for id in ids {
+        query = query.bind(id);
+    }
+    query = query.bind(subtract_seconds_iso(now_iso, SAFETY_AGE_FLOOR_SECONDS));
+    let result = query.execute(&mut **tx).await?;
+    Ok(result.rows_affected() as i64)
+}
+
 /// Pure string helper: subtract `seconds` from an ISO timestamp expressed
 /// at second precision. Works for the comparison-only use here without
 /// pulling in chrono.
@@ -237,10 +306,8 @@ fn subtract_seconds_iso(iso: &str, seconds: i64) -> String {
     let date_part = &s[0..10];
     let time_part = &s[11..19];
     let suffix = &s[19..];
-    let date_ok = date_part.chars().nth(4) == Some('-')
-        && date_part.chars().nth(7) == Some('-');
-    let time_ok = time_part.chars().nth(2) == Some(':')
-        && time_part.chars().nth(5) == Some(':');
+    let date_ok = date_part.chars().nth(4) == Some('-') && date_part.chars().nth(7) == Some('-');
+    let time_ok = time_part.chars().nth(2) == Some(':') && time_part.chars().nth(5) == Some(':');
     if !date_ok || !time_ok || s.chars().nth(10) != Some('T') {
         return s.to_string();
     }
@@ -315,12 +382,18 @@ mod marker_tests {
 
     #[test]
     fn predicate_version_is_v1() {
-        assert_eq!(SYNTHETIC_PREDICATE_VERSION, "h2o.studio.sync.synthetic-marker.v1");
+        assert_eq!(
+            SYNTHETIC_PREDICATE_VERSION,
+            "h2o.studio.sync.synthetic-marker.v1"
+        );
     }
 
     #[test]
     fn prefix_heuristic_version_is_distinct() {
-        assert_ne!(SYNTHETIC_PREDICATE_VERSION, SYNTHETIC_PREFIX_HEURISTIC_VERSION);
+        assert_ne!(
+            SYNTHETIC_PREDICATE_VERSION,
+            SYNTHETIC_PREFIX_HEURISTIC_VERSION
+        );
         assert_eq!(
             SYNTHETIC_PREFIX_HEURISTIC_VERSION,
             "h2o.studio.sync.synthetic-prefix-heuristic"
@@ -352,8 +425,17 @@ mod marker_tests {
 
     #[test]
     fn protected_delete_reasons_include_known_real() {
-        for reason in ["folder-delete", "folder-delete-cascade", "user-unbind", "remote-review-apply", "remote-tombstone-applied"] {
-            assert!(PROTECTED_TOMBSTONE_DELETE_REASONS.contains(&reason), "missing {reason}");
+        for reason in [
+            "folder-delete",
+            "folder-delete-cascade",
+            "user-unbind",
+            "remote-review-apply",
+            "remote-tombstone-applied",
+        ] {
+            assert!(
+                PROTECTED_TOMBSTONE_DELETE_REASONS.contains(&reason),
+                "missing {reason}"
+            );
         }
     }
 

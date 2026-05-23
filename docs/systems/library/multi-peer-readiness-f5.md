@@ -3270,11 +3270,83 @@ no real row mutation, no UI, no settings entry, no import/export/sync/apply
 changes, and no Chrome surface. Chrome's `previewCleanupSynthetic` continues
 to ignore `transactional: true` and `includeCandidateIds: true`.
 
-F5H.3b.1b (the cleanup commit) is the next phase. It will be a small
-additive diff: a new Tauri command that takes the F5H.3b.1a-issued
-`previewToken` + `candidateIds` + `dbFingerprint`, re-runs the v1
-predicate, recomputes the token, asserts equality (predicate version +
-fingerprint + ID-set + counts all match), and only then performs the
-id-pinned DELETE under COMMIT. Triple gate retained from the earlier
-F5H.3b.1 plan: long gate string + non-empty reason + Desktop-only
-surface check.
+## F5H.3b.1b — Gated Desktop synthetic cleanup commit
+
+Desktop now exposes the destructive commit path only under the maintenance
+namespace:
+
+```js
+await H2O.Studio.maintenance.cleanupSynthetic({
+  dryRun: false,
+  devGate: "I_UNDERSTAND_THIS_DELETES_SYNTHETIC_TOMBSTONE_DATA",
+  reason: "remove synthetic validation rows",
+  candidateIds: {
+    syncTombstoneReviewIds: [...],
+    syncTombstoneIds: [...]
+  },
+  expectedCounts: {
+    reviews: N,
+    tombstones: M
+  },
+  previewToken: "ptok1:..."
+});
+```
+
+This API is Desktop/Tauri only. Chrome does not register
+`H2O.Studio.maintenance.cleanupSynthetic`; Chrome preview remains read-only
+and has no IndexedDB deletion path.
+
+Commit rules:
+
+- JS rejects before invoke unless `dryRun === false`, the exact dev gate is
+  present, reason is non-empty and bounded, candidate arrays are well-formed,
+  expected counts match array lengths, total candidates are capped, and
+  `previewToken` matches `ptok1:<sha256-hex>`.
+- Empty candidate arrays with zero expected counts return a local no-op:
+  no Tauri invoke, no audit row, no deletion.
+- Rust recomputes the F5H.3b.1a preview token from the caller-supplied
+  candidate IDs, expected counts, `SYNTHETIC_PREDICATE_VERSION`, and current
+  DB fingerprint. Token mismatch returns `preview-token-drift` before any
+  transaction or audit row.
+- The real transaction inserts one `sync_maintenance_log` row, deletes
+  candidate-pinned review rows, deletes candidate-pinned tombstone rows,
+  updates the audit row with affected counts and hash-only result metadata,
+  then commits.
+- The DELETE statements embed the same `SYNTHETIC_PREDICATE_V1` subquery used
+  by preview. Prefix-only rows (`is_synthetic = 0`), pending or
+  accepted-later reviews, restored/protected/recent tombstones, reviews
+  attached to non-synthetic tombstones, and tombstones with live reviews cannot
+  be deleted even if passed as candidate IDs.
+- Any audit insert failure, review/tombstone revalidation count mismatch,
+  audit update failure, SQL error, or commit failure returns a code-only
+  failure and leaves the DB unchanged.
+
+The success result is redacted and counts-only:
+
+```js
+{
+  schema: "h2o.studio.maintenance.cleanup-synthetic.v1",
+  status: "committed",
+  ok: true,
+  redacted: true,
+  platform: "desktop-tauri",
+  predicateVersion: "h2o.studio.sync.synthetic-marker.v1",
+  counts: { reviewsDeleted: N, tombstonesDeleted: M, totalDeleted: N + M },
+  audit: {
+    recorded: true,
+    maintenanceIdPresent: true,
+    operatorPeerRecorded: true
+  },
+  actions: {
+    deletedRows: true,
+    mutatedRows: true,
+    realCleanupImplemented: true
+  },
+  warnings: []
+}
+```
+
+Default responses and audit `result_json` do not expose raw tombstone IDs,
+review IDs, record IDs, peer IDs, raw JSON, metadata, or content. The audit
+stores only hashes for the gate, token, review ID set, and tombstone ID set,
+plus counts and DB fingerprint values.
