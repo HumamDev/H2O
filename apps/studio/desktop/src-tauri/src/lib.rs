@@ -3,9 +3,11 @@
 // mobile target (which compiles through the cdylib declared in Cargo.toml's
 // [lib] section). This is the canonical Tauri V2 template shape.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
 use sqlx::{Connection, Row, SqliteConnection};
-use tauri_plugin_sql::{Migration, MigrationKind};
+use tauri::State;
+use tauri_plugin_sql::{DbInstances, DbPool, Migration, MigrationKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
@@ -31,7 +33,9 @@ impl F5g4ProofFailure {
             "review-update" => Ok(Some(Self::ReviewUpdate)),
             "duplicate-tombstone" => Ok(Some(Self::DuplicateTombstone)),
             "missing-binding" => Ok(Some(Self::MissingBinding)),
-            _ => Err(format!("unsupported F5G.4 proof failure stage: {normalized}")),
+            _ => Err(format!(
+                "unsupported F5G.4 proof failure stage: {normalized}"
+            )),
         }
     }
 
@@ -77,6 +81,123 @@ struct F5g4ProofResult {
 #[serde(rename_all = "camelCase")]
 struct F5g4ProofWarning {
     code: &'static str,
+}
+
+const F5G4_REAL_APPLY_DEV_GATE: &str = "I_UNDERSTAND_THIS_MUTATES_FOLDER_BINDING";
+const F5G4_DB_URL: &str = "sqlite:studio-v1.db";
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ApplyPayload {
+    dev_gate: String,
+    review_id: String,
+    chat_id: String,
+    folder_id: String,
+    review_record_id: String,
+    local_tombstone_record_id: String,
+    tombstone_id: String,
+    local_sync_peer_id: String,
+    remote_deleted_at_ms: i64,
+    applied_at: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ApplyAudit {
+    source_review_linked: bool,
+    remote_tombstone_linked: bool,
+    remote_peer_linked: bool,
+    local_operator_peer_recorded: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ApplyBlocker {
+    code: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ApplyWarning {
+    code: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct F5g4ApplyResult {
+    schema: &'static str,
+    ok: bool,
+    applied: bool,
+    dry_run: bool,
+    record_kind: Option<String>,
+    mutation_type: Option<&'static str>,
+    local_tombstone_created: bool,
+    review_updated: bool,
+    writes_performed: u32,
+    status: Option<String>,
+    decision: Option<String>,
+    audit: F5g4ApplyAudit,
+    blockers: Vec<F5g4ApplyBlocker>,
+    warnings: Vec<F5g4ApplyWarning>,
+}
+
+impl F5g4ApplyResult {
+    fn base() -> Self {
+        Self {
+            schema: "h2o.studio.tombstone-review-apply-result.v1",
+            ok: false,
+            applied: false,
+            dry_run: false,
+            record_kind: Some("folderBinding".to_string()),
+            mutation_type: Some("folderBinding.unbind"),
+            local_tombstone_created: false,
+            review_updated: false,
+            writes_performed: 0,
+            status: None,
+            decision: None,
+            audit: F5g4ApplyAudit {
+                source_review_linked: false,
+                remote_tombstone_linked: false,
+                remote_peer_linked: false,
+                local_operator_peer_recorded: false,
+            },
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn blocked(code: &str) -> Self {
+        let mut result = Self::base();
+        result.blockers.push(F5g4ApplyBlocker {
+            code: code.to_string(),
+        });
+        result
+    }
+
+    fn success() -> Self {
+        Self {
+            schema: "h2o.studio.tombstone-review-apply-result.v1",
+            ok: true,
+            applied: true,
+            dry_run: false,
+            record_kind: Some("folderBinding".to_string()),
+            mutation_type: Some("folderBinding.unbind"),
+            local_tombstone_created: true,
+            review_updated: true,
+            writes_performed: 3,
+            status: Some("resolved".to_string()),
+            decision: Some("applied-folder-binding".to_string()),
+            audit: F5g4ApplyAudit {
+                source_review_linked: true,
+                remote_tombstone_linked: true,
+                remote_peer_linked: true,
+                local_operator_peer_recorded: true,
+            },
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// V1 SQLite schema migrations.
@@ -833,7 +954,11 @@ async fn f5g4_run_transaction_proof(
     }
     Ok(F5g4ProofResult {
         schema: "h2o.studio.tombstone-review-apply-transaction-proof.v1",
-        ok: if committed { all_three_writes_visible } else { rolled_back },
+        ok: if committed {
+            all_three_writes_visible
+        } else {
+            rolled_back
+        },
         synthetic: true,
         transaction_used: true,
         committed,
@@ -848,12 +973,396 @@ async fn f5g4_run_transaction_proof(
     })
 }
 
+fn f5g4_required_string(value: &str, blocker: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(blocker.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn f5g4_validate_apply_payload(payload: &F5g4ApplyPayload) -> Result<(), String> {
+    if payload.dev_gate.trim() != F5G4_REAL_APPLY_DEV_GATE {
+        return Err("dev-gate-required".to_string());
+    }
+    f5g4_required_string(&payload.review_id, "review-not-found")?;
+    f5g4_required_string(&payload.chat_id, "local-target-missing")?;
+    f5g4_required_string(&payload.folder_id, "local-target-missing")?;
+    f5g4_required_string(&payload.review_record_id, "malformed-remote-tombstone")?;
+    let local_record_id = f5g4_required_string(
+        &payload.local_tombstone_record_id,
+        "malformed-remote-tombstone",
+    )?;
+    if !local_record_id.starts_with("folderBinding:") {
+        return Err("malformed-remote-tombstone".to_string());
+    }
+    f5g4_required_string(&payload.tombstone_id, "tombstone-id-unavailable")?;
+    f5g4_required_string(&payload.local_sync_peer_id, "local-identity-unavailable")?;
+    f5g4_required_string(&payload.applied_at, "applied-at-unavailable")?;
+    f5g4_required_string(&payload.reason, "apply-reason-required")?;
+    if payload.remote_deleted_at_ms <= 0 {
+        return Err("local-comparison-unavailable".to_string());
+    }
+    Ok(())
+}
+
+fn f5g4_json_string(value: &JsonValue, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn f5g4_append_apply_audit_warning(raw_warnings: &str) -> String {
+    let mut warnings = serde_json::from_str::<JsonValue>(raw_warnings)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    warnings.push(json!({
+        "code": "review-applied-folder-binding",
+        "action": "applied-folder-binding",
+        "reasonPresent": true
+    }));
+    serde_json::to_string(&warnings).unwrap_or_else(|_| "[]".to_string())
+}
+
+async fn f5g4_run_real_apply_transaction(
+    conn: &mut SqliteConnection,
+    payload: &F5g4ApplyPayload,
+    failure: Option<F5g4ProofFailure>,
+) -> F5g4ApplyResult {
+    if let Err(code) = f5g4_validate_apply_payload(payload) {
+        return F5g4ApplyResult::blocked(&code);
+    }
+
+    let review_id = payload.review_id.trim();
+    let chat_id = payload.chat_id.trim();
+    let folder_id = payload.folder_id.trim();
+    let review_record_id = payload.review_record_id.trim();
+    let local_tombstone_record_id = payload.local_tombstone_record_id.trim();
+    let tombstone_id = payload.tombstone_id.trim();
+    let local_sync_peer_id = payload.local_sync_peer_id.trim();
+    let applied_at = payload.applied_at.trim();
+    let reason = payload.reason.trim();
+
+    let mut tx = match conn.begin().await {
+        Ok(tx) => tx,
+        Err(_) => return F5g4ApplyResult::blocked("transaction-begin-failed"),
+    };
+
+    let review_row = match sqlx::query(
+        r#"
+        SELECT review_id, status, decision, record_kind, record_id, remote_tombstone_id,
+               remote_sync_peer_id, remote_export_id, delete_reason, remote_deleted_at,
+               raw_tombstone_json, warnings_json
+        FROM sync_tombstone_reviews
+        WHERE review_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(review_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return F5g4ApplyResult::blocked("review-read-failed");
+        }
+    };
+
+    let Some(review_row) = review_row else {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("review-not-found");
+    };
+
+    let status = review_row
+        .try_get::<String, _>("status")
+        .unwrap_or_default();
+    if status != "accepted-later" {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("review-status-not-accepted-later");
+    }
+
+    let record_kind = review_row
+        .try_get::<Option<String>, _>("record_kind")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if record_kind == "folder" {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("folder-apply-deferred");
+    }
+    if record_kind != "folderBinding" {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("unsupported-record-kind");
+    }
+
+    let stored_record_id = review_row
+        .try_get::<Option<String>, _>("record_id")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if stored_record_id != review_record_id {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("local-target-mismatch");
+    }
+
+    let remote_peer_id = review_row
+        .try_get::<Option<String>, _>("remote_sync_peer_id")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if !remote_peer_id.is_empty() && remote_peer_id == local_sync_peer_id {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("self-originated");
+    }
+
+    let raw_tombstone_json = review_row
+        .try_get::<String, _>("raw_tombstone_json")
+        .unwrap_or_default();
+    let tombstone = match serde_json::from_str::<JsonValue>(&raw_tombstone_json) {
+        Ok(value) if value.is_object() => value,
+        _ => {
+            let _ = tx.rollback().await;
+            return F5g4ApplyResult::blocked("malformed-remote-tombstone");
+        }
+    };
+    if f5g4_json_string(&tombstone, "schema").as_deref() != Some("h2o.studio.tombstone.v1") {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("malformed-remote-tombstone");
+    }
+    if f5g4_json_string(&tombstone, "recordKind").as_deref() != Some("folderBinding") {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("unsupported-record-kind");
+    }
+    if f5g4_json_string(&tombstone, "recordId").as_deref() != Some(review_record_id) {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("local-target-mismatch");
+    }
+    let tombstone_remote_peer = f5g4_json_string(&tombstone, "deletedBySyncPeerId");
+    if remote_peer_id.is_empty() && tombstone_remote_peer.as_deref().unwrap_or("").is_empty() {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("source-peer-ambiguous");
+    }
+    if tombstone_remote_peer.as_deref() == Some(local_sync_peer_id) {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("self-originated");
+    }
+
+    let binding_row = match sqlx::query(
+        "SELECT chat_id, folder_id, assigned_at FROM folder_bindings WHERE chat_id = ? LIMIT 1",
+    )
+    .bind(chat_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return F5g4ApplyResult::blocked("binding-read-failed");
+        }
+    };
+
+    let Some(binding_row) = binding_row else {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("local-target-missing");
+    };
+    let current_folder_id = binding_row
+        .try_get::<String, _>("folder_id")
+        .unwrap_or_default();
+    if current_folder_id != folder_id {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("local-target-mismatch");
+    }
+    let assigned_at = binding_row.try_get::<i64, _>("assigned_at").unwrap_or(0);
+    if assigned_at > payload.remote_deleted_at_ms {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("delete-vs-edit");
+    }
+
+    let remote_tombstone_id = review_row
+        .try_get::<Option<String>, _>("remote_tombstone_id")
+        .ok()
+        .flatten()
+        .or_else(|| f5g4_json_string(&tombstone, "tombstoneId"));
+    let remote_export_id = review_row
+        .try_get::<Option<String>, _>("remote_export_id")
+        .ok()
+        .flatten();
+    let original_delete_reason = f5g4_json_string(&tombstone, "deleteReason").or_else(|| {
+        review_row
+            .try_get::<Option<String>, _>("delete_reason")
+            .ok()
+            .flatten()
+    });
+    let cascade_from = f5g4_json_string(&tombstone, "cascadeFrom");
+    let warnings_json = review_row
+        .try_get::<String, _>("warnings_json")
+        .unwrap_or_else(|_| "[]".to_string());
+    let next_warnings_json = f5g4_append_apply_audit_warning(&warnings_json);
+    let meta_json = json!({
+        "source": "tombstoneReviews.applyReview",
+        "sourceReviewId": review_id,
+        "remoteTombstoneId": remote_tombstone_id,
+        "remoteSyncPeerId": if remote_peer_id.is_empty() { tombstone_remote_peer } else { Some(remote_peer_id.clone()) },
+        "remoteExportId": remote_export_id,
+        "appliedBySyncPeerId": local_sync_peer_id,
+        "appliedAt": applied_at,
+        "applyReason": reason,
+        "originalDeleteReason": original_delete_reason,
+        "targetKind": "folderBinding"
+    })
+    .to_string();
+
+    let record_kind_for_insert = if failure == Some(F5g4ProofFailure::TombstoneInsert) {
+        None
+    } else {
+        Some("folderBinding")
+    };
+    let inserted = match sqlx::query(
+        r#"
+        INSERT INTO sync_tombstones (
+          tombstone_id, schema, record_kind, record_id, deleted_at, deleted_by_sync_peer_id,
+          delete_reason, prior_digest, prior_updated_at, source_export_id, source_sequence_number,
+          cascade_from, restored_at, restored_by_sync_peer_id, meta_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(tombstone_id)
+    .bind("h2o.studio.tombstone.v1")
+    .bind(record_kind_for_insert)
+    .bind(local_tombstone_record_id)
+    .bind(applied_at)
+    .bind(local_sync_peer_id)
+    .bind("remote-review-apply")
+    .bind(Option::<String>::None)
+    .bind(assigned_at.to_string())
+    .bind(Option::<String>::None)
+    .bind(Option::<i64>::None)
+    .bind(cascade_from)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(meta_json)
+    .bind(applied_at)
+    .bind(applied_at)
+    .execute(&mut *tx)
+    .await
+    {
+        Ok(result) => result.rows_affected(),
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return F5g4ApplyResult::blocked("tombstone-insert-failed");
+        }
+    };
+    if inserted != 1 {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("tombstone-insert-failed");
+    }
+
+    let delete_folder_id = if failure == Some(F5g4ProofFailure::BindingDelete) {
+        "__f5g4_forced_binding_delete_miss__"
+    } else {
+        folder_id
+    };
+    let deleted =
+        match sqlx::query("DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?")
+            .bind(chat_id)
+            .bind(delete_folder_id)
+            .execute(&mut *tx)
+            .await
+        {
+            Ok(result) => result.rows_affected(),
+            Err(_) => {
+                let _ = tx.rollback().await;
+                return F5g4ApplyResult::blocked("binding-delete-failed");
+            }
+        };
+    if deleted != 1 {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("binding-delete-failed");
+    }
+
+    let update_review_id = if failure == Some(F5g4ProofFailure::ReviewUpdate) {
+        "__f5g4_forced_review_update_miss__"
+    } else {
+        review_id
+    };
+    let updated = match sqlx::query(
+        r#"
+        UPDATE sync_tombstone_reviews
+        SET status = 'resolved',
+            decision = 'applied-folder-binding',
+            decided_at = ?,
+            decided_by_sync_peer_id = ?,
+            warnings_json = ?,
+            updated_at = ?
+        WHERE review_id = ? AND status = 'accepted-later'
+        "#,
+    )
+    .bind(applied_at)
+    .bind(local_sync_peer_id)
+    .bind(next_warnings_json)
+    .bind(applied_at)
+    .bind(update_review_id)
+    .execute(&mut *tx)
+    .await
+    {
+        Ok(result) => result.rows_affected(),
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return F5g4ApplyResult::blocked("review-update-failed");
+        }
+    };
+    if updated != 1 {
+        let _ = tx.rollback().await;
+        return F5g4ApplyResult::blocked("review-update-failed");
+    }
+
+    if tx.commit().await.is_err() {
+        return F5g4ApplyResult::blocked("transaction-commit-failed");
+    }
+
+    F5g4ApplyResult::success()
+}
+
 #[tauri::command]
 async fn f5g4_prove_tombstone_review_apply_transaction(
     fail_at: Option<String>,
 ) -> Result<F5g4ProofResult, String> {
     let failure = F5g4ProofFailure::from_option(fail_at)?;
     f5g4_run_transaction_proof(failure).await
+}
+
+#[tauri::command]
+async fn f5g4_apply_reviewed_folder_binding_tombstone(
+    db_instances: State<'_, DbInstances>,
+    payload: F5g4ApplyPayload,
+) -> Result<F5g4ApplyResult, String> {
+    if let Err(code) = f5g4_validate_apply_payload(&payload) {
+        return Ok(F5g4ApplyResult::blocked(&code));
+    }
+
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(F5g4ApplyResult::blocked("sqlite-db-unavailable"));
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => return Ok(F5g4ApplyResult::blocked("sqlite-db-unavailable")),
+        }
+    };
+
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| format!("F5G.4 real apply sqlite acquire failed: {e}"))?;
+    Ok(f5g4_run_real_apply_transaction(&mut conn, &payload, None).await)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -868,7 +1377,8 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            f5g4_prove_tombstone_review_apply_transaction
+            f5g4_prove_tombstone_review_apply_transaction,
+            f5g4_apply_reviewed_folder_binding_tombstone
         ])
         .run(tauri::generate_context!())
         .expect("error while running H2O Studio desktop")
@@ -881,6 +1391,77 @@ mod tests {
     fn run_proof(failure: Option<F5g4ProofFailure>) -> F5g4ProofResult {
         tauri::async_runtime::block_on(async { f5g4_run_transaction_proof(failure).await })
             .expect("F5G.4 proof should run")
+    }
+
+    fn real_apply_payload() -> F5g4ApplyPayload {
+        F5g4ApplyPayload {
+            dev_gate: F5G4_REAL_APPLY_DEV_GATE.to_string(),
+            review_id: "f5g4-proof-review-001".to_string(),
+            chat_id: "f5g4-proof-chat-001".to_string(),
+            folder_id: "f5g4-proof-folder-001".to_string(),
+            review_record_id: "folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001".to_string(),
+            local_tombstone_record_id: "folderBinding:f5g4-proof-chat-001:f5g4-proof-folder-001"
+                .to_string(),
+            tombstone_id: "f5g4-proof-tombstone-001".to_string(),
+            local_sync_peer_id: "f5g4-proof-local-peer-001".to_string(),
+            remote_deleted_at_ms: 1_779_408_000_000_i64,
+            applied_at: "2026-05-22T00:00:00.000Z".to_string(),
+            reason: "f5g4 real apply test".to_string(),
+        }
+    }
+
+    fn has_blocker(result: &F5g4ApplyResult, code: &str) -> bool {
+        result.blockers.iter().any(|b| b.code == code)
+    }
+
+    fn run_real_apply_test(
+        seed_failure: Option<F5g4ProofFailure>,
+        tx_failure: Option<F5g4ProofFailure>,
+        status_override: Option<&str>,
+        kind_override: Option<&str>,
+        payload_override: Option<fn(&mut F5g4ApplyPayload)>,
+    ) -> (F5g4ApplyResult, F5g4ProofCounts, F5g4ProofCounts) {
+        tauri::async_runtime::block_on(async {
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("real apply test sqlite open");
+            f5g4_setup_proof_schema(&mut conn)
+                .await
+                .expect("real apply test schema");
+            f5g4_seed_proof_rows(&mut conn, seed_failure)
+                .await
+                .expect("real apply test seed");
+            if let Some(status) = status_override {
+                sqlx::query("UPDATE sync_tombstone_reviews SET status = ? WHERE review_id = ?")
+                    .bind(status)
+                    .bind("f5g4-proof-review-001")
+                    .execute(&mut conn)
+                    .await
+                    .expect("real apply test status override");
+            }
+            if let Some(kind) = kind_override {
+                sqlx::query(
+                    "UPDATE sync_tombstone_reviews SET record_kind = ? WHERE review_id = ?",
+                )
+                .bind(kind)
+                .bind("f5g4-proof-review-001")
+                .execute(&mut conn)
+                .await
+                .expect("real apply test kind override");
+            }
+            let before = f5g4_proof_counts(&mut conn)
+                .await
+                .expect("real apply test before count");
+            let mut payload = real_apply_payload();
+            if let Some(override_payload) = payload_override {
+                override_payload(&mut payload);
+            }
+            let result = f5g4_run_real_apply_transaction(&mut conn, &payload, tx_failure).await;
+            let after = f5g4_proof_counts(&mut conn)
+                .await
+                .expect("real apply test after count");
+            (result, before, after)
+        })
     }
 
     #[test]
@@ -949,5 +1530,145 @@ mod tests {
         assert!(result.no_partial_state);
         assert_eq!(result.before, result.after);
         assert_eq!(result.before.bindings, 0);
+    }
+
+    #[test]
+    fn f5g4_real_apply_success_commits_all_three_writes() {
+        let (result, before, after) = run_real_apply_test(None, None, None, None, None);
+        assert!(result.ok);
+        assert!(result.applied);
+        assert_eq!(result.writes_performed, 3);
+        assert_eq!(after.tombstones, before.tombstones + 1);
+        assert_eq!(after.bindings, before.bindings - 1);
+        assert_eq!(
+            after.reviews_accepted_later,
+            before.reviews_accepted_later - 1
+        );
+        assert_eq!(after.reviews_resolved, before.reviews_resolved + 1);
+    }
+
+    #[test]
+    fn f5g4_real_apply_wrong_dev_gate_blocks_before_transaction() {
+        let (result, before, after) = run_real_apply_test(
+            None,
+            None,
+            None,
+            None,
+            Some(|payload| payload.dev_gate = "wrong".to_string()),
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "dev-gate-required"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_missing_reason_blocks_before_transaction() {
+        let (result, before, after) = run_real_apply_test(
+            None,
+            None,
+            None,
+            None,
+            Some(|payload| payload.reason = " ".to_string()),
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "apply-reason-required"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_pending_status_blocks() {
+        let (result, before, after) = run_real_apply_test(None, None, Some("pending"), None, None);
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "review-status-not-accepted-later"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_missing_binding_rolls_back() {
+        let (result, before, after) = run_real_apply_test(
+            Some(F5g4ProofFailure::MissingBinding),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "local-target-missing"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_duplicate_tombstone_rolls_back() {
+        let (result, before, after) = run_real_apply_test(
+            Some(F5g4ProofFailure::DuplicateTombstone),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "tombstone-insert-failed"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_tombstone_insert_failure_rolls_back() {
+        let (result, before, after) = run_real_apply_test(
+            None,
+            Some(F5g4ProofFailure::TombstoneInsert),
+            None,
+            None,
+            None,
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "tombstone-insert-failed"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_binding_delete_failure_rolls_back() {
+        let (result, before, after) = run_real_apply_test(
+            None,
+            Some(F5g4ProofFailure::BindingDelete),
+            None,
+            None,
+            None,
+        );
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "binding-delete-failed"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_review_update_failure_rolls_back() {
+        let (result, before, after) =
+            run_real_apply_test(None, Some(F5g4ProofFailure::ReviewUpdate), None, None, None);
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "review-update-failed"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_already_resolved_blocks() {
+        let (result, before, after) = run_real_apply_test(None, None, Some("resolved"), None, None);
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "review-status-not-accepted-later"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_folder_review_blocks() {
+        let (result, before, after) = run_real_apply_test(None, None, None, Some("folder"), None);
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "folder-apply-deferred"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn f5g4_real_apply_unsupported_review_blocks() {
+        let (result, before, after) = run_real_apply_test(None, None, None, Some("chat"), None);
+        assert!(!result.ok);
+        assert!(has_blocker(&result, "unsupported-record-kind"));
+        assert_eq!(before, after);
     }
 }

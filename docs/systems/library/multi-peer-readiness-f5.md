@@ -1869,6 +1869,173 @@ F5G.4.1 must still be Desktop-only and must not proceed unless it uses a
 transactional path equivalent to this proof. Chrome remains dry-run-only until a
 separate Chrome mutation and audit model is designed.
 
+## F5G.4.1 Desktop FolderBinding Apply Gate
+
+F5G.4.1 enables the first real reviewed apply path, limited to Desktop and to a
+single `folderBinding` review. It remains a local operator action only. There is
+no automatic apply, no apply-all, no folder delete apply, no Chrome real apply,
+and no import/export/sync behavior change.
+
+The only mutating call shape is:
+
+```js
+await H2O.Studio.store.tombstoneReviews.applyReview(reviewId, {
+  dryRun: false,
+  devGate: 'I_UNDERSTAND_THIS_MUTATES_FOLDER_BINDING',
+  reason: 'operator accepted remote folder binding tombstone'
+})
+```
+
+Required gates before mutation:
+
+- exact `devGate`
+- non-empty `reason`
+- local sync peer identity available
+- review exists
+- review status is exactly `accepted-later`
+- review kind is exactly `folderBinding`
+- raw remote tombstone parses and targets the same review record
+- source peer is not self
+- fresh `previewApply()` returns `would-unbind-folder-binding` with no blockers
+- immediate transaction pre-read confirms target binding still exists
+- immediate transaction pre-read confirms target binding still points to the
+  same folder
+- immediate transaction pre-read confirms local binding timestamp is not newer
+  than the remote deleted timestamp
+
+The Desktop JS store performs the operator-gate and preview checks, then calls a
+narrow Rust/Tauri command:
+
+```txt
+f5g4_apply_reviewed_folder_binding_tombstone
+```
+
+The Rust command uses the loaded `sqlite:studio-v1.db` pool from
+`tauri_plugin_sql::DbInstances`, so it runs against the same Studio SQLite
+database as the JS entity stores. It is not a generic SQL command. It accepts
+only a validated folderBinding apply payload and re-checks the critical state
+inside the transaction.
+
+The real transaction is:
+
+```txt
+BEGIN
+  INSERT INTO sync_tombstones (
+    tombstone_id,
+    schema,
+    record_kind,
+    record_id,
+    deleted_at,
+    deleted_by_sync_peer_id,
+    delete_reason,
+    prior_digest,
+    prior_updated_at,
+    source_export_id,
+    source_sequence_number,
+    cascade_from,
+    restored_at,
+    restored_by_sync_peer_id,
+    meta_json,
+    created_at,
+    updated_at
+  )
+
+  DELETE FROM folder_bindings
+    WHERE chat_id = ? AND folder_id = ?
+
+  UPDATE sync_tombstone_reviews
+    SET status = 'resolved',
+        decision = 'applied-folder-binding',
+        decided_at = ?,
+        decided_by_sync_peer_id = ?,
+        warnings_json = ?,
+        updated_at = ?
+    WHERE review_id = ? AND status = 'accepted-later'
+COMMIT
+```
+
+Every write must affect exactly one row. If tombstone insert, binding delete, or
+review update fails or affects the wrong number of rows, the transaction rolls
+back and returns a redacted blocker result with `writesPerformed: 0`.
+
+The local tombstone uses:
+
+- `recordKind: 'folderBinding'`
+- `deleteReason: 'remote-review-apply'`
+- `deletedBySyncPeerId`: the local operator peer
+- `priorUpdatedAt`: the local binding `assigned_at`
+- `meta_json.source: 'tombstoneReviews.applyReview'`
+- `meta_json.sourceReviewId`
+- `meta_json.remoteTombstoneId`
+- `meta_json.remoteSyncPeerId`
+- `meta_json.remoteExportId`
+- `meta_json.appliedBySyncPeerId`
+- `meta_json.appliedAt`
+- `meta_json.applyReason`
+- `meta_json.originalDeleteReason`
+- `meta_json.targetKind: 'folderBinding'`
+
+Full IDs are allowed in persisted audit metadata. Default API results and
+diagnostics remain redacted.
+
+Successful apply returns:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-apply-result.v1',
+  ok: true,
+  applied: true,
+  dryRun: false,
+  recordKind: 'folderBinding',
+  mutationType: 'folderBinding.unbind',
+  localTombstoneCreated: true,
+  reviewUpdated: true,
+  writesPerformed: 3,
+  status: 'resolved',
+  decision: 'applied-folder-binding',
+  audit: {
+    sourceReviewLinked: true,
+    remoteTombstoneLinked: true,
+    remotePeerLinked: true,
+    localOperatorPeerRecorded: true
+  },
+  warnings: []
+}
+```
+
+Failure returns the same result schema with `ok: false`, `applied: false`,
+`writesPerformed: 0`, and code-only blockers. Failure results do not expose raw
+review IDs, record IDs, chat IDs, folder IDs, peer IDs, remote tombstone IDs,
+raw tombstone JSON, metadata, names, transcript text, or content.
+
+Expected blockers include:
+
+- `dev-gate-required`
+- `apply-reason-required`
+- `review-not-found`
+- `review-status-not-accepted-later`
+- `folder-apply-deferred`
+- `unsupported-record-kind`
+- `malformed-remote-tombstone`
+- `self-originated`
+- `source-peer-ambiguous`
+- `preview-blocked`
+- `local-target-missing`
+- `local-target-mismatch`
+- `delete-vs-edit`
+- `local-comparison-unavailable`
+- `tombstone-insert-failed`
+- `binding-delete-failed`
+- `review-update-failed`
+- `transaction-precondition-failed`
+
+Repeat apply after success blocks because the review is no longer
+`accepted-later`. If the target binding is already missing, F5G.4.1 blocks and
+leaves resolution to the explicit decision-only `markResolved()` action.
+
+Chrome remains dry-run-only in F5G.4.1. Chrome `applyReview({ dryRun: false })`
+must continue to return `real-apply-not-implemented`.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

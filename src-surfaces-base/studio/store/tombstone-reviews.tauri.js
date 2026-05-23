@@ -38,7 +38,9 @@
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
   var APPLY_DRY_RUN_SCHEMA = 'h2o.studio.tombstone-review-apply-dry-run.v1';
+  var APPLY_RESULT_SCHEMA = 'h2o.studio.tombstone-review-apply-result.v1';
   var TOMBSTONE_SCHEMA = 'h2o.studio.tombstone.v1';
+  var REAL_APPLY_DEV_GATE = 'I_UNDERSTAND_THIS_MUTATES_FOLDER_BINDING';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 100;
@@ -246,6 +248,21 @@
       if (c && typeof c.randomUUID === 'function') return 'tombstone-review:' + c.randomUUID();
     } catch (_) { /* ignore */ }
     return 'tombstone-review:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+  function generateTombstoneId() {
+    try {
+      var c = global.crypto || null;
+      if (c && typeof c.randomUUID === 'function') return 'tombstone:' + c.randomUUID();
+    } catch (_) { /* ignore */ }
+    return 'tombstone:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+  function encodeRecordPart(value) {
+    var s = cleanScalar(value);
+    try { return encodeURIComponent(s); }
+    catch (_) { return s; }
+  }
+  function buildFolderBindingRecordId(chatId, folderId) {
+    return 'folderBinding:' + encodeRecordPart(chatId) + ':' + encodeRecordPart(folderId);
   }
   function readField(input, camel, snake) {
     if (!input || typeof input !== 'object') return undefined;
@@ -763,6 +780,36 @@
       },
       warnings: [],
     };
+  }
+
+  function makeApplyResult(review) {
+    return {
+      schema: APPLY_RESULT_SCHEMA,
+      ok: false,
+      applied: false,
+      dryRun: false,
+      recordKind: nullableString(review && review.recordKind),
+      mutationType: null,
+      localTombstoneCreated: false,
+      reviewUpdated: false,
+      writesPerformed: 0,
+      status: nullableString(review && review.status),
+      decision: nullableString(review && review.decision),
+      audit: {
+        sourceReviewLinked: false,
+        remoteTombstoneLinked: false,
+        remotePeerLinked: false,
+        localOperatorPeerRecorded: false,
+      },
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function makeBlockedApplyResult(review, code) {
+    var result = makeApplyResult(review);
+    pushBlocker(result, code);
+    return result;
   }
 
   function copyCodeWarnings(warnings) {
@@ -1588,12 +1635,91 @@
     });
   }
 
+  function applyRealFolderBindingReview(review, tombstone, validation, opts, preview) {
+    var gated = cleanString(opts && opts.devGate) === REAL_APPLY_DEV_GATE;
+    if (!gated) return Promise.resolve(makeBlockedApplyResult(review, 'dev-gate-required'));
+    var reason = cleanString(opts && opts.reason);
+    if (!reason) return Promise.resolve(makeBlockedApplyResult(review, 'apply-reason-required'));
+    var status = cleanScalar(review && review.status);
+    if (status !== 'accepted-later') {
+      return Promise.resolve(makeBlockedApplyResult(review, 'review-status-not-accepted-later'));
+    }
+    if (!preview || (Array.isArray(preview.blockers) && preview.blockers.length)) {
+      var blocked = makeBlockedApplyResult(review, 'preview-blocked');
+      (Array.isArray(preview && preview.blockers) ? preview.blockers : []).forEach(function (blocker) {
+        pushBlocker(blocked, blocker && blocker.code);
+      });
+      mergeCodeWarnings(blocked.warnings, preview && preview.warnings);
+      return Promise.resolve(blocked);
+    }
+    if (preview.action !== 'would-unbind-folder-binding') {
+      if (preview.action === 'no-op-already-missing') {
+        return Promise.resolve(makeBlockedApplyResult(review, 'local-target-missing'));
+      }
+      return Promise.resolve(makeBlockedApplyResult(review, 'unsupported-record-kind'));
+    }
+
+    var kind = cleanScalar(tombstone && tombstone.recordKind);
+    if (kind === 'folder') return Promise.resolve(makeBlockedApplyResult(review, 'folder-apply-deferred'));
+    if (kind !== 'folderBinding') return Promise.resolve(makeBlockedApplyResult(review, 'unsupported-record-kind'));
+    if (validation && validation.malformed) {
+      return Promise.resolve(makeBlockedApplyResult(review, 'malformed-remote-tombstone'));
+    }
+    var ids = parseFolderBindingIds(tombstone, validation && validation.metaObject);
+    if (!ids.ok) return Promise.resolve(makeBlockedApplyResult(review, 'malformed-remote-tombstone'));
+    var remoteDeletedAtMs = parseTimeMs(tombstone && tombstone.deletedAt);
+    if (remoteDeletedAtMs == null) {
+      return Promise.resolve(makeBlockedApplyResult(review, 'local-comparison-unavailable'));
+    }
+
+    return readLocalSyncPeerIdForDecision().then(function (peerId) {
+      var remotePeerId = cleanScalar(review && review.remoteSyncPeerId) || cleanScalar(tombstone && tombstone.deletedBySyncPeerId);
+      if (!remotePeerId) return makeBlockedApplyResult(review, 'source-peer-ambiguous');
+      if (remotePeerId && peerId && remotePeerId === peerId) {
+        return makeBlockedApplyResult(review, 'self-originated');
+      }
+      var invoke = getInvoke();
+      if (!invoke) return makeBlockedApplyResult(review, 'tauri-invoke-unavailable');
+      var payload = {
+        devGate: REAL_APPLY_DEV_GATE,
+        reviewId: cleanScalar(review && review.reviewId),
+        chatId: ids.chatId,
+        folderId: ids.folderId,
+        reviewRecordId: cleanScalar(review && review.recordId) || cleanScalar(tombstone && tombstone.recordId),
+        localTombstoneRecordId: buildFolderBindingRecordId(ids.chatId, ids.folderId),
+        tombstoneId: generateTombstoneId(),
+        localSyncPeerId: peerId,
+        remoteDeletedAtMs: remoteDeletedAtMs,
+        appliedAt: nowIso(),
+        reason: reason,
+      };
+      return invoke('f5g4_apply_reviewed_folder_binding_tombstone', { payload: payload })
+        .then(function (result) {
+          if (result && result.ok === true && result.applied === true) {
+            recordWrite('applyReview');
+            notifySubscribers({ source: 'local', op: 'applyReview', reviewId: review.reviewId, status: 'resolved' });
+          }
+          if (opts && opts.includeSensitive === true && result && Array.isArray(result.warnings)) {
+            pushCodeWarning(result.warnings, 'include-sensitive-ignored');
+          }
+          return result || makeBlockedApplyResult(review, 'transaction-precondition-failed');
+        }).catch(function () {
+          var failed = makeBlockedApplyResult(review, 'transaction-precondition-failed');
+          pushCodeWarning(failed.warnings, 'apply-command-failed');
+          return failed;
+        });
+    }).catch(function () {
+      return makeBlockedApplyResult(review, 'local-identity-unavailable');
+    });
+  }
+
   function applyReview(reviewIdInput, options) {
     var opts = options || {};
     var dryRun = opts && opts.dryRun === true;
+    var realApply = opts && opts.dryRun === false;
     var reviewId = cleanString(reviewIdInput);
     if (!reviewId) {
-      var missingId = makeApplyDryRunResult(null, dryRun);
+      var missingId = realApply ? makeApplyResult(null) : makeApplyDryRunResult(null, dryRun);
       missingId.ok = false;
       missingId.reviewFound = false;
       missingId.action = 'blocked-review-not-found';
@@ -1601,7 +1727,7 @@
       return Promise.resolve(missingId);
     }
     return getReview(reviewId).then(function (review) {
-      var result = makeApplyDryRunResult(review, dryRun);
+      var result = realApply ? makeApplyResult(review) : makeApplyDryRunResult(review, dryRun);
       if (!review) {
         result.ok = false;
         result.reviewFound = false;
@@ -1609,11 +1735,21 @@
         pushBlocker(result, 'review-not-found');
         return result;
       }
-      if (!dryRun) {
+      if (!dryRun && !realApply) {
         result.ok = false;
         result.action = 'blocked-real-apply-not-implemented';
         pushBlocker(result, 'real-apply-not-implemented');
         return result;
+      }
+      if (realApply) {
+        var tombstone = parseReviewTombstone(review, makeApplyResult(review));
+        if (!tombstone) return makeBlockedApplyResult(review, 'malformed-remote-tombstone');
+        var validation = validateRemoteTombstone(tombstone, null);
+        if (validation.malformed) return makeBlockedApplyResult(review, 'malformed-remote-tombstone');
+        return previewApply(reviewId, { refreshLocalState: true, includeSensitive: false })
+          .then(function (preview) {
+            return applyRealFolderBindingReview(review, tombstone, validation, opts, preview);
+          });
       }
       var status = cleanScalar(review.status);
       if (status !== 'pending' && status !== 'accepted-later') {
@@ -1640,11 +1776,16 @@
       });
     }).catch(function (e) {
       recordError('applyReview', e);
-      var result = makeApplyDryRunResult(null, dryRun);
+      var result = realApply ? makeApplyResult(null) : makeApplyDryRunResult(null, dryRun);
       result.ok = false;
-      result.action = 'blocked-preview';
-      pushBlocker(result, 'preview-blocked');
-      pushCodeWarning(result.warnings, 'apply-dry-run-failed');
+      if (realApply) {
+        pushBlocker(result, 'transaction-precondition-failed');
+        pushCodeWarning(result.warnings, 'apply-failed');
+      } else {
+        result.action = 'blocked-preview';
+        pushBlocker(result, 'preview-blocked');
+        pushCodeWarning(result.warnings, 'apply-dry-run-failed');
+      }
       return result;
     });
   }
@@ -1743,7 +1884,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.4.0',
+    __version: '0.1.0-f5g.4.1',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1777,7 +1918,9 @@
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
       applyDryRunSchema: APPLY_DRY_RUN_SCHEMA,
+      applyResultSchema: APPLY_RESULT_SCHEMA,
       tombstoneSchema: TOMBSTONE_SCHEMA,
+      realApplyDevGate: REAL_APPLY_DEV_GATE,
       table: TABLE,
       classifications: Object.freeze(Object.keys(CLASSIFICATIONS).slice()),
       statuses: Object.freeze(Object.keys(STATUSES).slice()),
