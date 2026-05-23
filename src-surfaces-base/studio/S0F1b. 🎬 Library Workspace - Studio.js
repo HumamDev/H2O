@@ -177,6 +177,63 @@
     return { folders, items };
   }
 
+  function enrichKnownCanonicalFallbackRows(knownRows, storedRows) {
+    const rows = Array.isArray(knownRows) ? knownRows : [];
+    const stored = Array.isArray(storedRows) ? storedRows : [];
+    const knownIds = new Set(rows.map((row) => folderIdOf(row)).filter(Boolean));
+    const storedById = new Map();
+    for (const row of stored) {
+      const id = folderIdOf(row);
+      if (!id || !knownIds.has(id)) continue;
+      storedById.set(id, row);
+    }
+
+    const knownOrder = rows.map((row) => folderIdOf(row)).filter(Boolean).join('\n');
+    const storedOrder = stored
+      .map((row) => folderIdOf(row))
+      .filter((id) => id && knownIds.has(id))
+      .join('\n');
+    const canUseStoredOrder = !!storedOrder && storedOrder === knownOrder;
+    let enriched = false;
+
+    const enrichedRows = rows.map((row) => {
+      const id = folderIdOf(row);
+      const storedRow = storedById.get(id);
+      if (!storedRow) return row;
+      const next = { ...row };
+      const storedColor = String(storedRow.color || '').trim();
+      const storedIconColor = String(storedRow.iconColor || '').trim();
+      const storedIcon = String(storedRow.icon || '').trim();
+      if (!next.color && storedColor) {
+        next.color = storedColor;
+        enriched = true;
+      }
+      if (!next.iconColor && storedIconColor) {
+        next.iconColor = storedIconColor;
+        enriched = true;
+      }
+      if (!next.icon && storedIcon) {
+        next.icon = storedIcon;
+        enriched = true;
+      }
+      if (canUseStoredOrder) {
+        const storedSortOrder = Number(storedRow.sortOrder);
+        const storedIndex = Number(storedRow.index);
+        if (Number.isFinite(storedSortOrder) && Number(next.sortOrder) !== storedSortOrder) {
+          next.sortOrder = storedSortOrder;
+          enriched = true;
+        }
+        if (Number.isFinite(storedIndex) && Number(next.index) !== storedIndex) {
+          next.index = storedIndex;
+          enriched = true;
+        }
+      }
+      return next;
+    });
+
+    return { rows: enrichedRows, enriched };
+  }
+
   function countFolderStateBindings(items) {
     if (!items || typeof items !== 'object') return 0;
     return Object.values(items).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
@@ -1171,9 +1228,14 @@
     const nativeState = normalizeFolderStateForParity(nativePayload?.folderState, 'native-broadcast');
 
     const canonicalFromBroadcast = nativeState.folders.length > 0;
+    const knownCanonicalFallbackRows = KNOWN_NATIVE_CANONICAL_FOLDERS
+      .map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical'))
+      .filter(Boolean);
+    const fallbackCanonical = enrichKnownCanonicalFallbackRows(knownCanonicalFallbackRows, storedState.folders);
     const canonicalFolders = canonicalFromBroadcast
       ? nativeState.folders
-      : KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical')).filter(Boolean);
+      : fallbackCanonical.rows;
+    const fallbackVisualsEnriched = !canonicalFromBroadcast && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalBindingCount = canonicalFromBroadcast
       ? countFolderStateBindings(nativeState.items)
@@ -1235,6 +1297,7 @@
       surface,
       generatedAt: new Date().toISOString(),
       canonicalSource: canonicalFromBroadcast ? 'native-broadcast' : 'known-current-canonical-fallback',
+      fallbackVisualsEnriched,
       canonicalMirrorAvailable,
       canonicalFolderCount: canonicalFolders.length,
       localFolderCount: localFolders.length,
@@ -1499,6 +1562,7 @@
         localBindingCount: report.localBindingCount,
         canonicalSource,
         fallbackUsed: canonicalSource === 'known-current-canonical-fallback',
+        fallbackVisualsEnriched: !!report.fallbackVisualsEnriched,
         riskLevel: report.riskLevel,
         canonicalRows,
         localReviewRows,
