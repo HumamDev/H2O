@@ -25,13 +25,17 @@
   const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
 
+  // TODO(P8f): fill canonical palette (color/iconColor) from a native runtime probe.
+  // These entries are used only when the native broadcast and stored folder-state
+  // are both unavailable (cold boot or storage error). IDs, names, normalizedName,
+  // icon, and sortOrder are stable; color/iconColor will be filled in P8f.
   const KNOWN_NATIVE_CANONICAL_FOLDERS = [
-    { id: 'f_7050f49d3f341819dba53d547', folderId: 'f_7050f49d3f341819dba53d547', name: 'Study' },
-    { id: 'f_5d9431084707f19dba53d548', folderId: 'f_5d9431084707f19dba53d548', name: 'Case' },
-    { id: 'f_0606ea698948f19dba53d548', folderId: 'f_0606ea698948f19dba53d548', name: 'Dev' },
-    { id: 'f_e301f3506938c19dbac0e304', folderId: 'f_e301f3506938c19dbac0e304', name: 'Code' },
-    { id: 'f_3bf15f43b835d19dbac0fb13', folderId: 'f_3bf15f43b835d19dbac0fb13', name: 'Tech' },
-    { id: 'f_2bb1037f88b2719dbac10c22', folderId: 'f_2bb1037f88b2719dbac10c22', name: 'English' },
+    { id: 'f_7050f49d3f341819dba53d547', folderId: 'f_7050f49d3f341819dba53d547', name: 'Study',   normalizedName: 'study',   icon: 'folder', color: '', iconColor: '', sortOrder: 1 },
+    { id: 'f_5d9431084707f19dba53d548',  folderId: 'f_5d9431084707f19dba53d548',  name: 'Case',    normalizedName: 'case',    icon: 'folder', color: '', iconColor: '', sortOrder: 2 },
+    { id: 'f_0606ea698948f19dba53d548',  folderId: 'f_0606ea698948f19dba53d548',  name: 'Dev',     normalizedName: 'dev',     icon: 'folder', color: '', iconColor: '', sortOrder: 3 },
+    { id: 'f_e301f3506938c19dbac0e304',  folderId: 'f_e301f3506938c19dbac0e304',  name: 'Code',    normalizedName: 'code',    icon: 'folder', color: '', iconColor: '', sortOrder: 4 },
+    { id: 'f_3bf15f43b835d19dbac0fb13',  folderId: 'f_3bf15f43b835d19dbac0fb13',  name: 'Tech',    normalizedName: 'tech',    icon: 'folder', color: '', iconColor: '', sortOrder: 5 },
+    { id: 'f_2bb1037f88b2719dbac10c22',  folderId: 'f_2bb1037f88b2719dbac10c22',  name: 'English', normalizedName: 'english', icon: 'folder', color: '', iconColor: '', sortOrder: 6 },
   ];
   const KNOWN_NATIVE_CANONICAL_BINDING_COUNT = 8;
   const KNOWN_TEST_FOLDER_NAMES = new Set([
@@ -98,6 +102,8 @@
     const color = String(row?.color || row?.iconColor || '').trim();
     const iconColor = String(row?.iconColor || row?.color || '').trim();
     const icon = String(row?.icon || row?.iconKey || '').trim();
+    const rawSortOrder = Number(row?.sortOrder);
+    const sortOrder = Number.isFinite(rawSortOrder) ? rawSortOrder : index;
     const out = {
       id,
       folderId: id,
@@ -105,11 +111,56 @@
       normalizedName: normalizeFolderName(name),
       source: String(row?.source || source || '').trim(),
       index,
+      sortOrder,
     };
     if (color) out.color = color;
     if (iconColor) out.iconColor = iconColor;
     if (icon) out.icon = icon;
     return out;
+  }
+
+  const LOCAL_REVIEW_BUCKET_ORDER = ['conflict', 'test', 'extra', 'desktop-only', 'chrome-only', 'review-required'];
+
+  function formatCanonicalCountLabel(row) {
+    const native = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0);
+    const known = Number(row?.knownStudioCount ?? row?.knownCount ?? 0);
+    return `${native} native · ${known} known`;
+  }
+
+  function deriveReviewBucket(rowLike) {
+    if (!rowLike || rowLike.isCanonical) return null;
+    if (rowLike.isConflict) return 'conflict';
+    if (rowLike.isTestCandidate) return 'test';
+    // Source-origin heuristic: P8b only assigns desktop-only / chrome-only when the
+    // source tag clearly names the origin store. Ambiguous tags fall back to 'extra'
+    // so P8e can tighten the routing once renderers wire in.
+    const source = String(rowLike.source || '').toLowerCase();
+    if (source.includes('desktop') || source.includes('sqlite') || source.includes('tauri')) return 'desktop-only';
+    if (source.includes('chat-list') || source.includes('bridge') || source.includes('chrome-only')) return 'chrome-only';
+    return 'extra';
+  }
+
+  function sortCanonicalRows(rows) {
+    const arr = Array.isArray(rows) ? rows.slice() : [];
+    return arr.sort((a, b) => {
+      const so = (Number(a?.sortOrder) || 0) - (Number(b?.sortOrder) || 0);
+      if (so !== 0) return so;
+      const ix = (Number(a?.index) || 0) - (Number(b?.index) || 0);
+      if (ix !== 0) return ix;
+      return String(a?.normalizedName || '').localeCompare(String(b?.normalizedName || ''));
+    });
+  }
+
+  function sortLocalReviewRows(rows) {
+    const arr = Array.isArray(rows) ? rows.slice() : [];
+    return arr.sort((a, b) => {
+      const ai = LOCAL_REVIEW_BUCKET_ORDER.indexOf(String(a?.reviewBucket || ''));
+      const bi = LOCAL_REVIEW_BUCKET_ORDER.indexOf(String(b?.reviewBucket || ''));
+      const aIdx = ai === -1 ? LOCAL_REVIEW_BUCKET_ORDER.length : ai;
+      const bIdx = bi === -1 ? LOCAL_REVIEW_BUCKET_ORDER.length : bi;
+      if (aIdx !== bIdx) return aIdx - bIdx;
+      return String(a?.normalizedName || '').localeCompare(String(b?.normalizedName || ''));
+    });
   }
 
   function normalizeFolderStateForParity(raw, source = '') {
@@ -1035,13 +1086,23 @@
       let displayCountLabel = '';
       if (isCanonical) {
         displayCountLabel = canonicalMirrorAvailable
-          ? `${canonicalCount} native · ${knownCount} known`
+          ? formatCanonicalCountLabel({ nativeMembershipCount: canonicalCount, knownStudioCount: knownCount })
           : `canonical mirror unavailable${localBindingCount ? ` · ${localBindingCount} local` : ''}`;
         if (badges.includes('count-mismatch')) displayCountLabel += ' · count-mismatch';
       } else {
         const base = localBindingCount > 0 ? `${localBindingCount} local` : `${knownCount} known`;
         displayCountLabel = [base, ...badges.filter((badge) => ['extra', 'test', 'conflict', 'review'].includes(badge))].join(' · ');
       }
+      const rawSortOrder = Number(folder?.sortOrder);
+      const folderIndex = Number(folder?.index);
+      const rowSortOrder = Number.isFinite(rawSortOrder) ? rawSortOrder : (Number.isFinite(folderIndex) ? folderIndex : 0);
+      const reviewBucket = isCanonical ? null : deriveReviewBucket({
+        isCanonical,
+        isExtra,
+        isTestCandidate,
+        isConflict,
+        source: folder?.source,
+      });
       return {
         folderId,
         id: folderId,
@@ -1051,13 +1112,18 @@
         color: String(folder?.color || folder?.iconColor || '').trim(),
         iconColor: String(folder?.iconColor || folder?.color || '').trim(),
         icon: String(folder?.icon || '').trim(),
+        index: Number.isFinite(folderIndex) ? folderIndex : 0,
+        sortOrder: rowSortOrder,
         isCanonical,
         isExtra,
         isTestCandidate,
         isConflict,
+        reviewBucket,
         canonicalMirrorAvailable: !!canonicalMirrorAvailable,
         canonicalCount,
+        nativeMembershipCount: canonicalCount,
         knownCount,
+        knownStudioCount: knownCount,
         savedCount,
         linkedCount,
         orphanCount: isCanonical && canonicalMirrorAvailable ? Math.max(0, canonicalCount - knownCount) : 0,
@@ -1245,6 +1311,7 @@
       : await diagnoseFolderParity({ fresh: !!opts.fresh });
     const now = new Date().toISOString();
     const surface = String(report?.surface || (LW_isTauri() ? 'desktop-studio' : 'chrome-studio'));
+    const displayRows = Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows : [];
     const summary = {
       canonicalFolderCount: Number(report?.canonicalFolderCount || 0),
       localFolderCount: Number(report?.localFolderCount || 0),
@@ -1255,6 +1322,9 @@
       missingCanonicalCount: Array.isArray(report?.missingCanonicalFolders) ? report.missingCanonicalFolders.length : 0,
       extraLocalCount: Array.isArray(report?.extraLocalFolders) ? report.extraLocalFolders.length : 0,
       orphanMembershipCount: Number(report?.orphanBindingCount || 0),
+      canonicalRowsCount: displayRows.filter((row) => row && row.isCanonical).length,
+      localReviewRowsCount: displayRows.filter((row) => row && !row.isCanonical).length,
+      fallbackUsed: String(report?.canonicalSource || '') === 'known-current-canonical-fallback',
     };
     const checks = [];
     const addCheck = (id, ok, severity, message, details = null) => {
@@ -1411,8 +1481,13 @@
     surface: 'studio',
     diagnose: diagnoseFolderParity,
     selfCheck: selfCheckFolderParity,
+    formatCanonicalCountLabel,
     async getDisplayModel(options = {}) {
       const report = await diagnoseFolderParity(options);
+      const all = Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows : [];
+      const canonicalRows = sortCanonicalRows(all.filter((row) => row && row.isCanonical));
+      const localReviewRows = sortLocalReviewRows(all.filter((row) => row && !row.isCanonical));
+      const canonicalSource = String(report?.canonicalSource || '');
       return {
         readOnly: true,
         surface: report.surface,
@@ -1422,8 +1497,12 @@
         localFolderCount: report.localFolderCount,
         canonicalBindingCount: report.canonicalBindingCount,
         localBindingCount: report.localBindingCount,
+        canonicalSource,
+        fallbackUsed: canonicalSource === 'known-current-canonical-fallback',
         riskLevel: report.riskLevel,
-        rows: report.folderDisplayRows || [],
+        canonicalRows,
+        localReviewRows,
+        rows: [...canonicalRows, ...localReviewRows],
         warnings: report.warnings || [],
       };
     },
