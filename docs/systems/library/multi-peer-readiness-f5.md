@@ -2036,6 +2036,137 @@ leaves resolution to the explicit decision-only `markResolved()` action.
 Chrome remains dry-run-only in F5G.4.1. Chrome `applyReview({ dryRun: false })`
 must continue to return `real-apply-not-implemented`.
 
+## F5G.5 Cascade Group Diagnostics
+
+F5G.5 adds diagnostics-only cascade grouping for tombstone review queues. It
+does not add apply behavior, folder apply, cascade apply, apply-all, UI,
+import/export/sync behavior, or any Library mutation.
+
+Both Desktop and Chrome review stores expose:
+
+```js
+await H2O.Studio.store.tombstoneReviews.diagnoseCascadeGroups()
+```
+
+The diagnostic pass reads existing review rows only. It does not update review
+rows, tombstone rows, folder bindings, folders, chats, snapshots, tags, labels,
+categories, projects, sync state, or export state.
+
+Cascade grouping uses existing review fields:
+
+- `record_kind`
+- `record_id`
+- `delete_reason`
+- `classification`
+- `status`
+- `decision`
+- `remote_sync_peer_id`
+- `remote_export_id`
+- `remote_sequence_number`
+- `seen_count`
+- `raw_tombstone_json`
+- `warnings_json`
+
+`cascadeFrom`, `meta.cascade`, and `meta.cascadeKind` are derived from
+`raw_tombstone_json`; no migration or derived cascade column is introduced.
+
+Cascade root definition:
+
+- `recordKind === 'folder'`
+- no `cascadeFrom`
+- `meta.cascade === true` or `deleteReason === 'folder-delete'`
+- `deleteReason` does not end with `-cascade`
+
+Cascade child definition:
+
+- `cascadeFrom` is present, or
+- `deleteReason` ends with `-cascade`, or
+- binding kind has `meta.cascade === true`, or
+- `meta.cascadeKind` is present
+
+The initial expected child kind is `folderBinding`.
+
+The internal group key is:
+
+```txt
+remoteSyncPeerId + "\0" + cascadeRootRecordId
+```
+
+For root reviews, `cascadeRootRecordId` is the root review record id. For child
+reviews, `cascadeRootRecordId` prefers the remote tombstone `cascadeFrom` value.
+Groups intentionally cross export ids because repeated exports may carry the
+same cascade evidence. Export identity is treated as evidence metadata, not the
+primary group identity.
+
+The returned diagnostics are redacted by default and expose opaque group
+references only:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-review-cascade-diagnostics.v1',
+  generatedAt,
+  redacted: true,
+  totalGroups,
+  completeGroups,
+  partialGroups,
+  orphanChildGroups,
+  rootOnlyGroups,
+  groupsByRootKind,
+  groupsByStatus,
+  folderApplyDeferred: true,
+  cascadeApplyImplemented: false,
+  groups: [
+    {
+      groupRef: 'cascade-group-001',
+      rootKind: 'folder',
+      rootPresent: true,
+      rootStatus: 'pending',
+      rootClassification: 'safe-review',
+      childCount: 2,
+      pendingChildCount: 2,
+      acceptedLaterChildCount: 0,
+      resolvedChildCount: 0,
+      rejectedChildCount: 0,
+      ignoredChildCount: 0,
+      supersededChildCount: 0,
+      appliedChildCount: 0,
+      missingParent: false,
+      hasDeleteVsEditChild: false,
+      hasUnsupportedChild: false,
+      hasMalformedChild: false,
+      childApplyCandidates: 0,
+      applyEligibleChildCount: 0,
+      blockedChildCount: 0,
+      warnings: []
+    }
+  ],
+  warnings: []
+}
+```
+
+Default diagnostics must not expose raw review ids, record ids, folder ids, chat
+ids, peer ids, remote tombstone ids, raw tombstone JSON, metadata, folder names,
+chat titles, transcript text, or content.
+
+Warning codes include:
+
+- `cascade-root-missing`
+- `cascade-root-only`
+- `cascade-root-rejected-with-pending-children`
+- `cascade-parent-pending-with-resolved-children`
+- `cascade-child-delete-vs-edit`
+- `cascade-child-malformed`
+- `cascade-child-unsupported`
+- `cascade-incomplete-review-set`
+- `cascade-root-kind-unsupported`
+
+Apply-readiness fields are diagnostic only. `folderApplyDeferred: true` and
+`cascadeApplyImplemented: false` are mandatory because folder apply and cascade
+apply do not exist. `childApplyCandidates` only identifies child
+`folderBinding` reviews that look like possible single-review apply candidates;
+actual Desktop apply still requires the F5G.4.1 exact dev gate and fresh
+transaction preconditions.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

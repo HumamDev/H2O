@@ -45,6 +45,7 @@
   var SCHEMA_VERSION = 1;
   var REVIEW_SCHEMA = 'h2o.studio.tombstone-review.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
+  var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
@@ -1987,6 +1988,362 @@
     return Number(map && map[key]) || 0;
   }
 
+  function bumpMap(map, key) {
+    var k = cleanString(key) || 'unknown';
+    map[k] = Number(map[k] || 0) + 1;
+  }
+
+  function readAllReviewsForCascadeDiagnostics() {
+    return ensureReady()
+      .then(function () {
+        return idbGetAll().then(function (rows) {
+          return (Array.isArray(rows) ? rows : []).sort(function (a, b) {
+            var ak = [
+              cleanScalar(a && a.remoteSyncPeerId),
+              cleanScalar(a && a.recordId),
+              cleanScalar(a && a.reviewId),
+            ].join('\u0000');
+            var bk = [
+              cleanScalar(b && b.remoteSyncPeerId),
+              cleanScalar(b && b.recordId),
+              cleanScalar(b && b.reviewId),
+            ].join('\u0000');
+            if (ak < bk) return -1;
+            if (ak > bk) return 1;
+            return 0;
+          });
+        });
+      });
+  }
+
+  function parseCascadeTombstone(review, warnings) {
+    var raw = review && review.rawTombstoneJson;
+    if (!raw) {
+      pushCodeWarning(warnings, 'cascade-raw-tombstone-unavailable');
+      return null;
+    }
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!isObject(parsed)) throw new Error('raw tombstone not object');
+      return parsed;
+    } catch (_) {
+      pushCodeWarning(warnings, 'cascade-raw-tombstone-unparseable');
+      return null;
+    }
+  }
+
+  function cascadeMeta(tombstone) {
+    return isObject(tombstone && tombstone.meta) ? tombstone.meta : null;
+  }
+
+  function cascadeKind(review, tombstone) {
+    return cleanScalar(tombstone && tombstone.recordKind) || cleanScalar(review && review.recordKind);
+  }
+
+  function cascadeDeleteReason(review, tombstone) {
+    return cleanScalar(tombstone && tombstone.deleteReason) || cleanScalar(review && review.deleteReason);
+  }
+
+  function cascadeRecordId(review, tombstone) {
+    return cleanScalar(tombstone && tombstone.recordId) || cleanScalar(review && review.recordId);
+  }
+
+  function encodeCascadePart(value) {
+    var s = cleanScalar(value);
+    try { return encodeURIComponent(s); }
+    catch (_) { return s; }
+  }
+
+  function cascadeFolderRecordId(folderId) {
+    var id = cleanScalar(folderId);
+    return id ? ('folder:' + encodeCascadePart(id)) : '';
+  }
+
+  function inferCascadeRootRecordId(review, tombstone, meta) {
+    var explicit = cleanScalar(tombstone && tombstone.cascadeFrom);
+    if (explicit) return explicit;
+    var kind = cascadeKind(review, tombstone);
+    if (kind === 'folder') return cascadeRecordId(review, tombstone);
+    if (kind === 'folderBinding') {
+      var folderId = cleanScalar(meta && (meta.folderId || meta.oldFolderId));
+      if (folderId) return cascadeFolderRecordId(folderId);
+      var ids = parseFolderBindingIds(tombstone || { recordId: cascadeRecordId(review, tombstone) }, meta);
+      if (ids && ids.folderId) return cascadeFolderRecordId(ids.folderId);
+    }
+    return '';
+  }
+
+  function isCascadeRootReview(review, tombstone, meta) {
+    var kind = cascadeKind(review, tombstone);
+    var reason = cascadeDeleteReason(review, tombstone);
+    return kind === 'folder' &&
+      !cleanScalar(tombstone && tombstone.cascadeFrom) &&
+      !/-cascade$/.test(reason) &&
+      ((meta && meta.cascade === true) || reason === 'folder-delete');
+  }
+
+  function isCascadeChildReview(review, tombstone, meta) {
+    var kind = cascadeKind(review, tombstone);
+    var reason = cascadeDeleteReason(review, tombstone);
+    return !!(
+      cleanScalar(tombstone && tombstone.cascadeFrom) ||
+      /-cascade$/.test(reason) ||
+      (meta && meta.cascade === true && BINDING_TOMBSTONE_KINDS[kind]) ||
+      (meta && cleanScalar(meta.cascadeKind))
+    );
+  }
+
+  function makeCascadeMember(review, tombstone, meta, rootRecordId) {
+    var classification = cleanScalar(review && review.classification);
+    var status = cleanScalar(review && review.status);
+    var kind = cascadeKind(review, tombstone);
+    return {
+      memberKey: cleanScalar(review && review.dedupeKey) ||
+        cleanScalar(review && review.remoteTombstoneId) ||
+        cleanScalar(review && review.reviewId),
+      kind: kind,
+      status: status,
+      classification: classification,
+      decision: cleanScalar(review && review.decision),
+      rootRecordId: cleanScalar(rootRecordId),
+      cascadeFrom: cleanScalar(tombstone && tombstone.cascadeFrom),
+      seenCount: Number(review && review.seenCount) || 1,
+      exportPresent: !!cleanScalar(review && review.remoteExportId),
+      malformed: classification === 'malformed-remote-tombstone',
+      unsupported: classification === 'unsupported-record-kind' || !KNOWN_TOMBSTONE_KINDS[kind],
+      deleteVsEdit: classification === 'delete-vs-edit',
+      localComparisonUnavailable: classification === 'local-comparison-unavailable',
+      applied: status === 'resolved' && cleanScalar(review && review.decision) === 'applied-folder-binding',
+      applyCandidate: kind === 'folderBinding' &&
+        status === 'accepted-later' &&
+        (classification === 'safe-review' || classification === 'cascade-review'),
+      reviewWarnings: parseWarnings(review && (review.warningsJson || review.warnings)).map(function (warning) {
+        return cleanScalar(warning && warning.code);
+      }).filter(Boolean),
+      metaCascadeKindPresent: !!(meta && cleanScalar(meta.cascadeKind)),
+    };
+  }
+
+  function ensureCascadeGroup(groups, key) {
+    if (!groups[key]) {
+      groups[key] = {
+        key: key,
+        root: null,
+        children: [],
+        memberKeys: {},
+      };
+    }
+    return groups[key];
+  }
+
+  function addCascadeMemberOnce(group, bucket, member) {
+    var fallbackIndex = bucket === 'children' ? group.children.length : (group.root ? 1 : 0);
+    var key = cleanScalar(member && member.memberKey) || (bucket + ':' + fallbackIndex);
+    if (group.memberKeys[bucket + ':' + key]) return;
+    group.memberKeys[bucket + ':' + key] = true;
+    if (bucket === 'root') {
+      if (!group.root) group.root = member;
+      return;
+    }
+    group.children.push(member);
+  }
+
+  function addCascadeGroupWarning(warnings, code) {
+    pushCodeWarning(warnings, code);
+  }
+
+  function summarizeCascadeGroup(group, index) {
+    var root = group.root || null;
+    var children = group.children || [];
+    var warnings = [];
+    var pendingChildCount = 0;
+    var acceptedLaterChildCount = 0;
+    var resolvedChildCount = 0;
+    var rejectedChildCount = 0;
+    var ignoredChildCount = 0;
+    var supersededChildCount = 0;
+    var appliedChildCount = 0;
+    var hasDeleteVsEditChild = false;
+    var hasUnsupportedChild = false;
+    var hasMalformedChild = false;
+    var childApplyCandidates = 0;
+    var blockedChildCount = 0;
+
+    children.forEach(function (child) {
+      var status = cleanScalar(child.status) || 'unknown';
+      if (status === 'pending') pendingChildCount += 1;
+      if (status === 'accepted-later') acceptedLaterChildCount += 1;
+      if (status === 'resolved') resolvedChildCount += 1;
+      if (status === 'rejected') rejectedChildCount += 1;
+      if (status === 'ignored') ignoredChildCount += 1;
+      if (status === 'superseded') supersededChildCount += 1;
+      if (child.applied) appliedChildCount += 1;
+      if (child.deleteVsEdit) hasDeleteVsEditChild = true;
+      if (child.unsupported) hasUnsupportedChild = true;
+      if (child.malformed) hasMalformedChild = true;
+      if (child.applyCandidate) childApplyCandidates += 1;
+      if (
+        child.deleteVsEdit ||
+        child.localComparisonUnavailable ||
+        child.unsupported ||
+        child.malformed ||
+        status === 'rejected' ||
+        status === 'ignored' ||
+        status === 'superseded'
+      ) {
+        blockedChildCount += 1;
+      }
+    });
+
+    var rootStatus = cleanScalar(root && root.status) || null;
+    if (!root) addCascadeGroupWarning(warnings, 'cascade-root-missing');
+    if (root && children.length === 0) addCascadeGroupWarning(warnings, 'cascade-root-only');
+    if (root && root.kind && root.kind !== 'folder') addCascadeGroupWarning(warnings, 'cascade-root-kind-unsupported');
+    if (rootStatus === 'rejected' && (pendingChildCount + acceptedLaterChildCount) > 0) {
+      addCascadeGroupWarning(warnings, 'cascade-root-rejected-with-pending-children');
+    }
+    if (rootStatus === 'pending' && resolvedChildCount > 0) {
+      addCascadeGroupWarning(warnings, 'cascade-parent-pending-with-resolved-children');
+    }
+    if (hasDeleteVsEditChild) addCascadeGroupWarning(warnings, 'cascade-child-delete-vs-edit');
+    if (hasMalformedChild) addCascadeGroupWarning(warnings, 'cascade-child-malformed');
+    if (hasUnsupportedChild) addCascadeGroupWarning(warnings, 'cascade-child-unsupported');
+    if (!root || children.length === 0) addCascadeGroupWarning(warnings, 'cascade-incomplete-review-set');
+
+    return {
+      groupRef: 'cascade-group-' + String(index + 1).padStart(3, '0'),
+      rootKind: nullableString(root && root.kind),
+      rootPresent: !!root,
+      rootStatus: nullableString(rootStatus),
+      rootClassification: nullableString(root && root.classification),
+      childCount: children.length,
+      pendingChildCount: pendingChildCount,
+      acceptedLaterChildCount: acceptedLaterChildCount,
+      resolvedChildCount: resolvedChildCount,
+      rejectedChildCount: rejectedChildCount,
+      ignoredChildCount: ignoredChildCount,
+      supersededChildCount: supersededChildCount,
+      appliedChildCount: appliedChildCount,
+      missingParent: !root,
+      hasDeleteVsEditChild: hasDeleteVsEditChild,
+      hasUnsupportedChild: hasUnsupportedChild,
+      hasMalformedChild: hasMalformedChild,
+      childApplyCandidates: childApplyCandidates,
+      applyEligibleChildCount: childApplyCandidates,
+      blockedChildCount: blockedChildCount,
+      warnings: warnings,
+    };
+  }
+
+  function buildCascadeDiagnostics(rows, options) {
+    var opts = options || {};
+    var groups = {};
+    var warnings = [];
+    (Array.isArray(rows) ? rows : []).forEach(function (review, index) {
+      var rowWarnings = [];
+      var tombstone = parseCascadeTombstone(review, rowWarnings);
+      var meta = cascadeMeta(tombstone);
+      var root = isCascadeRootReview(review, tombstone, meta);
+      var child = isCascadeChildReview(review, tombstone, meta);
+      if (!root && !child) return;
+      var peer = cleanScalar(review && review.remoteSyncPeerId) ||
+        cleanScalar(tombstone && tombstone.deletedBySyncPeerId) ||
+        'unknown-peer';
+      var rootRecordId = root
+        ? cascadeRecordId(review, tombstone)
+        : inferCascadeRootRecordId(review, tombstone, meta);
+      if (!rootRecordId) {
+        rootRecordId = 'unknown-root:' + (cleanScalar(review && review.dedupeKey) || cleanScalar(review && review.reviewId) || String(index));
+        pushCodeWarning(rowWarnings, 'cascade-root-missing');
+      }
+      var group = ensureCascadeGroup(groups, peer + '\u0000' + rootRecordId);
+      var member = makeCascadeMember(review, tombstone, meta, rootRecordId);
+      rowWarnings.concat(member.reviewWarnings || []).forEach(function (code) {
+        if (code === 'missing-cascade-parent') addCascadeGroupWarning(warnings, 'cascade-root-missing');
+      });
+      if (root) addCascadeMemberOnce(group, 'root', member);
+      if (child) addCascadeMemberOnce(group, 'children', member);
+    });
+
+    var keys = Object.keys(groups).sort();
+    var groupSummaries = keys.map(function (key, index) {
+      return summarizeCascadeGroup(groups[key], index);
+    });
+    var groupsByRootKind = {};
+    var groupsByStatus = {};
+    var completeGroups = 0;
+    var orphanChildGroups = 0;
+    var rootOnlyGroups = 0;
+    groupSummaries.forEach(function (group) {
+      if (group.rootPresent && group.childCount > 0) completeGroups += 1;
+      if (!group.rootPresent) orphanChildGroups += 1;
+      if (group.rootPresent && group.childCount === 0) rootOnlyGroups += 1;
+      bumpMap(groupsByRootKind, group.rootKind || 'missing-root');
+      bumpMap(groupsByStatus, group.rootStatus || (group.rootPresent ? 'unknown' : 'orphan'));
+    });
+    if (opts && opts.includeSensitive === true) {
+      pushCodeWarning(warnings, 'include-sensitive-ignored');
+    }
+    return {
+      schema: CASCADE_DIAGNOSTIC_SCHEMA,
+      generatedAt: nowIso(),
+      redacted: true,
+      totalGroups: groupSummaries.length,
+      completeGroups: completeGroups,
+      partialGroups: groupSummaries.length - completeGroups,
+      orphanChildGroups: orphanChildGroups,
+      rootOnlyGroups: rootOnlyGroups,
+      groupsByRootKind: groupsByRootKind,
+      groupsByStatus: groupsByStatus,
+      folderApplyDeferred: true,
+      cascadeApplyImplemented: false,
+      groups: groupSummaries,
+      warnings: warnings,
+    };
+  }
+
+  function diagnoseCascadeGroups(options) {
+    if (!global.indexedDB) {
+      return Promise.resolve({
+        schema: CASCADE_DIAGNOSTIC_SCHEMA,
+        generatedAt: nowIso(),
+        redacted: true,
+        totalGroups: 0,
+        completeGroups: 0,
+        partialGroups: 0,
+        orphanChildGroups: 0,
+        rootOnlyGroups: 0,
+        groupsByRootKind: {},
+        groupsByStatus: {},
+        folderApplyDeferred: true,
+        cascadeApplyImplemented: false,
+        groups: [],
+        warnings: [{ code: 'indexeddb-unavailable' }],
+      });
+    }
+    return readAllReviewsForCascadeDiagnostics()
+      .then(function (rows) { return buildCascadeDiagnostics(rows, options); })
+      .catch(function (e) {
+        recordError('diagnoseCascadeGroups', e);
+        return {
+          schema: CASCADE_DIAGNOSTIC_SCHEMA,
+          generatedAt: nowIso(),
+          redacted: true,
+          totalGroups: 0,
+          completeGroups: 0,
+          partialGroups: 0,
+          orphanChildGroups: 0,
+          rootOnlyGroups: 0,
+          groupsByRootKind: {},
+          groupsByStatus: {},
+          folderApplyDeferred: true,
+          cascadeApplyImplemented: false,
+          groups: [],
+          warnings: [{ code: 'cascade-diagnostics-failed' }],
+        };
+      });
+  }
+
   function diagnose(options) {
     var includeSensitive = !!(options && options.includeSensitive);
     if (!global.indexedDB) {
@@ -2088,7 +2445,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.3',
+    __version: '0.1.0-f5g.5',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -2112,11 +2469,13 @@
     previewApply: previewApply,
     applyReview: applyReview,
     diagnose: diagnose,
+    diagnoseCascadeGroups: diagnoseCascadeGroups,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
+      cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
