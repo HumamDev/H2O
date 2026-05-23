@@ -2551,6 +2551,101 @@ Future implementation must prove:
 7. F5H.6: retention/archive strategy after watermarks.
 8. F5H.7: real purge policy much later, if ever.
 
+## F5H.1 Lifecycle Diagnostics
+
+F5H.1 adds a counts-only lifecycle diagnostic API:
+
+```js
+await H2O.Studio.store.tombstoneReviews.diagnoseLifecycle()
+```
+
+This API observes lifecycle state only. It does not clean up, purge, compact,
+archive, mutate review rows, mutate tombstone rows, mutate Library records, or
+change import/export/sync/apply behavior.
+
+Desktop reports both SQLite lifecycle surfaces:
+
+- local tombstones from `sync_tombstones`
+- review rows from `sync_tombstone_reviews`
+
+Chrome reports IndexedDB review rows only. Its tombstone section is explicitly:
+
+```js
+{
+  supported: false,
+  reason: 'chrome-local-tombstone-store-not-implemented'
+}
+```
+
+The diagnostic schema is:
+
+```js
+{
+  schema: 'h2o.studio.tombstone-lifecycle-diagnostic.v1',
+  generatedAt,
+  redacted: true,
+  platform: 'desktop-tauri' | 'chrome-mv3',
+  tombstones: {
+    supported,
+    total,
+    active,
+    restored,
+    syntheticCandidates,
+    purgeBlocked,
+    byKind,
+    byDeleteReason,
+    cascadeCount,
+    remoteReviewAppliedCount,
+    oldestDeletedAt,
+    newestDeletedAt,
+    warnings
+  },
+  reviews: {
+    supported: true,
+    total,
+    pending,
+    acceptedLater,
+    resolved,
+    rejected,
+    ignored,
+    superseded,
+    syntheticCandidates,
+    purgeBlocked,
+    byClassification,
+    byStatus,
+    malformedCount,
+    unsupportedKindCount,
+    deleteVsEditCount,
+    cascadeReviewCount,
+    oldestReceivedAt,
+    newestReceivedAt,
+    warnings
+  },
+  watermarks: {
+    supported: false,
+    reason: 'peer-watermarks-not-implemented'
+  },
+  recommendations: [
+    { code: 'peer-watermarks-required-before-compaction' },
+    { code: 'synthetic-cleanup-preview-available-later' },
+    { code: 'no-automatic-purge' }
+  ]
+}
+```
+
+Results are redacted and count-only. They must not include tombstone ids,
+review ids, record ids, peer ids, raw tombstone JSON, warning JSON contents,
+metadata, folder names, chat titles, transcript text, prompt text, answer text,
+or content.
+
+Synthetic candidates are counted only from known F5 validation prefixes:
+`f5c-`, `f5d-`, `f5d1-`, `f5d2-`, `f5f-`, and `f5g-`. Candidate rows are
+not listed and are not deleted.
+
+Because peer watermarks are not implemented, `purgeBlocked` is intentionally
+conservative. Lifecycle diagnostics can explain why cleanup is unsafe, but they
+do not authorize purge or compaction.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

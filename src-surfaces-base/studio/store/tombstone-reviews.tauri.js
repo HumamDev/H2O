@@ -35,6 +35,7 @@
   var REVIEW_SCHEMA = 'h2o.studio.tombstone-review.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
+  var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
@@ -46,6 +47,8 @@
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 100;
   var MAX_LIST_LIMIT = 1000;
+  var LOCAL_TOMBSTONE_TABLE = 'sync_tombstones';
+  var SYNTHETIC_PREFIXES = ['f5c-', 'f5d-', 'f5d1-', 'f5d2-', 'f5f-', 'f5g-'];
 
   var CLASSIFICATIONS = {
     'safe-review': true,
@@ -2017,6 +2020,265 @@
     map[k] = Number(map[k] || 0) + 1;
   }
 
+  function lifecycleRecommendations() {
+    return [
+      { code: 'peer-watermarks-required-before-compaction' },
+      { code: 'synthetic-cleanup-preview-available-later' },
+      { code: 'no-automatic-purge' },
+    ];
+  }
+
+  function makeLifecycleTombstoneSection() {
+    return {
+      supported: true,
+      available: true,
+      ready: true,
+      total: 0,
+      active: 0,
+      restored: 0,
+      syntheticCandidates: 0,
+      purgeBlocked: 0,
+      byKind: {},
+      byDeleteReason: {},
+      cascadeCount: 0,
+      remoteReviewAppliedCount: 0,
+      oldestDeletedAt: null,
+      newestDeletedAt: null,
+      warnings: [],
+    };
+  }
+
+  function makeLifecycleReviewSection() {
+    return {
+      supported: true,
+      available: true,
+      ready: true,
+      total: 0,
+      pending: 0,
+      acceptedLater: 0,
+      resolved: 0,
+      rejected: 0,
+      ignored: 0,
+      superseded: 0,
+      syntheticCandidates: 0,
+      purgeBlocked: 0,
+      byClassification: {},
+      byStatus: {},
+      malformedCount: 0,
+      unsupportedKindCount: 0,
+      deleteVsEditCount: 0,
+      cascadeReviewCount: 0,
+      oldestReceivedAt: null,
+      newestReceivedAt: null,
+      warnings: [],
+    };
+  }
+
+  function unavailableLifecycleTombstoneSection(code) {
+    var section = makeLifecycleTombstoneSection();
+    section.available = false;
+    section.ready = false;
+    pushCodeWarning(section.warnings, code);
+    return section;
+  }
+
+  function unavailableLifecycleReviewSection(code) {
+    var section = makeLifecycleReviewSection();
+    section.available = false;
+    section.ready = false;
+    pushCodeWarning(section.warnings, code);
+    return section;
+  }
+
+  function lifecycleString(value) {
+    if (value == null) return '';
+    if (typeof value === 'string') return value.trim();
+    try {
+      if (typeof value === 'object') return JSON.stringify(value);
+    } catch (_) { /* ignore */ }
+    return String(value).trim();
+  }
+
+  function lifecycleHasSyntheticMarker(value) {
+    var s = lifecycleString(value).toLowerCase();
+    if (!s) return false;
+    for (var i = 0; i < SYNTHETIC_PREFIXES.length; i += 1) {
+      var prefix = SYNTHETIC_PREFIXES[i];
+      var encoded = '';
+      try { encoded = encodeURIComponent(prefix).toLowerCase(); }
+      catch (_) { encoded = prefix; }
+      if (s.indexOf(prefix) >= 0 || s.indexOf(encoded) >= 0) return true;
+    }
+    return false;
+  }
+
+  function isSyntheticLifecycleTombstone(row) {
+    return lifecycleHasSyntheticMarker(readField(row, 'recordId', 'record_id')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'deleteReason', 'delete_reason')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'metaJson', 'meta_json')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'meta', 'meta_json'));
+  }
+
+  function isSyntheticLifecycleReview(row) {
+    return lifecycleHasSyntheticMarker(readField(row, 'reviewId', 'review_id')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'recordId', 'record_id')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'deleteReason', 'delete_reason')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'rawTombstoneJson', 'raw_tombstone_json')) ||
+      lifecycleHasSyntheticMarker(readField(row, 'remoteExportId', 'remote_export_id'));
+  }
+
+  function updateLifecycleRange(section, oldestField, newestField, stateObj, value) {
+    var raw = lifecycleString(value);
+    if (!raw) return;
+    var ms = parseTimeMs(raw);
+    if (ms == null) return;
+    if (stateObj.oldestMs == null || ms < stateObj.oldestMs) {
+      stateObj.oldestMs = ms;
+      section[oldestField] = raw;
+    }
+    if (stateObj.newestMs == null || ms > stateObj.newestMs) {
+      stateObj.newestMs = ms;
+      section[newestField] = raw;
+    }
+  }
+
+  function isLifecycleCascadeTombstone(row) {
+    var reason = cleanScalar(readField(row, 'deleteReason', 'delete_reason'));
+    return !!(
+      cleanScalar(readField(row, 'cascadeFrom', 'cascade_from')) ||
+      /-cascade$/.test(reason) ||
+      lifecycleString(readField(row, 'metaJson', 'meta_json')).indexOf('cascade') >= 0 ||
+      lifecycleString(readField(row, 'meta', 'meta_json')).indexOf('cascade') >= 0
+    );
+  }
+
+  function isLifecycleRemoteReviewAppliedTombstone(row) {
+    var reason = cleanScalar(readField(row, 'deleteReason', 'delete_reason'));
+    var meta = lifecycleString(readField(row, 'metaJson', 'meta_json')) ||
+      lifecycleString(readField(row, 'meta', 'meta_json'));
+    return reason === 'remote-review-apply' ||
+      meta.indexOf('remote-review-apply') >= 0 ||
+      meta.indexOf('tombstoneReviews.applyReview') >= 0;
+  }
+
+  function buildLifecycleTombstoneSection(rows) {
+    var section = makeLifecycleTombstoneSection();
+    var range = {};
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var kind = cleanScalar(readField(row, 'recordKind', 'record_kind')) || 'unknown';
+      var reason = cleanScalar(readField(row, 'deleteReason', 'delete_reason')) || 'unknown';
+      var restoredAt = cleanScalar(readField(row, 'restoredAt', 'restored_at'));
+      section.total += 1;
+      if (restoredAt) section.restored += 1;
+      else section.active += 1;
+      bumpMap(section.byKind, kind);
+      bumpMap(section.byDeleteReason, reason);
+      if (isLifecycleCascadeTombstone(row)) section.cascadeCount += 1;
+      if (isLifecycleRemoteReviewAppliedTombstone(row)) section.remoteReviewAppliedCount += 1;
+      if (isSyntheticLifecycleTombstone(row)) section.syntheticCandidates += 1;
+      updateLifecycleRange(section, 'oldestDeletedAt', 'newestDeletedAt', range, readField(row, 'deletedAt', 'deleted_at'));
+    });
+    section.purgeBlocked = section.total;
+    return section;
+  }
+
+  function buildLifecycleReviewSection(rows) {
+    var section = makeLifecycleReviewSection();
+    var range = {};
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var status = cleanScalar(readField(row, 'status', null)) || 'unknown';
+      var classification = cleanScalar(readField(row, 'classification', null)) || 'unknown';
+      section.total += 1;
+      bumpMap(section.byStatus, status);
+      bumpMap(section.byClassification, classification);
+      if (status === 'pending') section.pending += 1;
+      if (status === 'accepted-later') section.acceptedLater += 1;
+      if (status === 'resolved') section.resolved += 1;
+      if (status === 'rejected') section.rejected += 1;
+      if (status === 'ignored') section.ignored += 1;
+      if (status === 'superseded') section.superseded += 1;
+      if (classification === 'malformed-remote-tombstone') section.malformedCount += 1;
+      if (classification === 'unsupported-record-kind') section.unsupportedKindCount += 1;
+      if (classification === 'delete-vs-edit') section.deleteVsEditCount += 1;
+      if (classification === 'cascade-review') section.cascadeReviewCount += 1;
+      if (isSyntheticLifecycleReview(row)) section.syntheticCandidates += 1;
+      updateLifecycleRange(
+        section,
+        'oldestReceivedAt',
+        'newestReceivedAt',
+        range,
+        readField(row, 'receivedAt', 'received_at') || readField(row, 'createdAt', 'created_at')
+      );
+    });
+    section.purgeBlocked = section.total;
+    return section;
+  }
+
+  function readLifecycleTombstoneRows() {
+    return ensureReady().then(function () {
+      return sqlSelect(
+        'SELECT record_kind, record_id, delete_reason, deleted_at, restored_at, cascade_from, meta_json FROM ' +
+          LOCAL_TOMBSTONE_TABLE,
+        []
+      );
+    });
+  }
+
+  function readLifecycleReviewRows() {
+    return ensureReady().then(function () {
+      return sqlSelect(
+        'SELECT review_id, record_kind, record_id, delete_reason, classification, status, decision, ' +
+          'received_at, created_at, remote_export_id, raw_tombstone_json FROM ' + TABLE,
+        []
+      );
+    });
+  }
+
+  function diagnoseLifecycle() {
+    var tombstonesPromise = readLifecycleTombstoneRows()
+      .then(buildLifecycleTombstoneSection)
+      .catch(function (e) {
+        recordError('diagnoseLifecycle:tombstones', e);
+        return unavailableLifecycleTombstoneSection('lifecycle-tombstone-diagnostics-failed');
+      });
+    var reviewsPromise = readLifecycleReviewRows()
+      .then(buildLifecycleReviewSection)
+      .catch(function (e) {
+        recordError('diagnoseLifecycle:reviews', e);
+        return unavailableLifecycleReviewSection('lifecycle-review-diagnostics-failed');
+      });
+    return Promise.all([tombstonesPromise, reviewsPromise]).then(function (parts) {
+      return {
+        schema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
+        generatedAt: nowIso(),
+        redacted: true,
+        platform: 'desktop-tauri',
+        tombstones: parts[0],
+        reviews: parts[1],
+        watermarks: {
+          supported: false,
+          reason: 'peer-watermarks-not-implemented',
+        },
+        recommendations: lifecycleRecommendations(),
+      };
+    }).catch(function (e) {
+      recordError('diagnoseLifecycle', e);
+      return {
+        schema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
+        generatedAt: nowIso(),
+        redacted: true,
+        platform: 'desktop-tauri',
+        tombstones: unavailableLifecycleTombstoneSection('lifecycle-diagnostics-failed'),
+        reviews: unavailableLifecycleReviewSection('lifecycle-diagnostics-failed'),
+        watermarks: {
+          supported: false,
+          reason: 'peer-watermarks-not-implemented',
+        },
+        recommendations: lifecycleRecommendations(),
+      };
+    });
+  }
+
   function readAllReviewsForCascadeDiagnostics() {
     return ensureReady()
       .then(function () {
@@ -2412,7 +2674,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5g.6.1',
+    __version: '0.1.0-f5h.1',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -2438,12 +2700,14 @@
     proveApplyTransaction: proveApplyTransaction,
     diagnose: diagnose,
     diagnoseCascadeGroups: diagnoseCascadeGroups,
+    diagnoseLifecycle: diagnoseLifecycle,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
+      lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
