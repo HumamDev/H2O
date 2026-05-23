@@ -185,6 +185,29 @@
 
         <section id="viewReader" class="wbReader" hidden></section>
       </main>
+
+      <!-- ── Studio Dock Panel shell (Phase 2A — UI shell, no tabs) ───────
+           Visible Dock container. Hidden by default; the dock-shell
+           module (src-surfaces-base/studio/dock/dock-shell.studio.js)
+           auto-mounts onto this element at DOMContentLoaded and
+           toggles the `wbDock--open` class via open() / close().
+           CSS additionally route-gates visibility to reader routes
+           only (`body[data-route="reader"] #studioDock.wbDock--open`).
+           Feature tabs (Highlights/Bookmarks/Notes/Navigator/Context/
+           Capture) land in Phase 2B; Phase 2A renders only a
+           placeholder inside the view area. -->
+      <aside id="studioDock" class="wbDock" hidden aria-label="Studio Dock Panel">
+        <div class="wbDockRail" data-role="dock-rail" aria-hidden="true"></div>
+        <section class="wbDockBody" data-role="dock-body">
+          <header class="wbDockHead">
+            <div class="wbDockTitle">Dock</div>
+            <button type="button" class="wbDockClose" data-dock-action="close" aria-label="Close Dock">×</button>
+          </header>
+          <div class="wbDockView" data-role="dock-view">
+            <div class="wbDockEmpty">Dock tabs will appear in Phase 2B.</div>
+          </div>
+        </section>
+      </aside>
     </div>
   </div>
 

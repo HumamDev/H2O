@@ -1,35 +1,45 @@
-/* H2O Studio — Dock Shell (Phase 1b)
+/* H2O Studio — Dock Shell (Phase 2A)
  *
- * Publishes H2O.Studio.dock — a passive, mountless tab registry plus
- * Studio-local UI state (open / view) persisted via
- * H2O.Studio.store.prefs.
+ * Publishes H2O.Studio.dock — the Studio Dock tab registry, persisted
+ * UI state (open / view) via H2O.Studio.store.prefs, and as of Phase
+ * 2A a DOM-aware shell that mounts onto a visible Dock container in
+ * studio.html.
  *
- * Phase 1a introduced the namespace and no-op methods; Phase 1b wires
- * persistence for the Dock open flag and active view id. This file
- * still does NOT:
- *   - mount any DOM (mount/unmount remain no-op stubs)
- *   - render any tab (registered tabs are tracked, never painted)
+ * Phase progression:
+ *   - Phase 1a: passive namespace + no-op mount/open/close.
+ *   - Phase 1b: persistence wiring (open/view → h2o:studio:dock:*).
+ *   - Phase 2A: real DOM mount + open/close visual state + close
+ *               button wiring. NO feature tabs yet. NO feature-data
+ *               rendering. NO write-back. NO cross-surface sync.
+ *
+ * What this file still does NOT do:
+ *   - render any tab content (registered tabs are tracked, never
+ *     painted; the dock view area shows a "Phase 2B" placeholder)
+ *   - call any feature store (highlights / context / bookmarks /
+ *     notes / navigator / capture)
  *   - reach into any feature engine, native runtime, or studio reader
- *   - write any non-Studio key (refused at the prefs store boundary)
+ *   - write any non-Studio key
+ *   - own route detection (route gating is purely CSS via the
+ *     existing `body[data-route="reader"]` attribute set by studio.js)
  *
- * Persistence rules:
+ * Persistence rules (unchanged from Phase 1b):
  *   - open: persisted under H2O.Studio.store.prefs.keys.dockOpen
  *           ('h2o:studio:dock:open:v1') as a boolean
  *   - view: persisted under H2O.Studio.store.prefs.keys.dockView
  *           ('h2o:studio:dock:view:v1') as a string id or null
- *   - mounted / tabsRegistry: in-memory only; never persisted
+ *   - mounted / tabsRegistry / DOM refs: in-memory only; never persisted
  *
- * Public API (Phase 1b):
- *   version: '0.1.0-phase-1b'
- *   phase: '1b'
+ * Public API (Phase 2A):
+ *   version: '0.1.0-phase-2a'
+ *   phase: '2a'
  *   registerTab(id, def): void
  *   getTab(id): TabDef | null
  *   unregisterTab(id): boolean
  *   tabs: { [id]: TabDef }                  // fresh shallow copy on read
- *   mount(container): void                  // no-op stub
- *   unmount(): void                         // no-op stub
- *   open(): void                            // persists dockOpen
- *   close(): void                           // persists dockOpen
+ *   mount(container): void                  // DOM-aware (Phase 2A)
+ *   unmount(): void                         // DOM-aware (Phase 2A)
+ *   open(): void                            // persists + DOM visible
+ *   close(): void                           // persists + DOM hidden
  *   toggle(): void
  *   setView(id): boolean                    // null clears; unknown id rejected
  *   getView(): string | null
@@ -43,22 +53,26 @@
  *                  hasDockKeys, hasDockEvents,
  *                  hasPrefsStore, persisted,
  *                  tabCount, open, view, mounted,
+ *                  hasContainer, hasRail, hasBody, hasView,
  *                  errors }
  *
- * Boot hydration:
- *   1. Sync hydrate at install time: read prefs.get(dockOpen, undefined)
- *      and prefs.get(dockView, undefined). If the prefs cache is still
- *      cold (no real platform adapter, or async load not yet done) these
- *      return undefined and state stays at defaults.
- *   2. Subscribe to prefs; when the 'ready' event fires (async hydration
- *      complete) re-read both keys and update state, emitting
- *      openChanged / viewChanged for any actual change. Writes performed
- *      during boot hydration are suppressed so we never loop a hydrated
- *      value back into prefs.
- *   3. setView only applies a hydrated view id if a tab with that id is
- *      currently registered. Unregistered hydrated ids are silently
- *      ignored to avoid showing a "ghost view" pointing at a tab that
- *      will never paint.
+ * Route gating (Phase 2A):
+ *   The Dock container is permanently in studio.html, but visibility
+ *   is controlled by CSS:
+ *     body[data-route="reader"] #studioDock.wbDock--open { display: flex; ... }
+ *     #studioDock { display: none; }                  (default rule)
+ *   studio.js sets `body.dataset.route` ("list" | "reader" | "linked")
+ *   when the user navigates; the existing route plumbing therefore
+ *   handles Dock visibility with no JS coupling. open() / close()
+ *   manage the .wbDock--open class only — they do not check or
+ *   manipulate the route attribute.
+ *
+ * Auto-mount:
+ *   On DOM ready (or immediately if the document is already
+ *   interactive), the shell looks up `#studioDock` and calls
+ *   mount(container) automatically. Manual mount() from console is
+ *   still supported. In environments without `document` (e.g. node
+ *   smoke tests), the auto-mount is silently skipped.
  *
  * Contracts:
  *   docs/contracts/studio-dock-tab-registration.md
@@ -70,11 +84,13 @@
  *   - H2O global (created by H2O Core, loaded earlier in studio.html)
  *   - Optional: H2O.events.emit (used if present; soft-fails otherwise)
  *   - Optional: H2O.Studio.store.prefs (used if present; soft-fails)
+ *   - Optional: a DOM container with id="studioDock" (used if present)
  *
  * Does NOT depend on:
  *   - chrome.* / localStorage / IndexedDB
- *   - any DOM element in studio.html
- *   - any other Studio feature module
+ *   - any feature store (highlights / context / bookmarks / notes /
+ *     navigator / capture) — the shell does not call them
+ *   - studio.js — route gating is via CSS only, no JS hook needed
  */
 (function (global) {
   'use strict';
@@ -87,8 +103,13 @@
     return;
   }
 
-  const VERSION = '0.1.0-phase-1b';
-  const PHASE = '1b';
+  const VERSION = '0.1.0-phase-2a';
+  const PHASE = '2a';
+
+  /* CSS class applied to the container when open. CSS rules show the
+   * container only when this class is present AND the body's route
+   * attribute is a reader route. */
+  const OPEN_CLASS = 'wbDock--open';
 
   /* ── Event-name constants (Studio-local; do not collide with native) ── */
   const DOCK_SHELL_EVENTS = Object.freeze({
@@ -107,6 +128,17 @@
     mountContainer: null,
   };
 
+  /* DOM references captured at mount time. Cleared at unmount. */
+  const dockRefs = {
+    container: null,
+    rail: null,
+    body: null,
+    head: null,
+    view: null,
+    close: null,
+  };
+  let closeListener = null;
+
   const errors = [];
   const errMax = 20;
   let prefsUnsub = null;
@@ -118,6 +150,9 @@
   }
   function isNonEmptyString(v) {
     return typeof v === 'string' && v.length > 0;
+  }
+  function isElement(v) {
+    return !!v && typeof v === 'object' && typeof v.nodeType === 'number' && v.nodeType === 1;
   }
   function recordError(op, e) {
     try {
@@ -162,6 +197,30 @@
     catch (e) { recordError('persistView', e); }
   }
 
+  /* ── DOM helpers ──────────────────────────────────────────────────── */
+  /* Apply current internalState.open to the mounted container, if any.
+   * Sets both the `hidden` attribute (for assistive tech and default
+   * CSS) and the open class (which the route-gated CSS rule keys off).
+   * No-op when not mounted. */
+  function applyOpenToDom() {
+    if (!dockRefs.container) return;
+    try {
+      if (internalState.open) {
+        if (dockRefs.container.hasAttribute('hidden')) {
+          dockRefs.container.removeAttribute('hidden');
+        }
+        dockRefs.container.classList.add(OPEN_CLASS);
+      } else {
+        if (!dockRefs.container.hasAttribute('hidden')) {
+          dockRefs.container.setAttribute('hidden', '');
+        }
+        dockRefs.container.classList.remove(OPEN_CLASS);
+      }
+    } catch (e) {
+      recordError('applyOpenToDom', e);
+    }
+  }
+
   /* ── Tab registry ─────────────────────────────────────────────────── */
   function registerTab(id, def) {
     if (!isNonEmptyString(id)) return;
@@ -197,28 +256,70 @@
     return Object.keys(tabsRegistry).length;
   }
 
-  /* ── No-op shell methods (unchanged from 1a) ──────────────────────── */
+  /* ── Mount / unmount (Phase 2A — DOM-aware) ───────────────────────── */
   function mount(container) {
-    internalState.mountContainer = container || null;
+    if (!isElement(container)) {
+      /* Tolerate the Phase 1a-style call shape (any truthy thing) for
+       * back-compat with smoke tests; just record it. */
+      internalState.mountContainer = container || null;
+      internalState.mounted = true;
+      softEmit(DOCK_SHELL_EVENTS.ready, {});
+      return;
+    }
+    /* Re-mounting onto a different container: unmount the previous one
+     * first so listeners are cleaned up. */
+    if (dockRefs.container && dockRefs.container !== container) {
+      unmount();
+    }
+    internalState.mountContainer = container;
     internalState.mounted = true;
-    softEmit(DOCK_SHELL_EVENTS.ready, {});
+    dockRefs.container = container;
+    try {
+      dockRefs.rail  = container.querySelector('[data-role="dock-rail"]')  || null;
+      dockRefs.body  = container.querySelector('[data-role="dock-body"]')  || null;
+      dockRefs.head  = container.querySelector('.wbDockHead')              || null;
+      dockRefs.view  = container.querySelector('[data-role="dock-view"]')  || null;
+      dockRefs.close = container.querySelector('[data-dock-action="close"]') || null;
+    } catch (e) {
+      recordError('mount:querySelector', e);
+    }
+    if (dockRefs.close && typeof dockRefs.close.addEventListener === 'function') {
+      closeListener = function () { close(); };
+      try { dockRefs.close.addEventListener('click', closeListener); }
+      catch (e) { recordError('mount:closeListener', e); closeListener = null; }
+    }
+    applyOpenToDom();
+    softEmit(DOCK_SHELL_EVENTS.ready, { mounted: true });
   }
   function unmount() {
+    if (dockRefs.close && closeListener && typeof dockRefs.close.removeEventListener === 'function') {
+      try { dockRefs.close.removeEventListener('click', closeListener); }
+      catch (e) { recordError('unmount:closeListener', e); }
+    }
+    closeListener = null;
+    dockRefs.container = null;
+    dockRefs.rail = null;
+    dockRefs.body = null;
+    dockRefs.head = null;
+    dockRefs.view = null;
+    dockRefs.close = null;
     internalState.mountContainer = null;
     internalState.mounted = false;
   }
 
-  /* ── Open / close / toggle (now persist via prefs) ────────────────── */
+  /* ── Open / close / toggle (persist via prefs + apply to DOM) ─────── */
   function open() {
     if (internalState.open) return;
     internalState.open = true;
     persistOpen(true);
+    applyOpenToDom();
     softEmit(DOCK_SHELL_EVENTS.openChanged, { open: true });
   }
   function close() {
     if (!internalState.open) return;
     internalState.open = false;
     persistOpen(false);
+    applyOpenToDom();
     softEmit(DOCK_SHELL_EVENTS.openChanged, { open: false });
   }
   function toggle() {
@@ -301,6 +402,10 @@
       open: internalState.open,
       view: internalState.view,
       mounted: internalState.mounted,
+      hasContainer: !!dockRefs.container,
+      hasRail:      !!dockRefs.rail,
+      hasBody:      !!dockRefs.body,
+      hasView:      !!dockRefs.view,
       errors: errors.slice(),
     };
   }
@@ -315,6 +420,7 @@
       if (typeof persistedOpen === 'boolean' && persistedOpen !== internalState.open) {
         const wasOpen = internalState.open;
         internalState.open = persistedOpen;
+        applyOpenToDom();
         softEmit(DOCK_SHELL_EVENTS.openChanged, { open: persistedOpen, previous: wasOpen, source: reason || 'hydrate' });
       }
       const persistedView = prefs.get(prefs.keys.dockView, undefined);
@@ -361,13 +467,41 @@
         if (evt.type === 'ready') {
           hydrateFromPrefs('boot-async');
         }
-        /* Phase 1b ignores prefs set/remove events: this shell is the
-         * sole writer of dock open/view. Cross-context sync of UI state
-         * is intentionally out of scope (see STUDIO_DOCK_PANEL_CONTRACT
-         * "UI state never syncs" rule). */
+        /* Phase 2A continues to ignore prefs set/remove events: this
+         * shell is the sole writer of dock open/view. Cross-context
+         * sync of UI state is intentionally out of scope (see
+         * STUDIO_DOCK_PANEL_CONTRACT "UI state never syncs" rule). */
       });
     } catch (e) {
       recordError('bindPrefs:subscribe', e);
+    }
+  }
+
+  /* ── Auto-mount (Phase 2A) ────────────────────────────────────────── */
+  /* Look up the Dock container in studio.html and mount automatically.
+   * Safe in environments without `document` (node smoke tests skip).
+   * Manual mount() from console remains supported. */
+  function autoMount() {
+    try {
+      if (typeof document === 'undefined') return;
+      const el = document.getElementById('studioDock');
+      if (el) {
+        mount(el);
+      }
+    } catch (e) {
+      recordError('autoMount', e);
+    }
+  }
+  function scheduleAutoMount() {
+    try {
+      if (typeof document === 'undefined') return;
+      if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        autoMount();
+      } else if (typeof document.addEventListener === 'function') {
+        document.addEventListener('DOMContentLoaded', autoMount, { once: true });
+      }
+    } catch (e) {
+      recordError('scheduleAutoMount', e);
     }
   }
 
@@ -403,4 +537,7 @@
 
   /* Bind prefs after install so subscribers can find dockApi if needed. */
   bindPrefs();
+
+  /* Schedule auto-mount onto #studioDock once the DOM is ready. */
+  scheduleAutoMount();
 })(globalThis);
