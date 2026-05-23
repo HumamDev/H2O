@@ -32,6 +32,7 @@ const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
+const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
   selected: false,
@@ -6910,6 +6911,74 @@ async function settingsFolderDesktopKnownRowsForBindings(bindings){
   return out;
 }
 
+function settingsFolderDesktopRegistryFolderMatches(folderId){
+  const id = String(folderId || "").trim();
+  if (!id) return [];
+  let rows = [];
+  try { rows = W.H2O?.LibraryIndex?.getAll?.() || []; } catch { rows = []; }
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const values = [
+      row?.folderId,
+      row?.folder_id,
+      row?.sourceId,
+      row?.source_id,
+      row?.id,
+      row?.chatId,
+      row?.snapshotId,
+    ].map((value) => String(value || "").trim());
+    return values.includes(id);
+  }).slice(0, 8).map((row) => ({
+    chatId: String(row?.chatId || "").trim(),
+    sourceId: String(row?.sourceId || row?.source_id || "").trim(),
+    snapshotId: String(row?.snapshotId || row?.id || "").trim(),
+    title: String(row?.title || "").trim(),
+    folderId: String(row?.folderId || row?.folder_id || "").trim(),
+    view: String(row?.view || "").trim(),
+  }));
+}
+
+async function settingsFolderDesktopDependenciesForFolder(folderId){
+  const id = String(folderId || "").trim();
+  if (!id) {
+    return {
+      folderRows: [],
+      chatsByFolder: [],
+      snapshotsByChatId: [],
+      libraryRows: [],
+      warnings: ["Missing folder ID."],
+    };
+  }
+  const [folderResult, chatsResult, snapshotsResult] = await Promise.all([
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, name, source, color, sort_order, created_at, updated_at, meta_json FROM folders WHERE id = ?",
+      [id]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, source_id, title, folder_id, is_saved, is_linked, href, normalized_href FROM chats WHERE folder_id = ?",
+      [id]
+    ),
+    settingsFolderDesktopSqlSelect(
+      "SELECT id, chat_id, title FROM snapshots WHERE chat_id = ? LIMIT 10",
+      [id]
+    ),
+  ]);
+  const warnings = [];
+  if (!folderResult.ok) warnings.push(`Folder row preflight failed: ${folderResult.error || "unknown error"}`);
+  if (!chatsResult.ok) warnings.push(`Chat dependency preflight failed: ${chatsResult.error || "unknown error"}`);
+  if (!snapshotsResult.ok) warnings.push(`Snapshot dependency preflight failed: ${snapshotsResult.error || "unknown error"}`);
+  return {
+    folderRows: settingsFolderDesktopSqlOkRows(folderResult).map(settingsFolderDesktopNormalizeFolder).filter(Boolean),
+    chatsByFolder: settingsFolderDesktopSqlOkRows(chatsResult).map(settingsFolderDesktopNormalizeKnownChat).filter(Boolean),
+    snapshotsByChatId: settingsFolderDesktopSqlOkRows(snapshotsResult).map((row) => ({
+      id: String(row?.id || "").trim(),
+      chatId: String(row?.chat_id || row?.chatId || "").trim(),
+      title: String(row?.title || "").trim(),
+    })),
+    libraryRows: settingsFolderDesktopRegistryFolderMatches(id),
+    warnings,
+  };
+}
+
 async function settingsFolderDesktopLoadFacts(){
   if (!STUDIO_isTauri()) {
     return {
@@ -6920,6 +6989,7 @@ async function settingsFolderDesktopLoadFacts(){
       f5dFolders: [],
       bindingsByFolder: {},
       knownRowsByFolder: {},
+      dependenciesByFolder: {},
       warnings: ["Desktop SQLite review is available only in Desktop Studio."],
       diagnose: null,
       storeMethods: [],
@@ -6931,6 +7001,7 @@ async function settingsFolderDesktopLoadFacts(){
   const f5dFolders = listResult.folders.filter(settingsFolderCleanupIsF5DReviewCandidate);
   const bindingsByFolder = {};
   const knownRowsByFolder = {};
+  const dependenciesByFolder = {};
   const warnings = listResult.warnings.slice();
   for (const folder of f5dFolders) {
     const bindingResult = await settingsFolderDesktopBindingsForFolder(folder.folderId);
@@ -6939,6 +7010,10 @@ async function settingsFolderDesktopLoadFacts(){
       warnings.push(...bindingResult.warnings.map((msg) => `${folder.folderId}: ${msg}`));
     }
     knownRowsByFolder[folder.folderId] = await settingsFolderDesktopKnownRowsForBindings(bindingResult.bindings);
+    dependenciesByFolder[folder.folderId] = await settingsFolderDesktopDependenciesForFolder(folder.folderId);
+    if (dependenciesByFolder[folder.folderId].warnings.length) {
+      warnings.push(...dependenciesByFolder[folder.folderId].warnings.map((msg) => `${folder.folderId}: ${msg}`));
+    }
   }
   let diagnose = null;
   try { diagnose = typeof foldersStore?.diagnose === "function" ? await foldersStore.diagnose() : null; } catch {}
@@ -6951,6 +7026,7 @@ async function settingsFolderDesktopLoadFacts(){
     f5dFolders,
     bindingsByFolder,
     knownRowsByFolder,
+    dependenciesByFolder,
     warnings: Array.from(new Set(warnings.filter(Boolean))),
     diagnose,
     storeMethods,
@@ -7042,6 +7118,12 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
   const id = String(folderId || "").trim();
   const bindings = Array.isArray(desktopFacts?.bindingsByFolder?.[id]) ? desktopFacts.bindingsByFolder[id] : [];
   const knownChatRows = Array.isArray(desktopFacts?.knownRowsByFolder?.[id]) ? desktopFacts.knownRowsByFolder[id] : [];
+  const dependencies = desktopFacts?.dependenciesByFolder?.[id] || {};
+  const folderRows = Array.isArray(dependencies.folderRows) ? dependencies.folderRows : (desktopFolder ? [desktopFolder] : []);
+  const chatsByFolder = Array.isArray(dependencies.chatsByFolder) ? dependencies.chatsByFolder : [];
+  const snapshotsByChatId = Array.isArray(dependencies.snapshotsByChatId) ? dependencies.snapshotsByChatId : [];
+  const libraryRows = Array.isArray(dependencies.libraryRows) ? dependencies.libraryRows : [];
+  const dependencyCount = chatsByFolder.length + snapshotsByChatId.length + libraryRows.length;
   const orphanBindings = knownChatRows.filter((row) => row && row.known === false);
   const existsInDesktopSqlite = !!desktopFolder;
   const existsInChromeMirror = !!chromeFolder;
@@ -7049,9 +7131,14 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
   const bindingCount = bindings.length;
   const blockers = [];
   const warnings = [];
+  if (id !== FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID) blockers.push("P7d-d only targets f5d1-test-folder-b");
+  if (existsInDesktopSqlite && folderRows.length !== 1) blockers.push(`Desktop folder row count is ${folderRows.length}`);
   if (existsInNative) blockers.push("native/canonical folder");
   if (bindingCount > 0) blockers.push("Desktop SQLite binding exists");
   if (orphanBindings.length > 0) blockers.push("binding does not resolve to a known chat row");
+  if (chatsByFolder.length > 0) blockers.push("chat rows reference this folder");
+  if (snapshotsByChatId.length > 0) blockers.push("snapshot rows reference this folder id");
+  if (libraryRows.length > 0) blockers.push("LibraryIndex rows reference this folder");
   if (existsInChromeMirror) warnings.push("Also present in Chrome mirror; Desktop cleanup does not remove Chrome mirror rows.");
   if (!existsInDesktopSqlite && !existsInChromeMirror) blockers.push("folder not found in Desktop or Chrome facts");
   if (settingsFolderCleanupIsF5DReviewCandidate({ folderId: id, name })) {
@@ -7071,8 +7158,11 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
       : (existsInDesktopSqlite ? "desktop-empty-test-candidate" : "chrome-only-extra-candidate"));
   const futureEligible = !existsInNative
     && existsInDesktopSqlite
+    && id === FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID
+    && folderRows.length === 1
     && bindingCount === 0
-    && knownChatRows.length === 0;
+    && knownChatRows.length === 0
+    && dependencyCount === 0;
   return {
     folderId: id,
     name: String(name || desktopFolder?.name || chromeFolder?.name || id).trim() || id,
@@ -7093,6 +7183,11 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
     bindingCount,
     bindings,
     knownChatRows,
+    dependencyCount,
+    folderRows,
+    chatsByFolder,
+    snapshotsByChatId,
+    libraryRows,
     chromeBucket: chromeFolder ? {
       bucketExists: !!chromeFolder.bucketExists,
       bucketIsArray: !!chromeFolder.bucketIsArray,
@@ -7101,7 +7196,7 @@ function settingsFolderDesktopBuildCandidate({ folderId, name, desktopFolder = n
     } : null,
     proposedAction: bindingCount > 0
       ? "Review exact binding before any future Desktop action."
-      : "P7d-b Desktop deletion is allowed only after explicit preview, typed confirmation, fresh revalidation, and audit.",
+      : "P7d-d Desktop deletion is allowed only for f5d1-test-folder-b after explicit preview, typed confirmation, fresh revalidation, and audit.",
     riskLevel: bindingCount > 0 || orphanBindings.length > 0 ? "high-review-required" : "review-required",
     requiresApproval: true,
     warnings,
@@ -7825,15 +7920,26 @@ function settingsFolderDesktopDeleteBlockers(candidate){
   const folderId = String(candidate?.folderId || "").trim();
   const blockers = [];
   const knownChatRows = Array.isArray(candidate?.knownChatRows) ? candidate.knownChatRows : [];
+  const folderRows = Array.isArray(candidate?.folderRows) ? candidate.folderRows : [];
+  const chatsByFolder = Array.isArray(candidate?.chatsByFolder) ? candidate.chatsByFolder : [];
+  const snapshotsByChatId = Array.isArray(candidate?.snapshotsByChatId) ? candidate.snapshotsByChatId : [];
+  const libraryRows = Array.isArray(candidate?.libraryRows) ? candidate.libraryRows : [];
   if (!STUDIO_isTauri()) blockers.push("Desktop runtime required.");
   if (!folderId) blockers.push("missing folder ID");
+  if (folderId !== FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID) blockers.push("P7d-d only allows f5d1-test-folder-b");
   if (!candidate?.existsInDesktopSqlite) blockers.push("not present in Desktop SQLite");
   if (!settingsFolderCleanupIsF5DReviewCandidate(candidate)) blockers.push("not in Desktop/F5D review set");
   if (/^f_/.test(folderId)) blockers.push("canonical native folder ID prefix");
   if (candidate?.existsInNative) blockers.push("native-present folder");
+  if (folderRows.length !== 1) blockers.push(`Desktop folder row count is ${folderRows.length}`);
   if (settingsFolderCleanupNumber(candidate?.bindingCount) !== 0) blockers.push("Desktop SQLite bindings exist");
   if (knownChatRows.some((row) => row && row.known)) blockers.push("known chat row depends on this folder");
-  if (folderId === "f5d1-test-folder-b" && settingsFolderCleanupNumber(candidate?.bindingCount) > 0) {
+  if (chatsByFolder.length > 0) blockers.push("chats.folder_id references this folder");
+  if (snapshotsByChatId.length > 0) blockers.push("snapshots.chat_id references this folder id");
+  if (libraryRows.length > 0) blockers.push("LibraryIndex references this folder");
+  const remove = settingsFolderDesktopResolveRemoveMethod();
+  if (typeof remove.fn !== "function") blockers.push("Desktop folder remove API unavailable");
+  if (folderId === FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID && settingsFolderCleanupNumber(candidate?.bindingCount) > 0) {
     blockers.push("known bound F5D review folder");
   }
   return Array.from(new Set(blockers.filter(Boolean)));
@@ -7869,7 +7975,8 @@ function settingsFolderDesktopDeleteRowHtml(candidate){
           <span>${badges}</span>
         </span>
         <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "")}</span>
-        <span style="font-size:12px;opacity:.78">Desktop bindings ${esc(candidate?.bindingCount || 0)} · known chats 0 · native ${candidate?.existsInNative ? "yes" : "no"}</span>
+        <span style="font-size:12px;opacity:.78">Desktop bindings ${esc(candidate?.bindingCount || 0)} · chat rows ${(candidate?.chatsByFolder || []).length} · snapshots ${(candidate?.snapshotsByChatId || []).length} · LibraryIndex ${(candidate?.libraryRows || []).length}</span>
+        <span style="font-size:12px;opacity:.78">native ${candidate?.existsInNative ? "yes" : "no"} · folder rows ${(candidate?.folderRows || []).length}</span>
         <span style="font-size:12px;opacity:.72">${esc(chromeNote)}</span>
       </span>
     </label>
@@ -7883,7 +7990,7 @@ function settingsFolderDesktopRenderDeletePanel(panel, report){
   const eligible = settingsFolderDesktopEligibleDeleteRows(report);
   if (summary) {
     summary.textContent = STUDIO_isTauri()
-      ? `Desktop SQLite only. ${eligible.length} zero-binding F5D folder(s) are selectable. Chrome mirror, native folder-state, and sync folder are not modified.`
+      ? `Desktop SQLite only. ${eligible.length} final F5D folder(s) selectable. Chrome mirror, native folder-state, and sync folder are not modified.`
       : "Desktop empty folder cleanup is only available in Desktop Studio. Chrome mirror cleanup is separate and not performed.";
   }
   if (list) {
@@ -7901,7 +8008,10 @@ function settingsFolderDesktopRenderDeletePanel(panel, report){
 function settingsFolderDesktopValidateDeleteSelection(selectedIds, report){
   const ids = Array.from(new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
   if (!STUDIO_isTauri()) return { ok: false, error: "Desktop folder cleanup is only available in Desktop Studio.", selectedFolderIds: ids, candidates: [] };
-  if (!ids.length) return { ok: false, error: "Select at least one empty Desktop F5D folder.", selectedFolderIds: ids, candidates: [] };
+  if (!ids.length) return { ok: false, error: "Select f5d1-test-folder-b.", selectedFolderIds: ids, candidates: [] };
+  if (ids.length !== 1 || ids[0] !== FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID) {
+    return { ok: false, error: "P7d-d can delete only f5d1-test-folder-b.", selectedFolderIds: ids, candidates: [] };
+  }
   const eligibleById = new Map(settingsFolderDesktopEligibleDeleteRows(report).map((row) => [String(row.folderId || "").trim(), row]));
   const candidates = [];
   for (const folderId of ids) {
@@ -7916,8 +8026,12 @@ function settingsFolderDesktopValidateDeleteSelection(selectedIds, report){
       knownChatRows: settingsFolderCleanupClone(candidate.knownChatRows || []),
       nativePresence: !!candidate.existsInNative,
       existsInChromeMirror: !!candidate.existsInChromeMirror,
+      folderRows: settingsFolderCleanupClone(candidate.folderRows || []),
+      chatsByFolder: settingsFolderCleanupClone(candidate.chatsByFolder || []),
+      snapshotsByChatId: settingsFolderCleanupClone(candidate.snapshotsByChatId || []),
+      libraryRows: settingsFolderCleanupClone(candidate.libraryRows || []),
       riskLevel: "low-review-required",
-      eligibilityReason: "Desktop F5D folder has zero SQLite bindings, no known chat rows, and is native-absent.",
+      eligibilityReason: "f5d1-test-folder-b exists exactly once, has zero SQLite bindings, no chat/snapshot/LibraryIndex dependencies, and is native-absent.",
     });
   }
   return { ok: true, selectedFolderIds: ids, candidates };
@@ -7941,6 +8055,7 @@ function settingsFolderDesktopBuildDeletePreview(selectedIds, loaded){
   const validation = settingsFolderDesktopValidateDeleteSelection(selectedIds, loaded?.report);
   if (!validation.ok) return { ok: false, error: validation.error, selectedFolderIds: validation.selectedFolderIds || [] };
   const beforeSummary = settingsFolderDesktopSummaryFromFacts(loaded?.desktopFacts);
+  const remove = settingsFolderDesktopResolveRemoveMethod();
   return {
     ok: true,
     readOnly: false,
@@ -7950,8 +8065,17 @@ function settingsFolderDesktopBuildDeletePreview(selectedIds, loaded){
     surface: "desktop-studio",
     action: "delete-empty-desktop-folders",
     targetStore: "Desktop SQLite",
+    targetApi: remove.method
+      ? `H2O.Studio.store.folders.${remove.method}("${FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID}")`
+      : `H2O.Studio.store.folders.remove("${FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID}")`,
     selectedFolderIds: validation.selectedFolderIds,
     selectedFolders: validation.candidates,
+    targetFolder: validation.candidates[0] || null,
+    folderRow: validation.candidates[0]?.folderRows?.[0] || null,
+    bindingCount: settingsFolderCleanupNumber(validation.candidates[0]?.bindingCount),
+    chatDependencyCount: (validation.candidates[0]?.chatsByFolder || []).length,
+    snapshotDependencyCount: (validation.candidates[0]?.snapshotsByChatId || []).length,
+    libraryIndexDependencyCount: (validation.candidates[0]?.libraryRows || []).length,
     beforeDesktopFolderCount: beforeSummary.folderCount,
     predictedAfterDesktopFolderCount: Math.max(0, beforeSummary.folderCount - validation.selectedFolderIds.length),
     beforeDesktopFoldersSummary: beforeSummary,
@@ -8337,7 +8461,7 @@ async function deleteSelectedEmptyDesktopFolders(panel){
   }
   const remove = settingsFolderDesktopResolveRemoveMethod();
   if (typeof remove.fn !== "function") {
-    settingsFolderParityLog(panel, "Desktop deletion aborted before mutation. H2O.Studio.store.folders.remove is unavailable.");
+    settingsFolderParityLog(panel, "Desktop deletion aborted before mutation. H2O.Studio.store.folders.remove/delete is unavailable.");
     settingsFolderDesktopUpdateDeleteControls(panel);
     return;
   }
