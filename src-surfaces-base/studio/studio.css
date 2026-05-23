@@ -7067,3 +7067,78 @@ body[data-route="reader"] #studioDock.wbDock--open {
     width: min(100%, 320px);
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Studio Dock Panel rail buttons + placeholder body (Phase 2B)
+ *
+ * Phase 2B added inert tab placeholders. The dock-shell renders one
+ * rail button per registered tab and marks the active one. The view
+ * body shows placeholder text supplied by each tab's render().
+ *
+ * No feature data is rendered yet. No feature-store calls. These
+ * styles are placeholder shell affordances only.
+ * ──────────────────────────────────────────────────────────────────── */
+
+.wbDockRail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 6px 0;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.wbDockRailBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin: 0 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+}
+
+.wbDockRailBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.wbDockRailBtn:active {
+  transform: scale(0.96);
+}
+
+.wbDockRailBtn:focus-visible {
+  outline: 2px solid #6aa0ff;
+  outline-offset: -2px;
+}
+
+.wbDockRailBtn--active {
+  background: rgba(106, 160, 255, 0.18);
+  color: #fff;
+}
+
+.wbDockRailBtnIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 16px;
+  pointer-events: none;
+}
+
+.wbDockPlaceholder {
+  opacity: 0.62;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  padding: 6px 4px;
+}

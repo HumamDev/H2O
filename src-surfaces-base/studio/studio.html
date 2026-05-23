@@ -380,6 +380,28 @@
        Contracts: surfaces/studio/store/README.md,
                   surfaces/studio/STUDIO_DOCK_PANEL_CONTRACT.md. -->
   <script src="./store/capture.js"></script>
+
+  <!-- ── Studio Dock Panel tab placeholders (Phase 2B) ──────────────────
+       Each placeholder registers a tab with H2O.Studio.dock under a
+       stable id (highlights, context, bookmarks, notes, navigator,
+       capture; plus optional attachments and finder).
+       The render() functions emit a static placeholder message —
+       they do NOT read any feature store, do NOT scroll the reader,
+       do NOT mutate any data, and do NOT touch the native runtime.
+       Real feature-data rendering lands in Phase 2C against the
+       existing read-only stores. Capture stays inert in V1 per
+       STUDIO_DOCK_PANEL_CONTRACT.md.
+       Load after dock-shell + all feature stores so Phase 2C can wire
+       data reads without reordering. -->
+  <script src="./dock/tabs/highlights.tab.studio.js"></script>
+  <script src="./dock/tabs/context.tab.studio.js"></script>
+  <script src="./dock/tabs/bookmarks.tab.studio.js"></script>
+  <script src="./dock/tabs/notes.tab.studio.js"></script>
+  <script src="./dock/tabs/navigator.tab.studio.js"></script>
+  <script src="./dock/tabs/capture.tab.studio.js"></script>
+  <script src="./dock/tabs/attachments.tab.studio.js"></script>
+  <script src="./dock/tabs/finder.tab.studio.js"></script>
+
   <script src="./store/libraryIndex.js"></script>
   <!-- Desktop-only: SQLite-backed chats entity (M2a-3a). Self-detects Tauri
        and silently no-ops on MV3 / web. Backs the `chats` table defined in

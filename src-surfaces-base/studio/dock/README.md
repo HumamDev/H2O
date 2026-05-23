@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phase 0B, Phase 1a, Phase 1b, Phase 1c, Phase 1d, Phase 1e, Phase 1f, and Phase 1g landed (`dock-keys.js`, `dock-shell.studio.js`, `../store/prefs.js`, `../store/context.js`, `../store/bookmarks.js`, `../store/notes.js`, `../store/navigator.js`, `../store/capture.js`). Read-only Dock feature-store foundation is now complete (six native engines → six Studio façades). Next phase: Phase 2A — visible Dock UI shell (`tabs/*`, real DOM mount).
+Status: Phases 0B through 2B landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight inert tab placeholders register against the shell (`dock/tabs/*.tab.studio.js`). Next phase: Phase 2C — render real feature data from the existing read-only stores. No write-back yet.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -20,6 +20,8 @@ Companion docs:
 - **Phase 1f (landed)**: fourth read-only feature store — `H2O.Studio.store.navigator`. Reads native Navigator Engine per-chat state blob (`h2o:prm:cgx:nvgngn:state:navigator:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `get` / `getAll` / `getState` / `listPinned` / `listAliases` / `listCollapsed` / `keysFor` / `subscribe` / `selfCheck`. No write API, no pin/alias/collapse editing, no turn-model abstraction, no DOM-derived outline. Lives at `../store/navigator.js`. See "Phase 1f — what landed" below.
 - **Phase 1g (landed)**: fifth read-only feature store — `H2O.Studio.store.capture`. Reads native Capture Engine per-chat store blob (`h2o:prm:cgx:capture:store:v1:${chatId}`) **and** UI state (`…:ui:v1:${chatId}`) through `H2O.Studio.platform.storage`. Exposes `getStore` / `getUi` / `getBundle` / `getAll` / `list` / `getItem` / `keysFor` / `subscribe` / `selfCheck`. No write API, no Capture item creation, no conversion to Notes/Bookmarks/Context, no archiving, no live selection. Capture stays inert in Studio V1 per `STUDIO_DOCK_PANEL_CONTRACT.md`. Lives at `../store/capture.js`. See "Phase 1g — what landed" below. **Read-only foundation complete.**
 - **Phase 1c–1g**: per-feature read-only entity stores live in `../store/`, not here. This directory holds the Dock UI scaffolding.
+- **Phase 2A (landed)**: visible Dock UI shell — `#studioDock` container in `studio.html`, route-gated CSS in `studio.css`, and DOM-aware `mount/open/close/toggle` in `dock-shell.studio.js`. Auto-mounts at `DOMContentLoaded`. No tabs yet. See "Phase 2A — what landed" below.
+- **Phase 2B (landed)**: inert tab placeholders — `dock/tabs/*.tab.studio.js` registers eight tabs (Highlights, Context, Bookmarks, Notes, Navigator, Capture, Attachments, Finder) via `H2O.Studio.dock.registerTab`. The shell now renders rail buttons with active state and calls each tab's `render(container, ctx)` placeholder. NO feature-store reads, NO write-back, NO live selection, NO conversion. See "Phase 2B — what landed" below.
 - **Phase 2**: `tabs/` subdirectory for individual tab modules (highlights, bookmarks, notes, …).
 
 ## Code pattern (mandatory)
@@ -477,3 +479,59 @@ If `H2O.Studio.store.__registerEntity` is available at load time, the façade re
 - No schema migration. The façade preserves the native blob shape.
 - No write-back, no cross-surface sync beyond `chrome.storage.onChanged` propagation.
 - No extension of `fullBundle.v2`.
+
+## Phase 2A — what landed
+
+`dock-shell.studio.js` was upgraded from passive (Phase 1b) to DOM-aware. `mount(container)` now finds the rail / body / head / view / close children inside `#studioDock`, attaches a close-button click handler, and applies the current open state to the DOM. `unmount()` cleans up. `open()` and `close()` toggle the `wbDock--open` class and the `hidden` attribute on the container so CSS can paint/depaint the panel. `setView(id)` still validates against the tab registry.
+
+`studio.html` now contains the `#studioDock` container as the last child of `.wbStage`, with the rail / body / head / view / close placeholders the shell looks for.
+
+`studio.css` now route-gates the panel: it is hidden everywhere by default, and only rendered when `body[data-route="reader"]` AND the `wbDock--open` class is set on the container. The Dock auto-mounts at `DOMContentLoaded`, so no `studio.js` edits were required.
+
+`selfCheck()` was extended with `hasContainer / hasRail / hasBody / hasView` so a quick console call can verify the mount wiring.
+
+## Phase 2B — what landed
+
+Eight inert tab placeholders register against the Phase 2A shell:
+
+| Tab id | File | Icon | Placeholder text |
+|---|---|---|---|
+| `highlights` | `tabs/highlights.tab.studio.js` | 🌈 | "Read-only tab placeholder. Data rendering lands in Phase 2C." |
+| `context` | `tabs/context.tab.studio.js` | 🧠 | same |
+| `bookmarks` | `tabs/bookmarks.tab.studio.js` | ⭐ | same |
+| `notes` | `tabs/notes.tab.studio.js` | 🗒️ | same |
+| `navigator` | `tabs/navigator.tab.studio.js` | 🧭 | same |
+| `capture` | `tabs/capture.tab.studio.js` | 🧷 | "Capture is read-only/inert in Studio V1. Live selection and conversion are not enabled." |
+| `attachments` | `tabs/attachments.tab.studio.js` | 📎 | "Read-only tab placeholder. Data rendering lands in Phase 2C." |
+| `finder` | `tabs/finder.tab.studio.js` | 🔎 | same |
+
+Each tab module is a passive IIFE that calls `H2O.Studio.dock.registerTab(id, def)` and provides a minimal `render(container, ctx)` that writes static placeholder text into the supplied dock-view container. **No tab calls any feature store. No tab mutates anything. No tab touches the reader DOM.**
+
+`dock-shell.studio.js` was extended with:
+
+| Surface | Behavior |
+|---|---|
+| `listTabs()` | returns an array of registered tab ids in registration order |
+| `renderRail()` | clears the rail, emits one `.wbDockRailBtn` per tab with icon + title + `aria-pressed` + active-state class; reattaches click handlers (each calls `setView(tabId)`) |
+| `renderActiveView()` | runs any previous tab's cleanup, clears the dock view, and calls the active tab's `render(container, ctx)`. Falls back to the existing "Dock tabs will appear in Phase 2B." empty-state when no active view. |
+| `mount(container)` hook | calls `renderRail()` + `renderActiveView()` after applying open state |
+| `registerTab(id, def)` hook | if mounted, repaints rail; if the new tab matches the persisted view, paints its content |
+| `setView(id)` hook | repaints rail (active state) + view |
+| `unregisterTab(id)` hook | repaints rail; if the removed tab was active, clears view |
+| `hydrateFromPrefs(reason)` hook | if hydration produced a real view change AND mounted, repaints rail + view |
+| `unmount()` hook | removes per-rail-button listeners, runs the active tab cleanup |
+
+`studio.css` adds minimal styling: `.wbDockRail`, `.wbDockRailBtn` (idle / hover / focus-visible / active), `.wbDockRailBtnIcon`, `.wbDockPlaceholder`. No broader layout rules, no feature-specific styling.
+
+### What is still NOT in Phase 2B
+
+- No feature-store data calls from tabs or shell.
+- No actual highlights / bookmarks / notes / navigator / context / capture rendering.
+- No click-to-scroll reader integration.
+- No write-back. No `set` / `update` / `remove` / `saveNow` calls.
+- No live text selection. No Capture conversion / archiving.
+- No Notes editing. No Navigator pin/alias/collapse editing.
+- No Attachments DOM scanning. No Finder search.
+- No `fullBundle.v2` extension.
+
+`ctx` passed to tab `render()` in Phase 2B is intentionally minimal (`{ surface, phase, chatId:null, externalId:null, snapshotId:null }`). Phase 2C will populate `chatId / externalId / snapshotId` from the active reader snapshot so feature stores can be queried per-chat.

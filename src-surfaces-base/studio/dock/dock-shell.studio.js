@@ -1,4 +1,4 @@
-/* H2O Studio — Dock Shell (Phase 2A)
+/* H2O Studio — Dock Shell (Phase 2B)
  *
  * Publishes H2O.Studio.dock — the Studio Dock tab registry, persisted
  * UI state (open / view) via H2O.Studio.store.prefs, and as of Phase
@@ -103,8 +103,8 @@
     return;
   }
 
-  const VERSION = '0.1.0-phase-2a';
-  const PHASE = '2a';
+  const VERSION = '0.1.0-phase-2b';
+  const PHASE = '2b';
 
   /* CSS class applied to the container when open. CSS rules show the
    * container only when this class is present AND the body's route
@@ -143,6 +143,11 @@
   const errMax = 20;
   let prefsUnsub = null;
   let suppressPersist = false;   /* true while hydrating from prefs */
+
+  /* Per-rail-button click listeners + per-render cleanup callback —
+   * tracked so unmount and re-render can remove them cleanly. */
+  const railListeners = [];        /* [{ el, fn }] */
+  let activeRenderCleanup = null;  /* function | null */
 
   /* ── Helpers ──────────────────────────────────────────────────────── */
   function isPlainObject(v) {
@@ -231,6 +236,16 @@
     const stored = Object.assign({}, def, { id: id });
     tabsRegistry[id] = stored;
     softEmit(DOCK_SHELL_EVENTS.tabRegistered, { id: id });
+    /* Phase 2B: if the shell is already mounted, repaint the rail so
+     * newly-registered tabs appear immediately. If the newly-
+     * registered tab matches a pending persisted view (validated by
+     * hydrateFromPrefs), surface its content. */
+    if (dockRefs.rail) {
+      renderRail();
+      if (internalState.view === id) {
+        renderActiveView();
+      }
+    }
   }
   function getTab(id) {
     if (!isNonEmptyString(id)) return null;
@@ -246,6 +261,12 @@
       internalState.view = null;
       persistView(null);
       softEmit(DOCK_SHELL_EVENTS.viewChanged, { view: null, previous: oldView });
+      if (dockRefs.rail) renderRail();
+      renderActiveView();
+    } else if (dockRefs.rail) {
+      /* Removed tab wasn't active — still repaint rail so the button
+       * for the removed tab is gone. */
+      renderRail();
     }
     return true;
   }
@@ -254,6 +275,118 @@
   }
   function tabCount() {
     return Object.keys(tabsRegistry).length;
+  }
+  /* listTabs() returns an array of registered tab IDs in registration
+   * order. Convenience for callers that want a stable ordered list. */
+  function listTabs() {
+    return Object.keys(tabsRegistry);
+  }
+
+  /* ── Rail + view rendering (Phase 2B) ─────────────────────────────────
+   * Both helpers are no-ops when the corresponding DOM ref is missing.
+   * Neither calls any feature store. Neither writes anything outside
+   * the dock view area / rail. */
+  function clearRailListeners() {
+    for (let i = 0; i < railListeners.length; i += 1) {
+      const r = railListeners[i];
+      try {
+        if (r && r.el && typeof r.el.removeEventListener === 'function') {
+          r.el.removeEventListener('click', r.fn);
+        }
+      } catch (e) { recordError('clearRailListeners', e); }
+    }
+    railListeners.length = 0;
+  }
+  function renderRail() {
+    if (!dockRefs.rail) return;
+    if (typeof document === 'undefined') return;
+    clearRailListeners();
+    try {
+      while (dockRefs.rail.firstChild) {
+        dockRefs.rail.removeChild(dockRefs.rail.firstChild);
+      }
+    } catch (e) {
+      recordError('renderRail:clear', e);
+      return;
+    }
+    const ids = Object.keys(tabsRegistry);
+    for (let i = 0; i < ids.length; i += 1) {
+      const id = ids[i];
+      const def = tabsRegistry[id];
+      if (!def) continue;
+      try {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'wbDockRailBtn';
+        btn.setAttribute('data-dock-tab', id);
+        const isActive = internalState.view === id;
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        if (isActive) btn.classList.add('wbDockRailBtn--active');
+        btn.title = String(def.title || id);
+        btn.setAttribute('aria-label', String(def.title || id));
+        const ico = document.createElement('span');
+        ico.className = 'wbDockRailBtnIcon';
+        ico.setAttribute('aria-hidden', 'true');
+        ico.textContent = String(def.icon || (def.title ? def.title.charAt(0) : id.charAt(0)));
+        btn.appendChild(ico);
+        const handler = (function (tabId) {
+          return function () { setView(tabId); };
+        })(id);
+        btn.addEventListener('click', handler);
+        railListeners.push({ el: btn, fn: handler });
+        dockRefs.rail.appendChild(btn);
+      } catch (e) {
+        recordError('renderRail:append:' + id, e);
+      }
+    }
+  }
+  function renderActiveView() {
+    if (!dockRefs.view) return;
+    if (typeof document === 'undefined') return;
+    /* Run previous tab's cleanup if any. */
+    if (typeof activeRenderCleanup === 'function') {
+      try { activeRenderCleanup(); }
+      catch (e) { recordError('renderActiveView:cleanup', e); }
+      activeRenderCleanup = null;
+    }
+    try {
+      while (dockRefs.view.firstChild) {
+        dockRefs.view.removeChild(dockRefs.view.firstChild);
+      }
+    } catch (e) {
+      recordError('renderActiveView:clear', e);
+      return;
+    }
+    const id = internalState.view;
+    const def = (id && Object.prototype.hasOwnProperty.call(tabsRegistry, id))
+      ? tabsRegistry[id]
+      : null;
+    if (!def || typeof def.render !== 'function') {
+      /* Empty-state placeholder — same text as the initial markup in
+       * studio.html so the behavior matches when no tab is active. */
+      try {
+        const empty = document.createElement('div');
+        empty.className = 'wbDockEmpty';
+        empty.textContent = 'Dock tabs will appear in Phase 2B.';
+        dockRefs.view.appendChild(empty);
+      } catch (e) { recordError('renderActiveView:empty', e); }
+      return;
+    }
+    const ctx = {
+      surface: 'studio',
+      phase: PHASE,
+      chatId: null,
+      externalId: null,
+      snapshotId: null,
+    };
+    try {
+      const ret = def.render(dockRefs.view, ctx);
+      if (typeof ret === 'function') {
+        activeRenderCleanup = ret;
+      }
+    } catch (e) {
+      recordError('renderActiveView:render:' + id, e);
+    }
   }
 
   /* ── Mount / unmount (Phase 2A — DOM-aware) ───────────────────────── */
@@ -289,6 +422,11 @@
       catch (e) { recordError('mount:closeListener', e); closeListener = null; }
     }
     applyOpenToDom();
+    /* Phase 2B: render rail buttons + active tab view (if any). Tabs
+     * registered before mount appear immediately; tabs registered
+     * after mount trigger their own renderRail() via registerTab(). */
+    renderRail();
+    renderActiveView();
     softEmit(DOCK_SHELL_EVENTS.ready, { mounted: true });
   }
   function unmount() {
@@ -297,6 +435,14 @@
       catch (e) { recordError('unmount:closeListener', e); }
     }
     closeListener = null;
+    /* Phase 2B: tear down rail listeners + run any pending tab
+     * render cleanup before clearing the container references. */
+    clearRailListeners();
+    if (typeof activeRenderCleanup === 'function') {
+      try { activeRenderCleanup(); }
+      catch (e) { recordError('unmount:activeRenderCleanup', e); }
+      activeRenderCleanup = null;
+    }
     dockRefs.container = null;
     dockRefs.rail = null;
     dockRefs.body = null;
@@ -336,6 +482,8 @@
       internalState.view = null;
       persistView(null);
       softEmit(DOCK_SHELL_EVENTS.viewChanged, { view: null, previous: oldView });
+      if (dockRefs.rail) renderRail();
+      renderActiveView();
       return true;
     }
     if (!isNonEmptyString(id)) return false;
@@ -346,6 +494,9 @@
     internalState.view = id;
     persistView(id);
     softEmit(DOCK_SHELL_EVENTS.viewChanged, { view: id, previous: oldView });
+    /* Phase 2B: update rail active state + repaint view. */
+    if (dockRefs.rail) renderRail();
+    renderActiveView();
     return true;
   }
   function getView() {
@@ -415,6 +566,7 @@
     const prefs = getPrefs();
     if (!prefs) return;
     suppressPersist = true;
+    let viewChangedDuringHydrate = false;
     try {
       const persistedOpen = prefs.get(prefs.keys.dockOpen, undefined);
       if (typeof persistedOpen === 'boolean' && persistedOpen !== internalState.open) {
@@ -431,20 +583,29 @@
           if (persistedView === null) {
             const oldView = internalState.view;
             internalState.view = null;
+            viewChangedDuringHydrate = true;
             softEmit(DOCK_SHELL_EVENTS.viewChanged, { view: null, previous: oldView, source: reason || 'hydrate' });
           } else if (Object.prototype.hasOwnProperty.call(tabsRegistry, persistedView)) {
             const oldView = internalState.view;
             internalState.view = persistedView;
+            viewChangedDuringHydrate = true;
             softEmit(DOCK_SHELL_EVENTS.viewChanged, { view: persistedView, previous: oldView, source: reason || 'hydrate' });
           }
           /* If persistedView is a non-registered string, leave state
-           * alone and do NOT clear — we just can't safely apply it. */
+           * alone and do NOT clear — we just can't safely apply it.
+           * registerTab() will re-paint when the matching tab loads. */
         }
       }
     } catch (e) {
       recordError('hydrate', e);
     }
     suppressPersist = false;
+    /* Phase 2B: if hydration produced a real view change AND the shell
+     * is mounted, repaint the rail (active state) + view. */
+    if (viewChangedDuringHydrate && dockRefs.rail) {
+      renderRail();
+      renderActiveView();
+    }
   }
 
   function bindPrefs() {
@@ -512,6 +673,7 @@
     registerTab: registerTab,
     getTab: getTab,
     unregisterTab: unregisterTab,
+    listTabs: listTabs,
     mount: mount,
     unmount: unmount,
     open: open,
