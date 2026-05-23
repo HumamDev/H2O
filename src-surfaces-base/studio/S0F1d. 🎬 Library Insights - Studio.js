@@ -1408,17 +1408,16 @@
     loadFolderDisplayModel(false);
     const bucket = state.folderDisplay;
     const model = bucket.model;
-    const modelRows = Array.isArray(model?.rows) ? model.rows : [];
-    const fallbackRows = modelRows.length ? [] : fallbackFolderDisplayRows(idx);
-    const rows = (modelRows.length ? modelRows : fallbackRows).slice();
-    const degraded = !modelRows.length;
-    const canonicalCount = Number(model?.canonicalFolderCount ?? rows.filter((row) => row?.isCanonical).length) || 0;
-    const localCount = Number(model?.localFolderCount ?? rows.length) || 0;
-    const membershipCount = Number(model?.canonicalBindingCount ?? rows.reduce((sum, row) => sum + (Number(row?.canonicalCount || 0) || 0), 0)) || 0;
-    const localBindingCount = Number(model?.localBindingCount ?? rows.reduce((sum, row) => sum + (Number(row?.localBindingCount || 0) || 0), 0)) || 0;
+    const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
+    const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const degraded = !canonicalRows.length && !localReviewRows.length;
+    const canonicalCount = Number(model?.canonicalFolderCount ?? canonicalRows.length) || 0;
+    const localCount = Number(model?.localFolderCount ?? localReviewRows.length) || 0;
+    const membershipCount = Number(model?.canonicalBindingCount ?? canonicalRows.reduce((sum, row) => sum + (Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0), 0)) || 0;
+    const localBindingCount = Number(model?.localBindingCount ?? 0) || 0;
     const summary = [
       `${formatNumber(canonicalCount)} canonical`,
-      `${formatNumber(localCount || rows.length)} local`,
+      `${formatNumber(localCount)} local`,
       `${formatNumber(membershipCount)} memberships`,
       `${formatNumber(localBindingCount)} local bindings`,
     ].join(' · ');
@@ -1435,22 +1434,43 @@
     ]);
 
     const body = el('section', { class: 'wbDetailBody' });
-    if (bucket.loading && !rows.length) {
+    if (bucket.loading && degraded) {
       body.appendChild(el('div', { class: 'wbExpEmpty' }, [
         el('div', { class: 'wbExpEmptyTitle' }, 'Loading folders'),
         el('div', { class: 'wbExpEmptySub' }, 'Reading the folder parity display model.'),
       ]));
-    } else if (!rows.length) {
+    } else if (degraded) {
       body.appendChild(el('div', { class: 'wbExpEmpty' }, [
         el('div', { class: 'wbExpEmptyTitle' }, 'No folders found'),
         el('div', { class: 'wbExpEmptySub' }, bucket.error || 'Folder parity model unavailable.'),
       ]));
     } else {
+      body.appendChild(el('h3', {
+        class: 'wbFolderPageSectionTitle',
+        style: 'margin:0 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
+      }, `Canonical folders · ${formatNumber(canonicalRows.length)}`));
       body.appendChild(el('div', {
         class: 'wbFolderPageList',
         role: 'list',
         style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.025)',
-      }, rows.map(renderFolderCatalogRow)));
+      }, canonicalRows.map(renderFolderCatalogRow)));
+
+      if (localReviewRows.length) {
+        body.appendChild(el('h3', {
+          class: 'wbFolderPageSectionTitle wbFolderPageSectionTitle--review',
+          style: 'margin:24px 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
+        }, `Local Review · ${formatNumber(localReviewRows.length)}`));
+        body.appendChild(el('div', {
+          class: 'wbFolderPageLocalReviewExplanation',
+          style: 'margin:0 0 10px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.45',
+        }, 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.'));
+        body.appendChild(el('div', {
+          class: 'wbFolderPageList wbFolderPageList--review',
+          role: 'list',
+          style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.015);opacity:0.82',
+        }, localReviewRows.map(renderFolderCatalogRow)));
+      }
+
       if (warnings.length) {
         body.appendChild(el('div', {
           class: 'wbFolderPageWarnings',

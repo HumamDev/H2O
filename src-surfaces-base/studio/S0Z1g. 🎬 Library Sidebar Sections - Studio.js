@@ -1079,77 +1079,92 @@
     if (!ws) return;
     const host = D.getElementById('folderList');
     if (!host) return;
-    let displayRows = [];
+    let model = null;
     try {
-      const model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
-      displayRows = Array.isArray(model?.rows) ? model.rows : [];
+      model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
     } catch (e) { err('folderParity.getDisplayModel', e); }
-    if (displayRows.length) {
-      const items = displayRows.map((row) => {
-        const id = String(row?.folderId || row?.id || '').trim();
-        const name = String(row?.name || id).trim();
-        const appearance = getRowAppearance({
-          ...row,
-          id,
-          folderId: id,
-          name,
-          kind: 'folders',
-          section: 'folders',
-        });
-        return id ? {
-          id,
-          folderId: id,
-          name: appearance.name || name || id,
-          count: Number(row?.knownCount || 0),
-          displayCountLabel: String(row?.displayCountLabel || '').trim(),
-          canonicalCount: Number(row?.canonicalCount || 0),
-          knownCount: Number(row?.knownCount || 0),
-          savedCount: Number(row?.savedCount || 0),
-          linkedCount: Number(row?.linkedCount || 0),
-          orphanCount: Number(row?.orphanCount || 0),
-          localBindingCount: Number(row?.localBindingCount || 0),
-          badges: Array.isArray(row?.badges) ? row.badges : [],
-          isCanonical: row?.isCanonical === true,
-          isExtra: row?.isExtra === true,
-          isTestCandidate: row?.isTestCandidate === true,
-          isConflict: row?.isConflict === true,
-          color: appearance.color || normalizeHexColor(row?.color || row?.iconColor || ''),
-          iconKey: appearance.icon || 'folder',
-          iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
-        } : null;
-      }).filter(Boolean);
-      renderSectionList(host, 'folders', items, { emptyText: 'No saved folder contract found yet. Capture or assign a chat to a folder from chatgpt.com.' });
-      step('renderFolders.parity', String(items.length));
-      return;
-    }
-    let raw = [];
-    try { raw = await ws.getFolders(); } catch (e) { err('getFolders', e); }
-    const idx = getIndex();
-    const folderFacet = idx?.facets?.()?.byFolder || {};
-    const items = (Array.isArray(raw) ? raw : []).map((folder) => {
-      const id = String(folder?.id || folder?.folderId || '').trim();
-      const name = String(folder?.name || folder?.label || folder?.title || id).trim();
-      const facetCount = Array.isArray(folderFacet[id]) ? folderFacet[id].length : 0;
+
+    const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
+    const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const fallbackUsed = !!model?.fallbackUsed;
+
+    const toSidebarItem = (row) => {
+      const id = String(row?.folderId || row?.id || '').trim();
+      if (!id) return null;
+      const name = String(row?.name || id).trim();
       const appearance = getRowAppearance({
-        ...folder,
+        ...row,
         id,
         folderId: id,
         name,
         kind: 'folders',
         section: 'folders',
       });
-      return id ? {
+      const nativeCount = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0;
+      return {
         id,
         folderId: id,
         name: appearance.name || name || id,
-        count: facetCount,
-        color: appearance.color || normalizeHexColor(folder?.color || folder?.iconColor || ''),
+        count: nativeCount,
+        displayCountLabel: String(row?.displayCountLabel || '').trim(),
+        canonicalCount: Number(row?.canonicalCount || 0),
+        nativeMembershipCount: nativeCount,
+        knownCount: Number(row?.knownCount || 0),
+        knownStudioCount: Number(row?.knownStudioCount ?? row?.knownCount ?? 0),
+        savedCount: Number(row?.savedCount || 0),
+        linkedCount: Number(row?.linkedCount || 0),
+        orphanCount: Number(row?.orphanCount || 0),
+        localBindingCount: Number(row?.localBindingCount || 0),
+        badges: Array.isArray(row?.badges) ? row.badges : [],
+        isCanonical: row?.isCanonical === true,
+        isExtra: row?.isExtra === true,
+        isTestCandidate: row?.isTestCandidate === true,
+        isConflict: row?.isConflict === true,
+        reviewBucket: row?.reviewBucket || null,
+        color: appearance.color || normalizeHexColor(row?.color || row?.iconColor || ''),
         iconKey: appearance.icon || 'folder',
         iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
-      } : null;
-    }).filter(Boolean);
-    renderSectionList(host, 'folders', items, { emptyText: 'No saved folder contract found yet. Capture or assign a chat to a folder from chatgpt.com.' });
-    step('renderFolders', String(items.length));
+      };
+    };
+
+    const mainItems = canonicalRows.map(toSidebarItem).filter(Boolean);
+    const reviewItems = localReviewRows.map(toSidebarItem).filter(Boolean);
+
+    const mainEmptyText = fallbackUsed
+      ? 'Folder catalog is loading from native ChatGPT.'
+      : 'Canonical folder catalog unavailable. Open chatgpt.com to broadcast folders.';
+    renderSectionList(host, 'folders', mainItems, { emptyText: mainEmptyText });
+
+    if (reviewItems.length > 0) {
+      const persistKey = 'h2o:prm:cgx:library-sidebar:local-review:expanded:v1';
+      let expandedPref = false;
+      try { expandedPref = W.localStorage.getItem(persistKey) === '1'; } catch {}
+      const details = el('details', { class: 'wbSidebarSection--localReview' });
+      details.open = expandedPref;
+      const summary = el('summary', {
+        class: 'wbSidebarLocalReviewSummary',
+        style: 'cursor:pointer;padding:6px 10px;margin-top:6px;font-size:11px;color:rgba(255,255,255,.5);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,.06)',
+      }, `Local Review · ${formatNumber(reviewItems.length)}`);
+      details.appendChild(summary);
+      const reviewHost = el('div', {
+        class: 'wbSidebarLocalReviewList',
+        style: 'opacity:0.72;padding-top:4px',
+      });
+      details.appendChild(reviewHost);
+      renderSectionList(reviewHost, 'folders', reviewItems, {
+        emptyText: 'No items in Local Review',
+        limit: Math.max(reviewItems.length, 1),
+      });
+      reviewHost.querySelectorAll('.wbSidebarSectionItem').forEach((node) => {
+        node.classList.add('wbSidebarSectionItem--review');
+      });
+      details.addEventListener('toggle', () => {
+        try { W.localStorage.setItem(persistKey, details.open ? '1' : '0'); } catch {}
+      });
+      host.appendChild(details);
+    }
+
+    step('renderFolders.parity', `canonical=${mainItems.length} review=${reviewItems.length}`);
   }
 
   async function renderLabels() {
