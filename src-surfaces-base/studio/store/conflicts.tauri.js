@@ -6,9 +6,10 @@
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file is
  * a silent no-op and registers nothing.
  *
- * This module is intentionally observation-only. It lists and diagnoses
- * evidence already present in SQLite, and exposes no candidate ingestion,
- * merge, apply, or row mutation API.
+ * This module is intentionally conservative. It lists and diagnoses evidence
+ * already present in SQLite. F6.4a adds manual candidate ingest validation as
+ * dry-run only; it predicts counts with SELECTs and still exposes no real
+ * candidate ingestion, merge, apply, or row mutation API.
  */
 (function (global) {
   'use strict';
@@ -35,7 +36,9 @@
   var DB_URL = 'sqlite:studio-v1.db';
   var TABLE = 'sync_conflicts';
   var CONFLICT_SCHEMA = 'h2o.studio.sync-conflict.v1';
+  var CONFLICT_CANDIDATE_SCHEMA = 'h2o.studio.sync-conflict-candidate.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.sync-conflict.diagnostic.v1';
+  var INGEST_SCHEMA = 'h2o.studio.sync-conflict-ingest.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 50;
@@ -91,6 +94,46 @@
     linkedOnlyChat: true,
     savedSnapshot: true,
     unknown: true,
+  });
+  var INGEST_SOURCES = Object.freeze({
+    'manual-devtools': true,
+    'test-harness': true,
+    'multi-peer-diff-manual': true,
+  });
+  var CANDIDATE_SOURCES = Object.freeze({
+    'multi-peer-diff': true,
+    'manual-devtools': true,
+    'test-harness': true,
+    'multi-peer-diff-manual': true,
+  });
+  var SUSPICIOUS_CANDIDATE_FIELDS = Object.freeze({
+    rawjson: true,
+    raw_json: true,
+    content: true,
+    title: true,
+    name: true,
+    prompt: true,
+    answer: true,
+    message: true,
+    href: true,
+    url: true,
+    transcript: true,
+    text: true,
+    body: true,
+    raw: true,
+    metadata: true,
+    recordid: true,
+    record_id: true,
+    peerid: true,
+    peer_id: true,
+    chatid: true,
+    chat_id: true,
+    folderid: true,
+    folder_id: true,
+    conflictid: true,
+    conflict_id: true,
+    dedupekey: true,
+    dedupe_key: true,
   });
 
   var state = {
@@ -522,6 +565,194 @@
     return { ok: false };
   }
 
+  function bumpResultCounter(obj, key) {
+    var k = cleanString(key) || 'unknown';
+    obj[k] = Number(obj[k] || 0) + 1;
+  }
+
+  function makeIngestResult(dryRun, source, received) {
+    return {
+      schema: INGEST_SCHEMA,
+      ok: true,
+      dryRun: dryRun === true,
+      source: source || null,
+      received: Number(received || 0),
+      accepted: 0,
+      wouldInsert: 0,
+      wouldUpdate: 0,
+      wouldReject: 0,
+      writesPerformed: 0,
+      byKind: {},
+      byEntityKind: {},
+      byClassification: {},
+      bySeverity: {},
+      rejectionCodes: {},
+      warnings: [],
+    };
+  }
+
+  function makeBlockedIngestResult(candidates, options, code) {
+    var received = Array.isArray(candidates) ? candidates.length : 0;
+    var opts = options || {};
+    var result = makeIngestResult(opts.dryRun === true, cleanString(opts.source), received);
+    result.ok = false;
+    result.dryRun = opts.dryRun === true ? true : false;
+    result.accepted = 0;
+    result.wouldReject = received;
+    result.blockers = [warning(code || 'dry-run-required')];
+    if (received) result.rejectionCodes[code || 'dry-run-required'] = received;
+    return result;
+  }
+
+  function safeCodeString(value) {
+    var s = cleanString(value);
+    return /^[A-Za-z0-9._:-]{1,160}$/.test(s) ? s : '';
+  }
+
+  function validateReason(reason) {
+    if (reason == null || reason === '') return null;
+    if (typeof reason !== 'string') return 'invalid-reason';
+    if (reason.length > 256) return 'invalid-reason';
+    if (/[\u0000-\u001f\u007f]/.test(reason)) return 'invalid-reason';
+    return null;
+  }
+
+  function findSuspiciousField(value) {
+    var seen = [];
+    function visit(v) {
+      if (!v || typeof v !== 'object') return null;
+      if (seen.indexOf(v) !== -1) return null;
+      seen.push(v);
+      if (Array.isArray(v)) {
+        for (var i = 0; i < v.length; i++) {
+          var arrHit = visit(v[i]);
+          if (arrHit) return arrHit;
+        }
+        return null;
+      }
+      var keys = Object.keys(v);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        var normalized = String(key || '').toLowerCase();
+        if (SUSPICIOUS_CANDIDATE_FIELDS[normalized]) return key;
+        var hit = visit(v[key]);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    return visit(value);
+  }
+
+  function candidateDedupeKey(candidate) {
+    if (safeCodeString(candidate.dedupeKeyHash)) {
+      return { ok: true, key: 'candidate-hash:' + cleanString(candidate.dedupeKeyHash), warnings: [] };
+    }
+    if (candidate.dedupeKeyHashPresent === true) return { ok: false, code: 'missing-dedupe-material' };
+    return { ok: false, code: 'missing-dedupe-material' };
+  }
+
+  function validateCandidate(candidate) {
+    var blockers = [];
+    var warnings = [];
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return { ok: false, blockers: [warning('invalid-candidate')], warnings: warnings };
+    }
+    var suspicious = findSuspiciousField(candidate);
+    if (suspicious) blockers.push(warning('content-like-field-blocked'));
+    if (candidate.schema !== CONFLICT_CANDIDATE_SCHEMA) blockers.push(warning('invalid-schema'));
+    if (!hasOwn(CONFLICT_KINDS, candidate.conflictKind)) blockers.push(warning('invalid-conflict-kind'));
+    if (!hasOwn(ENTITY_KINDS, candidate.entityKind)) blockers.push(warning('invalid-entity-kind'));
+    if (!hasOwn(CLASSIFICATIONS, candidate.classification)) blockers.push(warning('invalid-classification'));
+    if (!hasOwn(SEVERITIES, candidate.severity)) blockers.push(warning('invalid-severity'));
+    if (!hasOwn(CANDIDATE_SOURCES, candidate.source)) blockers.push(warning('invalid-candidate-source'));
+    var dedupe = candidateDedupeKey(candidate);
+    if (!dedupe.ok) {
+      blockers.push(warning(dedupe.code || 'missing-dedupe-material'));
+    } else if (Array.isArray(dedupe.warnings)) {
+      warnings = warnings.concat(dedupe.warnings);
+    }
+    return {
+      ok: blockers.length === 0,
+      blockers: blockers,
+      warnings: warnings,
+      dedupeKey: dedupe.key || null,
+    };
+  }
+
+  function predictExistingDedupe(dedupeKey) {
+    return ensureReady().then(function (ok) {
+      if (!ok) return false;
+      return sqlSelect(
+        'SELECT dedupe_key AS dedupeKey FROM ' + TABLE + ' WHERE dedupe_key = ? LIMIT 1',
+        [dedupeKey]
+      ).then(function (rows) {
+        return Array.isArray(rows) && rows.length > 0;
+      });
+    });
+  }
+
+  function ingestConflictCandidates(candidates, options) {
+    var opts = options || {};
+    var received = Array.isArray(candidates) ? candidates.length : 0;
+    if (opts.dryRun !== true) {
+      return Promise.resolve(makeBlockedIngestResult(candidates, opts, 'real-ingest-not-implemented'));
+    }
+    if (!Array.isArray(candidates)) {
+      return Promise.resolve(makeBlockedIngestResult([], opts, 'invalid-candidates'));
+    }
+    var source = cleanString(opts.source);
+    if (!hasOwn(INGEST_SOURCES, source)) {
+      return Promise.resolve(makeBlockedIngestResult(candidates, opts, 'invalid-source'));
+    }
+    var reasonBlocker = validateReason(opts.reason);
+    if (reasonBlocker) {
+      return Promise.resolve(makeBlockedIngestResult(candidates, opts, reasonBlocker));
+    }
+
+    var result = makeIngestResult(true, source, received);
+    var accepted = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = candidates[i];
+      var validation = validateCandidate(candidate);
+      if (!validation.ok) {
+        result.wouldReject += 1;
+        validation.blockers.forEach(function (blocker) {
+          bumpResultCounter(result.rejectionCodes, blocker.code);
+        });
+        continue;
+      }
+      result.accepted += 1;
+      bumpResultCounter(result.byKind, candidate.conflictKind);
+      bumpResultCounter(result.byEntityKind, candidate.entityKind);
+      bumpResultCounter(result.byClassification, candidate.classification);
+      bumpResultCounter(result.bySeverity, candidate.severity);
+      validation.warnings.forEach(function (w) { result.warnings.push(w); });
+      accepted.push({ candidate: candidate, dedupeKey: validation.dedupeKey });
+    }
+
+    var seenInBatch = Object.create(null);
+    function classifyAccepted(index) {
+      if (index >= accepted.length) return Promise.resolve(result);
+      var item = accepted[index];
+      if (seenInBatch[item.dedupeKey]) {
+        result.wouldUpdate += 1;
+        return classifyAccepted(index + 1);
+      }
+      seenInBatch[item.dedupeKey] = true;
+      return predictExistingDedupe(item.dedupeKey).then(function (exists) {
+        if (exists) result.wouldUpdate += 1;
+        else result.wouldInsert += 1;
+        return classifyAccepted(index + 1);
+      }, function (e) {
+        recordError('ingestConflictCandidates:predictExistingDedupe', e);
+        result.warnings.push(warning('dedupe-lookup-failed'));
+        result.wouldInsert += 1;
+        return classifyAccepted(index + 1);
+      });
+    }
+    return classifyAccepted(0);
+  }
+
   function validateConflict(record) {
     record = record || {};
     var blockers = [];
@@ -555,7 +786,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f6.1b.1',
+    __version: '0.1.1-f6.4a',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -566,15 +797,20 @@
     countByKind: countByKind,
     countBySeverity: countBySeverity,
     validateConflict: validateConflict,
+    ingestConflictCandidates: ingestConflictCandidates,
     constants: Object.freeze({
       schema: CONFLICT_SCHEMA,
+      candidateSchema: CONFLICT_CANDIDATE_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
+      ingestSchema: INGEST_SCHEMA,
       table: TABLE,
       statuses: Object.freeze(Object.keys(STATUSES).slice()),
       severities: Object.freeze(Object.keys(SEVERITIES).slice()),
       classifications: Object.freeze(Object.keys(CLASSIFICATIONS).slice()),
       conflictKinds: Object.freeze(Object.keys(CONFLICT_KINDS).slice()),
       entityKinds: Object.freeze(Object.keys(ENTITY_KINDS).slice()),
+      ingestSources: Object.freeze(Object.keys(INGEST_SOURCES).slice()),
+      candidateSources: Object.freeze(Object.keys(CANDIDATE_SOURCES).slice()),
       defaultListLimit: DEFAULT_LIST_LIMIT,
       maxListLimit: MAX_LIST_LIMIT,
     }),

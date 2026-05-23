@@ -598,6 +598,22 @@ F6.3 is acceptable only if:
 - No reads from or writes to `H2O.Studio.store.conflicts`.
 - No ingestion, merge, apply, import/export/sync, or F5 behavior change.
 
+F6.4a is acceptable only if:
+
+- `H2O.Studio.store.conflicts.ingestConflictCandidates()` exists as a manual
+  dry-run validator only.
+- `dryRun: true` is required.
+- `dryRun: false` returns `real-ingest-not-implemented`.
+- Candidate validation rejects invalid enums, missing dedupe material, and
+  content-like fields.
+- Analyzer summaries that only expose `dedupeKeyHashPresent: true` remain
+  insufficient for durable queue prediction and are rejected as
+  `missing-dedupe-material` until a later phase exposes a safe hash/fingerprint.
+- Duplicate prediction uses read-only lookup by safe dedupe material.
+- `writesPerformed` is always `0`.
+- No analyzer, runner, import/export/sync, UI, Chrome, or F5 path calls the API.
+- No rows are inserted, updated, or deleted.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -618,7 +634,9 @@ F6.3 is acceptable only if:
 - F6.1b.1: Desktop read-only `conflicts.tauri.js` store registration.
 - F6.2: Analyzer-only conflict candidate detection.
 - F6.3: Hidden runner counts-only display.
-- F6.4: Manual conflict candidate ingestion.
+- F6.4a: Manual conflict candidate ingestion dry-run validation.
+- F6.4b: Manual conflict candidate write ingestion, only after transaction/write
+  strategy is settled.
 - F6.5: Decision-only actions.
 - F6.6: `previewResolution()` only, no mutation.
 - F6.7: Chrome conflict store scaffold if needed.
@@ -626,7 +644,7 @@ F6.3 is acceptable only if:
 
 ## 25. Recommendation
 
-The next implementation after F6.3 should remain conservative. F6.4 may add
-manual conflict candidate ingestion planning, but it must not merge, apply, or
-start bidirectional sync. Do not touch FolderParity renderer work from the other
-lane.
+The next implementation after F6.4a should remain conservative. F6.4b may add
+manual write ingestion only after the candidate contract and transaction/write
+strategy are settled. It must not merge, apply, or start bidirectional sync. Do
+not touch FolderParity renderer work from the other lane.
