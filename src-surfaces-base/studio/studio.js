@@ -4631,12 +4631,9 @@ function buildReaderDOM(snap){
     }
   } catch {}
 
-  /* Phase 2a — edit-overlay foundation hook.
-   * Fetches the per-snapshot overlay (if any) and calls the no-op
-   * applier. Async and fire-and-forget: the reader render never waits
-   * on the overlay, and the applier is guaranteed not to mutate DOM in
-   * Phase 2a (it only logs drift / counts ops). This is the single
-   * integration point future phases extend. */
+  /* Phase 2a — edit-overlay foundation hook (Phase 2b — now also
+   * applies ops to DOM via the extended applier, and publishes
+   * hasOverlay to the ribbon context). */
   try {
     const __sid = String(snap?.snapshotId || "");
     const __store = W.H2O?.Studio?.store?.editOverlay;
@@ -4645,9 +4642,62 @@ function buildReaderDOM(snap){
       Promise.resolve(__store.get(__sid)).then((__overlay) => {
         try { __applier(root, snap, __overlay || null); }
         catch (_) { /* applier never throws, but defensive catch anyway */ }
+        /* Phase 2b — publish hasOverlay to the ribbon context so the
+         * Format buttons can read it from ctx (in addition to the per-
+         * action isEnabled checks that look at chatType + selection). */
+        try {
+          const __ribbon = W?.H2O?.Studio?.ribbon;
+          if (__ribbon && typeof __ribbon.setContext === 'function') {
+            const __ctx = __ribbon.getContext();
+            const __hasOps = !!(__overlay && Array.isArray(__overlay.ops) && __overlay.ops.length > 0);
+            __ribbon.setContext(Object.assign({}, __ctx, { hasOverlay: __hasOps }));
+          }
+        } catch (_) { /* swallow */ }
       }, () => { /* swallow get rejection — reader continues without overlay */ });
     }
   } catch (_) { /* swallow — overlay must never break the reader */ }
+
+  /* Phase 2b — message-level selection click handler. Saved-reader only
+   * (gated by the chatType check in the ribbon shell). Adds an outline
+   * class to the clicked turn and pushes selectedMessageId +
+   * selectedTurnIdx into the ribbon context. The handler ignores clicks
+   * on interactive descendants so the legacy text-edit flow keeps
+   * working unchanged. Never throws. */
+  try {
+    if (sc && typeof sc.addEventListener === 'function' && String(snap?.snapshotId || '')) {
+      sc.addEventListener('click', function (ev) {
+        try {
+          const target = ev.target;
+          if (!target || typeof target.closest !== 'function') return;
+          /* Skip clicks on the legacy edit UI and any interactive
+           * descendants — clicking those should not steal focus from
+           * the ribbon-selection state. */
+          if (target.closest('.wbEditBtn, .wbEditWrap, .wbEditTextarea, button, a, input, select, textarea, [contenteditable="true"]')) return;
+          const turn = target.closest('[data-turn]');
+          if (!turn || !sc.contains(turn)) return;
+          const allTurns = Array.prototype.slice.call(sc.querySelectorAll('[data-turn]'));
+          const turnIdx = allTurns.indexOf(turn) + 1; /* 1-based */
+          if (turnIdx <= 0) return;
+          const messageId = String(turn.getAttribute('data-message-id') || '');
+          /* Move the visible outline */
+          for (let i = 0; i < allTurns.length; i += 1) {
+            try { allTurns[i].classList.remove('is-ribbon-selected'); } catch (_) {}
+          }
+          turn.classList.add('is-ribbon-selected');
+          /* Push to ribbon context — additive merge preserves existing
+           * route/title/etc context fields populated by renderRoute. */
+          const ribbon = W?.H2O?.Studio?.ribbon;
+          if (ribbon && typeof ribbon.setContext === 'function') {
+            const ctx = ribbon.getContext();
+            ribbon.setContext(Object.assign({}, ctx, {
+              selectedMessageId: messageId || null,
+              selectedTurnIdx: turnIdx,
+            }));
+          }
+        } catch (_) { /* swallow — selection must never break the reader */ }
+      });
+    }
+  } catch (_) { /* swallow */ }
 
   return root;
 }
@@ -10021,10 +10071,7 @@ function __ribbonBridge_getCleanTranscript(){
 }
 /* Phase 2a — narrow read-only accessor for the per-snapshot edit
  * overlay. Returns a Promise resolving to the EditOverlay record or
- * null. Never throws. Used by future Phase 2b+ ribbon code to discover
- * whether the current reader has an active overlay; for now it gives
- * test harnesses and selfCheck readers a clean accessor without
- * reaching into the entity store directly. */
+ * null. Never throws. */
 function __ribbonBridge_getOverlay(snapshotId){
   try {
     const sid = String(snapshotId == null ? '' : snapshotId);
@@ -10036,20 +10083,113 @@ function __ribbonBridge_getOverlay(snapshotId){
   } catch (_) { return Promise.resolve(null); }
 }
 
+/* Phase 2b — pure-read accessor: compute the current visual state of a
+ * specific message in the open snapshot's overlay. Returns a Promise
+ * that resolves to a default-shape state object when no overlay exists
+ * or no snapshot is open; returns the computed state otherwise. Used
+ * by ribbon action handlers to decide whether to apply or toggle off.
+ * Never throws. */
+function __ribbonBridge_getMessageStateForTurn(turnIdx){
+  const empty = { heading: null, quote: false, code: false, callout: null, cleanSpacing: false };
+  try {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return Promise.resolve(empty);
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    const ov = W.H2O?.Studio?.overlay;
+    if (!ovStore || !ov || typeof ov.computeMessageState !== 'function') return Promise.resolve(empty);
+    return Promise.resolve(ovStore.get(String(snap.snapshotId))).then(function (overlay) {
+      if (!overlay) return empty;
+      try { return ov.computeMessageState(overlay, Number(turnIdx)); }
+      catch (_) { return empty; }
+    }, function () { return empty; });
+  } catch (_) { return Promise.resolve(empty); }
+}
+
+/* Phase 2b — orchestrates a single overlay op: load-or-create overlay,
+ * drift-check against current snapshot, append op (pure helper),
+ * upsert to store, and re-apply to live reader DOM. Returns
+ * Promise<{ ok, reason?, overlay?, outcome?, error? }>. Never throws.
+ * Never mutates snap.messages. */
+function __ribbonBridge_applyOverlayOp(opSpec){
+  return Promise.resolve().then(function () {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) {
+      return { ok: false, reason: 'no-snapshot' };
+    }
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ov || typeof ov.computeBaseDigest !== 'function' || typeof ov.appendOp !== 'function' || typeof ov.applyOverlay !== 'function') {
+      return { ok: false, reason: 'overlay-unavailable' };
+    }
+    if (!ovStore || typeof ovStore.get !== 'function' || typeof ovStore.upsert !== 'function') {
+      return { ok: false, reason: 'store-unavailable' };
+    }
+    const sid = String(snap.snapshotId);
+    return Promise.resolve(ovStore.get(sid)).then(function (existing) {
+      let overlay = existing;
+      if (!overlay) {
+        try { overlay = ov.createEmpty({ snapshot: snap }); }
+        catch (_) { overlay = null; }
+        if (!overlay) return { ok: false, reason: 'create-empty-failed' };
+      }
+      /* Drift check — refuse to mutate an overlay that no longer
+       * matches the current snapshot. The applier ALSO refuses to
+       * render on drift, but we check here first so we don't persist
+       * a new op against a stale baseDigest. */
+      const currentDigest = ov.computeBaseDigest(snap);
+      if (overlay.baseDigest && overlay.baseDigest !== currentDigest) {
+        return { ok: false, reason: 'drift-detected', overlay: overlay, currentDigest: currentDigest };
+      }
+      /* Append op (pure) */
+      const next = ov.appendOp(overlay, opSpec);
+      if (!next) return { ok: false, reason: 'append-failed' };
+      /* Persist */
+      return Promise.resolve(ovStore.upsert(next)).then(function (saved) {
+        /* Re-apply to the live reader DOM */
+        let outcome = null;
+        try {
+          const readerEl = document.getElementById('viewReader');
+          const frame = readerEl && readerEl.querySelector('.cgFrame');
+          if (frame) outcome = ov.applyOverlay(frame, snap, saved);
+        } catch (_) { /* swallow — apply failure does not invalidate the persisted op */ }
+        /* Publish hasOverlay = true now */
+        try {
+          const ribbon = W.H2O?.Studio?.ribbon;
+          if (ribbon && typeof ribbon.setContext === 'function') {
+            const ctx = ribbon.getContext();
+            const hasOps = !!(saved && Array.isArray(saved.ops) && saved.ops.length > 0);
+            ribbon.setContext(Object.assign({}, ctx, { hasOverlay: hasOps }));
+          }
+        } catch (_) { /* swallow */ }
+        return { ok: true, overlay: saved, outcome: outcome };
+      }, function (err) {
+        return { ok: false, reason: 'upsert-failed', error: String((err && err.message) || err || '') };
+      });
+    }, function (err) {
+      return { ok: false, reason: 'get-failed', error: String((err && err.message) || err || '') };
+    });
+  }).catch(function (err) {
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
 try {
   W.H2O = W.H2O || {};
   W.H2O.Studio = W.H2O.Studio || {};
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-2a',
+      version: '0.1.0-phase-2b',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
+      getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
+      applyOverlayOp: __ribbonBridge_applyOverlayOp,
     };
-  } else if (!W.H2O.Studio.RibbonBridge.getOverlay) {
-    /* Idempotent additive upgrade: a previously-installed Phase 1b
-     * bridge gets the new accessor without losing the existing one. */
-    W.H2O.Studio.RibbonBridge.getOverlay = __ribbonBridge_getOverlay;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2a';
+  } else {
+    /* Idempotent additive upgrade for any pre-2b bridge variants. */
+    if (!W.H2O.Studio.RibbonBridge.getOverlay) W.H2O.Studio.RibbonBridge.getOverlay = __ribbonBridge_getOverlay;
+    if (!W.H2O.Studio.RibbonBridge.getMessageStateForTurn) W.H2O.Studio.RibbonBridge.getMessageStateForTurn = __ribbonBridge_getMessageStateForTurn;
+    if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2b';
   }
 } catch (_) { /* swallow */ }
