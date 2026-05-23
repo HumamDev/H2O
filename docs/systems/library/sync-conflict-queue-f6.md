@@ -589,6 +589,15 @@ F6.2 is acceptable only if:
 - No F5 tombstone/review/apply/cleanup behavior change.
 - No FolderParity/Ribbon/Dock/Overlay file changes.
 
+F6.3 is acceptable only if:
+
+- Hidden runner display only.
+- Counts only from `report.conflictCandidates`.
+- No candidate rows, IDs, names, titles, hrefs, raw JSON, content, or dedupe
+  keys are rendered.
+- No reads from or writes to `H2O.Studio.store.conflicts`.
+- No ingestion, merge, apply, import/export/sync, or F5 behavior change.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -617,7 +626,7 @@ F6.2 is acceptable only if:
 
 ## 25. Recommendation
 
-The next implementation after F6.2 should remain conservative. F6.3 may display
-counts in the hidden runner, but it must not ingest conflict rows automatically,
-merge, apply, or start bidirectional sync. Do not touch FolderParity renderer
-work from the other lane.
+The next implementation after F6.3 should remain conservative. F6.4 may add
+manual conflict candidate ingestion planning, but it must not merge, apply, or
+start bidirectional sync. Do not touch FolderParity renderer work from the other
+lane.

@@ -308,6 +308,21 @@
     );
     root.appendChild(confEl.block);
 
+    var candidateEl = makeKvBlock(
+      'Conflict candidates  (analyzer only; no queue write)',
+      [
+        'available', 'total', 'critical', 'high', 'medium', 'low', 'info',
+        'delete-vs-edit references', 'unsupported', 'warnings',
+        'same-record-divergent-metadata',
+        'local-newer-than-remote',
+        'remote-newer-than-local',
+        'folder-membership-divergence',
+        'unsupported-merge-kind',
+        'delete-vs-edit-reference'
+      ]
+    );
+    root.appendChild(candidateEl.block);
+
     var invEl = makeKvBlock('Invariants', [
       'issuesCount', 'everyChatHasId', 'everySnapshotHasDigest',
       'noSnapshotIdReusedAcrossChats', 'linkedSavedInvariantHolds'
@@ -337,6 +352,7 @@
       tombstones: tombEl.values,
       tombstoneReviews: reviewEl.values,
       conflicts:  confEl.values,
+      conflictCandidates: candidateEl.values,
       invariants: invEl.values,
       readiness:  readEl.values
     };
@@ -485,6 +501,28 @@
     setText(elements.conflicts['merge:visual-lww'],      String(Number(cbk['merge:visual-lww']      || 0)));
     setText(elements.conflicts['conflict:needs-review'], String(Number(cbk['conflict:needs-review'] || 0)));
     setText(elements.conflicts['conflict:hard'],         String(Number(cbk['conflict:hard']         || 0)));
+
+    var candidates = (report && report.conflictCandidates && typeof report.conflictCandidates === 'object')
+      ? report.conflictCandidates
+      : null;
+    var cBySeverity = (candidates && candidates.bySeverity) || {};
+    var cByKind = (candidates && candidates.byKind) || {};
+    setText(elements.conflictCandidates.available, candidates ? 'yes' : 'no');
+    setText(elements.conflictCandidates.total, String(Number((candidates && candidates.total) || 0)));
+    setText(elements.conflictCandidates.critical, String(Number(cBySeverity.critical || 0)));
+    setText(elements.conflictCandidates.high, String(Number(cBySeverity.high || 0)));
+    setText(elements.conflictCandidates.medium, String(Number(cBySeverity.medium || 0)));
+    setText(elements.conflictCandidates.low, String(Number(cBySeverity.low || 0)));
+    setText(elements.conflictCandidates.info, String(Number(cBySeverity.info || 0)));
+    setText(elements.conflictCandidates['delete-vs-edit references'], String(Number((candidates && candidates.deleteVsEditReferenceCount) || 0)));
+    setText(elements.conflictCandidates.unsupported, String(Number((candidates && candidates.unsupportedCount) || 0)));
+    setText(elements.conflictCandidates.warnings, String(warningCount(candidates && candidates.warnings)));
+    setText(elements.conflictCandidates['same-record-divergent-metadata'], String(Number(cByKind['same-record-divergent-metadata'] || 0)));
+    setText(elements.conflictCandidates['local-newer-than-remote'], String(Number(cByKind['local-newer-than-remote'] || 0)));
+    setText(elements.conflictCandidates['remote-newer-than-local'], String(Number(cByKind['remote-newer-than-local'] || 0)));
+    setText(elements.conflictCandidates['folder-membership-divergence'], String(Number(cByKind['folder-membership-divergence'] || 0)));
+    setText(elements.conflictCandidates['unsupported-merge-kind'], String(Number(cByKind['unsupported-merge-kind'] || 0)));
+    setText(elements.conflictCandidates['delete-vs-edit-reference'], String(Number(cByKind['delete-vs-edit-reference'] || 0)));
 
     var inv = (report && report.invariants) || {};
     setText(elements.invariants.issuesCount,                   String((inv.issues && inv.issues.length) || 0));
