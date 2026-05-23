@@ -2738,6 +2738,235 @@ The result is counts-only and redacted. It must not expose tombstone ids, review
 ids, record ids, peer ids, dedupe keys, raw JSON, metadata, warning JSON
 contents, names, titles, prompt/answer bodies, transcripts, or content.
 
+## F5H.3a Synthetic Cleanup Transaction And Audit Strategy
+
+F5H.3a defines the prerequisite strategy for future gated synthetic cleanup. It
+does not add a real cleanup API, does not delete rows, does not mutate reviews
+or tombstones, and does not change import/export/sync/apply behavior.
+
+Cleanup is destructive even when limited to validation rows. It must not exist
+until the Desktop transaction path and audit strategy are proven. Evidence
+preservation wins over tidiness: if a row is not confidently synthetic and
+cleanup-eligible, future cleanup must block it.
+
+### Future API Shape
+
+Future cleanup should use the same store surface as lifecycle diagnostics and
+preview:
+
+```js
+await H2O.Studio.store.tombstoneReviews.cleanupSynthetic({
+  dryRun: true,
+  devGate: 'I_UNDERSTAND_THIS_DELETES_SYNTHETIC_TOMBSTONE_DATA',
+  prefixes: ['f5c-', 'f5d-', 'f5d1-', 'f5d2-', 'f5f-', 'f5g-'],
+  includeTombstones: true,
+  includeReviews: true
+})
+```
+
+Rules for the future API:
+
+- `dryRun: true` delegates to `previewCleanupSynthetic()` and performs zero
+  writes.
+- `dryRun: false` requires the exact dev gate.
+- Prefixes must be an allowlisted subset of the known F5 validation prefixes.
+- Regex, arbitrary user patterns, fuzzy matching, and content matching are not
+  allowed.
+- The default result remains counts-only and redacted.
+
+Exact future dev gate:
+
+```txt
+I_UNDERSTAND_THIS_DELETES_SYNTHETIC_TOMBSTONE_DATA
+```
+
+There must be no global flag, persistent setting, UI toggle, or fuzzy gate
+matching.
+
+### Eligibility And Blockers
+
+Future cleanup may delete only rows that are both confidently synthetic and
+cleanup-eligible under the same strict policy used by
+`previewCleanupSynthetic()`.
+
+Future cleanup must block:
+
+- non-synthetic rows
+- uncertain rows
+- pending reviews
+- accepted-later reviews
+- delete-vs-edit reviews
+- malformed or unsupported reviews unless a later policy explicitly allows
+  terminal synthetic cases
+- unresolved cascade-review rows
+- active real tombstones
+- applied real review evidence
+- remote-review-applied real tombstones
+- rows linked to unresolved or ambiguous audit/cascade state
+
+Terminal synthetic reviews may become eligible later if they are not blocked by
+classification, applied-review evidence, or cascade state. Clearly synthetic
+non-audit-critical tombstones may become eligible later. F5H.3a does not delete
+either category.
+
+### Desktop Transaction Requirement
+
+Desktop real cleanup must be transactional if it touches both lifecycle tables:
+
+- `sync_tombstone_reviews`
+- `sync_tombstones`
+
+Sequential JavaScript `DELETE` calls are forbidden for real Desktop cleanup.
+Future implementation should use a narrow Rust/Tauri command, not generic SQL.
+The command must either re-check eligibility itself or receive a verified
+candidate set and validate affected row counts before commit.
+
+Future transaction shape:
+
+```sql
+BEGIN;
+  INSERT INTO sync_maintenance_log (
+    maintenance_id,
+    action,
+    policy_version,
+    operator_sync_peer_id,
+    reason,
+    dry_run_summary_json,
+    counts_json,
+    warnings_json,
+    created_at
+  ) VALUES (... synthetic-cleanup audit ...);
+
+  DELETE FROM sync_tombstone_reviews
+    WHERE review_id IN (...eligible synthetic reviews...);
+
+  DELETE FROM sync_tombstones
+    WHERE tombstone_id IN (...eligible synthetic tombstones...);
+COMMIT;
+```
+
+Any failed audit insert, review delete, tombstone delete, or affected-count
+mismatch must roll back the whole transaction. If `sync_maintenance_log` does
+not exist, real Desktop cleanup must remain blocked or a migration must be
+added in a later phase.
+
+### Audit Strategy
+
+Future destructive cleanup must record an audit entry before rows are deleted
+and inside the same transaction. The audit record should include:
+
+- operator identity
+- timestamp
+- reason
+- exact dev gate confirmation
+- dry-run or preview policy version
+- counts by category
+- platform
+- warnings
+- whether row identifiers were archived or redacted
+
+Default API results and diagnostics must not expose raw row identifiers. A
+future policy may allow an archived or redacted identifier set for audit, but
+that is not part of F5H.3a.
+
+Recommended policy version:
+
+```txt
+f5h.synthetic-cleanup.v1
+```
+
+Potential future maintenance table:
+
+```sql
+sync_maintenance_log
+```
+
+F5H.3a does not add this table or a production migration.
+
+### Chrome Boundary
+
+Chrome future cleanup is review-row only because Chrome does not have a local
+tombstone store. Chrome tombstones remain unsupported:
+
+```js
+{
+  supported: false,
+  reason: 'chrome-local-tombstone-store-not-implemented'
+}
+```
+
+Chrome cleanup still needs:
+
+- `dryRun: true` preview path before real deletion
+- exact dev gate for `dryRun: false`
+- strict allowlisted prefixes
+- no pending or accepted-later cleanup
+- no non-synthetic cleanup
+- conservative IndexedDB delete failure reporting
+
+### Future Result Shape
+
+Future real cleanup should return a redacted counts-only result:
+
+```js
+{
+  schema: 'h2o.studio.synthetic-cleanup-result.v1',
+  generatedAt,
+  redacted: true,
+  dryRun: false,
+  platform: 'desktop-tauri' | 'chrome-mv3',
+  ok: true,
+  deletedRows: {
+    tombstones: 0,
+    reviews: 0,
+    total: 0
+  },
+  skipped: {
+    cleanupBlocked,
+    uncertainSynthetic,
+    pendingOrAcceptedLater
+  },
+  audit: {
+    recorded: true,
+    policyVersion: 'f5h.synthetic-cleanup.v1',
+    operatorPeerRecorded: true
+  },
+  actions: {
+    deletedRows: true,
+    mutatedRows: true,
+    realCleanupImplemented: true
+  },
+  warnings: []
+}
+```
+
+Failure results must be redacted and report zero writes when the operation is
+blocked before transaction start.
+
+### Future Validation Requirements
+
+Before real cleanup can ship, validation must prove:
+
+- dry-run delegates to preview and writes zero rows
+- wrong dev gate blocks with zero writes
+- invalid prefixes block with zero writes
+- pending synthetic reviews are not deleted
+- accepted-later synthetic reviews are not deleted
+- terminal synthetic reviews are deleted only with the exact gate
+- eligible synthetic tombstones are deleted only with the exact gate
+- non-synthetic rows are never deleted
+- applied real review evidence is never deleted
+- remote-review-applied real tombstones are never deleted
+- Desktop rollback works for audit insert failure
+- Desktop rollback works for review delete failure
+- Desktop rollback works for tombstone delete failure
+- affected-count mismatches roll back
+- Chrome IndexedDB delete failures are reported conservatively
+- results remain counts-only and redacted
+
+F5H.3b may implement a Desktop transaction proof or real gated cleanup only
+after the audit table and transaction command are explicitly approved.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:
