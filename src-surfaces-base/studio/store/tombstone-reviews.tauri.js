@@ -36,6 +36,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
+  var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
@@ -2279,6 +2280,348 @@
     });
   }
 
+  function syntheticCleanupActions() {
+    return {
+      wouldDeleteRows: false,
+      wouldMutateRows: false,
+      realCleanupImplemented: false,
+    };
+  }
+
+  function makeSyntheticCleanupTombstoneSection() {
+    return {
+      supported: true,
+      available: true,
+      ready: true,
+      scanned: 0,
+      syntheticCandidates: 0,
+      cleanupEligible: 0,
+      cleanupBlocked: 0,
+      byKind: {},
+      byDeleteReason: {},
+      warnings: [],
+    };
+  }
+
+  function makeSyntheticCleanupReviewSection() {
+    return {
+      supported: true,
+      available: true,
+      ready: true,
+      scanned: 0,
+      syntheticCandidates: 0,
+      cleanupEligible: 0,
+      cleanupBlocked: 0,
+      byStatus: {},
+      byClassification: {},
+      warnings: [],
+    };
+  }
+
+  function unavailableSyntheticCleanupTombstoneSection(code) {
+    var section = makeSyntheticCleanupTombstoneSection();
+    section.available = false;
+    section.ready = false;
+    pushCodeWarning(section.warnings, code);
+    return section;
+  }
+
+  function unavailableSyntheticCleanupReviewSection(code) {
+    var section = makeSyntheticCleanupReviewSection();
+    section.available = false;
+    section.ready = false;
+    pushCodeWarning(section.warnings, code);
+    return section;
+  }
+
+  function notRequestedSyntheticCleanupTombstoneSection() {
+    var section = makeSyntheticCleanupTombstoneSection();
+    pushCodeWarning(section.warnings, 'section-not-requested');
+    return section;
+  }
+
+  function notRequestedSyntheticCleanupReviewSection() {
+    var section = makeSyntheticCleanupReviewSection();
+    pushCodeWarning(section.warnings, 'section-not-requested');
+    return section;
+  }
+
+  function syntheticCleanupBlockedResult(platform, dryRun, blockerCode, warnings) {
+    var result = {
+      schema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
+      ok: false,
+      generatedAt: nowIso(),
+      redacted: true,
+      dryRun: dryRun === true,
+      platform: platform,
+      tombstones: makeSyntheticCleanupTombstoneSection(),
+      reviews: makeSyntheticCleanupReviewSection(),
+      actions: syntheticCleanupActions(),
+      blockers: [],
+      warnings: Array.isArray(warnings) ? warnings.slice() : [],
+    };
+    pushBlocker(result, blockerCode || 'preview-blocked');
+    return result;
+  }
+
+  function syntheticCleanupKnownPrefixMap() {
+    var out = {};
+    SYNTHETIC_PREFIXES.forEach(function (prefix) { out[prefix] = true; });
+    return out;
+  }
+
+  function readSyntheticCleanupPrefixes(options, warnings, blockers) {
+    var opts = options || {};
+    var supplied = opts.prefixes;
+    var known = syntheticCleanupKnownPrefixMap();
+    if (supplied == null) return SYNTHETIC_PREFIXES.slice();
+    if (!Array.isArray(supplied)) {
+      pushBlocker({ blockers: blockers }, 'invalid-prefixes');
+      return [];
+    }
+    var out = [];
+    var seen = {};
+    supplied.forEach(function (value) {
+      var prefix = cleanScalar(value).toLowerCase();
+      if (!known[prefix]) {
+        pushBlocker({ blockers: blockers }, 'invalid-prefixes');
+        return;
+      }
+      if (!seen[prefix]) {
+        seen[prefix] = true;
+        out.push(prefix);
+      }
+    });
+    if (!out.length) pushCodeWarning(warnings, 'no-synthetic-prefixes-enabled');
+    return out;
+  }
+
+  function cleanupHasSyntheticMarker(value, prefixes) {
+    var s = lifecycleString(value).toLowerCase();
+    if (!s) return false;
+    var allowed = Array.isArray(prefixes) ? prefixes : SYNTHETIC_PREFIXES;
+    for (var i = 0; i < allowed.length; i += 1) {
+      var prefix = cleanScalar(allowed[i]).toLowerCase();
+      if (!prefix) continue;
+      var encoded = '';
+      try { encoded = encodeURIComponent(prefix).toLowerCase(); }
+      catch (_) { encoded = prefix; }
+      if (s.indexOf(prefix) >= 0 || s.indexOf(encoded) >= 0) return true;
+    }
+    return false;
+  }
+
+  function cleanupJsonMarkerHit(raw, prefixes, section) {
+    var text = lifecycleString(raw);
+    if (!text) return false;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      pushCodeWarning(section.warnings, 'cleanup-json-parse-failed');
+      return false;
+    }
+    if (!isObject(parsed)) return false;
+    var fields = [
+      parsed.tombstoneId,
+      parsed.recordId,
+      parsed.deleteReason,
+      parsed.cascadeFrom,
+      parsed.sourceExportId,
+      parsed.schema,
+      parsed.source,
+      parsed.sourceReviewId,
+      parsed.remoteTombstoneId,
+      parsed.remoteExportId,
+      parsed.applyReason,
+      parsed.validation,
+      parsed.testId,
+      parsed.targetKind,
+      parsed.originalDeleteReason,
+    ];
+    var meta = isObject(parsed.meta) ? parsed.meta : {};
+    [
+      'source',
+      'sourceReviewId',
+      'remoteTombstoneId',
+      'remoteExportId',
+      'applyReason',
+      'validation',
+      'testId',
+      'targetKind',
+      'originalDeleteReason',
+    ].forEach(function (key) {
+      fields.push(meta[key]);
+    });
+    for (var i = 0; i < fields.length; i += 1) {
+      if (cleanupHasSyntheticMarker(fields[i], prefixes)) return true;
+    }
+    return false;
+  }
+
+  function cleanupWarningsMarkerHit(raw, prefixes, section) {
+    var text = lifecycleString(raw);
+    if (!text) return false;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      pushCodeWarning(section.warnings, 'cleanup-json-parse-failed');
+      return false;
+    }
+    if (!Array.isArray(parsed)) return false;
+    for (var i = 0; i < parsed.length; i += 1) {
+      var warning = parsed[i];
+      if (!isObject(warning)) continue;
+      if (cleanupHasSyntheticMarker(warning.code, prefixes) || cleanupHasSyntheticMarker(warning.action, prefixes)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isSyntheticCleanupTombstone(row, prefixes, section) {
+    return cleanupHasSyntheticMarker(readField(row, 'tombstoneId', 'tombstone_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'recordId', 'record_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'deleteReason', 'delete_reason'), prefixes) ||
+      cleanupJsonMarkerHit(readField(row, 'metaJson', 'meta_json'), prefixes, section);
+  }
+
+  function isSyntheticCleanupReview(row, prefixes, section) {
+    return cleanupHasSyntheticMarker(readField(row, 'reviewId', 'review_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'remoteTombstoneId', 'remote_tombstone_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'recordId', 'record_id'), prefixes) ||
+      cleanupHasSyntheticMarker(readField(row, 'dedupeKey', 'dedupe_key'), prefixes) ||
+      cleanupJsonMarkerHit(readField(row, 'rawTombstoneJson', 'raw_tombstone_json'), prefixes, section) ||
+      cleanupWarningsMarkerHit(readField(row, 'warningsJson', 'warnings_json'), prefixes, section);
+  }
+
+  function isCleanupReviewTerminal(status) {
+    return status === 'ignored' || status === 'rejected' || status === 'resolved' || status === 'superseded';
+  }
+
+  function isCleanupReviewBlockedClassification(classification) {
+    return classification === 'delete-vs-edit' ||
+      classification === 'malformed-remote-tombstone' ||
+      classification === 'unsupported-record-kind';
+  }
+
+  function buildSyntheticCleanupTombstoneSection(rows, prefixes) {
+    var section = makeSyntheticCleanupTombstoneSection();
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var kind = cleanScalar(readField(row, 'recordKind', 'record_kind')) || 'unknown';
+      var reason = cleanScalar(readField(row, 'deleteReason', 'delete_reason')) || 'unknown';
+      var synthetic = isSyntheticCleanupTombstone(row, prefixes, section);
+      var auditCritical = isLifecycleRemoteReviewAppliedTombstone(row);
+      var cascadeLinked = isLifecycleCascadeTombstone(row);
+      section.scanned += 1;
+      bumpMap(section.byKind, kind);
+      bumpMap(section.byDeleteReason, reason);
+      if (synthetic) section.syntheticCandidates += 1;
+      if (synthetic && !auditCritical && !cascadeLinked) section.cleanupEligible += 1;
+    });
+    section.cleanupBlocked = section.scanned - section.cleanupEligible;
+    return section;
+  }
+
+  function buildSyntheticCleanupReviewSection(rows, prefixes) {
+    var section = makeSyntheticCleanupReviewSection();
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var status = cleanScalar(readField(row, 'status', null)) || 'unknown';
+      var classification = cleanScalar(readField(row, 'classification', null)) || 'unknown';
+      var decision = cleanScalar(readField(row, 'decision', null));
+      var synthetic = isSyntheticCleanupReview(row, prefixes, section);
+      var eligible = synthetic &&
+        isCleanupReviewTerminal(status) &&
+        !isCleanupReviewBlockedClassification(classification) &&
+        decision !== 'applied-folder-binding';
+      section.scanned += 1;
+      bumpMap(section.byStatus, status);
+      bumpMap(section.byClassification, classification);
+      if (synthetic) section.syntheticCandidates += 1;
+      if (eligible) section.cleanupEligible += 1;
+    });
+    section.cleanupBlocked = section.scanned - section.cleanupEligible;
+    return section;
+  }
+
+  function readSyntheticCleanupTombstoneRows() {
+    return ensureReady().then(function () {
+      return sqlSelect(
+        'SELECT tombstone_id, record_kind, record_id, delete_reason, restored_at, cascade_from, meta_json FROM ' +
+          LOCAL_TOMBSTONE_TABLE,
+        []
+      );
+    });
+  }
+
+  function readSyntheticCleanupReviewRows() {
+    return ensureReady().then(function () {
+      return sqlSelect(
+        'SELECT review_id, remote_tombstone_id, record_kind, record_id, delete_reason, classification, ' +
+          'status, decision, dedupe_key, raw_tombstone_json, warnings_json FROM ' + TABLE,
+        []
+      );
+    });
+  }
+
+  function previewCleanupSynthetic(options) {
+    var opts = options || {};
+    if (opts.dryRun !== true) {
+      return Promise.resolve(syntheticCleanupBlockedResult('desktop-tauri', false, 'dry-run-required'));
+    }
+    var warnings = [];
+    var blockers = [];
+    if (opts.includeSensitive === true) pushCodeWarning(warnings, 'include-sensitive-ignored');
+    var prefixes = readSyntheticCleanupPrefixes(opts, warnings, blockers);
+    if (blockers.length) {
+      var blocked = syntheticCleanupBlockedResult('desktop-tauri', true, 'invalid-prefixes', warnings);
+      blocked.blockers = blockers;
+      return Promise.resolve(blocked);
+    }
+
+    var includeTombstones = opts.includeTombstones !== false;
+    var includeReviews = opts.includeReviews !== false;
+    var tombstonesPromise = includeTombstones
+      ? readSyntheticCleanupTombstoneRows()
+        .then(function (rows) { return buildSyntheticCleanupTombstoneSection(rows, prefixes); })
+        .catch(function (e) {
+          recordError('previewCleanupSynthetic:tombstones', e);
+          return unavailableSyntheticCleanupTombstoneSection('synthetic-cleanup-tombstone-scan-failed');
+        })
+      : Promise.resolve(notRequestedSyntheticCleanupTombstoneSection());
+    var reviewsPromise = includeReviews
+      ? readSyntheticCleanupReviewRows()
+        .then(function (rows) { return buildSyntheticCleanupReviewSection(rows, prefixes); })
+        .catch(function (e) {
+          recordError('previewCleanupSynthetic:reviews', e);
+          return unavailableSyntheticCleanupReviewSection('synthetic-cleanup-review-scan-failed');
+        })
+      : Promise.resolve(notRequestedSyntheticCleanupReviewSection());
+
+    return Promise.all([tombstonesPromise, reviewsPromise]).then(function (parts) {
+      return {
+        schema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
+        ok: true,
+        generatedAt: nowIso(),
+        redacted: true,
+        dryRun: true,
+        platform: 'desktop-tauri',
+        tombstones: parts[0],
+        reviews: parts[1],
+        actions: syntheticCleanupActions(),
+        blockers: [],
+        warnings: warnings,
+      };
+    }).catch(function (e) {
+      recordError('previewCleanupSynthetic', e);
+      var failed = syntheticCleanupBlockedResult('desktop-tauri', true, 'synthetic-cleanup-preview-failed', warnings);
+      failed.tombstones = unavailableSyntheticCleanupTombstoneSection('synthetic-cleanup-preview-failed');
+      failed.reviews = unavailableSyntheticCleanupReviewSection('synthetic-cleanup-preview-failed');
+      return failed;
+    });
+  }
+
   function readAllReviewsForCascadeDiagnostics() {
     return ensureReady()
       .then(function () {
@@ -2674,7 +3017,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5h.1',
+    __version: '0.1.0-f5h.2',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -2701,6 +3044,7 @@
     diagnose: diagnose,
     diagnoseCascadeGroups: diagnoseCascadeGroups,
     diagnoseLifecycle: diagnoseLifecycle,
+    previewCleanupSynthetic: previewCleanupSynthetic,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
@@ -2708,6 +3052,7 @@
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
+      syntheticCleanupPreviewSchema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,

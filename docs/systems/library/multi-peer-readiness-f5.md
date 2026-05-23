@@ -2646,6 +2646,98 @@ Because peer watermarks are not implemented, `purgeBlocked` is intentionally
 conservative. Lifecycle diagnostics can explain why cleanup is unsafe, but they
 do not authorize purge or compaction.
 
+## F5H.2 Synthetic Cleanup Preview
+
+F5H.2 adds a dry-run-only preview API:
+
+```js
+await H2O.Studio.store.tombstoneReviews.previewCleanupSynthetic({
+  dryRun: true,
+  includeTombstones: true,
+  includeReviews: true,
+  prefixes: ['f5c-', 'f5d-', 'f5d1-', 'f5d2-', 'f5f-', 'f5g-'],
+  includeSensitive: false
+})
+```
+
+This API only reports what synthetic/test rows might be cleanup candidates. It
+does not delete rows, mutate tombstones, mutate reviews, archive rows, compact
+rows, purge rows, or change import/export/sync/apply behavior. If `dryRun` is
+not exactly `true`, the call returns a blocked result with
+`{ code: 'dry-run-required' }`.
+
+Desktop scans both lifecycle surfaces read-only:
+
+- `sync_tombstones`
+- `sync_tombstone_reviews`
+
+Chrome scans IndexedDB review rows only and returns local tombstones as
+unsupported:
+
+```js
+{
+  supported: false,
+  reason: 'chrome-local-tombstone-store-not-implemented'
+}
+```
+
+The preview schema is:
+
+```js
+{
+  schema: 'h2o.studio.synthetic-cleanup-preview.v1',
+  generatedAt,
+  redacted: true,
+  dryRun: true,
+  platform: 'desktop-tauri' | 'chrome-mv3',
+  tombstones: {
+    supported: true,
+    scanned,
+    syntheticCandidates,
+    cleanupEligible,
+    cleanupBlocked,
+    byKind,
+    byDeleteReason,
+    warnings
+  },
+  reviews: {
+    supported: true,
+    scanned,
+    syntheticCandidates,
+    cleanupEligible,
+    cleanupBlocked,
+    byStatus,
+    byClassification,
+    warnings
+  },
+  actions: {
+    wouldDeleteRows: false,
+    wouldMutateRows: false,
+    realCleanupImplemented: false
+  },
+  blockers: [],
+  warnings: []
+}
+```
+
+Synthetic detection is strict. The only supported markers are `f5c-`, `f5d-`,
+`f5d1-`, `f5d2-`, `f5f-`, and `f5g-`. Custom prefixes must be an allowlisted
+subset of those strings. Regex and fuzzy matching are not supported.
+
+Preview eligibility is conservative:
+
+- pending and accepted-later reviews are blocked
+- delete-vs-edit, malformed, and unsupported reviews are blocked
+- applied review audit rows are blocked
+- remote-review-applied tombstones are blocked
+- cascade-linked tombstones are blocked until a future cleanup policy can prove
+  linked review safety
+- rows that are not confidently synthetic are blocked
+
+The result is counts-only and redacted. It must not expose tombstone ids, review
+ids, record ids, peer ids, dedupe keys, raw JSON, metadata, warning JSON
+contents, names, titles, prompt/answer bodies, transcripts, or content.
+
 ## Future Envelope Model
 
 Future exports should use a top-level array:

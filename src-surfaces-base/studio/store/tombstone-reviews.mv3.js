@@ -47,6 +47,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
+  var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
   var DECISION_SCHEMA = 'h2o.studio.tombstone-review-decision.v1';
@@ -2437,6 +2438,270 @@
       });
   }
 
+  function syntheticCleanupActions() {
+    return {
+      wouldDeleteRows: false,
+      wouldMutateRows: false,
+      realCleanupImplemented: false,
+    };
+  }
+
+  function unsupportedChromeSyntheticCleanupTombstones() {
+    return {
+      supported: false,
+      reason: 'chrome-local-tombstone-store-not-implemented',
+    };
+  }
+
+  function makeSyntheticCleanupReviewSection() {
+    return {
+      supported: true,
+      available: true,
+      ready: true,
+      scanned: 0,
+      syntheticCandidates: 0,
+      cleanupEligible: 0,
+      cleanupBlocked: 0,
+      byStatus: {},
+      byClassification: {},
+      warnings: [],
+    };
+  }
+
+  function unavailableSyntheticCleanupReviewSection(code) {
+    var section = makeSyntheticCleanupReviewSection();
+    section.available = false;
+    section.ready = false;
+    pushCodeWarning(section.warnings, code);
+    return section;
+  }
+
+  function notRequestedSyntheticCleanupReviewSection() {
+    var section = makeSyntheticCleanupReviewSection();
+    pushCodeWarning(section.warnings, 'section-not-requested');
+    return section;
+  }
+
+  function syntheticCleanupBlockedResult(platform, dryRun, blockerCode, warnings) {
+    var result = {
+      schema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
+      ok: false,
+      generatedAt: nowIso(),
+      redacted: true,
+      dryRun: dryRun === true,
+      platform: platform,
+      tombstones: unsupportedChromeSyntheticCleanupTombstones(),
+      reviews: makeSyntheticCleanupReviewSection(),
+      actions: syntheticCleanupActions(),
+      blockers: [],
+      warnings: Array.isArray(warnings) ? warnings.slice() : [],
+    };
+    pushBlocker(result, blockerCode || 'preview-blocked');
+    return result;
+  }
+
+  function syntheticCleanupKnownPrefixMap() {
+    var out = {};
+    SYNTHETIC_PREFIXES.forEach(function (prefix) { out[prefix] = true; });
+    return out;
+  }
+
+  function readSyntheticCleanupPrefixes(options, warnings, blockers) {
+    var opts = options || {};
+    var supplied = opts.prefixes;
+    var known = syntheticCleanupKnownPrefixMap();
+    if (supplied == null) return SYNTHETIC_PREFIXES.slice();
+    if (!Array.isArray(supplied)) {
+      pushBlocker({ blockers: blockers }, 'invalid-prefixes');
+      return [];
+    }
+    var out = [];
+    var seen = {};
+    supplied.forEach(function (value) {
+      var prefix = cleanScalar(value).toLowerCase();
+      if (!known[prefix]) {
+        pushBlocker({ blockers: blockers }, 'invalid-prefixes');
+        return;
+      }
+      if (!seen[prefix]) {
+        seen[prefix] = true;
+        out.push(prefix);
+      }
+    });
+    if (!out.length) pushCodeWarning(warnings, 'no-synthetic-prefixes-enabled');
+    return out;
+  }
+
+  function cleanupHasSyntheticMarker(value, prefixes) {
+    var s = lifecycleString(value).toLowerCase();
+    if (!s) return false;
+    var allowed = Array.isArray(prefixes) ? prefixes : SYNTHETIC_PREFIXES;
+    for (var i = 0; i < allowed.length; i += 1) {
+      var prefix = cleanScalar(allowed[i]).toLowerCase();
+      if (!prefix) continue;
+      var encoded = '';
+      try { encoded = encodeURIComponent(prefix).toLowerCase(); }
+      catch (_) { encoded = prefix; }
+      if (s.indexOf(prefix) >= 0 || s.indexOf(encoded) >= 0) return true;
+    }
+    return false;
+  }
+
+  function cleanupJsonMarkerHit(raw, prefixes, section) {
+    var text = lifecycleString(raw);
+    if (!text) return false;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      pushCodeWarning(section.warnings, 'cleanup-json-parse-failed');
+      return false;
+    }
+    if (!isObject(parsed)) return false;
+    var fields = [
+      parsed.tombstoneId,
+      parsed.recordId,
+      parsed.deleteReason,
+      parsed.cascadeFrom,
+      parsed.sourceExportId,
+      parsed.schema,
+      parsed.source,
+      parsed.sourceReviewId,
+      parsed.remoteTombstoneId,
+      parsed.remoteExportId,
+      parsed.applyReason,
+      parsed.validation,
+      parsed.testId,
+      parsed.targetKind,
+      parsed.originalDeleteReason,
+    ];
+    var meta = isObject(parsed.meta) ? parsed.meta : {};
+    [
+      'source',
+      'sourceReviewId',
+      'remoteTombstoneId',
+      'remoteExportId',
+      'applyReason',
+      'validation',
+      'testId',
+      'targetKind',
+      'originalDeleteReason',
+    ].forEach(function (key) {
+      fields.push(meta[key]);
+    });
+    for (var i = 0; i < fields.length; i += 1) {
+      if (cleanupHasSyntheticMarker(fields[i], prefixes)) return true;
+    }
+    return false;
+  }
+
+  function cleanupWarningsMarkerHit(raw, prefixes, section) {
+    var text = lifecycleString(raw);
+    if (!text) return false;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {
+      pushCodeWarning(section.warnings, 'cleanup-json-parse-failed');
+      return false;
+    }
+    if (!Array.isArray(parsed)) return false;
+    for (var i = 0; i < parsed.length; i += 1) {
+      var warning = parsed[i];
+      if (!isObject(warning)) continue;
+      if (cleanupHasSyntheticMarker(warning.code, prefixes) || cleanupHasSyntheticMarker(warning.action, prefixes)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isSyntheticCleanupReview(row, prefixes, section) {
+    return cleanupHasSyntheticMarker(row && row.reviewId, prefixes) ||
+      cleanupHasSyntheticMarker(row && row.remoteTombstoneId, prefixes) ||
+      cleanupHasSyntheticMarker(row && row.recordId, prefixes) ||
+      cleanupHasSyntheticMarker(row && row.dedupeKey, prefixes) ||
+      cleanupJsonMarkerHit(row && row.rawTombstoneJson, prefixes, section) ||
+      cleanupWarningsMarkerHit(row && row.warningsJson, prefixes, section);
+  }
+
+  function isCleanupReviewTerminal(status) {
+    return status === 'ignored' || status === 'rejected' || status === 'resolved' || status === 'superseded';
+  }
+
+  function isCleanupReviewBlockedClassification(classification) {
+    return classification === 'delete-vs-edit' ||
+      classification === 'malformed-remote-tombstone' ||
+      classification === 'unsupported-record-kind';
+  }
+
+  function buildSyntheticCleanupReviewSection(rows, prefixes) {
+    var section = makeSyntheticCleanupReviewSection();
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var status = cleanScalar(row && row.status) || 'unknown';
+      var classification = cleanScalar(row && row.classification) || 'unknown';
+      var decision = cleanScalar(row && row.decision);
+      var synthetic = isSyntheticCleanupReview(row, prefixes, section);
+      var eligible = synthetic &&
+        isCleanupReviewTerminal(status) &&
+        !isCleanupReviewBlockedClassification(classification) &&
+        decision !== 'applied-folder-binding';
+      section.scanned += 1;
+      bumpMap(section.byStatus, status);
+      bumpMap(section.byClassification, classification);
+      if (synthetic) section.syntheticCandidates += 1;
+      if (eligible) section.cleanupEligible += 1;
+    });
+    section.cleanupBlocked = section.scanned - section.cleanupEligible;
+    return section;
+  }
+
+  function previewCleanupSynthetic(options) {
+    var opts = options || {};
+    if (opts.dryRun !== true) {
+      return Promise.resolve(syntheticCleanupBlockedResult('chrome-mv3', false, 'dry-run-required'));
+    }
+    var warnings = [];
+    var blockers = [];
+    if (opts.includeSensitive === true) pushCodeWarning(warnings, 'include-sensitive-ignored');
+    var prefixes = readSyntheticCleanupPrefixes(opts, warnings, blockers);
+    if (blockers.length) {
+      var blocked = syntheticCleanupBlockedResult('chrome-mv3', true, 'invalid-prefixes', warnings);
+      blocked.blockers = blockers;
+      return Promise.resolve(blocked);
+    }
+    var includeReviews = opts.includeReviews !== false;
+    var reviewsPromise = includeReviews
+      ? ensureReady()
+        .then(function () { return idbGetAll(); })
+        .then(function (rows) { return buildSyntheticCleanupReviewSection(rows, prefixes); })
+        .catch(function (e) {
+          recordError('previewCleanupSynthetic:reviews', e);
+          return unavailableSyntheticCleanupReviewSection(global.indexedDB ? 'synthetic-cleanup-review-scan-failed' : 'indexeddb-unavailable');
+        })
+      : Promise.resolve(notRequestedSyntheticCleanupReviewSection());
+    return reviewsPromise.then(function (reviews) {
+      return {
+        schema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
+        ok: true,
+        generatedAt: nowIso(),
+        redacted: true,
+        dryRun: true,
+        platform: 'chrome-mv3',
+        tombstones: unsupportedChromeSyntheticCleanupTombstones(),
+        reviews: reviews,
+        actions: syntheticCleanupActions(),
+        blockers: [],
+        warnings: warnings,
+      };
+    }).catch(function (e) {
+      recordError('previewCleanupSynthetic', e);
+      var failed = syntheticCleanupBlockedResult('chrome-mv3', true, 'synthetic-cleanup-preview-failed', warnings);
+      failed.reviews = unavailableSyntheticCleanupReviewSection('synthetic-cleanup-preview-failed');
+      return failed;
+    });
+  }
+
   function readAllReviewsForCascadeDiagnostics() {
     return ensureReady()
       .then(function () {
@@ -2889,7 +3154,7 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.0-f5h.1',
+    __version: '0.1.0-f5h.2',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -2915,6 +3180,7 @@
     diagnose: diagnose,
     diagnoseCascadeGroups: diagnoseCascadeGroups,
     diagnoseLifecycle: diagnoseLifecycle,
+    previewCleanupSynthetic: previewCleanupSynthetic,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
@@ -2922,6 +3188,7 @@
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
+      syntheticCleanupPreviewSchema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
