@@ -54,6 +54,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const state = {
   rowsCache: null,
   folderCatalog: [],
+  folderLocalReview: [],
   labelCatalog: [],
   categoryCatalog: [],
   folderBindingsByChat: {},
@@ -3124,6 +3125,8 @@ function mapFolderParityRowsToCatalog(rows){
 }
 
 async function fetchFolderParityCatalog(force = false){
+  // Kept for back-compat with any non-renderer consumer that still wants the
+  // union. The canonical sidebar path uses fetchFolderParityPartition.
   const api = W.H2O?.Library?.FolderParity;
   if (typeof api?.getDisplayModel !== "function") return [];
   const model = await api.getDisplayModel({ fresh: !!force });
@@ -3131,37 +3134,37 @@ async function fetchFolderParityCatalog(force = false){
   return rows.length ? rows : [];
 }
 
+async function fetchFolderParityPartition(force = false){
+  const api = W.H2O?.Library?.FolderParity;
+  if (typeof api?.getDisplayModel !== "function") {
+    return { canonical: [], review: [], fallbackUsed: false };
+  }
+  const model = await api.getDisplayModel({ fresh: !!force });
+  return {
+    canonical: mapFolderParityRowsToCatalog(model?.canonicalRows || []),
+    review: mapFolderParityRowsToCatalog(model?.localReviewRows || []),
+    fallbackUsed: !!model?.fallbackUsed,
+  };
+}
+
 async function fetchFolderCatalog(force = false){
   const cachedCatalog = Array.isArray(state.folderCatalog) ? state.folderCatalog : [];
-  const cachedUsesParity = cachedCatalog.some((folder) => (
-    String(folder?.displayCountLabel || "").trim()
-    || folder?.isCanonical === true
-    || String(folder?.source || "").includes("folder-parity")
-  ));
-  if (!force && cachedCatalog.length && cachedUsesParity) return cachedCatalog.slice();
+  const cachedReview = Array.isArray(state.folderLocalReview) ? state.folderLocalReview : [];
+  if (!force && cachedCatalog.length){
+    return { canonical: cachedCatalog.slice(), review: cachedReview.slice() };
+  }
   try {
-    const parityCatalog = await fetchFolderParityCatalog(force);
-    if (parityCatalog.length) {
-      state.folderCatalog = normalizeFolderCatalog(parityCatalog);
-      return Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [];
-    }
-  } catch { /* fall through to legacy workspace catalog */ }
-  if (!force && cachedCatalog.length) return cachedCatalog.slice();
-  const ws = getLibraryWorkspace();
-  if (ws?.getFolders){
-    try {
-      const list = await ws.getFolders({ fresh: !!force });
-      if (Array.isArray(list)){
-        state.folderCatalog = normalizeFolderCatalog(list);
-        return Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [];
-      }
-    } catch { /* fall through to archive bridge */ }
-  }
-  const attempt = await tryArchiveOps(FOLDER_LIST_OPS, {});
-  if (attempt.ok){
-    state.folderCatalog = normalizeFolderCatalog(attempt.result);
-  }
-  return Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [];
+    const partition = await fetchFolderParityPartition(force);
+    state.folderCatalog = normalizeFolderCatalog(partition.canonical);
+    state.folderLocalReview = normalizeFolderCatalog(partition.review);
+    return {
+      canonical: Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [],
+      review: Array.isArray(state.folderLocalReview) ? state.folderLocalReview.slice() : [],
+    };
+  } catch { /* FolderParity is the sole canonical source per P8a contract. No
+                ws.getFolders or archive-ops fallback — FolderParity's internal
+                KNOWN_NATIVE_CANONICAL_FOLDERS provides the cold-boot fallback. */ }
+  return { canonical: cachedCatalog.slice(), review: cachedReview.slice() };
 }
 
 async function fetchLabelCatalog(force = false){
@@ -3216,6 +3219,7 @@ async function fetchCategoryCatalog(force = false){
       // route-change/index-tick).
       if (['folder-binding-changed','category-changed','index-updated','cache-bust','cross-surface-sync'].includes(reason)){
         state.folderCatalog = [];
+        state.folderLocalReview = [];
         state.categoryCatalog = [];
         state.labelCatalog = [];
       }
@@ -3229,6 +3233,7 @@ async function fetchCategoryCatalog(force = false){
   // we catch native-originated changes even if the Workspace facade is slow.
   const handleCatalogBroadcast = () => {
     state.folderCatalog = [];
+    state.folderLocalReview = [];
     state.categoryCatalog = [];
     state.labelCatalog = [];
     renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
@@ -3329,13 +3334,13 @@ function mergeRowFolderData(row, bindingMap){
 
 async function enrichRowsWithFolderData(rows, force = false){
   const baseRows = await enrichRowsWithNativeInterfaceData(rows);
-  const fallbackCatalog = deriveFolderCatalogFromRows(baseRows);
-  const [catalog, bindingMap] = await Promise.all([
-    fetchFolderCatalog(force).catch(() => []),
+  const [, bindingMap] = await Promise.all([
+    fetchFolderCatalog(force).catch(() => ({ canonical: [], review: [] })),
     resolveFolderBindingsForChatIds(baseRows.map((row) => row.chatId)).catch(() => new Map()),
   ]);
-
-  state.folderCatalog = mergeFolderCatalogs(catalog, fallbackCatalog);
+  // fetchFolderCatalog already wrote state.folderCatalog (canonical) and
+  // state.folderLocalReview (review). Row-derived folders no longer pollute
+  // the canonical sidebar per P8a contract.
   const merged = baseRows.map((row) => mergeRowFolderData(row, bindingMap));
   state.rowsCache = merged.slice();
   return merged;
@@ -3453,33 +3458,40 @@ function renderListHeader(allRows, filteredRows, view, folderId, query){
   setRouteMeta("Studio", folderId ? `${title} / ${folderLabel}` : title, subtitle);
 }
 
-function collectFolderSidebarItems(rows, view){
+function collectFolderSidebarItems(rows, view, mode = "canonical"){
   const base = (Array.isArray(rows) ? rows : []).filter((row) => matchesView(row, view));
-  const counts = new Map();
   let unfiledCount = 0;
   for (const row of base){
     const folderId = String(row?.folderId || "").trim();
-    if (!folderId) {
-      unfiledCount += 1;
-      continue;
-    }
-    counts.set(folderId, (counts.get(folderId) || 0) + 1);
+    if (!folderId) unfiledCount += 1;
   }
 
-  const catalog = mergeFolderCatalogs(state.folderCatalog, deriveFolderCatalogFromRows(base));
-  const out = [{ folderId: "", label: "All folders", count: base.length, kind: "all" }];
-  for (const folder of catalog){
-    const rowCount = counts.get(folder.id) || 0;
+  // Canonical mode reads state.folderCatalog (canonical-only per P8a contract).
+  // Review mode reads state.folderLocalReview. Neither merges row-derived
+  // folders — extras only appear if FolderParity recognises them as Local Review.
+  const sourceCatalog = mode === "review"
+    ? (Array.isArray(state.folderLocalReview) ? state.folderLocalReview : [])
+    : (Array.isArray(state.folderCatalog) ? state.folderCatalog : []);
+  const out = mode === "canonical"
+    ? [{ folderId: "", label: "All folders", count: base.length, kind: "all" }]
+    : [];
+  for (const folder of sourceCatalog){
     const canonicalCount = Number(folder.canonicalCount || 0) || 0;
     const knownCount = Number(folder.knownCount || 0) || 0;
     const localBindingCount = Number(folder.localBindingCount || 0) || 0;
+    const nativeMembershipCount = Number(folder.nativeMembershipCount ?? canonicalCount) || 0;
     out.push({
       folderId: folder.id,
       label: folder.name || folder.id,
-      count: Math.max(rowCount, canonicalCount, knownCount, localBindingCount),
+      // P8a contract §8: primary count is native membership, never max'd with
+      // local binding counts. displayCountLabel ("<n> native · <m> known")
+      // drives the visible UI; numeric count only gates the is-empty class.
+      count: nativeMembershipCount,
       displayCountLabel: String(folder.displayCountLabel || "").trim(),
       canonicalCount,
+      nativeMembershipCount,
       knownCount,
+      knownStudioCount: Number(folder.knownStudioCount ?? knownCount) || 0,
       savedCount: Number(folder.savedCount || 0) || 0,
       linkedCount: Number(folder.linkedCount || 0) || 0,
       orphanCount: Number(folder.orphanCount || 0) || 0,
@@ -3489,12 +3501,13 @@ function collectFolderSidebarItems(rows, view){
       isExtra: folder.isExtra === true,
       isTestCandidate: folder.isTestCandidate === true,
       isConflict: folder.isConflict === true,
+      reviewBucket: folder.reviewBucket || null,
       kind: "folder",
       folderKind: folder.kind || "local",
       iconColor: normalizeSidebarIconColor(folder.iconColor || ""),
     });
   }
-  if (unfiledCount || state.lastFolderId === FOLDER_FILTER_NONE) {
+  if (mode === "canonical" && (unfiledCount || state.lastFolderId === FOLDER_FILTER_NONE)) {
     out.push({ folderId: FOLDER_FILTER_NONE, label: "Unfiled", count: unfiledCount, kind: "utility" });
   }
   return out;
@@ -3506,15 +3519,83 @@ const SIDEBAR_FOLDER_ICON_SVG = `
   </svg>
 `;
 
+function renderFolderSidebarRow(view, item, opts){
+  const appearance = item.kind === "folder"
+    ? W.H2O?.Library?.SidebarSections?.getRowAppearance?.({
+      kind: "folders",
+      id: item.folderId,
+      folderId: item.folderId,
+      name: item.label,
+      color: item.iconColor || "",
+    })
+    : null;
+  if (appearance?.hidden) return null;
+  const displayLabel = String(appearance?.name || item.label || "").trim() || item.folderId || "";
+  const folderIconSvg = appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG;
+  const link = document.createElement("a");
+  link.className = "wbFolderItem";
+  if (opts && opts.review) link.classList.add("wbFolderItem--review");
+  const countText = String(item.displayCountLabel || "").trim() || String(item.count || 0);
+  const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
+  if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
+  if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
+  link.href = buildListHash(view, item.folderId);
+  link.dataset.folderId = String(item.folderId || "");
+  if (hasDetailedCount) link.dataset.countLabel = countText;
+  if (Array.isArray(item.badges) && item.badges.length) link.dataset.badges = item.badges.join(",");
+  if (item.canonicalCount != null) link.dataset.canonicalCount = String(item.canonicalCount);
+  if (item.knownCount != null) link.dataset.knownCount = String(item.knownCount);
+  if (item.localBindingCount != null) link.dataset.localBindingCount = String(item.localBindingCount);
+  if (item.reviewBucket) link.dataset.reviewBucket = String(item.reviewBucket);
+  const iconColor = normalizeSidebarIconColor(appearance?.color || item.iconColor || "");
+  if (iconColor) {
+    link.dataset.color = iconColor;
+    link.style.setProperty("--wb-sidebar-item-color", iconColor);
+  }
+  const folderMenuHtml = item.kind === "folder"
+    ? `<button class="wbFolderMenuBtn" type="button" aria-label="More options for ${esc(displayLabel)}" aria-haspopup="menu" aria-expanded="false" title="More options for ${esc(displayLabel)}">...</button>`
+    : `<span class="wbFolderMenuSlot" aria-hidden="true"></span>`;
+  link.innerHTML = `
+    <span class="wbFolderIcon" aria-hidden="true">${folderIconSvg}</span>
+    <span class="wbFolderLabel">${esc(displayLabel)}</span>
+    <span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}">${esc(countText)}</span>
+    ${folderMenuHtml}
+  `;
+  const menuBtn = link.querySelector(".wbFolderMenuBtn");
+  if (menuBtn) {
+    menuBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
+    menuBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const api = W.H2O?.Library?.SidebarSections;
+      if (typeof api?.openRowMenu === "function") {
+        api.openRowMenu(menuBtn, {
+          kind: "folders",
+          id: item.folderId,
+          folderId: item.folderId,
+          name: displayLabel,
+          count: item.count || 0,
+          color: iconColor,
+          iconKey: appearance?.icon || "folder",
+          folderKind: item.folderKind || item.kind || "",
+        });
+      }
+    });
+  }
+  return link;
+}
+
 function renderFolderSidebar(rows, view, selectedFolderId){
   const host = $("#folderList");
   if (!host) return;
-  const items = collectFolderSidebarItems(rows, view);
+  const items = collectFolderSidebarItems(rows, view, "canonical");
+  const reviewItems = collectFolderSidebarItems(rows, view, "review");
   host.innerHTML = "";
 
   const folderEntries = items.filter((item) => item.kind === "folder");
-  if (items.length <= 1 && !folderEntries.length){
-    host.innerHTML = `<div class="wbSideEmpty">No saved folder contract found yet. Capture or assign a chat to a folder from chatgpt.com.</div>`;
+  const reviewEntries = reviewItems.filter((item) => item.kind === "folder");
+  if (items.length <= 1 && !folderEntries.length && !reviewEntries.length){
+    host.innerHTML = `<div class="wbSideEmpty">Canonical folder catalog unavailable. Open chatgpt.com to broadcast folders.</div>`;
     setActiveFolder("");
     return;
   }
@@ -3530,68 +3611,35 @@ function renderFolderSidebar(rows, view, selectedFolderId){
       divider.className = "wbFolderDivider";
       host.appendChild(divider);
     }
-    const appearance = item.kind === "folder"
-      ? W.H2O?.Library?.SidebarSections?.getRowAppearance?.({
-        kind: "folders",
-        id: item.folderId,
-        folderId: item.folderId,
-        name: item.label,
-        color: item.iconColor || "",
-      })
-      : null;
-    if (appearance?.hidden) return;
-    const displayLabel = String(appearance?.name || item.label || "").trim() || item.folderId || "";
-    const folderIconSvg = appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG;
-    const link = document.createElement("a");
-    link.className = "wbFolderItem";
-    const countText = String(item.displayCountLabel || "").trim() || String(item.count || 0);
-    const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
-    if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
-    if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
-    link.href = buildListHash(view, item.folderId);
-    link.dataset.folderId = String(item.folderId || "");
-    if (hasDetailedCount) link.dataset.countLabel = countText;
-    if (Array.isArray(item.badges) && item.badges.length) link.dataset.badges = item.badges.join(",");
-    if (item.canonicalCount != null) link.dataset.canonicalCount = String(item.canonicalCount);
-    if (item.knownCount != null) link.dataset.knownCount = String(item.knownCount);
-    if (item.localBindingCount != null) link.dataset.localBindingCount = String(item.localBindingCount);
-    const iconColor = normalizeSidebarIconColor(appearance?.color || item.iconColor || "");
-    if (iconColor) {
-      link.dataset.color = iconColor;
-      link.style.setProperty("--wb-sidebar-item-color", iconColor);
-    }
-    const folderMenuHtml = item.kind === "folder"
-      ? `<button class="wbFolderMenuBtn" type="button" aria-label="More options for ${esc(displayLabel)}" aria-haspopup="menu" aria-expanded="false" title="More options for ${esc(displayLabel)}">...</button>`
-      : `<span class="wbFolderMenuSlot" aria-hidden="true"></span>`;
-    link.innerHTML = `
-      <span class="wbFolderIcon" aria-hidden="true">${folderIconSvg}</span>
-      <span class="wbFolderLabel">${esc(displayLabel)}</span>
-      <span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}">${esc(countText)}</span>
-      ${folderMenuHtml}
-    `;
-    const menuBtn = link.querySelector(".wbFolderMenuBtn");
-    if (menuBtn) {
-      menuBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
-      menuBtn.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const api = W.H2O?.Library?.SidebarSections;
-        if (typeof api?.openRowMenu === "function") {
-          api.openRowMenu(menuBtn, {
-            kind: "folders",
-            id: item.folderId,
-            folderId: item.folderId,
-            name: displayLabel,
-            count: item.count || 0,
-            color: iconColor,
-            iconKey: appearance?.icon || "folder",
-            folderKind: item.folderKind || item.kind || "",
-          });
-        }
-      });
-    }
-    host.appendChild(link);
+    const link = renderFolderSidebarRow(view, item, { review: false });
+    if (link) host.appendChild(link);
   });
+
+  if (reviewEntries.length > 0) {
+    const persistKey = "h2o:prm:cgx:studio-sidebar:local-review:expanded:v1";
+    let expandedPref = false;
+    try { expandedPref = W.localStorage.getItem(persistKey) === "1"; } catch {}
+    const details = document.createElement("details");
+    details.className = "wbFolderLocalReview";
+    details.open = expandedPref;
+    const summary = document.createElement("summary");
+    summary.className = "wbFolderLocalReviewSummary";
+    summary.textContent = `Local Review · ${reviewEntries.length}`;
+    summary.style.cssText = "cursor:pointer;padding:6px 10px;margin-top:6px;font-size:11px;color:rgba(255,255,255,.5);letter-spacing:.04em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,.06)";
+    details.appendChild(summary);
+    const reviewHost = document.createElement("div");
+    reviewHost.className = "wbFolderLocalReviewList";
+    reviewHost.style.cssText = "opacity:0.72;padding-top:4px";
+    reviewEntries.forEach((item) => {
+      const link = renderFolderSidebarRow(view, item, { review: true });
+      if (link) reviewHost.appendChild(link);
+    });
+    details.appendChild(reviewHost);
+    details.addEventListener("toggle", () => {
+      try { W.localStorage.setItem(persistKey, details.open ? "1" : "0"); } catch {}
+    });
+    host.appendChild(details);
+  }
 
   setActiveFolder(selectedFolderId);
 }
@@ -3722,7 +3770,10 @@ function renderFolderAssignmentControl(){
   if (!(wrap && select)) return;
 
   const selectedChatId = String(state.selectedChatId || state.currentReaderSnapshot?.chatId || "").trim();
-  const catalog = mergeFolderCatalogs(state.folderCatalog, deriveFolderCatalogFromRows(state.rowsCache || []));
+  // P8a contract §2: assignment dropdown shows canonical folders only.
+  // Local Review extras are inspect-only; existing non-canonical bindings are
+  // preserved because the writer only fires on user-driven select change.
+  const catalog = Array.isArray(state.folderCatalog) ? state.folderCatalog : [];
   const currentFolderId = getSelectedFolderId();
 
   if (!selectedChatId || (!catalog.length && !currentFolderId)) {
@@ -4824,7 +4875,7 @@ async function renderReader(snapshotId){
     renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
 
     await Promise.all([
-      fetchFolderCatalog(false).catch(() => []),
+      fetchFolderCatalog(false).catch(() => ({ canonical: [], review: [] })),
       fetchLabelCatalog(false).catch(() => []),
       fetchCategoryCatalog(false).catch(() => []),
     ]);
@@ -7538,7 +7589,7 @@ function settingsFolderDesktopOrphanBindingReport(review, selfCheck, extra = {})
 async function settingsFolderDesktopLoadReviewInputs(seed = null){
   const parity = W.H2O?.Library?.FolderParity;
   const selfCheck = seed?.selfCheck || (typeof parity?.selfCheck === "function" ? await parity.selfCheck({ fresh: true }) : null);
-  const displayModel = seed?.displayModel || (typeof parity?.getDisplayModel === "function" ? await parity.getDisplayModel({ fresh: true }) : { rows: [] });
+  const displayModel = seed?.displayModel || (typeof parity?.getDisplayModel === "function" ? await parity.getDisplayModel({ fresh: true }) : { rows: [], canonicalRows: [], localReviewRows: [] });
   const desktopFacts = await settingsFolderDesktopLoadFacts();
   const chromeFacts = await settingsFolderDesktopLoadChromeFacts();
   return {
@@ -9714,6 +9765,7 @@ function boot(){
   $("#refreshBtn")?.addEventListener("click", () => {
     state.rowsCache = null;
     state.folderCatalog = [];
+    state.folderLocalReview = [];
     state.folderBindingsByChat = {};
     renderRoute({ force: true }).catch(console.error);
   });
