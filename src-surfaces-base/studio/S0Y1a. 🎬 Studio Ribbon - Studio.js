@@ -373,6 +373,164 @@
     },
   };
 
+  /* ── Phase 2b — message-level format actions ───────────────────────────
+   * Seven actions wired against the edit-overlay subsystem:
+   *   h1 / h2 / h3 — set/toggle/switch heading level on the selected message
+   *   quote / code / callout — toggle the wrapper
+   *   clean-spacing — toggle clean-spacing flag (CSS-driven normalisation)
+   *
+   * Enabled ONLY when:
+   *   - ctx.chatType === 'saved'
+   *   - a saved reader is mounted (signalled by snapshotId + selectedTurnIdx)
+   *   - editOverlay store + overlay applier are both installed
+   *
+   * All handlers go through H2O.Studio.RibbonBridge.applyOverlayOp, which
+   * checks drift, appends an op via the pure helper, upserts to the
+   * store, and re-applies the overlay to the live reader DOM. Toggle
+   * semantics are decided here at click time based on the current
+   * computed message state (via RibbonBridge.getMessageStateForTurn). */
+
+  function formatActionsIsEnabled(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return false;
+    if (!ctx.snapshotId) return false;
+    if (!Number.isFinite(Number(ctx.selectedTurnIdx)) || Number(ctx.selectedTurnIdx) <= 0) return false;
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.applyOverlayOp !== 'function') return false;
+    const store = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.editOverlay;
+    if (!store || typeof store.upsert !== 'function') return false;
+    return true;
+  }
+
+  /* Helper to run an op spec via the bridge and route status feedback. */
+  function runOverlayOp(opSpec, setStatus, statusLabels) {
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.applyOverlayOp !== 'function') {
+      setStatus('Overlay bridge unavailable');
+      return;
+    }
+    setStatus(statusLabels.pending || 'Applying…');
+    Promise.resolve(bridge.applyOverlayOp(opSpec)).then(
+      function (result) {
+        if (result && result.ok) {
+          setStatus(statusLabels.success || 'Applied');
+        } else {
+          const reason = (result && result.reason) || 'unknown';
+          if (reason === 'drift-detected') {
+            setStatus('Snapshot has changed — overlay disabled until rebase');
+          } else if (reason === 'no-snapshot') {
+            setStatus('No saved chat open');
+          } else {
+            setStatus((statusLabels.fail || 'Failed') + ': ' + reason);
+          }
+        }
+      },
+      function (err) {
+        const msg = (err && (err.message || String(err))) || 'unknown error';
+        setStatus((statusLabels.fail || 'Failed') + ': ' + msg);
+      }
+    );
+  }
+
+  /* Look up current state synchronously by reading from the bridge.
+   * The bridge returns a Promise; for toggle behaviour we need a
+   * synchronous answer. Strategy: fire applyOverlayOp directly with a
+   * `setLevel:N` op for headings (the reducer in the applier handles
+   * the toggle/switch semantics — last op wins per message per type).
+   * For quote/code/callout/clean-spacing, we pre-read via the bridge
+   * helper (async) and decide the payload from current state. */
+  function buildHeadingHandler(level) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        /* Pre-read current state so we can toggle off when clicking the
+         * same level twice; switch level when clicking a different level. */
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({ heading: null });
+        readP.then(function (cur) {
+          const curLevel = (cur && cur.heading && cur.heading.level) || null;
+          const nextLevel = (curLevel === level) ? null : level;
+          const opSpec = {
+            type: 'heading',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { level: nextLevel },
+            inverse: { level: curLevel },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: nextLevel ? ('Applying H' + nextLevel + '…') : 'Removing heading…',
+            success: nextLevel ? ('H' + nextLevel + ' applied') : 'Heading removed',
+            fail: 'Heading failed',
+          });
+        }, function () { setStatus('Heading failed: state read'); });
+      },
+    };
+  }
+
+  function buildToggleHandler(kind, opType, payloadOn, labels) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (cur) {
+          let isOn = false;
+          if (kind === 'quote') isOn = !!(cur && cur.quote);
+          else if (kind === 'code') isOn = !!(cur && cur.code);
+          else if (kind === 'callout') isOn = !!(cur && cur.callout);
+          else if (kind === 'clean-spacing') isOn = !!(cur && cur.cleanSpacing);
+          /* Payload: toggle on/off */
+          let nextPayload;
+          if (kind === 'callout') {
+            nextPayload = isOn ? { kind: null } : { kind: 'info' };
+          } else {
+            nextPayload = isOn ? { enabled: false } : payloadOn;
+          }
+          const opSpec = {
+            type: opType,
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: nextPayload,
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: isOn ? labels.removingLabel : labels.applyingLabel,
+            success: isOn ? labels.removedLabel : labels.appliedLabel,
+            fail: labels.failLabel,
+          });
+        }, function () { setStatus(labels.failLabel + ': state read'); });
+      },
+    };
+  }
+
+  ACTION_HANDLERS['h1'] = buildHeadingHandler(1);
+  ACTION_HANDLERS['h2'] = buildHeadingHandler(2);
+  ACTION_HANDLERS['h3'] = buildHeadingHandler(3);
+  ACTION_HANDLERS['quote'] = buildToggleHandler('quote', 'quote', { enabled: true }, {
+    applyingLabel: 'Applying quote…', removingLabel: 'Removing quote…',
+    appliedLabel: 'Quote applied', removedLabel: 'Quote removed',
+    failLabel: 'Quote failed',
+  });
+  ACTION_HANDLERS['code'] = buildToggleHandler('code', 'code', { enabled: true }, {
+    applyingLabel: 'Applying code block…', removingLabel: 'Removing code block…',
+    appliedLabel: 'Code block applied', removedLabel: 'Code block removed',
+    failLabel: 'Code block failed',
+  });
+  ACTION_HANDLERS['callout'] = buildToggleHandler('callout', 'callout', { kind: 'info' }, {
+    applyingLabel: 'Applying callout…', removingLabel: 'Removing callout…',
+    appliedLabel: 'Callout applied', removedLabel: 'Callout removed',
+    failLabel: 'Callout failed',
+  });
+  ACTION_HANDLERS['clean-spacing'] = buildToggleHandler('clean-spacing', 'clean-spacing', { enabled: true }, {
+    applyingLabel: 'Cleaning spacing…', removingLabel: 'Restoring spacing…',
+    appliedLabel: 'Spacing cleaned', removedLabel: 'Spacing restored',
+    failLabel: 'Clean spacing failed',
+  });
+
   /* ── Registration of the default catalogue ────────────────────────── */
   function registerCatalogue(shell) {
     TAB_CATALOGUE.forEach(function (tab) {

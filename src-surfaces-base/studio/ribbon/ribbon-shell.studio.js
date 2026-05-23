@@ -91,6 +91,13 @@
       title: null,
       originalUrl: null,
       readOnly: false,
+      /* Phase 2b — message-level selection for format/structure actions.
+       * Both nullable; both populated by studio.js's reader click handler.
+       * hasOverlay is true when an overlay record exists for the current
+       * snapshot — used to enable format buttons. */
+      selectedMessageId: null,
+      selectedTurnIdx: null,
+      hasOverlay: false,
     },
   };
 
@@ -299,6 +306,19 @@
     const title = isNonEmptyString(safe.title) ? safe.title : null;
     const originalUrl = isNonEmptyString(safe.originalUrl) ? safe.originalUrl : null;
     const readOnly = !!safe.readOnly;
+    /* Phase 2b — message selection + overlay-presence.
+     *   - selectedMessageId / selectedTurnIdx are reset to null whenever
+     *     chatType is not 'saved' (selection is meaningless without an
+     *     opened saved reader).
+     *   - hasOverlay is a derived signal published by studio.js when a
+     *     non-empty overlay exists for the current snapshot. */
+    const isSaved = chatType === 'saved';
+    const selectedMessageId = isSaved && isNonEmptyString(safe.selectedMessageId) ? safe.selectedMessageId : null;
+    const selectedTurnIdxRaw = Number(safe.selectedTurnIdx);
+    const selectedTurnIdx = isSaved && Number.isFinite(selectedTurnIdxRaw) && selectedTurnIdxRaw > 0
+      ? selectedTurnIdxRaw
+      : null;
+    const hasOverlay = !!safe.hasOverlay;
 
     const prev = Object.assign({}, internalState.context);
     const next = {
@@ -309,6 +329,9 @@
       title: title,
       originalUrl: originalUrl,
       readOnly: readOnly,
+      selectedMessageId: selectedMessageId,
+      selectedTurnIdx: selectedTurnIdx,
+      hasOverlay: hasOverlay,
     };
 
     const unchanged =
@@ -318,7 +341,10 @@
       prev.chatId === next.chatId &&
       prev.title === next.title &&
       prev.originalUrl === next.originalUrl &&
-      prev.readOnly === next.readOnly;
+      prev.readOnly === next.readOnly &&
+      prev.selectedMessageId === next.selectedMessageId &&
+      prev.selectedTurnIdx === next.selectedTurnIdx &&
+      prev.hasOverlay === next.hasOverlay;
     if (unchanged) return;
 
     internalState.context = next;
