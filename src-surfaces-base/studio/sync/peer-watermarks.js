@@ -2,7 +2,7 @@
  *
  * Read-only diagnostics only. Aggregates existing peer/export/import/
  * tombstone-review evidence and reports why destructive lifecycle actions
- * remain blocked until a durable watermark table exists.
+ * remain blocked until durable watermark write policy exists.
  *
  * No schema changes, no storage writes, no cleanup, no purge, no compaction,
  * no sync apply.
@@ -16,9 +16,12 @@
   if (H2O.Studio.sync.peerWatermarks && H2O.Studio.sync.peerWatermarks.__installed) return;
 
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.sync.peer-watermark-diagnostic.v1';
-  var MODULE_VERSION = '0.1.0-f5h.5-b';
-  var BLOCKER_CODES = Object.freeze([
-    'peer-watermark-table-not-implemented',
+  var WATERMARK_SCHEMA = 'h2o.studio.sync.peer-watermark.v1';
+  var DB_URL = 'sqlite:studio-v1.db';
+  var MODULE_VERSION = '0.1.0-f5h.5-d';
+  var WATERMARK_TABLE_BLOCKER = 'peer-watermark-table-not-implemented';
+  var WATERMARK_WRITE_POLICY_BLOCKER = 'peer-watermark-write-policy-not-implemented';
+  var LIFECYCLE_BLOCKER_CODES = Object.freeze([
     'active-peer-waterline-unknown',
     'source-stream-waterline-unknown',
     'retention-hold-model-not-implemented',
@@ -140,6 +143,26 @@
     return safeObject(H2O.Studio && H2O.Studio.store);
   }
 
+  function getInvoke() {
+    try {
+      var internals = global.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') return internals.invoke.bind(internals);
+    } catch (_) { /* ignore */ }
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return tauri.core.invoke.bind(tauri.core);
+      if (tauri && typeof tauri.invoke === 'function') return tauri.invoke.bind(tauri);
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  async function sqlSelect(query, values) {
+    var invoke = getInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable');
+    var rows = await invoke('plugin:sql|select', { db: DB_URL, query: query, values: values || [] });
+    return Array.isArray(rows) ? rows : [];
+  }
+
   async function callMaybe(obj, names, arg) {
     for (var i = 0; i < names.length; i += 1) {
       var name = names[i];
@@ -149,6 +172,22 @@
       }
     }
     return { ok: false, method: null, error: 'method-unavailable' };
+  }
+
+  function readNumber(row, keys) {
+    var r = safeObject(row);
+    for (var i = 0; i < keys.length; i += 1) {
+      if (r[keys[i]] != null) return numberOrZero(r[keys[i]]);
+    }
+    return 0;
+  }
+
+  function readNullableNumber(row, keys) {
+    var r = safeObject(row);
+    for (var i = 0; i < keys.length; i += 1) {
+      if (r[keys[i]] != null) return numberOrNull(r[keys[i]]);
+    }
+    return null;
   }
 
   function readField(row, camel, snake) {
@@ -172,6 +211,84 @@
         watermarks: null,
       },
     };
+  }
+
+  function makeEmptyWatermarkStore(surface, surfaceStoreKind, readError) {
+    return {
+      tablePresent: false,
+      surfaceStoreKind: cleanString(surfaceStoreKind) || (surface + '-no-watermark-table'),
+      schema: WATERMARK_SCHEMA,
+      rowCount: 0,
+      byStatus: {},
+      byStreamKind: {},
+      sequence: {
+        minHighWatermarkSequence: null,
+        maxHighWatermarkSequence: null,
+      },
+      retentionHolds: {
+        total: 0,
+        activeOrFuture: 0,
+      },
+      readError: cleanString(readError),
+    };
+  }
+
+  async function readDesktopWatermarkStore(generatedAt) {
+    var store = makeEmptyWatermarkStore('desktop-tauri', 'desktop-tauri-sqlite', '');
+    try {
+      var tableRows = await sqlSelect(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'sync_peer_watermarks'"
+      );
+      store.tablePresent = readNumber(tableRows[0], ['count', 'COUNT(*)']) > 0;
+      if (!store.tablePresent) return store;
+
+      var rowCountRows = await sqlSelect('SELECT COUNT(*) AS count FROM sync_peer_watermarks');
+      store.rowCount = readNumber(rowCountRows[0], ['count', 'COUNT(*)']);
+
+      var statusRows = await sqlSelect('SELECT status, COUNT(*) AS count FROM sync_peer_watermarks GROUP BY status');
+      statusRows.forEach(function (row) {
+        var status = cleanString(row && row.status) || 'unknown';
+        store.byStatus[status] = readNumber(row, ['count', 'COUNT(*)']);
+      });
+
+      var streamRows = await sqlSelect('SELECT stream_kind, COUNT(*) AS count FROM sync_peer_watermarks GROUP BY stream_kind');
+      streamRows.forEach(function (row) {
+        var streamKind = cleanString(row && row.stream_kind) || 'unknown';
+        store.byStreamKind[streamKind] = readNumber(row, ['count', 'COUNT(*)']);
+      });
+
+      var sequenceRows = await sqlSelect(
+        'SELECT MIN(high_watermark_sequence) AS min_high_watermark_sequence, MAX(high_watermark_sequence) AS max_high_watermark_sequence FROM sync_peer_watermarks WHERE high_watermark_sequence IS NOT NULL'
+      );
+      store.sequence = {
+        minHighWatermarkSequence: readNullableNumber(sequenceRows[0], ['min_high_watermark_sequence']),
+        maxHighWatermarkSequence: readNullableNumber(sequenceRows[0], ['max_high_watermark_sequence']),
+      };
+
+      var holdRows = await sqlSelect(
+        "SELECT COUNT(*) AS count FROM sync_peer_watermarks WHERE retention_hold_until IS NOT NULL AND TRIM(retention_hold_until) != ''"
+      );
+      var activeRows = await sqlSelect(
+        "SELECT COUNT(*) AS count FROM sync_peer_watermarks WHERE retention_hold_until IS NOT NULL AND TRIM(retention_hold_until) != '' AND retention_hold_until >= ?",
+        [generatedAt]
+      );
+      store.retentionHolds = {
+        total: readNumber(holdRows[0], ['count', 'COUNT(*)']),
+        activeOrFuture: readNumber(activeRows[0], ['count', 'COUNT(*)']),
+      };
+      return store;
+    } catch (e) {
+      store.readError = String((e && e.message) || e);
+      return store;
+    }
+  }
+
+  async function readWatermarkStore(surface, generatedAt) {
+    if (surface === 'desktop-tauri') return readDesktopWatermarkStore(generatedAt);
+    if (surface === 'chrome-mv3') {
+      return makeEmptyWatermarkStore(surface, 'chrome-mv3-no-watermark-table', '');
+    }
+    return makeEmptyWatermarkStore(surface, 'studio-web-no-watermark-table', '');
   }
 
   async function peerKeyFor(peerId, fallbackKey) {
@@ -555,8 +672,31 @@
     };
   }
 
-  function makeBlockers() {
-    return BLOCKER_CODES.map(function (code) { return { code: code }; });
+  function makeBlockers(watermarkStore) {
+    var store = safeObject(watermarkStore);
+    var first = store.tablePresent ? WATERMARK_WRITE_POLICY_BLOCKER : WATERMARK_TABLE_BLOCKER;
+    return [first].concat(LIFECYCLE_BLOCKER_CODES).map(function (code) { return { code: code }; });
+  }
+
+  function reasonForWatermarkStore(watermarkStore) {
+    return safeObject(watermarkStore).tablePresent
+      ? WATERMARK_WRITE_POLICY_BLOCKER
+      : WATERMARK_TABLE_BLOCKER;
+  }
+
+  function makeWatermarkClasses(watermarkStore) {
+    var byStreamKind = safeObject(safeObject(watermarkStore).byStreamKind);
+    var present = [];
+    if (numberOrZero(byStreamKind.export) > 0) present.push('export-watermark');
+    if (numberOrZero(byStreamKind.tombstone) > 0) present.push('tombstone-watermark');
+    if (numberOrZero(byStreamKind['tombstone-review']) > 0) present.push('review-watermark');
+    if (numberOrZero(byStreamKind.maintenance) > 0) present.push('maintenance-watermark');
+    return {
+      supported: false,
+      present: present,
+      missing: MISSING_WATERMARK_CLASSES.filter(function (name) { return present.indexOf(name) < 0; }),
+      deferred: ['folder-state-watermark'],
+    };
   }
 
   async function diagnose(options) {
@@ -564,6 +704,7 @@
     var includeIds = opts.includeIds === true;
     var acc = makeAccumulator(includeIds);
     var generatedAt = nowIso();
+    var surface = detectSurface();
     try {
       await collectIdentity(acc);
       await collectExportLog(acc);
@@ -572,6 +713,7 @@
       await collectTombstones(acc);
       await collectReviews(acc);
       await collectLifecycle(acc);
+      var watermarkStore = await readWatermarkStore(surface, generatedAt);
       var knownPeers = finalizePeers(acc);
       var sourceStreams = finalizeStreams(acc);
       var result = {
@@ -579,19 +721,15 @@
         readOnly: true,
         noMutation: true,
         supported: false,
-        reason: 'peer-watermark-table-not-implemented',
-        surface: detectSurface(),
+        reason: reasonForWatermarkStore(watermarkStore),
+        surface: surface,
         generatedAt: generatedAt,
         redacted: !includeIds,
         knownPeers: knownPeers,
         sourceStreams: sourceStreams,
-        watermarkClasses: {
-          supported: false,
-          present: [],
-          missing: MISSING_WATERMARK_CLASSES.slice(),
-          deferred: ['folder-state-watermark'],
-        },
-        blockers: makeBlockers(),
+        watermarkStore: watermarkStore,
+        watermarkClasses: makeWatermarkClasses(watermarkStore),
+        blockers: makeBlockers(watermarkStore),
         lifecycle: acc.lifecycle,
         warnings: acc.warnings,
       };
@@ -599,6 +737,8 @@
       state.lastSummary = {
         knownPeerCount: knownPeers.total,
         sourceStreamCount: sourceStreams.total,
+        watermarkTablePresent: watermarkStore.tablePresent === true,
+        watermarkRowCount: numberOrZero(watermarkStore.rowCount),
         warningCount: acc.warnings.length,
       };
       state.lastError = '';
@@ -611,18 +751,19 @@
         noMutation: true,
         supported: false,
         reason: 'peer-watermark-diagnostics-failed',
-        surface: detectSurface(),
+        surface: surface,
         generatedAt: generatedAt,
         redacted: !includeIds,
         knownPeers: { total: 0, byClassification: {}, byEvidenceKind: {}, peers: [] },
         sourceStreams: { total: 0, byStreamKind: {}, streams: [] },
+        watermarkStore: makeEmptyWatermarkStore(surface, surface + '-diagnostic-failed', state.lastError),
         watermarkClasses: {
           supported: false,
           present: [],
           missing: MISSING_WATERMARK_CLASSES.slice(),
           deferred: ['folder-state-watermark'],
         },
-        blockers: makeBlockers(),
+        blockers: makeBlockers(null),
         lifecycle: {
           available: false,
           reason: 'peer-watermark-diagnostics-failed',
@@ -638,7 +779,9 @@
     diagnose: diagnose,
     constants: Object.freeze({
       schema: DIAGNOSTIC_SCHEMA,
-      blockers: BLOCKER_CODES.slice(),
+      watermarkSchema: WATERMARK_SCHEMA,
+      blockers: [WATERMARK_TABLE_BLOCKER, WATERMARK_WRITE_POLICY_BLOCKER].concat(LIFECYCLE_BLOCKER_CODES),
+      writePolicyBlocker: WATERMARK_WRITE_POLICY_BLOCKER,
       missingWatermarkClasses: MISSING_WATERMARK_CLASSES.slice(),
     }),
     state: state,
