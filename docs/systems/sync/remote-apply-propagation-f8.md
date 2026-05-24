@@ -299,6 +299,50 @@ raw audit JSON, or content.
 | Propagation loop | Mark apply events as evidence, not commands, and track source/direction in later phases. |
 | Wrong peer or entity apply | Require policy, entity, field, identity, and baseline gates before any future mutation. |
 
+## F8 Closeout — Evidence-Only Propagation Boundary
+
+F8 now provides an evidence-only propagation path. Local folder color apply
+audit rows can be exported as redacted `syncApplyEvents`, remote peers can
+preview those events without mutation, valid but non-resolvable events produce
+`target-handle-unavailable`, and optional F6-shaped candidate evidence can be
+generated from valid blocked evidence.
+
+The implemented chain is:
+
+```txt
+local folder color apply audit
+-> redacted apply-event export
+-> remote apply-event preview
+-> target-unavailable blocker
+-> optional F6-shaped candidate evidence
+```
+
+Candidate output is optional, capped, redacted, and F6 dry-run compatible. It
+is not queue insertion.
+
+The current forbidden scope remains:
+
+- No remote apply.
+- No Chrome write-back.
+- No target resolution.
+- No automatic sync propagation.
+- No F6 auto-ingest.
+- No F5/F6/F7 mutation.
+- No remote folder creation or deletion.
+- No folderBinding or membership changes.
+- No `name`, `parentId`, or `sortOrder` expansion.
+- No auto-merge.
+- No background propagation.
+
+Safety meaning:
+
+- Apply events are evidence, not commands.
+- `eventDigest` is dedupe evidence, not authority.
+- F6-shaped candidates are preview evidence until manually ingested.
+- F5 remains owner of delete, tombstone, cascade-delete, and delete-vs-edit
+  cases.
+- F6 remains owner of durable non-delete queue rows and decisions.
+
 ## Roadmap
 
 - F8.0: Docs-only remote apply propagation safety model.
@@ -310,6 +354,7 @@ raw audit JSON, or content.
 
 ## Recommendation
 
-The next implementation after F8.0 should be F8.1 apply-event export evidence
-only. Do not implement remote write-back, remote apply, background propagation,
-or Chrome mutation yet.
+After F8 closeout, choose between F8.4 planning for exact-gated remote apply
+proof, F9 planning for a mobile read-only peer, or pausing propagation work for
+production hardening/tooling. Do not start F8.4 implementation without a full
+planning and review phase.
