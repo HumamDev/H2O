@@ -50,6 +50,8 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_OPERATION_RESULT_MAX = 8;
   const FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS = 30000;
+  const FOLDER_METADATA_OWNER_RETRY_MS = 150;
+  const FOLDER_METADATA_OWNER_RETRY_MAX = 30;
   const FOLDER_METADATA_REQUEST_MODES = new Set(['preview', 'apply']);
 
   // Native Library state-change events the module fans into the outbound
@@ -136,6 +138,7 @@
     lastFolderMetadataOperationRequestCount: 0,
     lastFolderMetadataOperationRequestIds: [],
     handledFolderMetadataOperationRequestIds: new Set(),
+    pendingFolderMetadataOperationRequests: new Map(),
     folderBridgeReadyBroadcasted: false,
     lastFolderBridgeReadyBroadcastAt: 0,
     lastFolderBridgeReadyBroadcastReason: '',
@@ -250,6 +253,49 @@
     };
   }
 
+  function hasFolderMetadataOwner(mode = 'preview') {
+    if (!H2O.folders || typeof H2O.folders.previewMetadataOperation !== 'function') return false;
+    if (mode === 'apply' && typeof H2O.folders.applyMetadataOperation !== 'function') return false;
+    return true;
+  }
+
+  function deferFolderMetadataOperationRequest(request, code = 'native-folder-owner-api-unavailable') {
+    const req = request && typeof request === 'object' ? request : {};
+    const id = String(req.requestId || '').trim();
+    if (!id) {
+      queueFolderMetadataOperationResult(folderMetadataResultBase(req, code));
+      return null;
+    }
+    const existing = state.pendingFolderMetadataOperationRequests.get(id);
+    if (existing) return null;
+    const entry = {
+      request: req,
+      attempts: 0,
+      code,
+      createdAt: Date.now(),
+      timer: null,
+    };
+    const retry = () => {
+      entry.attempts += 1;
+      if (hasFolderMetadataOwner(req.requestMode)) {
+        state.pendingFolderMetadataOperationRequests.delete(id);
+        executeFolderMetadataOperationRequest(req);
+        return;
+      }
+      if (entry.attempts >= FOLDER_METADATA_OWNER_RETRY_MAX) {
+        state.pendingFolderMetadataOperationRequests.delete(id);
+        const result = folderMetadataResultBase(req, code);
+        result.ownerWaitMs = Date.now() - entry.createdAt;
+        queueFolderMetadataOperationResult(result);
+        return;
+      }
+      entry.timer = W.setTimeout(retry, FOLDER_METADATA_OWNER_RETRY_MS);
+    };
+    state.pendingFolderMetadataOperationRequests.set(id, entry);
+    entry.timer = W.setTimeout(retry, FOLDER_METADATA_OWNER_RETRY_MS);
+    return null;
+  }
+
   function executeFolderMetadataOperationRequest(request) {
     const req = request && typeof request === 'object' ? request : {};
     let result = null;
@@ -262,16 +308,13 @@
         result = folderMetadataResultBase(req, 'invalid-request-mode');
       } else if (!operation || operation.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
         result = folderMetadataResultBase(req, 'invalid-folder-metadata-operation');
-      } else if (!H2O.folders || typeof H2O.folders.previewMetadataOperation !== 'function') {
-        result = folderMetadataResultBase(req, 'native-folder-owner-api-unavailable');
+      } else if (!hasFolderMetadataOwner(mode)) {
+        deferFolderMetadataOperationRequest(req, 'native-folder-owner-api-unavailable');
+        return null;
       } else if (mode === 'preview') {
         result = wrapFolderMetadataPreviewResult(req, H2O.folders.previewMetadataOperation(operation));
       } else if (mode === 'apply') {
-        if (typeof H2O.folders.applyMetadataOperation !== 'function') {
-          result = folderMetadataResultBase(req, 'native-folder-owner-api-unavailable');
-        } else {
-          result = wrapFolderMetadataApplyResult(req, H2O.folders.applyMetadataOperation(operation));
-        }
+        result = wrapFolderMetadataApplyResult(req, H2O.folders.applyMetadataOperation(operation));
       }
     } catch (e) {
       result = folderMetadataResultBase(req, 'native-folder-owner-error');
@@ -954,6 +997,7 @@
             requestsHandledAt: state.lastFolderMetadataOperationRequestAt,
             requestsHandledCount: state.lastFolderMetadataOperationRequestCount,
             lastHandledRequestIds: state.lastFolderMetadataOperationRequestIds.slice(),
+            pendingOwnerRequestCount: state.pendingFolderMetadataOperationRequests.size,
             pendingResultCount: state.pendingFolderMetadataOperationResults.length,
             recentResultCount: state.recentFolderMetadataOperationResults.length,
             lastResultAt: state.lastFolderMetadataOperationResultAt,
