@@ -213,6 +213,67 @@ For divergent metadata, F7.1b increments F6-compatible conflict candidate
 counts only. It does not call `sync_conflicts`, does not auto-ingest, and does
 not create decision or preview-resolution records.
 
+### F7.2 F6-Compatible Candidate Summaries
+
+F7.2 keeps the helper preview-only, but can optionally return capped
+F6-shaped candidate objects:
+
+```js
+H2O.Studio.diagnostics.previewBidirectionalFolderMetadata({
+  localFolders,
+  remoteFolders,
+  options: {
+    includeConflictCandidates: true,
+    conflictCandidateLimit: 20
+  }
+});
+```
+
+Candidate counts are always populated in `conflictCandidates`. The
+`conflictCandidates.candidates` array is returned only when
+`includeConflictCandidates === true`, defaults to a cap of `20`, and is capped
+at `50` even if a larger limit is requested. Counts include all candidates,
+not just the capped returned array.
+
+F7.2 candidate mappings:
+
+- `divergentMetadata` emits `same-record-divergent-metadata`,
+  `needs-human-review`, `medium`.
+- Divergent metadata with local newer `updatedAt` emits
+  `local-newer-than-remote`, `safe-review`, `low`.
+- Divergent metadata with remote newer `updatedAt` emits
+  `remote-newer-than-local`, `safe-review`, `low`.
+- Malformed or unsupported folder evidence emits `unsupported-merge-kind`,
+  `unsupported-record-kind`, `info`.
+
+`localOnly`, `remoteOnly`, duplicate identity, folderBinding, delete evidence,
+and real conflict handoff remain deferred. Presence-only folder differences
+can imply create/delete semantics and must not be treated as F6 queue evidence
+in F7.2.
+
+Returned candidates use:
+
+```js
+{
+  schema: "h2o.studio.sync-conflict-candidate.v1",
+  entityKind: "folder",
+  source: "bidirectional-folder-preview",
+  dedupeKeyHash,
+  localUpdatedAtPresent,
+  remoteUpdatedAtPresent,
+  localDigestPresent,
+  remoteDigestPresent,
+  warnings: []
+}
+```
+
+`dedupeKeyHash` is derived from internal material only: conflict kind, F6 entity
+kind, a hashed folder identity, and internal local/remote metadata hashes. The
+raw folder ID, folder name, parent ID, metadata hash, raw metadata, and peer
+identity are never returned. The F6 conflict store allowlists
+`bidirectional-folder-preview` as a candidate source for manual dry-run
+validation, but F7.2 never calls F6 ingestion.
+
 Potential blocker codes:
 
 - `watermark-unavailable`

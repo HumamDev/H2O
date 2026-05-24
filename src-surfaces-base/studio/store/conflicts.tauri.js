@@ -108,6 +108,7 @@
   });
   var CANDIDATE_SOURCES = Object.freeze({
     'multi-peer-diff': true,
+    'bidirectional-folder-preview': true,
     'manual-devtools': true,
     'test-harness': true,
     'multi-peer-diff-manual': true,

@@ -1,4 +1,4 @@
-/* H2O Studio Sync - F7.1b folder.metadata bidirectional preview
+/* H2O Studio Sync - F7.1b/F7.2 folder.metadata bidirectional preview
  *
  * PURE PREVIEW HELPER - read-only, in-memory, no IO.
  *   - No Tauri invokes, no browser storage access, no fetch, no fs.
@@ -8,8 +8,8 @@
  *   - No import/export/folder-sync/peer-transport calls.
  *
  * This helper compares local and remote folder metadata evidence and returns
- * redacted counts only. Hashes are ephemeral implementation details and are
- * never exposed in the default report.
+ * redacted counts by default. F7.2 can optionally return capped F6-shaped
+ * conflict candidate objects; it still never writes or calls F6 ingestion.
  */
 (function (global) {
   'use strict';
@@ -20,9 +20,14 @@
   if (H2O.Studio.diagnostics.__bidirectionalFolderPreviewInstalled) return;
 
   var REPORT_SCHEMA = 'h2o.studio.sync.bidirectional-preview.v0';
+  var CONFLICT_CANDIDATE_SCHEMA = 'h2o.studio.sync-conflict-candidate.v1';
   var ENTITY_KIND = 'folder.metadata';
-  var VERSION = '0.1.0-f7.1b';
+  var CONFLICT_ENTITY_KIND = 'folder';
+  var CANDIDATE_SOURCE = 'bidirectional-folder-preview';
+  var VERSION = '0.1.1-f7.2';
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var DEFAULT_CONFLICT_CANDIDATE_LIMIT = 20;
+  var MAX_CONFLICT_CANDIDATE_LIMIT = 50;
 
   function nowIso() {
     return new Date().toISOString();
@@ -109,6 +114,11 @@
     return ('00000000' + hash.toString(16)).slice(-8);
   }
 
+  function stableHash(value) {
+    var input = String(value || '');
+    return hashString('a:' + input) + hashString('b:' + input);
+  }
+
   function emptyBuckets() {
     return {};
   }
@@ -126,7 +136,30 @@
     list.push({ code: code });
   }
 
-  function createReport() {
+  function normalizeOptions(input) {
+    var root = safeObject(input);
+    var opts = isObject(root.options) ? root.options : root;
+    var include = opts.includeConflictCandidates === true;
+    var limit = Number(opts.conflictCandidateLimit);
+    if (!Number.isFinite(limit) || limit < 0) limit = DEFAULT_CONFLICT_CANDIDATE_LIMIT;
+    limit = Math.min(Math.floor(limit), MAX_CONFLICT_CANDIDATE_LIMIT);
+    return {
+      includeConflictCandidates: include,
+      conflictCandidateLimit: limit
+    };
+  }
+
+  function createReport(options) {
+    var conflictCandidates = {
+      total: 0,
+      byKind: emptyBuckets(),
+      byEntityKind: emptyBuckets(),
+      bySeverity: emptyBuckets()
+    };
+    if (options && options.includeConflictCandidates === true) {
+      conflictCandidates.candidates = [];
+    }
+
     return {
       schema: REPORT_SCHEMA,
       ok: true,
@@ -154,12 +187,7 @@
         timestampUnavailable: 0,
         unsupported: 0
       },
-      conflictCandidates: {
-        total: 0,
-        byKind: emptyBuckets(),
-        byEntityKind: emptyBuckets(),
-        bySeverity: emptyBuckets()
-      },
+      conflictCandidates: conflictCandidates,
       tombstoneReferences: {
         total: 0,
         deleteVsEditOwnedByF5: 0
@@ -201,10 +229,63 @@
     return { rows: [], available: false };
   }
 
-  function normalizeFolder(row, side, report) {
+  function makeDedupeHash(conflictKind, idMaterial, localHash, remoteHash) {
+    return 'f7folder:' + stableHash(stableStringify({
+      v: 'f7-folder-conflict-v1',
+      conflictKind: conflictKind,
+      entityKind: CONFLICT_ENTITY_KIND,
+      folderIdentityHash: stableHash(idMaterial || 'unknown'),
+      localMetadataHash: localHash || null,
+      remoteMetadataHash: remoteHash || null
+    }));
+  }
+
+  function candidateFor(conflictKind, severity, classification, details) {
+    details = safeObject(details);
+    return {
+      schema: CONFLICT_CANDIDATE_SCHEMA,
+      conflictKind: conflictKind,
+      entityKind: CONFLICT_ENTITY_KIND,
+      classification: classification,
+      severity: severity,
+      source: CANDIDATE_SOURCE,
+      dedupeKeyHash: makeDedupeHash(
+        conflictKind,
+        details.idMaterial,
+        details.localHash,
+        details.remoteHash
+      ),
+      localUpdatedAtPresent: !!details.localUpdatedAtPresent,
+      remoteUpdatedAtPresent: !!details.remoteUpdatedAtPresent,
+      localDigestPresent: !!details.localDigestPresent,
+      remoteDigestPresent: !!details.remoteDigestPresent,
+      warnings: asArray(details.warnings)
+        .map(function (w) { return isObject(w) ? { code: safeString(w.code) } : { code: safeString(w) }; })
+        .filter(function (w) { return !!w.code; })
+    };
+  }
+
+  function addConflictCandidate(report, conflictKind, severity, classification, details) {
+    report.conflictCandidates.total += 1;
+    increment(report.conflictCandidates.byKind, conflictKind);
+    increment(report.conflictCandidates.byEntityKind, CONFLICT_ENTITY_KIND);
+    increment(report.conflictCandidates.bySeverity, severity);
+    if (Array.isArray(report.conflictCandidates.candidates)
+        && report.conflictCandidates.candidates.length < report._candidateLimit) {
+      report.conflictCandidates.candidates.push(candidateFor(conflictKind, severity, classification, details));
+    }
+  }
+
+  function normalizeFolder(row, side, report, index) {
     if (!isObject(row)) {
       report.categories.unsupported += 1;
       addCode(report.warnings, 'unsupported');
+      addConflictCandidate(report, 'unsupported-merge-kind', 'info', 'unsupported-record-kind', {
+        idMaterial: side + ':unsupported:' + index + ':non-object',
+        localDigestPresent: side === 'local',
+        remoteDigestPresent: side === 'remote',
+        warnings: [{ code: 'unsupported' }]
+      });
       return null;
     }
 
@@ -212,6 +293,12 @@
     if (!id) {
       report.categories.unsupported += 1;
       addCode(report.blockers, 'folder-id-missing');
+      addConflictCandidate(report, 'unsupported-merge-kind', 'info', 'unsupported-record-kind', {
+        idMaterial: side + ':missing-id:' + index + ':' + stableHash(stableStringify(row)),
+        localDigestPresent: side === 'local',
+        remoteDigestPresent: side === 'remote',
+        warnings: [{ code: 'folder-id-missing' }]
+      });
       return null;
     }
 
@@ -264,11 +351,17 @@
     var out = Object.create(null);
     var list = asArray(rows);
     for (var i = 0; i < list.length; i++) {
-      var folder = normalizeFolder(list[i], side, report);
+      var folder = normalizeFolder(list[i], side, report, i);
       if (!folder) continue;
       if (out[folder.id]) {
         report.categories.unsupported += 1;
         addCode(report.warnings, 'unsupported');
+        addConflictCandidate(report, 'unsupported-merge-kind', 'info', 'unsupported-record-kind', {
+          idMaterial: side + ':duplicate-id:' + i + ':' + stableHash(folder.id),
+          localDigestPresent: side === 'local',
+          remoteDigestPresent: side === 'remote',
+          warnings: [{ code: 'unsupported' }]
+        });
         continue;
       }
       out[folder.id] = folder;
@@ -276,14 +369,16 @@
     return out;
   }
 
-  function addConflictCandidate(report) {
-    report.conflictCandidates.total += 1;
-    increment(report.conflictCandidates.byKind, 'same-record-divergent-metadata');
-    increment(report.conflictCandidates.byEntityKind, ENTITY_KIND);
-    increment(report.conflictCandidates.bySeverity, 'medium');
-  }
-
   function compareTimestamps(local, remote, report, hashDiffers) {
+    var details = {
+      idMaterial: local.id,
+      localHash: local.normalizedHash,
+      remoteHash: remote.normalizedHash,
+      localUpdatedAtPresent: local.updatedAtPresent,
+      remoteUpdatedAtPresent: remote.updatedAtPresent,
+      localDigestPresent: true,
+      remoteDigestPresent: true
+    };
     if (!local.updatedAtParseable || !remote.updatedAtParseable) {
       if (hashDiffers) {
         report.categories.timestampUnavailable += 1;
@@ -293,8 +388,14 @@
     }
     if (local.updatedAtValue > remote.updatedAtValue) {
       report.categories.localNewer += 1;
+      if (hashDiffers) {
+        addConflictCandidate(report, 'local-newer-than-remote', 'low', 'safe-review', details);
+      }
     } else if (remote.updatedAtValue > local.updatedAtValue) {
       report.categories.remoteNewer += 1;
+      if (hashDiffers) {
+        addConflictCandidate(report, 'remote-newer-than-local', 'low', 'safe-review', details);
+      }
     }
   }
 
@@ -327,7 +428,16 @@
       if (hashDiffers) {
         report.categories.divergentMetadata += 1;
         addCode(report.blockers, 'folder-metadata-divergent');
-        addConflictCandidate(report);
+        addConflictCandidate(report, 'same-record-divergent-metadata', 'medium', 'needs-human-review', {
+          idMaterial: local.id,
+          localHash: local.normalizedHash,
+          remoteHash: remote.normalizedHash,
+          localUpdatedAtPresent: local.updatedAtPresent,
+          remoteUpdatedAtPresent: remote.updatedAtPresent,
+          localDigestPresent: true,
+          remoteDigestPresent: true,
+          warnings: [{ code: 'folder-metadata-divergent' }]
+        });
       } else {
         report.categories.same += 1;
       }
@@ -361,8 +471,14 @@
   }
 
   function previewBidirectionalFolderMetadata(input) {
-    var report = createReport();
     var inp = isObject(input) ? input : {};
+    var options = normalizeOptions(inp);
+    var report = createReport(options);
+    Object.defineProperty(report, '_candidateLimit', {
+      value: options.conflictCandidateLimit,
+      enumerable: false,
+      configurable: true
+    });
     var localInput = localFolderInput(inp);
     var remoteInput = remoteFolderInput(inp);
 
@@ -376,6 +492,7 @@
     var remoteMap = normalizeCollection(remoteInput.rows, 'remote', report);
     compareFolderMetadata(localMap, remoteMap, report);
     inspectEnvelope(inp, report);
+    delete report._candidateLimit;
 
     return report;
   }
