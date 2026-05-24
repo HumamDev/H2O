@@ -38,6 +38,12 @@
   var PEER_STATE_SCHEMA = 'h2o.studio.sync.peer-state.v1';
   var TOMBSTONE_SCHEMA_VERSION = 'h2o.studio.tombstone.v1';
   var TOMBSTONE_EXPORT_LIMIT = 5000;
+  var DB_URL = 'sqlite:studio-v1.db';
+  var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
+  var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
+  var APPLY_EVENT_OPERATION = 'folder-metadata-color-apply';
+  var APPLY_EVENT_POLICY_VERSION = 'h2o.studio.sync.folder-metadata-apply.v0';
+  var APPLY_EVENT_LIMIT = 50;
   var SYNC_FOLDER_NAME = 'H2O Studio Sync';
   var SYNC_LATEST_FILE = 'latest.json';
   var SYNC_TMP_FILE = '.latest.json.tmp';
@@ -147,6 +153,12 @@
     } catch (_) {
       return '';
     }
+  }
+
+  function sqlSelect(query, values) {
+    var invoke = getTauriInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
+    return invoke('plugin:sql|select', { db: DB_URL, query: query, values: values || [] });
   }
 
   function byteLengthOf(text) {
@@ -1107,6 +1119,179 @@
     };
   }
 
+  function emptyApplyEventsPayload(extra) {
+    var safeExtra = safeObject(extra);
+    return {
+      schema: APPLY_EVENTS_SCHEMA_VERSION,
+      redacted: true,
+      available: safeExtra.available === true,
+      total: Number(safeExtra.total) || 0,
+      byOperation: safeObject(safeExtra.byOperation),
+      capped: safeExtra.capped === true,
+      limit: Number(safeExtra.limit) || APPLY_EVENT_LIMIT,
+      skippedMalformed: Number(safeExtra.skippedMalformed) || 0,
+      events: asArray(safeExtra.events),
+      warnings: asArray(safeExtra.warnings),
+    };
+  }
+
+  function warningCode(code) {
+    return { code: cleanString(code) || 'warning' };
+  }
+
+  function addBucket(map, key) {
+    var safeKey = cleanString(key) || 'unknown';
+    map[safeKey] = (Number(map[safeKey]) || 0) + 1;
+  }
+
+  function parseJsonObject(text) {
+    try {
+      if (!cleanString(text)) return null;
+      var parsed = JSON.parse(String(text));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      return parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function fieldsAreColorOnly(fields) {
+    var values = asArray(fields).map(function (field) {
+      return cleanString(field);
+    }).filter(Boolean);
+    return values.length === 1 && values[0] === 'color';
+  }
+
+  function successfulApplyAuditResult(row, parsed) {
+    if (!parsed) return false;
+    if (cleanString(row && row.operation) !== APPLY_EVENT_OPERATION) return false;
+    if (cleanString(row && row.policy_version) !== APPLY_EVENT_POLICY_VERSION) return false;
+    if (Number(row && row.dry_run) !== 0) return false;
+    if (cleanString(parsed.operation || APPLY_EVENT_OPERATION) !== APPLY_EVENT_OPERATION) return false;
+    if (cleanString(parsed.policyVersion || APPLY_EVENT_POLICY_VERSION) !== APPLY_EVENT_POLICY_VERSION) return false;
+    if (cleanString(parsed.entityKind) !== 'folder.metadata') return false;
+    if (!fieldsAreColorOnly(parsed.fieldsUpdated)) return false;
+    if (Number(parsed.rowsUpdated) !== 1) return false;
+    if (parsed.localOnly !== true) return false;
+    if (parsed.syncPropagated !== false) return false;
+    return true;
+  }
+
+  async function makeApplyEventDigest(row, parsed) {
+    var peerId = cleanString(row && row.requested_by_sync_peer_id);
+    var peerHash = peerId ? await sha256Hex(peerId) : '';
+    var material = JSON.stringify({
+      schema: APPLY_EVENT_SCHEMA_VERSION,
+      operation: APPLY_EVENT_OPERATION,
+      policyVersion: APPLY_EVENT_POLICY_VERSION,
+      maintenanceId: cleanString(row && row.maintenance_id),
+      requestedAt: cleanString(row && row.requested_at),
+      sourcePeerHash: peerHash,
+      fieldsUpdated: ['color'],
+      rowsUpdated: Number(parsed && parsed.rowsUpdated) || 0,
+      localOnly: parsed && parsed.localOnly === true,
+      syncPropagated: parsed && parsed.syncPropagated === true,
+    });
+    var digest = await sha256Hex(material);
+    return digest ? ('sha256:' + digest) : '';
+  }
+
+  async function projectApplyEvent(row, parsed) {
+    return {
+      schema: APPLY_EVENT_SCHEMA_VERSION,
+      operation: APPLY_EVENT_OPERATION,
+      entityKind: 'folder.metadata',
+      fieldsUpdated: ['color'],
+      policyVersion: APPLY_EVENT_POLICY_VERSION,
+      sourcePeerPresent: !!cleanString(row && row.requested_by_sync_peer_id),
+      appliedAtPresent: !!cleanString(row && row.requested_at),
+      beforeHashPresent: parsed && (parsed.baselineHashPresent === true || parsed.beforeHashPresent === true),
+      afterHashPresent: parsed && (parsed.targetHashPresent === true || parsed.afterHashPresent === true),
+      auditRecorded: true,
+      redacted: true,
+      eventDigest: await makeApplyEventDigest(row, parsed),
+    };
+  }
+
+  async function applyEventsAuditTableAvailable() {
+    try {
+      var rows = await sqlSelect(
+        'SELECT name FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1',
+        ['table', 'sync_maintenance_log']
+      );
+      return Array.isArray(rows) && rows.length > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function buildApplyEventsPayloadSafely() {
+    var warnings = [];
+    var tableAvailable = await applyEventsAuditTableAvailable();
+    if (!tableAvailable) {
+      return emptyApplyEventsPayload({
+        available: false,
+        warnings: [warningCode('apply-event-audit-log-unavailable')],
+      });
+    }
+
+    try {
+      var rows = await sqlSelect(
+        [
+          'SELECT maintenance_id, operation, policy_version, requested_at,',
+          '       requested_by_sync_peer_id, dry_run, result_json',
+          '  FROM sync_maintenance_log',
+          ' WHERE operation = ?',
+          '   AND policy_version = ?',
+          '   AND dry_run = 0',
+          ' ORDER BY requested_at DESC, created_at DESC, maintenance_id DESC',
+        ].join('\n'),
+        [APPLY_EVENT_OPERATION, APPLY_EVENT_POLICY_VERSION]
+      );
+      var byOperation = {};
+      var total = 0;
+      var skippedMalformed = 0;
+      var events = [];
+
+      for (var i = 0; i < asArray(rows).length; i += 1) {
+        var row = rows[i] || {};
+        var parsed = parseJsonObject(row.result_json);
+        if (!parsed) {
+          skippedMalformed += 1;
+          continue;
+        }
+        if (!successfulApplyAuditResult(row, parsed)) continue;
+        total += 1;
+        addBucket(byOperation, APPLY_EVENT_OPERATION);
+        if (events.length < APPLY_EVENT_LIMIT) {
+          var projected = await projectApplyEvent(row, parsed);
+          if (cleanString(projected.eventDigest)) events.push(projected);
+          else skippedMalformed += 1;
+        }
+      }
+
+      if (skippedMalformed > 0) warnings.push(warningCode('apply-event-audit-json-malformed'));
+
+      return {
+        schema: APPLY_EVENTS_SCHEMA_VERSION,
+        redacted: true,
+        available: true,
+        total: total,
+        byOperation: byOperation,
+        capped: total > APPLY_EVENT_LIMIT,
+        limit: APPLY_EVENT_LIMIT,
+        skippedMalformed: skippedMalformed,
+        events: events,
+        warnings: warnings,
+      };
+    } catch (_) {
+      return emptyApplyEventsPayload({
+        available: false,
+        warnings: [warningCode('apply-event-audit-log-unavailable')],
+      });
+    }
+  }
+
   async function buildTombstoneExportPayloadSafely(stores) {
     var api = stores && stores.tombstones;
     if (!api || typeof api.previewExport !== 'function') {
@@ -1180,6 +1365,7 @@
     var snapshotCount = collected.diagnostics.snapshotCount;
     var tombstoneExport = await buildTombstoneExportPayloadSafely(stores);
     var tombstoneDiagnostics = tombstoneExport.diagnostics || emptyTombstoneExportDiagnostics();
+    var syncApplyEvents = await buildApplyEventsPayloadSafely();
     var summary = {
       chatCount: chatArchive.chatCount,
       snapshotCount: snapshotCount,
@@ -1198,6 +1384,7 @@
       tombstoneCount: Number(tombstoneDiagnostics.total) || 0,
       activeTombstoneCount: Number(tombstoneDiagnostics.active) || 0,
       restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
+      applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
       schema: FULL_BUNDLE_SCHEMA,
@@ -1211,6 +1398,7 @@
       libraryKv: libraryKv,
       tombstoneSchemaVersion: TOMBSTONE_SCHEMA_VERSION,
       tombstones: asArray(tombstoneExport.tombstones),
+      syncApplyEvents: syncApplyEvents,
       diagnostics: {
         desktopExport: {
           ok: true,
@@ -1226,6 +1414,16 @@
             bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
           },
           tombstones: tombstoneDiagnostics,
+          applyEvents: {
+            schema: cleanString(syncApplyEvents.schema) || APPLY_EVENTS_SCHEMA_VERSION,
+            available: syncApplyEvents.available === true,
+            total: Number(syncApplyEvents.total) || 0,
+            capped: syncApplyEvents.capped === true,
+            limit: Number(syncApplyEvents.limit) || APPLY_EVENT_LIMIT,
+            skippedMalformed: Number(syncApplyEvents.skippedMalformed) || 0,
+            exported: asArray(syncApplyEvents.events).length,
+            warnings: asArray(syncApplyEvents.warnings),
+          },
           warnings: warnings,
           options: safeObject(options),
         },
@@ -1336,6 +1534,8 @@
         snapshotCount: Number(bundle && bundle.summary && bundle.summary.snapshotCount) || 0,
         turnCount: Number(bundle && bundle.summary && bundle.summary.turnCount) || 0,
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
+        applyEventCount: Number(bundle && bundle.summary && bundle.summary.applyEventCount) || 0,
+        applyEventExportedCount: asArray(bundle && bundle.syncApplyEvents && bundle.syncApplyEvents.events).length,
         checksum: checksum,
         peerTransport: peerTransport,
         peerTransportWarning: peerWarning,

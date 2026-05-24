@@ -81,6 +81,54 @@ Default export must not include:
 - Raw audit JSON.
 - Chat, snapshot, prompt, answer, transcript, or content fields.
 
+## F8.1 Exported Apply-Event Evidence
+
+F8.1 adds a redacted `syncApplyEvents` section to the Desktop export bundle.
+It is export evidence only: importers must not treat the section as a remote
+apply command.
+
+The exporter reads `sync_maintenance_log` and exports only successful committed
+F7.4.3 local folder color apply rows:
+
+- `operation === "folder-metadata-color-apply"`.
+- `policy_version === "h2o.studio.sync.folder-metadata-apply.v0"`.
+- `dry_run === 0`.
+- `result_json.rowsUpdated === 1`.
+- `result_json.localOnly === true`.
+- `result_json.syncPropagated === false`.
+- `result_json.fieldsUpdated` contains only `"color"`.
+
+The exporter skips failed rows, rollback proofs, dry-run proofs, synthetic
+maintenance rows, malformed rows, and ambiguous rows.
+
+Bundle section shape:
+
+```js
+{
+  syncApplyEvents: {
+    schema: "h2o.studio.sync.apply-events.v0",
+    redacted: true,
+    available: true,
+    total: 0,
+    byOperation: {},
+    capped: false,
+    limit: 50,
+    skippedMalformed: 0,
+    events: []
+  }
+}
+```
+
+If the audit log is unavailable, normal export continues with
+`available: false`, zero events, and an
+`apply-event-audit-log-unavailable` warning.
+
+Each event is redacted and includes an `eventDigest` computed from internal
+audit material for future dedupe/replay handling. The digest inputs are not
+exported. F8.1 does not export raw folder IDs, folder names, parent IDs, raw
+color values, peer IDs, raw before/after hashes, audit row IDs, raw audit JSON,
+conflict IDs, tombstone IDs, or metadata JSON.
+
 ## Remote Receive Model
 
 When another peer sees an apply event, it must treat the event as evidence
