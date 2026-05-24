@@ -709,10 +709,29 @@
     if (best) best.nodeValue = newText;
   }
 
+  function DOM_extractSidebarChatTitle(anchor, fallback = '') {
+    if (!(anchor instanceof HTMLElement)) return UTIL_normText(fallback).slice(0, 80);
+    const trunc = anchor.querySelector?.(SEL.sidebarTruncate);
+    const truncText = UTIL_normText(trunc?.textContent || '');
+    if (truncText) return UI_cleanSurfaceChatTitle(truncText).slice(0, 80);
+
+    const aria = UTIL_normText(anchor.getAttribute('aria-label') || '');
+    if (aria) return UI_cleanSurfaceChatTitle(aria).slice(0, 80);
+
+    const directText = [];
+    anchor.childNodes?.forEach?.((node) => {
+      if (node.nodeType === Node.TEXT_NODE) directText.push(node.nodeValue || '');
+    });
+    const direct = UTIL_normText(directText.join(' '));
+    if (direct) return UI_cleanSurfaceChatTitle(direct).slice(0, 80);
+
+    return UI_cleanSurfaceChatTitle(UTIL_normText(fallback || anchor.getAttribute('href') || '')).slice(0, 80);
+  }
+
   function DOM_getChatTitleFromSidebar(href) {
     try {
       const a = D.querySelector(`a[href="${CSS.escape(href)}"]`);
-      return UTIL_normText(a?.innerText || href).slice(0, 80);
+      return DOM_extractSidebarChatTitle(a, href);
     } catch {
       return UTIL_normText(href).slice(0, 80);
     }
@@ -727,7 +746,7 @@
     const anchors = D.querySelectorAll(SEL.sidebarItemAnchor);
     for (const a of anchors) {
       if ((a.getAttribute('href') || '') === fullHref) {
-        const t = UTIL_normText(a.innerText);
+        const t = DOM_extractSidebarChatTitle(a, fullHref);
         if (t) return t;
       }
     }
@@ -736,7 +755,7 @@
       for (const a of anchors) {
         const href = a.getAttribute('href') || '';
         if (href.endsWith(`/c/${chatId}`)) {
-          const t = UTIL_normText(a.innerText);
+          const t = DOM_extractSidebarChatTitle(a, fullHref);
           if (t) return t;
         }
       }
@@ -3038,7 +3057,7 @@ ${CROW}[aria-current="true"]{
     btn.title = label || 'More actions';
     if (token) btn.setAttribute(ATTR_CGXUI, token);
     btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
-    if (!btn.innerHTML.trim()) btn.innerHTML = FRAG_SVG_MORE;
+    btn.innerHTML = FRAG_SVG_MORE;
     return btn;
   }
 
@@ -4740,13 +4759,12 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
   function UI_appendInShellChatRow(list, item) {
     const li = D.createElement('li');
-    li.className = 'group/project-item hover:bg-token-interactive-bg-secondary-hover active:bg-token-interactive-bg-secondary-press flex min-h-16 cursor-pointer items-center p-3 text-sm select-none';
+    li.setAttribute(ATTR_CGXUI_STATE, 'chat-item');
 
     const row = D.createElement('a');
     row.href = item.href;
     row.draggable = false;
-    row.className = 'block min-w-0 grow';
-    row.setAttribute('data-discover', 'true');
+    row.setAttribute(ATTR_CGXUI_STATE, 'row');
     row.addEventListener('click', () => {
       W.setTimeout(() => UI_closeViewer(), 0);
     }, true);
@@ -4767,21 +4785,13 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     row.appendChild(body);
 
-    if (item.updatedAt) {
-      const date = D.createElement('span');
-      date.setAttribute(ATTR_CGXUI_STATE, 'row-date');
-      date.setAttribute('aria-hidden', 'true');
-      date.textContent = item.updatedAt;
-      row.appendChild(date);
-    }
-
     li.appendChild(row);
     list.appendChild(li);
   }
 
   function UI_appendInShellFolderRow(list, folder) {
     const li = D.createElement('li');
-    li.className = 'group/project-item hover:bg-token-interactive-bg-secondary-hover active:bg-token-interactive-bg-secondary-press flex min-h-16 cursor-pointer items-center p-3 text-sm select-none';
+    li.setAttribute(ATTR_CGXUI_STATE, 'folder-item');
 
     const btn = D.createElement('button');
     btn.type = 'button';
