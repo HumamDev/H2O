@@ -107,6 +107,83 @@ F9 must not expose edit controls.
 - F8 apply-event evidence is visible read-only only.
 - F9 must not call mutation APIs from F5, F6, F7, or F8.
 
+## F9.1b — Mobile Latest Bundle Diagnostic Helper
+
+F9.1b adds a mobile-local pure helper for Desktop `latest.json` bundles:
+
+```txt
+latest.json -> validate -> count/presence diagnostics -> read-only result
+```
+
+The helper is diagnostic only. It does not merge the Desktop bundle into the
+mobile archive store, does not write a mobile archive, does not call WebDAV or
+cloud transport, and does not make mobile authoritative.
+
+The public helper shape is:
+
+```ts
+diagnoseMobileSyncBundle(input, {
+  verifyChecksum,
+  sha256Hex
+})
+```
+
+Supported input is raw JSON text or an already parsed bundle. The first
+supported Desktop bundle schema is `h2o.studio.fullBundle.v2`.
+
+Diagnostics are redacted and read-only:
+
+```js
+{
+  schema: "h2o.mobile.bundle-reader.diagnostic.v1",
+  ok: true,
+  redacted: true,
+  readOnly: true,
+  source: {
+    kind: "latest-json",
+    schemaPresent: true,
+    checksumPresent: true,
+    checksumVerified: true,
+    sourcePeerPresent: true,
+    exportedAtPresent: true
+  },
+  counts: {
+    chats: 0,
+    snapshots: 0,
+    folders: 0,
+    folderMemberships: 0,
+    labels: 0,
+    categories: 0,
+    conflicts: 0,
+    tombstones: 0,
+    applyEvents: 0
+  },
+  capabilities: ["read-only"],
+  blockers: [],
+  warnings: []
+}
+```
+
+F9.1b inspects only presence and counts from the export envelope,
+`chatArchive`, Chrome folder state evidence, `libraryKv`, F5 tombstone
+evidence, F8 `syncApplyEvents`, sync conflict evidence if present, Desktop
+export diagnostics, and `summary` fallback counts.
+
+Checksum verification is optional and injected. The helper must not hard-couple
+to Expo crypto. If `verifyChecksum` is enabled, the expected hash input is:
+
+```txt
+JSON.stringify(bundleWithoutContentSha256, null, 2) + "\n"
+```
+
+Missing checksum produces `bundle-checksum-unavailable`. A mismatch blocks
+`latest-json` input with `bundle-checksum-mismatch`; pasted JSON receives a
+warning instead.
+
+F9.1b diagnostics must never expose chat text, prompts, answers, folder names,
+raw IDs, peer IDs, raw hashes, raw audit JSON, or metadata blobs. Counts,
+booleans, schema/status codes, and warning/blocker codes are allowed.
+
 ## Validation Model
 
 Future implementation must prove:
