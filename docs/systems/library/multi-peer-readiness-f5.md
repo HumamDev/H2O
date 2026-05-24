@@ -3398,6 +3398,38 @@ Recommended next phase: either `F5H.3c` Chrome review-only cleanup, or
 `F5H.4` duplicate sighting compaction preview. Neither next phase should
 loosen the synthetic marker contract or run cleanup from Chrome.
 
+## F5H.4 — Duplicate sighting compaction preview
+
+F5H.4 adds a read-only preview API on both tombstone review stores:
+
+```js
+await H2O.Studio.store.tombstoneReviews.previewDuplicateSightings({
+  includeIds: false,
+  limitGroups: 50
+});
+```
+
+The preview schema is
+`h2o.studio.tombstone-review-duplicate-sighting-preview.v1`. It is not a
+cleanup API: it performs no SQLite writes, no IndexedDB writes, no delete, no
+compaction, no sync apply, and no native/Chrome folder-state mutation.
+
+The preview reports two classes of duplicate sighting evidence:
+
+- already-compacted rows where `seen_count` / `seenCount > 1`
+- strict cross-row duplicate identities that share canonical tombstone identity
+  and equivalent review state
+
+Canonical identity uses `remoteSyncPeerId + remoteTombstoneId` first, then
+falls back to `remoteSyncPeerId + recordKind + recordId + remoteDeletedAt`.
+Cross-row groups with different status, decision, warning hash, raw tombstone
+hash, protected delete reason, cascade/apply linkage, or active apply/cleanup
+state are reported as blocked/risk-only and are not compaction candidates.
+
+The default result is redacted and contains counts plus fingerprints only.
+Debug callers may pass `includeIds: true` to include review/tombstone IDs for
+inspection. That flag does not change the read-only/no-mutation behavior.
+
 ## F5H final validation — debug synthetic seeder
 
 F5H final live validation needs at least one cleanup-eligible synthetic

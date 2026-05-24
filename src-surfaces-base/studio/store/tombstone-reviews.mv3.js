@@ -47,6 +47,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
+  var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
   var PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-apply-preview.v1';
@@ -701,6 +702,263 @@
   function countByStatus(filters) {
     return countByField('status', filters)
       .catch(function (e) { recordError('countByStatus', e); return []; });
+  }
+
+  function stablePreviewStringify(value) {
+    if (value == null) return 'null';
+    if (typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) {
+      return '[' + value.map(stablePreviewStringify).join(',') + ']';
+    }
+    var keys = Object.keys(value).sort();
+    return '{' + keys.map(function (key) {
+      return JSON.stringify(key) + ':' + stablePreviewStringify(value[key]);
+    }).join(',') + '}';
+  }
+
+  function previewHash(value) {
+    var text = typeof value === 'string' ? value : stablePreviewStringify(value);
+    var h = 2166136261;
+    for (var i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    }
+    return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+  }
+
+  function previewJsonHash(raw) {
+    if (raw == null || raw === '') return previewHash('');
+    if (typeof raw !== 'string') return previewHash(raw);
+    try {
+      return previewHash(JSON.parse(raw));
+    } catch (_) {
+      return previewHash(raw);
+    }
+  }
+
+  function previewWarningsHash(row) {
+    return previewHash(parseWarnings(row && (row.warningsJson || row.warnings)));
+  }
+
+  function previewProtectedDeleteReason(reason) {
+    return {
+      'folder-delete': true,
+      'folder-delete-cascade': true,
+      'remote-review-apply': true,
+      'remote-tombstone-applied': true,
+    }[cleanScalar(reason)] === true;
+  }
+
+  function duplicatePreviewIdentity(row) {
+    var peer = cleanScalar(row && row.remoteSyncPeerId);
+    var tombstoneId = cleanScalar(row && row.remoteTombstoneId);
+    if (peer && tombstoneId) {
+      return {
+        kind: 'remote-tombstone',
+        key: peer + '\u0000' + tombstoneId,
+        fingerprint: previewHash(['remote-tombstone', peer, tombstoneId]),
+      };
+    }
+    var recordKind = cleanScalar(row && row.recordKind);
+    var recordId = cleanScalar(row && row.recordId);
+    var deletedAt = cleanScalar(row && row.remoteDeletedAt);
+    if (peer && recordKind && recordId && deletedAt) {
+      return {
+        kind: 'remote-record',
+        key: peer + '\u0000' + recordKind + '\u0000' + recordId + '\u0000' + deletedAt,
+        fingerprint: previewHash(['remote-record', peer, recordKind, recordId, deletedAt]),
+      };
+    }
+    return null;
+  }
+
+  function duplicatePreviewState(row) {
+    return {
+      classification: cleanScalar(row && row.classification),
+      status: cleanScalar(row && row.status),
+      decision: cleanScalar(row && row.decision),
+      deleteReason: cleanScalar(row && row.deleteReason),
+      warningsHash: previewWarningsHash(row),
+      rawHash: previewJsonHash(row && row.rawTombstoneJson),
+    };
+  }
+
+  function duplicatePreviewIds(rows) {
+    return {
+      reviewIds: rows.map(function (row) { return cleanScalar(row && row.reviewId); }).filter(Boolean),
+      remoteTombstoneIds: rows.map(function (row) { return cleanScalar(row && row.remoteTombstoneId); }).filter(Boolean),
+      recordIds: rows.map(function (row) { return cleanScalar(row && row.recordId); }).filter(Boolean),
+      dedupeKeys: rows.map(function (row) { return cleanScalar(row && row.dedupeKey); }).filter(Boolean),
+    };
+  }
+
+  function duplicatePreviewBlockers(rows) {
+    var statuses = {};
+    var decisions = {};
+    var warnings = {};
+    var raws = {};
+    var reasons = {};
+    var out = [];
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var state = duplicatePreviewState(row);
+      statuses[state.status || 'unknown'] = true;
+      decisions[state.decision || ''] = true;
+      warnings[state.warningsHash] = true;
+      raws[state.rawHash] = true;
+      reasons[state.deleteReason || ''] = true;
+      if (state.status === 'accepted-later') out.push('accepted-later');
+      if (state.status === 'resolved' && state.decision === 'applied-folder-binding') out.push('applied-folder-binding');
+      if (previewProtectedDeleteReason(state.deleteReason)) out.push('protected-delete-reason');
+      if (state.classification === 'cascade-review' || state.deleteReason === 'folder-delete-cascade') out.push('cascade-linked-row');
+      if (String(row && row.rawTombstoneJson || '').indexOf('tombstoneReviews.applyReview') >= 0) out.push('apply-linked-row');
+    });
+    var statusKeys = Object.keys(statuses);
+    if (statusKeys.length > 1) out.push(statuses.pending ? 'pending-terminal-mixed' : 'different-status');
+    if (Object.keys(decisions).length > 1) out.push('different-decision');
+    if (Object.keys(warnings).length > 1) out.push('different-warnings');
+    if (Object.keys(raws).length > 1) out.push('different-raw-tombstone');
+    if (Object.keys(reasons).length > 1) out.push('different-delete-reason');
+    var seen = {};
+    return out.filter(function (code) {
+      if (seen[code]) return false;
+      seen[code] = true;
+      return true;
+    });
+  }
+
+  function duplicatePreviewAddLimited(list, entry, limit, counters, key) {
+    if (list.length < limit) list.push(entry);
+    else counters[key] = Number(counters[key] || 0) + 1;
+  }
+
+  function duplicatePreviewGroupSummary(type, identity, rows, includeIds, extra) {
+    var state = duplicatePreviewState(rows[0] || {});
+    var summary = Object.assign({
+      type: type,
+      identityKind: identity ? identity.kind : 'single-row',
+      identityFingerprint: identity ? identity.fingerprint : previewHash(cleanScalar(rows[0] && rows[0].dedupeKey) || cleanScalar(rows[0] && rows[0].reviewId)),
+      rowCount: rows.length,
+      retainedRows: 1,
+      classification: state.classification || null,
+      status: state.status || null,
+      decision: state.decision || null,
+      deleteReason: state.deleteReason || null,
+      warningsHash: state.warningsHash,
+      rawTombstoneHash: state.rawHash,
+    }, extra || {});
+    if (includeIds) summary.ids = duplicatePreviewIds(rows);
+    return summary;
+  }
+
+  function buildDuplicateSightingPreview(rows, options, surface) {
+    var opts = options || {};
+    var includeIds = opts.includeIds === true;
+    var limit = Number(opts.limitGroups);
+    if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+    limit = Math.min(Math.floor(limit), 250);
+    var result = {
+      readOnly: true,
+      noMutation: true,
+      phase: 'F5H.4',
+      schema: DUPLICATE_SIGHTING_PREVIEW_SCHEMA,
+      surface: surface,
+      generatedAt: nowIso(),
+      redacted: !includeIds,
+      rowsScanned: rows.length,
+      groupsScanned: 0,
+      duplicateGroups: [],
+      wouldCompactSightings: 0,
+      retainedRows: 0,
+      riskGroups: [],
+      blockedGroups: [],
+      warnings: [],
+    };
+    var counters = {};
+    var groups = {};
+    rows.forEach(function (row) {
+      var seenCount = Number(row && row.seenCount) || 1;
+      if (seenCount > 1) {
+        result.wouldCompactSightings += seenCount - 1;
+        result.retainedRows += 1;
+        duplicatePreviewAddLimited(
+          result.duplicateGroups,
+          duplicatePreviewGroupSummary('already-compacted-sightings', null, [row], includeIds, {
+            seenCount: seenCount,
+            wouldCompactSightings: seenCount - 1,
+          }),
+          limit,
+          counters,
+          'duplicateGroups'
+        );
+      }
+      var identity = duplicatePreviewIdentity(row);
+      if (!identity) return;
+      if (!groups[identity.key]) groups[identity.key] = { identity: identity, rows: [] };
+      groups[identity.key].rows.push(row);
+    });
+    Object.keys(groups).sort().forEach(function (key) {
+      var group = groups[key];
+      if (!group || group.rows.length < 2) return;
+      result.groupsScanned += 1;
+      var blockers = duplicatePreviewBlockers(group.rows);
+      var wouldCompact = group.rows.length - 1;
+      if (blockers.length) {
+        duplicatePreviewAddLimited(
+          result.blockedGroups,
+          duplicatePreviewGroupSummary('blocked-cross-row-duplicates', group.identity, group.rows, includeIds, {
+            blockers: blockers,
+            wouldCompactSightings: 0,
+          }),
+          limit,
+          counters,
+          'blockedGroups'
+        );
+        return;
+      }
+      result.wouldCompactSightings += wouldCompact;
+      result.retainedRows += 1;
+      duplicatePreviewAddLimited(
+        result.duplicateGroups,
+        duplicatePreviewGroupSummary('strict-cross-row-duplicates', group.identity, group.rows, includeIds, {
+          wouldCompactSightings: wouldCompact,
+        }),
+        limit,
+        counters,
+        'duplicateGroups'
+      );
+    });
+    Object.keys(counters).forEach(function (key) {
+      result.warnings.push({ code: key + '-truncated', count: counters[key] });
+    });
+    return result;
+  }
+
+  function previewDuplicateSightings(options) {
+    return ensureReady()
+      .then(function () { return idbGetAll(); })
+      .then(function (rows) {
+        return buildDuplicateSightingPreview(Array.isArray(rows) ? rows : [], options, 'chrome-mv3');
+      })
+      .catch(function (e) {
+        recordError('previewDuplicateSightings', e);
+        return {
+          readOnly: true,
+          noMutation: true,
+          phase: 'F5H.4',
+          schema: DUPLICATE_SIGHTING_PREVIEW_SCHEMA,
+          surface: 'chrome-mv3',
+          generatedAt: nowIso(),
+          redacted: !(options && options.includeIds === true),
+          rowsScanned: 0,
+          groupsScanned: 0,
+          duplicateGroups: [],
+          wouldCompactSightings: 0,
+          retainedRows: 0,
+          riskGroups: [],
+          blockedGroups: [],
+          warnings: [{ code: 'duplicate-sighting-preview-failed' }],
+        };
+      });
   }
 
   function createReview(record) {
@@ -3204,6 +3462,7 @@
     diagnoseCascadeGroups: diagnoseCascadeGroups,
     diagnoseLifecycle: diagnoseLifecycle,
     previewCleanupSynthetic: previewCleanupSynthetic,
+    previewDuplicateSightings: previewDuplicateSightings,
     validateReview: validateReview,
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
@@ -3211,6 +3470,7 @@
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
+      duplicateSightingPreviewSchema: DUPLICATE_SIGHTING_PREVIEW_SCHEMA,
       syntheticCleanupPreviewSchema: SYNTHETIC_CLEANUP_PREVIEW_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       previewSchema: PREVIEW_SCHEMA,
