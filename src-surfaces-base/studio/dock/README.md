@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-B landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights tab** renders real read-only highlight data via `H2O.Studio.store.highlights`, and the **Bookmarks tab** renders real read-only bookmark entries via `H2O.Studio.store.bookmarks`. Next phase: Phase 2C-N/V/X/P — turn the remaining tabs (Notes, Navigator, Context, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
+Status: Phases 0B through 2C-C landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights tab** renders real read-only highlight data via `H2O.Studio.store.highlights`, the **Bookmarks tab** renders real read-only bookmark entries via `H2O.Studio.store.bookmarks`, and the **Context tab** renders real read-only context items via `H2O.Studio.store.context`. Next phase: Phase 2C-N/V/P — turn the remaining tabs (Notes, Navigator, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -581,3 +581,29 @@ The second real-data Dock tab. `tabs/bookmarks.tab.studio.js` no longer renders 
 - No scroll-to-message integration (no safe per-message scroll helper currently exposed to Studio).
 - No multi-select. No drag-reorder.
 - No other tab implemented — Notes/Navigator/Context/Capture/Attachments/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-C — what landed (Context real read-only rendering)
+
+The third real-data Dock tab. `tabs/context.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `H2O.Studio.store.context.getBundle(chatId)` (sync, lazy-fetch behind cache; first read may return `null` for sub-keys and notify via `subscribe()` when the platform fetch resolves).
+- Resolves `chatId` from `ctx.chatId → ctx.externalId → ctx.snapshotId` (first non-empty wins). Does **not** invent IDs.
+- Renders a "linked chat" empty state — `Open a linked chat/snapshot to view context.` — when no chat id is present. In that state the tab does **not** subscribe.
+- Renders the standard empty state — `No context items found for this chat yet.` — when the chat is linked but has no items.
+- Renders a top summary line: `<n> items • <m> history entries` (history count only shown when > 0).
+- Renders a compact row per item, sorted by `order` ascending (mirroring native [3W1a `ITEM_sort` manual default](src-runtime-base/3W1a.🟧🧠%20Context%20Engine%20🧠.js:252)):
+  - **title**: `item.title` if set, otherwise first line of `item.text`, otherwise `(untitled context item)`
+  - **snippet**: `item.text` when distinct from title
+  - **meta**: source label (`<kind> <id>` like `notes abc123`) • `id <itemId>` • `pinned` if pinned • `inactive` if `active === false` • localized `updatedAt` (or `createdAt` fallback)
+- Subscribes via `H2O.Studio.store.context.subscribe(fn)`; filters events to the current `chatId` while still accepting meta-key events (singleton, no chatId) so a meta update also repaints.
+- Returns an unsubscribe cleanup function to `dock-shell` (honored at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Reuses generic Dock list CSS from Phase 2C-H — no new CSS was needed.
+
+### What is still NOT in Phase 2C-C
+
+- No write-back. No `set` / `update` / `remove` / `saveNow` / `insert` / `promote` / `demote` calls.
+- No item creation / deletion / editing.
+- No prompt insertion / promotion / demotion.
+- No scroll-to-message integration.
+- No tag/profile/scope filtering UI (the native engine has these — Studio just renders raw items).
+- No other tab implemented — Notes/Navigator/Capture/Attachments/Finder remain inert Phase 2B placeholders.
