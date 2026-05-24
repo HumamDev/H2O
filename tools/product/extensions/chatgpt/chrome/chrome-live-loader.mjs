@@ -3949,6 +3949,7 @@ export function makeChromeLiveLoaderJs({
      * its own chrome.storage.local namespace can carry the same linked-only
      * records the prod broadcast already builds via snapshotLinkedRecords. */
     const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+    const MSG_FOLDER_METADATA_OPERATION_RESULTS = "h2o:library:folder-metadata-operation-results:v1";
     const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
     const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY]);
     const DIAG = (typeof TAG === "string" ? TAG : "[H2O cs-bridge]");
@@ -3995,6 +3996,7 @@ export function makeChromeLiveLoaderJs({
       if (!WATCHED.has(String(key || ""))) return;
       forwardNativeFolderStateToStudioLauncher(srcLabel, key, value);
       forwardNativeLinkedRecordsToStudioLauncher(srcLabel, key, value);
+      forwardNativeFolderMetadataOperationResultsToStudioLauncher(srcLabel, key, value);
       if (!hasStorage) {
         dlog("write.skip", srcLabel + " no chrome.storage");
         return;
@@ -4089,6 +4091,41 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
+    function forwardNativeFolderMetadataOperationResultsToStudioLauncher(srcLabel, key, value) {
+      if (String(key || "") !== NATIVE_KEY) return;
+      const results = value && typeof value === "object" && Array.isArray(value.folderMetadataOperationResults)
+        ? value.folderMetadataOperationResults
+        : null;
+      if (results === null) return;
+      if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") return;
+      const ownId = String(chrome.runtime.id || "");
+      if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) return;
+      try {
+        chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+          type: MSG_FOLDER_METADATA_OPERATION_RESULTS,
+          key: NATIVE_KEY,
+          source: "native-content-bridge",
+          sourceExtensionId: ownId,
+          sourceLabel: String(srcLabel || ""),
+          ts: Date.now(),
+          folderMetadataOperationResults: results,
+        }, (resp) => {
+          const le = chrome.runtime && chrome.runtime.lastError;
+          if (le) {
+            dlog("folderMetadataResults.external.skip", String(le.message || le));
+            return;
+          }
+          if (!resp || resp.ok === false) {
+            dlog("folderMetadataResults.external.err", String((resp && resp.error) || "no-response"));
+            return;
+          }
+          dlog("folderMetadataResults.external.ok", String(resp.status || "ok"));
+        });
+      } catch (e) {
+        dlog("folderMetadataResults.external.throw", String(e && (e.message || e)));
+      }
+    }
+
     function replayCurrentBroadcasts() {
       if (!hasStorage) return;
       try {
@@ -4137,6 +4174,9 @@ export function makeChromeLiveLoaderJs({
           for (const key of Object.keys(changes)) {
             if (!WATCHED.has(key)) continue;
             const ch = changes[key];
+            if (key === NATIVE_KEY) {
+              forwardNativeFolderMetadataOperationResultsToStudioLauncher("storage.onChanged", key, ch && ch.newValue);
+            }
             sendEvent(key, ch && ch.newValue, ch && ch.oldValue);
           }
         });

@@ -68,6 +68,14 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
   const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
+  const FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE = 'h2o:library:studio-broadcast:v1';
+  const NATIVE_OWNER_EXTENSION_IDS = [
+    'bgdapdcjckbiejckpfeinlmcdnijifpg', // prod
+    'bkijejgemjjolmdnkgcimoaniocegkij', // dev-controls
+    'ceenhihlkfdfjdolchjffpeejblnejdb', // dev-controls-armed
+    'ogcjkeaiicglflamhjaaimdhphjlgkbb', // dev-controls-oauth-google
+    'eeebgndgehjalflefaldogahaklnlahi', // dev-lean
+  ];
 
   const state = {
     bound: false,
@@ -115,6 +123,12 @@
     lastStudioBroadcastReason: '',
     lastStudioBroadcastPayloadKeys: [],
     lastStudioBroadcastTransport: '',
+    lastStudioBroadcastExternalAt: 0,
+    lastStudioBroadcastExternalStatus: '',
+    lastStudioBroadcastExternalAttempts: 0,
+    lastStudioBroadcastExternalOkCount: 0,
+    lastStudioBroadcastExternalErrors: [],
+    lastStudioBroadcastExternalTargetIds: [],
     pendingFolderMetadataRequests: new Map(),
     lastFolderMetadataRequestAt: 0,
     lastFolderMetadataRequestId: '',
@@ -186,6 +200,90 @@
         });
       } catch (e) { reject(e); }
     });
+  }
+
+  function hasRuntimeExternalMessaging() {
+    try {
+      return !!(W.chrome && chrome.runtime && typeof chrome.runtime.sendMessage === 'function');
+    } catch { return false; }
+  }
+
+  function folderMetadataRequestPayloadPresent(payload) {
+    const p = payload && typeof payload === 'object' ? payload : null;
+    const requests = p && p.folderMetadataOperationRequests;
+    return Array.isArray(requests) ? requests.length > 0 : !!(requests && typeof requests === 'object');
+  }
+
+  function forwardStudioBroadcastToNativeOwners(body) {
+    const payload = body && typeof body === 'object' ? body.payload : null;
+    if (!folderMetadataRequestPayloadPresent(payload)) return false;
+    state.lastStudioBroadcastExternalAt = Date.now();
+    state.lastStudioBroadcastExternalStatus = 'skipped';
+    state.lastStudioBroadcastExternalAttempts = 0;
+    state.lastStudioBroadcastExternalOkCount = 0;
+    state.lastStudioBroadcastExternalErrors = [];
+    state.lastStudioBroadcastExternalTargetIds = [];
+    if (!hasRuntimeExternalMessaging()) {
+      state.lastStudioBroadcastExternalStatus = 'unavailable';
+      state.lastStudioBroadcastExternalErrors = ['chrome-runtime-sendMessage-unavailable'];
+      return false;
+    }
+
+    const ownId = String((W.chrome && chrome.runtime && chrome.runtime.id) || '');
+    const lastNativeSourceId = String(
+      state.lastNativeFolderMergeSourceExtensionId ||
+      state.lastNativeBroadcastPayload?.sourceExtensionId ||
+      ''
+    ).trim();
+    const preferredTargets = NATIVE_OWNER_EXTENSION_IDS.includes(lastNativeSourceId)
+      ? [lastNativeSourceId]
+      : NATIVE_OWNER_EXTENSION_IDS;
+    const targets = preferredTargets.filter((id) => id && id !== ownId);
+    state.lastStudioBroadcastExternalAttempts = targets.length;
+    state.lastStudioBroadcastExternalStatus = targets.length ? 'pending' : 'no-native-targets';
+    state.lastStudioBroadcastExternalTargetIds = targets.slice();
+    if (!targets.length) return false;
+
+    const message = {
+      type: FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE,
+      key: BROADCAST_KEY,
+      value: body,
+      source: 'studio-launcher',
+      sourceExtensionId: ownId,
+      ts: Date.now(),
+    };
+
+    let settled = 0;
+    targets.forEach((targetId) => {
+      try {
+        chrome.runtime.sendMessage(targetId, message, (resp) => {
+          settled += 1;
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          if (runtimeError) {
+            state.lastStudioBroadcastExternalErrors.push(`${targetId}:${String(runtimeError.message || runtimeError)}`);
+          } else if (resp && resp.ok !== false) {
+            state.lastStudioBroadcastExternalOkCount += 1;
+          } else {
+            state.lastStudioBroadcastExternalErrors.push(`${targetId}:${String((resp && (resp.status || resp.error)) || 'no-response')}`);
+          }
+          if (state.lastStudioBroadcastExternalErrors.length > 8) {
+            state.lastStudioBroadcastExternalErrors.splice(0, state.lastStudioBroadcastExternalErrors.length - 8);
+          }
+          if (settled >= targets.length) {
+            state.lastStudioBroadcastExternalStatus = state.lastStudioBroadcastExternalOkCount > 0
+              ? 'ok'
+              : 'failed';
+          }
+        });
+      } catch (e) {
+        settled += 1;
+        state.lastStudioBroadcastExternalErrors.push(`${targetId}:${String(e?.message || e || 'send-failed')}`);
+        if (settled >= targets.length) {
+          state.lastStudioBroadcastExternalStatus = state.lastStudioBroadcastExternalOkCount > 0 ? 'ok' : 'failed';
+        }
+      }
+    });
+    return true;
   }
 
   function stableStringify(value) {
@@ -729,6 +827,7 @@
     if (pb) {
       try {
         state.lastStudioBroadcastTransport = 'platform.broadcast';
+        forwardStudioBroadcastToNativeOwners(body);
         // emitRaw is fire-and-forget for callers; preserve sync `return true`
         // semantics by not awaiting. Errors funnel into err() via .catch.
         pb.emitRaw(BROADCAST_KEY, body)
@@ -743,6 +842,7 @@
     }
     try {
       state.lastStudioBroadcastTransport = 'chrome.storage.fallback';
+      forwardStudioBroadcastToNativeOwners(body);
       chrome.storage.local.set({ [BROADCAST_KEY]: body }, () => {
         step('broadcast.fallback', body.reason);
       });
@@ -871,6 +971,23 @@
         lastResultId: state.lastFolderMetadataResultId,
         lastResultStatus: state.lastFolderMetadataResultStatus,
         lastResultBlockers: state.lastFolderMetadataResultBlockers.slice(),
+        storageBridge: {
+          requestWrittenBackend: state.lastStudioBroadcastTransport || '',
+          nativeReadableBackend: state.lastStudioBroadcastExternalAttempts
+            ? 'native-extension-chrome.storage.local-via-external-message'
+            : '',
+          resultReadBackend: state.lastNativeBroadcastReadSource || (state.transport || ''),
+          lastRequestVisibleToNative: state.lastStudioBroadcastExternalOkCount > 0,
+          lastNativeResultVisibleToStudio: !!state.lastFolderMetadataResultAt && state.lastFolderMetadataResultStatus !== 'timeout',
+          externalNativeRequest: {
+            at: state.lastStudioBroadcastExternalAt,
+            status: state.lastStudioBroadcastExternalStatus,
+            attempts: state.lastStudioBroadcastExternalAttempts,
+            okCount: state.lastStudioBroadcastExternalOkCount,
+            targetIds: state.lastStudioBroadcastExternalTargetIds.slice(),
+            errors: state.lastStudioBroadcastExternalErrors.slice(),
+          },
+        },
       };
     },
   };

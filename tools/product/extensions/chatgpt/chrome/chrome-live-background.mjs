@@ -112,6 +112,7 @@ const MSG_PAGE_SET_LINK = "h2o-ext-live:page-set-link";
 const MSG_ARCHIVE = "h2o-ext-archive:v1";
 const MSG_ARCHIVE_PORT = "h2o-ext-archive:v1:port";
 const MSG_FOLDERS = "h2o-ext-folders:v1";
+const MSG_STUDIO_BROADCAST = "h2o:library:studio-broadcast:v1";
 const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
 /* Phase K-2.6 — cross-extension linked-records bridge. Parallel of the
  * folder-state cross-extension message above. The receiver merges
@@ -119,8 +120,11 @@ const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
  * S0F1c's existing readNativeChatRegistryRecords() can pick up
  * linked-only records propagated from prod Cockpit Pro's native broadcast. */
 const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+const MSG_FOLDER_METADATA_OPERATION_RESULTS = "h2o:library:folder-metadata-operation-results:v1";
+const STUDIO_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
 const NATIVE_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:native:v1";
 const NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY = "h2o:library:native-folder-state:external-merge:diagnostic:v1";
+const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
 const MSG_CONTROL_HUB_OPEN = "h2o-ext-live:control-hub-open";
 const MSG_IDENTITY = "h2o-ext-identity:v1";
 const MSG_IDENTITY_FIRST_RUN_PROMPT = "h2o-ext-identity-first-run:v1";
@@ -4057,6 +4061,43 @@ async function writeChromeStorageLocalMerge(entries, modeRaw) {
   return { written, skipped };
 }
 
+async function handleExternalStudioBroadcastMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (senderId !== STUDIO_LAUNCHER_EXTENSION_ID) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const key = String(msg && msg.key || "");
+  if (key !== STUDIO_BROADCAST_KEY) {
+    return { ok: false, status: "invalid-broadcast-key", senderId, key };
+  }
+  const value = msg && msg.value && typeof msg.value === "object" && !Array.isArray(msg.value)
+    ? msg.value
+    : null;
+  if (!value) {
+    return { ok: false, status: "invalid-broadcast-value", senderId, key };
+  }
+  try {
+    await storageSet({ [STUDIO_BROADCAST_KEY]: value });
+    const payload = value && value.payload && typeof value.payload === "object" ? value.payload : {};
+    return {
+      ok: true,
+      status: "written",
+      senderId,
+      key: STUDIO_BROADCAST_KEY,
+      payloadKeys: Object.keys(payload).slice(0, 16),
+      ts: Date.now(),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "write-failed",
+      senderId,
+      key: STUDIO_BROADCAST_KEY,
+      error: String((e && (e.stack || e.message || e)) || "write-failed"),
+    };
+  }
+}
+
 async function handleExternalNativeFolderStateMessage(msg, sender) {
   const senderId = String(sender && sender.id || "");
   if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
@@ -4192,6 +4233,49 @@ async function handleExternalNativeLinkedRecordsMessage(msg, sender) {
       senderId,
       error: String((e && (e.stack || e.message || e)) || "merge-failed"),
       linkedRecordsCount: linkedRecords.length,
+    };
+  }
+}
+
+async function handleExternalNativeFolderMetadataOperationResultsMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const results = msg && Array.isArray(msg.folderMetadataOperationResults) ? msg.folderMetadataOperationResults : null;
+  if (results === null) {
+    return { ok: false, status: "invalid-folder-metadata-operation-results", senderId };
+  }
+  const source = String((msg && msg.source) || "native-content-bridge");
+  const sourceExtensionId = String((msg && msg.sourceExtensionId) || senderId);
+  try {
+    const before = await storageGet([NATIVE_BROADCAST_KEY]);
+    const prev = (before && before[NATIVE_BROADCAST_KEY] && typeof before[NATIVE_BROADCAST_KEY] === "object" && !Array.isArray(before[NATIVE_BROADCAST_KEY]))
+      ? before[NATIVE_BROADCAST_KEY]
+      : {};
+    const next = {
+      ...prev,
+      folderMetadataOperationResults: results.slice(0, 16),
+      ts: Date.now(),
+      surface: "native",
+      source,
+      sourceExtensionId,
+    };
+    await storageSet({ [NATIVE_BROADCAST_KEY]: next });
+    return {
+      ok: true,
+      status: results.length ? "merged" : "merged-empty",
+      senderId,
+      key: NATIVE_BROADCAST_KEY,
+      folderMetadataOperationResultCount: results.length,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "merge-failed",
+      senderId,
+      error: String((e && (e.stack || e.message || e)) || "merge-failed"),
+      folderMetadataOperationResultCount: results.length,
     };
   }
 }
@@ -11388,6 +11472,17 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === MSG_STUDIO_BROADCAST) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalStudioBroadcastMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === MSG_NATIVE_FOLDER_STATE) {
     (async () => {
       try {
@@ -11405,6 +11500,17 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         sendResponse(await handleExternalNativeLinkedRecordsMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === MSG_FOLDER_METADATA_OPERATION_RESULTS) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalNativeFolderMetadataOperationResultsMessage(msg, _sender));
       } catch (e) {
         sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
       }
