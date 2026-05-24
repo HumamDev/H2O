@@ -1,7 +1,7 @@
 # Folder Metadata Authority Contract - P8h
 
-Phase: P8h-d1
-Status: Contract only, no metadata mutation enabled
+Phase: P8h-d1 / P8h-d2
+Status: Contract and preview model only, no metadata mutation enabled
 
 ## Purpose
 
@@ -139,6 +139,148 @@ Future metadata mutation should use a reviewed operation object:
 ```
 
 The operation log overlaps with F7.1b and the broader F7 folder metadata comparator and apply-check path. P8h should define the parity UX and safety contract. F7 should own bidirectional metadata comparison, conflict detection, operation application, and cross-surface propagation.
+
+## Read-only operation preview model
+
+P8h-d2 defines the read-only preview object for future canonical folder metadata operations. This preview model is a contract only. It must not write folder-state, Chrome storage, Desktop SQLite, native state, or generated sync artifacts.
+
+```js
+{
+  schema: "h2o.folder-metadata-operation-preview.v1",
+  readOnly: true,
+  noMutation: true,
+  operationId,
+  operationType: "rename-folder" | "change-folder-color" | "delete-folder",
+  folderId,
+  sourceSurface,
+  generatedAt,
+  before,
+  proposed,
+  affectedSurfaces,
+  dependencySummary,
+  staleGuard: {
+    sourceHash,
+    folderHash,
+    membershipHash,
+    dependencyHash,
+    previewHash
+  },
+  blockers,
+  warnings,
+  requiredAuthority,
+  canApply: false
+}
+```
+
+`canApply` is always `false` for P8h-d2. Later apply planning must be owned by the reviewed F7 folder metadata comparator and apply-check path.
+
+### Required preview snapshots
+
+A complete preview needs read-only evidence from:
+
+- Native canonical folder-state:
+  - folder row
+  - `items[folderId]`
+  - sort or display order
+  - `color`, `iconColor`, and `icon`
+- Chrome Studio `FolderParity` snapshot.
+- Desktop Studio `FolderParity` snapshot.
+- Local `known here` counts per surface.
+- Local Review references.
+- Desktop SQLite folder and binding references for delete previews.
+- Chrome local references for delete previews.
+- F7 metadata comparator output when available.
+
+### Rename preview validation
+
+Rename previews must verify:
+
+- Folder ID remains stable.
+- New name is non-empty after normalization.
+- Same-name conflicts block the preview.
+- Stale source or folder hash blocks the preview.
+- Local Review rows are invalid targets.
+- Official ChatGPT folder mutation authority remains unproven.
+
+### Color preview validation
+
+Color previews must verify:
+
+- Proposed color is a valid approved token or hex value.
+- Target field is canonical `iconColor` or `color`.
+- Local row appearance is never the mutation target.
+- Local override data is ignored for canonical preview.
+- Folder ID and name remain unchanged.
+- Apply remains blocked until F7 authority exists.
+
+### Delete preview validation
+
+Delete previews must verify:
+
+- The operation is preview-only.
+- Empty-folder delete is the first possible future scope.
+- Non-empty delete blocks.
+- Preview includes native memberships, `known here` counts, Local Review references, Desktop references, and Chrome references.
+- Membership behavior is defined before any real delete.
+- Local Review rows are not canonical delete targets.
+
+## Preview blocker model
+
+Folder metadata previews use explicit blocker codes:
+
+- `operation-preview-only`
+- `metadata-authority-not-proven`
+- `official-chatgpt-folder-api-unproven`
+- `stale-source-hash`
+- `stale-folder-hash`
+- `target-not-canonical`
+- `local-review-target-blocked`
+- `same-name-conflict`
+- `invalid-folder-name`
+- `invalid-color`
+- `delete-non-empty-folder-blocked`
+- `delete-membership-policy-missing`
+- `desktop-reference-check-required`
+- `chrome-reference-check-required`
+- `f7-operation-log-required`
+
+Additional blockers may be added later, but they must remain explicit and redacted by default.
+
+## Stale guard and hash model
+
+Future apply planning must recompute the stale guard and reject mismatches. Hash inputs are normalized and redacted in preview output.
+
+| Hash | Required input |
+| --- | --- |
+| `folderHash` | Folder ID, name/title, `color`, `iconColor`, `icon`, sort order, parent, and metadata presence |
+| `membershipHash` | Canonical `items[folderId]` membership IDs and count; raw IDs are redacted in output |
+| `sourceHash` | Relevant canonical folder-state boundary |
+| `dependencyHash` | Local Review, `known here`, Desktop reference, and Chrome reference summaries |
+| `previewHash` | Operation type, folder ID, before/proposed metadata, and stale guard hashes |
+
+## F7 relationship
+
+P8h owns the folder parity UX contract and action parity. F7 owns bidirectional metadata comparison, conflict detection, operation logging, and apply checks.
+
+Implementation rules:
+
+- Use existing F7 preview and apply-planning modules where possible.
+- Do not create a second folder metadata mutation path.
+- Extend F7 from color-only planning to rename and delete only after authority review.
+- Keep P8h renderers and menus read-only until F7 reports a safe reviewed operation path.
+
+Future source work, if approved, should extend:
+
+- `src-surfaces-base/studio/sync/bidirectional-folder-preview.js`
+- `src-surfaces-base/studio/sync/folder-metadata-apply-plan.js`
+- `src-surfaces-base/studio/sync/folder-metadata-apply-checks.tauri.js`
+
+Future source work should avoid:
+
+- P8 renderers unless adding preview UI.
+- Sync/tombstone lifecycle files.
+- Generated dist output.
+- Native mutation handlers outside a reviewed authority phase.
 
 ## Safety rules
 
