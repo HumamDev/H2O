@@ -35,6 +35,11 @@ pub mod sync_conflict_ingest;
 // metadata; no merge/apply/entity mutation behavior lives here.
 pub mod sync_conflict_decision;
 
+// F7.4.2a — in-memory folder.metadata color apply transaction proof.
+// Test-only: no Tauri command, no JS surface, no production DB access.
+#[cfg(test)]
+mod folder_metadata_apply_proof;
+
 // F5H final validation — debug/Desktop-only seed helpers for controlled
 // live validation fixtures. Not compiled or registered in production builds.
 #[cfg(debug_assertions)]

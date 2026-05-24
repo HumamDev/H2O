@@ -748,6 +748,69 @@ F7.4.1e still performs no writes. It must not call F6 ingestion, F6 decision
 actions, F5 mutation APIs, folder mutation methods, Chrome storage mutation,
 import/export/sync mutation paths, merge, apply, or write-back behavior.
 
+### F7.4.2a In-Memory Folder Color Apply Transaction Proof
+
+F7.4.2a adds a Rust test-only transaction proof for the future local
+`folder.metadata.color` apply sequence. It does not expose a Tauri command,
+does not register a JavaScript API, and does not open the production Desktop
+SQLite database.
+
+The proof uses `sqlite::memory:` and synthetic tables that mirror only the
+minimum future transaction shape:
+
+- `folders(id, color, updated_at, meta_json)`
+- `sync_maintenance_log(...)` matching the existing audit table columns needed
+  for an audit insert and result update
+
+The transaction shape exercised by tests is:
+
+```txt
+BEGIN
+  insert redacted audit row
+  read current folder row
+  verify expected baseline hash
+  map color/iconColor to folders.color
+  simulate UPDATE folders SET color = ?, updated_at = ?
+  verify affected row count == 1
+  update audit result_json with redacted proof counts
+ROLLBACK
+  verify folder and audit snapshots match the pre-transaction state
+```
+
+Allowed field policy remains narrow:
+
+- `color`
+- `iconColor` as an alias for the same `folders.color` column
+
+The proof rejects `name`, `parentId`, `sortOrder`, `icon`, `kind`, `source`,
+`meta`, `createdAt`, `updatedAt`, and any other field. It also rejects missing
+or stale baseline hashes.
+
+F7.4.2a models only transaction mechanics. It does not call F5 APIs, F6 APIs,
+folder stores, import/export/sync code, Chrome storage, or apply/write-back
+paths. F5/F6 blockers are assumed to have been checked by earlier dry-run
+planning; future real apply phases must re-check them immediately before or
+inside the real transaction.
+
+The proof result is redacted and test-facing only. It returns schema, booleans,
+field name, proof step flags, blocker codes, and write counts. It must not
+return folder IDs, folder names, parent IDs, raw color/icon values, raw hashes,
+raw metadata, peer IDs, tombstone IDs, conflict IDs, raw JSON, or content.
+
+F7.4.2a proves:
+
+- success path rolls back with no committed writes
+- `color` and `iconColor` are the only accepted fields
+- stale baseline hash blocks
+- audit insert failure rolls back
+- affected-row mismatch rolls back
+- audit update failure rolls back
+- post-rollback folder/audit snapshots match the pre-transaction state
+- no production apply API exists
+
+It does not authorize a real DB rollback proof or real apply. Those remain
+separate later phases.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
