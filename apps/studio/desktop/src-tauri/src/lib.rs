@@ -4979,6 +4979,291 @@ mod tests {
     }
 
     #[test]
+    fn f5h3b1_seeded_proof_deletes_only_contract_confirmed_rows() {
+        let (
+            preview_review_ids,
+            preview_tombstone_ids,
+            result,
+            eligible_review,
+            eligible_tombstone,
+            non_synthetic_tombstone,
+            prefix_only_review,
+            prefix_only_tombstone,
+            pending_review,
+            restored_tombstone,
+            protected_tombstone,
+            audit_count,
+            audit_json,
+        ): (
+            Vec<String>,
+            Vec<String>,
+            synthetic_cleanup_commit::CleanupSyntheticCommitResult,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = f5h3b0d_run(|mut conn| async move {
+            f5h3b0c_seed_tombstone(
+                &mut conn,
+                "f5h-seeded-proof-tomb-eligible",
+                "folderBinding:f5h-proof-chat:f5h-proof-folder",
+                "f5h-test",
+                "{}",
+                1,
+                &f5h3b0d_old(),
+                None,
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_review(
+                &mut conn,
+                "f5h-seeded-proof-review-eligible",
+                Some("f5h-seeded-proof-remote"),
+                "folderBinding:f5h-proof-chat:f5h-proof-folder",
+                "dedupe-f5h-seeded-proof-review-eligible",
+                "resolved",
+                Some("rejected"),
+                "{}",
+                "[]",
+                1,
+                &f5h3b0d_old(),
+            )
+            .await
+            .unwrap();
+
+            f5h3b0c_seed_tombstone(
+                &mut conn,
+                "f5h-seeded-proof-tomb-lookalike",
+                "folderBinding:f5h-proof-lookalike:f5h-proof-folder",
+                "f5h-test",
+                "{}",
+                0,
+                &f5h3b0d_old(),
+                None,
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_review(
+                &mut conn,
+                "f5h-seeded-proof-review-prefix-only",
+                Some("f5h-seeded-proof-prefix-only-remote"),
+                "folderBinding:f5h-prefix-only-chat:f5h-prefix-only-folder",
+                "dedupe-f5h-seeded-proof-review-prefix-only",
+                "resolved",
+                Some("rejected"),
+                "{}",
+                "[]",
+                0,
+                &f5h3b0d_old(),
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_tombstone(
+                &mut conn,
+                "f5h-seeded-proof-tomb-prefix-only",
+                "folderBinding:f5h-prefix-only-chat:f5h-prefix-only-folder",
+                "f5h-test",
+                "{}",
+                0,
+                &f5h3b0d_old(),
+                None,
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_review(
+                &mut conn,
+                "f5h-seeded-proof-review-pending",
+                Some("f5h-seeded-proof-pending-remote"),
+                "folderBinding:f5h-pending-chat:f5h-pending-folder",
+                "dedupe-f5h-seeded-proof-review-pending",
+                "pending",
+                None,
+                "{}",
+                "[]",
+                1,
+                &f5h3b0d_old(),
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_tombstone(
+                &mut conn,
+                "f5h-seeded-proof-tomb-restored",
+                "folderBinding:f5h-restored-chat:f5h-restored-folder",
+                "f5h-test",
+                "{}",
+                1,
+                &f5h3b0d_old(),
+                Some("2026-05-15T00:00:00Z"),
+            )
+            .await
+            .unwrap();
+            f5h3b0c_seed_tombstone(
+                &mut conn,
+                "f5h-seeded-proof-tomb-protected",
+                "folderBinding:f5h-protected-chat:f5h-protected-folder",
+                "folder-delete",
+                "{}",
+                1,
+                &f5h3b0d_old(),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let preview = synthetic_cleanup_dryrun::run_dry_run(
+                &mut conn,
+                f5h3b0d_now(),
+                "test-peer".to_string(),
+                "seeded proof cleanup preview".to_string(),
+                None,
+                true,
+            )
+            .await;
+            assert!(preview.ok, "preview blocker={:?}", preview.blocker);
+            assert_eq!(preview.would_delete_rows.reviews, 1);
+            assert_eq!(preview.would_delete_rows.tombstones, 1);
+            assert_eq!(preview.would_delete_rows.total, 2);
+
+            let preview_ids = preview
+                .candidate_ids
+                .clone()
+                .expect("preview candidate IDs");
+            let preview_review_ids = preview_ids.sync_tombstone_review_ids.clone();
+            let preview_tombstone_ids = preview_ids.sync_tombstone_ids.clone();
+            let payload = f5h3b1b_payload_from_preview(preview);
+            let result =
+                synthetic_cleanup_commit::run_commit(&mut conn, payload, f5h3b0d_now(), None).await;
+
+            let eligible_review = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstone_reviews",
+                "review_id",
+                "f5h-seeded-proof-review-eligible",
+            )
+            .await;
+            let eligible_tombstone = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstones",
+                "tombstone_id",
+                "f5h-seeded-proof-tomb-eligible",
+            )
+            .await;
+            let non_synthetic_tombstone = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstones",
+                "tombstone_id",
+                "f5h-seeded-proof-tomb-lookalike",
+            )
+            .await;
+            let prefix_only_review = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstone_reviews",
+                "review_id",
+                "f5h-seeded-proof-review-prefix-only",
+            )
+            .await;
+            let prefix_only_tombstone = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstones",
+                "tombstone_id",
+                "f5h-seeded-proof-tomb-prefix-only",
+            )
+            .await;
+            let pending_review = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstone_reviews",
+                "review_id",
+                "f5h-seeded-proof-review-pending",
+            )
+            .await;
+            let restored_tombstone = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstones",
+                "tombstone_id",
+                "f5h-seeded-proof-tomb-restored",
+            )
+            .await;
+            let protected_tombstone = f5h3b1b_row_count(
+                &mut conn,
+                "sync_tombstones",
+                "tombstone_id",
+                "f5h-seeded-proof-tomb-protected",
+            )
+            .await;
+            let audit_count = f5h3b1b_maintenance_count(&mut conn).await;
+            let audit_json = f5h3b1b_last_audit_result_json(&mut conn).await;
+            (
+                preview_review_ids,
+                preview_tombstone_ids,
+                result,
+                eligible_review,
+                eligible_tombstone,
+                non_synthetic_tombstone,
+                prefix_only_review,
+                prefix_only_tombstone,
+                pending_review,
+                restored_tombstone,
+                protected_tombstone,
+                audit_count,
+                audit_json,
+            )
+        });
+
+        assert_eq!(
+            preview_review_ids,
+            vec!["f5h-seeded-proof-review-eligible".to_string()]
+        );
+        assert_eq!(
+            preview_tombstone_ids,
+            vec!["f5h-seeded-proof-tomb-eligible".to_string()]
+        );
+        assert!(result.ok, "blockers={:?}", result.blockers);
+        assert_eq!(result.status, "committed");
+        assert_eq!(
+            result.predicate_version,
+            "h2o.studio.sync.synthetic-marker.v1"
+        );
+        assert_eq!(result.counts.reviews_deleted, 1);
+        assert_eq!(result.counts.tombstones_deleted, 1);
+        assert_eq!(result.counts.total_deleted, 2);
+        assert!(result.audit.recorded);
+        assert!(result.actions.deleted_rows);
+        assert!(result.actions.mutated_rows);
+        assert_eq!(eligible_review, 0);
+        assert_eq!(eligible_tombstone, 0);
+        assert_eq!(non_synthetic_tombstone, 1);
+        assert_eq!(prefix_only_review, 1);
+        assert_eq!(prefix_only_tombstone, 1);
+        assert_eq!(pending_review, 1);
+        assert_eq!(restored_tombstone, 1);
+        assert_eq!(protected_tombstone, 1);
+        assert_eq!(audit_count, 1);
+
+        let response_json = serde_json::to_string(&result).unwrap();
+        for raw_id in [
+            "f5h-seeded-proof-review-eligible",
+            "f5h-seeded-proof-tomb-eligible",
+            "f5h-seeded-proof-tomb-lookalike",
+            "f5h-seeded-proof-review-prefix-only",
+            "f5h-seeded-proof-tomb-prefix-only",
+            "f5h-seeded-proof-review-pending",
+            "f5h-seeded-proof-tomb-restored",
+            "f5h-seeded-proof-tomb-protected",
+        ] {
+            assert!(!response_json.contains(raw_id));
+            assert!(!audit_json.contains(raw_id));
+        }
+        assert!(audit_json.contains("reviewIdsSha256"));
+        assert!(audit_json.contains("tombstoneIdsSha256"));
+    }
+
+    #[test]
     fn f5h3b1b_wrong_preview_token_blocks_before_transaction() {
         let (result, audit_count, review_count): (
             synthetic_cleanup_commit::CleanupSyntheticCommitResult,
