@@ -711,9 +711,29 @@
 
   function DOM_extractSidebarChatTitle(anchor, fallback = '') {
     if (!(anchor instanceof HTMLElement)) return UTIL_normText(fallback).slice(0, 80);
-    const trunc = anchor.querySelector?.(SEL.sidebarTruncate);
-    const truncText = UTIL_normText(trunc?.textContent || '');
-    if (truncText) return UI_cleanSurfaceChatTitle(truncText).slice(0, 80);
+    const textFromNode = (root) => {
+      if (!(root instanceof HTMLElement)) return '';
+      const walker = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.closest?.('button,[role="button"],svg,[aria-hidden="true"],[data-trailing-button]')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      const parts = [];
+      let node;
+      while ((node = walker.nextNode())) parts.push(node.nodeValue || '');
+      return UTIL_normText(parts.join(' '));
+    };
+
+    const truncs = [...anchor.querySelectorAll?.(SEL.sidebarTruncate) || []]
+      .map((node) => UI_cleanSurfaceChatTitle(textFromNode(node)).slice(0, 120))
+      .filter(Boolean);
+    const bestTrunc = truncs
+      .filter((text) => !UI_isNoisySurfaceChatTitle(text))
+      .sort((a, b) => a.length - b.length)[0] || truncs[0] || '';
+    if (bestTrunc) return bestTrunc.slice(0, 80);
 
     const aria = UTIL_normText(anchor.getAttribute('aria-label') || '');
     if (aria) return UI_cleanSurfaceChatTitle(aria).slice(0, 80);
@@ -2930,6 +2950,15 @@ ${CROW}[aria-current="true"]{
     return chatTitle && projectName ? `${chatTitle} - ${projectName}` : text;
   }
 
+  function UI_isNoisySurfaceChatTitle(raw) {
+    const text = UTIL_normText(raw || '');
+    if (!text) return true;
+    const actionHits = (text.match(/\b(?:Open|Rename|Delete|Share|Archive|Copy|More|Options|Color|Studio)\b/gi) || []).length;
+    const metadataHits = (text.match(/\b(?:answers?|Last edited|Today|Yesterday)\b/gi) || []).length;
+    const dateHits = (text.match(/\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b/g) || []).length;
+    return actionHits >= 2 || metadataHits + dateHits >= 3;
+  }
+
   function UI_findExistingPrimaryIconSlot(rowEl) {
     const owned = rowEl.querySelector?.(UTIL_selScoped(UI_FSECTION_ICON_SLOT));
     if (owned) return owned;
@@ -3055,9 +3084,37 @@ ${CROW}[aria-current="true"]{
     btn.setAttribute('aria-label', label || 'More actions');
     btn.setAttribute('aria-haspopup', 'menu');
     btn.title = label || 'More actions';
+    btn.disabled = false;
+    btn.removeAttribute('disabled');
+    btn.tabIndex = 0;
     if (token) btn.setAttribute(ATTR_CGXUI, token);
     btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    btn.setAttribute('data-h2o-folder-action-button', '1');
     btn.innerHTML = FRAG_SVG_MORE;
+    return btn;
+  }
+
+  function UI_bindFolderMoreButton(btn, onOpen) {
+    if (!(btn instanceof HTMLElement) || typeof onOpen !== 'function') return btn;
+    let lastOpenAt = 0;
+    const stop = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    };
+    const open = (event) => {
+      stop(event);
+      const now = Date.now();
+      if (now - lastOpenAt < 120) return;
+      lastOpenAt = now;
+      onOpen(event);
+    };
+    btn.addEventListener('pointerdown', stop, true);
+    btn.addEventListener('mousedown', stop, true);
+    btn.addEventListener('click', open, true);
+    btn.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') open(event);
+    };
     return btn;
   }
 
@@ -3453,7 +3510,7 @@ function ROUTE_clearPageRoute_LOCAL() {
     };
 
     const makeFolderRow = (text, iconSvg, onClick, opts = {}) => {
-      const row = UI_makeRowShell(tplDiv, tplA, FALLBACK_ROW_CLASS, 'a');
+      const row = UI_makeRowShell(tplDiv, tplA, FALLBACK_ROW_CLASS, 'div');
       UI_setRowText(row, text);
       UI_injectIcon(row, iconSvg, { color: opts.color });
       return UI_wireAsButton(row, onClick);
@@ -3646,11 +3703,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           row.setAttribute('data-cgxui-folder-id', folder.id);
           renderedFolderRows.push({ row, isActiveFolder });
 
-          const more = UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE);
-
-          more.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+          const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
             UI_openFolderPop(more, [
               { type: 'title', label: 'Folder actions' },
               UI_colorGridItem('Color', folderColor, (color) => {
@@ -3734,7 +3787,7 @@ function ROUTE_clearPageRoute_LOCAL() {
                 }
               }
             ]);
-          };
+          });
 
           row.appendChild(more);
 
@@ -4734,6 +4787,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const row = D.createElement('a');
     row.href = item.href;
     row.setAttribute(ATTR_CGXUI_STATE, 'row');
+    row.setAttribute('data-h2o-folder-card', '1');
+    row.setAttribute('data-h2o-folder-chat-id', String(item.chatId || ''));
 
     const body = D.createElement('div');
     body.style.minWidth = '0';
@@ -4760,6 +4815,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   function UI_appendInShellChatRow(list, item) {
     const li = D.createElement('li');
     li.setAttribute(ATTR_CGXUI_STATE, 'chat-item');
+    li.setAttribute('data-h2o-folder-card', '1');
+    li.setAttribute('data-h2o-folder-chat-id', String(item.chatId || ''));
 
     const row = D.createElement('a');
     row.href = item.href;
@@ -4887,13 +4944,21 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         .map(([href]) => href);
     }
 
-    hrefs = [...new Set(hrefs.map((href) => String(href || '').trim()).filter(Boolean))];
+    const seenChatKeys = new Set();
+    hrefs = hrefs.map((href) => String(href || '').trim()).filter(Boolean).filter((href) => {
+      const chatId = DOM_parseChatIdFromHref(href);
+      const key = chatId ? `chat:${chatId}` : `href:${href}`;
+      if (seenChatKeys.has(key)) return false;
+      seenChatKeys.add(key);
+      return true;
+    });
     const chats = hrefs.map((href) => {
       const chatId = DOM_parseChatIdFromHref(href);
+      const rawTitle = DOM_findChatTitleInSidebarByHref(href) || DOM_getChatTitleFromSidebar(href) || chatId || href;
       return {
         href,
         chatId,
-        title: DOM_findChatTitleInSidebarByHref(href) || DOM_getChatTitleFromSidebar(href) || chatId || href,
+        title: UI_isNoisySurfaceChatTitle(rawTitle) ? (chatId || href) : rawTitle,
       };
     });
 
@@ -4927,6 +4992,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         UI_openFolderAppearanceEditor(anchor, folder, () => UI_openFolderPanel(folderId));
       },
     });
+    list.textContent = '';
     chats.forEach((c) => UI_appendViewerChatRow(list, c));
 
     D.body.appendChild(box);
@@ -4950,6 +5016,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         UI_openFolderAppearanceEditor(anchor, folder, () => UI_openFolderViewer(folderId, { skipHistory: true }));
       },
     });
+    list.textContent = '';
     chats.forEach((c) => UI_appendInShellChatRow(list, c));
 
     if (UI_mountInShellPage(page)) ROUTE_commitPageRoute({ view: 'folder', id: folderId }, opts);
