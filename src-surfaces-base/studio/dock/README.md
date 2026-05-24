@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2B landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight inert tab placeholders register against the shell (`dock/tabs/*.tab.studio.js`). Next phase: Phase 2C — render real feature data from the existing read-only stores. No write-back yet.
+Status: Phases 0B through 2C-H landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tab placeholders register against the shell (`dock/tabs/*.tab.studio.js`), and the **Highlights tab now renders real read-only highlight data** via `H2O.Studio.store.highlights`. Next phase: Phase 2C-B/N/V/X/P — turn the remaining tabs (Bookmarks, Notes, Navigator, Context, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -535,3 +535,25 @@ Each tab module is a passive IIFE that calls `H2O.Studio.dock.registerTab(id, de
 - No `fullBundle.v2` extension.
 
 `ctx` passed to tab `render()` in Phase 2B is intentionally minimal (`{ surface, phase, chatId:null, externalId:null, snapshotId:null }`). Phase 2C will populate `chatId / externalId / snapshotId` from the active reader snapshot so feature stores can be queried per-chat.
+
+## Phase 2C-H — what landed (Highlights real read-only rendering)
+
+The first real-data Dock tab. `tabs/highlights.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `H2O.Studio.store.highlights.getAll()` (sync, returns the live in-memory cache; never mutated).
+- Flattens `blob.itemsByAnswer[answerId] = Item[]` into a single display list, newest first by `ts`.
+- Renders a compact row per item: color swatch (from the native palette name map), text snippet (`item.anchors.textQuote.exact`, normalized & truncated to 240 chars), and meta line (color name • answer id • timestamp).
+- Shows the empty state `No highlights found for this chat yet.` when there are 0 items.
+- Subscribes via `H2O.Studio.store.highlights.subscribe(fn)` and re-renders on changes; the returned unsubscribe is handed back to `dock-shell` via the render() return value (shell honors this at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Catches errors and falls back to `.wbDockError`.
+
+`studio.css` gains generic reusable Dock list classes: `.wbDockList`, `.wbDockRow`, `.wbDockSwatch`, `.wbDockRowBody`, `.wbDockRowText`, `.wbDockMeta`, `.wbDockError`, `.wbDockLoading`. These are intentionally generic so the remaining Phase 2C tabs (Bookmarks/Notes/Navigator/Context/Capture) can reuse them without redefining styles.
+
+### What is still NOT in Phase 2C-H
+
+- No write-back. No `update` / `setForAnswer` / `removeForAnswer` / `saveNow` / `setCurrentColor` calls.
+- No highlight creation. No deletion. No color editing.
+- No Smart Highlight scoring.
+- No scroll-to-message integration (no safe per-message scroll helper is currently exposed to Studio).
+- No per-chat filtering yet — `ctx.chatId` is still `null`, so the tab shows all stored highlights across answer ids. Per-chat scoping arrives once the reader snapshot populates `ctx`.
+- No other tab implemented — Bookmarks/Notes/Navigator/Context/Capture/Attachments/Finder remain inert Phase 2B placeholders.

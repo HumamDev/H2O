@@ -7324,3 +7324,83 @@ body[data-route="reader"] #studioDock.wbDock--open {
 
 /* Reduced-motion: the JS scroll handler picks behavior:'auto' when the
    user prefers reduced motion, so no extra CSS rule is needed here. */
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Studio Dock Panel — generic read-only list styles (Phase 2C)
+ *
+ * Shared affordances for tab content that renders a flat scrollable
+ * list of items (Highlights first, others later). Class names are
+ * generic so future tabs (Bookmarks/Notes/Navigator/Context/Capture)
+ * can reuse them without redefining styles.
+ *
+ * Per-row swatch color comes from the inline CSS custom property
+ * --wb-dock-swatch-color set by the tab's render() function.
+ * ──────────────────────────────────────────────────────────────────── */
+.wbDockList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wbDockRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--wb-border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.wbDockSwatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: var(--wb-dock-swatch-color, #888);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.wbDockRowBody {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wbDockRowText {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--wb-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.wbDockMeta {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--wb-dim);
+  opacity: 0.85;
+}
+
+.wbDockError {
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 92, 92, 0.35);
+  background: rgba(255, 92, 92, 0.06);
+  color: var(--wb-text);
+}
+
+.wbDockLoading {
+  opacity: 0.6;
+  font-style: italic;
+  text-align: center;
+  padding: 24px 12px;
+}
