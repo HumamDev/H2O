@@ -29,6 +29,56 @@
       return Promise.reject(new Error('H2O.Studio.platform.' + name + ' unavailable (no adapter bound)'));
     };
   }
+  function inferenceUnavailableStatus() {
+    return {
+      ok: true,
+      available: false,
+      configured: false,
+      provider: null,
+      reason: 'provider-unavailable',
+      message: 'AI provider unavailable',
+      phase: '3d-a',
+      network: false,
+      adapter: current && current.name ? current.name : 'fallback',
+    };
+  }
+  function inferenceRunUnavailable(request) {
+    var req = (request && typeof request === 'object') ? request : {};
+    return Promise.resolve({
+      ok: false,
+      requestId: req.requestId || null,
+      action: req.action || null,
+      reason: 'provider-unavailable',
+      message: 'AI provider unavailable',
+      status: inferenceUnavailableStatus(),
+    });
+  }
+  function inferenceCancelUnavailable(requestId) {
+    return Promise.resolve({
+      ok: true,
+      requestId: requestId || null,
+      cancelled: false,
+      reason: 'provider-unavailable',
+      message: 'AI provider unavailable',
+    });
+  }
+  function inferenceSelfCheck() {
+    var status = inferenceUnavailableStatus();
+    return {
+      ok: true,
+      phase: status.phase,
+      available: status.available,
+      configured: status.configured,
+      provider: status.provider,
+      reason: status.reason,
+      message: status.message,
+      network: status.network,
+      adapter: status.adapter,
+      hasGetStatus: true,
+      hasRun: true,
+      hasCancel: true,
+    };
+  }
 
   /* Fallback adapter: present from the moment index.js loads so feature code
    * never sees `undefined` on the platform surface. Each method either no-ops
@@ -64,6 +114,14 @@
     files: { available: false },
     capture: { available: false },
     auth: { available: false },
+    inference: {
+      available: false,
+      phase: '3d-a',
+      getStatus: inferenceUnavailableStatus,
+      run: inferenceRunUnavailable,
+      cancel: inferenceCancelUnavailable,
+      selfCheck: inferenceSelfCheck,
+    },
     /* Phase 1b — one-shot text writes for actions like Studio Ribbon's
      * "Copy title". readText is intentionally not part of the contract
      * today; add it only when a feature genuinely needs paste support. */
@@ -93,6 +151,10 @@
     platform.files = current.files;
     platform.capture = current.capture;
     platform.auth = current.auth;
+    /* Phase 3d-A — passive AI inference contract. Defaults to unavailable
+     * and never performs network/provider work unless a future adapter
+     * explicitly replaces this surface. */
+    platform.inference = current.inference || fallback.inference;
     /* Phase 1b — clipboard contract. Defaults to the fallback rejecter
      * if the adapter doesn't expose its own clipboard. */
     platform.clipboard = current.clipboard || fallback.clipboard;
@@ -125,6 +187,14 @@
     var storageReady = !!(platform.storage && platform.storage.set && platform.storage.set !== fallback.storage.set);
     var messagingReady = !!(platform.messaging && platform.messaging.send && platform.messaging.send !== fallback.messaging.send);
     var selectorsLoaded = !!(H2O.Studio && H2O.Studio.SELECTORS && typeof H2O.Studio.SELECTORS === 'object');
+    var inferenceStatus = null;
+    try {
+      if (platform.inference && typeof platform.inference.getStatus === 'function') {
+        inferenceStatus = platform.inference.getStatus();
+      }
+    } catch (e) {
+      inferenceStatus = { available: false, reason: 'status-error', message: e && e.message ? e.message : String(e) };
+    }
 
     return {
       adapter: current.name,
@@ -136,6 +206,8 @@
       broadcastReady: broadcastReady,
       storageReady: storageReady,
       messagingReady: messagingReady,
+      inferenceReady: !!(inferenceStatus && inferenceStatus.available),
+      inferenceStatus: inferenceStatus,
       selectorsLoaded: selectorsLoaded,
       warnings: WARNINGS.slice(),
     };
@@ -152,6 +224,7 @@
     files: fallback.files,
     capture: fallback.capture,
     auth: fallback.auth,
+    inference: fallback.inference,
     /* Phase 1b — clipboard contract. Starts at the fallback rejecter and
      * is re-bound by registerAdapter when a real adapter is installed. */
     clipboard: fallback.clipboard,

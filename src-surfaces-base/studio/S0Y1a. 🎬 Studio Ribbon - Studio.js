@@ -99,13 +99,13 @@
       chatTypes: ['saved'],
       groups: [
         { id: 'extract', label: 'Extract', actions: [
-          { id: 'summarize',     label: 'Summarize' },
-          { id: 'extract-tasks', label: 'Extract tasks' },
-          { id: 'generate-tags', label: 'Generate tags' },
+          { id: 'summarize',     label: 'Summarize',     tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'extract-tasks', label: 'Extract tasks', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-a' },
         ] },
         { id: 'rewrite', label: 'Rewrite', actions: [
-          { id: 'rewrite-selection', label: 'Rewrite selected' },
-          { id: 'study-notes',       label: 'Create study notes' },
+          { id: 'rewrite-selection', label: 'Rewrite selected', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'study-notes',       label: 'Create study notes', tooltip: 'AI provider unavailable', phase: '3d-a' },
         ] },
       ],
     },
@@ -191,6 +191,75 @@
   function getRibbonBridge() {
     try { return (H2O && H2O.Studio && H2O.Studio.RibbonBridge) || null; }
     catch (_) { return null; }
+  }
+  function getInference() {
+    try {
+      const platform = getPlatform();
+      return (platform && platform.inference) || null;
+    } catch (_) { return null; }
+  }
+  function normalizeInferenceStatus(status) {
+    if (!status || typeof status !== 'object') {
+      return {
+        available: false,
+        configured: false,
+        reason: 'adapter-missing',
+        message: 'AI provider unavailable',
+      };
+    }
+    return {
+      available: status.available === true,
+      configured: status.configured === true,
+      provider: status.provider || null,
+      reason: status.reason || (status.available === true ? null : 'provider-unavailable'),
+      message: status.message || (status.available === true ? 'AI provider available' : 'AI provider unavailable'),
+      phase: status.phase || '3d-a',
+    };
+  }
+  function getInferenceStatus() {
+    const inference = getInference();
+    if (!inference || typeof inference.getStatus !== 'function') {
+      return normalizeInferenceStatus(null);
+    }
+    try {
+      const status = inference.getStatus();
+      if (status && typeof status.then === 'function') {
+        return {
+          available: false,
+          configured: false,
+          reason: 'status-pending',
+          message: 'AI provider unavailable',
+          phase: '3d-a',
+        };
+      }
+      return normalizeInferenceStatus(status);
+    } catch (_) {
+      return {
+        available: false,
+        configured: false,
+        reason: 'status-error',
+        message: 'AI provider unavailable',
+        phase: '3d-a',
+      };
+    }
+  }
+  function getAiUnavailableMessage() {
+    const status = getInferenceStatus();
+    return status.message || 'AI provider unavailable';
+  }
+  function makePassiveAiHandler(actionId) {
+    return {
+      actionId: actionId,
+      isEnabled: function () {
+        /* Phase 3d-A only installs the passive contract and disabled UI.
+         * No AI requests are allowed from ribbon actions in this slice. */
+        return false;
+      },
+      disabledTooltip: getAiUnavailableMessage,
+      onClick: function (ctx, setStatus) {
+        setStatus(getAiUnavailableMessage(), { persist: true });
+      },
+    };
   }
 
   /* ── Phase 1b — wired action handlers ────────────────────────────────
@@ -629,6 +698,15 @@
       },
     },
   };
+  [
+    'summarize',
+    'extract-tasks',
+    'generate-tags',
+    'rewrite-selection',
+    'study-notes',
+  ].forEach(function (actionId) {
+    ACTION_HANDLERS[actionId] = makePassiveAiHandler(actionId);
+  });
 
   /* ── Phase 2b — message-level format actions ───────────────────────────
    * Seven actions wired against the edit-overlay subsystem:
@@ -1117,7 +1195,7 @@
              * entry specifies its own tooltip (e.g. "No public Tags/Labels
              * API yet"), use that instead of the generic placeholder. */
             tooltip: action.tooltip || 'Coming soon',
-            phase: '1a',
+            phase: action.phase || '1a',
           });
         });
       });
@@ -1230,6 +1308,11 @@
             try { enabled = !!handler.isEnabled(ctx); }
             catch (_) { enabled = false; }
           }
+          let disabledTooltip = action.tooltip || '';
+          if (!enabled && handler && typeof handler.disabledTooltip === 'function') {
+            try { disabledTooltip = handler.disabledTooltip(ctx) || disabledTooltip; }
+            catch (_) { /* keep catalogue tooltip */ }
+          }
           const attrs = {
             type: 'button',
             class: 'wbRibbonAction',
@@ -1240,7 +1323,7 @@
             /* Drop the "Coming soon" placeholder tooltip when the action is wired. */
             attrs.title = '';
           } else {
-            attrs.title = action.tooltip || '';
+            attrs.title = disabledTooltip;
             attrs.disabled = 'disabled';
           }
           const btn = el('button', attrs, action.label);
