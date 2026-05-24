@@ -765,7 +765,10 @@ F6 final validation harness is acceptable only if:
 - F6 final validation harness: Debug-only in-app runner for the public F6
   conflict queue API path.
 - F6.7: Chrome conflict store scaffold if needed.
-- F7: First gated bidirectional prototype.
+- F7.0: Bidirectional preview safety model docs only. See
+  `docs/systems/sync/bidirectional-preview-f7.md`.
+- F7.1a: Inspect available folder metadata, digest, sequence, peer mirror, and
+  watermark inputs before any bidirectional preview implementation.
 
 ## 25. Recommendation
 
@@ -773,3 +776,8 @@ The next implementation after F6.6 should remain conservative. F6.7 may add a
 Chrome conflict store scaffold only if review queue parity is needed, but it
 must not merge, apply, delete, or start bidirectional sync. Do not touch
 FolderParity renderer work from the other lane.
+
+After F6 final validation, F7 begins with the docs-only safety model in
+`docs/systems/sync/bidirectional-preview-f7.md`. The next F7 step is F7.1a
+inspection only, not bidirectional preview implementation, schema stamping, or
+runtime sync behavior.
