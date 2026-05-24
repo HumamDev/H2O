@@ -348,14 +348,13 @@ H2O.Studio.store.conflicts.countBySeverity()
 H2O.Studio.store.conflicts.validateConflict(record)
 ```
 
-Explicitly defer write/ingest APIs:
+F6.1b explicitly deferred write/ingest APIs:
 
 - `createConflict()`
 - `upsertConflictSighting()`
 - `ingestConflictCandidates()`
 - `markIgnored()`
 - `markResolved()`
-- `previewResolution()`
 
 Avoid dangerous or premature APIs entirely:
 
@@ -364,6 +363,13 @@ Avoid dangerous or premature APIs entirely:
 - `autoMerge()`
 - `forceRemoteWins()`
 - `deleteLocal()`
+
+Later F6 phases add only the explicitly planned manual surfaces:
+`ingestConflictCandidates()` in F6.4, decision-only methods in F6.5, and
+`previewResolution(conflictId, options)` in F6.6. `previewResolution()` is a
+read-only diagnostic method. It returns option labels and blockers only; it
+does not call the F6.5 decision methods and does not mutate conflict rows or app
+entities.
 
 ## 16. F6.1b.1 Read-Only Store Registration
 
@@ -656,6 +662,35 @@ F6.5 is acceptable only if:
   calls the decision APIs.
 - No merge, apply, delete, bidirectional sync, or public UI behavior is added.
 
+F6.6 is acceptable only if:
+
+- `H2O.Studio.store.conflicts.previewResolution(conflictId, options)` exists as
+  a Desktop-only read-only method.
+- The method reads existing redacted conflict row data and returns only
+  conflict kind, entity kind, status, classification, severity, presence flags,
+  option labels, blockers, and warnings.
+- `includeSensitive: true` is ignored with a warning; raw summaries, peer IDs,
+  record IDs, names, titles, prompts, answers, transcripts, metadata blobs, and
+  dedupe keys are never returned.
+- `refreshLocalState: true` does not perform deep local reads in F6.6 and
+  returns a code-level warning such as `local-refresh-not-implemented`.
+- `pending` and `accepted-later` conflicts may return preview labels.
+  Terminal statuses `ignored`, `rejected`, `resolved`, and `superseded` return
+  the `conflict-status-terminal` blocker and are not reopened.
+- `delete-vs-edit-reference` and
+  `delete-vs-edit-owned-by-f5` return the `f5-owned-delete-review` label and
+  the `delete-vs-edit-owned-by-f5` blocker. F6 does not duplicate F5 tombstone
+  review behavior.
+- Supported preview labels are explanation-only:
+  `local-wins-preview`, `remote-wins-preview`, `manual-merge-preview`,
+  `ignore-preview`, `reject-preview`, `accepted-later-preview`,
+  `f5-owned-delete-review`, and `unsupported-resolution`.
+- The method does not call `markIgnored`, `markRejected`, `markAcceptedLater`,
+  or `markResolved`.
+- No SQL `INSERT`, `UPDATE`, or `DELETE`, entity mutation, import/export/sync
+  mutation, F5 apply/cleanup, merge, apply, bidirectional sync, Chrome, UI, or
+  settings behavior is added.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -685,7 +720,7 @@ F6.5 is acceptable only if:
 
 ## 25. Recommendation
 
-The next implementation after F6.5 should remain conservative. F6.6 may add
-`previewResolution()` diagnostics only, but it must not merge, apply, delete, or
-start bidirectional sync. Do not touch FolderParity renderer work from the other
-lane.
+The next implementation after F6.6 should remain conservative. F6.7 may add a
+Chrome conflict store scaffold only if review queue parity is needed, but it
+must not merge, apply, delete, or start bidirectional sync. Do not touch
+FolderParity renderer work from the other lane.

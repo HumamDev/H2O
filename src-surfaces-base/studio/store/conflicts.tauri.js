@@ -10,8 +10,9 @@
  * already present in SQLite. F6.4a adds manual candidate ingest validation as
  * dry-run only. F6.4b adds explicit manual ingestion through a narrow Rust
  * transaction command. F6.5 adds decision-only actions for existing conflict
- * rows. There is still no automatic candidate ingestion, merge, apply, entity
- * mutation, delete, or analyzer/runner persistence.
+ * rows. F6.6 adds read-only resolution previews as labels only. There is still
+ * no automatic candidate ingestion, merge, apply, entity mutation, delete, or
+ * analyzer/runner persistence.
  */
 (function (global) {
   'use strict';
@@ -42,6 +43,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.sync-conflict.diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.sync-conflict-ingest.v1';
   var DECISION_SCHEMA = 'h2o.studio.sync-conflict-decision.v1';
+  var RESOLUTION_PREVIEW_SCHEMA = 'h2o.studio.sync-conflict-resolution-preview.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 50;
@@ -117,6 +119,20 @@
     'resolved-duplicate': true,
     'resolved-owned-by-f5': true,
     'blocked-unsupported': true,
+  });
+  var TERMINAL_STATUSES = Object.freeze({
+    ignored: true,
+    rejected: true,
+    resolved: true,
+    superseded: true,
+  });
+  var RESOLUTION_PREVIEW_KINDS = Object.freeze({
+    'same-record-divergent-metadata': true,
+    'local-newer-than-remote': true,
+    'remote-newer-than-local': true,
+    'folder-membership-divergence': true,
+    'unsupported-merge-kind': true,
+    'delete-vs-edit-reference': true,
   });
   var SUSPICIOUS_CANDIDATE_FIELDS = Object.freeze({
     rawjson: true,
@@ -1090,9 +1106,154 @@
     });
   }
 
+  function previewBase(conflictFound, warnings) {
+    return {
+      schema: RESOLUTION_PREVIEW_SCHEMA,
+      ok: conflictFound === true,
+      conflictFound: conflictFound === true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      dryRunOnly: true,
+      wouldMutateOnApply: false,
+      conflictKind: null,
+      entityKind: null,
+      status: null,
+      classification: null,
+      severity: null,
+      evidence: {
+        localSummaryPresent: false,
+        remoteSummaryPresent: false,
+        localUpdatedAtPresent: false,
+        remoteUpdatedAtPresent: false,
+        warningCount: 0,
+      },
+      options: [],
+      recommendedAction: null,
+      blockers: [],
+      warnings: Array.isArray(warnings) ? warnings : [],
+    };
+  }
+
+  function normalizeCodeList(items) {
+    if (!Array.isArray(items)) return [];
+    return items.map(function (item) {
+      return typeof item === 'string' ? warning(item) : warning(item && item.code);
+    }).filter(function (item) { return !!item.code; });
+  }
+
+  function optionLabel(action, available, wouldRequireFutureApply, blockers) {
+    return {
+      action: action,
+      available: available === true,
+      wouldRequireFutureApply: wouldRequireFutureApply === true,
+      implemented: false,
+      blockers: normalizeCodeList(blockers || []),
+    };
+  }
+
+  function previewWarnings(options) {
+    var opts = options || {};
+    var warnings = [];
+    if (opts.includeSensitive === true) warnings.push(warning('include-sensitive-ignored'));
+    if (opts.refreshLocalState === true) warnings.push(warning('local-refresh-not-implemented'));
+    return warnings;
+  }
+
+  function previewFailure(code, warnings) {
+    var out = previewBase(false, warnings);
+    out.blockers = [warning(code || 'conflict-not-found')];
+    return out;
+  }
+
+  function summaryBlockers(conflict) {
+    var blockers = [];
+    if (!conflict || !conflict.localSummary || conflict.localSummary.present !== true) {
+      blockers.push(warning('missing-local-summary'));
+    }
+    if (!conflict || !conflict.remoteSummary || conflict.remoteSummary.present !== true) {
+      blockers.push(warning('missing-remote-summary'));
+    }
+    return blockers;
+  }
+
+  function populatePreviewFromConflict(out, conflict) {
+    out.ok = true;
+    out.conflictFound = true;
+    out.conflictKind = cleanString(conflict && conflict.conflictKind) || null;
+    out.entityKind = cleanString(conflict && conflict.entityKind) || null;
+    out.status = cleanString(conflict && conflict.status) || null;
+    out.classification = cleanString(conflict && conflict.classification) || null;
+    out.severity = cleanString(conflict && conflict.severity) || null;
+    out.evidence = {
+      localSummaryPresent: !!(conflict && conflict.localSummary && conflict.localSummary.present === true),
+      remoteSummaryPresent: !!(conflict && conflict.remoteSummary && conflict.remoteSummary.present === true),
+      localUpdatedAtPresent: !!(conflict && conflict.localUpdatedAtPresent),
+      remoteUpdatedAtPresent: !!(conflict && conflict.remoteUpdatedAtPresent),
+      warningCount: Number(conflict && conflict.warningCount) || 0,
+    };
+    return out;
+  }
+
+  function buildPreviewOptions(out, conflict) {
+    var kind = cleanString(out.conflictKind);
+    var classification = cleanString(out.classification);
+    var status = cleanString(out.status);
+    if (hasOwn(TERMINAL_STATUSES, status)) {
+      out.blockers.push(warning('conflict-status-terminal'));
+      return out;
+    }
+    if (status !== 'pending' && status !== 'accepted-later') {
+      out.blockers.push(warning('unsupported-conflict-status'));
+      return out;
+    }
+    if (kind === 'delete-vs-edit-reference' || classification === 'delete-vs-edit-owned-by-f5') {
+      out.blockers.push(warning('delete-vs-edit-owned-by-f5'));
+      out.options.push(optionLabel('f5-owned-delete-review', true, false, []));
+      return out;
+    }
+    if (!hasOwn(RESOLUTION_PREVIEW_KINDS, kind) || kind === 'unsupported-merge-kind') {
+      out.blockers.push(warning('unsupported-conflict-kind'));
+      out.blockers.push(warning('resolution-not-implemented'));
+      out.options.push(optionLabel('unsupported-resolution', false, false, out.blockers));
+      return out;
+    }
+
+    var evidenceBlockers = summaryBlockers(conflict);
+    out.blockers = out.blockers.concat(evidenceBlockers);
+    out.options.push(optionLabel('local-wins-preview', evidenceBlockers.length === 0, true, evidenceBlockers));
+    out.options.push(optionLabel('remote-wins-preview', evidenceBlockers.length === 0, true, evidenceBlockers));
+    out.options.push(optionLabel('manual-merge-preview', evidenceBlockers.length === 0, true, evidenceBlockers));
+    out.options.push(optionLabel('ignore-preview', true, false, []));
+    out.options.push(optionLabel('reject-preview', true, false, []));
+    if (status === 'pending') {
+      out.options.push(optionLabel('accepted-later-preview', true, false, []));
+    }
+    return out;
+  }
+
+  function previewResolution(conflictId, options) {
+    var id = cleanString(conflictId);
+    var warnings = previewWarnings(options);
+    if (!validConflictId(id)) return Promise.resolve(previewFailure('invalid-conflict-id', warnings));
+    return getConflict(id).then(function (result) {
+      if (!result || result.ok !== true) {
+        var blockers = result && Array.isArray(result.blockers) ? result.blockers : [];
+        return previewFailure((blockers[0] && blockers[0].code) || 'sync-conflicts-get-failed', warnings);
+      }
+      if (result.found !== true || !result.conflict) {
+        return previewFailure('conflict-not-found', warnings);
+      }
+      var out = populatePreviewFromConflict(previewBase(true, warnings), result.conflict);
+      return buildPreviewOptions(out, result.conflict);
+    }).catch(function (e) {
+      recordError('previewResolution', e);
+      return previewFailure('sync-conflict-resolution-preview-failed', warnings);
+    });
+  }
+
   var api = {
     __installed: true,
-    __version: '0.1.3-f6.5',
+    __version: '0.1.4-f6.6',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -1108,12 +1269,14 @@
     markRejected: markRejected,
     markAcceptedLater: markAcceptedLater,
     markResolved: markResolved,
+    previewResolution: previewResolution,
     constants: Object.freeze({
       schema: CONFLICT_SCHEMA,
       candidateSchema: CONFLICT_CANDIDATE_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
+      resolutionPreviewSchema: RESOLUTION_PREVIEW_SCHEMA,
       table: TABLE,
       statuses: Object.freeze(Object.keys(STATUSES).slice()),
       severities: Object.freeze(Object.keys(SEVERITIES).slice()),
@@ -1123,6 +1286,7 @@
       ingestSources: Object.freeze(Object.keys(INGEST_SOURCES).slice()),
       candidateSources: Object.freeze(Object.keys(CANDIDATE_SOURCES).slice()),
       resolvedDecisions: Object.freeze(Object.keys(RESOLVED_DECISIONS).slice()),
+      resolutionPreviewKinds: Object.freeze(Object.keys(RESOLUTION_PREVIEW_KINDS).slice()),
       defaultListLimit: DEFAULT_LIST_LIMIT,
       maxListLimit: MAX_LIST_LIMIT,
     }),
