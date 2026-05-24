@@ -45,6 +45,8 @@
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
   const COALESCE_MS = 350;
   const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
+  const FOLDER_METADATA_OPERATION_RESULT_MAX = 8;
 
   // Native Library state-change events the module fans into the outbound
   // broadcast. New events can be added without code changes elsewhere — Studio
@@ -121,6 +123,10 @@
     lastFolderCatalogSource: '',
     lastFolderCatalogNamesSample: [],
     lastFolderCatalogChecksum: '',
+    pendingFolderMetadataOperationResults: [],
+    lastFolderMetadataOperationResultAt: 0,
+    lastFolderMetadataOperationResultCount: 0,
+    lastFolderMetadataOperationResultRequestIds: [],
     folderBridgeReadyBroadcasted: false,
     lastFolderBridgeReadyBroadcastAt: 0,
     lastFolderBridgeReadyBroadcastReason: '',
@@ -553,10 +559,52 @@
     }
   }
 
+  function normalizeFolderMetadataOperationResult(result) {
+    const src = result && typeof result === 'object' ? result : {};
+    const requestId = String(src.requestId || '').trim();
+    const requestMode = String(src.requestMode || '').trim();
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId,
+      requestMode,
+      ok: src.ok === true,
+      applied: src.applied === true,
+      noMutation: src.noMutation !== false,
+      readOnly: src.readOnly === true,
+      canApply: src.canApply === true,
+      operationType: String(src.operationType || src.operation?.operationType || '').trim(),
+      folderId: String(src.folderId || src.operation?.folderId || '').trim(),
+      before: src.before && typeof src.before === 'object' ? src.before : null,
+      after: Object.prototype.hasOwnProperty.call(src, 'after') ? src.after : null,
+      blockers: Array.isArray(src.blockers) ? src.blockers.slice(0, 12) : [],
+      warnings: Array.isArray(src.warnings) ? src.warnings.slice(0, 12) : [],
+      error: src.error ? String(src.error) : '',
+      t: Number(src.t || Date.now()) || Date.now(),
+    };
+  }
+
+  function queueFolderMetadataOperationResult(result) {
+    const normalized = normalizeFolderMetadataOperationResult(result);
+    if (!normalized.requestId) normalized.blockers.push({ code: 'missing-request-id' });
+    state.pendingFolderMetadataOperationResults.push(normalized);
+    if (state.pendingFolderMetadataOperationResults.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
+      state.pendingFolderMetadataOperationResults.splice(0, state.pendingFolderMetadataOperationResults.length - FOLDER_METADATA_OPERATION_RESULT_MAX);
+    }
+    state.lastFolderMetadataOperationResultAt = Date.now();
+    state.lastFolderMetadataOperationResultCount += 1;
+    state.lastFolderMetadataOperationResultRequestIds = state.pendingFolderMetadataOperationResults
+      .map((item) => String(item.requestId || '').trim())
+      .filter(Boolean)
+      .slice(-FOLDER_METADATA_OPERATION_RESULT_MAX);
+    broadcastImmediately('folder-metadata-operation-result');
+    return normalized;
+  }
+
   // ── Outbound: native → Studio ──────────────────────────────────────────────
   function broadcastNow() {
     const reasons = Array.from(state.pendingReasons);
     state.pendingReasons.clear();
+    const folderMetadataOperationResults = state.pendingFolderMetadataOperationResults.splice(0, FOLDER_METADATA_OPERATION_RESULT_MAX);
     const body = {
       ts: Date.now(),
       surface: 'native',
@@ -574,6 +622,9 @@
       // Studio's existing folder-state key. This is read-only on native.
       folderState: snapshotFolderState(),
     };
+    if (folderMetadataOperationResults.length) {
+      body.folderMetadataOperationResults = folderMetadataOperationResults;
+    }
     state.lastOutboundReasons = reasons.slice(0, 24);
     state.lastOutboundPayloadKeys = Object.keys(body).slice(0, 24);
     if (hasChromeStorage()) {
@@ -651,6 +702,7 @@
     },
     pingStudio(reason) { scheduleBroadcast(reason || 'manual.ping'); broadcastNow(); },
     flushFolderState(reason) { broadcastImmediately(reason || 'manual.folder-state'); return true; },
+    queueFolderMetadataOperationResult,
     diagnose() {
       return {
         surface: 'native',
@@ -731,6 +783,14 @@
             bridgeReadyBroadcasted: !!state.folderBridgeReadyBroadcasted,
             bridgeReadyBroadcastAt: state.lastFolderBridgeReadyBroadcastAt,
             bridgeReadyBroadcastReason: state.lastFolderBridgeReadyBroadcastReason,
+          },
+          folderMetadataOperations: {
+            resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+            pendingResultCount: state.pendingFolderMetadataOperationResults.length,
+            lastResultAt: state.lastFolderMetadataOperationResultAt,
+            lastResultCount: state.lastFolderMetadataOperationResultCount,
+            lastRequestIds: state.lastFolderMetadataOperationResultRequestIds.slice(),
+            maxResultsPerBroadcast: FOLDER_METADATA_OPERATION_RESULT_MAX,
           },
         },
         subscribers: state.subscribers.size,

@@ -42,6 +42,10 @@
   // loop-suppression filtering is needed beyond the dual-event dedupe below.
   const COALESCE_MS = 220;
   const DUAL_EVENT_WINDOW_MS = 50;
+  const FOLDER_METADATA_OPERATION_REQUEST_SCHEMA = 'h2o.folder-metadata-operation-request.v1';
+  const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
+  const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
+  const FOLDER_METADATA_REQUEST_MODES = new Set(['preview', 'apply']);
 
   // Reason hints carried in the Studio broadcast payload. We don't fail if a
   // hint is missing — the catch-all (refresh everything) runs whenever the
@@ -61,6 +65,11 @@
     lastEventName: '',
     runs: 0,
     lastRunAt: 0,
+    folderMetadataRequestsSeen: 0,
+    folderMetadataResultsPublished: 0,
+    lastFolderMetadataRequestAt: 0,
+    lastFolderMetadataRequestIds: [],
+    lastFolderMetadataResultBlockers: [],
   };
 
   function dualDedupe(eventName, detail) {
@@ -86,6 +95,150 @@
       category: CATEGORY_REASONS.has(r),
       unknown: !FOLDER_REASONS.has(r) && !CATEGORY_REASONS.has(r),
     };
+  }
+
+  function addCode(list, code) {
+    const normalized = String(code || '').trim();
+    if (!normalized) return;
+    if (!list.some((entry) => entry && entry.code === normalized)) list.push({ code: normalized });
+  }
+
+  function resultBase(request, code = '') {
+    const req = request && typeof request === 'object' ? request : {};
+    const op = req.operation && typeof req.operation === 'object' ? req.operation : {};
+    const result = {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(req.requestId || '').trim(),
+      requestMode: String(req.requestMode || '').trim(),
+      ok: false,
+      applied: false,
+      noMutation: true,
+      operationType: String(op.operationType || '').trim(),
+      folderId: String(op.folderId || '').trim(),
+      before: null,
+      after: null,
+      blockers: [],
+      warnings: [],
+    };
+    addCode(result.blockers, code);
+    return result;
+  }
+
+  function wrapPreviewResult(request, preview) {
+    const src = preview && typeof preview === 'object' ? preview : {};
+    const result = {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(request?.requestId || '').trim(),
+      requestMode: String(request?.requestMode || 'preview').trim() || 'preview',
+      ok: Array.isArray(src.blockers) ? src.blockers.length === 0 : false,
+      applied: false,
+      noMutation: true,
+      readOnly: src.readOnly === true,
+      canApply: src.canApply === true,
+      operationType: String(src.operationType || request?.operation?.operationType || '').trim(),
+      folderId: String(src.folderId || request?.operation?.folderId || '').trim(),
+      before: src.before && typeof src.before === 'object' ? src.before : null,
+      after: Object.prototype.hasOwnProperty.call(src, 'after') ? src.after : null,
+      blockers: Array.isArray(src.blockers) ? src.blockers.slice(0, 12) : [],
+      warnings: Array.isArray(src.warnings) ? src.warnings.slice(0, 12) : [],
+    };
+    return result;
+  }
+
+  function wrapApplyResult(request, applied) {
+    const src = applied && typeof applied === 'object' ? applied : {};
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(request?.requestId || '').trim(),
+      requestMode: String(request?.requestMode || 'apply').trim() || 'apply',
+      ok: src.ok === true,
+      applied: src.applied === true,
+      noMutation: src.noMutation !== false,
+      operationType: String(src.operationType || request?.operation?.operationType || '').trim(),
+      folderId: String(src.folderId || request?.operation?.folderId || '').trim(),
+      before: src.before && typeof src.before === 'object' ? src.before : null,
+      after: Object.prototype.hasOwnProperty.call(src, 'after') ? src.after : null,
+      blockers: Array.isArray(src.blockers) ? src.blockers.slice(0, 12) : [],
+      warnings: Array.isArray(src.warnings) ? src.warnings.slice(0, 12) : [],
+    };
+  }
+
+  function publishFolderMetadataOperationResult(result) {
+    const sync = H2O.Library?.Sync;
+    if (!sync || typeof sync.queueFolderMetadataOperationResult !== 'function') {
+      state.lastFolderMetadataResultBlockers = ['native-result-broadcast-unavailable'];
+      err('folderMetadata.result.publish', new Error('native-result-broadcast-unavailable'));
+      return false;
+    }
+    const published = sync.queueFolderMetadataOperationResult(result);
+    state.folderMetadataResultsPublished += 1;
+    state.lastFolderMetadataResultBlockers = Array.isArray(published?.blockers)
+      ? published.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
+      : [];
+    return true;
+  }
+
+  function executeFolderMetadataOperationRequest(request) {
+    const req = request && typeof request === 'object' ? request : {};
+    let result = null;
+    try {
+      const mode = String(req.requestMode || '').trim();
+      const operation = req.operation && typeof req.operation === 'object' ? req.operation : null;
+      if (req.schema !== FOLDER_METADATA_OPERATION_REQUEST_SCHEMA) {
+        result = resultBase(req, 'invalid-request-schema');
+      } else if (!FOLDER_METADATA_REQUEST_MODES.has(mode)) {
+        result = resultBase(req, 'invalid-request-mode');
+      } else if (!operation || operation.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+        result = resultBase(req, 'invalid-folder-metadata-operation');
+      } else if (!H2O.folders || typeof H2O.folders.previewMetadataOperation !== 'function') {
+        result = resultBase(req, 'native-folder-owner-api-unavailable');
+      } else if (mode === 'preview') {
+        result = wrapPreviewResult(req, H2O.folders.previewMetadataOperation(operation));
+      } else if (mode === 'apply') {
+        if (typeof H2O.folders.applyMetadataOperation !== 'function') {
+          result = resultBase(req, 'native-folder-owner-api-unavailable');
+        } else {
+          result = wrapApplyResult(req, H2O.folders.applyMetadataOperation(operation));
+        }
+      }
+    } catch (e) {
+      result = resultBase(req, 'native-folder-owner-error');
+      result.error = String(e?.message || e || 'native-folder-owner-error');
+      err('folderMetadata.request.execute', e);
+    }
+    if (!result) result = resultBase(req, 'invalid-folder-metadata-operation');
+    publishFolderMetadataOperationResult(result);
+    return result;
+  }
+
+  function folderMetadataRequestsFromDetail(detail) {
+    const payload = detail?.payload && typeof detail.payload === 'object' ? detail.payload : null;
+    const nested = payload?.payload && typeof payload.payload === 'object' ? payload.payload : null;
+    const direct = detail && typeof detail === 'object' ? detail : null;
+    const sources = [
+      direct?.folderMetadataOperationRequests,
+      payload?.folderMetadataOperationRequests,
+      nested?.folderMetadataOperationRequests,
+    ];
+    const out = [];
+    for (const value of sources) {
+      if (Array.isArray(value)) out.push(...value);
+      else if (value && typeof value === 'object') out.push(value);
+    }
+    return out.filter(Boolean).slice(0, 8);
+  }
+
+  function handleFolderMetadataOperationRequests(detail) {
+    const requests = folderMetadataRequestsFromDetail(detail);
+    if (!requests.length) return [];
+    state.folderMetadataRequestsSeen += requests.length;
+    state.lastFolderMetadataRequestAt = Date.now();
+    state.lastFolderMetadataRequestIds = requests
+      .map((request) => String(request?.requestId || '').trim())
+      .filter(Boolean)
+      .slice(-8);
+    step('folderMetadata.requests', String(requests.length));
+    return requests.map(executeFolderMetadataOperationRequest);
   }
 
   function safeCall(label, fn) {
@@ -163,6 +316,7 @@
   function onSync(eventName, ev) {
     const detail = ev?.detail || {};
     if (dualDedupe(eventName, detail)) return;
+    handleFolderMetadataOperationRequests(detail);
     const reason = reasonOf(detail);
     scheduleRefresh([reason || 'change']);
     step('recv', eventName);
@@ -191,6 +345,17 @@
         runs: state.runs,
         lastRunAt: state.lastRunAt,
         lastDetailTs: state.lastDetailTs,
+        folderMetadataOperations: {
+          requestSchema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
+          resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          supportedModes: Array.from(FOLDER_METADATA_REQUEST_MODES),
+          requestsSeen: state.folderMetadataRequestsSeen,
+          resultsPublished: state.folderMetadataResultsPublished,
+          lastRequestAt: state.lastFolderMetadataRequestAt,
+          lastRequestIds: state.lastFolderMetadataRequestIds.slice(),
+          lastResultBlockers: state.lastFolderMetadataResultBlockers.slice(),
+          nativeOwnerApiAvailable: !!(H2O.folders && typeof H2O.folders.previewMetadataOperation === 'function'),
+        },
         steps: diag.steps.slice(-15),
         errors: diag.errors.slice(-10),
       };

@@ -63,6 +63,11 @@
   // Two separate keys so each side reacts to the OTHER side's broadcast
   // without re-firing its own (avoids self-feedback loops).
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
+  const FOLDER_METADATA_OPERATION_REQUEST_SCHEMA = 'h2o.folder-metadata-operation-request.v1';
+  const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
+  const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
+  const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
+  const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
 
   const state = {
     bound: false,
@@ -110,6 +115,15 @@
     lastStudioBroadcastReason: '',
     lastStudioBroadcastPayloadKeys: [],
     lastStudioBroadcastTransport: '',
+    pendingFolderMetadataRequests: new Map(),
+    lastFolderMetadataRequestAt: 0,
+    lastFolderMetadataRequestId: '',
+    lastFolderMetadataRequestMode: '',
+    lastFolderMetadataRequestStatus: '',
+    lastFolderMetadataResultAt: 0,
+    lastFolderMetadataResultId: '',
+    lastFolderMetadataResultStatus: '',
+    lastFolderMetadataResultBlockers: [],
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -460,6 +474,82 @@
     try { W.H2O?.events?.emit?.('library:native-broadcast-updated', detail); } catch {}
   }
 
+  function folderMetadataResultBase(requestId, requestMode, operation, code) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(requestId || '').trim(),
+      requestMode: String(requestMode || '').trim(),
+      ok: false,
+      applied: false,
+      noMutation: true,
+      operationType: String(op.operationType || '').trim(),
+      folderId: String(op.folderId || '').trim(),
+      before: null,
+      after: null,
+      blockers: code ? [{ code: String(code) }] : [],
+      warnings: [],
+    };
+  }
+
+  function folderMetadataRequestId() {
+    return `h2o-folder-op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function currentPlatformAdapter() {
+    try {
+      const env = W.H2O && W.H2O.Studio && W.H2O.Studio.platform && W.H2O.Studio.platform.env;
+      return String(env?.adapter || '');
+    } catch { return ''; }
+  }
+
+  function folderMetadataRequestTransportBlocker() {
+    const adapter = currentPlatformAdapter();
+    if (adapter === 'tauri') return 'native-owner-request-desktop-bridge-not-implemented';
+    if (!hasChromeStorage() && !getPlatformBroadcast()) return 'native-owner-broadcast-unavailable';
+    return '';
+  }
+
+  function settleFolderMetadataRequest(requestId, result) {
+    const id = String(requestId || '').trim();
+    if (!id) return false;
+    const pending = state.pendingFolderMetadataRequests.get(id);
+    if (!pending) return false;
+    try { W.clearTimeout(pending.timer); } catch {}
+    state.pendingFolderMetadataRequests.delete(id);
+    state.lastFolderMetadataResultAt = Date.now();
+    state.lastFolderMetadataResultId = id;
+    state.lastFolderMetadataResultStatus = result?.ok === true ? 'ok' : 'blocked';
+    state.lastFolderMetadataRequestStatus = result?.ok === true ? 'resolved' : 'blocked';
+    state.lastFolderMetadataResultBlockers = Array.isArray(result?.blockers)
+      ? result.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
+      : [];
+    pending.resolve(result);
+    return true;
+  }
+
+  function rememberFolderMetadataOperationResults(payload, reason = '') {
+    const results = Array.isArray(payload?.folderMetadataOperationResults)
+      ? payload.folderMetadataOperationResults
+      : [];
+    if (!results.length) return;
+    results.slice(0, 16).forEach((raw) => {
+      if (!raw || typeof raw !== 'object') return;
+      const result = {
+        ...raw,
+        schema: String(raw.schema || FOLDER_METADATA_OPERATION_RESULT_SCHEMA),
+        requestId: String(raw.requestId || '').trim(),
+      };
+      try {
+        W.dispatchEvent(new CustomEvent('evt:h2o:folder-metadata-operation-result', {
+          detail: { result, reason: String(reason || 'native-broadcast'), t: Date.now() },
+        }));
+      } catch {}
+      settleFolderMetadataRequest(result.requestId, result);
+    });
+    step('folder-metadata.results', String(results.length));
+  }
+
   function rememberNativeBroadcast(payload, reason = '') {
     try {
       const p = normalizeNativeBroadcastPayload(payload);
@@ -478,6 +568,7 @@
       if (p?.folderState) {
         mergeNativeFolderState(p.folderState, reason || 'native-broadcast').catch((e) => err('folder-state.merge.async', e));
       }
+      rememberFolderMetadataOperationResults(p, reason);
       emitNativeBroadcastUpdated(p, reason);
     } catch {}
   }
@@ -661,6 +752,99 @@
     }
   }
 
+  function requestFolderMetadataOperation(operation, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const mode = String(opts.requestMode || 'preview').trim();
+    const op = operation && typeof operation === 'object' ? {
+      schema: operation.schema || FOLDER_METADATA_OPERATION_SCHEMA,
+      ...operation,
+      sourceSurface: operation.sourceSurface || 'chrome-studio',
+      createdAt: operation.createdAt || new Date().toISOString(),
+    } : null;
+    const requestId = String(opts.requestId || folderMetadataRequestId()).trim();
+    const blocker = folderMetadataRequestTransportBlocker();
+    if (mode !== 'preview' && mode !== 'apply') {
+      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'invalid-request-mode'));
+    }
+    if (!op || op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'invalid-folder-metadata-operation'));
+    }
+    if (blocker) {
+      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, blocker));
+    }
+    if (state.pendingFolderMetadataRequests.size >= FOLDER_METADATA_REQUEST_MAX_PENDING) {
+      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'too-many-pending-folder-metadata-requests'));
+    }
+
+    const request = {
+      schema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
+      requestId,
+      requestMode: mode,
+      operation: op,
+      createdAt: new Date().toISOString(),
+    };
+    const payload = { folderMetadataOperationRequests: [request] };
+    const reason = String(opts.reason || `folder-metadata-operation-${mode}-request`);
+    const waitForResult = opts.waitForResult !== false;
+    const timeoutMsRaw = Number(opts.timeoutMs || FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS);
+    const timeoutMs = Math.max(500, Math.min(30000, Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS));
+
+    state.lastFolderMetadataRequestAt = Date.now();
+    state.lastFolderMetadataRequestId = requestId;
+    state.lastFolderMetadataRequestMode = mode;
+    state.lastFolderMetadataRequestStatus = waitForResult ? 'pending' : 'sent';
+
+    if (!waitForResult) {
+      const sent = broadcastFromStudio(reason, payload);
+      state.lastFolderMetadataRequestStatus = sent ? 'sent' : 'broadcast-failed';
+      return Promise.resolve(sent
+        ? { schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA, requestId, requestMode: mode, ok: true, applied: false, noMutation: true, blockers: [], warnings: [], sent: true }
+        : folderMetadataResultBase(requestId, mode, op, 'native-owner-broadcast-unavailable'));
+    }
+
+    return new Promise((resolve) => {
+      const timer = W.setTimeout(() => {
+        const timeoutResult = folderMetadataResultBase(requestId, mode, op, 'native-owner-timeout');
+        state.pendingFolderMetadataRequests.delete(requestId);
+        state.lastFolderMetadataRequestStatus = 'timeout';
+        state.lastFolderMetadataResultAt = Date.now();
+        state.lastFolderMetadataResultId = requestId;
+        state.lastFolderMetadataResultStatus = 'timeout';
+        state.lastFolderMetadataResultBlockers = ['native-owner-timeout'];
+        resolve(timeoutResult);
+      }, timeoutMs);
+      state.pendingFolderMetadataRequests.set(requestId, { resolve, timer, operation: op, mode, createdAt: Date.now() });
+      const sent = broadcastFromStudio(reason, payload);
+      if (!sent) {
+        const failed = folderMetadataResultBase(requestId, mode, op, 'native-owner-broadcast-unavailable');
+        state.lastFolderMetadataRequestStatus = 'broadcast-failed';
+        settleFolderMetadataRequest(requestId, failed);
+      }
+    });
+  }
+
+  const FolderMetadataOperations = {
+    request: requestFolderMetadataOperation,
+    diagnose() {
+      return {
+        requestSchema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
+        operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,
+        resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        adapter: currentPlatformAdapter(),
+        transportBlocker: folderMetadataRequestTransportBlocker(),
+        pendingRequests: state.pendingFolderMetadataRequests.size,
+        lastRequestAt: state.lastFolderMetadataRequestAt,
+        lastRequestId: state.lastFolderMetadataRequestId,
+        lastRequestMode: state.lastFolderMetadataRequestMode,
+        lastRequestStatus: state.lastFolderMetadataRequestStatus,
+        lastResultAt: state.lastFolderMetadataResultAt,
+        lastResultId: state.lastFolderMetadataResultId,
+        lastResultStatus: state.lastFolderMetadataResultStatus,
+        lastResultBlockers: state.lastFolderMetadataResultBlockers.slice(),
+      };
+    },
+  };
+
   // ── Workspace bridge ───────────────────────────────────────────────────────
   // When Studio Library Workspace mutates a folder binding / snapshot category,
   // it emits 'library-workspace:updated' with reason in detail. We listen for
@@ -687,6 +871,8 @@
       return () => state.subscribers.delete(fn);
     },
     broadcast: broadcastFromStudio,
+    folderMetadataOperations: FolderMetadataOperations,
+    requestFolderMetadataOperation,
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
     getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
     refreshNativeBroadcast,
@@ -767,6 +953,7 @@
             payloadKeys: state.lastStudioBroadcastPayloadKeys.slice(),
             transport: state.lastStudioBroadcastTransport,
           },
+          folderMetadataOperations: FolderMetadataOperations.diagnose(),
         },
         subscribers: state.subscribers.size,
         steps: diag.steps.slice(-15),
@@ -776,6 +963,9 @@
   };
 
   H2O.Library.Sync = Sync;
+  H2O.Studio = H2O.Studio || {};
+  H2O.Studio.sync = H2O.Studio.sync || {};
+  H2O.Studio.sync.folderMetadataOperations = FolderMetadataOperations;
 
   function bootBindings() {
     bindTransport();
