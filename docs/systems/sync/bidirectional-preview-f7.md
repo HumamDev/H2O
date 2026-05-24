@@ -177,6 +177,42 @@ The preview report is evidence-only. It must not include apply plans, SQL
 mutation plans, import commands, export commands, resolver functions, or
 local/remote winner instructions.
 
+### F7.1b Folder Metadata Comparator
+
+F7.1b adds a pure helper:
+
+```js
+H2O.Studio.diagnostics.previewBidirectionalFolderMetadata({
+  localFolders,
+  remoteFolders,
+  envelope,
+  options
+});
+```
+
+The helper is preview-only and compares `folder.metadata` rows by stable
+`id`/`folderId`. It normalizes aliases such as `sortOrder`/`index`/`position`,
+`color`/`iconColor`, and `parentId`/`parentFolderId`, then computes an
+ephemeral in-memory metadata hash. The hash is not persisted and is not
+returned in the default report.
+
+F7.1b classifications are counts-only:
+
+- `same`: same folder ID and same normalized metadata hash.
+- `localOnly`: local folder ID absent from remote evidence.
+- `remoteOnly`: remote folder ID absent from local evidence.
+- `divergentMetadata`: same folder ID with different normalized metadata.
+- `localNewer`: local `updatedAt` is newer, only when both timestamps parse.
+- `remoteNewer`: remote `updatedAt` is newer, only when both timestamps parse.
+- `timestampUnavailable`: divergent metadata exists but one or both timestamps
+  are missing or unparseable.
+- `unsupported`: malformed or unsupported folder evidence, such as rows without
+  a stable folder ID.
+
+For divergent metadata, F7.1b increments F6-compatible conflict candidate
+counts only. It does not call `sync_conflicts`, does not auto-ingest, and does
+not create decision or preview-resolution records.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
@@ -233,8 +269,11 @@ must be Desktop/debug-only, exact-gated, and separately planned.
 
 - F7.0: Docs-only bidirectional preview safety model.
 - F7.1a: Inspect available folder metadata, digest, sequence, peer mirror, and
-  watermark inputs.
-- F7.1b: Add preview-only comparator only if existing data is enough.
+  watermark inputs. The inspection found enough existing metadata for preview
+  diagnostics, but not enough durable evidence for apply/write-back.
+- F7.1b: Preview-only `folder.metadata` comparator helper. It compares and
+  classifies existing evidence, returns redacted counts, and performs no
+  writes, apply, merge, or F6 ingestion.
 - F7.1c: Add stamping/watermark schema only if F7.1a proves it is required.
 - F7.2: Emit F6-compatible candidate summaries from preview, with no
   ingestion.
@@ -243,25 +282,11 @@ must be Desktop/debug-only, exact-gated, and separately planned.
 - F8+: Remote apply propagation gates.
 - F9/F10/F11: Mobile and cloud/WebDAV/native transport later.
 
-This roadmap does not authorize F7.1 implementation. The next step after F7.0
-is inspection only.
+This roadmap does not authorize schema stamping, write-back, apply, merge, or
+remote propagation. Those remain separate later phases.
 
 ## 11. Recommendation
 
-The next phase should be F7.1a inspection, not bidirectional preview
-implementation.
-
-F7.1a should answer:
-
-- Which `folder.metadata` fields are currently present in Desktop local state?
-- Which `folder.metadata` fields are currently present in exported Chrome-
-  importable bundles?
-- Which peer identity, export sequence, per-peer mirror, and watermark evidence
-  is already available to the comparator?
-- Whether stable metadata digests can be computed from existing data without
-  exposing names or raw IDs.
-- Whether missing evidence should block preview or justify a later schema
-  proposal.
-
-Do not implement bidirectional preview until those available state and digest
-inputs are inspected and documented.
+After F7.1b, the next step should be validation of the preview helper against
+known local/remote folder fixtures. Do not start F7.1c stamping, F7.2 F6
+candidate emission, or any apply/write-back path without a separate plan.

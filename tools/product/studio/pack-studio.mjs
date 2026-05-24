@@ -148,6 +148,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
   "sync/multi-peer-diff.js",
+  // F7.1b: pure folder.metadata bidirectional preview comparator. Counts-only,
+  // redacted, no storage reads/writes, no apply, no F6 ingest.
+  "sync/bidirectional-folder-preview.js",
   // F1B: hidden/gated readiness runner. Mounts only when BOTH
   //   H2O.flags.experimentalMultiPeer === true AND
   //   location.hash === '#/dev/multi-peer-readiness'
@@ -297,6 +300,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/peer-discovery.js",
   "sync/peer-watermarks.js",
   "sync/multi-peer-diff.js",
+  "sync/bidirectional-folder-preview.js",
   "sync/multi-peer-runner.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",

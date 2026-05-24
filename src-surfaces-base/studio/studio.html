@@ -529,6 +529,9 @@
        surface. Must load BEFORE multi-peer-runner.js so the runner finds the
        analyzer registered. -->
   <script src="./sync/multi-peer-diff.js"></script>
+  <!-- F7.1b: pure folder.metadata bidirectional preview comparator. Counts-only,
+       redacted, no storage reads/writes, no apply, no F6 ingest. -->
+  <script src="./sync/bidirectional-folder-preview.js"></script>
   <!-- F1B: hidden/gated readiness runner. Mounts only when BOTH
        H2O.flags.experimentalMultiPeer === true AND
        location.hash === '#/dev/multi-peer-readiness' (F1B.1 also reconciles
