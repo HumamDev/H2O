@@ -484,6 +484,74 @@
       },
     },
 
+    /* Phase 3c-B — Export → Download → DOCX.
+     * Async export of the current overlay-aware saved chat as a `.docx`
+     * file via H2O.Studio.RibbonBridge.exportDocx(). The bridge composes
+     * the Phase 3c-A pure DOCX writer (H2O.Studio.overlayDocxWriter)
+     * output with the Phase 3a platform.files.exportBlob save path.
+     *
+     * Tauri binary safety: the Phase 3c-B platform.tauri.js update
+     * detects non-text MIMEs and routes through plugin:fs|write_file
+     * (binary). If write_file isn't allow-listed in capabilities,
+     * the existing fallback chain catches the rejection and uses the
+     * Chromium-style Blob+<a download> path. No new Tauri capability
+     * was added — the bridge degrades gracefully.
+     *
+     * Enable rule: saved-reader only + bridge installed.
+     *
+     * Status strings:
+     *   "Preparing DOCX…"                                — pending
+     *   "DOCX saved: <filename>"                         — overlay applied OR raw (no drift)
+     *   "DOCX saved (overlay skipped — snapshot changed)"
+     *                                                     — drift fallback
+     *   "Export cancelled"                               — user dismissed Tauri save dialog
+     *   "No transcript content"                          — empty snapshot
+     *   "No saved chat open"                             — bridge couldn't find snap
+     *   "DOCX writer unavailable"                        — overlayDocxWriter missing or selfCheck not ok
+     *   "Export bridge unavailable"                      — bridge method missing
+     *   "Export failed: <reason>"                        — anything else */
+    'export-docx': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.exportDocx !== 'function') return false;
+        return true;
+      },
+      onClick: function (ctx, setStatus) {
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.exportDocx !== 'function') {
+          setStatus('Export bridge unavailable');
+          return;
+        }
+        setStatus('Preparing DOCX…');
+        Promise.resolve(bridge.exportDocx()).then(
+          function (result) {
+            const safe = (result && typeof result === 'object') ? result : { ok: false, reason: 'unknown' };
+            if (safe.ok === true) {
+              const filename = String(safe.filename || 'DOCX');
+              if (safe.overlaySkipped && safe.overlayReason === 'drift-detected') {
+                setStatus('DOCX saved (overlay skipped — snapshot changed)');
+              } else {
+                setStatus('DOCX saved: ' + filename);
+              }
+              return;
+            }
+            const reason = String(safe.reason || 'unknown');
+            if (reason === 'cancelled') { setStatus('Export cancelled'); return; }
+            if (reason === 'no-snapshot') { setStatus('No saved chat open'); return; }
+            if (reason === 'no-content') { setStatus('No transcript content'); return; }
+            if (reason === 'writer-unavailable') { setStatus('DOCX writer unavailable'); return; }
+            const errSuffix = safe.error ? ': ' + String(safe.error) : '';
+            setStatus('Export failed: ' + reason + errSuffix);
+          },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Export failed: ' + msg);
+          }
+        );
+      },
+    },
+
     /* Phase 1c — Metadata → Category.
      * Does NOT mutate category itself; instead routes focus + brief
      * pulse highlight onto the existing topbar category picker

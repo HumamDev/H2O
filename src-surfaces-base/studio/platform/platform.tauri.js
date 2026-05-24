@@ -399,19 +399,69 @@
         return { ok: false, reason: 'cancelled' };
       }
       var path = String(chosenPath);
-      /* Convert the blob to text. Markdown / JSON / CSV all round-trip
-       * cleanly through .text() as UTF-8; binary blobs would need a
-       * different fs op (out of Phase 3a scope). */
-      var textPromise = (typeof blob.text === 'function') ? blob.text() : Promise.resolve('');
-      return Promise.resolve(textPromise).then(function (contents) {
+
+      /* Phase 3c-B — binary-safe routing.
+       * Text MIMEs (text/*) round-trip cleanly through .text() as UTF-8 →
+       * plugin:fs|write_text_file. This preserves the Phase 3a Markdown
+       * export path verbatim.
+       *
+       * Non-text MIMEs (e.g. DOCX, ZIP, PDF) MUST go through the binary
+       * path: blob → ArrayBuffer → Uint8Array → number[] → plugin:fs|write_file.
+       * The text path corrupts binary bytes because blob.text() decodes
+       * invalid UTF-8 sequences as U+FFFD; re-encoding back through Rust
+       * mangles the file.
+       *
+       * If plugin:fs|write_file is missing from capabilities OR rejects,
+       * fall back to the Chromium-style Blob+<a download> path (same
+       * graceful degradation the Phase 3a text path uses). No new Rust
+       * dependency, no new capability change. */
+      var mimeType = String((blob && blob.type) || '').toLowerCase();
+      var isTextMime = mimeType.indexOf('text/') === 0;
+
+      if (isTextMime) {
+        var textPromise = (typeof blob.text === 'function') ? blob.text() : Promise.resolve('');
+        return Promise.resolve(textPromise).then(function (contents) {
+          var writePromise;
+          try {
+            writePromise = invoke('plugin:fs|write_text_file', {
+              path: path,
+              contents: String(contents == null ? '' : contents),
+            });
+          } catch (_) {
+            return blobAnchorFallback();
+          }
+          if (!writePromise || typeof writePromise.then !== 'function') {
+            return blobAnchorFallback();
+          }
+          return writePromise.then(function () {
+            return { ok: true, path: path, suggestedName: suggestedName };
+          }, function (writeErr) {
+            try { console.warn('[H2O.Studio.platform.tauri] plugin:fs|write_text_file rejected; falling back to blob+anchor', writeErr); }
+            catch (_) { /* ignore */ }
+            return blobAnchorFallback();
+          });
+        });
+      }
+
+      /* Binary path — non-text MIME (Phase 3c-B). */
+      var bufPromise = (typeof blob.arrayBuffer === 'function')
+        ? blob.arrayBuffer()
+        : Promise.resolve(new ArrayBuffer(0));
+      return Promise.resolve(bufPromise).then(function (buf) {
+        var byteArray;
+        try { byteArray = Array.from(new Uint8Array(buf)); }
+        catch (_) { byteArray = []; }
         var writePromise;
         try {
-          writePromise = invoke('plugin:fs|write_text_file', {
-            path: path,
-            contents: String(contents == null ? '' : contents),
-          });
+          /* plugin:fs|write_file expects a Vec<u8> on the Rust side; in
+           * JS that surfaces as a number[] (or Uint8Array — both accepted
+           * by tauri-plugin-fs's JSON deserializer). Sending Array form
+           * for maximum compatibility across plugin versions. */
+          writePromise = invoke('plugin:fs|write_file', { path: path, contents: byteArray });
         } catch (_) {
-          /* fs plugin missing or rejected synchronously — fall back. */
+          /* fs plugin missing OR write_file not allow-listed in capabilities
+           * → fall back to webview Blob+anchor download. The user still
+           * gets the file; loses the native save-dialog OS placement. */
           return blobAnchorFallback();
         }
         if (!writePromise || typeof writePromise.then !== 'function') {
@@ -420,9 +470,7 @@
         return writePromise.then(function () {
           return { ok: true, path: path, suggestedName: suggestedName };
         }, function (writeErr) {
-          /* fs.write rejected — almost always a capability/permission
-           * issue. Fall back rather than failing the user. */
-          try { console.warn('[H2O.Studio.platform.tauri] plugin:fs|write_text_file rejected; falling back to blob+anchor', writeErr); }
+          try { console.warn('[H2O.Studio.platform.tauri] plugin:fs|write_file rejected; falling back to blob+anchor', writeErr); }
           catch (_) { /* ignore */ }
           return blobAnchorFallback();
         });

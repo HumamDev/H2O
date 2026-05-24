@@ -167,6 +167,23 @@ interface PlatformFiles {
 `{ ok: false, reason: 'cancelled' }`. Treat as informational, NOT an
 error; surface a non-error status to the user.
 
+**Binary-safety (Phase 3c-B):** `exportBlob` is binary-safe across both
+adapters. MV3's Blob + `URL.createObjectURL` + `<a download>` preserves
+bytes verbatim regardless of MIME. Tauri's `filesExportBlob` detects
+`text/*` vs non-text MIMEs and routes accordingly:
+
+- `text/*` (Markdown, JSON, CSV, etc.) → `plugin:fs|write_text_file`
+  (Phase 3a behaviour, unchanged).
+- Non-text (DOCX, ZIP, PDF, etc.) → `plugin:fs|write_file` with the
+  blob's bytes as a `number[]` (Phase 3c-B addition). If `write_file`
+  isn't allow-listed in capabilities, the existing fallback chain catches
+  the rejection and uses Blob+anchor instead — **no new Tauri capability
+  is required**.
+
+The MIME type drives routing — callers don't need to pick a backend.
+Just construct the Blob with the correct `type` and `exportBlob` does
+the right thing on both adapters.
+
 ### `H2O.Studio.platform.auth` (token requests)
 
 ```ts

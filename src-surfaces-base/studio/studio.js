@@ -11038,6 +11038,218 @@ function __ribbonBridge_exportMarkdown(opts){
   });
 }
 
+/* ─── Phase 3c-B — DOCX export bridge + helpers ───────────────────────────
+ * Composes the Phase 3c-A pure DOCX writer (H2O.Studio.overlayDocxWriter)
+ * with H2O.Studio.platform.files.exportBlob and the inline Blob+anchor
+ * fallback. Mirrors the Phase 3a Markdown bridge shape line-for-line so
+ * the ribbon handler reads exactly the same fields.
+ *
+ * Tauri binary safety: the Phase 3c-B platform.tauri.js update detects
+ * non-text MIME types and routes through plugin:fs|write_file (binary)
+ * instead of plugin:fs|write_text_file (text). The DOCX MIME
+ * (application/vnd.openxml...) triggers the binary path; if the fs plugin
+ * doesn't have write_file allow-listed in capabilities, the existing
+ * fallback chain catches the rejection and uses Blob+anchor download
+ * (loses native save dialog on desktop but the file still saves). */
+
+/* Suggested filename: {sanitized-title}__{YYYY-MM-DD}.docx. Reuses Phase
+ * 3a's filename sanitizer + builder; just swaps .md for .docx. */
+function __ribbonBridge_buildDocxFilename(snap){
+  try {
+    const md = __ribbonBridge_buildMarkdownFilename(snap);
+    if (typeof md === 'string' && md.endsWith('.md')) return md.slice(0, -3) + '.docx';
+    return String(md || 'studio-transcript') + '.docx';
+  } catch (_) { return 'studio-transcript.docx'; }
+}
+
+/* Phase 3c-B — export the current saved snapshot as a Word .docx file.
+ * Composes overlayDocxWriter.build() output with platform.files.exportBlob.
+ * Drift fallback: when the overlay record's baseDigest doesn't match
+ * snap.messages, the writer is called with overlay:null (raw mode) and
+ * the result is flagged overlaySkipped:true, overlayReason:'drift-detected'.
+ * The user still gets a valid .docx, just without the overlay decorations.
+ *
+ * Returns Promise<{
+ *   ok: boolean,
+ *   reason?: 'no-snapshot' | 'no-content' | 'cancelled' | 'export-failed' |
+ *            'writer-unavailable' | 'error',
+ *   filename?: string,
+ *   bytes?: number,
+ *   path?: string,                  (Tauri native save path when applicable)
+ *   overlayIncluded?: boolean,
+ *   overlaySkipped?: boolean,
+ *   overlayReason?: string,
+ *   fallback?: 'blob-anchor',
+ * }>. Never throws. */
+function __ribbonBridge_exportDocx(opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeOverlay = options.includeOverlay !== false;
+    const includeToc = options.includeToc === true;
+    const collapsedMode = (options.collapsedMode === 'include-silent' || options.collapsedMode === 'omit')
+      ? options.collapsedMode
+      : 'include-marked';
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) {
+      return { ok: false, reason: 'no-snapshot' };
+    }
+
+    const writer = W.H2O?.Studio?.overlayDocxWriter;
+    if (!writer || typeof writer.build !== 'function') {
+      return { ok: false, reason: 'writer-unavailable' };
+    }
+    try {
+      if (typeof writer.selfCheck === 'function' && writer.selfCheck().ok === false) {
+        return { ok: false, reason: 'writer-unavailable', error: 'overlayDocxWriter.selfCheck not ok' };
+      }
+    } catch (_) { /* swallow — selfCheck is advisory */ }
+
+    /* Resolve overlay record + drift detection. Mirrors the Phase 3a
+     * exportMarkdown / Phase 2e getCleanTranscript pattern. */
+    const sid = String(snap.snapshotId);
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+
+    function resolveOverlay() {
+      if (!includeOverlay) return Promise.resolve({ overlay: null, overlaySkipped: false, overlayReason: undefined });
+      if (!ovStore || typeof ovStore.get !== 'function') {
+        return Promise.resolve({ overlay: null, overlaySkipped: false, overlayReason: undefined });
+      }
+      return Promise.resolve(ovStore.get(sid)).then(function (overlay) {
+        if (!overlay) return { overlay: null, overlaySkipped: false, overlayReason: undefined };
+        if (ov && typeof ov.computeBaseDigest === 'function' && overlay.baseDigest) {
+          let currentDigest = '';
+          try { currentDigest = ov.computeBaseDigest(snap); } catch (_) { currentDigest = ''; }
+          if (currentDigest && overlay.baseDigest !== currentDigest) {
+            return { overlay: null, overlaySkipped: true, overlayReason: 'drift-detected' };
+          }
+        }
+        return { overlay: overlay, overlaySkipped: false, overlayReason: undefined };
+      }, function () {
+        return { overlay: null, overlaySkipped: false, overlayReason: undefined };
+      });
+    }
+
+    /* Resolve originalUrl from the ribbon context (only present for
+     * indexed chats — saved chats omit it from the header). */
+    function readOriginalUrl() {
+      try {
+        const ribbon = W.H2O?.Studio?.ribbon;
+        const ctx = (ribbon && typeof ribbon.getContext === 'function') ? ribbon.getContext() : null;
+        if (ctx && typeof ctx.originalUrl === 'string') return ctx.originalUrl;
+      } catch (_) {}
+      return '';
+    }
+
+    return resolveOverlay().then(function (resolved) {
+      const originalUrl = readOriginalUrl();
+      const headerMeta = {
+        title: snap.title,
+        capturedDate: (snap.capturedAt ? String(snap.capturedAt).slice(0, 10) : ''),
+      };
+      if (originalUrl) headerMeta.originalUrl = originalUrl;
+      if (snap.chatId) headerMeta.chatId = snap.chatId;
+
+      let built;
+      try {
+        built = writer.build({
+          snap: snap,
+          overlay: resolved.overlay,
+          headerMeta: headerMeta,
+          opts: {
+            includeOverlay: includeOverlay && resolved.overlay !== null,
+            includeToc: includeToc,
+            collapsedMode: collapsedMode,
+          },
+        });
+      } catch (e) {
+        return { ok: false, reason: 'export-failed', error: String((e && e.message) || e || '') };
+      }
+      if (!built || !built.bytes || built.bytes.length === 0) {
+        return { ok: false, reason: 'no-content' };
+      }
+      if (built.reason === 'writer-error') {
+        /* Writer fell back to its minimal-DOCX recovery. Surface as an
+         * export-failed so the user knows something went wrong even
+         * though bytes were produced. */
+        return { ok: false, reason: 'export-failed', error: 'writer-error: minimal DOCX returned' };
+      }
+
+      const blob = built.blob;
+      const filename = __ribbonBridge_buildDocxFilename(snap);
+      const overlayIncluded = !!(built.opsApplied > 0 || built.structureApplied === true || built.tocIncluded === true);
+
+      function inlineBlobAnchor() {
+        return new Promise(function (resolve) {
+          try {
+            if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+              return resolve({ ok: false, reason: 'export-failed', error: 'URL.createObjectURL unavailable' });
+            }
+            if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+              return resolve({ ok: false, reason: 'export-failed', error: 'document unavailable' });
+            }
+            if (!blob) {
+              return resolve({ ok: false, reason: 'export-failed', error: 'blob unavailable' });
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            try {
+              document.body.appendChild(a);
+              a.click();
+            } catch (e) {
+              try { URL.revokeObjectURL(url); } catch (_) {}
+              return resolve({ ok: false, reason: 'export-failed', error: String((e && e.message) || e || '') });
+            }
+            setTimeout(function () {
+              try { document.body.removeChild(a); } catch (_) {}
+              try { URL.revokeObjectURL(url); } catch (_) {}
+            }, 200);
+            resolve({ ok: true, filename: filename, bytes: built.size, fallback: 'blob-anchor' });
+          } catch (e) {
+            resolve({ ok: false, reason: 'error', error: String((e && e.message) || e || '') });
+          }
+        });
+      }
+
+      const files = W.H2O?.Studio?.platform?.files;
+      const canExportViaPlatform = !!(files && files.available && typeof files.exportBlob === 'function' && blob);
+      const writePromise = canExportViaPlatform
+        ? Promise.resolve(files.exportBlob({ suggestedName: filename, blob: blob }))
+            .then(undefined, function (err) {
+              try { console.warn('[RibbonBridge.exportDocx] platform.files.exportBlob rejected; falling back', err); }
+              catch (_) {}
+              return inlineBlobAnchor();
+            })
+        : inlineBlobAnchor();
+
+      return writePromise.then(function (res) {
+        const r = (res && typeof res === 'object') ? res : {};
+        if (r.ok === false && r.reason === 'cancelled') {
+          return { ok: false, reason: 'cancelled' };
+        }
+        if (r.ok === false) {
+          return { ok: false, reason: r.reason || 'export-failed', error: String(r.error || '') };
+        }
+        return {
+          ok: true,
+          filename: filename,
+          bytes: built.size,
+          path: r.path,
+          overlayIncluded: overlayIncluded,
+          overlaySkipped: resolved.overlaySkipped,
+          overlayReason: resolved.overlayReason,
+          fallback: r.fallback || (canExportViaPlatform ? undefined : 'blob-anchor'),
+        };
+      });
+    });
+  }).catch(function (err) {
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
 /* ─── Phase 3b — PDF / print view helpers + bridge method ──────────────────
  * Strategy A: window.print() over the live reader DOM. The browser's
  * print dialog offers "Save as PDF" as a destination on every modern OS
@@ -11624,7 +11836,7 @@ try {
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-3b',
+      version: '0.1.0-phase-3c-b',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
@@ -11642,6 +11854,9 @@ try {
       openPrintView: __ribbonBridge_openPrintView,
       _buildPrintHeaderEl: __ribbonBridge_buildPrintHeaderEl,
       _buildPdfFilename: __ribbonBridge_buildPdfFilename,
+      /* Phase 3c-B — DOCX export. */
+      exportDocx: __ribbonBridge_exportDocx,
+      _buildDocxFilename: __ribbonBridge_buildDocxFilename,
     };
   } else {
     /* Idempotent additive upgrade. */
@@ -11667,6 +11882,9 @@ try {
     W.H2O.Studio.RibbonBridge.openPrintView = __ribbonBridge_openPrintView;
     if (!W.H2O.Studio.RibbonBridge._buildPrintHeaderEl) W.H2O.Studio.RibbonBridge._buildPrintHeaderEl = __ribbonBridge_buildPrintHeaderEl;
     if (!W.H2O.Studio.RibbonBridge._buildPdfFilename) W.H2O.Studio.RibbonBridge._buildPdfFilename = __ribbonBridge_buildPdfFilename;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-3b';
+    /* Phase 3c-B — DOCX export. Reinstall reference on hot reload. */
+    W.H2O.Studio.RibbonBridge.exportDocx = __ribbonBridge_exportDocx;
+    if (!W.H2O.Studio.RibbonBridge._buildDocxFilename) W.H2O.Studio.RibbonBridge._buildDocxFilename = __ribbonBridge_buildDocxFilename;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-3c-b';
   }
 } catch (_) { /* swallow */ }

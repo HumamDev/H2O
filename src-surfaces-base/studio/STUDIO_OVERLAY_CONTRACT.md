@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 3c-A)
+Status: Active (Phase 3c-B)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -870,6 +870,111 @@ All user-supplied text passes through:
 - DEFLATE compression (stored-mode only).
 - Embedded TOC with live page numbers.
 - DOCX → editable round-trip.
+
+## Phase 3c-B — DOCX export bridge + ribbon wiring
+
+Status: **Built**. Implemented across `studio.js`
+(`RibbonBridge.exportDocx` + `_buildDocxFilename`),
+`S0Y1a. 🎬 Studio Ribbon - Studio.js`
+(`Export → DOCX` handler), and `platform/platform.tauri.js` (binary-safe
+write path for non-text MIMEs).
+
+### Bridge shape
+
+`H2O.Studio.RibbonBridge.exportDocx(opts?)` — async, returns
+`Promise<{ ok, reason?, filename?, bytes?, path?, overlayIncluded?,
+overlaySkipped?, overlayReason?, fallback? }>`. Mirrors the Phase 3a
+`exportMarkdown` shape exactly so the ribbon handler reads the same
+fields.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | boolean | true when the file landed (native save OR Blob+anchor fallback). |
+| `reason` | string? | When `ok:false`, one of: `'no-snapshot'`, `'no-content'`, `'cancelled'` (Tauri save dialog dismissed), `'export-failed'`, `'writer-unavailable'`, `'error'`. |
+| `filename` | string | `{stem}__{YYYY-MM-DD}.docx` (reuses Phase 3a sanitizer). |
+| `bytes` | number | Size of the file written. |
+| `path` | string? | Tauri-native save path when `plugin:fs|write_file` was used. |
+| `overlayIncluded` | boolean | True if any per-message op, structure marker, or TOC was emitted. |
+| `overlaySkipped` | boolean | True if the overlay's `baseDigest` doesn't match the current snapshot (drift). |
+| `overlayReason` | string? | `'drift-detected'` when applicable. |
+| `fallback` | string? | `'blob-anchor'` when the inline Blob+anchor fallback was used. |
+
+Options: `includeOverlay` (default `true`), `includeToc` (default
+`false`), `collapsedMode` (default `'include-marked'`) — all pass-through
+to the writer.
+
+The bridge **never throws**. Try/catch around every internal branch;
+last-resort floor resolves with `{ ok: false, reason: 'error' }`.
+
+### Tauri binary-safe write path
+
+The Phase 3a Tauri `filesExportBlob` used `plugin:fs|write_text_file`
+exclusively. This is correct for `text/*` MIMEs (Markdown export) but
+**corrupts binary bytes** because `blob.text()` decodes invalid UTF-8
+sequences as U+FFFD, and re-encoding loses the original bytes.
+
+Phase 3c-B adds MIME detection inside `filesExportBlob`:
+
+- **Text MIMEs** (`text/*`) — unchanged: routes through
+  `plugin:fs|write_text_file`. Phase 3a Markdown export path is
+  preserved byte-for-byte (regression guard).
+- **Non-text MIMEs** (DOCX, ZIP, PDF, anything not `text/*`) — new
+  path: converts `blob` to a `number[]` byte array and invokes
+  `plugin:fs|write_file` (binary). Same `tauri-plugin-fs` plugin
+  already used; no new Rust dependency.
+
+**Fallback chain on Tauri** (mirrors Phase 3a graceful degradation):
+1. If `plugin:dialog|save` is unavailable / rejects → Blob+anchor.
+2. If the user dismisses the save dialog → `{ ok: false, reason: 'cancelled' }`.
+3. If `plugin:fs|write_file` is unavailable / rejects (typically:
+   capability not allow-listed) → Blob+anchor.
+4. If the Tauri webview itself can't `URL.createObjectURL` → `{ ok: false, reason: 'export-failed' }`.
+
+Phases 3a and 3c-B add no Tauri capability changes; the binary path
+either works via the existing `plugin:fs|*` allow-list, or it
+gracefully falls back to Blob+anchor (loses native save dialog on
+desktop but the user still gets the file).
+
+### Ribbon status feedback (Export → Download → DOCX)
+
+- `"Preparing DOCX…"` — pending.
+- `"DOCX saved: <filename>"` — overlay applied OR raw mode (no drift).
+- `"DOCX saved (overlay skipped — snapshot changed)"` — drift fallback.
+- `"Export cancelled"` — user dismissed Tauri save dialog.
+- `"No transcript content"` — empty snapshot.
+- `"No saved chat open"` — no current saved snapshot.
+- `"DOCX writer unavailable"` — `overlayDocxWriter` missing or
+  `selfCheck().ok === false`.
+- `"Export bridge unavailable"` — bridge method missing.
+- `"Export failed: <reason>[: <error>]"` — anything else.
+
+### Compliance notes for Phase 3c-B
+
+- `exportDocx` MUST NOT mutate `snap.messages` or the overlay record.
+- The bridge MUST NOT throw under any input.
+- The bridge MUST reuse the existing helpers: Phase 3a's
+  `_buildMarkdownFilename` (via `_buildDocxFilename`), Phase 3a's
+  drift-detection precedent (via `computeBaseDigest`), Phase 3a's
+  inline Blob+anchor fallback pattern.
+- The Tauri text path for `text/*` MIMEs MUST remain byte-identical to
+  Phase 3a so Markdown export is unchanged.
+- The binary write path MUST NOT introduce any new Rust dependency,
+  new Tauri plugin, or new capability allow-list entry. Acceptance of
+  `plugin:fs|write_file` depends on the existing capability — if not
+  allow-listed, the rejection-and-fallback chain handles it.
+- The status string `"DOCX saved (overlay skipped — snapshot changed)"`
+  is the canonical drift surface; do not paraphrase.
+
+### Out of scope for Phase 3c-B
+
+- DOCX writer feature additions (images, tables, etc.) — see Phase 3c-A
+  "out of scope" list.
+- Programmatic detection of "user kept the file vs deleted it" — outside
+  any browser/OS contract.
+- Hot-swapping the DOCX MIME to `application/zip` for download — keep
+  the proper MIME so OS file-association maps to Word/LibreOffice.
+- Adding `plugin:fs|write_file` to Tauri capabilities — the existing
+  fallback chain handles its absence.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 
