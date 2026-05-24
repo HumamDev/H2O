@@ -25,7 +25,7 @@
   var ENTITY_KIND = 'folder.metadata';
   var CONFLICT_ENTITY_KIND = 'folder';
   var CANDIDATE_SOURCE = 'bidirectional-folder-preview';
-  var VERSION = '0.2.0-f7.1b';
+  var VERSION = '0.3.0-f7.2';
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var DEFAULT_CONFLICT_CANDIDATE_LIMIT = 20;
   var MAX_CONFLICT_CANDIDATE_LIMIT = 50;
@@ -275,7 +275,12 @@
         deleteVsEditOwnedByF5: 0
       },
       canApply: false,
-      blockers: [],
+      blockers: [
+        { code: 'preview-only-no-apply' },
+        { code: 'f6-ingest-not-called' },
+        { code: 'folder-metadata-apply-blocked' },
+        { code: 'metadata-authority-not-proven' }
+      ],
       warnings: []
     };
   }
@@ -312,11 +317,12 @@
     return { rows: [], available: false };
   }
 
-  function makeDedupeHash(conflictKind, idMaterial, localHash, remoteHash) {
+  function makeDedupeHash(conflictKind, idMaterial, localHash, remoteHash, field) {
     return 'f7folder:' + stableHash(stableStringify({
       v: 'f7-folder-conflict-v1',
       conflictKind: conflictKind,
       entityKind: CONFLICT_ENTITY_KIND,
+      field: field || null,
       folderIdentityHash: stableHash(idMaterial || 'unknown'),
       localMetadataHash: localHash || null,
       remoteMetadataHash: remoteHash || null
@@ -336,12 +342,15 @@
         conflictKind,
         details.idMaterial,
         details.localHash,
-        details.remoteHash
+        details.remoteHash,
+        details.field
       ),
       localUpdatedAtPresent: !!details.localUpdatedAtPresent,
       remoteUpdatedAtPresent: !!details.remoteUpdatedAtPresent,
       localDigestPresent: !!details.localDigestPresent,
       remoteDigestPresent: !!details.remoteDigestPresent,
+      field: details.field || null,
+      previewSchema: REPORT_SCHEMA,
       warnings: asArray(details.warnings)
         .map(function (w) { return isObject(w) ? { code: safeString(w.code) } : { code: safeString(w) }; })
         .filter(function (w) { return !!w.code; })
@@ -357,6 +366,118 @@
         && report.conflictCandidates.candidates.length < report._candidateLimit) {
       report.conflictCandidates.candidates.push(candidateFor(conflictKind, severity, classification, details));
     }
+  }
+
+  function candidateMappingForDifference(kind) {
+    if (kind === 'same-id-different-name') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'needs-human-review',
+        severity: 'medium',
+        warning: 'same-id-different-name'
+      };
+    }
+    if (kind === 'same-id-different-canonical-color') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'safe-review',
+        severity: 'low',
+        warning: 'same-id-different-canonical-color'
+      };
+    }
+    if (kind === 'same-id-different-icon') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'safe-review',
+        severity: 'low',
+        warning: 'same-id-different-icon'
+      };
+    }
+    if (kind === 'same-id-different-sort-order') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'safe-review',
+        severity: 'low',
+        warning: 'same-id-different-sort-order'
+      };
+    }
+    if (kind === 'same-id-different-active-state') {
+      return {
+        conflictKind: 'delete-vs-edit-reference',
+        classification: 'needs-human-review',
+        severity: 'high',
+        warning: 'active-state-divergent'
+      };
+    }
+    if (kind === 'same-id-different-source-metadata') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'needs-human-review',
+        severity: 'medium',
+        warning: 'same-id-different-source-metadata'
+      };
+    }
+    if (kind === 'same-id-different-metadata') {
+      return {
+        conflictKind: 'same-record-divergent-metadata',
+        classification: 'needs-human-review',
+        severity: 'medium',
+        warning: 'same-id-different-metadata'
+      };
+    }
+    if (kind === 'same-name-different-id') {
+      return {
+        conflictKind: 'folder-identity-collision',
+        classification: 'needs-human-review',
+        severity: 'medium',
+        warning: 'same-name-different-id'
+      };
+    }
+    if (kind === 'missing-local-folder') {
+      return {
+        conflictKind: 'remote-only-folder-metadata',
+        classification: 'safe-review',
+        severity: 'low',
+        warning: 'missing-local-folder',
+        informationalOnly: true
+      };
+    }
+    if (kind === 'missing-remote-folder') {
+      return {
+        conflictKind: 'local-only-folder-metadata',
+        classification: 'safe-review',
+        severity: 'low',
+        warning: 'missing-remote-folder',
+        informationalOnly: true
+      };
+    }
+    return {
+      conflictKind: 'same-record-divergent-metadata',
+      classification: 'needs-human-review',
+      severity: 'medium',
+      warning: kind || 'folder-metadata-divergent'
+    };
+  }
+
+  function candidateSeverityForDifference(kind) {
+    return candidateMappingForDifference(kind).severity;
+  }
+
+  function addConflictCandidateForDifference(report, kind, field, details) {
+    var mapping = candidateMappingForDifference(kind);
+    var candidateDetails = Object.assign({}, safeObject(details), {
+      field: field || null,
+      warnings: asArray(details && details.warnings).slice()
+    });
+    addCode(candidateDetails.warnings, mapping.warning);
+    if (mapping.informationalOnly) addCode(candidateDetails.warnings, 'informational-only-no-apply');
+    addConflictCandidate(
+      report,
+      mapping.conflictKind,
+      mapping.severity,
+      mapping.classification,
+      candidateDetails
+    );
   }
 
   function differenceEntry(report, kind, severity, field, details) {
@@ -385,6 +506,7 @@
   function addDifference(report, kind, severity, field, details) {
     report.differences.total += 1;
     increment(report.differences.byKind, kind);
+    addConflictCandidateForDifference(report, kind, field, details);
     if (report.differences.entries.length < report._differenceLimit) {
       report.differences.entries.push(differenceEntry(report, kind, severity, field, details));
     }
@@ -511,15 +633,6 @@
   }
 
   function compareTimestamps(local, remote, report, hashDiffers) {
-    var details = {
-      idMaterial: local.id,
-      localHash: local.normalizedHash,
-      remoteHash: remote.normalizedHash,
-      localUpdatedAtPresent: local.updatedAtPresent,
-      remoteUpdatedAtPresent: remote.updatedAtPresent,
-      localDigestPresent: true,
-      remoteDigestPresent: true
-    };
     if (!local.updatedAtParseable || !remote.updatedAtParseable) {
       if (hashDiffers) {
         report.categories.timestampUnavailable += 1;
@@ -529,14 +642,8 @@
     }
     if (local.updatedAtValue > remote.updatedAtValue) {
       report.categories.localNewer += 1;
-      if (hashDiffers) {
-        addConflictCandidate(report, 'local-newer-than-remote', 'low', 'safe-review', details);
-      }
     } else if (remote.updatedAtValue > local.updatedAtValue) {
       report.categories.remoteNewer += 1;
-      if (hashDiffers) {
-        addConflictCandidate(report, 'remote-newer-than-local', 'low', 'safe-review', details);
-      }
     }
   }
 
@@ -631,8 +738,8 @@
       var b = checks[i][3];
       if (a === b) continue;
       changed = true;
-      addDifference(report, kind, kind === 'same-id-different-canonical-color' ? 'low' : 'medium',
-        field, differenceDetails(local, remote, [{ code: kind }]));
+      addDifference(report, kind, candidateSeverityForDifference(kind), field,
+        differenceDetails(local, remote, [{ code: kind }]));
     }
     return changed;
   }
@@ -703,16 +810,6 @@
           addDifference(report, 'same-id-different-metadata', 'medium', 'metadata',
             differenceDetails(local, remote, [{ code: 'folder-metadata-divergent' }]));
         }
-        addConflictCandidate(report, 'same-record-divergent-metadata', 'medium', 'needs-human-review', {
-          idMaterial: local.id,
-          localHash: local.normalizedHash,
-          remoteHash: remote.normalizedHash,
-          localUpdatedAtPresent: local.updatedAtPresent,
-          remoteUpdatedAtPresent: remote.updatedAtPresent,
-          localDigestPresent: true,
-          remoteDigestPresent: true,
-          warnings: [{ code: 'folder-metadata-divergent' }]
-        });
       } else {
         report.categories.same += 1;
         report.matches.total += 1;
