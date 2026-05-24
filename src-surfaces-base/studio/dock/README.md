@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-H landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tab placeholders register against the shell (`dock/tabs/*.tab.studio.js`), and the **Highlights tab now renders real read-only highlight data** via `H2O.Studio.store.highlights`. Next phase: Phase 2C-B/N/V/X/P — turn the remaining tabs (Bookmarks, Notes, Navigator, Context, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
+Status: Phases 0B through 2C-B landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights tab** renders real read-only highlight data via `H2O.Studio.store.highlights`, and the **Bookmarks tab** renders real read-only bookmark entries via `H2O.Studio.store.bookmarks`. Next phase: Phase 2C-N/V/X/P — turn the remaining tabs (Notes, Navigator, Context, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -557,3 +557,27 @@ The first real-data Dock tab. `tabs/highlights.tab.studio.js` no longer renders 
 - No scroll-to-message integration (no safe per-message scroll helper is currently exposed to Studio).
 - No per-chat filtering yet — `ctx.chatId` is still `null`, so the tab shows all stored highlights across answer ids. Per-chat scoping arrives once the reader snapshot populates `ctx`.
 - No other tab implemented — Bookmarks/Notes/Navigator/Context/Capture/Attachments/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-B — what landed (Bookmarks real read-only rendering)
+
+The second real-data Dock tab. `tabs/bookmarks.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `H2O.Studio.store.bookmarks.list(chatId)` (sync, lazy-fetch behind cache; first read returns `[]` and notifies via `subscribe()` when the platform fetch resolves).
+- Resolves `chatId` from `ctx.chatId → ctx.externalId → ctx.snapshotId` (first non-empty wins). Does **not** invent IDs.
+- Renders a "linked chat" empty state — `Open a linked chat/snapshot to view bookmarks.` — when no chat id is present. In that state the tab does **not** subscribe.
+- Renders the standard empty state — `No bookmarks found for this chat yet.` — when the chat is linked but has no entries.
+- Renders a compact row per entry, sorted newest-first by `createdAt` (then `pairNo`, then store order):
+  - **title**: `entry.title` if set, otherwise the first line of `entry.snapText`, otherwise `(untitled bookmark)`
+  - **snippet**: the rest of `snapText` if a title was used (skipped when title equals first line)
+  - **meta**: `msg <id>` (msgId or primaryAId, truncated) • `pair <n>` • localized `createdAt`
+- Subscribes via `H2O.Studio.store.bookmarks.subscribe(fn)`; filters events to the current `chatId` so notifications for other chats don't repaint.
+- Returns an unsubscribe cleanup function to `dock-shell` (honored at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Reuses the generic Dock list CSS classes added in Phase 2C-H — no new CSS was needed. Bookmarks rows have no swatch (bookmarks aren't color-coded); the `.wbDockRowBody` simply fills the row.
+
+### What is still NOT in Phase 2C-B
+
+- No write-back. No `set` / `update` / `remove` / `saveNow` calls.
+- No bookmark creation / deletion / editing / toggling.
+- No scroll-to-message integration (no safe per-message scroll helper currently exposed to Studio).
+- No multi-select. No drag-reorder.
+- No other tab implemented — Notes/Navigator/Context/Capture/Attachments/Finder remain inert Phase 2B placeholders.
