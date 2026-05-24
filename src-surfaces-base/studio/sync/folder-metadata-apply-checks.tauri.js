@@ -28,8 +28,22 @@
   var originalPlan = H2O.Studio.diagnostics.planBidirectionalFolderMetadataApply;
   if (typeof originalPlan !== 'function') return;
 
-  var VERSION = '0.1.1-f7.4.1e';
+  var VERSION = '0.2.0-f7.4.3';
   var FOLDER_RECORD_KIND = 'folder';
+  var COLOR_APPLY_SCHEMA = 'h2o.studio.sync.folder-metadata-color-apply.v0';
+
+  function getInvoke() {
+    try {
+      var internals = global.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') return internals.invoke.bind(internals);
+    } catch (_) { /* ignore */ }
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return tauri.core.invoke.bind(tauri.core);
+      if (tauri && typeof tauri.invoke === 'function') return tauri.invoke.bind(tauri);
+    } catch (_) { /* ignore */ }
+    return null;
+  }
 
   function isObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -208,6 +222,88 @@
     return cleanString(candidate.dedupeKeyHash);
   }
 
+  function applyFailure(code, dryRun) {
+    return {
+      schema: COLOR_APPLY_SCHEMA,
+      ok: false,
+      redacted: true,
+      dryRun: dryRun === true,
+      applied: false,
+      localOnly: true,
+      syncPropagated: false,
+      entityKind: 'folder.metadata',
+      fieldsUpdated: [],
+      audit: {
+        recorded: false,
+        operatorPeerRecorded: false
+      },
+      counts: {
+        rowsUpdated: 0
+      },
+      blockers: [{ code: cleanString(code) || 'folder-color-apply-failed' }],
+      warnings: []
+    };
+  }
+
+  function normalizeApplyResult(result, dryRun) {
+    if (!result || typeof result !== 'object' || result.schema !== COLOR_APPLY_SCHEMA) {
+      return applyFailure('folder-color-apply-failed', dryRun);
+    }
+    return {
+      schema: COLOR_APPLY_SCHEMA,
+      ok: result.ok === true,
+      redacted: true,
+      dryRun: result.dryRun === true,
+      applied: result.applied === true,
+      localOnly: result.localOnly !== false,
+      syncPropagated: result.syncPropagated === true,
+      entityKind: cleanString(result.entityKind) || 'folder.metadata',
+      fieldsUpdated: Array.isArray(result.fieldsUpdated)
+        ? result.fieldsUpdated.map(cleanString).filter(Boolean)
+        : [],
+      audit: {
+        recorded: !!(result.audit && result.audit.recorded === true),
+        operatorPeerRecorded: !!(result.audit && result.audit.operatorPeerRecorded === true)
+      },
+      counts: {
+        rowsUpdated: Number(result.counts && result.counts.rowsUpdated) || 0
+      },
+      blockers: Array.isArray(result.blockers)
+        ? result.blockers.map(function (b) { return { code: cleanString(b && b.code) || 'blocked' }; })
+        : [],
+      warnings: Array.isArray(result.warnings)
+        ? result.warnings.map(function (w) { return { code: cleanString(w && w.code) || 'warning' }; })
+        : []
+    };
+  }
+
+  function readLocalSyncPeerIdForApply(explicitPeerId) {
+    var explicit = cleanString(explicitPeerId);
+    if (explicit) return Promise.resolve(explicit);
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      return Promise.reject(new Error('local identity unavailable for folder color apply audit'));
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanString(value && value.syncPeerId);
+        if (!peerId || peerId.length > 256 || /[\u0000-\u001f\u007f]/.test(peerId)) {
+          throw new Error('local identity unavailable for folder color apply audit');
+        }
+        return peerId;
+      });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  function applyDedupeKeyHash(input) {
+    var inp = safeObject(input);
+    var direct = cleanString(inp.dedupeKeyHash);
+    if (direct) return direct;
+    return selectedDedupeKeyHash(inp.selectedDelta);
+  }
+
   function checkF6Blockers(selectedDelta, blockers, warnings, enabled) {
     if (enabled !== true) {
       addBlocker(blockers, 'f6-blocker-check-unavailable');
@@ -296,7 +392,48 @@
     });
   }
 
+  function applyBidirectionalFolderMetadataColor(input) {
+    var inp = safeObject(input);
+    var invoke = getInvoke();
+    if (inp.dryRun !== false) {
+      return Promise.resolve(applyFailure('dry-run-must-be-false', inp.dryRun));
+    }
+    if (typeof invoke !== 'function' || !detectTauri()) {
+      return Promise.resolve(applyFailure('tauri-invoke-unavailable', inp.dryRun));
+    }
+    return readLocalSyncPeerIdForApply(inp.requestedBySyncPeerId || inp.localSyncPeerId)
+      .then(function (peerId) {
+        return invoke('apply_folder_metadata_color', {
+          payload: {
+            dryRun: inp.dryRun === true,
+            devGate: cleanString(inp.devGate || inp.gate),
+            targetFolderId: cleanString(inp.targetFolderId),
+            field: cleanString(inp.field),
+            targetColor: cleanString(inp.targetColor || inp.targetValue),
+            selectedDelta: safeObject(inp.selectedDelta),
+            expectedBaselineHash: cleanString(inp.expectedBaselineHash),
+            expectedTargetHash: cleanString(inp.expectedTargetHash) || null,
+            reason: cleanString(inp.reason),
+            requestedBySyncPeerId: peerId,
+            dedupeKeyHash: applyDedupeKeyHash(inp),
+            priorPlan: safeObject(inp.priorPlan)
+          }
+        });
+      })
+      .then(function (result) {
+        return normalizeApplyResult(result, inp.dryRun);
+      })
+      .catch(function (err) {
+        var message = cleanString(err && err.message);
+        if (message.indexOf('local identity unavailable') >= 0) {
+          return applyFailure('identity-unavailable', inp.dryRun);
+        }
+        return applyFailure('folder-color-apply-failed', inp.dryRun);
+      });
+  }
+
   H2O.Studio.diagnostics.planBidirectionalFolderMetadataApply = planWithLiveChecks;
+  H2O.Studio.diagnostics.applyBidirectionalFolderMetadataColor = applyBidirectionalFolderMetadataColor;
   H2O.Studio.diagnostics.__folderMetadataApplyChecksInstalled = true;
   H2O.Studio.diagnostics.__folderMetadataApplyChecksVersion = VERSION;
 

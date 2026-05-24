@@ -982,6 +982,91 @@ Chrome storage, import/export/sync mutation paths, merge, apply, or write-back
 behavior. F5/F6 blockers remain preconditions from F7.4.1e; a future real
 apply phase must re-check F5/F6 immediately before or inside its transaction.
 
+### F7.4.3 Exact-Gated Local Folder Color Apply
+
+F7.4.3 adds the first real F7 mutation path. It is intentionally narrow:
+
+```txt
+one existing local folder -> folders.color -> one transaction -> one audit row
+```
+
+The Rust/Tauri command is:
+
+```txt
+apply_folder_metadata_color
+```
+
+The Desktop facade is narrowly named:
+
+```js
+H2O.Studio.diagnostics.applyBidirectionalFolderMetadataColor(...)
+```
+
+No generic apply, resolver, local-wins, remote-wins, merge, sync propagation, or
+Chrome write-back API is introduced.
+
+The command requires:
+
+- `dryRun: false`
+- exact gate: `I_UNDERSTAND_THIS_APPLIES_ONE_LOCAL_FOLDER_COLOR_CHANGE`
+- sensitive input `targetFolderId`
+- field `color` or `iconColor`; `iconColor` maps to the same `folders.color`
+  column
+- target color value from direct input or selected delta
+- `expectedBaselineHash` from the F7.4.1 live check hash algorithm
+- optional `expectedTargetHash`
+- non-empty `reason`
+- local sync peer identity
+- safe `dedupeKeyHash` for F6 blocker re-check
+- successful F7.4.1e plan proof showing `ok`, `applyable`, and
+  `writesPerformed: 0`
+
+The transaction shape is:
+
+```txt
+BEGIN
+  insert sync_maintenance_log audit row
+  read current folder row by sensitive target ID
+  verify normalized current folder hash equals expectedBaselineHash
+  verify target hash if supplied
+  re-check F5 tombstone/delete blockers
+  re-check F6 conflict blockers by safe dedupeKeyHash
+  UPDATE folders SET color = ?, updated_at = ? WHERE id = ?
+  verify affected row count == 1
+  update sync_maintenance_log.result_json with redacted success flags
+COMMIT
+```
+
+The command rolls back on wrong gate, `dryRun` not false, missing reason,
+missing identity, unsupported field, missing folder, stale baseline hash,
+target hash mismatch, F5 blocker, F6 blocker, audit insert failure, affected
+row mismatch, audit update failure, SQL error, or commit failure.
+
+F5 re-checks are read-only and block on active folder tombstone, cascade delete
+evidence, or unresolved folder delete review. F6 re-checks are read-only and
+use the same dedupe-key status/decision blocking matrix as the F6 diagnostic.
+F7.4.3 does not mutate F5 or F6 rows.
+
+On success, exactly one `sync_maintenance_log` row persists:
+
+- operation: `folder-metadata-color-apply`
+- policy version: `h2o.studio.sync.folder-metadata-apply.v0`
+- `dry_run: 0`
+- operator peer identity recorded in the audit column
+- redacted result JSON with field names, hash-presence booleans, rows updated,
+  F5/F6 check booleans, `localOnly: true`, and `syncPropagated: false`
+
+The result is redacted and returns only schema, booleans, field names, audit
+presence, row counts, blocker codes, and warnings. It must not return folder
+IDs, folder names, parent IDs, raw color/icon values, raw hashes, raw metadata,
+peer IDs, audit row IDs, conflict IDs, tombstone IDs, dedupe keys, raw JSON, or
+content.
+
+F7.4.3 remains local-only. It does not create folders, delete folders, move
+folder membership, mutate folder bindings, mutate chats/snapshots/content,
+write Chrome storage, export/import/sync, auto-merge, resolve conflicts, or
+propagate the color change to another peer.
+
 Potential blocker codes:
 
 - `watermark-unavailable`

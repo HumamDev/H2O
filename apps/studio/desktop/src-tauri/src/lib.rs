@@ -39,6 +39,10 @@ pub mod sync_conflict_decision;
 // color apply. Always rolls back and verifies unchanged state; no apply path.
 pub mod folder_metadata_apply_rollback_proof;
 
+// F7.4.3 — exact-gated real local folder.metadata color apply. Commits only
+// one folders.color update + one audit row; no sync/Chrome/F5/F6 mutation.
+pub mod folder_metadata_color_apply;
+
 // F7.4.2a — in-memory folder.metadata color apply transaction proof.
 // Test-only: no Tauri command, no JS surface, no production DB access.
 #[cfg(test)]
@@ -1813,6 +1817,50 @@ async fn prove_folder_metadata_color_apply_rollback(
     .await)
 }
 
+#[tauri::command]
+async fn apply_folder_metadata_color(
+    db_instances: State<'_, DbInstances>,
+    payload: folder_metadata_color_apply::FolderMetadataColorApplyPayload,
+) -> Result<folder_metadata_color_apply::FolderMetadataColorApplyResult, String> {
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(
+                folder_metadata_color_apply::FolderMetadataColorApplyResult::blocked(
+                    "desktop-db-unavailable",
+                ),
+            );
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(
+                    folder_metadata_color_apply::FolderMetadataColorApplyResult::blocked(
+                        "desktop-db-unavailable",
+                    ),
+                );
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(
+                folder_metadata_color_apply::FolderMetadataColorApplyResult::blocked(
+                    "desktop-db-unavailable",
+                ),
+            );
+        }
+    };
+
+    Ok(
+        folder_metadata_color_apply::run_apply(&mut conn, payload, nowish_iso(), nowish_millis())
+            .await,
+    )
+}
+
 #[cfg(debug_assertions)]
 #[tauri::command]
 async fn dev_seed_f5h_final_validation_synthetic_rows(
@@ -1931,6 +1979,7 @@ macro_rules! h2o_studio_invoke_handler {
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
+            apply_folder_metadata_color,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -1947,7 +1996,8 @@ macro_rules! h2o_studio_invoke_handler {
             cleanup_synthetic_commit,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
-            prove_folder_metadata_color_apply_rollback
+            prove_folder_metadata_color_apply_rollback,
+            apply_folder_metadata_color
         ]
     };
 }
