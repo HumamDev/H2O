@@ -1361,7 +1361,7 @@
         orphanCount: 0,
         localBindingCount: 0,
         badges: ['degraded'],
-        displayCountLabel: `${formatNumber(knownCount)} known`,
+        displayCountLabel: `${formatNumber(knownCount)} known here`,
         color: String(folder?.color || folder?.iconColor || '').trim(),
         iconColor: String(folder?.iconColor || folder?.color || '').trim(),
       } : null;
@@ -1406,7 +1406,7 @@
     const folderId = String(row?.folderId || row?.id || '').trim();
     const name = String(row?.name || folderId).trim() || folderId;
     const href = getRouteSvc()?.buildLibraryHash?.('folder', folderId) || `#/library/folder/${encodeURIComponent(folderId)}`;
-    const label = String(row?.displayCountLabel || '').trim() || `${formatNumber(row?.knownCount || 0)} known`;
+    const label = String(row?.displayCountLabel || '').trim() || `${formatNumber(row?.knownCount || 0)} known here`;
     const secondary = [
       folderId ? `ID ${folderId}` : '',
       Number(row?.orphanCount || 0) > 0 ? `${formatNumber(row.orphanCount)} orphan membership${Number(row.orphanCount) === 1 ? '' : 's'}` : '',

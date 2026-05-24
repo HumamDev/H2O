@@ -124,7 +124,7 @@
   function formatCanonicalCountLabel(row) {
     const native = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0);
     const known = Number(row?.knownStudioCount ?? row?.knownCount ?? 0);
-    return `${native} native · ${known} known`;
+    return `${native} native · ${known} known here`;
   }
 
   function deriveReviewBucket(rowLike) {
@@ -1147,7 +1147,7 @@
           : `canonical mirror unavailable${localBindingCount ? ` · ${localBindingCount} local` : ''}`;
         if (badges.includes('count-mismatch')) displayCountLabel += ' · count-mismatch';
       } else {
-        const base = localBindingCount > 0 ? `${localBindingCount} local` : `${knownCount} known`;
+        const base = localBindingCount > 0 ? `${localBindingCount} local` : `${knownCount} known here`;
         displayCountLabel = [base, ...badges.filter((badge) => ['extra', 'test', 'conflict', 'review'].includes(badge))].join(' · ');
       }
       const rawSortOrder = Number(folder?.sortOrder);
