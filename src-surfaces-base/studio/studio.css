@@ -1,6 +1,10 @@
 /*
- * @version 2.5.5
- * Changes: fixed shell, collapsed rail, reader-owned scroll
+ * @version 2.5.7
+ * Changes: fixed shell, collapsed rail, reader-owned scroll;
+ *          narrow viewport (<=960px) keeps sidebar as a real grid pane
+ *          (overlay mode removed) so list rows do not underlap the sidebar;
+ *          narrow-mode @media rules carry !important so they cannot be
+ *          shadowed by any cached/stale earlier rule in the cascade.
  */
 :root{
   color-scheme: dark;
@@ -727,6 +731,13 @@ body[data-sidebar="closed"] .wbSide--sidebar{
      position:fixed at <=960px (overlay), auto-placement does not drop the stage
      into the 0-width second column. */
   grid-column:3 / 4;
+  /* Form a stacking context so list-row hover/select/focus-within/popover
+     z-index (5/4/30/40) cannot escape and paint over .wbSide--sidebar
+     (z-index:3) when the sidebar is an overlay at narrow widths. Stage is a
+     pane: its layering is its own and never crosses the rail/sidebar layers.
+     Top-layer floats (emoji picker, command bar, sidebar native menu) are
+     appended to document.body, so they remain unaffected. */
+  isolation:isolate;
 }
 
 .wbTop{
@@ -2655,24 +2666,35 @@ body[data-route="reader"] .cgScroll .cgxui-mnmp-wash-orange::before{ background:
 }
 
 @media (max-width: 960px){
+  /* Narrow viewport: sidebar stays a real grid pane (no overlay mode).
+     The wide-mode defaults at the top of the file produce the right layout
+     on their own, but we re-assert them here EXPLICITLY so:
+       (a) the @media block documents narrow-width behavior in one place,
+       (b) any cached or future-introduced override that resurrects the old
+           overlay rules (`grid-template-columns:0 0 minmax(0,1fr)` and
+           `.wbSide--sidebar { position:fixed; width:min(82vw,...) }`) is
+           defeated by these explicit narrow-width rules sitting in the
+           same @media block.
+     If you ever want a true mobile overlay mode, introduce it at a much
+     narrower breakpoint (e.g. <=480px) — do not put it back here. */
   .wbShell{
-    grid-template-columns:0 0 minmax(0,1fr);
+    grid-template-columns:0 minmax(0,var(--wb-side-w)) minmax(0,1fr) !important;
   }
 
   body[data-sidebar="closed"] .wbShell{
-    grid-template-columns:var(--wb-rail-w) 0 minmax(0,1fr);
+    grid-template-columns:var(--wb-rail-w) 0 minmax(0,1fr) !important;
   }
 
   .wbSide--sidebar{
-    position:fixed;
-    inset:0 auto 0 0;
-    width:min(82vw, var(--wb-side-w));
-    height:100vh;
-    box-shadow:var(--wb-shadow);
+    position:relative !important;
+    inset:auto !important;
+    width:auto !important;
+    height:100% !important;
+    box-shadow:none !important;
   }
 
   body[data-sidebar="closed"] .wbSide--sidebar{
-    transform:translateX(-110%);
+    transform:translateX(-100%) !important;
   }
 
   .wbMain{
