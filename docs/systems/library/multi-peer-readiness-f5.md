@@ -3430,6 +3430,30 @@ The default result is redacted and contains counts plus fingerprints only.
 Debug callers may pass `includeIds: true` to include review/tombstone IDs for
 inspection. That flag does not change the read-only/no-mutation behavior.
 
+## F5H.5 — Peer watermark lifecycle model
+
+F5H.5 defines the peer watermark prerequisite for destructive lifecycle work.
+The standalone contract is documented in
+[peer-watermark-model-f5h.md](../sync/peer-watermark-model-f5h.md).
+
+A watermark is durable evidence that an observing peer has processed a source
+peer's sync stream through a specific export boundary. It is stronger than
+file discovery: `latest.json` existing, a peer directory existing, or a row
+appearing in a review queue is not enough to authorize purge or compaction.
+
+Until watermarks are implemented and runtime-proven, these operations remain
+blocked for real user evidence:
+
+- general tombstone purge
+- restored tombstone compaction
+- duplicate sighting destructive compaction
+- review archive/delete for non-synthetic rows
+- maintenance log trimming
+- any "safe to forget" operation involving real user evidence
+
+Preview-only diagnostics remain allowed. Synthetic cleanup remains separate and
+does not replace watermark requirements for non-synthetic lifecycle work.
+
 ## F5H final validation — debug synthetic seeder
 
 F5H final live validation needs at least one cleanup-eligible synthetic
