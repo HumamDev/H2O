@@ -398,7 +398,10 @@
     const rawIcon = String(rawItem.iconKey || rawItem.icon || '').trim().toLowerCase();
     const fallbackIcon = SIDEBAR_ICON_SVGS[rawIcon] ? rawIcon : defaultIconForKind(kind);
     const icon = kind === 'folders' ? 'folder' : normalizeCategoryIcon(pref.icon || fallbackIcon);
-    const color = normalizeHexColor(pref.color || rawItem.color || rawItem.iconColor || rawItem.labelColor || rawItem.projectColor || '');
+    const isCanonicalFolder = kind === 'folders' && rawItem.isCanonical === true;
+    const color = isCanonicalFolder
+      ? normalizeHexColor(rawItem.iconColor || rawItem.color || rawItem.folderColor || rawItem.accentColor || '')
+      : normalizeHexColor(pref.color || rawItem.color || rawItem.iconColor || rawItem.labelColor || rawItem.projectColor || '');
     return {
       id,
       kind,
@@ -626,6 +629,7 @@
     const kind = normalizeMenuKind(item.kind || item.section);
     if (kind === 'categories') return writeNativeCategoryAppearance(item.id, { color });
     if (kind === 'folders') {
+      if (item.isCanonical === true) return false;
       writeLocalRowAppearance(item, { color });
       return writeNativeFolderColor(item.id, color);
     }
@@ -1057,6 +1061,7 @@
         'data-canonical-count': item.canonicalCount != null ? item.canonicalCount : null,
         'data-known-count': item.knownCount != null ? item.knownCount : null,
         'data-local-binding-count': item.localBindingCount != null ? item.localBindingCount : null,
+        'data-color-source': item.isCanonical === true ? 'canonical' : (color ? 'local' : null),
         style: color ? `--wb-sidebar-item-color:${color};` : '',
       }, [
         makeItemIcon(item, kind),
@@ -1155,7 +1160,9 @@
         isTestCandidate: row?.isTestCandidate === true,
         isConflict: row?.isConflict === true,
         reviewBucket: row?.reviewBucket || null,
-        color: appearance.color || normalizeHexColor(row?.color || row?.iconColor || ''),
+        color: row?.isCanonical === true
+          ? normalizeHexColor(row?.iconColor || row?.color || '')
+          : (appearance.color || normalizeHexColor(row?.color || row?.iconColor || '')),
         iconKey: appearance.icon || 'folder',
         iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
       };
