@@ -349,6 +349,194 @@ only if it selects candidates, validates shape, returns selected candidates
 only, does not ingest, does not call F6 store writes, and does not mutate local
 or remote state.
 
+### F7.4.0 Folder Metadata Color Apply Safety Contract
+
+F7.4.0 is a documentation contract only. It does not authorize apply code,
+runtime APIs, Rust commands, migrations, schema stamping, UI, settings, Chrome
+storage mutation, import/export/sync behavior changes, or F5/F6 runtime
+changes.
+
+The first possible apply target is narrowed to one existing local folder row
+and one non-structural scalar color field: `color` / `iconColor`. This proves
+the gated audit and transaction machinery with lower risk than folder renames,
+hierarchy changes, membership changes, or content changes.
+
+Allowed scope:
+
+- One existing local folder row.
+- One local-only color metadata update.
+- One non-structural scalar field: `color` / `iconColor`.
+
+Deferred fields:
+
+- `name`
+- `parentId`
+- `sortOrder`
+- `icon`
+- `kind`
+- `source`
+- `meta`
+- `createdAt`
+- `updatedAt`
+
+Forbidden behavior:
+
+- Folder creation.
+- Folder deletion.
+- FolderBinding or membership mutation.
+- Chat or snapshot movement.
+- Cascade behavior.
+- Chrome storage mutation.
+- Remote write-back.
+- Automatic apply.
+- Automatic merge.
+
+For this contract, "apply folder.metadata" means updating exactly one allowed
+scalar field on one existing local folder row after verifying that the selected
+preview baseline still matches current local state, then recording audit. It
+does not mean local-wins globally, remote-wins globally, bidirectional sync,
+folder merge, create/delete, membership movement, or content sync.
+
+Future real apply must require:
+
+- Exact dev gate:
+  `I_UNDERSTAND_THIS_APPLIES_ONE_FOLDER_METADATA_CHANGE`
+- `dryRun: false`
+- Non-empty reason.
+- Local sync peer identity.
+- Selected delta from a fresh preview.
+- Current baseline hash equal to the expected preview baseline hash.
+- Existing target folder row.
+- Only allowlisted fields present.
+- F5 tombstone/delete blockers absent.
+- F6 conflict blockers absent or explicitly resolved.
+- Transaction and audit.
+- Affected row count exactly `1`.
+
+Future API contract, for planning only:
+
+```js
+await H2O.Studio.diagnostics.applyBidirectionalFolderMetadata({
+  dryRun: false,
+  devGate: "I_UNDERSTAND_THIS_APPLIES_ONE_FOLDER_METADATA_CHANGE",
+  reason: "operator approved one folder color update",
+  previewToken,
+  selectedDelta,
+  expectedBaselineHash,
+  expectedTargetHash
+});
+```
+
+Implementation must be split into later phases:
+
+- F7.4.1: dry-run apply plan only, zero writes.
+- F7.4.2: audit/transaction proof.
+- F7.4.3: real exact-gated color apply only.
+- F7.4.4: consider `icon`, then `sortOrder`, then much later `name`.
+- Keep `parentId` deferred until hierarchy and cycle validation exists.
+
+Audit model:
+
+- Prefer existing maintenance/audit infrastructure if it can record this safely.
+- Record operation `folder-metadata-apply`.
+- Record policy version.
+- Record reason.
+- Record operator sync peer identity presence.
+- Record selected field names.
+- Record before/after hashes.
+- Record preview token/hash.
+- Record rows updated.
+- Record blockers/warnings.
+- Do not return raw folder names, raw IDs, raw metadata, or raw peer IDs.
+
+Future real apply must be one transaction:
+
+```sql
+BEGIN;
+  INSERT audit pending row;
+  SELECT current folder row;
+  verify current hash == expectedBaselineHash;
+  verify F5 blockers absent;
+  verify F6 blockers absent or resolved;
+  UPDATE folders SET color = ? WHERE id = ?;
+  verify affected rows == 1;
+  UPDATE audit row success;
+COMMIT;
+```
+
+Rollback on audit failure, stale baseline, tombstone blocker, F6 blocker, SQL
+failure, or affected-row mismatch.
+
+F5 must block apply for active folder tombstones, delete-vs-edit evidence,
+cascade delete evidence, or unresolved delete review. F7 must not override F5.
+
+F6 must block apply for matching pending conflicts, accepted-later conflicts,
+unresolved preview candidates, or cases where an explicit resolved decision is
+required but absent. F7 must not bypass F6.
+
+Schema and stamping decision:
+
+- Fresh baseline hash is enough for dry-run planning.
+- Fresh baseline hash may be enough for a tightly gated local-only color apply.
+- Fresh baseline hash is not enough for broader metadata apply or remote
+  propagation.
+- Do not add general watermark or stamping columns yet.
+- Decide audit/stamping requirements before F7.4.3 real apply.
+
+Planned result shape:
+
+```js
+{
+  schema: "h2o.studio.sync.folder-metadata-apply.v0",
+  ok: true,
+  dryRun: false,
+  redacted: true,
+  applied: true,
+  entityKind: "folder.metadata",
+  fieldsUpdated: ["color"],
+  audit: {
+    recorded: true,
+    operatorPeerRecorded: true
+  },
+  counts: {
+    rowsUpdated: 1
+  },
+  blockers: [],
+  warnings: []
+}
+```
+
+Redaction policy for apply results:
+
+- Never return folder name, folder ID, parent ID, raw metadata, raw JSON, peer
+  IDs, or unsafe raw hashes.
+- Treat raw color/icon values as sensitive unless a later exact-gated
+  diagnostic mode authorizes them.
+- Return only field names, booleans, counts, code-level blockers, and audit
+  presence.
+
+Future validation must prove wrong gate blocks, missing reason blocks, dry-run
+writes zero rows, stale preview hash blocks, tombstone evidence blocks, pending
+F6 conflict blocks, forbidden fields reject, single color update succeeds,
+folderBinding rows remain unchanged, chat/snapshot rows remain unchanged, audit
+persists, rollback works, no Chrome storage mutation occurs, no
+import/export/sync behavior changes, and redaction passes.
+
+F7.4.0 risk table:
+
+| Risk | Severity | Mitigation |
+| --- | --- | --- |
+| Silent overwrite | High | Fresh baseline hash, exact gate, transaction |
+| Hierarchy corruption | High | Defer `parentId` until hierarchy validation exists |
+| Semantic rename mistake | Medium | Defer `name` until later validated phase |
+| F5 delete bypass | High | Mandatory tombstone/delete blocker checks |
+| F6 conflict bypass | High | Require no pending/accepted-later conflict or explicit resolved state |
+| Audit gap | High | Require audit before real apply |
+| Operator confusion | Medium | Dry-run-first split, exact gate, field-limited result |
+
+The next phase should be F7.4.1 dry-run apply plan only. Do not implement real
+apply yet, and do not add schema/stamping unless F7.4.1 proves it is needed.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
