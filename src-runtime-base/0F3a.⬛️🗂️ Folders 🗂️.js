@@ -141,6 +141,10 @@
   const CFG_CATEGORY_DEFAULT_COLOR = '#3B82F6';
   const CFG_ASSIGN_ONE_FOLDER_MAX = true; // keep your intended behavior: one-folder max
   const EV_FOLDERS_CHANGED = 'evt:h2o:folders:changed';
+  const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
+  const FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA = 'h2o.folder-metadata-operation-preview.v1';
+  const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
+  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-e1.native-owner-api.v1';
   const CFG_PROJECT_COLOR_OPTIONS = Object.freeze([
     { key: 'blue', label: 'Blue', color: '#3B82F6' },
     { key: 'red', label: 'Red', color: '#FF4C4C' },
@@ -1924,6 +1928,321 @@ ${CROW}[aria-current="true"]{
     });
     ENGINE_rerenderAllSections();
     UI_refreshActivePageForAppearance('folder', id);
+  }
+
+  function META_isObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function META_safeObject(value) {
+    return META_isObject(value) ? value : {};
+  }
+
+  function META_cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function META_hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(META_safeObject(obj), key);
+  }
+
+  function META_canonicalize(value) {
+    if (Array.isArray(value)) return value.map(META_canonicalize);
+    if (!META_isObject(value)) return value;
+    const out = {};
+    Object.keys(value).sort().forEach((key) => {
+      out[key] = META_canonicalize(value[key]);
+    });
+    return out;
+  }
+
+  function META_stableStringify(value) {
+    try { return JSON.stringify(META_canonicalize(value)); }
+    catch { return String(value || ''); }
+  }
+
+  function META_hash(value) {
+    const text = META_stableStringify(value);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `h2o-folder-meta-${(`00000000${hash.toString(16)}`).slice(-8)}`;
+  }
+
+  function META_folderHashInput(folder) {
+    const row = META_safeObject(folder);
+    return {
+      id: META_cleanString(row.id || row.folderId),
+      name: META_cleanString(row.name || row.title),
+      color: STORE_normalizeProjectColor(row.iconColor || row.color),
+      icon: META_cleanString(row.icon || ''),
+      sortOrder: Number.isFinite(Number(row.sortOrder)) ? Number(row.sortOrder) : null,
+      kind: META_cleanString(row.kind || ''),
+      parentId: META_cleanString(row.parentId || ''),
+      projectRefPresent: !!row.projectRef,
+      metaPresent: !!(row.meta || row.meta_json),
+    };
+  }
+
+  function META_folderHash(folder) {
+    return META_hash(META_folderHashInput(folder));
+  }
+
+  function META_memberships(data, folderId) {
+    const items = data?.items && typeof data.items === 'object' ? data.items : {};
+    return Array.isArray(items[folderId])
+      ? items[folderId].map((value) => String(value || '').trim()).filter(Boolean).sort()
+      : [];
+  }
+
+  function META_membershipHash(data, folderId) {
+    return META_hash({ folderId, memberships: META_memberships(data, folderId) });
+  }
+
+  function META_sourceHash(data) {
+    const src = STORE_normalizeData(data);
+    return META_hash({
+      folders: (src.folders || []).map((folder) => ({
+        id: META_cleanString(folder.id || folder.folderId),
+        folderHash: META_folderHash(folder),
+        membershipHash: META_membershipHash(src, META_cleanString(folder.id || folder.folderId)),
+      })).sort((a, b) => a.id.localeCompare(b.id)),
+    });
+  }
+
+  function META_findFolder(data, folderId) {
+    const id = META_cleanString(folderId);
+    return (Array.isArray(data?.folders) ? data.folders : []).find((folder) => META_cleanString(folder?.id || folder?.folderId) === id) || null;
+  }
+
+  function META_folderSummary(data, folder) {
+    const row = META_safeObject(folder);
+    const id = META_cleanString(row.id || row.folderId);
+    const memberships = META_memberships(data, id);
+    const iconColor = STORE_normalizeProjectColor(row.iconColor || row.color);
+    const color = STORE_normalizeProjectColor(row.color || row.iconColor);
+    return {
+      id,
+      folderId: id,
+      name: META_cleanString(row.name || row.title || id),
+      color,
+      iconColor,
+      icon: META_cleanString(row.icon || ''),
+      sortOrder: Number.isFinite(Number(row.sortOrder)) ? Number(row.sortOrder) : null,
+      membershipCount: memberships.length,
+      folderHash: META_folderHash(row),
+      sourceHash: META_sourceHash(data),
+      membershipHash: META_membershipHash(data, id),
+    };
+  }
+
+  function META_addCode(list, code) {
+    const normalized = META_cleanString(code);
+    if (!normalized) return;
+    if (!list.some((entry) => entry && entry.code === normalized)) list.push({ code: normalized });
+  }
+
+  function META_isLocalReviewOperation(operation) {
+    const op = META_safeObject(operation);
+    const before = META_safeObject(op.before);
+    const after = META_safeObject(op.after);
+    const surface = META_cleanString(op.sourceSurface).toLowerCase();
+    const folderId = META_cleanString(op.folderId || before.folderId || after.folderId);
+    return op.localReviewTarget === true
+      || !!META_cleanString(op.reviewBucket || before.reviewBucket || after.reviewBucket)
+      || surface === 'local-review'
+      || /^(__|local-review[:_-])/i.test(folderId);
+  }
+
+  function META_targetColorFromOperation(operation) {
+    const op = META_safeObject(operation);
+    const after = META_safeObject(op.after);
+    const directKeys = ['iconColor', 'color', 'targetColor'];
+    for (const key of directKeys) {
+      if (META_hasOwn(after, key)) {
+        const raw = META_cleanString(after[key]);
+        return { present: true, raw, color: raw ? STORE_normalizeProjectColor(raw) : '' };
+      }
+    }
+    for (const key of ['targetColor', 'color', 'iconColor']) {
+      if (META_hasOwn(op, key)) {
+        const raw = META_cleanString(op[key]);
+        return { present: true, raw, color: raw ? STORE_normalizeProjectColor(raw) : '' };
+      }
+    }
+    return { present: false, raw: '', color: '' };
+  }
+
+  function META_operationBase(operation) {
+    const op = META_safeObject(operation);
+    const folderId = META_cleanString(op.folderId || op.before?.folderId || op.after?.folderId || op.id);
+    return {
+      schema: FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA,
+      readOnly: true,
+      noMutation: true,
+      operationSchema: META_cleanString(op.schema || ''),
+      operationType: META_cleanString(op.operationType),
+      folderId,
+      before: null,
+      after: null,
+      requiredAuthority: 'native-h2o-folder-state',
+      canApply: false,
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function META_validateCommon(operation, preview, data) {
+    const op = META_safeObject(operation);
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) META_addCode(preview.blockers, 'invalid-operation-schema');
+    if (!preview.folderId) META_addCode(preview.blockers, 'folder-id-required');
+    if (META_isLocalReviewOperation(op)) META_addCode(preview.blockers, 'local-review-target-blocked');
+    const folder = preview.folderId ? META_findFolder(data, preview.folderId) : null;
+    if (!folder) {
+      META_addCode(preview.blockers, 'folder-not-found');
+      META_addCode(preview.blockers, 'target-not-canonical');
+      return null;
+    }
+    preview.before = META_folderSummary(data, folder);
+    const guard = META_safeObject(op.staleGuard);
+    if (META_cleanString(guard.folderHash) && META_cleanString(guard.folderHash) !== preview.before.folderHash) {
+      META_addCode(preview.blockers, 'stale-folder-hash');
+    }
+    if (META_cleanString(guard.sourceHash) && META_cleanString(guard.sourceHash) !== preview.before.sourceHash) {
+      META_addCode(preview.blockers, 'stale-source-hash');
+    }
+    if (META_cleanString(guard.membershipHash) && META_cleanString(guard.membershipHash) !== preview.before.membershipHash) {
+      META_addCode(preview.blockers, 'stale-membership-hash');
+    }
+    return folder;
+  }
+
+  function META_previewColorOperation(operation, preview, data) {
+    const folder = META_validateCommon(operation, preview, data);
+    const target = META_targetColorFromOperation(operation);
+    const targetValid = target.present && (!target.raw || !!target.color);
+    if (!targetValid) META_addCode(preview.blockers, 'invalid-color');
+    if (!folder) return preview;
+    const before = preview.before || META_folderSummary(data, folder);
+    if (!targetValid) return preview;
+    const after = { ...before, color: target.color, iconColor: target.color };
+    after.folderHash = META_hash(META_folderHashInput({ ...folder, color: target.color, iconColor: target.color }));
+    preview.after = after;
+    if (target.present && target.color === before.iconColor) META_addCode(preview.warnings, 'no-op-color-unchanged');
+    const stableFieldsChanged = before.name !== after.name
+      || before.id !== after.id
+      || before.sortOrder !== after.sortOrder
+      || before.membershipCount !== after.membershipCount;
+    if (stableFieldsChanged) META_addCode(preview.blockers, 'unexpected-non-color-delta');
+    preview.canApply = preview.blockers.length === 0;
+    return preview;
+  }
+
+  function META_previewRenameOperation(operation, preview, data) {
+    const folder = META_validateCommon(operation, preview, data);
+    const op = META_safeObject(operation);
+    const after = META_safeObject(op.after);
+    const nextName = META_cleanString(after.name || after.title || op.name || op.title);
+    if (!nextName) META_addCode(preview.blockers, 'invalid-folder-name');
+    if (UTIL_isReservedFolderViewName(nextName)) META_addCode(preview.blockers, 'invalid-folder-name');
+    if (folder && nextName) {
+      const exists = data.folders.some((item) =>
+        item.id !== folder.id && META_cleanString(item.name || item.title).toLowerCase() === nextName.toLowerCase()
+      );
+      if (exists) META_addCode(preview.blockers, 'same-name-conflict');
+      preview.after = { ...(preview.before || META_folderSummary(data, folder)), name: nextName };
+    }
+    META_addCode(preview.blockers, 'rename-operation-not-enabled-yet');
+    preview.canApply = false;
+    return preview;
+  }
+
+  function META_previewDeleteOperation(operation, preview, data) {
+    const folder = META_validateCommon(operation, preview, data);
+    if (folder) {
+      preview.after = null;
+      if ((preview.before?.membershipCount || 0) > 0) META_addCode(preview.blockers, 'delete-non-empty-folder-blocked');
+    }
+    META_addCode(preview.blockers, 'delete-policy-not-implemented');
+    preview.canApply = false;
+    return preview;
+  }
+
+  function API_previewMetadataOperation(operation) {
+    const data = STORE_readData();
+    const preview = META_operationBase(operation);
+    if (preview.operationType === 'change-folder-color') return META_previewColorOperation(operation, preview, data);
+    if (preview.operationType === 'rename-folder') return META_previewRenameOperation(operation, preview, data);
+    if (preview.operationType === 'delete-folder') return META_previewDeleteOperation(operation, preview, data);
+    META_addCode(preview.blockers, 'unsupported-operation-type');
+    return preview;
+  }
+
+  function API_applyMetadataOperation(operation, options = {}) {
+    const opts = META_safeObject(options);
+    const preview = API_previewMetadataOperation(operation);
+    if (opts.dryRun === true) return { ...preview, dryRun: true };
+    if (preview.operationType !== 'change-folder-color') {
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: false,
+        applied: false,
+        noMutation: true,
+        operationType: preview.operationType,
+        folderId: preview.folderId,
+        before: preview.before,
+        after: preview.after,
+        blockers: preview.blockers.length ? preview.blockers : [{ code: `${preview.operationType || 'operation'}-not-enabled-yet` }],
+        warnings: preview.warnings,
+      };
+    }
+    if (!preview.canApply) {
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: false,
+        applied: false,
+        noMutation: true,
+        operationType: preview.operationType,
+        folderId: preview.folderId,
+        before: preview.before,
+        after: preview.after,
+        blockers: preview.blockers,
+        warnings: preview.warnings,
+      };
+    }
+    if ((preview.before?.iconColor || '') === (preview.after?.iconColor || '')) {
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: true,
+        applied: false,
+        noMutation: true,
+        writesPerformed: 0,
+        operationType: preview.operationType,
+        folderId: preview.folderId,
+        before: preview.before,
+        after: preview.before,
+        blockers: [],
+        warnings: preview.warnings,
+      };
+    }
+    STORE_setFolderIconColor(preview.folderId, preview.after?.iconColor || '');
+    const afterData = STORE_readData();
+    const afterFolder = META_findFolder(afterData, preview.folderId);
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      ok: true,
+      applied: true,
+      noMutation: false,
+      writesPerformed: 1,
+      operationType: preview.operationType,
+      folderId: preview.folderId,
+      before: preview.before,
+      after: afterFolder ? META_folderSummary(afterData, afterFolder) : null,
+      blockers: [],
+      warnings: preview.warnings,
+    };
   }
 
     /* Phase C8: moved to 0F4a — function STORE_getCategoryAppearance */
@@ -5925,6 +6244,16 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       ownerRegistered: !!H2O.LibraryCore?.getOwner?.('folders'),
       serviceRegistered: !!H2O.LibraryCore?.getService?.('folders'),
       folderParity: API_getFolderParityDiagnostics(),
+      metadataOperations: {
+        version: FOLDER_METADATA_OPERATION_VERSION,
+        operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,
+        previewSchema: FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA,
+        resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        supportedOperations: ['change-folder-color'],
+        previewOnlyOperations: ['rename-folder', 'delete-folder'],
+        authority: 'native-h2o-folder-state',
+        officialChatGptFolderApiProven: false,
+      },
       deprecation: API_getDeprecationDiagnostics(),
     };
   }
@@ -5956,6 +6285,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     setShowFolderCounts: API_setShowFolderCounts,
     getShowCategoryCounts: API_getShowCategoryCounts,
     setShowCategoryCounts: API_setShowCategoryCounts,
+    previewMetadataOperation: API_previewMetadataOperation,
+    applyMetadataOperation: API_applyMetadataOperation,
     // Phase 9B: native viewer/sidebar UI is future-deprecated only after Studio
     // replacement workflows are complete; save/bind/write paths stay active.
     ensureInjected: CORE_FS_ensureInjected,
@@ -6053,6 +6384,8 @@ function LIBCORE_registerFoldersOwner() {
   if (typeof H2O.folders.setShowFolderCounts !== 'function') H2O.folders.setShowFolderCounts = API_setShowFolderCounts;
   if (typeof H2O.folders.getShowCategoryCounts !== 'function') H2O.folders.getShowCategoryCounts = API_getShowCategoryCounts;
   if (typeof H2O.folders.setShowCategoryCounts !== 'function') H2O.folders.setShowCategoryCounts = API_setShowCategoryCounts;
+  if (typeof H2O.folders.previewMetadataOperation !== 'function') H2O.folders.previewMetadataOperation = API_previewMetadataOperation;
+  if (typeof H2O.folders.applyMetadataOperation !== 'function') H2O.folders.applyMetadataOperation = API_applyMetadataOperation;
   if (typeof H2O.folders.diagnose !== 'function') H2O.folders.diagnose = API_diagnose;
   if (typeof H2O.folders.ensureInjected !== 'function') H2O.folders.ensureInjected = CORE_FS_ensureInjected;
   if (typeof H2O.folders.syncFolderSidebarActiveState !== 'function') H2O.folders.syncFolderSidebarActiveState = CORE_FS_syncFolderSidebarActiveState;
