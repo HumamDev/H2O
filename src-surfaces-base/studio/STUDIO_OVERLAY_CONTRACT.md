@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 3b)
+Status: Active (Phase 3c-A)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -696,6 +696,180 @@ while one is open returns `{ ok: false, reason: 'print-in-progress' }`.
   exists on the serializer (`collapsedMode: 'omit'`) but no ribbon UI
   in Phase 3b.
 - DOCX / direct JS PDF / Tauri-native PDF.
+
+## Phase 3c-A — DOCX writer foundation (no ribbon yet)
+
+Status: **Built** (writer-only slice). Phase 3c-A ships the pure
+in-house DOCX writer that Phase 3c-B will compose with the ribbon.
+**No `RibbonBridge.exportDocx`, no `Export → DOCX` handler, no
+platform-adapter changes** in this slice — those land in Phase 3c-B.
+
+### Strategy
+
+Strategy B from the Phase 3c plan: **minimal in-house DOCX writer**
+emitting a stored-mode (uncompressed) OOXML/WordprocessingML ZIP
+container. **Zero new runtime dependencies, no vendor library, no
+deflate code.** Valid DOCX files are accepted by Word, LibreOffice,
+Pages without compression — file size grows ~10% over the JSON it
+encodes, acceptable for V1.
+
+### The writer module
+
+`H2O.Studio.overlayDocxWriter` is a singleton installed by
+`studio/overlay/overlay-docx-writer.studio.js`. Pure module: no DOM,
+no storage, no I/O, no platform.files dependency. Reuses the Phase 2d-
+aware reducers (`computeMessageState`, `computeStructureState`,
+`findSectionContaining`) the Phase 2e serializer and the Phase 3a/3b
+bridges already use, so it inherits the active-set filter
+automatically.
+
+Public API:
+
+```ts
+H2O.Studio.overlayDocxWriter.build(input) -> {
+  blob: Blob,         // application/vnd.openxmlformats-officedocument.wordprocessingml.document
+  bytes: Uint8Array,  // raw ZIP bytes (same data backing the Blob)
+  size: number,
+  opsApplied: number,       // count of active per-message ops emitted
+  structureApplied: boolean,// true iff a section/divider/TOC was emitted
+  tocIncluded: boolean,
+  collapsedSections: number,
+  reason?: string,          // 'writer-error' on internal failure
+}
+
+H2O.Studio.overlayDocxWriter.selfCheck() -> {
+  ok, version, phase, docxMime,
+  crc32Probe: { input, got, expected, ok },
+  hasReducers, defaultIncludeOverlay, defaultIncludeToc,
+  defaultCollapsedMode, errors,
+}
+```
+
+`input` shape:
+
+```ts
+{
+  snap: Snapshot,
+  overlay: EditOverlay | null,
+  headerMeta?: { title?, capturedDate?, originalUrl?, chatId? },
+  opts?: {
+    includeOverlay?: boolean,   // default true; when false, emit raw transcript only
+    includeToc?: boolean,       // default false
+    collapsedMode?: 'include-marked' | 'include-silent' | 'omit',  // default 'include-marked'
+  }
+}
+```
+
+The writer **never throws**. On internal error it falls back to a
+minimal valid DOCX containing just the header block and resolves with
+`reason: 'writer-error'`. The CRC32 self-check
+(`crc32("abc") === 0x352441C2`) runs at probe time and surfaces via
+`selfCheck().crc32Probe.ok`.
+
+### DOCX ZIP entries emitted (exactly 5)
+
+| Entry | Purpose |
+|---|---|
+| `[Content_Types].xml` | MIME-type map — declares `application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml` for `word/document.xml` and the corresponding type for `word/styles.xml`. |
+| `_rels/.rels` | Root relationships — points at `word/document.xml`. |
+| `word/_rels/document.xml.rels` | Document-scoped relationships — points at `word/styles.xml`. |
+| `word/document.xml` | The body: paragraphs + runs. |
+| `word/styles.xml` | Style declarations: `Title`, `Heading1-3`, `IntenseQuote`, `ListBullet`. No visual properties — consumer apps apply their theme. |
+
+### ZIP encoding
+
+- **Stored mode (method 0)** — no compression, no deflate code, no
+  `CompressionStream` dependency.
+- **General-purpose bit flag = 0** — no UTF-8 flag (all our entry names
+  are pure ASCII).
+- **Deterministic timestamps** — fixed DOS date 2020-01-01 00:00:00 so
+  output bytes are reproducible across runs (test-friendly).
+- **CRC32** — ISO/IEC 3309 standard (poly = 0xEDB88320 reflected,
+  init = 0xFFFFFFFF, final XOR = 0xFFFFFFFF).
+- **No ZIP64** — `.docx` files comfortably fit under the 4 GB ZIP-32
+  limit for any realistic transcript.
+
+### Op → DOCX mapping (mirrors Phase 2e + 3a)
+
+Same body-walking semantics the Phase 2e serializer uses; emission is
+OOXML paragraphs instead of Markdown lines.
+
+| Op | DOCX output |
+|---|---|
+| `heading H1/H2/H3` | role-label paragraph styled `Heading1/2/3`; body as `Normal` paragraphs |
+| `quote` | body paragraphs styled `IntenseQuote` |
+| `code` / `code-block` | body runs with `<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>`; `\n` → `<w:br/>` |
+| `callout` (info/note/warning/tip) | wraps role + body in `IntenseQuote` paragraphs with a leading **bold** `[!kind]` run |
+| `clean-spacing` | text pass: collapse 3+ consecutive `\n` → 2 before run emission |
+| `add-section` / `split-section` | `<w:p>` styled `Heading2` with section title |
+| `collapse-section` (default `include-marked`) | section title appended with ` [collapsed — N turns]`; content still emitted |
+| `page-divider` | `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` (hard page break) |
+| `toc` (when `includeToc: true`) | After header block: `Heading1` "Contents" + one `ListBullet` per section title |
+
+Op stacking on a single message (outer → inner): `callout > heading >
+code > quote > clean-spacing`. When both `code` and `quote` are active
+on the same turn, `code` wins (same as Phase 2e).
+
+### Header block (top of every DOCX)
+
+```
+[Title-styled paragraph]    snap.title
+[italic run]                Captured: YYYY-MM-DD
+[italic run, optional]      Source: <originalUrl>      ← only when present
+[italic run, optional]      Chat ID: <chatId>          ← only when present
+[empty spacer paragraph]
+```
+
+### XML safety
+
+All user-supplied text passes through:
+- `stripInvalidXmlChars` — removes XML 1.0-illegal control chars
+  (0x00–0x08, 0x0B, 0x0C, 0x0E–0x1F, plus U+FFFE/U+FFFF) while
+  preserving `\t`, `\n`, `\r`.
+- `xmlEscape` — replaces `& < > " '` with their entity equivalents.
+- Run text uses `<w:t xml:space="preserve">` so leading / trailing
+  whitespace survives.
+- Embedded `\n` becomes `<w:br/>` inside the run so newlines render
+  as soft line breaks in Word.
+
+### Compliance notes for Phase 3c-A
+
+- The writer MUST NOT mutate `snap.messages` or the `overlay` record.
+- The writer MUST be self-contained: no DOM, no storage, no
+  `platform.files`, no `RibbonBridge`, no `H2O.events.emit`.
+- The writer MUST reuse the existing applier reducers — do NOT
+  duplicate `computeMessageState` / `computeStructureState` logic.
+- The CRC32 implementation MUST use the ISO/IEC 3309 standard
+  (poly = 0xEDB88320 reflected); `selfCheck().crc32Probe.ok` MUST be
+  `true` for the writer to be considered healthy.
+- ZIP output MUST be deterministic — same input → same bytes, every
+  call (fixed DOS timestamp, no random ordering).
+- The writer MUST NOT throw under any input. On internal failure, it
+  returns a minimal valid DOCX with just the header block and
+  `reason: 'writer-error'`.
+
+### Out of scope for Phase 3c-A (deferred to Phase 3c-B)
+
+- `RibbonBridge.exportDocx(opts?)` — the bridge method that composes
+  the writer with `platform.files.exportBlob`.
+- `ACTION_HANDLERS['export-docx']` ribbon wiring in S0Y1a.
+- Status string canon for the `Export → DOCX` action.
+- Tauri-adapter binary-write path (if needed; current `write_text_file`
+  would corrupt DOCX bytes — Phase 3c-B will route to the inline
+  Blob+anchor fallback OR add a `write_file` branch).
+- Filename helper `_buildDocxFilename` — Phase 3c-B; trivial wrapper
+  over Phase 3a's `_buildMarkdownFilename`.
+
+### Out of scope for Phase 3c-A *and* Phase 3c-B
+
+- Images, tables, hyperlinks, lists beyond `ListBullet`.
+- Headers / footers.
+- Custom fonts beyond Consolas for code runs.
+- Themes beyond Word's defaults.
+- ZIP64 / large-file extensions.
+- DEFLATE compression (stored-mode only).
+- Embedded TOC with live page numbers.
+- DOCX → editable round-trip.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

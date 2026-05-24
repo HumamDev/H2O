@@ -322,6 +322,34 @@
                   src-surfaces-base/studio/overlay/README.md. -->
   <script src="./overlay/overlay-serializer.studio.js"></script>
 
+  <!-- ── Studio Overlay DOCX Writer (Phase 3c-A) ────────────────────────
+       Pure DOCX writer foundation: builds a stored-mode (uncompressed)
+       OOXML/WordprocessingML ZIP container from a snapshot + EditOverlay
+       record. Public API:
+         H2O.Studio.overlayDocxWriter.build({ snap, overlay, headerMeta, opts })
+           → { blob, bytes, size, opsApplied, structureApplied, tocIncluded, collapsedSections }
+         H2O.Studio.overlayDocxWriter.selfCheck() → { ok, crc32Probe, ... }
+
+       Phase 3c-A is the writer FOUNDATION only — no ribbon wiring, no
+       RibbonBridge.exportDocx, no platform-adapter changes. Phase 3c-B
+       will compose this module with platform.files.exportBlob and wire
+       the Export → DOCX ribbon handler.
+
+       No DOM access, no storage, no I/O. Reads overlay state via the
+       applier's pure reducers (computeMessageState / computeStructureState
+       / findSectionContaining) so it inherits Phase 2d's active-set
+       filter automatically. Loads AFTER overlay-serializer.studio.js
+       (depends on the same reducers via H2O.Studio.overlay) and BEFORE
+       store/editOverlay.js + studio.js (which will consume it through
+       the RibbonBridge in Phase 3c-B).
+
+       No new runtime dependencies. No vendor library. No deflate code —
+       ZIP entries use stored mode (method 0). Valid DOCX files are
+       accepted by Word, LibreOffice, Pages without compression.
+       Contracts: src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md,
+                  src-surfaces-base/studio/overlay/README.md. -->
+  <script src="./overlay/overlay-docx-writer.studio.js"></script>
+
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
        AFTER platform/ so the store can use platform.broadcast.onAnyChange,
