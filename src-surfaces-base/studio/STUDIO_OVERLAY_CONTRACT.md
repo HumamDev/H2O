@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 2d)
+Status: Active (Phase 2e)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -282,6 +282,132 @@ circuit so paints only fire on real changes.
 - History compaction (dropping ops referenced by neither stack) —
   deferred; `overlay.ops` may grow unboundedly within a single editing
   session and that is accepted for V1.
+
+## Phase 2e — overlay-aware Copy clean transcript
+
+Status: **Built**. Implemented across
+`overlay/overlay-serializer.studio.js` (new pure serializer module),
+`studio.js` (`RibbonBridge.getCleanTranscript` evolved to async
+object-returning shape), `studio.html` (one new script tag), and
+`S0Y1a. 🎬 Studio Ribbon - Studio.js` (`copy-clean-transcript` handler
+awaits the new shape).
+
+### The serializer
+
+`H2O.Studio.overlaySerializer.serialize(snap, overlay, opts)` is a pure
+function: no DOM access, no storage access, no I/O. It produces a
+Markdown-flavoured transcript using the existing Phase 2d-aware
+reducers (`computeMessageState` + `computeStructureState`), so it
+automatically honours `undoStack` membership. It never mutates `snap`
+or `overlay`.
+
+Options:
+
+- `includeOverlay` (default `true`) — when `false`, returns text
+  byte-identical to Phase 1b's raw format
+  (`User:\n<text>\n\nA:\n<text>\n\nSystem:\n<text>`).
+- `includeToc` (default `false`) — when `true` and at least one
+  section exists, emits `## Contents\n- <title>\n...` at the top.
+- `collapsedMode` (default `'include-marked'`) — controls collapsed-
+  section output:
+  - `'include-marked'`: include turns, append `[collapsed — N turns]`
+    suffix to the section header.
+  - `'include-silent'`: include turns, no marker.
+  - `'omit'`: skip turns of collapsed sections, append
+    `[collapsed — N turns hidden]` to the header.
+
+Return shape: `{ text, opsApplied, structureApplied, tocIncluded,
+collapsedSections, reason? }`. `opsApplied` counts per-message ops
+that produced visible output; `structureApplied` is `true` when any
+section header / page divider / TOC was emitted.
+
+### Output mappings (Markdown-flavoured)
+
+| Op | Output |
+|---|---|
+| `heading` H1 | `# <Role>:\n<body>` |
+| `heading` H2 | `## <Role>:\n<body>` |
+| `heading` H3 | `### <Role>:\n<body>` |
+| `quote` | `<Role>:\n> <body line 1>\n> <body line 2>` (role outside quote, body lines prefixed) |
+| `code` / `code-block` | `<Role>:\n` ` ```\n<body>\n``` ` (role outside fence) |
+| `callout` (info/note/warning/tip) | `> [!info]\n> <Role>:\n> <body>` (role + body inside callout) |
+| `clean-spacing` | text pass on body: 3+ consecutive `\n` collapse to 2 |
+| `add-section` / `split-section` | `## <Section title>` inserted between turns |
+| `page-divider` | `---` inserted between turns |
+| `collapse-section` (default `include-marked`) | section header gets ` [collapsed — N turns]` suffix; turns still emitted |
+| `toc` | omitted unless `includeToc: true` — then `## Contents\n- <title>\n...` at top |
+
+Op stacking on a single message (outer → inner):
+`callout > heading > code > quote > clean-spacing`. When both `code`
+and `quote` are active on the same turn, `code` wins (more specific).
+Inside a callout, the heading still decorates the role line that lives
+inside the callout body.
+
+### Bridge shape
+
+`H2O.Studio.RibbonBridge.getCleanTranscript(opts?)` — async, returns
+`Promise<{ text, overlayIncluded, overlaySkipped, reason? }>`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `text` | string | The transcript. `''` on missing snapshot / empty messages. |
+| `overlayIncluded` | boolean | True iff overlay decorations actually landed in the output (`opsApplied > 0 \|\| structureApplied \|\| tocIncluded`). |
+| `overlaySkipped` | boolean | True iff `includeOverlay` was requested but the overlay path was bypassed for a safe fallback reason. |
+| `reason` | string? | When `overlaySkipped`, one of: `'drift-detected'`, `'serializer-unavailable'`, `'store-unavailable'`, `'reducer-unavailable'`, `'serializer-error'`. |
+
+Cases:
+
+- Missing snapshot / empty `messages` → `{ text: '', overlayIncluded:
+  false, overlaySkipped: false }`.
+- `includeOverlay: false` → raw text, `overlayIncluded: false`,
+  `overlaySkipped: false`.
+- `includeOverlay: true` and no overlay record exists → raw text,
+  `overlayIncluded: false`, `overlaySkipped: false` (nothing to skip).
+- `includeOverlay: true`, overlay present, drift detected → raw text,
+  `overlayIncluded: false`, `overlaySkipped: true`,
+  `reason: 'drift-detected'`. The drift check uses the same
+  `computeBaseDigest` precedent as `applyOverlayOp` / `undo` / `redo`.
+- `includeOverlay: true`, overlay present, no drift → overlay-aware
+  text, `overlayIncluded` reflects whether any decoration landed.
+
+The bridge **never throws** — every internal branch catches; on
+unreachable failures it resolves with the empty floor shape.
+
+### Ribbon status feedback (Export → Copy → Copy clean transcript)
+
+- `"Copying transcript…"` — pending.
+- `"Transcript copied"` — success (overlay applied OR no overlay needed).
+- `"Transcript copied (overlay skipped — snapshot changed)"` — drift
+  fallback. Text on the clipboard is raw.
+- `"No transcript content"` — empty snapshot.
+- `"Transcript bridge unavailable"` — bridge method missing.
+- `"Copy failed: <msg>"` — clipboard write failed.
+
+### Compliance notes for Phase 2e
+
+- The serializer MUST NOT touch `snap.messages` or any overlay field.
+- The serializer MUST NOT read or write any storage; the bridge is
+  responsible for fetching the overlay record.
+- The serializer MUST NOT access the DOM.
+- `includeOverlay: false` output MUST remain byte-identical to Phase
+  1b's raw format (regression guard for any external consumer that
+  pinned to that shape).
+- The bridge MUST NOT throw under any input; on drift or any safe
+  fallback it MUST return well-formed `{ text, overlayIncluded:false,
+  overlaySkipped:true, reason }`.
+- Status string `"Transcript copied (overlay skipped — snapshot changed)"`
+  is the canonical surface for drift; do not paraphrase.
+
+### Out of scope for Phase 2e
+
+- Markdown file export (download as `.md`).
+- PDF / DOCX export.
+- AI-tools integration with the serializer output.
+- "Copy raw" as a separate ribbon button — the option exists on the
+  serializer + bridge as `{ includeOverlay: false }`; the catalogue
+  slot can be added later without a contract change.
+- "Copy visible only" as a separate ribbon button — the option exists
+  on the serializer as `{ collapsedMode: 'omit' }`; no UI in V1.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

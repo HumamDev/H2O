@@ -10610,54 +10610,184 @@ function boot(){
 
 boot();
 
-/* ─── Phase 1b — Studio Ribbon read-only bridge ───────────────────────────
- * Narrow accessor exposed to the Studio Ribbon's "Copy clean transcript"
- * action so the ribbon does not have to walk state.currentReaderSnapshot
- * directly. Serializes the canonical messages of the currently-open saved
- * snapshot into deterministic plain text.
+/* ─── Phase 1b → Phase 2e — Studio Ribbon read-only bridge ─────────────────
+ * Async accessor exposed to the Studio Ribbon's "Copy clean transcript"
+ * action. Serializes the canonical messages of the currently-open saved
+ * snapshot, optionally decorated with the per-snapshot edit overlay
+ * (headings, callouts, sections, etc.).
  *
- * Format (per Phase 1b spec):
- *   User:
- *   <text>
+ * Phase 2e contract — returns Promise<{
+ *   text: string,
+ *   overlayIncluded: boolean,
+ *   overlaySkipped: boolean,
+ *   reason?: string,
+ * }>:
+ *   - text                — the transcript string (raw on missing inputs).
+ *   - overlayIncluded     — true only when overlay decorations actually
+ *                           landed in the output (active ops were emitted
+ *                           OR structure markers were inserted).
+ *   - overlaySkipped      — true when includeOverlay was requested but
+ *                           the overlay path was bypassed for a safe
+ *                           fallback reason (drift, serializer missing).
+ *   - reason              — short string explaining a skip:
+ *                           'drift-detected', 'no-overlay',
+ *                           'serializer-unavailable', 'store-unavailable',
+ *                           'reducer-unavailable', 'serializer-error'.
  *
- *   A:
- *   <text>
+ * Options:
+ *   - includeOverlay      default true. Pass false for byte-identical
+ *                         Phase 1b output.
+ *   - includeToc          default false. When true and there is at
+ *                         least one section, a "## Contents" block is
+ *                         emitted at the top.
+ *   - collapsedMode       default 'include-marked'. Other values:
+ *                         'include-silent', 'omit' (see serializer doc).
  *
- *   System:
- *   <text>
+ * Guarantees:
+ *   - Never throws — wraps the entire body in try/catch and returns a
+ *     well-formed object on any failure.
+ *   - Returns { text: '', overlayIncluded: false, overlaySkipped: false }
+ *     for missing snapshot or empty messages.
+ *   - Returns raw text with overlayIncluded:false, overlaySkipped:false
+ *     when includeOverlay is explicitly false.
+ *   - Returns raw text with overlayIncluded:false, overlaySkipped:true,
+ *     reason:'drift-detected' when the overlay's baseDigest no longer
+ *     matches the snapshot.
+ *   - Never mutates snap.messages or the overlay record.
  *
- * Rules:
- *   - Skip empty messages (no text after trim).
- *   - Skip messages whose role is neither user/assistant/system.
- *   - Use the saved message text as-is (msg.text already reflects edits
- *     that have been persisted to the snapshot in this session — see
- *     persistEditToExtensionSnapshot above).
- *   - No metadata, timestamps, message IDs, turn IDs, or internal fields.
- *   - Returns '' when no snapshot is open or messages array is empty.
- *   - Never throws — wraps the entire body in try/catch and returns ''.
+ * Raw fallback parity: when includeOverlay is false (or any safe
+ * fallback fires), output is byte-identical to Phase 1b:
+ *     User:\n<text>\n\nA:\n<text>\n\nSystem:\n<text>
+ *   with empty turns skipped and unknown roles dropped.
  */
-function __ribbonBridge_getCleanTranscript(){
-  try {
+function __ribbonBridge_getCleanTranscript(opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeOverlay = options.includeOverlay !== false; /* default true */
+    const includeToc = options.includeToc === true;          /* default false */
+    const collapsedMode = (options.collapsedMode === 'include-silent' || options.collapsedMode === 'omit')
+      ? options.collapsedMode
+      : 'include-marked';
+
     const snap = state && state.currentReaderSnapshot;
-    if (!snap || typeof snap !== 'object') return '';
-    const messages = Array.isArray(snap.messages) ? snap.messages : [];
-    if (!messages.length) return '';
-    const out = [];
-    for (let i = 0; i < messages.length; i += 1) {
-      const msg = messages[i];
-      if (!msg || typeof msg !== 'object') continue;
-      const text = String(msg.text || '').trim();
-      if (!text) continue;
-      const role = String(msg.role || '').toLowerCase();
-      let label;
-      if (role === 'user') label = 'User:';
-      else if (role === 'assistant') label = 'A:';
-      else if (role === 'system') label = 'System:';
-      else continue;
-      out.push(label + '\n' + text);
+    if (!snap || typeof snap !== 'object') {
+      return { text: '', overlayIncluded: false, overlaySkipped: false };
     }
-    return out.join('\n\n');
-  } catch (_) { return ''; }
+
+    const serializer = W.H2O?.Studio?.overlaySerializer;
+    /* ── Raw mode short-circuit. Stays usable even when the Phase 2e
+     * serializer module didn't load (e.g., user is on an older Studio
+     * build), since includeOverlay:false bypasses the serializer. */
+    function rawResult(reasonIfAny) {
+      try {
+        const messages = Array.isArray(snap.messages) ? snap.messages : [];
+        const out = [];
+        for (let i = 0; i < messages.length; i += 1) {
+          const msg = messages[i];
+          if (!msg || typeof msg !== 'object') continue;
+          const text = String(msg.text == null ? '' : msg.text).trim();
+          if (!text) continue;
+          const role = String(msg.role || '').toLowerCase();
+          let label;
+          if (role === 'user') label = 'User:';
+          else if (role === 'assistant') label = 'A:';
+          else if (role === 'system') label = 'System:';
+          else continue;
+          out.push(label + '\n' + text);
+        }
+        const txt = out.join('\n\n');
+        const obj = { text: txt, overlayIncluded: false, overlaySkipped: !!reasonIfAny };
+        if (reasonIfAny) obj.reason = String(reasonIfAny);
+        return obj;
+      } catch (_) {
+        const obj = { text: '', overlayIncluded: false, overlaySkipped: !!reasonIfAny };
+        if (reasonIfAny) obj.reason = String(reasonIfAny);
+        return obj;
+      }
+    }
+
+    if (!includeOverlay) {
+      return rawResult(null);
+    }
+    if (!serializer || typeof serializer.serialize !== 'function') {
+      return rawResult('serializer-unavailable');
+    }
+
+    /* ── Overlay mode — fetch overlay record, drift-check, serialize. */
+    const sid = String(snap.snapshotId || '');
+    if (!sid) {
+      /* Snapshot has no id (shouldn't happen for saved chats but be safe).
+       * Serializer can still produce overlay-aware text against a null
+       * overlay (which it'll treat as raw with overlayIncluded:false). */
+      const r0 = serializer.serialize(snap, null, { includeOverlay: true, includeToc: includeToc, collapsedMode: collapsedMode });
+      return {
+        text: String(r0 && r0.text || ''),
+        overlayIncluded: false,
+        overlaySkipped: false,
+      };
+    }
+
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ovStore || typeof ovStore.get !== 'function') {
+      return rawResult('store-unavailable');
+    }
+
+    return Promise.resolve(ovStore.get(sid)).then(function (overlay) {
+      if (!overlay) {
+        /* No overlay record — serializer would just emit raw. Short-
+         * circuit so the call still resolves with the well-formed
+         * shape and no spurious overlaySkipped flag. */
+        const r1 = serializer.serialize(snap, null, { includeOverlay: true, includeToc: includeToc, collapsedMode: collapsedMode });
+        return {
+          text: String(r1 && r1.text || ''),
+          overlayIncluded: false,
+          overlaySkipped: false,
+        };
+      }
+
+      /* Drift check — mirrors applyOverlayOp/undo/redo behaviour. On
+       * drift, fall back to raw text and flag overlaySkipped. */
+      if (ov && typeof ov.computeBaseDigest === 'function' && overlay.baseDigest) {
+        let currentDigest = '';
+        try { currentDigest = ov.computeBaseDigest(snap); }
+        catch (_) { currentDigest = ''; }
+        if (currentDigest && overlay.baseDigest !== currentDigest) {
+          return rawResult('drift-detected');
+        }
+      }
+
+      let result = null;
+      try {
+        result = serializer.serialize(snap, overlay, {
+          includeOverlay: true,
+          includeToc: includeToc,
+          collapsedMode: collapsedMode,
+        });
+      } catch (_) {
+        return rawResult('serializer-error');
+      }
+      if (!result || typeof result !== 'object') {
+        return rawResult('serializer-error');
+      }
+      if (result.reason === 'serializer-error') {
+        return rawResult('serializer-error');
+      }
+      const applied = Number(result.opsApplied) > 0 || result.structureApplied === true || result.tocIncluded === true;
+      return {
+        text: String(result.text || ''),
+        overlayIncluded: !!applied,
+        overlaySkipped: false,
+      };
+    }, function () {
+      return rawResult('store-unavailable');
+    });
+  }).catch(function () {
+    /* Last-resort floor — should be unreachable since every internal
+     * path catches. Resolves rather than rejects, matching the
+     * "never throws" contract. */
+    return { text: '', overlayIncluded: false, overlaySkipped: false };
+  });
 }
 /* Phase 2a — narrow read-only accessor for the per-snapshot edit
  * overlay. Returns a Promise resolving to the EditOverlay record or
@@ -11021,7 +11151,7 @@ try {
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-2d',
+      version: '0.1.0-phase-2e',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
@@ -11041,6 +11171,11 @@ try {
     if (!W.H2O.Studio.RibbonBridge.undo) W.H2O.Studio.RibbonBridge.undo = __ribbonBridge_undo;
     if (!W.H2O.Studio.RibbonBridge.redo) W.H2O.Studio.RibbonBridge.redo = __ribbonBridge_redo;
     if (!W.H2O.Studio.RibbonBridge.getHistoryState) W.H2O.Studio.RibbonBridge.getHistoryState = __ribbonBridge_getHistoryState;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2d';
+    /* Phase 2e — getCleanTranscript shape changed from sync string to
+     * async object. Reinstall the function reference even when an
+     * older RibbonBridge is already installed, so hot-reloads pick up
+     * the new contract instead of holding the Phase 1b sync version. */
+    W.H2O.Studio.RibbonBridge.getCleanTranscript = __ribbonBridge_getCleanTranscript;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2e';
   }
 } catch (_) { /* swallow */ }

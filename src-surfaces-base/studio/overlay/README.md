@@ -24,3 +24,7 @@ Future phases may add real operations, ribbon actions, and review UI while prese
 ## Phase 2d — undo / redo
 
 Undo / redo is now wired via the **reducer-filter active-set model**: `overlay.ops` stays append-only, `overlay.undoStack` is the ordered active op-id set, and renderers iterate `overlay.ops` in original order while skipping ids that are not in the active set. See the "Phase 2d — undo / redo model" section in `../STUDIO_OVERLAY_CONTRACT.md` for the full model including the required legacy-migration rule (`undoStack` missing → all-active; `undoStack` present and empty → none-active).
+
+## Phase 2e — overlay-aware Copy clean transcript
+
+`overlay-serializer.studio.js` (new) turns a snapshot + overlay into a Markdown-flavoured transcript matching what the user sees in the reader. Pure: no DOM, no storage, no I/O. Reuses the Phase 2d-aware reducers, so it inherits the active-set filter automatically. The ribbon's "Copy clean transcript" action now calls the async `H2O.Studio.RibbonBridge.getCleanTranscript({ includeOverlay })` and writes the result to the clipboard. See the "Phase 2e — overlay-aware Copy clean transcript" section in `../STUDIO_OVERLAY_CONTRACT.md` for the full serializer mappings, the bridge return shape, and the drift-fallback behaviour.

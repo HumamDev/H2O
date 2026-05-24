@@ -261,13 +261,20 @@
         }
       },
     },
+    /* Phase 2e — overlay-aware copy.
+     * bridge.getCleanTranscript() returns Promise<{ text, overlayIncluded,
+     * overlaySkipped, reason? }>. The handler awaits, writes
+     * result.text to the clipboard, and surfaces an "overlay skipped"
+     * status when the bridge fell back to raw due to drift. The
+     * enable rule no longer peeks at the transcript content (the
+     * bridge is now async); empty-snapshot still reports
+     * "No transcript content" at click time. */
     'copy-clean-transcript': {
       isEnabled: function (ctx) {
         if (!ctx || ctx.chatType !== 'saved') return false;
         const bridge = getRibbonBridge();
         if (!bridge || typeof bridge.getCleanTranscript !== 'function') return false;
-        try { return !!String(bridge.getCleanTranscript() || '').trim(); }
-        catch (_) { return false; }
+        return true;
       },
       onClick: function (ctx, setStatus) {
         const bridge = getRibbonBridge();
@@ -275,10 +282,6 @@
           setStatus('Transcript bridge unavailable');
           return;
         }
-        let text = '';
-        try { text = String(bridge.getCleanTranscript() || ''); }
-        catch (e) { setStatus('Transcript read failed'); return; }
-        if (!text.trim()) { setStatus('No transcript content'); return; }
         const platform = getPlatform();
         const clip = platform && platform.clipboard;
         if (!clip || typeof clip.writeText !== 'function') {
@@ -286,8 +289,27 @@
           return;
         }
         setStatus('Copying transcript…');
-        Promise.resolve(clip.writeText(text)).then(
-          function () { setStatus('Transcript copied'); },
+        Promise.resolve(bridge.getCleanTranscript()).then(
+          function (result) {
+            const safe = (result && typeof result === 'object') ? result : { text: '', overlayIncluded: false, overlaySkipped: false };
+            const text = String(safe.text || '');
+            if (!text.trim()) { setStatus('No transcript content'); return; }
+            const overlaySkipped = !!safe.overlaySkipped;
+            const reason = String(safe.reason || '');
+            Promise.resolve(clip.writeText(text)).then(
+              function () {
+                if (overlaySkipped && reason === 'drift-detected') {
+                  setStatus('Transcript copied (overlay skipped — snapshot changed)');
+                } else {
+                  setStatus('Transcript copied');
+                }
+              },
+              function (err) {
+                const msg = (err && (err.message || String(err))) || 'unknown error';
+                setStatus('Copy failed: ' + msg);
+              }
+            );
+          },
           function (err) {
             const msg = (err && (err.message || String(err))) || 'unknown error';
             setStatus('Copy failed: ' + msg);

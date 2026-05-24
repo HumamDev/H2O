@@ -307,6 +307,21 @@
                   src-surfaces-base/studio/overlay/README.md. -->
   <script src="./overlay/overlay-applier.studio.js"></script>
 
+  <!-- ── Studio Overlay Serializer (Phase 2e) ───────────────────────────
+       Pure serializer that turns a snapshot + edit-overlay record into
+       a Markdown-flavoured transcript matching what the user sees in
+       the reader. Used by RibbonBridge.getCleanTranscript({ includeOverlay })
+       for the "Copy clean transcript" ribbon action. No DOM access,
+       no storage, no I/O. Reads overlay state via the applier's pure
+       reducers (computeMessageState / computeStructureState / findSectionContaining)
+       so it inherits Phase 2d's active-set filter automatically.
+       Loads AFTER overlay-applier.studio.js (depends on its reducers)
+       and BEFORE store/editOverlay.js + studio.js (which consume it
+       through the RibbonBridge).
+       Contracts: src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md,
+                  src-surfaces-base/studio/overlay/README.md. -->
+  <script src="./overlay/overlay-serializer.studio.js"></script>
+
   <!-- ── Studio Store (Stage 1: parallel infra) ─────────────────────────
        Registers H2O.Studio.store and the highlights entity store. Loads
        AFTER platform/ so the store can use platform.broadcast.onAnyChange,
