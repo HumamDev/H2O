@@ -141,6 +141,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F4.x: Desktop-only read-only peer discovery diagnostics for devices/*
   // state/checksum integrity. No imports, writes, polling, manifests, or history.
   "sync/peer-discovery.js",
+  // F5H.5-b: read-only peer watermark diagnostics. Aggregates existing peer,
+  // export, import, tombstone, and review evidence; no schema or lifecycle writes.
+  "sync/peer-watermarks.js",
   // F1A: pure, synchronous multi-peer diff analyzer. Surface-agnostic.
   // Registers H2O.Studio.diagnostics.multiPeerDiff and collectLocalState.
   // No IO; safe to ship dormant on every surface.
@@ -292,6 +295,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/export-log.js",
   "sync/peer-transport.js",
   "sync/peer-discovery.js",
+  "sync/peer-watermarks.js",
   "sync/multi-peer-diff.js",
   "sync/multi-peer-runner.js",
 

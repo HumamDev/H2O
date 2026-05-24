@@ -503,6 +503,11 @@
        integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,
        manifests, or history. -->
   <script src="./sync/peer-discovery.js"></script>
+  <!-- F5H.5-b: read-only peer watermark diagnostics. Aggregates identity,
+       export log, peer discovery, import-state, tombstone, and review evidence
+       into H2O.Studio.sync.peerWatermarks without schema changes, cleanup,
+       purge, compaction, sync apply, or storage writes. -->
+  <script src="./sync/peer-watermarks.js"></script>
   <!-- F1A: pure read-only multi-peer diff analyzer (surface-agnostic).
        Registers H2O.Studio.diagnostics.multiPeerDiff and
        H2O.Studio.diagnostics.collectLocalState. No IO; safe to load on every
