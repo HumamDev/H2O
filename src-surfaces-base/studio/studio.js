@@ -53,6 +53,10 @@ const FOLDER_DESKTOP_MIRROR_REFRESH_STATE = {
   preview: null,
   status: "",
 };
+const FOLDER_PARITY_SETTINGS_UI_STATE = {
+  activeTab: "overview",
+  statuses: Object.create(null),
+};
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
   selected: false,
   confirmation: "",
@@ -5520,12 +5524,47 @@ function renderSettingsRoute(){
           <button id="wbSettingsFolderParityCopy" type="button" style="${btnStyle}">Copy report JSON</button>
         </div>
       </div>
-      <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
-      <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
-      <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
-      <div id="wbSettingsFolderMirrorRefresh" style="${STUDIO_isTauri() ? "display:flex" : "display:none"};flex-direction:column;gap:8px;padding:10px;margin-top:10px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px">
+      <div id="wbSettingsFolderParityTabs" role="tablist" aria-label="Folder Parity sections" style="display:flex;gap:6px;flex-wrap:wrap;padding-top:4px">
+        <button type="button" data-folder-parity-tab="overview" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview")}">Overview</button>
+        <button type="button" data-folder-parity-tab="canonical" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical")}">Canonical Folders</button>
+        <button type="button" data-folder-parity-tab="local-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review")}">Local Review</button>
+        <button type="button" data-folder-parity-tab="mirror-refresh" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh")}">Mirror Refresh</button>
+        <button type="button" data-folder-parity-tab="cleanup-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review")}">Cleanup / Review</button>
+        <button type="button" data-folder-parity-tab="operations" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations")}">Operations / Proofs</button>
+      </div>
+      <div id="wbSettingsFolderParityPanelOverview" data-folder-parity-panel="overview" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
+        <div id="wbSettingsFolderParityHealth" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px"></div>
+        <div id="wbSettingsFolderParityOverviewMeta" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+        <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+        <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
+      </div>
+      <div id="wbSettingsFolderParityPanelCanonical" data-folder-parity-panel="canonical" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:600">Canonical Folders</div>
+            <div style="opacity:.72;font-size:12px">The native-owned canonical six with local known-here counts and visual source.</div>
+          </div>
+          <div data-folder-parity-status="canonicalRows">${settingsFolderParityStatusBadgeHtml("not-tested")}</div>
+        </div>
+        <div id="wbSettingsFolderParityCanonicalRows" style="display:flex;flex-direction:column;gap:7px"></div>
+      </div>
+      <div id="wbSettingsFolderParityPanelLocalReview" data-folder-parity-panel="local-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:600">Local Review</div>
+            <div style="opacity:.72;font-size:12px">Non-canonical folders are review-only and must stay out of the main canonical list.</div>
+          </div>
+          <div id="wbSettingsFolderParityLocalReviewSummary">${settingsFolderParityStatusBadgeHtml("not-tested")}</div>
+        </div>
+        <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+      </div>
+      <div id="wbSettingsFolderParityPanelMirrorRefresh" data-folder-parity-panel="mirror-refresh" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+      <div id="wbSettingsFolderMirrorRefresh" style="${STUDIO_isTauri() ? "display:flex" : "display:none"};flex-direction:column;gap:8px;padding:10px;margin-top:0;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px">
         <div>
-          <div style="font-weight:600">Refresh Desktop folder mirror</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="font-weight:600">Refresh Desktop folder mirror</div>
+            <div data-folder-parity-status="mirrorRefresh">${settingsFolderParityStatusBadgeHtml("not-tested")}</div>
+          </div>
           <div id="wbSettingsFolderMirrorRefreshSummary" style="opacity:.72;font-size:12px">Refreshes only this Desktop mirror key from a reviewed folder-state JSON. Desktop SQLite folders and bindings are not changed.</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -5552,6 +5591,8 @@ function renderSettingsRoute(){
         <div id="wbSettingsFolderMirrorRefreshStatus" style="font-size:12px;opacity:.72">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status || "Desktop mirror only. Native, Chrome, folders, and folder_bindings are not changed.")}</div>
         <pre id="wbSettingsFolderMirrorRefreshPreviewOut" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
       </div>
+      </div>
+      <div id="wbSettingsFolderParityPanelCleanupReview" data-folder-parity-panel="cleanup-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
       <div id="wbSettingsFolderCleanupReview" style="display:flex;flex-direction:column;gap:10px;padding-top:12px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div>
@@ -5674,6 +5715,14 @@ function renderSettingsRoute(){
           </div>
         </div>
       </div>
+      </div>
+      <div id="wbSettingsFolderParityPanelOperations" data-folder-parity-panel="operations" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        <div>
+          <div style="font-weight:600">Operations / Proofs</div>
+          <div style="opacity:.72;font-size:12px">Read-only status summary. This tab does not run folder color, rename, delete, cleanup, or apply operations.</div>
+        </div>
+        <div id="wbSettingsFolderParityOperationsRows" style="display:flex;flex-direction:column;gap:7px"></div>
+      </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
 
@@ -5760,6 +5809,7 @@ async function refreshSettingsDiagnostics(panel){
     }
   });
   refreshSettingsFolderParity(panel).catch((err) => {
+    settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", "Refresh failed");
     settingsFolderParityLog(panel, "Folder parity diagnostics failed.\n" + String(err && (err.stack || err.message || err)));
   });
 }
@@ -5828,6 +5878,242 @@ function settingsFolderParityChecksHtml(selfCheck){
       </div>
     `;
   }).join("");
+}
+
+function settingsFolderParityStatusMeta(status){
+  const key = String(status || "not-tested");
+  const map = {
+    works: {
+      label: "Works",
+      color: "rgba(74,222,128,.90)",
+      bg: "rgba(74,222,128,.12)",
+      border: "rgba(74,222,128,.32)",
+    },
+    warning: {
+      label: "Needs attention",
+      color: "rgba(250,204,21,.92)",
+      bg: "rgba(250,204,21,.12)",
+      border: "rgba(250,204,21,.34)",
+    },
+    failed: {
+      label: "Failed",
+      color: "rgba(248,113,113,.95)",
+      bg: "rgba(248,113,113,.12)",
+      border: "rgba(248,113,113,.34)",
+    },
+    running: {
+      label: "Running",
+      color: "rgba(147,197,253,.95)",
+      bg: "rgba(147,197,253,.12)",
+      border: "rgba(147,197,253,.32)",
+    },
+    disabled: {
+      label: "Disabled / protected",
+      color: "rgba(203,213,225,.86)",
+      bg: "rgba(148,163,184,.10)",
+      border: "rgba(148,163,184,.28)",
+    },
+    "not-tested": {
+      label: "Not tested",
+      color: "rgba(203,213,225,.76)",
+      bg: "rgba(148,163,184,.08)",
+      border: "rgba(148,163,184,.22)",
+    },
+  };
+  return map[key] || map["not-tested"];
+}
+
+function settingsFolderParityStatusBadgeHtml(status, label){
+  const meta = settingsFolderParityStatusMeta(status);
+  const text = label || meta.label;
+  return `<span style="display:inline-flex;align-items:center;gap:6px;width:max-content;padding:3px 8px;border-radius:999px;border:1px solid ${meta.border};background:${meta.bg};color:${meta.color};font-size:11px;font-weight:600;line-height:1.2">${esc(text)}</span>`;
+}
+
+function settingsFolderParitySetOperationStatus(panel, key, status, detail = "", label = ""){
+  const id = String(key || "").trim();
+  if (!id) return;
+  const entry = {
+    status: String(status || "not-tested"),
+    detail: String(detail || ""),
+    label: String(label || ""),
+    updatedAt: new Date().toISOString(),
+  };
+  FOLDER_PARITY_SETTINGS_UI_STATE.statuses[id] = entry;
+  const target = panel?.querySelector?.(`[data-folder-parity-status="${id}"]`);
+  if (target) {
+    target.innerHTML = `${settingsFolderParityStatusBadgeHtml(entry.status, entry.label)}${entry.detail ? ` <span style="opacity:.72">${esc(entry.detail)}</span>` : ""}`;
+  }
+  if (panel?.querySelector?.("#wbSettingsFolderParityOperationsRows")) {
+    settingsFolderParityRenderOperationRows(panel);
+  }
+}
+
+function settingsFolderParityStatusCardHtml(key, title, status = "not-tested", detail = "", label = ""){
+  return `
+    <div style="display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:rgba(255,255,255,.03);min-width:150px">
+      <div style="font-size:12px;opacity:.72">${esc(title)}</div>
+      <div data-folder-parity-status="${esc(key)}">${settingsFolderParityStatusBadgeHtml(status, label)}${detail ? ` <span style="opacity:.72">${esc(detail)}</span>` : ""}</div>
+    </div>
+  `;
+}
+
+function settingsFolderParityPanelTabStyle(active){
+  return [
+    "padding:7px 10px",
+    "border-radius:7px",
+    "border:1px solid " + (active ? "rgba(96,165,250,.42)" : "rgba(255,255,255,.10)"),
+    "background:" + (active ? "rgba(96,165,250,.14)" : "rgba(255,255,255,.04)"),
+    "color:inherit",
+    "font:inherit",
+    "font-size:12px",
+    "cursor:pointer",
+  ].join(";");
+}
+
+function settingsFolderParitySetActiveTab(panel, tabId){
+  const next = String(tabId || "overview").trim() || "overview";
+  FOLDER_PARITY_SETTINGS_UI_STATE.activeTab = next;
+  panel?.querySelectorAll?.("[data-folder-parity-panel]")?.forEach((el) => {
+    el.hidden = el.getAttribute("data-folder-parity-panel") !== next;
+  });
+  panel?.querySelectorAll?.("[data-folder-parity-tab]")?.forEach((btn) => {
+    const active = btn.getAttribute("data-folder-parity-tab") === next;
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.style.cssText = settingsFolderParityPanelTabStyle(active);
+  });
+}
+
+function settingsFolderParityShortId(value){
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.length <= 14 ? text : `${text.slice(0, 6)}...${text.slice(-5)}`;
+}
+
+function settingsFolderParityCanonicalColor(row){
+  return String(row?.iconColor || row?.color || "").trim();
+}
+
+function settingsFolderParityCanonicalStatus(row){
+  if (!row?.folderId && !row?.id) return "failed";
+  if (!String(row?.name || "").trim()) return "failed";
+  if (row?.badges?.includes?.("count-mismatch")) return "warning";
+  return "works";
+}
+
+function settingsFolderParityRenderCanonicalRows(panel, report){
+  const target = panel?.querySelector?.("#wbSettingsFolderParityCanonicalRows");
+  if (!target) return;
+  const displayRows = Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows : [];
+  const rows = displayRows.filter((row) => row?.isCanonical)
+    .concat(displayRows.some((row) => row?.isCanonical) ? [] : (Array.isArray(report?.canonicalFolders) ? report.canonicalFolders : []))
+    .slice(0, 12);
+  if (!rows.length) {
+    target.innerHTML = `<div style="opacity:.72">Canonical folder rows unavailable. Run diagnostics again.</div>`;
+    return;
+  }
+  target.innerHTML = rows.map((row) => {
+    const folderId = String(row.folderId || row.id || "").trim();
+    const color = settingsFolderParityCanonicalColor(row);
+    const status = settingsFolderParityCanonicalStatus(row);
+    const source = String(row.source || report?.canonicalSource || "").trim();
+    return `
+      <div style="display:grid;grid-template-columns:34px 1fr max-content max-content max-content;gap:10px;align-items:center;padding:9px 10px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025)">
+        <span title="${esc(color || "no color")}" style="width:22px;height:22px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:${esc(color || "rgba(255,255,255,.08)")};display:inline-block"></span>
+        <div style="min-width:0">
+          <div style="font-weight:600">${esc(row.name || folderId || "Folder")}</div>
+          <div style="opacity:.62;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">${esc(settingsFolderParityShortId(folderId))}${source ? ` · ${esc(source)}` : ""}</div>
+        </div>
+        <div style="font-size:12px;opacity:.8">${esc(String(row.nativeMembershipCount ?? row.canonicalCount ?? 0))} native</div>
+        <div style="font-size:12px;opacity:.8">${esc(String(row.knownStudioCount ?? row.knownCount ?? 0))} known here</div>
+        ${settingsFolderParityStatusBadgeHtml(status)}
+      </div>
+    `;
+  }).join("");
+}
+
+function settingsFolderParityRenderOverview(panel, report, selfCheck){
+  const health = panel?.querySelector?.("#wbSettingsFolderParityHealth");
+  const meta = panel?.querySelector?.("#wbSettingsFolderParityOverviewMeta");
+  if (!health && !meta) return;
+  const displayRows = Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows : [];
+  const canonicalRows = displayRows.filter((row) => row?.isCanonical);
+  const localReviewCount = displayRows.filter((row) => row && !row.isCanonical).length;
+  const hasColor = canonicalRows.some((row) => !!settingsFolderParityCanonicalColor(row));
+  const canonicalStatus = Number(report?.canonicalFolderCount || 0) >= 6 && !(report?.missingCanonicalFolders || []).length ? "works" : "warning";
+  const colorStatus = hasColor ? "works" : "warning";
+  const localReviewStatus = localReviewCount > 0 || (report?.extraLocalFolders || []).length ? "warning" : "works";
+  const desktopMirrorStatus = STUDIO_isTauri() ? "warning" : "not-tested";
+  const operationsStatus = "warning";
+  if (health) {
+    health.innerHTML = [
+      settingsFolderParityStatusCardHtml("overviewCanonical", "Canonical", canonicalStatus, `${Number(report?.canonicalFolderCount || 0)} folders`),
+      settingsFolderParityStatusCardHtml("overviewColors", "Colors", colorStatus, hasColor ? "canonical source" : "no color evidence"),
+      settingsFolderParityStatusCardHtml("overviewLocalReview", "Local Review", localReviewStatus, localReviewCount ? `${localReviewCount} rows` : "separated"),
+      settingsFolderParityStatusCardHtml("overviewDesktopMirror", "Desktop Mirror", desktopMirrorStatus, STUDIO_isTauri() ? "manual refresh path" : "Desktop only"),
+      settingsFolderParityStatusCardHtml("overviewOperations", "Operations", operationsStatus, "rename/delete protected"),
+    ].join("");
+  }
+  if (meta) {
+    meta.innerHTML = settingsSyncRowsHtml([
+      ["Last checked", report?.generatedAt || new Date().toISOString()],
+      ["Surface", report?.surface || ""],
+      ["Canonical source", report?.canonicalSource || ""],
+      ["Self-check", selfCheck ? `${selfCheck.ok ? "ok" : "review"} · ${selfCheck.severity || ""}` : "unavailable"],
+    ]);
+  }
+}
+
+function settingsFolderParityRenderLocalReview(panel, report){
+  const summary = panel?.querySelector?.("#wbSettingsFolderParityLocalReviewSummary");
+  if (!summary) return;
+  const displayRows = Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows : [];
+  const reviewRows = displayRows.filter((row) => row && !row.isCanonical);
+  const leakCount = displayRows.filter((row) => row?.isCanonical && row?.badges?.includes?.("extra")).length;
+  const status = leakCount > 0 ? "failed" : (reviewRows.length ? "warning" : "works");
+  const detail = leakCount > 0
+    ? `${leakCount} possible main-list leakage`
+    : reviewRows.length
+      ? `${reviewRows.length} review row(s)`
+      : "Separated correctly";
+  summary.innerHTML = `${settingsFolderParityStatusBadgeHtml(status)} <span style="opacity:.72">${esc(detail)}</span>`;
+}
+
+function settingsFolderParityRenderOperationRows(panel){
+  const target = panel?.querySelector?.("#wbSettingsFolderParityOperationsRows");
+  if (!target) return;
+  let diag = null;
+  try { diag = W.H2O?.Studio?.sync?.folderMetadataOperations?.diagnose?.() || null; } catch {}
+  const lastResultStatus = String(diag?.lastResultStatus || "");
+  const lastRequestMode = String(diag?.lastRequestMode || "");
+  const transportBlocker = String(diag?.transportBlocker || "");
+  const bridgeStatus = transportBlocker ? "disabled" : (lastResultStatus === "ok" ? "works" : (lastResultStatus === "blocked" || lastResultStatus === "timeout" ? "failed" : "not-tested"));
+  const previewStatus = lastRequestMode === "preview" && lastResultStatus === "ok" ? "works" : bridgeStatus === "failed" ? "failed" : "not-tested";
+  const applyStatus = lastRequestMode === "apply" && lastResultStatus === "ok" ? "works" : "not-tested";
+  const saved = (key, title, fallbackStatus, fallbackDetail) => {
+    const entry = FOLDER_PARITY_SETTINGS_UI_STATE.statuses[key] || {};
+    return [title, entry.status || fallbackStatus, entry.detail || fallbackDetail || ""];
+  };
+  const rows = [
+    saved("folderDiagnostics", "Folder diagnostics", "not-tested", "run diagnostics"),
+    saved("cleanupReview", "Cleanup candidate review", "not-tested", "review-only"),
+    saved("conflictReview", "Same-name conflict review", "not-tested", "review-only"),
+    saved("desktopReview", "Desktop cleanup review", STUDIO_isTauri() ? "not-tested" : "disabled", STUDIO_isTauri() ? "Desktop only" : "Desktop only"),
+    saved("orphanBindingReview", "Orphan binding review", STUDIO_isTauri() ? "not-tested" : "disabled", STUDIO_isTauri() ? "Desktop only" : "Desktop only"),
+    saved("mirrorRefresh", "Desktop mirror refresh", STUDIO_isTauri() ? "warning" : "disabled", STUDIO_isTauri() ? "manual reviewed refresh" : "Desktop only"),
+    ["Native owner API", bridgeStatus, transportBlocker || (lastResultStatus === "ok" ? "last native result ok" : "available through bridge diagnostics")],
+    ["Native color apply", applyStatus, applyStatus === "works" ? "last apply result ok" : "not run in this panel"],
+    ["Chrome -> Native preview bridge", previewStatus, previewStatus === "works" ? "preview result received" : (transportBlocker || "not recently tested")],
+    ["Chrome -> Native color sync", applyStatus, applyStatus === "works" ? "color apply result received" : "not recently tested"],
+    ["Rename", "disabled", "planned; protected"],
+    ["Delete", "disabled", "planned; protected"],
+  ];
+  target.innerHTML = rows.map(([name, status, detail]) => `
+    <div style="display:grid;grid-template-columns:minmax(180px,1fr) max-content 1.4fr;gap:10px;align-items:center;padding:9px 10px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025)">
+      <div style="font-weight:600">${esc(name)}</div>
+      ${settingsFolderParityStatusBadgeHtml(status)}
+      <div style="opacity:.72;font-size:12px">${esc(detail || "")}</div>
+    </div>
+  `).join("");
 }
 
 function settingsFolderCleanupNumber(value){
@@ -6380,17 +6666,20 @@ async function settingsFolderMirrorAppendAudit(entry){
 
 async function previewSettingsFolderMirrorRefresh(panel){
   let result;
+  settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "running", "Building preview");
   try {
     result = await settingsFolderMirrorBuildPreview(panel);
   } catch (err) {
     result = { ok: false, error: String(err && (err.stack || err.message || err)) };
   }
   if (!result.ok) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "failed", String(result.error || "Preview failed").slice(0, 96));
     settingsFolderMirrorSetPreview(panel, null);
     settingsFolderParityLog(panel, "Desktop mirror refresh preview blocked.\n" + String(result.error || "Unknown guard failure"));
     settingsFolderMirrorUpdateControls(panel);
     return result;
   }
+  settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Preview valid; confirmation required");
   settingsFolderMirrorSetPreview(panel, result.preview);
   const message = `Preview ready. Study ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.before ?? 0} -> ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.after ?? 0}. Desktop SQLite folders and folder_bindings are not changed.`;
   settingsFolderMirrorSetStatus(panel, message);
@@ -6424,16 +6713,19 @@ async function copySettingsFolderMirrorRefreshPlan(panel){
 async function refreshDesktopFolderMirror(panel){
   const confirmation = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
   if (confirmation !== FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Confirmation text does not match");
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh blocked. Confirmation text does not match.");
     settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Confirmation text does not match.");
     return;
   }
   const existingPreview = panel?.__h2oFolderMirrorRefreshPreview || FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview;
   if (!existingPreview) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Generate a fresh preview first");
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh blocked. Generate a fresh refresh preview first.");
     settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Generate a fresh refresh preview first.");
     return;
   }
+  settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "running", "Revalidating preview");
   settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: revalidating preview...");
   let fresh;
   try {
@@ -6441,16 +6733,19 @@ async function refreshDesktopFolderMirror(panel){
       generatedAt: existingPreview.refreshTimestamp || existingPreview.generatedAt,
     });
   } catch (err) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "failed", "Preview revalidation failed");
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(err && (err.stack || err.message || err)));
     return;
   }
   if (!fresh.ok) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "failed", "Guard failed");
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(fresh.error || "Guard failed"));
     return;
   }
   if (fresh.preview.afterChecksum !== existingPreview.afterChecksum || fresh.preview.beforeChecksum !== existingPreview.beforeChecksum) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Source or mirror changed");
     settingsFolderMirrorSetPreview(panel, fresh.preview);
     settingsFolderMirrorUpdateControls(panel);
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted. Source or Desktop mirror changed since preview; review the new preview before refreshing.");
@@ -6472,14 +6767,17 @@ async function refreshDesktopFolderMirror(panel){
     errors: [],
   };
   try {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "running", "Writing pending audit");
     settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: writing pending audit...");
     await settingsFolderMirrorAppendAudit(pending);
   } catch (auditErr) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "failed", "Audit write failed");
     settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation. Mirror refresh audit could not be written.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation. Mirror refresh audit could not be written.\n" + String(auditErr && (auditErr.stack || auditErr.message || auditErr)));
     return;
   }
   try {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "running", "Writing mirror key");
     settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: writing mirror key...");
     await settingsFolderDesktopStorageSetStrict({ [FOLDER_STATE_DATA_KEY]: fresh.afterState });
     const afterValues = await settingsFolderDesktopStorageGetStrict([FOLDER_STATE_DATA_KEY]);
@@ -6506,11 +6804,13 @@ async function refreshDesktopFolderMirror(panel){
     try { state.folderCatalog = []; state.folderLocalReview = []; await fetchFolderCatalog(true); renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId); } catch {}
     settingsFolderMirrorSetPreview(panel, null);
     const message = `Desktop folder mirror refreshed. Study is now ${afterSummary.studyBucketCount}. Desktop SQLite folders and folder_bindings were not changed.`;
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "works", "Refresh completed");
     settingsFolderMirrorSetStatus(panel, message);
     settingsFolderParityLog(panel, "Desktop folder mirror refreshed. Desktop SQLite folders, folder_bindings, native state, and Chrome storage were not modified.");
     await refreshSettingsFolderParity(panel);
     await refreshSettingsFolderDesktopReview(panel);
   } catch (err) {
+    settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "failed", "Refresh failed after pending audit");
     try {
       await settingsFolderMirrorAppendAudit({
         timestamp: new Date().toISOString(),
@@ -6729,6 +7029,13 @@ function settingsFolderCleanupRenderPlan(panel, plan){
   }
   if (copyBtn) copyBtn.disabled = false;
   settingsFolderCleanupRenderDeletePanel(panel, plan);
+  const counts = plan?.counts || {};
+  const reviewCount = settingsFolderCleanupNumber(counts.safeEmpty)
+    + settingsFolderCleanupNumber(counts.conflicts)
+    + settingsFolderCleanupNumber(counts.boundReview)
+    + settingsFolderCleanupNumber(counts.orphanMemberships);
+  settingsFolderParitySetOperationStatus(panel, "cleanupReview", reviewCount ? "warning" : "works", reviewCount ? `${reviewCount} review item(s)` : "No unsafe candidates");
+  settingsFolderParityRenderOperationRows(panel);
 }
 
 function settingsFolderCleanupRenderDeletePanel(panel, plan){
@@ -6973,11 +7280,14 @@ async function refreshSettingsFolderConflictReview(panel, seed = null){
   if (!panel) return null;
   const summary = panel.querySelector("#wbSettingsFolderConflictSummary");
   const copyBtn = panel.querySelector("#wbSettingsFolderConflictCopy");
+  settingsFolderParitySetOperationStatus(panel, "conflictReview", "running", "Refreshing");
   if (summary) summary.textContent = "Refreshing same-name conflict review…";
   if (copyBtn) copyBtn.disabled = true;
   const loaded = await settingsFolderConflictLoadInputs(seed);
   panel.__h2oFolderConflictReviewPlan = loaded.plan;
   settingsFolderConflictRenderPlan(panel, loaded.plan);
+  settingsFolderParitySetOperationStatus(panel, "conflictReview", loaded.plan?.conflictCount ? "warning" : "works", loaded.plan?.conflictCount ? `${loaded.plan.conflictCount} conflict(s)` : "No same-name conflicts");
+  settingsFolderParityRenderOperationRows(panel);
   return loaded.plan;
 }
 
@@ -8784,11 +9094,19 @@ async function refreshSettingsFolderDesktopReview(panel, seed = null){
   if (!panel) return null;
   const summary = panel.querySelector("#wbSettingsFolderDesktopReviewSummary");
   const copyBtn = panel.querySelector("#wbSettingsFolderDesktopReviewCopy");
+  settingsFolderParitySetOperationStatus(panel, "desktopReview", "running", "Refreshing");
   if (summary) summary.textContent = "Refreshing read-only Desktop cleanup review…";
   if (copyBtn) copyBtn.disabled = true;
   const loaded = await settingsFolderDesktopLoadReviewInputs(seed);
   panel.__h2oFolderDesktopReviewReport = loaded.report;
   settingsFolderDesktopRenderReport(panel, loaded.report);
+  const counts = loaded.report?.counts || {};
+  const reviewCount = settingsFolderCleanupNumber(counts.desktopCandidates)
+    + settingsFolderCleanupNumber(counts.chromeCandidates)
+    + settingsFolderCleanupNumber(counts.boundReview)
+    + settingsFolderCleanupNumber(counts.orphanBindings);
+  settingsFolderParitySetOperationStatus(panel, "desktopReview", reviewCount ? "warning" : "works", reviewCount ? `${reviewCount} review item(s)` : "No Desktop review items");
+  settingsFolderParityRenderOperationRows(panel);
   refreshSettingsFolderDesktopOrphanBindingReview(panel, { selfCheck: loaded.selfCheck })
     .catch((err) => settingsFolderParityLog(panel, "Orphan binding review failed.\n" + String(err && (err.stack || err.message || err))));
   return loaded.report;
@@ -8816,6 +9134,7 @@ async function refreshSettingsFolderDesktopOrphanBindingReview(panel, seed = nul
   if (!panel) return null;
   const summary = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingSummary");
   const copyBtn = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingCopy");
+  settingsFolderParitySetOperationStatus(panel, "orphanBindingReview", "running", "Refreshing");
   if (summary) summary.textContent = "Refreshing read-only orphan binding review…";
   if (copyBtn) copyBtn.disabled = true;
   const report = await settingsFolderDesktopLoadOrphanBindingReview(seed);
@@ -8824,6 +9143,10 @@ async function refreshSettingsFolderDesktopOrphanBindingReview(panel, seed = nul
   }
   panel.__h2oFolderDesktopOrphanBindingReport = report;
   settingsFolderDesktopRenderOrphanBindingReport(panel, report);
+  const blockers = settingsFolderDesktopOrphanBindingRemovalBlockers(report);
+  const orphanCount = settingsFolderCleanupNumber(report?.review?.orphanBindingCount || report?.orphanBindingCount || 0);
+  settingsFolderParitySetOperationStatus(panel, "orphanBindingReview", orphanCount || blockers.length ? "warning" : "works", orphanCount ? `${orphanCount} orphan binding(s)` : (blockers.length ? `${blockers.length} blocker(s)` : "No orphan binding"));
+  settingsFolderParityRenderOperationRows(panel);
   return report;
 }
 
@@ -9266,6 +9589,22 @@ async function refreshSettingsFolderParity(panel){
     ? await parity.selfCheck({ report })
     : null;
   panel.__h2oFolderParityReport = { selfCheck, diagnostics: report };
+  settingsFolderParitySetOperationStatus(
+    panel,
+    "folderDiagnostics",
+    selfCheck?.ok === true || report?.riskLevel === "ok" ? "works" : "warning",
+    selfCheck?.severity || report?.riskLevel || "diagnostics refreshed"
+  );
+  settingsFolderParityRenderOverview(panel, report, selfCheck);
+  settingsFolderParityRenderCanonicalRows(panel, report);
+  settingsFolderParityRenderLocalReview(panel, report);
+  settingsFolderParitySetOperationStatus(
+    panel,
+    "canonicalRows",
+    Number(report?.canonicalFolderCount || 0) >= 6 && !(report?.missingCanonicalFolders || []).length ? "works" : "warning",
+    `${Number(report?.canonicalFolderCount || 0)} canonical folder(s)`
+  );
+  settingsFolderParityRenderOperationRows(panel);
 
   const rows = [
     ["Surface", report.surface || ""],
@@ -9732,8 +10071,18 @@ function bindSettingsSyncControls(panel){
     refreshSettingsSync(panel).catch((err) => settingsSyncLog(panel, String(err && (err.stack || err.message || err))));
   });
 
+  panel.querySelectorAll("[data-folder-parity-tab]")?.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settingsFolderParitySetActiveTab(panel, btn.getAttribute("data-folder-parity-tab"));
+    });
+  });
+  settingsFolderParitySetActiveTab(panel, FOLDER_PARITY_SETTINGS_UI_STATE.activeTab);
+
   panel.querySelector("#wbSettingsFolderParityRefresh")?.addEventListener("click", () => {
-    refreshSettingsFolderParity(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+    refreshSettingsFolderParity(panel).catch((err) => {
+      settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", "Refresh failed");
+      settingsFolderParityLog(panel, String(err && (err.stack || err.message || err)));
+    });
   });
 
   panel.querySelector("#wbSettingsFolderParityCopy")?.addEventListener("click", () => {
