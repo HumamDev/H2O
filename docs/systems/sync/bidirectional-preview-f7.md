@@ -1237,7 +1237,8 @@ F7.4 still forbids:
 - Chat, snapshot, attachment, prompt, answer, transcript, or content mutation.
 
 The next major phase is F8 planning for remote apply propagation gates. F7.4
-does not authorize F8 implementation.
+does not authorize F8 implementation. See
+`docs/systems/sync/remote-apply-propagation-f8.md` for the F8.0 safety model.
 
 ## 12. Recommendation
 
