@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-P landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, **Navigator**, and **Capture** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. **Attachments** renders a read-only attachment list derived from the current Studio reader DOM (`#viewReader`). Capture stays **inert in V1** per `STUDIO_DOCK_PANEL_CONTRACT.md`: an inert/V1 notice is always shown above the list, and there is no mutation / conversion / archive / dismiss / live-selection UI. Only **Finder** remains as a Phase 2B placeholder. Next phase: Phase 2C-F (Finder read-only search across already-loaded Dock data). Still no write-back.
+Status: **Phase 2C is complete.** Phases 0B through 2C-F landed. All eight Dock tabs now render real read-only data: **Highlights**, **Bookmarks**, **Context**, **Notes**, **Navigator**, and **Capture** each render via their respective `H2O.Studio.store.*` façades; **Attachments** renders from the current Studio reader DOM (`#viewReader`); and **Finder** aggregates a local, in-memory, read-only search across the six persisted-store sources (Attachments search remains in the Attachments tab itself). Capture stays **inert in V1** with an always-on inert/V1 notice. No write-back, no conversion, no editing, no scroll/navigation integration in any tab.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -738,3 +738,49 @@ What it does:
 - No filtering / search / sort controls (`ui.filter` / `ui.sortBy` / `ui.query` are not exposed as controls; only the items themselves are rendered).
 - No `subTab` switching (`'capture'` vs `'review'`) — V1 just shows all items with `status`/`dismissed` surfaced in meta.
 - No other tab implemented — Finder remains an inert Phase 2B placeholder.
+
+## Phase 2C-F — what landed (Finder read-only local search)
+
+The eighth and final Phase 2C real-data Dock tab. Finder provides a local, in-memory, read-only search across the persisted-store sources already wired in Phases 2C-H/B/C/N/V/P:
+
+- `H2O.Studio.store.highlights.getAll()` — every highlight item across `itemsByAnswer`
+- `H2O.Studio.store.bookmarks.list(chatId)` — every bookmark entry for the active chat
+- `H2O.Studio.store.context.getBundle(chatId)` — every context item
+- `H2O.Studio.store.notes.getBundle(chatId)` — every note plus the scratchpad (rendered as a single `scratchpad` result row when non-empty)
+- `H2O.Studio.store.navigator.listPinned/listAliases/listCollapsed(chatId)` — pins, aliases, and currently-collapsed turns
+- `H2O.Studio.store.capture.getBundle(chatId)` — every captured item (including dismissed/converted)
+
+**Attachments search is intentionally NOT included** in this phase. Rather than duplicating the Attachments tab's DOM scanner, Finder renders a footer line: `Attachments search lands later — use the Attachments tab for now.`
+
+What the tab renders:
+
+- A linked-chat empty state — `Open a linked chat/snapshot to search Dock data.` — when no chatId is present. In that state no subscriptions are created and the search input is not rendered.
+- When a chatId is present:
+  - A `<input type="search">` at the top (inline-styled; deliberately does not edit the externally-modified `studio.css`).
+  - A summary line: `<n> items indexed (live, in-memory)` (empty query) or `<m> result(s) of <n> indexed` (non-empty query).
+  - With an empty query: `Type to search Dock data.`
+  - With a non-empty query: a `.wbDockList` of compact result rows, sorted by source order (H/B/N/V/C/P).
+  - The Attachments-deferred footer.
+- Each result row shows:
+  - **Source label** (`HIGHLIGHTS` / `BOOKMARKS` / `NOTES` / `NAVIGATOR` / `CONTEXT` / `CAPTURE`) inline before the title
+  - **Title** (entry-specific: highlight text / bookmark title / context title / note title / alias value / capture title / scratchpad marker)
+  - **Snippet** (when distinct from title)
+  - **Meta** line (kind, ids, tags, status flags, pin badges, source kind/id, etc. — same shape as the per-tab meta lines)
+
+### Read-only / no-persistence discipline
+
+- The query is held only in a JS variable inside the render closure. It is **NEVER** written to `localStorage`, `sessionStorage`, `chrome.storage`, `H2O.Studio.store.prefs`, or any other persistence.
+- **NO** `set` / `update` / `remove` / `saveNow` / write API on any store is ever called.
+- **NO** `<a>`, `<img>`, `<button>` rendered — text-only rows. The only interactive element is the local `<input type="search">`.
+- **NO** click-to-open, click-to-scroll, click-to-copy. No `window.open`, no clipboard, no `fetch`, no `XMLHttpRequest`, no `MutationObserver`, no `setInterval`, no `scrollTo`, no `scrollIntoView`.
+- Finder subscribes to all six stores on render and **rebuilds the in-memory cache on any change**, but never writes back to those stores.
+- The `cleanup()` function returned to dock-shell unsubscribes **all** subscriptions so re-selecting the tab does not leak handlers.
+
+### What is still NOT in Phase 2C-F
+
+- No Attachments search (deferred — see footer note).
+- No click-to-jump from a result to the source item / tab / message.
+- No query persistence across tab switches (intentional read-only stance).
+- No fuzzy matching / ranking — simple case-insensitive substring match for V1.
+- No grouping by source in the rendered list (sorted by source order, but no group headers).
+- No write-back / mutation surface anywhere in the tab.
