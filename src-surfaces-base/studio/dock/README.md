@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-A landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, and **Navigator** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. **Attachments** now renders a read-only attachment list derived from the current Studio reader DOM (`#viewReader`) — no persistent store, single scan per render, no observer/polling. Next phase: Phase 2C-P (Capture inert read-only render) and Phase 2C-F (Finder search across already-loaded Dock data). Still no write-back.
+Status: Phases 0B through 2C-P landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, **Navigator**, and **Capture** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. **Attachments** renders a read-only attachment list derived from the current Studio reader DOM (`#viewReader`). Capture stays **inert in V1** per `STUDIO_DOCK_PANEL_CONTRACT.md`: an inert/V1 notice is always shown above the list, and there is no mutation / conversion / archive / dismiss / live-selection UI. Only **Finder** remains as a Phase 2B placeholder. Next phase: Phase 2C-F (Finder read-only search across already-loaded Dock data). Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -697,3 +697,44 @@ The sixth real-data Dock tab. Unlike the H/B/C/N/V tabs, Attachments has **no pe
 - No grouping by message or by file type.
 - No filtering / search (Finder lands in its own phase).
 - No other tab implemented — Capture/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-P — what landed (Capture read-only / inert in V1)
+
+The seventh real-data Dock tab. `tabs/capture.tab.studio.js` no longer renders only static placeholder text — it now renders the per-chat Capture items the native Capture Engine wrote. Per `STUDIO_DOCK_PANEL_CONTRACT.md`, Capture stays **inert in Studio V1**: a prominent inert-V1 notice is always shown above the list, and there is **no mutation/conversion/archive/dismiss/live-selection UI**.
+
+What it does:
+
+- Renders the inert-V1 notice as the first child on **every** render, regardless of state: `Capture is read-only/inert in Studio V1. Live selection and conversion are not enabled.` (marked with `data-capture-notice="inert-v1"` so smoke tests can find it).
+- Reads `H2O.Studio.store.capture.getBundle(chatId)` (sync, lazy-fetch behind cache; first read may return `null` for either sub-key and notify via `subscribe()` when the platform fetch resolves).
+- Resolves `chatId` from `ctx.chatId → ctx.externalId → ctx.snapshotId` (first non-empty wins). Does **not** invent IDs.
+- Renders a "linked chat" hint — `Open a linked chat/snapshot to view captured items.` — when no chat id is present. The inert notice is still shown above it. In that state the tab does **not** subscribe.
+- Renders the standard empty state — `No captured items found for this chat yet.` — when the chat is linked but the store has no items.
+- Renders a top summary line: `<n> captured • <r> reviewed • <c> converted` (the latter two parts only appear when > 0).
+- Renders a compact row per item, sorted with **pinned first**, then **`updatedAt` descending** (fallback `createdAt`), preserving store order on ties:
+  - **title**: `item.title` if set, otherwise first line of `item.text`, otherwise `(untitled capture)`
+  - **snippet**: `item.text` when distinct from title
+  - **meta**: `kind` • `status: <s>` • `route: <routeSuggestion>` • source label (`<role> msg <msgId>`) • `id <itemId>` • `pinned` / `dismissed` badges • `#tag1 #tag2 …` • localized `updatedAt` (or `createdAt` fallback)
+  - **reviewed provenance** (optional, read-only): `reviewed at <ts>` line when `reviewedAt` is set
+  - **converted provenance** (optional, read-only): `converted → <kind> <id>` line when `convertedTo` is set — this is **pure metadata**, NOT an action button
+- Subscribes via `H2O.Studio.store.capture.subscribe(fn)` only when a chatId is resolved; filters events to the current `chatId` so unrelated changes don't repaint.
+- Returns an unsubscribe cleanup function to `dock-shell` (honored at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Reuses generic Dock list CSS from Phase 2C-H — no new CSS was needed.
+
+### Read-only / inert discipline (V1)
+
+- **NO** `set` / `update` / `remove` / `saveNow` / `convert` / `archive` / `dismiss` / `review` / `create` / write API call.
+- **NO** mutation of the items array or store/ui blobs returned by the store.
+- **NO `<a>`, `<img>`, `<button>` rendered.** Plain text-only rows; a stray click cannot trigger conversion or navigation.
+- **NO `getSelection` / Selection API.** Studio reads snapshots, not live chat — there is nothing to capture from a live selection here.
+- **NO** `window.open` / `clipboard` / `fetch` / `XMLHttpRequest` / `MutationObserver` / `setInterval`.
+- **NO** scroll-to-message integration.
+- Capture **rail title remains `Capture Box`** to match the native rail item label.
+
+### What is still NOT in Phase 2C-P
+
+- No Capture creation, deletion, editing, archiving, dismissal, or review-flow editing.
+- No conversion to Notes / Bookmarks / Context.
+- No live text selection or any capture-by-click flow.
+- No filtering / search / sort controls (`ui.filter` / `ui.sortBy` / `ui.query` are not exposed as controls; only the items themselves are rendered).
+- No `subTab` switching (`'capture'` vs `'review'`) — V1 just shows all items with `status`/`dismissed` surfaced in meta.
+- No other tab implemented — Finder remains an inert Phase 2B placeholder.
