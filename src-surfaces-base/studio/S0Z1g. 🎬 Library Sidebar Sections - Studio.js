@@ -38,6 +38,9 @@
   const TAG_CATEGORY_LINKS_KEY = 'h2o:prm:cgx:library:tag-category-links:v1';
   const LOCAL_REVIEW_EXPLANATION = 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.';
   const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
+  const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
+  const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
+  const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
   const SIDEBAR_MENU_COLORS = Object.freeze([
     { key: 'default', label: 'Default', color: '', value: '' },
     { key: 'blue', label: 'Blue', color: '#3B82F6', value: '#3B82F6' },
@@ -582,6 +585,151 @@
     return kind || 'item';
   }
 
+  function studioPlatformAdapter() {
+    try {
+      return String(W.H2O?.Studio?.platform?.env?.adapter || '').trim().toLowerCase();
+    } catch { return ''; }
+  }
+
+  function folderMetadataOperationRequest() {
+    try {
+      const fn = W.H2O?.Studio?.sync?.folderMetadataOperations?.request;
+      return typeof fn === 'function' ? fn : null;
+    } catch { return null; }
+  }
+
+  function canRequestCanonicalFolderColor(item) {
+    return item?.isCanonical === true
+      && studioPlatformAdapter() === 'mv3'
+      && !!folderMetadataOperationRequest();
+  }
+
+  function resultCodes(result, listName = 'blockers') {
+    const rows = Array.isArray(result?.[listName]) ? result[listName] : [];
+    return rows.map((entry) => String(entry?.code || '').trim()).filter(Boolean);
+  }
+
+  function firstResultCode(result, fallback = 'folder-color-request-failed') {
+    return resultCodes(result, 'blockers')[0]
+      || resultCodes(result, 'warnings')[0]
+      || fallback;
+  }
+
+  function buildFolderColorOperation(item, color, staleGuard = null) {
+    const operation = {
+      schema: FOLDER_METADATA_OPERATION_SCHEMA,
+      operationType: 'change-folder-color',
+      folderId: String(item?.id || item?.folderId || '').trim(),
+      after: { iconColor: normalizeHexColor(color || '') },
+      sourceSurface: 'chrome-studio',
+      reason: FOLDER_METADATA_COLOR_REASON,
+    };
+    if (staleGuard && typeof staleGuard === 'object' && Object.keys(staleGuard).length) {
+      operation.staleGuard = staleGuard;
+    }
+    return operation;
+  }
+
+  function staleGuardFromPreview(preview) {
+    const src = preview?.before && typeof preview.before === 'object' ? preview.before : {};
+    const out = {};
+    ['folderHash', 'sourceHash', 'membershipHash', 'previewHash'].forEach((key) => {
+      const value = String(src[key] || preview?.staleGuard?.[key] || '').trim();
+      if (value) out[key] = value;
+    });
+    return out;
+  }
+
+  function refreshAfterNativeFolderColorApply() {
+    let refreshed = false;
+    try {
+      const result = W.H2O?.Studio?.sync?.refreshNativeFolderState?.('folder-color-apply');
+      if (result && typeof result.finally === 'function') {
+        refreshed = true;
+        result.finally(() => {
+          try { renderAllSections(); } catch (e) { err('renderAfterFolderColorApply', e); }
+        });
+      }
+    } catch (e) { err('refreshNativeFolderState.folderColorApply', e); }
+    if (!refreshed) {
+      W.setTimeout(() => {
+        try { renderAllSections(); } catch (e) { err('renderAfterFolderColorApply.timeout', e); }
+      }, 650);
+    }
+  }
+
+  async function requestCanonicalFolderColor(item, color, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
+    }
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    if (!folderId || item?.isCanonical !== true) {
+      setStatus('Blocked: target-not-canonical', 'blocked');
+      return { ok: false, blockers: [{ code: 'target-not-canonical' }] };
+    }
+
+    const operation = buildFolderColorOperation(item, color);
+    setStatus('Previewing...', 'pending');
+    let preview = null;
+    try {
+      preview = await request(operation, {
+        requestMode: 'preview',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+      });
+    } catch (e) {
+      err('folderColor.preview', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'preview-request-threw' }] };
+    }
+
+    const previewBlocker = resultCodes(preview, 'blockers')[0];
+    if (!preview?.ok || previewBlocker) {
+      setStatus(`Blocked: ${previewBlocker || firstResultCode(preview)}`, 'blocked');
+      return preview;
+    }
+    if (resultCodes(preview, 'warnings').includes('no-op-color-unchanged')) {
+      setStatus('Color already current', 'ok');
+      return preview;
+    }
+    if (preview.canApply !== true) {
+      setStatus('Blocked: preview-not-applyable', 'blocked');
+      return preview;
+    }
+
+    setStatus('Applying...', 'pending');
+    let applied = null;
+    try {
+      applied = await request(buildFolderColorOperation(item, color, staleGuardFromPreview(preview)), {
+        requestMode: 'apply',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+      });
+    } catch (e) {
+      err('folderColor.apply', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
+    }
+
+    const applyBlocker = resultCodes(applied, 'blockers')[0];
+    if (!applied?.ok || applyBlocker) {
+      setStatus(`Blocked: ${applyBlocker || firstResultCode(applied, 'apply-failed')}`, 'blocked');
+      return applied;
+    }
+    if (applied.applied !== true) {
+      if (resultCodes(applied, 'warnings').includes('no-op-color-unchanged')) {
+        setStatus('Color already current', 'ok');
+      } else {
+        setStatus('Color unchanged', 'ok');
+      }
+      return applied;
+    }
+    setStatus('Color updated', 'ok');
+    refreshAfterNativeFolderColorApply();
+    return applied;
+  }
+
   function menuTitleForKind(kind) {
     if (kind === 'folders') return 'Folder actions';
     if (kind === 'categories') return 'Category appearance';
@@ -646,12 +794,27 @@
     return false;
   }
 
-  function makeMenuColorPicker(item, currentColor = '') {
+  function makeMenuColorPicker(item, currentColor = '', opts = {}) {
     const current = normalizeHexColor(currentColor || '');
+    const onSelect = typeof opts.onSelect === 'function' ? opts.onSelect : null;
+    const keepOpen = opts.keepOpen === true;
     const section = el('div', { class: 'wbSidebarNativePickerSection' }, [
-      el('div', { class: 'wbSidebarNativePickerLabel' }, 'Color'),
+      el('div', { class: 'wbSidebarNativePickerLabel' }, String(opts.label || 'Color')),
     ]);
     const grid = el('div', { class: 'wbSidebarNativeColorGrid' });
+    const status = opts.status
+      ? el('div', {
+        class: 'wbSidebarNativePickerStatus',
+        role: 'status',
+        'aria-live': 'polite',
+        style: 'min-height:16px;margin-top:6px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+      })
+      : null;
+    const setStatus = (message, kind = '') => {
+      if (!status) return;
+      status.textContent = String(message || '');
+      status.dataset.kind = String(kind || '');
+    };
     SIDEBAR_MENU_COLORS.forEach((option) => {
       const value = normalizeHexColor(option.value || option.color || '');
       const btn = el('button', {
@@ -666,12 +829,21 @@
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        closeRowMenu();
+        if (onSelect) {
+          Promise.resolve(onSelect(value, { setStatus, statusEl: status, button: btn }))
+            .catch((e) => {
+              err('menuColorPicker.onSelect', e);
+              setStatus(`Blocked: ${String(e?.message || e || 'color-request-failed')}`, 'blocked');
+            });
+          return;
+        }
+        if (!keepOpen) closeRowMenu();
         applyMenuColor(item, value);
       });
       grid.appendChild(btn);
     });
     section.appendChild(grid);
+    if (status) section.appendChild(status);
     return section;
   }
 
@@ -935,10 +1107,19 @@
       }));
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       if (isCanonicalFolder) {
-        pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
-          disabled: true,
-          title: disabledSyncTitle,
-        }));
+        if (canRequestCanonicalFolderColor(item)) {
+          pop.appendChild(makeMenuColorPicker(item, color, {
+            label: 'Change color',
+            status: true,
+            keepOpen: true,
+            onSelect: (value, controls) => requestCanonicalFolderColor(item, value, controls),
+          }));
+        } else {
+          pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
+            disabled: true,
+            title: studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
+          }));
+        }
       } else {
         pop.appendChild(makeMenuColorPicker(item, color));
       }
