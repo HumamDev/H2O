@@ -532,6 +532,9 @@
   <!-- F7.1b: pure folder.metadata bidirectional preview comparator. Counts-only,
        redacted, no storage reads/writes, no apply, no F6 ingest. -->
   <script src="./sync/bidirectional-folder-preview.js"></script>
+  <!-- F7.4.1b: pure dry-run folder.metadata color apply planner. Simulated
+       checks only; no reads, writes, apply, F5 calls, or F6 calls. -->
+  <script src="./sync/folder-metadata-apply-plan.js"></script>
   <!-- F1B: hidden/gated readiness runner. Mounts only when BOTH
        H2O.flags.experimentalMultiPeer === true AND
        location.hash === '#/dev/multi-peer-readiness' (F1B.1 also reconciles

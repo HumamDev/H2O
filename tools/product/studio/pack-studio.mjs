@@ -151,6 +151,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F7.1b: pure folder.metadata bidirectional preview comparator. Counts-only,
   // redacted, no storage reads/writes, no apply, no F6 ingest.
   "sync/bidirectional-folder-preview.js",
+  // F7.4.1b: pure dry-run folder.metadata color apply planner. Simulated
+  // checks only; no reads, writes, apply, F5 calls, or F6 calls.
+  "sync/folder-metadata-apply-plan.js",
   // F1B: hidden/gated readiness runner. Mounts only when BOTH
   //   H2O.flags.experimentalMultiPeer === true AND
   //   location.hash === '#/dev/multi-peer-readiness'
@@ -301,6 +304,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/peer-watermarks.js",
   "sync/multi-peer-diff.js",
   "sync/bidirectional-folder-preview.js",
+  "sync/folder-metadata-apply-plan.js",
   "sync/multi-peer-runner.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",

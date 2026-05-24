@@ -537,6 +537,96 @@ F7.4.0 risk table:
 The next phase should be F7.4.1 dry-run apply plan only. Do not implement real
 apply yet, and do not add schema/stamping unless F7.4.1 proves it is needed.
 
+### F7.4.1b Folder Metadata Apply Dry-Run Plan
+
+F7.4.1b adds a pure dry-run helper:
+
+```js
+H2O.Studio.diagnostics.planBidirectionalFolderMetadataApply({
+  dryRun: true,
+  entityKind: "folder.metadata",
+  field: "color",
+  selectedDelta,
+  expectedBaselineHash,
+  expectedTargetHash,
+  reason: "operator wants to preview one folder color apply",
+  checks: {
+    targetFolderExists: true,
+    baselineHashMatches: true,
+    f5BlockersAbsent: true,
+    f6BlockersAbsent: true
+  }
+});
+```
+
+This helper performs no live local folder reads, no F5 reads, no F6 reads, no
+audit commit, and no folder mutation. It uses only simulated or caller-provided
+checks. If any required check is missing or false, `applyable` is `false`.
+
+F7.4.1b input requirements:
+
+- `dryRun` must be `true`; otherwise `dry-run-required` blocks.
+- `entityKind` must be `folder.metadata`.
+- `field` must be `color` or `iconColor`.
+- `selectedDelta` must be present, but is never returned.
+- `expectedBaselineHash` must be present.
+- `expectedTargetHash` must be present.
+- `reason` is optional for dry-run, but if provided must be a safe string.
+
+F7.4.1b allowlists only `color` and `iconColor`. `name`, `parentId`,
+`sortOrder`, `icon`, `kind`, `source`, `meta`, `createdAt`, `updatedAt`, and
+all other fields return `field-not-allowlisted`.
+
+Required simulated checks:
+
+- `targetFolderExists === true`
+- `baselineHashMatches === true`
+- `f5BlockersAbsent === true`
+- `f6BlockersAbsent === true`
+
+Missing or failed checks return conservative blockers such as
+`target-folder-not-verified`, `baseline-hash-not-verified`,
+`f5-blocker-check-unavailable`, `f5-blocker-present`,
+`f6-blocker-check-unavailable`, or `f6-blocker-present`.
+
+F7.4.1b result shape:
+
+```js
+{
+  schema: "h2o.studio.sync.folder-metadata-apply-plan.v0",
+  ok: true,
+  dryRun: true,
+  redacted: true,
+  writesPerformed: 0,
+  wouldMutateOnApply: true,
+  applyable: true,
+  entityKind: "folder.metadata",
+  allowedFields: ["color", "iconColor"],
+  selectedField: "color",
+  checks: {
+    targetFolderExists: true,
+    baselineHashMatches: true,
+    f5BlockersAbsent: true,
+    f6BlockersAbsent: true,
+    fieldAllowlisted: true
+  },
+  plannedMutation: {
+    type: "folder.metadata.color",
+    rowsWouldUpdate: 1
+  },
+  blockers: [],
+  warnings: []
+}
+```
+
+The dry-run output remains redacted. It never returns the folder name, folder
+ID, parent ID, raw color/icon value, raw metadata, peer IDs, raw JSON, selected
+delta contents, or raw hashes. It returns only field names, booleans, counts,
+blocker codes, and planned mutation type.
+
+F7.4.1c may later inspect and integrate live read-only local/F5/F6 check
+surfaces. F7.4.1b intentionally does not do that.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
