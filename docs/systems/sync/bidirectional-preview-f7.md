@@ -1102,6 +1102,27 @@ validation shortcuts, import/export/sync paths, F5/F6 mutation APIs,
 folderBinding/chat/snapshot mutation paths, Chrome storage, merge, resolver, or
 write-back behavior.
 
+### F7.4.3a Hash Canonicalization Parity
+
+F7.4.3a keeps the F7.4.3 apply scope unchanged and fixes only baseline hash
+parity between the JavaScript dry-run/live-check path and the Rust apply
+transaction path.
+
+Folder metadata hashes canonicalize empty parent folder identity as the empty
+string `""`. These input forms must hash identically:
+
+- missing parent field
+- `parentId: null`
+- `parentId: ""`
+- `parentFolderId: null`
+- `parentFolderId: ""`
+- `parent_id: null`
+- `parent_id: ""`
+
+The rule matches the current Desktop DB shape, where root folders may persist
+`parent_id` as an empty string. It does not expose parent IDs, raw hashes, or
+new fields, and it does not weaken the Rust transaction baseline check.
+
 Potential blocker codes:
 
 - `watermark-unavailable`

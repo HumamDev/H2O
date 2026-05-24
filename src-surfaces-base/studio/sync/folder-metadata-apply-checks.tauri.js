@@ -70,6 +70,10 @@
     return cleanString(firstPresent(row, keys));
   }
 
+  function canonicalParentId(value) {
+    return cleanString(value);
+  }
+
   function normalizeNumber(value) {
     if (value == null || value === '') return null;
     var num = Number(value);
@@ -160,7 +164,7 @@
       : !!cleanString(metaValue);
     var hashInput = {
       name: firstString(row, ['name', 'title', 'folderName']) || null,
-      parentId: firstString(row, ['parentId', 'parentFolderId', 'parent_id']) || null,
+      parentId: canonicalParentId(firstPresent(row, ['parentId', 'parentFolderId', 'parent_id'])),
       color: firstString(row, ['color', 'iconColor', 'folderColor', 'accentColor']) || null,
       icon: firstString(row, ['icon', 'iconKey']) || null,
       sortOrder: normalizeNumber(firstPresent(row, ['sortOrder', 'index', 'position'])),

@@ -71,6 +71,10 @@
     return safeString(firstPresent(row, keys));
   }
 
+  function canonicalParentId(value) {
+    return safeString(value);
+  }
+
   function normalizeNumber(value) {
     if (value == null || value === '') return { present: false, value: null };
     var num = Number(value);
@@ -540,7 +544,7 @@
 
     var name = firstString(row, ['name', 'title', 'folderName']);
     var normalizedName = normalizeName(name);
-    var parentId = firstString(row, ['parentId', 'parentFolderId', 'parent_id']);
+    var parentId = canonicalParentId(firstPresent(row, ['parentId', 'parentFolderId', 'parent_id']));
     var color = normalizeHexColor(firstString(row, ['color', 'folderColor', 'accentColor']));
     var iconColor = normalizeHexColor(firstString(row, ['iconColor', 'icon_color']));
     var canonicalColor = iconColor || color;
@@ -560,7 +564,7 @@
 
     var hashInput = {
       name: name || null,
-      parentId: parentId || null,
+      parentId: parentId,
       color: color || null,
       iconColor: iconColor || null,
       canonicalColor: canonicalColor || null,

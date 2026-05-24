@@ -288,13 +288,14 @@ fn fnv1a_32_hex(input: &str) -> String {
 
 fn folder_hash(row: &FolderRow) -> String {
     let meta_present = row.meta_json.trim() != "{}" && !row.meta_json.trim().is_empty();
+    let parent_id = row.parent_id.as_deref().unwrap_or("").trim().to_string();
     let mut map = BTreeMap::<String, JsonValue>::new();
     map.insert("color".to_string(), json!(row.color));
     map.insert("icon".to_string(), JsonValue::Null);
     map.insert("kind".to_string(), JsonValue::Null);
     map.insert("metaPresent".to_string(), json!(meta_present));
     map.insert("name".to_string(), json!(row.name));
-    map.insert("parentId".to_string(), json!(row.parent_id));
+    map.insert("parentId".to_string(), json!(parent_id));
     map.insert("sortOrder".to_string(), json!(row.sort_order));
     map.insert("source".to_string(), json!(row.source));
     fnv1a_32_hex(&serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()))
@@ -1015,6 +1016,29 @@ mod tests {
             .unwrap();
         tx.rollback().await.unwrap();
         folder_hash(&row)
+    }
+
+    #[test]
+    fn f7_folder_metadata_color_apply_empty_parent_hash_canonicalizes() {
+        let base = FolderRow {
+            name: FIXTURE_FOLDER_NAME.to_string(),
+            parent_id: None,
+            color: Some(FIXTURE_COLOR.to_string()),
+            sort_order: 0,
+            source: "user".to_string(),
+            meta_json: "{}".to_string(),
+        };
+        let empty_parent = FolderRow {
+            parent_id: Some("".to_string()),
+            ..base.clone()
+        };
+        let whitespace_parent = FolderRow {
+            parent_id: Some("   ".to_string()),
+            ..base.clone()
+        };
+
+        assert_eq!(folder_hash(&base), folder_hash(&empty_parent));
+        assert_eq!(folder_hash(&base), folder_hash(&whitespace_parent));
     }
 
     async fn table_count(conn: &mut SqliteConnection, table: &str) -> i64 {
