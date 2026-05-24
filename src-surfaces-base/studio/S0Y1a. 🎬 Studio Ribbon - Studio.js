@@ -100,7 +100,7 @@
       groups: [
         { id: 'extract', label: 'Extract', actions: [
           { id: 'summarize',     label: 'Summarize',     tooltip: 'AI provider unavailable', phase: '3d-b' },
-          { id: 'extract-tasks', label: 'Extract tasks', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'extract-tasks', label: 'Extract tasks', tooltip: 'AI provider unavailable', phase: '3d-c1' },
           { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-a' },
         ] },
         { id: 'rewrite', label: 'Rewrite', actions: [
@@ -265,22 +265,29 @@
     };
   }
 
-  const AI_SUMMARY_CHAR_LIMIT = 24000;
-  const AI_SUMMARY_HEAD_CHARS = 12000;
-  const AI_SUMMARY_TAIL_CHARS = 12000;
+  const AI_TRANSCRIPT_CHAR_LIMIT = 24000;
+  const AI_TRANSCRIPT_HEAD_CHARS = 12000;
+  const AI_TRANSCRIPT_TAIL_CHARS = 12000;
+  const AI_TRANSCRIPT_OMISSION = '\n\n[... transcript truncated for AI action ...]\n\n';
   const AI_SUMMARY_OMISSION = '\n\n[... transcript truncated for summary ...]\n\n';
   let aiSummaryRequestSeq = 0;
   let aiSummaryActiveRequestId = null;
+  let aiTaskRequestSeq = 0;
+  let aiTaskActiveRequestId = null;
 
-  function buildSummaryInput(text, transcriptMeta) {
+  function buildAiTranscriptInput(text, transcriptMeta, opts) {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const omission = (typeof options.omission === 'string' && options.omission)
+      ? options.omission
+      : AI_TRANSCRIPT_OMISSION;
     const raw = String(text || '').trim();
     const originalChars = raw.length;
     let bounded = raw;
     let truncated = false;
-    if (originalChars > AI_SUMMARY_CHAR_LIMIT) {
-      bounded = raw.slice(0, AI_SUMMARY_HEAD_CHARS)
-        + AI_SUMMARY_OMISSION
-        + raw.slice(Math.max(0, originalChars - AI_SUMMARY_TAIL_CHARS));
+    if (originalChars > AI_TRANSCRIPT_CHAR_LIMIT) {
+      bounded = raw.slice(0, AI_TRANSCRIPT_HEAD_CHARS)
+        + omission
+        + raw.slice(Math.max(0, originalChars - AI_TRANSCRIPT_TAIL_CHARS));
       truncated = true;
     }
     const meta = (transcriptMeta && typeof transcriptMeta === 'object') ? transcriptMeta : {};
@@ -295,18 +302,56 @@
     };
   }
 
-  function buildSummarizeRequest(ctx, summaryInput) {
+  function buildSummaryInput(text, transcriptMeta) {
+    return buildAiTranscriptInput(text, transcriptMeta, { omission: AI_SUMMARY_OMISSION });
+  }
+
+  function buildAiPromptPreamble(ctx, transcriptInput) {
     const title = String((ctx && ctx.title) || '').trim();
-    const truncationNote = summaryInput.truncated
+    const truncationNote = transcriptInput.truncated
       ? 'The transcript was truncated deterministically: first 12000 characters, an omission marker, then the last 12000 characters.'
       : 'The transcript was not truncated.';
-    const overlayNote = summaryInput.overlaySkipped
-      ? ('Overlay was skipped' + (summaryInput.overlayReason ? ': ' + summaryInput.overlayReason : '') + '.')
-      : (summaryInput.overlayIncluded ? 'Overlay-aware transcript was used.' : 'Raw clean transcript was used.');
-    const userPrompt = [
+    const overlayNote = transcriptInput.overlaySkipped
+      ? ('Overlay was skipped' + (transcriptInput.overlayReason ? ': ' + transcriptInput.overlayReason : '') + '.')
+      : (transcriptInput.overlayIncluded ? 'Overlay-aware transcript was used.' : 'Raw clean transcript was used.');
+    return [
       title ? ('Title: ' + title) : 'Title: Untitled chat',
       truncationNote,
       overlayNote,
+    ];
+  }
+
+  function buildAiRequestBase(action, phase, transcriptInput, options) {
+    return {
+      input: {
+        kind: 'overlay-clean-transcript',
+        truncated: transcriptInput.truncated,
+        originalChars: transcriptInput.originalChars,
+        sentChars: transcriptInput.sentChars,
+        overlayIncluded: transcriptInput.overlayIncluded,
+        overlaySkipped: transcriptInput.overlaySkipped,
+        overlayReason: transcriptInput.overlayReason,
+      },
+      metadata: {
+        surface: 'studio',
+        feature: 'ribbon',
+        action: action,
+        truncated: transcriptInput.truncated,
+        originalChars: transcriptInput.originalChars,
+        sentChars: transcriptInput.sentChars,
+        overlayIncluded: transcriptInput.overlayIncluded,
+        overlaySkipped: transcriptInput.overlaySkipped,
+        overlayReason: transcriptInput.overlayReason,
+      },
+      options: options || {},
+      phase: phase,
+      action: action,
+    };
+  }
+
+  function buildSummarizeRequest(ctx, summaryInput) {
+    const userPrompt = [
+      ...buildAiPromptPreamble(ctx, summaryInput),
       '',
       'Summarize this chat transcript. Return concise Markdown with:',
       '- Overview',
@@ -318,10 +363,11 @@
       summaryInput.text,
     ].join('\n');
     const requestId = 'studio-ribbon-summarize-' + Date.now().toString(36) + '-' + (++aiSummaryRequestSeq);
-    return {
+    return Object.assign(buildAiRequestBase('summarize', '3d-b', summaryInput, {
+      maxTokens: 700,
+      temperature: 0.2,
+    }), {
       requestId: requestId,
-      action: 'summarize',
-      phase: '3d-b',
       messages: [
         {
           role: 'system',
@@ -329,75 +375,104 @@
         },
         { role: 'user', content: userPrompt },
       ],
-      input: {
-        kind: 'overlay-clean-transcript',
-        truncated: summaryInput.truncated,
-        originalChars: summaryInput.originalChars,
-        sentChars: summaryInput.sentChars,
-        overlayIncluded: summaryInput.overlayIncluded,
-        overlaySkipped: summaryInput.overlaySkipped,
-        overlayReason: summaryInput.overlayReason,
-      },
-      metadata: {
-        surface: 'studio',
-        feature: 'ribbon',
-        action: 'summarize',
-        truncated: summaryInput.truncated,
-        originalChars: summaryInput.originalChars,
-        sentChars: summaryInput.sentChars,
-        overlayIncluded: summaryInput.overlayIncluded,
-        overlaySkipped: summaryInput.overlaySkipped,
-        overlayReason: summaryInput.overlayReason,
-      },
-      options: {
-        maxTokens: 700,
-        temperature: 0.2,
-      },
-    };
+    });
   }
 
-  function summaryFailureReason(result) {
+  function buildExtractTasksRequest(ctx, transcriptInput) {
+    const userPrompt = [
+      ...buildAiPromptPreamble(ctx, transcriptInput),
+      '',
+      'Extract only explicit or strongly implied tasks from this chat transcript.',
+      'Do not invent tasks, owners, dates, or priorities.',
+      'If no clear tasks exist, return exactly:',
+      'No clear tasks found.',
+      '',
+      'When tasks exist, return Markdown exactly in this format:',
+      '## Tasks',
+      '',
+      '- [ ] Task: ...',
+      '  Priority: High | Medium | Low | Not mentioned',
+      '  Due: YYYY-MM-DD | Not mentioned',
+      '  Source/context: ...',
+      '',
+      'Transcript:',
+      transcriptInput.text,
+    ].join('\n');
+    const requestId = 'studio-ribbon-extract-tasks-' + Date.now().toString(36) + '-' + (++aiTaskRequestSeq);
+    return Object.assign(buildAiRequestBase('extract-tasks', '3d-c1', transcriptInput, {
+      maxTokens: 900,
+      temperature: 0.1,
+    }), {
+      requestId: requestId,
+      messages: [
+        {
+          role: 'system',
+          content: 'You extract action items from user-provided chat transcripts. Extract only explicit or strongly implied tasks. Do not invent tasks, owners, dates, or priorities. If no clear tasks are present, return exactly: No clear tasks found.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+  }
+
+  function aiFailureReason(result) {
     if (!result || typeof result !== 'object') return 'unknown';
     return String(result.reason || result.error || result.message || 'unknown');
   }
 
-  function extractSummaryText(result) {
+  function summaryFailureReason(result) {
+    return aiFailureReason(result);
+  }
+
+  function extractAiResultText(result) {
     if (typeof result === 'string') return result.trim();
     if (!result || typeof result !== 'object') return '';
     if (result.ok === false) return '';
-    const directFields = ['summary', 'text', 'content', 'outputText', 'output', 'message'];
+    const directFields = ['summary', 'tasks', 'text', 'content', 'outputText', 'output', 'message'];
     for (let i = 0; i < directFields.length; i += 1) {
       const value = result[directFields[i]];
       if (typeof value === 'string' && value.trim()) return value.trim();
     }
     if (result.result && typeof result.result === 'object') {
-      return extractSummaryText(result.result);
+      return extractAiResultText(result.result);
     }
     if (result.data && typeof result.data === 'object') {
-      return extractSummaryText(result.data);
+      return extractAiResultText(result.data);
     }
     return '';
   }
 
-  function removeSummaryModal() {
+  function extractSummaryText(result) {
+    return extractAiResultText(result);
+  }
+
+  function removeAiResultModal() {
     try {
       const existing = document.getElementById('wbRibbonAiSummaryModal');
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
     } catch (_) { /* swallow */ }
   }
 
-  function showSummaryModal(summaryText, summaryInput, setStatus) {
-    removeSummaryModal();
+  function removeSummaryModal() {
+    removeAiResultModal();
+  }
+
+  function showAiResultModal(titleText, resultText, transcriptInput, setStatus, opts) {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const label = String(titleText || 'AI Result');
+    const copyStatus = options.copyStatus || 'Copied';
+    const failPrefix = options.failPrefix || 'AI action failed';
+    const truncatedNote = options.truncatedNote || 'Transcript truncated';
+    removeAiResultModal();
     const host = document.body || getContainer();
     if (!host || typeof host.appendChild !== 'function') {
-      setStatus('Summary failed: result surface unavailable');
+      setStatus(failPrefix + ': result surface unavailable');
       return false;
     }
     const overlay = el('div', {
       id: 'wbRibbonAiSummaryModal',
       role: 'dialog',
       'aria-modal': 'true',
-      'aria-label': 'Summary',
+      'aria-label': label,
       style: 'position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.38);padding:24px;',
     });
     const panel = el('div', {
@@ -407,7 +482,7 @@
     const head = el('div', {
       style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(15,23,42,.12);',
     });
-    const title = el('div', { style: 'font-size:15px;font-weight:700;line-height:1.3;' }, 'Summary');
+    const title = el('div', { style: 'font-size:15px;font-weight:700;line-height:1.3;' }, label);
     const closeTop = el('button', {
       type: 'button',
       title: 'Close',
@@ -417,13 +492,13 @@
     const body = el('pre', {
       style: 'margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:520px;',
     });
-    body.textContent = String(summaryText || '');
+    body.textContent = String(resultText || '');
     const foot = el('div', {
       style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-top:1px solid rgba(15,23,42,.12);',
     });
     const note = el('div', {
       style: 'font-size:12px;color:#4b5563;line-height:1.35;',
-    }, summaryInput && summaryInput.truncated ? 'Transcript truncated for summary' : '');
+    }, transcriptInput && transcriptInput.truncated ? truncatedNote : '');
     const actions = el('div', { style: 'display:flex;align-items:center;gap:8px;' });
     const copyBtn = el('button', {
       type: 'button',
@@ -439,14 +514,14 @@
       const platform = getPlatform();
       const clip = platform && platform.clipboard;
       if (!clip || typeof clip.writeText !== 'function') {
-        setStatus('Summary failed: clipboard unavailable');
+        setStatus(failPrefix + ': clipboard unavailable');
         return;
       }
-      Promise.resolve(clip.writeText(String(summaryText || ''))).then(
-        function () { setStatus('Summary copied'); },
+      Promise.resolve(clip.writeText(String(resultText || ''))).then(
+        function () { setStatus(copyStatus); },
         function (err) {
           const msg = (err && (err.message || String(err))) || 'unknown error';
-          setStatus('Summary failed: ' + msg);
+          setStatus(failPrefix + ': ' + msg);
         }
       );
     }
@@ -479,7 +554,23 @@
     return true;
   }
 
-  function summarizeIsEnabled(ctx) {
+  function showSummaryModal(summaryText, summaryInput, setStatus) {
+    return showAiResultModal('Summary', summaryText, summaryInput, setStatus, {
+      copyStatus: 'Summary copied',
+      failPrefix: 'Summary failed',
+      truncatedNote: 'Transcript truncated for summary',
+    });
+  }
+
+  function showExtractTasksModal(taskText, transcriptInput, setStatus) {
+    return showAiResultModal('Extracted Tasks', taskText, transcriptInput, setStatus, {
+      copyStatus: 'Tasks copied',
+      failPrefix: 'Task extraction failed',
+      truncatedNote: 'Transcript truncated for task extraction',
+    });
+  }
+
+  function aiTranscriptActionIsEnabled(ctx) {
     if (!ctx || ctx.chatType !== 'saved') return false;
     const bridge = getRibbonBridge();
     if (!bridge || typeof bridge.getCleanTranscript !== 'function') return false;
@@ -489,7 +580,7 @@
     return status.available === true;
   }
 
-  function summarizeDisabledTooltip(ctx) {
+  function aiTranscriptDisabledTooltip(ctx) {
     if (!ctx || ctx.chatType !== 'saved') return 'AI provider unavailable';
     const bridge = getRibbonBridge();
     if (!bridge || typeof bridge.getCleanTranscript !== 'function') return 'Transcript bridge unavailable';
@@ -497,6 +588,14 @@
     if (!inference || typeof inference.run !== 'function') return 'AI provider unavailable';
     const status = getInferenceStatus();
     return status.available ? '' : (status.message || 'AI provider unavailable');
+  }
+
+  function summarizeIsEnabled(ctx) {
+    return aiTranscriptActionIsEnabled(ctx);
+  }
+
+  function summarizeDisabledTooltip(ctx) {
+    return aiTranscriptDisabledTooltip(ctx);
   }
 
   /* ── Phase 1b — wired action handlers ────────────────────────────────
@@ -1006,8 +1105,78 @@
       );
     },
   };
+  ACTION_HANDLERS['extract-tasks'] = {
+    isEnabled: aiTranscriptActionIsEnabled,
+    disabledTooltip: aiTranscriptDisabledTooltip,
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getCleanTranscript !== 'function') {
+        setStatus('Task extraction failed: transcript bridge unavailable');
+        return;
+      }
+      const inference = getInference();
+      const status = getInferenceStatus();
+      if (!status.available || !inference || typeof inference.run !== 'function') {
+        setStatus('AI provider unavailable');
+        return;
+      }
+
+      removeAiResultModal();
+      setStatus('Preparing tasks...');
+      Promise.resolve(bridge.getCleanTranscript({ includeOverlay: true })).then(
+        function (transcriptResult) {
+          const safe = (transcriptResult && typeof transcriptResult === 'object')
+            ? transcriptResult
+            : { text: '', overlayIncluded: false, overlaySkipped: false };
+          const transcriptInput = buildAiTranscriptInput(safe.text, safe);
+          if (!transcriptInput.text.trim()) {
+            setStatus('No transcript content');
+            return;
+          }
+          const request = buildExtractTasksRequest(ctx, transcriptInput);
+          aiTaskActiveRequestId = request.requestId;
+          setStatus('Extracting tasks...');
+          Promise.resolve(inference.run(request)).then(
+            function (result) {
+              if (aiTaskActiveRequestId !== request.requestId) return;
+              if (result && typeof result === 'object' && result.ok === false) {
+                removeAiResultModal();
+                setStatus('Task extraction failed: ' + aiFailureReason(result));
+                return;
+              }
+              const taskText = extractAiResultText(result);
+              if (!taskText) {
+                removeAiResultModal();
+                setStatus('Task extraction failed: empty-result');
+                return;
+              }
+              try {
+                if (showExtractTasksModal(taskText, transcriptInput, setStatus)) {
+                  setStatus('Tasks ready');
+                }
+              } catch (e) {
+                removeAiResultModal();
+                const msg = (e && (e.message || String(e))) || 'unknown error';
+                setStatus('Task extraction failed: ' + msg);
+              }
+            },
+            function (err) {
+              if (aiTaskActiveRequestId !== request.requestId) return;
+              removeAiResultModal();
+              const msg = (err && (err.message || String(err))) || 'unknown error';
+              setStatus('Task extraction failed: ' + msg);
+            }
+          );
+        },
+        function (err) {
+          removeAiResultModal();
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Task extraction failed: ' + msg);
+        }
+      );
+    },
+  };
   [
-    'extract-tasks',
     'generate-tags',
     'rewrite-selection',
     'study-notes',
