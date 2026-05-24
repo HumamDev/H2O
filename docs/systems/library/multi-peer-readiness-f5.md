@@ -3351,6 +3351,53 @@ review IDs, record IDs, peer IDs, raw JSON, metadata, or content. The audit
 stores only hashes for the gate, token, review ID set, and tombstone ID set,
 plus counts and DB fingerprint values.
 
+## F5H.3b.1 readiness closure
+
+Status: **ready, live-noop**.
+
+Commit `0be94ebe79278721ae4e189f1f456dad077e1669`
+(`Prove seeded synthetic cleanup readiness`) added an isolated in-memory
+SQLite proof for the real Desktop cleanup path. The proof seeds one
+contract-confirmed synthetic tombstone and one contract-confirmed synthetic
+review, plus lookalike/protected rows, then runs the production-shaped
+transactional dry-run and real commit path against the test database only.
+
+The seeded proof verifies:
+
+- only the eligible synthetic tombstone/review are selected by the
+  transactional dry-run candidate IDs
+- only those selected rows are deleted by the real commit path
+- non-synthetic lookalikes remain
+- prefix-only rows remain
+- pending synthetic reviews remain
+- restored synthetic tombstones remain
+- protected synthetic tombstones remain
+- one persistent `sync_maintenance_log` audit row is written
+- response and audit result JSON contain hashes/counts, not raw candidate IDs
+- existing bad-token and DB-fingerprint drift tests still block before
+  deletion/audit side effects
+
+The current live Desktop database remains a no-op target:
+
+- `wouldDeleteRows.total = 0`
+- zero-candidate real cleanup is rejected with `no-eligible-synthetic-rows`
+- no live cleanup has been run
+
+Real Desktop synthetic cleanup remains gated by all of the following:
+
+- a current transactional dry-run preview token
+- exact candidate IDs and expected counts from that preview
+- `SYNTHETIC_PREDICATE_VERSION =
+  "h2o.studio.sync.synthetic-marker.v1"`
+- a nonzero candidate count
+- exact operator confirmation/gate
+- a single transaction with persistent maintenance audit
+- affected row counts matching the preview candidate counts
+
+Recommended next phase: either `F5H.3c` Chrome review-only cleanup, or
+`F5H.4` duplicate sighting compaction preview. Neither next phase should
+loosen the synthetic marker contract or run cleanup from Chrome.
+
 ## F5H final validation — debug synthetic seeder
 
 F5H final live validation needs at least one cleanup-eligible synthetic
