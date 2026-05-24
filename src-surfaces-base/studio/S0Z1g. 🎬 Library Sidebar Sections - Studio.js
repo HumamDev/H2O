@@ -64,8 +64,12 @@
     'palette',
   ]);
   const SIDEBAR_MENU_ACTION_SVGS = Object.freeze({
+    open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H11l2 2h3.5A2.5 2.5 0 0 1 19 7.5v9A2.5 2.5 0 0 1 16.5 19h-9A2.5 2.5 0 0 1 5 16.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 12h6m-2.5-2.5L15 12l-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    studio: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3h9A2.5 2.5 0 0 1 19 5.5v13A2.5 2.5 0 0 1 16.5 21h-9A2.5 2.5 0 0 1 5 18.5v-13Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 7h7M8.5 11h7M8.5 15h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    palette: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 0 0 0 16h1.1a1.9 1.9 0 0 0 1.3-3.2 1.3 1.3 0 0 1 .9-2.2H17a3 3 0 0 0 3-3A7.6 7.6 0 0 0 12 4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.7 11h.01M9.4 7.8h.01M13 7.4h.01" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
     rename: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Zm11-13 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     delete: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5v2m-7 0v12.5A1.5 1.5 0 0 0 9.5 21h5A1.5 1.5 0 0 0 16 19.5V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15.5V6.5A1.5 1.5 0 0 1 6.5 5h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   });
   const SIDEBAR_ICON_SVGS = Object.freeze({
@@ -579,7 +583,7 @@
   }
 
   function menuTitleForKind(kind) {
-    if (kind === 'folders') return 'Folder color';
+    if (kind === 'folders') return 'Folder actions';
     if (kind === 'categories') return 'Category appearance';
     if (kind === 'labels') return 'Label appearance';
     if (kind === 'projects') return 'Project appearance';
@@ -669,6 +673,30 @@
     });
     section.appendChild(grid);
     return section;
+  }
+
+  function folderHrefForId(folderId) {
+    const id = String(folderId || '').trim();
+    if (!id) return '';
+    return getRouteSvc()?.buildLibraryHash?.('folder', id) || `#/library/folder/${encodeURIComponent(id)}`;
+  }
+
+  function openFolderRoute(folderId) {
+    const href = folderHrefForId(folderId);
+    if (!href) return false;
+    W.location.hash = href.startsWith('#') ? href : `#${href}`;
+    return true;
+  }
+
+  function copyTextValue(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    if (W.navigator?.clipboard?.writeText) {
+      W.navigator.clipboard.writeText(text).catch((e) => err('copyTextValue', e));
+      return true;
+    }
+    try { W.prompt?.('Folder ID', text); return true; }
+    catch (e) { err('copyTextFallback', e); return false; }
   }
 
   function makeMenuIconPicker(item, currentIcon = 'hash') {
@@ -893,7 +921,40 @@
     const appearance = getRowAppearance(item);
     const color = normalizeHexColor(appearance.color || item.color || item.iconColor || '') || (item.kind === 'categories' ? categoryAppearance(item).color : '');
     if (isFolderMenu) {
-      pop.appendChild(makeMenuColorPicker(item, color));
+      const isCanonicalFolder = item.isCanonical === true;
+      const disabledSyncTitle = 'Canonical folder actions are read-only until sync authority is proven.';
+      const deleteTitle = 'Delete requires a future preview and confirmation flow.';
+      const hasFolderRoute = !!folderHrefForId(item.id);
+      pop.appendChild(makeMenuAction('Open folder', SIDEBAR_MENU_ACTION_SVGS.open, () => openFolderRoute(item.id), {
+        disabled: !hasFolderRoute,
+        title: hasFolderRoute ? 'Open folder' : 'Folder route unavailable',
+      }));
+      pop.appendChild(makeMenuAction('Open in Studio', SIDEBAR_MENU_ACTION_SVGS.studio, () => openFolderRoute(item.id), {
+        disabled: !hasFolderRoute,
+        title: hasFolderRoute ? 'Open this folder in Studio' : 'Folder route unavailable',
+      }));
+      pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
+      if (isCanonicalFolder) {
+        pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
+          disabled: true,
+          title: disabledSyncTitle,
+        }));
+      } else {
+        pop.appendChild(makeMenuColorPicker(item, color));
+      }
+      pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, null, {
+        disabled: true,
+        title: disabledSyncTitle,
+      }));
+      pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+        danger: true,
+        disabled: true,
+        title: deleteTitle,
+      }));
+      pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
+      pop.appendChild(makeMenuAction('Copy folder ID', SIDEBAR_MENU_ACTION_SVGS.copy, () => copyTextValue(item.id), {
+        title: 'Copy folder ID',
+      }));
     } else if (isCategoryMenu) {
       pop.appendChild(makeMenuColorPicker(item, color));
       pop.appendChild(makeMenuIconPicker(item, item.iconKey || appearance.icon || defaultIconForKind(item.kind)));
