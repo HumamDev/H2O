@@ -2794,26 +2794,6 @@
     };
   }
 
-  function cleanupSyntheticNoop() {
-    return {
-      schema: SYNTHETIC_CLEANUP_COMMIT_SCHEMA,
-      status: 'no-op',
-      ok: true,
-      redacted: true,
-      platform: 'desktop-tauri',
-      predicateVersion: 'h2o.studio.sync.synthetic-marker.v1',
-      counts: cleanupSyntheticCounts(0, 0),
-      audit: {
-        recorded: false,
-        maintenanceIdPresent: false,
-        operatorPeerRecorded: false,
-      },
-      actions: cleanupSyntheticActions(false),
-      blockers: [],
-      warnings: ['no-eligible-synthetic-rows'],
-    };
-  }
-
   function cleanupHasControlCharacters(value) {
     return /[\u0000-\u001f\u007f]/.test(String(value || ''));
   }
@@ -2869,7 +2849,7 @@
       return Promise.resolve(cleanupSyntheticFailure('expected-count-mismatch'));
     }
     if (reviewIds.length === 0 && tombstoneIds.length === 0) {
-      return Promise.resolve(cleanupSyntheticNoop());
+      return Promise.resolve(cleanupSyntheticFailure('no-eligible-synthetic-rows'));
     }
     var previewToken = cleanString(opts.previewToken);
     if (!SYNTHETIC_CLEANUP_TOKEN_RE.test(previewToken)) {

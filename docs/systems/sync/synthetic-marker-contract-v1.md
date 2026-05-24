@@ -190,7 +190,9 @@ the loose heuristic flags.
   each DELETE is both candidate-pinned and guarded by the same
   `SYNTHETIC_PREDICATE_V1` subquery. Audit is written to
   `sync_maintenance_log` with hash-only result metadata. Chrome remains
-  preview-only and registers no cleanup function.
+  preview-only and registers no cleanup function. Empty candidate sets are a
+  hard readiness refusal (`no-eligible-synthetic-rows`): no transaction opens,
+  no audit row is inserted, and no cleanup path is invoked.
 
 All phases use exactly the predicate defined here. None may relax it
 without bumping the version string.

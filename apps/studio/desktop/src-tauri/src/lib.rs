@@ -5366,7 +5366,7 @@ mod tests {
     }
 
     #[test]
-    fn f5h3b1b_empty_candidates_are_no_op_without_audit() {
+    fn f5h3b1b_empty_candidates_are_rejected_without_audit() {
         let (result, audit_count): (synthetic_cleanup_commit::CleanupSyntheticCommitResult, i64) =
             f5h3b0d_run(|mut conn| async move {
                 let payload = f5h3b1b_payload_for_ids(&mut conn, vec![], vec![]).await;
@@ -5376,14 +5376,14 @@ mod tests {
                 let audit_count = f5h3b1b_maintenance_count(&mut conn).await;
                 (result, audit_count)
             });
-        assert!(result.ok);
-        assert_eq!(result.status, "no-op");
+        assert!(!result.ok);
+        assert_eq!(result.status, "rejected");
         assert_eq!(result.counts.total_deleted, 0);
         assert!(!result.audit.recorded);
         assert_eq!(audit_count, 0);
         assert!(result
-            .warnings
+            .blockers
             .iter()
-            .any(|w| w == "no-eligible-synthetic-rows"));
+            .any(|b| b.code == "no-eligible-synthetic-rows"));
     }
 }

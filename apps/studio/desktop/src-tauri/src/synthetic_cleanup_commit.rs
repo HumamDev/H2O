@@ -124,34 +124,6 @@ impl CleanupSyntheticCommitResult {
         }
     }
 
-    fn no_op() -> Self {
-        Self {
-            schema: CLEANUP_RESULT_SCHEMA,
-            status: "no-op",
-            ok: true,
-            redacted: true,
-            platform: PLATFORM_DESKTOP,
-            predicate_version: synthetic_marker::SYNTHETIC_PREDICATE_VERSION,
-            counts: CleanupCounts {
-                reviews_deleted: 0,
-                tombstones_deleted: 0,
-                total_deleted: 0,
-            },
-            audit: CleanupAudit {
-                recorded: false,
-                maintenance_id_present: false,
-                operator_peer_recorded: false,
-            },
-            actions: CleanupActions {
-                deleted_rows: false,
-                mutated_rows: false,
-                real_cleanup_implemented: true,
-            },
-            blockers: vec![],
-            warnings: vec!["no-eligible-synthetic-rows".to_string()],
-        }
-    }
-
     fn committed(reviews: i64, tombstones: i64) -> Self {
         Self {
             schema: CLEANUP_RESULT_SCHEMA,
@@ -319,7 +291,7 @@ pub async fn run_commit(
         return CleanupSyntheticCommitResult::rejected("expected-count-mismatch");
     }
     if review_ids.is_empty() && tombstone_ids.is_empty() {
-        return CleanupSyntheticCommitResult::no_op();
+        return CleanupSyntheticCommitResult::rejected("no-eligible-synthetic-rows");
     }
     if !schema_ready(conn).await {
         return CleanupSyntheticCommitResult::rejected("desktop-maintenance-unavailable");

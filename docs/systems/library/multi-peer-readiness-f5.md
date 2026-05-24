@@ -3302,8 +3302,8 @@ Commit rules:
   present, reason is non-empty and bounded, candidate arrays are well-formed,
   expected counts match array lengths, total candidates are capped, and
   `previewToken` matches `ptok1:<sha256-hex>`.
-- Empty candidate arrays with zero expected counts return a local no-op:
-  no Tauri invoke, no audit row, no deletion.
+- Empty candidate arrays with zero expected counts are rejected with
+  `no-eligible-synthetic-rows`: no Tauri invoke, no audit row, no deletion.
 - Rust recomputes the F5H.3b.1a preview token from the caller-supplied
   candidate IDs, expected counts, `SYNTHETIC_PREDICATE_VERSION`, and current
   DB fingerprint. Token mismatch returns `preview-token-drift` before any
