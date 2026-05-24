@@ -1067,6 +1067,41 @@ folder membership, mutate folder bindings, mutate chats/snapshots/content,
 write Chrome storage, export/import/sync, auto-merge, resolve conflicts, or
 propagate the color change to another peer.
 
+### F7.4.3 Live Validation Harness
+
+Because the terminal cannot execute JavaScript inside the Tauri WebView, live
+validation uses a dormant Desktop-only harness:
+
+```js
+H2O.Studio.devValidation.f7FolderColorApplyValidation.run()
+H2O.Studio.devValidation.f7FolderColorApplyValidation.lastResult()
+H2O.Studio.devValidation.f7FolderColorApplyValidation.clearLastResult()
+```
+
+The harness is debug validation only. It has no public UI, does not run on
+boot, and is not registered for Chrome. It calls only the public Studio APIs:
+
+- `H2O.Studio.diagnostics.planBidirectionalFolderMetadataApply(...)`
+- `H2O.Studio.diagnostics.applyBidirectionalFolderMetadataColor(...)`
+- read-only folder/chat/snapshot store methods where available
+
+The harness selects a safe existing folder, computes the same F7 normalized
+folder metadata hashes used by the live apply planner, runs the live dry-run
+plan, verifies wrong-gate rejection, performs one exact-gated local color
+apply, verifies stale-baseline rejection, and restores the original color via
+the same exact-gated public apply path when the original color is non-empty and
+the restore plan is applyable.
+
+The harness output is redacted. It returns only booleans, counts, step flags,
+and blocker/warning codes. It must not return folder IDs, folder names, parent
+IDs, raw color values, raw hashes, peer IDs, audit IDs, conflict IDs, tombstone
+IDs, dedupe keys, raw metadata, raw JSON, or content.
+
+It does not use direct SQL, generic Tauri invocation shortcuts, Rust-only
+validation shortcuts, import/export/sync paths, F5/F6 mutation APIs,
+folderBinding/chat/snapshot mutation paths, Chrome storage, merge, resolver, or
+write-back behavior.
+
 Potential blocker codes:
 
 - `watermark-unavailable`

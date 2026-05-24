@@ -566,6 +566,9 @@
   <!-- F7.4.1c: Tauri-only read layer for the dry-run apply planner. Reads
        folder/tombstone state only; no writes, apply, F5 mutation, or F6 mutation. -->
   <script src="./sync/folder-metadata-apply-checks.tauri.js"></script>
+  <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
+       a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
+  <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
   <!-- F1B: hidden/gated readiness runner. Mounts only when BOTH
        H2O.flags.experimentalMultiPeer === true AND
        location.hash === '#/dev/multi-peer-readiness' (F1B.1 also reconciles
