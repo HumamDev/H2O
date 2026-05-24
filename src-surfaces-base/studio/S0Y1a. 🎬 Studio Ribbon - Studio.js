@@ -531,6 +531,134 @@
     failLabel: 'Clean spacing failed',
   });
 
+  /* ── Phase 2c-A — structure actions (sections + page dividers) ────────
+   * Three actions wired against the edit-overlay subsystem's structure
+   * pass:
+   *   add-section   — inserts a section header BEFORE the selected
+   *                   turn (defaults to top when no selection). Auto-
+   *                   numbered title.
+   *   split-section — same op as add-section; UX differs only in the
+   *                   enable rule (requires selection AND the selected
+   *                   turn to be inside an existing section). Phase 2d
+   *                   will let users rename sections.
+   *   page-divider  — inserts a soft horizontal rule before the selected
+   *                   turn. Requires selection.
+   *
+   * Collapse-section + table-of-contents stay placeholders in 2c-A and
+   * ship in 2c-B.
+   *
+   * All three go through RibbonBridge.applyOverlayOp (Phase 2b), which
+   * checks drift, appends an op via the pure helper, upserts, and
+   * re-applies the overlay (which now includes the structure pass). */
+
+  function makeOverlayId(prefix) {
+    return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  }
+
+  function structureBaseEnabled(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return false;
+    if (!ctx.snapshotId) return false;
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.applyOverlayOp !== 'function') return false;
+    const store = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.editOverlay;
+    if (!store || typeof store.upsert !== 'function') return false;
+    return true;
+  }
+
+  ACTION_HANDLERS['add-section'] = {
+    /* Enabled whenever a saved reader is open. No selection required —
+     * defaults to inserting at the top of the snapshot. */
+    isEnabled: function (ctx) { return structureBaseEnabled(ctx); },
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      const readP = (bridge && typeof bridge.getStructureState === 'function')
+        ? Promise.resolve(bridge.getStructureState())
+        : Promise.resolve({ sections: [] });
+      readP.then(function (cur) {
+        const sectionCount = (cur && Array.isArray(cur.sections)) ? cur.sections.length : 0;
+        const title = 'Section ' + (sectionCount + 1);
+        const sectionId = makeOverlayId('sec');
+        const ti = Number(ctx && ctx.selectedTurnIdx);
+        const afterTurnIdx = (Number.isFinite(ti) && ti > 0) ? (ti - 1) : 0;
+        runOverlayOp({
+          type: 'add-section',
+          target: { kind: 'between-turns', afterTurnIdx: afterTurnIdx },
+          payload: { sectionId: sectionId, title: title, afterTurnIdx: afterTurnIdx },
+        }, setStatus, {
+          pending: 'Adding section…',
+          success: 'Section added',
+          fail: 'Section failed',
+        });
+      }, function () { setStatus('Section failed: state read'); });
+    },
+  };
+
+  ACTION_HANDLERS['split-section'] = {
+    /* Enabled when saved reader + selection + at least one overlay op
+     * exists. The "selected turn is inside an existing section" check
+     * is async (computeStructureState is async via the bridge); we make
+     * a fast best-effort sync check here using ctx.hasOverlay, and the
+     * onClick performs the real containment check before dispatching. */
+    isEnabled: function (ctx) {
+      if (!structureBaseEnabled(ctx)) return false;
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(ti) || ti <= 0) return false;
+      if (!ctx.hasOverlay) return false;
+      return true;
+    },
+    onClick: function (ctx, setStatus) {
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(ti) || ti <= 0) { setStatus('Select a message first'); return; }
+      const bridge = getRibbonBridge();
+      const ov = H2O && H2O.Studio && H2O.Studio.overlay;
+      const readP = (bridge && typeof bridge.getStructureState === 'function')
+        ? Promise.resolve(bridge.getStructureState())
+        : Promise.resolve({ sections: [] });
+      readP.then(function (cur) {
+        const containing = (ov && typeof ov.findSectionContaining === 'function')
+          ? ov.findSectionContaining(cur, ti)
+          : null;
+        if (!containing) { setStatus('Select a turn inside an existing section to split'); return; }
+        const sections = (cur && Array.isArray(cur.sections)) ? cur.sections : [];
+        const title = 'Section ' + (sections.length + 1);
+        const sectionId = makeOverlayId('sec');
+        runOverlayOp({
+          type: 'add-section',
+          target: { kind: 'between-turns', afterTurnIdx: ti - 1 },
+          payload: { sectionId: sectionId, title: title, afterTurnIdx: ti - 1 },
+        }, setStatus, {
+          pending: 'Splitting section…',
+          success: 'Section split',
+          fail: 'Split failed',
+        });
+      }, function () { setStatus('Split failed: state read'); });
+    },
+  };
+
+  ACTION_HANDLERS['page-divider'] = {
+    /* Enabled when saved reader + selection. No requirement to be
+     * inside a section — divider is independent of sections. */
+    isEnabled: function (ctx) {
+      if (!structureBaseEnabled(ctx)) return false;
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      return Number.isFinite(ti) && ti > 0;
+    },
+    onClick: function (ctx, setStatus) {
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(ti) || ti <= 0) { setStatus('Select a message first'); return; }
+      const dividerId = makeOverlayId('div');
+      runOverlayOp({
+        type: 'page-divider',
+        target: { kind: 'between-turns', afterTurnIdx: ti - 1 },
+        payload: { dividerId: dividerId, afterTurnIdx: ti - 1 },
+      }, setStatus, {
+        pending: 'Adding divider…',
+        success: 'Page divider added',
+        fail: 'Divider failed',
+      });
+    },
+  };
+
   /* ── Registration of the default catalogue ────────────────────────── */
   function registerCatalogue(shell) {
     TAB_CATALOGUE.forEach(function (tab) {

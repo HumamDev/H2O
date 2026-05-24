@@ -6182,11 +6182,12 @@ function settingsFolderMirrorSourceSummary(state){
   };
 }
 
-function settingsFolderMirrorProjectCanonicalState(sourceState){
+function settingsFolderMirrorProjectCanonicalState(sourceState, opts = {}){
   const blockers = [];
   if (!Array.isArray(sourceState?.folders)) blockers.push("Source folders[] is missing or malformed.");
   if (!sourceState?.items || typeof sourceState.items !== "object" || Array.isArray(sourceState.items)) blockers.push("Source items object is missing or malformed.");
   if (blockers.length) return { ok: false, error: blockers.join(" "), blockers };
+  const refreshedAt = String(opts?.refreshedAt || "").trim() || new Date().toISOString();
 
   const folders = sourceState.folders;
   const items = sourceState.items;
@@ -6226,8 +6227,8 @@ function settingsFolderMirrorProjectCanonicalState(sourceState){
     state: {
       schemaVersion: Number(sourceState.schemaVersion || 1) || 1,
       exportedFrom: sourceState.exportedFrom || sourceState.sourceKind || "desktop-folder-mirror-refresh",
-      exportedAt: sourceState.exportedAt || new Date().toISOString(),
-      refreshedAt: new Date().toISOString(),
+      exportedAt: sourceState.exportedAt || refreshedAt,
+      refreshedAt,
       folders: projectedFolders,
       items: projectedItems,
     },
@@ -6274,10 +6275,11 @@ async function settingsFolderMirrorReadSourceFromPanel(panel){
   };
 }
 
-async function settingsFolderMirrorBuildPreview(panel){
+async function settingsFolderMirrorBuildPreview(panel, opts = {}){
   if (!STUDIO_isTauri()) return { ok: false, error: "Desktop folder mirror refresh is only available in Desktop Studio." };
+  const generatedAt = String(opts?.generatedAt || opts?.refreshedAt || "").trim() || new Date().toISOString();
   const source = await settingsFolderMirrorReadSourceFromPanel(panel);
-  const projection = settingsFolderMirrorProjectCanonicalState(source.sourceState);
+  const projection = settingsFolderMirrorProjectCanonicalState(source.sourceState, { refreshedAt: generatedAt });
   if (!projection.ok) return { ok: false, error: projection.error || "Canonical projection failed.", blockers: projection.blockers || [] };
   const values = await settingsFolderDesktopStorageGetStrict([FOLDER_STATE_DATA_KEY]);
   const beforeState = settingsFolderCleanupClone(values?.[FOLDER_STATE_DATA_KEY] || {});
@@ -6289,7 +6291,8 @@ async function settingsFolderMirrorBuildPreview(panel){
   const preview = {
     readOnly: false,
     noMutationUntilRefresh: true,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
+    refreshTimestamp: generatedAt,
     surface: "desktop-studio",
     action: "refresh-desktop-folder-state-mirror",
     targetKey: FOLDER_STATE_DATA_KEY,
@@ -6329,6 +6332,13 @@ function settingsFolderMirrorSetPreview(panel, preview){
   }
 }
 
+function settingsFolderMirrorSetStatus(panel, message){
+  const text = String(message || "");
+  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status = text;
+  const status = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshStatus");
+  if (status) status.textContent = text;
+}
+
 function settingsFolderMirrorUpdateControls(panel){
   const sourceAvailable = !!String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshJson")?.value || panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPath")?.value || "").trim();
   const confirmation = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
@@ -6343,11 +6353,18 @@ function settingsFolderMirrorUpdateControls(panel){
 }
 
 async function settingsFolderMirrorAppendAudit(entry){
+  const auditId = String(entry?.auditId || `folder-mirror-refresh:${Date.now()}:${Math.random().toString(36).slice(2)}`);
+  const nextEntry = { ...(entry || {}), auditId };
   const values = await settingsFolderDesktopStorageGetStrict([FOLDER_MIRROR_REFRESH_AUDIT_KEY]);
   const existing = Array.isArray(values?.[FOLDER_MIRROR_REFRESH_AUDIT_KEY]) ? values[FOLDER_MIRROR_REFRESH_AUDIT_KEY] : [];
-  const next = existing.concat([entry]).slice(-50);
+  const next = existing.concat([nextEntry]).slice(-50);
   await settingsFolderDesktopStorageSetStrict({ [FOLDER_MIRROR_REFRESH_AUDIT_KEY]: next });
-  return next.length;
+  const verifyValues = await settingsFolderDesktopStorageGetStrict([FOLDER_MIRROR_REFRESH_AUDIT_KEY]);
+  const verify = Array.isArray(verifyValues?.[FOLDER_MIRROR_REFRESH_AUDIT_KEY]) ? verifyValues[FOLDER_MIRROR_REFRESH_AUDIT_KEY] : [];
+  if (!verify.some((item) => item?.auditId === auditId)) {
+    throw new Error("Desktop mirror refresh audit write verification failed.");
+  }
+  return { length: verify.length, auditId };
 }
 
 async function previewSettingsFolderMirrorRefresh(panel){
@@ -6364,10 +6381,8 @@ async function previewSettingsFolderMirrorRefresh(panel){
     return result;
   }
   settingsFolderMirrorSetPreview(panel, result.preview);
-  const status = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshStatus");
   const message = `Preview ready. Study ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.before ?? 0} -> ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.after ?? 0}. Desktop SQLite folders and folder_bindings are not changed.`;
-  FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status = message;
-  if (status) status.textContent = message;
+  settingsFolderMirrorSetStatus(panel, message);
   settingsFolderMirrorUpdateControls(panel);
   return result;
 }
@@ -6398,28 +6413,36 @@ async function copySettingsFolderMirrorRefreshPlan(panel){
 async function refreshDesktopFolderMirror(panel){
   const confirmation = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshConfirm")?.value || "");
   if (confirmation !== FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT) {
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh blocked. Confirmation text does not match.");
     settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Confirmation text does not match.");
     return;
   }
   const existingPreview = panel?.__h2oFolderMirrorRefreshPreview || FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview;
   if (!existingPreview) {
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh blocked. Generate a fresh refresh preview first.");
     settingsFolderParityLog(panel, "Desktop mirror refresh blocked. Generate a fresh refresh preview first.");
     return;
   }
+  settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: revalidating preview...");
   let fresh;
   try {
-    fresh = await settingsFolderMirrorBuildPreview(panel);
+    fresh = await settingsFolderMirrorBuildPreview(panel, {
+      generatedAt: existingPreview.refreshTimestamp || existingPreview.generatedAt,
+    });
   } catch (err) {
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(err && (err.stack || err.message || err)));
     return;
   }
   if (!fresh.ok) {
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation.\n" + String(fresh.error || "Guard failed"));
     return;
   }
   if (fresh.preview.afterChecksum !== existingPreview.afterChecksum || fresh.preview.beforeChecksum !== existingPreview.beforeChecksum) {
     settingsFolderMirrorSetPreview(panel, fresh.preview);
     settingsFolderMirrorUpdateControls(panel);
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted. Source or Desktop mirror changed since preview; review the new preview before refreshing.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted. Source or Desktop mirror changed since preview; review the new preview before refreshing.");
     return;
   }
@@ -6438,15 +6461,23 @@ async function refreshDesktopFolderMirror(panel){
     errors: [],
   };
   try {
+    settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: writing pending audit...");
     await settingsFolderMirrorAppendAudit(pending);
   } catch (auditErr) {
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh aborted before mutation. Mirror refresh audit could not be written.");
     settingsFolderParityLog(panel, "Desktop mirror refresh aborted before mutation. Mirror refresh audit could not be written.\n" + String(auditErr && (auditErr.stack || auditErr.message || auditErr)));
     return;
   }
   try {
+    settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: writing mirror key...");
     await settingsFolderDesktopStorageSetStrict({ [FOLDER_STATE_DATA_KEY]: fresh.afterState });
     const afterValues = await settingsFolderDesktopStorageGetStrict([FOLDER_STATE_DATA_KEY]);
+    const verifiedChecksum = await settingsFolderMirrorChecksum(afterValues?.[FOLDER_STATE_DATA_KEY] || {});
+    if (verifiedChecksum !== fresh.preview.afterChecksum) {
+      throw new Error(`Desktop mirror write verification failed. Expected ${fresh.preview.afterChecksum}; got ${verifiedChecksum}.`);
+    }
     const afterSummary = settingsFolderMirrorSummary(afterValues?.[FOLDER_STATE_DATA_KEY] || {});
+    settingsFolderMirrorSetStatus(panel, "Refreshing Desktop folder mirror: writing result audit...");
     await settingsFolderMirrorAppendAudit({
       timestamp: new Date().toISOString(),
       surface: "desktop-studio",
@@ -6463,10 +6494,8 @@ async function refreshDesktopFolderMirror(panel){
     try { W.H2O?.LibraryWorkspace?._bustCaches?.("desktop-folder-mirror-refresh"); } catch {}
     try { state.folderCatalog = []; state.folderLocalReview = []; await fetchFolderCatalog(true); renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId); } catch {}
     settingsFolderMirrorSetPreview(panel, null);
-    const status = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshStatus");
     const message = `Desktop folder mirror refreshed. Study is now ${afterSummary.studyBucketCount}. Desktop SQLite folders and folder_bindings were not changed.`;
-    FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status = message;
-    if (status) status.textContent = message;
+    settingsFolderMirrorSetStatus(panel, message);
     settingsFolderParityLog(panel, "Desktop folder mirror refreshed. Desktop SQLite folders, folder_bindings, native state, and Chrome storage were not modified.");
     await refreshSettingsFolderParity(panel);
     await refreshSettingsFolderDesktopReview(panel);
@@ -6486,6 +6515,7 @@ async function refreshDesktopFolderMirror(panel){
         errors: [String(err && (err.stack || err.message || err))],
       });
     } catch (_) { /* best-effort result audit after pending entry */ }
+    settingsFolderMirrorSetStatus(panel, "Desktop mirror refresh failed after pending audit.");
     settingsFolderParityLog(panel, "Desktop mirror refresh failed after pending audit.\n" + String(err && (err.stack || err.message || err)));
   }
 }
@@ -10657,6 +10687,28 @@ function __ribbonBridge_getMessageStateForTurn(turnIdx){
   } catch (_) { return Promise.resolve(empty); }
 }
 
+/* Phase 2c-A — pure-read accessor: compute the current structure state
+ * (sections + page dividers + TOC slot) for the open snapshot's overlay.
+ * Used by ribbon action handlers to decide auto-numbering for new
+ * sections, to look up "is selected turn inside a section" for the
+ * Split / Collapse enable rules, and (in Phase 2c-B) to toggle TOC.
+ * Returns default-shape object when no overlay/snapshot. Never throws. */
+function __ribbonBridge_getStructureState(){
+  const empty = { sections: [], dividers: [], toc: { position: null } };
+  try {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return Promise.resolve(empty);
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    const ov = W.H2O?.Studio?.overlay;
+    if (!ovStore || !ov || typeof ov.computeStructureState !== 'function') return Promise.resolve(empty);
+    return Promise.resolve(ovStore.get(String(snap.snapshotId))).then(function (overlay) {
+      if (!overlay) return empty;
+      try { return ov.computeStructureState(overlay); }
+      catch (_) { return empty; }
+    }, function () { return empty; });
+  } catch (_) { return Promise.resolve(empty); }
+}
+
 /* Phase 2b — orchestrates a single overlay op: load-or-create overlay,
  * drift-check against current snapshot, append op (pure helper),
  * upsert to store, and re-apply to live reader DOM. Returns
@@ -10731,17 +10783,19 @@ try {
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-2b',
+      version: '0.1.0-phase-2c-a',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
+      getStructureState: __ribbonBridge_getStructureState,
       applyOverlayOp: __ribbonBridge_applyOverlayOp,
     };
   } else {
-    /* Idempotent additive upgrade for any pre-2b bridge variants. */
+    /* Idempotent additive upgrade. */
     if (!W.H2O.Studio.RibbonBridge.getOverlay) W.H2O.Studio.RibbonBridge.getOverlay = __ribbonBridge_getOverlay;
     if (!W.H2O.Studio.RibbonBridge.getMessageStateForTurn) W.H2O.Studio.RibbonBridge.getMessageStateForTurn = __ribbonBridge_getMessageStateForTurn;
+    if (!W.H2O.Studio.RibbonBridge.getStructureState) W.H2O.Studio.RibbonBridge.getStructureState = __ribbonBridge_getStructureState;
     if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2b';
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2c-a';
   }
 } catch (_) { /* swallow */ }

@@ -31,8 +31,8 @@
     return;
   }
 
-  var VERSION = '0.1.0-phase-2b';
-  var PHASE = '2b';
+  var VERSION = '0.1.0-phase-2c-a';
+  var PHASE = '2c-a';
   var OverlayKeys = H2O.Studio.OverlayKeys || { schemaVersion: 1 };
   var OverlayEvents = H2O.Studio.OverlayEvents || {
     ready: 'evt:h2o:studio:overlay:ready',
@@ -310,6 +310,213 @@
     return changed;
   }
 
+  /* ── Phase 2c-A — Structure pass (sections + page dividers + TOC slot) ──
+   * Sections and dividers are render-time markers inserted as siblings
+   * BETWEEN turn wrappers. Turns are never reparented or reordered, so
+   * MiniMap and the existing per-turn applier remain unaffected. The
+   * structure pass is idempotent: every call first removes any
+   * previously-injected `[data-overlay-injected="true"]` elements, then
+   * re-inserts based on the current reduced state.
+   *
+   * `toc` state is computed for forward compatibility with Phase 2c-B
+   * (TOC rendering ships there); in 2c-A the field is read but the
+   * applier does not render a TOC element.
+   *
+   * Op handling:
+   *   - 'add-section'  / 'split-section'  → upsert section by sectionId
+   *   - 'collapse-section' (reserved for 2c-B) → mutates the matching
+   *                                              section's `collapsed` flag
+   *   - 'page-divider'                    → upsert divider by dividerId
+   *   - 'toc'                             → singleton state (last op wins)
+   */
+  function computeStructureState(overlay) {
+    var state = { sections: [], dividers: [], toc: { position: null } };
+    if (!isObject(overlay)) return state;
+    var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
+
+    var sectionMap = Object.create(null);   /* sectionId -> { sectionId, title, afterTurnIdx, collapsed } */
+    var dividerMap = Object.create(null);   /* dividerId -> { dividerId, afterTurnIdx } */
+    var tocState = { position: null };
+
+    for (var i = 0; i < ops.length; i += 1) {
+      var op = ops[i];
+      if (!isObject(op)) continue;
+      var payload = isObject(op.payload) ? op.payload : {};
+      switch (String(op.type)) {
+        case 'add-section':
+        case 'split-section': {
+          var sid = String(payload.sectionId || '');
+          if (!sid) break;
+          var ati = Number(payload.afterTurnIdx);
+          if (!isFinite(ati) || ati < 0) break;
+          var existing = sectionMap[sid];
+          sectionMap[sid] = {
+            sectionId: sid,
+            title: String(payload.title || (existing && existing.title) || 'Section'),
+            afterTurnIdx: ati,
+            collapsed: !!(existing && existing.collapsed),
+          };
+          break;
+        }
+        case 'collapse-section': {
+          /* Reserved for Phase 2c-B; the reducer accepts these ops now so
+           * they round-trip through the overlay without being dropped. */
+          var sid2 = String(payload.sectionId || '');
+          if (!sid2) break;
+          var sec2 = sectionMap[sid2];
+          if (sec2) sec2.collapsed = !!payload.collapsed;
+          break;
+        }
+        case 'page-divider': {
+          var did = String(payload.dividerId || '');
+          if (!did) break;
+          var atid = Number(payload.afterTurnIdx);
+          if (!isFinite(atid) || atid < 0) break;
+          dividerMap[did] = { dividerId: did, afterTurnIdx: atid };
+          break;
+        }
+        case 'toc': {
+          tocState.position = (payload.position === 'top') ? 'top' : null;
+          break;
+        }
+      }
+    }
+
+    state.sections = Object.keys(sectionMap).map(function (k) { return sectionMap[k]; })
+      .sort(function (a, b) { return a.afterTurnIdx - b.afterTurnIdx; });
+    state.dividers = Object.keys(dividerMap).map(function (k) { return dividerMap[k]; })
+      .sort(function (a, b) { return a.afterTurnIdx - b.afterTurnIdx; });
+    state.toc = tocState;
+
+    return state;
+  }
+
+  /* Pure helper — find the latest section whose afterTurnIdx is strictly
+   * less than turnIdx. Returns the section object or null when the turn
+   * sits before the first section header. */
+  function findSectionContaining(structureState, turnIdx) {
+    if (!isObject(structureState)) return null;
+    var sections = Array.isArray(structureState.sections) ? structureState.sections : [];
+    var idx = Number(turnIdx);
+    if (!isFinite(idx) || idx <= 0) return null;
+    var match = null;
+    for (var i = 0; i < sections.length; i += 1) {
+      var sec = sections[i];
+      if (Number(sec.afterTurnIdx) < idx) match = sec;
+      else break;
+    }
+    return match;
+  }
+
+  /* Build a section header DOM element. The element is decorative only:
+   * it carries no `data-turn-*` / `data-message-*` attributes, so MiniMap
+   * and other turn-keyed consumers ignore it by construction. */
+  function makeSectionHeaderEl(sec) {
+    var header = document.createElement('header');
+    header.className = 'wbOverlaySectionHeader';
+    header.setAttribute('data-overlay-injected', 'true');
+    header.setAttribute('data-section-id', String(sec.sectionId || ''));
+    header.setAttribute('data-overlay-section-collapsed', sec.collapsed ? 'true' : 'false');
+    /* id used by Phase 2c-B's TOC for anchor scrolling. */
+    if (sec.sectionId) header.id = 'wbOverlaySection-' + String(sec.sectionId);
+    var titleSpan = document.createElement('span');
+    titleSpan.className = 'wbOverlaySectionTitle';
+    titleSpan.textContent = String(sec.title || 'Section');
+    header.appendChild(titleSpan);
+    var metaSpan = document.createElement('span');
+    metaSpan.className = 'wbOverlaySectionMeta';
+    metaSpan.setAttribute('aria-hidden', 'true');
+    /* Empty in 2c-A; 2c-B populates with collapse indicator. */
+    metaSpan.textContent = '';
+    header.appendChild(metaSpan);
+    return header;
+  }
+
+  function makeDividerEl(div) {
+    var hr = document.createElement('hr');
+    hr.className = 'wbOverlayDivider';
+    hr.setAttribute('data-overlay-injected', 'true');
+    if (div.dividerId) hr.setAttribute('data-divider-id', String(div.dividerId));
+    return hr;
+  }
+
+  /* Insert `el` BEFORE the turn at 1-based position `targetTurnIdx`.
+   * Returns true if inserted. If `targetTurnIdx` exceeds the turn count,
+   * appends after the last turn (safe degradation when ops point past EOF
+   * after a re-capture). */
+  function insertBeforeTurnIdx(container, turns, targetTurnIdx, el) {
+    if (!container || !el) return false;
+    var idx = Number(targetTurnIdx) - 1;
+    if (!isFinite(idx)) return false;
+    if (idx >= 0 && idx < turns.length) {
+      try { container.insertBefore(el, turns[idx]); return true; }
+      catch (_) { return false; }
+    }
+    /* Beyond EOF — append after the last turn (next sibling of last turn,
+     * to keep it inside the same parent container). */
+    try {
+      var last = turns[turns.length - 1];
+      if (last && last.parentNode === container) {
+        container.appendChild(el);
+        return true;
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+
+  /* Apply structure state to the reader DOM. Idempotent: always cleans
+   * existing `[data-overlay-injected="true"]` elements before inserting.
+   * Returns counts for the outcome record. */
+  function applyStructureToReader(root, structureState) {
+    var counts = { removed: 0, headers: 0, dividers: 0 };
+    if (!root || typeof root.querySelectorAll !== 'function') return counts;
+
+    try {
+      /* Step 1 — idempotent cleanup. */
+      var injected = root.querySelectorAll('[data-overlay-injected="true"]');
+      for (var i = 0; i < injected.length; i += 1) {
+        try {
+          var node = injected[i];
+          if (node && node.parentNode) {
+            node.parentNode.removeChild(node);
+            counts.removed += 1;
+          }
+        } catch (_) { /* swallow per-node */ }
+      }
+    } catch (e) { recordError('applyStructure:cleanup', e); }
+
+    if (!isObject(structureState)) return counts;
+
+    try {
+      var turns = Array.prototype.slice.call(root.querySelectorAll('[data-turn]'));
+      if (!turns.length) return counts;
+      var container = turns[0].parentNode;
+      if (!container) return counts;
+
+      var sections = Array.isArray(structureState.sections) ? structureState.sections : [];
+      for (var s = 0; s < sections.length; s += 1) {
+        var sec = sections[s];
+        if (!sec) continue;
+        var ati = Number(sec.afterTurnIdx);
+        if (!isFinite(ati) || ati < 0) continue;
+        var header = makeSectionHeaderEl(sec);
+        if (insertBeforeTurnIdx(container, turns, ati + 1, header)) counts.headers += 1;
+      }
+
+      var dividers = Array.isArray(structureState.dividers) ? structureState.dividers : [];
+      for (var d = 0; d < dividers.length; d += 1) {
+        var divv = dividers[d];
+        if (!divv) continue;
+        var dati = Number(divv.afterTurnIdx);
+        if (!isFinite(dati) || dati < 0) continue;
+        var hr = makeDividerEl(divv);
+        if (insertBeforeTurnIdx(container, turns, dati + 1, hr)) counts.dividers += 1;
+      }
+    } catch (e) { recordError('applyStructure:insert', e); }
+
+    return counts;
+  }
+
   function applyOverlay(a, b, c) {
     try {
       var args = resolveApplyArgs(a, b, c);
@@ -357,6 +564,7 @@
         });
       }
 
+      /* Per-turn pass (Phase 2b — heading/quote/code/callout/clean-spacing). */
       var turns = Array.prototype.slice.call(root.querySelectorAll('[data-turn]'));
       var turnsTouched = 0;
       var turnsWithState = 0;
@@ -371,15 +579,25 @@
         }
       }
 
+      /* Structure pass (Phase 2c-A — sections + page dividers). Runs
+       * after the per-turn pass because section/divider markers are
+       * inserted as siblings between turns, and the per-turn pass only
+       * touches `[data-turn]` wrappers (zero interaction). */
+      var structureState = computeStructureState(overlay);
+      var structureCounts = applyStructureToReader(root, structureState);
+
       return makeOutcome({
         applied: true,
-        /* `mutated` here means "DOM attributes were toggled" — never refers
-         * to snap.messages, which the applier never touches. */
-        mutated: turnsTouched > 0,
+        /* `mutated` here means "DOM attributes/elements were toggled" — never
+         * refers to snap.messages, which the applier never touches. */
+        mutated: turnsTouched > 0 || structureCounts.headers > 0 || structureCounts.dividers > 0 || structureCounts.removed > 0,
         reason: 'applied',
         opCount: ops.length,
         turnsTouched: turnsTouched,
         turnsWithState: turnsWithState,
+        structureHeaders: structureCounts.headers,
+        structureDividers: structureCounts.dividers,
+        structureRemoved: structureCounts.removed,
         snapshotId: String(overlay.snapshotId || snapshot.snapshotId || ''),
         baseDigest: overlayDigest || currentDigest,
       });
@@ -396,7 +614,9 @@
       phase: PHASE,
       schemaVersion: SCHEMA_VERSION,
       /* Phase 2b applies decorative data-overlay-* attributes to turn
-       * wrappers when ops are present. mutatesSnapshots remains false. */
+       * wrappers. Phase 2c-A additionally inserts decorative section
+       * header + page divider markers as siblings between turns. None
+       * of this touches captured content or snap.messages. */
       passive: false,
       mutatesSnapshots: false,
       mutatesDom: true,
@@ -415,6 +635,11 @@
     createEmpty: createEmpty,
     appendOp: appendOp,
     computeMessageState: computeMessageState,
+    /* Phase 2c-A — pure structure-state helpers exposed for ribbon
+     * action handlers (split-section enable rule) and for the
+     * RibbonBridge.getStructureState accessor in studio.js. */
+    computeStructureState: computeStructureState,
+    findSectionContaining: findSectionContaining,
     applyOverlay: applyOverlay,
     selfCheck: selfCheck,
   };

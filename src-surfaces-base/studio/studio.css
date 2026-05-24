@@ -7079,66 +7079,159 @@ body[data-route="reader"] #studioDock.wbDock--open {
  * styles are placeholder shell affordances only.
  * ──────────────────────────────────────────────────────────────────── */
 
+/* Compact vertical rail. Native-like spacing — 4px outer padding,
+ * 4px gap between buttons. Hidden overflow so 8 buttons fit cleanly
+ * in the 44px-wide rail container even on narrow viewports. */
 .wbDockRail {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  padding: 6px 0;
-  gap: 2px;
+  padding: 8px 4px;
+  gap: 4px;
   overflow: hidden;
 }
 
+/* Per-tab accent color is set inline by the shell as the custom
+ * property --wb-dock-rail-color (from def.color). The button uses
+ * it for the active-state left bar and hover background tint.
+ * Falls back to a neutral tint if unset. */
 .wbDockRailBtn {
+  --wb-dock-rail-color: rgba(255, 255, 255, 0.18);
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  margin: 0 2px;
+  width: 36px;
+  height: 36px;
+  margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
-  border-radius: 6px;
-  color: rgba(255, 255, 255, 0.82);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  letter-spacing: 0.04em;
   transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+  user-select: none;
 }
 
 .wbDockRailBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--wb-dock-rail-color) 18%, rgba(255, 255, 255, 0.04));
   color: #fff;
 }
 
 .wbDockRailBtn:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
 }
 
 .wbDockRailBtn:focus-visible {
   outline: 2px solid #6aa0ff;
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 
+/* Active state — soft tinted background + 3px left bar in the tab's
+ * accent color. Mirrors native rail's "current view" feel. */
 .wbDockRailBtn--active {
-  background: rgba(106, 160, 255, 0.18);
+  background: color-mix(in srgb, var(--wb-dock-rail-color) 22%, rgba(255, 255, 255, 0.06));
   color: #fff;
 }
+.wbDockRailBtn--active::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--wb-dock-rail-color);
+}
 
+/* Single-letter icon (txt) — uppercase, slightly heavier than the
+ * idle rail color so it reads at a glance. Emojis (fallback) also
+ * render here cleanly. */
 .wbDockRailBtnIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
-  font-size: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
   pointer-events: none;
 }
 
+/* Placeholder view box. Strong title + secondary copy.
+ * Phase 2C will replace this with real per-tab feature data. */
 .wbDockPlaceholder {
-  opacity: 0.62;
-  font-size: 13px;
-  line-height: 1.5;
+  padding: 14px 8px;
   text-align: left;
-  padding: 6px 4px;
+}
+.wbDockPlaceholder strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0 0 6px;
+  color: rgba(255, 255, 255, 0.94);
+}
+.wbDockPlaceholder p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  opacity: 0.66;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+/* ─── Phase 2c-A — Edit Overlay structure markers ─────────────────────────
+   Inserted by the overlay applier's structure pass as siblings between
+   `[data-turn]` elements inside `.cgScroll`. All markers carry
+   `data-overlay-injected="true"` so the applier can clean them up
+   idempotently on every re-apply. Markers carry no `data-turn-id` /
+   `data-message-id` attributes — MiniMap and other turn-keyed consumers
+   ignore them by selector. */
+
+/* Section header — soft accent band with title left, meta-slot right. */
+.wbReader .wbOverlaySectionHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin:24px 0 12px;
+  padding:10px 14px;
+  border:1px solid var(--wb-border);
+  border-left:3px solid var(--wb-focus);
+  border-radius:8px;
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+  font-size:14px;
+  font-weight:600;
+  letter-spacing:.01em;
+  user-select:none;
+  scroll-margin-top:12px;
+}
+.wbReader .wbOverlaySectionTitle{
+  flex:1 1 auto;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.wbReader .wbOverlaySectionMeta{
+  flex:0 0 auto;
+  font-size:11.5px;
+  font-weight:500;
+  color:var(--wb-text-soft);
+  /* Empty in 2c-A; Phase 2c-B populates with a collapse indicator like
+     "▾  / ▸  (N turns)". */
+}
+
+/* Page divider — soft horizontal rule that breathes around itself. */
+.wbReader .wbOverlayDivider{
+  border:0;
+  height:1px;
+  margin:28px 8px;
+  background:linear-gradient(to right, transparent, var(--wb-border) 20%, var(--wb-border) 80%, transparent);
+  pointer-events:none;
 }

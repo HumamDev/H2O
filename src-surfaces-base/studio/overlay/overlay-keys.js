@@ -42,6 +42,14 @@
     codeBlock: 'code-block',
     callout: 'callout',
     cleanSpacing: 'clean-spacing',
+    /* Phase 2c-A — explicit op-type constants used by the structure
+     * pass. The historical `section`/`divider`/`toc` slots remain for
+     * back-compat with any external consumer that imported them as
+     * names before the structure pass shipped. */
+    addSection: 'add-section',
+    splitSection: 'split-section',
+    collapseSection: 'collapse-section',
+    pageDivider: 'page-divider',
     section: 'section',
     divider: 'divider',
     toc: 'toc',
