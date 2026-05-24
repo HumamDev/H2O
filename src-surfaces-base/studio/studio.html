@@ -447,6 +447,10 @@
        Read-only diagnostics/list/get scaffold over sync_conflicts; no
        ingestion, analyzer hook, merge/apply, or sync behavior change. -->
   <script src="./store/conflicts.tauri.js"></script>
+  <!-- Desktop-only: debug F6 final validation harness. Registers a dormant
+       H2O.Studio.devValidation.f6FinalValidation runner that calls the public
+       conflict store APIs only when manually invoked. No boot auto-run. -->
+  <script src="./dev/f6-final-validation.tauri.js"></script>
   <!-- Chrome/MV3-only: IndexedDB-backed tombstone review queue scaffold
        (F5F.4c.1). Registers the same H2O.Studio.store.tombstoneReviews API on
        Chrome only, without sync ingestion, delete apply, or Library mutation. -->

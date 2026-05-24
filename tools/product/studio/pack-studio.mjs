@@ -99,6 +99,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: SQLite-backed general sync conflict queue (F6.1b.1).
   // Read-only diagnostics/list/get scaffold over sync_conflicts.
   "store/conflicts.tauri.js",
+  // Desktop-only: debug F6 final validation harness. Dormant until manually
+  // invoked through H2O.Studio.devValidation.f6FinalValidation.
+  "dev/f6-final-validation.tauri.js",
   // Chrome/MV3-only: IndexedDB-backed tombstone review queue scaffold
   // (F5F.4c.1). API parity with Desktop scaffold, excluding ingestion/apply.
   "store/tombstone-reviews.mv3.js",
@@ -278,6 +281,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/tombstones.tauri.js",
   "store/tombstone-reviews.tauri.js",
   "store/conflicts.tauri.js",
+  "dev/f6-final-validation.tauri.js",
   "store/tombstone-reviews.mv3.js",
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",

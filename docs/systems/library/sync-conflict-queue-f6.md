@@ -710,6 +710,32 @@ F6 manual validation access is acceptable only if:
   decision-only methods, and `previewResolution()` after explicit manual
   ingestion.
 
+F6 final validation harness is acceptable only if:
+
+- The focused Desktop-only module
+  `src-surfaces-base/studio/dev/f6-final-validation.tauri.js` registers
+  `H2O.Studio.devValidation.f6FinalValidation`.
+- The harness is dormant on boot and runs only when
+  `H2O.Studio.devValidation.f6FinalValidation.run()` is explicitly invoked.
+- The harness calls the real public conflict store APIs only:
+  `diagnose`, `ingestConflictCandidates`, gated `listConflicts`,
+  `getConflict`, `previewResolution`, and `markAcceptedLater`.
+- The harness does not use direct SQL, Rust shortcuts, import/export/sync
+  paths, F5 paths, cleanup/delete helpers, merge/apply/resolution mutators, or
+  app entity mutation paths.
+- The harness uses a unique validation candidate per run, ingests it manually,
+  resolves the gated conflict ID internally, marks it `accepted-later`, and
+  does not delete validation rows.
+- The harness result is redacted and may expose only counts, step booleans,
+  blocker/warning codes, and `conflictIdPresent`. It must not return raw
+  conflict IDs, peer IDs, record IDs, dedupe keys, raw summaries, raw JSON,
+  names, titles, hrefs, prompts, answers, transcripts, content, or metadata
+  blobs.
+- No Chrome implementation, public UI/settings entry, automatic boot run, F5
+  behavior change, import/export/sync behavior change, or F7 behavior is added.
+- No hidden runner button is required while the existing multi-peer readiness
+  runner remains a counts-only/no-writes surface.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -736,6 +762,8 @@ F6 manual validation access is acceptable only if:
 - F6.6: `previewResolution()` only, no mutation.
 - F6 validation access: Gated manual conflict ID retrieval for DevTools
   validation only.
+- F6 final validation harness: Debug-only in-app runner for the public F6
+  conflict queue API path.
 - F6.7: Chrome conflict store scaffold if needed.
 - F7: First gated bidirectional prototype.
 
