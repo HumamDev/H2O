@@ -101,7 +101,7 @@
         { id: 'extract', label: 'Extract', actions: [
           { id: 'summarize',     label: 'Summarize',     tooltip: 'AI provider unavailable', phase: '3d-b' },
           { id: 'extract-tasks', label: 'Extract tasks', tooltip: 'AI provider unavailable', phase: '3d-c1' },
-          { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-d' },
         ] },
         { id: 'rewrite', label: 'Rewrite', actions: [
           { id: 'rewrite-selection', label: 'Rewrite selected', tooltip: 'AI provider unavailable', phase: '3d-a' },
@@ -276,6 +276,8 @@
   let aiTaskActiveRequestId = null;
   let aiStudyNotesRequestSeq = 0;
   let aiStudyNotesActiveRequestId = null;
+  let aiTagsRequestSeq = 0;
+  let aiTagsActiveRequestId = null;
 
   function buildAiTranscriptInput(text, transcriptMeta, opts) {
     const options = (opts && typeof opts === 'object') ? opts : {};
@@ -468,6 +470,45 @@
     });
   }
 
+  function buildGenerateTagsRequest(ctx, transcriptInput) {
+    const userPrompt = [
+      ...buildAiPromptPreamble(ctx, transcriptInput),
+      '',
+      'Generate suggested tags for this chat transcript.',
+      'Suggest 10-12 tags maximum.',
+      'Use short, reusable tag names.',
+      'Do not invent topics.',
+      'Do not duplicate or near-duplicate tags.',
+      'Do not invent confidence or reasons beyond evidence in the transcript.',
+      'If no clear tags exist, return exactly:',
+      'No clear tags found.',
+      '',
+      'When tags exist, return Markdown exactly in this format:',
+      '## Suggested Tags',
+      '',
+      '- Tag: ...',
+      '  Confidence: High | Medium | Low',
+      '  Reason: ...',
+      '',
+      'Transcript:',
+      transcriptInput.text,
+    ].join('\n');
+    const requestId = 'studio-ribbon-generate-tags-' + Date.now().toString(36) + '-' + (++aiTagsRequestSeq);
+    return Object.assign(buildAiRequestBase('generate-tags', '3d-d', transcriptInput, {
+      maxTokens: 650,
+      temperature: 0.1,
+    }), {
+      requestId: requestId,
+      messages: [
+        {
+          role: 'system',
+          content: 'You suggest concise tags from user-provided chat transcripts. Do not invent topics, duplicate tags, or invent confidence/reasons beyond evidence. If no clear tags are present, return exactly: No clear tags found.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+  }
+
   function aiFailureReason(result) {
     if (!result || typeof result !== 'object') return 'unknown';
     return String(result.reason || result.error || result.message || 'unknown');
@@ -481,7 +522,7 @@
     if (typeof result === 'string') return result.trim();
     if (!result || typeof result !== 'object') return '';
     if (result.ok === false) return '';
-    const directFields = ['summary', 'tasks', 'notes', 'text', 'content', 'outputText', 'output', 'message'];
+    const directFields = ['summary', 'tasks', 'notes', 'tags', 'text', 'content', 'outputText', 'output', 'message'];
     for (let i = 0; i < directFields.length; i += 1) {
       const value = result[directFields[i]];
       if (typeof value === 'string' && value.trim()) return value.trim();
@@ -629,6 +670,14 @@
       copyStatus: 'Study notes copied',
       failPrefix: 'Study notes failed',
       truncatedNote: 'Transcript truncated for study notes',
+    });
+  }
+
+  function showGenerateTagsModal(tagsText, transcriptInput, setStatus) {
+    return showAiResultModal('Suggested Tags', tagsText, transcriptInput, setStatus, {
+      copyStatus: 'Tags copied',
+      failPrefix: 'Tag generation failed',
+      truncatedNote: 'Transcript truncated for tag generation',
     });
   }
 
@@ -1309,8 +1358,78 @@
       );
     },
   };
+  ACTION_HANDLERS['generate-tags'] = {
+    isEnabled: aiTranscriptActionIsEnabled,
+    disabledTooltip: aiTranscriptDisabledTooltip,
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getCleanTranscript !== 'function') {
+        setStatus('Tag generation failed: transcript bridge unavailable');
+        return;
+      }
+      const inference = getInference();
+      const status = getInferenceStatus();
+      if (!status.available || !inference || typeof inference.run !== 'function') {
+        setStatus('AI provider unavailable');
+        return;
+      }
+
+      removeAiResultModal();
+      setStatus('Preparing tags...');
+      Promise.resolve(bridge.getCleanTranscript({ includeOverlay: true })).then(
+        function (transcriptResult) {
+          const safe = (transcriptResult && typeof transcriptResult === 'object')
+            ? transcriptResult
+            : { text: '', overlayIncluded: false, overlaySkipped: false };
+          const transcriptInput = buildAiTranscriptInput(safe.text, safe);
+          if (!transcriptInput.text.trim()) {
+            setStatus('No transcript content');
+            return;
+          }
+          const request = buildGenerateTagsRequest(ctx, transcriptInput);
+          aiTagsActiveRequestId = request.requestId;
+          setStatus('Generating tags...');
+          Promise.resolve(inference.run(request)).then(
+            function (result) {
+              if (aiTagsActiveRequestId !== request.requestId) return;
+              if (result && typeof result === 'object' && result.ok === false) {
+                removeAiResultModal();
+                setStatus('Tag generation failed: ' + aiFailureReason(result));
+                return;
+              }
+              const tagsText = extractAiResultText(result);
+              if (!tagsText) {
+                removeAiResultModal();
+                setStatus('Tag generation failed: empty-result');
+                return;
+              }
+              try {
+                if (showGenerateTagsModal(tagsText, transcriptInput, setStatus)) {
+                  setStatus('Tags ready');
+                }
+              } catch (e) {
+                removeAiResultModal();
+                const msg = (e && (e.message || String(e))) || 'unknown error';
+                setStatus('Tag generation failed: ' + msg);
+              }
+            },
+            function (err) {
+              if (aiTagsActiveRequestId !== request.requestId) return;
+              removeAiResultModal();
+              const msg = (err && (err.message || String(err))) || 'unknown error';
+              setStatus('Tag generation failed: ' + msg);
+            }
+          );
+        },
+        function (err) {
+          removeAiResultModal();
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Tag generation failed: ' + msg);
+        }
+      );
+    },
+  };
   [
-    'generate-tags',
     'rewrite-selection',
   ].forEach(function (actionId) {
     ACTION_HANDLERS[actionId] = makePassiveAiHandler(actionId);
