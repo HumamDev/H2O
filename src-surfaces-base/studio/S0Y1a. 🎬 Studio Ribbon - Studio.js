@@ -104,7 +104,7 @@
           { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-d' },
         ] },
         { id: 'rewrite', label: 'Rewrite', actions: [
-          { id: 'rewrite-selection', label: 'Rewrite selected', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'rewrite-selection', label: 'Rewrite selected', tooltip: 'AI provider unavailable', phase: '3d-e' },
           { id: 'study-notes',       label: 'Create study notes', tooltip: 'AI provider unavailable', phase: '3d-c2' },
         ] },
       ],
@@ -278,6 +278,8 @@
   let aiStudyNotesActiveRequestId = null;
   let aiTagsRequestSeq = 0;
   let aiTagsActiveRequestId = null;
+  let aiRewriteRequestSeq = 0;
+  let aiRewriteActiveRequestId = null;
 
   function buildAiTranscriptInput(text, transcriptMeta, opts) {
     const options = (opts && typeof opts === 'object') ? opts : {};
@@ -509,6 +511,182 @@
     });
   }
 
+  function getRewriteRole(turnEl, textRoot) {
+    const raw = String(
+      (turnEl && turnEl.getAttribute && turnEl.getAttribute('data-turn'))
+      || (textRoot && textRoot.getAttribute && textRoot.getAttribute('data-message-author-role'))
+      || ''
+    ).toLowerCase();
+    if (raw === 'assistant' || raw === 'user' || raw === 'system') return raw;
+    return raw || 'unknown';
+  }
+
+  function elementHasMessageId(el, messageId) {
+    const want = String(messageId || '').trim();
+    if (!el || !want) return false;
+    try {
+      if (el.getAttribute && String(el.getAttribute('data-message-id') || '').trim() === want) return true;
+      const nodes = (typeof el.querySelectorAll === 'function')
+        ? Array.prototype.slice.call(el.querySelectorAll('[data-message-id]'))
+        : [];
+      for (let i = 0; i < nodes.length; i += 1) {
+        if (String(nodes[i].getAttribute('data-message-id') || '').trim() === want) return true;
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+
+  function findRewriteSelectedTurn(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return null;
+    const turnIdx = Number(ctx.selectedTurnIdx);
+    if (!Number.isFinite(turnIdx) || turnIdx <= 0) return null;
+    let turns = [];
+    try {
+      turns = (typeof document.querySelectorAll === 'function')
+        ? Array.prototype.slice.call(document.querySelectorAll('[data-turn]'))
+        : [];
+    } catch (_) { turns = []; }
+    for (let i = 0; i < turns.length; i += 1) {
+      try {
+        if (turns[i].classList && turns[i].classList.contains('is-ribbon-selected')) {
+          return turns[i];
+        }
+      } catch (_) { /* continue */ }
+    }
+    return turns[Math.floor(turnIdx) - 1] || null;
+  }
+
+  function findRewriteTextRoot(turnEl, selectedMessageId) {
+    if (!turnEl || typeof turnEl.querySelectorAll !== 'function') return turnEl || null;
+    const want = String(selectedMessageId || '').trim();
+    if (want) {
+      try {
+        const messageNodes = Array.prototype.slice.call(turnEl.querySelectorAll('[data-message-id]'));
+        for (let i = 0; i < messageNodes.length; i += 1) {
+          if (String(messageNodes[i].getAttribute('data-message-id') || '').trim() === want) return messageNodes[i];
+        }
+      } catch (_) { /* fall through */ }
+    }
+    try {
+      return turnEl.querySelector('[data-message-author-role]') || turnEl.querySelector('.cgMsgBody') || turnEl;
+    } catch (_) {
+      return turnEl;
+    }
+  }
+
+  function extractRewriteTextFromElement(rootEl) {
+    if (!rootEl) return '';
+    try {
+      const clone = (typeof rootEl.cloneNode === 'function') ? rootEl.cloneNode(true) : null;
+      if (clone && typeof clone.querySelectorAll === 'function') {
+        const removeNodes = Array.prototype.slice.call(clone.querySelectorAll('.wbEditBtn, .wbEditWrap, button, input, select, textarea, [contenteditable="true"]'));
+        removeNodes.forEach(function (node) {
+          try { if (node && node.parentNode) node.parentNode.removeChild(node); } catch (_) { /* swallow */ }
+        });
+        const codeNodes = Array.prototype.slice.call(clone.querySelectorAll('pre code, pre'));
+        codeNodes.forEach(function (node) {
+          try {
+            const lang = String((node.className || '').match && ((node.className || '').match(/language-(\S+)/) || [])[1] || '');
+            const text = String(node.textContent || '');
+            const replacement = document.createTextNode('\n```' + lang + '\n' + text + '\n```\n');
+            if (node.parentNode) node.parentNode.replaceChild(replacement, node);
+          } catch (_) { /* swallow */ }
+        });
+        return String(clone.textContent || '').trim();
+      }
+    } catch (_) { /* fall through */ }
+    try { return String(rootEl.textContent || '').trim(); }
+    catch (_) { return ''; }
+  }
+
+  function buildRewriteSelectionInput(ctx) {
+    const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+    if (!ctx || ctx.chatType !== 'saved' || !Number.isFinite(turnIdx) || turnIdx <= 0) {
+      return { ok: false, reason: 'no-selection' };
+    }
+    const selectedMessageId = String((ctx && ctx.selectedMessageId) || '').trim();
+    const turnEl = findRewriteSelectedTurn(ctx);
+    if (!turnEl) return { ok: false, reason: 'no-selection' };
+    const textRoot = findRewriteTextRoot(turnEl, selectedMessageId);
+    const role = getRewriteRole(turnEl, textRoot);
+    const raw = extractRewriteTextFromElement(textRoot);
+    if (!raw.trim()) return { ok: false, reason: 'empty-selection' };
+    const bounded = buildAiTranscriptInput(raw, {});
+    return {
+      ok: true,
+      text: bounded.text,
+      role: role,
+      selectedTurnIdx: Math.floor(turnIdx),
+      selectedMessageId: selectedMessageId || null,
+      selectedMessageIdMatched: selectedMessageId ? elementHasMessageId(turnEl, selectedMessageId) : false,
+      truncated: bounded.truncated,
+      originalChars: bounded.originalChars,
+      sentChars: bounded.sentChars,
+    };
+  }
+
+  function buildRewriteSelectionRequest(ctx, selectionInput) {
+    const title = String((ctx && ctx.title) || '').trim();
+    const truncationNote = selectionInput.truncated
+      ? 'The selected text was truncated deterministically: first 12000 characters, an omission marker, then the last 12000 characters.'
+      : 'The selected text was not truncated.';
+    const userPrompt = [
+      title ? ('Title: ' + title) : 'Title: Untitled chat',
+      'Selected turn index: ' + String(selectionInput.selectedTurnIdx),
+      'Selected message ID: ' + String(selectionInput.selectedMessageId || 'Not available'),
+      'Role: ' + String(selectionInput.role || 'unknown'),
+      truncationNote,
+      '',
+      'Rewrite only the selected text.',
+      'Preserve meaning, facts, technical terms, code, IDs, filenames, and identifiers.',
+      'Do not add new facts.',
+      'Do not remove important constraints.',
+      'Keep the same language as the selected text unless the selected text is mixed-language.',
+      'Return the rewritten text only.',
+      'Add a short note only if necessary.',
+      '',
+      'Selected text:',
+      selectionInput.text,
+    ].join('\n');
+    const requestId = 'studio-ribbon-rewrite-selection-' + Date.now().toString(36) + '-' + (++aiRewriteRequestSeq);
+    return {
+      requestId: requestId,
+      input: {
+        kind: 'selected-message-text',
+        selectedTurnIdx: selectionInput.selectedTurnIdx,
+        selectedMessageId: selectionInput.selectedMessageId,
+        role: selectionInput.role,
+        truncated: selectionInput.truncated,
+        originalChars: selectionInput.originalChars,
+        sentChars: selectionInput.sentChars,
+      },
+      metadata: {
+        surface: 'studio',
+        feature: 'ribbon',
+        action: 'rewrite-selection',
+        selectedTurnIdx: selectionInput.selectedTurnIdx,
+        selectedMessageId: selectionInput.selectedMessageId,
+        role: selectionInput.role,
+        truncated: selectionInput.truncated,
+        originalChars: selectionInput.originalChars,
+        sentChars: selectionInput.sentChars,
+      },
+      options: {
+        maxTokens: 900,
+        temperature: 0.2,
+      },
+      phase: '3d-e',
+      action: 'rewrite-selection',
+      messages: [
+        {
+          role: 'system',
+          content: 'You rewrite selected text. Preserve meaning, facts, technical terms, code, IDs, filenames, identifiers, and important constraints. Do not add new facts. Return the rewritten text only unless a short note is necessary.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+    };
+  }
+
   function aiFailureReason(result) {
     if (!result || typeof result !== 'object') return 'unknown';
     return String(result.reason || result.error || result.message || 'unknown');
@@ -522,7 +700,7 @@
     if (typeof result === 'string') return result.trim();
     if (!result || typeof result !== 'object') return '';
     if (result.ok === false) return '';
-    const directFields = ['summary', 'tasks', 'notes', 'tags', 'text', 'content', 'outputText', 'output', 'message'];
+    const directFields = ['summary', 'tasks', 'notes', 'tags', 'rewrite', 'rewrittenText', 'text', 'content', 'outputText', 'output', 'message'];
     for (let i = 0; i < directFields.length; i += 1) {
       const value = result[directFields[i]];
       if (typeof value === 'string' && value.trim()) return value.trim();
@@ -681,6 +859,14 @@
     });
   }
 
+  function showRewriteModal(rewriteText, selectionInput, setStatus) {
+    return showAiResultModal('Rewritten Text', rewriteText, selectionInput, setStatus, {
+      copyStatus: 'Rewrite copied',
+      failPrefix: 'Rewrite failed',
+      truncatedNote: 'Selected text truncated for rewrite',
+    });
+  }
+
   function aiTranscriptActionIsEnabled(ctx) {
     if (!ctx || ctx.chatType !== 'saved') return false;
     const bridge = getRibbonBridge();
@@ -707,6 +893,24 @@
 
   function summarizeDisabledTooltip(ctx) {
     return aiTranscriptDisabledTooltip(ctx);
+  }
+
+  function rewriteSelectionIsEnabled(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return false;
+    if (!Number.isFinite(Number(ctx.selectedTurnIdx)) || Number(ctx.selectedTurnIdx) <= 0) return false;
+    const inference = getInference();
+    if (!inference || typeof inference.run !== 'function') return false;
+    const status = getInferenceStatus();
+    return status.available === true;
+  }
+
+  function rewriteSelectionDisabledTooltip(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return 'Select a message to rewrite';
+    if (!Number.isFinite(Number(ctx.selectedTurnIdx)) || Number(ctx.selectedTurnIdx) <= 0) return 'Select a message to rewrite';
+    const inference = getInference();
+    if (!inference || typeof inference.run !== 'function') return 'AI provider unavailable';
+    const status = getInferenceStatus();
+    return status.available ? '' : (status.message || 'AI provider unavailable');
   }
 
   /* ── Phase 1b — wired action handlers ────────────────────────────────
@@ -1429,11 +1633,65 @@
       );
     },
   };
-  [
-    'rewrite-selection',
-  ].forEach(function (actionId) {
-    ACTION_HANDLERS[actionId] = makePassiveAiHandler(actionId);
-  });
+  ACTION_HANDLERS['rewrite-selection'] = {
+    isEnabled: rewriteSelectionIsEnabled,
+    disabledTooltip: rewriteSelectionDisabledTooltip,
+    onClick: function (ctx, setStatus) {
+      if (!ctx || ctx.chatType !== 'saved' || !Number.isFinite(Number(ctx.selectedTurnIdx)) || Number(ctx.selectedTurnIdx) <= 0) {
+        setStatus('Select a message to rewrite');
+        return;
+      }
+      const inference = getInference();
+      const status = getInferenceStatus();
+      if (!status.available || !inference || typeof inference.run !== 'function') {
+        setStatus('AI provider unavailable');
+        return;
+      }
+
+      removeAiResultModal();
+      setStatus('Preparing rewrite...');
+      const selectionInput = buildRewriteSelectionInput(ctx);
+      if (!selectionInput.ok) {
+        if (selectionInput.reason === 'empty-selection') setStatus('No selected text');
+        else setStatus('Select a message to rewrite');
+        return;
+      }
+      const request = buildRewriteSelectionRequest(ctx, selectionInput);
+      aiRewriteActiveRequestId = request.requestId;
+      setStatus('Rewriting selected text...');
+      Promise.resolve(inference.run(request)).then(
+        function (result) {
+          if (aiRewriteActiveRequestId !== request.requestId) return;
+          if (result && typeof result === 'object' && result.ok === false) {
+            removeAiResultModal();
+            setStatus('Rewrite failed: ' + aiFailureReason(result));
+            return;
+          }
+          const rewriteText = extractAiResultText(result);
+          if (!rewriteText) {
+            removeAiResultModal();
+            setStatus('Rewrite failed: empty-result');
+            return;
+          }
+          try {
+            if (showRewriteModal(rewriteText, selectionInput, setStatus)) {
+              setStatus('Rewrite ready');
+            }
+          } catch (e) {
+            removeAiResultModal();
+            const msg = (e && (e.message || String(e))) || 'unknown error';
+            setStatus('Rewrite failed: ' + msg);
+          }
+        },
+        function (err) {
+          if (aiRewriteActiveRequestId !== request.requestId) return;
+          removeAiResultModal();
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Rewrite failed: ' + msg);
+        }
+      );
+    },
+  };
 
   /* ── Phase 2b — message-level format actions ───────────────────────────
    * Seven actions wired against the edit-overlay subsystem:
