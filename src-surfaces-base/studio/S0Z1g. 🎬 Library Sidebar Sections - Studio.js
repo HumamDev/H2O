@@ -807,13 +807,15 @@
         class: 'wbSidebarNativePickerStatus',
         role: 'status',
         'aria-live': 'polite',
-        style: 'min-height:16px;margin-top:6px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+        style: 'display:none;margin-top:6px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
       })
       : null;
     const setStatus = (message, kind = '') => {
       if (!status) return;
-      status.textContent = String(message || '');
+      const text = String(message || '');
+      status.textContent = text;
       status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
     };
     SIDEBAR_MENU_COLORS.forEach((option) => {
       const value = normalizeHexColor(option.value || option.color || '');
@@ -845,6 +847,33 @@
     section.appendChild(grid);
     if (status) section.appendChild(status);
     return section;
+  }
+
+  function makeCanonicalFolderColorPicker(item, currentColor, pop, anchorEl) {
+    const picker = makeMenuColorPicker(item, currentColor, {
+      label: 'Color',
+      status: true,
+      keepOpen: true,
+      onSelect: (value, controls) => requestCanonicalFolderColor(item, value, controls),
+    });
+    picker.hidden = true;
+    picker.dataset.menuItem = 'canonical-folder-color-picker';
+    const action = makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, () => {
+      picker.hidden = !picker.hidden;
+      action.setAttribute('aria-expanded', picker.hidden ? 'false' : 'true');
+      if (!picker.hidden) {
+        W.requestAnimationFrame(() => {
+          try { positionRowMenu(pop, anchorEl); } catch {}
+          try { picker.querySelector('button')?.focus?.(); } catch {}
+        });
+      }
+    }, {
+      keepOpen: true,
+      title: 'Change canonical folder color through Native owner',
+    });
+    action.setAttribute('aria-haspopup', 'true');
+    action.setAttribute('aria-expanded', 'false');
+    return [action, picker];
   }
 
   function folderHrefForId(folderId) {
@@ -996,7 +1025,7 @@
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        closeRowMenu();
+        if (!opts.keepOpen) closeRowMenu();
         try { onClick?.(); } catch (e) { err(`menuAction:${label}`, e); }
       });
     }
@@ -1108,12 +1137,7 @@
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       if (isCanonicalFolder) {
         if (canRequestCanonicalFolderColor(item)) {
-          pop.appendChild(makeMenuColorPicker(item, color, {
-            label: 'Change color',
-            status: true,
-            keepOpen: true,
-            onSelect: (value, controls) => requestCanonicalFolderColor(item, value, controls),
-          }));
+          makeCanonicalFolderColorPicker(item, color, pop, anchorEl).forEach((node) => pop.appendChild(node));
         } else {
           pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
             disabled: true,
