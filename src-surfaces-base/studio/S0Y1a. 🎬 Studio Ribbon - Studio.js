@@ -99,7 +99,7 @@
       chatTypes: ['saved'],
       groups: [
         { id: 'extract', label: 'Extract', actions: [
-          { id: 'summarize',     label: 'Summarize',     tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'summarize',     label: 'Summarize',     tooltip: 'AI provider unavailable', phase: '3d-b' },
           { id: 'extract-tasks', label: 'Extract tasks', tooltip: 'AI provider unavailable', phase: '3d-a' },
           { id: 'generate-tags', label: 'Generate tags', tooltip: 'AI provider unavailable', phase: '3d-a' },
         ] },
@@ -255,11 +255,248 @@
          * No AI requests are allowed from ribbon actions in this slice. */
         return false;
       },
-      disabledTooltip: getAiUnavailableMessage,
+      disabledTooltip: function () {
+        const status = getInferenceStatus();
+        return status.available ? 'Coming soon' : (status.message || 'AI provider unavailable');
+      },
       onClick: function (ctx, setStatus) {
         setStatus(getAiUnavailableMessage(), { persist: true });
       },
     };
+  }
+
+  const AI_SUMMARY_CHAR_LIMIT = 24000;
+  const AI_SUMMARY_HEAD_CHARS = 12000;
+  const AI_SUMMARY_TAIL_CHARS = 12000;
+  const AI_SUMMARY_OMISSION = '\n\n[... transcript truncated for summary ...]\n\n';
+  let aiSummaryRequestSeq = 0;
+  let aiSummaryActiveRequestId = null;
+
+  function buildSummaryInput(text, transcriptMeta) {
+    const raw = String(text || '').trim();
+    const originalChars = raw.length;
+    let bounded = raw;
+    let truncated = false;
+    if (originalChars > AI_SUMMARY_CHAR_LIMIT) {
+      bounded = raw.slice(0, AI_SUMMARY_HEAD_CHARS)
+        + AI_SUMMARY_OMISSION
+        + raw.slice(Math.max(0, originalChars - AI_SUMMARY_TAIL_CHARS));
+      truncated = true;
+    }
+    const meta = (transcriptMeta && typeof transcriptMeta === 'object') ? transcriptMeta : {};
+    return {
+      text: bounded,
+      truncated: truncated,
+      originalChars: originalChars,
+      sentChars: bounded.length,
+      overlayIncluded: meta.overlayIncluded === true,
+      overlaySkipped: meta.overlaySkipped === true,
+      overlayReason: meta.reason ? String(meta.reason) : null,
+    };
+  }
+
+  function buildSummarizeRequest(ctx, summaryInput) {
+    const title = String((ctx && ctx.title) || '').trim();
+    const truncationNote = summaryInput.truncated
+      ? 'The transcript was truncated deterministically: first 12000 characters, an omission marker, then the last 12000 characters.'
+      : 'The transcript was not truncated.';
+    const overlayNote = summaryInput.overlaySkipped
+      ? ('Overlay was skipped' + (summaryInput.overlayReason ? ': ' + summaryInput.overlayReason : '') + '.')
+      : (summaryInput.overlayIncluded ? 'Overlay-aware transcript was used.' : 'Raw clean transcript was used.');
+    const userPrompt = [
+      title ? ('Title: ' + title) : 'Title: Untitled chat',
+      truncationNote,
+      overlayNote,
+      '',
+      'Summarize this chat transcript. Return concise Markdown with:',
+      '- Overview',
+      '- Key points',
+      '- Decisions or answers',
+      '- Open questions, if any',
+      '',
+      'Transcript:',
+      summaryInput.text,
+    ].join('\n');
+    const requestId = 'studio-ribbon-summarize-' + Date.now().toString(36) + '-' + (++aiSummaryRequestSeq);
+    return {
+      requestId: requestId,
+      action: 'summarize',
+      phase: '3d-b',
+      messages: [
+        {
+          role: 'system',
+          content: 'You summarize user-provided chat transcripts. Do not invent facts. If information is missing or uncertain, say so briefly. Return only the requested summary.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+      input: {
+        kind: 'overlay-clean-transcript',
+        truncated: summaryInput.truncated,
+        originalChars: summaryInput.originalChars,
+        sentChars: summaryInput.sentChars,
+        overlayIncluded: summaryInput.overlayIncluded,
+        overlaySkipped: summaryInput.overlaySkipped,
+        overlayReason: summaryInput.overlayReason,
+      },
+      metadata: {
+        surface: 'studio',
+        feature: 'ribbon',
+        action: 'summarize',
+        truncated: summaryInput.truncated,
+        originalChars: summaryInput.originalChars,
+        sentChars: summaryInput.sentChars,
+        overlayIncluded: summaryInput.overlayIncluded,
+        overlaySkipped: summaryInput.overlaySkipped,
+        overlayReason: summaryInput.overlayReason,
+      },
+      options: {
+        maxTokens: 700,
+        temperature: 0.2,
+      },
+    };
+  }
+
+  function summaryFailureReason(result) {
+    if (!result || typeof result !== 'object') return 'unknown';
+    return String(result.reason || result.error || result.message || 'unknown');
+  }
+
+  function extractSummaryText(result) {
+    if (typeof result === 'string') return result.trim();
+    if (!result || typeof result !== 'object') return '';
+    if (result.ok === false) return '';
+    const directFields = ['summary', 'text', 'content', 'outputText', 'output', 'message'];
+    for (let i = 0; i < directFields.length; i += 1) {
+      const value = result[directFields[i]];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    if (result.result && typeof result.result === 'object') {
+      return extractSummaryText(result.result);
+    }
+    if (result.data && typeof result.data === 'object') {
+      return extractSummaryText(result.data);
+    }
+    return '';
+  }
+
+  function removeSummaryModal() {
+    try {
+      const existing = document.getElementById('wbRibbonAiSummaryModal');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    } catch (_) { /* swallow */ }
+  }
+
+  function showSummaryModal(summaryText, summaryInput, setStatus) {
+    removeSummaryModal();
+    const host = document.body || getContainer();
+    if (!host || typeof host.appendChild !== 'function') {
+      setStatus('Summary failed: result surface unavailable');
+      return false;
+    }
+    const overlay = el('div', {
+      id: 'wbRibbonAiSummaryModal',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': 'Summary',
+      style: 'position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.38);padding:24px;',
+    });
+    const panel = el('div', {
+      class: 'wbRibbonAiSummaryPanel',
+      style: 'width:min(720px,calc(100vw - 48px));max-height:min(720px,calc(100vh - 48px));display:flex;flex-direction:column;border:1px solid rgba(15,23,42,.18);border-radius:8px;background:#fff;color:#111827;box-shadow:0 24px 80px rgba(15,23,42,.28);overflow:hidden;',
+    });
+    const head = el('div', {
+      style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(15,23,42,.12);',
+    });
+    const title = el('div', { style: 'font-size:15px;font-weight:700;line-height:1.3;' }, 'Summary');
+    const closeTop = el('button', {
+      type: 'button',
+      title: 'Close',
+      'aria-label': 'Close',
+      style: 'border:1px solid rgba(15,23,42,.16);background:#fff;color:#111827;border-radius:6px;padding:5px 9px;font-size:13px;cursor:pointer;',
+    }, 'Close');
+    const body = el('pre', {
+      style: 'margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:520px;',
+    });
+    body.textContent = String(summaryText || '');
+    const foot = el('div', {
+      style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-top:1px solid rgba(15,23,42,.12);',
+    });
+    const note = el('div', {
+      style: 'font-size:12px;color:#4b5563;line-height:1.35;',
+    }, summaryInput && summaryInput.truncated ? 'Transcript truncated for summary' : '');
+    const actions = el('div', { style: 'display:flex;align-items:center;gap:8px;' });
+    const copyBtn = el('button', {
+      type: 'button',
+      style: 'border:1px solid rgba(15,23,42,.16);background:#111827;color:#fff;border-radius:6px;padding:6px 11px;font-size:13px;cursor:pointer;',
+    }, 'Copy');
+    const closeBtn = el('button', {
+      type: 'button',
+      style: 'border:1px solid rgba(15,23,42,.16);background:#fff;color:#111827;border-radius:6px;padding:6px 11px;font-size:13px;cursor:pointer;',
+    }, 'Close');
+
+    function close() { removeSummaryModal(); }
+    function copySummary() {
+      const platform = getPlatform();
+      const clip = platform && platform.clipboard;
+      if (!clip || typeof clip.writeText !== 'function') {
+        setStatus('Summary failed: clipboard unavailable');
+        return;
+      }
+      Promise.resolve(clip.writeText(String(summaryText || ''))).then(
+        function () { setStatus('Summary copied'); },
+        function (err) {
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Summary failed: ' + msg);
+        }
+      );
+    }
+
+    closeTop.addEventListener('click', close);
+    closeBtn.addEventListener('click', close);
+    copyBtn.addEventListener('click', copySummary);
+    overlay.addEventListener('click', function (ev) {
+      if (ev.target === overlay) close();
+    });
+    overlay.addEventListener('keydown', function (ev) {
+      if (ev && ev.key === 'Escape') {
+        ev.preventDefault();
+        close();
+      }
+    });
+
+    head.appendChild(title);
+    head.appendChild(closeTop);
+    actions.appendChild(copyBtn);
+    actions.appendChild(closeBtn);
+    foot.appendChild(note);
+    foot.appendChild(actions);
+    panel.appendChild(head);
+    panel.appendChild(body);
+    panel.appendChild(foot);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    try { closeTop.focus(); } catch (_) { /* swallow */ }
+    return true;
+  }
+
+  function summarizeIsEnabled(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return false;
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.getCleanTranscript !== 'function') return false;
+    const inference = getInference();
+    if (!inference || typeof inference.run !== 'function') return false;
+    const status = getInferenceStatus();
+    return status.available === true;
+  }
+
+  function summarizeDisabledTooltip(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return 'AI provider unavailable';
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.getCleanTranscript !== 'function') return 'Transcript bridge unavailable';
+    const inference = getInference();
+    if (!inference || typeof inference.run !== 'function') return 'AI provider unavailable';
+    const status = getInferenceStatus();
+    return status.available ? '' : (status.message || 'AI provider unavailable');
   }
 
   /* ── Phase 1b — wired action handlers ────────────────────────────────
@@ -698,8 +935,78 @@
       },
     },
   };
+  ACTION_HANDLERS['summarize'] = {
+    isEnabled: summarizeIsEnabled,
+    disabledTooltip: summarizeDisabledTooltip,
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getCleanTranscript !== 'function') {
+        setStatus('Summary failed: transcript bridge unavailable');
+        return;
+      }
+      const inference = getInference();
+      const status = getInferenceStatus();
+      if (!status.available || !inference || typeof inference.run !== 'function') {
+        setStatus('AI provider unavailable');
+        return;
+      }
+
+      removeSummaryModal();
+      setStatus('Preparing summary...');
+      Promise.resolve(bridge.getCleanTranscript({ includeOverlay: true })).then(
+        function (transcriptResult) {
+          const safe = (transcriptResult && typeof transcriptResult === 'object')
+            ? transcriptResult
+            : { text: '', overlayIncluded: false, overlaySkipped: false };
+          const summaryInput = buildSummaryInput(safe.text, safe);
+          if (!summaryInput.text.trim()) {
+            setStatus('No transcript content');
+            return;
+          }
+          const request = buildSummarizeRequest(ctx, summaryInput);
+          aiSummaryActiveRequestId = request.requestId;
+          setStatus('Summarizing...');
+          Promise.resolve(inference.run(request)).then(
+            function (result) {
+              if (aiSummaryActiveRequestId !== request.requestId) return;
+              if (result && typeof result === 'object' && result.ok === false) {
+                removeSummaryModal();
+                setStatus('Summary failed: ' + summaryFailureReason(result));
+                return;
+              }
+              const summaryText = extractSummaryText(result);
+              if (!summaryText) {
+                removeSummaryModal();
+                setStatus('Summary failed: empty-result');
+                return;
+              }
+              try {
+                if (showSummaryModal(summaryText, summaryInput, setStatus)) {
+                  setStatus('Summary ready');
+                }
+              } catch (e) {
+                removeSummaryModal();
+                const msg = (e && (e.message || String(e))) || 'unknown error';
+                setStatus('Summary failed: ' + msg);
+              }
+            },
+            function (err) {
+              if (aiSummaryActiveRequestId !== request.requestId) return;
+              removeSummaryModal();
+              const msg = (err && (err.message || String(err))) || 'unknown error';
+              setStatus('Summary failed: ' + msg);
+            }
+          );
+        },
+        function (err) {
+          removeSummaryModal();
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Summary failed: ' + msg);
+        }
+      );
+    },
+  };
   [
-    'summarize',
     'extract-tasks',
     'generate-tags',
     'rewrite-selection',
