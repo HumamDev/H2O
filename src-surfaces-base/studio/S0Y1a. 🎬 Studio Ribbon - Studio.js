@@ -659,6 +659,90 @@
     },
   };
 
+  /* ── Phase 2c-B — Collapse section + Table of contents ────────────────
+   * Both actions go through RibbonBridge.applyOverlayOp (Phase 2b) with
+   * structure op types that Phase 2c-A's reducer already accepts
+   * (collapse-section + toc). The applier renders the visual outcome
+   * via the structure pass — this layer only composes the op spec. */
+
+  ACTION_HANDLERS['collapse-section'] = {
+    /* Enabled when saved reader + selection + at least one overlay op
+     * exists. The "selected turn is inside an existing section" check
+     * runs in onClick because it requires the async structure-state
+     * read; the sync gate uses hasOverlay for parity with split-section. */
+    isEnabled: function (ctx) {
+      if (!structureBaseEnabled(ctx)) return false;
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(ti) || ti <= 0) return false;
+      if (!ctx.hasOverlay) return false;
+      return true;
+    },
+    onClick: function (ctx, setStatus) {
+      const ti = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(ti) || ti <= 0) { setStatus('Select a message first'); return; }
+      const bridge = getRibbonBridge();
+      const ov = H2O && H2O.Studio && H2O.Studio.overlay;
+      const readP = (bridge && typeof bridge.getStructureState === 'function')
+        ? Promise.resolve(bridge.getStructureState())
+        : Promise.resolve({ sections: [] });
+      readP.then(function (cur) {
+        const containing = (ov && typeof ov.findSectionContaining === 'function')
+          ? ov.findSectionContaining(cur, ti)
+          : null;
+        if (!containing) { setStatus('Select a turn inside an existing section to collapse'); return; }
+        const nextCollapsed = !containing.collapsed;
+        runOverlayOp({
+          type: 'collapse-section',
+          target: { kind: 'section', sectionId: containing.sectionId },
+          payload: { sectionId: containing.sectionId, collapsed: nextCollapsed },
+        }, setStatus, {
+          pending: nextCollapsed ? 'Collapsing section…' : 'Expanding section…',
+          success: nextCollapsed ? 'Section collapsed' : 'Section expanded',
+          fail: 'Collapse failed',
+        });
+      }, function () { setStatus('Collapse failed: state read'); });
+    },
+  };
+
+  ACTION_HANDLERS['table-of-contents'] = {
+    /* Enabled when saved reader is mounted AND any overlay exists (the
+     * onClick path enforces the "at least one section" requirement
+     * before dispatching the toc op — turns away with a clear status
+     * when there are no sections to list). */
+    isEnabled: function (ctx) {
+      if (!structureBaseEnabled(ctx)) return false;
+      if (!ctx.hasOverlay) return false;
+      return true;
+    },
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      const readP = (bridge && typeof bridge.getStructureState === 'function')
+        ? Promise.resolve(bridge.getStructureState())
+        : Promise.resolve({ sections: [], toc: { position: null } });
+      readP.then(function (cur) {
+        const sections = (cur && Array.isArray(cur.sections)) ? cur.sections : [];
+        const currentPos = (cur && cur.toc && cur.toc.position) || null;
+        /* No sections + TOC currently off → refuse with a helpful status.
+         * No sections + TOC currently on → still allow toggling off
+         * (recovery from a stale state). */
+        if (sections.length === 0 && !currentPos) {
+          setStatus('Add at least one section first');
+          return;
+        }
+        const nextPos = (currentPos === 'top') ? null : 'top';
+        runOverlayOp({
+          type: 'toc',
+          target: { kind: 'snapshot' },
+          payload: { position: nextPos },
+        }, setStatus, {
+          pending: nextPos ? 'Showing TOC…' : 'Hiding TOC…',
+          success: nextPos ? 'Table of contents shown' : 'Table of contents hidden',
+          fail: 'TOC failed',
+        });
+      }, function () { setStatus('TOC failed: state read'); });
+    },
+  };
+
   /* ── Registration of the default catalogue ────────────────────────── */
   function registerCatalogue(shell) {
     TAB_CATALOGUE.forEach(function (tab) {

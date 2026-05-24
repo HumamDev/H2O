@@ -31,8 +31,8 @@
     return;
   }
 
-  var VERSION = '0.1.0-phase-2c-a';
-  var PHASE = '2c-a';
+  var VERSION = '0.1.0-phase-2c-b';
+  var PHASE = '2c-b';
   var OverlayKeys = H2O.Studio.OverlayKeys || { schemaVersion: 1 };
   var OverlayEvents = H2O.Studio.OverlayEvents || {
     ready: 'evt:h2o:studio:overlay:ready',
@@ -440,6 +440,63 @@
     return hr;
   }
 
+  /* Phase 2c-B — TOC nav element. Built from current sections at render
+   * time (content is never persisted as text in the overlay). Click on
+   * a link scrolls to the matching `<header id="wbOverlaySection-...">`.
+   * Uses <button> rather than <a href="#..."> to avoid hash-routing
+   * conflicts with the Studio router. Returns null when sections list
+   * is empty so the applier can skip insertion. */
+  function makeTocEl(sections) {
+    if (!Array.isArray(sections) || sections.length === 0) return null;
+    var nav = document.createElement('nav');
+    nav.className = 'wbOverlayToc';
+    nav.setAttribute('data-overlay-injected', 'true');
+    nav.setAttribute('aria-label', 'Table of contents');
+
+    var heading = document.createElement('div');
+    heading.className = 'wbOverlayTocHeading';
+    heading.textContent = 'Contents';
+    nav.appendChild(heading);
+
+    var list = document.createElement('ol');
+    list.className = 'wbOverlayTocList';
+
+    /* prefers-reduced-motion check is per-click rather than per-build so
+     * the user can flip the OS setting without re-rendering Studio. */
+    function tocLinkClick(ev) {
+      try {
+        if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+        var sid = this.getAttribute('data-overlay-toc-link');
+        if (!sid) return;
+        var target = document.getElementById('wbOverlaySection-' + sid);
+        if (!target || typeof target.scrollIntoView !== 'function') return;
+        var reduced = false;
+        try {
+          reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (_) { reduced = false; }
+        target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+      } catch (_) { /* swallow — TOC clicks must never throw */ }
+    }
+
+    for (var i = 0; i < sections.length; i += 1) {
+      var sec = sections[i];
+      if (!sec) continue;
+      var li = document.createElement('li');
+      li.className = 'wbOverlayTocItem';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wbOverlayTocLink';
+      btn.setAttribute('data-overlay-toc-link', String(sec.sectionId || ''));
+      btn.textContent = String(sec.title || 'Section');
+      btn.addEventListener('click', tocLinkClick);
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+
+    nav.appendChild(list);
+    return nav;
+  }
+
   /* Insert `el` BEFORE the turn at 1-based position `targetTurnIdx`.
    * Returns true if inserted. If `targetTurnIdx` exceeds the turn count,
    * appends after the last turn (safe degradation when ops point past EOF
@@ -465,14 +522,15 @@
   }
 
   /* Apply structure state to the reader DOM. Idempotent: always cleans
-   * existing `[data-overlay-injected="true"]` elements before inserting.
+   * existing `[data-overlay-injected="true"]` elements AND
+   * `.is-in-collapsed-section` classes before re-applying.
    * Returns counts for the outcome record. */
   function applyStructureToReader(root, structureState) {
-    var counts = { removed: 0, headers: 0, dividers: 0 };
+    var counts = { removed: 0, headers: 0, dividers: 0, collapsedTurns: 0, tocInserted: false };
     if (!root || typeof root.querySelectorAll !== 'function') return counts;
 
     try {
-      /* Step 1 — idempotent cleanup. */
+      /* Step 1a — remove previously-injected structure elements. */
       var injected = root.querySelectorAll('[data-overlay-injected="true"]');
       for (var i = 0; i < injected.length; i += 1) {
         try {
@@ -482,6 +540,14 @@
             counts.removed += 1;
           }
         } catch (_) { /* swallow per-node */ }
+      }
+      /* Step 1b (Phase 2c-B) — clear any stale collapsed-turn classes.
+       * Without this, expanding a section would not visually un-hide its
+       * turns because the previous-render class would linger. */
+      var stale = root.querySelectorAll('[data-turn].is-in-collapsed-section');
+      for (var c = 0; c < stale.length; c += 1) {
+        try { stale[c].classList.remove('is-in-collapsed-section'); }
+        catch (_) { /* swallow per-node */ }
       }
     } catch (e) { recordError('applyStructure:cleanup', e); }
 
@@ -511,6 +577,57 @@
         if (!isFinite(dati) || dati < 0) continue;
         var hr = makeDividerEl(divv);
         if (insertBeforeTurnIdx(container, turns, dati + 1, hr)) counts.dividers += 1;
+      }
+
+      /* Phase 2c-B — collapse + meta pass.
+       * Walk turns in render order; for each turn, look up its containing
+       * section via findSectionContaining. Accumulate per-section turn
+       * counts and tag collapsed-section turns with the hide class.
+       * Then populate each section header's meta slot with the
+       * indicator ("▾"/"▸") + count. */
+      var sectionCounts = Object.create(null);   /* sectionId -> count */
+      for (var t = 0; t < turns.length; t += 1) {
+        var turnIdx = t + 1; /* 1-based, matches per-turn pass convention */
+        var containing = findSectionContaining(structureState, turnIdx);
+        if (!containing) continue;
+        var sidKey = String(containing.sectionId || '');
+        sectionCounts[sidKey] = (sectionCounts[sidKey] || 0) + 1;
+        if (containing.collapsed) {
+          try {
+            turns[t].classList.add('is-in-collapsed-section');
+            counts.collapsedTurns += 1;
+          } catch (_) { /* swallow per-node */ }
+        }
+      }
+
+      /* Populate header meta with collapse indicator + turn count. */
+      for (var sm = 0; sm < sections.length; sm += 1) {
+        var smSec = sections[sm];
+        if (!smSec || !smSec.sectionId) continue;
+        var headerEl = null;
+        try {
+          headerEl = root.querySelector('header.wbOverlaySectionHeader[data-section-id="' + String(smSec.sectionId).replace(/"/g, '\\"') + '"]');
+        } catch (_) { headerEl = null; }
+        if (!headerEl) continue;
+        var metaEl = headerEl.querySelector('.wbOverlaySectionMeta');
+        if (!metaEl) continue;
+        var countN = sectionCounts[String(smSec.sectionId)] || 0;
+        var prefix = smSec.collapsed ? '▸' : '▾'; /* ▸ collapsed, ▾ expanded */
+        metaEl.textContent = prefix + '  ' + countN + ' turn' + (countN === 1 ? '' : 's');
+      }
+
+      /* Phase 2c-B — TOC. Insert as the FIRST child of the turns container
+       * so it sits above all turns and any prior section header. The
+       * cleanup step at the top of this function removes any previous
+       * TOC, so this is idempotent. */
+      if (structureState.toc && structureState.toc.position === 'top') {
+        var tocEl = makeTocEl(sections);
+        if (tocEl) {
+          try {
+            container.insertBefore(tocEl, container.firstChild || null);
+            counts.tocInserted = true;
+          } catch (_) { /* swallow */ }
+        }
       }
     } catch (e) { recordError('applyStructure:insert', e); }
 
@@ -590,7 +707,12 @@
         applied: true,
         /* `mutated` here means "DOM attributes/elements were toggled" — never
          * refers to snap.messages, which the applier never touches. */
-        mutated: turnsTouched > 0 || structureCounts.headers > 0 || structureCounts.dividers > 0 || structureCounts.removed > 0,
+        mutated: turnsTouched > 0
+              || structureCounts.headers > 0
+              || structureCounts.dividers > 0
+              || structureCounts.removed > 0
+              || structureCounts.collapsedTurns > 0
+              || structureCounts.tocInserted === true,
         reason: 'applied',
         opCount: ops.length,
         turnsTouched: turnsTouched,
@@ -598,6 +720,8 @@
         structureHeaders: structureCounts.headers,
         structureDividers: structureCounts.dividers,
         structureRemoved: structureCounts.removed,
+        structureCollapsedTurns: structureCounts.collapsedTurns,
+        structureTocInserted: structureCounts.tocInserted,
         snapshotId: String(overlay.snapshotId || snapshot.snapshotId || ''),
         baseDigest: overlayDigest || currentDigest,
       });
