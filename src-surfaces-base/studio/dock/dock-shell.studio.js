@@ -309,7 +309,19 @@
       recordError('renderRail:clear', e);
       return;
     }
+    /* Native-like rail order (Phase 2B): sort by tab def's numeric
+     * `order` field if present (mirrors native DPANEL_RAIL_ITEMS).
+     * Tabs without an `order` field fall to the end in registration
+     * order, preserving back-compat with simpler tab defs. */
     const ids = Object.keys(tabsRegistry);
+    ids.sort(function (a, b) {
+      const da = tabsRegistry[a];
+      const db = tabsRegistry[b];
+      const oa = (da && typeof da.order === 'number') ? da.order : Number.POSITIVE_INFINITY;
+      const ob = (db && typeof db.order === 'number') ? db.order : Number.POSITIVE_INFINITY;
+      if (oa !== ob) return oa - ob;
+      return 0;  /* preserve relative registration order */
+    });
     for (let i = 0; i < ids.length; i += 1) {
       const id = ids[i];
       const def = tabsRegistry[id];
@@ -324,10 +336,25 @@
         if (isActive) btn.classList.add('wbDockRailBtn--active');
         btn.title = String(def.title || id);
         btn.setAttribute('aria-label', String(def.title || id));
+        /* Apply per-tab accent color (native parity). The CSS uses
+         * the custom property --wb-dock-rail-color to paint a side
+         * bar / dot; falls back to a default tint if unset. */
+        if (typeof def.color === 'string' && def.color) {
+          try { btn.style.setProperty('--wb-dock-rail-color', def.color); }
+          catch (_) { /* ignore unsupported CSSOM */ }
+        }
+        /* Native rail shows a single-letter `txt` (H/B/N/A/V/C/P/F).
+         * Use that for compact rail labels; fall back to `icon` then
+         * to a derived initial. */
+        const label = (typeof def.txt === 'string' && def.txt)
+          ? def.txt
+          : (typeof def.icon === 'string' && def.icon)
+            ? def.icon
+            : (def.title ? String(def.title).charAt(0).toUpperCase() : id.charAt(0).toUpperCase());
         const ico = document.createElement('span');
         ico.className = 'wbDockRailBtnIcon';
         ico.setAttribute('aria-hidden', 'true');
-        ico.textContent = String(def.icon || (def.title ? def.title.charAt(0) : id.charAt(0)));
+        ico.textContent = label;
         btn.appendChild(ico);
         const handler = (function (tabId) {
           return function () { setView(tabId); };
@@ -362,12 +389,16 @@
       ? tabsRegistry[id]
       : null;
     if (!def || typeof def.render !== 'function') {
-      /* Empty-state placeholder — same text as the initial markup in
-       * studio.html so the behavior matches when no tab is active. */
+      /* Empty-state placeholder: prompt the user to pick a tab once
+       * the rail is populated. If no tabs are registered at all this
+       * effectively becomes a "no tabs available" hint; we keep the
+       * same wording in both cases for simplicity. */
       try {
         const empty = document.createElement('div');
         empty.className = 'wbDockEmpty';
-        empty.textContent = 'Dock tabs will appear in Phase 2B.';
+        empty.textContent = tabCount() > 0
+          ? 'Select a Dock tab.'
+          : 'Dock tabs will appear in Phase 2B.';
         dockRefs.view.appendChild(empty);
       } catch (e) { recordError('renderActiveView:empty', e); }
       return;

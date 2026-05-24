@@ -7235,3 +7235,92 @@ body[data-route="reader"] #studioDock.wbDock--open {
   background:linear-gradient(to right, transparent, var(--wb-border) 20%, var(--wb-border) 80%, transparent);
   pointer-events:none;
 }
+
+/* ─── Phase 2c-B — Collapse + Table of contents ──────────────────────────
+   The applier walks `[data-turn]` siblings and adds
+   `.is-in-collapsed-section` to every turn that belongs to a collapsed
+   section. The class hides the turn via `display:none` — no reparenting,
+   no DOM mutation of captured turn content. Section headers stay visible
+   regardless of collapse state.
+
+   The TOC is a `<nav class="wbOverlayToc">` injected at the top of the
+   turns container when `toc.position === 'top'`. Click handlers on
+   `.wbOverlayTocLink` scroll the matching section header into view via
+   `scrollIntoView`; the JS path honours `prefers-reduced-motion`. */
+
+/* Hide turns inside a collapsed section. */
+.wbReader [data-turn].is-in-collapsed-section{
+  display:none;
+}
+
+/* Visual hint on a collapsed section header — softer accent + reduced
+   opacity. Title stays fully legible. */
+.wbReader .wbOverlaySectionHeader[data-overlay-section-collapsed="true"]{
+  border-left-color:var(--wb-text-soft);
+  background:var(--wb-surface-soft);
+  opacity:.88;
+}
+
+/* TOC container at top of the reader. */
+.wbReader .wbOverlayToc{
+  margin:0 0 20px;
+  padding:14px 16px;
+  border:1px solid var(--wb-border);
+  border-radius:8px;
+  background:var(--wb-surface-soft);
+  color:var(--wb-text);
+  scroll-margin-top:12px;
+}
+
+.wbReader .wbOverlayTocHeading{
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--wb-text-soft);
+  margin:0 0 10px;
+}
+
+.wbReader .wbOverlayTocList{
+  list-style:decimal inside;
+  margin:0;
+  padding:0;
+  font-size:13.5px;
+  line-height:1.55;
+}
+
+.wbReader .wbOverlayTocItem{
+  margin:2px 0;
+  padding-left:4px;
+}
+
+/* TOC link is a <button> (not <a href>) so it never adds a stale hash to
+   location.hash — Studio uses hash routing and a TOC anchor would route. */
+.wbReader .wbOverlayTocLink{
+  appearance:none;
+  -webkit-appearance:none;
+  background:transparent;
+  border:0;
+  padding:2px 6px;
+  margin-left:-6px;
+  border-radius:4px;
+  color:var(--wb-text);
+  font:inherit;
+  text-align:left;
+  cursor:pointer;
+  text-decoration:underline;
+  text-decoration-color:rgba(122,182,255,.35);
+  text-underline-offset:3px;
+  transition:background-color 120ms ease, text-decoration-color 120ms ease;
+}
+.wbReader .wbOverlayTocLink:hover{
+  background:var(--wb-surface-hover);
+  text-decoration-color:var(--wb-focus);
+}
+.wbReader .wbOverlayTocLink:focus-visible{
+  outline:2px solid var(--wb-focus);
+  outline-offset:2px;
+}
+
+/* Reduced-motion: the JS scroll handler picks behavior:'auto' when the
+   user prefers reduced motion, so no extra CSS rule is needed here. */

@@ -6,6 +6,9 @@
  * Navigator data, does NOT scroll the reader, and does NOT touch
  * pin/alias/collapse state. No DOM-derived outline is generated.
  *
+ * Visual metadata mirrors src-runtime-base/3A1a.…Dock Panel.js:219
+ * (DPANEL_RAIL_ITEMS[4]).
+ *
  * Real Navigator rendering lands in Phase 2C, against
  * H2O.Studio.store.navigator (read-only façade landed in Phase 1f).
  *
@@ -27,7 +30,9 @@
     id: 'navigator',
     title: 'Navigator',
     icon: '🧭',
+    txt: 'V',
     color: '#D47A38',
+    order: 50,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -35,11 +40,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Navigator';
+        const p = document.createElement('p');
         p.textContent = 'Read-only tab placeholder. Data rendering lands in Phase 2C.';
-        container.appendChild(p);
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });

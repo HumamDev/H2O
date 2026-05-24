@@ -393,13 +393,17 @@
        STUDIO_DOCK_PANEL_CONTRACT.md.
        Load after dock-shell + all feature stores so Phase 2C can wire
        data reads without reordering. -->
+  <!-- Loaded in native rail order (matches 3A1a.…Dock Panel.js:213-222
+       DPANEL_RAIL_ITEMS). Rail display order is enforced by the
+       shell's `order` sort, so script-tag order is purely cosmetic
+       — kept aligned here for readability. -->
   <script src="./dock/tabs/highlights.tab.studio.js"></script>
-  <script src="./dock/tabs/context.tab.studio.js"></script>
   <script src="./dock/tabs/bookmarks.tab.studio.js"></script>
   <script src="./dock/tabs/notes.tab.studio.js"></script>
-  <script src="./dock/tabs/navigator.tab.studio.js"></script>
-  <script src="./dock/tabs/capture.tab.studio.js"></script>
   <script src="./dock/tabs/attachments.tab.studio.js"></script>
+  <script src="./dock/tabs/navigator.tab.studio.js"></script>
+  <script src="./dock/tabs/context.tab.studio.js"></script>
+  <script src="./dock/tabs/capture.tab.studio.js"></script>
   <script src="./dock/tabs/finder.tab.studio.js"></script>
 
   <script src="./store/libraryIndex.js"></script>

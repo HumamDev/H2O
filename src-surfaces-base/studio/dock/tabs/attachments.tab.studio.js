@@ -1,7 +1,10 @@
-/* H2O Studio — Dock Tab Placeholder: Attachments (Phase 2B, optional)
+/* H2O Studio — Dock Tab Placeholder: Attachments (Phase 2B)
  *
  * Phase 2B placeholder. Registers a tab with H2O.Studio.dock under
  * the id 'attachments'. The render() function writes static text only.
+ *
+ * Visual metadata mirrors src-runtime-base/3A1a.…Dock Panel.js:218
+ * (DPANEL_RAIL_ITEMS[3]).
  *
  * Native Attachments has no engine — it is purely DOM-discovered from
  * the reader (images, file-cards). Studio's Phase 2C iteration will
@@ -27,7 +30,9 @@
     id: 'attachments',
     title: 'Attachments',
     icon: '📎',
+    txt: 'A',
     color: '#345E9E',
+    order: 40,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -35,11 +40,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
-        p.textContent = 'Read-only tab placeholder. Data rendering lands in Phase 2C.';
-        container.appendChild(p);
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Attachments';
+        const p = document.createElement('p');
+        p.textContent = 'Attachments are derived from the Studio reader DOM. DOM scanning lands later.';
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });

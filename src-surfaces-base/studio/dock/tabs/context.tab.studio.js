@@ -5,6 +5,9 @@
  * it does NOT read H2O.Studio.store.context, does NOT mutate any
  * Context data, and does NOT touch the native runtime.
  *
+ * Visual metadata mirrors src-runtime-base/3A1a.…Dock Panel.js:220
+ * (DPANEL_RAIL_ITEMS[5]).
+ *
  * Real Context rendering lands in Phase 2C, against
  * H2O.Studio.store.context (read-only façade landed in Phase 1c).
  *
@@ -26,7 +29,9 @@
     id: 'context',
     title: 'Context',
     icon: '🧠',
+    txt: 'C',
     color: '#6740A8',
+    order: 60,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -34,11 +39,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Context';
+        const p = document.createElement('p');
         p.textContent = 'Read-only tab placeholder. Data rendering lands in Phase 2C.';
-        container.appendChild(p);
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });

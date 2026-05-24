@@ -1,8 +1,11 @@
-/* H2O Studio — Dock Tab Placeholder: Capture (Phase 2B, inert in V1)
+/* H2O Studio — Dock Tab Placeholder: Capture Box (Phase 2B, inert in V1)
  *
  * Phase 2B placeholder for Capture. Registers a tab with
- * H2O.Studio.dock under the id 'capture'. The render() function
- * writes static text only.
+ * H2O.Studio.dock under the id 'capture' (the canonical Studio id).
+ * The native rail uses 'slot7' as the rail view-id pointing at the
+ * same Capture tab (src-runtime-base/3A1a.…Dock Panel.js:221); Studio
+ * routes directly via 'capture' and mirrors only the visible metadata
+ * (title, color, txt).
  *
  * Capture is INERT in Studio V1 per STUDIO_DOCK_PANEL_CONTRACT.md:
  *   - No live text selection (Studio reads snapshots, not live chat).
@@ -30,9 +33,11 @@
 
   dock.registerTab('capture', {
     id: 'capture',
-    title: 'Capture',
+    title: 'Capture Box',
     icon: '🧷',
+    txt: 'P',
     color: '#C05C95',
+    order: 70,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -40,11 +45,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Capture Box';
+        const p = document.createElement('p');
         p.textContent = 'Capture is read-only/inert in Studio V1. Live selection and conversion are not enabled.';
-        container.appendChild(p);
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });

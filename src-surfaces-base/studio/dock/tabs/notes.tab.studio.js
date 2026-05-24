@@ -6,6 +6,9 @@
  * data, does NOT touch editing or the body-version (Phase 3e)
  * conflict model, and does NOT touch the native runtime.
  *
+ * Visual metadata mirrors src-runtime-base/3A1a.…Dock Panel.js:217
+ * (DPANEL_RAIL_ITEMS[2]).
+ *
  * Real Notes rendering lands in Phase 2C, against
  * H2O.Studio.store.notes (read-only façade landed in Phase 1e).
  *
@@ -27,7 +30,9 @@
     id: 'notes',
     title: 'Notes',
     icon: '🗒️',
+    txt: 'N',
     color: '#A83A3A',
+    order: 30,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -35,11 +40,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Notes';
+        const p = document.createElement('p');
         p.textContent = 'Read-only tab placeholder. Data rendering lands in Phase 2C.';
-        container.appendChild(p);
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });

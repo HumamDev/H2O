@@ -1,11 +1,15 @@
-/* H2O Studio — Dock Tab Placeholder: Finder (Phase 2B, optional)
+/* H2O Studio — Dock Tab Placeholder: Finder (Phase 2B)
  *
  * Phase 2B placeholder. Registers a tab with H2O.Studio.dock under
- * the id 'finder'. The render() function writes static text only.
+ * the id 'finder' (the canonical Studio id). The native rail uses
+ * 'slot8' as the rail view-id pointing at the same Finder tab
+ * (src-runtime-base/3A1a.…Dock Panel.js:222); Studio routes directly
+ * via 'finder' and mirrors only the visible metadata (title, color,
+ * txt).
  *
  * Native Finder has no own engine — it composes Highlights /
  * Bookmarks / Notes reads into a single search list scoped to the
- * current chat. Studio's Phase 2C iteration may compose the existing
+ * current chat. Studio's Phase 2C+ iteration may compose the existing
  * read-only stores (highlights / bookmarks / notes) the same way.
  * Phase 2B does no composition, no search, no rendering of real data.
  *
@@ -27,7 +31,9 @@
     id: 'finder',
     title: 'Finder',
     icon: '🔎',
+    txt: 'F',
     color: '#3FA7D6',
+    order: 80,
     disabled: false,
     phase: '2b-placeholder',
     readonly: true,
@@ -35,11 +41,16 @@
       if (!container || typeof container.appendChild !== 'function') return;
       if (typeof document === 'undefined') return;
       try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-        const p = document.createElement('div');
-        p.className = 'wbDockPlaceholder';
-        p.textContent = 'Read-only tab placeholder. Data rendering lands in Phase 2C.';
-        container.appendChild(p);
+        container.textContent = '';
+        const box = document.createElement('div');
+        box.className = 'wbDockPlaceholder';
+        const h = document.createElement('strong');
+        h.textContent = 'Finder';
+        const p = document.createElement('p');
+        p.textContent = 'Finder search across Dock feature stores lands later.';
+        box.appendChild(h);
+        box.appendChild(p);
+        container.appendChild(box);
       } catch (_) { /* swallow */ }
     },
   });
