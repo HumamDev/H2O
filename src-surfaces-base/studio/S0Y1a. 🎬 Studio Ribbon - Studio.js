@@ -105,7 +105,7 @@
         ] },
         { id: 'rewrite', label: 'Rewrite', actions: [
           { id: 'rewrite-selection', label: 'Rewrite selected', tooltip: 'AI provider unavailable', phase: '3d-a' },
-          { id: 'study-notes',       label: 'Create study notes', tooltip: 'AI provider unavailable', phase: '3d-a' },
+          { id: 'study-notes',       label: 'Create study notes', tooltip: 'AI provider unavailable', phase: '3d-c2' },
         ] },
       ],
     },
@@ -274,6 +274,8 @@
   let aiSummaryActiveRequestId = null;
   let aiTaskRequestSeq = 0;
   let aiTaskActiveRequestId = null;
+  let aiStudyNotesRequestSeq = 0;
+  let aiStudyNotesActiveRequestId = null;
 
   function buildAiTranscriptInput(text, transcriptMeta, opts) {
     const options = (opts && typeof opts === 'object') ? opts : {};
@@ -414,6 +416,58 @@
     });
   }
 
+  function buildStudyNotesRequest(ctx, transcriptInput) {
+    const userPrompt = [
+      ...buildAiPromptPreamble(ctx, transcriptInput),
+      '',
+      'Create Markdown study notes from this chat transcript.',
+      'Do not invent facts.',
+      'Omit sections only if they are clearly not applicable.',
+      'Keep the main headings when possible.',
+      '',
+      'Return this structure:',
+      '## Study Notes',
+      '',
+      '### Overview',
+      '...',
+      '',
+      '### Key Concepts',
+      '...',
+      '',
+      '### Important Details',
+      '...',
+      '',
+      '### Definitions / Formulas',
+      '...',
+      '',
+      '### Examples',
+      '...',
+      '',
+      '### Review Questions',
+      '...',
+      '',
+      '### Study Checklist',
+      '- [ ] ...',
+      '',
+      'Transcript:',
+      transcriptInput.text,
+    ].join('\n');
+    const requestId = 'studio-ribbon-study-notes-' + Date.now().toString(36) + '-' + (++aiStudyNotesRequestSeq);
+    return Object.assign(buildAiRequestBase('study-notes', '3d-c2', transcriptInput, {
+      maxTokens: 1200,
+      temperature: 0.2,
+    }), {
+      requestId: requestId,
+      messages: [
+        {
+          role: 'system',
+          content: 'You create study notes from user-provided chat transcripts. Do not invent facts. Omit sections only if clearly not applicable, and keep the main headings when possible.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+  }
+
   function aiFailureReason(result) {
     if (!result || typeof result !== 'object') return 'unknown';
     return String(result.reason || result.error || result.message || 'unknown');
@@ -427,7 +481,7 @@
     if (typeof result === 'string') return result.trim();
     if (!result || typeof result !== 'object') return '';
     if (result.ok === false) return '';
-    const directFields = ['summary', 'tasks', 'text', 'content', 'outputText', 'output', 'message'];
+    const directFields = ['summary', 'tasks', 'notes', 'text', 'content', 'outputText', 'output', 'message'];
     for (let i = 0; i < directFields.length; i += 1) {
       const value = result[directFields[i]];
       if (typeof value === 'string' && value.trim()) return value.trim();
@@ -567,6 +621,14 @@
       copyStatus: 'Tasks copied',
       failPrefix: 'Task extraction failed',
       truncatedNote: 'Transcript truncated for task extraction',
+    });
+  }
+
+  function showStudyNotesModal(notesText, transcriptInput, setStatus) {
+    return showAiResultModal('Study Notes', notesText, transcriptInput, setStatus, {
+      copyStatus: 'Study notes copied',
+      failPrefix: 'Study notes failed',
+      truncatedNote: 'Transcript truncated for study notes',
     });
   }
 
@@ -1176,10 +1238,80 @@
       );
     },
   };
+  ACTION_HANDLERS['study-notes'] = {
+    isEnabled: aiTranscriptActionIsEnabled,
+    disabledTooltip: aiTranscriptDisabledTooltip,
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getCleanTranscript !== 'function') {
+        setStatus('Study notes failed: transcript bridge unavailable');
+        return;
+      }
+      const inference = getInference();
+      const status = getInferenceStatus();
+      if (!status.available || !inference || typeof inference.run !== 'function') {
+        setStatus('AI provider unavailable');
+        return;
+      }
+
+      removeAiResultModal();
+      setStatus('Preparing study notes...');
+      Promise.resolve(bridge.getCleanTranscript({ includeOverlay: true })).then(
+        function (transcriptResult) {
+          const safe = (transcriptResult && typeof transcriptResult === 'object')
+            ? transcriptResult
+            : { text: '', overlayIncluded: false, overlaySkipped: false };
+          const transcriptInput = buildAiTranscriptInput(safe.text, safe);
+          if (!transcriptInput.text.trim()) {
+            setStatus('No transcript content');
+            return;
+          }
+          const request = buildStudyNotesRequest(ctx, transcriptInput);
+          aiStudyNotesActiveRequestId = request.requestId;
+          setStatus('Creating study notes...');
+          Promise.resolve(inference.run(request)).then(
+            function (result) {
+              if (aiStudyNotesActiveRequestId !== request.requestId) return;
+              if (result && typeof result === 'object' && result.ok === false) {
+                removeAiResultModal();
+                setStatus('Study notes failed: ' + aiFailureReason(result));
+                return;
+              }
+              const notesText = extractAiResultText(result);
+              if (!notesText) {
+                removeAiResultModal();
+                setStatus('Study notes failed: empty-result');
+                return;
+              }
+              try {
+                if (showStudyNotesModal(notesText, transcriptInput, setStatus)) {
+                  setStatus('Study notes ready');
+                }
+              } catch (e) {
+                removeAiResultModal();
+                const msg = (e && (e.message || String(e))) || 'unknown error';
+                setStatus('Study notes failed: ' + msg);
+              }
+            },
+            function (err) {
+              if (aiStudyNotesActiveRequestId !== request.requestId) return;
+              removeAiResultModal();
+              const msg = (err && (err.message || String(err))) || 'unknown error';
+              setStatus('Study notes failed: ' + msg);
+            }
+          );
+        },
+        function (err) {
+          removeAiResultModal();
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Study notes failed: ' + msg);
+        }
+      );
+    },
+  };
   [
     'generate-tags',
     'rewrite-selection',
-    'study-notes',
   ].forEach(function (actionId) {
     ACTION_HANDLERS[actionId] = makePassiveAiHandler(actionId);
   });
