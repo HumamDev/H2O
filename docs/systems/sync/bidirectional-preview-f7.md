@@ -274,6 +274,81 @@ identity are never returned. The F6 conflict store allowlists
 `bidirectional-folder-preview` as a candidate source for manual dry-run
 validation, but F7.2 never calls F6 ingestion.
 
+### F7.3 Manual F6 Handoff Protocol
+
+F7.3 is an explicit manual handoff protocol only. It bridges F7 preview
+candidates to the existing F6 manual conflict queue ingestion API without
+adding helper methods, automatic queueing, runner-triggered ingestion, merge,
+apply, write-back, or sync behavior changes.
+
+The operator must explicitly run the F6 dry-run first, then explicitly run the
+real F6 manual ingest only after reviewing the dry-run result:
+
+```js
+const preview = H2O.Studio.diagnostics.previewBidirectionalFolderMetadata({
+  localFolders,
+  remoteFolders,
+  options: {
+    includeConflictCandidates: true,
+    conflictCandidateLimit: 5
+  }
+});
+
+const candidate = preview.conflictCandidates.candidates[0];
+
+await H2O.Studio.store.conflicts.ingestConflictCandidates([candidate], {
+  source: "manual-devtools",
+  reason: "manual F7 preview handoff to F6 queue",
+  dryRun: true
+});
+
+await H2O.Studio.store.conflicts.ingestConflictCandidates([candidate], {
+  source: "manual-devtools",
+  reason: "manual F7 preview handoff to F6 queue",
+  dryRun: false
+});
+```
+
+Handoff candidate requirements:
+
+- The candidate must come from F7.2 preview output.
+- The candidate must use schema `h2o.studio.sync-conflict-candidate.v1`.
+- The candidate must use source `bidirectional-folder-preview`.
+- The candidate must include an actual safe `dedupeKeyHash`.
+- The candidate must represent non-delete `folder.metadata` evidence.
+- The candidate must pass F6 dry-run before real ingest.
+- The candidate must not contain raw folder IDs, names, parent IDs, raw hashes,
+  raw metadata, peer IDs, JSON blobs, titles, hrefs, or content.
+
+Batch policy:
+
+- Default manual selection is one candidate.
+- Documentation examples should use at most five candidates.
+- Operators should manually hand off no more than ten candidates at once.
+- Do not add "ingest all candidates" examples or helpers.
+
+F5/F6 boundary:
+
+- F5 owns delete, tombstone, and delete-vs-edit evidence.
+- F7.3 must not hand F5-owned delete evidence into F6.
+- F6 owns durable non-delete conflict queue rows and decisions.
+- F7.3 documents manual submission only; it does not create a new queue owner.
+
+Rejected helper design:
+
+```js
+H2O.Studio.diagnostics.enqueuePreviewCandidates(...)
+```
+
+This helper is rejected for F7.3 because it hides the manual F6 ingestion
+boundary, increases auto-ingest risk, and can pollute the conflict queue with
+preview noise.
+
+A future `prepareBidirectionalConflictHandoff(...)` helper may be considered
+only if it selects candidates, validates shape, returns selected candidates
+only, does not ingest, does not call F6 store writes, and does not mutate local
+or remote state.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
