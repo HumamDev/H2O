@@ -120,6 +120,8 @@
     lastFolderMetadataRequestId: '',
     lastFolderMetadataRequestMode: '',
     lastFolderMetadataRequestStatus: '',
+    lastFolderMetadataRequestEnvelope: null,
+    folderMetadataTimeoutCount: 0,
     lastFolderMetadataResultAt: 0,
     lastFolderMetadataResultId: '',
     lastFolderMetadataResultStatus: '',
@@ -793,6 +795,16 @@
     state.lastFolderMetadataRequestId = requestId;
     state.lastFolderMetadataRequestMode = mode;
     state.lastFolderMetadataRequestStatus = waitForResult ? 'pending' : 'sent';
+    state.lastFolderMetadataRequestEnvelope = {
+      requestId,
+      requestMode: mode,
+      operationType: String(op.operationType || ''),
+      folderId: String(op.folderId || ''),
+      reason,
+      timeoutMs,
+      waitForResult,
+      payloadKeys: Object.keys(payload),
+    };
 
     if (!waitForResult) {
       const sent = broadcastFromStudio(reason, payload);
@@ -804,14 +816,30 @@
 
     return new Promise((resolve) => {
       const timer = W.setTimeout(() => {
-        const timeoutResult = folderMetadataResultBase(requestId, mode, op, 'native-owner-timeout');
-        state.pendingFolderMetadataRequests.delete(requestId);
-        state.lastFolderMetadataRequestStatus = 'timeout';
-        state.lastFolderMetadataResultAt = Date.now();
-        state.lastFolderMetadataResultId = requestId;
-        state.lastFolderMetadataResultStatus = 'timeout';
-        state.lastFolderMetadataResultBlockers = ['native-owner-timeout'];
-        resolve(timeoutResult);
+        try {
+          refreshNativeBroadcast('folder-metadata-timeout-check').finally(() => {
+            if (!state.pendingFolderMetadataRequests.has(requestId)) return;
+            const timeoutResult = folderMetadataResultBase(requestId, mode, op, 'native-owner-timeout');
+            state.pendingFolderMetadataRequests.delete(requestId);
+            state.lastFolderMetadataRequestStatus = 'timeout';
+            state.folderMetadataTimeoutCount += 1;
+            state.lastFolderMetadataResultAt = Date.now();
+            state.lastFolderMetadataResultId = requestId;
+            state.lastFolderMetadataResultStatus = 'timeout';
+            state.lastFolderMetadataResultBlockers = ['native-owner-timeout'];
+            resolve(timeoutResult);
+          });
+        } catch {
+          const timeoutResult = folderMetadataResultBase(requestId, mode, op, 'native-owner-timeout');
+          state.pendingFolderMetadataRequests.delete(requestId);
+          state.lastFolderMetadataRequestStatus = 'timeout';
+          state.folderMetadataTimeoutCount += 1;
+          state.lastFolderMetadataResultAt = Date.now();
+          state.lastFolderMetadataResultId = requestId;
+          state.lastFolderMetadataResultStatus = 'timeout';
+          state.lastFolderMetadataResultBlockers = ['native-owner-timeout'];
+          resolve(timeoutResult);
+        }
       }, timeoutMs);
       state.pendingFolderMetadataRequests.set(requestId, { resolve, timer, operation: op, mode, createdAt: Date.now() });
       const sent = broadcastFromStudio(reason, payload);
@@ -837,6 +865,8 @@
         lastRequestId: state.lastFolderMetadataRequestId,
         lastRequestMode: state.lastFolderMetadataRequestMode,
         lastRequestStatus: state.lastFolderMetadataRequestStatus,
+        lastRequestEnvelope: state.lastFolderMetadataRequestEnvelope ? { ...state.lastFolderMetadataRequestEnvelope } : null,
+        timeoutCount: state.folderMetadataTimeoutCount,
         lastResultAt: state.lastFolderMetadataResultAt,
         lastResultId: state.lastFolderMetadataResultId,
         lastResultStatus: state.lastFolderMetadataResultStatus,

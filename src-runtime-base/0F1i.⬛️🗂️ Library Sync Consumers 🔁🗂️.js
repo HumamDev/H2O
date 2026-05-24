@@ -229,6 +229,13 @@
   }
 
   function handleFolderMetadataOperationRequests(detail) {
+    if (detail?.folderMetadataOperationRequestsHandled === true) {
+      state.lastFolderMetadataRequestIds = Array.isArray(detail.folderMetadataOperationRequestIds)
+        ? detail.folderMetadataOperationRequestIds.map((value) => String(value || '').trim()).filter(Boolean).slice(-8)
+        : [];
+      step('folderMetadata.requests.skip', 'handled-by-native-sync');
+      return [];
+    }
     const requests = folderMetadataRequestsFromDetail(detail);
     if (!requests.length) return [];
     state.folderMetadataRequestsSeen += requests.length;

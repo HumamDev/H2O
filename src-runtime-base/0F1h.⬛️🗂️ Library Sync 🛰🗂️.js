@@ -45,8 +45,12 @@
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
   const COALESCE_MS = 350;
   const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const FOLDER_METADATA_OPERATION_REQUEST_SCHEMA = 'h2o.folder-metadata-operation-request.v1';
+  const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_OPERATION_RESULT_MAX = 8;
+  const FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS = 30000;
+  const FOLDER_METADATA_REQUEST_MODES = new Set(['preview', 'apply']);
 
   // Native Library state-change events the module fans into the outbound
   // broadcast. New events can be added without code changes elsewhere — Studio
@@ -124,9 +128,14 @@
     lastFolderCatalogNamesSample: [],
     lastFolderCatalogChecksum: '',
     pendingFolderMetadataOperationResults: [],
+    recentFolderMetadataOperationResults: [],
     lastFolderMetadataOperationResultAt: 0,
     lastFolderMetadataOperationResultCount: 0,
     lastFolderMetadataOperationResultRequestIds: [],
+    lastFolderMetadataOperationRequestAt: 0,
+    lastFolderMetadataOperationRequestCount: 0,
+    lastFolderMetadataOperationRequestIds: [],
+    handledFolderMetadataOperationRequestIds: new Set(),
     folderBridgeReadyBroadcasted: false,
     lastFolderBridgeReadyBroadcastAt: 0,
     lastFolderBridgeReadyBroadcastReason: '',
@@ -151,11 +160,14 @@
 
   // ── Inbound: Studio → native ───────────────────────────────────────────────
   function emitSyncEvent(reason, payload) {
+    const handledFolderMetadataOperationRequests = handleFolderMetadataOperationRequests(payload);
     const detail = {
       reason: String(reason || ''),
       payload: payload || null,
       t: Date.now(),
       surface: 'native',
+      folderMetadataOperationRequestsHandled: handledFolderMetadataOperationRequests.length > 0,
+      folderMetadataOperationRequestIds: handledFolderMetadataOperationRequests,
     };
     try {
       const p = payload && typeof payload === 'object' ? payload : null;
@@ -171,6 +183,142 @@
     state.subscribers.forEach((fn) => { try { fn(detail); } catch (e) { err('subscriber', e); } });
     state.lastInbound = Date.now();
     step('inbound', String(reason || ''));
+  }
+
+  function addCode(list, code) {
+    const normalized = String(code || '').trim();
+    if (!normalized) return;
+    if (!list.some((entry) => entry && entry.code === normalized)) list.push({ code: normalized });
+  }
+
+  function folderMetadataResultBase(request, code = '') {
+    const req = request && typeof request === 'object' ? request : {};
+    const op = req.operation && typeof req.operation === 'object' ? req.operation : {};
+    const result = {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(req.requestId || '').trim(),
+      requestMode: String(req.requestMode || '').trim(),
+      ok: false,
+      applied: false,
+      noMutation: true,
+      operationType: String(op.operationType || '').trim(),
+      folderId: String(op.folderId || '').trim(),
+      before: null,
+      after: null,
+      blockers: [],
+      warnings: [],
+    };
+    addCode(result.blockers, code);
+    return result;
+  }
+
+  function wrapFolderMetadataPreviewResult(request, preview) {
+    const src = preview && typeof preview === 'object' ? preview : {};
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(request?.requestId || '').trim(),
+      requestMode: String(request?.requestMode || 'preview').trim() || 'preview',
+      ok: Array.isArray(src.blockers) ? src.blockers.length === 0 : false,
+      applied: false,
+      noMutation: true,
+      readOnly: src.readOnly === true,
+      canApply: src.canApply === true,
+      operationType: String(src.operationType || request?.operation?.operationType || '').trim(),
+      folderId: String(src.folderId || request?.operation?.folderId || '').trim(),
+      before: src.before && typeof src.before === 'object' ? src.before : null,
+      after: Object.prototype.hasOwnProperty.call(src, 'after') ? src.after : null,
+      blockers: Array.isArray(src.blockers) ? src.blockers.slice(0, 12) : [],
+      warnings: Array.isArray(src.warnings) ? src.warnings.slice(0, 12) : [],
+    };
+  }
+
+  function wrapFolderMetadataApplyResult(request, applied) {
+    const src = applied && typeof applied === 'object' ? applied : {};
+    return {
+      schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+      requestId: String(request?.requestId || '').trim(),
+      requestMode: String(request?.requestMode || 'apply').trim() || 'apply',
+      ok: src.ok === true,
+      applied: src.applied === true,
+      noMutation: src.noMutation !== false,
+      operationType: String(src.operationType || request?.operation?.operationType || '').trim(),
+      folderId: String(src.folderId || request?.operation?.folderId || '').trim(),
+      before: src.before && typeof src.before === 'object' ? src.before : null,
+      after: Object.prototype.hasOwnProperty.call(src, 'after') ? src.after : null,
+      blockers: Array.isArray(src.blockers) ? src.blockers.slice(0, 12) : [],
+      warnings: Array.isArray(src.warnings) ? src.warnings.slice(0, 12) : [],
+    };
+  }
+
+  function executeFolderMetadataOperationRequest(request) {
+    const req = request && typeof request === 'object' ? request : {};
+    let result = null;
+    try {
+      const mode = String(req.requestMode || '').trim();
+      const operation = req.operation && typeof req.operation === 'object' ? req.operation : null;
+      if (req.schema !== FOLDER_METADATA_OPERATION_REQUEST_SCHEMA) {
+        result = folderMetadataResultBase(req, 'invalid-request-schema');
+      } else if (!FOLDER_METADATA_REQUEST_MODES.has(mode)) {
+        result = folderMetadataResultBase(req, 'invalid-request-mode');
+      } else if (!operation || operation.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+        result = folderMetadataResultBase(req, 'invalid-folder-metadata-operation');
+      } else if (!H2O.folders || typeof H2O.folders.previewMetadataOperation !== 'function') {
+        result = folderMetadataResultBase(req, 'native-folder-owner-api-unavailable');
+      } else if (mode === 'preview') {
+        result = wrapFolderMetadataPreviewResult(req, H2O.folders.previewMetadataOperation(operation));
+      } else if (mode === 'apply') {
+        if (typeof H2O.folders.applyMetadataOperation !== 'function') {
+          result = folderMetadataResultBase(req, 'native-folder-owner-api-unavailable');
+        } else {
+          result = wrapFolderMetadataApplyResult(req, H2O.folders.applyMetadataOperation(operation));
+        }
+      }
+    } catch (e) {
+      result = folderMetadataResultBase(req, 'native-folder-owner-error');
+      result.error = String(e?.message || e || 'native-folder-owner-error');
+      err('folderMetadata.request.execute', e);
+    }
+    if (!result) result = folderMetadataResultBase(req, 'invalid-folder-metadata-operation');
+    queueFolderMetadataOperationResult(result);
+    return result;
+  }
+
+  function folderMetadataRequestsFromPayload(payload) {
+    const body = payload && typeof payload === 'object' ? payload : null;
+    const nested = body?.payload && typeof body.payload === 'object' ? body.payload : null;
+    const sources = [
+      body?.folderMetadataOperationRequests,
+      nested?.folderMetadataOperationRequests,
+    ];
+    const out = [];
+    for (const value of sources) {
+      if (Array.isArray(value)) out.push(...value);
+      else if (value && typeof value === 'object') out.push(value);
+    }
+    return out.filter(Boolean).slice(0, 8);
+  }
+
+  function handleFolderMetadataOperationRequests(payload) {
+    const requests = folderMetadataRequestsFromPayload(payload);
+    if (!requests.length) return [];
+    const handledIds = [];
+    for (const request of requests) {
+      const id = String(request?.requestId || '').trim();
+      if (!id || state.handledFolderMetadataOperationRequestIds.has(id)) continue;
+      state.handledFolderMetadataOperationRequestIds.add(id);
+      handledIds.push(id);
+      executeFolderMetadataOperationRequest(request);
+    }
+    if (state.handledFolderMetadataOperationRequestIds.size > 64) {
+      state.handledFolderMetadataOperationRequestIds = new Set(Array.from(state.handledFolderMetadataOperationRequestIds).slice(-32));
+    }
+    if (handledIds.length) {
+      state.lastFolderMetadataOperationRequestAt = Date.now();
+      state.lastFolderMetadataOperationRequestCount += handledIds.length;
+      state.lastFolderMetadataOperationRequestIds = handledIds.slice(-FOLDER_METADATA_OPERATION_RESULT_MAX);
+      step('folder-metadata.requests', String(handledIds.length));
+    }
+    return handledIds;
   }
 
   function bindStorage() {
@@ -587,6 +735,10 @@
     const normalized = normalizeFolderMetadataOperationResult(result);
     if (!normalized.requestId) normalized.blockers.push({ code: 'missing-request-id' });
     state.pendingFolderMetadataOperationResults.push(normalized);
+    state.recentFolderMetadataOperationResults.push({ ...normalized, replayUntil: Date.now() + FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS });
+    if (state.recentFolderMetadataOperationResults.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
+      state.recentFolderMetadataOperationResults.splice(0, state.recentFolderMetadataOperationResults.length - FOLDER_METADATA_OPERATION_RESULT_MAX);
+    }
     if (state.pendingFolderMetadataOperationResults.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
       state.pendingFolderMetadataOperationResults.splice(0, state.pendingFolderMetadataOperationResults.length - FOLDER_METADATA_OPERATION_RESULT_MAX);
     }
@@ -604,7 +756,18 @@
   function broadcastNow() {
     const reasons = Array.from(state.pendingReasons);
     state.pendingReasons.clear();
-    const folderMetadataOperationResults = state.pendingFolderMetadataOperationResults.splice(0, FOLDER_METADATA_OPERATION_RESULT_MAX);
+    const now = Date.now();
+    state.recentFolderMetadataOperationResults = state.recentFolderMetadataOperationResults.filter((item) => Number(item?.replayUntil || 0) > now);
+    const folderMetadataResultMap = new Map();
+    state.recentFolderMetadataOperationResults.forEach((item) => {
+      const clean = { ...item };
+      delete clean.replayUntil;
+      if (clean.requestId) folderMetadataResultMap.set(clean.requestId, clean);
+    });
+    state.pendingFolderMetadataOperationResults.splice(0, FOLDER_METADATA_OPERATION_RESULT_MAX).forEach((item) => {
+      if (item.requestId) folderMetadataResultMap.set(item.requestId, item);
+    });
+    const folderMetadataOperationResults = Array.from(folderMetadataResultMap.values()).slice(-FOLDER_METADATA_OPERATION_RESULT_MAX);
     const body = {
       ts: Date.now(),
       surface: 'native',
@@ -785,12 +948,19 @@
             bridgeReadyBroadcastReason: state.lastFolderBridgeReadyBroadcastReason,
           },
           folderMetadataOperations: {
+            requestSchema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
+            operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,
             resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+            requestsHandledAt: state.lastFolderMetadataOperationRequestAt,
+            requestsHandledCount: state.lastFolderMetadataOperationRequestCount,
+            lastHandledRequestIds: state.lastFolderMetadataOperationRequestIds.slice(),
             pendingResultCount: state.pendingFolderMetadataOperationResults.length,
+            recentResultCount: state.recentFolderMetadataOperationResults.length,
             lastResultAt: state.lastFolderMetadataOperationResultAt,
             lastResultCount: state.lastFolderMetadataOperationResultCount,
             lastRequestIds: state.lastFolderMetadataOperationResultRequestIds.slice(),
             maxResultsPerBroadcast: FOLDER_METADATA_OPERATION_RESULT_MAX,
+            replayMs: FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS,
           },
         },
         subscribers: state.subscribers.size,
