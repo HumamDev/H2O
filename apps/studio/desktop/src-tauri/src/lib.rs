@@ -35,6 +35,10 @@ pub mod sync_conflict_ingest;
 // metadata; no merge/apply/entity mutation behavior lives here.
 pub mod sync_conflict_decision;
 
+// F7.4.2b — exact-gated real DB rollback proof for future folder.metadata
+// color apply. Always rolls back and verifies unchanged state; no apply path.
+pub mod folder_metadata_apply_rollback_proof;
+
 // F7.4.2a — in-memory folder.metadata color apply transaction proof.
 // Test-only: no Tauri command, no JS surface, no production DB access.
 #[cfg(test)]
@@ -1761,6 +1765,54 @@ async fn mark_sync_conflict_decision(
     Ok(sync_conflict_decision::run_decision(&mut conn, payload, nowish_iso()).await)
 }
 
+#[tauri::command]
+async fn prove_folder_metadata_color_apply_rollback(
+    db_instances: State<'_, DbInstances>,
+    payload: folder_metadata_apply_rollback_proof::FolderMetadataColorApplyRollbackProofPayload,
+) -> Result<folder_metadata_apply_rollback_proof::FolderMetadataColorApplyRollbackProofResult, String>
+{
+    let pool = {
+        let instances = db_instances.0.read().await;
+        let Some(db) = instances.get(F5G4_DB_URL) else {
+            return Ok(
+                folder_metadata_apply_rollback_proof::FolderMetadataColorApplyRollbackProofResult::blocked(
+                    "desktop-db-unavailable",
+                ),
+            );
+        };
+        match db {
+            DbPool::Sqlite(pool) => pool.clone(),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Ok(
+                    folder_metadata_apply_rollback_proof::FolderMetadataColorApplyRollbackProofResult::blocked(
+                        "desktop-db-unavailable",
+                    ),
+                );
+            }
+        }
+    };
+
+    let mut conn = match pool.acquire().await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(
+                folder_metadata_apply_rollback_proof::FolderMetadataColorApplyRollbackProofResult::blocked(
+                    "desktop-db-unavailable",
+                ),
+            );
+        }
+    };
+
+    Ok(folder_metadata_apply_rollback_proof::run_rollback_proof(
+        &mut conn,
+        payload,
+        nowish_iso(),
+        nowish_millis(),
+    )
+    .await)
+}
+
 #[cfg(debug_assertions)]
 #[tauri::command]
 async fn dev_seed_f5h_final_validation_synthetic_rows(
@@ -1861,6 +1913,13 @@ fn nowish_iso() -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
+fn nowish_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(debug_assertions)]
 macro_rules! h2o_studio_invoke_handler {
     () => {
@@ -1871,6 +1930,7 @@ macro_rules! h2o_studio_invoke_handler {
             cleanup_synthetic_commit,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
+            prove_folder_metadata_color_apply_rollback,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -1886,7 +1946,8 @@ macro_rules! h2o_studio_invoke_handler {
             preview_cleanup_synthetic_transactional,
             cleanup_synthetic_commit,
             ingest_conflict_candidates,
-            mark_sync_conflict_decision
+            mark_sync_conflict_decision,
+            prove_folder_metadata_color_apply_rollback
         ]
     };
 }

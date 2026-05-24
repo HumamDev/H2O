@@ -811,6 +811,85 @@ F7.4.2a proves:
 It does not authorize a real DB rollback proof or real apply. Those remain
 separate later phases.
 
+### F7.4.2b Real DB Folder Color Apply Rollback Proof
+
+F7.4.2b adds a narrow Rust/Tauri diagnostic command:
+
+```txt
+prove_folder_metadata_color_apply_rollback
+```
+
+The command runs the future local `folder.metadata.color` apply transaction
+shape against the loaded Desktop SQLite DB, then always rolls back and verifies
+that no folder or audit state persisted. It is a proof command, not an apply
+command.
+
+The command requires:
+
+- `dryRun: true`
+- exact gate:
+  `I_UNDERSTAND_THIS_RUNS_A_REAL_DB_ROLLBACK_PROOF_FOR_FOLDER_METADATA`
+- sensitive input `targetFolderId`
+- field `color` or `iconColor`
+- a planned target color value, either directly or from selected delta input
+- `expectedBaselineHash` from the F7.4.1 live check hash algorithm
+- non-empty `reason`
+- local sync peer identity
+- prior F7.4.1e plan proof showing `ok`, `applyable`, `dryRun`, and
+  `writesPerformed: 0`
+
+The command does not expose a JavaScript wrapper or UI. It is available only as
+a Tauri diagnostic command and returns a redacted proof result.
+
+The transaction shape is:
+
+```txt
+BEGIN
+  insert redacted sync_maintenance_log row
+  read current folder row by sensitive target ID
+  verify normalized current folder hash equals expectedBaselineHash
+  map color/iconColor to folders.color
+  simulate UPDATE folders SET color = ?, updated_at = ?
+  verify affected row count == 1
+  update sync_maintenance_log.result_json with redacted proof flags
+ROLLBACK
+  re-read folder state
+  verify target folder hash unchanged
+  verify folder and audit row counts unchanged
+  verify the proof audit row did not persist
+```
+
+The audit row exists only inside the rolled-back transaction:
+
+- operation: `folder-metadata-color-apply-rollback-proof`
+- policy version: `h2o.studio.sync.folder-metadata-apply.v0`
+- `dry_run: 1`
+- redacted result JSON only
+
+The result reports schema, proof flags, field name, row-count booleans,
+`writesCommitted: 0`, blocker codes, and warnings. It must not return folder
+IDs, folder names, parent IDs, raw color/icon values, raw hashes, raw metadata,
+peer IDs, audit row IDs, conflict IDs, tombstone IDs, raw JSON, or content.
+
+F7.4.2b proves:
+
+- wrong gate blocks before a transaction
+- missing reason blocks before a transaction
+- non-allowlisted fields block before a transaction
+- stale baseline blocks and rolls back
+- missing folder blocks and rolls back
+- affected-row mismatch rolls back
+- audit insert and audit update failures roll back
+- folder state is unchanged after proof
+- audit row is not persisted
+- row counts are unchanged
+- no real apply API exists
+
+F7.4.2b does not call F5 mutation APIs, F6 mutation APIs, folder stores,
+Chrome storage, import/export/sync mutation paths, merge, apply, or write-back
+behavior. F5/F6 blockers remain preconditions from F7.4.1e; a future real
+apply phase must re-check F5/F6 immediately before or inside its transaction.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
