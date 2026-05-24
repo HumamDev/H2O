@@ -635,6 +635,27 @@ F6.4b is acceptable only if:
 - No merge, apply, resolve, delete, bidirectional sync, or public UI behavior
   is added.
 
+F6.5 is acceptable only if:
+
+- `H2O.Studio.store.conflicts` exposes manual decision-only methods:
+  `markIgnored`, `markRejected`, `markAcceptedLater`, and `markResolved`.
+- Decision actions update only `sync_conflicts.status`, `decision`,
+  `decided_at`, `decided_by_sync_peer_id`, and `updated_at`.
+- Every decision requires a non-empty audited reason and local sync peer
+  identity; unaudited decisions are blocked.
+- Allowed transitions are limited to `pending -> ignored | rejected |
+  accepted-later | resolved` and `accepted-later -> ignored | rejected |
+  resolved`.
+- Terminal statuses `ignored`, `rejected`, `resolved`, and `superseded` are not
+  reopened.
+- `resolved-*` decisions are labels only. They do not perform local-wins,
+  remote-wins, manual merge, apply, sync writeback, or entity mutation.
+- Results are redacted and do not expose raw conflict IDs, record IDs, peer IDs,
+  raw JSON, names, titles, prompts, answers, transcripts, or metadata.
+- No analyzer, runner, ingestion, import/export/sync, UI, Chrome, or F5 path
+  calls the decision APIs.
+- No merge, apply, delete, bidirectional sync, or public UI behavior is added.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -664,6 +685,7 @@ F6.4b is acceptable only if:
 
 ## 25. Recommendation
 
-The next implementation after F6.4b should remain conservative. F6.5 may add
-decision-only actions, but it must not merge, apply, delete, or start
-bidirectional sync. Do not touch FolderParity renderer work from the other lane.
+The next implementation after F6.5 should remain conservative. F6.6 may add
+`previewResolution()` diagnostics only, but it must not merge, apply, delete, or
+start bidirectional sync. Do not touch FolderParity renderer work from the other
+lane.

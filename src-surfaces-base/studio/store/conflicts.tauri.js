@@ -9,8 +9,9 @@
  * This module is intentionally conservative. It lists and diagnoses evidence
  * already present in SQLite. F6.4a adds manual candidate ingest validation as
  * dry-run only. F6.4b adds explicit manual ingestion through a narrow Rust
- * transaction command. There is still no automatic candidate ingestion, merge,
- * apply, resolve, delete, or analyzer/runner persistence.
+ * transaction command. F6.5 adds decision-only actions for existing conflict
+ * rows. There is still no automatic candidate ingestion, merge, apply, entity
+ * mutation, delete, or analyzer/runner persistence.
  */
 (function (global) {
   'use strict';
@@ -40,6 +41,7 @@
   var CONFLICT_CANDIDATE_SCHEMA = 'h2o.studio.sync-conflict-candidate.v1';
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.sync-conflict.diagnostic.v1';
   var INGEST_SCHEMA = 'h2o.studio.sync-conflict-ingest.v1';
+  var DECISION_SCHEMA = 'h2o.studio.sync-conflict-decision.v1';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 50;
@@ -106,6 +108,15 @@
     'manual-devtools': true,
     'test-harness': true,
     'multi-peer-diff-manual': true,
+  });
+  var RESOLVED_DECISIONS = Object.freeze({
+    'resolved-local-wins': true,
+    'resolved-remote-wins': true,
+    'resolved-manual-merge': true,
+    'resolved-no-action-needed': true,
+    'resolved-duplicate': true,
+    'resolved-owned-by-f5': true,
+    'blocked-unsupported': true,
   });
   var SUSPICIOUS_CANDIDATE_FIELDS = Object.freeze({
     rawjson: true,
@@ -933,9 +944,155 @@
     };
   }
 
+  function decisionFailure(code, conflictFound) {
+    return {
+      schema: DECISION_SCHEMA,
+      ok: false,
+      conflictFound: conflictFound === true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      status: null,
+      decision: null,
+      decidedAt: null,
+      decidedBySyncPeerIdPresent: false,
+      blockers: [warning(code || 'db-unavailable')],
+      warnings: [],
+    };
+  }
+
+  function validConflictId(value) {
+    var s = cleanString(value);
+    return !!s && s.length <= 256 && !/[\u0000-\u001f\u007f]/.test(s);
+  }
+
+  function validDecisionReason(value) {
+    var s = cleanString(value);
+    return s.length >= 6 && s.length <= 256 && !/[\u0000-\u001f\u007f]/.test(s);
+  }
+
+  function isAllowedDecision(status, decision) {
+    if (status === 'ignored') return decision === 'ignored-by-operator';
+    if (status === 'rejected') return decision === 'rejected-by-operator';
+    if (status === 'accepted-later') return decision === 'accepted-for-later-review';
+    if (status === 'resolved') return hasOwn(RESOLVED_DECISIONS, decision);
+    return false;
+  }
+
+  function readLocalSyncPeerIdForDecision() {
+    var identity = H2O && H2O.Studio && H2O.Studio.identity;
+    if (!identity || typeof identity.whenReady !== 'function') {
+      return Promise.reject(new Error('local identity unavailable for conflict decision audit'));
+    }
+    try {
+      return Promise.resolve(identity.whenReady()).then(function (value) {
+        var peerId = cleanString(value && value.syncPeerId);
+        if (!peerId || peerId.length > 256 || /[\u0000-\u001f\u007f]/.test(peerId)) {
+          throw new Error('local identity unavailable for conflict decision audit');
+        }
+        return peerId;
+      });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  function normalizeDecisionResult(result) {
+    if (!result || typeof result !== 'object' || result.schema !== DECISION_SCHEMA) {
+      return decisionFailure('db-unavailable', false);
+    }
+    return {
+      schema: DECISION_SCHEMA,
+      ok: result.ok === true,
+      conflictFound: result.conflictFound === true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      status: cleanString(result.status) || null,
+      decision: cleanString(result.decision) || null,
+      decidedAt: cleanString(result.decidedAt) || null,
+      decidedBySyncPeerIdPresent: result.decidedBySyncPeerIdPresent === true,
+      blockers: Array.isArray(result.blockers) ? result.blockers.map(function (b) {
+        return warning(b && b.code);
+      }) : [],
+      warnings: Array.isArray(result.warnings) ? result.warnings.map(function (w) {
+        return typeof w === 'string' ? warning(w) : warning(w && w.code);
+      }) : [],
+    };
+  }
+
+  function markConflictDecision(input) {
+    var opts = input || {};
+    var conflictId = cleanString(opts.conflictId);
+    var status = cleanString(opts.status);
+    var decision = cleanString(opts.decision);
+    var reason = cleanString(opts.reason);
+    if (!validConflictId(conflictId)) return Promise.resolve(decisionFailure('invalid-conflict-id', false));
+    if (!validDecisionReason(reason)) return Promise.resolve(decisionFailure('invalid-reason', false));
+    if (!isAllowedDecision(status, decision)) return Promise.resolve(decisionFailure('invalid-decision', false));
+    var invoke = getInvoke();
+    if (typeof invoke !== 'function' || !detectTauri()) {
+      return Promise.resolve(decisionFailure('db-unavailable', false));
+    }
+    return readLocalSyncPeerIdForDecision().catch(function (e) {
+      recordError('markConflictDecision:identity', e);
+      return '';
+    }).then(function (peerId) {
+      if (!peerId) {
+        return decisionFailure('identity-unavailable', false);
+      }
+      return invoke('mark_sync_conflict_decision', {
+        payload: {
+          conflictId: conflictId,
+          status: status,
+          decision: decision,
+          reason: reason,
+          decidedBySyncPeerId: peerId,
+        },
+      }).then(normalizeDecisionResult).catch(function (e) {
+        recordError('markConflictDecision:command', e);
+        return decisionFailure('db-unavailable', false);
+      });
+    });
+  }
+
+  function markIgnored(conflictId, reason) {
+    return markConflictDecision({
+      conflictId: conflictId,
+      status: 'ignored',
+      decision: 'ignored-by-operator',
+      reason: reason,
+    });
+  }
+
+  function markRejected(conflictId, reason) {
+    return markConflictDecision({
+      conflictId: conflictId,
+      status: 'rejected',
+      decision: 'rejected-by-operator',
+      reason: reason,
+    });
+  }
+
+  function markAcceptedLater(conflictId, reason) {
+    return markConflictDecision({
+      conflictId: conflictId,
+      status: 'accepted-later',
+      decision: 'accepted-for-later-review',
+      reason: reason,
+    });
+  }
+
+  function markResolved(conflictId, decision, reason) {
+    return markConflictDecision({
+      conflictId: conflictId,
+      status: 'resolved',
+      decision: decision,
+      reason: reason,
+    });
+  }
+
   var api = {
     __installed: true,
-    __version: '0.1.2-f6.4b',
+    __version: '0.1.3-f6.5',
     init: init,
     dispose: dispose,
     isReady: isReady,
@@ -947,11 +1104,16 @@
     countBySeverity: countBySeverity,
     validateConflict: validateConflict,
     ingestConflictCandidates: ingestConflictCandidates,
+    markIgnored: markIgnored,
+    markRejected: markRejected,
+    markAcceptedLater: markAcceptedLater,
+    markResolved: markResolved,
     constants: Object.freeze({
       schema: CONFLICT_SCHEMA,
       candidateSchema: CONFLICT_CANDIDATE_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       ingestSchema: INGEST_SCHEMA,
+      decisionSchema: DECISION_SCHEMA,
       table: TABLE,
       statuses: Object.freeze(Object.keys(STATUSES).slice()),
       severities: Object.freeze(Object.keys(SEVERITIES).slice()),
@@ -960,6 +1122,7 @@
       entityKinds: Object.freeze(Object.keys(ENTITY_KINDS).slice()),
       ingestSources: Object.freeze(Object.keys(INGEST_SOURCES).slice()),
       candidateSources: Object.freeze(Object.keys(CANDIDATE_SOURCES).slice()),
+      resolvedDecisions: Object.freeze(Object.keys(RESOLVED_DECISIONS).slice()),
       defaultListLimit: DEFAULT_LIST_LIMIT,
       maxListLimit: MAX_LIST_LIMIT,
     }),
