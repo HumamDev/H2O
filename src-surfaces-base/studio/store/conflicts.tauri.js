@@ -88,6 +88,7 @@
     'category-binding-divergence': true,
     'visual-metadata-divergence': true,
     'unsupported-merge-kind': true,
+    'local-comparison-unavailable': true,
     'delete-vs-edit-reference': true,
   });
   var ENTITY_KINDS = Object.freeze({
@@ -112,6 +113,7 @@
   var CANDIDATE_SOURCES = Object.freeze({
     'multi-peer-diff': true,
     'bidirectional-folder-preview': true,
+    'remote-apply-event-preview': true,
     'manual-devtools': true,
     'test-harness': true,
     'multi-peer-diff-manual': true,

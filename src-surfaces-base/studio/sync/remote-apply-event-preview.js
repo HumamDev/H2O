@@ -10,7 +10,9 @@
  *   - No F7 apply calls.
  *
  * This helper validates redacted syncApplyEvents evidence from an exported
- * bundle and returns counts only by default. It never applies a remote change.
+ * bundle and returns counts only by default. F8.3 can optionally return
+ * capped F6-shaped candidate evidence for target-handle blockers. It never
+ * applies a remote change or ingests candidates.
  */
 (function (global) {
   'use strict';
@@ -23,12 +25,21 @@
   var REPORT_SCHEMA = 'h2o.studio.sync.remote-apply-propagation-preview.v0';
   var APPLY_EVENTS_SCHEMA = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA = 'h2o.studio.sync.apply-event.v0';
+  var CONFLICT_CANDIDATE_SCHEMA = 'h2o.studio.sync-conflict-candidate.v1';
   var OPERATION = 'folder-metadata-color-apply';
   var ENTITY_KIND = 'folder.metadata';
+  var CONFLICT_ENTITY_KIND = 'folder';
   var POLICY_VERSION = 'h2o.studio.sync.folder-metadata-apply.v0';
+  var CANDIDATE_SOURCE = 'remote-apply-event-preview';
+  var CANDIDATE_CONFLICT_KIND = 'local-comparison-unavailable';
+  var CANDIDATE_CLASSIFICATION = 'local-comparison-unavailable';
+  var CANDIDATE_SEVERITY = 'info';
+  var TARGET_BLOCKER_CODE = 'target-handle-unavailable';
   var DEFAULT_SAMPLE_LIMIT = 20;
   var MAX_SAMPLE_LIMIT = 50;
-  var VERSION = '0.1.0-f8.2';
+  var DEFAULT_CONFLICT_CANDIDATE_LIMIT = 20;
+  var MAX_CONFLICT_CANDIDATE_LIMIT = 50;
+  var VERSION = '0.2.0-f8.3';
 
   var SENSITIVE_FIELD_NAMES = Object.freeze({
     folderid: true,
@@ -104,13 +115,26 @@
     var limit = Number(opts.eventSampleLimit);
     if (!Number.isFinite(limit) || limit < 0) limit = DEFAULT_SAMPLE_LIMIT;
     limit = Math.min(Math.floor(limit), MAX_SAMPLE_LIMIT);
+    var candidateLimit = Number(opts.conflictCandidateLimit);
+    if (!Number.isFinite(candidateLimit) || candidateLimit < 0) candidateLimit = DEFAULT_CONFLICT_CANDIDATE_LIMIT;
+    candidateLimit = Math.min(Math.floor(candidateLimit), MAX_CONFLICT_CANDIDATE_LIMIT);
     return {
       includeEventSamples: opts.includeEventSamples === true,
-      eventSampleLimit: limit
+      eventSampleLimit: limit,
+      includeConflictCandidates: opts.includeConflictCandidates === true,
+      conflictCandidateLimit: candidateLimit
     };
   }
 
   function makeReport(options) {
+    var conflictCandidates = {
+      total: 0,
+      byKind: {},
+      bySeverity: {},
+      byEntityKind: {}
+    };
+    if (options.includeConflictCandidates) conflictCandidates.candidates = [];
+
     var sourceApplyEvents = {
       available: false,
       total: 0,
@@ -135,11 +159,7 @@
         byEntityKind: {},
         byOperation: {}
       },
-      conflictCandidates: {
-        total: 0,
-        byKind: {},
-        bySeverity: {}
-      },
+      conflictCandidates: conflictCandidates,
       tombstoneReferences: {
         total: 0,
         deleteVsEditOwnedByF5: 0
@@ -158,6 +178,36 @@
 
   function eventDigestSafe(value) {
     return /^sha256:[a-f0-9]{64}$/i.test(cleanString(value));
+  }
+
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!isObject(value)) return value;
+    var out = {};
+    var keys = Object.keys(value).sort();
+    for (var i = 0; i < keys.length; i += 1) {
+      out[keys[i]] = canonicalize(value[keys[i]]);
+    }
+    return out;
+  }
+
+  function stableStringify(value) {
+    return JSON.stringify(canonicalize(value));
+  }
+
+  function hashString(value) {
+    var input = String(value || '');
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < input.length; i += 1) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function stableHash(value) {
+    var input = String(value || '');
+    return hashString('a:' + input) + hashString('b:' + input);
   }
 
   function findSensitiveField(value) {
@@ -233,8 +283,47 @@
   }
 
   function markTargetUnavailable(report) {
-    addCode(report.blockers, 'target-handle-unavailable');
+    addCode(report.blockers, TARGET_BLOCKER_CODE);
     addCode(report.warnings, 'target-resolution-not-implemented');
+  }
+
+  function makeDedupeKeyHash(event, blockerCode) {
+    return 'f8event:' + stableHash(stableStringify({
+      version: 'f8-remote-apply-event-conflict-v1',
+      eventDigest: cleanString(event && event.eventDigest),
+      operation: OPERATION,
+      entityKind: ENTITY_KIND,
+      fieldsUpdated: ['color'],
+      blockerCode: cleanString(blockerCode) || TARGET_BLOCKER_CODE
+    }));
+  }
+
+  function makeConflictCandidate(event, blockerCode) {
+    return {
+      schema: CONFLICT_CANDIDATE_SCHEMA,
+      conflictKind: CANDIDATE_CONFLICT_KIND,
+      entityKind: CONFLICT_ENTITY_KIND,
+      classification: CANDIDATE_CLASSIFICATION,
+      severity: CANDIDATE_SEVERITY,
+      source: CANDIDATE_SOURCE,
+      dedupeKeyHash: makeDedupeKeyHash(event, blockerCode),
+      localUpdatedAtPresent: false,
+      remoteUpdatedAtPresent: false,
+      localDigestPresent: false,
+      remoteDigestPresent: false,
+      warnings: [{ code: cleanString(blockerCode) || TARGET_BLOCKER_CODE }]
+    };
+  }
+
+  function addConflictCandidate(report, options, event, blockerCode) {
+    report.conflictCandidates.total += 1;
+    increment(report.conflictCandidates.byKind, CANDIDATE_CONFLICT_KIND);
+    increment(report.conflictCandidates.bySeverity, CANDIDATE_SEVERITY);
+    increment(report.conflictCandidates.byEntityKind, CONFLICT_ENTITY_KIND);
+    if (!options.includeConflictCandidates) return;
+    var candidates = report.conflictCandidates.candidates;
+    if (!Array.isArray(candidates) || candidates.length >= options.conflictCandidateLimit) return;
+    candidates.push(makeConflictCandidate(event, blockerCode));
   }
 
   function previewRemoteApplyEvents(input) {
@@ -304,6 +393,7 @@
       increment(report.proposedRemoteApplies.byEntityKind, ENTITY_KIND);
       increment(report.proposedRemoteApplies.byOperation, OPERATION);
       addSample(report, options, event, false);
+      addConflictCandidate(report, options, event, TARGET_BLOCKER_CODE);
       markTargetUnavailable(report);
     }
 

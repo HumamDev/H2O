@@ -167,6 +167,53 @@ with `target-handle-unavailable` / `target-resolution-not-implemented`.
 Default output is counts-only. Optional samples are capped, redacted, and do
 not include the actual `eventDigest`.
 
+## F8.3 Remote Apply-Event Conflict Candidates
+
+F8.3 extends the pure preview helper with optional F6-shaped conflict candidate
+evidence:
+
+```js
+H2O.Studio.diagnostics.previewRemoteApplyEvents({
+  bundle,
+  includeConflictCandidates: true,
+  conflictCandidateLimit: 20
+});
+```
+
+Candidate counts are always included. The redacted `candidates` array is
+returned only when `includeConflictCandidates === true`; the default cap is 20
+and the hard cap is 50.
+
+F8.3 generates candidate evidence only for valid, non-duplicate remote apply
+events blocked by missing target handles. It does not generate candidates for
+duplicate events, malformed events, unsupported fields or operations,
+sensitive-field-rejected events, or delete/tombstone/delete-vs-edit evidence.
+
+Candidate shape:
+
+```js
+{
+  schema: "h2o.studio.sync-conflict-candidate.v1",
+  conflictKind: "local-comparison-unavailable",
+  entityKind: "folder",
+  classification: "local-comparison-unavailable",
+  severity: "info",
+  source: "remote-apply-event-preview",
+  dedupeKeyHash: "...",
+  localUpdatedAtPresent: false,
+  remoteUpdatedAtPresent: false,
+  localDigestPresent: false,
+  remoteDigestPresent: false,
+  warnings: [{ code: "target-handle-unavailable" }]
+}
+```
+
+The `dedupeKeyHash` is computed from internal redacted evidence, including the
+source apply event digest, operation, entity kind, fields, and blocker code.
+The raw event digest and digest inputs are never returned. F8.3 does not call
+F6 ingestion, does not write `sync_conflicts`, does not resolve targets, and
+does not apply remote changes.
+
 ## Remote Receive Model
 
 When another peer sees an apply event, it must treat the event as evidence
