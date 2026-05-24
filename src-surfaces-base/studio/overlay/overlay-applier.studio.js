@@ -1,13 +1,36 @@
-/* H2O Studio — Edit Overlay Applier (Phase 2b)
+/* H2O Studio — Edit Overlay Applier (Phase 2d)
  *
- * Message-level formatting application. The applier:
+ * Message-level formatting application + structure pass + undo/redo
+ * via the reducer-filter active-set model.
+ *
+ * The applier:
  *   - Validates overlay shape and checks baseDigest drift (refuses to
  *     render on drift; emits drift-detected).
  *   - Reduces the overlay's op log into per-message visual state
- *     (heading / quote / code / callout / clean-spacing).
+ *     (heading / quote / code / callout / clean-spacing) — filtered
+ *     by the active op-id set computed from overlay.undoStack.
+ *   - Reduces the overlay's op log into structure state (sections,
+ *     dividers, TOC) — also filtered by the active set.
  *   - Applies state to turn elements in the reader DOM by setting
  *     `data-overlay-*` attributes; CSS rules in studio.css map those
  *     attributes to the soft dark visual style.
+ *
+ * Phase 2d — reducer-filter active-set undo/redo:
+ *   - overlay.ops is append-only history; entries are never deleted.
+ *   - overlay.undoStack is the ordered active op-id set; reducers iterate
+ *     overlay.ops in original order and skip any op whose id is not in
+ *     the active set. This preserves "last op of (type, target) wins".
+ *   - overlay.redoStack holds op ids that were undone and can be re-promoted.
+ *   - popUndo / popRedo are pure helpers that produce a new overlay with
+ *     the appropriate stack mutated; ops is left untouched.
+ *
+ * Migration rule (legacy overlays — Phase 2a/2b/2c records):
+ *   - If overlay.undoStack is missing OR is not an array, treat ALL ops
+ *     as active. This preserves visual continuity for any persisted
+ *     overlay created before Phase 2d started populating undoStack.
+ *   - If overlay.undoStack exists as an array, respect it EXACTLY —
+ *     even when empty. An empty array means "undo everything", and the
+ *     reducers must render no ops in that case.
  *
  * Strict invariants (do not relax):
  *   - NEVER mutates snapshot.messages or the captured snapshot file.
@@ -19,7 +42,11 @@
  *
  * Pure helpers (no DOM, no I/O) also exported:
  *   appendOp(overlay, opSpec) -> overlay'
+ *   popUndo(overlay) -> overlay' | null
+ *   popRedo(overlay) -> overlay' | null
+ *   getActiveOpIdSet(overlay) -> { [opId]: true } | null  (null = all-active legacy)
  *   computeMessageState(overlay, turnIdx) -> { heading, quote, code, callout, cleanSpacing }
+ *   computeStructureState(overlay) -> { sections, dividers, toc }
  */
 (function (global) {
   'use strict';
@@ -31,8 +58,8 @@
     return;
   }
 
-  var VERSION = '0.1.0-phase-2c-b';
-  var PHASE = '2c-b';
+  var VERSION = '0.1.0-phase-2d';
+  var PHASE = '2d';
   var OverlayKeys = H2O.Studio.OverlayKeys || { schemaVersion: 1 };
   var OverlayEvents = H2O.Studio.OverlayEvents || {
     ready: 'evt:h2o:studio:overlay:ready',
@@ -196,6 +223,83 @@
     });
   }
 
+  /* ── Phase 2d — undo/redo via reducer-filter active-set ──────────────
+   *
+   * Migration rule (critical):
+   *   - undoStack missing OR not an array  → ALL ops active (legacy 2a/2b/2c).
+   *   - undoStack is an array (even empty) → respect it EXACTLY.
+   *     An empty array means "undo everything"; renderers MUST show no ops.
+   *
+   * Return shape:
+   *   - null     → legacy all-active sentinel; callers treat every op as active.
+   *   - object   → { [opId]: true } lookup; callers consult by id.
+   *
+   * The plain-object lookup (vs Set) keeps this helper synchronously safe
+   * to call from per-turn hot paths without churn. */
+  function getActiveOpIdSet(overlay) {
+    if (!isObject(overlay)) return null;
+    if (!Array.isArray(overlay.undoStack)) return null;
+    var set = Object.create(null);
+    for (var i = 0; i < overlay.undoStack.length; i += 1) {
+      var id = overlay.undoStack[i];
+      if (id == null) continue;
+      set[String(id)] = true;
+    }
+    return set;
+  }
+
+  /* Returns true when `opId` is currently active given an active-set
+   * computed by getActiveOpIdSet. A null active-set means "all active"
+   * (legacy migration). Tolerates missing ids. */
+  function isOpActive(active, opId) {
+    if (active === null) return true;
+    if (opId == null) return false;
+    return !!active[String(opId)];
+  }
+
+  /* Pop the most-recently-active op id off undoStack and push it onto
+   * redoStack. Returns a new overlay record (never mutates input). The
+   * ops array is left untouched — undo is purely a stack manipulation
+   * in the reducer-filter model.
+   *
+   * Returns null when:
+   *   - overlay is not an object
+   *   - undoStack is missing / not an array / empty
+   * Callers treat null as "no-undo" and surface a status string. */
+  function popUndo(overlay) {
+    if (!isObject(overlay)) return null;
+    if (!Array.isArray(overlay.undoStack) || overlay.undoStack.length === 0) return null;
+    var undo = overlay.undoStack.slice();
+    var redo = Array.isArray(overlay.redoStack) ? overlay.redoStack.slice() : [];
+    var moved = undo.pop();
+    redo.push(moved);
+    var ops = Array.isArray(overlay.ops) ? overlay.ops.slice() : [];
+    return Object.assign({}, overlay, {
+      ops: ops,
+      undoStack: undo,
+      redoStack: redo,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  /* Mirror of popUndo: pop redoStack top, push back onto undoStack.
+   * Returns null when redoStack is missing/empty. */
+  function popRedo(overlay) {
+    if (!isObject(overlay)) return null;
+    if (!Array.isArray(overlay.redoStack) || overlay.redoStack.length === 0) return null;
+    var undo = Array.isArray(overlay.undoStack) ? overlay.undoStack.slice() : [];
+    var redo = overlay.redoStack.slice();
+    var moved = redo.pop();
+    undo.push(moved);
+    var ops = Array.isArray(overlay.ops) ? overlay.ops.slice() : [];
+    return Object.assign({}, overlay, {
+      ops: ops,
+      undoStack: undo,
+      redoStack: redo,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   /* Reduce overlay ops in-order to compute the current visual state of a
    * specific message (identified by turnIdx). Last op of each type for a
    * given target wins. Returns a stable shape even when no ops apply. */
@@ -212,10 +316,17 @@
     var idx = Number(turnIdx);
     if (!isFinite(idx)) return state;
 
+    /* Phase 2d — active-set filter. See getActiveOpIdSet doc for the
+     * migration rule. We iterate overlay.ops in original order (preserving
+     * the "last op of (type, target) wins" semantics) but skip any op
+     * whose id is not in the active set. */
+    var active = getActiveOpIdSet(overlay);
+
     for (var i = 0; i < ops.length; i += 1) {
       var op = ops[i];
       if (!isObject(op) || !isMessageTarget(op.target)) continue;
       if (Number(op.target.turnIdx) !== idx) continue;
+      if (!isOpActive(active, op.id)) continue;
       var payload = isObject(op.payload) ? op.payload : {};
       switch (String(op.type)) {
         case 'heading': {
@@ -338,9 +449,15 @@
     var dividerMap = Object.create(null);   /* dividerId -> { dividerId, afterTurnIdx } */
     var tocState = { position: null };
 
+    /* Phase 2d — active-set filter. Same semantics as computeMessageState:
+     * iterate ops in original order, skip ids that are not in the
+     * active set (undoStack). null active = legacy all-active. */
+    var active = getActiveOpIdSet(overlay);
+
     for (var i = 0; i < ops.length; i += 1) {
       var op = ops[i];
       if (!isObject(op)) continue;
+      if (!isOpActive(active, op.id)) continue;
       var payload = isObject(op.payload) ? op.payload : {};
       switch (String(op.type)) {
         case 'add-section':
@@ -746,6 +863,15 @@
       mutatesDom: true,
       mutatesCapturedContent: false,
       hasKeys: !!H2O.Studio.OverlayKeys,
+      /* Phase 2d — undo/redo support flags. Both reducers respect the
+       * active-set computed from overlay.undoStack; popUndo/popRedo are
+       * the pure helpers the bridge uses to manipulate stacks. The
+       * legacy migration sentinel (undoStack missing → all-active) is
+       * applied transparently by getActiveOpIdSet. */
+      supportsUndoRedo: true,
+      undoRedoModel: 'reducer-filter-active-set',
+      legacyMigration: 'undoStack-missing-means-all-active',
+      hasUndoRedoHelpers: typeof popUndo === 'function' && typeof popRedo === 'function' && typeof getActiveOpIdSet === 'function',
       errors: errors.slice(),
     };
   }
@@ -764,6 +890,14 @@
      * RibbonBridge.getStructureState accessor in studio.js. */
     computeStructureState: computeStructureState,
     findSectionContaining: findSectionContaining,
+    /* Phase 2d — undo/redo helpers (pure; no DOM, no I/O).
+     * RibbonBridge.undo / .redo in studio.js compose these with the
+     * editOverlay store + applyOverlay re-render. The active-set
+     * accessor is also exposed so callers can short-circuit when
+     * they need to know whether a specific op id is currently visible. */
+    popUndo: popUndo,
+    popRedo: popRedo,
+    getActiveOpIdSet: getActiveOpIdSet,
     applyOverlay: applyOverlay,
     selfCheck: selfCheck,
   };

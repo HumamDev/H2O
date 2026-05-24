@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 2a)
+Status: Active (Phase 2d)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -41,10 +41,15 @@ flow (`persistEditToExtensionSnapshot`), not in the overlay subsystem.
 
 ### Invariant 2 — Overlays are additive, not destructive
 
-Each operation in `overlay.ops[]` captures both its forward effect and
-its `inverse` payload. Undo applies the inverse; redo re-applies the
-forward effect. No op ever loses information needed to fully reverse
-itself.
+`overlay.ops[]` is append-only history. Operations are never deleted,
+even on undo. Each forward operation captures its full payload (and may
+optionally carry an `inverse` payload as forward-compat metadata, used
+by debugging tools but no longer required for undo correctness — see
+"Phase 2d — undo / redo model" below).
+
+Undo / redo work via the **reducer-filter active-set model** described
+below: undo moves an op id from `undoStack` to `redoStack`; the reducer
+simply stops applying that op. No information is lost.
 
 ### Invariant 3 — `turnIdx` is stable only within one saved snapshot
 
@@ -180,6 +185,103 @@ Forbidden anywhere in `studio/overlay/` and `studio/store/editOverlay.js`:
 - Section grouping CSS
 - Cross-context sync
 - Rebase UI for drift
+
+## Phase 2d — undo / redo model
+
+Status: **Built**. Implemented across `overlay-applier.studio.js` (pure
+helpers + reducer changes), `studio.js` (`RibbonBridge.undo/redo/getHistoryState`),
+`ribbon/ribbon-shell.studio.js` (`undoCount`/`redoCount` context fields),
+and `S0Y1a. 🎬 Studio Ribbon - Studio.js` (Home → Undo / Redo).
+
+### The reducer-filter active-set model
+
+1. **`overlay.ops` is append-only.** Forward operations are pushed onto
+   `ops` by `appendOp` and never removed. Re-running `appendOp` for a
+   later forward op grows `ops` monotonically.
+2. **`overlay.undoStack` is the ordered active op-id set.** It contains
+   the ids of ops that are currently visible. `appendOp` pushes the new
+   op's id onto `undoStack` (and clears `redoStack`); `popUndo` pops the
+   top id and pushes it onto `redoStack`; `popRedo` does the reverse.
+3. **`overlay.redoStack` holds undone op ids.** Each id still references
+   an op present in `overlay.ops`, so redo is a pure stack manipulation
+   followed by a re-render — no replay, no inverse.
+4. **Reducers iterate `overlay.ops` in original order**, but skip any op
+   whose id is NOT in the active set. This preserves the "last op of a
+   given (type, target) wins" semantics that existed before Phase 2d.
+
+The active set is computed by `getActiveOpIdSet(overlay)`. Renderers
+short-circuit ops outside the set via `isOpActive(active, op.id)` in
+both `computeMessageState` and `computeStructureState`.
+
+### Required migration rule (active-set legacy behaviour)
+
+Existing overlays persisted before Phase 2d may have `undoStack` either
+absent or shaped differently. The renderer MUST honour exactly this
+rule:
+
+- **`undoStack` is missing OR is not an array** → treat **all ops as
+  active**. This is the legacy migration sentinel and preserves visual
+  continuity for any persisted overlay from Phase 2a/2b/2c.
+- **`undoStack` exists as an array** → respect it **exactly**, even when
+  empty. An empty `undoStack` means "undo everything" — the user
+  legitimately undid every op — and the renderer MUST display no ops in
+  that case. Do NOT treat empty as all-active when `redoStack` exists.
+
+`getActiveOpIdSet` returns `null` for the legacy all-active case and a
+`{ [opId]: true }` lookup object for the explicit case. `isOpActive`
+treats a `null` active set as "everything matches".
+
+### Bridge API
+
+`H2O.Studio.RibbonBridge` (declared in `studio.js`) exposes:
+
+| Method | Returns | Behaviour |
+|---|---|---|
+| `undo()` | `Promise<{ ok, reason?, overlay?, outcome?, undoCount?, redoCount?, label? }>` | Pops `undoStack` top onto `redoStack`, persists, re-renders, republishes counts. Refuses safely on drift / no-undo / no-overlay / no-snapshot. |
+| `redo()` | same shape | Mirror of undo: pops `redoStack` top, pushes onto `undoStack`. |
+| `getHistoryState()` | `Promise<{ undoCount, redoCount, lastUndoLabel?, lastRedoLabel? }>` | Pure-read accessor. Empty stacks → `0` / `0` with no label fields. |
+
+All three never throw. Drift detection uses the same `computeBaseDigest`
+check as `applyOverlayOp`; on drift the stacks are not mutated.
+
+### Ribbon context fields
+
+`H2O.Studio.ribbon`'s context gains `undoCount: number` and `redoCount:
+number`. Both are coerced to non-negative integers (Number.NaN /
+negative / undefined → `0`). They are republished by `studio.js` after:
+
+- initial overlay load in `buildReaderDOM`
+- `RibbonBridge.applyOverlayOp` (forward ops)
+- `RibbonBridge.undo`
+- `RibbonBridge.redo`
+
+The shell's `setContext` includes both fields in its equality short-
+circuit so paints only fire on real changes.
+
+### Compliance notes for Phase 2d
+
+- `overlay.ops` MUST NOT be mutated by undo or redo.
+- Renderers MUST use `getActiveOpIdSet` + `isOpActive` (or equivalent
+  filter) — they MUST NOT iterate `overlay.undoStack` to compute state,
+  because doing so would lose the ops original ordering needed for
+  last-wins semantics.
+- Drift behaviour during undo / redo MUST match `applyOverlayOp` — same
+  digest check, same refusal shape, same `evt:h2o:studio:overlay:drift-
+  detected` semantics for downstream consumers.
+- Status feedback strings exposed at the Home tab MUST exactly match:
+  `"Undoing…"`, `"Undone: <label>"`, `"Nothing to undo"`, `"Redoing…"`,
+  `"Redone: <label>"`, `"Nothing to redo"`,
+  `"Snapshot has changed — overlay disabled until rebase"`.
+
+### Out of scope for Phase 2d
+
+- Keyboard shortcuts (Cmd-Z / Cmd-Shift-Z) — deferred to a future
+  phase; would require touching the Studio keyboard router.
+- Op coalescing / time-window batching — each ribbon click remains one
+  undo step in V1.
+- History compaction (dropping ops referenced by neither stack) —
+  deferred; `overlay.ops` may grow unboundedly within a single editing
+  session and that is accepted for V1.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

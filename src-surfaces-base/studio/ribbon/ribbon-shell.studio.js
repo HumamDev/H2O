@@ -98,6 +98,13 @@
       selectedMessageId: null,
       selectedTurnIdx: null,
       hasOverlay: false,
+      /* Phase 2d — undo/redo history counts for the open snapshot's
+       * overlay. Both default to 0 (no history). Published by
+       * studio.js's RibbonBridge after overlay load, applyOverlayOp,
+       * undo, and redo. The Home tab Undo/Redo buttons enable iff
+       * the corresponding count > 0. */
+      undoCount: 0,
+      redoCount: 0,
     },
   };
 
@@ -319,6 +326,13 @@
       ? selectedTurnIdxRaw
       : null;
     const hasOverlay = !!safe.hasOverlay;
+    /* Phase 2d — coerce undoCount / redoCount to safe non-negative
+     * integers. Non-finite, negative, or undefined values fall back to 0
+     * so the Home tab Undo/Redo enable rules always see a numeric. */
+    const undoCountRaw = Number(safe.undoCount);
+    const undoCount = (Number.isFinite(undoCountRaw) && undoCountRaw > 0) ? Math.floor(undoCountRaw) : 0;
+    const redoCountRaw = Number(safe.redoCount);
+    const redoCount = (Number.isFinite(redoCountRaw) && redoCountRaw > 0) ? Math.floor(redoCountRaw) : 0;
 
     const prev = Object.assign({}, internalState.context);
     const next = {
@@ -332,6 +346,8 @@
       selectedMessageId: selectedMessageId,
       selectedTurnIdx: selectedTurnIdx,
       hasOverlay: hasOverlay,
+      undoCount: undoCount,
+      redoCount: redoCount,
     };
 
     const unchanged =
@@ -344,7 +360,9 @@
       prev.readOnly === next.readOnly &&
       prev.selectedMessageId === next.selectedMessageId &&
       prev.selectedTurnIdx === next.selectedTurnIdx &&
-      prev.hasOverlay === next.hasOverlay;
+      prev.hasOverlay === next.hasOverlay &&
+      prev.undoCount === next.undoCount &&
+      prev.redoCount === next.redoCount;
     if (unchanged) return;
 
     internalState.context = next;

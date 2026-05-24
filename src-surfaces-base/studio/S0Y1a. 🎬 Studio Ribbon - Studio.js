@@ -743,6 +743,109 @@
     },
   };
 
+  /* ── Phase 2d — Home → Undo / Redo ────────────────────────────────────
+   * Wires the two Home tab History placeholders against the
+   * RibbonBridge.undo / .redo methods. Both honour the reducer-filter
+   * active-set model: undo moves an op id from undoStack → redoStack
+   * without deleting it from overlay.ops; redo moves it back. The
+   * applier's reducers skip ops whose id is not in undoStack, so the
+   * visual effect appears/disappears immediately.
+   *
+   * Enable rules:
+   *   - undo:  ctx.chatType === 'saved' AND ctx.snapshotId AND
+   *            (ctx.undoCount || 0) > 0 AND bridge is installed.
+   *   - redo:  same gate, with (ctx.redoCount || 0) > 0.
+   *
+   * Status strings:
+   *   - "Undoing…" / "Undone: <label>" / "Nothing to undo"
+   *   - "Redoing…" / "Redone: <label>" / "Nothing to redo"
+   *   - "Snapshot has changed — overlay disabled until rebase"
+   *     (shared drift string, mirrors runOverlayOp behaviour). */
+
+  function historyBaseEnabled(ctx) {
+    if (!ctx || ctx.chatType !== 'saved') return false;
+    if (!ctx.snapshotId) return false;
+    const bridge = getRibbonBridge();
+    if (!bridge || typeof bridge.undo !== 'function' || typeof bridge.redo !== 'function') return false;
+    const store = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.editOverlay;
+    if (!store || typeof store.upsert !== 'function') return false;
+    return true;
+  }
+
+  ACTION_HANDLERS['undo'] = {
+    isEnabled: function (ctx) {
+      if (!historyBaseEnabled(ctx)) return false;
+      return Number(ctx && ctx.undoCount) > 0;
+    },
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.undo !== 'function') {
+        setStatus('Undo bridge unavailable');
+        return;
+      }
+      setStatus('Undoing…');
+      Promise.resolve(bridge.undo()).then(
+        function (result) {
+          if (result && result.ok) {
+            const label = (result.label && String(result.label).trim()) || '';
+            setStatus(label ? ('Undone: ' + label) : 'Undone');
+            return;
+          }
+          const reason = (result && result.reason) || 'unknown';
+          if (reason === 'no-undo') { setStatus('Nothing to undo'); return; }
+          if (reason === 'no-overlay') { setStatus('Nothing to undo'); return; }
+          if (reason === 'drift-detected') {
+            setStatus('Snapshot has changed — overlay disabled until rebase');
+            return;
+          }
+          if (reason === 'no-snapshot') { setStatus('No saved chat open'); return; }
+          setStatus('Undo failed: ' + reason);
+        },
+        function (err) {
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Undo failed: ' + msg);
+        }
+      );
+    },
+  };
+
+  ACTION_HANDLERS['redo'] = {
+    isEnabled: function (ctx) {
+      if (!historyBaseEnabled(ctx)) return false;
+      return Number(ctx && ctx.redoCount) > 0;
+    },
+    onClick: function (ctx, setStatus) {
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.redo !== 'function') {
+        setStatus('Redo bridge unavailable');
+        return;
+      }
+      setStatus('Redoing…');
+      Promise.resolve(bridge.redo()).then(
+        function (result) {
+          if (result && result.ok) {
+            const label = (result.label && String(result.label).trim()) || '';
+            setStatus(label ? ('Redone: ' + label) : 'Redone');
+            return;
+          }
+          const reason = (result && result.reason) || 'unknown';
+          if (reason === 'no-redo') { setStatus('Nothing to redo'); return; }
+          if (reason === 'no-overlay') { setStatus('Nothing to redo'); return; }
+          if (reason === 'drift-detected') {
+            setStatus('Snapshot has changed — overlay disabled until rebase');
+            return;
+          }
+          if (reason === 'no-snapshot') { setStatus('No saved chat open'); return; }
+          setStatus('Redo failed: ' + reason);
+        },
+        function (err) {
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Redo failed: ' + msg);
+        }
+      );
+    },
+  };
+
   /* ── Registration of the default catalogue ────────────────────────── */
   function registerCatalogue(shell) {
     TAB_CATALOGUE.forEach(function (tab) {

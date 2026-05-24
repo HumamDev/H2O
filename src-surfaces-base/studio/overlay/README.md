@@ -20,3 +20,7 @@ The overlay system exists so future ribbon/formatting actions can store render-t
 - Digest drift causes the applier to skip safely and report a benign outcome.
 
 Future phases may add real operations, ribbon actions, and review UI while preserving the no-snapshot-mutation invariant in `STUDIO_OVERLAY_CONTRACT.md`.
+
+## Phase 2d — undo / redo
+
+Undo / redo is now wired via the **reducer-filter active-set model**: `overlay.ops` stays append-only, `overlay.undoStack` is the ordered active op-id set, and renderers iterate `overlay.ops` in original order while skipping ids that are not in the active set. See the "Phase 2d — undo / redo model" section in `../STUDIO_OVERLAY_CONTRACT.md` for the full model including the required legacy-migration rule (`undoStack` missing → all-active; `undoStack` present and empty → none-active).

@@ -4695,13 +4695,21 @@ function buildReaderDOM(snap){
         catch (_) { /* applier never throws, but defensive catch anyway */ }
         /* Phase 2b — publish hasOverlay to the ribbon context so the
          * Format buttons can read it from ctx (in addition to the per-
-         * action isEnabled checks that look at chatType + selection). */
+         * action isEnabled checks that look at chatType + selection).
+         * Phase 2d — also publish undoCount / redoCount so the Home tab
+         * Undo/Redo buttons enable correctly on initial reader load. */
         try {
           const __ribbon = W?.H2O?.Studio?.ribbon;
           if (__ribbon && typeof __ribbon.setContext === 'function') {
             const __ctx = __ribbon.getContext();
             const __hasOps = !!(__overlay && Array.isArray(__overlay.ops) && __overlay.ops.length > 0);
-            __ribbon.setContext(Object.assign({}, __ctx, { hasOverlay: __hasOps }));
+            const __undo = (__overlay && Array.isArray(__overlay.undoStack)) ? __overlay.undoStack.length : 0;
+            const __redo = (__overlay && Array.isArray(__overlay.redoStack)) ? __overlay.redoStack.length : 0;
+            __ribbon.setContext(Object.assign({}, __ctx, {
+              hasOverlay: __hasOps,
+              undoCount: __undo,
+              redoCount: __redo,
+            }));
           }
         } catch (_) { /* swallow */ }
       }, () => { /* swallow get rejection — reader continues without overlay */ });
@@ -10756,13 +10764,23 @@ function __ribbonBridge_applyOverlayOp(opSpec){
           const frame = readerEl && readerEl.querySelector('.cgFrame');
           if (frame) outcome = ov.applyOverlay(frame, snap, saved);
         } catch (_) { /* swallow — apply failure does not invalidate the persisted op */ }
-        /* Publish hasOverlay = true now */
+        /* Publish hasOverlay = true now.
+         * Phase 2d — also republish undoCount / redoCount so the Home
+         * tab Undo/Redo buttons immediately reflect the new stack
+         * shape after each forward op (and after the redoStack clear
+         * that appendOp performs). */
         try {
           const ribbon = W.H2O?.Studio?.ribbon;
           if (ribbon && typeof ribbon.setContext === 'function') {
             const ctx = ribbon.getContext();
             const hasOps = !!(saved && Array.isArray(saved.ops) && saved.ops.length > 0);
-            ribbon.setContext(Object.assign({}, ctx, { hasOverlay: hasOps }));
+            const undoN = (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0;
+            const redoN = (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0;
+            ribbon.setContext(Object.assign({}, ctx, {
+              hasOverlay: hasOps,
+              undoCount: undoN,
+              redoCount: redoN,
+            }));
           }
         } catch (_) { /* swallow */ }
         return { ok: true, overlay: saved, outcome: outcome };
@@ -10777,18 +10795,241 @@ function __ribbonBridge_applyOverlayOp(opSpec){
   });
 }
 
+/* Phase 2d — shared helper that re-applies an overlay record to the live
+ * reader DOM and republishes hasOverlay/undoCount/redoCount to the
+ * ribbon context. Used by RibbonBridge.undo / RibbonBridge.redo after
+ * each stack manipulation. Never throws. */
+function __ribbonBridge_publishAndRender(snap, saved){
+  let outcome = null;
+  try {
+    const ov = W.H2O?.Studio?.overlay;
+    const readerEl = document.getElementById('viewReader');
+    const frame = readerEl && readerEl.querySelector('.cgFrame');
+    if (frame && ov && typeof ov.applyOverlay === 'function') {
+      outcome = ov.applyOverlay(frame, snap, saved);
+    }
+  } catch (_) { /* swallow — apply failure does not invalidate the persisted stack change */ }
+  try {
+    const ribbon = W.H2O?.Studio?.ribbon;
+    if (ribbon && typeof ribbon.setContext === 'function') {
+      const ctx = ribbon.getContext();
+      const hasOps = !!(saved && Array.isArray(saved.ops) && saved.ops.length > 0);
+      const undoN = (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0;
+      const redoN = (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0;
+      ribbon.setContext(Object.assign({}, ctx, {
+        hasOverlay: hasOps,
+        undoCount: undoN,
+        redoCount: redoN,
+      }));
+    }
+  } catch (_) { /* swallow */ }
+  return outcome;
+}
+
+/* Phase 2d — derive a short human label from an op (for status feedback
+ * like "Undone: H2", "Redone: Section"). Returns null when the op has no
+ * recognisable shape. Synchronous, never throws. Labels are advisory
+ * only — no i18n. */
+function __ribbonBridge_labelForOp(op){
+  try {
+    if (!op || typeof op !== 'object') return null;
+    const type = String(op.type || '');
+    const payload = (op.payload && typeof op.payload === 'object') ? op.payload : {};
+    switch (type) {
+      case 'heading': {
+        const lvl = Number(payload.level);
+        if (lvl === 1 || lvl === 2 || lvl === 3) return 'H' + lvl;
+        return 'Heading';
+      }
+      case 'quote':         return 'Quote';
+      case 'code':
+      case 'code-block':    return 'Code block';
+      case 'callout':       return 'Callout';
+      case 'clean-spacing': return 'Clean spacing';
+      case 'add-section':
+      case 'split-section': return 'Section';
+      case 'collapse-section': return payload.collapsed ? 'Collapse' : 'Expand';
+      case 'page-divider':  return 'Divider';
+      case 'toc':           return payload.position ? 'TOC on' : 'TOC off';
+      default:              return type || null;
+    }
+  } catch (_) { return null; }
+}
+
+/* Phase 2d — undo the most recent active op on the current snapshot's
+ * overlay. Uses the reducer-filter active-set model: ops are NOT deleted
+ * from overlay.ops; instead the op id is moved from undoStack to
+ * redoStack and the reducer simply stops applying it. Drift-checks
+ * against the current snapshot baseDigest with the same logic
+ * applyOverlayOp uses — refuses safely on drift without mutating the
+ * stacks. Returns Promise<{ ok, reason?, overlay?, outcome?,
+ * undoCount?, redoCount?, label? }>. Never throws. */
+function __ribbonBridge_undo(){
+  return Promise.resolve().then(function () {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return { ok: false, reason: 'no-snapshot' };
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ov || typeof ov.computeBaseDigest !== 'function' || typeof ov.popUndo !== 'function') {
+      return { ok: false, reason: 'overlay-unavailable' };
+    }
+    if (!ovStore || typeof ovStore.get !== 'function' || typeof ovStore.upsert !== 'function') {
+      return { ok: false, reason: 'store-unavailable' };
+    }
+    const sid = String(snap.snapshotId);
+    return Promise.resolve(ovStore.get(sid)).then(function (existing) {
+      if (!existing) return { ok: false, reason: 'no-overlay' };
+      const undo = Array.isArray(existing.undoStack) ? existing.undoStack : [];
+      if (undo.length === 0) return { ok: false, reason: 'no-undo', undoCount: 0, redoCount: Array.isArray(existing.redoStack) ? existing.redoStack.length : 0 };
+      /* Drift check — same precedent as applyOverlayOp. Refuses safely
+       * without mutating either stack. */
+      const currentDigest = ov.computeBaseDigest(snap);
+      if (existing.baseDigest && existing.baseDigest !== currentDigest) {
+        return { ok: false, reason: 'drift-detected', overlay: existing, currentDigest: currentDigest };
+      }
+      /* Identify the op that's about to be undone (for the label). */
+      const undoneOpId = undo[undo.length - 1];
+      const ops = Array.isArray(existing.ops) ? existing.ops : [];
+      let undoneOp = null;
+      for (let i = ops.length - 1; i >= 0; i -= 1) {
+        if (ops[i] && String(ops[i].id) === String(undoneOpId)) { undoneOp = ops[i]; break; }
+      }
+      const next = ov.popUndo(existing);
+      if (!next) return { ok: false, reason: 'pop-undo-failed' };
+      return Promise.resolve(ovStore.upsert(next)).then(function (saved) {
+        const outcome = __ribbonBridge_publishAndRender(snap, saved);
+        return {
+          ok: true,
+          overlay: saved,
+          outcome: outcome,
+          undoCount: (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0,
+          redoCount: (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0,
+          label: __ribbonBridge_labelForOp(undoneOp),
+        };
+      }, function (err) {
+        return { ok: false, reason: 'upsert-failed', error: String((err && err.message) || err || '') };
+      });
+    }, function (err) {
+      return { ok: false, reason: 'get-failed', error: String((err && err.message) || err || '') };
+    });
+  }).catch(function (err) {
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
+/* Phase 2d — redo the most recently-undone op on the current snapshot's
+ * overlay. Mirror of __ribbonBridge_undo: moves an id from redoStack
+ * back onto undoStack, re-renders, republishes counts. Drift-checks
+ * identically. Never throws. */
+function __ribbonBridge_redo(){
+  return Promise.resolve().then(function () {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return { ok: false, reason: 'no-snapshot' };
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ov || typeof ov.computeBaseDigest !== 'function' || typeof ov.popRedo !== 'function') {
+      return { ok: false, reason: 'overlay-unavailable' };
+    }
+    if (!ovStore || typeof ovStore.get !== 'function' || typeof ovStore.upsert !== 'function') {
+      return { ok: false, reason: 'store-unavailable' };
+    }
+    const sid = String(snap.snapshotId);
+    return Promise.resolve(ovStore.get(sid)).then(function (existing) {
+      if (!existing) return { ok: false, reason: 'no-overlay' };
+      const redo = Array.isArray(existing.redoStack) ? existing.redoStack : [];
+      if (redo.length === 0) return { ok: false, reason: 'no-redo', undoCount: Array.isArray(existing.undoStack) ? existing.undoStack.length : 0, redoCount: 0 };
+      const currentDigest = ov.computeBaseDigest(snap);
+      if (existing.baseDigest && existing.baseDigest !== currentDigest) {
+        return { ok: false, reason: 'drift-detected', overlay: existing, currentDigest: currentDigest };
+      }
+      const redoneOpId = redo[redo.length - 1];
+      const ops = Array.isArray(existing.ops) ? existing.ops : [];
+      let redoneOp = null;
+      for (let i = ops.length - 1; i >= 0; i -= 1) {
+        if (ops[i] && String(ops[i].id) === String(redoneOpId)) { redoneOp = ops[i]; break; }
+      }
+      const next = ov.popRedo(existing);
+      if (!next) return { ok: false, reason: 'pop-redo-failed' };
+      return Promise.resolve(ovStore.upsert(next)).then(function (saved) {
+        const outcome = __ribbonBridge_publishAndRender(snap, saved);
+        return {
+          ok: true,
+          overlay: saved,
+          outcome: outcome,
+          undoCount: (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0,
+          redoCount: (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0,
+          label: __ribbonBridge_labelForOp(redoneOp),
+        };
+      }, function (err) {
+        return { ok: false, reason: 'upsert-failed', error: String((err && err.message) || err || '') };
+      });
+    }, function (err) {
+      return { ok: false, reason: 'get-failed', error: String((err && err.message) || err || '') };
+    });
+  }).catch(function (err) {
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
+/* Phase 2d — pure-read accessor for the Home tab Undo/Redo enable
+ * rules. Returns Promise<{ undoCount, redoCount, lastUndoLabel?,
+ * lastRedoLabel? }>. Empty stacks → 0/0 with no label fields. Never
+ * throws. Treats missing undoStack as 0 (the active-set migration only
+ * applies to the renderer; history counts always reflect the actual
+ * arrays). */
+function __ribbonBridge_getHistoryState(){
+  const empty = { undoCount: 0, redoCount: 0 };
+  try {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return Promise.resolve(empty);
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ovStore || typeof ovStore.get !== 'function') return Promise.resolve(empty);
+    return Promise.resolve(ovStore.get(String(snap.snapshotId))).then(function (overlay) {
+      if (!overlay) return empty;
+      const undo = Array.isArray(overlay.undoStack) ? overlay.undoStack : [];
+      const redo = Array.isArray(overlay.redoStack) ? overlay.redoStack : [];
+      const ops = Array.isArray(overlay.ops) ? overlay.ops : [];
+      const out = { undoCount: undo.length, redoCount: redo.length };
+      if (undo.length > 0) {
+        const topUndoId = String(undo[undo.length - 1]);
+        for (let i = ops.length - 1; i >= 0; i -= 1) {
+          if (ops[i] && String(ops[i].id) === topUndoId) {
+            const lbl = __ribbonBridge_labelForOp(ops[i]);
+            if (lbl) out.lastUndoLabel = lbl;
+            break;
+          }
+        }
+      }
+      if (redo.length > 0) {
+        const topRedoId = String(redo[redo.length - 1]);
+        for (let j = ops.length - 1; j >= 0; j -= 1) {
+          if (ops[j] && String(ops[j].id) === topRedoId) {
+            const lbl2 = __ribbonBridge_labelForOp(ops[j]);
+            if (lbl2) out.lastRedoLabel = lbl2;
+            break;
+          }
+        }
+      }
+      return out;
+    }, function () { return empty; });
+  } catch (_) { return Promise.resolve(empty); }
+}
+
 try {
   W.H2O = W.H2O || {};
   W.H2O.Studio = W.H2O.Studio || {};
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-2c-a',
+      version: '0.1.0-phase-2d',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
       getStructureState: __ribbonBridge_getStructureState,
       applyOverlayOp: __ribbonBridge_applyOverlayOp,
+      undo: __ribbonBridge_undo,
+      redo: __ribbonBridge_redo,
+      getHistoryState: __ribbonBridge_getHistoryState,
     };
   } else {
     /* Idempotent additive upgrade. */
@@ -10796,6 +11037,10 @@ try {
     if (!W.H2O.Studio.RibbonBridge.getMessageStateForTurn) W.H2O.Studio.RibbonBridge.getMessageStateForTurn = __ribbonBridge_getMessageStateForTurn;
     if (!W.H2O.Studio.RibbonBridge.getStructureState) W.H2O.Studio.RibbonBridge.getStructureState = __ribbonBridge_getStructureState;
     if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2c-a';
+    /* Phase 2d — undo/redo/getHistoryState additive upgrade. */
+    if (!W.H2O.Studio.RibbonBridge.undo) W.H2O.Studio.RibbonBridge.undo = __ribbonBridge_undo;
+    if (!W.H2O.Studio.RibbonBridge.redo) W.H2O.Studio.RibbonBridge.redo = __ribbonBridge_redo;
+    if (!W.H2O.Studio.RibbonBridge.getHistoryState) W.H2O.Studio.RibbonBridge.getHistoryState = __ribbonBridge_getHistoryState;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2d';
   }
 } catch (_) { /* swallow */ }
