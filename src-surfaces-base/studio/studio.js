@@ -5589,6 +5589,7 @@ function renderSettingsRoute(){
         </label>
         <button id="wbSettingsFolderMirrorRefreshRun" type="button" style="${btnStyle}" disabled>Refresh Desktop folder mirror</button>
         <div id="wbSettingsFolderMirrorRefreshStatus" style="font-size:12px;opacity:.72">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status || "Desktop mirror only. Native, Chrome, folders, and folder_bindings are not changed.")}</div>
+        <div id="wbSettingsFolderMirrorRefreshDeltaSummary" style="display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.45" hidden></div>
         <pre id="wbSettingsFolderMirrorRefreshPreviewOut" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
       </div>
       </div>
@@ -6430,6 +6431,20 @@ function settingsFolderMirrorFolderName(row, fallback = ""){
   return String(row?.name || row?.title || fallback || "").trim();
 }
 
+function settingsFolderMirrorVisualColor(row){
+  return String(row?.iconColor || row?.color || "").trim();
+}
+
+function settingsFolderMirrorCanonicalRowMap(stateObj){
+  const folders = Array.isArray(stateObj?.folders) ? stateObj.folders : [];
+  const byId = new Map();
+  folders.forEach((row) => {
+    const id = settingsFolderMirrorFolderId(row);
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  return byId;
+}
+
 function settingsFolderMirrorNormalizeState(raw, sourceKind){
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
@@ -6536,11 +6551,16 @@ function settingsFolderMirrorSummary(stateObj){
   const src = stateObj && typeof stateObj === "object" ? stateObj : {};
   const folders = Array.isArray(src.folders) ? src.folders : [];
   const items = src.items && typeof src.items === "object" && !Array.isArray(src.items) ? src.items : {};
-  const perFolder = FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => ({
-    folderId: known.folderId,
-    name: known.name,
-    membershipCount: Array.isArray(items[known.folderId]) ? items[known.folderId].length : 0,
-  }));
+  const byId = settingsFolderMirrorCanonicalRowMap(src);
+  const perFolder = FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => {
+    const folderRow = byId.get(known.folderId) || null;
+    return {
+      folderId: known.folderId,
+      name: settingsFolderMirrorFolderName(folderRow, known.name) || known.name,
+      membershipCount: Array.isArray(items[known.folderId]) ? items[known.folderId].length : 0,
+      color: settingsFolderMirrorVisualColor(folderRow),
+    };
+  });
   return {
     key: FOLDER_STATE_DATA_KEY,
     folderCount: folders.length,
@@ -6551,6 +6571,24 @@ function settingsFolderMirrorSummary(stateObj){
     refreshedAt: src.refreshedAt || "",
     perFolder,
   };
+}
+
+function settingsFolderMirrorColorDeltaRows(beforeSummary, afterSummary){
+  const beforeRows = new Map((beforeSummary?.perFolder || []).map((row) => [row.folderId, row]));
+  const afterRows = new Map((afterSummary?.perFolder || []).map((row) => [row.folderId, row]));
+  return FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => {
+    const before = beforeRows.get(known.folderId) || {};
+    const after = afterRows.get(known.folderId) || {};
+    const beforeColor = String(before.color || "").trim();
+    const afterColor = String(after.color || "").trim();
+    return {
+      folderId: known.folderId,
+      name: known.name,
+      beforeColor,
+      afterColor,
+      colorChanged: beforeColor !== afterColor,
+    };
+  });
 }
 
 async function settingsFolderMirrorReadSourceFromPanel(panel){
@@ -6585,6 +6623,7 @@ async function settingsFolderMirrorBuildPreview(panel, opts = {}){
   const afterSummary = settingsFolderMirrorSummary(afterState);
   const beforeChecksum = await settingsFolderMirrorChecksum(beforeState || {});
   const afterChecksum = await settingsFolderMirrorChecksum(afterState);
+  const perFolderColorDeltas = settingsFolderMirrorColorDeltaRows(beforeSummary, afterSummary);
   const preview = {
     readOnly: false,
     noMutationUntilRefresh: true,
@@ -6605,7 +6644,11 @@ async function settingsFolderMirrorBuildPreview(panel, opts = {}){
       name: known.name,
       before: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
       after: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
+      beforeColor: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.color || "",
+      afterColor: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.color || "",
+      colorChanged: perFolderColorDeltas.find((row) => row.folderId === known.folderId)?.colorChanged || false,
     })),
+    perFolderColorDeltas,
     beforeChecksum,
     afterChecksum,
     confirmationText: FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT,
@@ -6619,9 +6662,41 @@ async function settingsFolderMirrorBuildPreview(panel, opts = {}){
   return { ok: true, preview, beforeState, afterState };
 }
 
+function settingsFolderMirrorRenderDeltaSummary(panel, preview){
+  const box = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshDeltaSummary");
+  if (!box) return;
+  if (!preview) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const colorRows = Array.isArray(preview.perFolderColorDeltas) ? preview.perFolderColorDeltas : [];
+  const changedColorRows = colorRows.filter((row) => row?.colorChanged);
+  const membershipRows = Array.isArray(preview.perFolderMembershipCounts) ? preview.perFolderMembershipCounts : [];
+  const colorLines = changedColorRows.length
+    ? changedColorRows.map((row) => {
+        const before = row.beforeColor || "(blank)";
+        const after = row.afterColor || "(blank)";
+        return `<div><strong>${esc(row.name || "Folder")} color:</strong> <code>${esc(before)}</code> -&gt; <code>${esc(after)}</code></div>`;
+      }).join("")
+    : `<div><strong>Color changes:</strong> none detected.</div>`;
+  const memberLines = membershipRows.map((row) => (
+    `<div><strong>${esc(row.name || "Folder")} members:</strong> ${Number(row.before || 0)} -&gt; ${Number(row.after || 0)}</div>`
+  )).join("");
+  box.hidden = false;
+  box.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:6px">
+      <div style="font-weight:600">Refresh preview deltas</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px">${colorLines}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:4px 12px;opacity:.78">${memberLines}</div>
+    </div>
+  `;
+}
+
 function settingsFolderMirrorSetPreview(panel, preview){
   panel.__h2oFolderMirrorRefreshPreview = preview || null;
   FOLDER_DESKTOP_MIRROR_REFRESH_STATE.preview = preview || null;
+  settingsFolderMirrorRenderDeltaSummary(panel, preview);
   const pre = panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPreviewOut");
   if (pre) {
     pre.hidden = !preview;
@@ -6681,7 +6756,10 @@ async function previewSettingsFolderMirrorRefresh(panel){
   }
   settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Preview valid; confirmation required");
   settingsFolderMirrorSetPreview(panel, result.preview);
-  const message = `Preview ready. Study ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.before ?? 0} -> ${result.preview.perFolderMembershipCounts.find((row) => row.name === "Study")?.after ?? 0}. Desktop SQLite folders and folder_bindings are not changed.`;
+  const studyCounts = result.preview.perFolderMembershipCounts.find((row) => row.name === "Study") || {};
+  const colorChangeCount = (result.preview.perFolderColorDeltas || []).filter((row) => row?.colorChanged).length;
+  const colorMessage = colorChangeCount ? `${colorChangeCount} color change${colorChangeCount === 1 ? "" : "s"} detected.` : "No canonical color changes detected.";
+  const message = `Preview ready. Study members: ${studyCounts.before ?? 0} -> ${studyCounts.after ?? 0}. ${colorMessage} Desktop SQLite folders and folder_bindings are not changed.`;
   settingsFolderMirrorSetStatus(panel, message);
   settingsFolderMirrorUpdateControls(panel);
   return result;
