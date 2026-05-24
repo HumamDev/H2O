@@ -152,13 +152,7 @@
         </div>
 
         <div class="wbTopGroup wbTopGroup--actions">
-          <div id="categoryAssignWrap" class="wbCategoryTopbar" hidden></div>
-
-          <label class="wbSelectWrap wbSelectWrap--topbar" id="folderAssignWrap" hidden>
-            <span class="wbSelectLabel">Folder</span>
-            <select id="folderAssignSelect" class="wbSelect" aria-label="Assign selected chat to folder"></select>
-          </label>
-
+          <div id="categoryStatusTopbar" class="wbCategoryTopbarStatus" hidden></div>
           <button class="wbBtn wbBtn--topbar" id="refreshBtn" type="button">Refresh</button>
         </div>
       </header>
@@ -175,6 +169,15 @@
                aria-label="Studio ribbon"
                data-chat-type=""
                hidden></section>
+
+      <div id="studioRibbonMetadataParking" class="wbRibbonMetadataParking" hidden aria-hidden="true">
+        <div id="categoryAssignWrap" class="wbCategoryTopbar" hidden></div>
+
+        <label class="wbSelectWrap wbSelectWrap--topbar" id="folderAssignWrap" hidden>
+          <span class="wbSelectLabel">Folder</span>
+          <select id="folderAssignSelect" class="wbSelect" aria-label="Assign selected chat to folder"></select>
+        </label>
+      </div>
 
       <main class="wbMain">
         <section id="viewListPanel" class="wbPanel wbPanel--list">

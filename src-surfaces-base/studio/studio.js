@@ -4782,7 +4782,23 @@ function renderReaderRouteMeta(snap){
 
 function renderCategoryInspector(snap = state.currentReaderSnapshot){
   const wrap = $("#categoryAssignWrap");
-  if (!wrap) return;
+  const statusWrap = $("#categoryStatusTopbar");
+  if (!wrap) {
+    if (statusWrap) {
+      statusWrap.hidden = true;
+      statusWrap.innerHTML = "";
+    }
+    return;
+  }
+
+  const clearCategoryInspector = () => {
+    wrap.hidden = true;
+    wrap.innerHTML = "";
+    if (statusWrap) {
+      statusWrap.hidden = true;
+      statusWrap.innerHTML = "";
+    }
+  };
 
   const selectedRow = getSelectedWorkbenchRow();
   const selectedSnapshotId = String(
@@ -4793,8 +4809,7 @@ function renderCategoryInspector(snap = state.currentReaderSnapshot){
     || ""
   ).trim();
   if (!selectedSnapshotId) {
-    wrap.hidden = true;
-    wrap.innerHTML = "";
+    clearCategoryInspector();
     return;
   }
 
@@ -4819,9 +4834,19 @@ function renderCategoryInspector(snap = state.currentReaderSnapshot){
     : (primaryId || confidenceText || secondaryName ? "System" : "Category");
 
   if (!catalog.length && !primaryId) {
-    wrap.hidden = true;
-    wrap.innerHTML = "";
+    clearCategoryInspector();
     return;
+  }
+
+  if (statusWrap) {
+    const showStatus = !!(primaryId || confidenceText || secondaryName || source);
+    statusWrap.hidden = !showStatus;
+    statusWrap.innerHTML = showStatus ? `
+      <div class="wbCategoryMeta"${secondaryName ? ` title="Secondary category: ${esc(secondaryName)}"` : ""}>
+        <span class="wbCategorySource">${esc(sourceLabel)}</span>
+        ${confidenceText ? `<span class="wbCategoryConfidence">${esc(confidenceText)}</span>` : ""}
+      </div>
+    ` : "";
   }
 
   const options = [
@@ -4837,10 +4862,6 @@ function renderCategoryInspector(snap = state.currentReaderSnapshot){
 
   wrap.hidden = false;
   wrap.innerHTML = `
-    <div class="wbCategoryMeta"${secondaryName ? ` title="Secondary category: ${esc(secondaryName)}"` : ""}>
-      <span class="wbCategorySource">${esc(sourceLabel)}</span>
-      ${confidenceText ? `<span class="wbCategoryConfidence">${esc(confidenceText)}</span>` : ""}
-    </div>
     <label class="wbSelectWrap wbSelectWrap--topbar wbSelectWrap--category">
       <span class="wbSelectLabel">Category</span>
       <select id="categoryAssignSelect" class="wbSelect" aria-label="Assign selected chat to category">

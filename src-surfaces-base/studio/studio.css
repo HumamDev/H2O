@@ -773,6 +773,17 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   justify-content:flex-end;
 }
 
+.wbCategoryTopbarStatus{
+  display:inline-flex;
+  align-items:center;
+  flex:0 1 auto;
+  min-width:0;
+}
+
+.wbCategoryTopbarStatus[hidden]{
+  display:none !important;
+}
+
 .wbCategoryTopbar{
   display:flex;
   align-items:center;
@@ -6730,6 +6741,61 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   flex-wrap:nowrap;
 }
 
+.wbRibbonPanel[data-tab-id="metadata"] .wbRibbonGroupActions{
+  align-items:flex-start;
+  flex-wrap:wrap;
+  gap:6px;
+}
+
+.wbRibbonMetadataParking{
+  display:none !important;
+}
+
+.wbRibbonMetadataSlot{
+  display:flex;
+  align-items:center;
+  min-width:0;
+  max-width:100%;
+  min-height:30px;
+}
+
+.wbRibbonMetadataSlot--category{
+  max-width:min(100%, 34rem);
+}
+
+.wbRibbonMetadataSlot--folder{
+  max-width:min(100%, 16rem);
+}
+
+.wbRibbonMetadataSlotEmpty{
+  display:inline-flex;
+  align-items:center;
+  min-height:30px;
+  padding:0 10px;
+  border:1px dashed var(--wb-border);
+  border-radius:999px;
+  color:var(--wb-muted);
+  font-size:12px;
+}
+
+.wbRibbonMetadataSlot > #categoryAssignWrap{
+  justify-content:flex-start;
+  flex-wrap:wrap;
+}
+
+.wbRibbonMetadataSlot > #categoryAssignWrap[hidden],
+.wbRibbonMetadataSlot > #folderAssignWrap[hidden]{
+  display:none !important;
+}
+
+.wbRibbonMetadataSlot > #folderAssignWrap.wbSelectWrap--topbar{
+  flex:0 1 auto;
+}
+
+.wbRibbonMetadataSlot .wbBtn--topbar{
+  white-space:nowrap;
+}
+
 .wbRibbonGroupLabel{
   font-size:10.5px;
   letter-spacing:.06em;
@@ -6803,11 +6869,10 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   visibility:hidden;
 }
 
-/* Phase 1c — pulse highlight for the topbar category picker.
-   Triggered by the Studio Ribbon's Metadata → Category action; routes
-   user attention to the canonical existing widget rather than
-   duplicating a picker inside the ribbon. ~1.2s soft focus pulse using
-   the existing --wb-focus token. */
+/* Phase 1c — pulse highlight for the canonical category picker.
+   The picker now lives in the Studio Ribbon Metadata tab, but the legacy
+   focus bridge still uses the same pulse class. ~1.2s soft focus pulse
+   using the existing --wb-focus token. */
 @keyframes wbRibbonPulse{
   0%   { box-shadow: 0 0 0 0 rgba(122,182,255,.55); }
   40%  { box-shadow: 0 0 0 4px rgba(122,182,255,.20); }

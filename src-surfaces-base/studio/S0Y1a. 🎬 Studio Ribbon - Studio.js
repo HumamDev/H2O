@@ -119,6 +119,7 @@
            * yet; provider modules are read-only at the Studio surface). */
           { id: 'add-tags', label: 'Tags',     tooltip: 'No public Tags/Labels API yet' },
           { id: 'category', label: 'Category' },
+          { id: 'folder',   label: 'Folder' },
           { id: 'project',  label: 'Project',  tooltip: 'No public Project API yet' },
           { id: 'status',   label: 'Status',   tooltip: 'Chat status is not in Studio schema yet' },
         ] },
@@ -169,6 +170,56 @@
   }
   function getContainer() {
     return document.getElementById('studioRibbon');
+  }
+  function getMetadataParking(container) {
+    let parking = null;
+    try { parking = document.getElementById('studioRibbonMetadataParking'); }
+    catch (_) { parking = null; }
+    if (parking) return parking;
+    try {
+      parking = document.createElement('div');
+      parking.id = 'studioRibbonMetadataParking';
+      parking.className = 'wbRibbonMetadataParking';
+      parking.hidden = true;
+      parking.setAttribute('aria-hidden', 'true');
+      const parent = container && container.parentNode;
+      if (parent) parent.insertBefore(parking, container.nextSibling || null);
+      else document.body.appendChild(parking);
+    } catch (_) { parking = null; }
+    return parking;
+  }
+  function parkMetadataControls(container) {
+    const parking = getMetadataParking(container);
+    if (!parking) return;
+    ['categoryAssignWrap', 'folderAssignWrap'].forEach(function (id) {
+      let node = null;
+      try { node = document.getElementById(id); } catch (_) { node = null; }
+      if (!node || node.parentNode === parking) return;
+      try { parking.appendChild(node); } catch (_) { /* swallow */ }
+    });
+  }
+  function mountMetadataControls(container, activeTabId, ctx) {
+    if (activeTabId !== 'metadata') return;
+    if (!ctx || ctx.chatType !== 'saved') return;
+    const panel = container && container.querySelector
+      ? container.querySelector('#wbRibbonPanel-metadata')
+      : null;
+    if (!panel || panel.hidden) return;
+    const pairs = [
+      { id: 'categoryAssignWrap', slot: 'category' },
+      { id: 'folderAssignWrap', slot: 'folder' },
+    ];
+    pairs.forEach(function (pair) {
+      let node = null;
+      let slot = null;
+      try { node = document.getElementById(pair.id); } catch (_) { node = null; }
+      try { slot = panel.querySelector('[data-ribbon-metadata-slot="' + pair.slot + '"]'); } catch (_) { slot = null; }
+      if (!node || !slot || node.parentNode === slot) return;
+      try {
+        slot.innerHTML = '';
+        slot.appendChild(node);
+      } catch (_) { /* swallow */ }
+    });
   }
   function safeEmit(name, detail) {
     try {
@@ -1272,14 +1323,11 @@
       },
     },
 
-    /* Phase 1c — Metadata → Category.
-     * Does NOT mutate category itself; instead routes focus + brief
-     * pulse highlight onto the existing topbar category picker
-     * (#categoryAssignWrap, populated by studio.js renderCategoryInspector
-     * when a saved snapshot reader opens). The picker is the canonical
-     * mutation UI for category — the ribbon entry is a navigation aid for
-     * users who don't know the topbar widget exists. Enabled only when
-     * the picker is present and contains an interactive control. */
+    /* Phase 1c compatibility — Metadata → Category.
+     * The canonical picker is #categoryAssignWrap, populated by studio.js
+     * renderCategoryInspector and now mounted directly inside Metadata.
+     * Keep this handler as a safe focus/pulse bridge for any legacy caller
+     * that still invokes the action id programmatically. */
     'category': {
       isEnabled: function (ctx) {
         if (!ctx || ctx.chatType !== 'saved') return false;
@@ -2287,6 +2335,17 @@
         const actions = shell.actionsForGroup(tab.id, group.id);
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
+          if (tab.id === 'metadata' && (action.id === 'category' || action.id === 'folder')) {
+            const slotName = action.id === 'category' ? 'category' : 'folder';
+            const slot = el('div', {
+              class: 'wbRibbonMetadataSlot wbRibbonMetadataSlot--' + slotName,
+              'data-ribbon-metadata-slot': slotName,
+              'aria-label': action.label,
+            });
+            slot.appendChild(el('span', { class: 'wbRibbonMetadataSlotEmpty' }, action.label + ' unavailable'));
+            actionsRow.appendChild(slot);
+            return;
+          }
           const handler = ACTION_HANDLERS[action.id];
           let enabled = false;
           if (handler && typeof handler.isEnabled === 'function') {
@@ -2333,6 +2392,7 @@
     const ctx = shell.getContext();
     const chatType = (ctx && ctx.chatType) || null;
     const collapsed = !!shell.getCollapsed();
+    parkMetadataControls(container);
 
     /* Visibility: ribbon entirely hidden when no chat is open. */
     if (!chatType) {
@@ -2369,6 +2429,7 @@
     container.appendChild(buildTabStrip(visibleTabs, activeTabId, collapsed));
     if (!collapsed) {
       container.appendChild(buildPanels(shell, visibleTabs, activeTabId));
+      mountMetadataControls(container, activeTabId, ctx);
     }
   }
 
