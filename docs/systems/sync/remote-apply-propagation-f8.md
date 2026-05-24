@@ -129,6 +129,44 @@ exported. F8.1 does not export raw folder IDs, folder names, parent IDs, raw
 color values, peer IDs, raw before/after hashes, audit row IDs, raw audit JSON,
 conflict IDs, tombstone IDs, or metadata JSON.
 
+## F8.2 Remote Apply-Event Preview
+
+F8.2 adds a pure preview helper:
+
+```js
+H2O.Studio.diagnostics.previewRemoteApplyEvents({
+  bundle,
+  includeEventSamples: false,
+  eventSampleLimit: 20
+});
+```
+
+The helper validates and summarizes `bundle.syncApplyEvents` only. It performs
+no import behavior, remote apply, Chrome storage mutation, Desktop mutation,
+F5 mutation, F6 ingestion, or F7 apply call.
+
+Validation accepts only redacted F8.1 folder color apply events:
+
+- `schema === "h2o.studio.sync.apply-event.v0"`.
+- `operation === "folder-metadata-color-apply"`.
+- `entityKind === "folder.metadata"`.
+- `fieldsUpdated` is exactly `["color"]`.
+- `policyVersion === "h2o.studio.sync.folder-metadata-apply.v0"`.
+- `redacted === true`.
+- `auditRecorded === true`.
+- `eventDigest` is present as a safe digest string.
+
+Unsupported, malformed, non-redacted, sensitive, or duplicate events are counted
+only. Duplicate detection uses `eventDigest` internally; repeated digests do
+not increase proposed remote apply counts.
+
+F8.2 deliberately does not resolve a remote folder target. F8.1 events do not
+carry a safe target handle, so otherwise valid events are counted as blocked
+with `target-handle-unavailable` / `target-resolution-not-implemented`.
+
+Default output is counts-only. Optional samples are capped, redacted, and do
+not include the actual `eventDigest`.
+
 ## Remote Receive Model
 
 When another peer sees an apply event, it must treat the event as evidence
