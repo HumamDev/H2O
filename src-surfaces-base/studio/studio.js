@@ -3569,6 +3569,8 @@ function renderFolderSidebarRow(view, item, opts){
       folderId: item.folderId,
       name: item.label,
       color: item.iconColor || "",
+      iconColor: item.iconColor || "",
+      isCanonical: item.isCanonical === true,
     })
     : null;
   if (appearance?.hidden) return null;
@@ -3624,6 +3626,7 @@ function renderFolderSidebarRow(view, item, opts){
           color: iconColor,
           iconKey: appearance?.icon || "folder",
           folderKind: item.folderKind || item.kind || "",
+          isCanonical: item.isCanonical === true,
         });
       }
     });
@@ -10789,6 +10792,252 @@ function __ribbonBridge_getCleanTranscript(opts){
     return { text: '', overlayIncluded: false, overlaySkipped: false };
   });
 }
+
+/* ─── Phase 3a — Markdown export helpers + bridge method ──────────────────
+ * Pure helpers (no DOM, no I/O) used by __ribbonBridge_exportMarkdown
+ * to compose the .md file contents and produce a filesystem-safe
+ * filename. Both are exported on RibbonBridge as well so smoke harnesses
+ * + future export variants (.json / .csv) can reuse them. */
+
+/* Sanitize a chat title into a filesystem-safe stem.
+ *   - Replaces Windows-reserved chars (/\:*?"<>|) + control chars with '-'.
+ *   - Collapses runs of '-' to a single '-'.
+ *   - Trims leading/trailing '-' and whitespace.
+ *   - Truncates to 80 chars (safe for cross-OS path limits).
+ *   - Prefixes the Windows reserved device names (CON, PRN, AUX, NUL, COM1-9,
+ *     LPT1-9) with '_' so the result is valid on Windows even though the
+ *     extension is appended.
+ *   - Returns '' for empty / unsalvageable input; caller picks a fallback. */
+function __ribbonBridge_sanitizeFilenameStem(title){
+  try {
+    var raw = String(title == null ? '' : title);
+    /* Strip control chars (0x00-0x1F + 0x7F) and Windows-reserved punct. */
+    var cleaned = raw.replace(/[ -<>:"/\\|?*]/g, '-');
+    /* Collapse whitespace runs to single spaces, then spaces to '-'. */
+    cleaned = cleaned.replace(/\s+/g, ' ').trim().replace(/ /g, '-');
+    /* Collapse runs of '-' to single '-'. */
+    cleaned = cleaned.replace(/-{2,}/g, '-');
+    /* Trim leading/trailing '-'. */
+    cleaned = cleaned.replace(/^-+|-+$/g, '');
+    if (!cleaned) return '';
+    /* Truncate to 80 chars (re-trim trailing '-' after truncation). */
+    if (cleaned.length > 80) cleaned = cleaned.slice(0, 80).replace(/-+$/, '');
+    /* Windows reserved device names — prefix with '_' to make safe. */
+    var reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+    if (reserved.test(cleaned)) cleaned = '_' + cleaned;
+    return cleaned;
+  } catch (_) { return ''; }
+}
+
+/* Build the Markdown filename: "{stem}__{YYYY-MM-DD}.md". The date is
+ * derived from snap.capturedAt's ISO date prefix if available, else
+ * today's date. Empty stem falls back to "chat-{chatId8}" or
+ * "studio-transcript". Always returns a string ending in ".md". */
+function __ribbonBridge_buildMarkdownFilename(snap){
+  try {
+    var stem = __ribbonBridge_sanitizeFilenameStem(snap && snap.title);
+    if (!stem) {
+      var cid = String((snap && snap.chatId) || '').replace(/[^A-Za-z0-9_-]/g, '');
+      if (cid) stem = 'chat-' + cid.slice(0, 8);
+      else stem = 'studio-transcript';
+    }
+    var date = '';
+    var raw = (snap && snap.capturedAt) ? String(snap.capturedAt) : '';
+    if (raw && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
+      date = raw.slice(0, 10);
+    } else {
+      var d = new Date();
+      var y = d.getFullYear();
+      var m = String(d.getMonth() + 1).padStart(2, '0');
+      var dd = String(d.getDate()).padStart(2, '0');
+      date = y + '-' + m + '-' + dd;
+    }
+    return stem + '__' + date + '.md';
+  } catch (_) { return 'studio-transcript.md'; }
+}
+
+/* Build the Markdown file header block:
+ *
+ *   # {title}
+ *
+ *   _Captured: {YYYY-MM-DD}_
+ *   _Source: {originalUrl}_         (only when originalUrl provided)
+ *   _Chat ID: {chatId}_             (only when chatId provided)
+ *
+ *   ---
+ *
+ * Each metadata line ends with two trailing spaces so Markdown
+ * preserves the line break inside the same paragraph. Returns a
+ * string ending with "\n\n" so the serializer body can be appended
+ * directly. */
+function __ribbonBridge_buildMarkdownHeader(snap, originalUrl){
+  try {
+    var lines = [];
+    var title = String((snap && snap.title) || '').trim();
+    lines.push('# ' + (title || 'Studio transcript'));
+    lines.push('');
+    var metaLines = [];
+    /* Date from capturedAt ISO prefix; fall back to today. */
+    var raw = (snap && snap.capturedAt) ? String(snap.capturedAt) : '';
+    var date;
+    if (raw && /^\d{4}-\d{2}-\d{2}/.test(raw)) date = raw.slice(0, 10);
+    else {
+      var d = new Date();
+      date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    metaLines.push('_Captured: ' + date + '_');
+    var src = String(originalUrl == null ? '' : originalUrl).trim();
+    if (src) metaLines.push('_Source: ' + src + '_');
+    var chatId = String((snap && snap.chatId) || '').trim();
+    if (chatId) metaLines.push('_Chat ID: ' + chatId + '_');
+    /* Two trailing spaces preserve the visual line break within a
+     * single Markdown paragraph (Markdown line-break syntax). */
+    lines.push(metaLines.join('  \n'));
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    return lines.join('\n') + '\n';
+  } catch (_) {
+    return '# Studio transcript\n\n---\n\n';
+  }
+}
+
+/* Phase 3a — export the current saved snapshot as a Markdown .md file.
+ * Composes the file = header block + Phase 2e serializer output, then
+ * writes via platform.files.exportBlob. When platform.files is
+ * unavailable, falls back to an inline Blob + <a download> dance so the
+ * feature still works in degraded environments.
+ *
+ * Returns Promise<{
+ *   ok: boolean,
+ *   reason?: 'no-snapshot' | 'no-content' | 'cancelled' | 'export-failed' | 'error',
+ *   filename?: string,
+ *   bytes?: number,
+ *   path?: string,                   (Tauri native save path when applicable)
+ *   overlayIncluded?: boolean,
+ *   overlaySkipped?: boolean,
+ *   overlayReason?: string,
+ *   fallback?: 'blob-anchor' | 'platform-files',
+ * }>. Never throws. */
+function __ribbonBridge_exportMarkdown(opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeOverlay = options.includeOverlay !== false;
+    const includeToc = options.includeToc === true;
+    const collapsedMode = (options.collapsedMode === 'include-silent' || options.collapsedMode === 'omit')
+      ? options.collapsedMode
+      : 'include-marked';
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) {
+      return { ok: false, reason: 'no-snapshot' };
+    }
+
+    /* Reuse Phase 2e: getCleanTranscript handles overlay fetch + drift
+     * fallback + active-set filter. We just consume its result. */
+    return Promise.resolve(__ribbonBridge_getCleanTranscript({
+      includeOverlay: includeOverlay,
+      includeToc: includeToc,
+      collapsedMode: collapsedMode,
+    })).then(function (tr) {
+      const safeTr = (tr && typeof tr === 'object') ? tr : { text: '', overlayIncluded: false, overlaySkipped: false };
+      const body = String(safeTr.text || '');
+      if (!body.trim()) {
+        return { ok: false, reason: 'no-content' };
+      }
+
+      /* Resolve originalUrl from the ribbon context (only present for
+       * indexed chats — saved chats omit it from the header). */
+      let originalUrl = '';
+      try {
+        const ribbon = W.H2O?.Studio?.ribbon;
+        const ctx = (ribbon && typeof ribbon.getContext === 'function') ? ribbon.getContext() : null;
+        if (ctx && typeof ctx.originalUrl === 'string') originalUrl = ctx.originalUrl;
+      } catch (_) { originalUrl = ''; }
+
+      const filename = __ribbonBridge_buildMarkdownFilename(snap);
+      const header = __ribbonBridge_buildMarkdownHeader(snap, originalUrl);
+      const content = header + body + '\n';
+
+      let blob;
+      try {
+        blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+      } catch (e) {
+        return { ok: false, reason: 'error', error: String((e && e.message) || e || '') };
+      }
+      const bytes = blob.size;
+
+      function inlineBlobAnchor() {
+        return new Promise(function (resolve) {
+          try {
+            if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+              return resolve({ ok: false, reason: 'export-failed', error: 'URL.createObjectURL unavailable' });
+            }
+            if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+              return resolve({ ok: false, reason: 'export-failed', error: 'document unavailable' });
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            try {
+              document.body.appendChild(a);
+              a.click();
+            } catch (e) {
+              try { URL.revokeObjectURL(url); } catch (_) {}
+              return resolve({ ok: false, reason: 'export-failed', error: String((e && e.message) || e || '') });
+            }
+            setTimeout(function () {
+              try { document.body.removeChild(a); } catch (_) {}
+              try { URL.revokeObjectURL(url); } catch (_) {}
+            }, 200);
+            resolve({ ok: true, filename: filename, bytes: bytes, fallback: 'blob-anchor' });
+          } catch (e) {
+            resolve({ ok: false, reason: 'error', error: String((e && e.message) || e || '') });
+          }
+        });
+      }
+
+      const files = W.H2O?.Studio?.platform?.files;
+      const canExportViaPlatform = !!(files && files.available && typeof files.exportBlob === 'function');
+      const writePromise = canExportViaPlatform
+        ? Promise.resolve(files.exportBlob({ suggestedName: filename, blob: blob }))
+            .then(undefined, function (err) {
+              /* platform.files rejected — fall back to inline blob+anchor
+               * so the user still gets a file. Log for diagnostics. */
+              try { console.warn('[RibbonBridge.exportMarkdown] platform.files.exportBlob rejected; falling back', err); }
+              catch (_) {}
+              return inlineBlobAnchor();
+            })
+        : inlineBlobAnchor();
+
+      return writePromise.then(function (res) {
+        const r = (res && typeof res === 'object') ? res : {};
+        if (r.ok === false && r.reason === 'cancelled') {
+          /* User dismissed the Tauri save dialog. Informational, not
+           * an error. */
+          return { ok: false, reason: 'cancelled' };
+        }
+        if (r.ok === false) {
+          return { ok: false, reason: r.reason || 'export-failed', error: String(r.error || '') };
+        }
+        return {
+          ok: true,
+          filename: filename,
+          bytes: bytes,
+          path: r.path,
+          overlayIncluded: !!safeTr.overlayIncluded,
+          overlaySkipped: !!safeTr.overlaySkipped,
+          overlayReason: safeTr.reason,
+          fallback: r.fallback || (canExportViaPlatform ? undefined : 'blob-anchor'),
+        };
+      });
+    });
+  }).catch(function (err) {
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
 /* Phase 2a — narrow read-only accessor for the per-snapshot edit
  * overlay. Returns a Promise resolving to the EditOverlay record or
  * null. Never throws. */
@@ -11151,7 +11400,7 @@ try {
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-2e',
+      version: '0.1.0-phase-3a',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
@@ -11160,6 +11409,11 @@ try {
       undo: __ribbonBridge_undo,
       redo: __ribbonBridge_redo,
       getHistoryState: __ribbonBridge_getHistoryState,
+      /* Phase 3a — Markdown export. */
+      exportMarkdown: __ribbonBridge_exportMarkdown,
+      _sanitizeFilenameStem: __ribbonBridge_sanitizeFilenameStem,
+      _buildMarkdownFilename: __ribbonBridge_buildMarkdownFilename,
+      _buildMarkdownHeader: __ribbonBridge_buildMarkdownHeader,
     };
   } else {
     /* Idempotent additive upgrade. */
@@ -11176,6 +11430,11 @@ try {
      * older RibbonBridge is already installed, so hot-reloads pick up
      * the new contract instead of holding the Phase 1b sync version. */
     W.H2O.Studio.RibbonBridge.getCleanTranscript = __ribbonBridge_getCleanTranscript;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-2e';
+    /* Phase 3a — Markdown export. Reinstall reference on hot reload. */
+    W.H2O.Studio.RibbonBridge.exportMarkdown = __ribbonBridge_exportMarkdown;
+    if (!W.H2O.Studio.RibbonBridge._sanitizeFilenameStem) W.H2O.Studio.RibbonBridge._sanitizeFilenameStem = __ribbonBridge_sanitizeFilenameStem;
+    if (!W.H2O.Studio.RibbonBridge._buildMarkdownFilename) W.H2O.Studio.RibbonBridge._buildMarkdownFilename = __ribbonBridge_buildMarkdownFilename;
+    if (!W.H2O.Studio.RibbonBridge._buildMarkdownHeader) W.H2O.Studio.RibbonBridge._buildMarkdownHeader = __ribbonBridge_buildMarkdownHeader;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-3a';
   }
 } catch (_) { /* swallow */ }

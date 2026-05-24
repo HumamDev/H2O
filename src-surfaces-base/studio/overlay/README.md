@@ -28,3 +28,7 @@ Undo / redo is now wired via the **reducer-filter active-set model**: `overlay.o
 ## Phase 2e — overlay-aware Copy clean transcript
 
 `overlay-serializer.studio.js` (new) turns a snapshot + overlay into a Markdown-flavoured transcript matching what the user sees in the reader. Pure: no DOM, no storage, no I/O. Reuses the Phase 2d-aware reducers, so it inherits the active-set filter automatically. The ribbon's "Copy clean transcript" action now calls the async `H2O.Studio.RibbonBridge.getCleanTranscript({ includeOverlay })` and writes the result to the clipboard. See the "Phase 2e — overlay-aware Copy clean transcript" section in `../STUDIO_OVERLAY_CONTRACT.md` for the full serializer mappings, the bridge return shape, and the drift-fallback behaviour.
+
+## Phase 3a — Markdown export
+
+`H2O.Studio.RibbonBridge.exportMarkdown()` composes the Phase 2e serializer output + a small header block (title, date, optional source URL, chat ID) and writes the result to a `.md` file via `H2O.Studio.platform.files.exportBlob`. MV3 uses Blob + `<a download>`; Tauri tries `plugin:dialog|save` + `plugin:fs|write_text_file` and falls back to the Blob+anchor path when those plugins aren't allow-listed (no new Rust deps or capability changes were added). The ribbon's `Export → Markdown` button invokes the bridge; drift fallback flows through with the status hint. See the "Phase 3a — Markdown export" section in `../STUDIO_OVERLAY_CONTRACT.md` for the full filename format, header layout, bridge return shape, and status canon.

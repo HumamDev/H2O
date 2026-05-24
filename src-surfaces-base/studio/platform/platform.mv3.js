@@ -226,12 +226,71 @@
     });
   }
 
-  /* ───────────────────────── placeholders ───────────────────────── */
+  /* ───────────────────────── files (Phase 3a) ─────────────────────────
+   * exportBlob downloads a Blob via the standard browser Blob +
+   * URL.createObjectURL + <a download> dance. Mirrors the long-standing
+   * migrateDownloadJson pattern in studio.js, generalised behind the
+   * platform.files contract so Studio Ribbon's Phase 3a Markdown export
+   * (and any later text/json/csv export) can route through one seam.
+   *
+   * Resolves with { ok: true, suggestedName } on success. Rejects with a
+   * descriptive Error on missing inputs / DOM-unavailable / Blob-URL
+   * failure. The bridge layer translates rejection into a benign
+   * { ok: false, reason } result so the ribbon never sees a throw.
+   *
+   * No new permissions are needed — `<a download>` works in the Studio
+   * surface today (Studio's existing migrateDownloadJson is proof). */
+  function filesExportBlob(opts) {
+    return new Promise(function (resolve, reject) {
+      try {
+        if (!opts || typeof opts !== 'object') {
+          return reject(new Error('platform.files.exportBlob: missing opts'));
+        }
+        var blob = opts.blob;
+        var suggestedName = String(opts.suggestedName || '').trim() || 'download.bin';
+        if (!blob || typeof blob !== 'object' || typeof blob.size !== 'number') {
+          return reject(new Error('platform.files.exportBlob: opts.blob must be a Blob'));
+        }
+        if (typeof global.URL === 'undefined' || typeof global.URL.createObjectURL !== 'function') {
+          return reject(new Error('platform.files.exportBlob: URL.createObjectURL unavailable'));
+        }
+        if (typeof global.document === 'undefined' || typeof global.document.createElement !== 'function') {
+          return reject(new Error('platform.files.exportBlob: document unavailable'));
+        }
+        var url = global.URL.createObjectURL(blob);
+        var a = global.document.createElement('a');
+        a.href = url;
+        a.download = suggestedName;
+        try {
+          global.document.body.appendChild(a);
+          a.click();
+        } catch (e) {
+          try { global.URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+          return reject(e);
+        }
+        /* Cleanup on the next tick so the click has a chance to fire the
+         * browser's download flow before we revoke the URL. 200ms matches
+         * the migrateDownloadJson precedent. */
+        setTimeout(function () {
+          try { global.document.body.removeChild(a); } catch (_) { /* ignore */ }
+          try { global.URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+        }, 200);
+        resolve({ ok: true, suggestedName: suggestedName });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
 
   var files = {
-    available: false,
-    reason: 'platform.files not implemented in mv3 skeleton; add when needed',
+    available: true,
+    exportBlob: filesExportBlob,
+    /* exportJson / importJson / importFile remain placeholders for now.
+     * Add when a feature genuinely needs them — Phase 3a only requires
+     * exportBlob. */
   };
+
+  /* ───────────────────────── placeholders ───────────────────────── */
 
   var capture = {
     available: false,

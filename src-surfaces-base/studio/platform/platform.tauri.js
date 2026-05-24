@@ -299,6 +299,143 @@
     }
   }
 
+  /* ── files.exportBlob (Phase 3a) ────────────────────────────────────
+   * Tries the native save flow first:
+   *   1. plugin:dialog|save        — returns the chosen path (or null on
+   *                                   user cancellation).
+   *   2. plugin:fs|write_text_file — writes the blob contents (text mode
+   *                                   for Markdown / JSON / text MIMEs).
+   *
+   * If either plugin is missing from this build's Tauri capabilities OR
+   * an invoke rejects (typical: permission denied because the plugin
+   * isn't allow-listed), falls back to the Chromium-style Blob +
+   * <a download> dance. The Tauri webview is chromium-based and
+   * supports this — meaning Phase 3a ships without requiring any new
+   * Rust dependency / capability change. If the plugins ARE present
+   * they're used; if not, the user still gets the file via the
+   * browser-style download path into the Tauri webview's downloads dir.
+   *
+   * Return shape:
+   *   { ok: true,  path?: string, suggestedName }    — native save succeeded
+   *   { ok: true,  suggestedName, fallback }         — blob+anchor used
+   *   { ok: false, reason: 'cancelled' }             — user dismissed dialog
+   *   rejection with Error                           — both paths failed
+   *                                                    (bridge translates) */
+  function filesExportBlob(opts) {
+    if (!opts || typeof opts !== 'object') {
+      return Promise.reject(new Error('platform.files.exportBlob: missing opts'));
+    }
+    var blob = opts.blob;
+    var suggestedName = String(opts.suggestedName || '').trim() || 'download.bin';
+    if (!blob || typeof blob !== 'object' || typeof blob.size !== 'number') {
+      return Promise.reject(new Error('platform.files.exportBlob: opts.blob must be a Blob'));
+    }
+
+    function blobAnchorFallback() {
+      return new Promise(function (resolve, reject) {
+        try {
+          if (typeof global.URL === 'undefined' || typeof global.URL.createObjectURL !== 'function') {
+            return reject(new Error('platform.files.exportBlob: URL.createObjectURL unavailable in webview'));
+          }
+          if (typeof global.document === 'undefined' || typeof global.document.createElement !== 'function') {
+            return reject(new Error('platform.files.exportBlob: document unavailable in webview'));
+          }
+          var url = global.URL.createObjectURL(blob);
+          var a = global.document.createElement('a');
+          a.href = url;
+          a.download = suggestedName;
+          try {
+            global.document.body.appendChild(a);
+            a.click();
+          } catch (e) {
+            try { global.URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+            return reject(e);
+          }
+          setTimeout(function () {
+            try { global.document.body.removeChild(a); } catch (_) { /* ignore */ }
+            try { global.URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+          }, 200);
+          resolve({ ok: true, suggestedName: suggestedName, fallback: 'blob-anchor' });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
+
+    var invoke = getTauriInvoke();
+    if (!invoke) {
+      /* Tauri context without invoke (shouldn't happen since we only
+       * register inside detectTauri() — but be defensive). */
+      return blobAnchorFallback();
+    }
+
+    /* Derive an extension hint from the suggestedName tail. Markdown
+     * export passes "*.md" implicitly via the suggestedName. */
+    var ext = '';
+    var dot = suggestedName.lastIndexOf('.');
+    if (dot > -1 && dot < suggestedName.length - 1) {
+      ext = suggestedName.slice(dot + 1).toLowerCase();
+    }
+    var dialogArgs = { defaultPath: suggestedName };
+    if (ext) {
+      dialogArgs.filters = [{ name: ext.toUpperCase() + ' file', extensions: [ext] }];
+    }
+
+    var savePromise;
+    try {
+      savePromise = invoke('plugin:dialog|save', dialogArgs);
+    } catch (_) {
+      /* Synchronous throw from invoke — plugin almost certainly missing. */
+      return blobAnchorFallback();
+    }
+    if (!savePromise || typeof savePromise.then !== 'function') {
+      return blobAnchorFallback();
+    }
+
+    return savePromise.then(function (chosenPath) {
+      if (chosenPath == null || chosenPath === '') {
+        /* User dismissed the save dialog. Return informational
+         * non-error so the ribbon can surface "Export cancelled". */
+        return { ok: false, reason: 'cancelled' };
+      }
+      var path = String(chosenPath);
+      /* Convert the blob to text. Markdown / JSON / CSV all round-trip
+       * cleanly through .text() as UTF-8; binary blobs would need a
+       * different fs op (out of Phase 3a scope). */
+      var textPromise = (typeof blob.text === 'function') ? blob.text() : Promise.resolve('');
+      return Promise.resolve(textPromise).then(function (contents) {
+        var writePromise;
+        try {
+          writePromise = invoke('plugin:fs|write_text_file', {
+            path: path,
+            contents: String(contents == null ? '' : contents),
+          });
+        } catch (_) {
+          /* fs plugin missing or rejected synchronously — fall back. */
+          return blobAnchorFallback();
+        }
+        if (!writePromise || typeof writePromise.then !== 'function') {
+          return blobAnchorFallback();
+        }
+        return writePromise.then(function () {
+          return { ok: true, path: path, suggestedName: suggestedName };
+        }, function (writeErr) {
+          /* fs.write rejected — almost always a capability/permission
+           * issue. Fall back rather than failing the user. */
+          try { console.warn('[H2O.Studio.platform.tauri] plugin:fs|write_text_file rejected; falling back to blob+anchor', writeErr); }
+          catch (_) { /* ignore */ }
+          return blobAnchorFallback();
+        });
+      });
+    }, function (dialogErr) {
+      /* dialog plugin missing or rejected. Fall back so the user still
+       * gets the file. */
+      try { console.warn('[H2O.Studio.platform.tauri] plugin:dialog|save rejected; falling back to blob+anchor', dialogErr); }
+      catch (_) { /* ignore */ }
+      return blobAnchorFallback();
+    });
+  }
+
   /* ── clipboard.writeText ────────────────────────────────────────── */
   /* Phase 1b — one-shot text write. Prefer tauri-plugin-clipboard-manager
    * if it happens to be wired into this build (no new dependency added in
@@ -347,7 +484,7 @@
       onAnyChange: broadcastOnAnyChange,
     },
     storage: { get: storageGet, set: storageSet, remove: storageRemove },
-    files: { available: false },
+    files: { available: true, exportBlob: filesExportBlob },
     capture: { available: false },
     auth: { available: false },
     clipboard: { writeText: clipboardWriteText },

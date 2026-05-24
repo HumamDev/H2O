@@ -125,16 +125,47 @@ Implementations:
 
 ```ts
 interface PlatformFiles {
-  exportJson(opts: { suggestedName: string; data: unknown }): Promise<{ ok: boolean }>;
-  exportBlob(opts: { suggestedName: string; blob: Blob }): Promise<{ ok: boolean }>;
-  importJson<T = unknown>(opts?: { mimeTypes?: string[] }): Promise<T | null>;
-  importFile(opts?: { mimeTypes?: string[] }): Promise<File | null>;
+  available: boolean;                                                      // implementation present
+  exportBlob(opts: { suggestedName: string; blob: Blob }): Promise<{      // Phase 3a — implemented
+    ok: boolean;
+    suggestedName?: string;
+    path?: string;             // Tauri-native save path when applicable
+    reason?: 'cancelled';      // user dismissed the Tauri save dialog
+    fallback?: 'blob-anchor';  // Tauri-only: native save unavailable, used webview download
+  }>;
+  exportJson?(opts: { suggestedName: string; data: unknown }): Promise<{ ok: boolean }>;  // placeholder
+  importJson?<T = unknown>(opts?: { mimeTypes?: string[] }): Promise<T | null>;            // placeholder
+  importFile?(opts?: { mimeTypes?: string[] }): Promise<File | null>;                      // placeholder
 }
 ```
 
-Implementations:
-- **MV3 adapter** — Blob + `<a download>` for export; hidden `<input type=file>` for import.
-- **Tauri adapter** — `dialog.save` / `dialog.open` plus `fs.writeTextFile` / `fs.readTextFile`.
+**Implementation status (Phase 3a):**
+
+- `exportBlob` — **implemented** on MV3 + Tauri.
+- `exportJson`, `importJson`, `importFile` — **placeholders** (add when a
+  feature genuinely needs them).
+
+**Implementations:**
+
+- **MV3 adapter** (`platform.mv3.js`) — `exportBlob` uses Blob +
+  `URL.createObjectURL` + `<a download>`. No new permission required.
+  Mirrors the long-standing `migrateDownloadJson` pattern in `studio.js`.
+- **Tauri adapter** (`platform.tauri.js`) — `exportBlob` tries
+  `plugin:dialog|save` then `plugin:fs|write_text_file`. If either
+  plugin is missing from this build's Tauri capabilities OR the invoke
+  rejects (typical: permission denied), falls back to the Chromium-style
+  Blob+`<a download>` (the Tauri webview is chromium-based and supports
+  it). **No new Rust dependencies or capability changes were added in
+  Phase 3a** — features adopt the API freely; missing plugins degrade
+  silently to the webview download path.
+- **Fallback adapter** — `files: { available: false }`. Callers MUST
+  feature-detect `platform.files.available && typeof platform.files.exportBlob === 'function'`
+  before calling, OR provide their own inline fallback (see
+  `RibbonBridge.exportMarkdown` for the canonical pattern).
+
+**Cancellation:** Tauri users who dismiss the save dialog get
+`{ ok: false, reason: 'cancelled' }`. Treat as informational, NOT an
+error; surface a non-error status to the user.
 
 ### `H2O.Studio.platform.auth` (token requests)
 

@@ -317,6 +317,66 @@
         );
       },
     },
+    /* Phase 3a — Export → Markdown.
+     * Async export of the current overlay-aware saved chat as a `.md`
+     * file via H2O.Studio.RibbonBridge.exportMarkdown(). The bridge
+     * composes header block + Phase 2e serializer output, picks a
+     * filesystem-safe filename, and routes through
+     * H2O.Studio.platform.files.exportBlob (MV3 → Blob+<a download>;
+     * Tauri → native dialog/fs, falling back to Blob+<a download> when
+     * the dialog/fs plugins aren't allow-listed).
+     *
+     * Enable rule: saved-reader only + bridge installed.
+     *
+     * Status strings:
+     *   "Preparing Markdown…"                            — pending
+     *   "Markdown saved: <filename>"                     — overlay applied OR raw (no drift)
+     *   "Markdown saved (overlay skipped — snapshot changed)"
+     *                                                     — drift fallback
+     *   "Export cancelled"                               — user dismissed Tauri save dialog
+     *   "No transcript content"                          — empty snapshot
+     *   "Export bridge unavailable"                      — bridge method missing
+     *   "Export failed: <reason>"                        — anything else */
+    'export-markdown': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.exportMarkdown !== 'function') return false;
+        return true;
+      },
+      onClick: function (ctx, setStatus) {
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.exportMarkdown !== 'function') {
+          setStatus('Export bridge unavailable');
+          return;
+        }
+        setStatus('Preparing Markdown…');
+        Promise.resolve(bridge.exportMarkdown()).then(
+          function (result) {
+            const safe = (result && typeof result === 'object') ? result : { ok: false, reason: 'unknown' };
+            if (safe.ok === true) {
+              const filename = String(safe.filename || 'Markdown');
+              if (safe.overlaySkipped && safe.overlayReason === 'drift-detected') {
+                setStatus('Markdown saved (overlay skipped — snapshot changed)');
+              } else {
+                setStatus('Markdown saved: ' + filename);
+              }
+              return;
+            }
+            const reason = String(safe.reason || 'unknown');
+            if (reason === 'cancelled') { setStatus('Export cancelled'); return; }
+            if (reason === 'no-snapshot') { setStatus('No saved chat open'); return; }
+            if (reason === 'no-content') { setStatus('No transcript content'); return; }
+            const errSuffix = safe.error ? ': ' + String(safe.error) : '';
+            setStatus('Export failed: ' + reason + errSuffix);
+          },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Export failed: ' + msg);
+          }
+        );
+      },
+    },
     /* Phase 1c — Metadata → Category.
      * Does NOT mutate category itself; instead routes focus + brief
      * pulse highlight onto the existing topbar category picker

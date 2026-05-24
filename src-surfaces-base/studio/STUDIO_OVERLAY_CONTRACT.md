@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 2e)
+Status: Active (Phase 3a)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -408,6 +408,143 @@ unreachable failures it resolves with the empty floor shape.
   slot can be added later without a contract change.
 - "Copy visible only" as a separate ribbon button — the option exists
   on the serializer as `{ collapsedMode: 'omit' }`; no UI in V1.
+
+## Phase 3a — Markdown export
+
+Status: **Built**. Implemented across `platform/platform.mv3.js`
+(`files.exportBlob` real implementation), `platform/platform.tauri.js`
+(`files.exportBlob` native-first + Blob+anchor fallback),
+`studio.js` (`RibbonBridge.exportMarkdown` + filename sanitizer +
+header builder), and `S0Y1a. 🎬 Studio Ribbon - Studio.js`
+(`Export → Markdown` handler).
+
+### Bridge shape
+
+`H2O.Studio.RibbonBridge.exportMarkdown(opts?)` — async, returns
+`Promise<{ ok, reason?, filename?, bytes?, path?, overlayIncluded?,
+overlaySkipped?, overlayReason?, fallback? }>`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | boolean | true when the file landed (either via native save or Blob+anchor fallback). |
+| `reason` | string? | When `ok:false`, one of: `'no-snapshot'`, `'no-content'`, `'cancelled'` (user dismissed Tauri save dialog), `'export-failed'`, `'error'`. |
+| `filename` | string | The suggested filename (`{stem}__{YYYY-MM-DD}.md`). |
+| `bytes` | number | Size of the file written. |
+| `path` | string? | Tauri-native save path when `plugin:fs|write_text_file` was used. |
+| `overlayIncluded` | boolean | Pass-through from `getCleanTranscript`. |
+| `overlaySkipped` | boolean | Pass-through (drift fallback triggered). |
+| `overlayReason` | string? | Pass-through reason from `getCleanTranscript`. |
+| `fallback` | string? | `'blob-anchor'` when the inline Blob+`<a download>` fallback was used (either because `platform.files.available` was false, or because the Tauri native save path fell back). |
+
+Options:
+
+- `includeOverlay` (default `true`) — pass-through to serializer.
+- `includeToc` (default `false`) — pass-through.
+- `collapsedMode` (default `'include-marked'`) — pass-through.
+
+The bridge **never throws**. All branches resolve with a well-formed
+result; even Blob construction or DOM creation failures resolve with
+`{ ok: false, reason: 'error', error: '<msg>' }`.
+
+### Filename format
+
+```
+{sanitized-title}__{YYYY-MM-DD}.md
+```
+
+Sanitization (`__ribbonBridge_sanitizeFilenameStem`):
+
+- Replaces control chars (0x00–0x1F + 0x7F) and Windows-reserved
+  punctuation (`/\:*?"<>|` and spaces) with `-`.
+- Collapses whitespace runs to single spaces then to `-`; collapses
+  runs of `-`; trims leading/trailing `-`.
+- Truncates to 80 chars (cross-OS path safety).
+- Prefixes Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`,
+  `COM1-9`, `LPT1-9`) with `_`.
+
+Filename fallbacks (`__ribbonBridge_buildMarkdownFilename`):
+
+- Empty sanitized stem AND non-empty `chatId` → `chat-{chatId8}`.
+- Empty sanitized stem AND no `chatId` → `studio-transcript`.
+- Date from `snap.capturedAt` ISO prefix (YYYY-MM-DD); fallback to
+  today's local date.
+
+### File content layout
+
+```markdown
+# {snap.title}
+
+_Captured: {YYYY-MM-DD}_
+_Source: {originalUrl}_         (only when originalUrl present in ribbon context)
+_Chat ID: {snap.chatId}_        (only when chatId present)
+
+---
+
+{Phase 2e serializer output}
+```
+
+Metadata lines are joined with `  \n` (two trailing spaces + newline)
+so Markdown preserves them as visible line breaks within a single
+paragraph. The horizontal rule (`---`) separates the doc header from
+the conversation body. `originalUrl` is read from the live ribbon
+context (`H2O.Studio.ribbon.getContext().originalUrl`) and only
+included for indexed chats.
+
+### Platform behaviour
+
+- **MV3** (`platform.mv3.js`): `files.exportBlob` uses Blob +
+  `URL.createObjectURL` + `<a download>`. No new permission required —
+  this works in the Studio surface today (proof: existing
+  `migrateDownloadJson`).
+- **Tauri** (`platform.tauri.js`): `files.exportBlob` tries
+  `plugin:dialog|save` then `plugin:fs|write_text_file`. If either
+  plugin is missing from this build's Tauri capabilities OR rejects
+  with a permission error, falls back to the Chromium-style
+  Blob+`<a download>` (the Tauri webview is chromium-based and
+  supports it). **No new Rust deps or capability changes required for
+  Phase 3a.**
+- **Fallback** (`platform/index.js`): defaults `files.available: false`.
+  The bridge feature-detects and uses its inline Blob+anchor fallback
+  whenever `platform.files.available !== true`.
+
+### Cancellation
+
+Tauri users who dismiss the save dialog get back `{ ok: false, reason:
+'cancelled' }`. The ribbon handler surfaces this as `"Export cancelled"`
+— informational, not styled as an error.
+
+### Ribbon status feedback (Export → Download → Markdown)
+
+- `"Preparing Markdown…"` — pending.
+- `"Markdown saved: <filename>"` — overlay applied OR raw mode (no drift).
+- `"Markdown saved (overlay skipped — snapshot changed)"` — drift fallback.
+- `"Export cancelled"` — user dismissed Tauri save dialog.
+- `"No transcript content"` — empty snapshot.
+- `"No saved chat open"` — no current saved snapshot.
+- `"Export bridge unavailable"` — bridge method missing.
+- `"Export failed: <reason>"` — anything else.
+
+### Compliance notes for Phase 3a
+
+- `exportMarkdown` MUST NOT mutate `snap.messages` or the overlay record.
+- The serializer is reused verbatim — no parallel formatting code.
+- Filename sanitizer + header builder are pure helpers (no DOM, no I/O).
+- Bridge MUST NOT throw under any input.
+- The drift status string `"Markdown saved (overlay skipped — snapshot
+  changed)"` mirrors the Phase 2e copy variant; do not paraphrase.
+- No new storage keys, no overlay schema changes, no new op types.
+- Adapters MUST keep their `files.available` flag honest: `true` only
+  when `exportBlob` is callable.
+
+### Out of scope for Phase 3a
+
+- PDF / DOCX / HTML export.
+- Markdown frontmatter (YAML at top) — a future `includeFrontmatter`
+  option can add this without a contract change.
+- Drift annotation inside the exported file — the status string flags
+  it in the UI; the file itself stays clean.
+- "Copy raw" or "Copy visible only" ribbon buttons (still V2+).
+- Bulk export of multiple snapshots.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 
