@@ -276,13 +276,30 @@ validation, but F7.2 never calls F6 ingestion.
 
 ### F7.3 Manual F6 Handoff Protocol
 
-F7.3 is an explicit manual handoff protocol only. It bridges F7 preview
-candidates to the existing F6 manual conflict queue ingestion API without
-adding helper methods, automatic queueing, runner-triggered ingestion, merge,
-apply, write-back, or sync behavior changes.
+F7.3 is a manual protocol for taking explicitly selected folder metadata
+candidates from F7 preview output and passing them to the existing F6 conflict
+queue API. It is not a UI feature and not an automatic sync path.
 
-The operator must explicitly run the F6 dry-run first, then explicitly run the
-real F6 manual ingest only after reviewing the dry-run result:
+The existing F6 API is:
+
+```js
+H2O.Studio.store.conflicts.ingestConflictCandidates(candidates, {
+  source: "manual-devtools",
+  reason,
+  dryRun
+});
+```
+
+Manual handoff flow:
+
+1. Run F7 preview with `includeConflictCandidates: true`.
+2. Manually select one or a small set of candidate objects from the latest
+   preview result.
+3. Run F6 dry-run ingestion.
+4. Review the dry-run result.
+5. Only after explicit approval, run the same call with `dryRun: false`.
+
+No automatic ingestion is allowed.
 
 ```js
 const preview = H2O.Studio.diagnostics.previewBidirectionalFolderMetadata({
@@ -298,34 +315,106 @@ const candidate = preview.conflictCandidates.candidates[0];
 
 await H2O.Studio.store.conflicts.ingestConflictCandidates([candidate], {
   source: "manual-devtools",
-  reason: "manual F7 preview handoff to F6 queue",
+  reason: "manual F7 folder metadata preview handoff to F6 queue",
   dryRun: true
 });
+```
 
+Only if explicitly approved later, the operator may run:
+
+```js
 await H2O.Studio.store.conflicts.ingestConflictCandidates([candidate], {
   source: "manual-devtools",
-  reason: "manual F7 preview handoff to F6 queue",
+  reason: "manual F7 folder metadata preview handoff to F6 queue",
   dryRun: false
 });
 ```
 
-Handoff candidate requirements:
+The candidate array lives under `preview.conflictCandidates.candidates`. There
+is no top-level `preview.candidates` contract.
 
-- The candidate must come from F7.2 preview output.
-- The candidate must use schema `h2o.studio.sync-conflict-candidate.v1`.
-- The candidate must use source `bidirectional-folder-preview`.
-- The candidate must include an actual safe `dedupeKeyHash`.
-- The candidate must represent non-delete `folder.metadata` evidence.
-- The candidate must pass F6 dry-run before real ingest.
-- The candidate must not contain raw folder IDs, names, parent IDs, raw hashes,
-  raw metadata, peer IDs, JSON blobs, titles, hrefs, or content.
+#### Candidate selection rules
 
-Batch policy:
-
+- Select actual candidate objects from the latest preview output.
 - Default manual selection is one candidate.
 - Documentation examples should use at most five candidates.
 - Operators should manually hand off no more than ten candidates at once.
-- Do not add "ingest all candidates" examples or helpers.
+- Do not add or use "enqueue all" helpers.
+- Do not select by array index alone unless tied to a preview hash or token.
+- Do not enqueue `delete-vs-edit-reference` candidates in F7.3.
+
+#### Allowed conflict kinds
+
+F7.3 may manually hand off only these conflict kinds:
+
+- `same-record-divergent-metadata`
+- `folder-identity-collision`
+- `local-only-folder-metadata`
+- `remote-only-folder-metadata`
+
+The one-sided folder kinds are review-only. They must not imply create, delete,
+rename, or apply behavior.
+
+#### Blocked conflict kinds
+
+F7.3 must not manually hand off:
+
+- `delete-vs-edit-reference`
+- Any candidate implying folder delete or metadata apply.
+- Malformed candidates without safe dedupe material.
+- Candidates with raw folder IDs, folder names, parent IDs, peer IDs, raw
+  metadata, JSON blobs, titles, hrefs, prompts, messages, or content.
+
+#### F6 dry-run validation
+
+Before real ingestion, F6 dry-run must validate:
+
+- `schema === "h2o.studio.sync-conflict-candidate.v1"`
+- `source === "bidirectional-folder-preview"`
+- `entityKind === "folder"`
+- Allowed `conflictKind`.
+- Allowed `classification`.
+- Allowed `severity`.
+- Safe `dedupeKeyHash`.
+- No raw folder IDs.
+- No folder names.
+- No parent IDs.
+- No peer IDs.
+- No raw metadata.
+- No JSON blobs.
+- `previewSchema === "h2o.studio.sync.folder-metadata-preview.v1"` when
+  present.
+- Candidate count remains within the manual limit.
+- No apply behavior.
+
+#### Confirmation and audit model
+
+For the docs-only/manual F7.3 protocol:
+
+- `reason` is required for real ingest.
+- Recommended reason is:
+  `manual F7 folder metadata preview handoff to F6 queue`
+- Future UI, if ever added, must require exact confirmation:
+  `ENQUEUE FOLDER METADATA CONFLICTS`
+- Durable audit is the F6 queue ingestion itself through pending conflict rows
+  or duplicate sightings.
+- F7.3 does not add a separate F7 audit table.
+
+#### Forbidden behavior
+
+F7.3 explicitly forbids:
+
+- Automatic queue writes.
+- "Enqueue all" behavior.
+- Runner-triggered ingestion.
+- Settings or public UI ingestion.
+- Folder rename, delete, or color mutation.
+- Native folder-state mutation.
+- Chrome folder-state mutation.
+- Desktop folder-state mutation.
+- Sync apply or operation apply.
+- F6 decision calls from F7.
+- P8 renderer changes.
 
 F5/F6 boundary:
 
@@ -333,6 +422,9 @@ F5/F6 boundary:
 - F7.3 must not hand F5-owned delete evidence into F6.
 - F6 owns durable non-delete conflict queue rows and decisions.
 - F7.3 documents manual submission only; it does not create a new queue owner.
+
+Safety statement: F7.3 does not apply folder metadata. It only defines how
+selected preview candidates may be manually handed to F6 for review.
 
 Rejected helper design:
 
