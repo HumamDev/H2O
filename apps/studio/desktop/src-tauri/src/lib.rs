@@ -781,6 +781,48 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v11 — F5H.5-c: inert peer watermark evidence table.
+        // This creates schema/indexes only. It does not add watermark
+        // writers, lifecycle unblocking, purge, archive, compaction,
+        // cleanup, sync apply, or Chrome/native mutation behavior.
+        Migration {
+            version: 11,
+            description: "init sync peer watermarks",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS sync_peer_watermarks (
+                  watermark_id            TEXT PRIMARY KEY,
+                  schema                  TEXT NOT NULL,
+                  observing_peer_id       TEXT NOT NULL,
+                  source_peer_id          TEXT NOT NULL,
+                  stream_kind             TEXT NOT NULL,
+                  last_seen_export_id     TEXT,
+                  last_seen_sequence      INTEGER,
+                  last_seen_checksum      TEXT,
+                  last_seen_at            TEXT NOT NULL,
+                  last_imported_at        TEXT,
+                  high_watermark_sequence INTEGER,
+                  low_watermark_sequence  INTEGER,
+                  retention_hold_until    TEXT,
+                  status                  TEXT NOT NULL,
+                  meta_json               TEXT NOT NULL DEFAULT '{}',
+                  created_at              TEXT NOT NULL,
+                  updated_at              TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_peer_watermarks_unique_stream
+                  ON sync_peer_watermarks(observing_peer_id, source_peer_id, stream_kind);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_peer_watermarks_source_sequence
+                  ON sync_peer_watermarks(source_peer_id, stream_kind, high_watermark_sequence);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_peer_watermarks_observing_status
+                  ON sync_peer_watermarks(observing_peer_id, status);
+
+                CREATE INDEX IF NOT EXISTS idx_sync_peer_watermarks_retention_hold
+                  ON sync_peer_watermarks(retention_hold_until);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -1903,6 +1945,112 @@ mod tests {
                 && !migration.sql.contains("DELETE FROM sync_conflicts"),
             "F6.1b.0 migration must not seed, mutate, or delete conflict rows"
         );
+    }
+
+    #[test]
+    fn f5h5c_peer_watermarks_migration_defines_inert_table_and_indexes() {
+        tauri::async_runtime::block_on(async {
+            let migrations = studio_migrations();
+            let migration = migrations
+                .iter()
+                .find(|m| m.version == 11)
+                .expect("F5H.5-c sync_peer_watermarks migration exists");
+            assert_eq!(migration.description, "init sync peer watermarks");
+            assert!(migration
+                .sql
+                .contains("CREATE TABLE IF NOT EXISTS sync_peer_watermarks"));
+
+            let mut conn = SqliteConnection::connect("sqlite::memory:")
+                .await
+                .expect("F5H.5-c migration test sqlite open");
+            for statement in migration.sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                sqlx::query(statement)
+                    .execute(&mut conn)
+                    .await
+                    .expect("F5H.5-c migration statement applies");
+            }
+
+            let (table_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sync_peer_watermarks'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .expect("F5H.5-c table lookup");
+            assert_eq!(table_count, 1);
+
+            let column_rows = sqlx::query("PRAGMA table_info(sync_peer_watermarks)")
+                .fetch_all(&mut conn)
+                .await
+                .expect("F5H.5-c table info");
+            let column_names = column_rows
+                .iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<Vec<_>>();
+            for column in [
+                "watermark_id",
+                "schema",
+                "observing_peer_id",
+                "source_peer_id",
+                "stream_kind",
+                "last_seen_export_id",
+                "last_seen_sequence",
+                "last_seen_checksum",
+                "last_seen_at",
+                "last_imported_at",
+                "high_watermark_sequence",
+                "low_watermark_sequence",
+                "retention_hold_until",
+                "status",
+                "meta_json",
+                "created_at",
+                "updated_at",
+            ] {
+                assert!(
+                    column_names.iter().any(|name| name == column),
+                    "sync_peer_watermarks migration missing column {column}"
+                );
+            }
+
+            let index_rows = sqlx::query("PRAGMA index_list(sync_peer_watermarks)")
+                .fetch_all(&mut conn)
+                .await
+                .expect("F5H.5-c index list");
+            let index_names = index_rows
+                .iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<Vec<_>>();
+            for index in [
+                "idx_sync_peer_watermarks_unique_stream",
+                "idx_sync_peer_watermarks_source_sequence",
+                "idx_sync_peer_watermarks_observing_status",
+                "idx_sync_peer_watermarks_retention_hold",
+            ] {
+                assert!(
+                    index_names.iter().any(|name| name == index),
+                    "sync_peer_watermarks migration missing {index}"
+                );
+            }
+
+            assert!(
+                migration
+                    .sql
+                    .contains("CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_peer_watermarks_unique_stream"),
+                "sync_peer_watermarks migration must enforce one row per observer/source/stream"
+            );
+            assert!(
+                !migration.sql.contains("INSERT INTO sync_peer_watermarks")
+                    && !migration.sql.contains("UPDATE sync_peer_watermarks")
+                    && !migration.sql.contains("DELETE FROM sync_peer_watermarks"),
+                "F5H.5-c migration must not seed, mutate, or delete watermark rows"
+            );
+            assert!(
+                !migration.sql.contains("sync_tombstones")
+                    && !migration.sql.contains("sync_tombstone_reviews")
+                    && !migration.sql.contains("sync_maintenance_log")
+                    && !migration.sql.contains("sync_conflicts"),
+                "F5H.5-c migration must not alter lifecycle data tables"
+            );
+        });
     }
 
     fn run_proof(failure: Option<F5g4ProofFailure>) -> F5g4ProofResult {
