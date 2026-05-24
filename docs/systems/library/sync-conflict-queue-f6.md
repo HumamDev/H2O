@@ -736,6 +736,35 @@ F6 final validation harness is acceptable only if:
 - No hidden runner button is required while the existing multi-peer readiness
   runner remains a counts-only/no-writes surface.
 
+F7.4.1d read-only F6 conflict blocker lookup is acceptable only if:
+
+- `H2O.Studio.store.conflicts.diagnoseConflictByDedupeKeyHash(dedupeKeyHash)`
+  exists as a Desktop-only read-only diagnostic method.
+- The caller passes only the safe candidate `dedupeKeyHash`, not raw dedupe
+  material, record IDs, folder IDs, or peer IDs.
+- The store internally queries the persisted F6 dedupe key as
+  `candidate-hash:` plus the safe hash. It never returns the stored dedupe key
+  or input hash.
+- The only database access is a read-only lookup of status, decision,
+  classification, severity, conflict kind, and entity kind for a matching row.
+- Results are redacted and may expose only `found`, `blocksApply`, status,
+  safe decision code/presence, classification, severity, and blocker/warning
+  codes.
+- `pending` and `accepted-later` rows block future apply planning.
+- `ignored` and `rejected` rows unblock only when their expected decision code
+  is present.
+- `resolved-owned-by-f5`, `blocked-unsupported`, ambiguous resolved rows,
+  unknown statuses, and F5-owned delete-vs-edit rows block future apply
+  planning.
+- `resolved-no-action-needed`, `resolved-duplicate`, and resolved label-only
+  rows such as `resolved-local-wins`, `resolved-remote-wins`, and
+  `resolved-manual-merge` do not block this lookup, but label-only decisions
+  may return a warning because they still do not perform mutation.
+- `superseded` rows do not block and return a warning.
+- The method does not call conflict ingestion, conflict decision actions, F5
+  APIs, folder mutation paths, import/export/sync paths, Chrome APIs, merge,
+  apply, or entity mutation behavior.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.

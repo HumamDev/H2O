@@ -10,9 +10,10 @@
  * already present in SQLite. F6.4a adds manual candidate ingest validation as
  * dry-run only. F6.4b adds explicit manual ingestion through a narrow Rust
  * transaction command. F6.5 adds decision-only actions for existing conflict
- * rows. F6.6 adds read-only resolution previews as labels only. There is still
- * no automatic candidate ingestion, merge, apply, entity mutation, delete, or
- * analyzer/runner persistence.
+ * rows. F6.6 adds read-only resolution previews as labels only. F7.4.1d adds
+ * a read-only dedupe blocker diagnostic. There is still no automatic candidate
+ * ingestion, merge, apply, entity mutation, delete, or analyzer/runner
+ * persistence.
  */
 (function (global) {
   'use strict';
@@ -44,7 +45,9 @@
   var INGEST_SCHEMA = 'h2o.studio.sync-conflict-ingest.v1';
   var DECISION_SCHEMA = 'h2o.studio.sync-conflict-decision.v1';
   var RESOLUTION_PREVIEW_SCHEMA = 'h2o.studio.sync-conflict-resolution-preview.v1';
+  var DEDUPE_DIAGNOSTIC_SCHEMA = 'h2o.studio.sync-conflict-dedupe-diagnostic.v1';
   var VALIDATION_ID_GATE = 'I_UNDERSTAND_THIS_EXPOSES_CONFLICT_IDS_FOR_VALIDATION';
+  var CANDIDATE_DEDUPE_PREFIX = 'candidate-hash:';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 50;
@@ -607,6 +610,135 @@
         platform: 'desktop-tauri',
         blockers: [warning('sync-conflicts-get-failed')],
       };
+    });
+  }
+
+  function dedupeDiagnosticFailure(code) {
+    return {
+      schema: DEDUPE_DIAGNOSTIC_SCHEMA,
+      ok: false,
+      redacted: true,
+      platform: 'desktop-tauri',
+      found: false,
+      blocksApply: true,
+      blocker: null,
+      blockers: [warning(code || 'sync-conflict-dedupe-diagnostic-failed')],
+      warnings: [],
+    };
+  }
+
+  function dedupeDiagnosticNotFound() {
+    return {
+      schema: DEDUPE_DIAGNOSTIC_SCHEMA,
+      ok: true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      found: false,
+      blocksApply: false,
+      blocker: null,
+      warnings: [],
+    };
+  }
+
+  function suspiciousDedupeHashString(value) {
+    var s = cleanString(value).toLowerCase();
+    if (!s) return true;
+    if (/[\s{}\[\]"'`]/.test(s)) return true;
+    return /(^|[._:-])(rawjson|raw_json|content|title|prompt|answer|message|href|url|transcript|text|body|metadata|raw)($|[._:-])/.test(s);
+  }
+
+  function safeDedupeKeyHash(value) {
+    if (typeof value !== 'string') return '';
+    var s = safeCodeString(value);
+    if (!s || suspiciousDedupeHashString(s)) return '';
+    if (/^(candidate-hash|folder|chat|snapshot|label|category|peer|record):/i.test(s)) return '';
+    return s;
+  }
+
+  function decisionBlocksForResolved(decision) {
+    if (decision === 'resolved-no-action-needed') return null;
+    if (decision === 'resolved-duplicate') return null;
+    if (decision === 'resolved-local-wins') return null;
+    if (decision === 'resolved-remote-wins') return null;
+    if (decision === 'resolved-manual-merge') return null;
+    if (decision === 'resolved-owned-by-f5') return 'f6-conflict-owned-by-f5';
+    if (decision === 'blocked-unsupported') return 'f6-conflict-blocked-unsupported';
+    return 'f6-conflict-resolution-ambiguous';
+  }
+
+  function blockerForDedupeDiagnostic(row) {
+    var status = cleanString(row && row.status);
+    var decision = cleanString(row && row.decision);
+    var classification = cleanString(row && row.classification);
+    var conflictKind = cleanString(row && row.conflict_kind);
+
+    if (status === 'ignored') {
+      return decision === 'ignored-by-operator' ? null : 'f6-conflict-resolution-ambiguous';
+    }
+    if (status === 'rejected') {
+      return decision === 'rejected-by-operator' ? null : 'f6-conflict-resolution-ambiguous';
+    }
+    if (conflictKind === 'delete-vs-edit-reference' || classification === 'delete-vs-edit-owned-by-f5') {
+      return 'f6-conflict-owned-by-f5';
+    }
+    if (status === 'pending') return 'f6-conflict-pending';
+    if (status === 'accepted-later') return 'f6-conflict-accepted-later';
+    if (status === 'superseded') return null;
+    if (status === 'resolved') return decisionBlocksForResolved(decision);
+    return 'f6-conflict-status-unknown';
+  }
+
+  function warningsForDedupeDiagnostic(row, blockerCode) {
+    var out = [];
+    var status = cleanString(row && row.status);
+    var decision = cleanString(row && row.decision);
+    if (status === 'superseded') out.push(warning('f6-conflict-superseded'));
+    if (!blockerCode && status === 'resolved'
+        && (decision === 'resolved-local-wins'
+          || decision === 'resolved-remote-wins'
+          || decision === 'resolved-manual-merge')) {
+      out.push(warning('f6-conflict-resolved-label-only'));
+    }
+    return out;
+  }
+
+  function dedupeDiagnosticFromRow(row) {
+    var blockerCode = blockerForDedupeDiagnostic(row);
+    var rawDecision = cleanString(row && row.decision);
+    var decision = safeCodeString(rawDecision);
+    return {
+      schema: DEDUPE_DIAGNOSTIC_SCHEMA,
+      ok: true,
+      redacted: true,
+      platform: 'desktop-tauri',
+      found: true,
+      blocksApply: !!blockerCode,
+      status: safeCodeString(row && row.status) || null,
+      decision: decision || null,
+      decisionPresent: !!rawDecision,
+      classification: safeCodeString(row && row.classification) || null,
+      severity: safeCodeString(row && row.severity) || null,
+      blocker: blockerCode ? warning(blockerCode) : null,
+      warnings: warningsForDedupeDiagnostic(row, blockerCode),
+    };
+  }
+
+  function diagnoseConflictByDedupeKeyHash(dedupeKeyHash) {
+    var hash = safeDedupeKeyHash(dedupeKeyHash);
+    if (!hash) return Promise.resolve(dedupeDiagnosticFailure('invalid-dedupe-key-hash'));
+    return ensureReady().then(function (ok) {
+      if (!ok) return dedupeDiagnosticFailure(state.initError || 'sync-conflicts-table-missing');
+      return sqlSelect(
+        'SELECT status, decision, classification, severity, conflict_kind, entity_kind ' +
+        'FROM ' + TABLE + ' WHERE dedupe_key = ? LIMIT 1',
+        [CANDIDATE_DEDUPE_PREFIX + hash]
+      ).then(function (rows) {
+        var row = Array.isArray(rows) && rows.length ? rows[0] : null;
+        return row ? dedupeDiagnosticFromRow(row) : dedupeDiagnosticNotFound();
+      });
+    }).catch(function (e) {
+      recordError('diagnoseConflictByDedupeKeyHash', e);
+      return dedupeDiagnosticFailure('sync-conflict-dedupe-diagnostic-failed');
     });
   }
 
@@ -1284,13 +1416,14 @@
 
   var api = {
     __installed: true,
-    __version: '0.1.4-f6.6',
+    __version: '0.1.5-f7.4.1d',
     init: init,
     dispose: dispose,
     isReady: isReady,
     diagnose: diagnose,
     listConflicts: listConflicts,
     getConflict: getConflict,
+    diagnoseConflictByDedupeKeyHash: diagnoseConflictByDedupeKeyHash,
     countByStatus: countByStatus,
     countByKind: countByKind,
     countBySeverity: countBySeverity,
@@ -1308,6 +1441,7 @@
       ingestSchema: INGEST_SCHEMA,
       decisionSchema: DECISION_SCHEMA,
       resolutionPreviewSchema: RESOLUTION_PREVIEW_SCHEMA,
+      dedupeDiagnosticSchema: DEDUPE_DIAGNOSTIC_SCHEMA,
       table: TABLE,
       statuses: Object.freeze(Object.keys(STATUSES).slice()),
       severities: Object.freeze(Object.keys(SEVERITIES).slice()),

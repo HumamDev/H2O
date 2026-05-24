@@ -671,6 +671,49 @@ folder mutation methods, F5 apply/cleanup methods, F6 ingest/decision methods,
 Chrome storage mutation, import/export/sync mutation paths, Rust commands, or
 schema migrations.
 
+### F7.4.1d Read-Only F6 Dedupe Blocker Lookup
+
+F7.4.1d adds the F6-owned read-only diagnostic method:
+
+```js
+await H2O.Studio.store.conflicts.diagnoseConflictByDedupeKeyHash(dedupeKeyHash);
+```
+
+The method answers whether an existing `sync_conflicts` row for a safe
+candidate `dedupeKeyHash` blocks future folder color apply planning. It accepts
+only the safe candidate hash and internally looks up the persisted F6 key as
+`candidate-hash:` plus that hash. It never returns the input hash, stored dedupe
+key, conflict ID, record ID, peer ID, summaries, folder names, raw JSON, or
+content.
+
+The lookup is diagnostic only. It performs a read-only conflict-store lookup and
+returns redacted status, decision presence/code, classification, severity,
+`found`, `blocksApply`, and blocker/warning codes. It does not call F6
+ingestion, F6 decision actions, F5 APIs, folder mutation paths, import/export,
+sync, Chrome storage, merge, apply, or write-back behavior.
+
+Blocking policy:
+
+- `pending` blocks with `f6-conflict-pending`.
+- `accepted-later` blocks with `f6-conflict-accepted-later`.
+- `ignored` and `rejected` do not block only when their expected decision code
+  is present.
+- F5-owned rows, including `delete-vs-edit-reference`,
+  `delete-vs-edit-owned-by-f5`, and `resolved-owned-by-f5`, block with
+  `f6-conflict-owned-by-f5` unless clearly ignored or rejected.
+- `blocked-unsupported` blocks with `f6-conflict-blocked-unsupported`.
+- Ambiguous resolved rows block with `f6-conflict-resolution-ambiguous`.
+- Unknown statuses block with `f6-conflict-status-unknown`.
+- `resolved-no-action-needed` and `resolved-duplicate` do not block.
+- `resolved-local-wins`, `resolved-remote-wins`, and
+  `resolved-manual-merge` do not block this diagnostic, but they remain labels
+  only and may return a warning.
+- `superseded` does not block and returns a warning.
+
+F7.4.1d does not wire this lookup into
+`folder-metadata-apply-checks.tauri.js`. The next separate phase can replace
+the current `f6-blocker-check-unavailable` result with this diagnostic.
+
 Potential blocker codes:
 
 - `watermark-unavailable`
