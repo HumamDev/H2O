@@ -649,10 +649,10 @@ target folder ID, folder name, parent ID, raw color/icon value, raw metadata,
 raw hashes, tombstone IDs, conflict IDs, peer IDs, and raw JSON are never
 returned.
 
-F7.4.1c still cannot prove F6 blockers absent because the conflict store does
-not yet expose a precise read-only lookup by candidate/dedupe hash. Therefore
-`checkF6Blockers: true` returns `f6-blocker-check-unavailable`, sets
-`f6BlockersAbsent` false in the redacted result, and keeps `applyable: false`.
+F7.4.1c initially could not prove F6 blockers absent because the conflict store
+did not expose a precise read-only lookup by candidate/dedupe hash. That gap is
+closed in F7.4.1d/F7.4.1e by adding and consuming a redacted F6 dedupe
+diagnostic.
 
 Additional live-check blockers:
 
@@ -710,9 +710,43 @@ Blocking policy:
   only and may return a warning.
 - `superseded` does not block and returns a warning.
 
-F7.4.1d does not wire this lookup into
-`folder-metadata-apply-checks.tauri.js`. The next separate phase can replace
-the current `f6-blocker-check-unavailable` result with this diagnostic.
+F7.4.1d itself does not wire this lookup into
+`folder-metadata-apply-checks.tauri.js`; it only adds the F6-owned diagnostic
+surface.
+
+### F7.4.1e F6 Dedupe Diagnostic Wiring
+
+F7.4.1e wires the read-only F6 dedupe diagnostic into the Desktop/Tauri folder
+metadata apply live-check wrapper. The pure dry-run planner remains unchanged.
+
+When `refreshLocalState === true` and `checkF6Blockers === true`, the wrapper
+extracts a safe candidate hash from:
+
+```js
+selectedDelta.dedupeKeyHash
+selectedDelta.conflictCandidate?.dedupeKeyHash
+selectedDelta.candidate?.dedupeKeyHash
+```
+
+If no safe hash is available, the wrapper returns
+`f6-dedupe-key-hash-required`, sets `f6BlockersAbsent` false, and keeps
+`applyable` false. The hash is sensitive input only and is never returned.
+
+If a hash is present, the wrapper calls only:
+
+```js
+H2O.Studio.store.conflicts.diagnoseConflictByDedupeKeyHash(dedupeKeyHash)
+```
+
+The wrapper consumes only `found`, `blocksApply`, `blocker.code`, and code-level
+warnings. It does not duplicate the F6 status/decision matrix. If the
+diagnostic is unavailable or fails, applyability remains false. If the
+diagnostic finds no blocking conflict and all other live checks pass,
+`f6BlockersAbsent` may be true and the dry-run plan may become applyable.
+
+F7.4.1e still performs no writes. It must not call F6 ingestion, F6 decision
+actions, F5 mutation APIs, folder mutation methods, Chrome storage mutation,
+import/export/sync mutation paths, merge, apply, or write-back behavior.
 
 Potential blocker codes:
 

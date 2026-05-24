@@ -1,11 +1,11 @@
-/* H2O Studio Sync - F7.4.1c folder.metadata apply live checks
+/* H2O Studio Sync - F7.4.1c/F7.4.1e folder.metadata apply live checks
  *
  * Tauri-only read layer for the F7.4.1b dry-run planner.
  *   - No SQL execution.
  *   - No browser storage access.
  *   - No folder write methods.
  *   - No F5 lifecycle writes.
- *   - No F6 queue/review writes.
+ *   - No F6 queue/review writes; F6 dedupe checks are diagnostic-only.
  *   - No import/export/folder-sync/peer-transport calls.
  */
 (function (global) {
@@ -28,7 +28,7 @@
   var originalPlan = H2O.Studio.diagnostics.planBidirectionalFolderMetadataApply;
   if (typeof originalPlan !== 'function') return;
 
-  var VERSION = '0.1.0-f7.4.1c';
+  var VERSION = '0.1.1-f7.4.1e';
   var FOLDER_RECORD_KIND = 'folder';
 
   function isObject(value) {
@@ -94,9 +94,44 @@
     list.push({ code: normalized });
   }
 
-  function mergeBlockers(result, blockers) {
+  function addWarning(list, code) {
+    var normalized = cleanString(code);
+    if (!normalized) return;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].code === normalized) return;
+    }
+    list.push({ code: normalized });
+  }
+
+  function isSpecificF6Blocker(code) {
+    var normalized = cleanString(code);
+    if (!normalized || normalized === 'f6-blocker-present') return false;
+    return normalized.indexOf('f6-conflict-') === 0
+      || normalized.indexOf('f6-blocker-check-') === 0
+      || normalized === 'f6-dedupe-key-hash-required';
+  }
+
+  function pruneGenericF6Blocker(result) {
+    var blockers = Array.isArray(result.blockers) ? result.blockers : [];
+    var hasSpecific = false;
+    for (var i = 0; i < blockers.length; i++) {
+      if (isSpecificF6Blocker(blockers[i] && blockers[i].code)) {
+        hasSpecific = true;
+        break;
+      }
+    }
+    if (!hasSpecific) return;
+    result.blockers = blockers.filter(function (blocker) {
+      return cleanString(blocker && blocker.code) !== 'f6-blocker-present';
+    });
+  }
+
+  function mergeBlockers(result, blockers, warnings) {
     result.blockers = Array.isArray(result.blockers) ? result.blockers : [];
     for (var i = 0; i < blockers.length; i++) addBlocker(result.blockers, blockers[i].code);
+    result.warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    for (var w = 0; w < (warnings || []).length; w++) addWarning(result.warnings, warnings[w].code);
+    pruneGenericF6Blocker(result);
     result.ok = result.blockers.length === 0;
     result.applyable = result.ok === true;
     if (!result.applyable && result.plannedMutation) result.plannedMutation.rowsWouldUpdate = 0;
@@ -162,17 +197,65 @@
       });
   }
 
+  function selectedDedupeKeyHash(selectedDelta) {
+    var delta = safeObject(selectedDelta);
+    var direct = cleanString(delta.dedupeKeyHash);
+    if (direct) return direct;
+    var conflictCandidate = safeObject(delta.conflictCandidate);
+    var fromConflictCandidate = cleanString(conflictCandidate.dedupeKeyHash);
+    if (fromConflictCandidate) return fromConflictCandidate;
+    var candidate = safeObject(delta.candidate);
+    return cleanString(candidate.dedupeKeyHash);
+  }
+
+  function checkF6Blockers(selectedDelta, blockers, warnings, enabled) {
+    if (enabled !== true) {
+      addBlocker(blockers, 'f6-blocker-check-unavailable');
+      return Promise.resolve(undefined);
+    }
+    var dedupeKeyHash = selectedDedupeKeyHash(selectedDelta);
+    if (!dedupeKeyHash) {
+      addBlocker(blockers, 'f6-dedupe-key-hash-required');
+      return Promise.resolve(false);
+    }
+    var conflicts = H2O.Studio.store && H2O.Studio.store.conflicts;
+    if (!conflicts || typeof conflicts.diagnoseConflictByDedupeKeyHash !== 'function') {
+      addBlocker(blockers, 'f6-blocker-check-unavailable');
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve(conflicts.diagnoseConflictByDedupeKeyHash(dedupeKeyHash))
+      .then(function (diagnostic) {
+        if (!diagnostic || diagnostic.ok !== true) {
+          addBlocker(blockers, 'f6-blocker-check-failed');
+          return false;
+        }
+        var f6Warnings = Array.isArray(diagnostic.warnings) ? diagnostic.warnings : [];
+        for (var i = 0; i < f6Warnings.length; i++) addWarning(warnings, f6Warnings[i] && f6Warnings[i].code);
+        if (diagnostic.found === false) return true;
+        if (diagnostic.blocksApply === true) {
+          addBlocker(blockers, cleanString(diagnostic.blocker && diagnostic.blocker.code) || 'f6-blocker-present');
+          return false;
+        }
+        return true;
+      })
+      .catch(function () {
+        addBlocker(blockers, 'f6-blocker-check-failed');
+        return false;
+      });
+  }
+
   function buildLiveChecks(input) {
     var inp = safeObject(input);
     var selectedDelta = safeObject(inp.selectedDelta);
     var targetFolderId = cleanString(selectedDelta.targetFolderId);
     var blockers = [];
+    var warnings = [];
     var checks = {};
 
     if (!targetFolderId) {
       addBlocker(blockers, 'target-folder-id-required');
       checks.f6BlockersAbsent = undefined;
-      return Promise.resolve({ checks: checks, blockers: blockers });
+      return Promise.resolve({ checks: checks, blockers: blockers, warnings: warnings });
     }
 
     return readFolder(targetFolderId, blockers).then(function (folder) {
@@ -192,9 +275,10 @@
       return checkLocalTombstone(targetFolderId, blockers, inp.checkF5Blockers === true);
     }).then(function (f5Absent) {
       checks.f5BlockersAbsent = f5Absent === true ? true : (f5Absent === false ? false : undefined);
-      checks.f6BlockersAbsent = undefined;
-      addBlocker(blockers, 'f6-blocker-check-unavailable');
-      return { checks: checks, blockers: blockers };
+      return checkF6Blockers(selectedDelta, blockers, warnings, inp.checkF6Blockers === true);
+    }).then(function (f6Absent) {
+      checks.f6BlockersAbsent = f6Absent === true ? true : (f6Absent === false ? false : undefined);
+      return { checks: checks, blockers: blockers, warnings: warnings };
     });
   }
 
@@ -204,11 +288,11 @@
       var planInput = Object.assign({}, safeObject(input), { checks: live.checks });
       var result = originalPlan(planInput);
       result.checkMode = 'live-read-only';
-      return mergeBlockers(result, live.blockers);
+      return mergeBlockers(result, live.blockers, live.warnings);
     }).catch(function () {
       var fallback = originalPlan(Object.assign({}, safeObject(input), { checks: {} }));
       fallback.checkMode = 'live-read-only';
-      return mergeBlockers(fallback, [{ code: 'live-read-check-failed' }]);
+      return mergeBlockers(fallback, [{ code: 'live-read-check-failed' }], []);
     });
   }
 
