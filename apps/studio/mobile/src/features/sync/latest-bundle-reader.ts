@@ -243,6 +243,9 @@ function hasSourcePeerPresence(bundle: Record<string, unknown>): boolean {
   if (typeof bundle.sourcePeerId === "string" && bundle.sourcePeerId.length > 0) {
     return true;
   }
+  if (typeof bundle.sourceSyncPeerId === "string" && bundle.sourceSyncPeerId.length > 0) {
+    return true;
+  }
   if (typeof bundle.sourcePeer === "string" && bundle.sourcePeer.length > 0) {
     return true;
   }
@@ -358,6 +361,9 @@ function countFolderState(diagnostic: MobileBundleDiagnostic, bundle: Record<str
 function countLibraryKv(diagnostic: MobileBundleDiagnostic, bundle: Record<string, unknown>): void {
   const libraryKv = valueAt(bundle, "libraryKv");
   if (libraryKv === undefined) {
+    return;
+  }
+  if (Array.isArray(libraryKv)) {
     return;
   }
   if (!isRecord(libraryKv)) {
