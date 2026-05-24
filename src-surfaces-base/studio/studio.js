@@ -11038,6 +11038,230 @@ function __ribbonBridge_exportMarkdown(opts){
   });
 }
 
+/* ─── Phase 3b — PDF / print view helpers + bridge method ──────────────────
+ * Strategy A: window.print() over the live reader DOM. The browser's
+ * print dialog offers "Save as PDF" as a destination on every modern OS
+ * (Chrome, Edge, Firefox, Safari, Tauri webview). Studio injects a
+ * temporary <header data-print-header> before .cgFrame, swaps
+ * document.title for a sensible PDF filename, calls window.print(), and
+ * unwinds. No JS PDF library, no Tauri plugin, no platform.files change.
+ *
+ * Cancellation limitation: window.print() is synchronous from JS and
+ * returns no signal indicating whether the user saved a file or
+ * dismissed the dialog. The bridge resolves ok:true for "we opened the
+ * dialog"; the ribbon status string explains. Same constraint every
+ * web-based print-to-PDF flow has. */
+
+/* Build the print-only header element with title + date + optional
+ * source + optional chat ID. Pure (constructs and returns a node; no
+ * DOM mutation outside the returned element). Reused by the smoke. */
+function __ribbonBridge_buildPrintHeaderEl(snap, originalUrl){
+  try {
+    const header = document.createElement('header');
+    header.setAttribute('data-print-header', 'true');
+
+    const titleEl = document.createElement('h1');
+    titleEl.textContent = String((snap && snap.title) || 'Studio transcript');
+    header.appendChild(titleEl);
+
+    const meta = document.createElement('div');
+    meta.className = 'wbPrintHeaderMeta';
+
+    /* Date from capturedAt ISO prefix; fall back to today's local date. */
+    let date;
+    const raw = (snap && snap.capturedAt) ? String(snap.capturedAt) : '';
+    if (raw && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
+      date = raw.slice(0, 10);
+    } else {
+      const d = new Date();
+      date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    const dateSpan = document.createElement('span');
+    dateSpan.textContent = 'Captured: ' + date;
+    meta.appendChild(dateSpan);
+
+    const src = String(originalUrl == null ? '' : originalUrl).trim();
+    if (src) {
+      const srcSpan = document.createElement('span');
+      srcSpan.textContent = 'Source: ' + src;
+      meta.appendChild(srcSpan);
+    }
+    const chatId = String((snap && snap.chatId) || '').trim();
+    if (chatId) {
+      const chatSpan = document.createElement('span');
+      chatSpan.textContent = 'Chat ID: ' + chatId;
+      meta.appendChild(chatSpan);
+    }
+    header.appendChild(meta);
+    return header;
+  } catch (_) {
+    /* Last-resort minimal node so callers can still print. */
+    try {
+      const fallback = document.createElement('header');
+      fallback.setAttribute('data-print-header', 'true');
+      const h = document.createElement('h1');
+      h.textContent = 'Studio transcript';
+      fallback.appendChild(h);
+      return fallback;
+    } catch (_) { return null; }
+  }
+}
+
+/* Suggested filename hint (the browser's save-as-PDF dialog ignores
+ * this and uses document.title — we set that to a useful string below).
+ * Kept for the bridge result + status messages. Reuses the Phase 3a
+ * Markdown filename sanitizer; just swaps .md for .pdf. */
+function __ribbonBridge_buildPdfFilename(snap){
+  try {
+    const md = __ribbonBridge_buildMarkdownFilename(snap);
+    if (typeof md === 'string' && md.endsWith('.md')) return md.slice(0, -3) + '.pdf';
+    return String(md || 'studio-transcript') + '.pdf';
+  } catch (_) { return 'studio-transcript.pdf'; }
+}
+
+/* Coalesce concurrent print calls — only one print in flight at a time
+ * (otherwise the document.title stash/restore can race). */
+let __ribbonBridge_printInFlight = false;
+
+/* Phase 3b — open the browser print dialog over the live reader DOM.
+ * The CSS in studio.css (@media print block) hides Studio chrome and
+ * keeps overlay decorations + the print-only header visible. The user
+ * picks the destination (printer or Save as PDF) from the OS dialog.
+ *
+ * Returns Promise<{
+ *   ok: boolean,
+ *   reason?: 'no-snapshot' | 'no-content' | 'reader-unavailable' |
+ *            'print-unavailable' | 'print-in-progress' | 'error',
+ *   filename?: string,              suggested PDF filename
+ *   overlayIncluded?: boolean,      mirrors getCleanTranscript shape
+ *   overlaySkipped?: boolean,       true if drift detected
+ *   overlayReason?: string,         'drift-detected' when applicable
+ * }>. Never throws. */
+function __ribbonBridge_openPrintView(opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeHeader = options.includeHeader !== false; /* default true */
+
+    if (__ribbonBridge_printInFlight) {
+      return { ok: false, reason: 'print-in-progress' };
+    }
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) {
+      return { ok: false, reason: 'no-snapshot' };
+    }
+
+    /* Locate the reader DOM. Phase 2/3 conventions: #viewReader > .cgFrame */
+    let frame = null;
+    try {
+      const readerEl = document.getElementById('viewReader');
+      frame = readerEl && readerEl.querySelector('.cgFrame');
+    } catch (_) { frame = null; }
+    if (!frame) {
+      return { ok: false, reason: 'reader-unavailable' };
+    }
+
+    if (typeof window === 'undefined' || typeof window.print !== 'function') {
+      return { ok: false, reason: 'print-unavailable' };
+    }
+
+    /* Compute drift status diagnostically. We do NOT refuse on drift —
+     * the user pressed print and expects a render. We just surface the
+     * fact via overlaySkipped so the ribbon status can flag it. */
+    let overlaySkipped = false;
+    let overlayReason;
+    let overlayIncluded = false;
+    try {
+      const ov = W.H2O?.Studio?.overlay;
+      const ovStore = W.H2O?.Studio?.store?.editOverlay;
+      if (ov && typeof ov.computeBaseDigest === 'function' && ovStore && typeof ovStore.get === 'function') {
+        /* Synchronous best-effort: read the cached overlay if available
+         * (editOverlay caches after first get/upsert). For our purposes
+         * the diagnostic is advisory; not awaiting keeps the bridge
+         * snappy and avoids racing with the print dialog opening. */
+        try {
+          const maybe = ovStore.get(String(snap.snapshotId));
+          if (maybe && typeof maybe.then === 'function') {
+            /* Async path — we can't await before print() without delaying
+             * the dialog; just leave the flags at defaults. */
+          } else if (maybe) {
+            const currentDigest = ov.computeBaseDigest(snap);
+            if (maybe.baseDigest && maybe.baseDigest !== currentDigest) {
+              overlaySkipped = true;
+              overlayReason = 'drift-detected';
+            } else if (Array.isArray(maybe.undoStack) && maybe.undoStack.length > 0) {
+              overlayIncluded = true;
+            }
+          }
+        } catch (_) { /* swallow — diagnostic only */ }
+      }
+    } catch (_) { /* swallow */ }
+
+    /* Resolve originalUrl from the ribbon context for the header line. */
+    let originalUrl = '';
+    try {
+      const ribbon = W.H2O?.Studio?.ribbon;
+      const ctx = (ribbon && typeof ribbon.getContext === 'function') ? ribbon.getContext() : null;
+      if (ctx && typeof ctx.originalUrl === 'string') originalUrl = ctx.originalUrl;
+    } catch (_) { originalUrl = ''; }
+
+    const filename = __ribbonBridge_buildPdfFilename(snap);
+    const titleForPdf = String((snap && snap.title) || 'Studio transcript') + ' — Studio';
+
+    /* Stash state for restoration in finally. */
+    let injectedHeader = null;
+    let previousTitle = '';
+    __ribbonBridge_printInFlight = true;
+
+    try {
+      previousTitle = document.title;
+      try { document.title = titleForPdf; } catch (_) { /* swallow */ }
+
+      if (includeHeader) {
+        injectedHeader = __ribbonBridge_buildPrintHeaderEl(snap, originalUrl);
+        if (injectedHeader) {
+          try { frame.insertBefore(injectedHeader, frame.firstChild || null); }
+          catch (_) { injectedHeader = null; /* couldn't inject; print anyway */ }
+        }
+      }
+
+      /* Call into the browser print dialog. Synchronous from JS. */
+      try {
+        window.print();
+      } catch (printErr) {
+        return { ok: false, reason: 'error', error: String((printErr && printErr.message) || printErr || '') };
+      }
+
+      return {
+        ok: true,
+        filename: filename,
+        overlayIncluded: overlayIncluded,
+        overlaySkipped: overlaySkipped,
+        overlayReason: overlayReason,
+      };
+    } finally {
+      /* Always restore — even if window.print threw or we returned
+       * early. The injected header is short-lived and must not leak
+       * into the live reader. */
+      if (injectedHeader && injectedHeader.parentNode) {
+        try { injectedHeader.parentNode.removeChild(injectedHeader); }
+        catch (_) { /* swallow */ }
+      }
+      try {
+        if (previousTitle != null) document.title = previousTitle;
+      } catch (_) { /* swallow */ }
+      __ribbonBridge_printInFlight = false;
+    }
+  }).catch(function (err) {
+    /* Last-resort floor — guarantees the never-throw contract even if
+     * the synchronous body above somehow rejected before the finally
+     * ran. The finally above runs first in normal flow so this is
+     * primarily a paranoia net. */
+    __ribbonBridge_printInFlight = false;
+    return { ok: false, reason: 'error', error: String((err && err.message) || err || '') };
+  });
+}
+
 /* Phase 2a — narrow read-only accessor for the per-snapshot edit
  * overlay. Returns a Promise resolving to the EditOverlay record or
  * null. Never throws. */
@@ -11400,7 +11624,7 @@ try {
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
-      version: '0.1.0-phase-3a',
+      version: '0.1.0-phase-3b',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
@@ -11414,6 +11638,10 @@ try {
       _sanitizeFilenameStem: __ribbonBridge_sanitizeFilenameStem,
       _buildMarkdownFilename: __ribbonBridge_buildMarkdownFilename,
       _buildMarkdownHeader: __ribbonBridge_buildMarkdownHeader,
+      /* Phase 3b — PDF / print view. */
+      openPrintView: __ribbonBridge_openPrintView,
+      _buildPrintHeaderEl: __ribbonBridge_buildPrintHeaderEl,
+      _buildPdfFilename: __ribbonBridge_buildPdfFilename,
     };
   } else {
     /* Idempotent additive upgrade. */
@@ -11435,6 +11663,10 @@ try {
     if (!W.H2O.Studio.RibbonBridge._sanitizeFilenameStem) W.H2O.Studio.RibbonBridge._sanitizeFilenameStem = __ribbonBridge_sanitizeFilenameStem;
     if (!W.H2O.Studio.RibbonBridge._buildMarkdownFilename) W.H2O.Studio.RibbonBridge._buildMarkdownFilename = __ribbonBridge_buildMarkdownFilename;
     if (!W.H2O.Studio.RibbonBridge._buildMarkdownHeader) W.H2O.Studio.RibbonBridge._buildMarkdownHeader = __ribbonBridge_buildMarkdownHeader;
-    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-3a';
+    /* Phase 3b — PDF / print view. Reinstall reference on hot reload. */
+    W.H2O.Studio.RibbonBridge.openPrintView = __ribbonBridge_openPrintView;
+    if (!W.H2O.Studio.RibbonBridge._buildPrintHeaderEl) W.H2O.Studio.RibbonBridge._buildPrintHeaderEl = __ribbonBridge_buildPrintHeaderEl;
+    if (!W.H2O.Studio.RibbonBridge._buildPdfFilename) W.H2O.Studio.RibbonBridge._buildPdfFilename = __ribbonBridge_buildPdfFilename;
+    W.H2O.Studio.RibbonBridge.version = '0.1.0-phase-3b';
   }
 } catch (_) { /* swallow */ }

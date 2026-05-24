@@ -7404,3 +7404,315 @@ body[data-route="reader"] #studioDock.wbDock--open {
   text-align: center;
   padding: 24px 12px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Phase 3b — Print / PDF stylesheet
+   ─────────────────────────────────────────────────────────────────────
+   Strategy A: window.print() over the live reader DOM. The user clicks
+   Export → PDF (or Print view), studio.js injects a temporary
+   [data-print-header] element before .cgFrame and calls window.print().
+   The browser print dialog offers "Save as PDF" as a destination on
+   every modern OS (Chrome, Edge, Firefox, Safari, Tauri webview).
+
+   What this stylesheet does:
+     1. Hides Studio chrome (sidebar, rail, topbar, ribbon, status, edit UI).
+     2. Forces a light/readable theme for print regardless of screen theme.
+     3. Reveals the on-demand print header (display:none on screen).
+     4. Preserves every Phase 2 overlay decoration in print.
+     5. Un-hides collapsed-section turns (collapse is a viewing convenience;
+        print includes the content but the collapsed marker stays in the
+        section header — mirrors Phase 2e/3a collapsedMode='include-marked').
+     6. Adds page-break hints so callouts / code / section headers don't
+        split awkwardly across pages.
+     7. Sets @page margins; users can override via the OS print dialog.
+
+   No JS PDF library, no Tauri plugin, no platform.files change.
+   Contracts: src-surfaces-base/studio/STUDIO_OVERLAY_CONTRACT.md
+   ─────────────────────────────────────────────────────────────────── */
+
+/* Screen-default: the print-header is a hidden DOM node until print. */
+[data-print-header] {
+  display: none;
+}
+
+@page {
+  size: letter;
+  margin: 0.75in;
+}
+
+@media print {
+
+  /* ── 1. Hide Studio chrome ───────────────────────────────────────── */
+  .wbRail,
+  .wbSide,
+  .wbSide--sidebar,
+  .wbSidebarHead,
+  .wbSidebarSection,
+  .wbStudioNavItem,
+  .wbTop,
+  .wbTopGroup,
+  .wbRouteMeta,
+  .wbCategoryTopbar,
+  .wbSelectWrap--topbar,
+  .wbRibbon,
+  .wbRibbonStatus,
+  .wbDock,
+  .wbDockRail,
+  .wbDockPanel,
+  .wbEditBtn,
+  .wbEditWrap,
+  .wbMini,
+  .wbMiniMap,
+  .wbMiniMapBtn,
+  #studioRibbon,
+  #studioSidebar,
+  #railSidebarBtn,
+  #folderAssignWrap,
+  #categoryAssignWrap {
+    display: none !important;
+  }
+
+  /* Ribbon-selection outline is a UI affordance, not content. */
+  .wbReader [data-turn].is-ribbon-selected::before,
+  .wbReader [data-turn].is-ribbon-selected::after {
+    display: none !important;
+  }
+  .wbReader [data-turn].is-ribbon-selected {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  /* ── 2. Force a readable light theme ─────────────────────────────── */
+  html,
+  body,
+  body[data-h2o-studio-mode] {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .wbShell,
+  .wbStage,
+  .wbMain {
+    display: block !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  #viewReader,
+  .wbReader,
+  .cgFrame {
+    display: block !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    font-size: 11pt;
+    line-height: 1.5;
+  }
+
+  .wbReader [data-turn] {
+    background: transparent !important;
+    color: #000000 !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 0 8pt 0 !important;
+    margin: 0 0 8pt 0 !important;
+    page-break-inside: auto;
+  }
+
+  /* Tighten generic links so they don't waste blue ink. */
+  .wbReader a, .wbReader a:visited {
+    color: #000000 !important;
+    text-decoration: underline;
+  }
+
+  /* ── 3. Reveal the print-only header ─────────────────────────────── */
+  [data-print-header] {
+    display: block !important;
+    margin: 0 0 16pt 0 !important;
+    padding: 0 0 8pt 0 !important;
+    border-bottom: 1pt solid #000000 !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+    page-break-after: avoid !important;
+  }
+  [data-print-header] h1 {
+    font-size: 18pt !important;
+    margin: 0 0 6pt 0 !important;
+    padding: 0 !important;
+    color: #000000 !important;
+    font-weight: 700 !important;
+    page-break-after: avoid !important;
+  }
+  [data-print-header] .wbPrintHeaderMeta {
+    font-size: 9pt !important;
+    color: #333333 !important;
+    line-height: 1.4 !important;
+  }
+  [data-print-header] .wbPrintHeaderMeta > span {
+    display: block;
+  }
+
+  /* ── 4. Overlay decorations — keep them visible in print ─────────── */
+
+  .wbReader [data-turn][data-overlay-heading="h1"] [data-message-author-role] {
+    font-size: 22pt !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+    margin-top: 8pt !important;
+    page-break-after: avoid !important;
+  }
+  .wbReader [data-turn][data-overlay-heading="h2"] [data-message-author-role] {
+    font-size: 18pt !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+    margin-top: 6pt !important;
+    page-break-after: avoid !important;
+  }
+  .wbReader [data-turn][data-overlay-heading="h3"] [data-message-author-role] {
+    font-size: 14pt !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+    margin-top: 4pt !important;
+    page-break-after: avoid !important;
+  }
+
+  .wbReader [data-turn][data-overlay-quote="true"] [data-message-author-role] {
+    border-left: 3pt solid #555555 !important;
+    padding-left: 10pt !important;
+    color: #222222 !important;
+    background: #f4f4f4 !important;
+    page-break-inside: avoid;
+  }
+
+  .wbReader [data-turn][data-overlay-code="true"] [data-message-author-role] {
+    font-family: "SF Mono", "Menlo", "Consolas", "Courier New", monospace !important;
+    font-size: 9.5pt !important;
+    background: #f4f4f4 !important;
+    color: #000000 !important;
+    border: 0.5pt solid #cccccc !important;
+    padding: 8pt !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+    page-break-inside: avoid;
+  }
+
+  .wbReader [data-turn][data-overlay-callout] [data-message-author-role] {
+    border: 0.5pt solid #888888 !important;
+    border-left-width: 3pt !important;
+    padding: 8pt 12pt !important;
+    background: #fafafa !important;
+    color: #000000 !important;
+    page-break-inside: avoid;
+  }
+  .wbReader [data-turn][data-overlay-callout="info"] [data-message-author-role] {
+    border-left-color: #336699 !important;
+  }
+  .wbReader [data-turn][data-overlay-callout="note"] [data-message-author-role] {
+    border-left-color: #666666 !important;
+  }
+  .wbReader [data-turn][data-overlay-callout="warning"] [data-message-author-role] {
+    border-left-color: #cc6600 !important;
+  }
+  .wbReader [data-turn][data-overlay-callout="tip"] [data-message-author-role] {
+    border-left-color: #339966 !important;
+  }
+
+  .wbReader [data-turn][data-overlay-clean-spacing="true"] [data-message-author-role] p {
+    margin: 0 0 6pt 0 !important;
+  }
+
+  /* ── 5. Structure markers (sections / dividers / TOC) ────────────── */
+
+  .wbReader .wbOverlaySectionHeader {
+    background: #ffffff !important;
+    color: #000000 !important;
+    border-top: 0.5pt solid #888888 !important;
+    border-bottom: 0.5pt solid #888888 !important;
+    padding: 6pt 0 !important;
+    margin: 12pt 0 6pt 0 !important;
+    page-break-inside: avoid !important;
+    page-break-after: avoid !important;
+  }
+  .wbReader .wbOverlaySectionTitle {
+    font-size: 13pt !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+  }
+  .wbReader .wbOverlaySectionMeta {
+    font-size: 9pt !important;
+    color: #555555 !important;
+    margin-left: 8pt !important;
+  }
+
+  .wbReader .wbOverlayDivider {
+    border: none !important;
+    border-top: 1pt solid #000000 !important;
+    margin: 12pt 0 !important;
+    page-break-after: auto;
+  }
+
+  /* TOC — keep visible at the top. Buttons render as plain text in
+     print (their scrollIntoView click handlers are dead in a PDF
+     anyway; users navigate via the printed section headers). */
+  .wbReader .wbOverlayToc {
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: 0.5pt solid #888888 !important;
+    padding: 8pt 12pt !important;
+    margin: 0 0 16pt 0 !important;
+    page-break-inside: avoid;
+    page-break-after: avoid;
+  }
+  .wbReader .wbOverlayTocHeading {
+    font-size: 12pt !important;
+    font-weight: 700 !important;
+    color: #000000 !important;
+    margin: 0 0 6pt 0 !important;
+  }
+  .wbReader .wbOverlayTocList {
+    margin: 0 !important;
+    padding-left: 18pt !important;
+  }
+  .wbReader .wbOverlayTocLink {
+    background: transparent !important;
+    border: none !important;
+    color: #000000 !important;
+    font-size: 10pt !important;
+    text-align: left !important;
+    padding: 0 !important;
+    cursor: default !important;
+  }
+
+  /* ── 6. Collapsed sections — un-hide for print but keep marker ───── */
+  .wbReader [data-turn].is-in-collapsed-section {
+    display: revert !important;
+  }
+
+  /* ── 7. Page-break orphans / widows tuning ───────────────────────── */
+  .wbReader p, .wbReader li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* ── 8. Generic image / pre overflow protection ──────────────────── */
+  .wbReader img, .wbReader pre, .wbReader code {
+    max-width: 100% !important;
+    overflow-wrap: anywhere !important;
+  }
+  .wbReader pre {
+    white-space: pre-wrap !important;
+  }
+
+}

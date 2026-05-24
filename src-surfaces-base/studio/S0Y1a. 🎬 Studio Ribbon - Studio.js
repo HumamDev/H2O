@@ -377,6 +377,113 @@
         );
       },
     },
+    /* Phase 3b — Export → Download → PDF AND Export → Print → Print view.
+     * Both actions invoke the SAME bridge method
+     * (H2O.Studio.RibbonBridge.openPrintView) which:
+     *   1. Injects a temporary <header data-print-header> with title +
+     *      captured date + optional source + chat ID before .cgFrame.
+     *   2. Swaps document.title for the duration of the print dialog
+     *      so the browser's "Save as PDF" destination defaults to a
+     *      useful filename.
+     *   3. Calls window.print(); browser print dialog opens.
+     *   4. Unwinds in try/finally — removes header, restores title.
+     *
+     * The two ribbon entries differ only in status strings:
+     *   - export-pdf  promotes "Save as PDF" in the success status
+     *   - print-view  is neutral (user picks destination)
+     *
+     * Cancellation limitation: window.print() returns no signal that
+     * the user dismissed the dialog vs saved a PDF. ok:true means
+     * "dialog opened"; status text is honest about it. Same constraint
+     * Notion / GitHub / Google Docs all have. */
+
+    /* Shared isEnabled rule for both Print-family actions. */
+    /* (Inlined into both handlers below to mirror the format/structure
+     * pattern used elsewhere in this file — no shared helper to keep
+     * the dependency graph local.) */
+
+    'export-pdf': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.openPrintView !== 'function') return false;
+        return true;
+      },
+      onClick: function (ctx, setStatus) {
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.openPrintView !== 'function') {
+          setStatus('Print bridge unavailable');
+          return;
+        }
+        setStatus('Opening print dialog…');
+        Promise.resolve(bridge.openPrintView()).then(
+          function (result) {
+            const safe = (result && typeof result === 'object') ? result : { ok: false, reason: 'unknown' };
+            if (safe.ok === true) {
+              if (safe.overlaySkipped && safe.overlayReason === 'drift-detected') {
+                setStatus('Print dialog opened (overlay disabled — snapshot changed)');
+              } else {
+                setStatus('Print dialog opened — choose Save as PDF');
+              }
+              return;
+            }
+            const reason = String(safe.reason || 'unknown');
+            if (reason === 'no-snapshot')           { setStatus('No saved chat open'); return; }
+            if (reason === 'reader-unavailable')    { setStatus('Reader not mounted'); return; }
+            if (reason === 'print-unavailable')     { setStatus('Print unavailable in this environment'); return; }
+            if (reason === 'print-in-progress')     { setStatus('Print already in progress'); return; }
+            const errSuffix = safe.error ? ': ' + String(safe.error) : '';
+            setStatus('Print failed: ' + reason + errSuffix);
+          },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Print failed: ' + msg);
+          }
+        );
+      },
+    },
+
+    'print-view': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.openPrintView !== 'function') return false;
+        return true;
+      },
+      onClick: function (ctx, setStatus) {
+        const bridge = getRibbonBridge();
+        if (!bridge || typeof bridge.openPrintView !== 'function') {
+          setStatus('Print bridge unavailable');
+          return;
+        }
+        setStatus('Opening print dialog…');
+        Promise.resolve(bridge.openPrintView()).then(
+          function (result) {
+            const safe = (result && typeof result === 'object') ? result : { ok: false, reason: 'unknown' };
+            if (safe.ok === true) {
+              if (safe.overlaySkipped && safe.overlayReason === 'drift-detected') {
+                setStatus('Print dialog opened (overlay disabled — snapshot changed)');
+              } else {
+                setStatus('Print dialog opened');
+              }
+              return;
+            }
+            const reason = String(safe.reason || 'unknown');
+            if (reason === 'no-snapshot')           { setStatus('No saved chat open'); return; }
+            if (reason === 'reader-unavailable')    { setStatus('Reader not mounted'); return; }
+            if (reason === 'print-unavailable')     { setStatus('Print unavailable in this environment'); return; }
+            if (reason === 'print-in-progress')     { setStatus('Print already in progress'); return; }
+            const errSuffix = safe.error ? ': ' + String(safe.error) : '';
+            setStatus('Print failed: ' + reason + errSuffix);
+          },
+          function (err) {
+            const msg = (err && (err.message || String(err))) || 'unknown error';
+            setStatus('Print failed: ' + msg);
+          }
+        );
+      },
+    },
+
     /* Phase 1c — Metadata → Category.
      * Does NOT mutate category itself; instead routes focus + brief
      * pulse highlight onto the existing topbar category picker

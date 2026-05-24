@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 3a)
+Status: Active (Phase 3b)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -545,6 +545,157 @@ Tauri users who dismiss the save dialog get back `{ ok: false, reason:
   it in the UI; the file itself stays clean.
 - "Copy raw" or "Copy visible only" ribbon buttons (still V2+).
 - Bulk export of multiple snapshots.
+
+## Phase 3b — PDF / print via window.print()
+
+Status: **Built**. Implemented across `studio.css` (new `@media print`
+block), `studio.js` (`RibbonBridge.openPrintView` + pure helpers
+`buildPrintHeaderEl` / `buildPdfFilename`), and
+`S0Y1a. 🎬 Studio Ribbon - Studio.js` (`Export → PDF` and
+`Export → Print view` handlers, both pointing at the same bridge).
+
+### Strategy
+
+Strategy A — **browser/Tauri-webview `window.print()` over the live
+reader DOM**. The user clicks Export → PDF (or Print view); the bridge
+injects a temporary `<header data-print-header>` element before
+`.cgFrame`, swaps `document.title` for a useful PDF filename, calls
+`window.print()`, and unwinds in `try/finally`. The browser's print
+dialog offers "Save as PDF" as a destination on every modern OS
+(Chrome, Edge, Firefox, Safari, Tauri webview).
+
+**No new dependencies, no platform.files changes, no Tauri plugin/
+capability changes, no JS PDF library, no Markdown→HTML conversion.**
+The reader DOM with its existing Phase 2 overlay CSS IS the canonical
+rendered view; print just hides the chrome and prints it.
+
+### Bridge shape
+
+`H2O.Studio.RibbonBridge.openPrintView(opts?)` — async, returns
+`Promise<{ ok, reason?, filename?, overlayIncluded?, overlaySkipped?,
+overlayReason? }>`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | boolean | true when the print dialog was opened (NOT a signal that the user saved/printed anything). |
+| `reason` | string? | When `ok:false`, one of: `'no-snapshot'`, `'reader-unavailable'`, `'print-unavailable'`, `'print-in-progress'`, `'error'`. |
+| `filename` | string | Suggested PDF filename (`.pdf` extension, sanitized from snap.title). Advisory only — browser save dialog generates its own from `document.title`. |
+| `overlayIncluded` | boolean | True if the cached overlay has active ops at print time. |
+| `overlaySkipped` | boolean | True if the overlay's baseDigest doesn't match the current snapshot (drift). |
+| `overlayReason` | string? | `'drift-detected'` when applicable. |
+
+Options:
+
+- `includeHeader` (default `true`) — skip the on-demand header
+  injection. The print stylesheet still hides chrome and shows the
+  reader, but no title/date/source/chatId block at top.
+
+The bridge **never throws**. All branches resolve with a well-formed
+result; the `try/finally` around `window.print()` guarantees the
+injected header is removed and `document.title` restored even if
+`window.print()` itself throws synchronously.
+
+### Temporary print header
+
+The injected element is a `<header data-print-header>` with:
+
+```html
+<header data-print-header="true">
+  <h1>{snap.title}</h1>
+  <div class="wbPrintHeaderMeta">
+    <span>Captured: 2026-05-24</span>
+    [<span>Source: https://chatgpt.com/c/...</span>]   ← only when ctx.originalUrl present
+    [<span>Chat ID: {snap.chatId}</span>]              ← only when chatId present
+  </div>
+</header>
+```
+
+The element is `display: none` on screen (so the live reader is
+unaffected) and `display: block` in `@media print` (so it surfaces
+only at print time). The bridge inserts it as the first child of
+`.cgFrame` and removes it in `finally` immediately after
+`window.print()` returns.
+
+`document.title` is briefly set to `"{snap.title} — Studio"` for the
+duration of `window.print()` and restored afterwards. This makes the
+browser's "Save as PDF" dialog default to a sensible filename.
+
+### Collapsed section behaviour
+
+Collapsed sections are **un-hidden in print** by overriding the screen
+rule `.is-in-collapsed-section { display: none }` with
+`display: revert !important` inside `@media print`. The section header
+keeps its `[collapsed — N turns]` suffix (populated by the applier),
+so the reader can see that the section was collapsed in Studio.
+Mirrors the Phase 2e/3a Markdown export `collapsedMode:
+'include-marked'` default.
+
+### Cancellation limitation (canonical)
+
+`window.print()` is synchronous from JS and returns no signal whether
+the user saved a file, sent to a printer, or dismissed the dialog.
+The bridge resolves `{ ok: true, ... }` to mean **"we opened the
+dialog"**, NOT "a file was saved". The ribbon status string is
+honest about this:
+
+- `Export → PDF`        →  `"Print dialog opened — choose Save as PDF"`
+- `Export → Print view` →  `"Print dialog opened"`
+
+Same constraint that Notion / GitHub / Google Docs all have. Do not
+attempt to detect cancellation; do not chain a follow-up action on
+"successful print"; do not surface a `"PDF saved: <filename>"`
+status — we don't know if a file was actually saved.
+
+### Concurrency
+
+Only one print may be in flight at a time. A module-level
+`__ribbonBridge_printInFlight` boolean coalesces concurrent calls
+so the `document.title` stash/restore can't race. A second call
+while one is open returns `{ ok: false, reason: 'print-in-progress' }`.
+
+### Ribbon status feedback (Export → Download → PDF and Export → Print → Print view)
+
+- `"Opening print dialog…"` — pending.
+- `"Print dialog opened — choose Save as PDF"` — Export → PDF success.
+- `"Print dialog opened"` — Print view success.
+- `"Print dialog opened (overlay disabled — snapshot changed)"` — drift fallback for either action.
+- `"No saved chat open"` — missing snapshot.
+- `"Reader not mounted"` — `.cgFrame` not found.
+- `"Print unavailable in this environment"` — no `window.print`.
+- `"Print already in progress"` — second concurrent call.
+- `"Print failed: <reason>"` — anything else.
+
+### Compliance notes for Phase 3b
+
+- `openPrintView` MUST NOT mutate `snap.messages` or the overlay record.
+- The bridge MUST clean up the injected header AND restore
+  `document.title` even if `window.print()` throws synchronously
+  (verified by `try/finally`).
+- The CSS rules MUST NOT affect screen rendering — only behaviour
+  inside `@media print`. (Exception: the `[data-print-header] {
+  display: none }` screen rule, which keeps the injected node hidden
+  on screen.)
+- Collapsed-section un-hiding in print MUST keep the section header's
+  `[collapsed — N turns]` marker so the reader knows the section was
+  collapsed in Studio.
+- The bridge MUST NOT add any new platform.files method, any new
+  Tauri plugin / capability, or any JS PDF library.
+- The status string `"Print dialog opened (overlay disabled — snapshot
+  changed)"` is the canonical drift surface; do not paraphrase.
+
+### Out of scope for Phase 3b
+
+- Programmatic detection of "user saved PDF vs cancelled" — impossible
+  cross-browser.
+- TOC with live page-number links — `target-counter()` is fragile
+  across print engines; V1 prints TOC as a plain list of section titles.
+- Custom paper sizes / multi-page layouts — let the OS print dialog
+  drive.
+- PDF metadata customization beyond `document.title`.
+- "Print visible only" mode skipping collapsed content — the option
+  exists on the serializer (`collapsedMode: 'omit'`) but no ribbon UI
+  in Phase 3b.
+- DOCX / direct JS PDF / Tauri-native PDF.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 
