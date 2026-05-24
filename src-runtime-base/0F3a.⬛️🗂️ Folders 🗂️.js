@@ -3109,7 +3109,8 @@ ${CROW}[aria-current="true"]{
       lastOpenAt = now;
       onOpen(event);
     };
-    btn.addEventListener('pointerdown', stop, true);
+    btn.addEventListener('pointerdown', open, true);
+    btn.addEventListener('pointerup', stop, true);
     btn.addEventListener('mousedown', stop, true);
     btn.addEventListener('click', open, true);
     btn.onkeydown = (event) => {
