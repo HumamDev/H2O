@@ -627,6 +627,50 @@ blocker codes, and planned mutation type.
 F7.4.1c may later inspect and integrate live read-only local/F5/F6 check
 surfaces. F7.4.1b intentionally does not do that.
 
+### F7.4.1c Live Read-Only Apply Checks
+
+F7.4.1c adds a thin Desktop/Tauri read layer around
+`planBidirectionalFolderMetadataApply(...)`. The pure F7.4.1b planner remains
+the authoritative planner. If `refreshLocalState !== true`, behavior is
+unchanged and caller-provided simulated checks are used.
+
+When `refreshLocalState === true`, the wrapper performs only read-only checks:
+
+- `H2O.Studio.store.folders.get(targetFolderId)` confirms the target folder
+  exists.
+- The current folder row is normalized with the same folder metadata hash
+  fields used by F7 preview, then compared with `expectedBaselineHash`.
+- `H2O.Studio.store.tombstones.getTombstone("folder", "folder:" +
+  encodeURIComponent(targetFolderId))` checks for an active local folder
+  tombstone.
+
+The wrapper accepts `selectedDelta.targetFolderId` as sensitive input only. The
+target folder ID, folder name, parent ID, raw color/icon value, raw metadata,
+raw hashes, tombstone IDs, conflict IDs, peer IDs, and raw JSON are never
+returned.
+
+F7.4.1c still cannot prove F6 blockers absent because the conflict store does
+not yet expose a precise read-only lookup by candidate/dedupe hash. Therefore
+`checkF6Blockers: true` returns `f6-blocker-check-unavailable`, sets
+`f6BlockersAbsent` false in the redacted result, and keeps `applyable: false`.
+
+Additional live-check blockers:
+
+- `target-folder-id-required`
+- `local-folder-read-unavailable`
+- `baseline-hash-mismatch`
+- `baseline-hash-check-unavailable`
+- `f5-folder-tombstone-present`
+- `f5-blocker-check-unavailable`
+- `f6-blocker-check-unavailable`
+- `live-read-check-failed`
+
+Result shape remains the F7.4.1b plan shape with `checkMode:
+"live-read-only"`. `writesPerformed` remains `0`. The wrapper must not call
+folder mutation methods, F5 apply/cleanup methods, F6 ingest/decision methods,
+Chrome storage mutation, import/export/sync mutation paths, Rust commands, or
+schema migrations.
+
 Potential blocker codes:
 
 - `watermark-unavailable`

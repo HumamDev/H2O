@@ -535,6 +535,9 @@
   <!-- F7.4.1b: pure dry-run folder.metadata color apply planner. Simulated
        checks only; no reads, writes, apply, F5 calls, or F6 calls. -->
   <script src="./sync/folder-metadata-apply-plan.js"></script>
+  <!-- F7.4.1c: Tauri-only read layer for the dry-run apply planner. Reads
+       folder/tombstone state only; no writes, apply, F5 mutation, or F6 mutation. -->
+  <script src="./sync/folder-metadata-apply-checks.tauri.js"></script>
   <!-- F1B: hidden/gated readiness runner. Mounts only when BOTH
        H2O.flags.experimentalMultiPeer === true AND
        location.hash === '#/dev/multi-peer-readiness' (F1B.1 also reconciles

@@ -154,6 +154,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F7.4.1b: pure dry-run folder.metadata color apply planner. Simulated
   // checks only; no reads, writes, apply, F5 calls, or F6 calls.
   "sync/folder-metadata-apply-plan.js",
+  // F7.4.1c: Tauri-only read layer for the dry-run apply planner. Reads
+  // folder/tombstone state only; no writes, apply, F5 mutation, or F6 mutation.
+  "sync/folder-metadata-apply-checks.tauri.js",
   // F1B: hidden/gated readiness runner. Mounts only when BOTH
   //   H2O.flags.experimentalMultiPeer === true AND
   //   location.hash === '#/dev/multi-peer-readiness'
@@ -305,6 +308,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/multi-peer-diff.js",
   "sync/bidirectional-folder-preview.js",
   "sync/folder-metadata-apply-plan.js",
+  "sync/folder-metadata-apply-checks.tauri.js",
   "sync/multi-peer-runner.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
