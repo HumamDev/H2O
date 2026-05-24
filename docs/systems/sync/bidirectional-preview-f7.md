@@ -1188,14 +1188,58 @@ must be Desktop/debug-only, exact-gated, and separately planned.
 - F7.2: Emit F6-compatible candidate summaries from preview, with no
   ingestion.
 - F7.3: Explicit manual handoff to F6 conflict queue.
-- F7.4+: Gated single-entity apply prototype much later.
+- F7.4: Exact-gated local folder color apply, live-validated.
 - F8+: Remote apply propagation gates.
 - F9/F10/F11: Mobile and cloud/WebDAV/native transport later.
 
-This roadmap does not authorize schema stamping, write-back, apply, merge, or
+This roadmap does not authorize schema stamping, broad write-back, merge, or
 remote propagation. Those remain separate later phases.
 
-## 11. Recommendation
+## 11. F7.4 Closeout
+
+F7.4 is complete and live-validated. It proves the first exact-gated local
+folder metadata mutation path end-to-end:
+
+- Dry-run live plan returned `applyable: true`.
+- Wrong gate blocked.
+- Real exact-gated apply succeeded with `rowsUpdated: 1`.
+- Result remained `localOnly: true` and `syncPropagated: false`.
+- Stale baseline retry blocked.
+- Restore through the same exact-gated path succeeded.
+- Audit rows persisted.
+- Folder, folderBinding, chat, and snapshot counts remained unchanged.
+- Redaction passed.
+
+The validated mutation boundary is intentionally narrow:
+
+- One existing local folder row.
+- `folders.color` only.
+- `iconColor` is accepted only as an input alias that maps to `folders.color`.
+- Exact gate is required.
+- Non-empty reason and local sync peer identity are required.
+- Baseline hash is required and rechecked.
+- F5 tombstone/delete blockers must be absent.
+- F6 non-delete conflict blockers must be absent.
+- One audit row is required for each successful local color apply.
+
+F7.4 still forbids:
+
+- `name`.
+- `parentId`.
+- `sortOrder`.
+- `icon`, except the `iconColor` input alias to `folders.color`.
+- `kind`, `source`, `meta`, `createdAt`, and `updatedAt`.
+- FolderBinding or membership mutation.
+- Folder creation or deletion.
+- Chrome storage mutation.
+- Remote write-back or sync propagation.
+- Auto-merge, resolver behavior, or local-wins/remote-wins policy.
+- Chat, snapshot, attachment, prompt, answer, transcript, or content mutation.
+
+The next major phase is F8 planning for remote apply propagation gates. F7.4
+does not authorize F8 implementation.
+
+## 12. Recommendation
 
 After F7.1b, the next step should be validation of the preview helper against
 known local/remote folder fixtures. Do not start F7.1c stamping, F7.2 F6
