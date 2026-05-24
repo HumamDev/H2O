@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-V landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, and **Navigator** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. Notes additionally renders a read-only scratchpad preview, and Navigator renders three read-only sections (Pinned / Aliases / Collapsed). Next phase: Phase 2C-P (Capture inert read-only render) and the DOM-derived tabs Attachments / Finder. Still no write-back.
+Status: Phases 0B through 2C-A landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, and **Navigator** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. **Attachments** now renders a read-only attachment list derived from the current Studio reader DOM (`#viewReader`) — no persistent store, single scan per render, no observer/polling. Next phase: Phase 2C-P (Capture inert read-only render) and Phase 2C-F (Finder search across already-loaded Dock data). Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -660,3 +660,40 @@ The fifth real-data Dock tab. `tabs/navigator.tab.studio.js` no longer renders p
 - No jump-to-turn / scroll-to-message / Navigator click navigation.
 - No turn-model abstraction. No outline derivation from Studio reader DOM.
 - No other tab implemented — Capture/Attachments/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-A — what landed (Attachments real read-only DOM-derived rendering)
+
+The sixth real-data Dock tab. Unlike the H/B/C/N/V tabs, Attachments has **no persistent store** — it derives its list from the current Studio reader DOM on each render. `tabs/attachments.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `document.getElementById('viewReader')` (the Studio reader root at [studio.html:192](src-surfaces-base/studio/studio.html:192)).
+- If the reader root is missing, renders `Open a saved chat reader to view attachments.` — no scan, no scrolling, no other side effects.
+- Inside the reader root, performs a **single scan** for:
+  - `img[src]` — all images
+  - `a[href]` — links filtered by a conservative file-extension allow-list (`pdf, png, jpg, jpeg, gif, webp, svg, txt, md, doc, docx, xls, xlsx, csv, zip, json, ppt, pptx`) plus image-ish extensions (`bmp, ico, avif`).
+- For each item, reads ONLY: `src`/`href`, `alt`, `textContent`, and the nearest-ancestor `data-message-id` / `data-turn-id` attributes (bounded walk that stops at the reader root).
+- Renders a top summary line: `<n> attachments • <i> images • <f> files`.
+- Renders a compact row per item:
+  - **label**: alt text > anchor text > URL basename > URL (truncated to 240 chars)
+  - **type meta**: `image`/`file` • extension display (`PDF`/`PNG`/...) • `msg <id>` (or `turn <id>` if no msgId)
+  - **URL preview**: plain text only (truncated). `data:` URIs are skipped entirely.
+- Renders the empty state `No attachments found in this reader.` when the reader exists but has no matches.
+- Reuses generic Dock list CSS from Phase 2C-H — no new CSS was needed.
+
+### Read-only / no-side-effects discipline
+
+- **NO `<img>` element is ever created** by the tab. We read the source `img`'s `src` attribute as a string but never render an `<img>`, so the browser cannot re-fetch the asset through Dock content.
+- **NO `<a>` element is ever created.** URLs are rendered as plain text only — a stray click cannot navigate, no `window.open`, no `target="_blank"`.
+- **NO download / open / copy / delete buttons.**
+- **NO clipboard / `window.open` / `fetch` / `XMLHttpRequest` calls.**
+- **NO `MutationObserver`, no polling, no `setInterval`.** Single scan per render. Re-rendering happens when the user re-selects the tab; `dock-shell` already handles that.
+- **NO mutation of the reader DOM.** The scan reads attributes only; nothing in `#viewReader` is added, removed, or modified.
+- **NO persistence.** Items are computed fresh each render; no store is created, no key is written.
+
+### What is still NOT in Phase 2C-A
+
+- No live refresh while the user edits the reader (single scan per render).
+- No thumbnail previews of images (text-only rows by design).
+- No clickable links (text-only rows by design).
+- No grouping by message or by file type.
+- No filtering / search (Finder lands in its own phase).
+- No other tab implemented — Capture/Finder remain inert Phase 2B placeholders.
