@@ -691,6 +691,25 @@ F6.6 is acceptable only if:
   mutation, F5 apply/cleanup, merge, apply, bidirectional sync, Chrome, UI, or
   settings behavior is added.
 
+F6 manual validation access is acceptable only if:
+
+- Default `listConflicts()` output remains redacted and exposes
+  `conflictIdPresent` but not `conflictId`.
+- Raw conflict row IDs are exposed only when the caller explicitly passes
+  `includeIdsForManualValidation: true` and the exact gate
+  `I_UNDERSTAND_THIS_EXPOSES_CONFLICT_IDS_FOR_VALIDATION`.
+- Wrong or missing validation gates return `invalid-validation-gate`, no rows,
+  and no IDs.
+- The gated path adds only `conflictId` to each already-redacted row. It does
+  not expose peer IDs, record IDs, dedupe keys, raw summaries, raw JSON, names,
+  titles, hrefs, prompts, answers, transcripts, content, or metadata blobs.
+- The path is Desktop/Tauri-only through `conflicts.tauri.js`; no Chrome,
+  public UI, settings, analyzer, runner, import/export/sync, F5, merge, apply,
+  or entity mutation behavior is added.
+- The purpose is manual DevTools validation of `getConflict()`,
+  decision-only methods, and `previewResolution()` after explicit manual
+  ingestion.
+
 ## 23. Risks And Mitigations
 
 - Auto-merge pressure: keep early APIs diagnostic and decision-only.
@@ -715,6 +734,8 @@ F6.6 is acceptable only if:
 - F6.4b: Explicit manual conflict candidate write ingestion.
 - F6.5: Decision-only actions.
 - F6.6: `previewResolution()` only, no mutation.
+- F6 validation access: Gated manual conflict ID retrieval for DevTools
+  validation only.
 - F6.7: Chrome conflict store scaffold if needed.
 - F7: First gated bidirectional prototype.
 

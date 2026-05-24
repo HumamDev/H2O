@@ -44,6 +44,7 @@
   var INGEST_SCHEMA = 'h2o.studio.sync-conflict-ingest.v1';
   var DECISION_SCHEMA = 'h2o.studio.sync-conflict-decision.v1';
   var RESOLUTION_PREVIEW_SCHEMA = 'h2o.studio.sync-conflict-resolution-preview.v1';
+  var VALIDATION_ID_GATE = 'I_UNDERSTAND_THIS_EXPOSES_CONFLICT_IDS_FOR_VALIDATION';
   var READY_POLL_INTERVAL_MS = 100;
   var READY_POLL_MAX_TRIES = 100;
   var DEFAULT_LIST_LIMIT = 50;
@@ -468,8 +469,35 @@
     return blockers;
   }
 
+  function shouldIncludeIdsForManualValidation(filters) {
+    return filters && filters.includeIdsForManualValidation === true;
+  }
+
+  function validManualValidationGate(filters) {
+    return cleanString(filters && filters.validationGate) === VALIDATION_ID_GATE;
+  }
+
+  function redactedRowForList(row, includeConflictId) {
+    var out = redactedRow(row);
+    if (includeConflictId === true) {
+      out.conflictId = cleanString(row && row.conflict_id) || null;
+    }
+    return out;
+  }
+
   function listConflicts(filters) {
     filters = filters || {};
+    var includeValidationIds = shouldIncludeIdsForManualValidation(filters);
+    if (includeValidationIds && !validManualValidationGate(filters)) {
+      return Promise.resolve({
+        ok: false,
+        redacted: true,
+        platform: 'desktop-tauri',
+        blockers: [warning('invalid-validation-gate')],
+        rows: [],
+        warnings: [],
+      });
+    }
     var blockers = validateFilters(filters);
     if (blockers.length) {
       return Promise.resolve({
@@ -511,7 +539,9 @@
           ok: true,
           redacted: true,
           platform: 'desktop-tauri',
-          rows: (Array.isArray(rows) ? rows : []).map(redactedRow),
+          rows: (Array.isArray(rows) ? rows : []).map(function (row) {
+            return redactedRowForList(row, includeValidationIds);
+          }),
           warnings: [],
         };
       });
@@ -1287,6 +1317,7 @@
       candidateSources: Object.freeze(Object.keys(CANDIDATE_SOURCES).slice()),
       resolvedDecisions: Object.freeze(Object.keys(RESOLVED_DECISIONS).slice()),
       resolutionPreviewKinds: Object.freeze(Object.keys(RESOLUTION_PREVIEW_KINDS).slice()),
+      manualValidationIdGate: VALIDATION_ID_GATE,
       defaultListLimit: DEFAULT_LIST_LIMIT,
       maxListLimit: MAX_LIST_LIMIT,
     }),
