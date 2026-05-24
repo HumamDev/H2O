@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-C landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights tab** renders real read-only highlight data via `H2O.Studio.store.highlights`, the **Bookmarks tab** renders real read-only bookmark entries via `H2O.Studio.store.bookmarks`, and the **Context tab** renders real read-only context items via `H2O.Studio.store.context`. Next phase: Phase 2C-N/V/P — turn the remaining tabs (Notes, Navigator, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
+Status: Phases 0B through 2C-N landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, and **Notes** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. Notes additionally renders a read-only scratchpad preview when present. Next phase: Phase 2C-V/P — turn the remaining tabs (Navigator, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -607,3 +607,31 @@ The third real-data Dock tab. `tabs/context.tab.studio.js` no longer renders pla
 - No scroll-to-message integration.
 - No tag/profile/scope filtering UI (the native engine has these — Studio just renders raw items).
 - No other tab implemented — Notes/Navigator/Capture/Attachments/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-N — what landed (Notes real read-only rendering)
+
+The fourth real-data Dock tab. `tabs/notes.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `H2O.Studio.store.notes.getBundle(chatId)` (sync, lazy-fetch behind cache; first read may return `null` for either sub-key and notify via `subscribe()` when the platform fetch resolves).
+- Resolves `chatId` from `ctx.chatId → ctx.externalId → ctx.snapshotId` (first non-empty wins). Does **not** invent IDs.
+- Renders a "linked chat" empty state — `Open a linked chat/snapshot to view notes.` — when no chat id is present. In that state the tab does **not** subscribe.
+- Renders the standard empty state — `No notes found for this chat yet.` — when the chat is linked but has neither notes nor scratchpad.
+- Renders a top summary line: `<n> notes • scratchpad` (scratchpad token only shown when scratch is non-empty).
+- **Scratchpad preview** (when non-empty): a single `.wbDockRow` titled `Scratchpad` with a truncated text preview. **No textarea, no input, no contenteditable, no save controls** — it is display-only.
+- Renders a compact row per note, sorted with **pinned first**, then **`updatedAt` descending** (fallback `createdAt`), preserving store order on ties:
+  - **title**: `note.title` if set, otherwise first line of `note.text`, otherwise `(untitled note)`
+  - **snippet**: `note.text` when distinct from title
+  - **meta**: source label (`<kind> <id>`) • `id <noteId>` • `pinned` badge if pinned • `#tag1 #tag2 …` if tags present • localized `updatedAt` (or `createdAt` fallback)
+- Subscribes via `H2O.Studio.store.notes.subscribe(fn)`; filters events to the current `chatId` so unrelated changes don't repaint. Both `notes` and `scratch` key events fire under the same subscribe.
+- Returns an unsubscribe cleanup function to `dock-shell` (honored at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Reuses generic Dock list CSS from Phase 2C-H — no new CSS was needed.
+
+### What is still NOT in Phase 2C-N
+
+- No write-back. No `set` / `update` / `remove` / `saveNow` calls.
+- No note creation / deletion / editing / pinning / unpinning.
+- No editing UI (no textarea, no input, no contenteditable, no save controls — anywhere).
+- No conflict-resolution UI. No `bodyVersions` handling.
+- No scratchpad editing — it's a read-only preview.
+- No scroll-to-message integration.
+- No other tab implemented — Navigator/Capture/Attachments/Finder remain inert Phase 2B placeholders.
