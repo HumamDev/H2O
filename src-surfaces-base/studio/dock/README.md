@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: Phases 0B through 2C-N landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, and **Notes** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. Notes additionally renders a read-only scratchpad preview when present. Next phase: Phase 2C-V/P — turn the remaining tabs (Navigator, Capture) into real read-only renderers using the same generic Dock list classes. Still no write-back.
+Status: Phases 0B through 2C-V landed. Read-only Dock feature-store foundation is complete (six native engines → six Studio façades); the visible Dock UI shell (`#studioDock` container + DOM-aware `H2O.Studio.dock`) is in place; eight tabs register against the shell (`dock/tabs/*.tab.studio.js`); the **Highlights**, **Bookmarks**, **Context**, **Notes**, and **Navigator** tabs each render real read-only data via their respective `H2O.Studio.store.*` façades. Notes additionally renders a read-only scratchpad preview, and Navigator renders three read-only sections (Pinned / Aliases / Collapsed). Next phase: Phase 2C-P (Capture inert read-only render) and the DOM-derived tabs Attachments / Finder. Still no write-back.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -635,3 +635,28 @@ The fourth real-data Dock tab. `tabs/notes.tab.studio.js` no longer renders plac
 - No scratchpad editing — it's a read-only preview.
 - No scroll-to-message integration.
 - No other tab implemented — Navigator/Capture/Attachments/Finder remain inert Phase 2B placeholders.
+
+## Phase 2C-V — what landed (Navigator real read-only rendering)
+
+The fifth real-data Dock tab. `tabs/navigator.tab.studio.js` no longer renders placeholder text. Instead it:
+
+- Reads `H2O.Studio.store.navigator.getState(chatId)` + `listPinned(chatId)` + `listAliases(chatId)` + `listCollapsed(chatId)` — all synchronous, lazy-fetch behind cache; first read may return empties and notify via `subscribe()` when the platform fetch resolves.
+- Resolves `chatId` from `ctx.chatId → ctx.externalId → ctx.snapshotId` (first non-empty wins). Does **not** invent IDs.
+- Renders a "linked chat" empty state — `Open a linked chat/snapshot to view navigator state.` — when no chat id is present. In that state the tab does **not** subscribe.
+- Renders the standard empty state — `No navigator state found for this chat yet.` — when the chat is linked but has neither a state blob nor any pinned/aliased/collapsed entries.
+- Renders a top summary line: `<n> pinned • <m> aliases • <k> collapsed`.
+- Renders **three read-only sections**, each with a `<title> (<count>)` header and a `.wbDockList`. Empty sections show a stub row instead of disappearing entirely:
+  - **Pinned**: one row per pin entry. Title shows `turn <turnId>`; meta shows `kind` (`question`/`answer`) and, for answer pins, `answer <answerId>`.
+  - **Aliases**: one row per alias. Title shows the alias value (truncated). Meta shows `turn <turnId>` and, for answer-level aliases (raw key contains `::a:<answerId>`), `answer <answerId>`. The raw key is preserved in `data-row-key`.
+  - **Collapsed**: one row per currently-collapsed turn. The store's `listCollapsed()` already filters out falsy values, so we render whatever it returns.
+- Subscribes via `H2O.Studio.store.navigator.subscribe(fn)`; filters events to the current `chatId` so unrelated changes don't repaint.
+- Returns an unsubscribe cleanup function to `dock-shell` (honored at `renderActiveView:cleanup` and `unmount:activeRenderCleanup`).
+- Reuses generic Dock list CSS from Phase 2C-H — no new CSS was needed.
+
+### What is still NOT in Phase 2C-V
+
+- No write-back. No `set` / `update` / `remove` / `saveNow` calls.
+- No pin / unpin / alias / rename / collapse / expand editing.
+- No jump-to-turn / scroll-to-message / Navigator click navigation.
+- No turn-model abstraction. No outline derivation from Studio reader DOM.
+- No other tab implemented — Capture/Attachments/Finder remain inert Phase 2B placeholders.
