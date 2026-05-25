@@ -230,6 +230,45 @@ booleans and counts.
 Snapshot support in F9.2a is list metadata only. A full read-only snapshot
 reader is deferred to F9.2c.
 
+## F9.2b.1 — Read-Only Bundle Display Component
+
+F9.2b.1 adds a presentational mobile component for the read-only bundle view:
+
+```txt
+MobileReadOnlyLibraryView -> static read-only component
+```
+
+The component renders a read-only bundle header, source presence diagnostics,
+library rows, folder rows, empty states, and code-only warnings. It does not
+wire a route, parse files, read from the archive store, call WebDAV, navigate,
+mutate state, or expose edit controls.
+
+The component input is:
+
+```ts
+type ReadOnlyBundleDisplayProps = {
+  view: MobileReadOnlyLibraryView;
+};
+```
+
+Rendered sections:
+
+- Library: chat title previews when available, snapshot counts, folder counts,
+  and a static read-only indicator.
+- Folders: folder name previews when available, item counts, color-presence
+  indicators, and a static locked indicator.
+- Diagnostics: source schema, export timestamp, source peer, and checksum
+  presence.
+- Warnings: code-only warning rows.
+
+Normal UI may show user-owned title and folder-name previews. The component
+must not log the full view model or expose raw IDs, peer IDs, raw hashes, audit
+JSON, metadata blobs, prompts, answers, or snapshot message content.
+
+F9.2b.1 intentionally does not add route integration. The next UI phase may
+mount the component in a route or dev surface, but only after preserving the
+same read-only data boundary.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.

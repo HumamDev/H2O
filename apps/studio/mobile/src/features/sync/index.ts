@@ -6,6 +6,7 @@ export {
   validateMobileSyncBundle,
 } from "./latest-bundle-reader";
 export { buildMobileReadOnlyBundleView } from "./latest-bundle-view-model";
+export { ReadOnlyBundleDisplay } from "./readonly-bundle-display";
 export type {
   DiagnoseMobileSyncBundleOptions,
   MobileBundleDiagnostic,
@@ -19,3 +20,4 @@ export type {
   MobileReadOnlyLibraryView,
   MobileReadOnlyViewWarning,
 } from "./latest-bundle-view-model";
+export type { ReadOnlyBundleDisplayProps } from "./readonly-bundle-display";
