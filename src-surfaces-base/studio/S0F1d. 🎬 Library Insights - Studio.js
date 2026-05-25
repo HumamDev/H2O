@@ -1440,6 +1440,9 @@
         folderId,
         h2oFolderId: folderId,
         h2oFolderPageActionButton: '1',
+        h2oFolderName: name,
+        h2oFolderCanonical: isCanonical ? 'true' : 'false',
+        h2oFolderColor: String(row?.iconColor || row?.color || '').trim(),
       },
       style: 'display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;min-width:30px;max-width:30px;flex:0 0 auto;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.045);color:rgba(255,255,255,.76);font-size:15px;line-height:1;letter-spacing:0;padding:0;cursor:pointer',
     }, '...');
@@ -1517,7 +1520,9 @@
     const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
     const fallbackRows = fallbackFolderDisplayRows(idx);
     const usingFallbackRows = !canonicalRows.length && fallbackRows.length > 0;
-    const displayCanonicalRows = canonicalRows.length ? canonicalRows : fallbackRows;
+    const displayCanonicalRows = canonicalRows.length
+      ? canonicalRows.map((row) => ({ ...row, isCanonical: true }))
+      : fallbackRows;
     const displayLocalReviewRows = canonicalRows.length || localReviewRows.length ? localReviewRows : [];
     const degraded = !displayCanonicalRows.length && !displayLocalReviewRows.length;
     const canonicalCount = Number(model?.canonicalFolderCount ?? canonicalRows.length) || (usingFallbackRows ? displayCanonicalRows.length : 0);

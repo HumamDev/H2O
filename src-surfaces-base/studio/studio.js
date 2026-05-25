@@ -5353,6 +5353,9 @@ function makeVisibleStudioFolderPageActionButton(row){
   button.dataset.h2oFolderPageActionButton = "1";
   button.dataset.h2oFolderId = String(row?.folderId || "");
   button.dataset.folderId = String(row?.folderId || "");
+  button.dataset.h2oFolderName = name;
+  button.dataset.h2oFolderCanonical = row?.isCanonical === true ? "true" : "false";
+  button.dataset.h2oFolderColor = String(row?.iconColor || row?.color || "");
   button.title = row?.isCanonical === true ? `More options for ${name}` : "Local Review rows are protected";
   button.setAttribute("aria-label", button.title);
   button.setAttribute("aria-expanded", "false");

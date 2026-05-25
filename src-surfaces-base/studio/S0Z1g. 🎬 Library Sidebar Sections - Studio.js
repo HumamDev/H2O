@@ -38,6 +38,7 @@
     lastApply: null,
     lastError: '',
   };
+  let folderActionDelegationBound = false;
   const FOLDERS_UI_KEYS = [
     'h2o:prm:cgx:fldrs:state:ui:v1',
     'h2o:folders:ui:v1',
@@ -2504,6 +2505,90 @@
     return pop;
   }
 
+  function folderActionMenuItemFromButton(button) {
+    if (!button) return null;
+    const pageRow = button.closest?.('[data-h2o-folder-page-row="1"], .wbFolderPageRow');
+    const sidebarRow = button.closest?.('.wbSidebarSectionItem--folders, [data-section="folders"]');
+    const folderId = String(
+      button.getAttribute?.('data-h2o-folder-id')
+      || button.getAttribute?.('data-folder-id')
+      || pageRow?.getAttribute?.('data-h2o-folder-id')
+      || pageRow?.getAttribute?.('data-folder-id')
+      || sidebarRow?.getAttribute?.('data-id')
+      || sidebarRow?.getAttribute?.('data-h2o-folder-id')
+      || ''
+    ).trim();
+    if (!folderId || folderId === FOLDER_FILTER_NONE) return null;
+    const isFolderButton = !!button.closest?.('[data-h2o-folder-page-row="1"], .wbFolderPageRow')
+      || String(sidebarRow?.getAttribute?.('data-section') || '').trim() === 'folders';
+    if (!isFolderButton) return null;
+    const canonicalRaw = String(
+      button.getAttribute?.('data-h2o-folder-canonical')
+      || pageRow?.getAttribute?.('data-canonical')
+      || sidebarRow?.getAttribute?.('data-canonical')
+      || (sidebarRow?.getAttribute?.('data-color-source') === 'canonical' ? 'true' : '')
+      || ''
+    ).trim().toLowerCase();
+    if (canonicalRaw && canonicalRaw !== 'true') return null;
+    const disabled = button.disabled === true
+      || String(button.getAttribute?.('aria-disabled') || '').trim().toLowerCase() === 'true';
+    if (disabled) return null;
+    const rawName = String(
+      button.getAttribute?.('data-h2o-folder-name')
+      || pageRow?.getAttribute?.('data-h2o-folder-name')
+      || sidebarRow?.getAttribute?.('data-h2o-folder-name')
+      || button.getAttribute?.('aria-label')
+      || pageRow?.getAttribute?.('title')
+      || sidebarRow?.getAttribute?.('aria-label')
+      || sidebarRow?.getAttribute?.('title')
+      || ''
+    ).trim();
+    const name = rawName
+      .replace(/^More options for\s+/i, '')
+      .split(' — ')[0]
+      .split(', ')[0]
+      .trim() || folderId;
+    const color = normalizeHexColor(
+      button.getAttribute?.('data-h2o-folder-color')
+      || pageRow?.getAttribute?.('data-color')
+      || sidebarRow?.getAttribute?.('data-color')
+      || ''
+    );
+    return {
+      id: folderId,
+      folderId,
+      name,
+      label: name,
+      kind: 'folders',
+      section: 'folders',
+      color,
+      iconColor: color,
+      isCanonical: true,
+    };
+  }
+
+  function bindFolderActionMenuDelegation() {
+    if (folderActionDelegationBound) return;
+    folderActionDelegationBound = true;
+    D.addEventListener('pointerdown', (ev) => {
+      const button = ev.target?.closest?.('[data-h2o-folder-page-action-button="1"], .wbSidebarSectionItemMenu');
+      if (!button || !folderActionMenuItemFromButton(button)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      try { ev.stopImmediatePropagation?.(); } catch {}
+    }, true);
+    D.addEventListener('click', (ev) => {
+      const button = ev.target?.closest?.('[data-h2o-folder-page-action-button="1"], .wbSidebarSectionItemMenu');
+      if (!button) return;
+      const item = folderActionMenuItemFromButton(button);
+      if (!item) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      try { ev.stopImmediatePropagation?.(); } catch {}
+      openRowMenu(button, item);
+    }, true);
+  }
+
   // ── Collapse state (persisted across sessions) ─────────────────────────────
   function loadCollapse() {
     try { return JSON.parse(W.localStorage.getItem(COLLAPSE_KEY) || '{}') || {}; }
@@ -2607,6 +2692,10 @@
           'aria-label': `More options for ${name}`,
           'aria-haspopup': 'menu',
           'aria-expanded': 'false',
+          'data-h2o-folder-id': kind === 'folders' ? id : null,
+          'data-h2o-folder-name': kind === 'folders' ? name : null,
+          'data-h2o-folder-canonical': kind === 'folders' && item.isCanonical === true ? 'true' : null,
+          'data-h2o-folder-color': kind === 'folders' && color ? color : null,
         }, '...')
         : null;
       if (menuButton) {
@@ -3026,6 +3115,7 @@
     if (projsSec)   bindCollapseToggle(projsSec,   'projects',   true);
     ensureFolderCountToggle();
     ensureFolderCreateButton();
+    bindFolderActionMenuDelegation();
 
     renderAllSections();
     bindUpdates();
