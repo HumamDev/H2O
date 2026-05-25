@@ -1,5 +1,5 @@
 import * as Crypto from "expo-crypto";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -12,17 +12,24 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
+  buildReadOnlyBundleCacheMetadata,
   buildMobileReadOnlySnapshotDetail,
   buildMobileReadOnlySyncEvidenceView,
   buildMobileReadOnlyBundleView,
+  clearReadOnlyBundleCacheMetadata,
   diagnoseMobileSyncBundle,
+  loadReadOnlyBundleCacheMetadata,
   readMobileSyncBundle,
+  ReadOnlyBundleCacheStatus,
   ReadOnlyBundleDisplay,
   ReadOnlyBundleStatus,
   ReadOnlySnapshotReader,
   ReadOnlySyncEvidenceStatus,
+  saveReadOnlyBundleCacheMetadata,
   type MobileBundleDiagnostic,
+  type MobileReadOnlyBundleCacheMetadata,
   type MobileReadOnlyLibraryView,
+  type ReadOnlyBundleCacheStatusValue,
 } from "../features/sync";
 
 type PreviewPhase = "idle" | "running" | "ready" | "blocked";
@@ -38,6 +45,34 @@ export default function ReadOnlyBundleRoute() {
   const [bundle, setBundle] = useState<unknown | null>(null);
   const [view, setView] = useState<MobileReadOnlyLibraryView | null>(null);
   const [selectedSnapshotIndex, setSelectedSnapshotIndex] = useState<number | null>(null);
+  const [cacheMetadata, setCacheMetadata] = useState<MobileReadOnlyBundleCacheMetadata | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<ReadOnlyBundleCacheStatusValue>("idle");
+  const [cacheWarnings, setCacheWarnings] = useState<Array<{ code: string }>>([]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadMetadataCache() {
+      const result = await loadReadOnlyBundleCacheMetadata();
+      if (!mounted) {
+        return;
+      }
+      setCacheWarnings(result.warnings);
+      if (result.found && result.metadata) {
+        setCacheMetadata(result.metadata);
+        setCacheStatus("loaded");
+        return;
+      }
+      setCacheMetadata(null);
+      setCacheStatus(result.ok ? "missing" : "malformed");
+    }
+
+    loadMetadataCache();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   async function previewBundle() {
     setPhase("running");
@@ -77,11 +112,38 @@ export default function ReadOnlyBundleRoute() {
     setPhase("ready");
   }
 
+  async function saveMetadataCache() {
+    if (!diagnostic || diagnostic.blockers.length > 0) {
+      return;
+    }
+
+    const metadata = buildReadOnlyBundleCacheMetadata({
+      diagnostic,
+      sourceKind: "pasted-json",
+    });
+    const result = await saveReadOnlyBundleCacheMetadata(metadata);
+    setCacheWarnings(result.warnings);
+    if (result.ok) {
+      setCacheMetadata(metadata);
+      setCacheStatus("loaded");
+    }
+  }
+
+  async function clearMetadataCache() {
+    const result = await clearReadOnlyBundleCacheMetadata();
+    setCacheWarnings(result.warnings);
+    if (result.ok) {
+      setCacheMetadata(null);
+      setCacheStatus("cleared");
+    }
+  }
+
   const snapshotDetail =
     bundle && selectedSnapshotIndex !== null
       ? buildMobileReadOnlySnapshotDetail(bundle, { snapshotIndex: selectedSnapshotIndex })
       : null;
   const syncEvidence = bundle ? buildMobileReadOnlySyncEvidenceView(bundle) : null;
+  const canSaveMetadata = Boolean(diagnostic && diagnostic.blockers.length === 0 && phase === "ready");
 
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
@@ -94,7 +156,7 @@ export default function ReadOnlyBundleRoute() {
           <Text style={styles.routeEyebrow}>F9 read-only preview</Text>
           <Text style={styles.routeTitle}>Read-only bundle</Text>
           <Text style={styles.routeCopy}>
-            Preview only — nothing is saved, imported, synced, or written back.
+            Preview only — bundle content is not saved, imported, synced, or written back.
           </Text>
         </View>
 
@@ -139,6 +201,14 @@ export default function ReadOnlyBundleRoute() {
         </View>
 
         <DiagnosticSummary diagnostic={diagnostic} phase={phase} />
+        <ReadOnlyBundleCacheStatus
+          metadata={cacheMetadata}
+          status={cacheStatus}
+          warnings={cacheWarnings}
+          canSaveMetadata={canSaveMetadata}
+          onSaveMetadata={saveMetadataCache}
+          onClearCache={clearMetadataCache}
+        />
         <ReadOnlyBundleStatus diagnostic={diagnostic} view={view} />
 
         {snapshotDetail ? (

@@ -830,8 +830,8 @@ Recommended split:
 - F9.4.0: docs-only cache safety model.
 - F9.4.1: inspect mobile storage options.
 - F9.4.2: cache metadata/read-only diagnostics only.
-- F9.4.3: optional full view-model cache if approved.
-- F9.4.4: clear-cache UX.
+- F9.4.3: route/status wiring for metadata-only cache.
+- F9.4.4: offline cache validation and UX hardening.
 - F10: mobile write-back much later.
 
 The recommended next step after F9.4.0 is F9.4.1 storage inspection. Do not
@@ -887,6 +887,61 @@ F9.4.2 does not add route wiring, UI, archive-store access, WebDAV, cloud,
 persistence of bundle content, conflict ingestion, conflict decisions,
 tombstone creation, F7/F8 apply, sync propagation, or mobile write-back. Full
 bundle, full view-model, and snapshot-content caching remain deferred.
+
+## F9.4.3 — Read-Only Metadata Cache Route Wiring
+
+F9.4.3 wires the metadata-only cache into the mobile read-only bundle route and
+status UI:
+
+```txt
+diagnostic metadata -> explicit metadata cache -> status display
+```
+
+The route may load cached metadata on mount, show metadata-only status, save
+metadata after a successful pasted bundle diagnosis, and clear the isolated
+read-only cache key. These operations are limited to:
+
+```txt
+h2o.mobile.readonly.bundle-cache.v1
+```
+
+F9.4.3 adds `ReadOnlyBundleCacheStatus`, a presentational status component for
+the metadata cache. It renders only:
+
+- Cache status.
+- Cached-at timestamp.
+- Source kind.
+- Source, export, checksum, and source-peer presence booleans.
+- Counts for chats, snapshots, folders, folder memberships, labels,
+  categories, tombstones, conflicts, and apply events.
+- Code-only warning lists.
+- Read-only/non-authoritative capability labels.
+
+The route uses explicit cache actions:
+
+- `Save metadata cache` builds cache metadata from the current diagnostic and
+  writes only the isolated metadata cache key.
+- `Clear read-only cache` removes only the isolated metadata cache key.
+
+There is no auto-save. Saving metadata is not an import operation and does not
+make mobile authoritative.
+
+The status copy must make the boundary clear:
+
+- Metadata cache only.
+- Only counts/status are cached.
+- Bundle content is not cached.
+- Paste a bundle again to view library and snapshots.
+
+F9.4.3 does not cache full `latest.json` text, parsed bundle objects, snapshot
+messages or content, full view models, folder names, chat text, raw IDs, peer
+IDs, raw hashes, audit JSON, tombstone IDs, conflict IDs, or metadata blobs.
+The metadata cache cannot restore bundle content and cannot render the
+library/folder/snapshot viewer by itself.
+
+F9.4.3 also does not add archive-store access, WebDAV/cloud transport, outbound
+export, conflict ingestion, conflict decisions, tombstone creation/delete/
+restore, F7/F8 apply behavior, sync propagation, or mobile write-back.
 
 Next phases:
 

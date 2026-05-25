@@ -25,7 +25,7 @@ export function ReadOnlyBundleStatus({ diagnostic, view }: ReadOnlyBundleStatusP
           <Text style={styles.eyebrow}>Read-only status</Text>
           <Text style={styles.title}>Bundle diagnostics</Text>
           <Text style={styles.subtitle}>
-            Preview only — no data is saved, imported, synced, or written back.
+            Preview only — bundle content is not saved, imported, synced, or written back.
           </Text>
         </View>
         <View style={styles.modeBadge}>
