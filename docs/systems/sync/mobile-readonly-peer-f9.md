@@ -1197,9 +1197,16 @@ The following remain forbidden:
 ## F9.5c Validation Status — Native Selection Pending
 
 F9.5 is implemented, but native document picker file selection remains pending
-manual validation. The read-only pipeline and simulator route reachability were
-validated; terminal automation could not reliably tap and select a file inside
-the iOS document picker.
+manual validation. The read-only pipeline, simulator route reachability, picker
+presentation, and file visibility were validated; terminal automation could not
+reliably complete the final tap/select action inside the iOS document picker.
+
+Current status:
+
+```txt
+Implemented; static + route + picker-open validation passed; manual native file
+selection pending.
+```
 
 Validated:
 
@@ -1229,6 +1236,10 @@ Validated:
 - `ExpoDocumentPicker` and `ExpoFileSystem` native pods compiled.
 - `/read-only-bundle` opened by deep link.
 - The route displayed `Choose file to preview` and read-only/preview-only copy.
+- Native document picker opened.
+- Real `latest.json` was visible in the iOS Files picker.
+- iOS pod/build integration was fixed in
+  `8cc65b3` (`fix(mobile): update iOS pods for file preview`).
 
 Pending:
 
@@ -1236,12 +1247,27 @@ Pending:
 - Manual confirmation that selecting `latest.json` through the native picker
   reads the file and renders the same read-only preview.
 
-No archive-store, WebDAV, import/merge, write-back, full bundle cache, or
-snapshot content cache behavior was used during validation. The validation run
-temporarily changed `apps/studio/mobile/ios/Podfile.lock` through `pod install`;
-that file was restored and is not part of this validation status.
+Blocked step:
 
-Until the manual picker step is completed, F9.5 status is:
+- Terminal automation could not reliably select the visible `latest.json` file
+  inside the native iOS document picker. This is an automation limitation, not a
+  read-only pipeline failure.
+
+Safety confirmation:
+
+- No archive-store path was used.
+- No WebDAV path was used.
+- No archive import or merge path was used.
+- No write-back path was used.
+- No full bundle cache was used.
+- No snapshot content cache was used.
+- No F5/F6/F7/F8 mutation path was used.
+
+Final full validation requires a human/operator to open the app, navigate to
+`/read-only-bundle`, tap `Choose file to preview`, and manually select
+`latest.json` in the native Files picker.
+
+Until that manual picker step is completed, F9.5 status remains:
 
 ```txt
 Implemented; native picker selection pending manual validation.
