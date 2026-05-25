@@ -5,6 +5,7 @@ export {
   readMobileSyncBundle,
   validateMobileSyncBundle,
 } from "./latest-bundle-reader";
+export { buildMobileReadOnlyBundleView } from "./latest-bundle-view-model";
 export type {
   DiagnoseMobileSyncBundleOptions,
   MobileBundleDiagnostic,
@@ -13,3 +14,8 @@ export type {
   MobileBundleSourceKind,
   MobileBundleTextSourceKind,
 } from "./latest-bundle-reader";
+export type {
+  BuildMobileReadOnlyBundleViewOptions,
+  MobileReadOnlyLibraryView,
+  MobileReadOnlyViewWarning,
+} from "./latest-bundle-view-model";

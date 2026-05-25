@@ -184,6 +184,58 @@ F9.1b diagnostics must never expose chat text, prompts, answers, folder names,
 raw IDs, peer IDs, raw hashes, raw audit JSON, or metadata blobs. Counts,
 booleans, schema/status codes, and warning/blocker codes are allowed.
 
+## F9.2a — Read-Only Bundle View Model
+
+F9.2a adds a pure mobile view-model builder for Desktop `latest.json` bundle
+evidence:
+
+```txt
+latest.json bundle -> read-only mobile view model
+```
+
+This is not UI and not storage. The view model must not merge into the mobile
+archive store, write `AsyncStorage`, call WebDAV, create tombstones, ingest
+conflict candidates, run apply APIs, or make mobile authoritative.
+
+The public helper shape is:
+
+```ts
+buildMobileReadOnlyBundleView(bundle, {
+  checksumVerified
+})
+```
+
+The view schema is `h2o.mobile.readonly-library-view.v1`. It contains:
+
+- `chats`: read-only chat rows with `idPresent`, optional `titlePreview`,
+  `snapshotCount`, and `folderCount`.
+- `folders`: read-only folder rows with `idPresent`, optional `namePreview`,
+  `itemCount`, and `colorPresent`.
+- `snapshots`: read-only snapshot metadata with presence booleans only.
+- `diagnostics`: source schema, checksum, export timestamp, and source peer
+  presence.
+- `warnings`: code-only warning entries.
+
+F9.2a may use user-facing titles and folder names in the UI view model because
+they are already part of the user's imported bundle. Diagnostics, validation
+logs, and status output must remain redacted and must not include raw IDs,
+peer IDs, hashes, audit JSON, metadata blobs, prompts, answers, or snapshot
+message content.
+
+Folder membership is derived internally from Chrome folder-state evidence. Raw
+folder, chat, and snapshot IDs may be used transiently to compute `itemCount`
+and `folderCount`, but the returned view model must expose only presence
+booleans and counts.
+
+Snapshot support in F9.2a is list metadata only. A full read-only snapshot
+reader is deferred to F9.2c.
+
+Next phases:
+
+- F9.2b: Library and folder list display from the read-only view model.
+- F9.2c: Snapshot read-only reader.
+- F9.2d: Read-only status and diagnostics screen.
+
 ## Validation Model
 
 Future implementation must prove:

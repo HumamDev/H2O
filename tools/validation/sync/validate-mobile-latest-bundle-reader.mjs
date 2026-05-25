@@ -17,11 +17,19 @@ function readRepoFile(relativePath) {
 }
 
 function loadLatestBundleReader() {
+  return loadTypescriptModule('apps/studio/mobile/src/features/sync/latest-bundle-reader.ts');
+}
+
+function loadLatestBundleViewModel() {
+  return loadTypescriptModule('apps/studio/mobile/src/features/sync/latest-bundle-view-model.ts');
+}
+
+function loadTypescriptModule(relativePath) {
   const helperPath = path.join(
     repoRoot,
-    'apps/studio/mobile/src/features/sync/latest-bundle-reader.ts',
+    relativePath,
   );
-  const source = readRepoFile('apps/studio/mobile/src/features/sync/latest-bundle-reader.ts');
+  const source = readRepoFile(relativePath);
   const transpiled = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -283,6 +291,47 @@ function assertRedacted(diagnostic, bundle) {
   assert.deepEqual(leaked, [], 'diagnostic leaked sensitive bundle values');
 }
 
+function collectRawIds(value, output = new Set(), activeKey = '') {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (normalized.length >= 6 && isIdKey(activeKey)) {
+      output.add(normalized);
+    }
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectRawIds(item, output, activeKey);
+    }
+    return output;
+  }
+  if (isRecord(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      collectRawIds(child, output, key);
+    }
+  }
+  return output;
+}
+
+function isIdKey(key) {
+  const normalized = key.toLowerCase();
+  return normalized === 'id' || normalized.endsWith('id') || normalized.endsWith('_id');
+}
+
+function assertViewModelNoRawIds(view, bundle) {
+  const viewJson = JSON.stringify(view);
+  const leaked = [];
+  for (const rawId of collectRawIds(bundle)) {
+    if (viewJson.includes(rawId)) {
+      leaked.push(rawId);
+    }
+    if (leaked.length >= 5) {
+      break;
+    }
+  }
+  assert.deepEqual(leaked, [], 'view model leaked raw IDs');
+}
+
 if (!fs.existsSync(bundlePath)) {
   console.error(
     JSON.stringify(
@@ -302,10 +351,14 @@ if (!fs.existsSync(bundlePath)) {
 const text = fs.readFileSync(bundlePath, 'utf8');
 const bundle = JSON.parse(text);
 const { diagnoseMobileSyncBundle } = loadLatestBundleReader();
+const { buildMobileReadOnlyBundleView } = loadLatestBundleViewModel();
 const diagnostic = await diagnoseMobileSyncBundle(
   { text, sourceKind: 'latest-json' },
   { verifyChecksum: true, sha256Hex },
 );
+const view = buildMobileReadOnlyBundleView(bundle, {
+  checksumVerified: diagnostic.source.checksumVerified,
+});
 
 assert.equal(diagnostic.schema, 'h2o.mobile.bundle-reader.diagnostic.v1');
 assert.equal(diagnostic.ok, true);
@@ -321,6 +374,25 @@ assert.equal(diagnostic.source.checksumVerified, true);
 const expectedCounts = countExpected(bundle);
 assert.deepEqual(diagnostic.counts, expectedCounts);
 assertRedacted(diagnostic, bundle);
+
+assert.equal(view.schema, 'h2o.mobile.readonly-library-view.v1');
+assert.equal(view.readOnly, true);
+assert.equal(view.diagnostics.sourceSchemaPresent, true);
+assert.equal(view.diagnostics.exportedAtPresent, true);
+assert.equal(view.diagnostics.sourcePeerPresent, true);
+assert.equal(view.diagnostics.checksumVerified, true);
+assert.equal(view.chats.length, expectedCounts.chats);
+assert.equal(view.snapshots.length, expectedCounts.snapshots);
+assert.equal(view.folders.length, expectedCounts.folders);
+assert.equal(
+  view.folders.reduce((total, folder) => total + folder.itemCount, 0),
+  expectedCounts.folderMemberships,
+);
+assert.equal(
+  view.chats.reduce((total, chat) => total + chat.folderCount, 0),
+  expectedCounts.folderMemberships,
+);
+assertViewModelNoRawIds(view, bundle);
 
 console.log(
   JSON.stringify(
@@ -347,6 +419,18 @@ console.log(
       },
       redaction: {
         passed: true,
+      },
+      readOnlyViewModel: {
+        schema: view.schema,
+        readOnly: view.readOnly,
+        chats: view.chats.length,
+        snapshots: view.snapshots.length,
+        folders: view.folders.length,
+        folderMembershipsFromFolders: view.folders.reduce((total, folder) => total + folder.itemCount, 0),
+        folderMembershipsFromChats: view.chats.reduce((total, chat) => total + chat.folderCount, 0),
+        diagnostics: view.diagnostics,
+        warnings: view.warnings,
+        rawIdsExposed: false,
       },
     },
     null,
