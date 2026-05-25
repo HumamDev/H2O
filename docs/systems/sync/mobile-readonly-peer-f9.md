@@ -1050,6 +1050,83 @@ This polish does not change cache storage behavior, add file picker support,
 add full bundle or snapshot-content cache, add archive-store behavior, add
 WebDAV/cloud transport, or add mobile write-back.
 
+## F9.5a — Read-Only File Picker Dependency Decision
+
+F9.5 is planned as read-only file preview, not import. The goal is to let a
+user choose a local Desktop `latest.json` file and preview it through the
+existing read-only pipeline. A file picker is needed before that can be
+implemented safely.
+
+Current dependency findings:
+
+- `expo-document-picker` is not listed in `apps/studio/mobile/package.json`.
+- `expo-file-system` is available in the repo context and used through
+  `expo-file-system/legacy`, but it is not clearly declared as a direct mobile
+  dependency.
+- `apps/studio/mobile/src/app/import-export.tsx` is unsafe to reuse for F9.5
+  because it is archive-store, WebDAV, merge, import, and export oriented.
+
+Dependency options:
+
+- Option A: add `expo-document-picker`. This is the recommended path if
+  package/version compatibility is acceptable. It is the best fit for Expo and
+  React Native file selection, and it keeps the read-only route separate from
+  mutable import/export behavior.
+- Option B: avoid a dependency and keep paste-only input. This is safest for
+  dependencies, but it provides no file-preview UX improvement.
+- Option C: reuse `import-export.tsx`. This is rejected because that screen
+  imports archive-store replacement, WebDAV pull/push, and archive merge/export
+  paths.
+- Option D: use platform-specific web file input. This is rejected/deferred
+  because it fragments mobile/web behavior and adds conditional route code.
+
+Recommended decision:
+
+- Add `expo-document-picker` in F9.5b only if package/version compatibility is
+  accepted.
+- Read the selected file text into route-local state only.
+- Use `sourceKind: "latest-json"` for picked files.
+- Treat checksum mismatch as a blocker for picked files.
+- Keep pasted JSON behavior unchanged.
+- Do not add archive-store, WebDAV, import, sync, or write-back behavior.
+
+Future F9.5b safety boundary:
+
+- Use the picker only from `read-only-bundle.tsx` or a small read-only helper.
+- Do not reuse `import-export.tsx`.
+- Do not call archive-store, WebDAV, conflict, apply, or mutation APIs.
+- Do not persist file URI, file content, parsed bundle data, full view models,
+  or snapshot content.
+- Do not cache full bundle or snapshot content.
+
+Future F9.5b flow:
+
+```txt
+Choose latest.json file
+-> read file text into route-local state
+-> diagnoseMobileSyncBundle({ text, sourceKind: "latest-json" })
+-> readMobileSyncBundle
+-> buildMobileReadOnlyBundleView
+-> buildMobileReadOnlySyncEvidenceView
+-> render existing read-only UI
+```
+
+Future F9.5b validation must prove:
+
+- Dependency install and version compatibility are checked.
+- The file picker returns a selected file.
+- Valid `latest.json` previews successfully.
+- Invalid JSON blocks safely.
+- Unsupported schema blocks safely.
+- Checksum mismatch blocks for file source.
+- Pasted JSON behavior remains unchanged.
+- No archive-store/WebDAV/mutation imports are added.
+- No full bundle/content persistence is added.
+- No misleading import, sync, restore, or write-back labels are introduced.
+
+Proceed to F9.5b only after accepting the dependency addition. Do not start
+F10.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
