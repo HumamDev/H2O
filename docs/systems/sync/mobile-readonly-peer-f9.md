@@ -289,6 +289,36 @@ or `/import-export` screens.
 Real bundle input, pasted bundle text, file picker support, diagnostics route
 integration, and snapshot content reading remain deferred.
 
+## F9.2b.3 — In-Memory Pasted Bundle Preview
+
+F9.2b.3 changes the read-only bundle route from mock-only to pasted-text
+preview:
+
+```txt
+paste latest.json -> diagnose -> build read-only view -> display
+```
+
+The route uses local React state only. It does not save pasted text, import the
+bundle, merge archive data, call WebDAV, create cache state, or write back to
+Desktop, Chrome, or mobile stores.
+
+Validation uses `diagnoseMobileSyncBundle` with `sourceKind: "pasted-json"`.
+Checksum mismatch is a warning for pasted JSON because copied content may be
+reformatted. A future original-file path can still block on checksum mismatch.
+
+If validation returns blockers, the route shows blocker codes and does not
+render the bundle view. If validation passes, it derives
+`MobileReadOnlyLibraryView` with `buildMobileReadOnlyBundleView` and renders
+`ReadOnlyBundleDisplay`.
+
+The UI must not expose controls for save, import, merge, sync, push/pull,
+edit, delete, restore, move, apply, or conflict decisions. It may show
+user-owned title and folder-name previews only through the read-only display
+component.
+
+File picker, WebDAV/cloud transport, route menu wiring, persistent cache,
+diagnostics screen integration, and snapshot content reading remain deferred.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
