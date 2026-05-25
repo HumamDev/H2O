@@ -46,6 +46,7 @@
   const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
   const FOLDER_METADATA_RENAME_REASON = 'Chrome Studio canonical folder rename';
   const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
+  const FOLDER_METADATA_RENAME_POLL_MS = 700;
   const SIDEBAR_MENU_COLORS = Object.freeze([
     { key: 'default', label: 'Default', color: '', value: '' },
     { key: 'blue', label: 'Blue', color: '#3B82F6', value: '#3B82F6' },
@@ -691,10 +692,24 @@
     return out;
   }
 
+  function refreshNativeFolderState(reason = 'folder-metadata-apply') {
+    const sync = W.H2O?.Library?.Sync || W.H2O?.Studio?.sync || {};
+    const fn = typeof sync.refreshNativeFolderState === 'function'
+      ? sync.refreshNativeFolderState
+      : (typeof sync.refreshNativeBroadcast === 'function' ? sync.refreshNativeBroadcast : null);
+    if (typeof fn !== 'function') return null;
+    try {
+      return fn.call(sync, reason);
+    } catch (e) {
+      err('refreshNativeFolderState.call', e);
+      return null;
+    }
+  }
+
   function refreshAfterNativeFolderMetadataApply(reason = 'folder-metadata-apply') {
     let refreshed = false;
     try {
-      const result = W.H2O?.Studio?.sync?.refreshNativeFolderState?.(reason);
+      const result = refreshNativeFolderState(reason);
       if (result && typeof result.finally === 'function') {
         refreshed = true;
         result.finally(() => {
@@ -711,6 +726,29 @@
 
   function refreshAfterNativeFolderColorApply() {
     refreshAfterNativeFolderMetadataApply('folder-color-apply');
+  }
+
+  async function requestFolderMetadataOperationWithNativeRefresh(request, operation, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const pollReason = String(opts.pollReason || 'folder-metadata-result-poll');
+    let stopped = false;
+    let polling = false;
+    const poll = () => {
+      if (stopped || polling) return;
+      const result = refreshNativeFolderState(pollReason);
+      if (result && typeof result.finally === 'function') {
+        polling = true;
+        result.finally(() => { polling = false; });
+      }
+    };
+    const timer = W.setInterval(poll, FOLDER_METADATA_RENAME_POLL_MS);
+    W.setTimeout(poll, Math.min(250, FOLDER_METADATA_RENAME_POLL_MS));
+    try {
+      return await request(operation, opts);
+    } finally {
+      stopped = true;
+      try { W.clearInterval(timer); } catch {}
+    }
   }
 
   async function requestCanonicalFolderColor(item, color, controls = {}) {
@@ -807,9 +845,10 @@
     setStatus('Previewing...', 'pending');
     let preview = null;
     try {
-      preview = await request(operation, {
+      preview = await requestFolderMetadataOperationWithNativeRefresh(request, operation, {
         requestMode: 'preview',
         timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-rename-preview-result-poll',
       });
     } catch (e) {
       err('folderRename.preview', e);
@@ -834,9 +873,10 @@
     setStatus('Applying...', 'pending');
     let applied = null;
     try {
-      applied = await request(buildFolderRenameOperation(item, nextName, staleGuardFromPreview(preview)), {
+      applied = await requestFolderMetadataOperationWithNativeRefresh(request, buildFolderRenameOperation(item, nextName, staleGuardFromPreview(preview)), {
         requestMode: 'apply',
         timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-rename-apply-result-poll',
       });
     } catch (e) {
       err('folderRename.apply', e);
@@ -1053,11 +1093,16 @@
     panel.appendChild(buttonRow);
     panel.appendChild(status);
 
+    let pendingRename = false;
     const syncSubmit = () => {
       const nextName = normalizeFolderRenameInput(input.value);
-      submit.disabled = !nextName || nextName === currentName;
+      input.disabled = pendingRename;
+      cancel.disabled = pendingRename;
+      submit.disabled = pendingRename || !nextName || nextName === currentName;
       submit.style.opacity = submit.disabled ? '.55' : '1';
       submit.style.cursor = submit.disabled ? 'not-allowed' : 'pointer';
+      cancel.style.opacity = pendingRename ? '.55' : '1';
+      cancel.style.cursor = pendingRename ? 'not-allowed' : 'pointer';
     };
     const showPanel = () => {
       panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
@@ -1079,15 +1124,18 @@
         syncSubmit();
         return;
       }
-      submit.disabled = true;
+      pendingRename = true;
+      syncSubmit();
       Promise.resolve(requestCanonicalFolderRename(item, nextName, { setStatus }))
         .then((result) => {
+          pendingRename = false;
           syncSubmit();
           if (result?.ok && result.applied === true) {
             W.setTimeout(() => closeRowMenu(), 750);
           }
         })
         .catch((e) => {
+          pendingRename = false;
           err('folderRename.panel', e);
           setStatus(`Blocked: ${String(e?.message || e || 'rename-failed')}`, 'blocked');
           syncSubmit();
@@ -1097,6 +1145,7 @@
     input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
         ev.preventDefault();
+        if (pendingRename) return;
         panel.style.display = 'none';
         action.setAttribute('aria-expanded', 'false');
         return;
@@ -1109,6 +1158,7 @@
     cancel.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+      if (pendingRename) return;
       panel.style.display = 'none';
       action.setAttribute('aria-expanded', 'false');
     });
