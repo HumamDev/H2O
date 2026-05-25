@@ -1127,6 +1127,73 @@ Future F9.5b validation must prove:
 Proceed to F9.5b only after accepting the dependency addition. Do not start
 F10.
 
+## F9.5b — Read-Only Latest File Preview
+
+F9.5b adds a file-picker path to the existing mobile read-only route. It is a
+preview flow only, not archive import, merge, sync, restore, or write-back.
+
+Dependencies added for the mobile app:
+
+- `expo-document-picker`.
+- `expo-file-system`.
+
+The read-only file preview chain is:
+
+```txt
+Choose latest.json file
+-> read file text into route-local state
+-> diagnoseMobileSyncBundle({ text, sourceKind: "latest-json" })
+-> readMobileSyncBundle
+-> buildMobileReadOnlyBundleView
+-> buildMobileReadOnlySyncEvidenceView
+-> render existing read-only UI
+```
+
+File-source checksum behavior:
+
+- Picked files use `sourceKind: "latest-json"`.
+- Checksum verification is requested.
+- Checksum mismatch blocks preview for picked files.
+- Missing checksum warns.
+- Pasted JSON behavior is unchanged: pasted input uses
+  `sourceKind: "pasted-json"` and checksum mismatch remains a warning.
+
+The route stores only route-local preview state:
+
+- Input text while the screen is open.
+- Source kind.
+- Selected file name for display.
+- Diagnostic result.
+- Parsed bundle in memory.
+- Derived read-only views in memory.
+- Local snapshot selection index.
+
+The route does not persist:
+
+- File URI.
+- File contents.
+- Full bundle text.
+- Parsed bundle objects.
+- Full view models.
+- Snapshot messages/content.
+
+Metadata cache behavior is unchanged: explicit `Save metadata cache` can store
+diagnostic metadata/counts only. It does not cache the file, bundle content,
+library content, or snapshot content.
+
+The following remain forbidden:
+
+- Reusing mutable `import-export.tsx`.
+- Archive-store writes.
+- `replaceArchiveStore`.
+- `saveArchiveStore`.
+- WebDAV pull/push.
+- Archive import or merge.
+- Conflict ingestion or decisions.
+- F7/F8 apply APIs.
+- Folder/chat/snapshot mutations.
+- Mobile write-back.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.

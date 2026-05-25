@@ -1,4 +1,6 @@
 import * as Crypto from "expo-crypto";
+import * as DocumentPicker from "expo-document-picker";
+import { readAsStringAsync } from "expo-file-system/legacy";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -33,6 +35,7 @@ import {
 } from "../features/sync";
 
 type PreviewPhase = "idle" | "running" | "ready" | "blocked";
+type PreviewSourceKind = "pasted-json" | "latest-json";
 
 async function sha256Hex(text: string): Promise<string> {
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, text);
@@ -40,6 +43,8 @@ async function sha256Hex(text: string): Promise<string> {
 
 export default function ReadOnlyBundleRoute() {
   const [inputText, setInputText] = useState("");
+  const [sourceKind, setSourceKind] = useState<PreviewSourceKind>("pasted-json");
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>("idle");
   const [diagnostic, setDiagnostic] = useState<MobileBundleDiagnostic | null>(null);
   const [bundle, setBundle] = useState<unknown | null>(null);
@@ -74,15 +79,23 @@ export default function ReadOnlyBundleRoute() {
     };
   }, []);
 
-  async function previewBundle() {
-    setPhase("running");
+  function resetPreviewState() {
     setDiagnostic(null);
     setBundle(null);
     setView(null);
     setSelectedSnapshotIndex(null);
+  }
+
+  async function previewCurrentInput() {
+    await previewBundleText(inputText, sourceKind);
+  }
+
+  async function previewBundleText(text: string, previewSourceKind: PreviewSourceKind) {
+    setPhase("running");
+    resetPreviewState();
 
     const nextDiagnostic = await diagnoseMobileSyncBundle(
-      { text: inputText, sourceKind: "pasted-json" },
+      { text, sourceKind: previewSourceKind },
       { verifyChecksum: true, sha256Hex },
     );
     setDiagnostic(nextDiagnostic);
@@ -94,7 +107,7 @@ export default function ReadOnlyBundleRoute() {
       return;
     }
 
-    const read = readMobileSyncBundle({ text: inputText, sourceKind: "pasted-json" });
+    const read = readMobileSyncBundle({ text, sourceKind: previewSourceKind });
     if (read.ok === false) {
       setPhase("blocked");
       setBundle(null);
@@ -112,6 +125,51 @@ export default function ReadOnlyBundleRoute() {
     setPhase("ready");
   }
 
+  async function chooseFileToPreview() {
+    const previousPhase = phase;
+    setPhase("running");
+
+    let result: DocumentPicker.DocumentPickerResult;
+    try {
+      result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: false,
+        multiple: false,
+        type: ["application/json", "text/json", "text/plain", "*/*"],
+      });
+    } catch {
+      setPhase(previousPhase);
+      return;
+    }
+
+    if (result.canceled) {
+      setPhase(previousPhase);
+      return;
+    }
+
+    const asset = result.assets[0];
+    if (!asset) {
+      resetPreviewState();
+      setSelectedFileName(null);
+      setPhase("blocked");
+      return;
+    }
+
+    let text: string;
+    try {
+      text = await readAsStringAsync(asset.uri);
+    } catch {
+      resetPreviewState();
+      setSelectedFileName(asset.name || null);
+      setPhase("blocked");
+      return;
+    }
+
+    setInputText(text);
+    setSourceKind("latest-json");
+    setSelectedFileName(asset.name || "selected latest.json");
+    await previewBundleText(text, "latest-json");
+  }
+
   async function saveMetadataCache() {
     if (!diagnostic || diagnostic.blockers.length > 0) {
       return;
@@ -119,7 +177,7 @@ export default function ReadOnlyBundleRoute() {
 
     const metadata = buildReadOnlyBundleCacheMetadata({
       diagnostic,
-      sourceKind: "pasted-json",
+      sourceKind,
     });
     const result = await saveReadOnlyBundleCacheMetadata(metadata);
     setCacheWarnings(result.warnings);
@@ -161,6 +219,31 @@ export default function ReadOnlyBundleRoute() {
         </View>
 
         <View style={styles.inputCard}>
+          <Text style={styles.sectionTitle}>Preview latest.json file</Text>
+          <Text style={styles.helpText}>
+            Choose a local Desktop latest.json file for read-only preview. Nothing is saved, imported,
+            synced, or written back.
+          </Text>
+          {selectedFileName ? (
+            <Text style={styles.selectedFileText}>Selected file: {selectedFileName}</Text>
+          ) : (
+            <Text style={styles.codeEmpty}>No file selected.</Text>
+          )}
+          <TouchableOpacity
+            style={[styles.secondaryButton, phase === "running" && styles.previewButtonDisabled]}
+            activeOpacity={0.8}
+            disabled={phase === "running"}
+            onPress={chooseFileToPreview}
+          >
+            {phase === "running" ? (
+              <ActivityIndicator color="#1D4ED8" />
+            ) : (
+              <Text style={styles.secondaryButtonText}>Choose file to preview</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.inputCard}>
           <Text style={styles.sectionTitle}>Paste latest.json</Text>
           <Text style={styles.helpText}>
             Paste a Desktop latest.json bundle to validate it in memory and render a read-only preview.
@@ -170,12 +253,11 @@ export default function ReadOnlyBundleRoute() {
             value={inputText}
             onChangeText={(text) => {
               setInputText(text);
+              setSourceKind("pasted-json");
+              setSelectedFileName(null);
               if (phase !== "idle") {
                 setPhase("idle");
-                setDiagnostic(null);
-                setBundle(null);
-                setView(null);
-                setSelectedSnapshotIndex(null);
+                resetPreviewState();
               }
             }}
             placeholder={'{ "schema": "h2o.studio.fullBundle.v2", ... }'}
@@ -190,7 +272,7 @@ export default function ReadOnlyBundleRoute() {
             style={[styles.previewButton, phase === "running" && styles.previewButtonDisabled]}
             activeOpacity={0.8}
             disabled={phase === "running"}
-            onPress={previewBundle}
+            onPress={previewCurrentInput}
           >
             {phase === "running" ? (
               <ActivityIndicator color="#FFFFFF" />
@@ -403,6 +485,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
+  selectedFileText: {
+    borderRadius: 12,
+    backgroundColor: "#EFF6FF",
+    color: "#1E3A8A",
+    fontSize: 13,
+    fontWeight: "700",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
   input: {
     minHeight: 160,
     borderRadius: 14,
@@ -425,6 +516,19 @@ const styles = StyleSheet.create({
   },
   previewButtonText: {
     color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  secondaryButton: {
+    alignItems: "center",
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#93C5FD",
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 12,
+  },
+  secondaryButtonText: {
+    color: "#1D4ED8",
     fontSize: 15,
     fontWeight: "800",
   },
