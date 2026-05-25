@@ -1298,6 +1298,16 @@ Current validation summary:
 - TypeScript/scoped checks passed earlier in F9.5 validation.
 - Forbidden-call grep stayed clean.
 - Human picker validation passed on iOS simulator, iPhone 17 Pro, iOS 26.5.
+- Android picker validation is blocked by environment/tooling: `adb` and
+  `emulator` were not available, `/Users/hobayda/Library/Android/sdk` was
+  missing, Android Studio was not found under `/Applications`, and
+  `apps/studio/mobile/android` only contains `README.md`.
+- The Android validation blocker occurred before app launch. Static mobile
+  read-only TypeScript checks passed, forbidden-call grep returned no matches,
+  and no archive-store, WebDAV, import/merge, write-back, full bundle cache, or
+  snapshot content cache behavior was used.
+- Native Android picker behavior remains unvalidated until Android Studio/SDK
+  and an emulator or physical Android device are available.
 - No files changed during human picker validation.
 - Git only had unrelated Studio WIP during validation.
 
