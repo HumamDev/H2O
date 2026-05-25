@@ -4078,6 +4078,12 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
   }
   try {
     await storageSet({ [STUDIO_BROADCAST_KEY]: value });
+    let directRelay = { ok: false, status: "not-attempted", sent: 0, errors: [] };
+    try {
+      directRelay = await forwardStudioBroadcastToChatTabs(value);
+    } catch (e) {
+      directRelay = { ok: false, status: "relay-error", sent: 0, errors: [String(e && (e.message || e))] };
+    }
     const payload = value && value.payload && typeof value.payload === "object" ? value.payload : {};
     return {
       ok: true,
@@ -4085,6 +4091,7 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
       senderId,
       key: STUDIO_BROADCAST_KEY,
       payloadKeys: Object.keys(payload).slice(0, 16),
+      directRelay,
       ts: Date.now(),
     };
   } catch (e) {
@@ -4096,6 +4103,59 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
       error: String((e && (e.stack || e.message || e)) || "write-failed"),
     };
   }
+}
+
+async function forwardStudioBroadcastToChatTabs(value) {
+  if (!chrome.tabs || typeof chrome.tabs.query !== "function" || typeof chrome.tabs.sendMessage !== "function") {
+    return { ok: false, status: "tabs-api-unavailable", sent: 0, errors: ["chrome.tabs unavailable"] };
+  }
+  const tabs = await new Promise((resolve, reject) => {
+    try {
+      chrome.tabs.query({ url: [CHAT_MATCH] }, (rows) => {
+        const le = chrome.runtime.lastError;
+        if (le) return reject(new Error(String(le.message || le)));
+        resolve(Array.isArray(rows) ? rows : []);
+      });
+    } catch (e) { reject(e); }
+  });
+  const tabIds = tabs
+    .map((tab) => Number(tab && tab.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!tabIds.length) return { ok: true, status: "no-chatgpt-tabs", sent: 0, errors: [] };
+
+  let sent = 0;
+  const errors = [];
+  await Promise.all(tabIds.map((tabId) => new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, {
+        type: MSG_STUDIO_BROADCAST,
+        key: STUDIO_BROADCAST_KEY,
+        value,
+        source: "native-background-direct-relay",
+        ts: Date.now(),
+      }, (resp) => {
+        const le = chrome.runtime.lastError;
+        if (le) {
+          errors.push(String(tabId) + ":" + String(le.message || le));
+        } else if (resp && resp.ok !== false) {
+          sent += 1;
+        } else {
+          errors.push(String(tabId) + ":" + String((resp && (resp.status || resp.error)) || "no-response"));
+        }
+        resolve();
+      });
+    } catch (e) {
+      errors.push(String(tabId) + ":" + String(e && (e.message || e)));
+      resolve();
+    }
+  })));
+  return {
+    ok: sent > 0,
+    status: sent > 0 ? "relayed" : "not-relayed",
+    sent,
+    tabCount: tabIds.length,
+    errors: errors.slice(0, 8),
+  };
 }
 
 async function handleExternalNativeFolderStateMessage(msg, sender) {

@@ -3941,6 +3941,7 @@ export function makeChromeLiveLoaderJs({
     const EV_EVENT = "h2o-ext-cs:event";
     const STUDIO_KEY = "h2o:library:cross-surface:broadcast:v1";
     const NATIVE_KEY = "h2o:library:cross-surface:broadcast:native:v1";
+    const MSG_STUDIO_BROADCAST = "h2o:library:studio-broadcast:v1";
     const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
     const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
     /* Phase K-2.6 — cross-extension linked-records bridge. Parallel to the
@@ -4011,6 +4012,29 @@ export function makeChromeLiveLoaderJs({
         });
       } catch (e) {
         dlog("write.throw", String(e && (e.message || e)));
+      }
+    }
+
+    function handleStudioBroadcastDirectRelay(msg, sendResponse) {
+      const key = String(msg && msg.key || "");
+      const value = msg && msg.value && typeof msg.value === "object" && !Array.isArray(msg.value)
+        ? msg.value
+        : null;
+      if (key !== STUDIO_KEY) {
+        try { sendResponse({ ok: false, status: "invalid-broadcast-key", key }); } catch {}
+        return;
+      }
+      if (!value) {
+        try { sendResponse({ ok: false, status: "invalid-broadcast-value", key }); } catch {}
+        return;
+      }
+      try {
+        sendEvent(STUDIO_KEY, value, undefined, { direct: true });
+        dlog("studioBroadcast.direct.ok", String(value.reason || ""));
+        sendResponse({ ok: true, status: "relayed", key: STUDIO_KEY, payloadKeys: Object.keys(value.payload || {}).slice(0, 12) });
+      } catch (e) {
+        dlog("studioBroadcast.direct.err", String(e && (e.message || e)));
+        try { sendResponse({ ok: false, status: "relay-failed", key: STUDIO_KEY, error: String(e && (e.message || e)) }); } catch {}
       }
     }
 
@@ -4166,6 +4190,16 @@ export function makeChromeLiveLoaderJs({
       const d = (ev && ev.detail) || {};
       handleWrite("custom-event", d.key, d.value);
     }, false);
+
+    try {
+      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (!msg || msg.type !== MSG_STUDIO_BROADCAST) return undefined;
+        handleStudioBroadcastDirectRelay(msg, sendResponse);
+        return true;
+      });
+    } catch (e) {
+      dlog("studioBroadcast.direct.bind.err", String(e && (e.message || e)));
+    }
 
     if (hasStorage) {
       try {
