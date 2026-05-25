@@ -1,5 +1,5 @@
 /*
- * @version 2.5.17
+ * @version 2.5.18
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
@@ -45,7 +45,10 @@
  *          v2.5.15 made the Settings section containers obviously
  *          bounded boxes in Light/Sepia: Sepia card bg now off-white
  *          (#fffaea) clearly above the cream page; both themes use
- *          darker borders (.30/.55) + bigger 2-layer drop shadows.
+ *          darker borders (.30/.55) + bigger 2-layer drop shadows;
+ *          v2.5.18 split the Settings card class selector from the
+ *          attribute-fingerprint fallback and overrides full background /
+ *          border shorthands so inline dark-theme card styles do not win.
  */
 :root{
   color-scheme: dark;
@@ -8651,11 +8654,15 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
  * the class is bulletproof — no attribute-substring-normalization
  * surprises. The `[style*=…]` selector below stays as belt-and-suspenders
  * for any future card that uses cardStyle without the class. */
-.wbSettingsCard,
+.wbSettingsCard{
+  background: var(--wb-settings-card-bg) !important;
+  border: 1px solid var(--wb-settings-card-border) !important;
+  box-shadow: var(--wb-settings-card-shadow) !important;
+}
+
 [data-settings-rendered="1"] [style*="background:rgba(255,255,255,.02)"]{
-  background-color: var(--wb-settings-card-bg) !important;
-  border-color: var(--wb-settings-card-border) !important;
-  border-style: solid !important;
+  background: var(--wb-settings-card-bg) !important;
+  border: 1px solid var(--wb-settings-card-border) !important;
   box-shadow: var(--wb-settings-card-shadow) !important;
 }
 
