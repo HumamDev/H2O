@@ -562,6 +562,26 @@ conflict decisions, tombstone creation, F7/F8 apply, delete/restore behavior,
 or mobile write-back. F9.3c may wire the component into the read-only bundle
 route.
 
+## F9.3c — Sync Evidence Status Route Wiring
+
+F9.3c wires read-only sync evidence status into the `read-only-bundle` route:
+
+```txt
+local parsed bundle -> read-only sync evidence view -> status component
+```
+
+The route derives `MobileReadOnlySyncEvidenceView` from the existing
+route-local parsed bundle with `buildMobileReadOnlySyncEvidenceView`. It
+renders `ReadOnlySyncEvidenceStatus` on the bundle overview screen after
+general bundle status and before the library/folder/snapshot display.
+
+The evidence status is not shown in snapshot detail mode, keeping snapshot
+reading focused and avoiding extra route clutter.
+
+F9.3c does not add archive-store access, WebDAV, persistence, tombstone
+creation, conflict candidate ingestion, conflict decisions, delete/restore
+behavior, F7/F8 apply, mobile write-back, or any sync propagation behavior.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.

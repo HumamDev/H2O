@@ -13,12 +13,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   buildMobileReadOnlySnapshotDetail,
+  buildMobileReadOnlySyncEvidenceView,
   buildMobileReadOnlyBundleView,
   diagnoseMobileSyncBundle,
   readMobileSyncBundle,
   ReadOnlyBundleDisplay,
   ReadOnlyBundleStatus,
   ReadOnlySnapshotReader,
+  ReadOnlySyncEvidenceStatus,
   type MobileBundleDiagnostic,
   type MobileReadOnlyLibraryView,
 } from "../features/sync";
@@ -79,6 +81,7 @@ export default function ReadOnlyBundleRoute() {
     bundle && selectedSnapshotIndex !== null
       ? buildMobileReadOnlySnapshotDetail(bundle, { snapshotIndex: selectedSnapshotIndex })
       : null;
+  const syncEvidence = bundle ? buildMobileReadOnlySyncEvidenceView(bundle) : null;
 
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
@@ -151,6 +154,7 @@ export default function ReadOnlyBundleRoute() {
           </View>
         ) : view ? (
           <>
+            {syncEvidence ? <ReadOnlySyncEvidenceStatus evidence={syncEvidence} /> : null}
             <ReadOnlyBundleDisplay view={view} />
             <SnapshotSelectionSection view={view} onSelectSnapshot={setSelectedSnapshotIndex} />
           </>
