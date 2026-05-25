@@ -144,7 +144,8 @@
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA = 'h2o.folder-metadata-operation-preview.v1';
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
-  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-f1.native-owner-api.v2';
+  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-g1.native-delete-preview.v1';
+  const FOLDER_METADATA_DELETE_CONFIRMATION_TEXT = 'DELETE EMPTY FOLDER';
   const CFG_PROJECT_COLOR_OPTIONS = Object.freeze([
     { key: 'blue', label: 'Blue', color: '#3B82F6' },
     { key: 'red', label: 'Red', color: '#FF4C4C' },
@@ -2159,6 +2160,40 @@ ${CROW}[aria-current="true"]{
     };
   }
 
+  function META_deleteDependencySummary(data, folder, beforeSummary) {
+    const before = META_safeObject(beforeSummary);
+    const id = META_cleanString(before.folderId || before.id || folder?.id || folder?.folderId);
+    const items = data?.items && typeof data.items === 'object' && !Array.isArray(data.items) ? data.items : {};
+    const memberships = META_memberships(data, id);
+    const itemBucketExists = Object.prototype.hasOwnProperty.call(items, id);
+    return {
+      folderId: id,
+      folderName: before.name || META_cleanString(folder?.name || folder?.title || id),
+      color: before.color || '',
+      iconColor: before.iconColor || '',
+      nativeMembershipCount: memberships.length,
+      itemBucketExists,
+      itemBucketEmpty: memberships.length === 0,
+      folderHash: before.folderHash || (folder ? META_folderHash(folder) : ''),
+      sourceHash: before.sourceHash || META_sourceHash(data),
+      membershipHash: before.membershipHash || META_membershipHash(data, id),
+      knownHere: {
+        available: false,
+        count: null,
+        source: 'native-preview-does-not-track-studio-known-here',
+      },
+      chromeReferences: {
+        status: 'check-required',
+        blocker: 'chrome-reference-check-required',
+      },
+      desktopReferences: {
+        status: 'check-required',
+        blocker: 'desktop-reference-check-required',
+      },
+      officialChatGptFolderApiProven: false,
+    };
+  }
+
   function META_addCode(list, code) {
     const normalized = META_cleanString(code);
     if (!normalized) return;
@@ -2304,11 +2339,50 @@ ${CROW}[aria-current="true"]{
 
   function META_previewDeleteOperation(operation, preview, data) {
     const folder = META_validateCommon(operation, preview, data);
+    preview.requiredConfirmation = FOLDER_METADATA_DELETE_CONFIRMATION_TEXT;
+    preview.confirmation = {
+      required: true,
+      text: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
+      appliesTo: 'future-empty-folder-delete-apply',
+    };
     if (folder) {
+      const dependencySummary = META_deleteDependencySummary(data, folder, preview.before);
+      preview.before = {
+        ...(preview.before || {}),
+        nativeMembershipCount: dependencySummary.nativeMembershipCount,
+        itemBucketExists: dependencySummary.itemBucketExists,
+        itemBucketEmpty: dependencySummary.itemBucketEmpty,
+      };
+      preview.dependencySummary = dependencySummary;
       preview.after = null;
+      preview.proposed = {
+        deleted: true,
+        folderId: preview.folderId,
+        folderName: preview.before?.name || '',
+        nativeMembershipCount: dependencySummary.nativeMembershipCount,
+        itemBucketEmpty: dependencySummary.itemBucketEmpty,
+        removeFolderRow: true,
+        removeEmptyItemBucket: dependencySummary.itemBucketEmpty,
+      };
       if ((preview.before?.membershipCount || 0) > 0) META_addCode(preview.blockers, 'delete-non-empty-folder-blocked');
+    } else {
+      preview.dependencySummary = {
+        folderId: preview.folderId,
+        nativeMembershipCount: null,
+        itemBucketExists: false,
+        itemBucketEmpty: false,
+        knownHere: { available: false, count: null },
+        chromeReferences: { status: 'check-required', blocker: 'chrome-reference-check-required' },
+        desktopReferences: { status: 'check-required', blocker: 'desktop-reference-check-required' },
+        officialChatGptFolderApiProven: false,
+      };
     }
+    META_addCode(preview.blockers, 'delete-operation-not-enabled-yet');
     META_addCode(preview.blockers, 'delete-policy-not-implemented');
+    META_addCode(preview.blockers, 'delete-confirmation-required');
+    META_addCode(preview.blockers, 'chrome-reference-check-required');
+    META_addCode(preview.blockers, 'desktop-reference-check-required');
+    META_addCode(preview.blockers, 'official-chatgpt-folder-api-unproven');
     preview.canApply = false;
     return preview;
   }
