@@ -1059,15 +1059,22 @@ ${CROW}:not(:hover):not([aria-current="true"]){
 }
 ${FMORE},
 ${CMORE}{
+  all:unset !important;
+  box-sizing:border-box !important;
   position:absolute !important;
   right:9px !important;
   top:50% !important;
   transform:translateY(-50%) !important;
-  display:flex !important;
+  display:inline-flex !important;
   align-items:center !important;
   justify-content:center !important;
-  width:24px !important;
-  height:24px !important;
+  width:30px !important;
+  min-width:30px !important;
+  max-width:30px !important;
+  height:30px !important;
+  min-height:30px !important;
+  max-height:30px !important;
+  flex:0 0 30px !important;
   padding:0 !important;
   margin:0 !important;
   border:0 !important;
@@ -1077,9 +1084,12 @@ ${CMORE}{
   cursor:pointer !important;
   pointer-events:auto !important;
   touch-action:manipulation !important;
-  z-index:2 !important;
-  opacity:0;
-  visibility:hidden;
+  z-index:20 !important;
+  outline:none !important;
+  appearance:none !important;
+  -webkit-appearance:none !important;
+  opacity:.72;
+  visibility:visible;
   transition:opacity .12s ease, background .12s ease, color .12s ease;
 }
 ${ROOT} [data-cgxui-state="folder-row-wrap"]:hover ${FMORE},
@@ -1091,20 +1101,26 @@ ${CROW}:focus-within ${CMORE}{
   opacity:1;
   visibility:visible;
 }
+${FMORE}:focus-visible,
+${CMORE}:focus-visible{
+  box-shadow:0 0 0 2px rgba(255,255,255,.26) inset !important;
+}
 ${FMORE} svg,
 ${CMORE} svg{
   width:20px !important;
   height:20px !important;
   display:block !important;
+  flex:0 0 20px !important;
   opacity:1 !important;
+  pointer-events:none !important;
 }
 ${FMORE}:hover,
 ${CMORE}:hover{
   color:var(--text-primary, #fff);
-  background:transparent !important;
+  background:var(--interactive-bg-secondary-hover, rgba(255,255,255,.08)) !important;
 }
 ${FMORE}:active,
-${CMORE}:active{ background:transparent !important; }
+${CMORE}:active{ background:var(--interactive-bg-secondary-press, rgba(255,255,255,.12)) !important; }
 
 /* C) Popover (Rename / Delete) */
 ${POP}{
@@ -3685,18 +3701,58 @@ ${CROW}[aria-current="true"]{
     // makes clicks select the row instead of opening the H2O popup.
     const btn = D.createElement('button');
     btn.type = 'button';
-    btn.className = '__menu-item-trailing-btn';
-    btn.setAttribute('data-trailing-button', 'true');
+    btn.className = 'h2oFolderActionButton';
+    btn.setAttribute('data-h2o-trailing-button', 'true');
     btn.setAttribute('aria-label', label || 'More actions');
     btn.setAttribute('aria-haspopup', 'menu');
     btn.setAttribute('aria-expanded', 'false');
     btn.title = label || 'More actions';
     btn.disabled = false;
     btn.tabIndex = 0;
+    btn.style.cssText = [
+      'all:unset',
+      'box-sizing:border-box',
+      'position:absolute',
+      'right:9px',
+      'top:50%',
+      'transform:translateY(-50%)',
+      'display:inline-flex',
+      'align-items:center',
+      'justify-content:center',
+      'width:30px',
+      'min-width:30px',
+      'max-width:30px',
+      'height:30px',
+      'min-height:30px',
+      'max-height:30px',
+      'flex:0 0 30px',
+      'padding:0',
+      'margin:0',
+      'border:0',
+      'border-radius:8px',
+      'background:transparent',
+      'color:var(--text-primary, #fff)',
+      'cursor:pointer',
+      'pointer-events:auto',
+      'touch-action:manipulation',
+      'z-index:20',
+      'opacity:.72',
+      'visibility:visible',
+      'appearance:none',
+      '-webkit-appearance:none',
+      'outline:none',
+    ].join(';');
     if (token) btn.setAttribute(ATTR_CGXUI, token);
     btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
     if (token === UI_FSECTION_FOLDER_MORE) btn.setAttribute('data-h2o-folder-action-button', '1');
     btn.innerHTML = FRAG_SVG_MORE;
+    btn.querySelectorAll?.('svg')?.forEach((svg) => {
+      svg.style.width = '20px';
+      svg.style.height = '20px';
+      svg.style.display = 'block';
+      svg.style.flex = '0 0 20px';
+      svg.style.pointerEvents = 'none';
+    });
     return btn;
   }
 
@@ -3704,6 +3760,9 @@ ${CROW}[aria-current="true"]{
     if (!(btn instanceof HTMLElement) || typeof onOpen !== 'function') return btn;
     let lastOpenAt = 0;
     const stop = (event) => {
+      if (event?.currentTarget instanceof HTMLElement) {
+        event.currentTarget.style.opacity = '1';
+      }
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
@@ -3716,8 +3775,9 @@ ${CROW}[aria-current="true"]{
       onOpen(event);
     };
     btn.addEventListener('pointerdown', open, true);
+    btn.addEventListener('touchstart', open, true);
     btn.addEventListener('pointerup', stop, true);
-    btn.addEventListener('mousedown', stop, true);
+    btn.addEventListener('mousedown', open, true);
     btn.addEventListener('mouseup', stop, true);
     btn.addEventListener('click', open, true);
     btn.addEventListener('keydown', (event) => {
@@ -4315,6 +4375,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           const rowWrap = D.createElement('div');
           rowWrap.setAttribute(ATTR_CGXUI_STATE, 'folder-row-wrap');
           rowWrap.setAttribute(ATTR_CGXUI_OWNER, SkID);
+          rowWrap.setAttribute('data-h2o-folder-action-wrap', '1');
           rowWrap.setAttribute('data-h2o-folder-id', String(folder.id || ''));
 
           const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
@@ -5448,6 +5509,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       const row = D.createElement('div');
       row.setAttribute(ATTR_CGXUI_STATE, 'folder-item');
       row.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
+      row.style.position = 'relative';
       row.style.display = 'flex';
       row.style.alignItems = 'center';
       row.style.gap = '4px';
