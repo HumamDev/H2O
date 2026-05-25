@@ -4782,11 +4782,15 @@ function renderReaderRouteMeta(snap){
 
 function renderCategoryInspector(snap = state.currentReaderSnapshot){
   const wrap = $("#categoryAssignWrap");
-  const statusWrap = $("#categoryStatusTopbar");
+  const statusWrap = $("#categoryStatusRibbon") || $("#categoryStatusTopbar");
   if (!wrap) {
     if (statusWrap) {
       statusWrap.hidden = true;
       statusWrap.innerHTML = "";
+      statusWrap.dataset.sourceLabel = "";
+      statusWrap.dataset.confidenceText = "";
+      statusWrap.dataset.primaryName = "";
+      statusWrap.dataset.secondaryName = "";
     }
     return;
   }
@@ -4797,6 +4801,10 @@ function renderCategoryInspector(snap = state.currentReaderSnapshot){
     if (statusWrap) {
       statusWrap.hidden = true;
       statusWrap.innerHTML = "";
+      statusWrap.dataset.sourceLabel = "";
+      statusWrap.dataset.confidenceText = "";
+      statusWrap.dataset.primaryName = "";
+      statusWrap.dataset.secondaryName = "";
     }
   };
 
@@ -4841,6 +4849,10 @@ function renderCategoryInspector(snap = state.currentReaderSnapshot){
   if (statusWrap) {
     const showStatus = !!(primaryId || confidenceText || secondaryName || source);
     statusWrap.hidden = !showStatus;
+    statusWrap.dataset.sourceLabel = showStatus ? sourceLabel : "";
+    statusWrap.dataset.confidenceText = showStatus ? confidenceText : "";
+    statusWrap.dataset.primaryName = showStatus ? primaryName : "";
+    statusWrap.dataset.secondaryName = showStatus ? secondaryName : "";
     statusWrap.innerHTML = showStatus ? `
       <div class="wbCategoryMeta"${secondaryName ? ` title="Secondary category: ${esc(secondaryName)}"` : ""}>
         <span class="wbCategorySource">${esc(sourceLabel)}</span>

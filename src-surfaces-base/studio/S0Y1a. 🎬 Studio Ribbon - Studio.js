@@ -125,6 +125,7 @@
         ] },
         { id: 'source', label: 'Source', actions: [
           { id: 'source-link', label: 'Source link' },
+          { id: 'system-status', label: 'System' },
         ] },
       ],
     },
@@ -171,6 +172,7 @@
   function getContainer() {
     return document.getElementById('studioRibbon');
   }
+  let metadataPopoverKind = null;
   function getMetadataParking(container) {
     let parking = null;
     try { parking = document.getElementById('studioRibbonMetadataParking'); }
@@ -188,6 +190,17 @@
     } catch (_) { parking = null; }
     return parking;
   }
+  function removeMetadataPopovers(container) {
+    try {
+      const root = container || getContainer();
+      if (!root || !root.querySelectorAll) return;
+      Array.prototype.slice.call(root.querySelectorAll('.wbRibbonMetadataPopover')).forEach(function (node) {
+        try { node.remove(); } catch (_) {
+          try { if (node.parentNode) node.parentNode.removeChild(node); } catch (__) { /* swallow */ }
+        }
+      });
+    } catch (_) { /* swallow */ }
+  }
   function parkMetadataControls(container) {
     const parking = getMetadataParking(container);
     if (!parking) return;
@@ -197,29 +210,142 @@
       if (!node || node.parentNode === parking) return;
       try { parking.appendChild(node); } catch (_) { /* swallow */ }
     });
+    removeMetadataPopovers(container);
+    metadataPopoverKind = null;
+    syncMetadataButtons(container);
   }
-  function mountMetadataControls(container, activeTabId, ctx) {
-    if (activeTabId !== 'metadata') return;
-    if (!ctx || ctx.chatType !== 'saved') return;
-    const panel = container && container.querySelector
-      ? container.querySelector('#wbRibbonPanel-metadata')
-      : null;
-    if (!panel || panel.hidden) return;
-    const pairs = [
-      { id: 'categoryAssignWrap', slot: 'category' },
-      { id: 'folderAssignWrap', slot: 'folder' },
-    ];
-    pairs.forEach(function (pair) {
-      let node = null;
-      let slot = null;
-      try { node = document.getElementById(pair.id); } catch (_) { node = null; }
-      try { slot = panel.querySelector('[data-ribbon-metadata-slot="' + pair.slot + '"]'); } catch (_) { slot = null; }
-      if (!node || !slot || node.parentNode === slot) return;
-      try {
-        slot.innerHTML = '';
-        slot.appendChild(node);
-      } catch (_) { /* swallow */ }
+  function selectedOptionText(select) {
+    if (!select) return '';
+    try {
+      const option = select.options && select.selectedIndex >= 0
+        ? select.options[select.selectedIndex]
+        : null;
+      return String((option && option.textContent) || select.value || '').trim();
+    } catch (_) { return ''; }
+  }
+  function getCategoryDetail() {
+    let select = null;
+    let status = null;
+    try { select = document.getElementById('categoryAssignSelect'); } catch (_) { select = null; }
+    try { status = document.getElementById('categoryStatusRibbon') || document.getElementById('categoryStatusTopbar'); } catch (_) { status = null; }
+    const text = selectedOptionText(select);
+    if (text && text !== 'Select category') return text;
+    const primary = String((status && status.dataset && status.dataset.primaryName) || '').trim();
+    return primary || 'Uncategorized';
+  }
+  function getFolderDetail() {
+    let select = null;
+    try { select = document.getElementById('folderAssignSelect'); } catch (_) { select = null; }
+    return selectedOptionText(select) || 'Unfiled';
+  }
+  function getSystemStatusParts() {
+    let status = null;
+    try { status = document.getElementById('categoryStatusRibbon') || document.getElementById('categoryStatusTopbar'); } catch (_) { status = null; }
+    const ds = (status && status.dataset) || {};
+    const label = String(ds.sourceLabel || '').trim();
+    const confidence = String(ds.confidenceText || '').trim();
+    const primary = String(ds.primaryName || '').trim();
+    return {
+      visible: !!(label || confidence || primary),
+      label: label || 'System',
+      detail: confidence || primary || '',
+    };
+  }
+  function metadataControlIsAvailable(kind) {
+    const id = kind === 'folder' ? 'folderAssignWrap' : 'categoryAssignWrap';
+    let node = null;
+    try { node = document.getElementById(id); } catch (_) { node = null; }
+    return !!(node && !node.hidden);
+  }
+  function setMetadataButtonContent(button, label, detail) {
+    if (!button) return;
+    try {
+      button.innerHTML = '';
+      button.appendChild(el('span', { class: 'wbRibbonMetadataButtonLabel' }, label));
+      if (detail) button.appendChild(el('span', { class: 'wbRibbonMetadataButtonValue' }, detail));
+    } catch (_) { button.textContent = detail ? (label + ' ' + detail) : label; }
+  }
+  function syncMetadataButtons(container) {
+    const root = container || getContainer();
+    if (!root || !root.querySelector) return;
+    const categoryBtn = root.querySelector('[data-action-id="category"]');
+    const folderBtn = root.querySelector('[data-action-id="folder"]');
+    if (categoryBtn) {
+      const available = metadataControlIsAvailable('category');
+      setMetadataButtonContent(categoryBtn, 'Category', available ? getCategoryDetail() : '');
+      categoryBtn.disabled = !available;
+      categoryBtn.setAttribute('aria-disabled', available ? 'false' : 'true');
+      categoryBtn.setAttribute('aria-expanded', metadataPopoverKind === 'category' ? 'true' : 'false');
+      categoryBtn.title = available ? 'Edit category' : 'Category unavailable';
+    }
+    if (folderBtn) {
+      const available = metadataControlIsAvailable('folder');
+      setMetadataButtonContent(folderBtn, 'Folder', available ? getFolderDetail() : '');
+      folderBtn.disabled = !available;
+      folderBtn.setAttribute('aria-disabled', available ? 'false' : 'true');
+      folderBtn.setAttribute('aria-expanded', metadataPopoverKind === 'folder' ? 'true' : 'false');
+      folderBtn.title = available ? 'Edit folder' : 'Folder unavailable';
+    }
+    const statusPill = root.querySelector('[data-ribbon-metadata-status="system"]');
+    if (statusPill) {
+      const parts = getSystemStatusParts();
+      statusPill.hidden = !parts.visible;
+      setMetadataButtonContent(statusPill, parts.label, parts.detail);
+      statusPill.title = parts.detail ? (parts.label + ' ' + parts.detail) : parts.label;
+    }
+  }
+  function positionMetadataPopover(popover, trigger, container) {
+    if (!(popover && trigger && container)) return;
+    try {
+      const rootRect = container.getBoundingClientRect();
+      const triggerRect = trigger.getBoundingClientRect();
+      const width = Math.min(360, Math.max(260, rootRect.width - 24));
+      popover.style.width = width + 'px';
+      popover.style.left = Math.max(8, Math.min(triggerRect.left - rootRect.left, rootRect.width - width - 8)) + 'px';
+      popover.style.top = Math.max(42, triggerRect.bottom - rootRect.top + 6) + 'px';
+    } catch (_) { /* CSS fallback handles placement */ }
+  }
+  function toggleMetadataPopover(kind, trigger, setStatus) {
+    const container = getContainer();
+    if (!container) return;
+    const id = kind === 'folder' ? 'folderAssignWrap' : 'categoryAssignWrap';
+    let node = null;
+    try { node = document.getElementById(id); } catch (_) { node = null; }
+    if (!node || node.hidden) {
+      if (setStatus) setStatus(kind === 'folder' ? 'Folder unavailable' : 'Category unavailable');
+      syncMetadataButtons(container);
+      return;
+    }
+    if (metadataPopoverKind === kind) {
+      parkMetadataControls(container);
+      if (setStatus) setStatus(kind === 'folder' ? 'Folder options closed' : 'Category options closed');
+      return;
+    }
+    parkMetadataControls(container);
+    const title = kind === 'folder' ? 'Folder' : 'Category';
+    const popover = el('div', {
+      class: 'wbRibbonMetadataPopover',
+      role: 'dialog',
+      'aria-label': title + ' options',
+      'data-metadata-popover': kind,
     });
+    const header = el('div', { class: 'wbRibbonMetadataPopoverHeader' });
+    header.appendChild(el('div', { class: 'wbRibbonMetadataPopoverTitle' }, title));
+    header.appendChild(el('button', {
+      type: 'button',
+      class: 'wbRibbonMetadataPopoverClose',
+      'aria-label': 'Close ' + title.toLowerCase() + ' options',
+      'data-metadata-popover-close': 'true',
+    }, 'Close'));
+    popover.appendChild(header);
+    const body = el('div', { class: 'wbRibbonMetadataPopoverBody' });
+    body.appendChild(node);
+    popover.appendChild(body);
+    container.appendChild(popover);
+    metadataPopoverKind = kind;
+    positionMetadataPopover(popover, trigger, container);
+    syncMetadataButtons(container);
+    if (setStatus) setStatus(kind === 'folder' ? 'Folder options open' : 'Category options open');
   }
   function safeEmit(name, detail) {
     try {
@@ -1323,48 +1449,28 @@
       },
     },
 
-    /* Phase 1c compatibility — Metadata → Category.
-     * The canonical picker is #categoryAssignWrap, populated by studio.js
-     * renderCategoryInspector and now mounted directly inside Metadata.
-     * Keep this handler as a safe focus/pulse bridge for any legacy caller
-     * that still invokes the action id programmatically. */
+    /* Metadata → Category.
+     * Opens a compact ribbon popover and mounts the canonical
+     * #categoryAssignWrap node inside it. The existing delegated handlers
+     * on that node continue to own persistence and reclassify/restore. */
     'category': {
       isEnabled: function (ctx) {
         if (!ctx || ctx.chatType !== 'saved') return false;
-        let wrap = null;
-        try { wrap = document.getElementById('categoryAssignWrap'); }
-        catch (_) { return false; }
-        if (!wrap || wrap.hidden) return false;
-        /* "Has interactive content" — at least one focusable descendant. */
-        try {
-          return !!wrap.querySelector('button, select, input, [role="button"], [tabindex]:not([tabindex="-1"])');
-        } catch (_) { return false; }
+        return metadataControlIsAvailable('category');
       },
-      onClick: function (ctx, setStatus) {
-        let wrap = null;
-        try { wrap = document.getElementById('categoryAssignWrap'); }
-        catch (_) { wrap = null; }
-        if (!wrap) { setStatus('Category picker not available'); return; }
-        let interactive = null;
-        try {
-          interactive = wrap.querySelector('button, select, input, [role="button"], [tabindex]:not([tabindex="-1"])');
-        } catch (_) { interactive = null; }
-        if (interactive && typeof interactive.focus === 'function') {
-          try { interactive.focus(); } catch (_) { /* swallow */ }
-        }
-        /* Pulse the picker briefly so the user sees where the action
-         * routed to. Force reflow by reading offsetWidth so a repeat
-         * click restarts the animation. */
-        try {
-          wrap.classList.remove('is-pulsing');
-          /* eslint-disable-next-line no-unused-expressions */
-          wrap.offsetWidth;
-          wrap.classList.add('is-pulsing');
-          setTimeout(function () {
-            try { wrap.classList.remove('is-pulsing'); } catch (_) { /* swallow */ }
-          }, 1300);
-        } catch (_) { /* swallow */ }
-        setStatus('Category picker is in the top bar');
+      disabledTooltip: function () { return 'Category unavailable'; },
+      onClick: function (ctx, setStatus, trigger) {
+        toggleMetadataPopover('category', trigger, setStatus);
+      },
+    },
+    'folder': {
+      isEnabled: function (ctx) {
+        if (!ctx || ctx.chatType !== 'saved') return false;
+        return metadataControlIsAvailable('folder');
+      },
+      disabledTooltip: function () { return 'Folder unavailable'; },
+      onClick: function (ctx, setStatus, trigger) {
+        toggleMetadataPopover('folder', trigger, setStatus);
       },
     },
     /* Phase 1c — Metadata → Source link.
@@ -2335,15 +2441,40 @@
         const actions = shell.actionsForGroup(tab.id, group.id);
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
-          if (tab.id === 'metadata' && (action.id === 'category' || action.id === 'folder')) {
-            const slotName = action.id === 'category' ? 'category' : 'folder';
-            const slot = el('div', {
-              class: 'wbRibbonMetadataSlot wbRibbonMetadataSlot--' + slotName,
-              'data-ribbon-metadata-slot': slotName,
-              'aria-label': action.label,
+          if (tab.id === 'metadata' && action.id === 'system-status') {
+            const parts = getSystemStatusParts();
+            const pill = el('span', {
+              class: 'wbRibbonAction wbRibbonMetadataAction wbRibbonMetadataStatusAction',
+              role: 'status',
+              'aria-live': 'polite',
+              'data-ribbon-metadata-status': 'system',
+              hidden: !parts.visible,
             });
-            slot.appendChild(el('span', { class: 'wbRibbonMetadataSlotEmpty' }, action.label + ' unavailable'));
-            actionsRow.appendChild(slot);
+            setMetadataButtonContent(pill, parts.label, parts.detail);
+            actionsRow.appendChild(pill);
+            return;
+          }
+          if (tab.id === 'metadata' && (action.id === 'category' || action.id === 'folder')) {
+            const available = metadataControlIsAvailable(action.id);
+            const attrs = {
+              type: 'button',
+              class: 'wbRibbonAction wbRibbonMetadataAction wbRibbonMetadataAction--' + action.id,
+              'data-action-id': action.id,
+              'aria-haspopup': 'dialog',
+              'aria-expanded': metadataPopoverKind === action.id ? 'true' : 'false',
+              'aria-disabled': available ? 'false' : 'true',
+              title: available ? ('Edit ' + action.label.toLowerCase()) : (action.label + ' unavailable'),
+            };
+            if (!available) attrs.disabled = 'disabled';
+            const btn = el('button', attrs);
+            setMetadataButtonContent(
+              btn,
+              action.label,
+              available
+                ? (action.id === 'folder' ? getFolderDetail() : getCategoryDetail())
+                : ''
+            );
+            actionsRow.appendChild(btn);
             return;
           }
           const handler = ACTION_HANDLERS[action.id];
@@ -2429,7 +2560,9 @@
     container.appendChild(buildTabStrip(visibleTabs, activeTabId, collapsed));
     if (!collapsed) {
       container.appendChild(buildPanels(shell, visibleTabs, activeTabId));
-      mountMetadataControls(container, activeTabId, ctx);
+      if (activeTabId === 'metadata' && ctx && ctx.chatType === 'saved') {
+        syncMetadataButtons(container);
+      }
     }
   }
 
@@ -2503,6 +2636,14 @@
       const target = ev.target;
       if (!target || !target.closest) return;
 
+      const popoverClose = target.closest('[data-metadata-popover-close]');
+      if (popoverClose) {
+        ev.preventDefault();
+        parkMetadataControls(container);
+        setStatus('Metadata options closed');
+        return;
+      }
+
       const collapseBtn = target.closest('[data-action="toggle-collapsed"]');
       if (collapseBtn) {
         ev.preventDefault();
@@ -2531,7 +2672,7 @@
           ev.preventDefault();
           let ctx = null;
           try { ctx = shell.getContext(); } catch (_) { ctx = null; }
-          try { handler.onClick(ctx, setStatus); }
+          try { handler.onClick(ctx, setStatus, actionBtn); }
           catch (e) {
             const msg = (e && (e.message || String(e))) || 'unknown error';
             setStatus('Action failed: ' + msg);
@@ -2539,6 +2680,14 @@
           safeEmit('evt:h2o:studio:ribbon:action-invoked', { action: actionId });
         }
         return;
+      }
+    });
+    container.addEventListener('change', function (ev) {
+      const target = ev.target;
+      if (!target) return;
+      if (target.id === 'categoryAssignSelect' || target.id === 'folderAssignSelect') {
+        syncMetadataButtons(container);
+        setTimeout(function () { syncMetadataButtons(container); }, 0);
       }
     });
   }
