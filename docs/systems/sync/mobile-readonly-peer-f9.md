@@ -539,6 +539,29 @@ conflict ingestion, conflict decisions, tombstone creation, F7/F8 apply, or
 mobile write-back. F9.3b may add a presentational read-only evidence status
 component.
 
+## F9.3b — Presentational Sync Evidence Status
+
+F9.3b adds a presentational component for the sync evidence view model:
+
+```txt
+MobileReadOnlySyncEvidenceView -> static evidence status component
+```
+
+The component renders read-only sections for tombstone evidence, conflict
+evidence, apply-event evidence, and capability labels. It shows only
+availability flags, counts, capped/skipped-malformed apply-event metadata, and
+warning codes.
+
+The component explicitly labels unavailable sections as unavailable in the
+current bundle. It must not imply that missing F6 conflict rows are a complete
+conflict queue.
+
+F9.3b has no buttons, press handlers, long-press handlers, navigation, route
+wiring, archive-store access, WebDAV, persistence, conflict ingestion,
+conflict decisions, tombstone creation, F7/F8 apply, delete/restore behavior,
+or mobile write-back. F9.3c may wire the component into the read-only bundle
+route.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
