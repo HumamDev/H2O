@@ -351,6 +351,35 @@ the route, and does not touch archive-store, WebDAV, mutable chat routes,
 `TurnBlock`, or edit/save/delete/restore controls. F9.2c.2 will add a
 presentational read-only snapshot reader.
 
+## F9.2c.2 — Presentational Read-Only Snapshot Reader
+
+F9.2c.2 adds a presentational mobile component for snapshot details:
+
+```txt
+MobileReadOnlySnapshotDetail -> static read-only snapshot reader
+```
+
+The component renders a read-only snapshot header, title preview, presence
+metadata, content kind, message count, warning codes, missing/empty states, and
+message turns from `MobileReadOnlySnapshotDetail`.
+
+Rendering is intentionally plain text first. F9.2c.2 does not use `TurnBlock`,
+does not use a Markdown renderer, does not parse rich HTML turns, and does not
+add edit, save, delete, restore, sync, apply, conflict-decision, copy-menu, or
+navigation controls.
+
+F9.2c.2 does not wire snapshot selection into the `read-only-bundle` route. It
+does not read from archive-store, does not call WebDAV, does not persist cache
+state, and does not write back to Desktop, Chrome, or mobile stores.
+
+Message text may be displayed in the normal read-only UI because it is
+user-owned bundle content. Logs, diagnostics, validation output, and docs must
+not print full message content, raw IDs, peer IDs, hashes, audit JSON, or
+metadata blobs.
+
+F9.2c.3 may wire local in-memory snapshot selection into the read-only bundle
+route, but only if the same display-only and no-write boundary is preserved.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
