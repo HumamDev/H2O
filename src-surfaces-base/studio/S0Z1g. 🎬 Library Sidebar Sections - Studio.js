@@ -50,6 +50,9 @@
   const FOLDER_METADATA_DELETE_APPLY_REASON = 'Chrome Studio canonical empty folder delete';
   const FOLDER_METADATA_DELETE_CONFIRMATION_TEXT = 'DELETE EMPTY FOLDER';
   const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
+  const FOLDER_METADATA_CREATE_TIMEOUT_MS = 15000;
+  const FOLDER_METADATA_CREATE_RECOVERY_ATTEMPTS = 8;
+  const FOLDER_METADATA_CREATE_RECOVERY_DELAY_MS = 500;
   const FOLDER_METADATA_RENAME_POLL_MS = 700;
   const FOLDER_METADATA_DELETE_PREVIEW_MAX_AGE_MS = 12000;
   const SIDEBAR_MENU_COLORS = Object.freeze([
@@ -772,6 +775,31 @@
     }
   }
 
+  async function resolveFreshCanonicalFolderItemByName(name) {
+    const targetName = normalizeFolderCreateInput(name);
+    const targetKey = targetName.toLowerCase();
+    if (!targetKey) return null;
+    try {
+      const model = await W.H2O?.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
+      const row = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
+        .find((candidate) => normalizeFolderCreateInput(candidate?.name || candidate?.title || '').toLowerCase() === targetKey);
+      if (!row) return null;
+      const folderId = String(row.folderId || row.id || '').trim();
+      return {
+        ...row,
+        id: folderId,
+        folderId,
+        kind: 'folders',
+        section: 'folders',
+        isCanonical: true,
+        name: normalizeFolderCreateInput(row.name || row.title || targetName),
+      };
+    } catch (e) {
+      err('folderCreate.resolveFreshCanonicalItemByName', e);
+      return null;
+    }
+  }
+
   function staleGuardFromPreview(preview) {
     const src = preview?.before && typeof preview.before === 'object' ? preview.before : {};
     const out = {};
@@ -886,6 +914,31 @@
     }
   }
 
+  function resultHasBlocker(result, code) {
+    return resultCodes(result, 'blockers').includes(String(code || '').trim());
+  }
+
+  function waitMs(ms) {
+    return new Promise((resolve) => W.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+  }
+
+  async function recoverCreatedFolderFromNativeState(name, reason = 'folder-create-recover') {
+    const targetName = normalizeFolderCreateInput(name);
+    if (!targetName) return null;
+    for (let attempt = 0; attempt < FOLDER_METADATA_CREATE_RECOVERY_ATTEMPTS; attempt += 1) {
+      try {
+        const refresh = refreshNativeFolderState(`${reason}:${attempt + 1}`);
+        if (refresh && typeof refresh.then === 'function') await refresh;
+      } catch (e) {
+        err('folderCreate.recover.refresh', e);
+      }
+      const fresh = await resolveFreshCanonicalFolderItemByName(targetName);
+      if (fresh?.folderId) return fresh;
+      await waitMs(FOLDER_METADATA_CREATE_RECOVERY_DELAY_MS);
+    }
+    return null;
+  }
+
   async function requestCanonicalFolderColor(item, color, controls = {}) {
     const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
     const request = folderMetadataOperationRequest();
@@ -974,12 +1027,17 @@
     const operation = buildFolderCreateOperation(nextName);
     setStatus('Previewing...', 'pending');
     let preview = null;
+    const requestCreatePreview = () => requestFolderMetadataOperationWithNativeRefresh(request, operation, {
+      requestMode: 'preview',
+      timeoutMs: FOLDER_METADATA_CREATE_TIMEOUT_MS,
+      pollReason: 'folder-create-preview-result-poll',
+    });
     try {
-      preview = await requestFolderMetadataOperationWithNativeRefresh(request, operation, {
-        requestMode: 'preview',
-        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
-        pollReason: 'folder-create-preview-result-poll',
-      });
+      preview = await requestCreatePreview();
+      if (resultHasBlocker(preview, 'native-owner-timeout')) {
+        setStatus('Previewing...', 'pending');
+        preview = await requestCreatePreview();
+      }
     } catch (e) {
       err('folderCreate.preview', e);
       setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
@@ -1001,13 +1059,35 @@
     try {
       applied = await requestFolderMetadataOperationWithNativeRefresh(request, buildFolderCreateOperation(nextName, staleGuardFromPreview(preview)), {
         requestMode: 'apply',
-        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        timeoutMs: FOLDER_METADATA_CREATE_TIMEOUT_MS,
         pollReason: 'folder-create-apply-result-poll',
       });
     } catch (e) {
       err('folderCreate.apply', e);
       setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
       return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
+    }
+
+    if (resultHasBlocker(applied, 'native-owner-timeout')) {
+      setStatus('Creating...', 'pending');
+      const recovered = await recoverCreatedFolderFromNativeState(nextName, 'folder-create-apply-timeout-recover');
+      if (recovered?.folderId) {
+        applied = {
+          schema: 'h2o.folder-metadata-operation-result.v1',
+          requestId: String(applied?.requestId || ''),
+          requestMode: 'apply',
+          ok: true,
+          applied: true,
+          noMutation: false,
+          writesPerformed: 1,
+          operationType: 'create-folder',
+          folderId: recovered.folderId,
+          before: preview.before || null,
+          after: recovered,
+          blockers: [],
+          warnings: [{ code: 'folder-create-result-recovered-from-canonical-state' }],
+        };
+      }
     }
 
     const applyBlocker = resultCodes(applied, 'blockers')[0];
