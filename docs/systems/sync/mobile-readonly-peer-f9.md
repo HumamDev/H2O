@@ -434,6 +434,75 @@ It does not save, import, sync, apply, resolve, call archive-store, call
 WebDAV, persist cache state, mutate bundle data, or write back to Desktop,
 Chrome, or mobile stores.
 
+## F9.2 Closeout — Mobile Read-Only Bundle Viewer Boundary
+
+F9.2 completes the first mobile read-only bundle viewer loop. Mobile can now
+accept pasted Desktop `latest.json` text in memory, diagnose the bundle, build
+a read-only library view, render library/folder rows, select snapshots with
+local route state, render read-only snapshot content, and show redacted status
+counts.
+
+The completed chain is:
+
+```txt
+paste latest.json
+-> diagnoseMobileSyncBundle
+-> readMobileSyncBundle
+-> buildMobileReadOnlyBundleView
+-> ReadOnlyBundleStatus
+-> ReadOnlyBundleDisplay
+-> local selectedSnapshotIndex
+-> buildMobileReadOnlySnapshotDetail
+-> ReadOnlySnapshotReader
+```
+
+The current boundary remains read-only:
+
+- No archive-store writes.
+- No `replaceArchiveStore`.
+- No `saveArchiveStore`.
+- No WebDAV pull or push.
+- No persistence or cache.
+- No mobile write-back.
+- No folder, chat, snapshot, label, or category edits.
+- No folder creation or deletion.
+- No folderBinding mutation.
+- No conflict candidate ingestion.
+- No conflict decisions.
+- No F7 or F8 apply APIs.
+- No sync propagation.
+- No cloud/WebDAV transport.
+- No mutation controls in the read-only route.
+
+Safety meaning:
+
+- Mobile is a viewer, not an authority.
+- Pasted bundle data is preview evidence, not imported state.
+- Local route state is temporary and non-authoritative.
+- Snapshot viewing is read-only content display.
+- Diagnostics and status remain code/count-only.
+
+Validation status:
+
+- Targeted TypeScript checks passed for the read-only bundle route and sync
+  components.
+- Forbidden-call grep checks passed for archive-store, WebDAV, conflict,
+  apply, snapshot mutation, and `TurnBlock` paths.
+- Real `latest.json` reader validation passed earlier in F9.1c.
+- F9.2 added no archive-store, WebDAV, persistence, write-back, or F5/F6/F7/F8
+  mutation calls.
+
+Recommended next options:
+
+- F9.3 planning: mobile conflict/tombstone/apply-event read-only status
+  details.
+- F9.4 planning: offline and non-authoritative cache validation.
+- Production hardening and UX polish.
+- F10 mobile write-back remains much later and must not start from F9.2.
+
+The recommended next planning step is F9.3. Keep it read-only: no decisions, no
+ingestion, no apply, and no write-back.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
