@@ -30,8 +30,8 @@
   const BrID  = PID;         // default
   const DsID  = PID;         // default
   const API_VERSION = '2.1.16';
-  const API_BUILD = '260510-163900';
-  const API_PHASE = 'top-more-before-section-boundary';
+  const API_BUILD = '260525-170429';
+  const API_PHASE = 'theme-runtime-library-sidebar-bridge';
 
   // labels only
   const MODTAG    = 'ThemesP';
@@ -1870,7 +1870,10 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [data-radix-popper-content-wrapper] {
 /* page shell colors only; do not frame individual answers/questions */
 body[${ATTR_HO_THEME_ENABLED}="true"] header,
 body[${ATTR_HO_THEME_ENABLED}="true"] aside,
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"],
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"],
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind],
 body[${ATTR_HO_THEME_ENABLED}="true"] [class*="composer-parent"],
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="conversation-input-footer"] {
   background: var(--ho-theme-surface) !important;
@@ -1890,6 +1893,8 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [class*="composer-parent"]:has([${ATTR_HO_
   isolation: isolate;
 }
 body[${ATTR_HO_THEME_ENABLED}="true"] aside,
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"],
 body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i],
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"],
 body[${ATTR_HO_THEME_ENABLED}="true"] #stage-sidebar-tiny-bar {
@@ -1897,26 +1902,34 @@ body[${ATTR_HO_THEME_ENABLED}="true"] #stage-sidebar-tiny-bar {
   background-image: none !important;
   color: var(--ho-theme-text) !important;
 }
-body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button),
-body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button),
-body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button) {
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, footer, ul, li, a, button, [role="button"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is(div, nav, section, footer, ul, li, a, button, [role="button"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, nav, section, footer, ul, li, a, button, [role="button"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, footer, ul, li, a, button, [role="button"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, footer, ul, li, a, button, [role="button"]) {
   background: transparent !important;
   background-image: none !important;
   border-color: transparent !important;
   box-shadow: none !important;
 }
-body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button)::before,
-body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, ul, li, a, button)::after,
-body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button)::before,
-body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, ul, li, a, button)::after,
-body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button)::before,
-body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, ul, li, a, button)::after {
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, footer, ul, li, a, button, [role="button"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] aside :is(div, nav, section, footer, ul, li, a, button, [role="button"])::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is(div, nav, section, footer, ul, li, a, button, [role="button"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is(div, nav, section, footer, ul, li, a, button, [role="button"])::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, nav, section, footer, ul, li, a, button, [role="button"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is(div, nav, section, footer, ul, li, a, button, [role="button"])::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, footer, ul, li, a, button, [role="button"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is(div, section, footer, ul, li, a, button, [role="button"])::after,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, footer, ul, li, a, button, [role="button"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is(div, nav, section, footer, ul, li, a, button, [role="button"])::after {
   background: transparent !important;
   background-image: none !important;
   border-color: transparent !important;
   box-shadow: none !important;
 }
 body[${ATTR_HO_THEME_ENABLED}="true"] aside :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
 body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]),
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"]) {
   background: var(--ho-theme-sidebar-solid) !important;
@@ -1926,6 +1939,8 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="stick
   isolation: isolate;
 }
 body[${ATTR_HO_THEME_ENABLED}="true"] aside :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
 body[${ATTR_HO_THEME_ENABLED}="true"] nav[aria-label*="chat" i] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before,
 body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="sticky"], [class*="fixed"], [style*="position: sticky"], [style*="position: fixed"])::before {
   content: "";
@@ -1934,6 +1949,13 @@ body[${ATTR_HO_THEME_ENABLED}="true"] [data-testid="sidebar"] :is([class*="stick
   z-index: -1;
   background: var(--ho-theme-sidebar-solid) !important;
   background-image: none !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] :is([data-testid*="profile" i], [data-testid*="account" i], [aria-label*="profile" i], [aria-label*="account" i], [aria-label*="user" i]),
+body[${ATTR_HO_THEME_ENABLED}="true"] #stage-slideover-sidebar :is([data-testid*="profile" i], [data-testid*="account" i], [aria-label*="profile" i], [aria-label*="account" i], [aria-label*="user" i]) {
+  background: color-mix(in srgb, var(--ho-theme-sidebar-solid) 82%, var(--ho-theme-surface-strong) 18%) !important;
+  background-image: none !important;
+  border-color: color-mix(in srgb, var(--ho-theme-border) 76%, transparent) !important;
+  color: var(--ho-theme-text) !important;
 }
 body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHATGPT_SIDEBAR}="true"] nav[aria-label="Chat history"] {
   position: relative;
@@ -1980,6 +2002,37 @@ body[${ATTR_HO_THEME_ENABLED}="true"] main,
 body[${ATTR_HO_THEME_ENABLED}="true"] [${ATTR_HO_CHAT_ROOT}="true"] {
   border-top-left-radius: 0 !important;
   border-top-right-radius: 0 !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] main:has([data-cgxui-page-kind]),
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui$="-page-host"] {
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--ho-accent-light) 20%, transparent), transparent 32%),
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--ho-accent-dark) 18%, transparent), transparent 38%),
+    linear-gradient(180deg, var(--ho-theme-canvas-top), var(--ho-theme-canvas)) fixed !important;
+  color: var(--ho-theme-text) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] {
+  background: transparent !important;
+  color: var(--ho-theme-text) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] :is([${ATTR_CGXUI_STATE}="list"], ol) {
+  border-color: var(--ho-theme-border) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] :is(li, [${ATTR_CGXUI_STATE}="folder-item"], [${ATTR_CGXUI_STATE}="chat-item"], [${ATTR_CGXUI_STATE}="category-group"]) {
+  border-color: color-mix(in srgb, var(--ho-theme-border) 72%, transparent) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] :is(h1, [${ATTR_CGXUI_STATE}="row-title"], [${ATTR_CGXUI_STATE}="title-icon"]) {
+  color: var(--ho-theme-text) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] :is([${ATTR_CGXUI_STATE}="sub"], [${ATTR_CGXUI_STATE}="row-sub"], [${ATTR_CGXUI_STATE}="view-action"]) {
+  color: var(--ho-theme-text-muted) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] [${ATTR_CGXUI_STATE}="tab"] {
+  background: color-mix(in srgb, var(--ho-accent-light) 28%, var(--ho-theme-surface-strong) 72%) !important;
+  color: var(--ho-theme-text) !important;
+}
+body[${ATTR_HO_THEME_ENABLED}="true"] [data-cgxui-page-kind] :is([${ATTR_CGXUI_STATE}="row"], [${ATTR_CGXUI_STATE}="category-button"], [${ATTR_CGXUI_STATE}="view-action"], [${ATTR_CGXUI_STATE}="title-icon"][role="button"]):hover {
+  background: color-mix(in srgb, var(--ho-theme-surface-strong) 74%, var(--ho-accent-light) 26%) !important;
 }
 
 /* FONT (family choice) */
