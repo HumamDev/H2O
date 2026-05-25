@@ -14,6 +14,9 @@ const CATEGORY_CATALOG_OPS = ["getCategoriesCatalog"];
 const CATEGORY_SET_OPS = ["setSnapshotCategory"];
 const CATEGORY_RECLASSIFY_OPS = ["reclassifySnapshotCategory"];
 const FOLDER_FILTER_NONE = "__none__";
+const FOLDER_SIDEBAR_UI_STATE = {
+  showFolderCountPills: false,
+};
 const UI_PREFS_KEY = "h2o:archiveWorkbench:ui:vNext";
 const EDIT_OVERRIDES_KEY = "h2o:archiveWorkbench:editOverrides:v1";
 const CHAT_TITLE_STATE_KEY_PREFIX = "h2o:prm:cgx:library:chat-title:state:v1:";
@@ -3553,7 +3556,7 @@ function collectFolderSidebarItems(rows, view, mode = "canonical"){
       iconColor: normalizeSidebarIconColor(folder.iconColor || ""),
     });
   }
-  if (mode === "canonical" && (unfiledCount || state.lastFolderId === FOLDER_FILTER_NONE)) {
+  if (mode === "canonical") {
     out.push({ folderId: FOLDER_FILTER_NONE, label: "Unfiled", count: unfiledCount, kind: "utility" });
   }
   return out;
@@ -3564,6 +3567,66 @@ const SIDEBAR_FOLDER_ICON_SVG = `
     <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
   </svg>
 `;
+
+function folderSidebarCountDetails(item, countText){
+  const display = String(item?.displayCountLabel || "").trim();
+  if (display) return display;
+  if (item?.folderId === FOLDER_FILTER_NONE || item?.label === "Unfiled") {
+    return `${String(item?.count || 0)} known here`;
+  }
+  if (item?.kind === "folder") {
+    const nativeCount = Number(item?.nativeMembershipCount ?? item?.canonicalCount ?? item?.count ?? 0) || 0;
+    const knownCount = Number(item?.knownStudioCount ?? item?.knownCount ?? 0) || 0;
+    const parts = [`${nativeCount} native`, `${knownCount} known here`];
+    if (Array.isArray(item?.badges) && item.badges.includes("count-mismatch")) parts.push("count-mismatch");
+    return parts.join(" · ");
+  }
+  return String(countText || "").trim();
+}
+
+function folderSidebarCountInfoHtml(displayLabel, details){
+  const text = String(details || "").trim();
+  if (!text) return "";
+  return `<button class="wbFolderCountInfo" type="button" title="${esc(text)}" aria-label="${esc(`${displayLabel} counts: ${text}`)}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.58);font:700 10.5px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;letter-spacing:0;cursor:help;flex:0 0 auto;padding:0">i</button>`;
+}
+
+function updateFolderCountToggleButton(button){
+  if (!button) return;
+  const enabled = !!FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
+  button.textContent = enabled ? "Counts on" : "Counts";
+  button.title = enabled ? "Hide folder count pills" : "Show folder count pills";
+  button.setAttribute("aria-pressed", String(enabled));
+  button.setAttribute("aria-label", enabled ? "Hide folder count details" : "Show folder count details");
+}
+
+function ensureFolderCountToggle(){
+  const section = document.querySelector(".wbSidebarSection--folders");
+  const label = section && section.querySelector(".wbSideLabel");
+  if (!(section && label)) return null;
+  let button = label.querySelector('[data-h2o-folder-count-toggle="1"]');
+  if (!button) {
+    label.style.display = "flex";
+    label.style.alignItems = "center";
+    label.style.gap = "8px";
+    button = document.createElement("button");
+    button.className = "wbSidebarFolderCountToggle";
+    button.type = "button";
+    button.dataset.h2oFolderCountToggle = "1";
+    button.style.cssText = "margin-left:auto;display:inline-flex;align-items:center;justify-content:center;height:20px;min-width:20px;padding:0 7px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:600 10px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer";
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("keydown", (event) => event.stopPropagation());
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      FOLDER_SIDEBAR_UI_STATE.showFolderCountPills = !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
+      updateFolderCountToggleButton(button);
+      renderList();
+    });
+    label.appendChild(button);
+  }
+  updateFolderCountToggleButton(button);
+  return button;
+}
 
 function renderFolderSidebarRow(view, item, opts){
   const appearance = item.kind === "folder"
@@ -3585,11 +3648,14 @@ function renderFolderSidebarRow(view, item, opts){
   if (opts && opts.review) link.classList.add("wbFolderItem--review");
   const countText = String(item.displayCountLabel || "").trim() || String(item.count || 0);
   const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
+  const compactCounts = !(opts && opts.review) && !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
+  const countDetails = folderSidebarCountDetails(item, countText);
   if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
   if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
   link.href = buildListHash(view, item.folderId);
   link.dataset.folderId = String(item.folderId || "");
   if (hasDetailedCount) link.dataset.countLabel = countText;
+  link.dataset.countMode = compactCounts ? "compact" : "inline";
   if (Array.isArray(item.badges) && item.badges.length) link.dataset.badges = item.badges.join(",");
   if (item.canonicalCount != null) link.dataset.canonicalCount = String(item.canonicalCount);
   if (item.knownCount != null) link.dataset.knownCount = String(item.knownCount);
@@ -3610,9 +3676,18 @@ function renderFolderSidebarRow(view, item, opts){
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayLabel)}</span>
       ${reviewBadgesHtml}
     </span>
-    <span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}">${esc(countText)}</span>
+    ${compactCounts ? folderSidebarCountInfoHtml(displayLabel, countDetails) : `<span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}" title="${esc(countDetails)}">${esc(countText)}</span>`}
     ${folderMenuHtml}
   `;
+  const countInfoBtn = link.querySelector(".wbFolderCountInfo");
+  if (countInfoBtn) {
+    countInfoBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
+    countInfoBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    countInfoBtn.addEventListener("keydown", (event) => event.stopPropagation());
+  }
   const menuBtn = link.querySelector(".wbFolderMenuBtn");
   if (menuBtn) {
     menuBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -3641,6 +3716,7 @@ function renderFolderSidebarRow(view, item, opts){
 function renderFolderSidebar(rows, view, selectedFolderId){
   const host = $("#folderList");
   if (!host) return;
+  ensureFolderCountToggle();
   const items = collectFolderSidebarItems(rows, view, "canonical");
   const reviewItems = collectFolderSidebarItems(rows, view, "review");
   host.innerHTML = "";
