@@ -1305,6 +1305,29 @@ Recommended next options:
 - If mobile read-only work continues, keep it limited to small UX polish or
   diagnostics improvements.
 
+## F9 Mobile Read-Only UX Polish — File Preview Privacy and Summary
+
+After F9.5 validation, the read-only route received a small UX/privacy polish
+pass for file-picked bundles:
+
+- Picked file text is no longer copied into the visible paste text area after
+  file selection.
+- The route shows a compact file-loaded state with the selected filename and a
+  reminder that raw file JSON is hidden and held only in memory for preview.
+- Paste mode remains available; entering pasted JSON switches the preview
+  source back to `pasted-json`.
+- The empty state now says users may choose a `latest.json` file or paste
+  bundle JSON.
+- The validation summary explicitly separates `checksum present` from
+  `checksum verified`, using `yes` or `no`.
+- The validation summary includes safe preview counts for chats, snapshots,
+  folders, tombstones, and apply events.
+
+This polish does not change the read-only boundary. It does not add archive
+import, archive-store writes, WebDAV/cloud transport, mobile write-back, full
+bundle cache, snapshot/content cache, conflict decisions, or F7/F8 apply
+behavior.
+
 ## Validation Model
 
 Future implementation must prove:

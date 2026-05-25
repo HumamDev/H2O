@@ -87,7 +87,9 @@ export default function ReadOnlyBundleRoute() {
   }
 
   async function previewCurrentInput() {
-    await previewBundleText(inputText, sourceKind);
+    setSourceKind("pasted-json");
+    setSelectedFileName(null);
+    await previewBundleText(inputText, "pasted-json");
   }
 
   async function previewBundleText(text: string, previewSourceKind: PreviewSourceKind) {
@@ -164,7 +166,7 @@ export default function ReadOnlyBundleRoute() {
       return;
     }
 
-    setInputText(text);
+    setInputText("");
     setSourceKind("latest-json");
     setSelectedFileName(asset.name || "selected latest.json");
     await previewBundleText(text, "latest-json");
@@ -225,7 +227,13 @@ export default function ReadOnlyBundleRoute() {
             synced, or written back.
           </Text>
           {selectedFileName ? (
-            <Text style={styles.selectedFileText}>Selected file: {selectedFileName}</Text>
+            <View style={styles.fileLoadedBox}>
+              <Text style={styles.selectedFileText}>Selected file: {selectedFileName}</Text>
+              <Text style={styles.fileLoadedText}>
+                Raw file JSON is hidden after selection. The file is held only in memory for this
+                read-only preview.
+              </Text>
+            </View>
           ) : (
             <Text style={styles.codeEmpty}>No file selected.</Text>
           )}
@@ -246,7 +254,9 @@ export default function ReadOnlyBundleRoute() {
         <View style={styles.inputCard}>
           <Text style={styles.sectionTitle}>Paste latest.json</Text>
           <Text style={styles.helpText}>
-            Paste a Desktop latest.json bundle to validate it in memory and render a read-only preview.
+            {selectedFileName
+              ? "Paste bundle JSON here to switch to pasted preview. File preview JSON stays hidden by default."
+              : "Paste a Desktop latest.json bundle to validate it in memory and render a read-only preview."}
           </Text>
           <TextInput
             style={styles.input}
@@ -282,7 +292,12 @@ export default function ReadOnlyBundleRoute() {
           </TouchableOpacity>
         </View>
 
-        <DiagnosticSummary diagnostic={diagnostic} phase={phase} />
+        <DiagnosticSummary
+          diagnostic={diagnostic}
+          phase={phase}
+          selectedFileName={selectedFileName}
+          sourceKind={sourceKind}
+        />
         <ReadOnlyBundleCacheStatus
           metadata={cacheMetadata}
           status={cacheStatus}
@@ -314,7 +329,8 @@ export default function ReadOnlyBundleRoute() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No bundle preview loaded</Text>
             <Text style={styles.emptyText}>
-              Paste a bundle and tap Preview bundle. This route does not save or import the data.
+              Choose a latest.json file or paste bundle JSON to preview it. Preview only — nothing is
+              saved, imported, synced, or written back.
             </Text>
           </View>
         )}
@@ -364,9 +380,13 @@ function SnapshotSelectionSection({
 function DiagnosticSummary({
   diagnostic,
   phase,
+  selectedFileName,
+  sourceKind,
 }: {
   diagnostic: MobileBundleDiagnostic | null;
   phase: PreviewPhase;
+  selectedFileName: string | null;
+  sourceKind: PreviewSourceKind;
 }) {
   if (!diagnostic) {
     return null;
@@ -381,13 +401,20 @@ function DiagnosticSummary({
         </Text>
       </View>
       <View style={styles.summaryGrid}>
+        <SummaryItem label="source" value={sourceKind === "latest-json" ? "file preview" : "pasted JSON"} />
+        {sourceKind === "latest-json" && selectedFileName ? (
+          <SummaryItem label="file" value={selectedFileName} />
+        ) : null}
         <SummaryItem label="schema" value={diagnostic.source.schemaPresent ? "present" : "missing"} />
         <SummaryItem label="exported at" value={diagnostic.source.exportedAtPresent ? "present" : "missing"} />
         <SummaryItem label="source peer" value={diagnostic.source.sourcePeerPresent ? "present" : "missing"} />
-        <SummaryItem
-          label="checksum"
-          value={diagnostic.source.checksumVerified ? "verified" : diagnostic.source.checksumPresent ? "present" : "missing"}
-        />
+        <SummaryItem label="checksum present" value={diagnostic.source.checksumPresent ? "yes" : "no"} />
+        <SummaryItem label="checksum verified" value={diagnostic.source.checksumVerified ? "yes" : "no"} />
+        <SummaryItem label="chats" value={String(diagnostic.counts.chats)} />
+        <SummaryItem label="snapshots" value={String(diagnostic.counts.snapshots)} />
+        <SummaryItem label="folders" value={String(diagnostic.counts.folders)} />
+        <SummaryItem label="tombstones" value={String(diagnostic.counts.tombstones)} />
+        <SummaryItem label="apply events" value={String(diagnostic.counts.applyEvents)} />
       </View>
       <CodeList title="Blockers" codes={diagnostic.blockers.map((blocker) => blocker.code)} emptyLabel="No blockers." />
       <CodeList title="Warnings" codes={diagnostic.warnings.map((warning) => warning.code)} emptyLabel="No warnings." />
@@ -493,6 +520,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     paddingHorizontal: 10,
     paddingVertical: 8,
+  },
+  fileLoadedBox: {
+    gap: 6,
+  },
+  fileLoadedText: {
+    color: "#475569",
+    fontSize: 12,
+    lineHeight: 17,
   },
   input: {
     minHeight: 160,
