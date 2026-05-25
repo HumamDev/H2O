@@ -1194,18 +1194,35 @@ The following remain forbidden:
 - Folder/chat/snapshot mutations.
 - Mobile write-back.
 
-## F9.5c Validation Status — Native Selection Pending
+## F9.5 Closeout — Validated Read-Only File Picker Preview Boundary
 
-F9.5 is implemented, but native document picker file selection remains pending
-manual validation. The read-only pipeline, simulator route reachability, picker
-presentation, and file visibility were validated; terminal automation could not
-reliably complete the final tap/select action inside the iOS document picker.
+F9.5 is implemented and human-validated as a read-only local file preview path.
+It lets mobile choose a local Desktop `latest.json` file, read its text into
+route-local state, verify it as a `latest-json` source, and render the existing
+read-only bundle/status/evidence/snapshot preview. It is not archive import,
+merge, sync, restore, or write-back.
 
-Current status:
+F9.5 now provides:
+
+- `expo-document-picker` file selection.
+- `expo-file-system/legacy` local text read.
+- Selected file text held in route-local state only.
+- Picked files use `sourceKind: "latest-json"`.
+- Existing read-only pipeline reuse:
+  `diagnoseMobileSyncBundle -> readMobileSyncBundle ->
+  buildMobileReadOnlyBundleView -> buildMobileReadOnlySyncEvidenceView ->
+  read-only display`.
+- Metadata cache remains metadata-only.
+
+The validated file picker chain is:
 
 ```txt
-Implemented; static + route + picker-open validation passed; manual native file
-selection pending.
+Choose file to preview
+-> native document picker
+-> select latest.json
+-> read file text into route-local state
+-> checksum verify as latest-json
+-> render read-only bundle/status/evidence/snapshot preview
 ```
 
 Validated:
@@ -1237,47 +1254,56 @@ Validated:
 - `/read-only-bundle` opened by deep link.
 - The route displayed `Choose file to preview` and read-only/preview-only copy.
 - Native document picker opened.
-- Real `latest.json` was visible in the iOS Files picker.
+- Real latest bundle content was selected manually through the iOS Files picker.
+- The selected simulator file name was `latest 2.json`.
+- The selected simulator file was byte-identical to the real host
+  `/Users/hobayda/H2O Studio Sync/latest.json` by SHA-256.
+- Counts matched expected real bundle evidence.
+- Read-only wording was visible.
+- No import, sync, write-back, merge, restore, load-archive, or recover-chats
+  wording appeared in the read-only file preview path.
 - iOS pod/build integration was fixed in
   `8cc65b3` (`fix(mobile): update iOS pods for file preview`).
 
-Pending:
+The following remain forbidden:
 
-- Manual native iOS document picker file selection.
-- Manual confirmation that selecting `latest.json` through the native picker
-  reads the file and renders the same read-only preview.
+- Archive-store writes.
+- `replaceArchiveStore`.
+- `saveArchiveStore`.
+- WebDAV pull/push.
+- Import or merge into archive.
+- Mobile write-back.
+- Full bundle cache.
+- Snapshot/content cache.
+- Conflict candidate ingestion or decisions.
+- F7/F8 apply APIs.
+- Sync propagation.
+- Treating the picked file as imported archive state.
 
-Blocked step:
+Safety meaning:
 
-- Terminal automation could not reliably select the visible `latest.json` file
-  inside the native iOS document picker. This is an automation limitation, not a
-  read-only pipeline failure.
+- File picker preview is a reader, not an importer.
+- The selected file is evidence for preview only.
+- File URI and file content are not persisted.
+- Users must explicitly save metadata cache, and that cache stores only
+  counts/status.
+- Mobile remains a read-only peer.
 
-Safety confirmation:
+Current validation summary:
 
-- No archive-store path was used.
-- No WebDAV path was used.
-- No archive import or merge path was used.
-- No write-back path was used.
-- No full bundle cache was used.
-- No snapshot content cache was used.
-- No F5/F6/F7/F8 mutation path was used.
+- TypeScript/scoped checks passed earlier in F9.5 validation.
+- Forbidden-call grep stayed clean.
+- Human picker validation passed on iOS simulator, iPhone 17 Pro, iOS 26.5.
+- No files changed during human picker validation.
+- Git only had unrelated Studio WIP during validation.
 
-Final full validation requires a human/operator to open the app, navigate to
-`/read-only-bundle`, tap `Choose file to preview`, and manually select
-`latest.json` in the native Files picker.
+Recommended next options:
 
-Until that manual picker step is completed, F9.5 status remains:
-
-```txt
-Implemented; native picker selection pending manual validation.
-```
-
-Next phases:
-
-- F9.2b: Library and folder list display from the read-only view model.
-- F9.2c: Snapshot read-only reader.
-- F9.2d: Read-only status and diagnostics screen.
+- Production hardening and UX polish are recommended.
+- F10 mobile write-back remains high risk and should not start without a full
+  safety model.
+- If mobile read-only work continues, keep it limited to small UX polish or
+  diagnostics improvements.
 
 ## Validation Model
 
