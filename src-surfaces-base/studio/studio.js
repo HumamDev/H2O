@@ -3647,6 +3647,7 @@ function renderFolderSidebarRow(view, item, opts){
   const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
   const compactCounts = !(opts && opts.review) && !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
   const countDetails = folderSidebarCountDetails(item, countText);
+  const countPillStyle = "display:block;box-sizing:border-box;min-width:0;max-width:108px;padding:1px 5px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;";
   const rowTitle = countDetails ? `${displayLabel} — ${countDetails}` : displayLabel;
   if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
   if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
@@ -3677,7 +3678,7 @@ function renderFolderSidebarRow(view, item, opts){
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayLabel)}</span>
       ${reviewBadgesHtml}
     </span>
-    ${compactCounts ? "" : `<span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}" title="${esc(countDetails)}">${esc(countText)}</span>`}
+    ${compactCounts ? "" : `<span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}" title="${esc(countDetails || countText)}" aria-label="${esc(countDetails || countText)}" style="${countPillStyle}">${esc(countText)}</span>`}
     ${folderMenuHtml}
   `;
   const menuBtn = link.querySelector(".wbFolderMenuBtn");

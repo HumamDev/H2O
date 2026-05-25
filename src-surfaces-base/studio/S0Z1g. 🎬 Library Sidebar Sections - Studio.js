@@ -1894,6 +1894,9 @@
       const hasDetailedCount = !!String(item.displayCountLabel || '').trim();
       const countDetails = kind === 'folders' ? folderCountDetailsText(item) : countLabel;
       const showInlineCount = !!countLabel && !compactFolderCounts;
+      const countPillStyle = showInlineCount
+        ? 'display:block;box-sizing:border-box;min-width:0;max-width:108px;padding:1px 5px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;'
+        : null;
       const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
       const title = countDetails ? `${name} — ${countDetails}` : name;
       const ariaLabel = countDetails ? `${name}, ${countDetails}` : name;
@@ -1948,7 +1951,8 @@
         showInlineCount ? el('span', {
           class: `wbSidebarSectionItemCount${hasDetailedCount ? ' wbSidebarSectionItemCount--folderParity' : ''}`,
           title: countDetails || (hasDetailedCount ? countLabel : null),
-          style: hasDetailedCount ? 'height:auto;min-height:18px;max-width:116px;white-space:normal;text-align:right;line-height:1.15;padding:2px 6px;' : null,
+          'aria-label': countDetails || countLabel,
+          style: countPillStyle,
         }, countLabel) : null,
         menuButton,
       ]);
