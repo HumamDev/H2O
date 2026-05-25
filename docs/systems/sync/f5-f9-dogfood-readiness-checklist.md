@@ -5,6 +5,9 @@
 F5-F9 are ready for controlled internal dogfood on a clean build branch. They
 are not production-ready yet.
 
+Current F9 mobile dogfood is iPhone/iOS-first. Android is deferred to a future
+project and is not a blocker for current iPhone read-only dogfood.
+
 The current blocker is release hygiene, not the F5-F9 safety model: do not cut
 a release from the current dirty worktree. Full-tree `git diff --check` is
 blocked by unrelated Studio WIP in `src-surfaces-base/studio/studio.css`.
@@ -19,7 +22,7 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 | F6 conflict queue | Complete for controlled dogfood | Conflict queue rows and decision metadata | Candidate schema, dry-run/ingest separation, decision transitions, terminal status locks, transactions | Desktop Rust library tests passed | Operators need clear queue triage rules |
 | F7 local folder color apply | Complete for controlled dogfood | Exact-gated local `folders.color` only | Baseline hash, target hash, F5 blockers, F6 blockers, allowlisted field, audit, transaction | Desktop Rust library tests and JS hash parity validation passed | Scope must stay limited to local color only |
 | F8 evidence-only propagation | Closed out as evidence-only | Nothing | Evidence display only; no remote apply surface | Closeout docs and F9 evidence status validation | Future pressure to convert evidence into remote apply |
-| F9 mobile read-only preview/cache | Complete for controlled dogfood | Isolated metadata-only cache key | Read-only route, checksum validation, redaction, no mutation imports, metadata-only cache shape | Mobile TypeScript, real `latest.json`, iOS picker, and metadata cache validations passed | Android and web picker paths are not yet validated |
+| F9 mobile read-only preview/cache | Complete for controlled iPhone/iOS dogfood | Isolated metadata-only cache key | Read-only route, checksum validation, redaction, no mutation imports, metadata-only cache shape | Mobile TypeScript, real `latest.json`, iOS picker, and metadata cache validations passed | Android is deferred; web picker path is not yet validated |
 | Packaging/dependencies | Adequate for controlled dogfood | Dependency metadata only when explicitly changed | Clean branch, lockfile review, iOS pods present | `expo-document-picker`, `expo-file-system`, and iOS pods are present | Package-lock/workspace hygiene still needs review before release |
 
 ## Dogfood Gate Checklist
@@ -33,6 +36,7 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 - [ ] `tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs` passes.
 - [ ] Desktop Rust `cargo test --lib` passes from `apps/studio/desktop/src-tauri`.
 - [ ] iOS file picker validation status is recorded.
+- [ ] Android status is recorded as deferred/future, not an iPhone dogfood blocker.
 - [ ] No F10 or write-back paths are enabled.
 
 ## Operator Checklist
@@ -65,6 +69,8 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 ### F9 Mobile Read-Only
 
 - Mobile is a viewer, not a writer or sync authority.
+- Current dogfood target is iPhone/iOS.
+- Android is explicitly deferred to a future project.
 - `latest.json` is preview evidence only.
 - The metadata cache stores only counts, status, and warning codes.
 - Do not add archive import, archive merge, WebDAV, sync propagation, or mobile
@@ -81,7 +87,7 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 | F7 | Rust tests and JS parity check | Exact-gated apply tests | Historical operator validation | Fixture rows | Keep color-only scope |
 | F8 | Docs and evidence model checks | None by design | Closeout review | Evidence-only status | No remote apply by design |
 | F9 paste path | Scoped TypeScript | Reader validation | Manual route validation | Real `latest.json` | None material |
-| F9 file picker path | Scoped TypeScript | iOS build and native pods | Human iOS picker validation | Real byte-identical `latest.json` | Android/web validation |
+| F9 file picker path | Scoped TypeScript | iOS build and native pods | Human iOS picker validation | Real byte-identical `latest.json` | Android deferred; web validation later |
 | F9 metadata cache | Validation script | Save/load/clear behavior | Cache UI validation | Mock diagnostic counts | None material |
 | F9 snapshot reader | Scoped TypeScript | Real bundle reader validation | Manual snapshot viewing | Real snapshot evidence | Large snapshot stress |
 | Packaging/dependencies | Package and pod checks | iOS build/install/launch | iOS simulator validation | Real file preview | Package-lock/workspace hygiene |
@@ -95,7 +101,7 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 
 ### P1
 
-- Run Android file picker validation if Android dogfood is in scope.
+- Run Android file picker validation only if Android becomes a dogfood target.
 - Review package-lock and stale workspace hygiene before release packaging.
 - Document pod/dependency operator steps, including when to run `pod install`.
 - Tighten F5/F6/F7 operator runbook clarity before broader dogfood.
@@ -104,7 +110,7 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 
 - Add friendly warning and blocker explanations.
 - Add large-file warning or handling for mobile preview.
-- Add Android/web validation status notices.
+- Add web validation status notices if web preview becomes a target.
 - Polish read-only badge consistency across mobile status cards.
 
 ## No-Go Areas
@@ -131,10 +137,11 @@ F10 mobile write-back remains forbidden until it has its own full safety model.
 
 Proceed with small production hardening before any new feature phase:
 
-1. Android file picker validation if Android is a dogfood target.
-2. Package-lock/workspace hygiene review.
-3. F5/F6/F7 operator runbook polish.
-4. Warning/blocker explanation polish.
+1. iPhone read-only dogfood smoke validation.
+2. Package/build checklist on a clean branch.
+3. Package-lock/workspace hygiene review.
+4. F5/F6/F7 operator runbook polish.
+5. Warning/blocker explanation polish.
 
 Do not start F10. Mobile write-back requires a full safety model comparable to
 F5-F7, not a quick follow-up.

@@ -8,6 +8,56 @@ F9 read-only route.
 This flow is read-only. It does not import, sync, merge, write back, or modify
 archive state.
 
+Current dogfood target: iPhone/iOS. Android is deferred to a future project and
+is not required for current iPhone read-only dogfood.
+
+## iOS Dogfood Runbook
+
+Prerequisites:
+
+- iOS simulator or iPhone device.
+- Native dependencies installed. Run `pod install` in the iOS project if native
+  modules are missing after a fresh checkout or dependency change.
+- `expo-document-picker` and `expo-file-system` available from the mobile app
+  dependency set.
+
+Launch:
+
+1. Run the mobile app on the iOS simulator or iPhone device.
+2. Open `/read-only-bundle`.
+
+Preview:
+
+1. Tap `Choose file to preview` and select `latest.json`, or paste the JSON
+   text into the paste area and tap `Preview bundle`.
+2. Confirm the preview loads with read-only and preview-only wording.
+3. Confirm counts and checksum status match expectations below.
+
+Expected checksum behavior:
+
+- Picked file: checksum should verify.
+- Pasted JSON: checksum mismatch may warn if copied text formatting changed.
+
+## iOS Safety Checklist
+
+- [ ] Read-only wording is visible.
+- [ ] No `Import`, `Sync`, `Merge`, `Restore`, or `Write back` labels are visible.
+- [ ] File preview works.
+- [ ] Paste preview works.
+- [ ] Snapshot reader works.
+- [ ] Metadata cache save/load/clear works.
+- [ ] Cache stores metadata only.
+- [ ] No archive-store, WebDAV, or write-back behavior is used.
+
+## Android Status
+
+Android validation is deferred. No Android dogfood or release gate is currently
+required for the iPhone-first F9 read-only target.
+
+Future Android work must first provide Android Studio/SDK setup and an emulator
+or physical Android device. The current Android tooling blocker should not be
+treated as an iPhone dogfood blocker.
+
 ## Where latest.json Comes From
 
 Desktop writes the bundle in the sync folder. The current known local path is:

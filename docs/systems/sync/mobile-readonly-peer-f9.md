@@ -16,6 +16,9 @@ Operator how-to: see
 [`mobile-readonly-operator-guide-f9.md`](./mobile-readonly-operator-guide-f9.md)
 for the concise mobile `latest.json` preview workflow.
 
+Current dogfood target: iPhone/iOS. Android is deferred to a future project
+and is not a blocker for current iPhone read-only dogfood.
+
 ## Recommended Data Source
 
 The first mobile input source should be a copied or exported `latest.json`
@@ -1313,7 +1316,9 @@ Current validation summary:
 
 Recommended next options:
 
-- Production hardening and UX polish are recommended.
+- iPhone UX smoke validation and production hardening are recommended.
+- Android validation is deferred and should start only after Android
+  SDK/emulator/device setup exists.
 - F10 mobile write-back remains high risk and should not start without a full
   safety model.
 - If mobile read-only work continues, keep it limited to small UX polish or
