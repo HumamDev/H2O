@@ -34,9 +34,11 @@ PODS:
     - ExpoModulesCore
   - ExpoDevice (55.0.17):
     - ExpoModulesCore
+  - ExpoDocumentPicker (55.0.13):
+    - ExpoModulesCore
   - ExpoDomWebView (55.0.6):
     - ExpoModulesCore
-  - ExpoFileSystem (55.0.21):
+  - ExpoFileSystem (55.0.22):
     - ExpoModulesCore
   - ExpoFont (55.0.8):
     - ExpoModulesCore
@@ -2227,6 +2229,7 @@ DEPENDENCIES:
   - ExpoAsset (from `../../../../node_modules/expo-asset/ios`)
   - ExpoCrypto (from `../../../../node_modules/expo-crypto/ios`)
   - ExpoDevice (from `../../../../node_modules/expo-device/ios`)
+  - ExpoDocumentPicker (from `../../../../node_modules/expo-document-picker/ios`)
   - "ExpoDomWebView (from `../../../../node_modules/@expo/dom-webview/ios`)"
   - ExpoFileSystem (from `../../../../node_modules/expo-file-system/ios`)
   - ExpoFont (from `../../../../node_modules/expo-font/ios`)
@@ -2349,6 +2352,8 @@ EXTERNAL SOURCES:
     :path: "../../../../node_modules/expo-crypto/ios"
   ExpoDevice:
     :path: "../../../../node_modules/expo-device/ios"
+  ExpoDocumentPicker:
+    :path: "../../../../node_modules/expo-document-picker/ios"
   ExpoDomWebView:
     :path: "../../../../node_modules/@expo/dom-webview/ios"
   ExpoFileSystem:
@@ -2552,8 +2557,9 @@ SPEC CHECKSUMS:
   ExpoAsset: 7721c5c4ae2a7c3c8147a046727ac6c020b05648
   ExpoCrypto: e7f4a14eaa6d6a6a2196cd7391d171c84be0b1aa
   ExpoDevice: b8a65afe42c3c5934eb6983870672fe785b39dea
+  ExpoDocumentPicker: be59b82799ae30811e3f37a7521d6622baa63a19
   ExpoDomWebView: b2e9d601f9cb77d3c97da73234e175b64be91928
-  ExpoFileSystem: 60d1020c4533ca9d8e9ca6b98d4e719c3e8185b2
+  ExpoFileSystem: 61e663d0bbd1a973d324530d1d6ee559a5e5192c
   ExpoFont: a7e34a75bdfb703fa07a0e87807f836236608c76
   ExpoGlassEffect: 2dedac2fe817f9b02d0dad29ce0aef7afebc5cd4
   ExpoImage: 74d26278507b0b0d85b1e50562412172603f59eb
