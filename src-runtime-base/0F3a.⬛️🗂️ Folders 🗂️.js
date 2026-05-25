@@ -2152,7 +2152,10 @@ ${CROW}[aria-current="true"]{
     const ui = STORE_readUI();
     delete ui.openFolders[id];
     STORE_writeUI(ui);
-    if (opts.rerender !== false) ENGINE_rerenderAllSections();
+    if (opts.rerender !== false) {
+      ENGINE_rerenderAllSections();
+      UI_refreshActivePageForAppearance('folder', id);
+    }
 
     return {
       ok: true,
@@ -2887,7 +2890,7 @@ ${CROW}[aria-current="true"]{
       {
         label: 'Delete folder',
         danger: true,
-        onClick: () => {
+        onClick: async () => {
           const preview = API_previewMetadataOperation({
             schema: FOLDER_METADATA_OPERATION_SCHEMA,
             operationType: 'delete-folder',
@@ -2904,11 +2907,15 @@ ${CROW}[aria-current="true"]{
             return alert(`Folder delete blocked: ${hardBlockers[0]}`);
           }
 
-          const typed = W.prompt?.(
-            `Type ${FOLDER_METADATA_DELETE_CONFIRMATION_TEXT} to delete "${folderName}".`,
-            ''
-          );
-          if (typed !== FOLDER_METADATA_DELETE_CONFIRMATION_TEXT) return;
+          const confirmed = await UI_openExactConfirmationModal({
+            title: 'Delete empty folder',
+            message: `Delete "${folderName}" from H2O folders. This only applies to empty folders and does not delete chats.`,
+            requiredText: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
+            confirmText: 'Delete',
+            inputLabel: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
+            danger: true,
+          });
+          if (!confirmed) return;
 
           const result = API_applyMetadataOperation({
             schema: FOLDER_METADATA_OPERATION_SCHEMA,
@@ -2923,8 +2930,10 @@ ${CROW}[aria-current="true"]{
             if (resultBlockers.includes('delete-non-empty-folder-blocked')) return alert('Only empty folders can be deleted.');
             return alert(`Folder delete blocked${resultBlockers[0] ? `: ${resultBlockers[0]}` : '.'}`);
           }
+          UI_closeFolderPop();
           afterChange?.();
           ENGINE_rerenderAllSections();
+          UI_refreshActivePageForAppearance('folder', folderId);
         }
       },
       'sep',
@@ -3449,6 +3458,125 @@ ${CROW}[aria-current="true"]{
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') done(null);
         if (e.key === 'Enter') { e.preventDefault(); if (!ok.disabled) ok.click(); }
+      });
+
+      setTimeout(() => input.focus(), 0);
+    });
+  }
+
+  function UI_openExactConfirmationModal({
+    title = 'Confirm action',
+    message = '',
+    requiredText = '',
+    confirmText = 'Confirm',
+    inputLabel = '',
+    danger = false,
+  } = {}) {
+    UI_ensureStyle();
+
+    const exact = String(requiredText || '').trim();
+    return new Promise((resolve) => {
+      const ov = D.createElement('div');
+      ov.setAttribute(ATTR_CGXUI, UI_FSECTION_MODAL);
+      ov.setAttribute(ATTR_CGXUI_OWNER, SkID);
+      ov.setAttribute('data-h2o-folder-delete-confirmation', '1');
+
+      const box = D.createElement('div');
+      box.setAttribute(ATTR_CGXUI_STATE, 'box');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+
+      const hd = D.createElement('div');
+      hd.setAttribute(ATTR_CGXUI_STATE, 'hd');
+
+      const t = D.createElement('div');
+      t.setAttribute(ATTR_CGXUI_STATE, 'title');
+      t.textContent = String(title || 'Confirm action');
+
+      const x = D.createElement('button');
+      x.type = 'button';
+      x.setAttribute(ATTR_CGXUI_STATE, 'x');
+      x.setAttribute('aria-label', 'Close');
+      x.textContent = '×';
+
+      hd.appendChild(t);
+      hd.appendChild(x);
+
+      const bd = D.createElement('div');
+      bd.setAttribute(ATTR_CGXUI_STATE, 'bd');
+
+      if (message) {
+        const msg = D.createElement('div');
+        msg.setAttribute(ATTR_CGXUI_STATE, 'message');
+        msg.textContent = String(message);
+        bd.appendChild(msg);
+      }
+
+      const phrase = D.createElement('div');
+      phrase.setAttribute(ATTR_CGXUI_STATE, 'message');
+      phrase.style.marginTop = '10px';
+      phrase.textContent = exact ? `Type ${exact} to continue.` : 'Type the required confirmation text to continue.';
+      bd.appendChild(phrase);
+
+      const input = D.createElement('input');
+      input.placeholder = inputLabel || exact || 'Confirmation';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.setAttribute('aria-label', inputLabel || `Type ${exact} to confirm`);
+      bd.appendChild(input);
+
+      const ft = D.createElement('div');
+      ft.setAttribute(ATTR_CGXUI_STATE, 'ft');
+
+      const cancel = D.createElement('button');
+      cancel.type = 'button';
+      cancel.setAttribute(ATTR_CGXUI_STATE, 'btn');
+      cancel.textContent = 'Cancel';
+
+      const ok = D.createElement('button');
+      ok.type = 'button';
+      ok.setAttribute(ATTR_CGXUI_STATE, 'primary');
+      ok.textContent = confirmText || 'Confirm';
+      if (danger) {
+        ok.style.background = 'rgba(220,38,38,.78)';
+        ok.style.borderColor = 'rgba(248,113,113,.45)';
+        ok.style.color = '#fff';
+      }
+
+      const sync = () => { ok.disabled = input.value.trim() !== exact; };
+      sync();
+
+      ft.appendChild(cancel);
+      ft.appendChild(ok);
+
+      box.appendChild(hd);
+      box.appendChild(bd);
+      box.appendChild(ft);
+
+      ov.appendChild(box);
+      D.body.appendChild(ov);
+      CLEAN.nodes.add(ov);
+
+      let settled = false;
+      const done = (value) => {
+        if (settled) return;
+        settled = true;
+        SAFE_remove(ov);
+        resolve(value);
+      };
+
+      x.onclick = () => done(false);
+      cancel.onclick = () => done(false);
+      ok.onclick = () => { if (!ok.disabled) done(true); };
+
+      ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(false); });
+      input.addEventListener('input', sync);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') done(false);
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!ok.disabled) ok.click();
+        }
       });
 
       setTimeout(() => input.focus(), 0);
@@ -4422,6 +4550,8 @@ function ROUTE_clearPageRoute_LOCAL() {
         STORE_writeUI(u);
 
         render();
+        ENGINE_rerenderAllSections();
+        UI_refreshActivePageForAppearance('folder', id);
       }));
 
       const realFolders = data.folders.filter((folder) => !UTIL_isReservedFolderViewName(folder.name));
@@ -5791,9 +5921,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     if (targetKind === 'folder') {
       if (page.kind === 'folder' && page.id === targetId) {
-        UI_openFolderViewer(targetId, { skipHistory: true });
+        const exists = STORE_readData().folders.some((folder) => String(folder?.id || folder?.folderId || '') === targetId);
+        if (exists) UI_openFolderViewer(targetId, { skipHistory: true });
+        else UI_openFoldersViewer(null, { skipHistory: true });
       } else if (page.kind === 'folders') {
-        UI_openFoldersViewer();
+        UI_openFoldersViewer(null, { skipHistory: true });
       }
       return;
     }
