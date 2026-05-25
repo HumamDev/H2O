@@ -661,6 +661,182 @@ Recommended next options:
 The recommended next planning step is F9.4. Keep it read-only and focused on
 offline/non-authoritative cache validation.
 
+## F9.4.0 — Offline Non-Authoritative Cache Safety Model
+
+F9.4 starts as cache safety planning only. The mobile cache is for offline
+read-only display convenience. It is not a sync source, not authority, and not
+write-back.
+
+The cache boundary is:
+
+```txt
+latest.json -> validate -> cache read-only/non-authoritative data -> offline display
+```
+
+It must not become:
+
+```txt
+cache -> export
+cache -> sync source
+cache -> write-back
+cache -> conflict authority
+```
+
+Required non-authority contract:
+
+- `readOnly: true`.
+- `nonAuthoritative: true`.
+- No outbound export.
+- No sync propagation.
+- No conflict decisions.
+- No apply behavior.
+- No tombstone/delete/restore behavior.
+- No archive-store merge.
+
+Cache content options:
+
+- Option A: cache original pasted or `latest.json` text. This is easiest to
+  rehydrate and preserves snapshots, but has the highest privacy and storage
+  footprint.
+- Option B: cache the parsed bundle object. This has similar privacy risk and
+  adds migration/versioning concerns.
+- Option C: cache derived read-only view models. This is lower risk than raw
+  bundle caching, but may lose snapshot content unless that content is included.
+- Option D: cache minimal diagnostics and counts only. This is safest but least
+  useful for offline library/snapshot browsing.
+
+Recommendation for F9.4.0: do not cache the full bundle or snapshot content
+yet. Start with the docs-only safety model. A later implementation should
+likely begin with metadata/diagnostics caching only. Full view or snapshot
+content caching requires explicit privacy and clear-cache UX approval.
+
+Storage/key strategy:
+
+- Avoid the existing archive-store.
+- Avoid sync/archive storage keys.
+- Do not use WebDAV or cloud transport.
+- Use a separate future namespace such as
+  `h2o.mobile.readonly.bundle-cache.v1`.
+
+Future storage options:
+
+- AsyncStorage: simple, but not encrypted.
+- SecureStore: safer, but poor for large bundles.
+- File/document storage: better for large content, but requires more lifecycle
+  and privacy work.
+- Existing archive-store: forbidden for this cache.
+
+Minimum safe cache metadata:
+
+```js
+{
+  schema: "h2o.mobile.readonly.bundle-cache.v1",
+  readOnly: true,
+  nonAuthoritative: true,
+  cachedAt,
+  sourceKind,
+  sourceSchemaPresent,
+  exportedAtPresent,
+  checksumPresent,
+  checksumVerified,
+  sourcePeerPresent,
+  counts,
+  warnings
+}
+```
+
+Cache metadata must not contain raw IDs, raw hashes, raw audit JSON, or mutation
+capabilities.
+
+Clear and invalidation behavior:
+
+- Provide a manual "Clear read-only cache" action before any content cache is
+  considered complete.
+- Unsupported cache schema invalidates safely.
+- Malformed cache warns and does not crash.
+- Optional max-age warning may be added.
+- No auto-refresh.
+- No background WebDAV polling.
+- No sync/import on cache load.
+
+Future UI may show:
+
+- Loaded from read-only cache.
+- Clear cache.
+- Paste newer bundle.
+- Cache freshness or exportedAt presence.
+- Checksum status.
+
+Future UI must not show:
+
+- Sync now.
+- Push or pull.
+- Import into archive.
+- Write back.
+- Resolve.
+- Apply.
+- Delete or restore.
+
+Privacy and redaction policy:
+
+- Full bundle or full view-model cache may store chat and snapshot content on
+  mobile.
+- Snapshot content cache is deferred or must be explicit opt-in.
+- Logs must not print cached content.
+- Diagnostics remain counts, presence flags, and code-only warnings.
+- Secure or encrypted storage should be considered before content caching.
+- Clear-cache behavior must remove all read-only cache keys and files.
+
+F5/F6/F7/F8 integration remains display-only:
+
+- Tombstones remain read-only.
+- Conflicts remain read-only.
+- Apply events remain read-only.
+- No mutation APIs are called.
+- No mobile peer authority is added.
+
+Future implementation must prove:
+
+- Cached data loads offline.
+- Source bundle data is not mutated.
+- Archive-store is not touched.
+- Cache key is separate from archive/sync store.
+- Clear cache removes the cache.
+- Malformed cache fails safely.
+- No write-back APIs are exposed.
+- No WebDAV/cloud calls are made.
+- No F5/F6/F7/F8 mutation calls are made.
+- Redaction and logging remain safe.
+
+Risks and mitigations:
+
+- Cache mistaken as authoritative source: use explicit non-authoritative schema
+  and visible labels.
+- Snapshot privacy risk: defer full content caching until clear UX and privacy
+  policy exists.
+- Stale bundle shown as current: display cachedAt, exportedAt presence, and
+  checksum status.
+- Cache grows too large: define size and retention limits before full bundle
+  caching.
+- Accidental archive-store reuse: use a separate namespace and validate with
+  forbidden-call grep checks.
+- Hidden sync/write-back creep: no WebDAV, export, background refresh, or
+  write-back controls.
+- User confusion between preview cache and imported archive: label the cache as
+  read-only preview cache only.
+
+Recommended split:
+
+- F9.4.0: docs-only cache safety model.
+- F9.4.1: inspect mobile storage options.
+- F9.4.2: cache metadata/read-only diagnostics only.
+- F9.4.3: optional full view-model cache if approved.
+- F9.4.4: clear-cache UX.
+- F10: mobile write-back much later.
+
+The recommended next step after F9.4.0 is F9.4.1 storage inspection. Do not
+implement cache yet, and do not start F10.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
