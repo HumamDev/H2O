@@ -6692,6 +6692,24 @@ function settingsFolderMirrorColorDeltaRows(beforeSummary, afterSummary){
   });
 }
 
+function settingsFolderMirrorNameDeltaRows(beforeSummary, afterSummary){
+  const beforeRows = new Map((beforeSummary?.perFolder || []).map((row) => [row.folderId, row]));
+  const afterRows = new Map((afterSummary?.perFolder || []).map((row) => [row.folderId, row]));
+  return FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((known) => {
+    const before = beforeRows.get(known.folderId) || {};
+    const after = afterRows.get(known.folderId) || {};
+    const beforeName = String(before.name || "").trim();
+    const afterName = String(after.name || "").trim();
+    return {
+      folderId: known.folderId,
+      name: known.name,
+      beforeName,
+      afterName,
+      nameChanged: beforeName !== afterName,
+    };
+  });
+}
+
 async function settingsFolderMirrorReadSourceFromPanel(panel){
   const pasted = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshJson")?.value || "").trim();
   const path = String(panel?.querySelector?.("#wbSettingsFolderMirrorRefreshPath")?.value || "").trim();
@@ -6725,6 +6743,7 @@ async function settingsFolderMirrorBuildPreview(panel, opts = {}){
   const beforeChecksum = await settingsFolderMirrorChecksum(beforeState || {});
   const afterChecksum = await settingsFolderMirrorChecksum(afterState);
   const perFolderColorDeltas = settingsFolderMirrorColorDeltaRows(beforeSummary, afterSummary);
+  const perFolderNameDeltas = settingsFolderMirrorNameDeltaRows(beforeSummary, afterSummary);
   const preview = {
     readOnly: false,
     noMutationUntilRefresh: true,
@@ -6745,10 +6764,14 @@ async function settingsFolderMirrorBuildPreview(panel, opts = {}){
       name: known.name,
       before: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
       after: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.membershipCount || 0,
+      beforeName: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.name || "",
+      afterName: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.name || "",
+      nameChanged: perFolderNameDeltas.find((row) => row.folderId === known.folderId)?.nameChanged || false,
       beforeColor: beforeSummary.perFolder.find((row) => row.folderId === known.folderId)?.color || "",
       afterColor: afterSummary.perFolder.find((row) => row.folderId === known.folderId)?.color || "",
       colorChanged: perFolderColorDeltas.find((row) => row.folderId === known.folderId)?.colorChanged || false,
     })),
+    perFolderNameDeltas,
     perFolderColorDeltas,
     beforeChecksum,
     afterChecksum,
@@ -6771,9 +6794,18 @@ function settingsFolderMirrorRenderDeltaSummary(panel, preview){
     box.innerHTML = "";
     return;
   }
+  const nameRows = Array.isArray(preview.perFolderNameDeltas) ? preview.perFolderNameDeltas : [];
+  const changedNameRows = nameRows.filter((row) => row?.nameChanged);
   const colorRows = Array.isArray(preview.perFolderColorDeltas) ? preview.perFolderColorDeltas : [];
   const changedColorRows = colorRows.filter((row) => row?.colorChanged);
   const membershipRows = Array.isArray(preview.perFolderMembershipCounts) ? preview.perFolderMembershipCounts : [];
+  const nameLines = changedNameRows.length
+    ? changedNameRows.map((row) => {
+        const before = row.beforeName || "(blank)";
+        const after = row.afterName || "(blank)";
+        return `<div><strong>${esc(row.name || "Folder")} name:</strong> <code>${esc(before)}</code> -&gt; <code>${esc(after)}</code></div>`;
+      }).join("")
+    : `<div><strong>Name changes:</strong> none detected.</div>`;
   const colorLines = changedColorRows.length
     ? changedColorRows.map((row) => {
         const before = row.beforeColor || "(blank)";
@@ -6788,6 +6820,7 @@ function settingsFolderMirrorRenderDeltaSummary(panel, preview){
   box.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:6px">
       <div style="font-weight:600">Refresh preview deltas</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px">${nameLines}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px">${colorLines}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:4px 12px;opacity:.78">${memberLines}</div>
     </div>
@@ -6858,9 +6891,11 @@ async function previewSettingsFolderMirrorRefresh(panel){
   settingsFolderParitySetOperationStatus(panel, "mirrorRefresh", "warning", "Preview valid; confirmation required");
   settingsFolderMirrorSetPreview(panel, result.preview);
   const studyCounts = result.preview.perFolderMembershipCounts.find((row) => row.name === "Study") || {};
+  const nameChangeCount = (result.preview.perFolderNameDeltas || []).filter((row) => row?.nameChanged).length;
   const colorChangeCount = (result.preview.perFolderColorDeltas || []).filter((row) => row?.colorChanged).length;
+  const nameMessage = nameChangeCount ? `${nameChangeCount} name change${nameChangeCount === 1 ? "" : "s"} detected.` : "No canonical name changes detected.";
   const colorMessage = colorChangeCount ? `${colorChangeCount} color change${colorChangeCount === 1 ? "" : "s"} detected.` : "No canonical color changes detected.";
-  const message = `Preview ready. Study members: ${studyCounts.before ?? 0} -> ${studyCounts.after ?? 0}. ${colorMessage} Desktop SQLite folders and folder_bindings are not changed.`;
+  const message = `Preview ready. Study members: ${studyCounts.before ?? 0} -> ${studyCounts.after ?? 0}. ${nameMessage} ${colorMessage} Desktop SQLite folders and folder_bindings are not changed.`;
   settingsFolderMirrorSetStatus(panel, message);
   settingsFolderMirrorUpdateControls(panel);
   return result;
