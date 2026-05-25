@@ -1050,6 +1050,9 @@ ${CROW}{
   position:relative;
   padding-right:40px !important;
 }
+${ROOT} [data-cgxui-state="folder-row-wrap"]{
+  position:relative;
+}
 ${FROW}:not(:hover):not([aria-current="true"]),
 ${CROW}:not(:hover):not([aria-current="true"]){
   background: transparent !important;
@@ -1072,10 +1075,15 @@ ${CMORE}{
   background:transparent !important;
   color:var(--text-primary, #fff) !important;
   cursor:pointer !important;
+  pointer-events:auto !important;
+  touch-action:manipulation !important;
+  z-index:2 !important;
   opacity:0;
   visibility:hidden;
   transition:opacity .12s ease, background .12s ease, color .12s ease;
 }
+${ROOT} [data-cgxui-state="folder-row-wrap"]:hover ${FMORE},
+${ROOT} [data-cgxui-state="folder-row-wrap"]:focus-within ${FMORE},
 ${FROW}:hover ${FMORE},
 ${FROW}:focus-within ${FMORE},
 ${CROW}:hover ${CMORE},
@@ -1453,6 +1461,30 @@ ${VIEWER}[data-cgxui-mode="panel"] [${ATTR_CGXUI_STATE}="list"] button{
   gap: 10px;
   padding: 5px 10px;
   border-radius: 10px;
+}
+${VIEWER} [${ATTR_CGXUI_STATE}="folder-action"]{
+  all: unset;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--text-secondary, rgba(255,255,255,.72));
+  cursor: pointer;
+  pointer-events: auto;
+}
+${VIEWER} [${ATTR_CGXUI_STATE}="folder-action"]:hover,
+${VIEWER} [${ATTR_CGXUI_STATE}="folder-action"]:focus-visible{
+  background: var(--interactive-bg-secondary-hover, rgba(255,255,255,.08));
+  color: var(--text-primary, #fff);
+}
+${VIEWER} [${ATTR_CGXUI_STATE}="folder-action"] svg{
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 /* Category page mode: mounted inside ChatGPT's main shell, not as a body overlay */
@@ -2787,7 +2819,7 @@ ${CROW}[aria-current="true"]{
     const folderId = String(folder.id || folder.folderId || '').trim();
     const folderName = String(folder.name || folder.title || folderId || 'Folder');
     const folderColor = STORE_normalizeProjectColor(folder.iconColor || folder.color);
-    UI_openFolderPop(anchorEl, [
+    return UI_openFolderPop(anchorEl, [
       { type: 'title', label: 'Folder actions' },
       UI_colorGridItem('Color', folderColor, (color) => {
         STORE_setFolderIconColor(folderId, color);
@@ -2840,16 +2872,40 @@ ${CROW}[aria-current="true"]{
         label: 'Delete folder',
         danger: true,
         onClick: () => {
-          const ok = confirm(`Delete folder "${folderName}"?`);
-          if (!ok) return;
-
-          const result = STORE_deleteEmptyFolder(folderId, {
-            source: 'folder-actions-delete',
-            rerender: false,
+          const preview = API_previewMetadataOperation({
+            schema: FOLDER_METADATA_OPERATION_SCHEMA,
+            operationType: 'delete-folder',
+            folderId,
+            sourceSurface: 'native-chatgpt',
+            reason: 'Native folder action delete preview',
           });
-          if (!result.ok) {
-            if ((result.blockers || []).includes('delete-non-empty-folder-blocked')) return alert('Only empty folders can be deleted.');
-            return alert('Folder delete blocked.');
+          const blockerCodes = (preview.blockers || []).map((entry) => String(entry?.code || entry || '')).filter(Boolean);
+          if (blockerCodes.includes('delete-non-empty-folder-blocked')) {
+            return alert('Only empty folders can be deleted.');
+          }
+          const hardBlockers = blockerCodes.filter((code) => code !== 'delete-confirmation-required');
+          if (hardBlockers.length) {
+            return alert(`Folder delete blocked: ${hardBlockers[0]}`);
+          }
+
+          const typed = W.prompt?.(
+            `Type ${FOLDER_METADATA_DELETE_CONFIRMATION_TEXT} to delete "${folderName}".`,
+            ''
+          );
+          if (typed !== FOLDER_METADATA_DELETE_CONFIRMATION_TEXT) return;
+
+          const result = API_applyMetadataOperation({
+            schema: FOLDER_METADATA_OPERATION_SCHEMA,
+            operationType: 'delete-folder',
+            folderId,
+            confirmation: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
+            sourceSurface: 'native-chatgpt',
+            reason: 'Native folder action empty delete',
+          });
+          if (!result.ok || !result.applied) {
+            const resultBlockers = (result.blockers || []).map((entry) => String(entry?.code || entry || '')).filter(Boolean);
+            if (resultBlockers.includes('delete-non-empty-folder-blocked')) return alert('Only empty folders can be deleted.');
+            return alert(`Folder delete blocked${resultBlockers[0] ? `: ${resultBlockers[0]}` : '.'}`);
           }
           afterChange?.();
           ENGINE_rerenderAllSections();
@@ -2860,7 +2916,7 @@ ${CROW}[aria-current="true"]{
         label: 'Copy folder ID',
         onClick: () => UI_copyTextValue(folderId, 'Folder ID'),
       },
-    ]);
+    ], { menuKind: 'folder-actions', folderId });
   }
 
     /* Phase C8: moved to 0F4a — function UI_openCategoryAppearanceEditor */
@@ -2877,7 +2933,7 @@ ${CROW}[aria-current="true"]{
     STATE.popEl = null;
   }
 
-  function UI_openFolderPop(anchorEl, items) {
+  function UI_openFolderPop(anchorEl, items, opts = {}) {
     UI_ensureStyle();
     LIBCORE_registerFoldersOwner();
     UI_closeFolderPop();
@@ -2891,6 +2947,10 @@ ${CROW}[aria-current="true"]{
     pop.setAttribute('data-h2o-glass', 'panel');
     pop.setAttribute('data-h2o-skin', 'sand-glass');
     pop.setAttribute('data-h2o-skin-surface', 'sand-glass');
+    if (opts?.menuKind === 'folder-actions') {
+      pop.setAttribute('data-h2o-folder-menu', '1');
+      pop.setAttribute('data-h2o-folder-id', String(opts.folderId || ''));
+    }
 
     items.forEach((it) => {
       if (it === 'sep') {
@@ -3083,6 +3143,8 @@ ${CROW}[aria-current="true"]{
       };
       CLEAN.listeners.add(removeOutsideListeners);
     }, 0);
+
+    return pop;
   }
 
   function UI_openFoldersOverflowDropdown(anchorEl, foldersRaw) {
@@ -3565,26 +3627,22 @@ ${CROW}[aria-current="true"]{
   }
 
   function UI_makeNativeLikeMoreButton(label, token) {
-    const nativeTemplate = UI_getNativeTrailingButtonTemplate();
-    const btn = nativeTemplate?.cloneNode(true) || D.createElement('button');
+    // Keep the action affordance H2O-owned. Cloning ChatGPT's trailing button
+    // can carry host focus/selection classes into our synthetic rows, which
+    // makes clicks select the row instead of opening the H2O popup.
+    const btn = D.createElement('button');
     btn.type = 'button';
-    btn.classList.add('__menu-item-trailing-btn');
-    btn.querySelectorAll?.('[id]')?.forEach((el) => el.removeAttribute('id'));
-    btn.removeAttribute('id');
-    btn.removeAttribute('data-testid');
-    btn.removeAttribute('data-state');
-    btn.removeAttribute('aria-controls');
-    btn.removeAttribute('aria-expanded');
+    btn.className = '__menu-item-trailing-btn';
     btn.setAttribute('data-trailing-button', 'true');
     btn.setAttribute('aria-label', label || 'More actions');
     btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
     btn.title = label || 'More actions';
     btn.disabled = false;
-    btn.removeAttribute('disabled');
     btn.tabIndex = 0;
     if (token) btn.setAttribute(ATTR_CGXUI, token);
     btn.setAttribute(ATTR_CGXUI_OWNER, SkID);
-    btn.setAttribute('data-h2o-folder-action-button', '1');
+    if (token === UI_FSECTION_FOLDER_MORE) btn.setAttribute('data-h2o-folder-action-button', '1');
     btn.innerHTML = FRAG_SVG_MORE;
     return btn;
   }
@@ -3607,10 +3665,12 @@ ${CROW}[aria-current="true"]{
     btn.addEventListener('pointerdown', open, true);
     btn.addEventListener('pointerup', stop, true);
     btn.addEventListener('mousedown', stop, true);
+    btn.addEventListener('mouseup', stop, true);
     btn.addEventListener('click', open, true);
-    btn.onkeydown = (event) => {
+    btn.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') open(event);
-    };
+      if (event.key === 'Escape') UI_closeFolderPop();
+    }, true);
     return btn;
   }
 
@@ -4199,11 +4259,18 @@ function ROUTE_clearPageRoute_LOCAL() {
           row.setAttribute('data-cgxui-folder-id', folder.id);
           renderedFolderRows.push({ row, isActiveFolder });
 
+          const rowWrap = D.createElement('div');
+          rowWrap.setAttribute(ATTR_CGXUI_STATE, 'folder-row-wrap');
+          rowWrap.setAttribute(ATTR_CGXUI_OWNER, SkID);
+          rowWrap.setAttribute('data-h2o-folder-id', String(folder.id || ''));
+
           const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
             UI_openFolderActionsPop(more, folder, render);
           });
+          more.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
 
-          row.appendChild(more);
+          rowWrap.appendChild(row);
+          rowWrap.appendChild(more);
 
           const trunc = row.querySelector?.(SEL.sidebarTruncate);
           if (trunc && ui.showFolderCounts !== false) {
@@ -4215,7 +4282,7 @@ function ROUTE_clearPageRoute_LOCAL() {
             trunc.parentElement?.appendChild(span);
           }
 
-          grp.appendChild(row);
+          grp.appendChild(rowWrap);
 
           if (isOpen) {
             const previewHrefs = hrefs.slice(0, CFG_FOLDER_CHAT_PREVIEW_LIMIT);
@@ -5263,6 +5330,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   function UI_appendInShellFolderRow(list, folder) {
     const li = D.createElement('li');
     li.setAttribute(ATTR_CGXUI_STATE, 'folder-item');
+    li.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
 
     const btn = D.createElement('button');
     btn.type = 'button';
@@ -5298,6 +5366,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     });
     more.setAttribute(ATTR_CGXUI_STATE, 'folder-action');
     more.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
+    more.setAttribute('data-h2o-folder-page-action-button', '1');
     li.appendChild(more);
     list.appendChild(li);
   }
@@ -5323,9 +5392,18 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     UI_closeViewer();
     const { box, list: fallbackList } = UI_makeViewerShell('Folders', `${folders.length} folders`, { mode: CFG_CATEGORY_OPEN_MODE_PANEL });
     folders.forEach((folder) => {
+      const row = D.createElement('div');
+      row.setAttribute(ATTR_CGXUI_STATE, 'folder-item');
+      row.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '4px';
+
       const btn = D.createElement('button');
       btn.type = 'button';
       btn.onclick = () => UI_openFolderByMode(folder.id);
+      btn.style.flex = '1 1 auto';
+      btn.style.minWidth = '0';
       const body = D.createElement('div');
       body.style.minWidth = '0';
       body.style.flex = '1 1 auto';
@@ -5339,8 +5417,10 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       });
       more.setAttribute(ATTR_CGXUI_STATE, 'folder-action');
       more.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
-      fallbackList.appendChild(btn);
-      fallbackList.appendChild(more);
+      more.setAttribute('data-h2o-folder-page-action-button', '1');
+      row.appendChild(btn);
+      row.appendChild(more);
+      fallbackList.appendChild(row);
     });
     D.body.appendChild(box);
     CLEAN.nodes.add(box);
