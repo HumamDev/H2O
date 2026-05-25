@@ -45,6 +45,8 @@
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
   const FOLDER_METADATA_RENAME_REASON = 'Chrome Studio canonical folder rename';
+  const FOLDER_METADATA_DELETE_PREVIEW_REASON = 'Chrome Studio canonical folder delete preview';
+  const FOLDER_METADATA_DELETE_CONFIRMATION_TEXT = 'DELETE EMPTY FOLDER';
   const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
   const FOLDER_METADATA_RENAME_POLL_MS = 700;
   const SIDEBAR_MENU_COLORS = Object.freeze([
@@ -637,6 +639,12 @@
       && !!folderMetadataOperationRequest();
   }
 
+  function canRequestCanonicalFolderDeletePreview(item) {
+    return item?.isCanonical === true
+      && studioPlatformAdapter() === 'mv3'
+      && !!folderMetadataOperationRequest();
+  }
+
   function resultCodes(result, listName = 'blockers') {
     const rows = Array.isArray(result?.[listName]) ? result[listName] : [];
     return rows.map((entry) => String(entry?.code || '').trim()).filter(Boolean);
@@ -680,6 +688,27 @@
       operation.staleGuard = staleGuard;
     }
     return operation;
+  }
+
+  function buildFolderDeletePreviewOperation(item, staleGuard = null) {
+    const operation = {
+      schema: FOLDER_METADATA_OPERATION_SCHEMA,
+      operationType: 'delete-folder',
+      folderId: String(item?.id || item?.folderId || '').trim(),
+      sourceSurface: 'chrome-studio',
+      reason: FOLDER_METADATA_DELETE_PREVIEW_REASON,
+    };
+    if (staleGuard && typeof staleGuard === 'object' && Object.keys(staleGuard).length) {
+      operation.staleGuard = staleGuard;
+    }
+    return operation;
+  }
+
+  function shortFolderId(value) {
+    const id = String(value || '').trim();
+    if (!id) return '';
+    if (id.length <= 14) return id;
+    return `${id.slice(0, 8)}...${id.slice(-5)}`;
   }
 
   async function resolveFreshCanonicalFolderItem(item) {
@@ -931,6 +960,49 @@
     setStatus('Folder renamed', 'ok');
     refreshAfterNativeFolderMetadataApply('folder-rename-apply');
     return applied;
+  }
+
+  async function requestCanonicalFolderDeletePreview(item, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Native owner unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
+    }
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    if (!folderId || item?.isCanonical !== true) {
+      setStatus('Blocked: target-not-canonical', 'blocked');
+      return { ok: false, blockers: [{ code: 'target-not-canonical' }] };
+    }
+
+    const operation = buildFolderDeletePreviewOperation(item);
+    setStatus('Previewing...', 'pending');
+    let preview = null;
+    try {
+      preview = await requestFolderMetadataOperationWithNativeRefresh(request, operation, {
+        requestMode: 'preview',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-delete-preview-result-poll',
+      });
+    } catch (e) {
+      err('folderDelete.preview', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'preview-request-threw' }] };
+    }
+
+    const blockers = resultCodes(preview, 'blockers');
+    if (!preview?.ok) {
+      setStatus(`Blocked: ${blockers[0] || firstResultCode(preview, 'folder-delete-preview-failed')}`, 'blocked');
+      return preview;
+    }
+    if (blockers.includes('delete-non-empty-folder-blocked')) {
+      setStatus('Blocked: delete-non-empty-folder-blocked', 'blocked');
+    } else if (blockers.length) {
+      setStatus(`Preview ready: ${blockers[0]}`, 'ok');
+    } else {
+      setStatus('Preview only', 'ok');
+    }
+    return preview;
   }
 
   function menuTitleForKind(kind) {
@@ -1243,6 +1315,118 @@
     return [action, panel];
   }
 
+  function makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl) {
+    const panel = el('div', {
+      class: 'wbSidebarNativePickerSection',
+      style: 'display:none;flex-direction:column;gap:7px;min-width:240px;max-width:320px',
+      'data-menu-item': 'canonical-folder-delete-preview-panel',
+    });
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Delete preview'));
+    const body = el('div', {
+      style: 'display:flex;flex-direction:column;gap:5px;font-size:11px;line-height:1.35;color:rgba(255,255,255,.72)',
+    });
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'display:none;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    });
+    const setStatus = (message, kind = '') => {
+      const text = String(message || '');
+      status.textContent = text;
+      status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
+    };
+    const renderLine = (label, value, opts = {}) => {
+      const row = el('div', { style: 'display:flex;gap:8px;justify-content:space-between;align-items:flex-start' });
+      row.appendChild(el('span', { style: 'color:rgba(255,255,255,.52)' }, label));
+      row.appendChild(el('span', {
+        style: `${opts.mono ? 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;' : ''}text-align:right;min-width:0;overflow-wrap:anywhere`,
+      }, value));
+      return row;
+    };
+    const renderCodes = (label, codes) => {
+      const values = Array.isArray(codes) ? codes.filter(Boolean) : [];
+      const box = el('div', { style: 'display:flex;flex-direction:column;gap:3px' });
+      box.appendChild(el('div', { style: 'color:rgba(255,255,255,.52)' }, label));
+      if (!values.length) {
+        box.appendChild(el('div', { style: 'color:rgba(255,255,255,.78)' }, 'none'));
+        return box;
+      }
+      values.forEach((code) => {
+        box.appendChild(el('code', {
+          style: 'display:block;padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);font-size:10.5px;white-space:normal;overflow-wrap:anywhere',
+        }, code));
+      });
+      return box;
+    };
+    const renderPreview = (preview = null) => {
+      body.innerHTML = '';
+      const before = preview?.before && typeof preview.before === 'object' ? preview.before : {};
+      const deps = preview?.dependencySummary && typeof preview.dependencySummary === 'object' ? preview.dependencySummary : {};
+      const folderId = String(preview?.folderId || item?.folderId || item?.id || '').trim();
+      const folderName = String(before.name || deps.folderName || item?.name || item?.title || folderId || 'Folder');
+      const membershipCount = Number(deps.nativeMembershipCount ?? before.nativeMembershipCount ?? before.membershipCount ?? item?.nativeMembershipCount ?? item?.count ?? 0) || 0;
+      const itemBucketEmpty = deps.itemBucketEmpty === true || before.itemBucketEmpty === true;
+      const confirmation = String(preview?.requiredConfirmation || preview?.confirmation?.text || FOLDER_METADATA_DELETE_CONFIRMATION_TEXT);
+      const blockers = resultCodes(preview, 'blockers');
+      const warnings = resultCodes(preview, 'warnings');
+      body.appendChild(renderLine('Folder', folderName));
+      body.appendChild(renderLine('Folder ID', shortFolderId(folderId), { mono: true }));
+      body.appendChild(renderLine('Native members', String(membershipCount)));
+      body.appendChild(renderLine('Item bucket', itemBucketEmpty ? 'empty' : 'not empty'));
+      body.appendChild(renderLine('Future confirmation', confirmation, { mono: true }));
+      body.appendChild(renderCodes('Blockers', blockers));
+      body.appendChild(renderCodes('Warnings', warnings));
+      body.appendChild(el('div', {
+        style: 'margin-top:2px;color:rgba(255,255,255,.62)',
+      }, membershipCount > 0
+        ? 'Delete is blocked because the canonical folder is not empty.'
+        : 'Preview only. Chrome delete apply is not enabled yet.'));
+    };
+    renderPreview(null);
+    panel.appendChild(body);
+    panel.appendChild(status);
+
+    let pendingPreview = false;
+    const runPreview = () => {
+      if (pendingPreview) return;
+      pendingPreview = true;
+      renderPreview(null);
+      Promise.resolve(requestCanonicalFolderDeletePreview(item, { setStatus }))
+        .then((preview) => {
+          pendingPreview = false;
+          renderPreview(preview);
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        })
+        .catch((e) => {
+          pendingPreview = false;
+          err('folderDelete.previewPanel', e);
+          setStatus(`Blocked: ${String(e?.message || e || 'delete-preview-failed')}`, 'blocked');
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        });
+    };
+    const showPanel = () => {
+      panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+      action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
+      if (panel.style.display !== 'none') {
+        setStatus('', '');
+        runPreview();
+        W.requestAnimationFrame(() => {
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        });
+      }
+    };
+    const action = makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, showPanel, {
+      keepOpen: true,
+      danger: true,
+      title: 'Preview canonical folder delete through Native owner',
+    });
+    action.setAttribute('aria-haspopup', 'true');
+    action.setAttribute('aria-expanded', 'false');
+    return [action, panel];
+  }
+
   function folderHrefForId(folderId) {
     const id = String(folderId || '').trim();
     if (!id) return '';
@@ -1528,7 +1712,7 @@
     if (isFolderMenu) {
       const isCanonicalFolder = item.isCanonical === true;
       const disabledSyncTitle = 'Canonical folder actions are read-only until sync authority is proven.';
-      const deleteTitle = 'Delete requires a future preview and confirmation flow.';
+      const deleteTitle = 'Preview canonical folder delete through Native owner.';
       const hasFolderRoute = !!folderHrefForId(item.id);
       pop.appendChild(makeMenuAction('Open folder', SIDEBAR_MENU_ACTION_SVGS.open, () => openFolderRoute(item.id), {
         disabled: !hasFolderRoute,
@@ -1559,11 +1743,15 @@
           title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
         }));
       }
-      pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
-        danger: true,
-        disabled: true,
-        title: deleteTitle,
-      }));
+      if (isCanonicalFolder && canRequestCanonicalFolderDeletePreview(item)) {
+        makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+      } else {
+        pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+          danger: true,
+          disabled: true,
+          title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : deleteTitle,
+        }));
+      }
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       pop.appendChild(makeMenuAction('Copy folder ID', SIDEBAR_MENU_ACTION_SVGS.copy, () => copyTextValue(item.id), {
         title: 'Copy folder ID',

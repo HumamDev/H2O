@@ -1626,6 +1626,7 @@ ${PAGE}[data-cgxui-page-kind="projects"] [${ATTR_CGXUI_STATE}="title-icon"] svg{
   display: block;
 }
 ${PAGE} li{
+  position: relative;
   min-height: 64px;
   border-bottom: 1px solid var(--border-default, rgba(255,255,255,.10));
 }
@@ -1670,6 +1671,36 @@ ${PAGE} [${ATTR_CGXUI_STATE}="row-date"]{
   flex: 0 0 auto;
   font-size: 14px;
   white-space: nowrap;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="folder-item"] [${ATTR_CGXUI_STATE}="category-button"]{
+  padding-right: 48px;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="folder-action"]{
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, rgba(255,255,255,.72));
+  opacity: .72;
+  cursor: pointer;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="folder-action"]:hover,
+${PAGE} [${ATTR_CGXUI_STATE}="folder-action"]:focus-visible{
+  background: var(--interactive-bg-secondary-hover, rgba(255,255,255,.08));
+  opacity: 1;
+}
+${PAGE} [${ATTR_CGXUI_STATE}="folder-action"] svg{
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 /* E) Folder kind divider */
@@ -2735,6 +2766,103 @@ ${CROW}[aria-current="true"]{
     ]);
   }
 
+  function UI_copyTextValue(value, label = 'Value') {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    if (W.navigator?.clipboard?.writeText) {
+      W.navigator.clipboard.writeText(text).catch((error) => DIAG_err('copyText', error));
+      return true;
+    }
+    try {
+      W.prompt?.(label, text);
+      return true;
+    } catch (error) {
+      DIAG_err('copyTextFallback', error);
+      return false;
+    }
+  }
+
+  function UI_openFolderActionsPop(anchorEl, folder, afterChange = null) {
+    if (!anchorEl || !folder) return;
+    const folderId = String(folder.id || folder.folderId || '').trim();
+    const folderName = String(folder.name || folder.title || folderId || 'Folder');
+    const folderColor = STORE_normalizeProjectColor(folder.iconColor || folder.color);
+    UI_openFolderPop(anchorEl, [
+      { type: 'title', label: 'Folder actions' },
+      UI_colorGridItem('Color', folderColor, (color) => {
+        STORE_setFolderIconColor(folderId, color);
+        afterChange?.();
+      }, true),
+      'sep',
+      {
+        label: 'Open folder',
+        iconSvg: FRAG_SVG_FOLDER,
+        onClick: () => UI_openFolderByMode(folderId),
+      },
+      'sep',
+      {
+        label: 'Open in Studio',
+        iconSvg: FRAG_SVG_FOLDER,
+        onClick: () => {
+          const hash = `#/saved?folder=${encodeURIComponent(folderId)}`;
+          H2O.archiveBoot?.openWorkbench?.(hash);
+        },
+      },
+      'sep',
+      {
+        label: 'Rename folder',
+        onClick: async () => {
+          const next = await UI_openNameModal({
+            title: 'Rename folder',
+            placeholder: 'Folder name',
+            initialValue: folderName,
+            confirmText: 'Rename'
+          });
+          if (!next) return;
+
+          const result = STORE_renameFolder(folderId, next, {
+            source: 'folder-actions-rename',
+            rerender: false,
+          });
+          if (!result.ok) {
+            if ((result.blockers || []).includes('same-name-conflict')) return alert('Folder already exists.');
+            if ((result.blockers || []).includes('reserved-folder-name')) return alert(`${next} is a view, not a folder.`);
+            return alert('Folder rename blocked.');
+          }
+          if (result.applied) {
+            afterChange?.();
+            ENGINE_rerenderAllSections();
+          }
+        }
+      },
+      'sep',
+      {
+        label: 'Delete folder',
+        danger: true,
+        onClick: () => {
+          const ok = confirm(`Delete folder "${folderName}"?`);
+          if (!ok) return;
+
+          const result = STORE_deleteEmptyFolder(folderId, {
+            source: 'folder-actions-delete',
+            rerender: false,
+          });
+          if (!result.ok) {
+            if ((result.blockers || []).includes('delete-non-empty-folder-blocked')) return alert('Only empty folders can be deleted.');
+            return alert('Folder delete blocked.');
+          }
+          afterChange?.();
+          ENGINE_rerenderAllSections();
+        }
+      },
+      'sep',
+      {
+        label: 'Copy folder ID',
+        onClick: () => UI_copyTextValue(folderId, 'Folder ID'),
+      },
+    ]);
+  }
+
     /* Phase C8: moved to 0F4a — function UI_openCategoryAppearanceEditor */
 
   /* Popover (folder row actions) */
@@ -2743,6 +2871,8 @@ ${CROW}[aria-current="true"]{
       try { STATE.popPositionOff(); } catch {}
       STATE.popPositionOff = null;
     }
+    try { STATE.popAnchorEl?.setAttribute?.('aria-expanded', 'false'); } catch {}
+    STATE.popAnchorEl = null;
     if (STATE.popEl) SAFE_remove(STATE.popEl);
     STATE.popEl = null;
   }
@@ -2878,6 +3008,8 @@ ${CROW}[aria-current="true"]{
     D.body.appendChild(pop);
     CLEAN.nodes.add(pop);
     STATE.popEl = pop;
+    STATE.popAnchorEl = anchorEl;
+    try { anchorEl?.setAttribute?.('aria-expanded', 'true'); } catch {}
 
     const positionPop = () => {
       if (!pop.isConnected || !anchorEl?.isConnected) return;
@@ -2926,12 +3058,30 @@ ${CROW}[aria-current="true"]{
 
     // close on outside click
     setTimeout(() => {
+      if (!pop.isConnected || STATE.popEl !== pop) return;
       const onDoc = (e) => {
         if (!STATE.popEl) return;
-        if (!STATE.popEl.contains(e.target)) UI_closeFolderPop();
+        if (STATE.popEl.contains(e.target)) return;
+        if (anchorEl === e.target || anchorEl?.contains?.(e.target)) return;
+        UI_closeFolderPop();
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') UI_closeFolderPop();
       };
       D.addEventListener('mousedown', onDoc, true);
-      CLEAN.listeners.add(() => D.removeEventListener('mousedown', onDoc, true));
+      D.addEventListener('pointerdown', onDoc, true);
+      D.addEventListener('keydown', onKey, true);
+      const removeOutsideListeners = () => {
+        D.removeEventListener('mousedown', onDoc, true);
+        D.removeEventListener('pointerdown', onDoc, true);
+        D.removeEventListener('keydown', onKey, true);
+      };
+      const previousOff = STATE.popPositionOff;
+      STATE.popPositionOff = () => {
+        try { previousOff?.(); } catch {}
+        removeOutsideListeners();
+      };
+      CLEAN.listeners.add(removeOutsideListeners);
     }, 0);
   }
 
@@ -4050,71 +4200,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           renderedFolderRows.push({ row, isActiveFolder });
 
           const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
-            UI_openFolderPop(more, [
-              { type: 'title', label: 'Folder actions' },
-              UI_colorGridItem('Color', folderColor, (color) => {
-                STORE_setFolderIconColor(folder.id, color);
-                render();
-              }, true),
-              'sep',
-              {
-                label: 'Open folder',
-                onClick: () => UI_openFolderByMode(folder.id),
-              },
-              'sep',
-              {
-                label: 'Open in Studio',
-                onClick: () => {
-                  const hash = `#/saved?folder=${encodeURIComponent(folder.id)}`;
-                  H2O.archiveBoot?.openWorkbench?.(hash);
-                }
-              },
-              'sep',
-              {
-                label: 'Rename folder',
-                onClick: async () => {
-                  const next = await UI_openNameModal({
-                    title: 'Rename folder',
-                    placeholder: 'Folder name',
-                    initialValue: folder.name || '',
-                    confirmText: 'Rename'
-                  });
-                  if (!next) return;
-
-                  const result = STORE_renameFolder(folder.id, next, {
-                    source: 'sidebar-folder-rename',
-                    rerender: false,
-                  });
-                  if (!result.ok) {
-                    if ((result.blockers || []).includes('same-name-conflict')) return alert('Folder already exists.');
-                    if ((result.blockers || []).includes('reserved-folder-name')) return alert(`${next} is a view, not a folder.`);
-                    return alert('Folder rename blocked.');
-                  }
-                  if (result.applied) render();
-                }
-              },
-              'sep',
-              {
-                label: 'Delete folder',
-                danger: true,
-                onClick: () => {
-                  const ok = confirm(`Delete folder "${folder.name}"?`);
-                  if (!ok) return;
-
-                  const result = STORE_deleteEmptyFolder(folder.id, {
-                    source: 'sidebar-folder-delete',
-                    rerender: false,
-                  });
-                  if (!result.ok) {
-                    if ((result.blockers || []).includes('delete-non-empty-folder-blocked')) {
-                      return alert('Only empty folders can be deleted.');
-                    }
-                    return alert('Folder delete blocked.');
-                  }
-                  render();
-                }
-              }
-            ]);
+            UI_openFolderActionsPop(more, folder, render);
           });
 
           row.appendChild(more);
@@ -5207,6 +5293,12 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
     btn.appendChild(body);
     li.appendChild(btn);
+    const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
+      UI_openFolderActionsPop(more, folder, () => UI_openFoldersViewer(null, { skipHistory: true }));
+    });
+    more.setAttribute(ATTR_CGXUI_STATE, 'folder-action');
+    more.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
+    li.appendChild(more);
     list.appendChild(li);
   }
 
@@ -5242,7 +5334,13 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       title.textContent = folder.name || folder.id || 'Folder';
       body.appendChild(title);
       btn.appendChild(body);
+      const more = UI_bindFolderMoreButton(UI_makeNativeLikeMoreButton('Folder actions', UI_FSECTION_FOLDER_MORE), () => {
+        UI_openFolderActionsPop(more, folder, () => UI_openFoldersViewer(folders, opts));
+      });
+      more.setAttribute(ATTR_CGXUI_STATE, 'folder-action');
+      more.setAttribute('data-h2o-folder-id', String(folder.id || folder.folderId || ''));
       fallbackList.appendChild(btn);
+      fallbackList.appendChild(more);
     });
     D.body.appendChild(box);
     CLEAN.nodes.add(box);
