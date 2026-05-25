@@ -201,9 +201,16 @@
       const storedRow = storedById.get(id);
       if (!storedRow) return row;
       const next = { ...row };
+      const storedName = String(storedRow?.name || storedRow?.title || '').trim();
       const storedColor = String(storedRow.color || '').trim();
       const storedIconColor = String(storedRow.iconColor || '').trim();
       const storedIcon = String(storedRow.icon || '').trim();
+      if (storedName && storedName !== next.name) {
+        next.name = storedName;
+        next.normalizedName = normalizeFolderName(storedName);
+        next.title = storedName;
+        enriched = true;
+      }
       if (!next.color && storedColor) {
         next.color = storedColor;
         enriched = true;
