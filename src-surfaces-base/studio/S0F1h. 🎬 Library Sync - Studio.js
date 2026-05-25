@@ -118,6 +118,7 @@
     lastNativeFolderMergeReadAt: 0,
     lastNativeFolderMergeReadSource: '',
     lastNativeFolderMergeReadError: '',
+    lastNativeFolderMergePromise: null,
     lastRefreshOwners: [],
     lastStudioBroadcastAt: 0,
     lastStudioBroadcastReason: '',
@@ -665,12 +666,26 @@
       state.lastNativeBroadcastFolderBindingCount = Number(p?.folderState?.counts?.bindingCount || countFolderBindings(p?.folderState?.items)) || 0;
       state.lastNativeBroadcastFolderSource = String(p?.folderState?.source || '');
       state.lastNativeBroadcastPayload = p || null;
+      let folderMergePromise = Promise.resolve(null);
       if (p?.folderState) {
-        mergeNativeFolderState(p.folderState, reason || 'native-broadcast').catch((e) => err('folder-state.merge.async', e));
+        folderMergePromise = mergeNativeFolderState(p.folderState, reason || 'native-broadcast')
+          .then((result) => {
+            coalesceEmit('native-folder-state-merged');
+            return result;
+          })
+          .catch((e) => {
+            err('folder-state.merge.async', e);
+            return { ok: false, status: 'error', error: String(e?.message || e || 'folder-state-merge-error') };
+          });
+        state.lastNativeFolderMergePromise = folderMergePromise;
       }
       rememberFolderMetadataOperationResults(p, reason);
       emitNativeBroadcastUpdated(p, reason);
-    } catch {}
+      return folderMergePromise;
+    } catch (e) {
+      err('native-broadcast.remember', e);
+      return Promise.resolve(null);
+    }
   }
 
   async function refreshNativeBroadcast(reason = '') {
@@ -694,7 +709,7 @@
       state.lastNativeBroadcastReadSource = payload ? 'chrome.storage.local' : 'chrome.storage.local-empty';
       state.lastNativeBroadcastReadError = payload ? '' : state.lastNativeBroadcastReadError;
       if (payload) {
-        rememberNativeBroadcast(payload, reason || 'refresh');
+        await rememberNativeBroadcast(payload, reason || 'refresh');
         step('native-broadcast.refresh', String(reason || 'manual'));
       }
       return payload;
