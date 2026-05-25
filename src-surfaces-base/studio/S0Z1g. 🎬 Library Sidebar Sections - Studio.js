@@ -40,6 +40,7 @@
   const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
+  const FOLDER_METADATA_RENAME_REASON = 'Chrome Studio canonical folder rename';
   const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
   const SIDEBAR_MENU_COLORS = Object.freeze([
     { key: 'default', label: 'Default', color: '', value: '' },
@@ -604,6 +605,12 @@
       && !!folderMetadataOperationRequest();
   }
 
+  function canRequestCanonicalFolderRename(item) {
+    return item?.isCanonical === true
+      && studioPlatformAdapter() === 'mv3'
+      && !!folderMetadataOperationRequest();
+  }
+
   function resultCodes(result, listName = 'blockers') {
     const rows = Array.isArray(result?.[listName]) ? result[listName] : [];
     return rows.map((entry) => String(entry?.code || '').trim()).filter(Boolean);
@@ -630,6 +637,25 @@
     return operation;
   }
 
+  function normalizeFolderRenameInput(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ');
+  }
+
+  function buildFolderRenameOperation(item, name, staleGuard = null) {
+    const operation = {
+      schema: FOLDER_METADATA_OPERATION_SCHEMA,
+      operationType: 'rename-folder',
+      folderId: String(item?.id || item?.folderId || '').trim(),
+      after: { name: normalizeFolderRenameInput(name) },
+      sourceSurface: 'chrome-studio',
+      reason: FOLDER_METADATA_RENAME_REASON,
+    };
+    if (staleGuard && typeof staleGuard === 'object' && Object.keys(staleGuard).length) {
+      operation.staleGuard = staleGuard;
+    }
+    return operation;
+  }
+
   function staleGuardFromPreview(preview) {
     const src = preview?.before && typeof preview.before === 'object' ? preview.before : {};
     const out = {};
@@ -640,22 +666,26 @@
     return out;
   }
 
-  function refreshAfterNativeFolderColorApply() {
+  function refreshAfterNativeFolderMetadataApply(reason = 'folder-metadata-apply') {
     let refreshed = false;
     try {
-      const result = W.H2O?.Studio?.sync?.refreshNativeFolderState?.('folder-color-apply');
+      const result = W.H2O?.Studio?.sync?.refreshNativeFolderState?.(reason);
       if (result && typeof result.finally === 'function') {
         refreshed = true;
         result.finally(() => {
-          try { renderAllSections(); } catch (e) { err('renderAfterFolderColorApply', e); }
+          try { renderAllSections(); } catch (e) { err('renderAfterFolderMetadataApply', e); }
         });
       }
-    } catch (e) { err('refreshNativeFolderState.folderColorApply', e); }
+    } catch (e) { err('refreshNativeFolderState.folderMetadataApply', e); }
     if (!refreshed) {
       W.setTimeout(() => {
-        try { renderAllSections(); } catch (e) { err('renderAfterFolderColorApply.timeout', e); }
+        try { renderAllSections(); } catch (e) { err('renderAfterFolderMetadataApply.timeout', e); }
       }, 650);
     }
+  }
+
+  function refreshAfterNativeFolderColorApply() {
+    refreshAfterNativeFolderMetadataApply('folder-color-apply');
   }
 
   async function requestCanonicalFolderColor(item, color, controls = {}) {
@@ -727,6 +757,83 @@
     }
     setStatus('Color updated', 'ok');
     refreshAfterNativeFolderColorApply();
+    return applied;
+  }
+
+  async function requestCanonicalFolderRename(item, name, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
+    }
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    if (!folderId || item?.isCanonical !== true) {
+      setStatus('Blocked: target-not-canonical', 'blocked');
+      return { ok: false, blockers: [{ code: 'target-not-canonical' }] };
+    }
+    const nextName = normalizeFolderRenameInput(name);
+    if (!nextName) {
+      setStatus('Blocked: invalid-folder-name', 'blocked');
+      return { ok: false, blockers: [{ code: 'invalid-folder-name' }] };
+    }
+
+    const operation = buildFolderRenameOperation(item, nextName);
+    setStatus('Previewing...', 'pending');
+    let preview = null;
+    try {
+      preview = await request(operation, {
+        requestMode: 'preview',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+      });
+    } catch (e) {
+      err('folderRename.preview', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'preview-request-threw' }] };
+    }
+
+    const previewBlocker = resultCodes(preview, 'blockers')[0];
+    if (!preview?.ok || previewBlocker) {
+      setStatus(`Blocked: ${previewBlocker || firstResultCode(preview, 'folder-rename-preview-failed')}`, 'blocked');
+      return preview;
+    }
+    if (resultCodes(preview, 'warnings').includes('no-op-name-unchanged')) {
+      setStatus('Name already current', 'ok');
+      return preview;
+    }
+    if (preview.canApply !== true) {
+      setStatus('Blocked: preview-not-applyable', 'blocked');
+      return preview;
+    }
+
+    setStatus('Applying...', 'pending');
+    let applied = null;
+    try {
+      applied = await request(buildFolderRenameOperation(item, nextName, staleGuardFromPreview(preview)), {
+        requestMode: 'apply',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+      });
+    } catch (e) {
+      err('folderRename.apply', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
+    }
+
+    const applyBlocker = resultCodes(applied, 'blockers')[0];
+    if (!applied?.ok || applyBlocker) {
+      setStatus(`Blocked: ${applyBlocker || firstResultCode(applied, 'folder-rename-apply-failed')}`, 'blocked');
+      return applied;
+    }
+    if (applied.applied !== true) {
+      if (resultCodes(applied, 'warnings').includes('no-op-name-unchanged')) {
+        setStatus('Name already current', 'ok');
+      } else {
+        setStatus('Folder name unchanged', 'ok');
+      }
+      return applied;
+    }
+    setStatus('Folder renamed', 'ok');
+    refreshAfterNativeFolderMetadataApply('folder-rename-apply');
     return applied;
   }
 
@@ -874,6 +981,126 @@
     action.setAttribute('aria-haspopup', 'true');
     action.setAttribute('aria-expanded', 'false');
     return [action, picker];
+  }
+
+  function makeCanonicalFolderRenamePanel(item, pop, anchorEl) {
+    const currentName = String(item?.name || '').trim();
+    const panel = el('div', {
+      class: 'wbSidebarNativePickerSection',
+      style: 'display:none;flex-direction:column;gap:7px;min-width:220px',
+      'data-menu-item': 'canonical-folder-rename-panel',
+    });
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Rename folder'));
+    const input = el('input', {
+      type: 'text',
+      value: currentName,
+      'aria-label': 'Folder name',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      style: 'width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.16);background:rgba(0,0,0,.20);color:inherit;font:inherit;font-size:12px;outline:none',
+    });
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'display:none;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    });
+    const setStatus = (message, kind = '') => {
+      const text = String(message || '');
+      status.textContent = text;
+      status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
+    };
+    const buttonRow = el('div', {
+      style: 'display:flex;gap:6px;justify-content:flex-end;align-items:center',
+    });
+    const cancel = el('button', {
+      type: 'button',
+      style: 'padding:5px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.05);color:inherit;font:inherit;font-size:12px;cursor:pointer',
+    }, 'Cancel');
+    const submit = el('button', {
+      type: 'button',
+      style: 'padding:5px 9px;border-radius:6px;border:1px solid rgba(125,211,252,.34);background:rgba(59,130,246,.18);color:inherit;font:inherit;font-size:12px;cursor:pointer',
+    }, 'Rename');
+    buttonRow.appendChild(cancel);
+    buttonRow.appendChild(submit);
+    panel.appendChild(input);
+    panel.appendChild(buttonRow);
+    panel.appendChild(status);
+
+    const syncSubmit = () => {
+      const nextName = normalizeFolderRenameInput(input.value);
+      submit.disabled = !nextName || nextName === currentName;
+      submit.style.opacity = submit.disabled ? '.55' : '1';
+      submit.style.cursor = submit.disabled ? 'not-allowed' : 'pointer';
+    };
+    const showPanel = () => {
+      panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+      action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
+      if (panel.style.display !== 'none') {
+        input.value = currentName;
+        setStatus('', '');
+        syncSubmit();
+        W.requestAnimationFrame(() => {
+          try { positionRowMenu(pop, anchorEl); } catch {}
+          try { input.focus(); input.select(); } catch {}
+        });
+      }
+    };
+    const submitRename = () => {
+      const nextName = normalizeFolderRenameInput(input.value);
+      if (!nextName) {
+        setStatus('Blocked: invalid-folder-name', 'blocked');
+        syncSubmit();
+        return;
+      }
+      submit.disabled = true;
+      Promise.resolve(requestCanonicalFolderRename(item, nextName, { setStatus }))
+        .then((result) => {
+          syncSubmit();
+          if (result?.ok && result.applied === true) {
+            W.setTimeout(() => closeRowMenu(), 750);
+          }
+        })
+        .catch((e) => {
+          err('folderRename.panel', e);
+          setStatus(`Blocked: ${String(e?.message || e || 'rename-failed')}`, 'blocked');
+          syncSubmit();
+        });
+    };
+    input.addEventListener('input', syncSubmit);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        panel.style.display = 'none';
+        action.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        if (!submit.disabled) submitRename();
+      }
+    });
+    cancel.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      panel.style.display = 'none';
+      action.setAttribute('aria-expanded', 'false');
+    });
+    submit.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!submit.disabled) submitRename();
+    });
+
+    const action = makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, showPanel, {
+      keepOpen: true,
+      title: 'Rename canonical folder through Native owner',
+    });
+    action.setAttribute('aria-haspopup', 'true');
+    action.setAttribute('aria-expanded', 'false');
+    syncSubmit();
+    return [action, panel];
   }
 
   function folderHrefForId(folderId) {
@@ -1147,10 +1374,14 @@
       } else {
         pop.appendChild(makeMenuColorPicker(item, color));
       }
-      pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, null, {
-        disabled: true,
-        title: disabledSyncTitle,
-      }));
+      if (isCanonicalFolder && canRequestCanonicalFolderRename(item)) {
+        makeCanonicalFolderRenamePanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+      } else {
+        pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, null, {
+          disabled: true,
+          title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
+        }));
+      }
       pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
         danger: true,
         disabled: true,
