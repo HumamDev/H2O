@@ -17,6 +17,7 @@ import {
   diagnoseMobileSyncBundle,
   readMobileSyncBundle,
   ReadOnlyBundleDisplay,
+  ReadOnlyBundleStatus,
   ReadOnlySnapshotReader,
   type MobileBundleDiagnostic,
   type MobileReadOnlyLibraryView,
@@ -135,6 +136,7 @@ export default function ReadOnlyBundleRoute() {
         </View>
 
         <DiagnosticSummary diagnostic={diagnostic} phase={phase} />
+        <ReadOnlyBundleStatus diagnostic={diagnostic} view={view} />
 
         {snapshotDetail ? (
           <View style={styles.snapshotPreviewArea}>

@@ -10,6 +10,7 @@ export {
   buildMobileReadOnlySnapshotDetail,
 } from "./latest-bundle-view-model";
 export { ReadOnlyBundleDisplay } from "./readonly-bundle-display";
+export { ReadOnlyBundleStatus } from "./readonly-bundle-status";
 export { ReadOnlySnapshotReader } from "./readonly-snapshot-reader";
 export type {
   DiagnoseMobileSyncBundleOptions,
@@ -28,4 +29,5 @@ export type {
   MobileReadOnlyViewWarning,
 } from "./latest-bundle-view-model";
 export type { ReadOnlyBundleDisplayProps } from "./readonly-bundle-display";
+export type { ReadOnlyBundleStatusProps } from "./readonly-bundle-status";
 export type { ReadOnlySnapshotReaderProps } from "./readonly-snapshot-reader";

@@ -406,6 +406,34 @@ F9.2c.3 must not expose edit, save, restore, delete, sync, import, conflict
 decision, or apply controls. It must not call archive-store, WebDAV,
 tombstone, conflict, F7 apply, or F8 remote-apply mutation paths.
 
+## F9.2d — Read-Only Bundle Status
+
+F9.2d adds a redacted diagnostics/status component for the pasted bundle route:
+
+```txt
+diagnostic + view -> redacted status display
+```
+
+The status component renders read-only capability chips, source presence,
+checksum presence/verification, content counts, sync evidence counts, and
+code-only blocker/warning lists. It is wired into `read-only-bundle` after
+bundle diagnosis and before the library/folder/snapshot display.
+
+The status output is code/count-only. It may show booleans, counts, capability
+labels, status labels, and warning/blocker codes. It must not show chat text,
+prompts, answers, folder names, raw IDs, peer IDs, raw hashes, audit JSON, or
+metadata blobs.
+
+F9.2d completes the read-only route loop:
+
+```txt
+paste -> diagnose -> status -> library/folders -> snapshots
+```
+
+It does not save, import, sync, apply, resolve, call archive-store, call
+WebDAV, persist cache state, mutate bundle data, or write back to Desktop,
+Chrome, or mobile stores.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
