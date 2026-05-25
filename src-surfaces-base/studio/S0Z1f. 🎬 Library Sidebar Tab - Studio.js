@@ -39,6 +39,9 @@
   function getRoute()    { return getCore()?.getService?.('route') || null; }
   function getInsights() { return H2O.LibraryInsights || null; }
   function getPageHost() { return getCore()?.getService?.('page-host') || null; }
+  function getIndex() { return H2O.LibraryIndex || null; }
+
+  let folderPageRecoveryToken = 0;
 
   function makeEl(tag, attrs = {}, children) {
     const node = D.createElement(tag);
@@ -134,6 +137,299 @@
     link.classList.toggle('active', route?.name === 'library');
   }
 
+  function isFoldersLibraryRoute(route = getRoute()?.current?.()) {
+    return route?.name === 'library' && String(route?.view || '').toLowerCase() === 'folders';
+  }
+
+  function folderPageHasRows(region) {
+    if (!region) return false;
+    return !!region.querySelector('[data-h2o-folder-page-row="1"], .wbFolderPageRow[data-folder-id]');
+  }
+
+  function normalizeFolderPageRow(row, canonical) {
+    const folderId = String(row?.folderId || row?.id || '').trim();
+    const name = String(row?.name || row?.label || row?.title || folderId).trim() || folderId;
+    return folderId ? {
+      ...row,
+      id: folderId,
+      folderId,
+      name,
+      color: String(row?.iconColor || row?.color || '').trim(),
+      iconColor: String(row?.iconColor || row?.color || '').trim(),
+      displayCountLabel: String(row?.displayCountLabel || '').trim(),
+      nativeMembershipCount: Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0,
+      knownCount: Number(row?.knownStudioCount ?? row?.knownCount ?? 0) || 0,
+      isCanonical: canonical === true,
+    } : null;
+  }
+
+  function countKnownUnfiledRows() {
+    try {
+      const rows = getIndex()?.getAll?.();
+      if (!Array.isArray(rows)) return 0;
+      return rows.filter((row) => {
+        const folderId = String(row?.folderId || row?.folder || '').trim();
+        const folderIds = Array.isArray(row?.folderIds)
+          ? row.folderIds.map((id) => String(id || '').trim()).filter(Boolean)
+          : [];
+        return !folderId && folderIds.length === 0;
+      }).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function folderPageCountLabel(row) {
+    const explicit = String(row?.displayCountLabel || '').trim();
+    if (explicit) return explicit;
+    if (row?.isUnfiled) return `${Number(row?.knownCount || 0) || 0} known here`;
+    const nativeCount = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0;
+    const knownCount = Number(row?.knownStudioCount ?? row?.knownCount ?? 0) || 0;
+    return row?.isCanonical ? `${nativeCount} native · ${knownCount} known here` : `${knownCount} known here`;
+  }
+
+  function folderPageHref(folderId) {
+    const id = String(folderId || '').trim();
+    return getRoute()?.buildLibraryHash?.('folder', id) || `#/library/folder/${encodeURIComponent(id)}`;
+  }
+
+  function makeFolderPageActionButton(row) {
+    const button = makeEl('button', {
+      class: 'wbFolderPageActionButton',
+      type: 'button',
+      title: row.isCanonical ? `More options for ${row.name}` : 'Local Review rows are protected',
+      'aria-label': row.isCanonical ? `More options for ${row.name}` : 'Local Review rows are protected',
+      'aria-haspopup': row.isCanonical ? 'menu' : null,
+      'aria-expanded': 'false',
+      'aria-disabled': row.isCanonical ? null : 'true',
+      'data-h2o-folder-page-action-button': '1',
+      'data-h2o-folder-id': row.folderId,
+      'data-folder-id': row.folderId,
+      style: [
+        'display:inline-flex',
+        'align-items:center',
+        'justify-content:center',
+        'width:30px',
+        'height:30px',
+        'min-width:30px',
+        'max-width:30px',
+        'padding:0',
+        'border:1px solid rgba(255,255,255,.12)',
+        'border-radius:8px',
+        'background:rgba(255,255,255,.045)',
+        'color:rgba(255,255,255,.78)',
+        'font:700 14px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        `cursor:${row.isCanonical ? 'pointer' : 'not-allowed'}`,
+        row.isCanonical ? '' : 'opacity:.52',
+      ].filter(Boolean).join(';'),
+    }, '...');
+    if (row.isCanonical) {
+      button.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const openMenu = H2O.Library?.SidebarSections?.openRowMenu;
+        if (typeof openMenu === 'function') {
+          openMenu(button, {
+            ...row,
+            id: row.folderId,
+            folderId: row.folderId,
+            name: row.name,
+            label: row.name,
+            kind: 'folders',
+            section: 'folders',
+            color: row.iconColor || row.color || '',
+            iconColor: row.iconColor || row.color || '',
+            isCanonical: true,
+          });
+        }
+      });
+    } else {
+      button.disabled = true;
+    }
+    return button;
+  }
+
+  function makeFallbackFolderPageRow(row) {
+    const label = folderPageCountLabel(row);
+    const color = String(row.iconColor || row.color || '').trim() || 'currentColor';
+    const icon = makeEl('span', {
+      class: 'wbFolderPageIcon',
+      'aria-hidden': 'true',
+      style: `display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:${color};background:rgba(255,255,255,.035);flex:0 0 auto`,
+      html: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>',
+    });
+    const link = makeEl('a', {
+      class: 'wbFolderPageRowLink',
+      href: folderPageHref(row.folderId),
+      title: `${row.name} — ${label}`,
+      'data-folder-id': row.folderId,
+      'data-h2o-folder-id': row.folderId,
+      style: 'display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;min-width:0;color:inherit;text-decoration:none',
+    }, [
+      icon,
+      makeEl('div', { style: 'min-width:0' }, [
+        makeEl('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap' }, [
+          makeEl('span', { style: 'font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, row.name),
+          makeEl('span', {
+            style: 'display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)',
+          }, row.isCanonical ? 'canonical' : (row.isUnfiled ? 'system' : 'review-required')),
+        ]),
+        makeEl('div', { style: 'margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all' }, row.folderId ? `ID ${row.folderId}` : ''),
+      ]),
+      makeEl('div', { style: 'text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, label),
+    ]);
+    return makeEl('div', {
+      class: 'wbFolderPageRow',
+      role: 'listitem',
+      title: `${row.name} — ${label}`,
+      'data-h2o-folder-page-row': '1',
+      'data-h2o-folder-id': row.folderId,
+      'data-folder-id': row.folderId,
+      'data-canonical': row.isCanonical ? 'true' : 'false',
+      style: 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:14px 14px 14px 16px;border-bottom:1px solid rgba(255,255,255,.08);color:inherit',
+    }, [
+      link,
+      row.isUnfiled ? makeEl('span', { 'aria-hidden': 'true', style: 'display:inline-block;width:30px;height:30px' }) : makeFolderPageActionButton(row),
+    ]);
+  }
+
+  async function renderFoldersPageFallback(region, reason = '') {
+    if (!(region instanceof HTMLElement) || !isFoldersLibraryRoute()) return false;
+    const parity = H2O.Library?.FolderParity;
+    const loading = makeEl('div', {
+      class: 'wbLibraryPage',
+      'data-h2o-folder-page': '1',
+      'data-h2o-folder-page-owner': 'sidebar-tab-fallback',
+      'data-h2o-folder-page-status': 'loading',
+    }, [
+      makeEl('section', { class: 'wbDetailBodyWrap wbFolderPage', 'data-h2o-folder-page': '1' }, [
+        makeEl('section', { class: 'wbDetailHead' }, [
+          makeEl('div', { class: 'wbDetailEyebrow' }, 'folders'),
+          makeEl('h2', { class: 'wbDetailTitle' }, 'Folders'),
+          makeEl('div', { class: 'wbDetailMeta' }, 'Loading folder parity model'),
+        ]),
+        makeEl('section', { class: 'wbDetailBody' }, [
+          makeEl('div', { class: 'wbExpEmpty' }, 'Loading folders...'),
+        ]),
+      ]),
+    ]);
+    region.innerHTML = '';
+    region.appendChild(loading);
+    if (typeof parity?.getDisplayModel !== 'function') {
+      loading.querySelector('.wbDetailMeta').textContent = 'FolderParity unavailable';
+      return false;
+    }
+    let model = null;
+    try {
+      model = await parity.getDisplayModel({ fresh: true });
+    } catch (e) {
+      err('foldersPageFallback.model', e);
+    }
+    if (!isFoldersLibraryRoute()) return false;
+    const canonicalRows = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
+      .map((row) => normalizeFolderPageRow(row, true))
+      .filter(Boolean);
+    const reviewRows = (Array.isArray(model?.localReviewRows) ? model.localReviewRows : [])
+      .map((row) => normalizeFolderPageRow(row, false))
+      .filter(Boolean);
+    const knownUnfiled = countKnownUnfiledRows();
+    const allRows = canonicalRows.concat({
+      id: '__none__',
+      folderId: '__none__',
+      name: 'Unfiled',
+      displayCountLabel: `${knownUnfiled} known here`,
+      knownCount: knownUnfiled,
+      isCanonical: false,
+      isUnfiled: true,
+    });
+    const body = makeEl('section', {
+      class: 'wbDetailBody',
+    }, [
+      makeEl('h3', {
+        class: 'wbFolderPageSectionTitle',
+        style: 'margin:0 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
+      }, `Canonical folders · ${canonicalRows.length}`),
+      makeEl('div', {
+        class: 'wbFolderPageList',
+        role: 'list',
+        style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.025)',
+      }, allRows.map(makeFallbackFolderPageRow)),
+    ]);
+    if (reviewRows.length) {
+      body.appendChild(makeEl('h3', {
+        class: 'wbFolderPageSectionTitle wbFolderPageSectionTitle--review',
+        style: 'margin:24px 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
+      }, `Local Review · ${reviewRows.length}`));
+      body.appendChild(makeEl('div', {
+        class: 'wbFolderPageLocalReviewExplanation',
+        style: 'margin:0 0 10px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.45',
+      }, 'Read-only. Local Review rows are protected.'));
+      body.appendChild(makeEl('div', {
+        class: 'wbFolderPageList wbFolderPageList--review',
+        role: 'list',
+        style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.015);opacity:0.82',
+      }, reviewRows.map(makeFallbackFolderPageRow)));
+    }
+    const shell = makeEl('div', {
+      class: 'wbLibraryPage',
+      'data-h2o-folder-page': '1',
+      'data-h2o-folder-page-owner': 'sidebar-tab-fallback',
+      'data-h2o-folder-page-reason': reason,
+    }, [
+      makeEl('header', { class: 'wbLibraryPageHeader' }, [
+        makeEl('div', { class: 'wbLibraryPageBrand' }, [
+          makeEl('div', { class: 'wbLibraryPageBrandIcon', 'aria-hidden': 'true' }, 'F'),
+          makeEl('div', { class: 'wbLibraryPageBrandText' }, [
+            makeEl('h1', { class: 'wbLibraryPageTitle' }, 'Folders'),
+            makeEl('div', { class: 'wbLibraryPageStats' }, `${canonicalRows.length} canonical · ${reviewRows.length} review · ${model?.surface || 'studio'}`),
+          ]),
+        ]),
+      ]),
+      makeEl('section', { class: 'wbLibraryPageBody' }, [
+        makeEl('div', {
+          class: 'wbDetailBodyWrap wbFolderPage',
+          'data-h2o-folder-page': '1',
+          'data-h2o-folder-page-owner': 'sidebar-tab-fallback',
+        }, [
+          makeEl('section', { class: 'wbDetailHead' }, [
+            makeEl('a', { class: 'wbDetailBack', href: '#/library/explorer' }, '← Back to Explorer'),
+            makeEl('div', { class: 'wbDetailEyebrow' }, 'folders'),
+            makeEl('h2', { class: 'wbDetailTitle' }, 'Folders'),
+            makeEl('div', { class: 'wbDetailMeta' }, 'Read-only. No cleanup performed.'),
+          ]),
+          body,
+        ]),
+      ]),
+    ]);
+    region.innerHTML = '';
+    region.appendChild(shell);
+    step('folders-page-fallback.rendered', `${canonicalRows.length}/${reviewRows.length}`);
+    return true;
+  }
+
+  function scheduleFoldersPageBodyCheck(reason = '') {
+    const token = ++folderPageRecoveryToken;
+    const delays = [80, 260, 720];
+    const check = (index) => {
+      if (token !== folderPageRecoveryToken || !isFoldersLibraryRoute()) return;
+      const region = getPageHost()?.ensureLibraryRegion?.();
+      if (folderPageHasRows(region)) return;
+      try { getInsights()?.render?.(); } catch (e) { err('foldersPageCheck.render', e); }
+      if (index < delays.length - 1) {
+        W.setTimeout(() => check(index + 1), delays[index + 1]);
+        return;
+      }
+      if (!folderPageHasRows(region)) {
+        renderFoldersPageFallback(region, reason).catch((e) => err('foldersPageFallback', e));
+      }
+    };
+    W.setTimeout(() => check(0), delays[0]);
+  }
+
   // ── Overlay visibility (route → show/hide Library page) ───────────────────
   function applyRouteVisibility() {
     const route = getRoute()?.current?.();
@@ -142,6 +438,7 @@
     if (isLib) {
       if (insights?.show) insights.show();
       else getPageHost()?.showLibraryRegion?.(true);
+      if (isFoldersLibraryRoute(route)) scheduleFoldersPageBodyCheck('library-route-folders');
     } else {
       if (insights?.hide) insights.hide();
       else getPageHost()?.showLibraryRegion?.(false);

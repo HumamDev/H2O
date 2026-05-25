@@ -1497,6 +1497,7 @@
       data: {
         folderId,
         h2oFolderId: folderId,
+        h2oFolderPageRow: '1',
         canonical: row?.isCanonical === true ? 'true' : 'false',
         badges: (Array.isArray(row?.badges) ? row.badges : []).join(','),
       },
@@ -1590,7 +1591,13 @@
         }, warnings.slice(0, 3).join(' ')));
       }
     }
-    return el('div', { class: 'wbDetailBodyWrap wbFolderPage' }, [head, body]);
+    return el('div', {
+      class: 'wbDetailBodyWrap wbFolderPage',
+      data: {
+        h2oFolderPage: '1',
+        h2oFolderPageOwner: 'library-insights',
+      },
+    }, [head, body]);
   }
 
   // ── Mount / dispatch ───────────────────────────────────────────────────────
