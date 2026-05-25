@@ -12,10 +12,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
+  buildMobileReadOnlySnapshotDetail,
   buildMobileReadOnlyBundleView,
   diagnoseMobileSyncBundle,
   readMobileSyncBundle,
   ReadOnlyBundleDisplay,
+  ReadOnlySnapshotReader,
   type MobileBundleDiagnostic,
   type MobileReadOnlyLibraryView,
 } from "../features/sync";
@@ -30,12 +32,16 @@ export default function ReadOnlyBundleRoute() {
   const [inputText, setInputText] = useState("");
   const [phase, setPhase] = useState<PreviewPhase>("idle");
   const [diagnostic, setDiagnostic] = useState<MobileBundleDiagnostic | null>(null);
+  const [bundle, setBundle] = useState<unknown | null>(null);
   const [view, setView] = useState<MobileReadOnlyLibraryView | null>(null);
+  const [selectedSnapshotIndex, setSelectedSnapshotIndex] = useState<number | null>(null);
 
   async function previewBundle() {
     setPhase("running");
     setDiagnostic(null);
+    setBundle(null);
     setView(null);
+    setSelectedSnapshotIndex(null);
 
     const nextDiagnostic = await diagnoseMobileSyncBundle(
       { text: inputText, sourceKind: "pasted-json" },
@@ -45,22 +51,33 @@ export default function ReadOnlyBundleRoute() {
 
     if (nextDiagnostic.blockers.length > 0) {
       setPhase("blocked");
+      setBundle(null);
+      setSelectedSnapshotIndex(null);
       return;
     }
 
     const read = readMobileSyncBundle({ text: inputText, sourceKind: "pasted-json" });
     if (read.ok === false) {
       setPhase("blocked");
+      setBundle(null);
+      setSelectedSnapshotIndex(null);
       return;
     }
 
+    setBundle(read.bundle);
     setView(
       buildMobileReadOnlyBundleView(read.bundle, {
         checksumVerified: nextDiagnostic.source.checksumVerified,
       }),
     );
+    setSelectedSnapshotIndex(null);
     setPhase("ready");
   }
+
+  const snapshotDetail =
+    bundle && selectedSnapshotIndex !== null
+      ? buildMobileReadOnlySnapshotDetail(bundle, { snapshotIndex: selectedSnapshotIndex })
+      : null;
 
   return (
     <SafeAreaView style={styles.safe} edges={[]}>
@@ -90,7 +107,9 @@ export default function ReadOnlyBundleRoute() {
               if (phase !== "idle") {
                 setPhase("idle");
                 setDiagnostic(null);
+                setBundle(null);
                 setView(null);
+                setSelectedSnapshotIndex(null);
               }
             }}
             placeholder={'{ "schema": "h2o.studio.fullBundle.v2", ... }'}
@@ -117,8 +136,22 @@ export default function ReadOnlyBundleRoute() {
 
         <DiagnosticSummary diagnostic={diagnostic} phase={phase} />
 
-        {view ? (
-          <ReadOnlyBundleDisplay view={view} />
+        {snapshotDetail ? (
+          <View style={styles.snapshotPreviewArea}>
+            <TouchableOpacity
+              style={styles.backButton}
+              activeOpacity={0.8}
+              onPress={() => setSelectedSnapshotIndex(null)}
+            >
+              <Text style={styles.backButtonText}>Back to read-only bundle</Text>
+            </TouchableOpacity>
+            <ReadOnlySnapshotReader detail={snapshotDetail} />
+          </View>
+        ) : view ? (
+          <>
+            <ReadOnlyBundleDisplay view={view} />
+            <SnapshotSelectionSection view={view} onSelectSnapshot={setSelectedSnapshotIndex} />
+          </>
         ) : (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No bundle preview loaded</Text>
@@ -129,6 +162,44 @@ export default function ReadOnlyBundleRoute() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function SnapshotSelectionSection({
+  view,
+  onSelectSnapshot,
+}: {
+  view: MobileReadOnlyLibraryView;
+  onSelectSnapshot: (snapshotIndex: number) => void;
+}) {
+  return (
+    <View style={styles.snapshotListCard}>
+      <Text style={styles.sectionTitle}>Snapshots</Text>
+      <Text style={styles.helpText}>
+        Select a snapshot for local read-only viewing. This stays in this preview and does not write back.
+      </Text>
+      {view.snapshots.length === 0 ? (
+        <Text style={styles.codeEmpty}>No snapshot evidence is available in this bundle.</Text>
+      ) : (
+        view.snapshots.map((snapshot, index) => (
+          <TouchableOpacity
+            key={`readonly-snapshot-select-${index}`}
+            style={styles.snapshotRow}
+            activeOpacity={0.82}
+            onPress={() => onSelectSnapshot(index)}
+          >
+            <View style={styles.snapshotRowCopy}>
+              <Text style={styles.snapshotRowTitle}>Snapshot {index + 1}</Text>
+              <Text style={styles.snapshotRowMeta}>
+                chat id {snapshot.chatIdPresent ? "present" : "missing"} · created at{" "}
+                {snapshot.createdAtPresent ? "present" : "missing"}
+              </Text>
+            </View>
+            <Text style={styles.snapshotRowAction}>View snapshot</Text>
+          </TouchableOpacity>
+        ))
+      )}
+    </View>
   );
 }
 
@@ -380,5 +451,63 @@ const styles = StyleSheet.create({
     color: "#64748B",
     fontSize: 13,
     lineHeight: 19,
+  },
+  snapshotListCard: {
+    gap: 10,
+    marginHorizontal: 16,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#D7E1EE",
+    backgroundColor: "#FFFFFF",
+    padding: 14,
+  },
+  snapshotRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  snapshotRowCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  snapshotRowTitle: {
+    color: "#172033",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  snapshotRowMeta: {
+    color: "#64748B",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  snapshotRowAction: {
+    color: "#1D4ED8",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  snapshotPreviewArea: {
+    gap: 12,
+  },
+  backButton: {
+    alignSelf: "flex-start",
+    marginHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#BFD0E5",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  backButtonText: {
+    color: "#1D4ED8",
+    fontSize: 13,
+    fontWeight: "800",
   },
 });

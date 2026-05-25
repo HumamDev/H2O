@@ -380,6 +380,32 @@ metadata blobs.
 F9.2c.3 may wire local in-memory snapshot selection into the read-only bundle
 route, but only if the same display-only and no-write boundary is preserved.
 
+## F9.2c.3 — Local Snapshot Selection In Read-Only Route
+
+F9.2c.3 wires local snapshot selection into the `read-only-bundle` route:
+
+```txt
+local snapshot row -> selectedSnapshotIndex -> read-only detail -> local back
+```
+
+The route stores the parsed pasted bundle, `MobileReadOnlyLibraryView`, and the
+selected snapshot index in local React state only. When a pasted bundle is
+successfully validated and read, the route resets the selected snapshot and
+keeps the parsed bundle only in memory.
+
+Snapshot rows are rendered from `view.snapshots`. Selecting a row only updates
+`selectedSnapshotIndex`; it does not navigate to `/chat/[id]`, open the mobile
+archive, persist state, write cache data, call WebDAV, or mutate source data.
+
+When a snapshot is selected, the route derives
+`MobileReadOnlySnapshotDetail` with `buildMobileReadOnlySnapshotDetail` and
+renders `ReadOnlySnapshotReader`. The back control only clears the selected
+snapshot index and returns to the read-only bundle display.
+
+F9.2c.3 must not expose edit, save, restore, delete, sync, import, conflict
+decision, or apply controls. It must not call archive-store, WebDAV,
+tombstone, conflict, F7 apply, or F8 remote-apply mutation paths.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
