@@ -144,7 +144,7 @@
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA = 'h2o.folder-metadata-operation-preview.v1';
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
-  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-e1.native-owner-api.v1';
+  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-f1.native-owner-api.v2';
   const CFG_PROJECT_COLOR_OPTIONS = Object.freeze([
     { key: 'blue', label: 'Blue', color: '#3B82F6' },
     { key: 'red', label: 'Red', color: '#FF4C4C' },
@@ -1948,6 +1948,88 @@ ${CROW}[aria-current="true"]{
     }
   }
 
+  function STORE_normalizeFolderName(raw) {
+    return UTIL_normText(raw || '');
+  }
+
+  function STORE_folderNameKey(raw) {
+    return STORE_normalizeFolderName(raw).toLowerCase();
+  }
+
+  function STORE_validateFolderRename(data, folderId, name) {
+    const id = String(folderId || '').trim();
+    const nextName = STORE_normalizeFolderName(name);
+    const blockers = [];
+    const folder = id && Array.isArray(data?.folders)
+      ? data.folders.find((item) => String(item?.id || item?.folderId || '').trim() === id)
+      : null;
+    if (!id) blockers.push('folder-id-required');
+    if (!folder) {
+      blockers.push('folder-not-found');
+      blockers.push('target-not-canonical');
+    }
+    if (!nextName) blockers.push('invalid-folder-name');
+    if (nextName && UTIL_isReservedFolderViewName(nextName)) blockers.push('reserved-folder-name');
+    const nextKey = STORE_folderNameKey(nextName);
+    if (folder && nextKey) {
+      const exists = data.folders.some((item) =>
+        String(item?.id || item?.folderId || '').trim() !== id
+        && STORE_folderNameKey(item?.name || item?.title) === nextKey
+      );
+      if (exists) blockers.push('same-name-conflict');
+    }
+    return {
+      ok: blockers.length === 0,
+      folder,
+      folderId: id,
+      nextName,
+      blockers,
+    };
+  }
+
+  function STORE_renameFolder(folderId, name, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const data = STORE_readData();
+    const validation = STORE_validateFolderRename(data, folderId, name);
+    if (!validation.ok) return { ok: false, applied: false, ...validation };
+    const target = validation.folder;
+    const previousName = STORE_normalizeFolderName(target.name || target.title || '');
+    if (previousName === validation.nextName) {
+      return {
+        ok: true,
+        applied: false,
+        folderId: validation.folderId,
+        previousName,
+        name: previousName,
+        blockers: [],
+        warnings: ['no-op-name-unchanged'],
+      };
+    }
+    target.name = validation.nextName;
+    target.updatedAt = STORE_nowStamp();
+    STORE_writeData(data);
+    EVENT_emitFoldersChanged({
+      action: 'folder-rename',
+      folderId: validation.folderId,
+      folderName: String(target.name || ''),
+      previousFolderName: previousName,
+      source: String(opts.source || 'folder-rename'),
+    });
+    if (opts.rerender !== false) {
+      ENGINE_rerenderAllSections();
+      UI_refreshActivePageForAppearance('folder', validation.folderId);
+    }
+    return {
+      ok: true,
+      applied: true,
+      folderId: validation.folderId,
+      previousName,
+      name: validation.nextName,
+      blockers: [],
+      warnings: [],
+    };
+  }
+
   function STORE_setFolderIconColor(folderId, color) {
     const id = String(folderId || '').trim();
     if (!id) return;
@@ -2183,18 +2265,40 @@ ${CROW}[aria-current="true"]{
     const folder = META_validateCommon(operation, preview, data);
     const op = META_safeObject(operation);
     const after = META_safeObject(op.after);
-    const nextName = META_cleanString(after.name || after.title || op.name || op.title);
+    const nextName = STORE_normalizeFolderName(after.name || after.title || op.name || op.title);
+    const before = preview.before || (folder ? META_folderSummary(data, folder) : null);
     if (!nextName) META_addCode(preview.blockers, 'invalid-folder-name');
-    if (UTIL_isReservedFolderViewName(nextName)) META_addCode(preview.blockers, 'invalid-folder-name');
+    if (nextName && UTIL_isReservedFolderViewName(nextName)) META_addCode(preview.blockers, 'reserved-folder-name');
     if (folder && nextName) {
-      const exists = data.folders.some((item) =>
-        item.id !== folder.id && META_cleanString(item.name || item.title).toLowerCase() === nextName.toLowerCase()
-      );
-      if (exists) META_addCode(preview.blockers, 'same-name-conflict');
-      preview.after = { ...(preview.before || META_folderSummary(data, folder)), name: nextName };
+      const validation = STORE_validateFolderRename(data, preview.folderId, nextName);
+      validation.blockers.forEach((code) => META_addCode(preview.blockers, code));
+      ['id', 'folderId'].forEach((key) => {
+        if (META_hasOwn(after, key) && META_cleanString(after[key]) !== preview.folderId) META_addCode(preview.blockers, 'folder-id-changed');
+      });
+      if (META_hasOwn(after, 'iconColor') && STORE_normalizeProjectColor(after.iconColor) !== (before?.iconColor || '')) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      if (META_hasOwn(after, 'color') && STORE_normalizeProjectColor(after.color) !== (before?.color || '')) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      if (META_hasOwn(after, 'icon') && META_cleanString(after.icon) !== (before?.icon || '')) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      if (META_hasOwn(after, 'sortOrder') && Number(after.sortOrder) !== before?.sortOrder) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      if (META_hasOwn(after, 'membershipCount') && Number(after.membershipCount) !== (before?.membershipCount || 0)) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      if (META_hasOwn(after, 'memberships') || META_hasOwn(after, 'items')) {
+        META_addCode(preview.blockers, 'unexpected-non-rename-delta');
+      }
+      const afterSummary = { ...before, name: nextName };
+      afterSummary.folderHash = META_hash(META_folderHashInput({ ...folder, name: nextName }));
+      preview.after = afterSummary;
+      if (before?.name === nextName) META_addCode(preview.warnings, 'no-op-name-unchanged');
     }
-    META_addCode(preview.blockers, 'rename-operation-not-enabled-yet');
-    preview.canApply = false;
+    preview.canApply = preview.blockers.length === 0;
     return preview;
   }
 
@@ -2223,7 +2327,8 @@ ${CROW}[aria-current="true"]{
     const opts = META_safeObject(options);
     const preview = API_previewMetadataOperation(operation);
     if (opts.dryRun === true) return { ...preview, dryRun: true };
-    if (preview.operationType !== 'change-folder-color') {
+    const canApplyOperation = preview.operationType === 'change-folder-color' || preview.operationType === 'rename-folder';
+    if (!canApplyOperation) {
       return {
         schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
         ok: false,
@@ -2248,6 +2353,55 @@ ${CROW}[aria-current="true"]{
         before: preview.before,
         after: preview.after,
         blockers: preview.blockers,
+        warnings: preview.warnings,
+      };
+    }
+    if (preview.operationType === 'rename-folder') {
+      if ((preview.before?.name || '') === (preview.after?.name || '')) {
+        return {
+          schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          ok: true,
+          applied: false,
+          noMutation: true,
+          writesPerformed: 0,
+          operationType: preview.operationType,
+          folderId: preview.folderId,
+          before: preview.before,
+          after: preview.before,
+          blockers: [],
+          warnings: preview.warnings,
+        };
+      }
+      const result = STORE_renameFolder(preview.folderId, preview.after?.name || '', {
+        source: 'folder-metadata-operation',
+      });
+      if (!result.ok) {
+        return {
+          schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          ok: false,
+          applied: false,
+          noMutation: true,
+          operationType: preview.operationType,
+          folderId: preview.folderId,
+          before: preview.before,
+          after: preview.after,
+          blockers: (result.blockers || []).map((code) => ({ code })),
+          warnings: preview.warnings,
+        };
+      }
+      const afterData = STORE_readData();
+      const afterFolder = META_findFolder(afterData, preview.folderId);
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: true,
+        applied: !!result.applied,
+        noMutation: !result.applied,
+        writesPerformed: result.applied ? 1 : 0,
+        operationType: preview.operationType,
+        folderId: preview.folderId,
+        before: preview.before,
+        after: afterFolder ? META_folderSummary(afterData, afterFolder) : preview.after,
+        blockers: [],
         warnings: preview.warnings,
       };
     }
@@ -3736,27 +3890,16 @@ function ROUTE_clearPageRoute_LOCAL() {
                   });
                   if (!next) return;
 
-                  const d = STORE_readData();
-                  const exists = d.folders.some((f) =>
-                    f.id !== folder.id && (f.name || '').trim().toLowerCase() === next.toLowerCase()
-                  );
-                  if (exists) return alert('Folder already exists.');
-
-                  const target = d.folders.find((f) => f.id === folder.id);
-                  if (target) {
-                    const previousName = String(target.name || '');
-                    target.name = next;
-                    target.updatedAt = STORE_nowStamp();
-                    STORE_writeData(d);
-                    EVENT_emitFoldersChanged({
-                      action: 'folder-rename',
-                      folderId: String(target.id || folder.id || ''),
-                      folderName: String(target.name || ''),
-                      previousFolderName: previousName,
-                      source: 'sidebar-folder-rename',
-                    });
+                  const result = STORE_renameFolder(folder.id, next, {
+                    source: 'sidebar-folder-rename',
+                    rerender: false,
+                  });
+                  if (!result.ok) {
+                    if ((result.blockers || []).includes('same-name-conflict')) return alert('Folder already exists.');
+                    if ((result.blockers || []).includes('reserved-folder-name')) return alert(`${next} is a view, not a folder.`);
+                    return alert('Folder rename blocked.');
                   }
-                  render();
+                  if (result.applied) render();
                 }
               },
               'sep',
@@ -6327,8 +6470,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,
         previewSchema: FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA,
         resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
-        supportedOperations: ['change-folder-color'],
-        previewOnlyOperations: ['rename-folder', 'delete-folder'],
+        supportedOperations: ['change-folder-color', 'rename-folder'],
+        previewOnlyOperations: ['delete-folder'],
         authority: 'native-h2o-folder-state',
         officialChatGptFolderApiProven: false,
       },
