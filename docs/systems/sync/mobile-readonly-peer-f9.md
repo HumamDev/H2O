@@ -837,6 +837,57 @@ Recommended split:
 The recommended next step after F9.4.0 is F9.4.1 storage inspection. Do not
 implement cache yet, and do not start F10.
 
+## F9.4.2 — Read-Only Bundle Metadata Cache
+
+F9.4.2 adds an isolated AsyncStorage-backed metadata cache for read-only bundle
+diagnostics:
+
+```txt
+diagnostic metadata -> isolated read-only AsyncStorage cache
+```
+
+The cache key is:
+
+```txt
+h2o.mobile.readonly.bundle-cache.v1
+```
+
+The cache stores only:
+
+- `readOnly: true`.
+- `nonAuthoritative: true`.
+- `cachedAt`.
+- `sourceKind`.
+- Source, export, checksum, and source-peer presence booleans.
+- Counts for chats, snapshots, folders, folder memberships, labels,
+  categories, tombstones, conflicts, and apply events.
+- Code-only warnings.
+
+The cache does not store full `latest.json` text, parsed full bundle objects,
+snapshot message content, derived full view models, folder names, chat text,
+raw IDs, peer IDs, raw hashes, audit JSON, tombstone IDs, conflict IDs, or
+metadata blobs.
+
+The cache API is metadata-only:
+
+```ts
+buildReadOnlyBundleCacheMetadata({ diagnostic, sourceKind, cachedAt })
+saveReadOnlyBundleCacheMetadata(metadata)
+loadReadOnlyBundleCacheMetadata()
+clearReadOnlyBundleCacheMetadata()
+```
+
+`saveReadOnlyBundleCacheMetadata` normalizes the supplied metadata to the exact
+cache shape before writing. `loadReadOnlyBundleCacheMetadata` rejects malformed
+or unsupported-schema cache data with warning codes instead of throwing.
+`clearReadOnlyBundleCacheMetadata` removes only the isolated read-only cache
+key.
+
+F9.4.2 does not add route wiring, UI, archive-store access, WebDAV, cloud,
+persistence of bundle content, conflict ingestion, conflict decisions,
+tombstone creation, F7/F8 apply, sync propagation, or mobile write-back. Full
+bundle, full view-model, and snapshot-content caching remain deferred.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.

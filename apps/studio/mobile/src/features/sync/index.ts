@@ -6,6 +6,12 @@ export {
   validateMobileSyncBundle,
 } from "./latest-bundle-reader";
 export {
+  buildReadOnlyBundleCacheMetadata,
+  clearReadOnlyBundleCacheMetadata,
+  loadReadOnlyBundleCacheMetadata,
+  saveReadOnlyBundleCacheMetadata,
+} from "./readonly-bundle-cache";
+export {
   buildMobileReadOnlyBundleView,
   buildMobileReadOnlySnapshotDetail,
 } from "./latest-bundle-view-model";
@@ -22,6 +28,11 @@ export type {
   MobileBundleSourceKind,
   MobileBundleTextSourceKind,
 } from "./latest-bundle-reader";
+export type {
+  MobileReadOnlyBundleCacheMetadata,
+  MobileReadOnlyBundleCacheSourceKind,
+  MobileReadOnlyBundleCacheWarning,
+} from "./readonly-bundle-cache";
 export type {
   BuildMobileReadOnlyBundleViewOptions,
   BuildMobileReadOnlySnapshotDetailOptions,
