@@ -46,9 +46,11 @@
   const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
   const FOLDER_METADATA_RENAME_REASON = 'Chrome Studio canonical folder rename';
   const FOLDER_METADATA_DELETE_PREVIEW_REASON = 'Chrome Studio canonical folder delete preview';
+  const FOLDER_METADATA_DELETE_APPLY_REASON = 'Chrome Studio canonical empty folder delete';
   const FOLDER_METADATA_DELETE_CONFIRMATION_TEXT = 'DELETE EMPTY FOLDER';
   const FOLDER_METADATA_COLOR_TIMEOUT_MS = 8000;
   const FOLDER_METADATA_RENAME_POLL_MS = 700;
+  const FOLDER_METADATA_DELETE_PREVIEW_MAX_AGE_MS = 12000;
   const SIDEBAR_MENU_COLORS = Object.freeze([
     { key: 'default', label: 'Default', color: '', value: '' },
     { key: 'blue', label: 'Blue', color: '#3B82F6', value: '#3B82F6' },
@@ -645,6 +647,10 @@
       && !!folderMetadataOperationRequest();
   }
 
+  function canRequestCanonicalFolderDeleteApply(item) {
+    return canRequestCanonicalFolderDeletePreview(item);
+  }
+
   function resultCodes(result, listName = 'blockers') {
     const rows = Array.isArray(result?.[listName]) ? result[listName] : [];
     return rows.map((entry) => String(entry?.code || '').trim()).filter(Boolean);
@@ -704,6 +710,13 @@
     return operation;
   }
 
+  function buildFolderDeleteOperation(item, staleGuard = null, confirmation = '') {
+    const operation = buildFolderDeletePreviewOperation(item, staleGuard);
+    operation.reason = FOLDER_METADATA_DELETE_APPLY_REASON;
+    operation.confirmation = String(confirmation || '');
+    return operation;
+  }
+
   function shortFolderId(value) {
     const id = String(value || '').trim();
     if (!id) return '';
@@ -743,6 +756,51 @@
       if (value) out[key] = value;
     });
     return out;
+  }
+
+  function deletePreviewBlockers(preview) {
+    return resultCodes(preview, 'blockers');
+  }
+
+  function deletePreviewHardBlockers(preview) {
+    return deletePreviewBlockers(preview)
+      .filter((code) => code !== 'delete-confirmation-required');
+  }
+
+  function deletePreviewMembershipCount(preview, item = {}) {
+    const before = preview?.before && typeof preview.before === 'object' ? preview.before : {};
+    const deps = preview?.dependencySummary && typeof preview.dependencySummary === 'object' ? preview.dependencySummary : {};
+    return Number(deps.nativeMembershipCount ?? before.nativeMembershipCount ?? before.membershipCount ?? item?.nativeMembershipCount ?? item?.count ?? 0) || 0;
+  }
+
+  function deletePreviewItemBucketEmpty(preview) {
+    const before = preview?.before && typeof preview.before === 'object' ? preview.before : {};
+    const deps = preview?.dependencySummary && typeof preview.dependencySummary === 'object' ? preview.dependencySummary : {};
+    if (deps.itemBucketEmpty === true || before.itemBucketEmpty === true) return true;
+    if (deps.itemBucketExists === false || before.itemBucketExists === false) return true;
+    return false;
+  }
+
+  function canApplyDeletePreview(preview, item = {}) {
+    if (!preview || typeof preview !== 'object') return false;
+    const hardBlockers = deletePreviewHardBlockers(preview);
+    if (hardBlockers.length) return false;
+    if (deletePreviewMembershipCount(preview, item) !== 0) return false;
+    return deletePreviewItemBucketEmpty(preview);
+  }
+
+  function navigateAfterDeletedFolder(folderId) {
+    const id = String(folderId || '').trim();
+    if (!id) return;
+    const rawHash = String(W.location?.hash || '');
+    const encodedId = encodeURIComponent(id);
+    let decodedHash = rawHash;
+    try { decodedHash = decodeURIComponent(rawHash); } catch {}
+    const pointsToDeletedFolder = rawHash.includes(`/folder/${encodedId}`)
+      || rawHash.includes(`folder=${encodedId}`)
+      || decodedHash.includes(`/folder/${id}`)
+      || decodedHash.includes(`folder=${id}`);
+    if (pointsToDeletedFolder) W.location.hash = '#/library/folders';
   }
 
   function refreshNativeFolderState(reason = 'folder-metadata-apply') {
@@ -991,18 +1049,99 @@
     }
 
     const blockers = resultCodes(preview, 'blockers');
-    if (!preview?.ok) {
-      setStatus(`Blocked: ${blockers[0] || firstResultCode(preview, 'folder-delete-preview-failed')}`, 'blocked');
+    const hardBlockers = deletePreviewHardBlockers(preview);
+    if (!preview || typeof preview !== 'object') {
+      setStatus('Blocked: folder-delete-preview-failed', 'blocked');
+      return preview;
+    }
+    if (!preview.ok && !blockers.includes('delete-confirmation-required') && !hardBlockers.length) {
+      setStatus('Blocked: folder-delete-preview-failed', 'blocked');
+      return preview;
+    }
+    if (!preview?.ok && hardBlockers.length) {
+      setStatus(`Blocked: ${hardBlockers[0] || firstResultCode(preview, 'folder-delete-preview-failed')}`, 'blocked');
       return preview;
     }
     if (blockers.includes('delete-non-empty-folder-blocked')) {
       setStatus('Blocked: delete-non-empty-folder-blocked', 'blocked');
-    } else if (blockers.length) {
-      setStatus(`Preview ready: ${blockers[0]}`, 'ok');
+    } else if (hardBlockers.length) {
+      setStatus(`Blocked: ${hardBlockers[0]}`, 'blocked');
+    } else if (blockers.includes('delete-confirmation-required')) {
+      setStatus('Type DELETE EMPTY FOLDER to enable delete', 'pending');
     } else {
-      setStatus('Preview only', 'ok');
+      setStatus('Preview ready', 'ok');
     }
     return preview;
+  }
+
+  async function requestCanonicalFolderDeleteApply(item, preview, confirmation, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const onPreview = typeof controls.onPreview === 'function' ? controls.onPreview : () => {};
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
+    }
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    if (!folderId || item?.isCanonical !== true) {
+      setStatus('Blocked: target-not-canonical', 'blocked');
+      return { ok: false, blockers: [{ code: 'target-not-canonical' }] };
+    }
+    if (String(confirmation || '') !== FOLDER_METADATA_DELETE_CONFIRMATION_TEXT) {
+      setStatus('Type DELETE EMPTY FOLDER to enable delete', 'blocked');
+      return { ok: false, blockers: [{ code: 'delete-confirmation-required' }] };
+    }
+
+    let previewForApply = preview && typeof preview === 'object' ? preview : null;
+    const previewAgeMs = Math.max(0, Date.now() - Number(controls.previewAt || 0));
+    if (!previewForApply || !String(previewForApply.folderId || '').trim() || previewAgeMs > FOLDER_METADATA_DELETE_PREVIEW_MAX_AGE_MS) {
+      previewForApply = await requestCanonicalFolderDeletePreview(item, { setStatus });
+      onPreview(previewForApply);
+    }
+
+    const hardBlockers = deletePreviewHardBlockers(previewForApply);
+    if (hardBlockers.length) {
+      setStatus(`Blocked: ${hardBlockers[0]}`, 'blocked');
+      return previewForApply;
+    }
+    if (!canApplyDeletePreview(previewForApply, item)) {
+      const blocker = deletePreviewBlockers(previewForApply)[0] || 'delete-preview-not-applyable';
+      setStatus(`Blocked: ${blocker}`, 'blocked');
+      return previewForApply;
+    }
+
+    const operation = buildFolderDeleteOperation(item, staleGuardFromPreview(previewForApply), confirmation);
+    setStatus('Applying...', 'pending');
+    let applied = null;
+    try {
+      applied = await requestFolderMetadataOperationWithNativeRefresh(request, operation, {
+        requestMode: 'apply',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-delete-apply-result-poll',
+      });
+    } catch (e) {
+      err('folderDelete.apply', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
+    }
+
+    const applyBlocker = resultCodes(applied, 'blockers')[0];
+    if (!applied?.ok || applyBlocker) {
+      setStatus(`Blocked: ${applyBlocker || firstResultCode(applied, 'folder-delete-apply-failed')}`, 'blocked');
+      return applied;
+    }
+    if (applied.applied !== true) {
+      setStatus('Folder delete not applied', 'blocked');
+      return applied;
+    }
+    setStatus('Folder deleted', 'ok');
+    navigateAfterDeletedFolder(folderId);
+    refreshAfterNativeFolderMetadataApply('folder-delete-apply');
+    W.setTimeout(() => {
+      try { closeRowMenu(); } catch {}
+      try { renderAllSections(); } catch (e) { err('folderDelete.renderAfterApply', e); }
+    }, 250);
+    return applied;
   }
 
   function menuTitleForKind(kind) {
@@ -1337,6 +1476,63 @@
       status.dataset.kind = String(kind || '');
       status.style.display = text ? 'block' : 'none';
     };
+    const confirmWrap = el('div', {
+      style: 'display:flex;flex-direction:column;gap:6px;margin-top:2px',
+      'data-menu-item': 'canonical-folder-delete-apply-controls',
+    });
+    const confirmHint = el('div', {
+      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    }, `Type ${FOLDER_METADATA_DELETE_CONFIRMATION_TEXT} to enable delete.`);
+    const confirmInput = el('input', {
+      type: 'text',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      placeholder: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
+      'aria-label': `Type ${FOLDER_METADATA_DELETE_CONFIRMATION_TEXT} to confirm folder delete`,
+      style: 'width:100%;box-sizing:border-box;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(0,0,0,.22);color:rgba(255,255,255,.92);padding:7px 8px;font-size:11px;line-height:1.3;outline:none',
+    });
+    const buttonRow = el('div', { style: 'display:flex;justify-content:flex-end;gap:6px' });
+    const cancelDelete = el('button', {
+      type: 'button',
+      class: 'wbSidebarNativeAction',
+      style: 'padding:6px 8px;font-size:11px;min-height:28px',
+    }, 'Cancel');
+    const submitDelete = el('button', {
+      type: 'button',
+      class: 'wbSidebarNativeAction wbSidebarNativeAction--danger',
+      style: 'padding:6px 8px;font-size:11px;min-height:28px',
+    }, 'Delete');
+    buttonRow.appendChild(cancelDelete);
+    buttonRow.appendChild(submitDelete);
+    confirmWrap.appendChild(confirmHint);
+    confirmWrap.appendChild(confirmInput);
+    confirmWrap.appendChild(buttonRow);
+
+    let latestPreview = null;
+    let latestPreviewAt = 0;
+    let pendingPreview = false;
+    let pendingApply = false;
+    let action = null;
+    const confirmationMatches = () => confirmInput.value.trim() === FOLDER_METADATA_DELETE_CONFIRMATION_TEXT;
+    const syncDeleteControls = () => {
+      const eligible = canRequestCanonicalFolderDeleteApply(item) && canApplyDeletePreview(latestPreview, item);
+      const busy = pendingPreview || pendingApply;
+      const canSubmit = eligible && !busy && confirmationMatches();
+      confirmInput.disabled = busy || !eligible;
+      submitDelete.disabled = !canSubmit;
+      submitDelete.setAttribute('aria-disabled', canSubmit ? 'false' : 'true');
+      if (!latestPreview) {
+        confirmHint.textContent = 'Preview the folder before delete.';
+      } else if (!eligible) {
+        const blocker = deletePreviewHardBlockers(latestPreview)[0]
+          || (deletePreviewMembershipCount(latestPreview, item) > 0 ? 'delete-non-empty-folder-blocked' : 'delete-preview-not-applyable');
+        confirmHint.textContent = `Blocked: ${blocker}`;
+      } else if (!confirmationMatches()) {
+        confirmHint.textContent = `Type ${FOLDER_METADATA_DELETE_CONFIRMATION_TEXT} to enable delete.`;
+      } else {
+        confirmHint.textContent = 'Ready to delete this empty folder through Native owner.';
+      }
+    };
     const renderLine = (label, value, opts = {}) => {
       const row = el('div', { style: 'display:flex;gap:8px;justify-content:space-between;align-items:flex-start' });
       row.appendChild(el('span', { style: 'color:rgba(255,255,255,.52)' }, label));
@@ -1366,8 +1562,8 @@
       const deps = preview?.dependencySummary && typeof preview.dependencySummary === 'object' ? preview.dependencySummary : {};
       const folderId = String(preview?.folderId || item?.folderId || item?.id || '').trim();
       const folderName = String(before.name || deps.folderName || item?.name || item?.title || folderId || 'Folder');
-      const membershipCount = Number(deps.nativeMembershipCount ?? before.nativeMembershipCount ?? before.membershipCount ?? item?.nativeMembershipCount ?? item?.count ?? 0) || 0;
-      const itemBucketEmpty = deps.itemBucketEmpty === true || before.itemBucketEmpty === true;
+      const membershipCount = deletePreviewMembershipCount(preview, item);
+      const itemBucketEmpty = deletePreviewItemBucketEmpty(preview);
       const confirmation = String(preview?.requiredConfirmation || preview?.confirmation?.text || FOLDER_METADATA_DELETE_CONFIRMATION_TEXT);
       const blockers = resultCodes(preview, 'blockers');
       const warnings = resultCodes(preview, 'warnings');
@@ -1375,55 +1571,126 @@
       body.appendChild(renderLine('Folder ID', shortFolderId(folderId), { mono: true }));
       body.appendChild(renderLine('Native members', String(membershipCount)));
       body.appendChild(renderLine('Item bucket', itemBucketEmpty ? 'empty' : 'not empty'));
-      body.appendChild(renderLine('Future confirmation', confirmation, { mono: true }));
+      body.appendChild(renderLine('Required confirmation', confirmation, { mono: true }));
       body.appendChild(renderCodes('Blockers', blockers));
       body.appendChild(renderCodes('Warnings', warnings));
       body.appendChild(el('div', {
         style: 'margin-top:2px;color:rgba(255,255,255,.62)',
       }, membershipCount > 0
         ? 'Delete is blocked because the canonical folder is not empty.'
-        : 'Preview only. Chrome delete apply is not enabled yet.'));
+        : 'Empty folder delete can apply only after exact confirmation.'));
+      syncDeleteControls();
     };
     renderPreview(null);
     panel.appendChild(body);
+    panel.appendChild(confirmWrap);
     panel.appendChild(status);
 
-    let pendingPreview = false;
+    const rememberPreview = (preview) => {
+      latestPreview = preview && typeof preview === 'object' ? preview : null;
+      latestPreviewAt = latestPreview ? Date.now() : 0;
+      renderPreview(latestPreview);
+      syncDeleteControls();
+    };
     const runPreview = () => {
       if (pendingPreview) return;
       pendingPreview = true;
+      syncDeleteControls();
       renderPreview(null);
       Promise.resolve(requestCanonicalFolderDeletePreview(item, { setStatus }))
         .then((preview) => {
           pendingPreview = false;
-          renderPreview(preview);
+          rememberPreview(preview);
           try { positionRowMenu(pop, anchorEl); } catch {}
         })
         .catch((e) => {
           pendingPreview = false;
           err('folderDelete.previewPanel', e);
           setStatus(`Blocked: ${String(e?.message || e || 'delete-preview-failed')}`, 'blocked');
+          syncDeleteControls();
           try { positionRowMenu(pop, anchorEl); } catch {}
         });
     };
+    const submitDeleteRequest = () => {
+      if (pendingApply || submitDelete.disabled) return;
+      pendingApply = true;
+      syncDeleteControls();
+      Promise.resolve(requestCanonicalFolderDeleteApply(item, latestPreview, confirmInput.value.trim(), {
+        setStatus,
+        previewAt: latestPreviewAt,
+        onPreview: rememberPreview,
+      }))
+        .then((result) => {
+          pendingApply = false;
+          if (result?.ok && result.applied === true) {
+            confirmInput.value = '';
+            syncDeleteControls();
+            W.setTimeout(() => {
+              try { positionRowMenu(pop, anchorEl); } catch {}
+            }, 0);
+            return;
+          }
+          syncDeleteControls();
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        })
+        .catch((e) => {
+          pendingApply = false;
+          err('folderDelete.applyPanel', e);
+          setStatus(`Blocked: ${String(e?.message || e || 'delete-apply-failed')}`, 'blocked');
+          syncDeleteControls();
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        });
+    };
+    confirmInput.addEventListener('input', syncDeleteControls);
+    confirmInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        if (pendingPreview || pendingApply) return;
+        panel.style.display = 'none';
+        action?.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitDeleteRequest();
+      }
+    });
+    cancelDelete.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (pendingPreview || pendingApply) return;
+      panel.style.display = 'none';
+      action?.setAttribute('aria-expanded', 'false');
+    });
+    submitDelete.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      submitDeleteRequest();
+    });
     const showPanel = () => {
       panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
       action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
       if (panel.style.display !== 'none') {
         setStatus('', '');
+        confirmInput.value = '';
+        latestPreview = null;
+        latestPreviewAt = 0;
+        syncDeleteControls();
         runPreview();
         W.requestAnimationFrame(() => {
           try { positionRowMenu(pop, anchorEl); } catch {}
+          try { confirmInput.focus(); } catch {}
         });
       }
     };
-    const action = makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, showPanel, {
+    action = makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, showPanel, {
       keepOpen: true,
       danger: true,
-      title: 'Preview canonical folder delete through Native owner',
+      title: 'Delete an empty canonical folder through Native owner',
     });
     action.setAttribute('aria-haspopup', 'true');
     action.setAttribute('aria-expanded', 'false');
+    syncDeleteControls();
     return [action, panel];
   }
 
