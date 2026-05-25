@@ -1917,6 +1917,20 @@
     };
   }
 
+  function buildAllFoldersSidebarItem() {
+    return {
+      id: '__all_folders__',
+      folderId: '__all_folders__',
+      name: 'All folders',
+      href: '#/library/folders',
+      icon: '…',
+      isCanonical: false,
+      isSystem: true,
+      isAllFoldersLink: true,
+      disableMenu: true,
+    };
+  }
+
   function copyTextValue(value) {
     const text = String(value || '').trim();
     if (!text) return false;
@@ -2635,12 +2649,16 @@
       .map(toSidebarItem)
       .filter((item) => item && item.id !== FOLDER_FILTER_NONE);
     mainItems.push(buildUnfiledSidebarItem());
+    mainItems.push(buildAllFoldersSidebarItem());
     const reviewItems = localReviewRows.map(toSidebarItem).filter(Boolean);
 
     const mainEmptyText = fallbackUsed
       ? 'Folder catalog is loading from native ChatGPT.'
       : 'Canonical folder catalog unavailable. Open chatgpt.com to broadcast folders.';
-    renderSectionList(host, 'folders', mainItems, { emptyText: mainEmptyText });
+    renderSectionList(host, 'folders', mainItems, {
+      emptyText: mainEmptyText,
+      limit: Math.max(mainItems.length, ITEM_LIMIT_DEFAULT),
+    });
 
     if (reviewItems.length > 0) {
       const persistKey = 'h2o:prm:cgx:library-sidebar:local-review:expanded:v1';
