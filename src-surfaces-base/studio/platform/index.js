@@ -164,6 +164,13 @@
      * (line 4301) already feature-detects this; the assignment here
      * just makes it discoverable on the public object too. */
     if (typeof current.openUrl === 'function') platform.openUrl = current.openUrl;
+    /* Tauri-specific extension: window namespace (setAlwaysOnTop, future
+     * window operations). Same conditional-mirror pattern as openUrl so the
+     * appearance store's feature-detect via `platform.window?.setAlwaysOnTop`
+     * sees it on Tauri and stays undefined on MV3/fallback. */
+    if (current.window && typeof current.window.setAlwaysOnTop === 'function') {
+      platform.window = current.window;
+    }
     /* Notify listeners that a real adapter is now bound. */
     try {
       if (H2O.events && typeof H2O.events.emit === 'function') {

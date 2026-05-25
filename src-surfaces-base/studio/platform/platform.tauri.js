@@ -512,6 +512,46 @@
     return navFallback();
   }
 
+  /* ── window.setAlwaysOnTop (Tauri V2) ──────────────────────────────
+   * Owns the desktop-only "Always stay on top" toggle exposed by the
+   * Appearance / View Options panel (src-surfaces-base/studio/appearance/).
+   * Defense-in-depth path order:
+   *   1. Tauri V2 webview API `__TAURI__.window.getCurrentWindow().setAlwaysOnTop(on)`
+   *   2. Legacy V1/V2 webview API `__TAURI__.window.getCurrent().setAlwaysOnTop(on)`
+   *   3. Raw invoke `plugin:window|set_always_on_top` with `{ value: on }`
+   *      (matches the command name exposed by tauri-plugin-window-internals
+   *      under the `core:window` permission set, which is granted by
+   *      `core:default` in apps/studio/desktop/src-tauri/capabilities/default.json).
+   * If every path rejects (capability missing, plugin missing, etc.) the
+   * returned promise rejects so the appearance store can surface the failure
+   * via H2O.Studio.appearance.selfCheck().errors. No silent fakes. */
+  function windowSetAlwaysOnTop(on) {
+    var desired = !!on;
+    var tauri = (global.__TAURI__ || (global.__TAURI_INTERNALS__ && global.__TAURI_INTERNALS__.plugins)) || null;
+    var winNs = tauri && tauri.window ? tauri.window : null;
+    var current = null;
+    if (winNs) {
+      try {
+        if (typeof winNs.getCurrentWindow === 'function') current = winNs.getCurrentWindow();
+        else if (typeof winNs.getCurrent === 'function') current = winNs.getCurrent();
+      } catch (_) { current = null; }
+    }
+    if (current && typeof current.setAlwaysOnTop === 'function') {
+      try {
+        var p = current.setAlwaysOnTop(desired);
+        if (p && typeof p.then === 'function') return p;
+        return Promise.resolve(p);
+      } catch (e) { /* fall through to raw invoke */ }
+    }
+    var invoke = getTauriInvoke();
+    if (!invoke) return Promise.reject(new Error('platform.window.setAlwaysOnTop: tauri invoke unavailable'));
+    try {
+      return invoke('plugin:window|set_always_on_top', { value: desired });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
   /* ── Public adapter ─────────────────────────────────────────────── */
   var adapter = {
     name: ADAPTER_NAME,
@@ -536,6 +576,7 @@
     capture: { available: false },
     auth: { available: false },
     clipboard: { writeText: clipboardWriteText },
+    window: { available: true, setAlwaysOnTop: windowSetAlwaysOnTop },
     /* Tauri-specific extension (not part of the fallback shape; callers
      * may feature-detect via `platform.openUrl` or `platform.env.isTauri`). */
     openUrl: openUrl,

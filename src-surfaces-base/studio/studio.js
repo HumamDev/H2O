@@ -5556,17 +5556,17 @@ function renderSettingsRoute(){
 
     <h3 style="${sectionTitleStyle}">Data &amp; Migration</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:0 0 28px">
-      <div style="${cardStyle}">
+      <div class="wbSettingsCard" style="${cardStyle}">
         <div style="font-weight:600">Export Studio Bundle</div>
         <div style="opacity:.7;font-size:12px;flex:1">Download a full JSON bundle of your chats, snapshots, folders, labels, categories, projects, highlights, library KV, and UI prefs. Auth tokens are never exported.</div>
         <a href="#/migrate/export" style="${btnStyle}">Open Export</a>
       </div>
-      <div style="${cardStyle}">
+      <div class="wbSettingsCard" style="${cardStyle}">
         <div style="font-weight:600">Import Studio Bundle</div>
         <div style="opacity:.7;font-size:12px;flex:1">Apply a previously exported bundle to this extension. The flow auto-backs-up current data and dry-runs before any write. Merge mode never overwrites existing records.</div>
         <a href="#/migrate/import" style="${btnStyle}">Open Import</a>
       </div>
-      <div style="${cardStyle}">
+      <div class="wbSettingsCard" style="${cardStyle}">
         <div style="font-weight:600">Backup Current Studio Data</div>
         <div style="opacity:.7;font-size:12px;flex:1">Generate a snapshot of <em>this</em> extension's Studio data right now. Same operation as Export — pair it with Import to migrate across extension IDs or restore from a known-good state.</div>
         <a href="#/migrate/export" style="${btnStyle}">Open Backup</a>
@@ -5574,7 +5574,7 @@ function renderSettingsRoute(){
     </div>
 
     <h3 style="${sectionTitleStyle}">Local Sync</h3>
-    <div id="wbSettingsSyncBox" style="${cardStyle};margin:0 0 28px">
+    <div id="wbSettingsSyncBox" class="wbSettingsCard" style="${cardStyle};margin:0 0 28px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div>
           <div id="wbSettingsSyncTitle" style="font-weight:600">Desktop to Chrome Sync</div>
@@ -5615,7 +5615,7 @@ function renderSettingsRoute(){
     </div>
 
     <h3 style="${sectionTitleStyle}">Folder Parity</h3>
-    <div id="wbSettingsFolderParityBox" style="${cardStyle};margin:0 0 28px">
+    <div id="wbSettingsFolderParityBox" class="wbSettingsCard" style="${cardStyle};margin:0 0 28px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div>
           <div style="font-weight:600">Folder Parity</div>
@@ -5830,7 +5830,7 @@ function renderSettingsRoute(){
     </div>
 
     <h3 style="${sectionTitleStyle}">Storage Diagnostics</h3>
-    <div id="wbSettingsDiagBox" style="${cardStyle}">
+    <div id="wbSettingsDiagBox" class="wbSettingsCard" style="${cardStyle}">
       <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
         <div style="opacity:.6">Extension ID</div>           <div id="wbSettingsDiagId">${esc(meta.id || "(unavailable)")}</div>
         <div style="opacity:.6">Extension name</div>         <div id="wbSettingsDiagName">${esc(meta.name || "(unavailable)")}</div>

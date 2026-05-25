@@ -1,10 +1,51 @@
 /*
- * @version 2.5.7
+ * @version 2.5.17
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
  *          narrow-mode @media rules carry !important so they cannot be
- *          shadowed by any cached/stale earlier rule in the cascade.
+ *          shadowed by any cached/stale earlier rule in the cascade;
+ *          Appearance / View Options panel: theme/typography/font-size/
+ *          content-width/visibility/always-on-top hooks (owned by
+ *          src-surfaces-base/studio/appearance/);
+ *          Light/Sepia themes cover the topbar + ribbon + sidebar badge
+ *          via --wb-topbar-bg / --wb-ribbon-bg / --wb-sidebar-badge-bg
+ *          tokens (no hardcoded dark rgba on .wbTop / .wbRibbon);
+ *          v2.5.10 expands theme coverage to:
+ *            - the # folder-count toggle (.wbSidebarFolderCountToggle)
+ *            - the "LOCAL REVIEW · N" section (.wbSidebarLocalReview*)
+ *              both of which are JS-injected with inline white-alpha
+ *              styles; CSS overrides them with !important via theme tokens;
+ *            - the Library nav icon (.wbSidebarNav .wbNavItem::before)
+ *              now uses mask + currentColor so it follows the sidebar
+ *              text color in every theme (no more #dcdcdc hardcoded SVG);
+ *            - the .wbHistoryRow drop shadows now use --wb-card-shadow*
+ *              tokens so Light/Sepia render flat paper-like cards
+ *              instead of heavy dark shadows.
+ *          v2.5.11 expanded theme coverage to the sidebar context menu
+ *          (.wbSidebarNativeMenu + .wbSidebarNativeMenu--folder): popup
+ *          background, border, shadow, title, action item color/hover,
+ *          separator, danger color, disabled color all routed through
+ *          --wb-popover-* tokens so Light/Sepia render a flat themed
+ *          popup with readable action items (previously dark gradient +
+ *          var(--wb-text) which becomes invisible dark-brown in Sepia);
+ *          v2.5.12 themed the Local Review badge pills
+ *          (.wbSidebarLocalReviewBadge — "0 known here / extra /
+ *          conflict") which the JS module mounts with inline white-alpha
+ *          styles. Now routed through --wb-sidebar-review-badge-* tokens;
+ *          v2.5.13 themed the Studio Settings page (route #/settings):
+ *          cards / buttons / inputs / log-blocks / dividers carry
+ *          single-source-of-truth inline styles from studio.js
+ *          renderSettings(); CSS overrides scoped to
+ *          [data-settings-rendered="1"] target the inline-style
+ *          fingerprints and route them through --wb-settings-* tokens;
+ *          v2.5.14 strengthened Light/Sepia Settings card visibility
+ *          via lifted card bg distinct from page, stronger border alpha,
+ *          and a soft elevation shadow (new --wb-settings-card-shadow);
+ *          v2.5.15 made the Settings section containers obviously
+ *          bounded boxes in Light/Sepia: Sepia card bg now off-white
+ *          (#fffaea) clearly above the cream page; both themes use
+ *          darker borders (.30/.55) + bigger 2-layer drop shadows.
  */
 :root{
   color-scheme: dark;
@@ -53,6 +94,96 @@
   --wb-thread-gap:1.25rem;
   --wb-user-w:70%;
   --wb-list-w:52rem;
+
+  /* Theme-aware surface tokens introduced for the Appearance panel
+   * (v2.5.9 + v2.5.10). Each defaults to the previously-hardcoded dark
+   * value so the dark theme is byte-equivalent. Light/Sepia blocks below
+   * override these. Selectors that used to embed the literal rgba now
+   * read these vars. */
+  --wb-topbar-bg:rgba(33,33,33,.92);
+  --wb-ribbon-bg:rgba(33,33,33,.78);
+  --wb-sidebar-badge-bg:var(--wb-surface);
+  --wb-sidebar-badge-border:var(--wb-border);
+  /* v2.5.10 — additional tokens for items rendered by JS modules with
+   * inline styles (the # folder-count toggle and the Local Review
+   * summary/list) and for the saved-chat row depth. Dark defaults match
+   * the literal values from the JS inline styles and the
+   * .wbHistoryRow box-shadow tuples so dark theme is byte-equivalent. */
+  --wb-sidebar-badge-text:rgba(255,255,255,.62);
+  --wb-sidebar-badge-fill:rgba(255,255,255,.035);
+  --wb-sidebar-badge-outline:rgba(255,255,255,.12);
+  --wb-sidebar-review-text:rgba(255,255,255,.5);
+  --wb-sidebar-review-explain:rgba(255,255,255,.56);
+  --wb-sidebar-review-divider:rgba(255,255,255,.06);
+  --wb-sidebar-review-opacity:0.84;
+  --wb-sidebar-icon-color:#dcdcdc;
+  --wb-card-shadow-inset:
+    inset 0 0 0 1px rgba(255,255,255,.035),
+    inset 0 1px 0 rgba(255,255,255,.04);
+  --wb-card-shadow:0 2px 8px rgba(0,0,0,.20);
+  --wb-card-shadow-hover-inset:
+    inset 0 0 0 1px rgba(255,255,255,.05),
+    inset 0 1px 0 rgba(255,255,255,.06);
+  --wb-card-shadow-hover:0 4px 13px rgba(0,0,0,.32);
+  --wb-card-shadow-selected-inset:
+    inset 0 0 0 1px rgba(255,255,255,.06),
+    inset 0 1px 0 rgba(255,255,255,.07);
+  --wb-card-shadow-selected:0 4px 14px rgba(0,0,0,.34);
+
+  /* v2.5.11 — Tokens for the sidebar context-menu popup
+   * (.wbSidebarNativeMenu and .wbSidebarNativeMenu--folder). The base
+   * variant is the generic popup; --folder is the right-click "Folder
+   * actions" popover. Dark defaults reproduce the previous hardcoded
+   * gradients byte-equivalent; Light/Sepia replace them with a flat
+   * theme-tinted surface so the popup follows the theme and its action
+   * items become readable (they previously inherited --wb-text which
+   * went dark-brown in Sepia and disappeared on the dark popup). */
+  --wb-popover-bg:
+    linear-gradient(135deg, rgba(57,78,90,.94), rgba(18,43,58,.95));
+  --wb-popover-folder-bg:
+    radial-gradient(circle at 54% -28%, rgba(119,147,194,.34), rgba(119,147,194,0) 48%),
+    radial-gradient(circle at 0% 100%, rgba(255,255,255,.08), rgba(255,255,255,0) 42%),
+    linear-gradient(150deg, rgba(32,35,40,.96), rgba(17,19,23,.97) 58%, rgba(13,15,18,.98));
+  --wb-popover-border:rgba(148,163,184,.32);
+  --wb-popover-folder-border:rgba(226,232,240,.22);
+  --wb-popover-shadow:
+    0 24px 70px rgba(0,0,0,.42),
+    inset 0 1px 0 rgba(255,255,255,.08);
+  --wb-popover-folder-shadow:
+    0 22px 48px rgba(0,0,0,.44),
+    0 0 0 1px rgba(255,255,255,.04) inset,
+    0 1px 0 rgba(255,255,255,.12) inset;
+  --wb-popover-title:rgba(245,247,250,.92);
+  --wb-popover-action:rgba(245,247,250,.94);
+  --wb-popover-action-hover-bg:rgba(255,255,255,.08);
+  --wb-popover-divider:rgba(226,232,240,.24);
+  --wb-popover-danger:#FF4C4C;
+  --wb-popover-disabled:rgba(226,232,240,.38);
+
+  /* v2.5.12 — Tokens for the Local Review badge pills
+   * (.wbSidebarLocalReviewBadge — "0 known here", "extra", "conflict")
+   * which the JS module mounts with inline white-alpha styles. Dark
+   * defaults match those inline values byte-for-byte. Light/Sepia
+   * override to readable dark-on-light pills. */
+  --wb-sidebar-review-badge-text:rgba(255,255,255,.68);
+  --wb-sidebar-review-badge-bg:rgba(255,255,255,.045);
+  --wb-sidebar-review-badge-border:rgba(255,255,255,.12);
+
+  /* v2.5.13 — Tokens for the Studio Settings page (route #/settings).
+   * Dark defaults match the inline-style template literals in
+   * studio.js renderSettings() (cardStyle / btnStyle / input styles)
+   * byte-for-byte so the existing dark look is preserved. Light/Sepia
+   * override to a readable themed surface. */
+  --wb-settings-card-bg:rgba(255,255,255,.02);
+  --wb-settings-card-border:rgba(255,255,255,.08);
+  --wb-settings-card-shadow:none;
+  --wb-settings-btn-bg:rgba(255,255,255,.06);
+  --wb-settings-btn-border:rgba(255,255,255,.12);
+  --wb-settings-btn-hover-bg:rgba(255,255,255,.10);
+  --wb-settings-btn-hover-border:rgba(255,255,255,.18);
+  --wb-settings-input-bg:rgba(0,0,0,.18);
+  --wb-settings-input-border:rgba(255,255,255,.12);
+  --wb-settings-divider:rgba(255,255,255,.06);
 
   --font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI","Helvetica Neue",Arial,sans-serif;
   --mono:"SFMono-Regular","JetBrains Mono","Berkeley Mono","Menlo","Consolas",monospace;
@@ -259,8 +390,11 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  border:1px solid var(--wb-border);
-  background:var(--wb-surface);
+  /* Themable border + background so the badge keeps contrast across all
+   * three themes (Dark: surface on sidebar; Light/Sepia: distinct from
+   * the sidebar bg via dedicated badge tokens — see :root overrides). */
+  border:1px solid var(--wb-sidebar-badge-border);
+  background:var(--wb-sidebar-badge-bg);
   color:var(--wb-text);
   font-size:10px;
   font-weight:700;
@@ -420,11 +554,23 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   grid-column:1;
   width:18px;
   height:18px;
-  background-repeat:no-repeat;
-  background-position:center;
-  background-size:18px 18px;
   opacity:.85;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dcdcdc' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><path d='M8 8h8M8 12h8M8 16h5'/></svg>");
+  /* v2.5.10 — replaced background-image (which embedded a hardcoded
+   * stroke='%23dcdcdc' that was invisible in Light/Sepia) with a mask
+   * fed by `currentColor`. The icon now tracks the parent text color
+   * (`--wb-sidebar-icon-color`, which Light/Sepia override). The mask
+   * reads SVG alpha only, so the stroke color inside the data URL is
+   * irrelevant; we keep `currentColor` as the source for both stroke
+   * resolution and the fill (`background-color`). */
+  background-color:var(--wb-sidebar-icon-color);
+  -webkit-mask-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><path d='M8 8h8M8 12h8M8 16h5'/></svg>");
+  -webkit-mask-repeat:no-repeat;
+  -webkit-mask-position:center;
+  -webkit-mask-size:18px 18px;
+  mask-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><rect x='4' y='4' width='16' height='16' rx='2'/><path d='M8 8h8M8 12h8M8 16h5'/></svg>");
+  mask-repeat:no-repeat;
+  mask-position:center;
+  mask-size:18px 18px;
 }
 
 /* Native-style "Search chats" row + any future top-of-sidebar nav items.
@@ -750,7 +896,9 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   min-height:var(--wb-header-h);
   padding:8px 18px;
   border-bottom:1px solid var(--wb-border);
-  background:rgba(33,33,33,.92);
+  /* Themable: --wb-topbar-bg defaults to the original dark rgba and is
+   * remapped by Light/Sepia at the bottom of this file. */
+  background:var(--wb-topbar-bg);
   backdrop-filter:blur(18px);
 }
 
@@ -957,10 +1105,10 @@ body[data-route="reader"] .wbMain{
   border:1px solid rgba(255,255,255,.08);
   border-radius:12px;
   background:rgba(0,0,0,.16);
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,.035),
-    inset 0 1px 0 rgba(255,255,255,.04),
-    0 2px 8px rgba(0,0,0,.20);
+  /* v2.5.10 — shadows tokenized so Light/Sepia can flatten the cards.
+   * Dark defaults reproduce the original tuples byte-for-byte (see
+   * --wb-card-shadow-* at :root). */
+  box-shadow: var(--wb-card-shadow-inset), var(--wb-card-shadow);
   backdrop-filter:saturate(160%) blur(12px);
   -webkit-backdrop-filter:saturate(160%) blur(12px);
   transition:background-color .12s ease, border-color .12s ease, box-shadow .12s ease, transform .12s ease;
@@ -970,10 +1118,7 @@ body[data-route="reader"] .wbMain{
   z-index:5;
   background:rgba(0,0,0,.11);
   border-color:rgba(255,255,255,.14);
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,.05),
-    inset 0 1px 0 rgba(255,255,255,.06),
-    0 4px 13px rgba(0,0,0,.32);
+  box-shadow: var(--wb-card-shadow-hover-inset), var(--wb-card-shadow-hover);
   transform:translateY(-1px);
 }
 
@@ -981,10 +1126,7 @@ body[data-route="reader"] .wbMain{
   z-index:4;
   background:rgba(255,255,255,.075);
   border-color:rgba(255,255,255,.18);
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,.06),
-    inset 0 1px 0 rgba(255,255,255,.07),
-    0 4px 14px rgba(0,0,0,.34);
+  box-shadow: var(--wb-card-shadow-selected-inset), var(--wb-card-shadow-selected);
 }
 
 .wbHistoryRow.wb-row-gold{
@@ -6154,11 +6296,10 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   padding: 20px;
   border: 1px solid rgba(148,163,184,.32);
   border-radius: 18px;
-  background:
-    linear-gradient(135deg, rgba(57,78,90,.94), rgba(18,43,58,.95)),
-    var(--wb-panel);
-  color: var(--wb-text);
-  box-shadow: 0 24px 70px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08);
+  /* v2.5.11 — themable. Dark defaults reproduce the original gradient. */
+  background: var(--wb-popover-bg);
+  color: var(--wb-popover-action);
+  box-shadow: var(--wb-popover-shadow);
   backdrop-filter: blur(18px) saturate(1.18);
 }
 
@@ -6166,16 +6307,10 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   width: min(318px, calc(100vw - 16px));
   overflow: visible;
   padding: 14px;
-  border-color: rgba(226,232,240,.22);
+  border-color: var(--wb-popover-folder-border);
   border-radius: 16px;
-  background:
-    radial-gradient(circle at 54% -28%, rgba(119,147,194,.34), rgba(119,147,194,0) 48%),
-    radial-gradient(circle at 0% 100%, rgba(255,255,255,.08), rgba(255,255,255,0) 42%),
-    linear-gradient(150deg, rgba(32,35,40,.96), rgba(17,19,23,.97) 58%, rgba(13,15,18,.98));
-  box-shadow:
-    0 22px 48px rgba(0,0,0,.44),
-    0 0 0 1px rgba(255,255,255,.04) inset,
-    0 1px 0 rgba(255,255,255,.12) inset;
+  background: var(--wb-popover-folder-bg);
+  box-shadow: var(--wb-popover-folder-shadow);
   backdrop-filter: blur(22px) saturate(1.28);
 }
 
@@ -6189,7 +6324,8 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 
 .wbSidebarNativeMenu--folder .wbSidebarNativeMenuTitle {
   margin: 0 0 12px;
-  color: rgba(245,247,250,.92);
+  /* v2.5.11 — themable; dark default reproduces the original near-white. */
+  color: var(--wb-popover-title);
   font-size: 13px;
   font-weight: 750;
 }
@@ -6383,7 +6519,8 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbSidebarNativeSep {
   height: 1px;
   margin: 18px 0;
-  background: rgba(226,232,240,.24);
+  /* v2.5.11 — themable. */
+  background: var(--wb-popover-divider);
 }
 
 .wbSidebarNativeTags {
@@ -6500,7 +6637,9 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--wb-text);
+  /* v2.5.11 — themable. Previously `var(--wb-text)` which becomes dark
+   * brown in Sepia and was unreadable on the dark popup background. */
+  color: var(--wb-popover-action);
   text-align: left;
   font: 650 14px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   cursor: pointer;
@@ -6508,16 +6647,16 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 
 .wbSidebarNativeAction:hover,
 .wbSidebarNativeAction:focus-visible {
-  background: rgba(255,255,255,.08);
+  background: var(--wb-popover-action-hover-bg);
   outline: none;
 }
 
 .wbSidebarNativeAction.is-danger {
-  color: #FF4C4C;
+  color: var(--wb-popover-danger);
 }
 
 .wbSidebarNativeAction.is-disabled {
-  color: rgba(226,232,240,.38);
+  color: var(--wb-popover-disabled);
   cursor: default;
 }
 
@@ -6610,7 +6749,9 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   z-index:3;
   min-width:0;
   border-bottom:1px solid var(--wb-border);
-  background:rgba(33,33,33,.78);
+  /* Themable: --wb-ribbon-bg defaults to the original dark rgba and is
+   * remapped by Light/Sepia at the bottom of this file. */
+  background:var(--wb-ribbon-bg);
   backdrop-filter:blur(14px);
   color:var(--wb-text);
   font-size:13px;
@@ -7889,4 +8030,660 @@ body[data-route="reader"] #studioDock.wbDock--open {
     white-space: pre-wrap !important;
   }
 
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Appearance / View Options (v2.5.8)
+ *
+ *  All visual surfaces driven by the Appearance store live in this block.
+ *  The store writes:
+ *    <html data-h2o-theme="dark|light|sepia"
+ *          data-h2o-typography="sans|serif|mono"
+ *          data-h2o-plain-text="on|off"
+ *          data-h2o-show-folders="on|off"
+ *          data-h2o-show-notes="on|off"
+ *          style="--wb-appearance-font-size:16px;
+ *                 --wb-appearance-content-width:48rem;">
+ *
+ *  Defaults (dark, sans, 16px, 48rem, all visible, plain off) are reflected
+ *  here as fallbacks so the page renders correctly even before the store
+ *  hydrates and before any user interaction.
+ *
+ *  Owned by src-surfaces-base/studio/appearance/.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Theme: Light ─────────────────────────────────────────────────────── */
+html[data-h2o-theme="light"]{
+  color-scheme: light;
+  --wb-page: #f7f7f7;
+  --wb-sidebar: #ffffff;
+  --wb-sidebar-elevated: #f7f7f7;
+  --wb-surface: #ffffff;
+  --wb-surface-soft: rgba(0,0,0,.04);
+  --wb-surface-hover: rgba(0,0,0,.08);
+  --wb-surface-active: rgba(0,0,0,.12);
+  --wb-surface-selected: rgba(0,0,0,.08);
+  --wb-border: rgba(0,0,0,.10);
+  --wb-border-strong: rgba(0,0,0,.20);
+  --wb-text: #1a1a1a;
+  --wb-text-soft: rgba(0,0,0,.78);
+  /* Bumped a notch darker than the previous values for sepia-screenshot
+   * readability of muted labels like "LOCAL REVIEW · 6". */
+  --wb-muted: #404040;
+  --wb-dim: #585858;
+  --wb-icon: #303030;
+  --wb-user-bg: #e8e8e8;
+  --wb-code-bg: #f0f0f0;
+  --wb-code-border: rgba(0,0,0,.08);
+  --wb-shadow: 0 12px 32px rgba(0,0,0,.10);
+  /* Theme-specific overrides for the new tokens. The topbar/ribbon use a
+   * mostly-opaque tinted bg so the backdrop blur doesn't reveal the dark
+   * historical fallback through. The sidebar badge needs a fill distinct
+   * from the white sidebar so the "H2O" / # circular badge stays visible. */
+  --wb-topbar-bg: rgba(255,255,255,.94);
+  --wb-ribbon-bg: rgba(247,247,247,.94);
+  --wb-sidebar-badge-bg: #ececec;
+  --wb-sidebar-badge-border: rgba(0,0,0,.22);
+  /* v2.5.10 — neutralize the JS-injected white-alpha inline styles
+   * for the # folder-count toggle, the Local Review summary/list,
+   * and tone down the .wbHistoryRow drop shadow to a paper-like depth. */
+  --wb-sidebar-badge-text: #303030;
+  --wb-sidebar-badge-fill: #e8e8e8;
+  --wb-sidebar-badge-outline: rgba(0,0,0,.22);
+  --wb-sidebar-review-text: #4f4f4f;
+  --wb-sidebar-review-explain: #585858;
+  --wb-sidebar-review-divider: rgba(0,0,0,.08);
+  --wb-sidebar-review-opacity: 1;
+  --wb-sidebar-icon-color: #4f4f4f;
+  --wb-card-shadow-inset: none;
+  --wb-card-shadow: 0 1px 0 rgba(0,0,0,.06);
+  --wb-card-shadow-hover-inset: none;
+  --wb-card-shadow-hover: 0 2px 8px rgba(0,0,0,.08);
+  --wb-card-shadow-selected-inset: none;
+  --wb-card-shadow-selected: 0 2px 10px rgba(0,0,0,.10);
+  /* v2.5.11 — popup adopts the light theme: flat near-white surface,
+   * dark text, soft hover. Both the base menu and the --folder variant
+   * collapse to the same flat surface (decorative dark radials would
+   * look wrong on a light popup). */
+  --wb-popover-bg: linear-gradient(180deg, #ffffff, #f8f8f8);
+  --wb-popover-folder-bg: linear-gradient(180deg, #ffffff, #f8f8f8);
+  --wb-popover-border: rgba(0,0,0,.14);
+  --wb-popover-folder-border: rgba(0,0,0,.14);
+  --wb-popover-shadow:
+    0 20px 50px rgba(0,0,0,.18),
+    0 0 0 1px rgba(0,0,0,.04) inset;
+  --wb-popover-folder-shadow:
+    0 18px 38px rgba(0,0,0,.18),
+    0 0 0 1px rgba(0,0,0,.04) inset;
+  --wb-popover-title: #1a1a1a;
+  --wb-popover-action: #1a1a1a;
+  --wb-popover-action-hover-bg: rgba(0,0,0,.06);
+  --wb-popover-divider: rgba(0,0,0,.12);
+  --wb-popover-danger: #c01818;
+  --wb-popover-disabled: rgba(0,0,0,.36);
+  /* v2.5.12 — Light readable pills. */
+  --wb-sidebar-review-badge-text: #404040;
+  --wb-sidebar-review-badge-bg: rgba(0,0,0,.045);
+  --wb-sidebar-review-badge-border: rgba(0,0,0,.16);
+  /* v2.5.16 — Light Studio Settings: cards must be unmistakable
+   * containers. Page bg is #f7f7f7; card is pure white with a SOLID
+   * dark grey border (#8a8a8a, no alpha) so the outline is opaque and
+   * cannot be missed. Real elevation shadow. */
+  --wb-settings-card-bg: #ffffff;
+  --wb-settings-card-border: #8a8a8a;
+  --wb-settings-card-shadow:
+    0 1px 2px rgba(0,0,0,.08),
+    0 6px 16px rgba(0,0,0,.10);
+  --wb-settings-btn-bg: #f4f4f4;
+  --wb-settings-btn-border: rgba(0,0,0,.28);
+  --wb-settings-btn-hover-bg: #e8e8e8;
+  --wb-settings-btn-hover-border: rgba(0,0,0,.38);
+  --wb-settings-input-bg: #ffffff;
+  --wb-settings-input-border: rgba(0,0,0,.28);
+  --wb-settings-divider: rgba(0,0,0,.18);
+}
+
+/* ── Theme: Sepia ─────────────────────────────────────────────────────── */
+html[data-h2o-theme="sepia"]{
+  color-scheme: light;
+  --wb-page: #f4ecd8;
+  --wb-sidebar: #efe5cc;
+  --wb-sidebar-elevated: #f8f1de;
+  --wb-surface: #faf3e0;
+  --wb-surface-soft: rgba(101,67,33,.06);
+  --wb-surface-hover: rgba(101,67,33,.11);
+  --wb-surface-active: rgba(101,67,33,.16);
+  --wb-surface-selected: rgba(101,67,33,.12);
+  --wb-border: rgba(101,67,33,.18);
+  --wb-border-strong: rgba(101,67,33,.30);
+  --wb-text: #2c2310;
+  --wb-text-soft: rgba(44,35,16,.82);
+  --wb-muted: #4d3f22;
+  --wb-dim: #695733;
+  --wb-icon: #4a3b1d;
+  --wb-user-bg: #ece2c4;
+  --wb-code-bg: #ece2c4;
+  --wb-code-border: rgba(101,67,33,.16);
+  --wb-shadow: 0 12px 32px rgba(101,67,33,.18);
+  /* Theme-specific overrides for the new tokens. */
+  --wb-topbar-bg: rgba(248,241,222,.94);
+  --wb-ribbon-bg: rgba(244,236,216,.94);
+  --wb-sidebar-badge-bg: #e3d6b1;
+  --wb-sidebar-badge-border: rgba(101,67,33,.34);
+  /* v2.5.10 — Sepia values for the JS-injected items + flat-paper card depth. */
+  --wb-sidebar-badge-text: #4d3f22;
+  --wb-sidebar-badge-fill: #d8c89f;
+  --wb-sidebar-badge-outline: rgba(101,67,33,.38);
+  --wb-sidebar-review-text: #6a5630;
+  --wb-sidebar-review-explain: #7a6840;
+  --wb-sidebar-review-divider: rgba(101,67,33,.16);
+  --wb-sidebar-review-opacity: 1;
+  --wb-sidebar-icon-color: #5c4a28;
+  --wb-card-shadow-inset: none;
+  --wb-card-shadow: 0 1px 0 rgba(101,67,33,.10);
+  --wb-card-shadow-hover-inset: none;
+  --wb-card-shadow-hover: 0 2px 8px rgba(101,67,33,.10);
+  --wb-card-shadow-selected-inset: none;
+  --wb-card-shadow-selected: 0 2px 10px rgba(101,67,33,.14);
+  /* v2.5.11 — popup adopts the sepia theme: flat sepia-elevated surface,
+   * dark-brown text, soft brown hover. */
+  --wb-popover-bg: linear-gradient(180deg, #faf3e0, #f4ecd8);
+  --wb-popover-folder-bg: linear-gradient(180deg, #faf3e0, #f4ecd8);
+  --wb-popover-border: rgba(101,67,33,.28);
+  --wb-popover-folder-border: rgba(101,67,33,.28);
+  --wb-popover-shadow:
+    0 20px 50px rgba(101,67,33,.22),
+    0 0 0 1px rgba(101,67,33,.08) inset;
+  --wb-popover-folder-shadow:
+    0 18px 38px rgba(101,67,33,.22),
+    0 0 0 1px rgba(101,67,33,.08) inset;
+  --wb-popover-title: #2c2310;
+  --wb-popover-action: #2c2310;
+  --wb-popover-action-hover-bg: rgba(101,67,33,.10);
+  --wb-popover-divider: rgba(101,67,33,.20);
+  --wb-popover-danger: #a8331a;
+  --wb-popover-disabled: rgba(44,35,16,.40);
+  /* v2.5.12 — Sepia readable pills. */
+  --wb-sidebar-review-badge-text: #4d3f22;
+  --wb-sidebar-review-badge-bg: rgba(101,67,33,.06);
+  --wb-sidebar-review-badge-border: rgba(101,67,33,.22);
+  /* v2.5.16 — Sepia Studio Settings: cards must be unmistakable
+   * containers. Page bg is #f4ecd8 (cream); card is pure WHITE
+   * (#ffffff) with a SOLID dark brown border (#7a5b32, no alpha) so
+   * the outline is opaque and stands out unambiguously. Real
+   * elevation shadow with sepia tint. */
+  --wb-settings-card-bg: #ffffff;
+  --wb-settings-card-border: #7a5b32;
+  --wb-settings-card-shadow:
+    0 1px 2px rgba(101,67,33,.14),
+    0 6px 16px rgba(101,67,33,.18);
+  --wb-settings-btn-bg: #ede1bb;
+  --wb-settings-btn-border: rgba(101,67,33,.50);
+  --wb-settings-btn-hover-bg: #e3d6a8;
+  --wb-settings-btn-hover-border: rgba(101,67,33,.62);
+  --wb-settings-input-bg: #fffaea;
+  --wb-settings-input-border: rgba(101,67,33,.50);
+  --wb-settings-divider: rgba(101,67,33,.28);
+}
+
+/* ── Typography: Serif / Mono ─────────────────────────────────────────── */
+html[data-h2o-typography="serif"]{
+  --font:
+    "New York","Charter","Iowan Old Style","Source Serif Pro",
+    "Georgia","Times New Roman",serif;
+}
+html[data-h2o-typography="mono"]{
+  --font: var(--mono);
+}
+
+/* ── Font size & content width (runtime CSS vars) ─────────────────────── */
+/* The store writes these on <html>'s inline style. They flow into the
+ * reader text root and the thread/list width tokens. We do NOT redefine
+ * --wb-thread-w globally here because that would freeze it at this rule's
+ * cascade position; instead the reader components opt in below. */
+
+.wbReader,
+.cgFrame,
+.cgBody,
+.cgThread{
+  font-size: var(--wb-appearance-font-size, 16px);
+}
+
+.wbReader .cgThread,
+.wbReader [data-message-author-role],
+.wbReader [data-turn]{
+  /* Lift the thread max-width so the user-adjusted content width takes
+   * precedence over --wb-thread-w. The existing reader CSS lays out the
+   * thread with --wb-thread-w; this rule overrides that single dimension
+   * without touching the surrounding grid. */
+  max-width: var(--wb-appearance-content-width, var(--wb-thread-w, 48rem));
+}
+
+/* ── Visibility toggles ───────────────────────────────────────────────── */
+html[data-h2o-show-folders="off"] .wbSidebarSection--folders{ display:none !important; }
+html[data-h2o-show-notes="off"]   .wbSidebarSection--recent { display:none !important; }
+
+/* ── Plain text mode (reader) ─────────────────────────────────────────── */
+/* Strip highlight backgrounds, answer-wash colors, and the Studio-side
+ * MiniMap wash overlays so the reader presents text without color noise.
+ * Highlight marks are still semantically present in the DOM; only the
+ * visible backgrounds are neutralised. */
+html[data-h2o-plain-text="on"] .wbReader mark,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-yellow,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-blue,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-red,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-green,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-gold,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-sky,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-pink,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-purple,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-hl-orange{
+  background: transparent !important;
+  color: inherit !important;
+}
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-yellow::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-blue::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-red::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-green::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-gold::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-sky::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-pink::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-purple::before,
+html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
+  background: transparent !important;
+}
+
+/* ── Top-bar trigger button ──────────────────────────────────────────── */
+.wbAppearanceBtn{
+  /* Inherits .wbIconBtn .wbIconBtn--topbar base; we just style the icon
+   * stroke and the active state for symmetry with other topbar buttons. */
+  color: var(--wb-text-soft);
+}
+.wbAppearanceBtn svg{
+  width: 18px;
+  height: 18px;
+  display: block;
+  fill: currentColor;
+}
+.wbAppearanceBtn:hover,
+.wbAppearanceBtn.is-on{
+  background: var(--wb-surface-hover);
+  border-color: var(--wb-border-strong);
+  color: var(--wb-text);
+}
+
+/* ── Popover panel ───────────────────────────────────────────────────── */
+.wbAppearancePanel{
+  position: fixed;
+  /* `right` / `top` set inline by panel-position(); width set inline. */
+  z-index: 90;                  /* above stage (isolated), below CmdBar/Native menu */
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  max-width: 360px;
+  padding: 0;
+  border: 1px solid var(--wb-border-strong);
+  border-radius: 14px;
+  background: var(--wb-sidebar-elevated, var(--wb-surface));
+  color: var(--wb-text);
+  box-shadow: var(--wb-shadow);
+  font-family: var(--font);
+  overflow: hidden;
+  isolation: isolate;
+}
+.wbAppearancePanel[hidden]{ display: none !important; }
+
+.wbAppearanceHead{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wbAppearanceTitle{
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: .005em;
+  color: var(--wb-text);
+}
+.wbAppearanceClose{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wb-text-soft);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wbAppearanceClose:hover{
+  background: var(--wb-surface-hover);
+  border-color: var(--wb-border);
+  color: var(--wb-text);
+}
+
+.wbAppearanceBody{
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 12px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.wbAppearanceBody::-webkit-scrollbar{ width: 8px; }
+.wbAppearanceBody::-webkit-scrollbar-thumb{
+  background: rgba(127,127,127,.30);
+  border-radius: 4px;
+}
+
+.wbAppearanceSection{
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 4px 4px;
+}
+.wbAppearanceSectionTitle{
+  margin: 0 4px 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--wb-dim);
+}
+.wbAppearanceSectionBody{
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Segmented control (theme / typography) */
+.wbAppearanceSegmented{
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--wb-border);
+  border-radius: 10px;
+  background: var(--wb-surface-soft);
+}
+.wbAppearanceSegmentedBtn{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wb-text-soft);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: .005em;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+}
+.wbAppearanceSegmentedBtn:hover{
+  background: var(--wb-surface-hover);
+  color: var(--wb-text);
+}
+.wbAppearanceSegmentedBtn.is-on{
+  background: var(--wb-surface);
+  border-color: var(--wb-border-strong);
+  color: var(--wb-text);
+  box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+
+/* Stepper (font-size / text-width) */
+.wbAppearanceRow--stepper{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--wb-border);
+  border-radius: 10px;
+  background: transparent;
+}
+.wbAppearanceRowText{
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.wbAppearanceRowLabel{
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--wb-text);
+}
+.wbAppearanceRowHint{
+  font-size: 11px;
+  color: var(--wb-dim);
+}
+.wbAppearanceStepper{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--wb-border);
+  border-radius: 8px;
+  background: var(--wb-surface-soft);
+}
+.wbAppearanceStepperBtn{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wb-text-soft);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.wbAppearanceStepperBtn:hover:not(:disabled){
+  background: var(--wb-surface-hover);
+  color: var(--wb-text);
+}
+.wbAppearanceStepperBtn:disabled{
+  opacity: .35;
+  cursor: not-allowed;
+}
+.wbAppearanceStepperValue{
+  min-width: 48px;
+  padding: 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--wb-text);
+  text-align: center;
+}
+
+/* Toggle rows (folders / notes / plain text / always-on-top) */
+.wbAppearanceRow--toggle{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .12s ease, border-color .12s ease;
+}
+.wbAppearanceRow--toggle:hover{
+  background: var(--wb-surface-soft);
+  border-color: var(--wb-border);
+}
+.wbAppearanceSwitchTrack{
+  flex: 0 0 auto;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(127,127,127,.32);
+  transition: background-color .14s ease;
+}
+.wbAppearanceSwitchThumb{
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.20);
+  transform: translateX(0);
+  transition: transform .14s ease;
+}
+.wbAppearanceRow--toggle.is-on .wbAppearanceSwitchTrack{
+  background: #4f9eff;
+}
+.wbAppearanceRow--toggle.is-on .wbAppearanceSwitchThumb{
+  transform: translateX(14px);
+}
+
+/* ── Narrow viewport safety ───────────────────────────────────────────── */
+@media (max-width: 560px){
+  .wbAppearancePanel{
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+}
+
+/* ── v2.5.10 — overrides for JS-injected inline-style elements ──────────
+ *
+ * These three selectors are mounted by sidebar JS modules that emit
+ * `style="…"` inline strings carrying hardcoded dark-theme white-alpha
+ * colors (e.g. `color:rgba(255,255,255,.5)`). Inline styles win over
+ * external CSS in normal cascade, so theme tokens alone don't reach them.
+ * The `!important` declarations below defeat the inline values and route
+ * the visual through the new `--wb-sidebar-badge-*` / `--wb-sidebar-review-*`
+ * tokens which Light/Sepia override above.
+ *
+ * Touched modules (unchanged — CSS-only fix):
+ *   src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js
+ *     ~line 2024  .wbSidebarFolderCountToggle   (the # badge in Folders)
+ *     ~line 1872  .wbSidebarSection--localReview / .wbSidebarLocalReview*
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/* The # folder-count toggle button (top-right of the Folders section). */
+.wbSidebarFolderCountToggle{
+  color: var(--wb-sidebar-badge-text) !important;
+  background: var(--wb-sidebar-badge-fill) !important;
+  border-color: var(--wb-sidebar-badge-outline) !important;
+}
+.wbSidebarFolderCountToggle:hover{
+  color: var(--wb-text) !important;
+  background: var(--wb-surface-hover) !important;
+  border-color: var(--wb-border-strong) !important;
+}
+
+/* "LOCAL REVIEW · N" summary line and the explanatory paragraph beneath. */
+.wbSidebarLocalReviewSummary{
+  color: var(--wb-sidebar-review-text) !important;
+  border-top-color: var(--wb-sidebar-review-divider) !important;
+}
+.wbSidebarLocalReviewExplanation{
+  color: var(--wb-sidebar-review-explain) !important;
+}
+/* The Local Review item list carries inline `opacity:0.84` which compounds
+ * with the muted theme colors and pushes contrast below readable. Reset
+ * to the themed value (1 on Light/Sepia, 0.84 on Dark) via a CSS var. */
+.wbSidebarLocalReviewList{
+  opacity: var(--wb-sidebar-review-opacity) !important;
+}
+
+/* v2.5.12 — The badge pills under each Local Review row
+ * ("0 known here", "extra", "conflict") are mounted by S0Z1g sidebar JS
+ * with inline `color:rgba(255,255,255,.68); background:rgba(255,255,255,.045);
+ * border:1px solid rgba(255,255,255,.12)`. !important routes them through
+ * theme tokens so they're readable in Sepia/Light. */
+.wbSidebarLocalReviewBadge{
+  color: var(--wb-sidebar-review-badge-text) !important;
+  background: var(--wb-sidebar-review-badge-bg) !important;
+  border-color: var(--wb-sidebar-review-badge-border) !important;
+}
+
+/* ── v2.5.13 — Studio Settings page (route #/settings) ──────────────────
+ *
+ * The Settings panel is mounted by studio.js (renderSettings ~line 5532)
+ * with inline-style template strings (`cardStyle`, `btnStyle`, etc.) on
+ * raw <div>/<a>/<button> elements — no CSS classes. In Dark theme those
+ * white-alpha inline values render as soft elevated cards on the dark
+ * page; in Sepia/Light they disappear (white-on-cream/white-on-white).
+ *
+ * Approach: scope overrides to the panel via `[data-settings-rendered="1"]`
+ * (set by renderSettings() at line 5544) and target inline-style
+ * fingerprints via attribute selectors. Each cardStyle / btnStyle /
+ * input style was a single source-of-truth template literal in studio.js
+ * so the fingerprints are stable. Light/Sepia tokenize the surfaces
+ * through --wb-settings-card-*/--wb-settings-btn-* (added at :root
+ * with dark defaults that match the literal inline values byte-for-byte).
+ *
+ * Only theming changes — no behavior change, no JS touched.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/* Card containers (`cardStyle`):
+ *   border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.02)
+ *
+ * v2.5.17 — every settings card div now also carries a real
+ * `wbSettingsCard` class added by studio.js renderSettings(). Targeting
+ * the class is bulletproof — no attribute-substring-normalization
+ * surprises. The `[style*=…]` selector below stays as belt-and-suspenders
+ * for any future card that uses cardStyle without the class. */
+.wbSettingsCard,
+[data-settings-rendered="1"] [style*="background:rgba(255,255,255,.02)"]{
+  background-color: var(--wb-settings-card-bg) !important;
+  border-color: var(--wb-settings-card-border) !important;
+  border-style: solid !important;
+  box-shadow: var(--wb-settings-card-shadow) !important;
+}
+
+/* Buttons / links rendered with `btnStyle`:
+ *   background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12) */
+[data-settings-rendered="1"] [style*="background:rgba(255,255,255,.06)"]{
+  background: var(--wb-settings-btn-bg) !important;
+  border-color: var(--wb-settings-btn-border) !important;
+}
+[data-settings-rendered="1"] [style*="background:rgba(255,255,255,.06)"]:hover{
+  background: var(--wb-settings-btn-hover-bg) !important;
+  border-color: var(--wb-settings-btn-hover-border) !important;
+}
+
+/* Inputs (the folder-state path text input): `background:rgba(0,0,0,.18)` */
+[data-settings-rendered="1"] input[style*="background:rgba(0,0,0,.18)"]{
+  background: var(--wb-settings-input-bg) !important;
+  border-color: var(--wb-settings-input-border) !important;
+  color: var(--wb-text) !important;
+}
+
+/* Log <pre> blocks: same `background:rgba(0,0,0,.18)` fingerprint. */
+[data-settings-rendered="1"] pre[style*="background:rgba(0,0,0,.18)"]{
+  background: var(--wb-settings-input-bg) !important;
+  color: var(--wb-text) !important;
+}
+
+/* Section dividers (`border-top:1px solid rgba(255,255,255,.06)`). */
+[data-settings-rendered="1"] [style*="border-top:1px solid rgba(255,255,255,.06)"]{
+  border-top-color: var(--wb-settings-divider) !important;
 }

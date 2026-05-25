@@ -45,6 +45,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "overlay/overlay-keys.js",
   "overlay/overlay-applier.studio.js",
 
+  // Studio Appearance / View Options (v2.5.8) — top-right options panel.
+  // Passive constants + store + panel. studio.html references all three;
+  // missing any of them produces a 404 and the Appearance trigger never
+  // mounts. Same subdir copy pattern as dock/ribbon/overlay.
+  // Contracts: src-surfaces-base/studio/appearance/.
+  "appearance/appearance-keys.js",
+  "appearance/appearance-store.studio.js",
+  "appearance/appearance-panel.studio.js",
+
   // Studio Store (Stage 1 parallel infra) — loads after platform/ and before
   // any feature module. Contracts: src-surfaces-base/studio/store/README.md,
   // STUDIO_STORAGE_CONTRACT.md.
@@ -274,6 +283,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Studio Edit Overlay — see SOURCE_FILES list above for context.
   "overlay/overlay-keys.js",
   "overlay/overlay-applier.studio.js",
+
+  // Studio Appearance / View Options — see SOURCE_FILES list above.
+  "appearance/appearance-keys.js",
+  "appearance/appearance-store.studio.js",
+  "appearance/appearance-panel.studio.js",
 
   // Studio Store — see SOURCE_FILES list above for context.
   "store/index.js",
