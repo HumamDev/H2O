@@ -2922,6 +2922,26 @@ ${CROW}[aria-current="true"]{
     /* Phase C8: moved to 0F4a — function UI_openCategoryAppearanceEditor */
 
   /* Popover (folder row actions) */
+  function UI_getFolderPopLayer() {
+    let layer = D.querySelector('[data-h2o-folder-pop-layer="1"]');
+    if (layer instanceof HTMLElement) return layer;
+    layer = D.createElement('div');
+    layer.setAttribute('data-h2o-folder-pop-layer', '1');
+    layer.setAttribute(ATTR_CGXUI_OWNER, SkID);
+    layer.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      `z-index:${CFG_FSECTION_FLOATING_Z}`,
+      'pointer-events:none',
+      'overflow:visible',
+      'contain:none',
+      'isolation:isolate',
+    ].join(';');
+    D.documentElement.appendChild(layer);
+    CLEAN.nodes.add(layer);
+    return layer;
+  }
+
   function UI_closeFolderPop() {
     if (typeof STATE.popPositionOff === 'function') {
       try { STATE.popPositionOff(); } catch {}
@@ -2947,6 +2967,28 @@ ${CROW}[aria-current="true"]{
     pop.setAttribute('data-h2o-glass', 'panel');
     pop.setAttribute('data-h2o-skin', 'sand-glass');
     pop.setAttribute('data-h2o-skin-surface', 'sand-glass');
+    pop.setAttribute('data-h2o-folder-menu-placement', 'body-fixed');
+    pop.style.cssText = [
+      'position:fixed',
+      `z-index:${CFG_FSECTION_FLOATING_Z}`,
+      'display:block',
+      'visibility:visible',
+      'opacity:1',
+      'pointer-events:auto',
+      'box-sizing:border-box',
+      'min-width:238px',
+      'max-width:min(360px, calc(100vw - 16px))',
+      'max-height:min(78vh, 560px)',
+      'padding:5px',
+      'overflow:auto',
+      'background:var(--bg-elevated-secondary, #181818)',
+      'color:var(--text-primary, #fff)',
+      'border:1px solid var(--border-default, #ffffff26)',
+      'border-radius:12px',
+      'box-shadow:0 18px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.04)',
+      'transform:translateZ(0)',
+      'will-change:top,left',
+    ].join(';');
     if (opts?.menuKind === 'folder-actions') {
       pop.setAttribute('data-h2o-folder-menu', '1');
       pop.setAttribute('data-h2o-folder-id', String(opts.folderId || ''));
@@ -3065,7 +3107,8 @@ ${CROW}[aria-current="true"]{
       pop.appendChild(b);
     });
 
-    D.body.appendChild(pop);
+    const layer = UI_getFolderPopLayer();
+    layer.appendChild(pop);
     CLEAN.nodes.add(pop);
     STATE.popEl = pop;
     STATE.popAnchorEl = anchorEl;
@@ -3077,27 +3120,37 @@ ${CROW}[aria-current="true"]{
       const gap = 6;
       const vw = Math.max(320, W.innerWidth || D.documentElement.clientWidth || 0);
       const vh = Math.max(240, W.innerHeight || D.documentElement.clientHeight || 0);
+      pop.style.maxWidth = `${Math.min(360, Math.max(220, vw - pad * 2))}px`;
       pop.style.maxHeight = `${Math.max(160, vh - pad * 2)}px`;
 
       const rA = anchorEl.getBoundingClientRect();
       let rP = pop.getBoundingClientRect();
       const width = Math.min(rP.width, vw - pad * 2);
-      let left = Math.min(rA.right - width, vw - width - pad);
-      left = Math.max(pad, left);
+      const rightLeft = rA.right + gap;
+      const leftLeft = rA.left - width - gap;
+      let left = rightLeft;
+      let placementSide = 'right';
+      if (rightLeft + width > vw - pad && leftLeft >= pad) {
+        left = leftLeft;
+        placementSide = 'left';
+      } else if (rightLeft + width > vw - pad) {
+        left = Math.min(Math.max(pad, rA.right - width), vw - width - pad);
+        placementSide = 'clamped';
+      }
+      left = Math.max(pad, Math.min(left, vw - width - pad));
 
-      const spaceBelow = Math.max(0, vh - rA.bottom - gap - pad);
-      const spaceAbove = Math.max(0, rA.top - gap - pad);
-      const preferAbove = spaceBelow < Math.min(rP.height, 260) && spaceAbove > spaceBelow;
-      const maxSideSpace = Math.max(160, preferAbove ? spaceAbove : Math.max(spaceBelow, spaceAbove));
+      const spaceBelow = Math.max(0, vh - rA.top - pad);
+      const maxSideSpace = Math.max(160, spaceBelow);
       pop.style.maxHeight = `${Math.min(vh - pad * 2, maxSideSpace)}px`;
       rP = pop.getBoundingClientRect();
 
-      let top = preferAbove ? (rA.top - gap - rP.height) : (rA.bottom + gap);
+      let top = Math.max(pad, rA.top);
       if (top + rP.height > vh - pad) top = vh - rP.height - pad;
       if (top < pad) top = pad;
 
       pop.style.left = `${left}px`;
       pop.style.top = `${top}px`;
+      pop.setAttribute('data-h2o-folder-menu-side', placementSide);
     };
 
     positionPop();
