@@ -75,10 +75,10 @@ export function ReadOnlyBundleDisplay({ view }: ReadOnlyBundleDisplayProps) {
 
 function DiagnosticsBlock({ view }: { view: MobileReadOnlyLibraryView }) {
   const diagnostics = [
-    ["source schema", view.diagnostics.sourceSchemaPresent],
-    ["exported at", view.diagnostics.exportedAtPresent],
-    ["source peer", view.diagnostics.sourcePeerPresent],
-    ["checksum", view.diagnostics.checksumVerified],
+    ["source schema", view.diagnostics.sourceSchemaPresent ? "present" : "missing"],
+    ["exported at", view.diagnostics.exportedAtPresent ? "present" : "missing"],
+    ["source peer", view.diagnostics.sourcePeerPresent ? "present" : "missing"],
+    ["checksum verified", view.diagnostics.checksumVerified ? "yes" : "no"],
   ] as const;
 
   return (
@@ -88,14 +88,18 @@ function DiagnosticsBlock({ view }: { view: MobileReadOnlyLibraryView }) {
         {diagnostics.map(([label, value]) => (
           <View key={label} style={styles.diagnosticItem}>
             <Text style={styles.diagnosticLabel}>{label}</Text>
-            <Text style={[styles.diagnosticValue, value ? styles.diagnosticYes : styles.diagnosticNo]}>
-              {value ? "present" : "missing"}
+            <Text style={[styles.diagnosticValue, isPositiveDiagnosticValue(value) ? styles.diagnosticYes : styles.diagnosticNo]}>
+              {value}
             </Text>
           </View>
         ))}
       </View>
     </View>
   );
+}
+
+function isPositiveDiagnosticValue(value: string): boolean {
+  return value === "present" || value === "yes";
 }
 
 function Section({

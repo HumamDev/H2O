@@ -27,6 +27,7 @@ export function ReadOnlyBundleCacheStatus({
   canSaveMetadata = false,
 }: ReadOnlyBundleCacheStatusProps) {
   const canClear = Boolean(onClearCache && (metadata || status === "malformed"));
+  const hasCachedMetadata = Boolean(metadata);
 
   return (
     <View style={styles.root}>
@@ -35,7 +36,7 @@ export function ReadOnlyBundleCacheStatus({
           <Text style={styles.eyebrow}>Metadata cache only</Text>
           <Text style={styles.title}>Read-only cache status</Text>
           <Text style={styles.subtitle}>
-            Only counts/status are cached. Bundle content is not cached.
+            Only counts/status are cached. Bundle content and snapshots are not cached.
           </Text>
         </View>
         <View style={styles.modeBadge}>
@@ -50,33 +51,45 @@ export function ReadOnlyBundleCacheStatus({
         <StatusChip label="no-write-back" />
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Cached source</Text>
-        <View style={styles.grid}>
-          <Metric label="cached at" value={metadata?.cachedAt ?? "none"} />
-          <Metric label="source kind" value={metadata?.sourceKind ?? "none"} />
-          <Metric label="schema" value={metadata?.sourceSchemaPresent ? "present" : "missing"} />
-          <Metric label="exported at" value={metadata?.exportedAtPresent ? "present" : "missing"} />
-          <Metric label="source peer" value={metadata?.sourcePeerPresent ? "present" : "missing"} />
-          <Metric label="checksum" value={metadata?.checksumPresent ? "present" : "missing"} />
-          <Metric label="checksum verified" value={metadata?.checksumVerified ? "yes" : "no"} />
-        </View>
-      </View>
+      {hasCachedMetadata ? (
+        <>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Cached source</Text>
+            <View style={styles.grid}>
+              <Metric label="cached at" value={metadata?.cachedAt ?? "none"} />
+              <Metric label="source kind" value={metadata?.sourceKind ?? "none"} />
+              <Metric label="schema" value={metadata?.sourceSchemaPresent ? "present" : "missing"} />
+              <Metric label="exported at" value={metadata?.exportedAtPresent ? "present" : "missing"} />
+              <Metric label="source peer" value={metadata?.sourcePeerPresent ? "present" : "missing"} />
+              <Metric label="checksum" value={metadata?.checksumPresent ? "present" : "missing"} />
+              <Metric label="checksum verified" value={metadata?.checksumVerified ? "yes" : "no"} />
+            </View>
+          </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Cached counts</Text>
-        <View style={styles.grid}>
-          <Metric label="chats" value={String(metadata?.counts.chats ?? 0)} />
-          <Metric label="snapshots" value={String(metadata?.counts.snapshots ?? 0)} />
-          <Metric label="folders" value={String(metadata?.counts.folders ?? 0)} />
-          <Metric label="folder memberships" value={String(metadata?.counts.folderMemberships ?? 0)} />
-          <Metric label="labels" value={String(metadata?.counts.labels ?? 0)} />
-          <Metric label="categories" value={String(metadata?.counts.categories ?? 0)} />
-          <Metric label="tombstones" value={String(metadata?.counts.tombstones ?? 0)} />
-          <Metric label="conflicts" value={String(metadata?.counts.conflicts ?? 0)} />
-          <Metric label="apply events" value={String(metadata?.counts.applyEvents ?? 0)} />
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Cached counts</Text>
+            <View style={styles.grid}>
+              <Metric label="chats" value={String(metadata?.counts.chats ?? 0)} />
+              <Metric label="snapshots" value={String(metadata?.counts.snapshots ?? 0)} />
+              <Metric label="folders" value={String(metadata?.counts.folders ?? 0)} />
+              <Metric label="folder memberships" value={String(metadata?.counts.folderMemberships ?? 0)} />
+              <Metric label="labels" value={String(metadata?.counts.labels ?? 0)} />
+              <Metric label="categories" value={String(metadata?.counts.categories ?? 0)} />
+              <Metric label="tombstones" value={String(metadata?.counts.tombstones ?? 0)} />
+              <Metric label="conflicts" value={String(metadata?.counts.conflicts ?? 0)} />
+              <Metric label="apply events" value={String(metadata?.counts.applyEvents ?? 0)} />
+            </View>
+          </View>
+        </>
+      ) : (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>No cached metadata</Text>
+          <Text style={styles.emptyText}>
+            Only metadata can be cached. Bundle content and snapshots are not cached.
+          </Text>
+          <Text style={styles.emptyText}>Paste a bundle again to view library and snapshots.</Text>
         </View>
-      </View>
+      )}
 
       <CodeList
         title="Cache warning codes"
@@ -84,7 +97,7 @@ export function ReadOnlyBundleCacheStatus({
       />
 
       <Text style={styles.reminder}>
-        Paste a bundle again to view library and snapshots. Cached metadata cannot restore bundle content.
+        Cached metadata cannot restore bundle content, library items, or snapshot messages.
       </Text>
 
       <View style={styles.actionRow}>
@@ -264,6 +277,24 @@ const styles = StyleSheet.create({
     color: "#64748B",
     fontSize: 13,
     fontStyle: "italic",
+  },
+  emptyState: {
+    gap: 6,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#DFE7F1",
+    backgroundColor: "#F8FAFC",
+    padding: 12,
+  },
+  emptyTitle: {
+    color: "#172033",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  emptyText: {
+    color: "#64748B",
+    fontSize: 13,
+    lineHeight: 19,
   },
   reminder: {
     color: "#64748B",

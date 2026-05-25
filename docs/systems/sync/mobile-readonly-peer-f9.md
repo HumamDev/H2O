@@ -1034,6 +1034,22 @@ Recommended next options:
 Do not start F10 yet. If mobile read-only work continues, F9.5 should stay
 read-only and focus on file picker/import preview without archive-store writes.
 
+## F9 Mobile Read-Only UX Polish — Checksum and Cache Empty State
+
+The read-only viewer includes a small post-F9.4 polish pass:
+
+- Bundle diagnostics label checksum verification as `checksum verified` with
+  `yes` or `no`, rather than implying checksum presence means verification.
+- Missing or cleared metadata cache state renders a dedicated "No cached
+  metadata" empty state instead of normal cached metrics with `missing` or `0`
+  values.
+- Cache status copy states that only counts/status are cached. Bundle content,
+  library content, and snapshot messages are not cached.
+
+This polish does not change cache storage behavior, add file picker support,
+add full bundle or snapshot-content cache, add archive-store behavior, add
+WebDAV/cloud transport, or add mobile write-back.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
