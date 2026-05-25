@@ -4092,6 +4092,9 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
       key: STUDIO_BROADCAST_KEY,
       payloadKeys: Object.keys(payload).slice(0, 16),
       directRelay,
+      folderMetadataOperationResults: Array.isArray(directRelay && directRelay.folderMetadataOperationResults)
+        ? directRelay.folderMetadataOperationResults.slice(0, 16)
+        : [],
       ts: Date.now(),
     };
   } catch (e) {
@@ -4125,6 +4128,7 @@ async function forwardStudioBroadcastToChatTabs(value) {
 
   let sent = 0;
   const errors = [];
+  const folderMetadataOperationResults = [];
   await Promise.all(tabIds.map((tabId) => new Promise((resolve) => {
     try {
       chrome.tabs.sendMessage(tabId, {
@@ -4139,6 +4143,9 @@ async function forwardStudioBroadcastToChatTabs(value) {
           errors.push(String(tabId) + ":" + String(le.message || le));
         } else if (resp && resp.ok !== false) {
           sent += 1;
+          if (Array.isArray(resp.folderMetadataOperationResults)) {
+            folderMetadataOperationResults.push(...resp.folderMetadataOperationResults);
+          }
         } else {
           errors.push(String(tabId) + ":" + String((resp && (resp.status || resp.error)) || "no-response"));
         }
@@ -4154,6 +4161,8 @@ async function forwardStudioBroadcastToChatTabs(value) {
     status: sent > 0 ? "relayed" : "not-relayed",
     sent,
     tabCount: tabIds.length,
+    resultCount: folderMetadataOperationResults.length,
+    folderMetadataOperationResults: folderMetadataOperationResults.slice(0, 16),
     errors: errors.slice(0, 8),
   };
 }

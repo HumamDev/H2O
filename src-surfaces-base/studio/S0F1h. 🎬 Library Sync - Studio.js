@@ -130,6 +130,9 @@
     lastStudioBroadcastExternalOkCount: 0,
     lastStudioBroadcastExternalErrors: [],
     lastStudioBroadcastExternalTargetIds: [],
+    lastStudioBroadcastExternalResponses: [],
+    lastStudioBroadcastExternalResultCount: 0,
+    lastStudioBroadcastExternalDirectRelay: null,
     pendingFolderMetadataRequests: new Map(),
     lastFolderMetadataRequestAt: 0,
     lastFolderMetadataRequestId: '',
@@ -224,6 +227,9 @@
     state.lastStudioBroadcastExternalOkCount = 0;
     state.lastStudioBroadcastExternalErrors = [];
     state.lastStudioBroadcastExternalTargetIds = [];
+    state.lastStudioBroadcastExternalResponses = [];
+    state.lastStudioBroadcastExternalResultCount = 0;
+    state.lastStudioBroadcastExternalDirectRelay = null;
     if (!hasRuntimeExternalMessaging()) {
       state.lastStudioBroadcastExternalStatus = 'unavailable';
       state.lastStudioBroadcastExternalErrors = ['chrome-runtime-sendMessage-unavailable'];
@@ -260,6 +266,51 @@
         chrome.runtime.sendMessage(targetId, message, (resp) => {
           settled += 1;
           const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          const directRelay = resp && resp.directRelay && typeof resp.directRelay === 'object'
+            ? resp.directRelay
+            : null;
+          const topLevelResults = resp && Array.isArray(resp.folderMetadataOperationResults)
+            ? resp.folderMetadataOperationResults
+            : [];
+          const directRelayResults = directRelay && Array.isArray(directRelay.folderMetadataOperationResults)
+            ? directRelay.folderMetadataOperationResults
+            : [];
+          const directResultKeys = new Set();
+          const directResults = topLevelResults.concat(directRelayResults).filter((result) => {
+            const requestId = String(result?.requestId || '').trim();
+            const requestMode = String(result?.requestMode || '').trim();
+            const key = `${requestId}:${requestMode}`;
+            if (!requestId || directResultKeys.has(key)) return false;
+            directResultKeys.add(key);
+            return true;
+          });
+          const responseSummary = {
+            targetId,
+            ok: !runtimeError && !!(resp && resp.ok !== false),
+            status: runtimeError
+              ? String(runtimeError.message || runtimeError)
+              : String((resp && (resp.status || resp.error)) || ''),
+            directRelay: directRelay
+              ? {
+                status: String(directRelay.status || ''),
+                sent: Number(directRelay.sent || 0) || 0,
+                tabCount: Number(directRelay.tabCount || 0) || 0,
+                resultCount: Number(directRelay.resultCount || directRelayResults.length || 0) || 0,
+                errors: Array.isArray(directRelay.errors) ? directRelay.errors.slice(0, 8) : [],
+              }
+              : null,
+            resultCount: directResults.length,
+            at: Date.now(),
+          };
+          state.lastStudioBroadcastExternalResponses.push(responseSummary);
+          if (state.lastStudioBroadcastExternalResponses.length > 12) {
+            state.lastStudioBroadcastExternalResponses.splice(0, state.lastStudioBroadcastExternalResponses.length - 12);
+          }
+          if (responseSummary.directRelay) state.lastStudioBroadcastExternalDirectRelay = responseSummary.directRelay;
+          if (directResults.length) {
+            state.lastStudioBroadcastExternalResultCount += directResults.length;
+            rememberFolderMetadataOperationResults({ folderMetadataOperationResults: directResults }, 'external-direct-relay');
+          }
           if (runtimeError) {
             state.lastStudioBroadcastExternalErrors.push(`${targetId}:${String(runtimeError.message || runtimeError)}`);
           } else if (resp && resp.ok !== false) {
@@ -915,9 +966,11 @@
       requestMode: mode,
       operationType: String(op.operationType || ''),
       folderId: String(op.folderId || ''),
+      afterName: String(op.after?.name || op.name || ''),
       reason,
       timeoutMs,
       waitForResult,
+      createdAt: request.createdAt,
       payloadKeys: Object.keys(payload),
     };
 
@@ -1001,6 +1054,14 @@
             okCount: state.lastStudioBroadcastExternalOkCount,
             targetIds: state.lastStudioBroadcastExternalTargetIds.slice(),
             errors: state.lastStudioBroadcastExternalErrors.slice(),
+            responses: state.lastStudioBroadcastExternalResponses.map((entry) => ({
+              ...entry,
+              directRelay: entry.directRelay ? { ...entry.directRelay } : null,
+            })),
+            directResultCount: state.lastStudioBroadcastExternalResultCount,
+            lastDirectRelay: state.lastStudioBroadcastExternalDirectRelay
+              ? { ...state.lastStudioBroadcastExternalDirectRelay }
+              : null,
           },
         },
       };

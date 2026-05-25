@@ -100,6 +100,7 @@
   const EV_WRITE = 'h2o-ext-cs:write';
   const EV_READY = 'h2o-ext-cs:ready';
   const EV_EVENT = 'h2o-ext-cs:event';
+  const EV_FOLDER_METADATA_RESULT = 'h2o-ext-cs:folder-metadata-result';
 
   const state = {
     storageBound: false,
@@ -137,8 +138,10 @@
     lastFolderMetadataOperationRequestAt: 0,
     lastFolderMetadataOperationRequestCount: 0,
     lastFolderMetadataOperationRequestIds: [],
+    lastFolderMetadataOperationRequestSummaries: [],
     handledFolderMetadataOperationRequestIds: new Set(),
     pendingFolderMetadataOperationRequests: new Map(),
+    lastFolderMetadataOperationResultSummaries: [],
     folderBridgeReadyBroadcasted: false,
     lastFolderBridgeReadyBroadcastAt: 0,
     lastFolderBridgeReadyBroadcastReason: '',
@@ -350,6 +353,19 @@
       if (!id || state.handledFolderMetadataOperationRequestIds.has(id)) continue;
       state.handledFolderMetadataOperationRequestIds.add(id);
       handledIds.push(id);
+      const op = request?.operation && typeof request.operation === 'object' ? request.operation : {};
+      state.lastFolderMetadataOperationRequestSummaries.push({
+        requestId: id,
+        requestMode: String(request?.requestMode || '').trim(),
+        operationType: String(op.operationType || '').trim(),
+        folderId: String(op.folderId || '').trim(),
+        folderName: String(op.after?.name || op.name || '').trim(),
+        ownerAvailable: hasFolderMetadataOwner(String(request?.requestMode || '').trim() || 'preview'),
+        at: Date.now(),
+      });
+      if (state.lastFolderMetadataOperationRequestSummaries.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
+        state.lastFolderMetadataOperationRequestSummaries.splice(0, state.lastFolderMetadataOperationRequestSummaries.length - FOLDER_METADATA_OPERATION_RESULT_MAX);
+      }
       executeFolderMetadataOperationRequest(request);
     }
     if (state.handledFolderMetadataOperationRequestIds.size > 64) {
@@ -777,6 +793,24 @@
   function queueFolderMetadataOperationResult(result) {
     const normalized = normalizeFolderMetadataOperationResult(result);
     if (!normalized.requestId) normalized.blockers.push({ code: 'missing-request-id' });
+    state.lastFolderMetadataOperationResultSummaries.push({
+      requestId: normalized.requestId,
+      requestMode: normalized.requestMode,
+      operationType: normalized.operationType,
+      folderId: normalized.folderId,
+      ok: normalized.ok,
+      applied: normalized.applied,
+      blockers: normalized.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8),
+      at: Date.now(),
+    });
+    if (state.lastFolderMetadataOperationResultSummaries.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
+      state.lastFolderMetadataOperationResultSummaries.splice(0, state.lastFolderMetadataOperationResultSummaries.length - FOLDER_METADATA_OPERATION_RESULT_MAX);
+    }
+    try {
+      D.dispatchEvent(new CustomEvent(EV_FOLDER_METADATA_RESULT, {
+        detail: { result: normalized, t: Date.now() },
+      }));
+    } catch {}
     state.pendingFolderMetadataOperationResults.push(normalized);
     state.recentFolderMetadataOperationResults.push({ ...normalized, replayUntil: Date.now() + FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS });
     if (state.recentFolderMetadataOperationResults.length > FOLDER_METADATA_OPERATION_RESULT_MAX) {
@@ -997,12 +1031,14 @@
             requestsHandledAt: state.lastFolderMetadataOperationRequestAt,
             requestsHandledCount: state.lastFolderMetadataOperationRequestCount,
             lastHandledRequestIds: state.lastFolderMetadataOperationRequestIds.slice(),
+            lastHandledRequestSummaries: state.lastFolderMetadataOperationRequestSummaries.slice(),
             pendingOwnerRequestCount: state.pendingFolderMetadataOperationRequests.size,
             pendingResultCount: state.pendingFolderMetadataOperationResults.length,
             recentResultCount: state.recentFolderMetadataOperationResults.length,
             lastResultAt: state.lastFolderMetadataOperationResultAt,
             lastResultCount: state.lastFolderMetadataOperationResultCount,
             lastRequestIds: state.lastFolderMetadataOperationResultRequestIds.slice(),
+            lastResultSummaries: state.lastFolderMetadataOperationResultSummaries.slice(),
             maxResultsPerBroadcast: FOLDER_METADATA_OPERATION_RESULT_MAX,
             replayMs: FOLDER_METADATA_OPERATION_RESULT_REPLAY_MS,
           },

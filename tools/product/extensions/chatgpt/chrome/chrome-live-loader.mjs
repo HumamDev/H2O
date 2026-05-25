@@ -3939,9 +3939,11 @@ export function makeChromeLiveLoaderJs({
     const EV_WRITE = "h2o-ext-cs:write";
     const EV_READY = "h2o-ext-cs:ready";
     const EV_EVENT = "h2o-ext-cs:event";
+    const EV_FOLDER_METADATA_RESULT = "h2o-ext-cs:folder-metadata-result";
     const STUDIO_KEY = "h2o:library:cross-surface:broadcast:v1";
     const NATIVE_KEY = "h2o:library:cross-surface:broadcast:native:v1";
     const MSG_STUDIO_BROADCAST = "h2o:library:studio-broadcast:v1";
+    const DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS = 3500;
     const FOLDER_STATE_DATA_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
     const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
     /* Phase K-2.6 — cross-extension linked-records bridge. Parallel to the
@@ -4015,6 +4017,36 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
+    function folderMetadataRequestIdsFromStudioBroadcast(value) {
+      const payload = value && typeof value === "object" ? value.payload : null;
+      const requests = payload && payload.folderMetadataOperationRequests;
+      const list = Array.isArray(requests)
+        ? requests
+        : (requests && typeof requests === "object" ? [requests] : []);
+      return list
+        .map((request) => String(request && request.requestId || "").trim())
+        .filter(Boolean);
+    }
+
+    function summarizeFolderMetadataRequestsFromStudioBroadcast(value) {
+      const payload = value && typeof value === "object" ? value.payload : null;
+      const requests = payload && payload.folderMetadataOperationRequests;
+      const list = Array.isArray(requests)
+        ? requests
+        : (requests && typeof requests === "object" ? [requests] : []);
+      return list.map((request) => {
+        const operation = request && request.operation && typeof request.operation === "object" ? request.operation : {};
+        const after = operation.after && typeof operation.after === "object" ? operation.after : {};
+        return {
+          requestId: String(request && request.requestId || "").trim(),
+          requestMode: String(request && request.requestMode || "").trim(),
+          operationType: String(operation.operationType || "").trim(),
+          folderId: String(operation.folderId || "").trim(),
+          afterName: String(after.name || "").trim(),
+        };
+      }).filter((entry) => entry.requestId || entry.operationType);
+    }
+
     function handleStudioBroadcastDirectRelay(msg, sendResponse) {
       const key = String(msg && msg.key || "");
       const value = msg && msg.value && typeof msg.value === "object" && !Array.isArray(msg.value)
@@ -4028,11 +4060,65 @@ export function makeChromeLiveLoaderJs({
         try { sendResponse({ ok: false, status: "invalid-broadcast-value", key }); } catch {}
         return;
       }
+      const requestIds = folderMetadataRequestIdsFromStudioBroadcast(value);
+      const requestSummaries = summarizeFolderMetadataRequestsFromStudioBroadcast(value);
+      let settled = false;
+      let timer = null;
+      const results = [];
+      const finish = (status, extra = {}) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          try { clearTimeout(timer); } catch {}
+          timer = null;
+        }
+        if (requestIds.length) {
+          try { document.removeEventListener(EV_FOLDER_METADATA_RESULT, onResult, false); } catch {}
+        }
+        try {
+          sendResponse({
+            ok: true,
+            status,
+            key: STUDIO_KEY,
+            payloadKeys: Object.keys(value.payload || {}).slice(0, 12),
+            requestIds: requestIds.slice(),
+            requestSummaries: requestSummaries.slice(0, 8),
+            resultCount: results.length,
+            folderMetadataOperationResults: results.slice(0, 16),
+            ...extra,
+          });
+        } catch {}
+      };
+      const onResult = (ev) => {
+        const detail = ev && ev.detail && typeof ev.detail === "object" ? ev.detail : null;
+        const result = detail && detail.result && typeof detail.result === "object" ? detail.result : null;
+        const requestId = String(result && result.requestId || "").trim();
+        if (!requestId || !requestIds.includes(requestId)) return;
+        results.push(result);
+        if (results.length >= requestIds.length) {
+          finish("relayed-result");
+        }
+      };
       try {
+        if (requestIds.length) {
+          document.addEventListener(EV_FOLDER_METADATA_RESULT, onResult, false);
+          timer = setTimeout(() => {
+            finish(results.length ? "relayed-partial-result-timeout" : "relayed-result-timeout", {
+              timeoutMs: DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS,
+            });
+          }, DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS);
+        }
         sendEvent(STUDIO_KEY, value, undefined, { direct: true });
-        dlog("studioBroadcast.direct.ok", String(value.reason || ""));
-        sendResponse({ ok: true, status: "relayed", key: STUDIO_KEY, payloadKeys: Object.keys(value.payload || {}).slice(0, 12) });
+        dlog("studioBroadcast.direct.ok", String(value.reason || "") + " requests=" + requestIds.length);
+        if (!requestIds.length) {
+          finish("relayed");
+        }
       } catch (e) {
+        if (timer) {
+          try { clearTimeout(timer); } catch {}
+          timer = null;
+        }
+        try { document.removeEventListener(EV_FOLDER_METADATA_RESULT, onResult, false); } catch {}
         dlog("studioBroadcast.direct.err", String(e && (e.message || e)));
         try { sendResponse({ ok: false, status: "relay-failed", key: STUDIO_KEY, error: String(e && (e.message || e)) }); } catch {}
       }
