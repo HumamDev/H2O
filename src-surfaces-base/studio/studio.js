@@ -3584,35 +3584,32 @@ function folderSidebarCountDetails(item, countText){
   return String(countText || "").trim();
 }
 
-function folderSidebarCountInfoHtml(displayLabel, details){
-  const text = String(details || "").trim();
-  if (!text) return "";
-  return `<button class="wbFolderCountInfo" type="button" title="${esc(text)}" aria-label="${esc(`${displayLabel} counts: ${text}`)}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.58);font:700 10.5px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;letter-spacing:0;cursor:help;flex:0 0 auto;padding:0">i</button>`;
-}
-
 function updateFolderCountToggleButton(button){
   if (!button) return;
   const enabled = !!FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
-  button.textContent = enabled ? "Counts on" : "Counts";
-  button.title = enabled ? "Hide folder count pills" : "Show folder count pills";
+  button.textContent = "#";
+  button.title = enabled ? "Hide folder counts" : "Show folder counts";
   button.setAttribute("aria-pressed", String(enabled));
-  button.setAttribute("aria-label", enabled ? "Hide folder count details" : "Show folder count details");
+  button.setAttribute("aria-label", enabled ? "Hide folder counts" : "Show folder counts");
+  button.style.background = enabled ? "rgba(59,130,246,.18)" : "rgba(255,255,255,.035)";
+  button.style.borderColor = enabled ? "rgba(125,211,252,.35)" : "rgba(255,255,255,.12)";
+  button.style.color = enabled ? "rgba(191,219,254,.95)" : "rgba(255,255,255,.62)";
 }
 
 function ensureFolderCountToggle(){
   const section = document.querySelector(".wbSidebarSection--folders");
   const label = section && section.querySelector(".wbSideLabel");
   if (!(section && label)) return null;
-  let button = label.querySelector('[data-h2o-folder-count-toggle="1"]');
+  let button = section.querySelector('[data-h2o-folder-count-toggle="1"]');
+  if (button && button.parentElement !== section) section.insertBefore(button, label.nextSibling);
   if (!button) {
-    label.style.display = "flex";
-    label.style.alignItems = "center";
-    label.style.gap = "8px";
+    section.style.position = "relative";
+    label.style.paddingRight = "40px";
     button = document.createElement("button");
     button.className = "wbSidebarFolderCountToggle";
     button.type = "button";
     button.dataset.h2oFolderCountToggle = "1";
-    button.style.cssText = "margin-left:auto;display:inline-flex;align-items:center;justify-content:center;height:20px;min-width:20px;padding:0 7px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:600 10px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer";
+    button.style.cssText = "position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:700 11px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer";
     button.addEventListener("pointerdown", (event) => event.stopPropagation());
     button.addEventListener("keydown", (event) => event.stopPropagation());
     button.addEventListener("click", (event) => {
@@ -3622,7 +3619,7 @@ function ensureFolderCountToggle(){
       updateFolderCountToggleButton(button);
       renderList();
     });
-    label.appendChild(button);
+    section.insertBefore(button, label.nextSibling);
   }
   updateFolderCountToggleButton(button);
   return button;
@@ -3650,9 +3647,13 @@ function renderFolderSidebarRow(view, item, opts){
   const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
   const compactCounts = !(opts && opts.review) && !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
   const countDetails = folderSidebarCountDetails(item, countText);
+  const rowTitle = countDetails ? `${displayLabel} — ${countDetails}` : displayLabel;
   if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
   if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
   link.href = buildListHash(view, item.folderId);
+  link.title = rowTitle;
+  link.setAttribute("aria-label", countDetails ? `${displayLabel}, ${countDetails}` : displayLabel);
+  if (compactCounts) link.style.gridTemplateColumns = "16px minmax(0,1fr) 24px";
   link.dataset.folderId = String(item.folderId || "");
   if (hasDetailedCount) link.dataset.countLabel = countText;
   link.dataset.countMode = compactCounts ? "compact" : "inline";
@@ -3676,18 +3677,9 @@ function renderFolderSidebarRow(view, item, opts){
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(displayLabel)}</span>
       ${reviewBadgesHtml}
     </span>
-    ${compactCounts ? folderSidebarCountInfoHtml(displayLabel, countDetails) : `<span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}" title="${esc(countDetails)}">${esc(countText)}</span>`}
+    ${compactCounts ? "" : `<span class="wbFolderCount${hasDetailedCount ? " wbFolderCount--folderParity" : ""}" title="${esc(countDetails)}">${esc(countText)}</span>`}
     ${folderMenuHtml}
   `;
-  const countInfoBtn = link.querySelector(".wbFolderCountInfo");
-  if (countInfoBtn) {
-    countInfoBtn.addEventListener("pointerdown", (event) => event.stopPropagation());
-    countInfoBtn.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-    });
-    countInfoBtn.addEventListener("keydown", (event) => event.stopPropagation());
-  }
   const menuBtn = link.querySelector(".wbFolderMenuBtn");
   if (menuBtn) {
     menuBtn.addEventListener("pointerdown", (event) => event.stopPropagation());

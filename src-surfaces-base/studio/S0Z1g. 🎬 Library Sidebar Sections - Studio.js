@@ -178,25 +178,6 @@
     return countLabelForItem(item);
   }
 
-  function makeFolderCountInfoButton(item = {}, name = '', details = '') {
-    const text = String(details || '').trim();
-    if (!text) return null;
-    const button = el('button', {
-      class: 'wbSidebarSectionCountInfo',
-      type: 'button',
-      title: text,
-      'aria-label': `${String(name || item.name || 'Folder').trim()} counts: ${text}`,
-      style: 'width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.58);font:700 10.5px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;cursor:help;flex:0 0 auto;padding:0',
-    }, 'i');
-    button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    button.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-    });
-    button.addEventListener('keydown', (ev) => ev.stopPropagation());
-    return button;
-  }
-
   function localReviewBadgeValues(item = {}) {
     const values = new Set((Array.isArray(item.badges) ? item.badges : [])
       .map((badge) => String(badge || '').trim().toLowerCase())
@@ -1610,9 +1591,13 @@
       const hasDetailedCount = !!String(item.displayCountLabel || '').trim();
       const countDetails = kind === 'folders' ? folderCountDetailsText(item) : countLabel;
       const showInlineCount = !!countLabel && !compactFolderCounts;
-      const countInfoButton = compactFolderCounts ? makeFolderCountInfoButton(item, name, countDetails) : null;
       const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
       const title = countDetails ? `${name} — ${countDetails}` : name;
+      const ariaLabel = countDetails ? `${name}, ${countDetails}` : name;
+      const rowStyle = [
+        color ? `--wb-sidebar-item-color:${color};` : '',
+        compactFolderCounts ? 'grid-template-columns:16px minmax(0,1fr) 24px;' : '',
+      ].filter(Boolean).join('');
       const menuButton = !opts.disableMenu && !item.disableMenu && (kind === 'categories' || kind === 'folders')
         ? el('button', {
           class: 'wbSidebarSectionItemMenu',
@@ -1635,6 +1620,7 @@
         class: `wbSidebarSectionItem wbSidebarSectionItem--${kind}`,
         href,
         title,
+        'aria-label': ariaLabel,
         'data-section': kind,
         'data-id': id,
         'data-icon': item.iconKey || '',
@@ -1646,7 +1632,7 @@
         'data-count-mode': compactFolderCounts ? 'compact' : (showInlineCount ? 'inline' : null),
         'data-system-row': item.isSystem === true ? 'true' : null,
         'data-color-source': item.isCanonical === true ? 'canonical' : (color ? 'local' : null),
-        style: color ? `--wb-sidebar-item-color:${color};` : '',
+        style: rowStyle,
       }, [
         makeItemIcon(item, kind),
         opts.review ? el('span', {
@@ -1661,7 +1647,6 @@
           title: countDetails || (hasDetailedCount ? countLabel : null),
           style: hasDetailedCount ? 'height:auto;min-height:18px;max-width:116px;white-space:normal;text-align:right;line-height:1.15;padding:2px 6px;' : null,
         }, countLabel) : null,
-        countInfoButton,
         menuButton,
       ]);
       host.appendChild(link);
@@ -1901,28 +1886,31 @@
   function updateFolderCountToggleButton(button) {
     if (!button) return;
     const enabled = !!FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
-    button.textContent = enabled ? 'Counts on' : 'Counts';
-    button.title = enabled ? 'Hide folder count pills' : 'Show folder count pills';
+    button.textContent = '#';
+    button.title = enabled ? 'Hide folder counts' : 'Show folder counts';
     button.setAttribute('aria-pressed', String(enabled));
-    button.setAttribute('aria-label', enabled ? 'Hide folder count details' : 'Show folder count details');
+    button.setAttribute('aria-label', enabled ? 'Hide folder counts' : 'Show folder counts');
+    button.style.background = enabled ? 'rgba(59,130,246,.18)' : 'rgba(255,255,255,.035)';
+    button.style.borderColor = enabled ? 'rgba(125,211,252,.35)' : 'rgba(255,255,255,.12)';
+    button.style.color = enabled ? 'rgba(191,219,254,.95)' : 'rgba(255,255,255,.62)';
   }
 
   function ensureFolderCountToggle() {
     const sec = D.querySelector('.wbSidebarSection--folders');
     const label = sec?.querySelector?.('.wbSideLabel');
     if (!sec || !label) return null;
-    let button = label.querySelector('[data-h2o-folder-count-toggle="1"]');
+    let button = sec.querySelector('[data-h2o-folder-count-toggle="1"]');
+    if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
     if (!button) {
       try {
-        label.style.display = 'flex';
-        label.style.alignItems = 'center';
-        label.style.gap = '8px';
+        sec.style.position = 'relative';
+        label.style.paddingRight = '40px';
       } catch {}
       button = el('button', {
         class: 'wbSidebarFolderCountToggle',
         type: 'button',
         'data-h2o-folder-count-toggle': '1',
-        style: 'margin-left:auto;display:inline-flex;align-items:center;justify-content:center;height:20px;min-width:20px;padding:0 7px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:600 10px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer',
+        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:700 11px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer',
       });
       button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
       button.addEventListener('keydown', (ev) => ev.stopPropagation());
@@ -1933,7 +1921,7 @@
         updateFolderCountToggleButton(button);
         renderFolders().catch((e) => err('renderFolders.countToggle', e));
       });
-      label.appendChild(button);
+      sec.insertBefore(button, label.nextSibling);
     }
     updateFolderCountToggleButton(button);
     return button;
