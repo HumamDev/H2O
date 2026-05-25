@@ -5300,6 +5300,309 @@ function focusSearch(){
   });
 }
 
+function isVisibleStudioFoldersRoute(){
+  const route = parseHash();
+  return route.name === "library" && String(route.view || "").toLowerCase() === "folders";
+}
+
+function visibleStudioFolderPageCountLabel(row){
+  const explicit = String(row?.displayCountLabel || "").trim();
+  if (explicit) return explicit;
+  if (row?.isUnfiled) return `${Number(row?.knownCount || 0) || 0} known here`;
+  const nativeCount = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? row?.count ?? 0) || 0;
+  const knownCount = Number(row?.knownStudioCount ?? row?.knownCount ?? 0) || 0;
+  return row?.isCanonical === true
+    ? `${nativeCount} native · ${knownCount} known here`
+    : `${knownCount} known here`;
+}
+
+function normalizeVisibleStudioFolderPageRow(raw, canonical){
+  const folderId = String(raw?.folderId || raw?.id || "").trim();
+  if (!folderId) return null;
+  const name = String(raw?.name || raw?.label || folderId).trim() || folderId;
+  return {
+    ...raw,
+    id: folderId,
+    folderId,
+    name,
+    label: name,
+    isCanonical: canonical === true || raw?.isCanonical === true,
+    iconColor: normalizeSidebarIconColor(raw?.iconColor || raw?.color || ""),
+    color: normalizeSidebarIconColor(raw?.iconColor || raw?.color || ""),
+    displayCountLabel: String(raw?.displayCountLabel || "").trim(),
+    nativeMembershipCount: Number(raw?.nativeMembershipCount ?? raw?.canonicalCount ?? raw?.count ?? 0) || 0,
+    canonicalCount: Number(raw?.canonicalCount ?? raw?.nativeMembershipCount ?? raw?.count ?? 0) || 0,
+    knownCount: Number(raw?.knownStudioCount ?? raw?.knownCount ?? 0) || 0,
+    knownStudioCount: Number(raw?.knownStudioCount ?? raw?.knownCount ?? 0) || 0,
+  };
+}
+
+function countVisibleStudioUnfiledRows(){
+  return (Array.isArray(state.rowsCache) ? state.rowsCache : []).filter((row) => {
+    const folderId = String(row?.folderId || "").trim();
+    return !folderId && matchesView(row, state.lastView || "saved");
+  }).length;
+}
+
+function makeVisibleStudioFolderPageActionButton(row){
+  const button = document.createElement("button");
+  const name = String(row?.name || row?.folderId || "folder");
+  button.className = "wbFolderPageActionButton";
+  button.type = "button";
+  button.textContent = "...";
+  button.dataset.h2oFolderPageActionButton = "1";
+  button.dataset.h2oFolderId = String(row?.folderId || "");
+  button.dataset.folderId = String(row?.folderId || "");
+  button.title = row?.isCanonical === true ? `More options for ${name}` : "Local Review rows are protected";
+  button.setAttribute("aria-label", button.title);
+  button.setAttribute("aria-expanded", "false");
+  button.style.cssText = [
+    "display:inline-flex",
+    "align-items:center",
+    "justify-content:center",
+    "width:30px",
+    "height:30px",
+    "min-width:30px",
+    "max-width:30px",
+    "padding:0",
+    "border:1px solid rgba(255,255,255,.12)",
+    "border-radius:8px",
+    "background:rgba(255,255,255,.045)",
+    "color:rgba(255,255,255,.78)",
+    "font:700 14px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif",
+    "letter-spacing:0",
+    "flex:0 0 auto",
+    row?.isCanonical === true ? "cursor:pointer" : "cursor:not-allowed;opacity:.52",
+  ].join(";");
+  if (row?.isCanonical === true) {
+    button.setAttribute("aria-haspopup", "menu");
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const openMenu = W.H2O?.Library?.SidebarSections?.openRowMenu;
+      if (typeof openMenu === "function") {
+        openMenu(button, {
+          ...row,
+          kind: "folders",
+          section: "folders",
+          id: row.folderId,
+          folderId: row.folderId,
+          name: row.name,
+          label: row.name,
+          color: row.iconColor || row.color || "",
+          iconColor: row.iconColor || row.color || "",
+          isCanonical: true,
+        });
+      }
+    });
+  } else {
+    button.disabled = true;
+    button.setAttribute("aria-disabled", "true");
+  }
+  return button;
+}
+
+function makeVisibleStudioFolderPageRow(row){
+  const label = visibleStudioFolderPageCountLabel(row);
+  const folderId = String(row?.folderId || row?.id || "").trim();
+  const name = String(row?.name || folderId).trim() || folderId;
+  const iconColor = normalizeSidebarIconColor(row?.iconColor || row?.color || "") || "currentColor";
+  const href = row?.isUnfiled
+    ? buildListHash(state.lastView || "saved", FOLDER_FILTER_NONE)
+    : buildListHash(state.lastView || "saved", folderId);
+  const rowEl = document.createElement("div");
+  rowEl.className = "wbFolderPageRow";
+  rowEl.setAttribute("role", "listitem");
+  rowEl.dataset.h2oFolderPageRow = "1";
+  rowEl.dataset.h2oFolderId = folderId;
+  rowEl.dataset.folderId = folderId;
+  rowEl.dataset.canonical = row?.isCanonical === true ? "true" : "false";
+  rowEl.title = `${name} — ${label}`;
+  rowEl.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:14px 14px 14px 16px;border-bottom:1px solid rgba(255,255,255,.08);color:inherit";
+
+  const link = document.createElement("a");
+  link.className = "wbFolderPageRowLink";
+  link.href = href;
+  link.dataset.h2oFolderId = folderId;
+  link.dataset.folderId = folderId;
+  link.title = `${name} — ${label}`;
+  link.style.cssText = "display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;min-width:0;color:inherit;text-decoration:none";
+  link.innerHTML = `
+    <span class="wbFolderPageIcon" aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:${esc(iconColor)};background:rgba(255,255,255,.035);flex:0 0 auto">
+      ${SIDEBAR_FOLDER_ICON_SVG}
+    </span>
+    <span style="min-width:0">
+      <span style="display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap">
+        <span style="font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
+        <span style="display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)">${esc(row?.isUnfiled ? "system" : row?.isCanonical ? "canonical" : "review-required")}</span>
+      </span>
+      <span style="display:block;margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all">${folderId ? `ID ${esc(folderId)}` : ""}</span>
+    </span>
+    <span title="${esc(label)}" aria-label="${esc(label)}" style="text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(label)}</span>
+  `;
+  rowEl.appendChild(link);
+  if (row?.isUnfiled) {
+    const spacer = document.createElement("span");
+    spacer.setAttribute("aria-hidden", "true");
+    spacer.style.cssText = "display:inline-block;width:30px;height:30px";
+    rowEl.appendChild(spacer);
+  } else {
+    rowEl.appendChild(makeVisibleStudioFolderPageActionButton(row));
+  }
+  return rowEl;
+}
+
+function prepareVisibleStudioFoldersBody(){
+  const listPanel = $("#viewListPanel");
+  const listEl = $("#viewList");
+  const readerEl = $("#viewReader");
+  const libraryRegion = document.getElementById("wbLibraryRegion");
+  try { W.H2O?.LibraryCore?.getService?.("page-host")?.showLibraryRegion?.(false); } catch {}
+  if (libraryRegion) libraryRegion.hidden = true;
+  if (listPanel) {
+    listPanel.hidden = false;
+    listPanel.removeAttribute("data-library-overlay");
+  }
+  if (readerEl) {
+    readerEl.hidden = true;
+    readerEl.removeAttribute("data-library-overlay");
+  }
+  const listTitle = $("#listTitle");
+  const listSubtitle = $("#listSubtitle");
+  const listFilters = $("#listFilters");
+  if (listTitle) listTitle.textContent = "Folders";
+  if (listSubtitle) listSubtitle.textContent = "Loading folder parity model...";
+  if (listFilters) listFilters.innerHTML = "";
+  setRouteMeta("Library", "Folders", "Library workspace · folders · labels · categories · projects · tags");
+  return listEl;
+}
+
+async function renderVisibleStudioFoldersPageBody(opts = {}){
+  const token = ++state.renderToken;
+  state.currentReaderSnapshot = null;
+  applyUiState();
+  setActiveNav(state.lastView || "saved");
+  studioHostUnmount("studio:library-folders-visible-body");
+  const listEl = prepareVisibleStudioFoldersBody();
+  if (listEl) {
+    listEl.innerHTML = `
+      <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="loading" style="padding:16px 18px 24px">
+        <div class="wbState">Loading folders...</div>
+      </section>
+    `;
+  }
+
+  const parity = W.H2O?.Library?.FolderParity;
+  if (typeof parity?.getDisplayModel !== "function") {
+    if (listEl) {
+      listEl.innerHTML = `
+        <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="waiting" style="padding:16px 18px 24px">
+          <div class="wbState">FolderParity is still loading. Folders will appear when the canonical model is ready.</div>
+        </section>
+      `;
+    }
+    W.setTimeout(() => {
+      if (isVisibleStudioFoldersRoute()) renderVisibleStudioFoldersPageBody({ force: true }).catch(console.warn);
+    }, 800);
+    return;
+  }
+
+  let model = null;
+  try {
+    model = await parity.getDisplayModel({ fresh: opts.force !== false });
+  } catch (error) {
+    if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
+    const errorListEl = prepareVisibleStudioFoldersBody() || listEl;
+    if (errorListEl) {
+      errorListEl.innerHTML = `
+        <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="error" style="padding:16px 18px 24px">
+          <div class="wbState wbState--error">${esc(error?.message || "Failed to load folder parity model.")}</div>
+        </section>
+      `;
+    }
+    return;
+  }
+  if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
+  const finalListEl = prepareVisibleStudioFoldersBody() || listEl;
+
+  const canonicalRows = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
+    .map((row) => normalizeVisibleStudioFolderPageRow({ ...row, isCanonical: true }, true))
+    .filter(Boolean);
+  const reviewRows = (Array.isArray(model?.localReviewRows) ? model.localReviewRows : [])
+    .map((row) => normalizeVisibleStudioFolderPageRow(row, false))
+    .filter(Boolean);
+  const unfiledRow = {
+    id: FOLDER_FILTER_NONE,
+    folderId: FOLDER_FILTER_NONE,
+    name: "Unfiled",
+    label: "Unfiled",
+    displayCountLabel: `${countVisibleStudioUnfiledRows()} known here`,
+    knownCount: countVisibleStudioUnfiledRows(),
+    isUnfiled: true,
+    isCanonical: false,
+  };
+  const page = document.createElement("section");
+  page.className = "wbFolderPage";
+  page.dataset.h2oFolderPage = "1";
+  page.dataset.h2oFolderPageOwner = "studio-js-visible-body";
+  page.dataset.h2oFolderPageStatus = canonicalRows.length ? "ready" : "empty";
+  page.style.cssText = "padding:16px 18px 24px;display:flex;flex-direction:column;gap:14px;min-width:0";
+
+  const summary = document.createElement("div");
+  summary.className = "wbFolderPageSummary";
+  summary.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;color:rgba(255,255,255,.62);font-size:12px;line-height:1.4";
+  summary.innerHTML = `
+    <span>${pluralize(canonicalRows.length, "canonical folder")} · ${pluralize(reviewRows.length, "review row")}</span>
+    <span>${esc(String(model?.surface || "folder-parity"))}</span>
+  `;
+  page.appendChild(summary);
+
+  const list = document.createElement("section");
+  list.className = "wbFolderPageList";
+  list.setAttribute("role", "list");
+  list.style.cssText = "display:flex;flex-direction:column;min-width:0;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.025);overflow:hidden";
+  const rowsToRender = canonicalRows.concat(unfiledRow);
+  if (!canonicalRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "wbState";
+    empty.textContent = "Canonical folder rows are unavailable. Open ChatGPT to broadcast folders, then refresh FolderParity.";
+    empty.style.padding = "22px";
+    list.appendChild(empty);
+  } else {
+    rowsToRender.forEach((row) => list.appendChild(makeVisibleStudioFolderPageRow(row)));
+  }
+  page.appendChild(list);
+
+  if (reviewRows.length) {
+    const review = document.createElement("section");
+    review.className = "wbFolderPageReview";
+    review.style.cssText = "display:flex;flex-direction:column;min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:10px;background:rgba(255,255,255,.018);overflow:hidden";
+    const head = document.createElement("div");
+    head.textContent = `Local Review · ${reviewRows.length}`;
+    head.style.cssText = "padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.07);font-size:11px;color:rgba(255,255,255,.55);letter-spacing:.04em;text-transform:uppercase";
+    review.appendChild(head);
+    reviewRows.forEach((row) => review.appendChild(makeVisibleStudioFolderPageRow(row)));
+    page.appendChild(review);
+  }
+
+  const subtitle = $("#listSubtitle");
+  if (subtitle) {
+    subtitle.textContent = [
+      pluralize(canonicalRows.length, "canonical folder"),
+      reviewRows.length ? pluralize(reviewRows.length, "Local Review row") : "",
+      model?.surface ? String(model.surface) : "",
+    ].filter(Boolean).join(" · ");
+  }
+  if (finalListEl) {
+    finalListEl.innerHTML = "";
+    finalListEl.appendChild(page);
+  }
+}
+
 async function renderRoute(opts = {}){
   /* Phase 1a Studio Ribbon — capture the resolved route here so the
    * try/finally tail can sync ribbon context exactly once regardless of
@@ -5333,12 +5636,10 @@ async function renderRoute(opts = {}){
   } catch {}
   if (route.name === "library") {
     // Library overlay is owned by S0F1d Library Insights and toggled by S0Z1f's
-    // route subscriber. studio.js does NOT render the list/reader on Library
-    // routes — the overlay covers the stage. Bailing out here is the single
-    // critical fix that prevents renderList from history.replaceState'ing the
-    // hash back to "#/saved" the moment the Library button is clicked. The
-    // topbar meta still gets refreshed below so the eyebrow doesn't keep
-    // showing the previous list view's text once the overlay opens.
+    // route subscriber. Most Library routes still bail out here so renderList
+    // does not rewrite the hash back to "#/saved"; folders is the explicit
+    // exception because the active runtime can show the static list body while
+    // the overlay page is empty.
     const LIBRARY_TAB_LABELS = {
       dashboard: "Dashboard",
       analytics: "Analytics",
@@ -5351,6 +5652,9 @@ async function renderRoute(opts = {}){
     const view = String(route.view || "dashboard").toLowerCase();
     const label = LIBRARY_TAB_LABELS[view] || (view ? view[0].toUpperCase() + view.slice(1) : "Dashboard");
     setRouteMeta("Library", label, "Library workspace · folders · labels · categories · projects · tags");
+    if (view === "folders") {
+      await renderVisibleStudioFoldersPageBody(opts);
+    }
     return;
   }
   if (route.name === "read") {
