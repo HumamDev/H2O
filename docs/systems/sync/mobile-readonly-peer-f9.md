@@ -503,6 +503,42 @@ Recommended next options:
 The recommended next planning step is F9.3. Keep it read-only: no decisions, no
 ingestion, no apply, and no write-back.
 
+## F9.3a — Read-Only Sync Evidence View Model
+
+F9.3a adds a pure mobile view model for sync evidence already present in the
+pasted Desktop `latest.json` bundle:
+
+```txt
+latest.json evidence -> read-only sync evidence view model
+```
+
+The helper shape is:
+
+```ts
+buildMobileReadOnlySyncEvidenceView(bundle)
+```
+
+The returned schema is `h2o.mobile.readonly-sync-evidence-view.v1`. It contains
+code/count-only sections for:
+
+- Tombstone/delete evidence: availability, total count, and warning codes.
+- Conflict evidence: availability, total count, and warning codes.
+- Apply-event evidence: availability, total count, capped/skipped-malformed
+  metadata, and safe warning codes from `syncApplyEvents`.
+
+The model always returns `capabilities: ["read-only"]`. Missing or malformed
+optional sections return warnings and zero counts rather than throwing.
+
+F9.3a must not expose raw IDs, peer IDs, hashes, folder names, chat text, audit
+row IDs, raw audit JSON, tombstone IDs, conflict IDs, or metadata blobs.
+Allowed output is limited to counts, booleans, availability flags, capability
+labels, and warning codes.
+
+F9.3a does not add UI, route wiring, archive-store access, WebDAV, persistence,
+conflict ingestion, conflict decisions, tombstone creation, F7/F8 apply, or
+mobile write-back. F9.3b may add a presentational read-only evidence status
+component.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
