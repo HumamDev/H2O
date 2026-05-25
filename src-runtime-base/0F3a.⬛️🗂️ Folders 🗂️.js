@@ -2987,18 +2987,26 @@ ${CROW}[aria-current="true"]{
     pop.style.cssText = [
       'position:fixed',
       `z-index:${CFG_FSECTION_FLOATING_Z}`,
-      'display:block',
+      'display:flex',
+      'flex-direction:column',
+      'align-items:stretch',
+      'gap:2px',
       'visibility:visible',
       'opacity:1',
       'pointer-events:auto',
       'box-sizing:border-box',
       'min-width:238px',
+      'width:max-content',
+      'height:auto',
+      'min-height:0',
       'max-width:min(360px, calc(100vw - 16px))',
       'max-height:min(78vh, 560px)',
-      'padding:5px',
-      'overflow:auto',
+      'padding:6px',
+      'overflow-x:hidden',
+      'overflow-y:auto',
       'background:var(--bg-elevated-secondary, #181818)',
       'color:var(--text-primary, #fff)',
+      'font:14px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       'border:1px solid var(--border-default, #ffffff26)',
       'border-radius:12px',
       'box-shadow:0 18px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.04)',
@@ -3015,6 +3023,16 @@ ${CROW}[aria-current="true"]{
         const sep = D.createElement('div');
         sep.setAttribute(ATTR_CGXUI, UI_FSECTION_SEP);
         sep.setAttribute(ATTR_CGXUI_OWNER, SkID);
+        sep.style.cssText = [
+          'display:block',
+          'box-sizing:border-box',
+          'height:1px',
+          'min-height:1px',
+          'margin:4px 6px',
+          'padding:0',
+          'background:rgba(255,255,255,.12)',
+          'flex:0 0 auto',
+        ].join(';');
         pop.appendChild(sep);
         return;
       }
@@ -3022,6 +3040,20 @@ ${CROW}[aria-current="true"]{
       if (it?.type === 'title') {
         const title = D.createElement('div');
         title.setAttribute(ATTR_CGXUI_STATE, 'picker-title');
+        title.setAttribute('data-h2o-folder-menu-row', 'title');
+        title.style.cssText = [
+          'display:block',
+          'box-sizing:border-box',
+          'width:100%',
+          'min-height:24px',
+          'padding:7px 10px 5px',
+          'color:var(--text-secondary, rgba(255,255,255,.72))',
+          'font-size:12px',
+          'font-weight:600',
+          'line-height:16px',
+          'white-space:nowrap',
+          'flex:0 0 auto',
+        ].join(';');
         title.textContent = it.label || '';
         pop.appendChild(title);
         return;
@@ -3030,14 +3062,42 @@ ${CROW}[aria-current="true"]{
       if (it?.type === 'color-grid' || it?.type === 'icon-grid') {
         const section = D.createElement('div');
         section.setAttribute(ATTR_CGXUI_STATE, 'picker-section');
+        section.setAttribute('data-h2o-folder-menu-row', it.type);
+        section.style.cssText = [
+          'display:block',
+          'box-sizing:border-box',
+          'width:100%',
+          'min-height:48px',
+          'padding:6px 8px 8px',
+          'flex:0 0 auto',
+        ].join(';');
 
         const label = D.createElement('div');
         label.setAttribute(ATTR_CGXUI_STATE, 'picker-label');
+        label.style.cssText = [
+          'display:block',
+          'box-sizing:border-box',
+          'margin:0 0 7px',
+          'color:var(--text-tertiary, rgba(255,255,255,.56))',
+          'font-size:11px',
+          'line-height:14px',
+          'white-space:nowrap',
+        ].join(';');
         label.textContent = it.label || '';
         section.appendChild(label);
 
         const grid = D.createElement('div');
         grid.setAttribute(ATTR_CGXUI_STATE, 'picker-grid');
+        grid.style.cssText = [
+          'display:flex',
+          'flex-direction:row',
+          'flex-wrap:nowrap',
+          'align-items:center',
+          'gap:6px',
+          'width:100%',
+          'min-height:28px',
+          'box-sizing:border-box',
+        ].join(';');
         // Phase 14 polish: tag color grids so the stylesheet can flatten them
         // into a single horizontal row that scrolls when needed (matching the
         // user's request that all colors live on one line).
@@ -3047,6 +3107,25 @@ ${CROW}[aria-current="true"]{
           const b = D.createElement('button');
           b.type = 'button';
           b.setAttribute(ATTR_CGXUI_STATE, it.type === 'color-grid' ? 'color-swatch' : 'icon-choice');
+          b.setAttribute('data-h2o-folder-menu-row', it.type === 'color-grid' ? 'color-swatch' : 'icon-choice');
+          b.style.cssText = [
+            'all:unset',
+            'box-sizing:border-box',
+            'display:inline-flex',
+            'align-items:center',
+            'justify-content:center',
+            'width:28px',
+            'height:28px',
+            'min-width:28px',
+            'min-height:28px',
+            'max-width:28px',
+            'max-height:28px',
+            'flex:0 0 28px',
+            'padding:0',
+            'border-radius:8px',
+            'cursor:pointer',
+            'color:var(--text-primary, #fff)',
+          ].join(';');
           b.setAttribute('aria-label', option.label || option.key || '');
           b.title = option.label || option.key || '';
 
@@ -3054,6 +3133,8 @@ ${CROW}[aria-current="true"]{
             const value = STORE_normalizeHexColor(option.value || option.color);
             b.setAttribute('data-cgxui-value', value);
             b.style.setProperty('--swatch-color', value || 'transparent');
+            b.style.background = value || 'rgba(255,255,255,.06)';
+            b.style.border = '1px solid rgba(255,255,255,.16)';
             b.setAttribute('aria-pressed', value === STORE_normalizeHexColor(it.current) ? 'true' : 'false');
             b.onclick = (e) => {
               e.preventDefault();
@@ -3096,20 +3177,46 @@ ${CROW}[aria-current="true"]{
       const b = D.createElement('button');
       b.type = 'button';
       if (it.danger) b.setAttribute(ATTR_CGXUI_STATE, 'danger');
+      b.setAttribute('data-h2o-folder-menu-row', 'action');
+      b.style.cssText = [
+        'all:unset',
+        'box-sizing:border-box',
+        'display:flex',
+        'align-items:center',
+        'gap:10px',
+        'width:100%',
+        'min-width:0',
+        'min-height:38px',
+        'height:auto',
+        'padding:9px 12px',
+        'border-radius:10px',
+        'cursor:pointer',
+        'color:var(--text-primary, #fff)',
+        'font-size:14px',
+        'font-weight:400',
+        'line-height:20px',
+        'white-space:nowrap',
+        'text-align:left',
+        'flex:0 0 auto',
+      ].join(';');
+      if (it.danger) b.style.color = 'var(--text-error, #f93a37)';
 
       if (it.iconEl) {
         const ico = D.createElement('span');
         ico.setAttribute(ATTR_CGXUI_STATE, 'ico');
+        ico.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;min-width:20px;flex:0 0 20px;color:currentColor;';
         ico.appendChild(it.iconEl.cloneNode(true));
         b.appendChild(ico);
       } else if (it.iconSvg) {
         const ico = D.createElement('span');
         ico.setAttribute(ATTR_CGXUI_STATE, 'ico');
+        ico.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;min-width:20px;flex:0 0 20px;color:currentColor;';
         ico.innerHTML = it.iconSvg;
         b.appendChild(ico);
       }
 
       const label = D.createElement('span');
+      label.style.cssText = 'display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:20px;';
       label.textContent = it.label || '';
       b.appendChild(label);
 
@@ -3120,6 +3227,12 @@ ${CROW}[aria-current="true"]{
         SAFE_try('popItem', () => it.onClick?.());
       };
 
+      b.addEventListener('mouseenter', () => {
+        b.style.background = 'var(--interactive-bg-secondary-hover, rgba(255,255,255,.10))';
+      });
+      b.addEventListener('mouseleave', () => {
+        b.style.background = 'transparent';
+      });
       pop.appendChild(b);
     });
 
