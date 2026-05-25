@@ -1194,6 +1194,59 @@ The following remain forbidden:
 - Folder/chat/snapshot mutations.
 - Mobile write-back.
 
+## F9.5c Validation Status — Native Selection Pending
+
+F9.5 is implemented, but native document picker file selection remains pending
+manual validation. The read-only pipeline and simulator route reachability were
+validated; terminal automation could not reliably tap and select a file inside
+the iOS document picker.
+
+Validated:
+
+- TypeScript targeted checks passed.
+- Forbidden-call grep was clean for F9 mobile sync files and the read-only
+  route.
+- Dependency resolution passed for `expo-document-picker` and
+  `expo-file-system`.
+- Real `latest.json` terminal validation passed.
+- Real bundle checksum was present and verified.
+- Real bundle counts matched expected evidence:
+  - chats: 7
+  - snapshots: 4
+  - folders: 12
+  - folder memberships: 7
+  - labels: 15
+  - categories: 12
+  - conflicts: 0
+  - tombstones: 11
+  - apply events: 0
+- Invalid JSON blocked safely.
+- Unsupported schema blocked safely.
+- File-source checksum mismatch blocked.
+- Pasted checksum mismatch remained warning-only.
+- Metadata-only cache validation passed.
+- iOS simulator app build, install, and launch passed.
+- `ExpoDocumentPicker` and `ExpoFileSystem` native pods compiled.
+- `/read-only-bundle` opened by deep link.
+- The route displayed `Choose file to preview` and read-only/preview-only copy.
+
+Pending:
+
+- Manual native iOS document picker file selection.
+- Manual confirmation that selecting `latest.json` through the native picker
+  reads the file and renders the same read-only preview.
+
+No archive-store, WebDAV, import/merge, write-back, full bundle cache, or
+snapshot content cache behavior was used during validation. The validation run
+temporarily changed `apps/studio/mobile/ios/Podfile.lock` through `pod install`;
+that file was restored and is not part of this validation status.
+
+Until the manual picker step is completed, F9.5 status is:
+
+```txt
+Implemented; native picker selection pending manual validation.
+```
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
