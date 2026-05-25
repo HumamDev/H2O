@@ -44,6 +44,7 @@
   const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_COLOR_REASON = 'Chrome Studio canonical folder color change';
+  const FOLDER_METADATA_CREATE_REASON = 'Chrome Studio canonical folder create';
   const FOLDER_METADATA_RENAME_REASON = 'Chrome Studio canonical folder rename';
   const FOLDER_METADATA_DELETE_PREVIEW_REASON = 'Chrome Studio canonical folder delete preview';
   const FOLDER_METADATA_DELETE_APPLY_REASON = 'Chrome Studio canonical empty folder delete';
@@ -641,6 +642,11 @@
       && !!folderMetadataOperationRequest();
   }
 
+  function canRequestCanonicalFolderCreate() {
+    return studioPlatformAdapter() === 'mv3'
+      && !!folderMetadataOperationRequest();
+  }
+
   function canRequestCanonicalFolderDeletePreview(item) {
     return item?.isCanonical === true
       && studioPlatformAdapter() === 'mv3'
@@ -679,6 +685,24 @@
 
   function normalizeFolderRenameInput(value) {
     return String(value || '').trim().replace(/\s+/g, ' ');
+  }
+
+  function normalizeFolderCreateInput(value) {
+    return normalizeFolderRenameInput(value);
+  }
+
+  function buildFolderCreateOperation(name, staleGuard = null) {
+    const operation = {
+      schema: FOLDER_METADATA_OPERATION_SCHEMA,
+      operationType: 'create-folder',
+      after: { name: normalizeFolderCreateInput(name) },
+      sourceSurface: 'chrome-studio',
+      reason: FOLDER_METADATA_CREATE_REASON,
+    };
+    if (staleGuard && typeof staleGuard === 'object' && Object.keys(staleGuard).length) {
+      operation.staleGuard = staleGuard;
+    }
+    return operation;
   }
 
   function buildFolderRenameOperation(item, name, staleGuard = null) {
@@ -934,6 +958,75 @@
     return applied;
   }
 
+  async function requestCanonicalFolderCreate(name, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
+    }
+    const nextName = normalizeFolderCreateInput(name);
+    if (!nextName) {
+      setStatus('Blocked: invalid-folder-name', 'blocked');
+      return { ok: false, blockers: [{ code: 'invalid-folder-name' }] };
+    }
+
+    const operation = buildFolderCreateOperation(nextName);
+    setStatus('Previewing...', 'pending');
+    let preview = null;
+    try {
+      preview = await requestFolderMetadataOperationWithNativeRefresh(request, operation, {
+        requestMode: 'preview',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-create-preview-result-poll',
+      });
+    } catch (e) {
+      err('folderCreate.preview', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'preview-request-threw' }] };
+    }
+
+    const previewBlocker = resultCodes(preview, 'blockers')[0];
+    if (!preview?.ok || previewBlocker) {
+      setStatus(`Blocked: ${previewBlocker || firstResultCode(preview, 'folder-create-preview-failed')}`, 'blocked');
+      return preview;
+    }
+    if (preview.canApply !== true) {
+      setStatus('Blocked: preview-not-applyable', 'blocked');
+      return preview;
+    }
+
+    setStatus('Creating...', 'pending');
+    let applied = null;
+    try {
+      applied = await requestFolderMetadataOperationWithNativeRefresh(request, buildFolderCreateOperation(nextName, staleGuardFromPreview(preview)), {
+        requestMode: 'apply',
+        timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
+        pollReason: 'folder-create-apply-result-poll',
+      });
+    } catch (e) {
+      err('folderCreate.apply', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
+      return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
+    }
+
+    const applyBlocker = resultCodes(applied, 'blockers')[0];
+    if (!applied?.ok || applyBlocker) {
+      setStatus(`Blocked: ${applyBlocker || firstResultCode(applied, 'folder-create-apply-failed')}`, 'blocked');
+      return applied;
+    }
+    if (applied.applied !== true) {
+      setStatus('Folder not created', 'blocked');
+      return applied;
+    }
+    setStatus('Folder created', 'ok');
+    refreshAfterNativeFolderMetadataApply('folder-create-apply');
+    W.setTimeout(() => {
+      try { renderAllSections(); } catch (e) { err('folderCreate.renderAfterApply', e); }
+    }, 250);
+    return applied;
+  }
+
   async function requestCanonicalFolderRename(item, name, controls = {}) {
     const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
     const request = folderMetadataOperationRequest();
@@ -1164,7 +1257,7 @@
       try { activeRowMenu.remove(); } catch {}
     }
     activeRowMenu = null;
-    D.querySelectorAll('.wbSidebarSectionItemMenu[aria-expanded="true"], .wbFolderMenuBtn[aria-expanded="true"]')
+    D.querySelectorAll('.wbSidebarSectionItemMenu[aria-expanded="true"], .wbFolderMenuBtn[aria-expanded="true"], [data-h2o-folder-create-button="1"][aria-expanded="true"]')
       .forEach((btn) => btn.setAttribute('aria-expanded', 'false'));
   }
 
@@ -1951,6 +2044,150 @@
     return false;
   }
 
+  function openFolderCreatePanel(anchorEl) {
+    if (!anchorEl || !canRequestCanonicalFolderCreate()) return null;
+    closeRowMenu();
+    anchorEl.setAttribute('aria-expanded', 'true');
+    const pop = el('div', {
+      class: 'wbSidebarNativeMenu wbSidebarNativeMenu--folder',
+      role: 'dialog',
+      'aria-label': 'Create folder',
+      'data-kind': 'folders',
+      'data-h2o-glass': 'panel',
+      'data-h2o-skin': 'sand-glass',
+      'data-h2o-skin-surface': 'sand-glass',
+    });
+    pop.appendChild(el('div', { class: 'wbSidebarNativeMenuTitle' }, 'Create folder'));
+
+    const panel = el('div', {
+      class: 'wbSidebarNativePickerSection',
+      style: 'display:flex;flex-direction:column;gap:7px;min-width:240px;max-width:320px',
+      'data-menu-item': 'canonical-folder-create-panel',
+    });
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'New folder'));
+    const input = el('input', {
+      type: 'text',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      placeholder: 'Folder name',
+      'aria-label': 'Folder name',
+      style: 'width:100%;box-sizing:border-box;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(0,0,0,.22);color:rgba(255,255,255,.92);padding:7px 8px;font-size:11px;line-height:1.3;outline:none',
+    });
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'display:none;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    });
+    const setStatus = (message, kind = '') => {
+      const text = String(message || '');
+      status.textContent = text;
+      status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
+    };
+    const buttonRow = el('div', { style: 'display:flex;justify-content:flex-end;gap:6px' });
+    const cancel = el('button', {
+      type: 'button',
+      class: 'wbSidebarNativeAction',
+      style: 'padding:6px 8px;font-size:11px;min-height:28px',
+    }, 'Cancel');
+    const submit = el('button', {
+      type: 'button',
+      class: 'wbSidebarNativeAction',
+      style: 'padding:6px 8px;font-size:11px;min-height:28px',
+    }, 'Create');
+    buttonRow.appendChild(cancel);
+    buttonRow.appendChild(submit);
+    panel.appendChild(input);
+    panel.appendChild(status);
+    panel.appendChild(buttonRow);
+    pop.appendChild(panel);
+
+    let pending = false;
+    const syncSubmit = () => {
+      submit.disabled = pending || !normalizeFolderCreateInput(input.value);
+    };
+    const submitCreate = () => {
+      if (pending || submit.disabled) return;
+      pending = true;
+      syncSubmit();
+      Promise.resolve(requestCanonicalFolderCreate(input.value, { setStatus }))
+        .then((result) => {
+          pending = false;
+          syncSubmit();
+          if (result?.ok && result.applied === true) {
+            input.value = '';
+            syncSubmit();
+            W.setTimeout(() => closeRowMenu(), 650);
+            return;
+          }
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        })
+        .catch((e) => {
+          pending = false;
+          err('folderCreate.panel', e);
+          setStatus(`Blocked: ${String(e?.message || e || 'folder-create-failed')}`, 'blocked');
+          syncSubmit();
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        });
+    };
+    input.addEventListener('input', syncSubmit);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        if (!pending) closeRowMenu();
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitCreate();
+      }
+    });
+    cancel.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!pending) closeRowMenu();
+    });
+    submit.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      submitCreate();
+    });
+    syncSubmit();
+
+    D.body.appendChild(pop);
+    activeRowMenu = pop;
+    const updatePosition = () => positionRowMenu(pop, anchorEl);
+    updatePosition();
+    requestAnimationFrame(updatePosition);
+    W.addEventListener('resize', updatePosition, true);
+    W.addEventListener('scroll', updatePosition, true);
+    let ro = null;
+    try {
+      ro = new ResizeObserver(updatePosition);
+      ro.observe(pop);
+    } catch {}
+    const onDoc = (ev) => {
+      if (!pop.contains(ev.target) && ev.target !== anchorEl && !anchorEl.contains?.(ev.target)) closeRowMenu();
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape' && !pending) closeRowMenu();
+    };
+    setTimeout(() => D.addEventListener('mousedown', onDoc, true), 0);
+    D.addEventListener('keydown', onKey, true);
+    activeRowMenuOff = () => {
+      W.removeEventListener('resize', updatePosition, true);
+      W.removeEventListener('scroll', updatePosition, true);
+      D.removeEventListener('mousedown', onDoc, true);
+      D.removeEventListener('keydown', onKey, true);
+      try { ro?.disconnect?.(); } catch {}
+    };
+    W.setTimeout(() => {
+      try { input.focus(); } catch {}
+    }, 0);
+    return pop;
+  }
+
   function openRowMenu(anchorEl, rawItem = {}) {
     if (!anchorEl) return null;
     const item = {
@@ -2263,6 +2500,7 @@
     const host = D.getElementById('folderList');
     if (!host) return;
     ensureFolderCountToggle();
+    ensureFolderCreateButton();
     let model = null;
     try {
       model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
@@ -2501,6 +2739,57 @@
     return button;
   }
 
+  function ensureFolderCreateButton() {
+    const sec = D.querySelector('.wbSidebarSection--folders');
+    const label = sec?.querySelector?.('.wbSideLabel');
+    if (!sec || !label) return null;
+    let button = sec.querySelector('[data-h2o-folder-create-button="1"]');
+    if (!canRequestCanonicalFolderCreate()) {
+      try { button?.remove?.(); } catch {}
+      return null;
+    }
+    if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
+    if (!button) {
+      try {
+        sec.style.position = 'relative';
+        label.style.paddingRight = '68px';
+      } catch {}
+      button = el('button', {
+        class: 'wbSidebarFolderCreateButton',
+        type: 'button',
+        title: 'Create folder',
+        'aria-label': 'Create folder',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'data-h2o-folder-create-button': '1',
+        style: 'position:absolute;top:8px;right:36px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+      });
+      button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
+      button.querySelectorAll('svg').forEach((svg) => {
+        svg.style.width = '13px';
+        svg.style.height = '13px';
+      });
+      button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      button.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        openFolderCreatePanel(button);
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openFolderCreatePanel(button);
+      });
+      sec.insertBefore(button, label.nextSibling);
+    }
+    try {
+      sec.style.position = 'relative';
+      label.style.paddingRight = '68px';
+    } catch {}
+    return button;
+  }
+
   // ── Re-render orchestration ────────────────────────────────────────────────
   function renderAllSections() {
     // Each loader has its own error boundary; one failure doesn't block the others.
@@ -2541,6 +2830,7 @@
     if (catsSec)    bindCollapseToggle(catsSec,    'categories', false);
     if (projsSec)   bindCollapseToggle(projsSec,   'projects',   true);
     ensureFolderCountToggle();
+    ensureFolderCreateButton();
 
     renderAllSections();
     bindUpdates();

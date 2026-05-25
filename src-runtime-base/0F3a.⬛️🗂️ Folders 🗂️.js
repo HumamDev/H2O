@@ -2067,6 +2067,76 @@ ${CROW}[aria-current="true"]{
     };
   }
 
+  function STORE_validateFolderCreate(data, name, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const nextName = STORE_normalizeFolderName(name);
+    const requestedId = String(opts.id || opts.folderId || '').trim();
+    const blockers = [];
+    if (!nextName) blockers.push('invalid-folder-name');
+    if (nextName && UTIL_isReservedFolderViewName(nextName)) blockers.push('reserved-folder-name');
+    const nextKey = STORE_folderNameKey(nextName);
+    if (nextKey && Array.isArray(data?.folders)) {
+      const exists = data.folders.some((item) =>
+        STORE_folderNameKey(item?.name || item?.title) === nextKey
+      );
+      if (exists) blockers.push('same-name-conflict');
+    }
+    if (requestedId && Array.isArray(data?.folders)) {
+      const idExists = data.folders.some((item) => String(item?.id || item?.folderId || '').trim() === requestedId);
+      if (idExists) blockers.push('folder-id-conflict');
+    }
+    return {
+      ok: blockers.length === 0,
+      folderId: requestedId,
+      nextName,
+      blockers,
+    };
+  }
+
+  function STORE_createFolder(name, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const data = STORE_readData();
+    const validation = STORE_validateFolderCreate(data, name, opts);
+    if (!validation.ok) return { ok: false, applied: false, ...validation };
+    const folder = STORE_makeLocalFolderRecord(validation.nextName, validation.folderId ? { id: validation.folderId } : {});
+    if (!folder?.id) {
+      return {
+        ok: false,
+        applied: false,
+        folderId: '',
+        nextName: validation.nextName,
+        blockers: ['folder-id-required'],
+        warnings: [],
+      };
+    }
+    data.folders.push(folder);
+    if (!data.items || typeof data.items !== 'object' || Array.isArray(data.items)) data.items = {};
+    data.items[folder.id] = [];
+    STORE_writeData(data);
+    EVENT_emitFoldersChanged({
+      action: 'folder-create',
+      folderId: String(folder.id || ''),
+      folderName: String(folder.name || ''),
+      source: String(opts.source || 'folder-create'),
+    });
+    const ui = STORE_readUI();
+    if (opts.openInline !== false && API_getFolderInlinePreviewOnOpen()) ui.openFolders[folder.id] = true;
+    STORE_writeUI(ui);
+    if (opts.rerender !== false) {
+      ENGINE_rerenderAllSections();
+      UI_refreshActivePageForAppearance('folder', folder.id);
+    }
+    return {
+      ok: true,
+      applied: true,
+      folderId: folder.id,
+      folder,
+      name: String(folder.name || ''),
+      blockers: [],
+      warnings: [],
+    };
+  }
+
   function STORE_renameFolder(folderId, name, options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const data = STORE_readData();
@@ -2476,6 +2546,66 @@ ${CROW}[aria-current="true"]{
     return preview;
   }
 
+  function META_previewCreateOperation(operation, preview, data) {
+    const op = META_safeObject(operation);
+    const after = META_safeObject(op.after);
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) META_addCode(preview.blockers, 'invalid-operation-schema');
+    if (META_isLocalReviewOperation(op)) META_addCode(preview.blockers, 'local-review-target-blocked');
+    const nextName = STORE_normalizeFolderName(after.name || after.title || op.name || op.title);
+    const requestedId = META_cleanString(op.folderId || after.folderId || after.id || op.id);
+    const sourceHash = META_sourceHash(data);
+    const guard = META_safeObject(op.staleGuard);
+    if (META_cleanString(guard.sourceHash) && META_cleanString(guard.sourceHash) !== sourceHash) {
+      META_addCode(preview.blockers, 'stale-source-hash');
+    }
+    if (!nextName) META_addCode(preview.blockers, 'invalid-folder-name');
+    if (nextName && UTIL_isReservedFolderViewName(nextName)) META_addCode(preview.blockers, 'reserved-folder-name');
+    const validation = STORE_validateFolderCreate(data, nextName, requestedId ? { id: requestedId } : {});
+    validation.blockers.forEach((code) => META_addCode(preview.blockers, code));
+    if (META_hasOwn(after, 'memberships') || META_hasOwn(after, 'items') || META_hasOwn(op, 'memberships') || META_hasOwn(op, 'items')) {
+      META_addCode(preview.blockers, 'unexpected-create-memberships');
+    }
+    preview.folderId = requestedId;
+    preview.before = {
+      sourceHash,
+      folderCount: Array.isArray(data?.folders) ? data.folders.length : 0,
+      membershipCount: 0,
+      previewHash: META_hash({ operationType: 'create-folder', name: nextName, sourceHash }),
+    };
+    const proposed = STORE_makeLocalFolderRecord(nextName || 'New folder', requestedId ? { id: requestedId } : { id: 'preview:create-folder' });
+    const afterData = STORE_normalizeData({
+      folders: [...(Array.isArray(data?.folders) ? data.folders : []), proposed],
+      items: {
+        ...(data?.items && typeof data.items === 'object' && !Array.isArray(data.items) ? data.items : {}),
+        [proposed.id]: [],
+      },
+    });
+    const afterFolder = META_findFolder(afterData, proposed.id);
+    preview.after = afterFolder ? {
+      ...META_folderSummary(afterData, afterFolder),
+      id: requestedId || '',
+      folderId: requestedId || '',
+      proposedFolderId: requestedId || null,
+      name: nextName,
+      membershipCount: 0,
+    } : {
+      id: requestedId || '',
+      folderId: requestedId || '',
+      name: nextName,
+      membershipCount: 0,
+      sourceHash,
+    };
+    preview.proposed = {
+      create: true,
+      folderName: nextName,
+      requestedFolderId: requestedId || null,
+      createEmptyItemBucket: true,
+      membershipCount: 0,
+    };
+    preview.canApply = preview.blockers.length === 0;
+    return preview;
+  }
+
   function META_previewDeleteOperation(operation, preview, data) {
     const op = META_safeObject(operation);
     const folder = META_validateCommon(operation, preview, data);
@@ -2533,6 +2663,7 @@ ${CROW}[aria-current="true"]{
     const data = STORE_readData();
     const preview = META_operationBase(operation);
     if (preview.operationType === 'change-folder-color') return META_previewColorOperation(operation, preview, data);
+    if (preview.operationType === 'create-folder') return META_previewCreateOperation(operation, preview, data);
     if (preview.operationType === 'rename-folder') return META_previewRenameOperation(operation, preview, data);
     if (preview.operationType === 'delete-folder') return META_previewDeleteOperation(operation, preview, data);
     META_addCode(preview.blockers, 'unsupported-operation-type');
@@ -2549,6 +2680,7 @@ ${CROW}[aria-current="true"]{
     const preview = API_previewMetadataOperation(operationForPreview);
     if (opts.dryRun === true) return { ...preview, dryRun: true };
     const canApplyOperation = preview.operationType === 'change-folder-color'
+      || preview.operationType === 'create-folder'
       || preview.operationType === 'rename-folder'
       || preview.operationType === 'delete-folder';
     if (!canApplyOperation) {
@@ -2578,6 +2710,42 @@ ${CROW}[aria-current="true"]{
         before: preview.before,
         after: preview.after,
         blockers: preview.blockers,
+        warnings: preview.warnings,
+      };
+    }
+    if (preview.operationType === 'create-folder') {
+      const result = STORE_createFolder(preview.after?.name || META_safeObject(operationForPreview).after?.name || META_safeObject(operationForPreview).name || '', {
+        id: preview.after?.folderId || preview.after?.id || META_safeObject(operationForPreview).folderId || '',
+        source: 'folder-metadata-operation',
+      });
+      if (!result.ok) {
+        return {
+          schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          ok: false,
+          applied: false,
+          noMutation: true,
+          writesPerformed: 0,
+          operationType: preview.operationType,
+          folderId: preview.folderId,
+          before: preview.before,
+          after: preview.after,
+          blockers: (result.blockers || []).map((code) => ({ code })),
+          warnings: preview.warnings.concat((result.warnings || []).map((code) => ({ code }))),
+        };
+      }
+      const afterData = STORE_readData();
+      const afterFolder = META_findFolder(afterData, result.folderId);
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: true,
+        applied: true,
+        noMutation: false,
+        writesPerformed: 1,
+        operationType: preview.operationType,
+        folderId: result.folderId,
+        before: preview.before,
+        after: afterFolder ? META_folderSummary(afterData, afterFolder) : null,
+        blockers: [],
         warnings: preview.warnings,
       };
     }
@@ -4528,30 +4696,15 @@ function ROUTE_clearPageRoute_LOCAL() {
         if (!name) return;
         if (UTIL_isReservedFolderViewName(name)) return alert(`${name} is a view, not a folder.`);
 
-        const d = STORE_readData();
-        const exists = d.folders.some((f) => (f.name || '').trim().toLowerCase() === name.toLowerCase());
-        if (exists) return alert('Folder already exists.');
-
-        const folder = STORE_makeLocalFolderRecord(name);
-        d.folders.push(folder);
-        d.items[folder.id] = d.items[folder.id] || [];
-        STORE_writeData(d);
-        EVENT_emitFoldersChanged({
-          action: 'folder-create',
-          folderId: String(folder.id || ''),
-          folderName: String(folder.name || ''),
+        const result = STORE_createFolder(name, {
           source: 'sidebar-folder-create',
         });
-
-        const id = folder.id;
-
-        const u = STORE_readUI();
-        if (API_getFolderInlinePreviewOnOpen()) u.openFolders[id] = true;
-        STORE_writeUI(u);
-
+        if (!result.ok) {
+          if ((result.blockers || []).includes('same-name-conflict')) return alert('Folder already exists.');
+          if ((result.blockers || []).includes('reserved-folder-name')) return alert(`${name} is a view, not a folder.`);
+          return alert('Folder create blocked.');
+        }
         render();
-        ENGINE_rerenderAllSections();
-        UI_refreshActivePageForAppearance('folder', id);
       }));
 
       const realFolders = data.folders.filter((folder) => !UTIL_isReservedFolderViewName(folder.name));
