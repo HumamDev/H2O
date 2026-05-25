@@ -943,6 +943,97 @@ F9.4.3 also does not add archive-store access, WebDAV/cloud transport, outbound
 export, conflict ingestion, conflict decisions, tombstone creation/delete/
 restore, F7/F8 apply behavior, sync propagation, or mobile write-back.
 
+## F9.4 Closeout — Validated Metadata-Only Cache Boundary
+
+F9.4 now provides a validated metadata-only offline cache boundary for the
+mobile read-only bundle viewer:
+
+- Isolated AsyncStorage metadata cache.
+- Explicit `Save metadata cache`.
+- Explicit `Clear read-only cache`.
+- Route/status display for cached metadata.
+- Validation script for save/load/clear behavior.
+- Safe malformed and unsupported cache handling.
+- Redaction checks that confirm no bundle/content data is stored.
+
+The validated chain is:
+
+```txt
+diagnostic metadata/counts
+-> buildReadOnlyBundleCacheMetadata
+-> saveReadOnlyBundleCacheMetadata
+-> loadReadOnlyBundleCacheMetadata
+-> ReadOnlyBundleCacheStatus
+-> clearReadOnlyBundleCacheMetadata
+```
+
+The cache key is:
+
+```txt
+h2o.mobile.readonly.bundle-cache.v1
+```
+
+The cache stores only:
+
+- `schema`.
+- `readOnly: true`.
+- `nonAuthoritative: true`.
+- `cachedAt`.
+- Source kind.
+- Source, checksum, export, and source-peer presence booleans.
+- Counts.
+- Warning codes.
+
+The following remain forbidden:
+
+- Full `latest.json` text cache.
+- Parsed bundle object cache.
+- Snapshot message/content cache.
+- Full view-model cache.
+- Archive-store writes.
+- `replaceArchiveStore`.
+- `saveArchiveStore`.
+- WebDAV pull/push.
+- Mobile write-back.
+- Outbound export.
+- Conflict decisions or candidate ingestion.
+- F7/F8 apply APIs.
+- Tombstone/delete/restore behavior.
+- Treating the cache as sync authority.
+
+Safety meaning:
+
+- The cache is display metadata only.
+- The cache is not imported archive state.
+- The cache is not a sync source.
+- The cache is not sufficient to render library or snapshots offline.
+- The user must paste or load a bundle again for full content display.
+- Clear cache affects only the isolated metadata key.
+
+Validation summary:
+
+- `tools/validation/sync/validate-mobile-readonly-cache.mjs` was committed.
+- Missing cache load returned safely.
+- Metadata build from a diagnostic passed.
+- Save/load of valid metadata passed.
+- Malformed JSON returned `readonly-cache-malformed`.
+- Unsupported schema returned `readonly-cache-schema-unsupported`.
+- Clear removed only the isolated cache key and preserved archive, WebDAV, and
+  identity sentinel keys.
+- Redaction scan passed.
+- Forbidden-call grep passed.
+- Full-tree `git diff --check` remained blocked by unrelated Studio CSS WIP,
+  but scoped F9/mobile checks passed.
+
+Recommended next options:
+
+- Production hardening or UX polish.
+- F9.5 file picker/import preview, read-only only.
+- F10 mobile write-back planning much later, high risk.
+
+Do not start F10 yet. If mobile read-only work continues, F9.5 should stay
+read-only and focus on file picker/import preview without archive-store writes.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
