@@ -1,7 +1,7 @@
 # Folder Rename Sync P8h Closeout
 
 Phase: P8h-f3
-Status: Native and Chrome folder rename sync proven; Desktop propagation remains reviewed/manual
+Status: Native and Chrome folder rename sync proven; Desktop propagation proven through reviewed mirror refresh
 
 ## Verdict
 
@@ -65,10 +65,48 @@ The following boundaries remain active:
 
 ## Remaining work
 
-The rename path is complete for Native and Chrome under the current safety model. Remaining folder metadata parity work is:
+## Desktop mirror propagation proof
 
-- P8h-f4 - Desktop mirror rename propagation proof through reviewed mirror refresh.
+Desktop receives canonical rename state through the reviewed Desktop mirror refresh path, not through direct Desktop metadata writes.
+
+The proven Desktop path is:
+
+```text
+Native H2O folder-state JSON
+-> Desktop Settings / Folder Parity / Mirror Refresh
+-> reviewed preview and exact confirmation
+-> Desktop mirror key refresh
+-> Desktop FolderParity and DOM reflect the canonical folder name
+```
+
+Final Native state after the rename/revert proof:
+
+- Study name: `Study`
+- Study `iconColor`: `#F472B6`
+- Study item count: `4`
+
+Final Desktop state after reviewed mirror refresh:
+
+- Surface: `desktop-studio`
+- Model name: `Study`
+- Model color: `#F472B6`
+- Native membership count: `4`
+- DOM text includes `Study`
+
+This confirms Desktop can reflect the canonical final rename state after mirror refresh. The temporary `Study Temp` intermediate Desktop proof was not separately captured, so the proof is final-state propagation rather than a separately recorded before/after Desktop temporary-name transition.
+
+## Remaining work
+
+The rename path is complete for Native, Chrome, and Desktop under the current safety model. Remaining folder metadata parity work is:
+
+- P8h-f4b - Show visible name deltas in Desktop Mirror Refresh preview.
 - P8h-g - Delete sync planning and implementation.
 - Optional future automatic Desktop propagation, if the reviewed manual mirror refresh is not enough.
 
-Desktop must remain display-only for rename until the reviewed mirror refresh proof is completed. Delete remains a separate policy-heavy phase and must keep its preview and confirmation requirements.
+Desktop remains display-only for rename. Desktop does not write canonical rename metadata directly, and Desktop SQLite folders and bindings are not canonical metadata authority. Delete remains a separate policy-heavy phase and must keep its preview and confirmation requirements.
+
+The next UI improvement should make name deltas visible in the Mirror Refresh preview, for example:
+
+```text
+Study name: Study -> Study Temp
+```
