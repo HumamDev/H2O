@@ -269,6 +269,26 @@ F9.2b.1 intentionally does not add route integration. The next UI phase may
 mount the component in a route or dev surface, but only after preserving the
 same read-only data boundary.
 
+## F9.2b.2 — Mock Read-Only Bundle Route
+
+F9.2b.2 adds a separate mobile route for the read-only bundle display:
+
+```txt
+mock MobileReadOnlyLibraryView -> ReadOnlyBundleDisplay route
+```
+
+The route is intentionally mock-only. It does not parse a real bundle, import a
+file, read from the mobile archive store, call WebDAV, persist cache data,
+write back, or expose edit/sync controls. It is not linked from the main
+sidebar or menu in this phase.
+
+The route exists to prove safe route wiring for `ReadOnlyBundleDisplay`
+without touching the existing mutable `/library`, `/folders`, `/folders/[id]`,
+or `/import-export` screens.
+
+Real bundle input, pasted bundle text, file picker support, diagnostics route
+integration, and snapshot content reading remain deferred.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
