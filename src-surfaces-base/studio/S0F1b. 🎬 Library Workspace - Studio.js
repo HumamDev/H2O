@@ -177,6 +177,34 @@
     return { folders, items };
   }
 
+  function mergeTrustedCanonicalFolderStates(primaryState, secondaryState, primaryLabel = '', secondaryLabel = '') {
+    const primary = primaryState && typeof primaryState === 'object' ? primaryState : { folders: [], items: {} };
+    const secondary = secondaryState && typeof secondaryState === 'object' ? secondaryState : { folders: [], items: {} };
+    const folders = [];
+    const seen = new Set();
+    const push = (row, label) => {
+      const id = folderIdOf(row);
+      if (!id || seen.has(id)) return;
+      const next = {
+        ...row,
+        source: String(row?.source || label || '').trim(),
+      };
+      folders.push(next);
+      seen.add(id);
+    };
+    (Array.isArray(primary.folders) ? primary.folders : []).forEach((row) => push(row, primaryLabel));
+    (Array.isArray(secondary.folders) ? secondary.folders : []).forEach((row) => push(row, secondaryLabel));
+
+    const items = {};
+    folders.forEach((folder) => {
+      const id = folderIdOf(folder);
+      const primaryItems = Array.isArray(primary.items?.[id]) ? primary.items[id] : [];
+      const secondaryItems = Array.isArray(secondary.items?.[id]) ? secondary.items[id] : [];
+      items[id] = Array.from(new Set([...primaryItems, ...secondaryItems].map((value) => String(value || '').trim()).filter(Boolean)));
+    });
+    return { folders, items };
+  }
+
   function enrichKnownCanonicalFallbackRows(knownRows, storedRows) {
     const rows = Array.isArray(knownRows) ? knownRows : [];
     const stored = Array.isArray(storedRows) ? storedRows : [];
@@ -1235,22 +1263,28 @@
     const nativeState = normalizeFolderStateForParity(nativePayload?.folderState, 'native-broadcast');
 
     const canonicalFromBroadcast = nativeState.folders.length > 0;
+    const canonicalFromStoredMirror = storedState.folders.length > 0;
+    const mergedTrustedCanonical = canonicalFromBroadcast
+      ? mergeTrustedCanonicalFolderStates(nativeState, storedState, 'native-broadcast', 'stored-folder-state')
+      : (canonicalFromStoredMirror ? storedState : { folders: [], items: {} });
     const knownCanonicalFallbackRows = KNOWN_NATIVE_CANONICAL_FOLDERS
       .map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical'))
       .filter(Boolean);
     const fallbackCanonical = enrichKnownCanonicalFallbackRows(knownCanonicalFallbackRows, storedState.folders);
-    const canonicalFolders = canonicalFromBroadcast
-      ? nativeState.folders
+    const canonicalFolders = mergedTrustedCanonical.folders.length
+      ? mergedTrustedCanonical.folders
       : fallbackCanonical.rows;
-    const fallbackVisualsEnriched = !canonicalFromBroadcast && !!fallbackCanonical.enriched;
+    const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalBindingCount = canonicalFromBroadcast
-      ? countFolderStateBindings(nativeState.items)
+      ? countFolderStateBindings(mergedTrustedCanonical.items)
+      : canonicalFromStoredMirror
+        ? countFolderStateBindings(storedState.items)
       : Number(syncDiag?.projection?.nativeBroadcast?.folderBindingCount
         || syncDiag?.projection?.nativeFolderStateMerge?.incomingBindingCount
         || KNOWN_NATIVE_CANONICAL_BINDING_COUNT
         || 0);
-    if (!canonicalFromBroadcast) warnings.push('Canonical folders are using the current known native fallback list; run native probes if this differs from live ChatGPT.');
+    if (!mergedTrustedCanonical.folders.length) warnings.push('Canonical folders are using the current known native fallback list; run native probes if this differs from live ChatGPT.');
 
     const rowStatsByFolder = summarizeIndexRowsByFolder();
     const knownStudioRowCountByFolder = Object.fromEntries(Object.entries(rowStatsByFolder).map(([folderId, stats]) => [folderId, Number(stats.known || 0)]));
@@ -1285,8 +1319,8 @@
     const riskLevel = (missingCanonicalFolders.length || duplicateGroups.length || testFolderCandidates.length || extraLocalFolders.length || orphanBindingCount)
       ? 'review-required'
       : 'ok';
-    const canonicalMirrorAvailable = canonicalFromBroadcast || storedState.folders.length > 0;
-    const canonicalItems = canonicalFromBroadcast ? nativeState.items : storedState.items;
+    const canonicalMirrorAvailable = mergedTrustedCanonical.folders.length > 0;
+    const canonicalItems = mergedTrustedCanonical.folders.length ? mergedTrustedCanonical.items : storedState.items;
     const folderDisplayRows = buildFolderDisplayRows({
       canonicalFolders,
       localFolders,
@@ -1303,7 +1337,9 @@
       readOnly: true,
       surface,
       generatedAt: new Date().toISOString(),
-      canonicalSource: canonicalFromBroadcast ? 'native-broadcast' : 'known-current-canonical-fallback',
+      canonicalSource: canonicalFromBroadcast
+        ? (canonicalFromStoredMirror && storedState.folders.length > nativeState.folders.length ? 'native-broadcast+stored-folder-state' : 'native-broadcast')
+        : (canonicalFromStoredMirror ? 'stored-folder-state' : 'known-current-canonical-fallback'),
       fallbackVisualsEnriched,
       canonicalMirrorAvailable,
       canonicalFolderCount: canonicalFolders.length,
@@ -1327,6 +1363,15 @@
         bindingCount: countFolderStateBindings(nativeState.items),
         ts: nativePayload?.ts || '',
         sourceExtensionId: nativePayload?.sourceExtensionId || '',
+      },
+      canonicalMerge: {
+        trustedNativeFolderCount: nativeState.folders.length,
+        trustedStoredFolderCount: storedState.folders.length,
+        mergedFolderCount: mergedTrustedCanonical.folders.length,
+        dynamicStoredFolderIds: storedState.folders
+          .map((folder) => folder.id)
+          .filter((id) => id && !nativeState.folders.some((folder) => folder.id === id))
+          .slice(0, 16),
       },
       canonicalFolders,
       localFolders,
