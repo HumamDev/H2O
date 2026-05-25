@@ -1,7 +1,7 @@
 <!--
- * @version 2.5.7
+ * @version 2.5.8
  * Changes: fixed shell, collapsed rail, simplified topbar;
- *          stylesheet href carries ?v=2.5.7 cache-bust because the Tauri
+ *          stylesheet href carries ?v=2.5.8 cache-bust because the Tauri
  *          V2 dev server (http://127.0.0.1:1430/) emits no
  *          Last-Modified/ETag/Cache-Control headers, so WKWebView
  *          otherwise serves the previously-fetched studio.css indefinitely
@@ -14,7 +14,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>H2O Studio vNext</title>
-  <link rel="stylesheet" href="./studio.css?v=2.5.7" />
+  <link rel="stylesheet" href="./studio.css?v=2.5.8" />
 </head>
 <body data-h2o-studio-mode="1">
   <div class="wbShell">
@@ -142,20 +142,6 @@
     </aside>
 
     <div class="wbStage">
-      <header class="wbTop">
-        <div class="wbTopGroup wbTopGroup--meta">
-          <div class="wbRouteMeta">
-            <div id="routeEyebrow" class="wbRouteEyebrow">Saved</div>
-            <div id="routeTitle" class="wbRouteTitle">Saved chats</div>
-            <div id="routeSummary" class="wbRouteSummary">Archive-backed ChatGPT frame</div>
-          </div>
-        </div>
-
-        <div class="wbTopGroup wbTopGroup--actions">
-          <button class="wbBtn wbBtn--topbar" id="refreshBtn" type="button">Refresh</button>
-        </div>
-      </header>
-
       <!-- ── Studio Ribbon (Phase 1a — passive shell) ─────────────────────
            OneNote-inspired tabbed action bar for the currently opened chat.
            Owned by S0Y1a. 🎬 Studio Ribbon - Studio.js; populated only when
@@ -169,6 +155,10 @@
                data-chat-type=""
                hidden></section>
 
+      <div id="studioRibbonControlParking" class="wbRibbonControlParking" hidden aria-hidden="true">
+        <button class="wbRibbonAction wbRibbonRefreshAction" id="refreshBtn" type="button">Refresh</button>
+      </div>
+
       <div id="studioRibbonMetadataParking" class="wbRibbonMetadataParking" hidden aria-hidden="true">
         <div id="categoryStatusRibbon" class="wbCategoryRibbonStatus" hidden></div>
 
@@ -179,6 +169,16 @@
           <select id="folderAssignSelect" class="wbSelect" aria-label="Assign selected chat to folder"></select>
         </label>
       </div>
+
+      <header class="wbTop">
+        <div class="wbTopGroup wbTopGroup--meta">
+          <div class="wbRouteMeta">
+            <div id="routeEyebrow" class="wbRouteEyebrow">Saved</div>
+            <div id="routeTitle" class="wbRouteTitle">Saved chats</div>
+            <div id="routeSummary" class="wbRouteSummary">Archive-backed ChatGPT frame</div>
+          </div>
+        </div>
+      </header>
 
       <main class="wbMain">
         <section id="viewListPanel" class="wbPanel wbPanel--list">

@@ -720,11 +720,11 @@ body[data-sidebar="closed"] .wbSide--sidebar{
   overflow:hidden;
   display:grid;
   grid-template-columns:minmax(0,1fr);
-  /* Three rows: .wbTop (header) · .wbRibbon (Studio Ribbon, hidden when no
-     chat is open and collapses to 0 via [hidden]) · .wbMain (content). The
-     middle row is `auto`, so when .wbRibbon[hidden] applies display:none it
-     contributes 0 height to the grid and the layout reverts to the prior
-     two-row behaviour without further changes. */
+  /* Three rows: .wbRibbon (Studio Ribbon, hidden when no chat is open and
+     collapses to 0 via [hidden]) · .wbTop (header/title row) · .wbMain
+     (content). The first row is `auto`, so when .wbRibbon[hidden] applies
+     display:none it contributes 0 height and the layout reverts to the
+     prior two-row behaviour without further changes. */
   grid-template-rows:auto auto minmax(0,1fr);
   background:var(--wb-page);
   /* Pin to the third column of .wbShell so that when .wbSide--sidebar becomes
@@ -6607,7 +6607,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   position:relative;
   display:flex;
   flex-direction:column;
-  z-index:1;
+  z-index:3;
   min-width:0;
   border-bottom:1px solid var(--wb-border);
   background:rgba(33,33,33,.78);
@@ -6750,6 +6750,14 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 
 .wbRibbonMetadataParking{
   display:none !important;
+}
+
+.wbRibbonControlParking{
+  display:none !important;
+}
+
+.wbRibbonRefreshAction{
+  min-width:72px;
 }
 
 .wbRibbonMetadataAction{

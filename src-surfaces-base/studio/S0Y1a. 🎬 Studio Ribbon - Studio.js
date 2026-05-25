@@ -47,6 +47,9 @@
       id: 'home', label: 'Home',
       chatTypes: ['saved', 'indexed', 'imported', 'readonly'],
       groups: [
+        { id: 'reader', label: 'Reader', actions: [
+          { id: 'refresh-reader', label: 'Refresh' },
+        ] },
         { id: 'edit', label: 'Edit', actions: [
           { id: 'rename-chat', label: 'Rename chat' },
           { id: 'copy-title',  label: 'Copy title' },
@@ -171,6 +174,53 @@
   }
   function getContainer() {
     return document.getElementById('studioRibbon');
+  }
+  function getRibbonControlParking(container) {
+    let parking = null;
+    try { parking = document.getElementById('studioRibbonControlParking'); }
+    catch (_) { parking = null; }
+    if (parking) return parking;
+    try {
+      parking = document.createElement('div');
+      parking.id = 'studioRibbonControlParking';
+      parking.className = 'wbRibbonControlParking';
+      parking.hidden = true;
+      parking.setAttribute('aria-hidden', 'true');
+      const parent = container && container.parentNode;
+      if (parent) parent.insertBefore(parking, container.nextSibling || null);
+      else document.body.appendChild(parking);
+    } catch (_) { parking = null; }
+    return parking;
+  }
+  function getRefreshButton() {
+    try { return document.getElementById('refreshBtn'); }
+    catch (_) { return null; }
+  }
+  function prepareRefreshButton(button) {
+    if (!button) return null;
+    try {
+      button.className = 'wbRibbonAction wbRibbonRefreshAction';
+      button.type = 'button';
+      button.hidden = false;
+      button.removeAttribute('aria-hidden');
+      button.removeAttribute('disabled');
+      button.setAttribute('data-action-id', 'refresh-reader');
+      button.setAttribute('aria-disabled', 'false');
+      button.setAttribute('aria-label', 'Refresh current view');
+      button.title = 'Refresh current view';
+      button.textContent = 'Refresh';
+    } catch (_) { /* swallow */ }
+    return button;
+  }
+  function parkRefreshControl(container) {
+    const parking = getRibbonControlParking(container);
+    const button = getRefreshButton();
+    if (!parking || !button) return;
+    try {
+      if (button.parentNode !== parking) parking.appendChild(button);
+      button.hidden = true;
+      button.setAttribute('aria-hidden', 'true');
+    } catch (_) { /* swallow */ }
   }
   let metadataPopoverKind = null;
   function getMetadataParking(container) {
@@ -2441,6 +2491,21 @@
         const actions = shell.actionsForGroup(tab.id, group.id);
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
+          if (tab.id === 'home' && action.id === 'refresh-reader') {
+            const refreshButton = prepareRefreshButton(getRefreshButton());
+            if (refreshButton) {
+              actionsRow.appendChild(refreshButton);
+            } else {
+              actionsRow.appendChild(el('button', {
+                type: 'button',
+                class: 'wbRibbonAction wbRibbonRefreshAction',
+                disabled: 'disabled',
+                'aria-disabled': 'true',
+                title: 'Refresh unavailable',
+              }, action.label));
+            }
+            return;
+          }
           if (tab.id === 'metadata' && action.id === 'system-status') {
             const parts = getSystemStatusParts();
             const pill = el('span', {
@@ -2523,6 +2588,7 @@
     const ctx = shell.getContext();
     const chatType = (ctx && ctx.chatType) || null;
     const collapsed = !!shell.getCollapsed();
+    parkRefreshControl(container);
     parkMetadataControls(container);
 
     /* Visibility: ribbon entirely hidden when no chat is open. */
