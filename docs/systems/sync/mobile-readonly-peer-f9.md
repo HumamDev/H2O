@@ -582,6 +582,85 @@ F9.3c does not add archive-store access, WebDAV, persistence, tombstone
 creation, conflict candidate ingestion, conflict decisions, delete/restore
 behavior, F7/F8 apply, mobile write-back, or any sync propagation behavior.
 
+## F9.3 Closeout — Mobile Read-Only Sync Evidence Status Boundary
+
+F9.3 completes mobile read-only sync evidence status for the pasted bundle
+route. Mobile can now derive sync evidence from the current in-memory Desktop
+`latest.json` bundle and display tombstone, conflict, and apply-event status
+without turning any evidence into an action surface.
+
+F9.3 now provides:
+
+- A pure read-only sync evidence view model.
+- A presentational read-only sync evidence status component.
+- Route-local wiring into the pasted `latest.json` preview route.
+- Tombstone evidence counts and availability status.
+- Conflict evidence counts and unavailable-state display.
+- Apply-event evidence counts, availability, capped state, and skipped
+  malformed count.
+- Read-only capability/status labels.
+- Code/count-only warning display.
+
+The current chain is:
+
+```txt
+paste latest.json
+-> diagnoseMobileSyncBundle
+-> readMobileSyncBundle
+-> buildMobileReadOnlyBundleView
+-> buildMobileReadOnlySyncEvidenceView
+-> ReadOnlyBundleStatus
+-> ReadOnlySyncEvidenceStatus
+-> ReadOnlyBundleDisplay
+-> local selectedSnapshotIndex
+-> buildMobileReadOnlySnapshotDetail
+-> ReadOnlySnapshotReader
+```
+
+The current boundary remains read-only:
+
+- No archive-store writes.
+- No `replaceArchiveStore`.
+- No `saveArchiveStore`.
+- No WebDAV pull or push.
+- No persistence or cache.
+- No mobile write-back.
+- No tombstone creation, deletion, or restoration.
+- No conflict candidate ingestion.
+- No conflict decisions.
+- No F7 or F8 apply APIs.
+- No sync propagation.
+- No mutation controls in the read-only route.
+- No treatment of pasted bundle data as imported state.
+
+Safety meaning:
+
+- Mobile is still a viewer, not an authority.
+- Pasted bundle data is preview evidence, not imported state.
+- Sync evidence status is display-only.
+- Conflict, tombstone, and apply-event counts are not editable queues.
+- Route state remains local, temporary, and non-authoritative.
+
+Validation status:
+
+- Targeted TypeScript checks passed for the read-only route and sync evidence
+  components.
+- Forbidden-call grep checks passed for archive-store, WebDAV, conflict,
+  apply, tombstone, snapshot mutation, and `TurnBlock` paths.
+- Real `latest.json` reader validation passed earlier in F9.1c.
+- F9.3 added no archive-store, WebDAV, persistence, write-back, or F5/F6/F7/F8
+  mutation calls.
+- Git was clean after F9.3c.
+
+Recommended next options:
+
+- F9.4 planning: offline and non-authoritative cache validation.
+- Production hardening and UX polish.
+- F10 mobile write-back remains much later and must not start from F9.3.
+
+The recommended next planning step is F9.4. Keep it read-only and focused on
+offline/non-authoritative cache validation.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.
