@@ -1402,6 +1402,65 @@
     return icon;
   }
 
+  function folderPageMenuItem(row) {
+    const folderId = String(row?.folderId || row?.id || '').trim();
+    const name = String(row?.name || row?.label || folderId).trim() || folderId;
+    return {
+      ...row,
+      id: folderId,
+      folderId,
+      name,
+      label: name,
+      kind: 'folders',
+      section: 'folders',
+      color: String(row?.iconColor || row?.color || '').trim(),
+      iconColor: String(row?.iconColor || row?.color || '').trim(),
+      isCanonical: row?.isCanonical === true,
+    };
+  }
+
+  function renderFolderPageActionButton(row) {
+    const folderId = String(row?.folderId || row?.id || '').trim();
+    const name = String(row?.name || row?.label || folderId).trim() || folderId;
+    const isCanonical = row?.isCanonical === true;
+    const canOpenMenu = !!folderId && isCanonical;
+    const title = canOpenMenu
+      ? `More options for ${name}`
+      : (isCanonical ? 'Folder actions are still loading' : 'Local Review rows are protected');
+    const button = el('button', {
+      class: 'wbFolderPageActionButton',
+      type: 'button',
+      title,
+      'aria-label': title,
+      'aria-haspopup': 'menu',
+      'aria-expanded': 'false',
+      'aria-disabled': canOpenMenu ? null : 'true',
+      disabled: canOpenMenu ? null : 'true',
+      data: {
+        folderId,
+        h2oFolderId: folderId,
+        h2oFolderPageActionButton: '1',
+      },
+      style: 'display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;min-width:30px;max-width:30px;flex:0 0 auto;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.045);color:rgba(255,255,255,.76);font-size:15px;line-height:1;letter-spacing:0;padding:0;cursor:pointer',
+    }, '...');
+    if (canOpenMenu) {
+      button.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const openMenu = H2O.Library?.SidebarSections?.openRowMenu;
+        if (typeof openMenu === 'function') openMenu(button, folderPageMenuItem(row));
+      });
+    } else {
+      button.style.cursor = 'not-allowed';
+      button.style.opacity = '0.55';
+    }
+    return button;
+  }
+
   function renderFolderCatalogRow(row) {
     const folderId = String(row?.folderId || row?.id || '').trim();
     const name = String(row?.name || folderId).trim() || folderId;
@@ -1411,16 +1470,16 @@
       folderId ? `ID ${folderId}` : '',
       Number(row?.orphanCount || 0) > 0 ? `${formatNumber(row.orphanCount)} orphan membership${Number(row.orphanCount) === 1 ? '' : 's'}` : '',
     ].filter(Boolean).join(' · ');
-    return el('a', {
-      class: 'wbFolderPageRow',
+    const link = el('a', {
+      class: 'wbFolderPageRowLink',
       href,
       title: `${name} — ${label}`,
       data: {
         folderId,
+        h2oFolderId: folderId,
         canonical: row?.isCanonical === true ? 'true' : 'false',
-        badges: (Array.isArray(row?.badges) ? row.badges : []).join(','),
       },
-      style: 'display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.08);color:inherit;text-decoration:none',
+      style: 'display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;min-width:0;color:inherit;text-decoration:none',
     }, [
       folderIconNode(row),
       el('div', { style: 'min-width:0' }, [
@@ -1430,7 +1489,22 @@
         ]),
         el('div', { style: 'margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all' }, secondary),
       ]),
-      el('div', { style: 'text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:160px' }, label),
+      el('div', { style: 'text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, label),
+    ]);
+    return el('div', {
+      class: 'wbFolderPageRow',
+      title: `${name} — ${label}`,
+      data: {
+        folderId,
+        h2oFolderId: folderId,
+        canonical: row?.isCanonical === true ? 'true' : 'false',
+        badges: (Array.isArray(row?.badges) ? row.badges : []).join(','),
+      },
+      role: 'listitem',
+      style: 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:14px 14px 14px 16px;border-bottom:1px solid rgba(255,255,255,.08);color:inherit',
+    }, [
+      link,
+      renderFolderPageActionButton(row),
     ]);
   }
 
@@ -1440,10 +1514,14 @@
     const model = bucket.model;
     const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
     const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
-    const degraded = !canonicalRows.length && !localReviewRows.length;
-    const canonicalCount = Number(model?.canonicalFolderCount ?? canonicalRows.length) || 0;
-    const localCount = Number(model?.localFolderCount ?? localReviewRows.length) || 0;
-    const membershipCount = Number(model?.canonicalBindingCount ?? canonicalRows.reduce((sum, row) => sum + (Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0), 0)) || 0;
+    const fallbackRows = fallbackFolderDisplayRows(idx);
+    const usingFallbackRows = !canonicalRows.length && fallbackRows.length > 0;
+    const displayCanonicalRows = canonicalRows.length ? canonicalRows : fallbackRows;
+    const displayLocalReviewRows = canonicalRows.length || localReviewRows.length ? localReviewRows : [];
+    const degraded = !displayCanonicalRows.length && !displayLocalReviewRows.length;
+    const canonicalCount = Number(model?.canonicalFolderCount ?? canonicalRows.length) || (usingFallbackRows ? displayCanonicalRows.length : 0);
+    const localCount = Number(model?.localFolderCount ?? localReviewRows.length) || displayLocalReviewRows.length;
+    const membershipCount = Number(model?.canonicalBindingCount ?? displayCanonicalRows.reduce((sum, row) => sum + (Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0), 0)) || 0;
     const localBindingCount = Number(model?.localBindingCount ?? 0) || 0;
     const summary = [
       `${formatNumber(canonicalCount)} canonical`,
@@ -1459,6 +1537,7 @@
       el('div', { class: 'wbDetailMeta' }, summary),
       el('div', { style: 'margin-top:10px;color:rgba(255,255,255,.64);font-size:12px;line-height:1.45' }, [
         'Read-only. No cleanup performed.',
+        usingFallbackRows ? el('span', {}, ' Showing workspace folder rows while FolderParity catches up.') : null,
         degraded ? el('span', {}, ` ${bucket.loading ? 'Loading folder parity model.' : (bucket.error || 'Folder parity model unavailable.')}`) : null,
       ]),
     ]);
@@ -1478,18 +1557,18 @@
       body.appendChild(el('h3', {
         class: 'wbFolderPageSectionTitle',
         style: 'margin:0 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
-      }, `Canonical folders · ${formatNumber(canonicalRows.length)}`));
+      }, `${usingFallbackRows ? 'Folders' : 'Canonical folders'} · ${formatNumber(displayCanonicalRows.length)}`));
       body.appendChild(el('div', {
         class: 'wbFolderPageList',
         role: 'list',
         style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.025)',
-      }, canonicalRows.map(renderFolderCatalogRow)));
+      }, displayCanonicalRows.map(renderFolderCatalogRow)));
 
-      if (localReviewRows.length) {
+      if (displayLocalReviewRows.length) {
         body.appendChild(el('h3', {
           class: 'wbFolderPageSectionTitle wbFolderPageSectionTitle--review',
           style: 'margin:24px 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
-        }, `Local Review · ${formatNumber(localReviewRows.length)}`));
+        }, `Local Review · ${formatNumber(displayLocalReviewRows.length)}`));
         body.appendChild(el('div', {
           class: 'wbFolderPageLocalReviewExplanation',
           style: 'margin:0 0 10px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.45',
@@ -1501,7 +1580,7 @@
           class: 'wbFolderPageList wbFolderPageList--review',
           role: 'list',
           style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.015);opacity:0.82',
-        }, localReviewRows.map(renderFolderCatalogRow)));
+        }, displayLocalReviewRows.map(renderFolderCatalogRow)));
       }
 
       if (warnings.length) {
