@@ -682,6 +682,30 @@
     return operation;
   }
 
+  async function resolveFreshCanonicalFolderItem(item) {
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    if (!folderId) return null;
+    try {
+      const model = await W.H2O?.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
+      const row = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
+        .find((candidate) => String(candidate?.folderId || candidate?.id || '').trim() === folderId);
+      if (!row) return null;
+      return {
+        ...item,
+        ...row,
+        id: folderId,
+        folderId,
+        kind: 'folders',
+        section: 'folders',
+        isCanonical: true,
+        name: normalizeFolderRenameInput(row.name || row.title || item?.name || ''),
+      };
+    } catch (e) {
+      err('folderRename.resolveFreshCanonicalItem', e);
+      return null;
+    }
+  }
+
   function staleGuardFromPreview(preview) {
     const src = preview?.before && typeof preview.before === 'object' ? preview.before : {};
     const out = {};
@@ -840,8 +864,15 @@
       setStatus('Blocked: invalid-folder-name', 'blocked');
       return { ok: false, blockers: [{ code: 'invalid-folder-name' }] };
     }
+    const freshItem = await resolveFreshCanonicalFolderItem(item);
+    const requestItem = freshItem || item;
+    const currentName = normalizeFolderRenameInput(requestItem?.name || requestItem?.title || '');
+    if (currentName && nextName === currentName) {
+      setStatus('Name already current', 'ok');
+      return { ok: true, applied: false, noMutation: true, warnings: [{ code: 'no-op-name-unchanged' }] };
+    }
 
-    const operation = buildFolderRenameOperation(item, nextName);
+    const operation = buildFolderRenameOperation(requestItem, nextName);
     setStatus('Previewing...', 'pending');
     let preview = null;
     try {
@@ -873,7 +904,7 @@
     setStatus('Applying...', 'pending');
     let applied = null;
     try {
-      applied = await requestFolderMetadataOperationWithNativeRefresh(request, buildFolderRenameOperation(item, nextName, staleGuardFromPreview(preview)), {
+      applied = await requestFolderMetadataOperationWithNativeRefresh(request, buildFolderRenameOperation(requestItem, nextName, staleGuardFromPreview(preview)), {
         requestMode: 'apply',
         timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
         pollReason: 'folder-rename-apply-result-poll',
@@ -1049,7 +1080,9 @@
   }
 
   function makeCanonicalFolderRenamePanel(item, pop, anchorEl) {
-    const currentName = String(item?.name || '').trim();
+    let currentName = normalizeFolderRenameInput(item?.name || '');
+    let currentItem = item;
+    let currentNameRequestSeq = 0;
     const panel = el('div', {
       class: 'wbSidebarNativePickerSection',
       style: 'display:none;flex-direction:column;gap:7px;min-width:220px',
@@ -1104,6 +1137,22 @@
       cancel.style.opacity = pendingRename ? '.55' : '1';
       cancel.style.cursor = pendingRename ? 'not-allowed' : 'pointer';
     };
+    const refreshPanelCurrentName = async () => {
+      const seq = ++currentNameRequestSeq;
+      const previousName = currentName;
+      const inputNameAtStart = normalizeFolderRenameInput(input.value);
+      const freshItem = await resolveFreshCanonicalFolderItem(currentItem);
+      if (seq !== currentNameRequestSeq || pendingRename || panel.style.display === 'none') return currentItem;
+      if (freshItem) currentItem = freshItem;
+      const freshName = normalizeFolderRenameInput(currentItem?.name || currentItem?.title || currentName);
+      if (freshName) {
+        currentName = freshName;
+        if (!inputNameAtStart || inputNameAtStart === previousName) input.value = freshName;
+      }
+      syncSubmit();
+      try { positionRowMenu(pop, anchorEl); } catch {}
+      return currentItem;
+    };
     const showPanel = () => {
       panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
       action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
@@ -1111,6 +1160,7 @@
         input.value = currentName;
         setStatus('', '');
         syncSubmit();
+        refreshPanelCurrentName().catch((e) => err('folderRename.refreshPanelCurrentName', e));
         W.requestAnimationFrame(() => {
           try { positionRowMenu(pop, anchorEl); } catch {}
           try { input.focus(); input.select(); } catch {}
@@ -1126,9 +1176,24 @@
       }
       pendingRename = true;
       syncSubmit();
-      Promise.resolve(requestCanonicalFolderRename(item, nextName, { setStatus }))
+      Promise.resolve(resolveFreshCanonicalFolderItem(currentItem))
+        .then((freshItem) => {
+          if (freshItem) currentItem = freshItem;
+          const freshName = normalizeFolderRenameInput(currentItem?.name || currentItem?.title || currentName);
+          if (freshName) currentName = freshName;
+          if (freshName && nextName === freshName) {
+            setStatus('Name already current', 'ok');
+            return { ok: true, applied: false, noMutation: true, warnings: [{ code: 'no-op-name-unchanged' }] };
+          }
+          return requestCanonicalFolderRename(currentItem, nextName, { setStatus });
+        })
         .then((result) => {
           pendingRename = false;
+          const resultName = normalizeFolderRenameInput(result?.after?.name || result?.after?.title || nextName);
+          if (result?.ok && resultName) {
+            currentName = resultName;
+            currentItem = { ...currentItem, name: resultName, title: resultName };
+          }
           syncSubmit();
           if (result?.ok && result.applied === true) {
             W.setTimeout(() => closeRowMenu(), 750);
