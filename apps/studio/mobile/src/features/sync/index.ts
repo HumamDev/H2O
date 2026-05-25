@@ -5,7 +5,10 @@ export {
   readMobileSyncBundle,
   validateMobileSyncBundle,
 } from "./latest-bundle-reader";
-export { buildMobileReadOnlyBundleView } from "./latest-bundle-view-model";
+export {
+  buildMobileReadOnlyBundleView,
+  buildMobileReadOnlySnapshotDetail,
+} from "./latest-bundle-view-model";
 export { ReadOnlyBundleDisplay } from "./readonly-bundle-display";
 export type {
   DiagnoseMobileSyncBundleOptions,
@@ -17,7 +20,10 @@ export type {
 } from "./latest-bundle-reader";
 export type {
   BuildMobileReadOnlyBundleViewOptions,
+  BuildMobileReadOnlySnapshotDetailOptions,
   MobileReadOnlyLibraryView,
+  MobileReadOnlySnapshotDetail,
+  MobileReadOnlySnapshotMessage,
   MobileReadOnlyViewWarning,
 } from "./latest-bundle-view-model";
 export type { ReadOnlyBundleDisplayProps } from "./readonly-bundle-display";

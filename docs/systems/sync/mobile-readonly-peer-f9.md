@@ -319,6 +319,38 @@ component.
 File picker, WebDAV/cloud transport, route menu wiring, persistent cache,
 diagnostics screen integration, and snapshot content reading remain deferred.
 
+## F9.2c.1 — Read-Only Snapshot Detail Model
+
+F9.2c.1 adds a pure snapshot detail model:
+
+```txt
+latest.json snapshot evidence -> read-only snapshot detail model
+```
+
+The model reads Desktop full-bundle snapshot evidence from
+`chatArchive.chats[].snapshots[]` and prefers `snapshot.messages[]` as the
+content source. It does not parse or return `meta.richTurns` HTML data.
+
+The helper shape is:
+
+```ts
+buildMobileReadOnlySnapshotDetail(bundle, {
+  snapshotIndex
+})
+```
+
+The returned detail uses schema `h2o.mobile.readonly-snapshot-detail.v1`,
+includes read-only message turns, and never returns raw snapshot IDs, chat IDs,
+digests, raw hashes, metadata blobs, or audit JSON.
+
+Returned message text is intended for future read-only UI display only.
+Validation output, logs, and diagnostics must not print full message content.
+
+F9.2c.1 does not add a UI reader, does not wire local snapshot selection into
+the route, and does not touch archive-store, WebDAV, mutable chat routes,
+`TurnBlock`, or edit/save/delete/restore controls. F9.2c.2 will add a
+presentational read-only snapshot reader.
+
 Next phases:
 
 - F9.2b: Library and folder list display from the read-only view model.

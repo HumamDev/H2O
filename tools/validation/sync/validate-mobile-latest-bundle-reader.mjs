@@ -351,13 +351,20 @@ if (!fs.existsSync(bundlePath)) {
 const text = fs.readFileSync(bundlePath, 'utf8');
 const bundle = JSON.parse(text);
 const { diagnoseMobileSyncBundle } = loadLatestBundleReader();
-const { buildMobileReadOnlyBundleView } = loadLatestBundleViewModel();
+const {
+  buildMobileReadOnlyBundleView,
+  buildMobileReadOnlySnapshotDetail,
+} = loadLatestBundleViewModel();
 const diagnostic = await diagnoseMobileSyncBundle(
   { text, sourceKind: 'latest-json' },
   { verifyChecksum: true, sha256Hex },
 );
 const view = buildMobileReadOnlyBundleView(bundle, {
   checksumVerified: diagnostic.source.checksumVerified,
+});
+const snapshotDetail = buildMobileReadOnlySnapshotDetail(bundle);
+const missingSnapshotDetail = buildMobileReadOnlySnapshotDetail(bundle, {
+  snapshotIndex: 100000,
 });
 
 assert.equal(diagnostic.schema, 'h2o.mobile.bundle-reader.diagnostic.v1');
@@ -393,6 +400,24 @@ assert.equal(
   expectedCounts.folderMemberships,
 );
 assertViewModelNoRawIds(view, bundle);
+
+const firstSnapshot = bundle.chatArchive?.chats?.flatMap((chat) => chat.snapshots ?? [])[0];
+assert.ok(firstSnapshot, 'real bundle should include at least one snapshot');
+assert.equal(snapshotDetail.schema, 'h2o.mobile.readonly-snapshot-detail.v1');
+assert.equal(snapshotDetail.readOnly, true);
+assert.equal(snapshotDetail.snapshotFound, true);
+assert.equal(snapshotDetail.contentKind, 'turns');
+assert.equal(snapshotDetail.messageCount, firstSnapshot.messages.length);
+assert.equal(snapshotDetail.messages.length, firstSnapshot.messages.length);
+assert.equal(snapshotDetail.contentPresent, true);
+assert.equal(snapshotDetail.warnings.length, 0);
+assert.equal(
+  snapshotDetail.messages.filter((message) => message.textPresent).length,
+  firstSnapshot.messages.filter((message) => typeof message.text === 'string' && message.text.length > 0).length,
+);
+assert.equal(missingSnapshotDetail.snapshotFound, false);
+assert.equal(missingSnapshotDetail.contentPresent, false);
+assert.deepEqual(missingSnapshotDetail.warnings, [{ code: 'snapshot-not-found' }]);
 
 console.log(
   JSON.stringify(
@@ -431,6 +456,20 @@ console.log(
         diagnostics: view.diagnostics,
         warnings: view.warnings,
         rawIdsExposed: false,
+      },
+      snapshotDetail: {
+        schema: snapshotDetail.schema,
+        readOnly: snapshotDetail.readOnly,
+        snapshotFound: snapshotDetail.snapshotFound,
+        contentKind: snapshotDetail.contentKind,
+        contentPresent: snapshotDetail.contentPresent,
+        messageCount: snapshotDetail.messageCount,
+        textMessageCount: snapshotDetail.messages.filter((message) => message.textPresent).length,
+        warnings: snapshotDetail.warnings,
+      },
+      missingSnapshot: {
+        snapshotFound: missingSnapshotDetail.snapshotFound,
+        warnings: missingSnapshotDetail.warnings,
       },
     },
     null,

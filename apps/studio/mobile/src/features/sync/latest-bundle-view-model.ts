@@ -1,4 +1,5 @@
 const VIEW_SCHEMA = "h2o.mobile.readonly-library-view.v1";
+const SNAPSHOT_DETAIL_SCHEMA = "h2o.mobile.readonly-snapshot-detail.v1";
 const FULL_BUNDLE_SCHEMA = "h2o.studio.fullBundle.v2";
 const FOLDER_STATE_KEY = "h2o:prm:cgx:fldrs:state:data:v1";
 
@@ -39,6 +40,32 @@ export type BuildMobileReadOnlyBundleViewOptions = {
   checksumVerified?: boolean;
 };
 
+export type MobileReadOnlySnapshotMessage = {
+  role: "user" | "assistant" | "system" | "unknown";
+  orderPresent: boolean;
+  createdAtPresent: boolean;
+  textPresent: boolean;
+  text: string;
+};
+
+export type MobileReadOnlySnapshotDetail = {
+  schema: typeof SNAPSHOT_DETAIL_SCHEMA;
+  readOnly: true;
+  snapshotFound: boolean;
+  titlePreview?: string;
+  createdAtPresent: boolean;
+  contentPresent: boolean;
+  contentKind: "turns";
+  messageCount: number;
+  messages: MobileReadOnlySnapshotMessage[];
+  warnings: MobileReadOnlyViewWarning[];
+};
+
+export type BuildMobileReadOnlySnapshotDetailOptions = {
+  snapshotIndex?: number;
+  snapshotTitle?: string;
+};
+
 export function buildMobileReadOnlyBundleView(
   bundleOrReadResult: unknown,
   options: BuildMobileReadOnlyBundleViewOptions = {},
@@ -71,6 +98,134 @@ export function buildMobileReadOnlyBundleView(
   });
 
   return view;
+}
+
+export function buildMobileReadOnlySnapshotDetail(
+  bundleOrReadResult: unknown,
+  options: BuildMobileReadOnlySnapshotDetailOptions = {},
+): MobileReadOnlySnapshotDetail {
+  const bundle = unwrapBundle(bundleOrReadResult);
+  const detail = createEmptySnapshotDetail();
+
+  if (!isRecord(bundle)) {
+    addSnapshotWarning(detail, "bundle-schema-unsupported");
+    return detail;
+  }
+
+  if (bundle.schema !== FULL_BUNDLE_SCHEMA) {
+    addSnapshotWarning(detail, "bundle-schema-unsupported");
+    return detail;
+  }
+
+  const snapshots = flattenSnapshotEvidence(bundle);
+  const snapshotIndex = normalizeSnapshotIndex(options.snapshotIndex);
+  const selected = snapshots[snapshotIndex];
+  if (!selected) {
+    addSnapshotWarning(detail, "snapshot-not-found");
+    return detail;
+  }
+
+  detail.snapshotFound = true;
+  const titlePreview = firstNonEmptyString(options.snapshotTitle, selected.title, selected.name);
+  if (titlePreview) {
+    detail.titlePreview = titlePreview;
+  }
+  detail.createdAtPresent = hasNonEmptyString(selected.createdAt) || hasNonEmptyString(selected.created_at);
+
+  const messages = selected.messages;
+  if (!Array.isArray(messages)) {
+    addSnapshotWarning(detail, "snapshot-messages-malformed");
+    return detail;
+  }
+
+  detail.messages = messages.map(readSnapshotMessage);
+  detail.messageCount = detail.messages.length;
+  detail.contentPresent = detail.messages.some((message) => message.textPresent);
+  if (!detail.contentPresent && detail.messageCount > 0) {
+    addSnapshotWarning(detail, "snapshot-message-text-missing");
+  }
+
+  return detail;
+}
+
+function createEmptySnapshotDetail(): MobileReadOnlySnapshotDetail {
+  return {
+    schema: SNAPSHOT_DETAIL_SCHEMA,
+    readOnly: true,
+    snapshotFound: false,
+    createdAtPresent: false,
+    contentPresent: false,
+    contentKind: "turns",
+    messageCount: 0,
+    messages: [],
+    warnings: [],
+  };
+}
+
+function flattenSnapshotEvidence(bundle: Record<string, unknown>): Record<string, unknown>[] {
+  if (!isRecord(bundle.chatArchive)) {
+    return [];
+  }
+  const chatRows = arrayAt(bundle.chatArchive, "chats");
+  if (!chatRows) {
+    return [];
+  }
+
+  const snapshots: Record<string, unknown>[] = [];
+  for (const chat of chatRows) {
+    if (!isRecord(chat)) {
+      continue;
+    }
+    const chatSnapshots = arrayAt(chat, "snapshots") ?? arrayAt(chat, "savedSnapshots") ?? [];
+    for (const snapshot of chatSnapshots) {
+      if (isRecord(snapshot)) {
+        snapshots.push(snapshot);
+      }
+    }
+  }
+  return snapshots;
+}
+
+function normalizeSnapshotIndex(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
+function readSnapshotMessage(message: unknown): MobileReadOnlySnapshotMessage {
+  if (!isRecord(message)) {
+    return {
+      role: "unknown",
+      orderPresent: false,
+      createdAtPresent: false,
+      textPresent: false,
+      text: "",
+    };
+  }
+
+  const text = typeof message.text === "string" ? message.text : "";
+  return {
+    role: normalizeSnapshotRole(message.role),
+    orderPresent: message.order !== undefined && message.order !== null,
+    createdAtPresent: message.createdAt !== undefined && message.createdAt !== null,
+    textPresent: text.length > 0,
+    text,
+  };
+}
+
+function normalizeSnapshotRole(value: unknown): MobileReadOnlySnapshotMessage["role"] {
+  const role = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (role === "user" || role === "assistant" || role === "system") {
+    return role;
+  }
+  return "unknown";
+}
+
+function addSnapshotWarning(detail: MobileReadOnlySnapshotDetail, code: string): void {
+  if (!detail.warnings.some((warning) => warning.code === code)) {
+    detail.warnings.push({ code });
+  }
 }
 
 function createEmptyView(options: BuildMobileReadOnlyBundleViewOptions): MobileReadOnlyLibraryView {
