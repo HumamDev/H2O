@@ -29,6 +29,15 @@
   const FOLDER_SIDEBAR_UI_STATE = {
     showFolderCountPills: false,
   };
+  const FOLDER_CREATE_FLOW_STATE = {
+    lastAt: 0,
+    lastName: '',
+    lastStage: '',
+    lastStatus: '',
+    lastPreview: null,
+    lastApply: null,
+    lastError: '',
+  };
   const FOLDERS_UI_KEYS = [
     'h2o:prm:cgx:fldrs:state:ui:v1',
     'h2o:folders:ui:v1',
@@ -918,6 +927,38 @@
     return resultCodes(result, 'blockers').includes(String(code || '').trim());
   }
 
+  function summarizeFolderMetadataResult(result) {
+    if (!result || typeof result !== 'object') return null;
+    return {
+      requestId: String(result.requestId || ''),
+      requestMode: String(result.requestMode || ''),
+      operationType: String(result.operationType || ''),
+      folderId: String(result.folderId || result.after?.folderId || result.after?.id || ''),
+      ok: result.ok === true,
+      applied: result.applied === true,
+      canApply: result.canApply === true,
+      blockers: resultCodes(result, 'blockers').slice(0, 8),
+      warnings: resultCodes(result, 'warnings').slice(0, 8),
+      afterName: String(result.after?.name || result.proposed?.folderName || ''),
+    };
+  }
+
+  function recordFolderCreateFlow(stage, patch = {}) {
+    FOLDER_CREATE_FLOW_STATE.lastAt = Date.now();
+    FOLDER_CREATE_FLOW_STATE.lastStage = String(stage || '');
+    Object.assign(FOLDER_CREATE_FLOW_STATE, patch);
+  }
+
+  function canApplyFolderCreatePreview(preview, name = '') {
+    if (!preview || typeof preview !== 'object') return false;
+    if (resultCodes(preview, 'blockers').length) return false;
+    const opType = String(preview.operationType || 'create-folder').trim();
+    if (opType && opType !== 'create-folder') return false;
+    const previewName = normalizeFolderCreateInput(preview.after?.name || preview.proposed?.folderName || name);
+    if (!previewName) return false;
+    return preview.canApply === true || preview.ok === true || preview.readOnly === true;
+  }
+
   function waitMs(ms) {
     return new Promise((resolve) => W.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
   }
@@ -1025,6 +1066,13 @@
     }
 
     const operation = buildFolderCreateOperation(nextName);
+    recordFolderCreateFlow('preview-start', {
+      lastName: nextName,
+      lastStatus: 'previewing',
+      lastPreview: null,
+      lastApply: null,
+      lastError: '',
+    });
     setStatus('Previewing...', 'pending');
     let preview = null;
     const requestCreatePreview = () => requestFolderMetadataOperationWithNativeRefresh(request, operation, {
@@ -1035,25 +1083,50 @@
     try {
       preview = await requestCreatePreview();
       if (resultHasBlocker(preview, 'native-owner-timeout')) {
+        recordFolderCreateFlow('preview-timeout-retry', {
+          lastPreview: summarizeFolderMetadataResult(preview),
+          lastStatus: 'preview-timeout-retry',
+        });
         setStatus('Previewing...', 'pending');
         preview = await requestCreatePreview();
       }
     } catch (e) {
       err('folderCreate.preview', e);
+      recordFolderCreateFlow('preview-error', {
+        lastStatus: 'preview-error',
+        lastError: String(e?.message || e || 'preview-failed'),
+      });
       setStatus(`Blocked: ${String(e?.message || e || 'preview-failed')}`, 'blocked');
       return { ok: false, blockers: [{ code: 'preview-request-threw' }] };
     }
+    recordFolderCreateFlow('preview-result', {
+      lastStatus: 'preview-result',
+      lastPreview: summarizeFolderMetadataResult(preview),
+    });
 
     const previewBlocker = resultCodes(preview, 'blockers')[0];
-    if (!preview?.ok || previewBlocker) {
+    const previewSucceeded = preview?.ok === true || canApplyFolderCreatePreview(preview, nextName);
+    if (!previewSucceeded || previewBlocker) {
+      recordFolderCreateFlow('preview-blocked', {
+        lastStatus: 'preview-blocked',
+        lastPreview: summarizeFolderMetadataResult(preview),
+      });
       setStatus(`Blocked: ${previewBlocker || firstResultCode(preview, 'folder-create-preview-failed')}`, 'blocked');
       return preview;
     }
-    if (preview.canApply !== true) {
+    if (!canApplyFolderCreatePreview(preview, nextName)) {
+      recordFolderCreateFlow('preview-not-applyable', {
+        lastStatus: 'preview-not-applyable',
+        lastPreview: summarizeFolderMetadataResult(preview),
+      });
       setStatus('Blocked: preview-not-applyable', 'blocked');
       return preview;
     }
 
+    recordFolderCreateFlow('apply-start', {
+      lastStatus: 'applying',
+      lastPreview: summarizeFolderMetadataResult(preview),
+    });
     setStatus('Creating...', 'pending');
     let applied = null;
     try {
@@ -1064,9 +1137,17 @@
       });
     } catch (e) {
       err('folderCreate.apply', e);
+      recordFolderCreateFlow('apply-error', {
+        lastStatus: 'apply-error',
+        lastError: String(e?.message || e || 'apply-failed'),
+      });
       setStatus(`Blocked: ${String(e?.message || e || 'apply-failed')}`, 'blocked');
       return { ok: false, blockers: [{ code: 'apply-request-threw' }] };
     }
+    recordFolderCreateFlow('apply-result', {
+      lastStatus: 'apply-result',
+      lastApply: summarizeFolderMetadataResult(applied),
+    });
 
     if (resultHasBlocker(applied, 'native-owner-timeout')) {
       setStatus('Creating...', 'pending');
@@ -1087,18 +1168,34 @@
           blockers: [],
           warnings: [{ code: 'folder-create-result-recovered-from-canonical-state' }],
         };
+        recordFolderCreateFlow('apply-recovered', {
+          lastStatus: 'apply-recovered',
+          lastApply: summarizeFolderMetadataResult(applied),
+        });
       }
     }
 
     const applyBlocker = resultCodes(applied, 'blockers')[0];
     if (!applied?.ok || applyBlocker) {
+      recordFolderCreateFlow('apply-blocked', {
+        lastStatus: 'apply-blocked',
+        lastApply: summarizeFolderMetadataResult(applied),
+      });
       setStatus(`Blocked: ${applyBlocker || firstResultCode(applied, 'folder-create-apply-failed')}`, 'blocked');
       return applied;
     }
     if (applied.applied !== true) {
+      recordFolderCreateFlow('apply-not-created', {
+        lastStatus: 'apply-not-created',
+        lastApply: summarizeFolderMetadataResult(applied),
+      });
       setStatus('Folder not created', 'blocked');
       return applied;
     }
+    recordFolderCreateFlow('created', {
+      lastStatus: 'created',
+      lastApply: summarizeFolderMetadataResult(applied),
+    });
     setStatus('Folder created', 'ok');
     refreshAfterNativeFolderMetadataApply('folder-create-apply');
     W.setTimeout(() => {
@@ -2986,6 +3083,11 @@
         projectsRendered:  D.getElementById('projectList')?.children.length || 0,
         collapseState: { ...collapseState },
         folderSidebarUi: { ...FOLDER_SIDEBAR_UI_STATE },
+        folderCreateFlow: {
+          ...FOLDER_CREATE_FLOW_STATE,
+          lastPreview: FOLDER_CREATE_FLOW_STATE.lastPreview ? { ...FOLDER_CREATE_FLOW_STATE.lastPreview } : null,
+          lastApply: FOLDER_CREATE_FLOW_STATE.lastApply ? { ...FOLDER_CREATE_FLOW_STATE.lastApply } : null,
+        },
         steps: diag.steps.slice(-15),
         errors: diag.errors.slice(-10),
       };
