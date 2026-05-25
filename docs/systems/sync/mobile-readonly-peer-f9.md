@@ -12,6 +12,10 @@ The F9 model is:
 read bundle -> validate -> cache/display -> no mutation
 ```
 
+Operator how-to: see
+[`mobile-readonly-operator-guide-f9.md`](./mobile-readonly-operator-guide-f9.md)
+for the concise mobile `latest.json` preview workflow.
+
 ## Recommended Data Source
 
 The first mobile input source should be a copied or exported `latest.json`
