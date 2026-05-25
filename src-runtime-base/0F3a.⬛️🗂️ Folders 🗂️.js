@@ -144,7 +144,7 @@
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   const FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA = 'h2o.folder-metadata-operation-preview.v1';
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
-  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-g1.native-delete-preview.v1';
+  const FOLDER_METADATA_OPERATION_VERSION = 'p8h-g2.native-empty-delete.v1';
   const FOLDER_METADATA_DELETE_CONFIRMATION_TEXT = 'DELETE EMPTY FOLDER';
   const CFG_PROJECT_COLOR_OPTIONS = Object.freeze([
     { key: 'blue', label: 'Blue', color: '#3B82F6' },
@@ -2031,6 +2031,63 @@ ${CROW}[aria-current="true"]{
     };
   }
 
+  function STORE_deleteEmptyFolder(folderId, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const data = STORE_readData();
+    const id = String(folderId || '').trim();
+    const blockers = [];
+    const target = id
+      ? data.folders.find((item) => String(item?.id || item?.folderId || '').trim() === id)
+      : null;
+    if (!id) blockers.push('folder-id-required');
+    if (!target) {
+      blockers.push('folder-not-found');
+      blockers.push('target-not-canonical');
+    }
+    const itemBucketExists = !!id && Object.prototype.hasOwnProperty.call(data.items || {}, id);
+    const existingItems = itemBucketExists && Array.isArray(data.items?.[id]) ? data.items[id] : [];
+    if (existingItems.length > 0) blockers.push('delete-non-empty-folder-blocked');
+    if (blockers.length) {
+      return {
+        ok: false,
+        applied: false,
+        folderId: id,
+        blockers,
+        warnings: [],
+      };
+    }
+
+    const before = META_folderSummary(data, target);
+    data.folders = data.folders.filter((folder) => String(folder?.id || folder?.folderId || '').trim() !== id);
+    if (!data.items || typeof data.items !== 'object' || Array.isArray(data.items)) data.items = {};
+    delete data.items[id];
+    STORE_writeData(data);
+    EVENT_emitFoldersChanged({
+      action: 'folder-delete',
+      folderId: id,
+      folderName: String(target.name || target.title || ''),
+      affectedCount: 0,
+      source: String(opts.source || 'folder-delete'),
+    });
+
+    const ui = STORE_readUI();
+    delete ui.openFolders[id];
+    STORE_writeUI(ui);
+    if (opts.rerender !== false) ENGINE_rerenderAllSections();
+
+    return {
+      ok: true,
+      applied: true,
+      folderId: id,
+      before,
+      after: null,
+      affectedCount: 0,
+      removedItemBucket: itemBucketExists,
+      blockers: [],
+      warnings: [],
+    };
+  }
+
   function STORE_setFolderIconColor(folderId, color) {
     const id = String(folderId || '').trim();
     if (!id) return;
@@ -2338,12 +2395,17 @@ ${CROW}[aria-current="true"]{
   }
 
   function META_previewDeleteOperation(operation, preview, data) {
+    const op = META_safeObject(operation);
     const folder = META_validateCommon(operation, preview, data);
+    const confirmation = META_cleanString(op.confirmation);
+    const confirmationOk = confirmation === FOLDER_METADATA_DELETE_CONFIRMATION_TEXT;
     preview.requiredConfirmation = FOLDER_METADATA_DELETE_CONFIRMATION_TEXT;
     preview.confirmation = {
       required: true,
       text: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
-      appliesTo: 'future-empty-folder-delete-apply',
+      provided: !!confirmation,
+      accepted: confirmationOk,
+      appliesTo: 'empty-folder-delete-apply',
     };
     if (folder) {
       const dependencySummary = META_deleteDependencySummary(data, folder, preview.before);
@@ -2377,13 +2439,11 @@ ${CROW}[aria-current="true"]{
         officialChatGptFolderApiProven: false,
       };
     }
-    META_addCode(preview.blockers, 'delete-operation-not-enabled-yet');
-    META_addCode(preview.blockers, 'delete-policy-not-implemented');
-    META_addCode(preview.blockers, 'delete-confirmation-required');
-    META_addCode(preview.blockers, 'chrome-reference-check-required');
-    META_addCode(preview.blockers, 'desktop-reference-check-required');
-    META_addCode(preview.blockers, 'official-chatgpt-folder-api-unproven');
-    preview.canApply = false;
+    if (!confirmationOk) META_addCode(preview.blockers, 'delete-confirmation-required');
+    META_addCode(preview.warnings, 'chrome-reference-check-required');
+    META_addCode(preview.warnings, 'desktop-reference-check-required');
+    META_addCode(preview.warnings, 'official-chatgpt-folder-api-unproven');
+    preview.canApply = preview.blockers.length === 0 && !!folder && confirmationOk;
     return preview;
   }
 
@@ -2399,15 +2459,23 @@ ${CROW}[aria-current="true"]{
 
   function API_applyMetadataOperation(operation, options = {}) {
     const opts = META_safeObject(options);
-    const preview = API_previewMetadataOperation(operation);
+    const op = META_safeObject(operation);
+    const optionsConfirmation = META_cleanString(opts.confirmation);
+    const operationForPreview = op.operationType === 'delete-folder' && optionsConfirmation && !META_cleanString(op.confirmation)
+      ? { ...op, confirmation: optionsConfirmation }
+      : operation;
+    const preview = API_previewMetadataOperation(operationForPreview);
     if (opts.dryRun === true) return { ...preview, dryRun: true };
-    const canApplyOperation = preview.operationType === 'change-folder-color' || preview.operationType === 'rename-folder';
+    const canApplyOperation = preview.operationType === 'change-folder-color'
+      || preview.operationType === 'rename-folder'
+      || preview.operationType === 'delete-folder';
     if (!canApplyOperation) {
       return {
         schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
         ok: false,
         applied: false,
         noMutation: true,
+        writesPerformed: 0,
         operationType: preview.operationType,
         folderId: preview.folderId,
         before: preview.before,
@@ -2422,11 +2490,60 @@ ${CROW}[aria-current="true"]{
         ok: false,
         applied: false,
         noMutation: true,
+        writesPerformed: 0,
         operationType: preview.operationType,
         folderId: preview.folderId,
         before: preview.before,
         after: preview.after,
         blockers: preview.blockers,
+        warnings: preview.warnings,
+      };
+    }
+    if (preview.operationType === 'delete-folder') {
+      if (!preview.canApply) {
+        return {
+          schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          ok: false,
+          applied: false,
+          noMutation: true,
+          writesPerformed: 0,
+          operationType: preview.operationType,
+          folderId: preview.folderId,
+          before: preview.before,
+          after: preview.after,
+          blockers: preview.blockers,
+          warnings: preview.warnings,
+        };
+      }
+      const result = STORE_deleteEmptyFolder(preview.folderId, {
+        source: 'folder-metadata-operation',
+      });
+      if (!result.ok) {
+        return {
+          schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+          ok: false,
+          applied: false,
+          noMutation: true,
+          writesPerformed: 0,
+          operationType: preview.operationType,
+          folderId: preview.folderId,
+          before: preview.before,
+          after: preview.after,
+          blockers: (result.blockers || []).map((code) => ({ code })),
+          warnings: preview.warnings.concat((result.warnings || []).map((code) => ({ code }))),
+        };
+      }
+      return {
+        schema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
+        ok: true,
+        applied: true,
+        noMutation: false,
+        writesPerformed: 1,
+        operationType: preview.operationType,
+        folderId: preview.folderId,
+        before: preview.before,
+        after: null,
+        blockers: [],
         warnings: preview.warnings,
       };
     }
@@ -3984,23 +4101,16 @@ function ROUTE_clearPageRoute_LOCAL() {
                   const ok = confirm(`Delete folder "${folder.name}"?`);
                   if (!ok) return;
 
-                  const d = STORE_readData();
-                  const existingItems = Array.isArray(d.items?.[folder.id]) ? d.items[folder.id] : [];
-                  d.folders = d.folders.filter((f) => f.id !== folder.id);
-                  delete d.items[folder.id];
-                  STORE_writeData(d);
-                  EVENT_emitFoldersChanged({
-                    action: 'folder-delete',
-                    folderId: String(folder.id || ''),
-                    folderName: String(folder.name || ''),
-                    affectedCount: existingItems.length,
+                  const result = STORE_deleteEmptyFolder(folder.id, {
                     source: 'sidebar-folder-delete',
+                    rerender: false,
                   });
-
-                  const u = STORE_readUI();
-                  delete u.openFolders[folder.id];
-                  STORE_writeUI(u);
-
+                  if (!result.ok) {
+                    if ((result.blockers || []).includes('delete-non-empty-folder-blocked')) {
+                      return alert('Only empty folders can be deleted.');
+                    }
+                    return alert('Folder delete blocked.');
+                  }
                   render();
                 }
               }
@@ -6544,8 +6654,10 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,
         previewSchema: FOLDER_METADATA_OPERATION_PREVIEW_SCHEMA,
         resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
-        supportedOperations: ['change-folder-color', 'rename-folder'],
-        previewOnlyOperations: ['delete-folder'],
+        supportedOperations: ['change-folder-color', 'rename-folder', 'delete-folder'],
+        previewOnlyOperations: [],
+        deletePolicy: 'empty-folder-only',
+        deleteConfirmation: FOLDER_METADATA_DELETE_CONFIRMATION_TEXT,
         authority: 'native-h2o-folder-state',
         officialChatGptFolderApiProven: false,
       },
