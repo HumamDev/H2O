@@ -78,6 +78,14 @@
        * render in some viewers but break round-trip; the DOCX writer
        * + screen + print CSS carry the colour instead). */
       textColor: null,
+      /* Phase 4-3 — paragraph controls.
+       *   list   — Markdown emits per-line "- " (bullet) or "N. "
+       *            (numbered) prefixes on the body. Skipped when
+       *            state.code is set (fenced code stays literal).
+       *   align  — INTENTIONALLY LOSSY in Markdown (no portable syntax).
+       *   indent — INTENTIONALLY LOSSY in Markdown (no portable syntax).
+       * The DOCX writer + screen + print CSS carry align/indent. */
+      list: null, align: null, indent: 0,
     };
   }
 
@@ -212,13 +220,50 @@
      * When state.code is set the character wrappers are skipped so the
      * fenced code block stays literal (no `**` interpretation inside
      * code). This mirrors how the DOCX writer also bypasses character
-     * formatting for code runs. */
+     * formatting for code runs.
+     *
+     * Phase 4-3 — when list mode is active (and code is not), character
+     * formatting is applied PER-LINE so each list item is syntactically
+     * well-formed Markdown (`- **line**` rather than `- **line1\n- line2**`). */
     var useCharFormatting = !(state && state.code);
-    if (useCharFormatting && state) {
+    var listKind = (state && state.list && !state.code && state.list.kind) ? state.list.kind : null;
+    function wrapCharFormatting(s) {
+      var x = s;
+      if (state.bold)          x = '**' + x + '**';
+      if (state.italic)        x = '*'  + x + '*';
+      if (state.underline)     x = '<u>' + x + '</u>';
+      if (state.strikethrough) x = '~~' + x + '~~';
+      return x;
+    }
+    if (useCharFormatting && state && !listKind) {
       if (state.bold)          { body = '**' + body + '**'; opCounter.applied += 1; }
       if (state.italic)        { body = '*' + body + '*';   opCounter.applied += 1; }
       if (state.underline)     { body = '<u>' + body + '</u>'; opCounter.applied += 1; }
       if (state.strikethrough) { body = '~~' + body + '~~'; opCounter.applied += 1; }
+    }
+
+    /* Phase 4-3 — list per-line prefix. Skipped inside code (state.code).
+     * When list is active and character formatting is also on, each line
+     * gets wrapped individually so the markdown is clean. */
+    if (listKind) {
+      var listLines = String(body).split('\n');
+      var numberedIdx = 1;
+      var rendered = [];
+      for (var li = 0; li < listLines.length; li += 1) {
+        var lineRaw = listLines[li];
+        var lineFormatted = (useCharFormatting && state) ? wrapCharFormatting(lineRaw) : lineRaw;
+        var prefix = (listKind === 'bullet') ? '- ' : (String(numberedIdx) + '. ');
+        rendered.push(prefix + lineFormatted);
+        if (listKind === 'numbered') numberedIdx += 1;
+      }
+      body = rendered.join('\n');
+      opCounter.applied += 1;
+      if (useCharFormatting && state) {
+        if (state.bold)          opCounter.applied += 1;
+        if (state.italic)        opCounter.applied += 1;
+        if (state.underline)     opCounter.applied += 1;
+        if (state.strikethrough) opCounter.applied += 1;
+      }
     }
 
     /* 2: heading — decorates the role label. */

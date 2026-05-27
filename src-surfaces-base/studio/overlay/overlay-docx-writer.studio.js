@@ -309,6 +309,38 @@
     return '<w:p>' + pPr + (runsXml || '') + '</w:p>';
   }
 
+  /* Phase 4-3 — paragraph wrapper that supports extra <w:pPr> children.
+   * Children are ordered per OOXML schema requirements:
+   *   pStyle → jc → ind
+   * `extraPPr` is the already-composed string of pPr child elements
+   * (excluding pStyle, which is composed here from styleId). Pass '' or
+   * null when no extras are needed; an empty styleId AND empty extras
+   * collapses to no <w:pPr> emission (matches paragraphXml behaviour). */
+  function paragraphXmlWithProps(styleId, extraPPr, runsXml) {
+    var styleEl = styleId ? '<w:pStyle w:val="' + xmlEscape(styleId) + '"/>' : '';
+    var extras  = extraPPr || '';
+    var pPr = (styleEl || extras) ? ('<w:pPr>' + styleEl + extras + '</w:pPr>') : '';
+    return '<w:p>' + pPr + (runsXml || '') + '</w:p>';
+  }
+
+  /* Phase 4-3 — compose `<w:jc>` and `<w:ind>` fragments for align +
+   * indent. Returns a string suitable for embedding INSIDE <w:pPr> (the
+   * caller composes pStyle before this and supplies the runs after). */
+  function paragraphAlignIndPPr(state) {
+    if (!state) return '';
+    var parts = [];
+    if (state.align === 'left' || state.align === 'center' || state.align === 'right') {
+      parts.push('<w:jc w:val="' + state.align + '"/>');
+    }
+    var lvl = Number(state.indent);
+    if (isFinite(lvl) && lvl > 0) {
+      if (lvl > 3) lvl = 3;
+      var twips = 720 * Math.floor(lvl);
+      parts.push('<w:ind w:left="' + twips + '"/>');
+    }
+    return parts.join('');
+  }
+
   /* Page-break paragraph (used by page-divider op). */
   function pageBreakParaXml() {
     return '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
@@ -347,6 +379,11 @@
       /* Phase 4-2 — message-level text color. Composes with the
        * character formatting rPr via combineRProps. */
       textColor: null,
+      /* Phase 4-3 — paragraph controls (DOCX honors all three).
+       *   list   — emits ListBullet / ListNumber pStyle per body line.
+       *   align  — emits <w:jc w:val="..."/> inside <w:pPr>.
+       *   indent — emits <w:ind w:left="720|1440|2160"/> (720 twips per level). */
+      list: null, align: null, indent: 0,
     };
   }
 
@@ -455,6 +492,25 @@
       if (headingStyle) opsCount += 1;
     }
 
+    /* Phase 4-3 — paragraph controls. List forces ListBullet/ListNumber
+     * pStyle for body paragraphs (overriding plain/quote, but skipped
+     * when state.code is set — fenced code stays literal). Align +
+     * indent compose into <w:pPr> via paragraphAlignIndPPr. All three
+     * decorate THE BODY paragraphs only; the role-label paragraph keeps
+     * its own style (heading or none) without align/indent. */
+    var listKind = (state && state.list && !state.code && state.list.kind) ? state.list.kind : null;
+    var listStyleId = null;
+    if (listKind === 'bullet')   listStyleId = 'ListBullet';
+    if (listKind === 'numbered') listStyleId = 'ListNumber';
+    var bodyAlignIndPPr = paragraphAlignIndPPr(state);
+    if (listStyleId) opsCount += 1;
+    if (state && (state.align === 'left' || state.align === 'center' || state.align === 'right')) {
+      opsCount += 1;
+    }
+    if (state && Number(state.indent) > 0) {
+      opsCount += 1;
+    }
+
     /* 1: callout wraps everything in IntenseQuote with [!kind] leading run. */
     if (state && state.callout && state.callout.kind) {
       var kind = state.callout.kind;
@@ -472,11 +528,13 @@
       var calloutXml = paragraphXml('IntenseQuote',
         runxBold('[!' + xmlEscape(kind) + ']') + runxText(' ' + label, headingStyle ? bold() : null));
       var bodyLines = String(body).split('\n');
+      /* Inside callout, list style does NOT override IntenseQuote (callout
+       * is more specific). Align/indent still compose into pPr. */
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
         var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : '';
         var lineRun = runXml(line, combineRProps(baseRPr, charRPr));
-        calloutXml += paragraphXml('IntenseQuote', lineRun);
+        calloutXml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, lineRun);
       }
       return { xml: calloutXml, opsCount: opsCount };
     }
@@ -487,7 +545,9 @@
     /* Role label paragraph (with heading style if present). The role
      * label stays bold regardless of state.bold — character formatting
      * applies to the BODY, not the role label, so the label remains
-     * visually distinct even when the body has its own bold toggle. */
+     * visually distinct even when the body has its own bold toggle.
+     * Phase 4-3: align/indent do NOT decorate the role label either —
+     * they apply to body paragraphs only, mirroring the char-format pattern. */
     xml += paragraphXml(headingStyle, runxText(label, bold()));
 
     /* Body. */
@@ -495,19 +555,31 @@
       opsCount += 1;
       /* One paragraph per body, with embedded <w:br/> per \n via runXml.
        * Could also split into one paragraph per line; one-paragraph is more
-       * compact and Word renders embedded <w:br/> as soft line breaks. */
-      xml += paragraphXml(null, runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
+       * compact and Word renders embedded <w:br/> as soft line breaks.
+       * Code skips list style but still honours align/indent. */
+      xml += paragraphXmlWithProps(null, bodyAlignIndPPr,
+        runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
+    } else if (listStyleId) {
+      /* List wins over quote when both set (list is more specific). One
+       * paragraph per body line, each with the ListBullet / ListNumber
+       * pStyle. Word's default numbering definition renders ListNumber as
+       * decimal; consumers may swap in their own numPr — we keep it
+       * minimal. */
+      var listLines = String(body).split('\n');
+      for (var li = 0; li < listLines.length; li += 1) {
+        xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, runXml(listLines[li], charRPr || null));
+      }
     } else if (state && state.quote) {
       opsCount += 1;
       var quoteLines = String(body).split('\n');
       for (var qi = 0; qi < quoteLines.length; qi += 1) {
-        xml += paragraphXml('IntenseQuote', runXml(quoteLines[qi], charRPr || null));
+        xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, runXml(quoteLines[qi], charRPr || null));
       }
     } else {
       /* Plain — one paragraph per body line so newlines render. */
       var plainLines = String(body).split('\n');
       for (var pi = 0; pi < plainLines.length; pi += 1) {
-        xml += paragraphXml(null, runXml(plainLines[pi], charRPr || null));
+        xml += paragraphXmlWithProps(null, bodyAlignIndPPr, runXml(plainLines[pi], charRPr || null));
       }
     }
     return { xml: xml, opsCount: opsCount };
@@ -658,6 +730,7 @@
       + '<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:qFormat/></w:style>'
       + '<w:style w:type="paragraph" w:styleId="IntenseQuote"><w:name w:val="Intense Quote"/><w:qFormat/></w:style>'
       + '<w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="List Bullet"/><w:qFormat/></w:style>'
+      + '<w:style w:type="paragraph" w:styleId="ListNumber"><w:name w:val="List Number"/><w:qFormat/></w:style>'
       + '</w:styles>';
   }
 

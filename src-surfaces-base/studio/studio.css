@@ -97,6 +97,10 @@
   --wb-thread-gap:1.25rem;
   --wb-user-w:70%;
   --wb-list-w:52rem;
+  /* Reader fixed overlays use this as their top clearance. It includes the
+     Studio ribbon/topbar stack plus a small gap; studio.js updates it from
+     live DOM measurements because the ribbon height is tab/collapse dependent. */
+  --wb-reader-top-offset:160px;
 
   /* Theme-aware surface tokens introduced for the Appearance panel
    * (v2.5.9 + v2.5.10). Each defaults to the previously-hardcoded dark
@@ -2512,11 +2516,11 @@ body[data-layout="wide"] .cgScroll > *{
 
 .cgMiniMapDock{
   position:sticky;
-  top:18px;
+  top:var(--wb-reader-top-offset);
   align-self:start;
   min-width:0;
   min-height:0;
-  max-height:calc(100vh - 118px);
+  max-height:calc(100vh - var(--wb-reader-top-offset) - 24px);
   overflow-y:auto;
   overflow-x:hidden;
   padding-top:6px;
@@ -2940,7 +2944,8 @@ body[data-route="reader"] .cgScroll .cgxui-mnmp-wash-orange::before{ background:
   .cgMsg--user,
   .wbRichRoot :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)),
   .wbRichRoot :where(.user-message-bubble-color){
-    width:min(100%, 42rem);
+    width:fit-content;
+    max-width:min(100%, 42rem);
   }
 }
 
@@ -3963,6 +3968,65 @@ body[data-route="reader"][data-layout="wide"] .cgScroll > :where(
   max-width:none;
   object-fit:cover;
   border-radius:18px;
+}
+
+body[data-route="reader"] .wbRichRoot .cgTurn--user,
+body[data-route="reader"] .wbRichRoot .wbTurn--user,
+body[data-route="reader"] .wbRichRoot [data-turn="user"]{
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-end !important;
+  justify-content:flex-start !important;
+  justify-items:end !important;
+}
+
+body[data-route="reader"] .wbRichRoot .cgTurn--user :where([data-message-author-role="user"]),
+body[data-route="reader"] .wbRichRoot .wbTurn--user :where([data-message-author-role="user"]),
+body[data-route="reader"] .wbRichRoot [data-turn="user"] :where([data-message-author-role="user"]){
+  align-self:flex-end !important;
+  margin-left:auto !important;
+  margin-right:0 !important;
+}
+
+body[data-route="reader"] .cgMsg--user,
+body[data-route="reader"] .wbRichRoot .cgTurn--user :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)),
+body[data-route="reader"] .wbRichRoot .wbTurn--user :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)),
+body[data-route="reader"] .wbRichRoot [data-turn="user"] :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)),
+body[data-route="reader"] .wbRichRoot .cgTurn--user :where(.user-message-bubble-color),
+body[data-route="reader"] .wbRichRoot .wbTurn--user :where(.user-message-bubble-color),
+body[data-route="reader"] .wbRichRoot [data-turn="user"] :where(.user-message-bubble-color){
+  width:fit-content !important;
+  max-width:min(var(--wb-user-w), 44rem) !important;
+  margin-left:auto !important;
+  margin-right:0 !important;
+}
+
+body[data-route="reader"] .cgUserAttachmentGrid,
+body[data-route="reader"] .wbRichRoot .cgTurn--user .cgUserAttachmentGrid,
+body[data-route="reader"] .wbRichRoot .wbTurn--user .cgUserAttachmentGrid,
+body[data-route="reader"] .wbRichRoot [data-turn="user"] .cgUserAttachmentGrid{
+  align-self:flex-end !important;
+  justify-content:end !important;
+  margin-left:auto !important;
+  margin-right:0 !important;
+}
+
+body[data-route="reader"] :is(
+  [data-cgxui="mnmp-root"][data-cgxui-owner="mnmp"],
+  [data-cgxui="mnmp-minimap"][data-cgxui-owner="mnmp"],
+  [data-cgxui="mm-root"][data-cgxui-owner="mnmp"],
+  [data-cgxui="mm-minimap"][data-cgxui-owner="mnmp"],
+  [data-h2o-owner="minimap-v10"],
+  .cgxui-mnmp-root,
+  .cgxui-mnmp-minimap,
+  .cgxui-mm-root,
+  .cgxui-mm-minimap
+){
+  --root-top:var(--wb-reader-top-offset) !important;
+  --cgxui-mnmp-minimap-top:var(--wb-reader-top-offset) !important;
+  top:var(--wb-reader-top-offset) !important;
+  max-height:calc(100vh - var(--wb-reader-top-offset) - 24px) !important;
+  z-index:1 !important;
 }
 
 /* Cited sources list at bottom of web-search turns */

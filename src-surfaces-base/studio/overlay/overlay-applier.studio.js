@@ -320,6 +320,16 @@
        * semantic palette names. `clear-formatting` resets to null for
        * free via defaultMessageState. */
       textColor: null,        /* { kind: 'red'|'green'|'blue'|'orange'|'gray' } | null */
+      /* Phase 4-3 — paragraph controls.
+       *   list   — null when no list mode is active; otherwise
+       *            { kind: 'bullet' | 'numbered' }.
+       *   align  — null = default (theme inherited); 'left'|'center'|'right'.
+       *   indent — integer 0..3; 0 means no indent. The op payload uses
+       *            an absolute level; ribbon Indent/Outdent compute the
+       *            new level by reading current state and clamping. */
+      list: null,
+      align: null,
+      indent: 0,
     };
   }
 
@@ -406,10 +416,38 @@
           }
           break;
         }
+        /* Phase 4-3 — paragraph controls. Unknown values normalize to
+         * null / 0 (defensive); the reducer never throws on bad input. */
+        case 'list': {
+          var listKind = String(payload.kind || '');
+          if (listKind === 'bullet' || listKind === 'numbered') {
+            state.list = { kind: listKind };
+          } else {
+            state.list = null;
+          }
+          break;
+        }
+        case 'align': {
+          var av = String(payload.value || '');
+          if (av === 'left' || av === 'center' || av === 'right') {
+            state.align = av;
+          } else {
+            state.align = null;
+          }
+          break;
+        }
+        case 'indent': {
+          var lvl = Number(payload.level);
+          if (!isFinite(lvl)) lvl = 0;
+          if (lvl < 0) lvl = 0;
+          if (lvl > 3) lvl = 3;
+          state.indent = Math.floor(lvl);
+          break;
+        }
         /* Phase 4-1 — clear-formatting reset. Wipes ALL per-message
-         * decoration fields (Phase 2b + Phase 4-1 + Phase 4-2) at this
-         * point in op order. Subsequent active ops apply normally on
-         * top of the cleared state. */
+         * decoration fields (Phase 2b + Phase 4-1 + Phase 4-2 + Phase
+         * 4-3) at this point in op order. Subsequent active ops apply
+         * normally on top of the cleared state. */
         case 'clear-formatting':
           state = defaultMessageState();
           break;
@@ -528,6 +566,41 @@
         }
       } else if (turnEl.hasAttribute('data-overlay-text-color')) {
         turnEl.removeAttribute('data-overlay-text-color');
+        changed = true;
+      }
+
+      /* Phase 4-3 — paragraph attributes. CSS rules in studio.css select
+       * on these to render list/align/indent on screen and in print. */
+      if (state.list && state.list.kind) {
+        if (turnEl.getAttribute('data-overlay-list') !== state.list.kind) {
+          turnEl.setAttribute('data-overlay-list', state.list.kind);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-list')) {
+        turnEl.removeAttribute('data-overlay-list');
+        changed = true;
+      }
+
+      if (state.align) {
+        if (turnEl.getAttribute('data-overlay-align') !== state.align) {
+          turnEl.setAttribute('data-overlay-align', state.align);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-align')) {
+        turnEl.removeAttribute('data-overlay-align');
+        changed = true;
+      }
+
+      /* Indent level 0 = no attribute (default). Levels 1/2/3 set the
+       * attribute to that integer string. */
+      if (Number(state.indent) > 0) {
+        var indStr = String(state.indent);
+        if (turnEl.getAttribute('data-overlay-indent') !== indStr) {
+          turnEl.setAttribute('data-overlay-indent', indStr);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-indent')) {
+        turnEl.removeAttribute('data-overlay-indent');
         changed = true;
       }
     } catch (e) { recordError('applyMessageStateToTurnEl', e); }
@@ -921,7 +994,9 @@
         var state = computeMessageState(overlay, turnIdx);
         var changed = applyMessageStateToTurnEl(turnEl, state);
         if (changed) turnsTouched += 1;
-        if (state.heading || state.quote || state.code || state.callout || state.cleanSpacing) {
+        if (state.heading || state.quote || state.code || state.callout || state.cleanSpacing
+            || state.bold || state.italic || state.underline || state.strikethrough
+            || state.textColor || state.list || state.align || Number(state.indent) > 0) {
           turnsWithState += 1;
         }
       }

@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 4-2)
+Status: Active (Phase 4-3)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1312,6 +1312,223 @@ Format tab:
   S3H1a's UI prefs and the Dock tab; the Ribbon uses the 8 fixed
   default color NAMES (color customization still works for the user;
   the Ribbon's swatch label just doesn't update).
+
+## Phase 4-3 — Message-level paragraph controls
+
+Phase 4-3 is the third Phase 4 slice — paragraph-level decorations
+applied to the entire selected message body. All three are overlay ops
+(no bridge to an external system, unlike highlights). Inline text-range
+selection is **not** part of Phase 4-3 and is deferred to a later slice.
+
+### Op model
+
+Three new op types extend `H2O.Studio.OverlayOpTypes`:
+
+| Op type  | Payload                                  | Reducer field        | Default |
+|----------|------------------------------------------|----------------------|---------|
+| `list`   | `{ kind: 'bullet' \| 'numbered' \| null }` | `state.list`         | `null`  |
+| `align`  | `{ value: 'left' \| 'center' \| 'right' \| null }` | `state.align` | `null`  |
+| `indent` | `{ level: number }` — absolute 0..3        | `state.indent`       | `0`     |
+
+| Field    | Value                                                             |
+|----------|-------------------------------------------------------------------|
+| Target   | `{ kind: 'message', turnIdx, messageId? }` (same as Phase 4-1/4-2) |
+| Wins     | Last active op of (type, target) wins (Phase 2b precedent)        |
+| Undo/redo | Phase 2d active-set filter applies for free                      |
+| `clear-formatting` reset | Yes — `defaultMessageState()` sets all three to defaults |
+
+Defensive reducer normalization: unknown `list.kind` / `align.value`
+collapses to `null`; out-of-range `indent.level` clamps to `[0, 3]`.
+
+### DOM dispatch
+
+The applier toggles three `data-overlay-*` attributes on the `[data-turn]`
+wrapper:
+
+```
+data-overlay-list="bullet|numbered"
+data-overlay-align="left|center|right"
+data-overlay-indent="1|2|3"     (absent when state.indent === 0)
+```
+
+Pattern matches Phase 2b/Phase 4-1/Phase 4-2: applier sets/removes the
+attribute; CSS rules in `studio.css` select on the attribute. The applier
+NEVER touches the turn element's children or text content — the same
+invariant from Phase 2b applies unchanged.
+
+### Markdown export mapping (lossy by design)
+
+| Op state                              | Markdown output                              |
+|---------------------------------------|----------------------------------------------|
+| `list = { kind: 'bullet' }`           | Per `\n`-split line, prefix `- ` (one bullet per line) |
+| `list = { kind: 'numbered' }`         | Per `\n`-split line, prefix `1. `, `2. `, `3. `, ... (renumbered each turn) |
+| `align = 'left' \| 'center' \| 'right'` | **No output** — intentionally lossy (no portable Markdown syntax) |
+| `indent = 1..3`                       | **No output** — intentionally lossy (no portable Markdown syntax) |
+
+When list is active and character formatting (Phase 4-1) is also on, the
+serializer wraps each line individually so the Markdown is syntactically
+clean (`- **line1**\n- **line2**`, not `- **line1\n- line2**`). When
+`state.code === true` (fenced code block), the list prefix is skipped so
+the fenced code stays literal — same precedent as character formatting.
+
+### DOCX export mapping (lossless for align/indent)
+
+| Op state         | DOCX emission                                                   |
+|------------------|----------------------------------------------------------------|
+| `list = bullet`  | Body paragraphs use `<w:pStyle w:val="ListBullet"/>`, one paragraph per `\n`-split line |
+| `list = numbered`| Body paragraphs use `<w:pStyle w:val="ListNumber"/>`, one paragraph per `\n`-split line |
+| `align`          | `<w:jc w:val="left|center|right"/>` inside `<w:pPr>` on each body paragraph |
+| `indent = 1`     | `<w:ind w:left="720"/>` (720 twips = ~0.5 inch)                |
+| `indent = 2`     | `<w:ind w:left="1440"/>`                                       |
+| `indent = 3`     | `<w:ind w:left="2160"/>`                                       |
+
+Composition order inside `<w:pPr>`: `pStyle → jc → ind`. The role-label
+paragraph keeps its own style (heading or none) and does **not** receive
+align/indent — they decorate body paragraphs only, mirroring the Phase
+4-1 character-formatting precedent that keeps the role label visually
+distinct.
+
+When `state.code` is set, the list pStyle is skipped (code stays plain
+paragraph) but align/indent still compose into pPr. When `state.callout`
+is set, the callout's IntenseQuote pStyle wins over the list pStyle —
+callout is more specific (Phase 2b precedent).
+
+A new `ListNumber` style declaration is added to `word/styles.xml`
+alongside the existing `ListBullet`. Word + LibreOffice render
+`ListNumber` as decimal numbering using their default numbering
+definition; consumers may supply their own `numPr` — the writer keeps
+the styles minimal.
+
+### Screen + print CSS mapping
+
+```
+[data-overlay-list="bullet"]   → display: list-item; list-style: disc inside
+[data-overlay-list="numbered"] → display: list-item; list-style: decimal inside
+[data-overlay-align="left"]    → text-align: left
+[data-overlay-align="center"]  → text-align: center
+[data-overlay-align="right"]   → text-align: right
+[data-overlay-indent="1"]      → padding-left: 1em
+[data-overlay-indent="2"]      → padding-left: 2em
+[data-overlay-indent="3"]      → padding-left: 3em
+```
+
+Print rules mirror screen with `!important` to win against the print
+reset block.
+
+### Screen-list single-marker limitation (intentional)
+
+The message body is ONE DOM element from the reader's perspective, so
+`display: list-item` renders ONE bullet/number for the entire message
+(whole body = one list item). Splitting a single message into multiple
+list items on screen would require contentEditable or per-line DOM
+restructuring — both explicitly out of scope for Phase 4-3.
+
+**Markdown and DOCX exports do split per `\n` and emit a proper
+multi-item list.** The per-line list-item rendering lives in the export
+paths, not in the reader. Users see "one bullet per message" in the
+reader; their exported `.md` / `.docx` shows "one bullet per line."
+
+This trade-off is documented because it's surprising — but the
+alternative (contentEditable + line-level state) is a much larger
+project, and the export-side fidelity is what users actually need from
+"add a list" most of the time.
+
+### Ribbon UI (Format → Paragraph group)
+
+```
+Paragraph:  Bullet  Numbered  |  Left  Center  Right  |  Indent  Outdent
+```
+
+Seven actions, all gated by the same `formatActionsIsEnabled` rule as
+the Phase 4-1 / Phase 4-2 Font + Text Color groups (saved-reader with a
+selected turn and the bridge installed).
+
+| Action       | Op submitted                            | Toggle/delta behaviour |
+|--------------|----------------------------------------|------------------------|
+| Bullet       | `list` payload `{ kind: 'bullet' }`    | Toggle: same kind twice clears (`kind: null`) |
+| Numbered     | `list` payload `{ kind: 'numbered' }`  | Toggle: same kind twice clears |
+| Left         | `align` payload `{ value: 'left' }`    | Toggle: same value twice clears |
+| Center       | `align` payload `{ value: 'center' }`  | Toggle: same value twice clears |
+| Right        | `align` payload `{ value: 'right' }`   | Toggle: same value twice clears |
+| Indent       | `indent` payload `{ level: cur + 1 }`  | Delta: clamps at level 3 (status "Already at maximum indent") |
+| Outdent      | `indent` payload `{ level: cur - 1 }`  | Delta: clamps at level 0 (status "Already at no indent") |
+
+Toggles read current state via `H2O.Studio.RibbonBridge.getMessageStateForTurn`
+(synchronous) before submitting. Deltas read `state.indent`, clamp the
+new level to 0..3, submit the absolute new level — the reducer also
+clamps so two sources of truth converge.
+
+### Ribbon status canon (Phase 4-3)
+
+| Action / outcome                | Status text                          |
+|--------------------------------|--------------------------------------|
+| Apply bullet list              | `Bullet list applied`                |
+| Apply numbered list            | `Numbered list applied`              |
+| Remove list (toggle off)       | `List removed`                       |
+| Align left/center/right        | `Aligned left` / `Aligned center` / `Aligned right` |
+| Clear alignment (toggle off)   | `Alignment cleared`                  |
+| Indent (new level 1..3)        | `Indented (level N)`                 |
+| Indent at max                  | `Already at maximum indent`          |
+| Outdent (new level 0..2)       | `Outdented (level N)`                |
+| Outdent at zero                | `Already at no indent`               |
+| Bridge drift                   | (existing drift hint flows through)  |
+
+### Combinations matrix
+
+| Combo                       | Screen + DOCX outcome |
+|-----------------------------|-----------------------|
+| `bold` + `list = bullet`    | Each line is a bullet item with bold content (Markdown wraps per-line) |
+| `code` + `list`             | Code wins — list pStyle skipped; code stays literal |
+| `callout` + `list`          | Callout wins — IntenseQuote pStyle keeps; list pStyle skipped inside callout |
+| `quote` + `list`            | List wins (list more specific than quote when both present) |
+| `align` + `indent`          | Composes — both `<w:jc>` and `<w:ind>` in same `<w:pPr>` |
+| `align = center` + `list`   | List item rendered with `text-align: center` (DOCX + screen) |
+| `clear-formatting`          | All three Phase 4-3 fields reset to defaults (null/null/0) |
+| Phase 2d undo               | Active-set filter applies; undoing the last `list` op restores prior `state.list` |
+
+### Format tab layout after Phase 4-3
+
+```
+Format tab:
+  Headings:   H1  H2  H3
+  Font:       B  I  U  S  Clear                                          ← Phase 4-1
+  Text Color: Red  Green  Blue  Orange  Gray  None                       ← Phase 4-2 (overlay op)
+  Highlight:  Blue Red Green Gold Sky Pink Purple Orange | Clear | Hide  ← Phase 4-2 (existing-system bridge)
+  Paragraph:  Bullet  Numbered  |  Left  Center  Right  |  Indent  Outdent ← Phase 4-3
+  Blocks:     Quote  Code  Callout
+  Cleanup:    Clean spacing
+```
+
+### Compliance notes for Phase 4-3
+
+- No new storage keys. No new schema. No schema migration.
+- No `chrome.*` / `localStorage` / `indexedDB` / `fetch` introduced.
+- No contentEditable / inline text-range selection.
+- No snapshot mutation. The applier still only toggles `data-overlay-*`
+  attributes on `[data-turn]` wrappers.
+- No platform-adapter changes; ribbon uses existing `runOverlayOp`
+  bridge plumbing.
+- No new Tauri capability, no new Rust dep, no plugin install.
+- The 3 new op types pass through Phase 2d's active-set undo/redo
+  unchanged because the reducer iterates ops in original order and
+  applies the same "last active op of (type, target) wins" rule.
+
+### Out of scope for Phase 4-3 (deferred to later Phase 4 slices)
+
+- **Inline list items** (multiple bullets per message on screen) —
+  requires contentEditable or per-line state.
+- **Multi-level nested lists** — single-level only; nesting needs
+  inline structure.
+- **Custom list start numbers / formats** — `ListNumber` uses Word's
+  default decimal numbering definition.
+- **Right-to-left text direction** — `<w:bidi/>` not emitted; only LTR.
+- **Justify alignment** — three modes only (left/center/right).
+- **Negative outdent below 0** or **hanging indent** — clamped to 0..3
+  positive integers.
+- **Per-line list character formatting in DOCX** when char-format is
+  also active — currently the run-property fragment applies to each
+  line's runs uniformly; mixed formatting per line still requires
+  inline selection.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

@@ -74,6 +74,16 @@
      * Ribbon controls that system directly through its public APIs
      * rather than duplicating it as an overlay op. */
     textColor: 'text-color',
+    /* Phase 4-3 — message-level paragraph controls. All three operate on
+     * the entire selected turn (no inline text selection); reducer state
+     * follows the Phase 2b "last op of (type, target) wins" rule.
+     *   list   — payload.kind: 'bullet'|'numbered'|null  (null clears)
+     *   align  — payload.value: 'left'|'center'|'right'|null
+     *   indent — payload.level: number 0..3 (absolute level; clamped)
+     * clear-formatting resets all three via defaultMessageState. */
+    list: 'list',
+    align: 'align',
+    indent: 'indent',
   });
 
   var OverlayTargets = Object.freeze({

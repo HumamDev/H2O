@@ -118,6 +118,22 @@
           { id: 'highlight-clear-message', label: 'Clear' },
           { id: 'highlight-visibility',    label: 'Hide' },
         ] },
+        /* Phase 4-3 — Paragraph group. Bullet / Numbered are list-mode
+         * toggles (clicking the same kind twice clears). Align left /
+         * center / right are also toggles relative to current align.
+         * Indent / Outdent are deltas: read current indent level, submit
+         * an absolute new level clamped to 0..3. All seven follow the
+         * Phase 4-1/4-2 enable rule (formatActionsIsEnabled) and submit
+         * via runOverlayOp, so undo/redo + drift detection work for free. */
+        { id: 'paragraph', label: 'Paragraph', actions: [
+          { id: 'list-bullet',   label: 'Bullet' },
+          { id: 'list-numbered', label: 'Numbered' },
+          { id: 'align-left',    label: 'Left' },
+          { id: 'align-center',  label: 'Center' },
+          { id: 'align-right',   label: 'Right' },
+          { id: 'indent',        label: 'Indent' },
+          { id: 'outdent',       label: 'Outdent' },
+        ] },
         { id: 'blocks', label: 'Blocks', actions: [
           { id: 'quote',   label: 'Quote' },
           { id: 'code',    label: 'Code block' },
@@ -2192,6 +2208,127 @@
   ACTION_HANDLERS['text-color-orange'] = buildTextColorHandler('orange', 'orange');
   ACTION_HANDLERS['text-color-gray']   = buildTextColorHandler('gray',   'gray');
   ACTION_HANDLERS['text-color-none']   = buildTextColorHandler(null,     'none');
+
+  /* ── Phase 4-3 — Paragraph controls (overlay ops list / align / indent) ─
+   * Seven handlers operate on the entire selected turn:
+   *   - Bullet / Numbered: list-mode toggles. Clicking the same kind a
+   *     second time clears (submits payload.kind === null). Switching to
+   *     the other kind replaces the current mode.
+   *   - Left / Center / Right: align toggles. Same-button-twice clears.
+   *   - Indent / Outdent: deltas. Read current state.indent, submit a
+   *     payload.level that is current+1 / current-1, clamped 0..3. The
+   *     reducer also clamps defensively.
+   * All seven use formatActionsIsEnabled (saved-reader + selected turn). */
+  function buildListHandler(kind, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (cur) {
+          const curKind = (cur && cur.list && cur.list.kind) || null;
+          const nextKind = (curKind === kind) ? null : kind;
+          const isClear = (nextKind === null);
+          const opSpec = {
+            type: 'list',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { kind: nextKind },
+            inverse: { kind: curKind },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: isClear ? 'Removing list…' : ('Applying ' + label + ' list…'),
+            success: isClear ? 'List removed' : (label.charAt(0).toUpperCase() + label.slice(1) + ' list applied'),
+            fail: 'List failed',
+          });
+        }, function () { setStatus('List failed: state read'); });
+      },
+    };
+  }
+  ACTION_HANDLERS['list-bullet']   = buildListHandler('bullet',   'bullet');
+  ACTION_HANDLERS['list-numbered'] = buildListHandler('numbered', 'numbered');
+
+  function buildAlignHandler(value, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (cur) {
+          const curAlign = (cur && cur.align) || null;
+          const nextValue = (curAlign === value) ? null : value;
+          const isClear = (nextValue === null);
+          const opSpec = {
+            type: 'align',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { value: nextValue },
+            inverse: { value: curAlign },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: isClear ? 'Clearing alignment…' : ('Aligning ' + label + '…'),
+            success: isClear ? 'Alignment cleared' : ('Aligned ' + label),
+            fail: 'Align failed',
+          });
+        }, function () { setStatus('Align failed: state read'); });
+      },
+    };
+  }
+  ACTION_HANDLERS['align-left']   = buildAlignHandler('left',   'left');
+  ACTION_HANDLERS['align-center'] = buildAlignHandler('center', 'center');
+  ACTION_HANDLERS['align-right']  = buildAlignHandler('right',  'right');
+
+  /* Indent / Outdent are deltas. Each click reads the current indent
+   * level, computes the new level (clamped 0..3), and submits an `indent`
+   * op with the ABSOLUTE new level. The reducer also clamps so two
+   * sources of truth converge on the same value. When already at the
+   * boundary (indent 0 for Outdent, indent 3 for Indent), the handler
+   * still submits the same-value op so undo/redo round-trips cleanly. */
+  function buildIndentDeltaHandler(delta, opLabel, statusLabel) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (cur) {
+          let curLevel = Number(cur && cur.indent);
+          if (!isFinite(curLevel)) curLevel = 0;
+          let nextLevel = curLevel + delta;
+          if (nextLevel < 0) nextLevel = 0;
+          if (nextLevel > 3) nextLevel = 3;
+          if (nextLevel === curLevel) {
+            /* Boundary case — surface a brief status so the user knows
+             * the click registered but the level didn't change. */
+            setStatus(delta > 0 ? 'Already at maximum indent' : 'Already at no indent');
+            return;
+          }
+          const opSpec = {
+            type: 'indent',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { level: nextLevel },
+            inverse: { level: curLevel },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: opLabel + '…',
+            success: statusLabel + ' (level ' + nextLevel + ')',
+            fail: opLabel + ' failed',
+          });
+        }, function () { setStatus(opLabel + ' failed: state read'); });
+      },
+    };
+  }
+  ACTION_HANDLERS['indent']  = buildIndentDeltaHandler(+1, 'Indenting',  'Indented');
+  ACTION_HANDLERS['outdent'] = buildIndentDeltaHandler(-1, 'Outdenting', 'Outdented');
 
   /* ── Phase 4-2 — Highlight (bridge to existing H2O.IHighlighter system) ─
    * IMPORTANT: the Ribbon does NOT own a parallel highlight store. All
