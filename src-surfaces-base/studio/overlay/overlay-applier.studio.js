@@ -330,7 +330,41 @@
       list: null,
       align: null,
       indent: 0,
+      /* Phase 4-4 — OneNote-style visual tags. Six independent booleans
+       * so multiple tags can stack on one message. NOT Library metadata
+       * tags — these are visual overlay annotations only and are never
+       * persisted to H2O.Studio.store.tags. clear-formatting resets all
+       * six to false via defaultMessageState. Canonical order (used for
+       * deterministic DOM attr + export rendering) follows the keys
+       * declared here exactly. */
+      visualTags: {
+        todo:       false,
+        important:  false,
+        question:   false,
+        definition: false,
+        warning:    false,
+        idea:       false,
+      },
     };
+  }
+
+  /* Phase 4-4 — canonical kind order + glyph map. The applier uses
+   * VISUAL_TAG_ORDER to build the space-separated DOM attribute in a
+   * deterministic order regardless of the order ops were applied. The
+   * glyph map is what `data-overlay-visual-tag-glyphs` exposes to CSS
+   * (single ::before rendering, no DOM injection). */
+  var VISUAL_TAG_ORDER = ['todo', 'important', 'question', 'definition', 'warning', 'idea'];
+  var VISUAL_TAG_GLYPHS = {
+    todo:       '☐',  /* ☐  BALLOT BOX */
+    important:  '❗',  /* ❗ HEAVY EXCLAMATION MARK */
+    question:   '❓',  /* ❓ BLACK QUESTION MARK ORNAMENT */
+    definition: '📖',  /* 📖 OPEN BOOK */
+    warning:    '⚠',  /* ⚠  WARNING SIGN */
+    idea:       '💡',  /* 💡 ELECTRIC LIGHT BULB */
+  };
+  function isVisualTagKind(k) {
+    return k === 'todo' || k === 'important' || k === 'question'
+        || k === 'definition' || k === 'warning' || k === 'idea';
   }
 
   /* Reduce overlay ops in-order to compute the current visual state of a
@@ -444,10 +478,24 @@
           state.indent = Math.floor(lvl);
           break;
         }
+        /* Phase 4-4 — visual-tag op. Per-kind boolean toggle. Unknown
+         * kinds are a defensive no-op (the switch-case below skips
+         * state mutation entirely). Last active op of (type, target,
+         * kind) wins — same precedent as Phase 4-1 character toggles. */
+        case 'visual-tag': {
+          var vtKind = String(payload.kind || '');
+          if (isVisualTagKind(vtKind)) {
+            if (!state.visualTags || typeof state.visualTags !== 'object') {
+              state.visualTags = defaultMessageState().visualTags;
+            }
+            state.visualTags[vtKind] = !!payload.enabled;
+          }
+          break;
+        }
         /* Phase 4-1 — clear-formatting reset. Wipes ALL per-message
          * decoration fields (Phase 2b + Phase 4-1 + Phase 4-2 + Phase
-         * 4-3) at this point in op order. Subsequent active ops apply
-         * normally on top of the cleared state. */
+         * 4-3 + Phase 4-4) at this point in op order. Subsequent active
+         * ops apply normally on top of the cleared state. */
         case 'clear-formatting':
           state = defaultMessageState();
           break;
@@ -602,6 +650,49 @@
       } else if (turnEl.hasAttribute('data-overlay-indent')) {
         turnEl.removeAttribute('data-overlay-indent');
         changed = true;
+      }
+
+      /* Phase 4-4 — visual-tag DOM dispatch. Walk VISUAL_TAG_ORDER so the
+       * attribute is built deterministically regardless of op insertion
+       * order. Both attributes are set/removed atomically:
+       *   data-overlay-visual-tags        — space-joined active kinds
+       *   data-overlay-visual-tag-glyphs  — pre-composed glyph string
+       *                                     for CSS `::before` rendering
+       * Pre-composing the glyph string in the applier sidesteps the
+       * "only one ::before per element" CSS limitation without DOM
+       * injection. */
+      var vtState = (state.visualTags && typeof state.visualTags === 'object') ? state.visualTags : null;
+      if (vtState) {
+        var activeKinds = [];
+        var activeGlyphs = [];
+        for (var vi = 0; vi < VISUAL_TAG_ORDER.length; vi += 1) {
+          var vtk = VISUAL_TAG_ORDER[vi];
+          if (vtState[vtk]) {
+            activeKinds.push(vtk);
+            activeGlyphs.push(VISUAL_TAG_GLYPHS[vtk] || '');
+          }
+        }
+        if (activeKinds.length > 0) {
+          var kindsAttr = activeKinds.join(' ');
+          var glyphsAttr = activeGlyphs.join(' ');
+          if (turnEl.getAttribute('data-overlay-visual-tags') !== kindsAttr) {
+            turnEl.setAttribute('data-overlay-visual-tags', kindsAttr);
+            changed = true;
+          }
+          if (turnEl.getAttribute('data-overlay-visual-tag-glyphs') !== glyphsAttr) {
+            turnEl.setAttribute('data-overlay-visual-tag-glyphs', glyphsAttr);
+            changed = true;
+          }
+        } else {
+          if (turnEl.hasAttribute('data-overlay-visual-tags')) {
+            turnEl.removeAttribute('data-overlay-visual-tags');
+            changed = true;
+          }
+          if (turnEl.hasAttribute('data-overlay-visual-tag-glyphs')) {
+            turnEl.removeAttribute('data-overlay-visual-tag-glyphs');
+            changed = true;
+          }
+        }
       }
     } catch (e) { recordError('applyMessageStateToTurnEl', e); }
     return changed;
@@ -994,9 +1085,13 @@
         var state = computeMessageState(overlay, turnIdx);
         var changed = applyMessageStateToTurnEl(turnEl, state);
         if (changed) turnsTouched += 1;
+        var anyVisualTag = !!(state.visualTags && (state.visualTags.todo || state.visualTags.important
+          || state.visualTags.question || state.visualTags.definition
+          || state.visualTags.warning || state.visualTags.idea));
         if (state.heading || state.quote || state.code || state.callout || state.cleanSpacing
             || state.bold || state.italic || state.underline || state.strikethrough
-            || state.textColor || state.list || state.align || Number(state.indent) > 0) {
+            || state.textColor || state.list || state.align || Number(state.indent) > 0
+            || anyVisualTag) {
           turnsWithState += 1;
         }
       }
@@ -1088,6 +1183,12 @@
     getActiveOpIdSet: getActiveOpIdSet,
     applyOverlay: applyOverlay,
     selfCheck: selfCheck,
+    /* Phase 4-4 — canonical visual-tag order + glyph map, exposed so the
+     * Markdown serializer + DOCX writer can render the same deterministic
+     * ordering as the DOM applier. Pure data; immutable in spirit (we do
+     * not freeze for V8 perf, but consumers MUST treat as read-only). */
+    visualTagOrder: VISUAL_TAG_ORDER,
+    visualTagGlyphs: VISUAL_TAG_GLYPHS,
   };
 
   H2O.Studio.overlay = api;

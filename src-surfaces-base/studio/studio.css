@@ -1,5 +1,5 @@
 /*
- * @version 2.5.18
+ * @version 2.5.19
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
@@ -3972,7 +3972,12 @@ body[data-route="reader"][data-layout="wide"] .cgScroll > :where(
 
 body[data-route="reader"] .wbRichRoot .cgTurn--user,
 body[data-route="reader"] .wbRichRoot .wbTurn--user,
-body[data-route="reader"] .wbRichRoot [data-turn="user"]{
+body[data-route="reader"] .wbRichRoot [data-turn="user"],
+body[data-route="reader"] :where(.cgTurn--user, .wbTurn--user, [data-turn="user"]),
+body[data-route="reader"] :where(
+  [data-testid="conversation-turn"],
+  [data-testid^="conversation-turn-"]
+):has([data-message-author-role="user"], .user-message-bubble-color){
   display:flex !important;
   flex-direction:column !important;
   align-items:flex-end !important;
@@ -3982,7 +3987,12 @@ body[data-route="reader"] .wbRichRoot [data-turn="user"]{
 
 body[data-route="reader"] .wbRichRoot .cgTurn--user :where([data-message-author-role="user"]),
 body[data-route="reader"] .wbRichRoot .wbTurn--user :where([data-message-author-role="user"]),
-body[data-route="reader"] .wbRichRoot [data-turn="user"] :where([data-message-author-role="user"]){
+body[data-route="reader"] .wbRichRoot [data-turn="user"] :where([data-message-author-role="user"]),
+body[data-route="reader"] :where(.cgTurn--user, .wbTurn--user, [data-turn="user"]) :where([data-message-author-role="user"]),
+body[data-route="reader"] :where(
+  [data-testid="conversation-turn"],
+  [data-testid^="conversation-turn-"]
+):has([data-message-author-role="user"], .user-message-bubble-color) :where([data-message-author-role="user"], .user-message-bubble-color){
   align-self:flex-end !important;
   margin-left:auto !important;
   margin-right:0 !important;
@@ -3994,7 +4004,8 @@ body[data-route="reader"] .wbRichRoot .wbTurn--user :where([data-message-author-
 body[data-route="reader"] .wbRichRoot [data-turn="user"] :where([data-message-author-role="user"]):not(:has(.user-message-bubble-color)),
 body[data-route="reader"] .wbRichRoot .cgTurn--user :where(.user-message-bubble-color),
 body[data-route="reader"] .wbRichRoot .wbTurn--user :where(.user-message-bubble-color),
-body[data-route="reader"] .wbRichRoot [data-turn="user"] :where(.user-message-bubble-color){
+body[data-route="reader"] .wbRichRoot [data-turn="user"] :where(.user-message-bubble-color),
+body[data-route="reader"] :where(.cgTurn--user, .wbTurn--user, [data-turn="user"]) :where([data-message-author-role="user"], .user-message-bubble-color){
   width:fit-content !important;
   max-width:min(var(--wb-user-w), 44rem) !important;
   margin-left:auto !important;
@@ -4004,7 +4015,8 @@ body[data-route="reader"] .wbRichRoot [data-turn="user"] :where(.user-message-bu
 body[data-route="reader"] .cgUserAttachmentGrid,
 body[data-route="reader"] .wbRichRoot .cgTurn--user .cgUserAttachmentGrid,
 body[data-route="reader"] .wbRichRoot .wbTurn--user .cgUserAttachmentGrid,
-body[data-route="reader"] .wbRichRoot [data-turn="user"] .cgUserAttachmentGrid{
+body[data-route="reader"] .wbRichRoot [data-turn="user"] .cgUserAttachmentGrid,
+body[data-route="reader"] :where(.cgTurn--user, .wbTurn--user, [data-turn="user"]) .cgUserAttachmentGrid{
   align-self:flex-end !important;
   justify-content:end !important;
   margin-left:auto !important;
@@ -7524,6 +7536,55 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * Phase 4-4 — OneNote-style visual tags (NOT Library metadata tags)
+ *
+ *   data-overlay-visual-tags        — space-joined active kinds, canonical order
+ *   data-overlay-visual-tag-glyphs  — pre-composed glyph string (set by applier)
+ *
+ * These are visual overlay annotations only — the applier sets two
+ * decorative attributes on the [data-turn] wrapper; CSS renders them as
+ * a leading glyph row (`::before`) + a colored left-edge stripe via
+ * `box-shadow: inset`. The glyph string is composed in the applier so
+ * one `::before` pseudo-element carries every active tag's icon (CSS
+ * cannot stack multiple `::before` pseudos per element).
+ *
+ * Hex colors are pinned to match the DOCX writer's VISUAL_TAG_HEX map
+ * exactly so DOCX + screen + print look consistent. When multiple tags
+ * are active the cascade-collapse rule applies for the stripe color:
+ * the LAST canonical-order kind whose rule appears in this CSS file
+ * wins. We order the rules so the most "urgent" kind (warning) wins.
+ * ────────────────────────────────────────────────────────────────────── */
+.wbReader [data-turn][data-overlay-visual-tag-glyphs] [data-message-author-role]::before{
+  content:attr(data-overlay-visual-tag-glyphs) " ";
+  display:inline-block;
+  margin-right:0.4em;
+  font-weight:600;
+  letter-spacing:0.15em;
+  vertical-align:baseline;
+}
+/* Per-kind left-edge stripe via inset box-shadow. Ordered so the more
+ * "urgent" kinds win the cascade when multiple tags are present:
+ * idea < definition < question < todo < important < warning. */
+.wbReader [data-turn][data-overlay-visual-tags~="idea"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #CA8A04;
+}
+.wbReader [data-turn][data-overlay-visual-tags~="definition"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #0891B2;
+}
+.wbReader [data-turn][data-overlay-visual-tags~="question"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #7C3AED;
+}
+.wbReader [data-turn][data-overlay-visual-tags~="todo"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #3B82F6;
+}
+.wbReader [data-turn][data-overlay-visual-tags~="important"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #DC2626;
+}
+.wbReader [data-turn][data-overlay-visual-tags~="warning"] [data-message-author-role]{
+  box-shadow:inset 3px 0 0 #D97706;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
  *
  * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
@@ -8279,6 +8340,39 @@ body[data-route="reader"] #studioDock.wbDock--open {
     padding-left: 3em !important;
   }
 
+  /* ── Phase 4-4 — visual tags in print ──────────────────────────────
+   * Mirror screen rules with !important to win against the global
+   * print black-text reset. Box-shadow stripes survive into Chromium
+   * print (Chromium honors box-shadow in print by default with
+   * `-webkit-print-color-adjust: exact`). Hex pinned to the DOCX
+   * VISUAL_TAG_HEX map. */
+  .wbReader [data-turn][data-overlay-visual-tag-glyphs] [data-message-author-role]::before {
+    content: attr(data-overlay-visual-tag-glyphs) " " !important;
+    display: inline-block !important;
+    margin-right: 0.4em !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.15em !important;
+    vertical-align: baseline !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="idea"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #CA8A04 !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="definition"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #0891B2 !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="question"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #7C3AED !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="todo"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #3B82F6 !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="important"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #DC2626 !important;
+  }
+  .wbReader [data-turn][data-overlay-visual-tags~="warning"] [data-message-author-role] {
+    box-shadow: inset 3px 0 0 #D97706 !important;
+  }
+
   /* ── 5. Structure markers (sections / dividers / TOC) ────────────── */
 
   .wbReader .wbOverlaySectionHeader {
@@ -9020,3 +9114,38 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
 [data-settings-rendered="1"] [style*="border-top:1px solid rgba(255,255,255,.06)"]{
   border-top-color: var(--wb-settings-divider) !important;
 }
+
+/* ── v2.5.18 — Tauri desktop runtime: macOS traffic-light buttons ───────
+ *
+ * apps/studio/desktop/src-tauri/tauri.conf.json sets
+ *   titleBarStyle: "Overlay", hiddenTitle: true,
+ *   trafficLightPosition: { x: 14, y: 18 }
+ * which makes macOS draw the red/yellow/green window buttons as an
+ * overlay at the top-left of the window WITHOUT the "H2O Studio" title
+ * bar. The window content extends full-bleed under the title-bar area;
+ * macOS still owns the topmost ~28px as a drag region.
+ *
+ * The traffic-light buttons sit at roughly x=14..86, y=18..30. Without
+ * extra padding they would overlap the sidebar header ("H2O Cockpit Pro
+ * / Studio") and the rail's collapse button. The rules below add a
+ * desktop-only top padding to those surfaces so the buttons sit in
+ * empty space above the content. The padding is scoped to
+ * `html[data-h2o-runtime="tauri"]` (set by platform.tauri.js at
+ * adapter register time) so MV3 / web extension Studio is untouched.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/* Push the sidebar header below the traffic-light band so the H2O badge
+ * + Cockpit Pro / Studio title sit cleanly under the OS buttons. */
+html[data-h2o-runtime="tauri"] .wbSidebarHead{
+  padding-top: 28px;
+}
+
+/* Same for the collapsed-rail state — the open-sidebar button at the
+ * top of the rail also needs to sit below the traffic-light band. */
+html[data-h2o-runtime="tauri"] .wbRail{
+  padding-top: 38px;
+}
+
+/* The top route header (.wbTop) sits to the right of the sidebar so
+ * traffic lights never overlap it geometrically. No padding needed
+ * there. Likewise .wbStage's other rows are right of the sidebar. */

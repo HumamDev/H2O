@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 4-3)
+Status: Active (Phase 4-4)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1145,8 +1145,8 @@ status is `"Select a message first"` (Phase 2b precedent).
 - **Inline text-range selection** — selecting a word/phrase inside a
   message. Phase 4e in the original Phase 4 design plan.
 - **Font family / font size** — needs inline selection.
-- **Lists / alignment / indent** — Phase 4c slice.
-- **Tags (To Do / Important / Question / etc.)** — Phase 4d slice.
+- **Lists / alignment / indent** — Phase 4c slice (delivered in Phase 4-3).
+- **Visual tags (To Do / Important / Question / etc.)** — Phase 4d slice (delivered in Phase 4-4).
 - **Format painter** — requires inline selection.
 - **Clipboard cut/paste of formatted spans** — not in scope.
 - **Subscript / superscript** — inherently inline; deferred.
@@ -1529,6 +1529,231 @@ Format tab:
   also active — currently the run-property fragment applies to each
   line's runs uniformly; mixed formatting per line still requires
   inline selection.
+
+## Phase 4-4 — OneNote-style visual tags
+
+Phase 4-4 is the fourth Phase 4 slice — six OneNote-style visual tags
+that decorate selected saved-reader messages with a glyph row and a
+colored left-edge stripe.
+
+### What this is NOT (read before reading anything else)
+
+**Phase 4-4 visual tags are NOT Library metadata tags.**
+
+- They do NOT write to `H2O.Studio.store.tags.*` or any tag-store API.
+- They do NOT bind to chats. The tag persists per `(snapshotId, turnIdx)`
+  on the overlay record, NOT to the snapshot's metadata or the Library's
+  per-chat tag index.
+- They do NOT show up anywhere else in the app — not in Library search,
+  not in the Metadata tab's tag chips, not in folder sidebars.
+- The Format-tab group is intentionally labelled **"Annotate"** (not
+  "Tags") to keep the distinction visible in the UI.
+
+These are decorative overlay annotations — render-time only, scoped to
+the snapshot, undoable via Phase 2d's active-set, and exported through
+the same overlay-aware paths as every other Phase 4 op.
+
+### Op model
+
+A single op type `visual-tag` carries a kind-discriminator + boolean.
+
+| Op type      | Payload                                            | Reducer field       |
+|--------------|----------------------------------------------------|---------------------|
+| `visual-tag` | `{ kind: 'todo'\|'important'\|'question'\|'definition'\|'warning'\|'idea', enabled: boolean }` | `state.visualTags[kind] = !!enabled` |
+
+| Field | Value |
+|-------|-------|
+| Target | `{ kind: 'message', turnIdx, messageId? }` (Phase 4-1 precedent) |
+| Wins | Last active op of (`type='visual-tag'`, target, `payload.kind`) wins |
+| Undo/redo | Phase 2d active-set filter applies for free; each tag click is one undoStack entry |
+| `clear-formatting` reset | Yes — `defaultMessageState()` resets all six booleans |
+
+Defensive reducer normalization: unknown `payload.kind` is a no-op (the
+switch-case never touches state). This makes the op forward-compat with
+any future kinds that older builds might encounter.
+
+### Reducer state
+
+```js
+state.visualTags = {
+  todo:       false,
+  important:  false,
+  question:   false,
+  definition: false,
+  warning:    false,
+  idea:       false,
+}
+```
+
+Six independent booleans so multiple tags can stack on one message
+(OneNote precedent — a single paragraph can carry many tags).
+
+### Canonical kind order, glyphs, hex
+
+Used by the applier, serializer, DOCX writer, and CSS rules. Order is
+fixed so DOM attribute strings + exports are deterministic regardless
+of the order ops were submitted.
+
+| Kind | Label | Glyph | Hex (no `#`) | CSS stripe priority |
+|------|-------|-------|--------------|---------------------|
+| `todo` | To Do | ☐ U+2610 | `3B82F6` (blue) | 4 |
+| `important` | Important | ❗ U+2757 | `DC2626` (red) | 5 |
+| `question` | Question | ❓ U+2753 | `7C3AED` (purple) | 3 |
+| `definition` | Definition | 📖 U+1F4D6 | `0891B2` (teal) | 2 |
+| `warning` | Warning | ⚠ U+26A0 | `D97706` (amber) | 6 (highest) |
+| `idea` | Idea | 💡 U+1F4A1 | `CA8A04` (gold) | 1 (lowest) |
+
+`warning` wins the cascade-collapse rule for the left-edge stripe when
+multiple tags are active.
+
+### DOM dispatch
+
+The applier toggles two `data-overlay-*` attributes on the `[data-turn]`
+wrapper:
+
+```
+data-overlay-visual-tags        — e.g. "todo important warning"
+data-overlay-visual-tag-glyphs  — e.g. "☐ ❗ ⚠"
+```
+
+Both are built in canonical kind order (see table above), regardless of
+op submission order. Both are removed atomically when zero tags active.
+
+The pre-composed glyph string lets CSS render every active tag's icon
+in ONE `::before` pseudo-element — the CSS-only single-pseudo limitation
+is solved without any DOM injection. The applier still NEVER touches
+the turn element's children.
+
+### Markdown export mapping
+
+A single bracketed prefix is prepended to the FIRST body line when any
+visual tag is active:
+
+```
+[tags: To Do, Important]
+```
+
+- Labels use the human form, canonical order.
+- Skipped entirely when zero tags active (zero extra characters in the
+  output — important for clean diff-mode review).
+- The prefix sits at the head of the body BEFORE list/code/quote/callout
+  wraps, so per-line bullets and code fences still compose correctly.
+- Future-compat: a "tag importer" could parse the bracketed prefix and
+  restore overlay ops on read.
+
+### DOCX export mapping
+
+A leading **bold colored run** is prepended to the FIRST body paragraph
+(or first body line in multi-line list/quote/plain branches):
+
+```xml
+<w:r>
+  <w:rPr><w:b/><w:color w:val="DC2626"/></w:rPr>
+  <w:t xml:space="preserve">☐ ❗ </w:t>
+</w:r>
+```
+
+- Glyphs concatenated with spaces, in canonical order.
+- Run color = the first canonical-order active kind's hex value.
+- Composes with Phase 2b code (`Consolas` rFonts) and Phase 4-1
+  character formatting in adjacent runs — they live in different `<w:r>`
+  elements so the rPr fragments don't bleed.
+- Emitted on the first body paragraph ONLY. Multi-paragraph messages
+  show one glyph row at the top (matching the on-screen treatment via
+  CSS `::before`).
+- Inside `callout`, the leading run lives at the head of the first
+  IntenseQuote body paragraph, after the `[!kind]` callout marker.
+
+### Screen + print CSS mapping
+
+```
+[data-overlay-visual-tag-glyphs]::before { content: attr(...); ... }
+[data-overlay-visual-tags~="warning"]    { box-shadow: inset 3px 0 0 #D97706; }
+... (one rule per kind, priority order ensures warning wins cascade)
+```
+
+Print rules mirror screen with `!important` overrides; Chromium honors
+`box-shadow` in print by default.
+
+### Ribbon UI
+
+```
+Format tab:
+  Headings:   H1  H2  H3
+  Font:       B  I  U  S  Clear
+  Text Color: Red  Green  Blue  Orange  Gray  None
+  Highlight:  Blue Red Green Gold Sky Pink Purple Orange | Clear | Hide
+  Paragraph:  Bullet  Numbered  |  Left  Center  Right  |  Indent  Outdent
+  Blocks:     Quote  Code  Callout
+  Annotate:   To Do  Important  Question  Definition  Warning  Idea  |  Clear tags  ← Phase 4-4
+  Cleanup:    Clean spacing
+```
+
+**Group label is "Annotate" (NOT "Tags")** — see "What this is NOT" above.
+
+| Action id | Behaviour |
+|-----------|-----------|
+| `visual-tag-todo` ... `visual-tag-idea` | Toggle one kind on/off via `visual-tag` op |
+| `visual-tag-clear` | Loop active kinds; submit `enabled:false` op per kind |
+
+All seven use `formatActionsIsEnabled` (saved-reader + selected turn +
+bridge installed). Toggle handlers read current state via
+`H2O.Studio.RibbonBridge.getMessageStateForTurn(turnIdx).visualTags[kind]`.
+
+**Clear tags submits N ops (one per active kind), not one composite op.**
+This means undoing "Clear tags" restores tags one at a time. Documented
+here so users + reviewers don't expect single-undo behaviour. The
+trade-off is reducer simplicity: a single composite payload would
+require a special-case "__all__" sentinel that the reducer would have
+to interpret, which we explicitly chose to avoid.
+
+### Status string canon (Phase 4-4)
+
+| Outcome | Status |
+|---------|--------|
+| Toggle on | `<Label> tag applied` |
+| Toggle off | `<Label> tag removed` |
+| Clear tags (≥1 active) | `All tags removed` |
+| Clear tags (none active) | `No tags to remove` |
+| Missing selection | `Select a message first` |
+| Bridge drift | (existing drift hint flows through `runOverlayOp`) |
+| Failure | `<Label> tag failed` / `Clear tags failed` |
+
+### Compliance notes for Phase 4-4
+
+- **No new storage keys.** No new schema. No schema migration.
+- **No `H2O.Studio.store.tags.*` writes.** No `H2O.Library.Tags.*`
+  writes. No `H2O.Studio.store.chats` metadata writes.
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch(` introduced.
+- No `contentEditable` / inline text-range selection.
+- No snapshot mutation. The applier still only toggles `data-overlay-*`
+  attributes on `[data-turn]` wrappers.
+- No platform-adapter changes; ribbon uses the existing `runOverlayOp`
+  bridge plumbing.
+- No new Tauri capability, no new Rust dep, no plugin install.
+- The new `visual-tag` op passes through Phase 2d's active-set undo/redo
+  unchanged — reducer iterates ops in original order and applies the
+  same "last active op of (type, target, kind) wins" rule.
+
+### Out of scope for Phase 4-4 (deferred to later phases)
+
+- **Custom tag definitions** — palette is fixed at 6 kinds.
+- **Tag rename / recolor from the Ribbon** — palette colors are
+  hardcoded in three places (applier, DOCX writer, CSS) to keep them
+  visually consistent across surfaces; a future slice could expose a
+  palette-editing UI without contract changes.
+- **Library-tag binding** — explicitly NOT in scope. If a future feature
+  wants to bridge visual-tag → metadata-tag, it must do so via the
+  Library's existing public APIs from a NEW ribbon action; it must NOT
+  collapse the two storage layers.
+- **Inline tag attribution** (tag a word / phrase, not the whole turn) —
+  requires inline selection (Phase 4e).
+- **PDF / DOCX tag-as-comment** annotations — current Phase 4-4 emits
+  visible glyph runs; "comments" are a different OOXML feature and
+  out of scope.
+- **Tag-filtered reader view** ("show only To Do") — out of scope; the
+  user can already scroll/search.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

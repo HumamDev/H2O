@@ -384,7 +384,47 @@
        *   align  — emits <w:jc w:val="..."/> inside <w:pPr>.
        *   indent — emits <w:ind w:left="720|1440|2160"/> (720 twips per level). */
       list: null, align: null, indent: 0,
+      /* Phase 4-4 — OneNote-style visual tags. DOCX emits a leading
+       * bold colored run on the FIRST body paragraph containing the
+       * glyph string. NOT Library metadata tags. */
+      visualTags: {
+        todo: false, important: false, question: false,
+        definition: false, warning: false, idea: false,
+      },
     };
+  }
+
+  /* Phase 4-4 — canonical order + glyph/color maps. Order matches the
+   * applier's VISUAL_TAG_ORDER exactly so the leading run renders
+   * deterministically. Colors are hex (OOXML w:color val format — no
+   * leading #), pinned to match the screen + print CSS so DOCX +
+   * on-screen + PDF renders look consistent. */
+  var VISUAL_TAG_ORDER_DOCX = ['todo', 'important', 'question', 'definition', 'warning', 'idea'];
+  var VISUAL_TAG_GLYPHS_DOCX = {
+    todo: '☐', important: '❗', question: '❓',
+    definition: '📖', warning: '⚠', idea: '💡',
+  };
+  var VISUAL_TAG_HEX = {
+    todo:       '3B82F6',
+    important:  'DC2626',
+    question:   '7C3AED',
+    definition: '0891B2',
+    warning:    'D97706',
+    idea:       'CA8A04',
+  };
+  function getVisualTagPayload(state) {
+    if (!state || !state.visualTags) return null;
+    var glyphs = [];
+    var primaryColor = null;
+    for (var i = 0; i < VISUAL_TAG_ORDER_DOCX.length; i += 1) {
+      var k = VISUAL_TAG_ORDER_DOCX[i];
+      if (state.visualTags[k]) {
+        glyphs.push(VISUAL_TAG_GLYPHS_DOCX[k]);
+        if (!primaryColor) primaryColor = VISUAL_TAG_HEX[k];
+      }
+    }
+    if (!glyphs.length) return null;
+    return { glyphText: glyphs.join(' ') + ' ', color: primaryColor };
   }
 
   /* Phase 4-2 — semantic text-color palette → hex (OOXML w:color values
@@ -511,6 +551,23 @@
       opsCount += 1;
     }
 
+    /* Phase 4-4 — visual-tag leading run. Built once per turn; prepended
+     * to the FIRST body paragraph (or first body line in list/quote/
+     * plain mode). The run is BOLD + colored with the primary kind's
+     * hex (first canonical-order kind that's active). NOT a separate
+     * paragraph — it sits inline at the head of the body run so it
+     * composes cleanly with character formatting and code rPr.
+     * Returns '' when no visual tags are active. */
+    var vtPayload = getVisualTagPayload(state);
+    var vtLeadingRun = '';
+    if (vtPayload) {
+      var rPrParts = ['<w:b/>'];
+      if (vtPayload.color) rPrParts.push('<w:color w:val="' + vtPayload.color + '"/>');
+      vtLeadingRun = '<w:r><w:rPr>' + rPrParts.join('') + '</w:rPr><w:t xml:space="preserve">'
+        + xmlEscape(vtPayload.glyphText) + '</w:t></w:r>';
+      opsCount += 1;
+    }
+
     /* 1: callout wraps everything in IntenseQuote with [!kind] leading run. */
     if (state && state.callout && state.callout.kind) {
       var kind = state.callout.kind;
@@ -529,12 +586,14 @@
         runxBold('[!' + xmlEscape(kind) + ']') + runxText(' ' + label, headingStyle ? bold() : null));
       var bodyLines = String(body).split('\n');
       /* Inside callout, list style does NOT override IntenseQuote (callout
-       * is more specific). Align/indent still compose into pPr. */
+       * is more specific). Align/indent still compose into pPr.
+       * Phase 4-4 — visual-tag leading run prepended to FIRST line only. */
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
         var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : '';
         var lineRun = runXml(line, combineRProps(baseRPr, charRPr));
-        calloutXml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, lineRun);
+        var firstLinePrefix = (bi === 0) ? vtLeadingRun : '';
+        calloutXml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, firstLinePrefix + lineRun);
       }
       return { xml: calloutXml, opsCount: opsCount };
     }
@@ -550,7 +609,10 @@
      * they apply to body paragraphs only, mirroring the char-format pattern. */
     xml += paragraphXml(headingStyle, runxText(label, bold()));
 
-    /* Body. */
+    /* Body.
+     * Phase 4-4 — vtLeadingRun is prepended ONCE to the first body
+     * paragraph (or first line in multi-line branches). All four
+     * branches honor this consistently. */
     if (state && state.code) {
       opsCount += 1;
       /* One paragraph per body, with embedded <w:br/> per \n via runXml.
@@ -558,7 +620,7 @@
        * compact and Word renders embedded <w:br/> as soft line breaks.
        * Code skips list style but still honours align/indent. */
       xml += paragraphXmlWithProps(null, bodyAlignIndPPr,
-        runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
+        vtLeadingRun + runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
     } else if (listStyleId) {
       /* List wins over quote when both set (list is more specific). One
        * paragraph per body line, each with the ListBullet / ListNumber
@@ -567,19 +629,22 @@
        * minimal. */
       var listLines = String(body).split('\n');
       for (var li = 0; li < listLines.length; li += 1) {
-        xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, runXml(listLines[li], charRPr || null));
+        var listLinePrefix = (li === 0) ? vtLeadingRun : '';
+        xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, listLinePrefix + runXml(listLines[li], charRPr || null));
       }
     } else if (state && state.quote) {
       opsCount += 1;
       var quoteLines = String(body).split('\n');
       for (var qi = 0; qi < quoteLines.length; qi += 1) {
-        xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, runXml(quoteLines[qi], charRPr || null));
+        var quoteLinePrefix = (qi === 0) ? vtLeadingRun : '';
+        xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, quoteLinePrefix + runXml(quoteLines[qi], charRPr || null));
       }
     } else {
       /* Plain — one paragraph per body line so newlines render. */
       var plainLines = String(body).split('\n');
       for (var pi = 0; pi < plainLines.length; pi += 1) {
-        xml += paragraphXmlWithProps(null, bodyAlignIndPPr, runXml(plainLines[pi], charRPr || null));
+        var plainLinePrefix = (pi === 0) ? vtLeadingRun : '';
+        xml += paragraphXmlWithProps(null, bodyAlignIndPPr, plainLinePrefix + runXml(plainLines[pi], charRPr || null));
       }
     }
     return { xml: xml, opsCount: opsCount };

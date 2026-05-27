@@ -84,6 +84,16 @@
     list: 'list',
     align: 'align',
     indent: 'indent',
+    /* Phase 4-4 — OneNote-style visual tags (NOT Library metadata tags).
+     * Single op type with a kind-discriminator payload:
+     *   payload: { kind: 'todo'|'important'|'question'|'definition'|'warning'|'idea',
+     *              enabled: boolean }
+     * Reducer tracks six independent booleans inside state.visualTags so
+     * multiple tags can stack on one message (OneNote precedent). These
+     * are visual overlay annotations rendered as a glyph row + colored
+     * left-stripe on the turn wrapper — they are NEVER persisted to the
+     * Library tag store (H2O.Studio.store.tags) and NEVER bind to chats. */
+    visualTag: 'visual-tag',
   });
 
   var OverlayTargets = Object.freeze({

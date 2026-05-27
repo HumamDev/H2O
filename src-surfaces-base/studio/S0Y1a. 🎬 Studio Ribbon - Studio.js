@@ -139,6 +139,20 @@
           { id: 'code',    label: 'Code block' },
           { id: 'callout', label: 'Callout' },
         ] },
+        /* Phase 4-4 — Annotate group. OneNote-style visual tags (NOT
+         * Library metadata tags). Six independent toggles + a Clear
+         * action that loops over currently-active kinds. Group label
+         * is "Annotate" rather than "Tags" to disambiguate from the
+         * Metadata tab's chat-tag store. */
+        { id: 'annotate', label: 'Annotate', actions: [
+          { id: 'visual-tag-todo',       label: 'To Do' },
+          { id: 'visual-tag-important',  label: 'Important' },
+          { id: 'visual-tag-question',   label: 'Question' },
+          { id: 'visual-tag-definition', label: 'Definition' },
+          { id: 'visual-tag-warning',    label: 'Warning' },
+          { id: 'visual-tag-idea',       label: 'Idea' },
+          { id: 'visual-tag-clear',      label: 'Clear tags' },
+        ] },
         { id: 'cleanup', label: 'Cleanup', actions: [
           { id: 'clean-spacing', label: 'Clean spacing' },
         ] },
@@ -2329,6 +2343,110 @@
   }
   ACTION_HANDLERS['indent']  = buildIndentDeltaHandler(+1, 'Indenting',  'Indented');
   ACTION_HANDLERS['outdent'] = buildIndentDeltaHandler(-1, 'Outdenting', 'Outdented');
+
+  /* ── Phase 4-4 — Annotate (overlay op `visual-tag`) ──────────────────
+   * IMPORTANT: these are visual overlay annotations, NOT Library
+   * metadata tags. The handlers below NEVER call
+   * H2O.Studio.store.tags.* or H2O.Library.Tags.* — they submit
+   * `visual-tag` overlay ops via runOverlayOp and the applier renders
+   * them as a glyph row + colored left-edge stripe on the turn wrapper.
+   *
+   * Six toggles + one Clear:
+   *   - Toggle reads current state.visualTags[kind] and submits the
+   *     opposite enabled flag.
+   *   - Clear iterates currently-active kinds and submits one op per
+   *     active kind with enabled:false. Each becomes its own undoStack
+   *     entry — undoing "Clear tags" restores tags one at a time
+   *     (documented behaviour in the contract). */
+  var VISUAL_TAG_LABELS = {
+    todo: 'To Do', important: 'Important', question: 'Question',
+    definition: 'Definition', warning: 'Warning', idea: 'Idea',
+  };
+  var VISUAL_TAG_KINDS = ['todo', 'important', 'question', 'definition', 'warning', 'idea'];
+
+  function buildVisualTagHandler(kind) {
+    var label = VISUAL_TAG_LABELS[kind];
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+          ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (cur) {
+          const curOn = !!(cur && cur.visualTags && cur.visualTags[kind]);
+          const opSpec = {
+            type: 'visual-tag',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { kind: kind, enabled: !curOn },
+            inverse: { kind: kind, enabled: curOn },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: curOn ? ('Removing ' + label + ' tag…') : ('Applying ' + label + ' tag…'),
+            success: curOn ? (label + ' tag removed') : (label + ' tag applied'),
+            fail: label + ' tag failed',
+          });
+        }, function () { setStatus(label + ' tag failed: state read'); });
+      },
+    };
+  }
+  ACTION_HANDLERS['visual-tag-todo']       = buildVisualTagHandler('todo');
+  ACTION_HANDLERS['visual-tag-important']  = buildVisualTagHandler('important');
+  ACTION_HANDLERS['visual-tag-question']   = buildVisualTagHandler('question');
+  ACTION_HANDLERS['visual-tag-definition'] = buildVisualTagHandler('definition');
+  ACTION_HANDLERS['visual-tag-warning']    = buildVisualTagHandler('warning');
+  ACTION_HANDLERS['visual-tag-idea']       = buildVisualTagHandler('idea');
+
+  /* Clear tags — loop over currently-active kinds and submit one
+   * disable op per kind. Each becomes its own undoStack entry. When no
+   * tags are active, surface a friendly "No tags to remove" status. */
+  ACTION_HANDLERS['visual-tag-clear'] = {
+    isEnabled: formatActionsIsEnabled,
+    onClick: function (ctx, setStatus) {
+      const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+      const bridge = getRibbonBridge();
+      const readP = (bridge && typeof bridge.getMessageStateForTurn === 'function')
+        ? Promise.resolve(bridge.getMessageStateForTurn(turnIdx))
+        : Promise.resolve({});
+      readP.then(function (cur) {
+        const vt = (cur && cur.visualTags) || {};
+        const active = VISUAL_TAG_KINDS.filter(function (k) { return !!vt[k]; });
+        if (active.length === 0) { setStatus('No tags to remove'); return; }
+        setStatus('Removing tags…');
+        /* Submit one op per active kind. Each goes through runOverlayOp
+         * and contributes its own undoStack entry. We chain via Promise
+         * to avoid racing the underlying bridge calls, and surface the
+         * "All tags removed" status only after the final op resolves. */
+        function submitNext(idx) {
+          if (idx >= active.length) { setStatus('All tags removed'); return; }
+          const k = active[idx];
+          const opSpec = {
+            type: 'visual-tag',
+            target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+            payload: { kind: k, enabled: false },
+            inverse: { kind: k, enabled: true },
+          };
+          /* We pass a no-op setStatus to runOverlayOp here so the
+           * intermediate per-tag pending/success/fail strings don't
+           * flash; we set the final summary status above + on success. */
+          const noStatus = function () {};
+          runOverlayOp(opSpec, noStatus, {
+            pending: 'Removing ' + VISUAL_TAG_LABELS[k] + ' tag…',
+            success: VISUAL_TAG_LABELS[k] + ' tag removed',
+            fail: VISUAL_TAG_LABELS[k] + ' tag failed',
+          });
+          /* Sequencing: bridge dispatches are synchronous in the
+           * happy path. We schedule the next via microtask so the
+           * underlying overlay record is updated before the next read. */
+          Promise.resolve().then(function () { submitNext(idx + 1); });
+        }
+        submitNext(0);
+      }, function () { setStatus('Clear tags failed: state read'); });
+    },
+  };
 
   /* ── Phase 4-2 — Highlight (bridge to existing H2O.IHighlighter system) ─
    * IMPORTANT: the Ribbon does NOT own a parallel highlight store. All

@@ -86,7 +86,34 @@
        *   indent — INTENTIONALLY LOSSY in Markdown (no portable syntax).
        * The DOCX writer + screen + print CSS carry align/indent. */
       list: null, align: null, indent: 0,
+      /* Phase 4-4 — OneNote-style visual tags. Markdown export emits a
+       * single bracketed prefix line "[tags: To Do, Important]" at the
+       * very start of the body content (after callout/heading wrap, but
+       * before list per-line prefixes). NOT Library metadata tags. */
+      visualTags: {
+        todo: false, important: false, question: false,
+        definition: false, warning: false, idea: false,
+      },
     };
+  }
+
+  /* Phase 4-4 — canonical kind→human-label map for the Markdown prefix.
+   * Order matches the applier's VISUAL_TAG_ORDER exactly so the prefix
+   * tag list renders deterministically. */
+  var VISUAL_TAG_LABEL_ORDER = ['todo', 'important', 'question', 'definition', 'warning', 'idea'];
+  var VISUAL_TAG_LABELS = {
+    todo: 'To Do', important: 'Important', question: 'Question',
+    definition: 'Definition', warning: 'Warning', idea: 'Idea',
+  };
+  function buildVisualTagPrefix(state) {
+    if (!state || !state.visualTags) return '';
+    var labels = [];
+    for (var i = 0; i < VISUAL_TAG_LABEL_ORDER.length; i += 1) {
+      var k = VISUAL_TAG_LABEL_ORDER[i];
+      if (state.visualTags[k]) labels.push(VISUAL_TAG_LABELS[k]);
+    }
+    if (!labels.length) return '';
+    return '[tags: ' + labels.join(', ') + '] ';
   }
 
   /* ── Raw serializer ───────────────────────────────────────────────────
@@ -198,6 +225,19 @@
       var normalised = applyCleanSpacing(body);
       if (normalised !== body) opCounter.applied += 1;
       body = normalised;
+    }
+
+    /* Phase 4-4 — prepend "[tags: To Do, Important] " prefix on the
+     * FIRST body line when any visual tag is active. The prefix lives
+     * inside the body so it inherits list/code/quote/callout wraps
+     * correctly. It is the SAME LINE as the existing body's first line,
+     * separated from the rest with a trailing space (already in the
+     * prefix string). When state.code is true the prefix still appears
+     * — it's part of the body content the user opted to mark. */
+    var vtPrefix = buildVisualTagPrefix(state);
+    if (vtPrefix) {
+      body = vtPrefix + body;
+      opCounter.applied += 1;
     }
 
     /* Phase 4-1 — character formatting wrappers applied to the body BEFORE
