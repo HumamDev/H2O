@@ -250,6 +250,13 @@ go through that spec.
 
 F10.3, F10.4, and F10.5 bridge work must validate that the source platform capability permits the data being sent and that the destination treats it as evidence, preview, or proposal as declared.
 
+The first bridge (F10.3) is recorded in
+[`docs/systems/cross-platform/bridge-v1-desktop-bundle-to-chrome.md`](../cross-platform/bridge-v1-desktop-bundle-to-chrome.md):
+a Chrome Studio operator-triggered diagnostic that reads the existing
+Desktop-exported `latest.json` bundle and presents it as a redacted
+`bundle` envelope per F10.2.0. It is evidence/preview only — no merge,
+no apply, no proposal, no remote apply, no write-back.
+
 F10.6 proposals must remain non-authoritative. F10.7 applies must remain Desktop-gated unless a later manifest update and safety model explicitly authorizes a new apply surface.
 
 ## Static Manifest Location Decision
