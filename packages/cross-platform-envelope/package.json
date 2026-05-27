@@ -1,0 +1,14 @@
+{
+  "name": "@h2o/cross-platform-envelope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure cross-platform envelope contracts and validators per F10.2 spec (docs/systems/cross-platform/envelope-v1.md).",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "UNLICENSED"
+}
