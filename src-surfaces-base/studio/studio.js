@@ -5826,6 +5826,27 @@ function settingsOverlayEnsure(){
   return panel;
 }
 
+function settingsPanelHasCurrentFolderCleanupReview(panel){
+  if (!panel || !panel.firstChild) return false;
+  const cleanupPanel = panel.querySelector("#wbSettingsFolderParityPanelCleanupReview");
+  const cleanupReview = panel.querySelector("#wbSettingsFolderCleanupReview");
+  if (!cleanupPanel || !cleanupReview) return false;
+  const text = String(cleanupReview.textContent || "");
+  if (!/Folder Cleanup Review/.test(text)) return false;
+  if (!/Read-only:\s*no cleanup is performed/i.test(text)) return false;
+  const legacyMutationControls = [
+    "#wbSettingsFolderCleanupDeleteBox",
+    "#wbSettingsFolderCleanupDeleteSelected",
+    "#wbSettingsFolderConflictDeleteBox",
+    "#wbSettingsFolderConflictDeleteSelected",
+    "#wbSettingsFolderDesktopDeleteBox",
+    "#wbSettingsFolderDesktopDeleteSelected",
+    "#wbSettingsFolderDesktopOrphanBindingRemoveBox",
+    "#wbSettingsFolderDesktopOrphanBindingRemoveSelected",
+  ];
+  return !legacyMutationControls.some((selector) => panel.querySelector(selector));
+}
+
 function settingsHideOtherPanels(){
   const listPanel = $("#viewListPanel");
   const readerEl = $("#viewReader");
@@ -5841,15 +5862,22 @@ function renderSettingsRoute(){
   const panel = settingsOverlayEnsure();
   if (!panel) return;
   panel.hidden = false;
+  settingsFolderParityEnsureTabBinding(panel);
 
   // Idempotency: same guard as renderMigrateRoute (focus / visibilitychange
   // re-enters renderRoute and would otherwise wipe the panel on every
-  // window-focus event).
+  // window-focus event). Rebuild if the active Settings DOM was mounted by an
+  // older bundle, otherwise the Cleanup / Review tab can keep stale content
+  // while diagnostics refresh normally.
   if (panel.dataset.settingsRendered === "1" && panel.firstChild) {
-    refreshSettingsDiagnostics(panel);
-    return;
+    if (settingsPanelHasCurrentFolderCleanupReview(panel)) {
+      refreshSettingsDiagnostics(panel);
+      return;
+    }
+    panel.dataset.settingsRendered = "";
   }
   panel.dataset.settingsRendered = "1";
+  delete panel.dataset.syncControlsBound;
   panel.innerHTML = "";
 
   const meta = migrateExtensionLabel();
@@ -6006,33 +6034,19 @@ function renderSettingsRoute(){
       <div id="wbSettingsFolderCleanupReview" style="display:flex;flex-direction:column;gap:10px;padding-top:12px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div>
-            <div style="font-weight:600">Cleanup Candidate Review</div>
-            <div id="wbSettingsFolderCleanupReviewSummary" style="opacity:.7;font-size:12px">Review-only. No cleanup performed.</div>
+            <h4 id="wbSettingsFolderCleanupReviewTitle" data-h2o-folder-cleanup-review-title="1" style="margin:0;font-size:14px;font-weight:600">Folder Cleanup Review</h4>
+            <div id="wbSettingsFolderCleanupReviewSummary" style="opacity:.7;font-size:12px">Read-only: no cleanup is performed.</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button id="wbSettingsFolderCleanupReviewRefresh" type="button" style="${btnStyle}">Refresh review</button>
             <button id="wbSettingsFolderCleanupReviewCopy" type="button" style="${btnStyle}">Copy cleanup plan JSON</button>
           </div>
         </div>
+        <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">
+          Read-only: this panel only renders FolderParity diagnostics. It does not delete, merge, repair, normalize, write Chrome storage, write Desktop SQLite, call Native owner operations, or mutate folder mirrors.
+        </div>
         <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
         <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
-        <div id="wbSettingsFolderCleanupDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
-          <div>
-            <div style="font-weight:600">Safe Empty Chrome Mirror Cleanup</div>
-            <div id="wbSettingsFolderCleanupDeleteSummary" style="opacity:.72;font-size:12px">Chrome mirror only. Native folders and Desktop SQLite are not modified.</div>
-          </div>
-          <div id="wbSettingsFolderCleanupDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button id="wbSettingsFolderCleanupPreview" type="button" style="${btnStyle}">Preview deletion JSON</button>
-            <button id="wbSettingsFolderCleanupCopyDeletePlan" type="button" style="${btnStyle}">Copy deletion plan JSON</button>
-          </div>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
-            <span style="opacity:.72">Type <code>${esc("DELETE EMPTY CHROME FOLDERS")}</code> to enable deletion.</span>
-            <input id="wbSettingsFolderCleanupConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
-          </label>
-          <button id="wbSettingsFolderCleanupDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected safe empty folders</button>
-          <pre id="wbSettingsFolderCleanupDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
-        </div>
         <div id="wbSettingsFolderConflictReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -6045,23 +6059,6 @@ function renderSettingsRoute(){
             </div>
           </div>
           <div id="wbSettingsFolderConflictGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
-          <div id="wbSettingsFolderConflictDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
-            <div>
-              <div style="font-weight:600">Delete Empty Duplicate Conflicts</div>
-              <div id="wbSettingsFolderConflictDeleteSummary" style="opacity:.72;font-size:12px">Chrome mirror only. Canonical folders, Desktop SQLite, and native folder-state are not modified.</div>
-            </div>
-            <div id="wbSettingsFolderConflictDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button id="wbSettingsFolderConflictPreviewDelete" type="button" style="${btnStyle}">Preview conflict deletion JSON</button>
-              <button id="wbSettingsFolderConflictCopyDeletePlan" type="button" style="${btnStyle}">Copy conflict deletion plan JSON</button>
-            </div>
-            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
-              <span style="opacity:.72">Type <code>${esc("DELETE EMPTY DUPLICATE FOLDERS")}</code> to enable duplicate deletion.</span>
-              <input id="wbSettingsFolderConflictDeleteConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
-            </label>
-            <button id="wbSettingsFolderConflictDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected empty duplicate folders</button>
-            <pre id="wbSettingsFolderConflictDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
-          </div>
         </div>
         <div id="wbSettingsFolderDesktopReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
@@ -6076,23 +6073,6 @@ function renderSettingsRoute(){
           </div>
           <div id="wbSettingsFolderDesktopReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
           <div id="wbSettingsFolderDesktopReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
-          <div id="wbSettingsFolderDesktopDeleteBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
-            <div>
-              <div style="font-weight:600">Delete Empty Desktop Folders</div>
-              <div id="wbSettingsFolderDesktopDeleteSummary" style="opacity:.72;font-size:12px">Desktop SQLite only. Chrome mirror, native folder-state, and sync folder are not modified.</div>
-            </div>
-            <div id="wbSettingsFolderDesktopDeleteList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button id="wbSettingsFolderDesktopPreviewDelete" type="button" style="${btnStyle}">Preview Desktop deletion JSON</button>
-              <button id="wbSettingsFolderDesktopCopyDeletePlan" type="button" style="${btnStyle}">Copy Desktop deletion plan JSON</button>
-            </div>
-            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
-              <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT)}</code> to enable Desktop deletion.</span>
-              <input id="wbSettingsFolderDesktopDeleteConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
-            </label>
-            <button id="wbSettingsFolderDesktopDeleteSelected" type="button" style="${btnStyle}" disabled>Delete selected empty Desktop folders</button>
-            <pre id="wbSettingsFolderDesktopDeletePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
-          </div>
           <div id="wbSettingsFolderDesktopOrphanBindingBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
               <div>
@@ -6105,23 +6085,6 @@ function renderSettingsRoute(){
               </div>
             </div>
             <div id="wbSettingsFolderDesktopOrphanBindingBody" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
-            <div id="wbSettingsFolderDesktopOrphanBindingRemoveBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
-              <div>
-                <div style="font-weight:600">Remove Orphan Desktop Binding</div>
-                <div id="wbSettingsFolderDesktopOrphanBindingRemoveSummary" style="opacity:.72;font-size:12px">Desktop SQLite binding only. The folder row, Chrome mirror, native folder-state, and sync folder are not modified.</div>
-              </div>
-              <div id="wbSettingsFolderDesktopOrphanBindingRemoveList" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <button id="wbSettingsFolderDesktopOrphanBindingPreviewRemove" type="button" style="${btnStyle}">Preview orphan binding removal JSON</button>
-                <button id="wbSettingsFolderDesktopOrphanBindingCopyRemovePlan" type="button" style="${btnStyle}">Copy orphan binding removal plan JSON</button>
-              </div>
-              <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
-                <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT)}</code> to enable binding removal.</span>
-                <input id="wbSettingsFolderDesktopOrphanBindingRemoveConfirm" type="text" autocomplete="off" spellcheck="false" style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
-              </label>
-              <button id="wbSettingsFolderDesktopOrphanBindingRemoveSelected" type="button" style="${btnStyle}" disabled>Remove selected orphan binding</button>
-              <pre id="wbSettingsFolderDesktopOrphanBindingRemovePreview" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
-            </div>
           </div>
         </div>
       </div>
@@ -6377,14 +6340,39 @@ function settingsFolderParityPanelTabStyle(active){
     "font:inherit",
     "font-size:12px",
     "cursor:pointer",
+    "pointer-events:auto",
   ].join(";");
+}
+
+function settingsFolderParityEnsureTabBinding(panel){
+  if (!panel) return;
+  const version = "p8i-c1-folder-parity-tabs-v1";
+  if (panel.__h2oFolderParityTabBindingVersion === version) return;
+  panel.__h2oFolderParityTabBindingVersion = version;
+  panel.addEventListener("click", (event) => {
+    const tab = event.target?.closest?.("[data-folder-parity-tab]");
+    if (!tab || !panel.contains(tab)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
+  }, true);
+  panel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const tab = event.target?.closest?.("[data-folder-parity-tab]");
+    if (!tab || !panel.contains(tab)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
+  }, true);
 }
 
 function settingsFolderParitySetActiveTab(panel, tabId){
   const next = String(tabId || "overview").trim() || "overview";
   FOLDER_PARITY_SETTINGS_UI_STATE.activeTab = next;
   panel?.querySelectorAll?.("[data-folder-parity-panel]")?.forEach((el) => {
-    el.hidden = el.getAttribute("data-folder-parity-panel") !== next;
+    const active = el.getAttribute("data-folder-parity-panel") === next;
+    el.hidden = !active;
+    el.style.display = active ? "flex" : "none";
   });
   panel?.querySelectorAll?.("[data-folder-parity-tab]")?.forEach((btn) => {
     const active = btn.getAttribute("data-folder-parity-tab") === next;
@@ -6553,10 +6541,10 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
   const src = row && typeof row === "object" ? row : {};
   const folderId = String(src.folderId || src.id || opts.folderId || "").trim();
   const name = String(src.name || opts.name || folderId || "Folder review item").trim();
-  const knownCount = settingsFolderCleanupNumber(src.knownCount);
+  const knownCount = settingsFolderCleanupNumber(src.knownCount ?? src.knownStudioCount);
   const localBindingCount = settingsFolderCleanupRowBindingCount(src);
   const bindingCount = Math.max(localBindingCount, knownCount);
-  const canonicalCount = settingsFolderCleanupNumber(src.canonicalCount);
+  const canonicalCount = settingsFolderCleanupNumber(src.canonicalCount ?? src.nativeMembershipCount);
   const orphanCount = settingsFolderCleanupNumber(src.orphanCount || opts.orphanCount);
   const warnings = Array.isArray(opts.warnings) ? opts.warnings.slice() : [];
   const badges = Array.isArray(src.badges) ? src.badges.map((badge) => String(badge || "").trim()).filter(Boolean) : [];
@@ -6579,7 +6567,7 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
   let riskLevel = "review";
   let requiresApproval = true;
   if (classification === "safe-empty") {
-    proposedAction = "Future P7b candidate only after explicit preview and typed approval.";
+    proposedAction = "Future P8i cleanup candidate only after explicit preview and typed approval.";
     riskLevel = "low-review-required";
   } else if (classification === "orphan-membership") {
     proposedAction = "Review membership coverage. Not a folder removal candidate.";
@@ -6594,6 +6582,9 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
   } else if (classification === "same-name-conflict") {
     proposedAction = "Resolve only through a future conflict review plan.";
     riskLevel = "high-review-required";
+  } else if (classification === "unsafe-to-delete") {
+    proposedAction = "Keep review-only until a later plan explains exact ownership and blockers.";
+    riskLevel = "high-review-required";
   }
 
   return {
@@ -6601,6 +6592,8 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
     name,
     normalizedName: String(src.normalizedName || name).trim().toLowerCase(),
     classification,
+    source: String(src.source || opts.source || "").trim(),
+    kind: String(src.kind || opts.kind || "").trim(),
     surface: String(opts.surface || src.surface || ""),
     isCanonical,
     isExtra,
@@ -6608,12 +6601,14 @@ function settingsFolderCleanupReviewCandidate(row, classification, opts = {}){
     isConflict,
     bindingCount,
     canonicalCount,
+    nativeMembershipCount: canonicalCount,
     knownCount,
     localBindingCount,
     savedCount: settingsFolderCleanupNumber(src.savedCount),
     linkedCount: settingsFolderCleanupNumber(src.linkedCount),
     orphanCount,
     badges,
+    displayCountLabel: String(src.displayCountLabel || opts.displayCountLabel || "").trim(),
     nativePresence,
     proposedAction,
     riskLevel,
@@ -6678,6 +6673,20 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
   const canonicalProtected = rows
     .filter((row) => !!row?.isCanonical)
     .map((row) => rowCandidate(row, "canonical-protected", { isCanonical: true, nativePresence: true }));
+  const groupedIds = new Set([
+    ...safeEmptyCandidates,
+    ...sameNameConflicts,
+    ...boundReviewCandidates,
+  ].map((candidate) => String(candidate.folderId || "").trim()).filter(Boolean));
+  const unsafeToDelete = rows
+    .filter((row) => {
+      const id = String(row?.folderId || row?.id || "").trim();
+      return !row?.isCanonical && id && !groupedIds.has(id);
+    })
+    .map((row) => rowCandidate(row, "unsafe-to-delete", {
+      nativePresence: false,
+      warnings: ["Review row does not meet empty-test cleanup requirements."],
+    }));
 
   const groups = {
     safeEmptyCandidates,
@@ -6685,6 +6694,7 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
     boundReviewCandidates,
     orphanMemberships,
     canonicalProtected,
+    unsafeToDelete,
   };
   return {
     readOnly: true,
@@ -6699,15 +6709,16 @@ function settingsFolderCleanupBuildReviewPlan(selfCheck, displayModel){
       boundReview: boundReviewCandidates.length,
       orphanMemberships: orphanMemberships.length,
       canonicalProtected: canonicalProtected.length,
+      unsafeToDelete: unsafeToDelete.length,
     },
     groups,
     safetyRules: [
-      "P7a is review-only.",
+      "P8i-c1 is review-only.",
       "No folder cleanup is performed.",
       "No Chrome storage, SQLite, or native folder-state writes are performed.",
       "Canonical f_* folders are protected.",
       "Conflicts and bound folders are review-only.",
-      "Desktop/F5D test folders are review-only in P7b.",
+      "Desktop/F5D test folders are review-only in P8i-c1.",
     ],
   };
 }
@@ -7486,13 +7497,25 @@ function settingsFolderCleanupChip(label, value){
 
 function settingsFolderCleanupBadgesHtml(candidate){
   const badges = Array.isArray(candidate?.badges) ? candidate.badges : [];
-  const withClass = [candidate?.classification, ...badges].filter(Boolean);
+  const withClass = [settingsFolderCleanupClassLabel(candidate?.classification), ...badges].filter(Boolean);
   if (!withClass.length) return "";
   return withClass.map((badge) => `<span style="display:inline-flex;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);border-radius:999px;padding:2px 6px;font-size:11px">${esc(badge)}</span>`).join(" ");
 }
 
+function settingsFolderCleanupClassLabel(classification){
+  const c = String(classification || "").trim();
+  if (c === "canonical-protected") return "preserve canonical";
+  if (c === "same-name-conflict") return "same-name conflict / review only";
+  if (c === "safe-empty") return "empty test cleanup candidate";
+  if (c === "bound-review") return "bound review";
+  if (c === "orphan-membership") return "orphan risk";
+  if (c === "unsafe-to-delete") return "unsafe to delete";
+  return c;
+}
+
 function settingsFolderCleanupCandidateHtml(candidate){
   const warnings = Array.isArray(candidate?.warnings) ? candidate.warnings : [];
+  const sourceKind = [candidate?.source, candidate?.kind].map((value) => String(value || "").trim()).filter(Boolean).join(" / ");
   return `
     <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
@@ -7501,11 +7524,13 @@ function settingsFolderCleanupCandidateHtml(candidate){
       </div>
       <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "(no folder id)")}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:4px 12px;font-size:12px">
-        <span>native ${esc(candidate?.canonicalCount ?? 0)}</span>
+        <span>native ${esc(candidate?.nativeMembershipCount ?? candidate?.canonicalCount ?? 0)}</span>
         <span>known ${esc(candidate?.knownCount ?? 0)}</span>
         <span>local bindings ${esc(candidate?.localBindingCount ?? candidate?.bindingCount ?? 0)}</span>
         <span>orphan ${esc(candidate?.orphanCount ?? 0)}</span>
       </div>
+      ${sourceKind ? `<div style="font-size:12px;opacity:.72"><strong>Source:</strong> ${esc(sourceKind)}</div>` : ""}
+      ${candidate?.displayCountLabel ? `<div style="font-size:12px;opacity:.72"><strong>Count label:</strong> ${esc(candidate.displayCountLabel)}</div>` : ""}
       <div style="font-size:12px"><strong>Review:</strong> ${esc(candidate?.proposedAction || "Review only.")}</div>
       <div style="font-size:12px"><strong>Risk:</strong> ${esc(candidate?.riskLevel || "review")}</div>
       ${warnings.length ? `<div style="font-size:12px;opacity:.78"><strong>Why:</strong> ${esc(warnings.join(" "))}</div>` : ""}
@@ -7525,7 +7550,25 @@ function settingsFolderCleanupGroupHtml(title, candidates, emptyText){
   `;
 }
 
+function settingsFolderCleanupEnsureStableTitle(panel){
+  const root = panel?.querySelector("#wbSettingsFolderCleanupReview");
+  if (!root) return null;
+  let title = root.querySelector("#wbSettingsFolderCleanupReviewTitle, [data-h2o-folder-cleanup-review-title='1']");
+  if (!title) {
+    title = document.createElement("h4");
+    title.id = "wbSettingsFolderCleanupReviewTitle";
+    title.style.margin = "0";
+    title.style.fontSize = "14px";
+    title.style.fontWeight = "600";
+    root.insertBefore(title, root.firstChild);
+  }
+  title.setAttribute("data-h2o-folder-cleanup-review-title", "1");
+  title.textContent = "Folder Cleanup Review";
+  return title;
+}
+
 function settingsFolderCleanupRenderPlan(panel, plan){
+  settingsFolderCleanupEnsureStableTitle(panel);
   const summary = panel?.querySelector("#wbSettingsFolderCleanupReviewSummary");
   const chips = panel?.querySelector("#wbSettingsFolderCleanupReviewChips");
   const groups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroups");
@@ -7535,27 +7578,31 @@ function settingsFolderCleanupRenderPlan(panel, plan){
   }
   if (chips) {
     chips.innerHTML = [
-      settingsFolderCleanupChip("safe empty", plan?.counts?.safeEmpty || 0),
+      settingsFolderCleanupChip("preserve canonical", plan?.counts?.canonicalProtected || 0),
       settingsFolderCleanupChip("conflicts", plan?.counts?.conflicts || 0),
+      settingsFolderCleanupChip("empty test", plan?.counts?.safeEmpty || 0),
       settingsFolderCleanupChip("bound review", plan?.counts?.boundReview || 0),
       settingsFolderCleanupChip("orphan memberships", plan?.counts?.orphanMemberships || 0),
+      settingsFolderCleanupChip("unsafe", plan?.counts?.unsafeToDelete || 0),
     ].join("");
   }
   if (groups) {
     groups.innerHTML = [
-      settingsFolderCleanupGroupHtml("Safe empty candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup."),
-      settingsFolderCleanupGroupHtml("Same-name conflicts", plan?.groups?.sameNameConflicts, "No same-name conflicts detected."),
-      settingsFolderCleanupGroupHtml("Bound review candidates", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected."),
-      settingsFolderCleanupGroupHtml("Orphan memberships", plan?.groups?.orphanMemberships, "No orphan native memberships detected."),
+      settingsFolderCleanupGroupHtml("Preserve canonical", plan?.groups?.canonicalProtected, "No canonical rows available."),
+      settingsFolderCleanupGroupHtml("Same-name conflict / review only", plan?.groups?.sameNameConflicts, "No same-name conflicts detected."),
+      settingsFolderCleanupGroupHtml("Empty test cleanup candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup."),
+      settingsFolderCleanupGroupHtml("Bound review", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected."),
+      settingsFolderCleanupGroupHtml("Orphan risk", plan?.groups?.orphanMemberships, "No orphan native memberships detected."),
+      settingsFolderCleanupGroupHtml("Unsafe to delete", plan?.groups?.unsafeToDelete, "No additional unsafe review rows detected."),
     ].join("");
   }
   if (copyBtn) copyBtn.disabled = false;
-  settingsFolderCleanupRenderDeletePanel(panel, plan);
   const counts = plan?.counts || {};
   const reviewCount = settingsFolderCleanupNumber(counts.safeEmpty)
     + settingsFolderCleanupNumber(counts.conflicts)
     + settingsFolderCleanupNumber(counts.boundReview)
-    + settingsFolderCleanupNumber(counts.orphanMemberships);
+    + settingsFolderCleanupNumber(counts.orphanMemberships)
+    + settingsFolderCleanupNumber(counts.unsafeToDelete);
   settingsFolderParitySetOperationStatus(panel, "cleanupReview", reviewCount ? "warning" : "works", reviewCount ? `${reviewCount} review item(s)` : "No unsafe candidates");
   settingsFolderParityRenderOperationRows(panel);
 }
@@ -10062,6 +10109,7 @@ function settingsFolderCleanupUpdateDeleteControls(panel){
 
 async function refreshSettingsFolderCleanupReview(panel, seed = null){
   if (!panel) return null;
+  settingsFolderCleanupEnsureStableTitle(panel);
   const summary = panel.querySelector("#wbSettingsFolderCleanupReviewSummary");
   const copyBtn = panel.querySelector("#wbSettingsFolderCleanupReviewCopy");
   const parity = W.H2O?.Library?.FolderParity;
