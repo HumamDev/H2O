@@ -240,6 +240,14 @@ Current role: read-only viewer for pasted or selected `latest.json`. It may cach
 
 F10.2 should define a shared cross-platform envelope that carries `platformId`, schema, authority context, evidence/proposal type, and source metadata without granting apply authority.
 
+F10.2.0 (docs-only envelope spec) is recorded in
+[`docs/systems/cross-platform/envelope-v1.md`](../cross-platform/envelope-v1.md).
+That document is the single source of truth for the cross-platform envelope
+shape, the seven envelope kinds, the kind↔authority and capability↔kind
+matrices, redaction rules, dedupe/replay semantics, and the mapping from
+F5–F9 artifacts to envelope kinds. All validation against this manifest must
+go through that spec.
+
 F10.3, F10.4, and F10.5 bridge work must validate that the source platform capability permits the data being sent and that the destination treats it as evidence, preview, or proposal as declared.
 
 F10.6 proposals must remain non-authoritative. F10.7 applies must remain Desktop-gated unless a later manifest update and safety model explicitly authorizes a new apply surface.
