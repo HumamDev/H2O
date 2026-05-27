@@ -4255,27 +4255,61 @@ export function makeChromeLiveLoaderJs({
       }
     }
 
+    // Bind-status tracker for the four critical listeners. Exposed read-only
+    // via window.__h2o_cs_bridge_diag below so DevTools can verify which
+    // transports actually registered without needing the dlog buffer. Each
+    // listener is wrapped in its own try/catch so a failure in one does not
+    // skip the rest (P8h-g4 hardening: previously an early-throw could leave
+    // the MSG_STUDIO_BROADCAST listener un-bound, producing "Receiving end
+    // does not exist" on bg→tab direct relay).
+    const bindStatus = {
+      windowMessage: false,
+      documentProbe: false,
+      documentWrite: false,
+      runtimeMessage: false,
+      storageOnChanged: false,
+      lastError: "",
+    };
+
     // Transport 1: window.postMessage. Registered UNCONDITIONALLY so that
     // even if chrome.storage is briefly unavailable on early document_start
     // ticks, the probe→READY handshake still completes and 0F1h's
     // bridgeReady flag flips true.
-    window.addEventListener("message", (ev) => {
-      const data = ev && ev.data;
-      if (!data || typeof data !== "object") return;
-      const type = data.type;
-      if (type === MSG_CS_PROBE) { handleProbe("postMessage", data.attempt); return; }
-      if (type === MSG_CS_WRITE) { handleWrite("postMessage", data.key, data.value); return; }
-    }, false);
+    try {
+      window.addEventListener("message", (ev) => {
+        const data = ev && ev.data;
+        if (!data || typeof data !== "object") return;
+        const type = data.type;
+        if (type === MSG_CS_PROBE) { handleProbe("postMessage", data.attempt); return; }
+        if (type === MSG_CS_WRITE) { handleWrite("postMessage", data.key, data.value); return; }
+      }, false);
+      bindStatus.windowMessage = true;
+    } catch (e) {
+      bindStatus.lastError = "windowMessage:" + String(e && (e.message || e));
+      dlog("windowMessage.bind.err", String(e && (e.message || e)));
+    }
 
     // Transport 2: CustomEvent on document. Survives some isolated-world
     // edge cases where window.postMessage cross-world hops are dropped.
-    document.addEventListener(EV_PROBE, (ev) => {
-      handleProbe("custom-event", ev && ev.detail && ev.detail.attempt);
-    }, false);
-    document.addEventListener(EV_WRITE, (ev) => {
-      const d = (ev && ev.detail) || {};
-      handleWrite("custom-event", d.key, d.value);
-    }, false);
+    try {
+      document.addEventListener(EV_PROBE, (ev) => {
+        handleProbe("custom-event", ev && ev.detail && ev.detail.attempt);
+      }, false);
+      bindStatus.documentProbe = true;
+    } catch (e) {
+      bindStatus.lastError = "documentProbe:" + String(e && (e.message || e));
+      dlog("documentProbe.bind.err", String(e && (e.message || e)));
+    }
+    try {
+      document.addEventListener(EV_WRITE, (ev) => {
+        const d = (ev && ev.detail) || {};
+        handleWrite("custom-event", d.key, d.value);
+      }, false);
+      bindStatus.documentWrite = true;
+    } catch (e) {
+      bindStatus.lastError = "documentWrite:" + String(e && (e.message || e));
+      dlog("documentWrite.bind.err", String(e && (e.message || e)));
+    }
 
     try {
       chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -4283,7 +4317,9 @@ export function makeChromeLiveLoaderJs({
         handleStudioBroadcastDirectRelay(msg, sendResponse);
         return true;
       });
+      bindStatus.runtimeMessage = true;
     } catch (e) {
+      bindStatus.lastError = "runtimeMessage:" + String(e && (e.message || e));
       dlog("studioBroadcast.direct.bind.err", String(e && (e.message || e)));
     }
 
@@ -4300,10 +4336,34 @@ export function makeChromeLiveLoaderJs({
             sendEvent(key, ch && ch.newValue, ch && ch.oldValue);
           }
         });
+        bindStatus.storageOnChanged = true;
       } catch (e) {
+        bindStatus.lastError = "storageOnChanged:" + String(e && (e.message || e));
         dlog("onChanged.bind.err", String(e && (e.message || e)));
       }
     }
+
+    // Expose a read-only diagnostic so DevTools can verify which transports
+    // are actually live without needing to scroll the dlog buffer. Useful for
+    // the P8h-g4 "Receiving end does not exist" runtime probe: if a tab shows
+    // bg→tab sendMessage failures, this object tells you whether the listener
+    // ever bound in the first place.
+    try {
+      Object.defineProperty(window, "__h2o_cs_bridge_diag", {
+        configurable: true,
+        enumerable: false,
+        get() {
+          return Object.freeze({
+            ...bindStatus,
+            hasStorage,
+            studioLauncherExtensionId: STUDIO_LAUNCHER_EXTENSION_ID,
+            studioKey: STUDIO_KEY,
+            nativeKey: NATIVE_KEY,
+            msgStudioBroadcast: MSG_STUDIO_BROADCAST,
+          });
+        },
+      });
+    } catch (_) { /* read-only diag is best-effort */ }
 
     // Best-effort unsolicited READY beacons. They cover the corner case
     // where 0F1h registers its listener AFTER content-script init but

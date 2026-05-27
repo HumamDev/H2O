@@ -119,6 +119,18 @@
     return out;
   }
 
+  function isNativeOwnedFolderMirrorRow(row) {
+    const source = String(row?.source || '').trim().toLowerCase();
+    const kind = String(row?.kind || '').trim().toLowerCase();
+    if (source === 'native-folder-catalog') return true;
+    if (source === 'native-folder-state') return true;
+    if (source === 'native-broadcast') return true;
+    if (source === 'native-h2o-folder-state') return true;
+    if (source.includes('native') && (source.includes('folder') || source.includes('catalog'))) return true;
+    if (kind === 'native-folder-catalog' || kind === 'native-folder-state') return true;
+    return false;
+  }
+
   const LOCAL_REVIEW_BUCKET_ORDER = ['conflict', 'test', 'extra', 'desktop-only', 'chrome-only', 'review-required'];
 
   function formatCanonicalCountLabel(row) {
@@ -180,11 +192,14 @@
   function mergeTrustedCanonicalFolderStates(primaryState, secondaryState, primaryLabel = '', secondaryLabel = '') {
     const primary = primaryState && typeof primaryState === 'object' ? primaryState : { folders: [], items: {} };
     const secondary = secondaryState && typeof secondaryState === 'object' ? secondaryState : { folders: [], items: {} };
+    const primaryIsAuthoritativeNative = String(primaryLabel || '').toLowerCase().includes('native');
+    const primaryIds = new Set((Array.isArray(primary.folders) ? primary.folders : []).map((row) => folderIdOf(row)).filter(Boolean));
     const folders = [];
     const seen = new Set();
-    const push = (row, label) => {
+    const push = (row, label, isSecondary = false) => {
       const id = folderIdOf(row);
       if (!id || seen.has(id)) return;
+      if (isSecondary && primaryIsAuthoritativeNative && isNativeOwnedFolderMirrorRow(row) && !primaryIds.has(id)) return;
       const next = {
         ...row,
         source: String(row?.source || label || '').trim(),
@@ -193,14 +208,15 @@
       seen.add(id);
     };
     (Array.isArray(primary.folders) ? primary.folders : []).forEach((row) => push(row, primaryLabel));
-    (Array.isArray(secondary.folders) ? secondary.folders : []).forEach((row) => push(row, secondaryLabel));
+    (Array.isArray(secondary.folders) ? secondary.folders : []).forEach((row) => push(row, secondaryLabel, true));
 
     const items = {};
     folders.forEach((folder) => {
       const id = folderIdOf(folder);
       const primaryItems = Array.isArray(primary.items?.[id]) ? primary.items[id] : [];
       const secondaryItems = Array.isArray(secondary.items?.[id]) ? secondary.items[id] : [];
-      items[id] = Array.from(new Set([...primaryItems, ...secondaryItems].map((value) => String(value || '').trim()).filter(Boolean)));
+      const values = primaryIsAuthoritativeNative && primaryIds.has(id) ? primaryItems : [...primaryItems, ...secondaryItems];
+      items[id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
     });
     return { folders, items };
   }

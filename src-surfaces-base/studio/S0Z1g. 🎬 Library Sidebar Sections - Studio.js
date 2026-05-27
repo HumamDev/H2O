@@ -734,6 +734,7 @@
   }
 
   function buildFolderDeletePreviewOperation(item, staleGuard = null) {
+    const expectedName = normalizeFolderRenameInput(item?.name || item?.label || item?.title || '');
     const operation = {
       schema: FOLDER_METADATA_OPERATION_SCHEMA,
       operationType: 'delete-folder',
@@ -741,6 +742,11 @@
       sourceSurface: 'chrome-studio',
       reason: FOLDER_METADATA_DELETE_PREVIEW_REASON,
     };
+    // Native owner accepts `expectedName` as the per-folder identity confirmation
+    // on the delete preview/apply contract. Studio rename/color/create already
+    // pass identity via `after.name`; delete previously sent neither, which caused
+    // the Native owner bridge to time out on the preview request (P8h-g4).
+    if (expectedName) operation.expectedName = expectedName;
     if (staleGuard && typeof staleGuard === 'object' && Object.keys(staleGuard).length) {
       operation.staleGuard = staleGuard;
     }

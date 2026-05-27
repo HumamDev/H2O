@@ -109,6 +109,9 @@
     lastNativeFolderMergeIncomingBindingCount: 0,
     lastNativeFolderMergeMergedFolderCount: 0,
     lastNativeFolderMergeMergedBindingCount: 0,
+    lastNativeFolderMergeRemovedNativeFolderCount: 0,
+    lastNativeFolderMergeRemovedNativeFolderIds: [],
+    lastNativeFolderMergePreservedLocalFolderCount: 0,
     lastNativeFolderMergeDuplicateNameDifferentIdCount: 0,
     lastNativeFolderMergeDuplicateNameDifferentIdSample: [],
     lastNativeFolderMergeCaseArrived: false,
@@ -445,6 +448,18 @@
     return out;
   }
 
+  function isNativeOwnedFolderMirrorRow(folder) {
+    const source = String(folder?.source || '').trim().toLowerCase();
+    const kind = String(folder?.kind || '').trim().toLowerCase();
+    if (source === 'native-folder-catalog') return true;
+    if (source === 'native-folder-state') return true;
+    if (source === 'native-broadcast') return true;
+    if (source === 'native-h2o-folder-state') return true;
+    if (source.includes('native') && (source.includes('folder') || source.includes('catalog'))) return true;
+    if (kind === 'native-folder-catalog' || kind === 'native-folder-state') return true;
+    return false;
+  }
+
   function findDuplicateNameDifferentIdCandidates(currentFolders, incomingFolders) {
     const byName = new Map();
     const add = (folder, source) => {
@@ -489,12 +504,23 @@
       const duplicates = findDuplicateNameDifferentIdCandidates(current.folders, incoming.folders);
       const currentById = new Map(current.folders.map((folder) => [folder.id, folder]));
       const incomingById = new Map(incoming.folders.map((folder) => [folder.id, folder]));
+      const incomingIds = new Set(incoming.folders.map((folder) => folder.id).filter(Boolean));
       const mergedFolders = [];
+      const removedNativeFolderIds = [];
+      let preservedLocalFolderCount = 0;
       const seen = new Set();
 
       current.folders.forEach((folder) => {
         const incomingFolder = incomingById.get(folder.id);
-        mergedFolders.push(incomingFolder ? mergeFolderRows(folder, incomingFolder) : folder);
+        if (incomingFolder) {
+          mergedFolders.push(mergeFolderRows(folder, incomingFolder));
+        } else if (isNativeOwnedFolderMirrorRow(folder)) {
+          removedNativeFolderIds.push(folder.id);
+          return;
+        } else {
+          preservedLocalFolderCount += 1;
+          mergedFolders.push(folder);
+        }
         seen.add(folder.id);
       });
       incoming.folders.forEach((folder) => {
@@ -507,7 +533,8 @@
       mergedFolders.forEach((folder) => {
         const existingItems = Array.isArray(current.items[folder.id]) ? current.items[folder.id] : [];
         const incomingItems = Array.isArray(incoming.items[folder.id]) ? incoming.items[folder.id] : [];
-        mergedItems[folder.id] = Array.from(new Set([...existingItems, ...incomingItems].map((value) => String(value || '').trim()).filter(Boolean)));
+        const values = incomingIds.has(folder.id) ? incomingItems : existingItems;
+        mergedItems[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
       });
 
       const beforeChecksum = stableChecksum({ folders: current.folders, items: current.items });
@@ -522,6 +549,9 @@
       state.lastNativeFolderMergeIncomingBindingCount = incomingBindingCount;
       state.lastNativeFolderMergeMergedFolderCount = mergedFolders.length;
       state.lastNativeFolderMergeMergedBindingCount = mergedBindingCount;
+      state.lastNativeFolderMergeRemovedNativeFolderCount = removedNativeFolderIds.length;
+      state.lastNativeFolderMergeRemovedNativeFolderIds = removedNativeFolderIds.slice(0, 16);
+      state.lastNativeFolderMergePreservedLocalFolderCount = preservedLocalFolderCount;
       state.lastNativeFolderMergeDuplicateNameDifferentIdCount = duplicates.length;
       state.lastNativeFolderMergeDuplicateNameDifferentIdSample = duplicates.slice(0, 8);
       state.lastNativeFolderMergeCaseArrived = incoming.folders.some((folder) => String(folder.name || '').trim().toLowerCase() === 'case');
@@ -547,6 +577,9 @@
         incomingBindingCount,
         mergedFolderCount: mergedFolders.length,
         mergedBindingCount,
+        removedNativeFolderCount: removedNativeFolderIds.length,
+        removedNativeFolderIds: removedNativeFolderIds.slice(0, 16),
+        preservedLocalFolderCount,
       };
     } catch (e) {
       state.lastNativeFolderMergeAt = Date.now();
@@ -579,6 +612,11 @@
     state.lastNativeFolderMergeIncomingBindingCount = asFiniteNumber(src.incomingBindingCount, 0);
     state.lastNativeFolderMergeMergedFolderCount = asFiniteNumber(src.mergedFolderCount || src.afterFolderCount, 0);
     state.lastNativeFolderMergeMergedBindingCount = asFiniteNumber(src.mergedBindingCount, 0);
+    state.lastNativeFolderMergeRemovedNativeFolderCount = asFiniteNumber(src.removedNativeFolderCount, 0);
+    state.lastNativeFolderMergeRemovedNativeFolderIds = Array.isArray(src.removedNativeFolderIds)
+      ? src.removedNativeFolderIds.map((id) => String(id || '').trim()).filter(Boolean).slice(0, 16)
+      : [];
+    state.lastNativeFolderMergePreservedLocalFolderCount = asFiniteNumber(src.preservedLocalFolderCount, 0);
     state.lastNativeFolderMergeDuplicateNameDifferentIdCount = asFiniteNumber(src.duplicateNameDifferentIdCount, 0);
     state.lastNativeFolderMergeDuplicateNameDifferentIdSample = Array.isArray(src.duplicateNameDifferentIdSample)
       ? src.duplicateNameDifferentIdSample.slice(0, 8)
@@ -1162,6 +1200,9 @@
             incomingBindingCount: state.lastNativeFolderMergeIncomingBindingCount,
             mergedFolderCount: state.lastNativeFolderMergeMergedFolderCount,
             mergedBindingCount: state.lastNativeFolderMergeMergedBindingCount,
+            removedNativeFolderCount: state.lastNativeFolderMergeRemovedNativeFolderCount,
+            removedNativeFolderIds: state.lastNativeFolderMergeRemovedNativeFolderIds.slice(),
+            preservedLocalFolderCount: state.lastNativeFolderMergePreservedLocalFolderCount,
             duplicateNameDifferentIdCount: state.lastNativeFolderMergeDuplicateNameDifferentIdCount,
             duplicateNameDifferentIdSample: state.lastNativeFolderMergeDuplicateNameDifferentIdSample.slice(),
             caseArrived: !!state.lastNativeFolderMergeCaseArrived,

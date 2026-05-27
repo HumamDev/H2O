@@ -3934,17 +3934,79 @@ function mergeFolderStateItems(existingItems, incomingItems) {
   return out;
 }
 
-function mergeFolderStateData(existingRaw, incomingRaw, modeRaw) {
+function isNativeOwnedFolderStateRow(folder) {
+  const source = String(folder && folder.source || "").trim().toLowerCase();
+  const kind = String(folder && folder.kind || "").trim().toLowerCase();
+  if (source === "native-folder-catalog") return true;
+  if (source === "native-folder-state") return true;
+  if (source === "native-broadcast") return true;
+  if (source === "native-h2o-folder-state") return true;
+  if (source.includes("native") && (source.includes("folder") || source.includes("catalog"))) return true;
+  if (kind === "native-folder-catalog" || kind === "native-folder-state") return true;
+  return false;
+}
+
+function mergeAuthoritativeNativeFolderState(existing, incoming, incomingRaw) {
+  const source = String(incomingRaw && incomingRaw.source || "native-folder-catalog").trim() || "native-folder-catalog";
+  const incomingFolders = incoming.folders.map((folder) => ({
+    ...folder,
+    source: String(folder && folder.source || source).trim() || source,
+  }));
+  const incomingIds = new Set(incomingFolders.map((folder) => String(folder && folder.id || "").trim()).filter(Boolean));
+  const removedNativeFolderIds = [];
+  let preservedLocalFolderCount = 0;
+  const existingFolders = [];
+  for (const folder of existing.folders) {
+    const id = String(folder && folder.id || "").trim();
+    if (!id) continue;
+    if (incomingIds.has(id)) {
+      existingFolders.push(folder);
+      continue;
+    }
+    if (isNativeOwnedFolderStateRow(folder)) {
+      removedNativeFolderIds.push(id);
+      continue;
+    }
+    preservedLocalFolderCount += 1;
+    existingFolders.push(folder);
+  }
+  const folders = mergeFolderCatalogLists(existingFolders, incomingFolders);
+  const items = {};
+  for (const folder of folders) {
+    const id = String(folder && folder.id || "").trim();
+    if (!id) continue;
+    const sourceItems = incomingIds.has(id) ? incoming.items : existing.items;
+    items[id] = normalizeFolderStateItems(sourceItems)[id] || [];
+  }
+  return {
+    ...existing,
+    ...incoming,
+    schemaVersion: incoming.schemaVersion || existing.schemaVersion || 1,
+    folders,
+    items,
+    updatedAt: nowIso(),
+    __h2oMergeStats: {
+      removedNativeFolderIds: removedNativeFolderIds.slice(0, 64),
+      preservedLocalFolderCount,
+    },
+  };
+}
+
+function mergeFolderStateData(existingRaw, incomingRaw, modeRaw, opts = {}) {
   const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
   const existing = normalizeFolderStateData(existingRaw);
   const incoming = normalizeFolderStateData(incomingRaw);
-  if (!incoming.folders.length && !Object.keys(incoming.items || {}).length) return existing;
+  const hasAuthoritativeFolderList = !!(opts && opts.nativeFolderStateAuthoritative && incomingRaw && Array.isArray(incomingRaw.folders));
+  if (!incoming.folders.length && !Object.keys(incoming.items || {}).length && !hasAuthoritativeFolderList) return existing;
   if (mode === "overwrite") {
     return {
       ...incoming,
       schemaVersion: incoming.schemaVersion || existing.schemaVersion || 1,
       updatedAt: nowIso(),
     };
+  }
+  if (opts && opts.nativeFolderStateAuthoritative) {
+    return mergeAuthoritativeNativeFolderState(existing, incoming, incomingRaw);
   }
   return {
     ...existing,
@@ -3998,7 +4060,7 @@ function findFolderDuplicateNameDifferentIdCandidates(existingFoldersRaw, incomi
     }));
 }
 
-async function writeChromeStorageLocalMerge(entries, modeRaw) {
+async function writeChromeStorageLocalMerge(entries, modeRaw, opts = {}) {
   const mode = String(modeRaw || "merge").trim().toLowerCase() === "overwrite" ? "overwrite" : "merge";
   const obj = entries && typeof entries === "object" && !Array.isArray(entries) ? entries : {};
   const incomingKeys = Object.keys(obj);
@@ -4029,13 +4091,17 @@ async function writeChromeStorageLocalMerge(entries, modeRaw) {
   const writes = {};
   let written = 0;
   let skipped = incomingKeys.length - safeKeys.length;
+  const folderStateMergeStats = {};
   for (const k of safeKeys) {
     if (k === FOLDER_STATE_DATA_KEY) {
-      const merged = mergeFolderStateData(existing[k], safeIncoming[k], mode);
+      const merged = mergeFolderStateData(existing[k], safeIncoming[k], mode, opts);
+      const mergeStats = merged && typeof merged === "object" ? merged.__h2oMergeStats : null;
+      if (merged && typeof merged === "object") delete merged.__h2oMergeStats;
       if (mode === "merge" && stableJson(normalizeFolderStateData(existing[k])) === stableJson(merged)) {
         skipped += 1;
         continue;
       }
+      if (mergeStats && typeof mergeStats === "object") folderStateMergeStats[k] = mergeStats;
       writes[k] = merged;
       written += 1;
       continue;
@@ -4058,7 +4124,7 @@ async function writeChromeStorageLocalMerge(entries, modeRaw) {
       } catch (e) { reject(e); }
     });
   }
-  return { written, skipped };
+  return { written, skipped, folderStateMergeStats };
 }
 
 async function handleExternalStudioBroadcastMessage(msg, sender) {
@@ -4178,11 +4244,19 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
   }
   const before = await storageGet([FOLDER_STATE_DATA_KEY]);
   const beforeState = normalizeFolderStateData(before && before[FOLDER_STATE_DATA_KEY]);
-  const result = await writeChromeStorageLocalMerge({ [FOLDER_STATE_DATA_KEY]: folderState }, "merge");
+  const result = await writeChromeStorageLocalMerge({ [FOLDER_STATE_DATA_KEY]: folderState }, "merge", {
+    nativeFolderStateAuthoritative: true,
+  });
   const after = await storageGet([FOLDER_STATE_DATA_KEY]);
   const afterState = normalizeFolderStateData(after && after[FOLDER_STATE_DATA_KEY]);
   const incomingState = normalizeFolderStateData(folderState);
   const status = result.written > 0 ? "merged" : "unchanged";
+  const mergeStats = result.folderStateMergeStats && result.folderStateMergeStats[FOLDER_STATE_DATA_KEY]
+    ? result.folderStateMergeStats[FOLDER_STATE_DATA_KEY]
+    : {};
+  const removedNativeFolderIds = Array.isArray(mergeStats.removedNativeFolderIds)
+    ? mergeStats.removedNativeFolderIds.map((id) => String(id || "").trim()).filter(Boolean).slice(0, 16)
+    : [];
   const duplicateNameDifferentIdSample = findFolderDuplicateNameDifferentIdCandidates(beforeState.folders, incomingState.folders).slice(0, 8);
   const incomingChecksum = String(folderState.checksum || checksumFolderState({ folders: incomingState.folders, items: incomingState.items }));
   const mergedChecksum = checksumFolderState({ folders: afterState.folders, items: afterState.items });
@@ -4205,6 +4279,9 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
     beforeBindingCount: countFolderStateBindings(beforeState.items),
     mergedFolderCount: afterState.folders.length,
     mergedBindingCount: countFolderStateBindings(afterState.items),
+    removedNativeFolderCount: removedNativeFolderIds.length,
+    removedNativeFolderIds,
+    preservedLocalFolderCount: Number(mergeStats.preservedLocalFolderCount || 0),
     written: result.written,
     skipped: result.skipped,
     duplicateNameDifferentIdCount: duplicateNameDifferentIdSample.length,
@@ -4231,6 +4308,9 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
     afterFolderCount: afterState.folders.length,
     mergedFolderCount: diagnostic.mergedFolderCount,
     mergedBindingCount: diagnostic.mergedBindingCount,
+    removedNativeFolderCount: diagnostic.removedNativeFolderCount,
+    removedNativeFolderIds: diagnostic.removedNativeFolderIds,
+    preservedLocalFolderCount: diagnostic.preservedLocalFolderCount,
     incomingChecksum,
     mergedChecksum,
     caseArrived: diagnostic.caseArrived,
