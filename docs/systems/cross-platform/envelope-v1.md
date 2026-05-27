@@ -40,49 +40,121 @@ Key safety properties carried forward from prior phases:
   validated against the producing platform's declared identity. Transport
   contributes zero authority. Payload contributes zero authority.
 
+## Core Lifecycle
+
+The F10 cross-platform model is a one-way pipeline. Every state change passes
+through these stages, in order, and never skips a stage:
+
+```
+evidence → preview → proposal → conflict / review → audited apply → export
+```
+
+| Stage | What it is | Producer side | What it produces | Downstream gate |
+|---|---|---|---|---|
+| **evidence** | Observation of state. "I saw X." | Any platform with `evidence-producer` authority or stronger. | `evidence` envelopes. | Does not advance to `preview` on its own; an explicit producer must elect to draft one. |
+| **preview** | Counterfactual diagnostic. "If applied, would do X." | Platforms with `preview-coordinator` authority or stronger. Always `dryRun: true`. | `preview` envelopes carrying `previewToken` and predicate version. | Does not advance to `proposal` on its own; an operator (or strong-authority code) must elect to submit one. |
+| **proposal** | Explicit request to apply, awaiting review. | Platforms with `proposal-source` authority or stronger. | `proposal` envelopes citing justifying evidence and the predicate. | Does not advance to `applyEvent` on its own; a strong-authority platform must run review/apply gates. |
+| **conflict / review** | Divergence between two evidence streams, or operator decision on a queued conflict. | Strong-authority comparator (typically Desktop running F7/F6). | `conflictCandidate` envelopes feeding F6 ingest; F6 review decisions producing follow-on `applyEvent`. | F6 conflict-queue rows are internal SQL; ingest is operator-driven, one-at-a-time. |
+| **audited apply** | Actual mutation under transactional, gated, audited rules. | Strong-authority platforms only (currently Desktop). | `applyEvent` envelopes that are **past-tense receipts** — the apply already happened locally before the envelope is emitted. | Never. The pipeline does not loop. Consumers do not re-apply. |
+| **export** | Transportable packet of upstream envelopes. | Platforms with `export` capability. | `bundle` envelopes wrapping ordered upstream envelopes. | Bundles travel via transports (§8); transport contributes zero authority. |
+
+Three properties of this pipeline are load-bearing:
+
+1. **It is one-way.** No stage feeds backward. An `applyEvent` does not
+   automatically re-emit as evidence (the producer's own evidence stream
+   handles that on its next observation cycle, independently).
+2. **Each stage is opt-in.** Producing evidence does not auto-produce a
+   preview. Producing a preview does not auto-produce a proposal. Producing
+   a proposal does not auto-produce an applyEvent. The pipeline is a sequence
+   of human or strong-authority gates, not an automation.
+3. **`cacheMetadata` is off-pipeline.** It is read-only mirror state for
+   diagnostics. It never feeds any other stage, and no consumer code path
+   may ever route from it to a write (see §3.7).
+
+The envelope kinds in §3 are the wire form of each pipeline stage:
+
+| Pipeline stage | Envelope kind(s) |
+|---|---|
+| evidence | `evidence` |
+| preview | `preview` |
+| proposal | `proposal` |
+| conflict / review | `conflictCandidate` (detection), `applyEvent` (review decision result) |
+| audited apply | `applyEvent` |
+| export | `bundle` |
+| off-pipeline diagnostics | `cacheMetadata` |
+
 ## Envelope Base Shape
 
-The canonical v1 shape:
+The canonical v1 shape. All field names below are **locked** for F10.2.1 — the
+optional static helper must match them byte-for-byte.
 
 ```ts
 type CrossPlatformEnvelope = {
   // ── Schema identity ─────────────────────────────────────────────
   schema: "h2o.crossPlatform.envelope.v1";
-  envelopeKind: EnvelopeKind;
+  envelopeVersion: "v1";
   envelopeKindVersion: "v1";
+  schemaHash?: string;                       // OPTIONAL — sha256 of the canonical schema definition known to the producer
 
-  // ── Source attribution (from F10.1 manifest) ────────────────────
+  // ── Envelope identity ───────────────────────────────────────────
+  kind: EnvelopeKind;
+  id: string;                                // globally-unique envelope ID (ULID/UUIDv7)
+  lineageId: string;                         // shared across an evidence → preview → proposal → applyEvent chain
+
+  // ── Provenance ──────────────────────────────────────────────────
+  createdAt: string;                         // ISO seconds UTC
+  expiresAt?: string;                        // OPTIONAL — ISO; after this the envelope is stale (§6)
+  sequence: number | null;                   // per-producer-peer monotonic envelope sequence from F3
+  exportSequence: number | null;             // optional secondary monotonic sequence within a single bundle
+
+  // ── Source attribution ──────────────────────────────────────────
   sourcePlatform: {
     platformId: PlatformId;
     surfaceKind: SurfaceKind;
-    authorityLevel: AuthorityLevel;
     sourcePeerEnvelope: RedactedPeerEnvelope;
   };
 
-  // ── What this envelope is about ─────────────────────────────────
+  // ── Authority (split: declared vs effective) ────────────────────
+  declaredAuthority: AuthorityLevel;         // what the producer claims
+  effectiveAuthority: AuthorityLevel | "rejected"; // what the validator concluded; "rejected" on validation failure
   capabilityUsed: CapabilityName;
-  entityKind: EntityKind;
-  operation: OperationName;
+  capabilitySnapshotHash: string;            // sha256 of the producer's F10.1 manifest at envelope creation time
 
-  // ── Provenance ──────────────────────────────────────────────────
-  createdAt: string;
-  sequence: number | null;
-  exportSequence: number | null;
-  dedupeKeyHash: string;
-  eventDigest: string;
+  // ── Subject ─────────────────────────────────────────────────────
+  subjectType: SubjectType;                  // e.g. "folder.metadata", "tombstone.review", "chat.evidence"
+  subjectId: string;                         // hashed at default redactionClass; see §5
+  operation: OperationName;                  // free-form per kind
+  operationIntent?: OperationIntent;         // REQUIRED for proposal / conflictCandidate / applyEvent (see §3)
 
-  // ── Posture flags ───────────────────────────────────────────────
-  redacted: boolean;
+  // ── Posture ─────────────────────────────────────────────────────
+  redactionClass: RedactionClass;
   dryRun: boolean | null;
   transactional: boolean | null;
+
+  // ── Idempotency ─────────────────────────────────────────────────
+  dedupeKey: string;                         // sha256 of canonical per-kind dedupe inputs (§6)
+  payloadHash: string;                       // sha256 of canonical payload alone (§6)
+  eventDigest: string;                       // sha256 of the canonical envelope minus warnings/blockers/eventDigest (§6)
 
   // ── Body ────────────────────────────────────────────────────────
   payload: KindSpecificPayload;
 
   // ── Diagnostic ──────────────────────────────────────────────────
-  warnings: string[];
-  blockers: string[];
+  warnings: string[];                        // code strings from a fixed allowlist
+  blockers: string[];                        // code strings from a fixed allowlist; empty on a well-formed envelope
 };
+
+type RedactionClass =
+  | "redacted"            // DEFAULT — cross-platform safe; no plain IDs, no display names, no content
+  | "device-local"        // GATED — same physical device, evidence/preview only, operator-opt-in
+  | "metadata-only";      // for cacheMetadata only — counts and status, no IDs
+
+type OperationIntent =
+  | "create"
+  | "update"
+  | "delete"              // F5-gated; see §3.proposal and §3.applyEvent
+  | "review"              // F6 ingest decisions
+  | "cleanup";            // F5H.3b synthetic cleanup operations
 ```
 
 ### Field Notes
@@ -90,23 +162,33 @@ type CrossPlatformEnvelope = {
 | Field | Notes |
 |---|---|
 | `schema` | Literal `"h2o.crossPlatform.envelope.v1"`. Bumped only on a breaking change. Schema bumps must be announced in this document one release before any platform emits the new schema. |
-| `envelopeKind` | One of the seven kinds in §3. Determines payload shape and consumer dispatch. |
+| `envelopeVersion` | Top-level shape version. Distinct from `envelopeKindVersion` (which versions per-kind payloads). Allows tightening the wrapper without bumping `schema`. |
 | `envelopeKindVersion` | Per-kind version. Allows `evidence v1` and `applyEvent v2` to coexist without bumping the overall envelope schema. |
-| `sourcePlatform.platformId` | One of: `"desktop-studio"`, `"chrome-studio"`, `"native-extension"`, `"mobile"`. Drives F10.1 manifest lookup. |
-| `sourcePlatform.surfaceKind` | One of: `"desktop-tauri"`, `"browser-studio"`, `"browser-runtime"`, `"mobile"`. Cross-checked against `authorityLevel` (§4.3). |
-| `sourcePlatform.authorityLevel` | One of the F10.1 authority levels (`"none"`, `"read-only"`, `"evidence-producer"`, `"preview-coordinator"`, `"proposal-source"`, `"strong-local-authority"`, `"audited-apply-authority"`). |
-| `sourcePlatform.sourcePeerEnvelope` | F2-shaped peer envelope with redacted IDs. Identity for routing, never trusted for authority. |
-| `capabilityUsed` | Must be on the F10.1 manifest entry for `sourcePlatform.platformId`. Validated per §4.2. |
-| `entityKind` | The kind of entity the envelope describes (e.g. `"folder.metadata"`, `"folderBinding"`, `"tombstone.review"`, `"chat.evidence"`). Free-form string with platform-specific guards. |
-| `operation` | The specific operation, e.g. `"folder-metadata-color-apply"`, `"reviewed-folder-binding-tombstone-apply"`, `"synthetic-cleanup-dry-run"`. Free-form per kind. |
+| `schemaHash` | Optional. Sha256 of the canonical schema definition the producer was compiled against. Lets a consumer detect "producer knew a different schema than I do" without parsing. |
+| `kind` | One of the seven values in §3. Determines payload shape and consumer dispatch. |
+| `id` | Globally-unique envelope ID (ULID or UUIDv7). Identifies **this creation event**, distinct from `eventDigest` (which is a content hash and may repeat for byte-identical envelopes). |
+| `lineageId` | Shared across the evidence → preview → proposal → applyEvent chain that motivated a single change. Lets F6 / audit code follow a lineage end-to-end without inspecting payload. |
 | `createdAt` | ISO seconds UTC. |
+| `expiresAt` | Optional. After this ISO time the envelope is **stale**: consumers may still display it (with a stale badge) but must not use it as input to a new `proposal`, `applyEvent`, or F6 ingest without revalidating. See §6. |
 | `sequence` | Per-producer-peer monotonic envelope sequence from F3. `null` if the producer is not a sequenced surface. Used for gap detection. |
 | `exportSequence` | Optional secondary monotonic sequence within a single bundle, used to preserve order across multiple kinds in one bundle. |
-| `dedupeKeyHash` | sha256 of the per-kind canonical dedupe input. Same logical event yields same hash; consumers dedupe by it. See §6. |
-| `eventDigest` | sha256 of the entire canonical envelope minus `warnings`, `blockers`, and `eventDigest` itself. Detects literal duplicates in transit and supports forward references. |
-| `redacted` | Defaults to `true`. Flipping to `false` requires the gated route described in §5.2. |
-| `dryRun` | `true` for `preview` envelopes, `false` for `applyEvent`, `null` for kinds where the field is meaningless (`evidence`, `proposal`, `conflictCandidate`, `bundle`, `cacheMetadata`). |
+| `sourcePlatform.platformId` | One of: `"desktop-studio"`, `"chrome-studio"`, `"native-extension"`, `"mobile"`. Drives F10.1 manifest lookup. |
+| `sourcePlatform.surfaceKind` | One of: `"desktop-tauri"`, `"browser-studio"`, `"browser-runtime"`, `"mobile"`. Cross-checked against `declaredAuthority` (§4.3). |
+| `sourcePlatform.sourcePeerEnvelope` | F2-shaped peer envelope with redacted IDs. Identity for routing only — **never** trusted for authority by itself (§4.5). |
+| `declaredAuthority` | The authority level the producer claims. Producer-supplied, untrusted until validated. One of: `"none"`, `"read-only"`, `"evidence-producer"`, `"preview-coordinator"`, `"proposal-source"`, `"strong-local-authority"`, `"audited-apply-authority"`. |
+| `effectiveAuthority` | The authority level the consumer's validator concluded after checking `sourcePlatform`, `declaredAuthority`, `capabilityUsed`, `capabilitySnapshotHash`, and the F10.1 manifest. May be **lower** than `declaredAuthority` (downgrade) or `"rejected"` (envelope refused). Consumers act only on `effectiveAuthority`. |
+| `capabilityUsed` | Must be on the F10.1 manifest entry for `sourcePlatform.platformId`. Validated per §4.2. |
+| `capabilitySnapshotHash` | Sha256 of the producer's F10.1 capability manifest at envelope creation. Lets a consumer detect "producer is operating under a manifest different from mine," surface a warning, and downgrade `effectiveAuthority` accordingly. |
+| `subjectType` | Kind of entity the envelope describes (e.g. `"folder.metadata"`, `"folderBinding"`, `"tombstone.review"`, `"chat.evidence"`). Free-form string with platform-specific guards (§4.7). |
+| `subjectId` | Hash of `(subjectType + raw entity ID + perEnvelopeSalt)` at `redactionClass: "redacted"`. Plain ID allowed only at `redactionClass: "device-local"`. Lets consumers dedupe by subject without parsing payload. Never raw at default class. |
+| `operation` | Specific operation string, e.g. `"folder-metadata-color-apply"`, `"reviewed-folder-binding-tombstone-apply"`, `"synthetic-cleanup-dry-run"`. Free-form per kind. |
+| `operationIntent` | Categorical intent. **Required** for `proposal`, `conflictCandidate`, and `applyEvent`. Forbidden on `evidence`, `preview`, `bundle`, `cacheMetadata`. Validator rejects mismatches with `blocker: "operation-intent-wrong-for-kind"`. |
+| `redactionClass` | Replaces the earlier `redacted: boolean`. Default `"redacted"`. See §5. |
+| `dryRun` | `true` for `preview`, `false` for `applyEvent`, `null` for `evidence`, `proposal`, `conflictCandidate`, `bundle`, `cacheMetadata`. Validator rejects non-null `dryRun` on those kinds and rejects `dryRun: false` on `preview`. |
 | `transactional` | `true` for transactional apply / dry-run kinds, `null` otherwise. |
+| `dedupeKey` | Sha256 of per-kind canonical dedupe inputs. See §6. |
+| `payloadHash` | Sha256 of the canonical `payload` alone. Distinct from `eventDigest`. Lets consumers detect "same payload, different envelope wrapper" — useful for upgrading an envelope's metadata without re-counting the underlying event. |
+| `eventDigest` | Sha256 of the entire canonical envelope minus `warnings`, `blockers`, and `eventDigest` itself. Detects literal duplicates in transit and supports forward references. |
 | `payload` | Per-kind shape. Validator rejects unknown fields and forever-no field names (§5.3). |
 | `warnings` | Code strings from a fixed allowlist. **Not** a free-text channel (§5.4). |
 | `blockers` | Code strings from a fixed allowlist. Empty on a well-formed envelope. |
@@ -119,7 +201,7 @@ The shape deliberately does **not** carry:
 |---|---|
 | `targetPlatform` | Envelopes are broadcast/observed, not addressed. A consumer chooses to attend; a producer never commands. Adding this would invite point-to-point routing logic that turns envelopes into RPCs. |
 | `action` / `command` | Adding such a field would invite consumers to dispatch by it. The envelope is a *type*, not an *instruction*. |
-| Raw IDs at the top level | All IDs live inside `payload`, where they are redaction-gated and per-kind validated. Top-level IDs would bypass the gates. |
+| Raw IDs at the top level (other than `id` and the hashed `subjectId`) | `id` identifies the envelope creation event; `subjectId` is hashed at default redactionClass. Plain entity IDs live inside `payload`, where they are redaction-gated and per-kind validated. Top-level plain IDs would bypass the gates. |
 | Content fields | Chat bodies, message text, attachment bytes, snapshot bodies, OS file paths, URLs, and credentials are **never** carried by any envelope at any level (§5.3). |
 
 ## Envelope Kinds
@@ -157,7 +239,7 @@ requirement.
 | Producers | Platforms at `proposal-source` authority or stronger. Currently only Desktop Studio per F10.1. Chrome Studio gains this capability only when explicitly upgraded by a future F10 phase, and Mobile remains read-first until later. |
 | Consumers | Desktop Studio review UI (F5 `sync_tombstone_reviews`, F6 conflict queue). |
 | Payload expectations | The proposed change with full provenance — the originating evidence digest(s), the predicate that justifies it, the operator who initiated it (or `null` if surfaced automatically by a diagnostic). |
-| Required fields | `payload.justifyingEvidenceDigests: string[]`, `payload.proposedOperation`, `payload.expectedPostState`, `payload.predicateVersion`. |
+| Required fields | `operationIntent` ∈ `{"create", "update", "delete", "review", "cleanup"}`; `payload.justifyingEvidenceDigests: string[]`; `payload.proposedOperation`; `payload.expectedPostState`; `payload.predicateVersion`. |
 | Apply implication | **None until reviewed.** A proposal must be turned into an `applyEvent` by a strong-authority platform; the proposal envelope itself does not move rows. |
 
 ### conflictCandidate
@@ -168,19 +250,19 @@ requirement.
 | Producers | Platforms comparing two evidence streams. Currently only Desktop Studio (the only strong authority that runs the F7 comparator). |
 | Consumers | F6 conflict queue **ingest** — one-at-a-time, operator-clicked. **Never auto-enqueue.** |
 | Payload expectations | Two divergent states, the common ancestor (if known), the divergence reason. |
-| Required fields | `payload.requesterState`, `payload.counterpartState`, `payload.commonAncestorHash`, `payload.divergenceReason`. |
+| Required fields | `operationIntent` ∈ `{"create", "update", "delete"}` (describing what the divergent operations were); `payload.requesterState`; `payload.counterpartState`; `payload.commonAncestorHash`; `payload.divergenceReason`. |
 | Apply implication | **None.** Even after F6 ingests it, the resulting conflict row still requires explicit operator resolution before any apply runs. |
 
 ### applyEvent
 
 | Aspect | Value |
 |---|---|
-| Meaning | Past-tense audit record of a change that **already happened** on the producing platform. |
+| Meaning | **Past-tense receipt only.** Audit record of a change that **already happened** on the producing platform before the envelope was created. An `applyEvent` is never a remote command. Consumers must not interpret it as a request to apply locally; replay must not retrigger apply; the very absence of a "remote-apply" code path is a structural invariant of the system. |
 | Producers | Strong-authority platforms only. In F10's current scope this means Desktop Studio. Chrome Studio, Native Extension, and Mobile never produce `applyEvent`. |
-| Consumers | Other platforms for read-only display and their own evidence-stream invalidation. Consumers do **not** mirror the apply locally. |
+| Consumers | Other platforms for read-only display and their own evidence-stream invalidation. Consumers do **not** mirror the apply locally, do **not** queue it for local apply, and do **not** translate it into a new `proposal` automatically. |
 | Payload expectations | What was applied — the operation, the entity ID, the pre/post state hashes, the audit row ID from the local maintenance log, the preview token (if applicable from F5H.3b.1b). |
-| Required fields | `dryRun: false`, `transactional: true`, `payload.auditMaintenanceId`, `payload.preState`, `payload.postState`, `payload.predicateVersion`. |
-| Apply implication | **None on consumers.** A consumer reading an `applyEvent` learns the producer changed something. The consumer does not mirror; mirroring is a separate decision via the proposal pipeline. |
+| Required fields | `dryRun: false`; `transactional: true`; `operationIntent` ∈ `{"create", "update", "delete", "review", "cleanup"}`; `payload.auditMaintenanceId`; `payload.preState`; `payload.postState`; `payload.predicateVersion`. |
+| Apply implication | **None on consumers.** A consumer reading an `applyEvent` learns the producer changed something. The consumer does not mirror; mirroring is a separate decision via the proposal pipeline. There is no envelope shape that would convert an `applyEvent` into a remote-apply command, and this document declares the absence of such a shape as an invariant. |
 
 ### bundle
 
@@ -201,7 +283,7 @@ requirement.
 | Producers | `read-only` authority platforms (mobile). |
 | Consumers | Studio surfaces for diagnostic display only. |
 | Payload expectations | The mirror snapshot — what the read-only platform believes the current state to be, plus the last ingested bundle sequence. |
-| Required fields | `payload.lastIngestedBundleSequence`, `payload.mirrorEntityCount`. Payload field allowlist enforced per §4.4. |
+| Required fields | `payload.lastIngestedBundleSequence`, `payload.mirrorEntityCount`. Payload field allowlist enforced per §4.6. |
 | Apply implication | **None and forever-none.** `cacheMetadata` is the only kind with a hard-coded routing contract: **no consumer code path may ever route from `cacheMetadata` to any write.** This invariant is documented here and is the basis for the future F10.2.2 CI scan. |
 
 ### Kind Distinction Summary
@@ -212,7 +294,7 @@ requirement.
 | preview is **dry-run** | A preview never applies. Its token may later authorize a separately-gated apply, but the preview itself is read-only. |
 | proposal **awaits review** | A proposal is a request, not an execution. Only review on a strong-authority platform turns it into an apply. |
 | conflictCandidate is **not** a durable conflict until F6 ingest | Detection of divergence ≠ enqueueing. F6 ingest is the explicit, operator-driven step that creates a durable row. |
-| applyEvent is a **past-tense receipt**, not a remote command | The apply already happened on the producer. Consumers do not re-apply. |
+| applyEvent is a **past-tense receipt only**, never a remote command | The apply already happened on the producer before the envelope existed. Consumers do not re-apply, do not queue it for apply, and do not translate it into a fresh proposal. No envelope shape converts an `applyEvent` into a remote-apply command; this absence is a load-bearing invariant of F10.2. |
 | bundle is **transport container only** | Bundles carry envelopes; they do not change the envelopes' meaning. |
 | cacheMetadata is **forever non-authoritative** | No future phase converts cacheMetadata into a write trigger without an explicit envelope schema bump and a multi-file diff. |
 
@@ -252,10 +334,10 @@ Rejection: `blocker: "capability-not-on-platform-allowlist"`.
 
 ### Surface ↔ Authority Sanity
 
-`sourcePlatform.surfaceKind` and `sourcePlatform.authorityLevel` must be a
+`sourcePlatform.surfaceKind` and the producer's `declaredAuthority` must be a
 valid pair per F10.1. Examples of allowed pairs:
 
-| `surfaceKind` | Allowed `authorityLevel` values |
+| `surfaceKind` | Allowed `declaredAuthority` values |
 |---|---|
 | `desktop-tauri` | `strong-local-authority` |
 | `browser-studio` | `preview-coordinator` |
@@ -267,6 +349,65 @@ Rejection: `blocker: "surface-authority-mismatch"`.
 This catches accidental misconfiguration. It does not stop a maliciously
 crafted envelope (see §10 R2 — platform spoofing).
 
+### Declared vs Effective Authority
+
+Every envelope carries two authority fields. They are deliberately distinct:
+
+| Field | Set by | Trusted? | Used for |
+|---|---|---|---|
+| `declaredAuthority` | The producer. | **No, never trusted on its own.** | Diagnostics, audit trail, "what did the producer claim." |
+| `effectiveAuthority` | The consumer's validator (or the receiver-side gateway in front of one). | Yes, after validation. | Dispatching the envelope into consumer code paths. The only authority field consumer code may act on. |
+
+The validator computes `effectiveAuthority` from:
+
+1. The F10.1 manifest entry for `sourcePlatform.platformId`.
+2. The `declaredAuthority` (must be ≤ the manifest's declared maximum for the
+   platform; never higher).
+3. The `capabilityUsed` (must be on the platform's capability allowlist).
+4. The `capabilitySnapshotHash` (must match the consumer's known F10.1
+   manifest hash, or surface a warning and downgrade).
+5. The kind ↔ authority matrix (§4.1) and capability ↔ kind matrix (§4.2).
+
+If any check fails, `effectiveAuthority` is set to `"rejected"` and the
+envelope is dropped before any consumer-side code path runs. Rejection
+records the offending blocker code(s) in `blockers[]`.
+
+If checks pass but the consumer's F10.1 manifest is **stricter** than the
+producer's (e.g. producer's snapshot allows `proposal` from Chrome Studio,
+consumer's manifest does not), the validator may set `effectiveAuthority`
+**below** `declaredAuthority`. This is a downgrade, not a rejection.
+
+> **Consumers must never read `declaredAuthority` directly. All authority
+> dispatch must go through `effectiveAuthority` after validation.**
+
+### sourcePlatform Alone Is Insufficient
+
+`sourcePlatform` answers "who claims to have produced this." It is **not**
+enough to grant authority. Specifically:
+
+1. A matching `sourcePlatform.platformId` does **not** by itself grant any
+   capability. The producer must also list a permitted `capabilityUsed` and
+   pass the kind ↔ authority + capability ↔ kind matrices.
+2. A matching `sourcePlatform.surfaceKind` does **not** by itself grant any
+   capability. Surface kind only sanity-checks declared authority (§4.3); it
+   does not authorize behavior.
+3. A valid `sourcePlatform.sourcePeerEnvelope` (F2-shaped, redacted) does
+   **not** by itself grant any capability. Identity is for routing, not for
+   authority.
+4. Every **write-capable** envelope (`proposal`, `applyEvent`, and any future
+   write-implying kind) must additionally validate against the producer's
+   declared capability manifest at the time the consumer validates. This is
+   what `capabilitySnapshotHash` is for: it lets the consumer cross-check
+   the producer's view of F10.1 against the consumer's view.
+5. If the consumer cannot verify `capabilitySnapshotHash` against any known
+   F10.1 manifest revision, the validator rejects the envelope with
+   `blocker: "capability-snapshot-unknown"`. Write-capable kinds are rejected
+   outright; read-only kinds (`evidence`, `cacheMetadata`) may be admitted
+   with a warning and `effectiveAuthority` downgrade to `read-only`.
+
+The above is the **authority insufficiency rule**: producer self-attestation
+alone never authorizes anything.
+
 ### Mobile-Specific Guards
 
 Mobile's contract is the strictest:
@@ -275,71 +416,69 @@ Mobile's contract is the strictest:
   rejection regardless of any other field state.
 - Mobile envelopes carrying `payload` fields outside the `cacheMetadata`
   allowlist are rejected with `blocker: "mobile-payload-outside-allowlist"`.
-- Mobile envelopes with `redacted: false` are rejected with
-  `blocker: "mobile-must-redact"`. No exception. This remains true even if
-  Mobile gains proposal capability in a later phase.
+- Mobile envelopes with `redactionClass` not in `{"redacted", "metadata-only"}`
+  are rejected with `blocker: "mobile-must-redact"`. No exception. This
+  remains true even if Mobile gains proposal capability in a later phase.
 
 ### Native-Extension-Specific Guards
 
-- Native-extension envelopes carrying `entityKind` outside the evidence scope
-  (e.g. `"chat.evidence"`, `"session.evidence"`, `"capture.evidence"`) are
-  rejected with `blocker: "native-extension-entity-outside-evidence-scope"`.
-- Native-extension envelopes that would imply a tombstone (`entityKind`
-  beginning with `"tombstone."` or `operation` containing delete semantics)
-  are rejected with `blocker: "native-extension-not-authorized-for-tombstones"`.
+- Native-extension envelopes carrying `subjectType` outside the evidence
+  scope (e.g. `"chat.evidence"`, `"session.evidence"`, `"capture.evidence"`)
+  are rejected with `blocker: "native-extension-entity-outside-evidence-scope"`.
+- Native-extension envelopes that would imply a tombstone (`subjectType`
+  beginning with `"tombstone."`, `operationIntent: "delete"`, or `operation`
+  containing delete semantics) are rejected with
+  `blocker: "native-extension-not-authorized-for-tombstones"`.
 
 ### Version Skew Behavior
 
-If `schema` or `envelopeKindVersion` is newer than the consumer recognizes,
-the envelope is rejected with `blocker: "envelope-schema-too-new"` and
-surfaced as a warning in operator diagnostics. The consumer does **not**
-attempt partial parsing. If `schema` is older than the consumer's minimum
-supported version, the envelope is rejected with
-`blocker: "envelope-schema-too-old"`.
+If `schema`, `envelopeVersion`, or `envelopeKindVersion` is newer than the
+consumer recognizes, the envelope is rejected with
+`blocker: "envelope-schema-too-new"` and surfaced as a warning in operator
+diagnostics. The consumer does **not** attempt partial parsing. If `schema`
+is older than the consumer's minimum supported version, the envelope is
+rejected with `blocker: "envelope-schema-too-old"`. If `schemaHash` is
+provided and does not match any schema version the consumer knows, the
+envelope is rejected with `blocker: "envelope-schema-hash-unknown"`.
 
 ## Redaction Rules
 
-`redacted: true` is the default for every envelope on every platform.
+`redactionClass: "redacted"` is the default for every envelope on every
+platform.
 
-### What Is Allowed At Each Redaction Level
+### Redaction Classes
 
-| Field family | `redacted: true` (default) | `redacted: false` (gated) |
-|---|---|---|
-| Peer IDs (`syncPeerId`, `physicalDeviceId`, `installId`) | Redacted F2 shape (`H2O.Studio.identity.diagnose()` output) | Same redacted F2 shape — **raw peer IDs never appear, even when redaction is off**. The flip ungates payload content, not identity. |
-| Entity IDs (`folderId`, `chatId`, `tombstoneId`) | Sha256 hash of `(entityKind + entityId + perRunSalt)` | Plain IDs allowed |
-| Hashes (`predecessorHash`, `eventDigest`, `dedupeKeyHash`, `previewToken`) | Always present, never redacted (hashes are not sensitive) | Same |
-| Display names (folder name, chat title) | Always omitted | Allowed, length-capped (≤ 200 chars) |
-| Counts (rows, folders, candidates) | Always allowed | Same |
-| Allowlisted snapshot fields (F7 folder-metadata `color`, `archived`, `parentFolderId`) | Allowed | Same |
-| ISO timestamps | Allowed | Same |
-| Predicate version strings | Always allowed | Same |
-| Chat content / message bodies / attachments | **Never** | **Never** |
-| URLs, file paths, OS user names | **Never** | **Never** |
-| Tokens, API keys, credentials | **Never** (`previewToken` is an explicit exception — see §5.3) | **Never** (same exception) |
+| Class | When used | What plain fields are allowed | What is hashed | What is forbidden |
+|---|---|---|---|---|
+| `"redacted"` (default) | Any envelope crossing a platform boundary or persisted beyond the producing device. | Hashes (`predecessorHash`, `eventDigest`, `dedupeKey`, `payloadHash`, `previewToken`); counts; ISO timestamps; predicate version strings; allowlisted snapshot fields (F7 folder-metadata `color`, `archived`, `parentFolderId`). | All entity IDs (sha256 of `subjectType + raw + perEnvelopeSalt`); peer IDs flow through F2 redacted shape only. | Display names; chat content; message bodies; attachment bytes; snapshot bodies; URLs; file paths; credentials. |
+| `"device-local"` (gated) | Evidence / preview envelopes whose producer and consumer are on the same physical device, with operator opt-in. | All of the `"redacted"` allowlist, plus plain entity IDs and plain display names (length-capped ≤ 200 chars). | (Hashes still present; raw IDs now plain.) | Chat content; message bodies; attachment bytes; snapshot bodies; URLs; file paths; credentials. **The forever-no list (§5.3) still applies.** |
+| `"metadata-only"` | `cacheMetadata` envelopes only. | Counts; status codes; warning codes; ISO timestamps; `lastIngestedBundleSequence`. | Nothing — there are no IDs in a metadata-only payload. | Everything else, including entity IDs (even hashed), display names, allowlisted snapshot fields, audit IDs, and any forever-no field. |
 
-### Gated Redaction Flip
+### Gated `"device-local"` Flip
 
-`redacted: false` is permitted only when **all** of the following hold:
+`redactionClass: "device-local"` is permitted only when **all** of the
+following hold:
 
-1. The consumer is Desktop Studio. Desktop is the only surface that ever sees
-   unredacted envelopes.
+1. The consumer is Desktop Studio. Desktop is the only surface that ever
+   sees `"device-local"` envelopes.
 2. The producer is on the same physical device as the consumer
    (`sourcePlatform.sourcePeerEnvelope.physicalDeviceId` matches the local
    device).
 3. The operator has explicitly opted in via a future feature flag (default
    off).
 4. The envelope kind is `evidence` or `preview`. `proposal`, `applyEvent`,
-   `conflictCandidate`, `bundle`, and `cacheMetadata` stay redacted regardless
-   of flag because they may travel further than the producing device.
+   `conflictCandidate`, `bundle`, and `cacheMetadata` stay at `"redacted"`
+   (or `"metadata-only"` for `cacheMetadata`) regardless of flag, because
+   they may travel further than the producing device.
 
-Any other consumer (chrome-studio, native-extension, mobile) treats
-`redacted: false` as `redacted: true` for display and emits a warning. The
-flip cannot leak content cross-platform.
+Any other consumer (chrome-studio, native-extension, mobile) treats a
+`"device-local"` envelope as `"redacted"` for display and emits a warning.
+The flip cannot leak plain IDs or display names cross-platform.
 
-### Content Forever-No List
+### No Forever-No Leakage
 
-The following are **never** carried by any envelope at any redaction level on
-any platform:
+The following are **never** carried by any envelope at any `redactionClass`
+on any platform:
 
 - Chat content
 - Message bodies
@@ -359,6 +498,60 @@ field names that match the forever-no deny list (`content`, `body`, `text`,
 forever-no content must surface a **hash** of the reference, never the
 reference itself.
 
+Forever-no enforcement is **independent of `redactionClass`**. Even
+`"device-local"` envelopes cannot carry chat content; the flip ungates IDs
+and display names, never content.
+
+### No Irreversible Delete-Intent Leakage
+
+Delete intents are irreversible by F5 design. To prevent them from leaking
+into read/proposal surfaces where they could be acted on without the full
+F5 review pipeline:
+
+- `operationIntent: "delete"` is permitted **only** on `proposal`,
+  `conflictCandidate`, and `applyEvent` envelopes. Validation rejects
+  `operationIntent: "delete"` on `evidence`, `preview`, `bundle`, and
+  `cacheMetadata` with `blocker: "delete-intent-on-read-only-kind"`.
+- A `preview` envelope describing a counterfactual deletion (e.g. F5H.3b
+  synthetic cleanup dry-run) sets `dryRun: true` and uses the synthetic
+  cleanup predicate in `payload.predicateVersion`; it does **not** set
+  `operationIntent: "delete"`. The preview describes what *would* happen, not
+  an intent to perform.
+- A `proposal` envelope carrying `operationIntent: "delete"` must additionally
+  cite an F5-eligible predicate (`payload.predicateVersion`) and the
+  justifying evidence digests (`payload.justifyingEvidenceDigests`). A
+  proposal without these is rejected with
+  `blocker: "delete-proposal-missing-f5-predicate"`.
+- An `applyEvent` carrying `operationIntent: "delete"` must include the audit
+  maintenance ID from the F5G.4 / F5H.3b apply path
+  (`payload.auditMaintenanceId`). Without it, rejected with
+  `blocker: "delete-apply-event-missing-audit-id"`.
+
+These rules ensure delete intents always travel through the F5 review/apply
+gates and never appear on a read surface as a self-executing instruction.
+
+### No Sensitive Local-Only Audit Details in Mobile / Cache Bundles
+
+`cacheMetadata` envelopes (mobile producer) and any envelope reaching a
+read-only consumer must **not** carry sensitive local-only audit details
+that belong to the producing platform's internal records:
+
+| Field family | May appear in `cacheMetadata`? | May appear in any envelope reaching mobile? |
+|---|---|---|
+| `payload.auditMaintenanceId` | **No.** | No. |
+| `payload.previewToken` | **No.** | No. |
+| `payload.dbFingerprint` (schema/migration versions) | **No.** | No. |
+| `payload.candidateIds` (synthetic cleanup) | **No.** | No. |
+| `payload.preState` / `payload.postState` (apply audit) | **No.** | No. |
+| Per-row entity IDs (hashed or plain) | **No.** | No (mobile is metadata-only). |
+| Per-row counts | Yes, capped | Yes |
+| Status codes, warning codes | Yes | Yes |
+| ISO timestamps | Yes | Yes |
+
+Rejection: `blocker: "local-only-audit-detail-on-mobile-or-cache"`. This
+prevents an operator's local audit trail from leaking through a sync bundle
+into a non-authoritative cache mirror.
+
 ### Warnings And Blockers Are Code Strings, Not Content
 
 `warnings[]` and `blockers[]` must be **code strings from a fixed allowlist**,
@@ -367,7 +560,9 @@ as a side-channel to leak content past the payload validator.
 
 Example allowed codes: `"counterpart-digest-unavailable"`,
 `"preview-token-skipped"`, `"rollback-verification-failed"`,
-`"mobile-payload-outside-allowlist"`.
+`"mobile-payload-outside-allowlist"`, `"delete-intent-on-read-only-kind"`,
+`"local-only-audit-detail-on-mobile-or-cache"`,
+`"capability-snapshot-unknown"`.
 
 Unknown warning or blocker codes cause validation to add a meta-warning
 `"unknown-warning-code"` and surface the envelope for operator review; they
@@ -375,15 +570,31 @@ do not auto-promote the unknown code.
 
 ## Dedupe / Replay Model
 
-### Two Hashes, Two Purposes
+### Three Hashes, Three Purposes
 
 | Hash | Inputs | Purpose |
 |---|---|---|
-| `dedupeKeyHash` | sha256 of canonical `(platformId, entityKind, operation, payload.dedupeFields)` where `dedupeFields` is a per-kind allowlisted subset (e.g. for `tombstone.review.proposal`: `{tombstoneId, reviewId, decision}`) | "Same logical event." Two envelopes with the same `dedupeKeyHash` describe the same intent. A consumer's local processor skips the second occurrence. |
+| `dedupeKey` | sha256 of canonical `(sourcePlatform.platformId, kind, subjectType, operation, operationIntent, payload.dedupeFields)` where `dedupeFields` is a per-kind allowlisted subset (e.g. for `tombstone.review.proposal`: `{tombstoneId, reviewId, decision}`) | "Same logical event." Two envelopes with the same `dedupeKey` describe the same intent. A consumer's local processor skips the second occurrence. |
+| `payloadHash` | sha256 of canonical `payload` alone | "Same content, possibly different wrapper." Lets a consumer detect a republished payload (e.g. an envelope re-emitted with a fresher `expiresAt`) without re-counting the underlying event. |
 | `eventDigest` | sha256 of the entire canonical envelope minus `warnings`, `blockers`, and `eventDigest` itself | "Same byte-for-byte envelope." Used to detect literal duplicates in transit and for forward references (e.g. `applyEvent.payload.justifyingProposalDigest`). |
 
-`dedupeKeyHash` provides intent-level idempotency; `eventDigest` provides
-transport-level idempotency.
+`dedupeKey` provides intent-level idempotency. `payloadHash` provides
+content-level idempotency. `eventDigest` provides transport-level idempotency.
+
+### `dedupeKey` Is Not Authority
+
+`dedupeKey` is an **idempotency key**, not an authority assertion. Receiving
+an envelope with a familiar `dedupeKey` does **not**:
+
+- Grant the producer any authority the producer did not already have.
+- Convert a `preview` envelope into a `proposal` or `applyEvent`.
+- Reopen a closed conflict decision (see below).
+- Bypass any §4 validation rule.
+
+Two envelopes with the same `dedupeKey` from different `sourcePlatform`
+values are independent events for authority purposes; they just collide on
+the dedupe key. The validator processes each through the full §4 matrix
+independently.
 
 ### Sequence And Export Sequence
 
@@ -408,13 +619,49 @@ Concretely:
 - A consumer processes `evidence`, `preview`, `proposal`, `conflictCandidate`,
   `cacheMetadata` envelopes by updating diagnostic views and local mirrors.
   Replaying re-runs the same update; the update is idempotent because it is
-  keyed by `dedupeKeyHash`.
+  keyed by `dedupeKey`.
 - A consumer processes `applyEvent` envelopes by updating its display of
   "what the authoritative platform reports." It does **not** mirror the apply
   locally. Replay re-displays the same audit record; no row moves.
 - The producer of an `applyEvent` does **not** treat its own outgoing envelope
   as a command — the apply already happened locally before the envelope was
   created. The envelope is past-tense receipt only.
+
+### Replayed Evidence Must Not Auto-Reopen Closed Conflict Decisions
+
+If an `evidence` envelope is replayed and matches the `lineageId` of a
+conflict that F6 already resolved (status terminal: `"resolved"`,
+`"applied"`, `"rejected"`, etc.), the consumer must:
+
+1. Update its diagnostic view of the lineage with the replayed observation.
+2. **Not** reopen, re-ingest, or re-queue the resolved F6 row.
+3. Surface a warning `"replayed-evidence-against-closed-conflict"` if the
+   replayed evidence contradicts the resolution.
+
+This rule prevents a stale evidence packet (re-imported from disk, replayed
+from cache, or arriving late through a delayed transport) from undoing a
+human conflict-review decision. Reopening a closed F6 row requires an
+explicit operator action in the Desktop conflict-queue UI, never an
+envelope.
+
+### Stale Evidence Stays Preview-Only Until Revalidated
+
+If an envelope's `expiresAt` is set and has passed at validation time:
+
+- The envelope is admitted only as a **stale** diagnostic. Consumers may
+  display it with a stale badge.
+- The envelope **may not** be used as input to a new `proposal`, used as a
+  `justifyingEvidenceDigests[]` entry, used to advance a lineage stage, or
+  ingested into F6.
+- A producer that needs to act on a stale observation must first emit a
+  fresh `evidence` envelope (new `id`, new `createdAt`, fresh `expiresAt`),
+  and the fresh envelope must pass full §4 validation including
+  `capabilitySnapshotHash` check.
+
+Rejection of stale-as-input: `blocker: "stale-evidence-not-revalidated"`.
+
+This rule means a long-stored bundle cannot be used to retroactively justify
+a write decision without the producer re-observing current state.
 
 ### No Automatic Apply From Any Replayed Envelope
 
@@ -454,8 +701,8 @@ platform boundaries.
 | **Desktop `latest.json` bundle** | `bundle` envelope wrapping an ordered array of `evidence` and `applyEvent` envelopes. |
 | **Mobile diagnostics** (F9) | `cacheMetadata` envelopes only. |
 | **F1** multi-peer diff | F1's per-peer state collection is internalized. When externalized for cross-platform display, it surfaces as `evidence` envelopes. F1 itself remains a pure JS analyzer. |
-| **F2** peer identity diagnose | `evidence` envelope with `entityKind = "peer.identity"` and a redacted F2 envelope as payload. |
-| **F3** envelope stamping | F3 is the source of `sourcePlatform.sourcePeerEnvelope` and `sequence` on every envelope. F3's existing stamping function does not require change to satisfy F10.2. |
+| **F2** peer identity diagnose | `evidence` envelope with `subjectType = "peer.identity"` and a redacted F2 envelope as payload. |
+| **F3** envelope stamping | F3 is the source of `sourcePlatform.sourcePeerEnvelope` and `sequence` on every envelope. The new envelope-identity fields (`id`, `lineageId`), authority fields (`declaredAuthority`, `effectiveAuthority`, `capabilitySnapshotHash`), and idempotency fields (`dedupeKey`, `payloadHash`, `eventDigest`) are populated by the envelope-construction helper (F10.2.1), not F3 itself. F3's existing stamping function remains untouched. |
 | **F4** per-peer transport (deferred) | Will become one of the transports listed in §8. The envelope shape is unchanged by F4's eventual implementation. |
 
 Two artifact families never produce envelopes by themselves:
@@ -546,17 +793,133 @@ becomes a one-day implementation. Inverting the order costs weeks.
 | # | Risk | Why plausible | Mitigation |
 |---|---|---|---|
 | **R1** | **Envelope treated as command.** A consumer reads an `applyEvent` and writes the apply locally. | Common pattern in CRDT / event-sourced systems where receipt = apply. Easy to slip in by analogy. | §6 replay invariant: no consumer code path reads an envelope and writes a row. Documented here; validated by code review and the future F10.2.2 CI scan. |
-| **R2** | **Platform spoofing.** A malicious or compromised producer claims `platformId: "desktop-studio"` from a Chrome surface. | Possible in any system where producers self-declare. | §4.3 surface↔authority sanity catches accidental misconfig. Hard defense (producer identity proof) is future-phase signing; for F10.2/F10.3 the system runs locally and inter-process trust is assumed. This document calls out the limit explicitly. |
-| **R3** | **Raw content leakage via payload.** A producer adds a `content: "..."` field hoping it will pass through. | Producers under deadline pressure add convenience fields. | §5.3 forever-no list enforced by validation: payload field names matching the deny list trigger `blocker: "payload-contains-forever-no-field"`. F10.2.2 CI scan catches it before merge. |
-| **R4** | **Dedupe collision.** Two different events compute the same `dedupeKeyHash`. | sha256 is fine; the risk is in input definition — if `dedupeFields` is too small, semantically different events collide. | Per-kind `dedupeFields` allowlist is explicit in this document, with worked examples. Each F-phase adding a new kind must propose its `dedupeFields` and have them reviewed. Future tests will assert distinct events yield distinct hashes. |
-| **R5** | **Replay confusion.** A replayed `applyEvent` causes a consumer to think the apply happened twice. | Network/transport retries; bundle re-import. | §6 replay invariant + `eventDigest` lets the consumer detect literal duplicates and dedupe on display. `dedupeKeyHash` handles semantic duplicates. The consumer's local mirror is updated idempotently. |
+| **R2** | **Platform spoofing.** A malicious or compromised producer claims `platformId: "desktop-studio"` and `declaredAuthority: "strong-local-authority"` from a Chrome surface. | Possible in any system where producers self-declare. | §4.3 surface↔authority sanity catches accidental misconfig. §4.4 declared-vs-effective authority means consumers act only on `effectiveAuthority`, computed from the F10.1 manifest plus `capabilitySnapshotHash` cross-check. §4.5 authority-insufficiency rule says producer self-attestation alone never authorizes anything. Hard defense (producer identity proof) is future-phase signing; for F10.2/F10.3 the system runs locally and inter-process trust is assumed. This document calls out the limit explicitly. |
+| **R3** | **Raw content leakage via payload.** A producer adds a `content: "..."` field hoping it will pass through. | Producers under deadline pressure add convenience fields. | §5.3 forever-no list enforced by validation regardless of `redactionClass`: payload field names matching the deny list trigger `blocker: "payload-contains-forever-no-field"`. F10.2.2 CI scan catches it before merge. |
+| **R4** | **Dedupe collision.** Two different events compute the same `dedupeKey`. | sha256 is fine; the risk is in input definition — if `dedupeFields` is too small, semantically different events collide. | Per-kind `dedupeFields` allowlist is explicit in this document, with worked examples. Each F-phase adding a new kind must propose its `dedupeFields` and have them reviewed. Future tests will assert distinct events yield distinct hashes. §6 also clarifies that `dedupeKey` is **not** an authority assertion — collision does not transfer authority. |
+| **R5** | **Replay confusion.** A replayed `applyEvent` causes a consumer to think the apply happened twice, or a replayed `evidence` reopens a closed F6 conflict. | Network/transport retries; bundle re-import; late-arriving evidence after a conflict was resolved. | §6 replay invariant + `eventDigest` lets the consumer detect literal duplicates. `dedupeKey` handles semantic duplicates. `payloadHash` distinguishes "same payload, different wrapper." Replayed evidence against a closed F6 lineage is admitted only as diagnostic and never auto-reopens the row. Stale envelopes (past `expiresAt`) are admitted as preview-only and cannot justify new writes. |
 | **R6** | **Authority bypass via transport.** Operator imports a `chrome-studio` envelope via a "trusted" file picker and the consumer treats it as Desktop authority. | The natural mental model is "I picked the file, so it's trusted." | §8 transport-neutrality contract. Validation is done against `sourcePlatform`, not against the transport. This document calls out the failure mode and how validation rejects it. |
 | **R7** | **Mixing proposal/apply semantics.** A consumer treats `proposal` as `applyEvent` (or vice versa) because the payloads look similar. | The two kinds share fields. | Separate kinds (§3); separate consumer dispatch (mandated here); future helper exposes separate validators. A `proposal` payload validator rejects fields that only belong on an `applyEvent`. |
-| **R8** | **Schema drift across platforms.** Desktop ships v1.1; Chrome stays on v1.0; producers and consumers disagree. | Inevitable across a multi-surface system with independent release cycles. | `schema` and `envelopeKindVersion` explicit. §4.6 hard reject on too-new schema. Schema bumps must be announced in this document one release before any platform produces them. |
+| **R8** | **Schema drift across platforms.** Desktop ships envelopeVersion v1.1; Chrome stays on v1.0; producers and consumers disagree. | Inevitable across a multi-surface system with independent release cycles. | `schema`, `envelopeVersion`, `envelopeKindVersion`, and optional `schemaHash` explicit. §4.8 hard reject on too-new schema, too-old schema, and unknown `schemaHash`. `capabilitySnapshotHash` adds a manifest-drift detector: producer and consumer can be on different F10.1 revisions and the validator will downgrade `effectiveAuthority` accordingly rather than silently mis-route. Schema bumps must be announced in this document one release before any platform produces them. |
 | **R9** | **`cacheMetadata` weaponized.** A mobile cache snapshot is read by Desktop and used to drive apply logic. | Tempting if Desktop is "missing" some state mobile has. | §3.7 hard-coded contract: no code path from `cacheMetadata` to write. F10.2.2 CI scan greps for `cacheMetadata` reads in apply paths. Documented here as the only kind with an absolute non-routing rule. |
 | **R10** | **`dryRun` misuse.** A producer sets `dryRun: false` on a `preview` envelope and a consumer treats it as authorization to apply. | Inconsistent field semantics across kinds. | §2 field notes: `dryRun` is `null` for kinds where it does not apply (`evidence`, `proposal`, `conflictCandidate`, `bundle`, `cacheMetadata`). Validation rejects non-null `dryRun` on those kinds and rejects `dryRun: false` on `preview` kinds. |
 | **R11** | **Envelope explosion.** Producers emit one envelope per row; transports flood. | High-cardinality entities tempt per-row evidence. | This document mandates digests over enumerations as the default evidence shape (folder-metadata-digest, tombstone-log-digest). Per-row evidence requires explicit justification and capping (e.g. F7 `divergences[]` cap of 25). |
 | **R12** | **Warnings used as side-channel.** A producer encodes data in `warnings[]` strings to bypass payload allowlists. | Strings are unstructured; rules apply only to known fields. | §5.4: `warnings[]` and `blockers[]` are code strings from a fixed allowlist, not free text. Unknown codes surface a `"unknown-warning-code"` meta-warning and do not auto-promote. |
+
+## F10.2.1 Readiness Checklist
+
+F10.2.1 (optional static schema helper) is **not** authorized by this
+document. It requires its own plan-and-approve cycle. Before that cycle
+begins, the following must be true:
+
+### Spec is locked
+
+- [x] Base shape locked: every field name in §2 is final. Renames during
+      F10.2.1 implementation would invalidate every cross-reference and are
+      out of scope.
+- [x] Seven envelope kinds are sufficient (§3). No eighth kind has been
+      required by any consuming F-phase as of this revision.
+- [x] `RedactionClass` enumerated values are locked: `"redacted"`,
+      `"device-local"`, `"metadata-only"`.
+- [x] `OperationIntent` enumerated values are locked: `"create"`,
+      `"update"`, `"delete"`, `"review"`, `"cleanup"`.
+- [x] Authority levels are inherited from F10.1 unchanged; no new level is
+      introduced by F10.2.
+
+### Validation contract is documented
+
+- [x] Kind ↔ authority matrix (§4.1) is complete for all four platforms and
+      all seven kinds.
+- [x] Capability ↔ kind matrix (§4.2) covers every capability declared in
+      F10.1 manifests.
+- [x] Surface ↔ authority pairs (§4.3) are enumerated.
+- [x] Declared vs effective authority semantics (§4.4) are unambiguous.
+- [x] sourcePlatform-insufficiency rule (§4.5) is documented with five
+      sub-conditions.
+- [x] Mobile-specific guards (§4.6) and native-extension-specific guards
+      (§4.7) reference the renamed fields (`redactionClass`, `subjectType`,
+      `operationIntent`).
+- [x] Version-skew behavior (§4.8) covers `schema`, `envelopeVersion`,
+      `envelopeKindVersion`, and `schemaHash`.
+
+### Blocker codes are enumerated
+
+The full blocker code set that F10.2.1 must implement:
+
+- `platform-not-authorized-for-kind`
+- `capability-not-on-platform-allowlist`
+- `surface-authority-mismatch`
+- `mobile-payload-outside-allowlist`
+- `mobile-must-redact`
+- `native-extension-entity-outside-evidence-scope`
+- `native-extension-not-authorized-for-tombstones`
+- `envelope-schema-too-new`
+- `envelope-schema-too-old`
+- `envelope-schema-hash-unknown`
+- `capability-snapshot-unknown`
+- `operation-intent-wrong-for-kind`
+- `delete-intent-on-read-only-kind`
+- `delete-proposal-missing-f5-predicate`
+- `delete-apply-event-missing-audit-id`
+- `local-only-audit-detail-on-mobile-or-cache`
+- `payload-contains-forever-no-field`
+- `stale-evidence-not-revalidated`
+
+No new blocker code may be added by F10.2.1 without first extending this
+document.
+
+### Redaction rules are encodable
+
+- [x] Three `RedactionClass` values exhaust the redaction space (§5.1).
+- [x] Forever-no field-name deny list (§5.3) is enumerated.
+- [x] Delete-intent leakage rules (§5.4) name the four allowed kinds and
+      the rejection codes for the disallowed kinds.
+- [x] Mobile / cache local-only audit-detail deny list (§5.5) is a fixed
+      table.
+
+### Dedupe / replay invariants are encodable
+
+- [x] Three hashes (`dedupeKey`, `payloadHash`, `eventDigest`) have explicit
+      canonical input specs (§6.1).
+- [x] `dedupeKey`-is-not-authority rule (§6.2) is explicit.
+- [x] Closed-conflict non-reopen rule (§6.5) is explicit.
+- [x] Stale-evidence preview-only rule (§6.6) is explicit.
+
+### F10.2.1 must NOT do
+
+When F10.2.1 is later authorized, the helper must:
+
+- Be pure (no I/O, no `fetch`, no file system, no platform-specific runtime
+  imports).
+- Take the F10.1 manifest as a **parameter** to its validation function,
+  never reach into a global or import a hardcoded snapshot.
+- **Not** mutate envelopes. Validation produces a result object describing
+  `effectiveAuthority` and any blockers; the envelope itself stays
+  immutable.
+- **Not** open transports, perform handshakes, or do anything bridge-like.
+- **Not** introduce a "remote-apply" code path or any path that, on
+  receiving any kind of envelope, writes a row.
+- **Not** add tests that import the helper from runtime code paths in a way
+  that would make it part of any apply / sync / cache / delete pipeline.
+- **Not** ship with platform-specific shims (separate Desktop / Chrome /
+  mobile builds). It is a single module.
+
+### Anti-goals for F10.2.1
+
+- Validation does not promote `effectiveAuthority` above `declaredAuthority`
+  under any circumstance.
+- Validation does not infer a sender's identity from transport metadata.
+- Validation does not silently accept unknown blocker / warning codes.
+- The helper does not provide an "apply" or "dispatch" function. It only
+  validates.
+
+### Items deliberately deferred to F10.2.2 (CI scan)
+
+The following are out of scope for F10.2.1 and belong to F10.2.2:
+
+- Repo-wide scan for envelope literals.
+- Forever-no field-name grep across runtime code.
+- `cacheMetadata`-to-write path scan.
+- Validation against the live F10.1 manifest in CI.
 
 ## Recommendation And Stop
 
@@ -584,14 +947,27 @@ from this document change.
 
 Future static helpers and validation scripts must:
 
-- Match the field shape declared in §2 byte-for-byte.
-- Enforce the kind ↔ authority matrix in §4.1 with the blocker codes listed
-  in §4.
-- Reject payloads containing forever-no field names (§5.3).
+- Match the field shape declared in §2 byte-for-byte, including renames
+  (`kind`, `subjectType`, `dedupeKey`, `redactionClass`) and the
+  declared-vs-effective authority split.
+- Enforce the kind ↔ authority matrix in §4.1 with the blocker codes
+  enumerated in the F10.2.1 Readiness Checklist.
+- Compute `effectiveAuthority` from `declaredAuthority` + F10.1 manifest +
+  `capabilityUsed` + `capabilitySnapshotHash`; never echo `declaredAuthority`
+  directly to consumer code.
+- Treat `sourcePlatform` alone as insufficient (§4.7).
+- Reject payloads containing forever-no field names (§5.3), independent of
+  `redactionClass`.
+- Reject `operationIntent: "delete"` on read-only kinds (§5.4).
+- Reject sensitive local-only audit details on mobile / cache envelopes
+  (§5.5).
 - Reject unknown warning or blocker codes by surfacing a meta-warning rather
   than promoting them.
 - Treat `cacheMetadata` as forever non-routable to writes (§3.7).
 - Treat transport as authority-neutral (§8).
+- Treat replayed evidence against closed F6 lineages as diagnostic-only
+  (§6.5).
+- Treat stale envelopes (past `expiresAt`) as preview-only (§6.6).
 
 Until those helpers exist, every cross-platform envelope produced or consumed
 in the repository must conform to this document on the basis of code review
