@@ -7272,6 +7272,43 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * Phase 4-1 — Message-level character formatting overlay attributes
+ *
+ * Each of the 4 toggles applies to the WHOLE message body (the
+ * [data-message-author-role] element). The role label itself stays in
+ * its normal style — these decorations are body-only. Visual fidelity
+ * is the priority over OS-perfect rendering since the message text
+ * is captured from ChatGPT verbatim and lives in snap.messages
+ * untouched; the styling is purely decorative.
+ *
+ *   data-overlay-bold="true"          → font-weight: 700
+ *   data-overlay-italic="true"        → font-style: italic
+ *   data-overlay-underline="true"     → text-decoration: underline
+ *   data-overlay-strikethrough="true" → text-decoration: line-through
+ *
+ * Underline + strikethrough compose via the multi-value
+ * `text-decoration-line` shorthand so both can coexist on one turn.
+ * ────────────────────────────────────────────────────────────────────── */
+
+.wbReader [data-turn][data-overlay-bold="true"] [data-message-author-role]{
+  font-weight:700;
+}
+.wbReader [data-turn][data-overlay-italic="true"] [data-message-author-role]{
+  font-style:italic;
+}
+.wbReader [data-turn][data-overlay-underline="true"] [data-message-author-role]{
+  text-decoration-line:underline;
+}
+.wbReader [data-turn][data-overlay-strikethrough="true"] [data-message-author-role]{
+  text-decoration-line:line-through;
+}
+/* Compose underline + strikethrough when both are active — single
+ * declaration with both line keywords so the browser renders both. */
+.wbReader [data-turn][data-overlay-underline="true"][data-overlay-strikethrough="true"] [data-message-author-role]{
+  text-decoration-line:underline line-through;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
  *
  * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
@@ -7949,6 +7986,26 @@ body[data-route="reader"] #studioDock.wbDock--open {
 
   .wbReader [data-turn][data-overlay-clean-spacing="true"] [data-message-author-role] p {
     margin: 0 0 6pt 0 !important;
+  }
+
+  /* ── Phase 4-1 — character formatting in print ─────────────────────
+   * Mirror the screen rules so Bold/Italic/Underline/Strikethrough
+   * survive into the printed PDF. Same selectors, !important to win
+   * against the @media-print body resets above. */
+  .wbReader [data-turn][data-overlay-bold="true"] [data-message-author-role] {
+    font-weight: 700 !important;
+  }
+  .wbReader [data-turn][data-overlay-italic="true"] [data-message-author-role] {
+    font-style: italic !important;
+  }
+  .wbReader [data-turn][data-overlay-underline="true"] [data-message-author-role] {
+    text-decoration-line: underline !important;
+  }
+  .wbReader [data-turn][data-overlay-strikethrough="true"] [data-message-author-role] {
+    text-decoration-line: line-through !important;
+  }
+  .wbReader [data-turn][data-overlay-underline="true"][data-overlay-strikethrough="true"] [data-message-author-role] {
+    text-decoration-line: underline line-through !important;
   }
 
   /* ── 5. Structure markers (sections / dividers / TOC) ────────────── */

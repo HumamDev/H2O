@@ -72,6 +72,18 @@
           { id: 'h2', label: 'H2' },
           { id: 'h3', label: 'H3' },
         ] },
+        /* Phase 4-1 — Font group (B / I / U / S / Clear). All four toggles
+         * apply to the entire selected message body; "Clear" wipes ALL
+         * per-message overlay decorations (Phase 2b + Phase 4-1) for the
+         * selected turn. Same enable rule as Headings (saved-reader with
+         * a selected turn). */
+        { id: 'font', label: 'Font', actions: [
+          { id: 'bold',          label: 'B' },
+          { id: 'italic',        label: 'I' },
+          { id: 'underline',     label: 'U' },
+          { id: 'strikethrough', label: 'S' },
+          { id: 'clear-formatting', label: 'Clear' },
+        ] },
         { id: 'blocks', label: 'Blocks', actions: [
           { id: 'quote',   label: 'Quote' },
           { id: 'code',    label: 'Code block' },
@@ -2009,6 +2021,11 @@
           else if (kind === 'code') isOn = !!(cur && cur.code);
           else if (kind === 'callout') isOn = !!(cur && cur.callout);
           else if (kind === 'clean-spacing') isOn = !!(cur && cur.cleanSpacing);
+          /* Phase 4-1 — character formatting kinds. */
+          else if (kind === 'bold') isOn = !!(cur && cur.bold);
+          else if (kind === 'italic') isOn = !!(cur && cur.italic);
+          else if (kind === 'underline') isOn = !!(cur && cur.underline);
+          else if (kind === 'strikethrough') isOn = !!(cur && cur.strikethrough);
           /* Payload: toggle on/off */
           let nextPayload;
           if (kind === 'callout') {
@@ -2054,6 +2071,58 @@
     appliedLabel: 'Spacing cleaned', removedLabel: 'Spacing restored',
     failLabel: 'Clean spacing failed',
   });
+
+  /* ── Phase 4-1 — Format → Font group handlers ──────────────────────────
+   * Four toggles (B / I / U / S) reuse the buildToggleHandler pattern
+   * established for quote / code / clean-spacing. Each operates on the
+   * entire selected message body; the role label stays in its normal
+   * style (matching the DOCX writer's separation of role-label rPr
+   * from body-rPr). Clear formatting is NOT a toggle — clicking it
+   * always submits a `clear-formatting` op which the reducer treats as
+   * a reset marker, wiping all per-message decorations for the turn at
+   * that point in op order. */
+  ACTION_HANDLERS['bold'] = buildToggleHandler('bold', 'bold', { enabled: true }, {
+    applyingLabel: 'Applying bold…', removingLabel: 'Removing bold…',
+    appliedLabel: 'Bold applied', removedLabel: 'Bold removed',
+    failLabel: 'Bold failed',
+  });
+  ACTION_HANDLERS['italic'] = buildToggleHandler('italic', 'italic', { enabled: true }, {
+    applyingLabel: 'Applying italic…', removingLabel: 'Removing italic…',
+    appliedLabel: 'Italic applied', removedLabel: 'Italic removed',
+    failLabel: 'Italic failed',
+  });
+  ACTION_HANDLERS['underline'] = buildToggleHandler('underline', 'underline', { enabled: true }, {
+    applyingLabel: 'Applying underline…', removingLabel: 'Removing underline…',
+    appliedLabel: 'Underline applied', removedLabel: 'Underline removed',
+    failLabel: 'Underline failed',
+  });
+  ACTION_HANDLERS['strikethrough'] = buildToggleHandler('strikethrough', 'strikethrough', { enabled: true }, {
+    applyingLabel: 'Applying strikethrough…', removingLabel: 'Removing strikethrough…',
+    appliedLabel: 'Strikethrough applied', removedLabel: 'Strikethrough removed',
+    failLabel: 'Strikethrough failed',
+  });
+
+  /* Clear formatting — not a toggle. Always submits a `clear-formatting`
+   * op which the reducer treats as a per-turn reset marker. The op only
+   * affects the message identified by selectedTurnIdx; structure
+   * decorations (sections / dividers / TOC) are untouched. */
+  ACTION_HANDLERS['clear-formatting'] = {
+    isEnabled: formatActionsIsEnabled,
+    onClick: function (ctx, setStatus) {
+      const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+      const opSpec = {
+        type: 'clear-formatting',
+        target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+        payload: {},
+      };
+      runOverlayOp(opSpec, setStatus, {
+        pending: 'Clearing formatting…',
+        success: 'Formatting cleared',
+        fail: 'Clear formatting failed',
+      });
+    },
+  };
 
   /* ── Phase 2c-A — structure actions (sections + page dividers) ────────
    * Three actions wired against the edit-overlay subsystem's structure

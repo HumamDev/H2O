@@ -300,17 +300,38 @@
     });
   }
 
-  /* Reduce overlay ops in-order to compute the current visual state of a
-   * specific message (identified by turnIdx). Last op of each type for a
-   * given target wins. Returns a stable shape even when no ops apply. */
-  function computeMessageState(overlay, turnIdx) {
-    var state = {
+  /* Helper — fresh default per-message state. Reused by the reducer
+   * initial value AND the `clear-formatting` op reset (Phase 4-1). */
+  function defaultMessageState() {
+    return {
       heading: null,        /* { level: 1|2|3 } | null */
       quote: false,
       code: false,
       callout: null,        /* { kind: 'info'|'note'|'warning'|'tip' } | null */
       cleanSpacing: false,
+      /* Phase 4-1 — message-level character formatting. Boolean toggles;
+       * shape is the proven Phase 2b `quote` / `code` pattern. */
+      bold: false,
+      italic: false,
+      underline: false,
+      strikethrough: false,
     };
+  }
+
+  /* Reduce overlay ops in-order to compute the current visual state of a
+   * specific message (identified by turnIdx). Last op of each type for a
+   * given target wins. Returns a stable shape even when no ops apply.
+   *
+   * Phase 4-1 — `clear-formatting` op: when the reducer sees an active
+   * clear-formatting op targeting this turn, the state resets to the
+   * default at that point in op order. Subsequent active ops on the
+   * same turn apply normally on top of the cleared state. This mirrors
+   * OneNote's Clear Formatting behaviour and composes with the Phase 2d
+   * active-set undo/redo for free (undoing the clear-formatting op
+   * causes the reducer to no longer see it, so prior decorations
+   * re-apply). */
+  function computeMessageState(overlay, turnIdx) {
+    var state = defaultMessageState();
     if (!isObject(overlay)) return state;
     var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
     var idx = Number(turnIdx);
@@ -353,6 +374,26 @@
         }
         case 'clean-spacing':
           state.cleanSpacing = !!payload.enabled;
+          break;
+        /* Phase 4-1 — character formatting toggles. */
+        case 'bold':
+          state.bold = !!payload.enabled;
+          break;
+        case 'italic':
+          state.italic = !!payload.enabled;
+          break;
+        case 'underline':
+          state.underline = !!payload.enabled;
+          break;
+        case 'strikethrough':
+          state.strikethrough = !!payload.enabled;
+          break;
+        /* Phase 4-1 — clear-formatting reset. Wipes ALL per-message
+         * decoration fields (Phase 2b + Phase 4-1) at this point in op
+         * order. Subsequent active ops apply normally on top of the
+         * cleared state. */
+        case 'clear-formatting':
+          state = defaultMessageState();
           break;
       }
     }
@@ -415,6 +456,48 @@
         }
       } else if (turnEl.hasAttribute('data-overlay-clean-spacing')) {
         turnEl.removeAttribute('data-overlay-clean-spacing');
+        changed = true;
+      }
+
+      /* Phase 4-1 — character formatting (4 boolean attributes). Pattern
+       * mirrors the existing quote/code/clean-spacing branches above. */
+      if (state.bold) {
+        if (turnEl.getAttribute('data-overlay-bold') !== 'true') {
+          turnEl.setAttribute('data-overlay-bold', 'true');
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-bold')) {
+        turnEl.removeAttribute('data-overlay-bold');
+        changed = true;
+      }
+
+      if (state.italic) {
+        if (turnEl.getAttribute('data-overlay-italic') !== 'true') {
+          turnEl.setAttribute('data-overlay-italic', 'true');
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-italic')) {
+        turnEl.removeAttribute('data-overlay-italic');
+        changed = true;
+      }
+
+      if (state.underline) {
+        if (turnEl.getAttribute('data-overlay-underline') !== 'true') {
+          turnEl.setAttribute('data-overlay-underline', 'true');
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-underline')) {
+        turnEl.removeAttribute('data-overlay-underline');
+        changed = true;
+      }
+
+      if (state.strikethrough) {
+        if (turnEl.getAttribute('data-overlay-strikethrough') !== 'true') {
+          turnEl.setAttribute('data-overlay-strikethrough', 'true');
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-strikethrough')) {
+        turnEl.removeAttribute('data-overlay-strikethrough');
         changed = true;
       }
     } catch (e) { recordError('applyMessageStateToTurnEl', e); }

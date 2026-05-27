@@ -340,7 +340,37 @@
   }
 
   function defaultMessageState() {
-    return { heading: null, quote: false, code: false, callout: null, cleanSpacing: false };
+    return {
+      heading: null, quote: false, code: false, callout: null, cleanSpacing: false,
+      /* Phase 4-1 — message-level character formatting. */
+      bold: false, italic: false, underline: false, strikethrough: false,
+    };
+  }
+
+  /* Phase 4-1 — compose `<w:rPr>` fragments for the 4 character toggles.
+   * Combines with any prior rPr (e.g. Consolas font for code). Returns
+   * a string suitable for embedding inside `<w:rPr>...</w:rPr>` (the
+   * caller wraps). Order matches the OOXML schema requirement: rFonts
+   * first, then b/i/strike, then u, then any other variants — but Word
+   * is permissive about ordering inside rPr, so we keep it readable. */
+  function charFormatRPr(state) {
+    if (!state) return '';
+    var parts = [];
+    if (state.bold)          parts.push('<w:b/>');
+    if (state.italic)        parts.push('<w:i/>');
+    if (state.strikethrough) parts.push('<w:strike/>');
+    if (state.underline)     parts.push('<w:u w:val="single"/>');
+    return parts.join('');
+  }
+
+  /* Combine a base rProps string (e.g. font face) with the character
+   * formatting fragment. Returns null when both are empty so runXml
+   * skips emitting an empty <w:rPr>. */
+  function combineRProps(baseRProps, charRPr) {
+    var base = baseRProps || '';
+    var ch   = charRPr || '';
+    if (!base && !ch) return null;
+    return base + ch;
   }
 
   function applyCleanSpacing(text) {
@@ -374,6 +404,20 @@
       body = normalized;
     }
 
+    /* Phase 4-1 — message-level character formatting. Composes a
+     * `<w:rPr>` fragment that gets merged with any base rProps on each
+     * body run (e.g. Consolas for code). Bold/italic/underline/strike
+     * decorate THE BODY — the role label stays bold (existing behaviour)
+     * regardless of state.bold so it remains visually distinct. Code
+     * font (Consolas) and the character toggles compose freely. */
+    var charRPr = charFormatRPr(state);
+    if (charRPr) {
+      if (state.bold)          opsCount += 1;
+      if (state.italic)        opsCount += 1;
+      if (state.underline)     opsCount += 1;
+      if (state.strikethrough) opsCount += 1;
+    }
+
     /* 2: heading style for the role-label paragraph. */
     var headingStyle = null;
     if (state && state.heading && state.heading.level) {
@@ -403,9 +447,8 @@
       var bodyLines = String(body).split('\n');
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
-        var lineRun = bodyHasCode
-          ? runXml(line, '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>')
-          : runXml(line, null);
+        var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : '';
+        var lineRun = runXml(line, combineRProps(baseRPr, charRPr));
         calloutXml += paragraphXml('IntenseQuote', lineRun);
       }
       return { xml: calloutXml, opsCount: opsCount };
@@ -414,7 +457,10 @@
     /* No callout — emit role-label paragraph + body paragraph(s). */
     var xml = '';
 
-    /* Role label paragraph (with heading style if present). */
+    /* Role label paragraph (with heading style if present). The role
+     * label stays bold regardless of state.bold — character formatting
+     * applies to the BODY, not the role label, so the label remains
+     * visually distinct even when the body has its own bold toggle. */
     xml += paragraphXml(headingStyle, runxText(label, bold()));
 
     /* Body. */
@@ -423,18 +469,18 @@
       /* One paragraph per body, with embedded <w:br/> per \n via runXml.
        * Could also split into one paragraph per line; one-paragraph is more
        * compact and Word renders embedded <w:br/> as soft line breaks. */
-      xml += paragraphXml(null, runXml(body, '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>'));
+      xml += paragraphXml(null, runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
     } else if (state && state.quote) {
       opsCount += 1;
       var quoteLines = String(body).split('\n');
       for (var qi = 0; qi < quoteLines.length; qi += 1) {
-        xml += paragraphXml('IntenseQuote', runXml(quoteLines[qi], null));
+        xml += paragraphXml('IntenseQuote', runXml(quoteLines[qi], charRPr || null));
       }
     } else {
       /* Plain — one paragraph per body line so newlines render. */
       var plainLines = String(body).split('\n');
       for (var pi = 0; pi < plainLines.length; pi += 1) {
-        xml += paragraphXml(null, runXml(plainLines[pi], null));
+        xml += paragraphXml(null, runXml(plainLines[pi], charRPr || null));
       }
     }
     return { xml: xml, opsCount: opsCount };

@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 3c-B)
+Status: Active (Phase 4-1)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -975,6 +975,182 @@ desktop but the user still gets the file).
   the proper MIME so OS file-association maps to Word/LibreOffice.
 - Adding `plugin:fs|write_file` to Tauri capabilities — the existing
   fallback chain handles its absence.
+
+## Phase 4-1 — Message-level character formatting
+
+Status: **Built** (first Phase 4 slice). The character-formatting
+toolset for the Format → Font ribbon group:
+**Bold / Italic / Underline / Strikethrough / Clear formatting.**
+
+### Scope
+
+This slice ships the **OneNote-style block-level** character formatting
+controls. **All four toggles apply to the entire selected message
+(turn).** Inline text-range selection is explicitly out of scope for
+Phase 4-1 and is deferred to a later Phase 4 slice (4e in the design
+plan). The existing `selectedTurnIdx` / `selectedMessageId` context
+fields drive the selection model; no DOM range tracking, no
+ContentEditable, no span ops.
+
+### New op types (5)
+
+| Op type | Payload | Reducer field |
+|---|---|---|
+| `bold` | `{ enabled: bool }` | `bold: bool` |
+| `italic` | `{ enabled: bool }` | `italic: bool` |
+| `underline` | `{ enabled: bool }` | `underline: bool` |
+| `strikethrough` | `{ enabled: bool }` | `strikethrough: bool` |
+| `clear-formatting` | `{}` | (resets ALL per-message fields to default) |
+
+### Reducer state shape (extended)
+
+```ts
+{
+  // Phase 2b — unchanged
+  heading: { level: 1|2|3 }|null,
+  quote: boolean,
+  code: boolean,
+  callout: { kind: 'info'|'note'|'warning'|'tip' }|null,
+  cleanSpacing: boolean,
+
+  // Phase 4-1 — new
+  bold: boolean,
+  italic: boolean,
+  underline: boolean,
+  strikethrough: boolean,
+}
+```
+
+### `clear-formatting` semantics
+
+When the reducer encounters an active `clear-formatting` op targeting a
+specific `turnIdx`, **the per-message state resets to its default at
+that point in op order.** All ten fields (Phase 2b + Phase 4-1) snap
+back to default. Subsequent active ops on the same turn apply normally
+on top of the cleared state.
+
+This composes cleanly with the Phase 2d reducer-filter active-set undo /
+redo:
+
+- Apply Bold → state has `bold: true`.
+- Apply Clear formatting → state resets; `bold: false` again.
+- Undo (pops `clear-formatting` off `undoStack`) → reducer no longer
+  sees the clear-formatting op; `bold: true` returns automatically.
+- Redo → `clear-formatting` is back in `undoStack`; state resets again.
+
+**No special-case undo logic required.** The reducer-filter model
+handles `clear-formatting` like any other op.
+
+### Op stacking (outer → inner)
+
+The 4 character toggles wrap the BODY text, applied innermost (before
+heading / quote / code / callout decorations wrap the role label or
+the body block):
+
+```
+1. callout       (wraps role + body in IntenseQuote)
+2. heading       (decorates role-label paragraph style)
+3. code          (body uses Consolas; code wins over quote)
+4. quote         (body uses IntenseQuote)
+5. clean-spacing (text pass on body)
+6. char format   (bold/italic/underline/strike on body runs — innermost)
+```
+
+**Code wins over character formatting** in two specific cases:
+- **Markdown serializer**: when `state.code === true`, the character
+  wrappers (`**`, `*`, `<u>`, `~~`) are skipped on the body text. The
+  fenced code block stays literal so `` ```const x = **42** ``  ` doesn't
+  get its `**` re-interpreted as bold.
+- **DOCX writer**: when `state.code === true`, the body run gets both
+  the Consolas `<w:rFonts/>` AND any active character formatting
+  fragments — Word's code-style font composes cleanly with `<w:b/>` etc.
+
+### Export mappings
+
+| Op | Markdown | DOCX `<w:rPr>` | Screen / Print CSS |
+|---|---|---|---|
+| `bold` | `**text**` | `<w:b/>` | `font-weight: 700` |
+| `italic` | `*text*` | `<w:i/>` | `font-style: italic` |
+| `underline` | `<u>text</u>` (raw HTML — Markdown has no native underline) | `<w:u w:val="single"/>` | `text-decoration-line: underline` |
+| `strikethrough` | `~~text~~` | `<w:strike/>` | `text-decoration-line: line-through` |
+| `clear-formatting` | (reducer-only — no output) | (reducer-only) | (no class applied) |
+
+Composed `underline + strikethrough` renders both decoration lines via
+a combined `text-decoration-line: underline line-through` rule.
+
+### Ribbon UI (Format tab)
+
+New "Font" group between "Headings" and "Blocks":
+
+```
+Format tab:
+  Headings: H1 H2 H3
+  Font:     B  I  U  S  Clear      ← Phase 4-1
+  Blocks:   Quote Code Callout
+  Cleanup:  Clean spacing
+```
+
+### Enable rule (Phase 4-1 buttons)
+
+All 5 Font-group actions share the existing `formatActionsIsEnabled`
+gate (Phase 2b precedent):
+
+- `ctx.chatType === 'saved'`
+- `ctx.snapshotId` non-empty
+- `Number.isFinite(ctx.selectedTurnIdx) && ctx.selectedTurnIdx > 0`
+- `H2O.Studio.RibbonBridge.applyOverlayOp` is a function
+- `H2O.Studio.store.editOverlay.upsert` is a function
+
+When disabled, the buttons show `"Coming soon"` tooltip (Phase 1a
+default). When clicked without a selected turn at click time, the
+status is `"Select a message first"` (Phase 2b precedent).
+
+### Status string canon (Phase 4-1)
+
+| State | Text |
+|---|---|
+| Bold pending | `"Applying bold…"` / `"Removing bold…"` |
+| Bold success | `"Bold applied"` / `"Bold removed"` |
+| Bold failure | `"Bold failed: <reason>"` |
+| Italic | `"Applying italic…"` / `"Italic applied"` / `"Italic removed"` / `"Italic failed: <reason>"` |
+| Underline | `"Applying underline…"` / `"Underline applied"` / `"Underline removed"` / `"Underline failed: <reason>"` |
+| Strikethrough | `"Applying strikethrough…"` / `"Strikethrough applied"` / `"Strikethrough removed"` / `"Strikethrough failed: <reason>"` |
+| Clear formatting | `"Clearing formatting…"` → `"Formatting cleared"` / `"Clear formatting failed: <reason>"` |
+| No turn selected | `"Select a message first"` (reuses Phase 2b canon) |
+| Drift | `"Snapshot has changed — overlay disabled until rebase"` (reuses Phase 2b drift canon via `runOverlayOp`) |
+
+### Compliance notes for Phase 4-1
+
+- All 4 toggles and `clear-formatting` MUST NOT mutate `snap.messages`.
+- The applier MUST NOT modify children or text content of the turn
+  element — only the new `data-overlay-bold|italic|underline|strikethrough`
+  attributes on the `[data-turn]` wrapper.
+- `clear-formatting` MUST reset only the per-message fields. Structure
+  state (sections / dividers / TOC) is untouched.
+- Markdown export of underline MUST emit inline HTML `<u>...</u>`
+  (Markdown has no portable underline syntax).
+- DOCX `<w:rPr>` MUST compose Consolas font + character toggles when
+  both code and character formatting are active on the same turn —
+  do not skip character formatting inside code blocks in the DOCX
+  output.
+- Markdown serializer MUST skip character wrappers when `state.code`
+  is set — the fenced code block stays literal.
+- Each new op type MUST follow the existing per-message `buildToggleHandler`
+  pattern in S0Y1a — no parallel mechanism.
+- The reducer-filter active-set model MUST handle these ops without
+  any framework changes (Phase 2d invariant).
+
+### Out of scope for Phase 4-1 (deferred to later Phase 4 slices)
+
+- **Inline text-range selection** — selecting a word/phrase inside a
+  message. Phase 4e in the original Phase 4 design plan.
+- **Font family / font size** — needs inline selection.
+- **Highlight + text color** — Phase 4b/c slice.
+- **Lists / alignment / indent** — Phase 4c slice.
+- **Tags (To Do / Important / Question / etc.)** — Phase 4d slice.
+- **Format painter** — requires inline selection.
+- **Clipboard cut/paste of formatted spans** — not in scope.
+- **Subscript / superscript** — inherently inline; deferred.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

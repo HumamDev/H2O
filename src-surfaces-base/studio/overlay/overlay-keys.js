@@ -53,6 +53,18 @@
     section: 'section',
     divider: 'divider',
     toc: 'toc',
+    /* Phase 4 (slice 1) — message-level character formatting. All four
+     * are simple boolean toggles on the selected turn; identical shape
+     * to the Phase 2b `quote` and `code` ops. `clear-formatting` is a
+     * special reset marker the reducer interprets as "drop all per-
+     * message decorations for this turn at this point in op order";
+     * subsequent ops on the same turn apply normally on top of the
+     * cleared state. */
+    bold: 'bold',
+    italic: 'italic',
+    underline: 'underline',
+    strikethrough: 'strikethrough',
+    clearFormatting: 'clear-formatting',
   });
 
   var OverlayTargets = Object.freeze({

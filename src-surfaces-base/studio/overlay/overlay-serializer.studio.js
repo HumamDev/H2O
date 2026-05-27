@@ -68,7 +68,11 @@
   }
 
   function defaultMessageState() {
-    return { heading: null, quote: false, code: false, callout: null, cleanSpacing: false };
+    return {
+      heading: null, quote: false, code: false, callout: null, cleanSpacing: false,
+      /* Phase 4-1 — message-level character formatting. */
+      bold: false, italic: false, underline: false, strikethrough: false,
+    };
   }
 
   /* ── Raw serializer ───────────────────────────────────────────────────
@@ -180,6 +184,35 @@
       var normalised = applyCleanSpacing(body);
       if (normalised !== body) opCounter.applied += 1;
       body = normalised;
+    }
+
+    /* Phase 4-1 — character formatting wrappers applied to the body BEFORE
+     * heading/quote/code/callout decorate the message. The wrappers nest
+     * tightest-first so the produced Markdown is well-formed:
+     *
+     *   raw       :  hello
+     *   bold      :  **hello**
+     *   italic    :  *hello*
+     *   underline :  <u>hello</u>   (Markdown has no native underline;
+     *                                inline HTML preserves the intent)
+     *   strike    :  ~~hello~~
+     *
+     * Combinations stack outside-in (innermost is the text, outer wraps
+     * are bold then italic then underline then strike). The wrappers
+     * apply to the WHOLE body — including newlines. For multi-line
+     * bodies inside a code fence, the wrappers are skipped (code wins);
+     * the writer keeps the code block syntactically clean.
+     *
+     * When state.code is set the character wrappers are skipped so the
+     * fenced code block stays literal (no `**` interpretation inside
+     * code). This mirrors how the DOCX writer also bypasses character
+     * formatting for code runs. */
+    var useCharFormatting = !(state && state.code);
+    if (useCharFormatting && state) {
+      if (state.bold)          { body = '**' + body + '**'; opCounter.applied += 1; }
+      if (state.italic)        { body = '*' + body + '*';   opCounter.applied += 1; }
+      if (state.underline)     { body = '<u>' + body + '</u>'; opCounter.applied += 1; }
+      if (state.strikethrough) { body = '~~' + body + '~~'; opCounter.applied += 1; }
     }
 
     /* 2: heading — decorates the role label. */
