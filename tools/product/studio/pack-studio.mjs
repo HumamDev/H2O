@@ -247,6 +247,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "S0F1d. 🎬 Library Insights - Studio.js",
   "S0F1f. 🎬 Library Maintenance - Studio.js",
   "S0F1h. 🎬 Library Sync - Studio.js",
+  // F10.4: read-only Settings card for the F10.3 bundle-envelope preview
+  // diagnostic. Mounts a sibling card after #wbSettingsSyncBox in
+  // Settings → Local Sync. Operator-triggered; no Apply / Merge / Sync
+  // Now / Proposal buttons; no chrome.storage write, no chrome.runtime
+  // broadcast, no folder-import call.
+  "S0F1i. 🎬 Cross-Platform Envelope Preview - Studio.js",
   // Phase 1 — canonical services + H2O.flags. Loads after every feature owner
   // so canonical aliases resolve to real impls on the first registration pass.
   "S0F1k. 🎬 Library Canonical Services - Studio.js",
@@ -382,6 +388,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F1d. 🎬 Library Insights - Studio.js",
   "S0F1f. 🎬 Library Maintenance - Studio.js",
   "S0F1h. 🎬 Library Sync - Studio.js",
+  "S0F1i. 🎬 Cross-Platform Envelope Preview - Studio.js",
   "S0F1k. 🎬 Library Canonical Services - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
