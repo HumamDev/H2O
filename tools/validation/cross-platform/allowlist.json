@@ -1,0 +1,30 @@
+{
+  "schema": "h2o.cross-platform.envelope-scan-allowlist.v1",
+  "description": "Cross-platform envelope scan allowlist. Every exception must carry a reason. Path patterns support a single trailing /** for directory match; otherwise exact match. F10.2.2 (a3fb7ac+).",
+  "exceptions": [
+    {
+      "rule": "CP-5.1",
+      "path": "packages/cross-platform-envelope/**",
+      "reason": "Helper package legitimately defines applyEvent types, validators, fixtures, and tests. Receiver-write detection does not apply.",
+      "expires": null
+    },
+    {
+      "rule": "CP-5.1",
+      "path": "tools/validation/cross-platform/**",
+      "reason": "Validation tooling exercises applyEvent envelopes against validators. Not a runtime consumer.",
+      "expires": null
+    },
+    {
+      "rule": "CP-7.1",
+      "path": "packages/cross-platform-envelope/**",
+      "reason": "Helper package defines cacheMetadata constants, types, and fixtures. Source of truth.",
+      "expires": null
+    },
+    {
+      "rule": "CP-7.1",
+      "path": "tools/validation/cross-platform/**",
+      "reason": "Validation tooling references cacheMetadata in fixtures and scans.",
+      "expires": null
+    }
+  ]
+}
