@@ -186,6 +186,96 @@ Both code lists draw from the F10.2.0 `BLOCKER_CODES` set declared in
 - **Not a native-extension change.** The native runtime tree is
   untouched.
 
+## Runtime proof — 2026-05-27
+
+The bridge has been proven end-to-end in live Chrome Studio against a
+real Desktop-exported `~/H2O Studio Sync/latest.json`.
+
+### Console result summary
+
+```js
+await H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes()
+// {
+//   ok: true,
+//   redacted: true,
+//   envelope: { kind: "bundle", ... },
+//   findings: { blockers: [], warnings: [] },
+//   bundleBytes: <integer>,
+//   bundleSchema: "h2o.studio.fullBundle.v2"
+// }
+```
+
+The constructed envelope's `sourcePlatform.sourcePeerEnvelope` carried
+all three sha256-hex hashes populated:
+
+```js
+envelope.sourcePlatform.sourcePeerEnvelope
+// {
+//   physicalDeviceIdHash: "<64-char lowercase sha256 hex>",
+//   installIdHash:        "<64-char lowercase sha256 hex>",
+//   syncPeerIdHash:       "<64-char lowercase sha256 hex>",
+//   surfaceKind:          "desktop-tauri"
+// }
+```
+
+### Exact meaning
+
+The Desktop-side `latest.json` produced by
+[`src-surfaces-base/studio/ingestion/export-bundle.tauri.js`](../../../src-surfaces-base/studio/ingestion/export-bundle.tauri.js)
+is reachable from Chrome Studio's operator-triggered diagnostic, can
+be wrapped as a valid F10.2.0 cross-platform `bundle` envelope, and
+passes every format gate the bridge enforces. The F2 redacted peer
+envelope round-trips correctly: Desktop hashes the raw F2 identity
+fields at export time, Chrome reads the pre-computed hashes back, and
+the envelope's `sourcePeerEnvelope` shape matches the F10.2.0
+`RedactedPeerEnvelope` contract.
+
+### Commits proving the chain
+
+| Commit | What it proved |
+|---|---|
+| [`94c59f3`](#) | Bridge logic — operator-triggered, preview-only, no folder-import call, no chrome.storage write, no chrome.runtime broadcast, sha256 via `crypto.subtle.digest`. |
+| [`b26884e`](#) | Bridge loaded into Chrome Studio via `<script>` tag in `studio.html` and `pack-studio.mjs` manifest entries (both arrays). |
+| [`85502de`](#) | Folder-handle lookup unwrap fix — bridge correctly reads the FileSystemDirectoryHandle from the wrapped IDB row, matching `folder-import.mv3.js`'s pattern. |
+| [`f88d496`](#) | Desktop exporter emits `bundle.sourcePeerEnvelope` with sha256 hashes of F2 identity fields; raw `installId` / `physicalDeviceId` UUIDs never written to disk. |
+
+### What this proof does NOT establish
+
+The bridge remains **preview / evidence only**. Specifically, this
+proof does not authorize, demonstrate, or enable:
+
+- **No proposal envelope.** Chrome Studio's authority level
+  (`preview-coordinator`) does not include `propose` per F10.1.
+- **No `applyEvent` construction or dispatch.** Chrome cannot
+  produce `applyEvent` envelopes; consumers do not act on incoming
+  `applyEvent` envelopes as commands.
+- **No remote apply, no write-back.** No path from envelope receipt
+  to a row write exists anywhere in the system.
+- **No merge / import execution.** The existing `folder-import.mv3.js`
+  merge path is untouched and is **not** invoked by F10.3.
+- **No chrome.storage writes from the bridge.**
+- **No chrome.runtime broadcast of bundle content.**
+- **No background polling / automatic refresh / daemon-like
+  behavior.** The diagnostic is one-shot, operator-triggered.
+- **No mobile write-back.** Forever-no per F10.1 and the dogfood
+  readiness checklist.
+- **No WebDAV / cloud relay.**
+- **No native durable peer work.**
+- **No recursive envelope enumeration inside `payload.envelopes`.**
+  F10.3 ships the `bundle`-envelope wrap only; enumerating inner
+  envelopes is F10.3.1+ scope and remains unauthorized.
+
+### Next allowed phase
+
+**F10.4 — operator UI for the preview — planning only.** With the
+end-to-end runtime path now proven, the next authorized step is to
+plan (not implement) a minimal operator UI that surfaces this
+diagnostic's result. F10.4 planning must respect the same hard
+boundaries: no merge, no apply, no write-back, no proposal. F10.3.1
+(recursive envelope enumeration), F10.5 (native-extension evidence
+bridge), F10.6 (proposal flow), and F10.7 (remote apply / write-back)
+remain unauthorized.
+
 ## Phase status
 
 | Phase | Status |
@@ -195,9 +285,9 @@ Both code lists draw from the F10.2.0 `BLOCKER_CODES` set declared in
 | F10.2.0 — envelope spec | Complete (`febd731`, `92d3eb3`) |
 | F10.2.1 — static helper | Complete (`a3fb7ac`) |
 | F10.2.2 — repo validation scan | Complete (`7093801`) |
-| **F10.3 — bridge v1: Desktop bundle → Chrome envelope preview** | **Current** |
+| **F10.3 — bridge v1: Desktop bundle → Chrome envelope preview** | **Proven (`94c59f3`, `b26884e`, `85502de`, `f88d496`) — runtime verified 2026-05-27** |
 | F10.3.1 — recursive envelope enumeration | Not authorized |
-| F10.4 — operator UI for the preview | Not authorized |
+| F10.4 — operator UI for the preview | Planning only (next allowed step) |
 | F10.5 — native-extension evidence bridge | Not authorized |
 | F10.6 — proposal flow | Not authorized |
 | F10.7 — remote apply / write-back | Forbidden until separate safety model |
