@@ -47,6 +47,15 @@
     'f5d.1 test folder a',
     'f5d.1 test folder b',
   ]);
+  const PRIMARY_CANONICAL_FOLDER_IDS = new Set(KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder) => String(folder.id || folder.folderId || '').trim()).filter(Boolean));
+  const FOLDER_UI_VISIBLE_REVIEW_NAMES = new Set([
+    'case',
+    'english',
+    'case-rt',
+    'empty test folder',
+    'empty-rt',
+    'english-rt',
+  ]);
 
   const diag = { t0: performance.now(), steps: [], errors: [], bufMax: 100, errMax: 25 };
   const step = (s, o = '') => {
@@ -361,6 +370,28 @@
         name: folderNameOf(folder),
         normalizedName: normalizeFolderName(folder?.normalizedName || folderNameOf(folder)),
       }));
+  }
+
+  function isF5DReviewFolder(row) {
+    const name = normalizeFolderName(row?.normalizedName || folderNameOf(row));
+    const id = folderIdOf(row).toLowerCase();
+    return /^f5d/.test(id) || name.startsWith('f5d ');
+  }
+
+  function isPrimaryCanonicalFolder(row) {
+    return PRIMARY_CANONICAL_FOLDER_IDS.has(folderIdOf(row));
+  }
+
+  function isVisibleFolderUiReviewRow(row, canonicalNames) {
+    const id = folderIdOf(row);
+    const name = normalizeFolderName(row?.normalizedName || folderNameOf(row));
+    if (!id || !name || name === 'unfiled') return false;
+    if (isPrimaryCanonicalFolder(row)) return false;
+    if (isF5DReviewFolder(row)) return false;
+    if (FOLDER_UI_VISIBLE_REVIEW_NAMES.has(name)) return true;
+    if (canonicalNames?.has?.(name) && /^fld-/.test(id.toLowerCase())) return true;
+    if (/^fld-rt-/.test(id.toLowerCase()) || /^fld-empty-/.test(id.toLowerCase())) return true;
+    return false;
   }
 
   function summarizeKnownRowsByFolder() {
@@ -1164,8 +1195,9 @@
   }) {
     const canonicalRows = Array.isArray(canonicalFolders) ? canonicalFolders : [];
     const localRows = Array.isArray(localFolders) ? localFolders : [];
-    const canonicalIds = new Set(canonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
-    const canonicalNames = new Set(canonicalRows.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
+    const primaryCanonicalRows = canonicalRows.filter(isPrimaryCanonicalFolder);
+    const canonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
+    const canonicalNames = new Set(primaryCanonicalRows.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
     const duplicateNames = new Set((Array.isArray(duplicateGroups) ? duplicateGroups : []).map((group) => normalizeFolderName(group.name || group.normalizedName)).filter(Boolean));
     const testIds = new Set((Array.isArray(testFolderCandidates) ? testFolderCandidates : []).map((folder) => folderIdOf(folder)).filter(Boolean));
     const localById = new Map(localRows.map((folder) => [folderIdOf(folder), folder]));
@@ -1242,15 +1274,25 @@
     };
 
     const out = [];
-    for (const folder of canonicalRows) {
+    const reviewSeen = new Set();
+    for (const folder of primaryCanonicalRows) {
       const id = folderIdOf(folder);
       out.push(common({ ...(localById.get(id) || {}), ...folder }, true));
+    }
+    for (const folder of canonicalRows) {
+      const id = folderIdOf(folder);
+      if (!id || canonicalIds.has(id) || reviewSeen.has(id)) continue;
+      if (!isVisibleFolderUiReviewRow(folder, canonicalNames)) continue;
+      out.push(common(folder, false));
+      reviewSeen.add(id);
     }
     for (const folder of localRows) {
       const id = folderIdOf(folder);
       const normalizedName = normalizeFolderName(folderNameOf(folder));
-      if (!id || canonicalIds.has(id) || normalizedName === 'unfiled') continue;
+      if (!id || canonicalIds.has(id) || reviewSeen.has(id) || normalizedName === 'unfiled') continue;
+      if (!isVisibleFolderUiReviewRow(folder, canonicalNames)) continue;
       out.push(common(folder, false));
+      reviewSeen.add(id);
     }
     return out;
   }
@@ -1624,8 +1666,8 @@
         surface: report.surface,
         generatedAt: report.generatedAt,
         canonicalMirrorAvailable: report.canonicalMirrorAvailable,
-        canonicalFolderCount: report.canonicalFolderCount,
-        localFolderCount: report.localFolderCount,
+        canonicalFolderCount: canonicalRows.length,
+        localFolderCount: localReviewRows.length,
         canonicalBindingCount: report.canonicalBindingCount,
         localBindingCount: report.localBindingCount,
         canonicalSource,

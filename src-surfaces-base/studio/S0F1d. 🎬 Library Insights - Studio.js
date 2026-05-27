@@ -1373,12 +1373,13 @@
       .map((badge) => String(badge || '').trim().toLowerCase())
       .filter(Boolean));
     if (row?.isCanonical) values.add('canonical');
+    if (row?.isUnfiled || row?.isSystem) values.add('system');
     if (row?.isExtra) values.add('extra');
     if (row?.isTestCandidate) values.add('test');
     if (row?.isConflict) values.add('conflict');
     const reviewBucket = String(row?.reviewBucket || '').trim().toLowerCase();
     if (reviewBucket) values.add(reviewBucket);
-    if (!row?.isCanonical) values.add('review-required');
+    if (!row?.isCanonical && !row?.isUnfiled && !row?.isSystem) values.add('review-required');
     if (Number(row?.localBindingCount || 0) > 0 && values.has('test')) values.add('review-required');
     const ordered = [
       'canonical',
@@ -1423,10 +1424,11 @@
     const folderId = String(row?.folderId || row?.id || '').trim();
     const name = String(row?.name || row?.label || folderId).trim() || folderId;
     const isCanonical = row?.isCanonical === true;
+    const isSystem = row?.isUnfiled === true || row?.isSystem === true;
     const canOpenMenu = !!folderId && isCanonical;
     const title = canOpenMenu
       ? `More options for ${name}`
-      : (isCanonical ? 'Folder actions are still loading' : 'Local Review rows are protected');
+      : (isSystem ? 'System folder row' : (isCanonical ? 'Folder actions are still loading' : 'Local Review rows are protected'));
     const button = el('button', {
       class: 'wbFolderPageActionButton',
       type: 'button',
@@ -1524,6 +1526,21 @@
       ? canonicalRows.map((row) => ({ ...row, isCanonical: true }))
       : fallbackRows;
     const displayLocalReviewRows = canonicalRows.length || localReviewRows.length ? localReviewRows : [];
+    const unfiledRow = {
+      id: '__none__',
+      folderId: '__none__',
+      name: 'Unfiled',
+      label: 'Unfiled',
+      isCanonical: false,
+      isSystem: true,
+      isUnfiled: true,
+      badges: ['system'],
+      displayCountLabel: 'system',
+      knownCount: 0,
+      nativeMembershipCount: 0,
+      canonicalCount: 0,
+      localBindingCount: 0,
+    };
     const degraded = !displayCanonicalRows.length && !displayLocalReviewRows.length;
     const canonicalCount = Number(model?.canonicalFolderCount ?? canonicalRows.length) || (usingFallbackRows ? displayCanonicalRows.length : 0);
     const localCount = Number(model?.localFolderCount ?? localReviewRows.length) || displayLocalReviewRows.length;
@@ -1568,7 +1585,7 @@
         class: 'wbFolderPageList',
         role: 'list',
         style: 'border:1px solid rgba(255,255,255,.10);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.025)',
-      }, displayCanonicalRows.map(renderFolderCatalogRow)));
+      }, displayCanonicalRows.concat(unfiledRow).map(renderFolderCatalogRow)));
 
       if (displayLocalReviewRows.length) {
         body.appendChild(el('h3', {

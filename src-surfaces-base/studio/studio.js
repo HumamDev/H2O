@@ -3521,9 +3521,7 @@ function collectFolderSidebarItems(rows, view, mode = "canonical"){
   const sourceCatalog = mode === "review"
     ? (Array.isArray(state.folderLocalReview) ? state.folderLocalReview : [])
     : (Array.isArray(state.folderCatalog) ? state.folderCatalog : []);
-  const out = mode === "canonical"
-    ? [{ folderId: "", label: "All folders", count: base.length, kind: "all" }]
-    : [];
+  const out = [];
   for (const folder of sourceCatalog){
     const canonicalCount = Number(folder.canonicalCount || 0) || 0;
     const knownCount = Number(folder.knownCount || 0) || 0;
@@ -3725,7 +3723,7 @@ function renderFolderSidebar(rows, view, selectedFolderId){
   const projectItems = items.filter((item) => item.kind === "folder" && item.folderKind === "project_backed");
   const localItems = items.filter((item) => item.kind === "folder" && item.folderKind !== "project_backed");
   const utilityItems = items.filter((item) => item.kind !== "folder");
-  const orderedItems = [...utilityItems.slice(0, 1), ...projectItems, ...localItems, ...utilityItems.slice(1)];
+  const orderedItems = [...projectItems, ...localItems, ...utilityItems];
 
   orderedItems.forEach((item) => {
     if (projectItems.length && localItems.length && item === localItems[0]){
