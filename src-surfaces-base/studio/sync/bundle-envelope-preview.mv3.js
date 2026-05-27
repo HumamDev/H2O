@@ -271,14 +271,39 @@
   }
 
   // ── Build redacted peer envelope from bundle fields ─────────────────
-  // The existing Desktop bundle does not carry the full F2 redacted peer
-  // envelope (physicalDeviceIdHash, installIdHash, syncPeerIdHash). The
-  // bridge:
-  //   - computes a real sha256 of bundle.sourceSyncPeerId for syncPeerIdHash
-  //   - leaves the other two hash fields as empty strings so the format
-  //     gate correctly identifies the gap (NO fake placeholder hashes)
-  //   - emits specific bridge-level warnings naming the missing fields
+  // F10.3d preference order:
+  //   1. If bundle.sourcePeerEnvelope is present AND all three of
+  //      physicalDeviceIdHash / installIdHash / syncPeerIdHash pass
+  //      isSha256Hex(), use it directly. No warnings emitted.
+  //   2. Otherwise fall back to the legacy behavior: sha256 the
+  //      existing bundle.sourceSyncPeerId for syncPeerIdHash, leave the
+  //      other two hash fields as empty strings (NO fake placeholder
+  //      hashes), and emit specific bridge-level warnings naming the
+  //      missing fields.
+  //
+  // The bundle's reported `surfaceKind` is intentionally ignored in
+  // favor of the literal 'desktop-tauri' because the producer of a
+  // latest.json is by definition Desktop Studio; trusting the bundle
+  // field would create a surface-spoof vector.
   async function buildSourcePeerEnvelope(bundle, warnings) {
+    var pre = bundle && bundle.sourcePeerEnvelope;
+    if (
+      pre &&
+      typeof pre === 'object' &&
+      !Array.isArray(pre) &&
+      isSha256Hex(pre.physicalDeviceIdHash) &&
+      isSha256Hex(pre.installIdHash) &&
+      isSha256Hex(pre.syncPeerIdHash)
+    ) {
+      return {
+        physicalDeviceIdHash: pre.physicalDeviceIdHash,
+        installIdHash: pre.installIdHash,
+        syncPeerIdHash: pre.syncPeerIdHash,
+        surfaceKind: 'desktop-tauri',
+      };
+    }
+
+    // Legacy fallback — bundle pre-dates F10.3d.
     var syncPeerId = cleanString(bundle && bundle.sourceSyncPeerId);
     var syncPeerIdHash = '';
     if (syncPeerId) {

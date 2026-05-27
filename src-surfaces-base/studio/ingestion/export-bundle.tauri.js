@@ -1447,6 +1447,31 @@
       bundle.sourceSurfaceKind = cleanString(identity.surfaceKind);
       bundle.sourceAppKind     = cleanString(identity.appKind);
       bundle.sourceStoreKind   = cleanString(identity.storeKind);
+
+      /* F10.3d — F2 redacted peer envelope for the F10.2 cross-platform
+       * envelope contract. The bundle carries sha256 hashes only; the
+       * raw `identity.installId` and `identity.physicalDeviceId` UUIDs
+       * are NEVER written to latest.json.
+       *
+       * `bundle.sourceSyncPeerId` above is preserved unchanged as a
+       * legacy-compatibility field for existing consumers; it is NOT a
+       * newly approved privacy architecture, and new consumers should
+       * prefer `bundle.sourcePeerEnvelope` instead.
+       *
+       * The envelope is omitted (not partially populated) when any
+       * sha256 computation fails — keeping the format-gate semantics
+       * crisp on the consumer side ("absent" vs "malformed"). */
+      var sourcePhysicalDeviceIdHash = await sha256Hex(cleanString(identity.physicalDeviceId));
+      var sourceInstallIdHash        = await sha256Hex(cleanString(identity.installId));
+      var sourceSyncPeerIdHash       = await sha256Hex(cleanString(identity.syncPeerId));
+      if (sourcePhysicalDeviceIdHash && sourceInstallIdHash && sourceSyncPeerIdHash) {
+        bundle.sourcePeerEnvelope = {
+          physicalDeviceIdHash: sourcePhysicalDeviceIdHash,
+          installIdHash:        sourceInstallIdHash,
+          syncPeerIdHash:       sourceSyncPeerIdHash,
+          surfaceKind:          cleanString(identity.surfaceKind),
+        };
+      }
     }
     state.lastExportAt = Date.now();
     state.lastSummary = summary;
