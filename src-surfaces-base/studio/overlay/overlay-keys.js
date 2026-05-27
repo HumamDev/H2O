@@ -65,6 +65,15 @@
     underline: 'underline',
     strikethrough: 'strikethrough',
     clearFormatting: 'clear-formatting',
+    /* Phase 4-2 — message-level text color. Payload kind is one of the
+     * 5 semantic palette names ('red'|'green'|'blue'|'orange'|'gray')
+     * or `null` to clear. Last op of (type, target) wins, same as
+     * the Phase 2b `callout` precedent. Highlights (background color)
+     * are NOT part of this op — they are owned by the existing
+     * H2O.IHighlighter / H2O.Studio.store.highlights system and the
+     * Ribbon controls that system directly through its public APIs
+     * rather than duplicating it as an overlay op. */
+    textColor: 'text-color',
   });
 
   var OverlayTargets = Object.freeze({

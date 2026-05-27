@@ -7309,6 +7309,34 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * Phase 4-2 — Message-level text color
+ *
+ *   data-overlay-text-color="red|green|blue|orange|gray"
+ *
+ * 5 semantic colors picked for legibility on both light and dark
+ * themes. Hex values are pinned to match the DOCX writer's
+ * TEXT_COLOR_HEX map exactly so DOCX exports render identically to
+ * the on-screen reader. Highlights (background) are a SEPARATE
+ * concern owned by H2O.IHighlighter; text-color affects only the
+ * foreground color of the message body.
+ * ────────────────────────────────────────────────────────────────────── */
+.wbReader [data-turn][data-overlay-text-color="red"] [data-message-author-role]{
+  color:#C53030;
+}
+.wbReader [data-turn][data-overlay-text-color="green"] [data-message-author-role]{
+  color:#2F855A;
+}
+.wbReader [data-turn][data-overlay-text-color="blue"] [data-message-author-role]{
+  color:#2C5282;
+}
+.wbReader [data-turn][data-overlay-text-color="orange"] [data-message-author-role]{
+  color:#C05621;
+}
+.wbReader [data-turn][data-overlay-text-color="gray"] [data-message-author-role]{
+  color:#4A5568;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
  *
  * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
@@ -8006,6 +8034,28 @@ body[data-route="reader"] #studioDock.wbDock--open {
   }
   .wbReader [data-turn][data-overlay-underline="true"][data-overlay-strikethrough="true"] [data-message-author-role] {
     text-decoration-line: underline line-through !important;
+  }
+
+  /* ── Phase 4-2 — text color in print (override black-text reset) ───
+   * The @media-print body resets text to #000000 !important; these
+   * rules win via higher selector specificity AND !important on the
+   * color property itself. Hex values pinned to match the DOCX
+   * writer's TEXT_COLOR_HEX map so PDF + DOCX exports look identical
+   * to the on-screen reader. */
+  .wbReader [data-turn][data-overlay-text-color="red"] [data-message-author-role] {
+    color: #C53030 !important;
+  }
+  .wbReader [data-turn][data-overlay-text-color="green"] [data-message-author-role] {
+    color: #2F855A !important;
+  }
+  .wbReader [data-turn][data-overlay-text-color="blue"] [data-message-author-role] {
+    color: #2C5282 !important;
+  }
+  .wbReader [data-turn][data-overlay-text-color="orange"] [data-message-author-role] {
+    color: #C05621 !important;
+  }
+  .wbReader [data-turn][data-overlay-text-color="gray"] [data-message-author-role] {
+    color: #4A5568 !important;
   }
 
   /* ── 5. Structure markers (sections / dividers / TOC) ────────────── */

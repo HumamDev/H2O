@@ -72,6 +72,12 @@
       heading: null, quote: false, code: false, callout: null, cleanSpacing: false,
       /* Phase 4-1 — message-level character formatting. */
       bold: false, italic: false, underline: false, strikethrough: false,
+      /* Phase 4-2 — message-level text color. Markdown serializer emits
+       * NO output for text-color (the field is intentionally not
+       * portable to plain Markdown — `<span style="color:...">` would
+       * render in some viewers but break round-trip; the DOCX writer
+       * + screen + print CSS carry the colour instead). */
+      textColor: null,
     };
   }
 

@@ -74,15 +74,49 @@
         ] },
         /* Phase 4-1 — Font group (B / I / U / S / Clear). All four toggles
          * apply to the entire selected message body; "Clear" wipes ALL
-         * per-message overlay decorations (Phase 2b + Phase 4-1) for the
-         * selected turn. Same enable rule as Headings (saved-reader with
-         * a selected turn). */
+         * per-message overlay decorations (Phase 2b + Phase 4-1 + Phase
+         * 4-2) for the selected turn. Same enable rule as Headings
+         * (saved-reader with a selected turn). */
         { id: 'font', label: 'Font', actions: [
           { id: 'bold',          label: 'B' },
           { id: 'italic',        label: 'I' },
           { id: 'underline',     label: 'U' },
           { id: 'strikethrough', label: 'S' },
           { id: 'clear-formatting', label: 'Clear' },
+        ] },
+        /* Phase 4-2 — Text Color group. Five semantic colors plus a
+         * "None" to clear. Each color is a separate ribbon action that
+         * submits a `text-color` overlay op via the same applyOverlayOp
+         * path Phase 4-1 uses. Markdown export is intentionally
+         * color-agnostic; DOCX + screen + print CSS carry the actual
+         * color. */
+        { id: 'text-color', label: 'Text Color', actions: [
+          { id: 'text-color-red',    label: 'Red' },
+          { id: 'text-color-green',  label: 'Green' },
+          { id: 'text-color-blue',   label: 'Blue' },
+          { id: 'text-color-orange', label: 'Orange' },
+          { id: 'text-color-gray',   label: 'Gray' },
+          { id: 'text-color-none',   label: 'None' },
+        ] },
+        /* Phase 4-2 — Highlight group. Bridges the EXISTING
+         * H2O.IHighlighter system from the Ribbon. The Ribbon does NOT
+         * create a parallel highlight store: brush picks call into
+         * H2O.IHighlighter.setCurrentColor; clear-highlights calls
+         * H2O.Studio.store.highlights.removeForAnswer; show/hide calls
+         * H2O.IHighlighter.setEnabled. Storage key (h2o:prm:cgx:nlnhghlghtr:
+         * state:inline_highlights:v3) and schemaVersion 3 stay
+         * unchanged — owned by store/highlights.js + S3H1a. */
+        { id: 'highlight', label: 'Highlight', actions: [
+          { id: 'highlight-brush-blue',   label: 'Blue' },
+          { id: 'highlight-brush-red',    label: 'Red' },
+          { id: 'highlight-brush-green',  label: 'Green' },
+          { id: 'highlight-brush-gold',   label: 'Gold' },
+          { id: 'highlight-brush-sky',    label: 'Sky' },
+          { id: 'highlight-brush-pink',   label: 'Pink' },
+          { id: 'highlight-brush-purple', label: 'Purple' },
+          { id: 'highlight-brush-orange', label: 'Orange' },
+          { id: 'highlight-clear-message', label: 'Clear' },
+          { id: 'highlight-visibility',    label: 'Hide' },
         ] },
         { id: 'blocks', label: 'Blocks', actions: [
           { id: 'quote',   label: 'Quote' },
@@ -2121,6 +2155,174 @@
         success: 'Formatting cleared',
         fail: 'Clear formatting failed',
       });
+    },
+  };
+
+  /* ── Phase 4-2 — Text Color (overlay op `text-color`) ─────────────────
+   * Five semantic colors + "None" (clear). Each ribbon action submits a
+   * `text-color` op with the appropriate payload.kind. Same enable rule
+   * as the Font group (saved-reader + selected turn). Reuses runOverlayOp
+   * so drift detection + status feedback + undo/redo all work for free
+   * via the Phase 2d active-set model. */
+  function buildTextColorHandler(kind, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        /* When kind === null the reducer clears the color field; the
+         * status reads "Text color cleared" instead of a specific name. */
+        const isClear = (kind === null);
+        const opSpec = {
+          type: 'text-color',
+          target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+          payload: { kind: kind },
+        };
+        runOverlayOp(opSpec, setStatus, {
+          pending: isClear ? 'Clearing text color…' : ('Applying text color (' + label + ')…'),
+          success: isClear ? 'Text color cleared' : ('Text color: ' + label),
+          fail: 'Text color failed',
+        });
+      },
+    };
+  }
+  ACTION_HANDLERS['text-color-red']    = buildTextColorHandler('red',    'red');
+  ACTION_HANDLERS['text-color-green']  = buildTextColorHandler('green',  'green');
+  ACTION_HANDLERS['text-color-blue']   = buildTextColorHandler('blue',   'blue');
+  ACTION_HANDLERS['text-color-orange'] = buildTextColorHandler('orange', 'orange');
+  ACTION_HANDLERS['text-color-gray']   = buildTextColorHandler('gray',   'gray');
+  ACTION_HANDLERS['text-color-none']   = buildTextColorHandler(null,     'none');
+
+  /* ── Phase 4-2 — Highlight (bridge to existing H2O.IHighlighter system) ─
+   * IMPORTANT: the Ribbon does NOT own a parallel highlight store. All
+   * actions in this group are control-surface bridges into the existing
+   * H2O.IHighlighter engine + H2O.Studio.store.highlights canonical
+   * persistence. No new schema, no new chrome.storage key, no parallel
+   * overlay op for highlights.
+   *
+   * Selection model: highlights are inline span-anchored (XPath +
+   * TextPosition + TextQuote per the existing engine). The Ribbon
+   * exposes only operations that make sense at message-level OR are
+   * global brush state:
+   *
+   *   1. Brush color picker (8 swatches) — global brush; calls
+   *      H2O.IHighlighter.setCurrentColor(name). Doesn't require a
+   *      selected turn (brush is global state).
+   *
+   *   2. Clear highlights on selected message — calls
+   *      H2O.Studio.store.highlights.removeForAnswer(selectedMessageId).
+   *      Requires saved-reader + selected turn.
+   *
+   *   3. Show/Hide highlights — calls
+   *      H2O.IHighlighter.setEnabled(...). Global visibility toggle.
+   *
+   * We do NOT expose a "create highlight" button because that requires
+   * inline text-range selection which the Ribbon doesn't have. Users
+   * still create highlights via the existing S3H1a popup / keyboard
+   * shortcut paths. */
+
+  function getIHighlighter() {
+    try { return (H2O && H2O.inline) || (H2O && H2O.H2OInline) || (typeof window !== 'undefined' && window.H2OInline) || null; }
+    catch (_) { return null; }
+  }
+
+  function buildHighlightBrushHandler(colorName, label) {
+    return {
+      isEnabled: function () {
+        const ih = getIHighlighter();
+        return !!(ih && typeof ih.setCurrentColor === 'function');
+      },
+      onClick: function (_ctx, setStatus) {
+        const ih = getIHighlighter();
+        if (!ih || typeof ih.setCurrentColor !== 'function') {
+          setStatus('Highlight bridge unavailable');
+          return;
+        }
+        try {
+          ih.setCurrentColor(colorName);
+          setStatus('Brush: ' + label);
+        } catch (e) {
+          const msg = (e && (e.message || String(e))) || 'unknown error';
+          setStatus('Brush failed: ' + msg);
+        }
+      },
+    };
+  }
+  ACTION_HANDLERS['highlight-brush-blue']   = buildHighlightBrushHandler('blue',   'blue');
+  ACTION_HANDLERS['highlight-brush-red']    = buildHighlightBrushHandler('red',    'red');
+  ACTION_HANDLERS['highlight-brush-green']  = buildHighlightBrushHandler('green',  'green');
+  ACTION_HANDLERS['highlight-brush-gold']   = buildHighlightBrushHandler('gold',   'gold');
+  ACTION_HANDLERS['highlight-brush-sky']    = buildHighlightBrushHandler('sky',    'sky');
+  ACTION_HANDLERS['highlight-brush-pink']   = buildHighlightBrushHandler('pink',   'pink');
+  ACTION_HANDLERS['highlight-brush-purple'] = buildHighlightBrushHandler('purple', 'purple');
+  ACTION_HANDLERS['highlight-brush-orange'] = buildHighlightBrushHandler('orange', 'orange');
+
+  /* Clear all highlights on the selected assistant message. The
+   * Ribbon's `selectedMessageId` matches the engine's `answerId`
+   * (both come from the ChatGPT turn's `data-message-id`). */
+  ACTION_HANDLERS['highlight-clear-message'] = {
+    isEnabled: function (ctx) {
+      if (!ctx || ctx.chatType !== 'saved') return false;
+      if (!ctx.selectedMessageId) return false;
+      const store = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.highlights;
+      return !!(store && typeof store.removeForAnswer === 'function');
+    },
+    onClick: function (ctx, setStatus) {
+      const store = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.highlights;
+      if (!store || typeof store.removeForAnswer !== 'function') {
+        setStatus('Highlight store unavailable');
+        return;
+      }
+      const messageId = ctx && ctx.selectedMessageId;
+      if (!messageId) {
+        setStatus('Select a message first');
+        return;
+      }
+      setStatus('Clearing highlights…');
+      let priorCount = 0;
+      try {
+        if (typeof store.getForAnswer === 'function') {
+          const items = store.getForAnswer(messageId);
+          priorCount = Array.isArray(items) ? items.length : 0;
+        }
+      } catch (_) { /* swallow — count is informational */ }
+      Promise.resolve(store.removeForAnswer(messageId)).then(
+        function () {
+          if (priorCount === 0) { setStatus('No highlights on this message'); return; }
+          setStatus('Highlights cleared on this message');
+        },
+        function (err) {
+          const msg = (err && (err.message || String(err))) || 'unknown error';
+          setStatus('Clear highlights failed: ' + msg);
+        }
+      );
+    },
+  };
+
+  /* Show / Hide all highlights — global visibility toggle. Label is
+   * static ("Hide") in the catalogue; status text differentiates
+   * "Highlights hidden" vs "Highlights shown" so the user knows what
+   * happened. Reading current state at click time keeps the toggle
+   * resilient if the engine state is changed elsewhere (popup, shortcut). */
+  ACTION_HANDLERS['highlight-visibility'] = {
+    isEnabled: function () {
+      const ih = getIHighlighter();
+      return !!(ih && typeof ih.setEnabled === 'function' && typeof ih.getEnabled === 'function');
+    },
+    onClick: function (_ctx, setStatus) {
+      const ih = getIHighlighter();
+      if (!ih || typeof ih.setEnabled !== 'function' || typeof ih.getEnabled !== 'function') {
+        setStatus('Highlight bridge unavailable');
+        return;
+      }
+      try {
+        const wasOn = !!ih.getEnabled();
+        ih.setEnabled(!wasOn);
+        setStatus(wasOn ? 'Highlights hidden' : 'Highlights shown');
+      } catch (e) {
+        const msg = (e && (e.message || String(e))) || 'unknown error';
+        setStatus('Visibility toggle failed: ' + msg);
+      }
     },
   };
 

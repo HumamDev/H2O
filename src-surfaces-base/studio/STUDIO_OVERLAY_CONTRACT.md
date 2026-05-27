@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 4-1)
+Status: Active (Phase 4-2)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1145,12 +1145,173 @@ status is `"Select a message first"` (Phase 2b precedent).
 - **Inline text-range selection** — selecting a word/phrase inside a
   message. Phase 4e in the original Phase 4 design plan.
 - **Font family / font size** — needs inline selection.
-- **Highlight + text color** — Phase 4b/c slice.
 - **Lists / alignment / indent** — Phase 4c slice.
 - **Tags (To Do / Important / Question / etc.)** — Phase 4d slice.
 - **Format painter** — requires inline selection.
 - **Clipboard cut/paste of formatted spans** — not in scope.
 - **Subscript / superscript** — inherently inline; deferred.
+
+## Phase 4-2 — Text Color + Highlight integration
+
+Status: **Built**. Second Phase 4 slice. **Dual-path architecture**:
+
+- **Text color** = new message-level overlay op (`text-color`), follows
+  the Phase 4-1 pattern exactly.
+- **Highlight** = control surface for the EXISTING
+  `H2O.IHighlighter` + `H2O.Studio.store.highlights` system. The
+  Ribbon adds buttons that call into the existing public APIs; **NO
+  parallel storage, NO duplicate schema, NO overlay op for highlights**.
+
+### Text color — overlay op model
+
+| Aspect | Value |
+|---|---|
+| Op type | `text-color` |
+| Payload | `{ kind: 'red' \| 'green' \| 'blue' \| 'orange' \| 'gray' \| null }` |
+| Target | `{ kind: 'message', turnIdx, messageId? }` (same as Phase 4-1 character toggles) |
+| Reducer state field | `textColor: { kind } \| null` |
+| DOM attribute | `data-overlay-text-color="red\|green\|blue\|orange\|gray"` on `[data-turn]` |
+| Last-op-wins | Yes (mirrors the Phase 2b `callout` precedent) |
+| `clear-formatting` reset | Yes — `defaultMessageState()` sets `textColor = null` so Phase 4-1's clear-formatting wipes it for free |
+| Undo / redo | Free via Phase 2d reducer-filter active-set |
+
+#### Palette (5 semantic colors + clear)
+
+Five mid-saturation tones picked for legibility on both light and dark
+themes. The hex values are **pinned in three places** — the CSS screen
+rules, the CSS print rules, and the DOCX writer's `TEXT_COLOR_HEX` map.
+The DOCX consumer apps (Word, LibreOffice, Pages) render without our
+CSS, so these values must look reasonable on a white page.
+
+| Kind | Hex |
+|---|---|
+| `red` | `#C53030` |
+| `green` | `#2F855A` |
+| `blue` | `#2C5282` |
+| `orange` | `#C05621` |
+| `gray` | `#4A5568` |
+| `null` | (clears the attribute; no `<w:color/>` emitted) |
+
+#### Text color — export mappings
+
+| Channel | text-color output |
+|---|---|
+| Markdown | **No output.** Markdown has no portable color syntax; documenting the lossy mapping is preferable to emitting raw HTML `<span style="color:...">` that would break round-trip. |
+| DOCX | `<w:color w:val="C53030"/>` (etc.) inside the body run's `<w:rPr>`. Composes with the Phase 4-1 character toggles (`<w:b/>`, `<w:i/>`, `<w:u w:val="single"/>`, `<w:strike/>`) and the Consolas `<w:rFonts/>` for code runs. |
+| Screen CSS | `.wbReader [data-turn][data-overlay-text-color="<kind>"] [data-message-author-role] { color: <hex>; }` |
+| Print CSS | Same selectors inside `@media print`, with `!important` to override the global black-text reset. |
+
+### Highlight — bridge to existing system (NO parallel state)
+
+The existing highlight system has 4 components:
+
+| Component | Owner | Role |
+|---|---|---|
+| `S3H1a. 🎬 Highlights Engine - Studio.js` | native runtime + Studio | Public API `H2O.IHighlighter.*` |
+| `S1A3a. 🎬 Highlight Dots - Studio.js` | runtime | MiniMap dots / visual layer |
+| `store/highlights.js` | Studio | Canonical persistence (`H2O.Studio.store.highlights`) |
+| `dock/tabs/highlights.tab.studio.js` | Studio | Read-only Dock tab |
+
+**Phase 4-2 adds Ribbon control buttons that bridge to the existing
+APIs. Nothing in this system is duplicated, mirrored, or shadowed.**
+
+#### Highlight storage facts (unchanged, documented)
+
+- **Storage key**: `h2o:prm:cgx:nlnhghlghtr:state:inline_highlights:v3`
+- **Backend**: `chrome.storage.local` (synced cross-context via
+  `chrome.storage.onChanged`)
+- **Schema version**: 3
+- **Blob shape**: `{ itemsByAnswer: { [answerId]: Item[] }, convoId?, _meta?: { currentColor? } }`
+- **Item shape**: `{ id, color, anchors: { xpath, textPos, textQuote }, ts, pairNo }`
+- **Selection scope**: span / inline (XPath + TextPosition + TextQuote anchoring)
+- **Color storage**: name token (e.g. `"gold"`, `"red"`), not hex
+- **Palette**: 8 colors (blue, red, green, gold, sky, pink, purple, orange); customizable via S3H1a's UI prefs at `h2o:prm:cgx:nlnhghlghtr:cfg:ui:v1` (separate localStorage key, NOT in the canonical blob)
+
+#### Ribbon actions (read these as bindings, not new code)
+
+| Ribbon action | Existing API called | Selection scope |
+|---|---|---|
+| **8 brush swatches** (Blue / Red / Green / Gold / Sky / Pink / Purple / Orange) | `H2O.IHighlighter.setCurrentColor(name)` | Global brush — affects the next highlight created (anywhere). Doesn't require a selected turn. |
+| **Clear** (Highlights on this message) | `H2O.Studio.store.highlights.removeForAnswer(selectedMessageId)` | The selected assistant turn |
+| **Hide / Show** (visibility toggle) | `H2O.IHighlighter.setEnabled(on)` + `getEnabled()` | Global visibility |
+
+The Ribbon **does NOT** expose a "create highlight" button. Inline
+text-range selection isn't supported by the Ribbon; users still
+create highlights via S3H1a's popup or keyboard shortcuts.
+
+The Ribbon **does NOT** export highlights to Markdown / DOCX / PDF.
+Highlights weren't in any export path before Phase 4-2; that's a
+separate future feature.
+
+#### Compliance notes (highlight bridge)
+
+- Ribbon code MUST call only the documented public APIs
+  (`H2O.IHighlighter.{setCurrentColor, getCurrentColor, setEnabled,
+  getEnabled}` and `H2O.Studio.store.highlights.removeForAnswer`).
+- Ribbon code MUST NOT read or write `chrome.storage.local` directly.
+- Ribbon code MUST NOT create a parallel highlight schema in
+  `editOverlay` records or anywhere else.
+- Ribbon code MUST NOT modify the canonical key
+  `h2o:prm:cgx:nlnhghlghtr:state:inline_highlights:v3` outside of the
+  documented store API methods.
+- Ribbon code MUST NOT touch the UI-prefs key
+  `h2o:prm:cgx:nlnhghlghtr:cfg:ui:v1` (owned by S3H1a's `CFG_*`
+  functions).
+- The `@match https://chatgpt.com/*` userscript header on S3H1a is
+  Tampermonkey metadata only — `<script>`-loaded execution in
+  studio.html runs the engine inside Studio too, and the
+  `STATE.installed` self-guard makes it idempotent.
+
+### Ribbon status canon (Phase 4-2)
+
+#### Text color
+- Pending: `"Applying text color (<color>)…"` / `"Clearing text color…"`
+- Success: `"Text color: <color>"` / `"Text color cleared"`
+- Drift: `"Snapshot has changed — overlay disabled until rebase"` (reuses Phase 2b drift canon via `runOverlayOp`)
+- Fail: `"Text color failed: <reason>"`
+- No selected turn: `"Select a message first"`
+
+#### Highlight brush
+- Success: `"Brush: <color>"`
+- Engine missing: `"Highlight bridge unavailable"`
+
+#### Clear highlights on message
+- Pending: `"Clearing highlights…"`
+- Success: `"Highlights cleared on this message"`
+- No-op (no items on this answer): `"No highlights on this message"`
+- Engine missing: `"Highlight store unavailable"`
+- No selection: `"Select a message first"`
+- Fail: `"Clear highlights failed: <reason>"`
+
+#### Visibility toggle
+- Success: `"Highlights hidden"` (when toggling off) / `"Highlights shown"` (when toggling on)
+- Engine missing: `"Highlight bridge unavailable"`
+- Fail: `"Visibility toggle failed: <reason>"`
+
+### Format tab layout after Phase 4-2
+
+```
+Format tab:
+  Headings:   H1  H2  H3
+  Font:       B  I  U  S  Clear                                ← Phase 4-1
+  Text Color: Red  Green  Blue  Orange  Gray  None             ← Phase 4-2 (overlay op)
+  Highlight:  Blue Red Green Gold Sky Pink Purple Orange | Clear | Hide  ← Phase 4-2 (existing-system bridge)
+  Blocks:     Quote  Code  Callout
+  Cleanup:    Clean spacing
+```
+
+### Out of scope for Phase 4-2
+
+- **Highlight creation from the Ribbon** — requires inline selection.
+- **Highlight export** to Markdown / DOCX / PDF — separate future phase.
+- **Recolor message** via the Ribbon — `H2O.IHighlighter.recolorTurnHighlights`
+  exists but is not exposed in Phase 4-2; could be a future Phase 4-N
+  addition without contract changes.
+- **Markdown export of text-color** — intentionally lossy.
+- **Palette customization** from the Ribbon — palette CRUD lives in
+  S3H1a's UI prefs and the Dock tab; the Ribbon uses the 8 fixed
+  default color NAMES (color customization still works for the user;
+  the Ribbon's swatch label just doesn't update).
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

@@ -315,6 +315,11 @@
       italic: false,
       underline: false,
       strikethrough: false,
+      /* Phase 4-2 — message-level text color. Null = no color (theme
+       * default); { kind: ... } when the user picked one of the 5
+       * semantic palette names. `clear-formatting` resets to null for
+       * free via defaultMessageState. */
+      textColor: null,        /* { kind: 'red'|'green'|'blue'|'orange'|'gray' } | null */
     };
   }
 
@@ -388,10 +393,23 @@
         case 'strikethrough':
           state.strikethrough = !!payload.enabled;
           break;
+        /* Phase 4-2 — message-level text color. payload.kind is one of
+         * the 5 semantic palette names or null to clear. Unknown
+         * values are normalized to null (defensive). */
+        case 'text-color': {
+          var tcKind = String(payload.kind || '');
+          if (tcKind === 'red' || tcKind === 'green' || tcKind === 'blue'
+              || tcKind === 'orange' || tcKind === 'gray') {
+            state.textColor = { kind: tcKind };
+          } else {
+            state.textColor = null;
+          }
+          break;
+        }
         /* Phase 4-1 — clear-formatting reset. Wipes ALL per-message
-         * decoration fields (Phase 2b + Phase 4-1) at this point in op
-         * order. Subsequent active ops apply normally on top of the
-         * cleared state. */
+         * decoration fields (Phase 2b + Phase 4-1 + Phase 4-2) at this
+         * point in op order. Subsequent active ops apply normally on
+         * top of the cleared state. */
         case 'clear-formatting':
           state = defaultMessageState();
           break;
@@ -498,6 +516,18 @@
         }
       } else if (turnEl.hasAttribute('data-overlay-strikethrough')) {
         turnEl.removeAttribute('data-overlay-strikethrough');
+        changed = true;
+      }
+
+      /* Phase 4-2 — text color attribute (mirrors data-overlay-callout
+       * shape: value-bearing attribute that CSS rules select on). */
+      if (state.textColor && state.textColor.kind) {
+        if (turnEl.getAttribute('data-overlay-text-color') !== state.textColor.kind) {
+          turnEl.setAttribute('data-overlay-text-color', state.textColor.kind);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-text-color')) {
+        turnEl.removeAttribute('data-overlay-text-color');
         changed = true;
       }
     } catch (e) { recordError('applyMessageStateToTurnEl', e); }

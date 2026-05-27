@@ -344,15 +344,38 @@
       heading: null, quote: false, code: false, callout: null, cleanSpacing: false,
       /* Phase 4-1 — message-level character formatting. */
       bold: false, italic: false, underline: false, strikethrough: false,
+      /* Phase 4-2 — message-level text color. Composes with the
+       * character formatting rPr via combineRProps. */
+      textColor: null,
     };
   }
 
-  /* Phase 4-1 — compose `<w:rPr>` fragments for the 4 character toggles.
-   * Combines with any prior rPr (e.g. Consolas font for code). Returns
-   * a string suitable for embedding inside `<w:rPr>...</w:rPr>` (the
-   * caller wraps). Order matches the OOXML schema requirement: rFonts
-   * first, then b/i/strike, then u, then any other variants — but Word
-   * is permissive about ordering inside rPr, so we keep it readable. */
+  /* Phase 4-2 — semantic text-color palette → hex (OOXML w:color values
+   * are 6-char hex strings WITHOUT the # prefix). Same constants are
+   * mirrored in studio.css for screen + print rendering — keeping the
+   * two in sync is intentional (DOCX consumer apps render without our
+   * CSS, so the colors must look reasonable on a white page). */
+  var TEXT_COLOR_HEX = {
+    red:    'C53030',
+    green:  '2F855A',
+    blue:   '2C5282',
+    orange: 'C05621',
+    gray:   '4A5568',
+  };
+  function textColorRPr(state) {
+    if (!state || !state.textColor || !state.textColor.kind) return '';
+    var hex = TEXT_COLOR_HEX[state.textColor.kind];
+    if (!hex) return '';
+    return '<w:color w:val="' + hex + '"/>';
+  }
+
+  /* Phase 4-1 — compose `<w:rPr>` fragments for the 4 character toggles
+   * (Phase 4-2 extends with text color). Combines with any prior rPr
+   * (e.g. Consolas font for code). Returns a string suitable for
+   * embedding inside `<w:rPr>...</w:rPr>` (the caller wraps). Order
+   * matches the OOXML schema requirement: rFonts first, then b/i/
+   * strike, then u, then color — but Word is permissive about ordering
+   * inside rPr, so we keep it readable. */
   function charFormatRPr(state) {
     if (!state) return '';
     var parts = [];
@@ -360,6 +383,10 @@
     if (state.italic)        parts.push('<w:i/>');
     if (state.strikethrough) parts.push('<w:strike/>');
     if (state.underline)     parts.push('<w:u w:val="single"/>');
+    /* Phase 4-2 — text color (always at the end so consumer apps that
+     * read sequentially still see the b/i/u/strike toggles first). */
+    var color = textColorRPr(state);
+    if (color) parts.push(color);
     return parts.join('');
   }
 
