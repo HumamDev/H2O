@@ -607,6 +607,44 @@
     };
   }
 
+  function normalizeAttachmentRecord(raw, idx = 0, roleRaw = "user") {
+    const src = isObj(raw) ? raw : {};
+    const kind = String(src.kind || src.type || "").trim().toLowerCase() || "image";
+    if (kind !== "image") return null;
+    const thumbnailSrc = String(src.thumbnailSrc || src.thumbnail || src.src || "").trim();
+    const originalSrc = String(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "").trim();
+    const captureStatus = String(src.captureStatus || src.status || (thumbnailSrc ? "linked" : "failed")).trim() || "failed";
+    if (!thumbnailSrc && !originalSrc && captureStatus !== "failed") return null;
+    const out = {
+      kind: "image",
+      role: normalizeRole(src.role || roleRaw || "user"),
+      thumbnailSrc,
+      originalSrc,
+      alt: String(src.alt || "").trim(),
+      width: Math.max(0, Math.round(Number(src.width || 0) || 0)),
+      height: Math.max(0, Math.round(Number(src.height || 0) || 0)),
+      naturalWidth: Math.max(0, Math.round(Number(src.naturalWidth || 0) || 0)),
+      naturalHeight: Math.max(0, Math.round(Number(src.naturalHeight || 0) || 0)),
+      captureStatus,
+      source: String(src.source || "dom").trim() || "dom",
+      order: Math.max(0, Math.floor(Number(src.order ?? idx) || idx)),
+    };
+    const error = String(src.error || "").trim();
+    if (error) out.error = error.slice(0, 180);
+    return out;
+  }
+
+  function normalizeAttachments(raw, roleRaw = "user") {
+    const src = Array.isArray(raw) ? raw : [];
+    const out = [];
+    for (let i = 0; i < src.length; i += 1) {
+      const item = normalizeAttachmentRecord(src[i], i, roleRaw);
+      if (item) out.push(item);
+    }
+    out.sort((a, b) => Number(a.order) - Number(b.order));
+    return out;
+  }
+
   function normalizeMessages(messages) {
     const src = Array.isArray(messages) ? messages : [];
     const rows = [];
@@ -614,14 +652,17 @@
       const m = isObj(src[i]) ? src[i] : {};
       const role = normalizeRole(m.role || m.author || m.type);
       const text = String(m.text || m.content || "").trim();
-      if (!text) continue;
+      const attachments = normalizeAttachments(m.attachments, role);
+      if (!text && !attachments.length) continue;
       const orderRaw = Number(m.order);
-      rows.push({
+      const row = {
         role,
         text,
         order: Number.isFinite(orderRaw) ? Math.floor(orderRaw) : i,
         createdAt: normalizeCreatedAt(m.createdAt ?? m.create_time ?? m.timestamp),
-      });
+      };
+      if (attachments.length) row.attachments = attachments;
+      rows.push(row);
     }
     rows.sort((a, b) => Number(a.order) - Number(b.order));
     for (let i = 0; i < rows.length; i += 1) rows[i].order = i;
@@ -695,6 +736,41 @@
     '[data-cgxui="mrnc-marks"][data-cgxui-owner="mrnc"]',
     '[data-cgxui="mrnc-gutter"][data-cgxui-owner="mrnc"]',
     '[data-cgxui="mrnc-gutlane"][data-cgxui-owner="mrnc"]',
+    '[aria-label="Response actions"][role="group"]',
+    '[aria-label="Your message actions"][role="group"]',
+    'button',
+    '[role="button"]',
+    'input',
+    'textarea',
+    'select',
+    '[aria-hidden="true"]',
+    '[hidden]',
+  ];
+
+  const USER_MESSAGE_TEXT_ROOT_SELECTORS = [
+    ".whitespace-pre-wrap",
+    '[class*="whitespace-pre-wrap"]',
+    ".user-message-bubble-color .whitespace-pre-wrap",
+    ".text-message",
+    '[data-testid*="message"] .whitespace-pre-wrap',
+    '[data-message-content]',
+  ];
+
+  const IMAGE_ATTACHMENT_MAX_EDGE = 512;
+  const IMAGE_ATTACHMENT_SELECTOR = 'img[src], picture img[src], canvas';
+  const IMAGE_ATTACHMENT_EXCLUDE_SELECTORS = [
+    ".h2o-cold-layer",
+    ".h2o-archive-native-detached-bin",
+    '[data-h2o-cold="1"]',
+    '[data-cgxui-chat-page-divider="1"]',
+    ".cgxui-chat-page-divider",
+    '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]',
+    ".cgxui-atns-answer-title",
+    '[data-cgxui="ats-stamp"][data-cgxui-owner="ats"]',
+    ".cgxui-ats-ts",
+    ".chatgpt-timestamp",
+    '[aria-hidden="true"]',
+    '[hidden]',
   ];
 
   function scrubCaptureClone(root) {
@@ -735,13 +811,166 @@
       .replace(/\u00a0/g, " ")
       .replace(/\u200b/g, "")
       .replace(/\r/g, "")
+      .replace(/(?:Show more\s*Show less|Show less\s*Show more)+\s*$/gi, "")
+      .split("\n")
+      .map((line) => line.replace(/^(?:Show more|Show less)$/i, "").trimEnd())
+      .join("\n")
       .trim();
   }
 
-  function captureCleanMessageText(messageEl) {
+  function pickUserMessageTextRoot(rootEl) {
+    if (!(rootEl instanceof Element)) return null;
+    for (const selector of USER_MESSAGE_TEXT_ROOT_SELECTORS) {
+      const candidates = Array.from(rootEl.querySelectorAll(selector));
+      for (const candidate of candidates) {
+        const text = normalizeCapturedText(candidate.textContent || "");
+        if (text) return candidate;
+      }
+    }
+    return rootEl;
+  }
+
+  function captureCleanMessageText(messageEl, roleRaw = "") {
     const cleanNode = cloneCaptureNode(messageEl);
     if (!cleanNode) return "";
-    return normalizeCapturedText(extractCaptureText(cleanNode));
+    const role = normalizeRole(roleRaw || cleanNode.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "");
+    const textRoot = role === "user" ? pickUserMessageTextRoot(cleanNode) : cleanNode;
+    return normalizeCapturedText(extractCaptureText(textRoot || cleanNode));
+  }
+
+  function isUsableAttachmentImageNode(node) {
+    if (!(node instanceof Element)) return false;
+    try {
+      if (node.closest(IMAGE_ATTACHMENT_EXCLUDE_SELECTORS.join(","))) return false;
+      const rect = node.getBoundingClientRect?.();
+      const naturalW = Number(node.naturalWidth || node.width || rect?.width || 0) || 0;
+      const naturalH = Number(node.naturalHeight || node.height || rect?.height || 0) || 0;
+      const visualW = Number(rect?.width || naturalW || 0) || 0;
+      const visualH = Number(rect?.height || naturalH || 0) || 0;
+      if (Math.max(naturalW, naturalH, visualW, visualH) < 48) return false;
+      const src = String(node.currentSrc || node.src || "").trim();
+      if (src && /(?:sprite|favicon|icon|avatar)/i.test(src) && Math.max(visualW, visualH) < 96) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function collectImageAttachmentNodes(messageEl, roleRaw = "") {
+    if (!(messageEl instanceof Element)) return [];
+    const role = normalizeRole(roleRaw || messageEl.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "");
+    if (role !== "user") return [];
+    const turnEl = messageEl.closest?.('[data-testid="conversation-turn"],[data-testid^="conversation-turn-"]') || messageEl;
+    const root = turnEl || messageEl;
+    const nodes = Array.from(root.querySelectorAll(IMAGE_ATTACHMENT_SELECTOR));
+    const seen = new Set();
+    return nodes.filter((node) => {
+      if (!node || seen.has(node)) return false;
+      seen.add(node);
+      const assistantHost = node.closest?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="assistant"]`);
+      if (assistantHost) return false;
+      return isUsableAttachmentImageNode(node);
+    });
+  }
+
+  function imageSourceForNode(node) {
+    if (!(node instanceof Element)) return "";
+    if (node.tagName === "CANVAS") return "";
+    return String(node.currentSrc || node.getAttribute?.("src") || node.src || "").trim();
+  }
+
+  async function captureImageAttachmentRecord(node, order = 0, roleRaw = "user") {
+    const role = normalizeRole(roleRaw || "user");
+    const rect = node?.getBoundingClientRect?.();
+    const originalSrc = imageSourceForNode(node);
+    const naturalWidth = Math.max(0, Math.round(Number(node?.naturalWidth || node?.width || rect?.width || 0) || 0));
+    const naturalHeight = Math.max(0, Math.round(Number(node?.naturalHeight || node?.height || rect?.height || 0) || 0));
+    const width = Math.max(0, Math.round(Number(rect?.width || naturalWidth || 0) || 0));
+    const height = Math.max(0, Math.round(Number(rect?.height || naturalHeight || 0) || 0));
+    const alt = String(node?.getAttribute?.("alt") || node?.getAttribute?.("aria-label") || "").trim();
+    const base = {
+      kind: "image",
+      role,
+      thumbnailSrc: "",
+      originalSrc,
+      alt,
+      width,
+      height,
+      naturalWidth,
+      naturalHeight,
+      captureStatus: "failed",
+      source: "dom",
+      order,
+    };
+
+    try {
+      if (node instanceof HTMLImageElement && !node.complete) {
+        await new Promise((resolve) => {
+          const done = () => resolve();
+          node.addEventListener("load", done, { once: true });
+          node.addEventListener("error", done, { once: true });
+          W.setTimeout(done, 1200);
+        });
+      }
+      const srcW = Math.max(1, Number(node?.naturalWidth || node?.width || rect?.width || 0) || 1);
+      const srcH = Math.max(1, Number(node?.naturalHeight || node?.height || rect?.height || 0) || 1);
+      const scale = Math.min(1, IMAGE_ATTACHMENT_MAX_EDGE / Math.max(srcW, srcH));
+      const outW = Math.max(1, Math.round(srcW * scale));
+      const outH = Math.max(1, Math.round(srcH * scale));
+      const canvas = D.createElement("canvas");
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("canvas unavailable");
+      ctx.drawImage(node, 0, 0, outW, outH);
+      let dataUrl = "";
+      try { dataUrl = canvas.toDataURL("image/webp", 0.82); } catch {}
+      if (!/^data:image\/webp/i.test(dataUrl)) dataUrl = canvas.toDataURL("image/jpeg", 0.84);
+      if (!/^data:image\//i.test(dataUrl)) throw new Error("thumbnail encode failed");
+      return {
+        ...base,
+        thumbnailSrc: dataUrl,
+        width: outW,
+        height: outH,
+        captureStatus: "embedded",
+      };
+    } catch (error) {
+      const persistableLinkedSrc = originalSrc && !/^blob:/i.test(originalSrc) ? originalSrc : "";
+      return {
+        ...base,
+        thumbnailSrc: persistableLinkedSrc,
+        captureStatus: persistableLinkedSrc ? "linked" : "failed",
+        error: String(error?.message || error || "image capture failed").slice(0, 180),
+      };
+    }
+  }
+
+  async function captureMessageAttachments(messageEl, roleRaw = "") {
+    const nodes = collectImageAttachmentNodes(messageEl, roleRaw).slice(0, 12);
+    const out = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      const item = await captureImageAttachmentRecord(nodes[i], i, roleRaw);
+      const normalized = normalizeAttachmentRecord(item, i, roleRaw);
+      if (normalized) out.push(normalized);
+    }
+    return out;
+  }
+
+  async function captureDomNormalizedMessagesWithAttachments() {
+    const nodes = collectNativeMessageNodes(D);
+    const out = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      const el = nodes[i];
+      const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
+      const text = captureCleanMessageText(el, role);
+      const attachments = await captureMessageAttachments(el, role);
+      if (!text && !attachments.length) continue;
+      const createdAt = normalizeCreatedAt(readCreateTimeFromNode(el));
+      const row = { role, text, order: out.length, createdAt };
+      if (attachments.length) row.attachments = attachments;
+      out.push(row);
+    }
+    return out;
   }
 
   function captureDomNormalizedMessages() {
@@ -750,7 +979,7 @@
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
       const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
-      const text = captureCleanMessageText(el);
+      const text = captureCleanMessageText(el, role);
       if (!text) continue;
       const createdAt = normalizeCreatedAt(readCreateTimeFromNode(el));
       out.push({ role, text, order: out.length, createdAt });
@@ -1061,12 +1290,14 @@
       }
 
       const item = { turnIdx, role, outerHTML, html: outerHTML };
+      const attachments = normalizeAttachments(row.attachments, role);
       if (Number.isFinite(createTime) && createTime > 0) item.createTime = createTime;
       if (Number.isFinite(userCreateTime) && userCreateTime > 0) item.userCreateTime = userCreateTime;
       if (Number.isFinite(assistantCreateTime) && assistantCreateTime > 0) item.assistantCreateTime = assistantCreateTime;
       if (userMessageId) item.userMessageId = userMessageId;
       if (assistantMessageId) item.assistantMessageId = assistantMessageId;
       if (Object.keys(messageTimes).length) item.messageTimes = messageTimes;
+      if (attachments.length) item.attachments = attachments;
       out.push(item);
     }
     out.sort((a, b) => Number(a.turnIdx) - Number(b.turnIdx));
@@ -1503,7 +1734,7 @@
     return out;
   }
 
-  function captureDomRichTurns(turnsRaw = null) {
+  async function captureDomRichTurns(turnsRaw = null) {
     const turns = Array.isArray(turnsRaw) ? turnsRaw.filter(Boolean) : collectNativeTurnNodes(D);
     if (!turns.length) return [];
     const out = [];
@@ -1518,6 +1749,11 @@
       if (!outerHTML) continue;
       const timeMeta = collectTurnTimeMeta(turnEl);
       const item = { turnIdx: i + 1, role, outerHTML };
+      if (role === "user") {
+        const userHost = turnEl.querySelector?.(`[${ATTR_MESSAGE_AUTHOR_ROLE}="user"]`) || turnEl;
+        const attachments = await captureMessageAttachments(userHost, "user");
+        if (attachments.length) item.attachments = attachments;
+      }
       if (timeMeta.createTime > 0) item.createTime = timeMeta.createTime;
       if (timeMeta.userCreateTime > 0) item.userCreateTime = timeMeta.userCreateTime;
       if (timeMeta.assistantCreateTime > 0) item.assistantCreateTime = timeMeta.assistantCreateTime;
@@ -1999,6 +2235,7 @@
         role: m.role,
         text: m.text,
         create_time: m.createdAt,
+        ...(Array.isArray(m.attachments) && m.attachments.length ? { attachments: m.attachments } : {}),
       })),
     };
   }
@@ -2014,6 +2251,7 @@
         text: m?.text,
         order: Number(m?.order),
         createdAt: m?.create_time ?? m?.createdAt ?? idx,
+        attachments: m?.attachments,
       })),
     );
     const createdAt = String(src.capturedAt || src.createdAt || nowIso());
@@ -2364,7 +2602,7 @@
         source: String(fetched.source || "backend-conversation"),
       };
     } else {
-      messages = captureDomNormalizedMessages();
+      messages = await captureDomNormalizedMessagesWithAttachments();
       if (!messages.length) {
         const fetched = await fetchConversationCapture(chatId, captureOpts);
         if (!fetched?.ok) return { ok: false, message: "No chat content found to archive." };
@@ -2377,7 +2615,7 @@
         };
       } else {
         const nativeTurns = collectNativeTurnNodes(D);
-        richTurns = captureDomRichTurns(nativeTurns);
+        richTurns = await captureDomRichTurns(nativeTurns);
         turnHighlights = captureAssistantTurnHighlights(nativeTurns);
       }
     }

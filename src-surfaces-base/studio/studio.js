@@ -35,6 +35,7 @@ const FOLDER_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY CHROME FOLDERS";
 const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
 const FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT = "REFRESH DESKTOP FOLDER MIRROR";
+const FOLDER_CLEANUP_DRY_RUN_FRESHNESS_MS = 5 * 60 * 1000;
 const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
@@ -1079,12 +1080,16 @@ function projectSqliteSnapshotToCanonical(input){
     catch { createdAt = ''; }
   }
 
-  const messages = turns.map((t, idx) => ({
-    role: (t && t.role) || 'assistant',
-    text: (t && t.text) || '',
-    order: (t && typeof t.turnIdx === 'number') ? t.turnIdx : idx,
-    createdAt: capturedAtMs || 0,
-  }));
+  const messages = turns.map((t, idx) => {
+    const meta = (t && t.meta && typeof t.meta === 'object' && !Array.isArray(t.meta)) ? t.meta : {};
+    return {
+      role: (t && t.role) || 'assistant',
+      text: (t && t.text) || '',
+      order: (t && typeof t.turnIdx === 'number') ? t.turnIdx : idx,
+      createdAt: capturedAtMs || 0,
+      attachments: Array.isArray(meta.attachments) ? meta.attachments : (Array.isArray(t && t.attachments) ? t.attachments : []),
+    };
+  });
 
   const richTurns = turns
     .filter((t) => t && typeof t.outerHtml === 'string' && t.outerHtml.length > 0)
@@ -1825,6 +1830,24 @@ function scrubReplayNode(root){
   root.querySelectorAll(STALE_REPLAY_SUBTREE_SELECTORS.join(",")).forEach((node) => {
     try { node.remove(); } catch {}
   });
+  root.querySelectorAll([
+    '[data-message-author-role="user"] input',
+    '[data-message-author-role="user"] textarea',
+    '[data-message-author-role="user"] select',
+    '[data-message-author-role="user"] [aria-hidden="true"]',
+    '[data-message-author-role="user"] [hidden]'
+  ].join(",")).forEach((node) => {
+    try { node.remove(); } catch {}
+  });
+  root.querySelectorAll([
+    '[data-message-author-role="user"] button',
+    '[data-message-author-role="user"] [role="button"]'
+  ].join(",")).forEach((node) => {
+    try {
+      if (node.querySelector?.("img")) unwrapReplayNode(node);
+      else node.remove();
+    } catch {}
+  });
   root.querySelectorAll(REPLAY_UNWRAP_SELECTORS.join(",")).forEach((node) => {
     try { unwrapReplayNode(node); } catch {}
   });
@@ -1906,6 +1929,44 @@ function sanitizeRichTurnElement(htmlRaw){
   return cleanTurn;
 }
 
+function normalizeAttachmentRecord(raw, idx = 0, roleRaw = "user"){
+  const src = raw && typeof raw === "object" ? raw : {};
+  const kind = String(src.kind || src.type || "").trim().toLowerCase() || "image";
+  if (kind !== "image") return null;
+  const thumbnailSrc = String(src.thumbnailSrc || src.thumbnail || src.src || "").trim();
+  const originalSrc = String(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "").trim();
+  const captureStatus = String(src.captureStatus || src.status || (thumbnailSrc ? "linked" : "failed")).trim() || "failed";
+  if (!thumbnailSrc && !originalSrc && captureStatus !== "failed") return null;
+  const out = {
+    kind: "image",
+    role: normalizeRole(src.role || roleRaw || "user"),
+    thumbnailSrc,
+    originalSrc,
+    alt: String(src.alt || "").trim(),
+    width: Math.max(0, Math.round(Number(src.width || 0) || 0)),
+    height: Math.max(0, Math.round(Number(src.height || 0) || 0)),
+    naturalWidth: Math.max(0, Math.round(Number(src.naturalWidth || 0) || 0)),
+    naturalHeight: Math.max(0, Math.round(Number(src.naturalHeight || 0) || 0)),
+    captureStatus,
+    source: String(src.source || "dom").trim() || "dom",
+    order: Math.max(0, Math.floor(Number(src.order ?? idx) || idx)),
+  };
+  const error = String(src.error || "").trim();
+  if (error) out.error = error.slice(0, 180);
+  return out;
+}
+
+function normalizeAttachments(raw, roleRaw = "user"){
+  const src = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (let i = 0; i < src.length; i += 1){
+    const item = normalizeAttachmentRecord(src[i], i, roleRaw);
+    if (item) out.push(item);
+  }
+  out.sort((a, b) => Number(a.order) - Number(b.order));
+  return out;
+}
+
 function normalizeRichTurns(raw){
   const src = Array.isArray(raw) ? raw : [];
   const out = [];
@@ -1930,6 +1991,8 @@ function normalizeRichTurns(raw){
     if (userMessageId) item.userMessageId = userMessageId;
     if (assistantMessageId) item.assistantMessageId = assistantMessageId;
     if (row.messageTimes && typeof row.messageTimes === "object") item.messageTimes = { ...row.messageTimes };
+    const attachments = normalizeAttachments(row.attachments, role);
+    if (attachments.length) item.attachments = attachments;
 
     out.push(item);
   }
@@ -2024,6 +2087,59 @@ function buildCanonicalMessage(role, text, meta = {}){
   return wrap;
 }
 
+function buildUserAttachmentGrid(attachmentsRaw){
+  const attachments = normalizeAttachments(attachmentsRaw, "user").filter((item) => item.kind === "image");
+  if (!attachments.length) return null;
+  const grid = document.createElement("div");
+  grid.className = "cgUserAttachmentGrid";
+  grid.setAttribute("aria-label", "Attached images");
+  for (const item of attachments){
+    const src = String(item.thumbnailSrc || item.originalSrc || "").trim();
+    if (!src) continue;
+    const card = document.createElement("div");
+    card.className = "cgUserAttachmentCard";
+    card.dataset.captureStatus = String(item.captureStatus || "");
+
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = item.alt || "Attached image";
+    img.loading = "lazy";
+    img.decoding = "async";
+    if (item.naturalWidth > 0) img.dataset.naturalWidth = String(item.naturalWidth);
+    if (item.naturalHeight > 0) img.dataset.naturalHeight = String(item.naturalHeight);
+    card.appendChild(img);
+    grid.appendChild(card);
+  }
+  return grid.childElementCount ? grid : null;
+}
+
+function removeNativeUserAttachmentImages(turnEl){
+  if (!(turnEl instanceof Element)) return;
+  turnEl.querySelectorAll('img').forEach((img) => {
+    try {
+      if (img.closest(".cgUserAttachmentGrid")) return;
+      if (img.closest('[data-message-author-role="assistant"]')) return;
+      const holder = img.closest('[data-message-attachment-id], [data-testid="image-asset"], button, [role="button"]');
+      if (holder && holder !== turnEl) {
+        holder.remove();
+        return;
+      }
+      const grid = img.closest(".grid");
+      img.remove();
+      if (grid && !grid.querySelector("img") && !normalizeText(grid.textContent || "")) grid.remove();
+    } catch {}
+  });
+}
+
+function attachUserAttachmentsToTurn(turnEl, messageEl, attachmentsRaw){
+  if (!(turnEl instanceof Element) || !(messageEl instanceof Element)) return;
+  const grid = buildUserAttachmentGrid(attachmentsRaw);
+  if (!grid) return;
+  removeNativeUserAttachmentImages(turnEl);
+  turnEl.classList.add("cgTurn--has-attachments");
+  messageEl.insertAdjacentElement("beforebegin", grid);
+}
+
 function buildCanonicalTurn(role, text, meta = {}){
   const turn = document.createElement("section");
   turn.className = `cgTurn cgTurn--${role} wbTurn wbTurn--fallback wbTurn--${role}`;
@@ -2036,6 +2152,7 @@ function buildCanonicalTurn(role, text, meta = {}){
   }
   stampReplayTurnMeta(turn, messageEl, meta.createTime, meta.turnNo);
   turn.appendChild(messageEl);
+  if (role === "user") attachUserAttachmentsToTurn(turn, messageEl, meta.attachments);
   return { turn, messageEl };
 }
 
@@ -2159,6 +2276,7 @@ function buildCanonicalConversation(container, snap){
       messageId: row?.messageId || row?.id || "",
       turnId: row?.turnId || "",
       dir: row?.dir || "",
+      attachments: row?.attachments,
     });
     if (role === "assistant"){
       answerIdx = nextAnswerIdx;
@@ -2181,6 +2299,11 @@ function mountRichTurns(container, richTurns, snapshotId, snap){
     const turn = normalized[i];
     const turnNo = Number(turn.turnIdx || (i + 1)) || (i + 1);
     const createTime = resolveSnapshotTurnCreateTime(snap, turn, i);
+    const snapMessage = Array.isArray(snap?.messages) ? snap.messages[turnNo - 1] : null;
+    const userAttachments = role => normalizeAttachments(
+      Array.isArray(turn.attachments) && turn.attachments.length ? turn.attachments : snapMessage?.attachments,
+      role
+    );
     let host = sanitizeRichTurnElement(turn.outerHTML);
     let role = normalizeRole(turn.role);
     let messageEl = host ? findRoleHostInTurn(host, role) : null;
@@ -2218,6 +2341,8 @@ function mountRichTurns(container, richTurns, snapshotId, snap){
       assistantIdx = answerIdx;
       attachAssistantEditButton(host, messageEl, sid, turn.turnIdx);
       assistantHosts.push(host);
+    } else if (role === "user"){
+      attachUserAttachmentsToTurn(host, messageEl, userAttachments(role));
     }
 
     container.appendChild(host);
@@ -6037,7 +6162,7 @@ function renderSettingsRoute(){
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button id="wbSettingsFolderCleanupReviewRefresh" type="button" style="${btnStyle}">Refresh review</button>
-            <button id="wbSettingsFolderCleanupReviewCopy" type="button" style="${btnStyle}">Copy cleanup plan JSON</button>
+            <button id="wbSettingsFolderCleanupReviewCopy" type="button" style="${btnStyle}">Copy review report JSON</button>
           </div>
         </div>
         <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">
@@ -6045,6 +6170,20 @@ function renderSettingsRoute(){
         </div>
         <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
         <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        <div id="wbSettingsFolderCleanupDryRunBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:600">Dry-run cleanup plan</div>
+              <div id="wbSettingsFolderCleanupDryRunSummary" style="opacity:.72;font-size:12px">Select review rows, then generate a dry-run plan. No cleanup is performed.</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="wbSettingsFolderCleanupDryRunGenerate" type="button" style="${btnStyle}">Generate dry-run plan</button>
+              <button id="wbSettingsFolderCleanupDryRunCopy" type="button" style="${btnStyle}" disabled>Copy dry-run plan JSON</button>
+            </div>
+          </div>
+          <div id="wbSettingsFolderCleanupDryRunRows" style="display:flex;flex-direction:column;gap:6px;font-size:12px"></div>
+          <pre id="wbSettingsFolderCleanupDryRunJson" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:220px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+        </div>
         <div id="wbSettingsFolderConflictReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -7511,13 +7650,31 @@ function settingsFolderCleanupClassLabel(classification){
   return c;
 }
 
-function settingsFolderCleanupCandidateHtml(candidate){
+function settingsFolderCleanupCandidateSelectable(candidate){
+  const id = String(candidate?.folderId || "").trim();
+  if (!id || candidate?.isCanonical) return false;
+  return [
+    "same-name-conflict",
+    "safe-empty",
+    "bound-review",
+    "unsafe-to-delete",
+    "orphan-membership",
+  ].includes(String(candidate?.classification || "").trim());
+}
+
+function settingsFolderCleanupCandidateHtml(candidate, selectedIds = new Set()){
   const warnings = Array.isArray(candidate?.warnings) ? candidate.warnings : [];
   const sourceKind = [candidate?.source, candidate?.kind].map((value) => String(value || "").trim()).filter(Boolean).join(" / ");
+  const id = String(candidate?.folderId || "").trim();
+  const selectable = settingsFolderCleanupCandidateSelectable(candidate);
+  const checked = selectable && selectedIds.has(id) ? " checked" : "";
   return `
     <div style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-        <strong>${esc(candidate?.name || "(unnamed)")}</strong>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${selectable ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.86"><input type="checkbox" data-folder-cleanup-dry-run-select="1" data-folder-id="${esc(id)}"${checked} /> Select</label>` : ""}
+          <strong>${esc(candidate?.name || "(unnamed)")}</strong>
+        </div>
         <span>${settingsFolderCleanupBadgesHtml(candidate)}</span>
       </div>
       <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;opacity:.72">${esc(candidate?.folderId || "(no folder id)")}</div>
@@ -7536,13 +7693,13 @@ function settingsFolderCleanupCandidateHtml(candidate){
   `;
 }
 
-function settingsFolderCleanupGroupHtml(title, candidates, emptyText){
+function settingsFolderCleanupGroupHtml(title, candidates, emptyText, selectedIds = new Set()){
   const rows = Array.isArray(candidates) ? candidates : [];
   return `
     <details open style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:8px;background:rgba(255,255,255,.025)">
       <summary style="cursor:pointer;font-weight:600">${esc(title)} <span style="opacity:.65">(${rows.length})</span></summary>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        ${rows.length ? rows.map(settingsFolderCleanupCandidateHtml).join("") : `<div style="opacity:.65;font-size:12px">${esc(emptyText || "No candidates.")}</div>`}
+        ${rows.length ? rows.map((candidate) => settingsFolderCleanupCandidateHtml(candidate, selectedIds)).join("") : `<div style="opacity:.65;font-size:12px">${esc(emptyText || "No candidates.")}</div>`}
       </div>
     </details>
   `;
@@ -7571,6 +7728,7 @@ function settingsFolderCleanupRenderPlan(panel, plan){
   const chips = panel?.querySelector("#wbSettingsFolderCleanupReviewChips");
   const groups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroups");
   const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupReviewCopy");
+  const selectedIds = new Set(Array.isArray(panel?.__h2oFolderCleanupDryRunSelectedIds) ? panel.__h2oFolderCleanupDryRunSelectedIds : []);
   if (summary) {
     summary.textContent = `Review-only cleanup plan generated. Severity: ${plan?.selfCheckSeverity || "unknown"}. No cleanup performed.`;
   }
@@ -7586,12 +7744,12 @@ function settingsFolderCleanupRenderPlan(panel, plan){
   }
   if (groups) {
     groups.innerHTML = [
-      settingsFolderCleanupGroupHtml("Preserve canonical", plan?.groups?.canonicalProtected, "No canonical rows available."),
-      settingsFolderCleanupGroupHtml("Same-name conflict / review only", plan?.groups?.sameNameConflicts, "No same-name conflicts detected."),
-      settingsFolderCleanupGroupHtml("Empty test cleanup candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup."),
-      settingsFolderCleanupGroupHtml("Bound review", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected."),
-      settingsFolderCleanupGroupHtml("Orphan risk", plan?.groups?.orphanMemberships, "No orphan native memberships detected."),
-      settingsFolderCleanupGroupHtml("Unsafe to delete", plan?.groups?.unsafeToDelete, "No additional unsafe review rows detected."),
+      settingsFolderCleanupGroupHtml("Preserve canonical", plan?.groups?.canonicalProtected, "No canonical rows available.", selectedIds),
+      settingsFolderCleanupGroupHtml("Same-name conflict / review only", plan?.groups?.sameNameConflicts, "No same-name conflicts detected.", selectedIds),
+      settingsFolderCleanupGroupHtml("Empty test cleanup candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup.", selectedIds),
+      settingsFolderCleanupGroupHtml("Bound review", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected.", selectedIds),
+      settingsFolderCleanupGroupHtml("Orphan risk", plan?.groups?.orphanMemberships, "No orphan native memberships detected.", selectedIds),
+      settingsFolderCleanupGroupHtml("Unsafe to delete", plan?.groups?.unsafeToDelete, "No additional unsafe review rows detected.", selectedIds),
     ].join("");
   }
   if (copyBtn) copyBtn.disabled = false;
@@ -7603,6 +7761,205 @@ function settingsFolderCleanupRenderPlan(panel, plan){
     + settingsFolderCleanupNumber(counts.unsafeToDelete);
   settingsFolderParitySetOperationStatus(panel, "cleanupReview", reviewCount ? "warning" : "works", reviewCount ? `${reviewCount} review item(s)` : "No unsafe candidates");
   settingsFolderParityRenderOperationRows(panel);
+}
+
+function settingsFolderCleanupDryRunCandidateList(plan){
+  const groups = plan?.groups || {};
+  return [
+    ...(Array.isArray(groups.sameNameConflicts) ? groups.sameNameConflicts : []),
+    ...(Array.isArray(groups.safeEmptyCandidates) ? groups.safeEmptyCandidates : []),
+    ...(Array.isArray(groups.boundReviewCandidates) ? groups.boundReviewCandidates : []),
+    ...(Array.isArray(groups.unsafeToDelete) ? groups.unsafeToDelete : []),
+    ...(Array.isArray(groups.orphanMemberships) ? groups.orphanMemberships.filter((candidate) => !candidate?.isCanonical) : []),
+  ].filter((candidate) => settingsFolderCleanupCandidateSelectable(candidate));
+}
+
+function settingsFolderCleanupDryRunSelectedIds(panel){
+  const ids = [...(panel?.querySelectorAll("[data-folder-cleanup-dry-run-select='1']:checked") || [])]
+    .map((input) => String(input.getAttribute("data-folder-id") || "").trim())
+    .filter(Boolean);
+  const unique = Array.from(new Set(ids));
+  if (panel) panel.__h2oFolderCleanupDryRunSelectedIds = unique;
+  return unique;
+}
+
+function settingsFolderCleanupDryRunDecision(candidate, staleDiagnostics){
+  const classification = String(candidate?.classification || "").trim();
+  const folderId = String(candidate?.folderId || "").trim();
+  const nativeMembershipCount = candidate?.nativeMembershipCount == null
+    ? null
+    : settingsFolderCleanupNumber(candidate.nativeMembershipCount);
+  const knownCount = candidate?.knownCount == null ? null : settingsFolderCleanupNumber(candidate.knownCount);
+  const localBindingCount = candidate?.localBindingCount == null
+    ? null
+    : settingsFolderCleanupNumber(candidate.localBindingCount);
+  const orphanCount = settingsFolderCleanupNumber(candidate?.orphanCount);
+  const badges = Array.isArray(candidate?.badges) ? candidate.badges.slice() : [];
+  const reasonCodes = [];
+
+  if (!folderId) reasonCodes.push("missing-folder-id");
+  if (staleDiagnostics) reasonCodes.push("stale-diagnostics");
+  if (candidate?.isCanonical || classification === "canonical-protected") reasonCodes.push("preserve-canonical");
+  if (classification === "same-name-conflict") reasonCodes.push("same-name-conflict-review-only");
+  if (classification === "safe-empty") reasonCodes.push("empty-test-candidate");
+  if (settingsFolderCleanupNumber(localBindingCount) > 0) reasonCodes.push("binding-count-nonzero");
+  if (settingsFolderCleanupNumber(knownCount) > 0) reasonCodes.push("known-count-nonzero");
+  if (orphanCount > 0 || classification === "orphan-membership") reasonCodes.push("orphan-risk-review-required");
+  if (!["safe-empty", "same-name-conflict", "bound-review", "unsafe-to-delete", "orphan-membership"].includes(classification)) {
+    reasonCodes.push("source-class-unsafe");
+  }
+
+  const allowed = !!folderId
+    && !staleDiagnostics
+    && !candidate?.isCanonical
+    && classification === "safe-empty"
+    && settingsFolderCleanupNumber(nativeMembershipCount) === 0
+    && settingsFolderCleanupNumber(knownCount) === 0
+    && settingsFolderCleanupNumber(localBindingCount) === 0
+    && orphanCount === 0;
+
+  if (!allowed && classification === "unsafe-to-delete") reasonCodes.push("source-class-unsafe");
+  reasonCodes.push("dry-run-only", "no-mutation-phase");
+
+  return {
+    folderId,
+    name: String(candidate?.name || folderId || "Folder review item"),
+    source: String(candidate?.source || ""),
+    className: settingsFolderCleanupClassLabel(classification),
+    risk: String(candidate?.riskLevel || "review"),
+    decision: allowed ? "allowed" : "blocked",
+    reasonCodes: Array.from(new Set(reasonCodes.filter(Boolean))),
+    facts: {
+      nativeMembershipCount,
+      knownCount,
+      localBindingCount,
+      badges,
+      displayCountLabel: String(candidate?.displayCountLabel || ""),
+    },
+  };
+}
+
+function settingsFolderCleanupBuildDryRunPlan(reviewPlan, selectedFolderIds){
+  const selectedIds = Array.isArray(selectedFolderIds) ? selectedFolderIds.map((id) => String(id || "").trim()).filter(Boolean) : [];
+  const generatedAt = new Date().toISOString();
+  const planGeneratedAt = Date.parse(String(reviewPlan?.generatedAt || ""));
+  const diagnosticsFreshnessMs = Number.isFinite(planGeneratedAt) ? Math.max(0, Date.now() - planGeneratedAt) : null;
+  const staleDiagnostics = diagnosticsFreshnessMs == null || diagnosticsFreshnessMs > FOLDER_CLEANUP_DRY_RUN_FRESHNESS_MS;
+  const byId = new Map(settingsFolderCleanupDryRunCandidateList(reviewPlan).map((candidate) => [String(candidate.folderId || "").trim(), candidate]));
+  const candidates = selectedIds.map((id) => {
+    const candidate = byId.get(id);
+    if (!candidate) {
+      return {
+        folderId: id,
+        name: id,
+        source: "",
+        className: "unsafe to delete",
+        risk: "high-review-required",
+        decision: "blocked",
+        reasonCodes: Array.from(new Set(["stale-diagnostics", "dry-run-only", "no-mutation-phase"])),
+        facts: {
+          nativeMembershipCount: null,
+          knownCount: null,
+          localBindingCount: null,
+          badges: [],
+          displayCountLabel: "",
+        },
+      };
+    }
+    return settingsFolderCleanupDryRunDecision(candidate, staleDiagnostics);
+  });
+  const allowedCount = candidates.filter((candidate) => candidate.decision === "allowed").length;
+  const blockedCount = candidates.length - allowedCount;
+  const reasonCodes = Array.from(new Set((candidates.length
+    ? candidates.flatMap((candidate) => Array.isArray(candidate.reasonCodes) ? candidate.reasonCodes : [])
+    : ["no-selection", "dry-run-only", "no-mutation-phase"]).filter(Boolean)));
+  return {
+    schema: "h2o.folder-cleanup-dry-run.v1",
+    surface: String(reviewPlan?.surface || ""),
+    generatedAt,
+    noMutation: true,
+    diagnosticsFreshnessMs,
+    selectedCount: selectedIds.length,
+    allowedCount,
+    blockedCount,
+    reasonCodes,
+    reasonCodeExamples: [
+      "empty-test-candidate",
+      "same-name-conflict-review-only",
+      "dry-run-only",
+      "no-mutation-phase",
+    ],
+    candidates,
+  };
+}
+
+function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
+  const summary = panel?.querySelector("#wbSettingsFolderCleanupDryRunSummary");
+  const rowsEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunRows");
+  const jsonEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunJson");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupDryRunCopy");
+  if (summary) {
+    summary.textContent = `schema: ${dryRunPlan?.schema || "h2o.folder-cleanup-dry-run.v1"} · selectedCount: ${dryRunPlan?.selectedCount || 0} · allowedCount: ${dryRunPlan?.allowedCount || 0} · blockedCount: ${dryRunPlan?.blockedCount || 0} · reasonCodes: ${(dryRunPlan?.reasonCodes || []).join(", ") || "dry-run-only, no-mutation-phase"} · No cleanup is performed.`;
+  }
+  if (rowsEl) {
+    const rows = Array.isArray(dryRunPlan?.candidates) ? dryRunPlan.candidates : [];
+    const metaHtml = `
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <strong>schema</strong><span>${esc(dryRunPlan?.schema || "h2o.folder-cleanup-dry-run.v1")}</span>
+        <strong>selectedCount</strong><span>${esc(dryRunPlan?.selectedCount ?? 0)}</span>
+        <strong>allowedCount</strong><span>${esc(dryRunPlan?.allowedCount ?? 0)}</span>
+        <strong>blockedCount</strong><span>${esc(dryRunPlan?.blockedCount ?? 0)}</span>
+        <strong>reasonCodes</strong><span>${esc((dryRunPlan?.reasonCodes || []).join(", ") || "dry-run-only, no-mutation-phase")}</span>
+        <strong>examples</strong><span>${esc((dryRunPlan?.reasonCodeExamples || []).join(", "))}</span>
+      </div>
+    `;
+    const rowHtml = rows.length ? rows.map((candidate) => `
+      <div style="display:grid;grid-template-columns:minmax(140px,1fr) max-content minmax(180px,2fr);gap:8px;align-items:start;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px">
+        <div>
+          <div style="font-weight:600">${esc(candidate.name || candidate.folderId || "(unnamed)")}</div>
+          <div style="opacity:.68;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">${esc(candidate.folderId || "(missing folder id)")}</div>
+        </div>
+        <span style="border:1px solid ${candidate.decision === "allowed" ? "rgba(34,197,94,.45)" : "rgba(234,179,8,.45)"};background:${candidate.decision === "allowed" ? "rgba(34,197,94,.13)" : "rgba(234,179,8,.12)"};border-radius:999px;padding:2px 8px;font-size:11px">${esc(candidate.decision)}</span>
+        <div style="font-size:12px;opacity:.78">${esc((candidate.reasonCodes || []).join(", "))}</div>
+      </div>
+    `).join("") : `<div style="border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px;opacity:.78">No rows selected. reasonCodes: no-selection, dry-run-only, no-mutation-phase.</div>`;
+    rowsEl.innerHTML = metaHtml + rowHtml;
+  }
+  if (jsonEl) {
+    jsonEl.hidden = false;
+    jsonEl.textContent = JSON.stringify(dryRunPlan || {}, null, 2);
+  }
+  if (copyBtn) copyBtn.disabled = !dryRunPlan;
+}
+
+async function generateSettingsFolderCleanupDryRunPlan(panel){
+  if (!panel) return null;
+  let reviewPlan = panel.__h2oFolderCleanupReviewPlan;
+  if (!reviewPlan) reviewPlan = await refreshSettingsFolderCleanupReview(panel);
+  const selectedIds = settingsFolderCleanupDryRunSelectedIds(panel);
+  const dryRunPlan = settingsFolderCleanupBuildDryRunPlan(reviewPlan, selectedIds);
+  panel.__h2oFolderCleanupDryRunPlan = dryRunPlan;
+  settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan);
+  settingsFolderParityLog(panel, "Dry-run folder cleanup plan generated. No cleanup performed.");
+  return dryRunPlan;
+}
+
+async function copySettingsFolderCleanupDryRunPlan(panel){
+  if (!panel) return;
+  let plan = panel.__h2oFolderCleanupDryRunPlan;
+  if (!plan) plan = await generateSettingsFolderCleanupDryRunPlan(panel);
+  const text = JSON.stringify(plan || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Dry-run folder cleanup plan JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; dry-run plan printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CLEANUP_DRY_RUN_PLAN", plan); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; dry-run folder cleanup plan printed to console as H2O_FOLDER_CLEANUP_DRY_RUN_PLAN.");
 }
 
 function settingsFolderCleanupRenderDeletePanel(panel, plan){
@@ -10110,14 +10467,27 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   settingsFolderCleanupEnsureStableTitle(panel);
   const summary = panel.querySelector("#wbSettingsFolderCleanupReviewSummary");
   const copyBtn = panel.querySelector("#wbSettingsFolderCleanupReviewCopy");
+  const dryRunSummary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
+  const dryRunRows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+  const dryRunJson = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
+  const dryRunCopy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
   const parity = W.H2O?.Library?.FolderParity;
   if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
     if (summary) summary.textContent = "Cleanup Candidate Review unavailable.";
     if (copyBtn) copyBtn.disabled = true;
+    if (dryRunCopy) dryRunCopy.disabled = true;
     return null;
   }
   if (summary) summary.textContent = "Refreshing review-only cleanup candidates…";
   if (copyBtn) copyBtn.disabled = true;
+  panel.__h2oFolderCleanupDryRunPlan = null;
+  if (dryRunSummary) dryRunSummary.textContent = "Select review rows, then generate a dry-run plan. No cleanup is performed.";
+  if (dryRunRows) dryRunRows.innerHTML = "";
+  if (dryRunJson) {
+    dryRunJson.hidden = true;
+    dryRunJson.textContent = "";
+  }
+  if (dryRunCopy) dryRunCopy.disabled = true;
   const loaded = seed?.selfCheck
     ? { selfCheck: seed.selfCheck, displayModel: await parity.getDisplayModel({ fresh: true }) }
     : await settingsFolderCleanupLoadReviewInputs();
@@ -10725,6 +11095,32 @@ function bindSettingsSyncControls(panel){
 
   panel.querySelector("#wbSettingsFolderCleanupReviewCopy")?.addEventListener("click", () => {
     copySettingsFolderCleanupReviewPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupReviewGroups")?.addEventListener("change", (ev) => {
+    const target = ev.target;
+    if (!target || target.getAttribute?.("data-folder-cleanup-dry-run-select") !== "1") return;
+    settingsFolderCleanupDryRunSelectedIds(panel);
+    panel.__h2oFolderCleanupDryRunPlan = null;
+    const summary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
+    const rows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+    const json = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
+    const copy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
+    if (summary) summary.textContent = "Selection changed. Generate a fresh dry-run plan. No cleanup is performed.";
+    if (rows) rows.innerHTML = "";
+    if (json) {
+      json.hidden = true;
+      json.textContent = "";
+    }
+    if (copy) copy.disabled = true;
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupDryRunGenerate")?.addEventListener("click", () => {
+    generateSettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupDryRunCopy")?.addEventListener("click", () => {
+    copySettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderConflictRefresh")?.addEventListener("click", () => {

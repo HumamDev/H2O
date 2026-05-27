@@ -1004,7 +1004,8 @@ body[data-sidebar="closed"] .wbSide--sidebar{
 }
 
 body[data-route="reader"] .wbMain{
-  overflow:hidden;
+  overflow-y:auto;
+  overflow-x:hidden;
   overscroll-behavior:contain;
   padding:0;
   display:grid;
@@ -2207,19 +2208,32 @@ body[data-route="reader"] .cgFrame,
 body[data-route="reader"] .cgBody,
 body[data-route="reader"] .cgThread{
   min-height:0 !important;
+  max-height:none !important;
+}
+
+body[data-route="reader"] .wbMain{
   height:100% !important;
-  max-height:100% !important;
-  overflow:hidden !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+}
+
+body[data-route="reader"] .wbReader,
+body[data-route="reader"] .cgFrame,
+body[data-route="reader"] .cgBody,
+body[data-route="reader"] .cgThread{
+  height:auto !important;
+  min-height:100% !important;
+  overflow:visible !important;
 }
 
 body[data-route="reader"] .cgScroll,
 body[data-route="reader"] .wbReaderScroll,
 body[data-route="reader"] [data-scroll-root="1"]{
-  min-height:0 !important;
-  height:100% !important;
-  max-height:100% !important;
-  overflow-y:auto !important;
-  overflow-x:hidden !important;
+  min-height:100% !important;
+  height:auto !important;
+  max-height:none !important;
+  overflow-y:visible !important;
+  overflow-x:visible !important;
   overscroll-behavior:contain !important;
 }
 
@@ -2268,7 +2282,9 @@ body[data-layout="wide"] .cgScroll > *{
 
 .cgTurn--user{
   display:flex;
-  justify-content:flex-end;
+  flex-direction:column;
+  align-items:flex-end;
+  justify-content:flex-start;
 }
 
 .cgMsg{
@@ -3480,13 +3496,13 @@ div[class*="prose"] {
 
 .wbRichRoot [data-message-author-role="user"].text-message,
 .wbRichRoot [data-message-author-role="user"] .text-message {
-  align-items:stretch;
-  width:100%;
+  align-items:flex-start;
+  width:auto;
   max-width:100%;
 }
 
 .wbRichRoot [data-message-author-role="user"] .text-message > * {
-  width:100%;
+  width:auto;
   max-width:100%;
   min-width:0;
 }
@@ -3837,7 +3853,9 @@ body[data-route="reader"][data-layout="wide"] .cgScroll > :where(
 /* Keep stamped role wrappers authoritative for side placement parity */
 .wbRichRoot .cgTurn--user[data-testid^="conversation-turn"] {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
 }
 
 .wbRichRoot .cgTurn--user [data-message-author-role="user"] {
@@ -3891,6 +3909,60 @@ body[data-route="reader"][data-layout="wide"] .cgScroll > :where(
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 6px;
+}
+
+.cgUserAttachmentGrid{
+  --cg-user-attachment-size:112px;
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(var(--cg-user-attachment-size), var(--cg-user-attachment-size)));
+  justify-content:end;
+  gap:8px;
+  width:fit-content;
+  max-width:min(100%, calc((var(--cg-user-attachment-size) * 3) + 16px));
+  margin:0 0 8px auto;
+}
+
+.cgUserAttachmentCard{
+  width:var(--cg-user-attachment-size);
+  height:var(--cg-user-attachment-size);
+  overflow:hidden;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.08);
+}
+
+.cgUserAttachmentCard img{
+  display:block;
+  width:100%;
+  height:100%;
+  max-width:none;
+  object-fit:cover;
+  border-radius:inherit;
+}
+
+.cgTurn--user .grid:has(img),
+.cgTurn--user [data-message-attachment-id]:has(img),
+.wbRichRoot .cgTurn--user .grid:has(img),
+.wbRichRoot .cgTurn--user [data-message-attachment-id]:has(img){
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  gap:8px;
+  width:fit-content;
+  max-width:min(100%, 352px);
+  margin:0 0 8px auto;
+}
+
+.cgTurn--user .grid:has(img) img,
+.cgTurn--user [data-message-attachment-id]:has(img) img,
+.wbRichRoot .cgTurn--user .grid:has(img) img,
+.wbRichRoot .cgTurn--user [data-message-attachment-id]:has(img) img{
+  display:block;
+  width:112px;
+  height:112px;
+  max-width:none;
+  object-fit:cover;
+  border-radius:18px;
 }
 
 /* Cited sources list at bottom of web-search turns */
@@ -7337,6 +7409,57 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * Phase 4-3 — Message-level paragraph controls
+ *
+ *   data-overlay-list="bullet|numbered"
+ *   data-overlay-align="left|center|right"
+ *   data-overlay-indent="1|2|3"
+ *
+ * All three decorate the role-author content scope inside the turn.
+ *
+ * Screen-list limitation: the message body is ONE DOM element from the
+ * reader's perspective, so `display: list-item` produces a SINGLE
+ * bullet/number per message (whole body = one list item). Splitting a
+ * message into multiple list items would require contentEditable +
+ * line-level structural state, which Phase 4-3 explicitly avoids.
+ * Markdown export + DOCX export both split per `\n` and emit a proper
+ * multi-item list — the per-line list-item rendering lives there.
+ *
+ * Hex / units / spacing chosen to match the OOXML writer (720 twips per
+ * indent level → 1em per level on screen; DOCX uses 720/1440/2160 twips).
+ * ────────────────────────────────────────────────────────────────────── */
+.wbReader [data-turn][data-overlay-list="bullet"] [data-message-author-role]{
+  display:list-item;
+  list-style:disc inside;
+  margin-left:0;
+}
+.wbReader [data-turn][data-overlay-list="numbered"] [data-message-author-role]{
+  display:list-item;
+  list-style:decimal inside;
+  margin-left:0;
+}
+
+.wbReader [data-turn][data-overlay-align="left"] [data-message-author-role]{
+  text-align:left;
+}
+.wbReader [data-turn][data-overlay-align="center"] [data-message-author-role]{
+  text-align:center;
+}
+.wbReader [data-turn][data-overlay-align="right"] [data-message-author-role]{
+  text-align:right;
+}
+
+.wbReader [data-turn][data-overlay-indent="1"] [data-message-author-role]{
+  padding-left:1em;
+}
+.wbReader [data-turn][data-overlay-indent="2"] [data-message-author-role]{
+  padding-left:2em;
+}
+.wbReader [data-turn][data-overlay-indent="3"] [data-message-author-role]{
+  padding-left:3em;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
  *
  * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
@@ -8058,6 +8181,40 @@ body[data-route="reader"] #studioDock.wbDock--open {
     color: #4A5568 !important;
   }
 
+  /* ── Phase 4-3 — paragraph controls in print ───────────────────────
+   * Mirror the screen rules; !important to win against the print
+   * reset block above. Same screen-list single-marker limitation
+   * applies in print too — splitting a message into multiple list
+   * items requires contentEditable which Phase 4-3 avoids. */
+  .wbReader [data-turn][data-overlay-list="bullet"] [data-message-author-role] {
+    display: list-item !important;
+    list-style: disc inside !important;
+    margin-left: 0 !important;
+  }
+  .wbReader [data-turn][data-overlay-list="numbered"] [data-message-author-role] {
+    display: list-item !important;
+    list-style: decimal inside !important;
+    margin-left: 0 !important;
+  }
+  .wbReader [data-turn][data-overlay-align="left"] [data-message-author-role] {
+    text-align: left !important;
+  }
+  .wbReader [data-turn][data-overlay-align="center"] [data-message-author-role] {
+    text-align: center !important;
+  }
+  .wbReader [data-turn][data-overlay-align="right"] [data-message-author-role] {
+    text-align: right !important;
+  }
+  .wbReader [data-turn][data-overlay-indent="1"] [data-message-author-role] {
+    padding-left: 1em !important;
+  }
+  .wbReader [data-turn][data-overlay-indent="2"] [data-message-author-role] {
+    padding-left: 2em !important;
+  }
+  .wbReader [data-turn][data-overlay-indent="3"] [data-message-author-role] {
+    padding-left: 3em !important;
+  }
+
   /* ── 5. Structure markers (sections / dividers / TOC) ────────────── */
 
   .wbReader .wbOverlaySectionHeader {
@@ -8359,13 +8516,11 @@ html[data-h2o-typography="mono"]{
   font-size: var(--wb-appearance-font-size, 16px);
 }
 
-.wbReader .cgThread,
 .wbReader [data-message-author-role],
 .wbReader [data-turn]{
-  /* Lift the thread max-width so the user-adjusted content width takes
-   * precedence over --wb-thread-w. The existing reader CSS lays out the
-   * thread with --wb-thread-w; this rule overrides that single dimension
-   * without touching the surrounding grid. */
+  /* Lift the turn/body max-width so the user-adjusted content width takes
+   * precedence over --wb-thread-w while the full-width reader scroll root
+   * remains centered in the main content area. */
   max-width: var(--wb-appearance-content-width, var(--wb-thread-w, 48rem));
 }
 

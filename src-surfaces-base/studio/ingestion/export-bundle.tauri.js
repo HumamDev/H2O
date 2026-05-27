@@ -522,11 +522,14 @@
   function projectTurnMessage(turn, index, capturedAt) {
     var order = (typeof turn.turnIdx === 'number' && Number.isFinite(turn.turnIdx))
       ? Math.floor(turn.turnIdx) : index;
+    var meta = safeObject(turn.meta);
+    var attachments = Array.isArray(meta.attachments) ? meta.attachments : (Array.isArray(turn.attachments) ? turn.attachments : []);
     return {
       role: cleanString(turn.role || 'assistant') || 'assistant',
       text: typeof turn.text === 'string' ? turn.text : '',
       order: order,
       createdAt: numberOrZero(capturedAt) || null,
+      attachments: attachments,
     };
   }
 

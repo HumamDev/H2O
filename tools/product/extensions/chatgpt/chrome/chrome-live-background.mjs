@@ -2216,19 +2216,57 @@ function normalizeMessageRole(raw) {
   return "assistant";
 }
 
+function normalizeAttachmentRecord(raw, idx = 0, roleRaw = "user") {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const kind = String(src.kind || src.type || "").trim().toLowerCase() || "image";
+  if (kind !== "image") return null;
+  const thumbnailSrc = String(src.thumbnailSrc || src.thumbnail || src.src || "").trim();
+  const originalSrc = String(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "").trim();
+  const captureStatus = String(src.captureStatus || src.status || (thumbnailSrc ? "linked" : "failed")).trim() || "failed";
+  if (!thumbnailSrc && !originalSrc && captureStatus !== "failed") return null;
+  return {
+    kind: "image",
+    role: normalizeMessageRole(src.role || roleRaw || "user"),
+    thumbnailSrc,
+    originalSrc,
+    alt: String(src.alt || "").trim(),
+    width: Math.max(0, Math.round(Number(src.width || 0) || 0)),
+    height: Math.max(0, Math.round(Number(src.height || 0) || 0)),
+    naturalWidth: Math.max(0, Math.round(Number(src.naturalWidth || 0) || 0)),
+    naturalHeight: Math.max(0, Math.round(Number(src.naturalHeight || 0) || 0)),
+    captureStatus,
+    source: String(src.source || "dom").trim() || "dom",
+    order: Math.max(0, Math.floor(Number(src.order ?? idx) || idx)),
+  };
+}
+
+function normalizeAttachments(raw, roleRaw = "user") {
+  const src = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (let i = 0; i < src.length; i += 1) {
+    const item = normalizeAttachmentRecord(src[i], i, roleRaw);
+    if (item) out.push(item);
+  }
+  out.sort((a, b) => Number(a.order) - Number(b.order));
+  return out;
+}
+
 function normalizeMessages(messages) {
   const src = Array.isArray(messages) ? messages : [];
   const out = [];
   for (let i = 0; i < src.length; i += 1) {
     const m = src[i] && typeof src[i] === "object" ? src[i] : {};
+    const role = normalizeMessageRole(m.role);
+    const attachments = normalizeAttachments(m.attachments, role);
     const orderRaw = Number(m.order);
     const createdAtRaw = Number(m.createdAt);
     const row = {
-      role: normalizeMessageRole(m.role),
+      role,
       text: String(m.text || ""),
       order: Number.isFinite(orderRaw) ? Math.floor(orderRaw) : i,
       createdAt: Number.isFinite(createdAtRaw) ? createdAtRaw : null,
     };
+    if (attachments.length) row.attachments = attachments;
     if (typeof m.editedAt === "string" && m.editedAt) row.editedAt = m.editedAt;
     if (typeof m.originalText === "string") row.originalText = m.originalText;
     out.push(row);
@@ -2247,6 +2285,7 @@ function canonicalMessagesJson(messages) {
     text: m.text,
     order: m.order,
     createdAt: m.createdAt == null ? null : m.createdAt,
+    ...(Array.isArray(m.attachments) && m.attachments.length ? { attachments: m.attachments } : {}),
   }));
   return JSON.stringify(rows);
 }

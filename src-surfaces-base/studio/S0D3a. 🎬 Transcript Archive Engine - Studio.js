@@ -326,6 +326,41 @@
     return Number.isFinite(d.getTime()) ? d.getTime() : null;
   }
 
+  function normalizeAttachmentRecord(raw, idx = 0, roleRaw = "user") {
+    const src = isObj(raw) ? raw : {};
+    const kind = String(src.kind || src.type || "").trim().toLowerCase() || "image";
+    if (kind !== "image") return null;
+    const thumbnailSrc = String(src.thumbnailSrc || src.thumbnail || src.src || "").trim();
+    const originalSrc = String(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "").trim();
+    const captureStatus = String(src.captureStatus || src.status || (thumbnailSrc ? "linked" : "failed")).trim() || "failed";
+    if (!thumbnailSrc && !originalSrc && captureStatus !== "failed") return null;
+    return {
+      kind: "image",
+      role: normalizeRole(src.role || roleRaw || "user"),
+      thumbnailSrc,
+      originalSrc,
+      alt: String(src.alt || "").trim(),
+      width: Math.max(0, Math.round(Number(src.width || 0) || 0)),
+      height: Math.max(0, Math.round(Number(src.height || 0) || 0)),
+      naturalWidth: Math.max(0, Math.round(Number(src.naturalWidth || 0) || 0)),
+      naturalHeight: Math.max(0, Math.round(Number(src.naturalHeight || 0) || 0)),
+      captureStatus,
+      source: String(src.source || "dom").trim() || "dom",
+      order: Math.max(0, Math.floor(Number(src.order ?? idx) || idx)),
+    };
+  }
+
+  function normalizeAttachments(raw, roleRaw = "user") {
+    const src = Array.isArray(raw) ? raw : [];
+    const out = [];
+    for (let i = 0; i < src.length; i += 1) {
+      const item = normalizeAttachmentRecord(src[i], i, roleRaw);
+      if (item) out.push(item);
+    }
+    out.sort((a, b) => Number(a.order) - Number(b.order));
+    return out;
+  }
+
   function normalizeMessages(messages) {
     const src = Array.isArray(messages) ? messages : [];
     const rows = [];
@@ -333,14 +368,17 @@
       const m = isObj(src[i]) ? src[i] : {};
       const role = normalizeRole(m.role || m.author || m.type);
       const text = String(m.text || m.content || "").trim();
-      if (!text) continue;
+      const attachments = normalizeAttachments(m.attachments, role);
+      if (!text && !attachments.length) continue;
       const orderRaw = Number(m.order);
-      rows.push({
+      const row = {
         role,
         text,
         order: Number.isFinite(orderRaw) ? Math.floor(orderRaw) : i,
         createdAt: normalizeCreatedAt(m.createdAt ?? m.create_time ?? m.timestamp),
-      });
+      };
+      if (attachments.length) row.attachments = attachments;
+      rows.push(row);
     }
     rows.sort((a, b) => Number(a.order) - Number(b.order));
     for (let i = 0; i < rows.length; i += 1) rows[i].order = i;
@@ -377,13 +415,75 @@
     };
   }
 
+  const CAPTURE_STRIP_SUBTREE_SELECTORS = [
+    "button",
+    '[role="button"]',
+    "input",
+    "textarea",
+    "select",
+    '[aria-hidden="true"]',
+    "[hidden]",
+    ".h2o-cold-layer",
+    ".h2o-archive-native-detached-bin",
+    '[data-h2o-cold="1"]',
+    '[data-cgxui-chat-page-divider="1"]',
+    ".cgxui-chat-page-divider",
+  ];
+
+  const USER_MESSAGE_TEXT_ROOT_SELECTORS = [
+    ".whitespace-pre-wrap",
+    '[class*="whitespace-pre-wrap"]',
+    ".user-message-bubble-color .whitespace-pre-wrap",
+    ".text-message",
+    '[data-message-content]',
+  ];
+
+  function normalizeCapturedText(raw) {
+    return String(raw || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\u200b/g, "")
+      .replace(/\r/g, "")
+      .replace(/(?:Show more\s*Show less|Show less\s*Show more)+\s*$/gi, "")
+      .split("\n")
+      .map((line) => line.replace(/^(?:Show more|Show less)$/i, "").trimEnd())
+      .join("\n")
+      .trim();
+  }
+
+  function cloneCleanCaptureNode(rootEl) {
+    if (!(rootEl instanceof Element)) return null;
+    const clone = rootEl.cloneNode(true);
+    clone.querySelectorAll(CAPTURE_STRIP_SUBTREE_SELECTORS.join(",")).forEach((node) => {
+      try { node.remove(); } catch {}
+    });
+    return clone;
+  }
+
+  function pickUserMessageTextRoot(rootEl) {
+    if (!(rootEl instanceof Element)) return rootEl;
+    for (const selector of USER_MESSAGE_TEXT_ROOT_SELECTORS) {
+      for (const candidate of Array.from(rootEl.querySelectorAll(selector))) {
+        if (normalizeCapturedText(candidate.textContent || "")) return candidate;
+      }
+    }
+    return rootEl;
+  }
+
+  function captureCleanMessageText(messageEl, roleRaw = "") {
+    const clean = cloneCleanCaptureNode(messageEl);
+    if (!clean) return "";
+    const role = normalizeRole(roleRaw || clean.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "");
+    const textRoot = role === "user" ? pickUserMessageTextRoot(clean) : clean;
+    return normalizeCapturedText(textRoot?.textContent || "");
+  }
+
   function captureDomNormalizedMessages() {
     const nodes = collectNativeMessageNodes(D);
     const out = [];
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
       const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
-      const text = String(el?.innerText || el?.textContent || "").trim();
+      const text = captureCleanMessageText(el, role);
       if (!text) continue;
       const createdAt = normalizeCreatedAt(H2O.time?.getCreateTime?.(el));
       out.push({ role, text, order: out.length, createdAt });
@@ -681,6 +781,8 @@
       if (userMessageId) item.userMessageId = userMessageId;
       if (assistantMessageId) item.assistantMessageId = assistantMessageId;
       if (Object.keys(messageTimes).length) item.messageTimes = messageTimes;
+      const attachments = normalizeAttachments(row.attachments, role);
+      if (attachments.length) item.attachments = attachments;
       out.push(item);
     }
     out.sort((a, b) => Number(a.turnIdx) - Number(b.turnIdx));
@@ -1214,6 +1316,7 @@
         role: m.role,
         text: m.text,
         create_time: m.createdAt,
+        ...(Array.isArray(m.attachments) && m.attachments.length ? { attachments: m.attachments } : {}),
       })),
     };
   }
@@ -1229,6 +1332,7 @@
         text: m?.text,
         order: Number(m?.order),
         createdAt: m?.create_time ?? m?.createdAt ?? idx,
+        attachments: m?.attachments,
       })),
     );
     const createdAt = String(src.capturedAt || src.createdAt || nowIso());
