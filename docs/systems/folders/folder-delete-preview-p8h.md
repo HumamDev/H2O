@@ -1,11 +1,11 @@
-# Folder Delete Preview P8h Closeout
+# Folder Delete P8h Closeout
 
-Phase: P8h-g3
-Status: Native delete preview/apply safety proven; Chrome delete preview exists; Chrome/Desktop delete apply remains disabled
+Phase: P8h-g3 / P8h-g4
+Status: Native delete safety proven; Chrome empty-folder delete through Native owner proven; Desktop delete apply remains disabled
 
 ## Verdict
 
-P8h-g1, P8h-g2, and P8h-g3 are complete enough for closeout under the current safety model.
+P8h-g1, P8h-g2, P8h-g3, and P8h-g4 are complete under the current safety model.
 
 The completed delete work proves:
 
@@ -15,8 +15,11 @@ The completed delete work proves:
 - Native folder action popup is visible, body-fixed, and usable.
 - Native folders page/list rows expose folder action affordances.
 - Chrome Studio delete preview UI exists.
-- Chrome Studio delete apply remains disabled.
+- Chrome Studio empty-folder delete apply works through the Native owner bridge.
+- Chrome Studio does not use a local fallback delete/write path.
+- Chrome Studio removes deleted Native-owned folders from FolderParity after the authoritative Native mirror merge.
 - Non-empty folders remain blocked.
+- Desktop Studio delete apply remains disabled.
 
 ## Relevant Commits
 
@@ -30,6 +33,12 @@ The completed delete work proves:
 | Native action button hitbox fix | `98e8912cf8b0ba6951754065c386b21640a74c62` | Fixed the Native action button geometry and real-click target. |
 | Native popup layout/height fix | `2fcbc6f88810245a959ef9fc10ebe2bd014f1fce` | Fixed the collapsed popup layout so actions are visible and usable. |
 | Native create/delete lifecycle UX fix | `3387e6f25915702f33baf7126f53f0fc146ae104` | Replaced browser delete prompt with an H2O modal and refreshed Native sidebar/page after create/delete. |
+| Chrome native-backed folder creation | `71d8a7654bf4760643df2f3ab4dcc2d530a60bbd` | Added a Chrome Studio create-folder panel backed by the Native owner API. |
+| Chrome create bridge diagnostics | `fcf0fb616337cef20d15670aa796cee2b081f9f6` | Added live request tracing for create-folder bridge diagnosis. |
+| Chrome create apply flow | `82705969ac00a1f76292c3d443656ad1f097524e` | Fixed the Chrome create panel preview-to-apply transition. |
+| Created folder action menu | `4a7daa639d79ec7e021508244afba3f66c652137` | Ensured newly created canonical folders can open the existing action menu. |
+| Dynamic Native folders in FolderParity | `7ba546b6a07d80af7fcbb89ada9e30e2252e6fb5` | Included Native-created dynamic folders in Chrome Studio FolderParity. |
+| Chrome delete mirror merge | `bd22356ddadeec48001b51ea6e0fd52b89c0976a` | Made incoming Native folder-state authoritative for deleted Native-owned rows. |
 
 ## Runtime Proof Results
 
@@ -66,12 +75,45 @@ Native popup proof:
 - The popup includes Color, Open folder, Open in Studio, Rename folder, Delete folder, and Copy folder ID.
 - Native folders page/list rows have action affordances.
 
+Chrome Studio empty-folder delete proof:
+
+- Temporary folder `Delete Test Chrome` was created through Chrome Studio using the Native owner bridge.
+- The temporary folder was empty and exposed the existing Chrome Studio action menu.
+- Chrome Studio delete preview showed membership count `0` and required exact confirmation:
+
+```text
+DELETE EMPTY FOLDER
+```
+
+- Chrome Studio delete apply reached the Native owner and Native removed the folder.
+- Native final state no longer contains `Delete Test Chrome`.
+- Chrome Studio FolderParity final state no longer contains `Delete Test Chrome`.
+- The All folders page no longer shows `Delete Test Chrome`.
+- Chrome Studio FolderParity still contains `Study`.
+
+Chrome mirror merge proof:
+
+- Before the final mirror fix, Chrome had received the authoritative Native folder-state but merged it additively.
+- The stale stored row for `Delete Test Chrome` had source `native-folder-catalog` and survived even though Native no longer listed it.
+- The final merge rule treats incoming Native folder-state as authoritative for Native-owned rows.
+- Stored Native-owned rows absent from incoming Native folder-state are removed from the Chrome mirror.
+- Non-Native/local review/imported-style rows are preserved according to existing semantics.
+
+Study non-empty safety proof:
+
+- Study delete panel opens.
+- Native members: `4`.
+- Blockers include `delete-non-empty-folder-blocked` and `delete-confirmation-required`.
+- Confirmation input is disabled.
+- Delete cannot apply.
+
 ## Safety Boundaries
 
 The following boundaries remain active:
 
 - Native H2O folder-state remains the canonical folder metadata authority.
-- Chrome delete apply is not enabled.
+- Chrome delete apply is enabled only for empty canonical folders through the Native owner bridge.
+- Chrome does not perform direct local fallback deletes.
 - Desktop delete apply is not enabled.
 - Desktop SQLite/Rust paths are not part of delete authority.
 - Local Review rows are protected and are not delete targets.
@@ -86,15 +128,13 @@ The following boundaries remain active:
 The next phase should be:
 
 ```text
-P8h-g4 - Chrome Studio empty-folder delete through Native owner
+P8h-g5 - Desktop mirror delete propagation proof
 ```
 
-Do not start Chrome delete apply until the Chrome delete preview UI is accepted. P8h-g4 should keep the same safety model:
+P8h-g5 should keep the same safety model:
 
-- preview first
-- exact confirmation
-- empty canonical folders only
-- Native owner bridge only
-- no Desktop apply
-- no SQLite/Rust mutation path
-- non-empty folders blocked
+- Desktop receives canonical delete state only through reviewed mirror refresh.
+- Desktop direct delete remains disabled.
+- SQLite/Rust folder and binding stores remain non-authoritative for delete.
+- Non-empty delete remains blocked.
+- Local Review rows remain protected.
