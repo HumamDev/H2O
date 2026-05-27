@@ -167,6 +167,16 @@
   // ── IndexedDB read-only handle retrieval ────────────────────────────
   // Reuses the IDB store that folder-import.mv3.js maintains; this
   // module never opens it for write.
+  //
+  // folder-import.mv3.js stores the FileSystemDirectoryHandle wrapped in a
+  // row object `{ handle, name, connectedAt }` under key 'sync-folder'
+  // (see folder-import.mv3.js loadStoredHandle()). The bridge unwraps the
+  // row and returns the raw `handle` (or null if absent).
+  //
+  // The bridge also tolerates the legacy case where the IDB row could
+  // itself be the raw handle: if `row.getFileHandle` is a function, the
+  // row IS the handle and is returned as-is. This is defensive only — the
+  // current folder-import.mv3.js always wraps.
   function getSyncFolderHandle() {
     return new Promise(function (resolve) {
       var indexedDb;
@@ -192,7 +202,18 @@
           var store = tx.objectStore(IDB_STORE);
           var getReq = store.get(IDB_KEY);
           getReq.onsuccess = function () {
-            resolve(getReq.result || null);
+            var row = getReq.result;
+            var handle = null;
+            if (row) {
+              if (row.handle && typeof row.handle.getFileHandle === 'function') {
+                // Standard wrapped row { handle, name, connectedAt }.
+                handle = row.handle;
+              } else if (typeof row.getFileHandle === 'function') {
+                // Defensive: a legacy row where the value IS the handle.
+                handle = row;
+              }
+            }
+            resolve(handle);
             try { db.close(); } catch (_) {}
           };
           getReq.onerror = function () {
