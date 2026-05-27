@@ -59,6 +59,7 @@ const FOLDER_DESKTOP_MIRROR_REFRESH_STATE = {
 };
 const FOLDER_PARITY_SETTINGS_UI_STATE = {
   activeTab: "overview",
+  cleanupSubtab: "overview",
   statuses: Object.create(null),
 };
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
@@ -419,6 +420,64 @@ function mountEditTextarea(hostEl, snapshotId, turnIdx, originalText, onSave, on
 function normalizeText(s){
   return String(s || "").replace(/\s+/g, " ").trim();
 }
+
+function cleanReaderUserText(raw){
+  return String(raw || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u200b/g, "")
+    .replace(/\r/g, "")
+    .replace(/(?:\s*(?:Show more\s*Show less|Show less\s*Show more)\s*)+$/gi, "")
+    .split("\n")
+    .map((line) => line.replace(/^\s*(?:Show more|Show less)\s*$/i, ""))
+    .join("\n")
+    .trim();
+}
+
+function cleanReaderUserTextNodeLeaks(root){
+  if (!(root instanceof Element)) return;
+  const hosts = [];
+  if (root.matches?.('[data-message-author-role="user"], .user-message-bubble-color')) hosts.push(root);
+  hosts.push(...root.querySelectorAll?.('[data-message-author-role="user"], .user-message-bubble-color') || []);
+  for (const host of hosts){
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes){
+      const before = String(node.nodeValue || "");
+      const after = cleanReaderUserText(before);
+      if (after !== before.trim()) node.nodeValue = after ? after : "";
+    }
+  }
+}
+
+let readerTopOffsetRaf = 0;
+
+function syncReaderTopOffset(){
+  if (readerTopOffsetRaf) cancelAnimationFrame(readerTopOffsetRaf);
+  readerTopOffsetRaf = requestAnimationFrame(() => {
+    readerTopOffsetRaf = 0;
+    try {
+      const visibleBottoms = [document.querySelector(".wbRibbon:not([hidden])"), document.querySelector(".wbTop")]
+        .filter((el) => el instanceof Element)
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden" || r.height <= 0) return 0;
+          return Math.ceil(r.bottom);
+        });
+      const bottom = Math.max(0, ...visibleBottoms);
+      const offset = Math.max(72, bottom + 12);
+      document.documentElement.style.setProperty("--wb-reader-top-offset", `${offset}px`);
+    } catch {}
+  });
+}
+
+try {
+  window.addEventListener("resize", syncReaderTopOffset, { passive: true });
+  window.addEventListener("evt:h2o:studio:ribbon:context-changed", syncReaderTopOffset, { passive: true });
+  window.addEventListener("evt:h2o:studio:ribbon:tab-changed", syncReaderTopOffset, { passive: true });
+  window.addEventListener("evt:h2o:studio:ribbon:collapsed-changed", syncReaderTopOffset, { passive: true });
+} catch {}
 
 function normalizeRole(raw){
   return String(raw || "").trim().toLowerCase() === "user" ? "user" : "assistant";
@@ -1923,6 +1982,7 @@ function sanitizeRichTurnElement(htmlRaw){
 
   const cleanTurn = turnEl.cloneNode(true);
   scrubReplayNode(cleanTurn);
+  cleanReaderUserTextNodeLeaks(cleanTurn);
   // Defensive pass: scrubReplayNode might leave or rebuild <use> elements, so strip
   // any remaining cross-origin references once more on the cloned tree.
   neutralizeExternalUseHrefs(cleanTurn);
@@ -2077,7 +2137,7 @@ function buildCanonicalMessage(role, text, meta = {}){
 
   const bodyEl = document.createElement("div");
   bodyEl.className = "cgMsgBody";
-  bodyEl.innerHTML = renderTextAsChatGPTBlocks(text);
+  bodyEl.innerHTML = renderTextAsChatGPTBlocks(role === "user" ? cleanReaderUserText(text) : text);
 
   wrap.appendChild(bodyEl);
 
@@ -4880,6 +4940,8 @@ function buildReaderDOM(snap){
       });
     }
   } catch {}
+  syncReaderTopOffset();
+  try { setTimeout(syncReaderTopOffset, 80); } catch {}
 
   /* Phase 2a — edit-overlay foundation hook (Phase 2b — now also
    * applies ops to DOM via the extended applier, and publishes
@@ -5957,6 +6019,10 @@ function settingsPanelHasCurrentFolderCleanupReview(panel){
   const text = String(cleanupReview.textContent || "");
   if (!/Folder Cleanup Review/.test(text)) return false;
   if (!/Read-only:\s*no cleanup is performed/i.test(text)) return false;
+  if (!panel.querySelector("[data-folder-cleanup-subtab='overview']")) return false;
+  if (!panel.querySelector("[data-folder-cleanup-subpanel='dry-run']")) return false;
+  if (!panel.querySelector("#wbSettingsFolderCleanupDryRunGenerate")) return false;
+  if (!panel.querySelector("#wbSettingsFolderCleanupDryRunRows")) return false;
   const legacyMutationControls = [
     "#wbSettingsFolderCleanupDeleteBox",
     "#wbSettingsFolderCleanupDeleteSelected",
@@ -6165,11 +6231,26 @@ function renderSettingsRoute(){
             <button id="wbSettingsFolderCleanupReviewCopy" type="button" style="${btnStyle}">Copy review report JSON</button>
           </div>
         </div>
+        <div id="wbSettingsFolderCleanupSubtabs" role="tablist" aria-label="Folder Cleanup Review sections" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" data-folder-cleanup-subtab="overview" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview")}">Overview</button>
+          <button type="button" data-folder-cleanup-subtab="candidates" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates")}">Candidates</button>
+          <button type="button" data-folder-cleanup-subtab="dry-run" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run")}">Dry-run Plan</button>
+          <button type="button" data-folder-cleanup-subtab="conflicts" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts")}">Conflicts</button>
+          <button type="button" data-folder-cleanup-subtab="desktop" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop")}">Desktop</button>
+          <button type="button" data-folder-cleanup-subtab="orphans" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans")}">Orphans</button>
+        </div>
+        <div data-folder-cleanup-subpanel="overview" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "flex" : "none"};flex-direction:column;gap:8px">
         <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">
           Read-only: this panel only renders FolderParity diagnostics. It does not delete, merge, repair, normalize, write Chrome storage, write Desktop SQLite, call Native owner operations, or mutate folder mirrors.
         </div>
         <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
+        <div style="font-size:12px;opacity:.72">No cleanup is performed. Use the Candidates and Dry-run Plan subtabs to inspect a reviewed no-mutation plan before any future implementation phase.</div>
+        </div>
+        <div data-folder-cleanup-subpanel="candidates" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "flex" : "none"};flex-direction:column;gap:8px">
+        <div style="font-size:12px;opacity:.72">Selectable rows are non-canonical review candidates only. Native-owned canonical rows are preserve-only.</div>
         <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        <div data-folder-cleanup-subpanel="dry-run" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "flex" : "none"};flex-direction:column;gap:8px">
         <div id="wbSettingsFolderCleanupDryRunBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -6184,6 +6265,9 @@ function renderSettingsRoute(){
           <div id="wbSettingsFolderCleanupDryRunRows" style="display:flex;flex-direction:column;gap:6px;font-size:12px"></div>
           <pre id="wbSettingsFolderCleanupDryRunJson" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:220px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
         </div>
+        </div>
+        <div data-folder-cleanup-subpanel="conflicts" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "flex" : "none"};flex-direction:column;gap:8px">
+        <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Never merge by name. Same-name rows such as Case and English are review-only conflicts until a future exact-ID plan exists.</div>
         <div id="wbSettingsFolderConflictReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -6197,6 +6281,8 @@ function renderSettingsRoute(){
           </div>
           <div id="wbSettingsFolderConflictGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
         </div>
+        </div>
+        <div data-folder-cleanup-subpanel="desktop" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "flex" : "none"};flex-direction:column;gap:8px">
         <div id="wbSettingsFolderDesktopReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -6210,6 +6296,10 @@ function renderSettingsRoute(){
           </div>
           <div id="wbSettingsFolderDesktopReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
           <div id="wbSettingsFolderDesktopReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        </div>
+        <div data-folder-cleanup-subpanel="orphans" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "flex" : "none"};flex-direction:column;gap:8px">
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Orphan membership/binding risk is diagnostic. It is not deletion permission and does not authorize cleanup.</div>
           <div id="wbSettingsFolderDesktopOrphanBindingBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
               <div>
@@ -6483,7 +6573,7 @@ function settingsFolderParityPanelTabStyle(active){
 
 function settingsFolderParityEnsureTabBinding(panel){
   if (!panel) return;
-  const version = "p8i-c1-folder-parity-tabs-v1";
+  const version = "p8i-c2-folder-parity-tabs-dry-run-v1";
   if (panel.__h2oFolderParityTabBindingVersion === version) return;
   panel.__h2oFolderParityTabBindingVersion = version;
   panel.addEventListener("click", (event) => {
@@ -6493,6 +6583,13 @@ function settingsFolderParityEnsureTabBinding(panel){
     event.stopPropagation();
     settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
   }, true);
+  panel.addEventListener("click", (event) => {
+    const tab = event.target?.closest?.("[data-folder-cleanup-subtab]");
+    if (!tab || !panel.contains(tab)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    settingsFolderCleanupSetActiveSubtab(panel, tab.getAttribute("data-folder-cleanup-subtab"));
+  }, true);
   panel.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     const tab = event.target?.closest?.("[data-folder-parity-tab]");
@@ -6500,6 +6597,52 @@ function settingsFolderParityEnsureTabBinding(panel){
     event.preventDefault();
     event.stopPropagation();
     settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
+  }, true);
+  panel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const tab = event.target?.closest?.("[data-folder-cleanup-subtab]");
+    if (!tab || !panel.contains(tab)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    settingsFolderCleanupSetActiveSubtab(panel, tab.getAttribute("data-folder-cleanup-subtab"));
+  }, true);
+  panel.addEventListener("click", (event) => {
+    const generateBtn = event.target?.closest?.("#wbSettingsFolderCleanupDryRunGenerate");
+    if (generateBtn && panel.contains(generateBtn)) {
+      event.preventDefault();
+      event.stopPropagation();
+      generateSettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+      return;
+    }
+    const copyBtn = event.target?.closest?.("#wbSettingsFolderCleanupDryRunCopy");
+    if (copyBtn && panel.contains(copyBtn)) {
+      event.preventDefault();
+      event.stopPropagation();
+      copySettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+    }
+  }, true);
+  panel.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!target || target.getAttribute?.("data-folder-cleanup-dry-run-select") !== "1" || !panel.contains(target)) return;
+    settingsFolderCleanupDryRunSelectedIds(panel);
+    panel.__h2oFolderCleanupDryRunPlan = null;
+    const summary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
+    const rows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+    const json = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
+    const copy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
+    const box = panel.querySelector("#wbSettingsFolderCleanupDryRunBox");
+    if (summary) summary.textContent = "Selection changed. Generate a fresh dry-run plan. No cleanup is performed.";
+    if (rows) {
+      rows.removeAttribute("data-folder-cleanup-dry-run-rendered");
+      rows.innerHTML = "";
+    }
+    if (box) box.removeAttribute("data-folder-cleanup-dry-run-rendered");
+    if (json) {
+      json.hidden = true;
+      json.textContent = "";
+      json.removeAttribute("data-folder-cleanup-dry-run-rendered");
+    }
+    if (copy) copy.disabled = true;
   }, true);
 }
 
@@ -6515,6 +6658,35 @@ function settingsFolderParitySetActiveTab(panel, tabId){
     const active = btn.getAttribute("data-folder-parity-tab") === next;
     btn.setAttribute("aria-selected", active ? "true" : "false");
     btn.style.cssText = settingsFolderParityPanelTabStyle(active);
+  });
+}
+
+function settingsFolderCleanupSubtabStyle(active){
+  return [
+    "padding:6px 9px",
+    "border-radius:7px",
+    "border:1px solid " + (active ? "rgba(96,165,250,.42)" : "rgba(255,255,255,.10)"),
+    "background:" + (active ? "rgba(96,165,250,.14)" : "rgba(255,255,255,.035)"),
+    "color:inherit",
+    "font:inherit",
+    "font-size:12px",
+    "cursor:pointer",
+    "pointer-events:auto",
+  ].join(";");
+}
+
+function settingsFolderCleanupSetActiveSubtab(panel, subtabId){
+  const next = String(subtabId || "overview").trim() || "overview";
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab = next;
+  panel?.querySelectorAll?.("[data-folder-cleanup-subpanel]")?.forEach((el) => {
+    const active = el.getAttribute("data-folder-cleanup-subpanel") === next;
+    el.hidden = !active;
+    el.style.display = active ? "flex" : "none";
+  });
+  panel?.querySelectorAll?.("[data-folder-cleanup-subtab]")?.forEach((btn) => {
+    const active = btn.getAttribute("data-folder-cleanup-subtab") === next;
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.style.cssText = settingsFolderCleanupSubtabStyle(active);
   });
 }
 
@@ -7894,10 +8066,12 @@ function settingsFolderCleanupBuildDryRunPlan(reviewPlan, selectedFolderIds){
 }
 
 function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
+  const box = panel?.querySelector("#wbSettingsFolderCleanupDryRunBox");
   const summary = panel?.querySelector("#wbSettingsFolderCleanupDryRunSummary");
   const rowsEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunRows");
   const jsonEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunJson");
   const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupDryRunCopy");
+  if (box) box.setAttribute("data-folder-cleanup-dry-run-rendered", "1");
   if (summary) {
     summary.textContent = `schema: ${dryRunPlan?.schema || "h2o.folder-cleanup-dry-run.v1"} · selectedCount: ${dryRunPlan?.selectedCount || 0} · allowedCount: ${dryRunPlan?.allowedCount || 0} · blockedCount: ${dryRunPlan?.blockedCount || 0} · reasonCodes: ${(dryRunPlan?.reasonCodes || []).join(", ") || "dry-run-only, no-mutation-phase"} · No cleanup is performed.`;
   }
@@ -7905,6 +8079,7 @@ function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
     const rows = Array.isArray(dryRunPlan?.candidates) ? dryRunPlan.candidates : [];
     const metaHtml = `
       <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <strong>Dry-run result</strong><span data-folder-cleanup-dry-run-rendered="1">rendered</span>
         <strong>schema</strong><span>${esc(dryRunPlan?.schema || "h2o.folder-cleanup-dry-run.v1")}</span>
         <strong>selectedCount</strong><span>${esc(dryRunPlan?.selectedCount ?? 0)}</span>
         <strong>allowedCount</strong><span>${esc(dryRunPlan?.allowedCount ?? 0)}</span>
@@ -7924,10 +8099,12 @@ function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
       </div>
     `).join("") : `<div style="border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px;opacity:.78">No rows selected. reasonCodes: no-selection, dry-run-only, no-mutation-phase.</div>`;
     rowsEl.innerHTML = metaHtml + rowHtml;
+    rowsEl.setAttribute("data-folder-cleanup-dry-run-rendered", "1");
   }
   if (jsonEl) {
     jsonEl.hidden = false;
     jsonEl.textContent = JSON.stringify(dryRunPlan || {}, null, 2);
+    jsonEl.setAttribute("data-folder-cleanup-dry-run-rendered", "1");
   }
   if (copyBtn) copyBtn.disabled = !dryRunPlan;
 }
@@ -7939,6 +8116,7 @@ async function generateSettingsFolderCleanupDryRunPlan(panel){
   const selectedIds = settingsFolderCleanupDryRunSelectedIds(panel);
   const dryRunPlan = settingsFolderCleanupBuildDryRunPlan(reviewPlan, selectedIds);
   panel.__h2oFolderCleanupDryRunPlan = dryRunPlan;
+  settingsFolderCleanupSetActiveSubtab(panel, "dry-run");
   settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan);
   settingsFolderParityLog(panel, "Dry-run folder cleanup plan generated. No cleanup performed.");
   return dryRunPlan;
@@ -10482,12 +10660,17 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   if (copyBtn) copyBtn.disabled = true;
   panel.__h2oFolderCleanupDryRunPlan = null;
   if (dryRunSummary) dryRunSummary.textContent = "Select review rows, then generate a dry-run plan. No cleanup is performed.";
-  if (dryRunRows) dryRunRows.innerHTML = "";
+  if (dryRunRows) {
+    dryRunRows.innerHTML = "";
+    dryRunRows.removeAttribute("data-folder-cleanup-dry-run-rendered");
+  }
   if (dryRunJson) {
     dryRunJson.hidden = true;
     dryRunJson.textContent = "";
+    dryRunJson.removeAttribute("data-folder-cleanup-dry-run-rendered");
   }
   if (dryRunCopy) dryRunCopy.disabled = true;
+  panel.querySelector("#wbSettingsFolderCleanupDryRunBox")?.removeAttribute("data-folder-cleanup-dry-run-rendered");
   const loaded = seed?.selfCheck
     ? { selfCheck: seed.selfCheck, displayModel: await parity.getDisplayModel({ fresh: true }) }
     : await settingsFolderCleanupLoadReviewInputs();
@@ -11015,6 +11198,7 @@ function bindSettingsSyncControls(panel){
     });
   });
   settingsFolderParitySetActiveTab(panel, FOLDER_PARITY_SETTINGS_UI_STATE.activeTab);
+  settingsFolderCleanupSetActiveSubtab(panel, FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab);
 
   panel.querySelector("#wbSettingsFolderParityRefresh")?.addEventListener("click", () => {
     refreshSettingsFolderParity(panel).catch((err) => {
