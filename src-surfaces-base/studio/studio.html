@@ -567,6 +567,13 @@
        connect a read-only folder handle and manually import latest.json via the
        existing full-bundle merge importer. No polling or folder writes. -->
   <script src="./sync/folder-import.mv3.js"></script>
+  <!-- F10.3: Chrome/MV3-only operator-triggered diagnostic that reads the
+       existing sync-folder latest.json and presents it as a redacted
+       cross-platform `bundle` envelope per F10.2.0. Preview/evidence only —
+       no merge, no apply, no proposal, no write-back, no chrome.storage
+       write, no chrome.runtime broadcast, no folder-import call. Registers
+       H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes. -->
+  <script src="./sync/bundle-envelope-preview.mv3.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no

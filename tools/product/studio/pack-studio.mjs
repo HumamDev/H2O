@@ -132,6 +132,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Chrome/MV3-only: manual sync-folder import (R2B). Reads latest.json from
   // a user-picked directory handle and calls the existing merge importer.
   "sync/folder-import.mv3.js",
+  // F10.3: Chrome/MV3-only bundle-envelope preview bridge. Operator-triggered
+  // diagnostic only; reads the existing sync-folder latest.json (read-only)
+  // and presents it as a redacted cross-platform `bundle` envelope per
+  // F10.2.0. No merge, no apply, no proposal, no write-back.
+  "sync/bundle-envelope-preview.mv3.js",
   // F2: peer-identity scaffold. Mints + persists per-install peer identity
   // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
   // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
@@ -317,6 +322,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
+  "sync/bundle-envelope-preview.mv3.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",
