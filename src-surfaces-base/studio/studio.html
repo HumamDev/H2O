@@ -1,12 +1,13 @@
 <!--
- * @version 2.5.18
+ * @version 2.5.20
  * Changes: fixed shell, collapsed rail, simplified topbar;
- *          stylesheet href carries ?v=2.5.18 cache-bust because the Tauri
+ *          stylesheet href carries ?v=2.5.20 cache-bust because the Tauri
  *          V2 dev server (http://127.0.0.1:1430/) emits no
  *          Last-Modified/ETag/Cache-Control headers, so WKWebView
- *          otherwise serves the previously-fetched studio.css indefinitely
- *          and live CSS edits never reach the desktop window. Bump the
- *          query string each time studio.css's structural layout changes;
+ *          otherwise serves previously-fetched Studio assets indefinitely
+ *          and live CSS/JS edits never reach the desktop window. Bump the
+ *          query string each time studio.css or studio.js structural reader
+ *          behavior changes;
  *          Appearance / View Options panel mounted in the top-right corner
  *          (trigger added by appearance/appearance-panel.studio.js);
  *          v2.5.10 expanded Light/Sepia theme coverage to the JS-injected
@@ -27,7 +28,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>H2O Studio vNext</title>
-  <link rel="stylesheet" href="./studio.css?v=2.5.18" />
+  <link rel="stylesheet" href="./studio.css?v=2.5.20" />
 </head>
 <body data-h2o-studio-mode="1">
   <div class="wbShell">
@@ -742,6 +743,6 @@
   <script src="./S9D1a. 🎬 Auto Emoji Title - Studio.js"></script>
   <!-- ─────────────────────────────────────────────────────────────────── -->
 
-  <script src="./studio.js"></script>
+  <script src="./studio.js?v=2.5.20"></script>
 </body>
 </html>

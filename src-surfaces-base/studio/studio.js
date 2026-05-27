@@ -426,18 +426,26 @@ function cleanReaderUserText(raw){
     .replace(/\u00a0/g, " ")
     .replace(/\u200b/g, "")
     .replace(/\r/g, "")
-    .replace(/(?:\s*(?:Show more\s*Show less|Show less\s*Show more)\s*)+$/gi, "")
+    .replace(/(?:\s*(?:Show\s+more|Show\s+less)\s*)+$/gi, "")
     .split("\n")
-    .map((line) => line.replace(/^\s*(?:Show more|Show less)\s*$/i, ""))
+    .map((line) => line.replace(/^\s*(?:Show\s+more|Show\s+less)\s*$/i, ""))
     .join("\n")
     .trim();
 }
 
 function cleanReaderUserTextNodeLeaks(root){
   if (!(root instanceof Element)) return;
-  const hosts = [];
-  if (root.matches?.('[data-message-author-role="user"], .user-message-bubble-color')) hosts.push(root);
-  hosts.push(...root.querySelectorAll?.('[data-message-author-role="user"], .user-message-bubble-color') || []);
+  const messageSelector = '[data-message-author-role="user"], .user-message-bubble-color, .cgMsg--user';
+  const turnSelector = '.cgTurn--user, .wbTurn--user, [data-turn="user"]';
+  const messageHosts = [];
+  if (root.matches?.(messageSelector)) messageHosts.push(root);
+  messageHosts.push(...root.querySelectorAll?.(messageSelector) || []);
+
+  const turnHosts = [];
+  if (root.matches?.(turnSelector)) turnHosts.push(root);
+  turnHosts.push(...root.querySelectorAll?.(turnSelector) || []);
+
+  const hosts = messageHosts.length ? messageHosts : turnHosts;
   for (const host of hosts){
     const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -2390,6 +2398,7 @@ function mountRichTurns(container, richTurns, snapshotId, snap){
       createTime,
       messageId: role === "assistant" ? turn.assistantMessageId : turn.userMessageId,
     });
+    if (role === "user") cleanReaderUserTextNodeLeaks(host);
 
     const override = sid ? getEditOverride(sid, turn.turnIdx) : null;
     if (override !== null && role === "assistant"){
