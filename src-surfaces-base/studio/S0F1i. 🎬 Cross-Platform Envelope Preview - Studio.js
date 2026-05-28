@@ -406,44 +406,90 @@
   }
 
   // ── Mount ─────────────────────────────────────────────────────────────
+  // The MutationObserver is held in module scope so it can be disconnected
+  // after a successful mount and re-armed when Settings is torn down /
+  // rebuilt (e.g., navigating away from #/settings and back). This
+  // bounds the observer's lifetime so it does not add overhead during
+  // Studio's main hydration loop after the card has been placed.
+  var activeObserver = null;
+
+  function disconnectObserver() {
+    if (activeObserver) {
+      try { activeObserver.disconnect(); } catch (_) { /* swallow */ }
+      activeObserver = null;
+    }
+  }
+
   function tryMount() {
-    if (document.getElementById(ID.card)) {
-      // Already mounted.
+    // Defensive: never let a mount attempt throw out of the observer
+    // callback. A throw here would terminate that callback firing but
+    // would not disable subsequent firings; still, swallowing keeps the
+    // module quiet in the operator's console.
+    try {
+      if (document.getElementById(ID.card)) {
+        // Already mounted — refresh bridge-loaded status text only.
+        refreshBridgeStatus();
+        disconnectObserver();
+        return true;
+      }
+      var anchor = document.querySelector('#wbSettingsSyncBox');
+      if (!anchor) return false;
+      anchor.insertAdjacentHTML('afterend', buildCardHtml());
+      wireCardEvents();
       refreshBridgeStatus();
+      setText(ID.lastChecked, fmtIso(state.lastCheckedAt));
+      state.mounted = true;
+      // Replay cached result if present (e.g. after Settings rebuild).
+      if (state.lastResult) {
+        renderResult(state.lastResult);
+      } else if (state.lastError) {
+        renderError(state.lastError);
+      }
+      // Card is in place; stop observing until something tears it down.
+      disconnectObserver();
       return true;
+    } catch (_) {
+      return false;
     }
-    var anchor = document.querySelector('#wbSettingsSyncBox');
-    if (!anchor) return false;
-    anchor.insertAdjacentHTML('afterend', buildCardHtml());
-    wireCardEvents();
-    refreshBridgeStatus();
-    setText(ID.lastChecked, fmtIso(state.lastCheckedAt));
-    state.mounted = true;
-    // Replay cached result if present (e.g. after Settings rebuild).
-    if (state.lastResult) {
-      renderResult(state.lastResult);
-    } else if (state.lastError) {
-      renderError(state.lastError);
-    }
-    return true;
   }
 
   // Watch document.body for Settings overlay (re)mounts and inject the
   // card whenever #wbSettingsSyncBox appears without our card sibling.
-  // No setInterval; observer-driven.
+  // Disconnects on successful mount; re-arms on demand below.
+  // No setInterval; observer-driven (+ hashchange fallback).
   function installObserver() {
     if (typeof global.MutationObserver !== 'function') return;
-    var obs = new global.MutationObserver(function () {
-      tryMount();
-    });
+    if (activeObserver) return;
     try {
-      obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+      activeObserver = new global.MutationObserver(function () {
+        tryMount();
+      });
+      activeObserver.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+    } catch (_) { /* swallow */ }
+  }
+
+  // Hashchange fallback: if the operator navigates away from Settings
+  // and back, the Settings panel rebuild may not be caught by the
+  // (disconnected) observer. On any hashchange, if the card is missing,
+  // re-arm the observer and try to mount immediately.
+  function onHashChange() {
+    try {
+      if (!document.getElementById(ID.card)) {
+        installObserver();
+        tryMount();
+      }
     } catch (_) { /* swallow */ }
   }
 
   function bootstrap() {
-    tryMount();
-    installObserver();
+    try {
+      tryMount();
+      installObserver();
+      try { global.addEventListener('hashchange', onHashChange); } catch (_) { /* swallow */ }
+    } catch (_) { /* swallow */ }
   }
 
   if (document.readyState === 'loading') {
@@ -451,6 +497,24 @@
   } else {
     bootstrap();
   }
+
+  // Operator self-test helper. Lets a DevTools console verify the
+  // module is loaded and inspect mount state without needing red-error
+  // forensics. Pure read; no side effects on Studio state.
+  H2O.Studio.diagnostics.__bundleEnvelopePreviewCardSelfTest = function () {
+    return {
+      installed: true,
+      moduleVersion: 'F10.4-1.0.1-hardened',
+      bridgeLoaded: typeof H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes === 'function',
+      anchorPresent: !!document.querySelector('#wbSettingsSyncBox'),
+      cardMounted: !!document.getElementById(ID.card),
+      observerActive: !!activeObserver,
+      mountedState: !!state.mounted,
+      hasCachedResult: !!state.lastResult,
+      hasCachedError: !!state.lastError,
+      lastCheckedAt: state.lastCheckedAt ? new Date(state.lastCheckedAt).toISOString() : null,
+    };
+  };
 
   H2O.Studio.diagnostics.__bundleEnvelopePreviewCardInstalled = true;
 
