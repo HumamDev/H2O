@@ -714,6 +714,10 @@
        conflictCandidate candidates only. No publish, outbox enqueue, apply,
        proposal, applyEvent, convergence, or WebDAV. -->
   <script src="./sync/convergence-conflict-candidate-generator.tauri.js"></script>
+  <!-- F10.8.6g1: Desktop/Tauri-only shared publication ledger. Appends and
+       lists local publication lifecycle rows only. No publish, outbox enqueue,
+       upload, apply, convergence, or remote mutation. -->
+  <script src="./sync/publication-ledger.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
