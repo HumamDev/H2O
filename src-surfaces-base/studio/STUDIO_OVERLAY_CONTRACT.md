@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 5d-1)
+Status: Active (Phase 5d-2)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -2145,6 +2145,88 @@ markers, which renderers collapse) rather than improper nesting.
 - No snapshot mutation; serializer is pure (no DOM, no storage).
 - No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
   `fetch`; no DOCX-writer/CSS/ribbon/studio.js changes.
+
+## Phase 5d-2 — inline export: DOCX
+
+Phase 5d-2 brings DOCX export to parity with the reader + Markdown by
+serializing inline Bold / Italic / Underline / Strikethrough / Text Color
+as **segmented `<w:r>` runs**. It reuses the committed shared segmenter
+`H2O.Studio.overlay.buildInlineRuns` (Phase 5d-1). **No Markdown / PDF /
+print / Ribbon changes.**
+
+### Run segmentation
+
+- `emitTurnXml(turn, state, inlineState)` now receives the inline state
+  (computed in `build()` via `computeInlineState(overlay, turnIdx)`).
+- When the turn has inline ranges (and is **not** code or clean-spacing),
+  it calls `buildInlineRuns(body, state, inlineState, { offsetAdjust })`,
+  where `offsetAdjust` = the leading-whitespace delta from the raw
+  `turn.source.text` (now retained by `buildRawTurns`). This reconciles
+  the inline anchor offsets (flattened rendered-text space) onto the
+  trimmed DOCX body, identical to the Phase 5d-1 serializer.
+- The returned runs are split by line (`splitRunsByLine`) into a per-body-
+  line array of sub-runs so **paragraph count is unchanged** (one
+  paragraph per body line, including blank lines). Each sub-run is emitted
+  as its own `<w:r>` via `emitRunsXml` → `runXml`, preserving
+  `xml:space="preserve"`; empty runs are skipped.
+
+### Per-run rPr mapping
+
+`runRPr(run)` builds the run's `<w:rPr>` from its flat flags in the fixed
+order **b → i → strike → u → color** (identical to `charFormatRPr`):
+
+| Run flag | OOXML |
+|----------|-------|
+| bold | `<w:b/>` |
+| italic | `<w:i/>` |
+| strikethrough | `<w:strike/>` |
+| underline | `<w:u w:val="single"/>` |
+| textColor | `<w:color w:val="HEX"/>` (`TEXT_COLOR_HEX`; unknown → omitted) |
+
+`combineRProps(baseRProps, runRPr(run))` keeps any paragraph-invariant
+base (e.g. a font face) first, then the per-run character props. Because
+`buildInlineRuns` folds message-level formatting into the runs as a
+full-range base layer, the writer does **NOT** additionally apply the
+message-level `charRPr` to body runs when inline is used (avoids
+double-application).
+
+### Paragraph-path interactions (all preserved)
+
+- **plain / quote / callout / bullet / numbered list** — runs emitted
+  inside the existing per-line paragraphs; pStyle (`IntenseQuote`,
+  `ListBullet`, `ListNumber`) unchanged.
+- **align / indent** — `<w:pPr>` (`<w:jc>` / `<w:ind>`) unchanged
+  (paragraph-level); runs nest inside.
+- **visual-tag leading run** — unchanged; still the first run on the
+  first body line.
+- **code blocks** — inline **suppressed**; the existing single Consolas
+  run with message-level `charRPr` is preserved (code stays literal).
+- **heading** — role-label paragraph unchanged; only body runs segmented.
+
+### Degradation rules
+
+- `buildInlineRuns` returns `ok:false` (offset out-of-range / can't
+  reconcile) → `useInline=false` → existing single-run-per-line path
+  (message-level `charRPr`). Never corrupted XML.
+- No inline ranges for the turn → existing output **byte-for-byte**
+  (existing Phase 3c DOCX behavior unchanged).
+- `state.code` or `state.cleanSpacing` → inline suppressed.
+
+### Out of scope for 5d-2
+
+- Markdown / Copy clean transcript (delivered in 5d-1; unchanged here).
+- PDF / print inline CSS (5d-A, deferred).
+- contentEditable, snapshot mutation, new storage keys, ribbon/DOM/render
+  changes, platform/Tauri/MV3/tooling changes.
+
+### Compliance notes for 5d-2
+
+- No new op type; no `overlay-keys.js` change. Reuses `inline-format` +
+  `computeInlineState` + the committed `buildInlineRuns`.
+- No snapshot mutation; the writer is pure (no DOM, no storage, no I/O).
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch`; no serializer/CSS/ribbon/studio.js/platform changes.
+- ZIP stays stored-mode (method 0); CRC32 + XML-validity unaffected.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

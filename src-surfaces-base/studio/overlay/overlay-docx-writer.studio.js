@@ -366,7 +366,10 @@
       else if (role === 'assistant') label = 'A:';
       else if (role === 'system') label = 'System:';
       else continue;
-      out.push({ turnIdx: i + 1, role: role, label: label, text: text });
+      /* Phase 5d-2 — keep `source` so inline export can reconcile the
+       * inline anchor offsets (flattened rendered-text space) against the
+       * trimmed body via the raw text's leading-whitespace delta. */
+      out.push({ turnIdx: i + 1, role: role, label: label, text: text, source: msg });
     }
     return out;
   }
@@ -477,6 +480,89 @@
     return base + ch;
   }
 
+  /* ════════════════════════════════════════════════════════════════════
+   * Phase 5d-2 — inline run segmentation (DOCX export of inline B/I/U/S/color)
+   *
+   * Reuses the committed pure segmenter H2O.Studio.overlay.buildInlineRuns,
+   * which folds message-level character formatting (full-range base) +
+   * inline interval/segment state into ordered non-overlapping runs:
+   *   { text, bold, italic, underline, strikethrough, textColor }
+   * Each run becomes its own <w:r> so overlapping/crossing inline ranges
+   * always produce schema-valid OOXML.
+   * ════════════════════════════════════════════════════════════════════ */
+
+  /* Build a <w:rPr> fragment from a single segmenter run's flat flags.
+   * Order matches charFormatRPr (b → i → strike → u → color) so message-
+   * level and inline rPr are byte-order-identical. Returns '' for an
+   * unstyled run (caller combines with any base font rPr). */
+  function runRPr(run) {
+    if (!isObject(run)) return '';
+    var parts = [];
+    if (run.bold)          parts.push('<w:b/>');
+    if (run.italic)        parts.push('<w:i/>');
+    if (run.strikethrough) parts.push('<w:strike/>');
+    if (run.underline)     parts.push('<w:u w:val="single"/>');
+    if (run.textColor) {
+      var hex = TEXT_COLOR_HEX[run.textColor];
+      if (hex) parts.push('<w:color w:val="' + hex + '"/>');
+    }
+    return parts.join('');
+  }
+
+  /* Split segmenter runs into a per-line array of sub-run lists so no run
+   * spans a newline (the DOCX writer emits one paragraph per body line).
+   * Produces exactly bodyLineCount groups (incl. blank lines) so the
+   * paragraph count is unchanged from the non-inline path. A run whose
+   * text contains '\n' is split across line groups, preserving its style
+   * flags on each piece. */
+  function splitRunsByLine(runs) {
+    var lines = [[]];
+    if (!Array.isArray(runs)) return lines;
+    for (var i = 0; i < runs.length; i += 1) {
+      var run = runs[i];
+      if (!isObject(run)) continue;
+      var pieces = String(run.text == null ? '' : run.text).split('\n');
+      for (var p = 0; p < pieces.length; p += 1) {
+        if (p > 0) lines.push([]); /* newline → start a new line group */
+        var seg = pieces[p];
+        if (seg !== '') {
+          lines[lines.length - 1].push({
+            text: seg,
+            bold: !!run.bold, italic: !!run.italic,
+            underline: !!run.underline, strikethrough: !!run.strikethrough,
+            textColor: run.textColor || null,
+          });
+        }
+      }
+    }
+    return lines;
+  }
+
+  /* Emit the <w:r> runs for one line's sub-runs. `baseRProps` is any
+   * paragraph-invariant rPr (e.g. a font face) merged with each run's
+   * per-run rPr. Empty-text runs are skipped by runXml. Returns '' for an
+   * empty line group (blank line → empty paragraph via the caller). */
+  function emitRunsXml(subRuns, baseRProps) {
+    if (!Array.isArray(subRuns) || !subRuns.length) return '';
+    var out = '';
+    for (var i = 0; i < subRuns.length; i += 1) {
+      out += runXml(subRuns[i].text, combineRProps(baseRProps || '', runRPr(subRuns[i])));
+    }
+    return out;
+  }
+
+  /* Detect whether an inline state has any ranges to render. */
+  function inlineStateHasRanges(inlineState) {
+    if (!isObject(inlineState)) return false;
+    return !!(
+      (Array.isArray(inlineState.bold) && inlineState.bold.length) ||
+      (Array.isArray(inlineState.italic) && inlineState.italic.length) ||
+      (Array.isArray(inlineState.underline) && inlineState.underline.length) ||
+      (Array.isArray(inlineState.strikethrough) && inlineState.strikethrough.length) ||
+      (Array.isArray(inlineState.textColor) && inlineState.textColor.length)
+    );
+  }
+
   function applyCleanSpacing(text) {
     if (typeof text !== 'string' || !text) return text || '';
     return text.replace(/\n{3,}/g, '\n\n');
@@ -496,7 +582,7 @@
    * per-message ops that produced visible output (for the metadata
    * counter). The xml string contains one or more <w:p> elements.
    * ════════════════════════════════════════════════════════════════════ */
-  function emitTurnXml(turn, state) {
+  function emitTurnXml(turn, state, inlineState) {
     var opsCount = 0;
     var label = turn.label;
     var body = turn.text;
@@ -520,6 +606,32 @@
       if (state.italic)        opsCount += 1;
       if (state.underline)     opsCount += 1;
       if (state.strikethrough) opsCount += 1;
+    }
+
+    /* Phase 5d-2 — inline run segmentation. When the turn has inline
+     * ranges (and is neither code nor clean-spacing), fold message-level +
+     * inline into per-run <w:r> output via the committed buildInlineRuns
+     * segmenter. `inlineLines` is a per-body-line array of sub-run lists
+     * (so paragraph count is unchanged). When useInline is true the body
+     * runs carry their OWN rPr (message-level folded in), so charRPr is
+     * NOT additionally applied to body runs. On any reconciliation
+     * failure (offset out-of-range), useInline stays false and the
+     * existing single-run-per-line path runs unchanged. Inline is
+     * suppressed for code (Consolas literal) and clean-spacing
+     * (coordinate base shifts). */
+    var useInline = false;
+    var inlineLines = null;
+    if (inlineStateHasRanges(inlineState) && !(state && state.code) && !(state && state.cleanSpacing)) {
+      var rawText = (turn.source && turn.source.text != null) ? String(turn.source.text) : body;
+      var leadingTrim = rawText.length - rawText.replace(/^\s+/, '').length;
+      var builder = (H2O.Studio.overlay && typeof H2O.Studio.overlay.buildInlineRuns === 'function')
+        ? H2O.Studio.overlay.buildInlineRuns : null;
+      var rr = builder ? builder(body, state, inlineState, { offsetAdjust: leadingTrim }) : null;
+      if (rr && rr.ok && Array.isArray(rr.runs)) {
+        inlineLines = splitRunsByLine(rr.runs);
+        useInline = true;
+        opsCount += 1;
+      }
     }
 
     /* 2: heading style for the role-label paragraph. */
@@ -591,7 +703,9 @@
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
         var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : '';
-        var lineRun = runXml(line, combineRProps(baseRPr, charRPr));
+        /* Phase 5d-2 — inline runs when available (code suppresses inline,
+         * so bodyHasCode and useInline are mutually exclusive). */
+        var lineRun = useInline ? emitRunsXml(inlineLines[bi], baseRPr) : runXml(line, combineRProps(baseRPr, charRPr));
         var firstLinePrefix = (bi === 0) ? vtLeadingRun : '';
         calloutXml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, firstLinePrefix + lineRun);
       }
@@ -630,21 +744,24 @@
       var listLines = String(body).split('\n');
       for (var li = 0; li < listLines.length; li += 1) {
         var listLinePrefix = (li === 0) ? vtLeadingRun : '';
-        xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, listLinePrefix + runXml(listLines[li], charRPr || null));
+        var listLineRun = useInline ? emitRunsXml(inlineLines[li], '') : runXml(listLines[li], charRPr || null);
+        xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, listLinePrefix + listLineRun);
       }
     } else if (state && state.quote) {
       opsCount += 1;
       var quoteLines = String(body).split('\n');
       for (var qi = 0; qi < quoteLines.length; qi += 1) {
         var quoteLinePrefix = (qi === 0) ? vtLeadingRun : '';
-        xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, quoteLinePrefix + runXml(quoteLines[qi], charRPr || null));
+        var quoteLineRun = useInline ? emitRunsXml(inlineLines[qi], '') : runXml(quoteLines[qi], charRPr || null);
+        xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, quoteLinePrefix + quoteLineRun);
       }
     } else {
       /* Plain — one paragraph per body line so newlines render. */
       var plainLines = String(body).split('\n');
       for (var pi = 0; pi < plainLines.length; pi += 1) {
         var plainLinePrefix = (pi === 0) ? vtLeadingRun : '';
-        xml += paragraphXmlWithProps(null, bodyAlignIndPPr, plainLinePrefix + runXml(plainLines[pi], charRPr || null));
+        var plainLineRun = useInline ? emitRunsXml(inlineLines[pi], '') : runXml(plainLines[pi], charRPr || null);
+        xml += paragraphXmlWithProps(null, bodyAlignIndPPr, plainLinePrefix + plainLineRun);
       }
     }
     return { xml: xml, opsCount: opsCount };
@@ -889,7 +1006,17 @@
             try { state = applier.computeMessageState(overlay, turn.turnIdx) || defaultMessageState(); }
             catch (e) { recordError('computeMessageState:' + turn.turnIdx, e); }
 
-            var emitted = emitTurnXml(turn, state);
+            /* Phase 5d-2 — inline interval/segment state for this turn
+             * (null when the reducer is unavailable; emitTurnXml degrades
+             * to the message-level path). */
+            var inlineState = null;
+            try {
+              if (typeof applier.computeInlineState === 'function') {
+                inlineState = applier.computeInlineState(overlay, turn.turnIdx);
+              }
+            } catch (e4) { recordError('computeInlineState:' + turn.turnIdx, e4); inlineState = null; }
+
+            var emitted = emitTurnXml(turn, state, inlineState);
             bodyXml += emitted.xml;
             result.opsApplied += emitted.opsCount;
           }
