@@ -681,6 +681,10 @@
        from durable outbox/inbox stores only. No writes, transport,
        convergence, apply, or automatic sync. -->
   <script src="./sync/relay-index.tauri.js"></script>
+  <!-- F10.8.5: Desktop/Tauri-only manual sync UI. Counts-first operator
+       surface over outbox, inbox, relay index, preview/conflict/apply receipts.
+       No automatic sync, convergence, merge, or apply. -->
+  <script src="./sync/manual-sync-ui.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
