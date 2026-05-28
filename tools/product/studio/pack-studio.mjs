@@ -288,6 +288,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // approved color-only local apply and returns an applyEvent receipt only.
   // No watermark, consumed ledger, publication, transport, or batch action.
   "sync/color-convergence-action.tauri.js",
+  // F10.8.9c: Desktop/Tauri-only convergence bookkeeping. Finalizes one
+  // successful local color convergence by recording consumed-operation and
+  // watermark rows only. No apply, publication, transport, or remote mutation.
+  "sync/convergence-bookkeeping.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -480,6 +484,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/consumed-operation-ledger.tauri.js",
   "sync/convergence-preflight.tauri.js",
   "sync/color-convergence-action.tauri.js",
+  "sync/convergence-bookkeeping.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
