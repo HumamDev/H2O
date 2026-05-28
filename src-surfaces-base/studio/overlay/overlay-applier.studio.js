@@ -679,6 +679,124 @@
     return k === 'red' || k === 'green' || k === 'blue' || k === 'orange' || k === 'gray';
   }
 
+  /* ── Phase 5d-1 — pure inline-run segmenter (export foundation) ────────
+   *
+   * buildInlineRuns(bodyText, messageState, inlineState, opts) ->
+   *   { ok, runs: [{ text, bold, italic, underline, strikethrough, textColor }], reason? }
+   *
+   * Folds message-level character formatting (treated as full-range base
+   * layer) + inline interval/segment state into a single ordered list of
+   * non-overlapping runs over bodyText. Each run carries a flat style
+   * tuple, so any consumer (Markdown 5d-1, DOCX 5d-2) emits well-formed
+   * output even for overlapping/crossing inline ranges.
+   *
+   * Coordinate space: inlineState offsets are in the message's flattened
+   * rendered-text space. The caller passes opts.offsetAdjust (typically
+   * the count of leading whitespace trimmed from the raw text) so offsets
+   * rebase onto bodyText. If ANY rebased endpoint falls outside
+   * [0, bodyText.length], the segmenter degrades safely (ok:false,
+   * reason:'inline-out-of-range') and the caller falls back to its
+   * message-level path — never emitting corrupted markup.
+   *
+   * Pure: no DOM, no I/O, no mutation of inputs. Never throws. */
+  function buildInlineRuns(bodyText, messageState, inlineState, opts) {
+    try {
+      var text = String(bodyText == null ? '' : bodyText);
+      var len = text.length;
+      var ms = isObject(messageState) ? messageState : {};
+      var is = isObject(inlineState) ? inlineState : {};
+      var options = isObject(opts) ? opts : {};
+      var adjust = Number(options.offsetAdjust);
+      if (!isFinite(adjust)) adjust = 0;
+
+      function rebaseIntervals(list) {
+        var out = [];
+        if (!Array.isArray(list)) return out;
+        for (var i = 0; i < list.length; i += 1) {
+          var iv = list[i];
+          if (!Array.isArray(iv)) continue;
+          var s = Number(iv[0]) - adjust;
+          var e = Number(iv[1]) - adjust;
+          if (!isFinite(s) || !isFinite(e)) return null;
+          if (s < 0 || e > len || e <= s) return null;
+          out.push([s, e]);
+        }
+        return out;
+      }
+      function rebaseSegments(list) {
+        var out = [];
+        if (!Array.isArray(list)) return out;
+        for (var i = 0; i < list.length; i += 1) {
+          var seg = list[i];
+          if (!isObject(seg)) continue;
+          var s = Number(seg.start) - adjust;
+          var e = Number(seg.end) - adjust;
+          if (!isFinite(s) || !isFinite(e)) return null;
+          if (s < 0 || e > len || e <= s) return null;
+          out.push({ start: s, end: e, kind: seg.kind });
+        }
+        return out;
+      }
+
+      var bold = rebaseIntervals(is.bold);
+      var italic = rebaseIntervals(is.italic);
+      var underline = rebaseIntervals(is.underline);
+      var strike = rebaseIntervals(is.strikethrough);
+      var color = rebaseSegments(is.textColor);
+      if (bold === null || italic === null || underline === null || strike === null || color === null) {
+        return { ok: false, reason: 'inline-out-of-range' };
+      }
+
+      /* message-level full-range base layer */
+      var msBold = !!ms.bold;
+      var msItalic = !!ms.italic;
+      var msUnderline = !!ms.underline;
+      var msStrike = !!ms.strikethrough;
+      var msColor = (ms.textColor && ms.textColor.kind) ? String(ms.textColor.kind) : null;
+
+      /* boundary set */
+      var bset = Object.create(null);
+      bset[0] = true; bset[len] = true;
+      function addIntervalBounds(list) { for (var i = 0; i < list.length; i += 1) { bset[list[i][0]] = true; bset[list[i][1]] = true; } }
+      addIntervalBounds(bold); addIntervalBounds(italic); addIntervalBounds(underline); addIntervalBounds(strike);
+      for (var ci = 0; ci < color.length; ci += 1) { bset[color[ci].start] = true; bset[color[ci].end] = true; }
+      var bounds = Object.keys(bset).map(Number).filter(function (n) { return n >= 0 && n <= len; }).sort(function (a, b) { return a - b; });
+
+      function covered(list, a, b) {
+        for (var i = 0; i < list.length; i += 1) { if (list[i][0] <= a && list[i][1] >= b) return true; }
+        return false;
+      }
+      function colorForRange(a, b) {
+        var k = msColor; /* base layer */
+        for (var i = 0; i < color.length; i += 1) {
+          if (color[i].start <= a && color[i].end >= b) k = (color[i].kind == null ? null : String(color[i].kind));
+        }
+        return k;
+      }
+
+      var runs = [];
+      for (var i2 = 0; i2 < bounds.length - 1; i2 += 1) {
+        var a = bounds[i2];
+        var b = bounds[i2 + 1];
+        if (b <= a) continue;
+        var slice = text.slice(a, b);
+        if (slice === '') continue;
+        runs.push({
+          text: slice,
+          bold: msBold || covered(bold, a, b),
+          italic: msItalic || covered(italic, a, b),
+          underline: msUnderline || covered(underline, a, b),
+          strikethrough: msStrike || covered(strike, a, b),
+          textColor: colorForRange(a, b),
+        });
+      }
+      return { ok: true, runs: runs, inlineApplied: true };
+    } catch (e) {
+      recordError('buildInlineRuns', e);
+      return { ok: false, reason: 'segmenter-error' };
+    }
+  }
+
   function isInlineTarget(target) {
     if (!isObject(target)) return false;
     if (target.kind !== 'inline') return false;
@@ -1462,6 +1580,8 @@
     cutColorSegments: cutColorSegments,
     paintColor: paintColor,
     colorAt: colorAt,
+    /* Phase 5d-1 — pure inline-run segmenter shared by export paths. */
+    buildInlineRuns: buildInlineRuns,
   };
 
   H2O.Studio.overlay = api;

@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 5c-2)
+Status: Active (Phase 5d-1)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -2058,6 +2058,93 @@ always paints (last-wins, no toggle-off-on-same-color — matches message-level)
 - No snapshot mutation; render pass touches only the live reader DOM.
 - No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` / `fetch`;
   no serializer/DOCX-writer changes; no platform changes.
+
+## Phase 5d-1 — inline export: Markdown / Copy clean transcript
+
+Phase 5d-1 is the first inline-export slice. It teaches the Markdown
+serializer (which also backs **Copy clean transcript**) to represent
+inline Bold / Italic / Underline / Strikethrough on selected ranges.
+**Text color stays intentionally lossy in Markdown.** DOCX (5d-2) and
+PDF/print (5d-A) inline export are **deferred** — not in this slice.
+
+### Shared inline-run segmenter
+
+`H2O.Studio.overlay.buildInlineRuns(bodyText, messageState, inlineState, opts)`
+→ `{ ok, runs:[{ text, bold, italic, underline, strikethrough, textColor }], reason? }`.
+
+- **Pure** (no DOM, no I/O, never throws). Folds message-level character
+  formatting (treated as a full-range `[0,len)` base layer) + the inline
+  interval/segment state from `computeInlineState` into a single ordered
+  list of **non-overlapping runs**, each with a flat style tuple. This
+  guarantees well-formed output even for overlapping/crossing inline
+  ranges.
+- Designed to be reused by the DOCX writer in 5d-2 (run segmentation) —
+  the same boundary/segment math.
+
+### Coordinate-space reconciliation (degrade-safe)
+
+Inline offsets are in the message's **flattened rendered-text** space; the
+serializer body is the **trimmed** raw `msg.text`. The serializer passes
+`opts.offsetAdjust` = the count of leading whitespace trimmed from the
+raw text, so offsets rebase onto the body. If ANY rebased endpoint falls
+outside `[0, bodyText.length]`, `buildInlineRuns` returns `ok:false` and
+the serializer **falls back to its existing message-level path** — never
+emitting corrupted markup. Inline export is additionally **skipped** when:
+
+- `state.code` is set (fenced code stays literal — inline suppressed),
+- `state.cleanSpacing` changed the body (coordinate base shifts),
+- there are no inline ranges for the turn.
+
+### Markdown mapping
+
+| Run style | Markdown |
+|-----------|----------|
+| bold | `**text**` |
+| italic | `*text*` |
+| underline | `<u>text</u>` (inline HTML; Markdown has no native underline) |
+| strikethrough | `~~text~~` |
+| text color | **no output (lossy, documented)** |
+
+Each run is wrapped independently in the fixed nesting order (bold
+innermost → strikethrough outermost), matching the Phase 4-1 whole-body
+wrapper order. Wrapping is applied **per line within a run** so markers
+never span newlines — this keeps output well-formed and lets the Phase
+4-3 list per-line prefixer work unchanged. Crossing/overlapping ranges
+produce balanced-per-run markers (occasionally redundant adjacent
+markers, which renderers collapse) rather than improper nesting.
+
+### Interaction with existing formatting
+
+- **Message-level B/I/U/S** is folded into the segmenter (full-range base
+  layer), so it is no longer double-applied; output is equivalent.
+- **When no inline ranges exist**, the serializer uses its existing
+  message-level path **byte-for-byte** (no behavioral change; existing
+  2e/3a output unchanged).
+- **Lists** — runs are produced first (newline-aware), then the per-line
+  `- ` / `N. ` prefix is applied; the per-line message-level re-wrap is
+  skipped when inline runs were used.
+- **Quote / Callout** — applied around the already-marked body.
+- **Visual tags** — the `[tags: …]` prefix is prepended AFTER inline
+  segmentation (unstyled), so offsets stay aligned.
+- **Copy clean transcript** flows through the same `serialize`, so it
+  gains inline markers automatically.
+
+### Out of scope for 5d-1
+
+- DOCX inline export (5d-2 run-segmentation, incl. `<w:color>`).
+- PDF/print inline export + print CSS (5d-A).
+- A non-lossy Markdown color mapping (e.g. `<span style="color:…">`) —
+  not implemented; would need explicit approval.
+- contentEditable, snapshot mutation, new storage keys, ribbon/DOM/render
+  changes, platform/Tauri/MV3/tooling changes.
+
+### Compliance notes for 5d-1
+
+- No new op type; no `overlay-keys.js` change. Reuses `inline-format` +
+  `computeInlineState`.
+- No snapshot mutation; serializer is pure (no DOM, no storage).
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch`; no DOCX-writer/CSS/ribbon/studio.js changes.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

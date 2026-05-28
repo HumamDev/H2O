@@ -196,6 +196,37 @@
     return '';
   }
 
+  /* ── Phase 5d-1 — inline run → Markdown ───────────────────────────────
+   * Render the segmenter's runs to Markdown. Each run is wrapped
+   * independently in the fixed nesting order (bold innermost → strike
+   * outermost), matching the Phase 4-1 whole-body wrapper order. Wrapping
+   * is applied PER-LINE within a run so markers never span newlines —
+   * this keeps the result well-formed and lets the list per-line prefixer
+   * work unchanged. Blank lines are left unwrapped (no stray `****`).
+   * Text color is intentionally LOSSY: it carries no Markdown output
+   * (matches the Phase 4-2 message-level precedent). */
+  function runsToMarkdown(runs) {
+    if (!Array.isArray(runs)) return '';
+    var out = '';
+    for (var i = 0; i < runs.length; i += 1) {
+      var r = runs[i] || {};
+      var lines = String(r.text == null ? '' : r.text).split('\n');
+      for (var li = 0; li < lines.length; li += 1) {
+        var x = lines[li];
+        if (x !== '') {
+          if (r.bold)          x = '**' + x + '**';
+          if (r.italic)        x = '*' + x + '*';
+          if (r.underline)     x = '<u>' + x + '</u>';
+          if (r.strikethrough) x = '~~' + x + '~~';
+          /* textColor: intentionally no Markdown output. */
+        }
+        lines[li] = x;
+      }
+      out += lines.join('\n');
+    }
+    return out;
+  }
+
   /* ── Per-turn serializer ────────────────────────────────────────────
    * Stacking order (outer → inner):
    *   1. callout (if present)  — wraps everything including role label
@@ -215,7 +246,7 @@
    * type that produced visible output (heading, quote, code, callout,
    * cleanSpacing).
    */
-  function serializeTurn(turn, state, opCounter) {
+  function serializeTurn(turn, state, inlineState, opCounter) {
     if (!turn || !turn.text) return '';
     var label = turn.label;
     var body = turn.text;
@@ -225,6 +256,40 @@
       var normalised = applyCleanSpacing(body);
       if (normalised !== body) opCounter.applied += 1;
       body = normalised;
+    }
+
+    /* Phase 5d-1 — inline run segmentation (B/I/U/S; color lossy in MD).
+     * Folds message-level char formatting + inline intervals into one
+     * pass via the shared segmenter, producing a marked body. Runs on the
+     * trimmed body BEFORE the visual-tag prefix so inline offsets
+     * reconcile against the message's raw text via the leading-whitespace
+     * delta (opts.offsetAdjust). Skipped when:
+     *   - state.code is set (fenced code stays literal — inline suppressed)
+     *   - state.cleanSpacing changed the body (coordinate base shifts)
+     *   - there are no inline ranges
+     *   - the segmenter cannot reconcile offsets (degrades safely)
+     * When inlineApplied, the existing message-level char-format wrap and
+     * the list per-line wrap are skipped (the runs already fold message-
+     * level formatting), but the list per-line PREFIX still applies. */
+    var inlineApplied = false;
+    var hasInline = !!(inlineState && (
+      (Array.isArray(inlineState.bold) && inlineState.bold.length) ||
+      (Array.isArray(inlineState.italic) && inlineState.italic.length) ||
+      (Array.isArray(inlineState.underline) && inlineState.underline.length) ||
+      (Array.isArray(inlineState.strikethrough) && inlineState.strikethrough.length) ||
+      (Array.isArray(inlineState.textColor) && inlineState.textColor.length)
+    ));
+    if (hasInline && !(state && state.code) && !(state && state.cleanSpacing)) {
+      var rawText = (turn.source && turn.source.text != null) ? String(turn.source.text) : body;
+      var leadingTrim = rawText.length - rawText.replace(/^\s+/, '').length;
+      var builder = (H2O.Studio.overlay && typeof H2O.Studio.overlay.buildInlineRuns === 'function')
+        ? H2O.Studio.overlay.buildInlineRuns : null;
+      var rr = builder ? builder(body, state, inlineState, { offsetAdjust: leadingTrim }) : null;
+      if (rr && rr.ok && Array.isArray(rr.runs)) {
+        body = runsToMarkdown(rr.runs);
+        inlineApplied = true;
+        opCounter.applied += 1;
+      }
     }
 
     /* Phase 4-4 — prepend "[tags: To Do, Important] " prefix on the
@@ -275,7 +340,7 @@
       if (state.strikethrough) x = '~~' + x + '~~';
       return x;
     }
-    if (useCharFormatting && state && !listKind) {
+    if (useCharFormatting && state && !listKind && !inlineApplied) {
       if (state.bold)          { body = '**' + body + '**'; opCounter.applied += 1; }
       if (state.italic)        { body = '*' + body + '*';   opCounter.applied += 1; }
       if (state.underline)     { body = '<u>' + body + '</u>'; opCounter.applied += 1; }
@@ -291,14 +356,18 @@
       var rendered = [];
       for (var li = 0; li < listLines.length; li += 1) {
         var lineRaw = listLines[li];
-        var lineFormatted = (useCharFormatting && state) ? wrapCharFormatting(lineRaw) : lineRaw;
+        /* When inline runs were applied, the body already carries B/I/U/S
+         * markers (folded message-level + inline) — so do NOT re-wrap the
+         * line; just prefix it. Otherwise keep the Phase 4-3 per-line
+         * message-level char-format wrap. */
+        var lineFormatted = (useCharFormatting && state && !inlineApplied) ? wrapCharFormatting(lineRaw) : lineRaw;
         var prefix = (listKind === 'bullet') ? '- ' : (String(numberedIdx) + '. ');
         rendered.push(prefix + lineFormatted);
         if (listKind === 'numbered') numberedIdx += 1;
       }
       body = rendered.join('\n');
       opCounter.applied += 1;
-      if (useCharFormatting && state) {
+      if (useCharFormatting && state && !inlineApplied) {
         if (state.bold)          opCounter.applied += 1;
         if (state.italic)        opCounter.applied += 1;
         if (state.underline)     opCounter.applied += 1;
@@ -523,7 +592,16 @@
         try { state = applier.computeMessageState(overlay, turn.turnIdx) || defaultMessageState(); }
         catch (e) { recordError('computeMessageState:' + turn.turnIdx, e); state = defaultMessageState(); }
 
-        var turnText = serializeTurn(turn, state, opCounter);
+        /* Phase 5d-1 — inline interval/segment state for this turn (null
+         * when the reducer is unavailable; serializeTurn degrades safely). */
+        var inlineState = null;
+        try {
+          if (typeof applier.computeInlineState === 'function') {
+            inlineState = applier.computeInlineState(overlay, turn.turnIdx);
+          }
+        } catch (e2) { recordError('computeInlineState:' + turn.turnIdx, e2); inlineState = null; }
+
+        var turnText = serializeTurn(turn, state, inlineState, opCounter);
         if (turnText) pieces.push(turnText);
       }
 
