@@ -14377,9 +14377,419 @@ function __ribbonBridge_getHistoryState(){
   } catch (_) { return Promise.resolve(empty); }
 }
 
+/* Phase 5a — passive inline selection diagnostics. This mirrors the
+ * existing highlighter anchor strategy (text quote + text position + XPath)
+ * but does not write overlays, stores, snapshots, or DOM. */
+function __inlineSelection_toElement(node){
+  if (!node) return null;
+  if (node.nodeType === 1) return node;
+  return node.parentElement || null;
+}
+
+function __inlineSelection_normalizeText(value){
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function __inlineSelection_cssEscape(value){
+  const raw = String(value || '');
+  if (W.CSS && typeof W.CSS.escape === 'function') {
+    try { return W.CSS.escape(raw); } catch (_) {}
+  }
+  return raw.replace(/["\\]/g, '\\$&');
+}
+
+function __inlineSelection_getReaderScroll(){
+  try {
+    const readerEl = document.getElementById('viewReader');
+    if (!readerEl || readerEl.hidden) return null;
+    const frame = readerEl.querySelector('.cgFrame');
+    return frame && frame.querySelector('.cgScroll');
+  } catch (_) { return null; }
+}
+
+function __inlineSelection_isSavedReaderMounted(){
+  try {
+    return !!(state && state.currentReaderSnapshot && state.currentReaderSnapshot.snapshotId && __inlineSelection_getReaderScroll());
+  } catch (_) { return false; }
+}
+
+function __inlineSelection_isExcludedUi(node){
+  const el = __inlineSelection_toElement(node);
+  if (!el || typeof el.closest !== 'function') return true;
+  return !!el.closest([
+    '#studioRibbon',
+    '.wbRibbon',
+    '.wbRibbonMetadataPopover',
+    '.wbTop',
+    '#studioDock',
+    '.wbDock',
+    '[role="dialog"]',
+    '.wbEditWrap',
+    '.wbEditTextarea',
+    'button',
+    'input',
+    'select',
+    'textarea',
+    '[contenteditable="true"]'
+  ].join(','));
+}
+
+function __inlineSelection_turnForNode(node, scrollEl){
+  const el = __inlineSelection_toElement(node);
+  if (!el || !scrollEl || typeof el.closest !== 'function') return null;
+  const turn = el.closest('[data-turn]');
+  if (!turn || !scrollEl.contains(turn)) return null;
+  return turn;
+}
+
+function __inlineSelection_turnIndex(turnEl, scrollEl){
+  if (!turnEl || !scrollEl) return 0;
+  const turns = Array.prototype.slice.call(scrollEl.querySelectorAll('[data-turn]'));
+  return turns.indexOf(turnEl) + 1;
+}
+
+function __inlineSelection_messageForNode(node, turnEl){
+  const el = __inlineSelection_toElement(node);
+  if (!el || !turnEl || typeof el.closest !== 'function') return null;
+  const direct = el.closest('[data-message-author-role], [data-message-id]');
+  if (direct && turnEl.contains(direct)) return direct;
+  return turnEl.querySelector('[data-message-author-role], [data-message-id]') || turnEl;
+}
+
+function __inlineSelection_readMessageId(messageEl, turnEl){
+  const candidates = [messageEl, turnEl];
+  try {
+    const nested = turnEl && turnEl.querySelector && turnEl.querySelector('[data-message-id]');
+    if (nested) candidates.push(nested);
+  } catch (_) {}
+  for (let i = 0; i < candidates.length; i += 1) {
+    const el = candidates[i];
+    const value = String(
+      (el && el.getAttribute && el.getAttribute('data-message-id'))
+      || (el && el.dataset && el.dataset.messageId)
+      || ''
+    ).trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function __inlineSelection_readRole(messageEl, turnEl){
+  const raw = String(
+    (messageEl && messageEl.getAttribute && messageEl.getAttribute('data-message-author-role'))
+    || (turnEl && turnEl.getAttribute && turnEl.getAttribute('data-turn'))
+    || ''
+  ).trim().toLowerCase();
+  return raw || null;
+}
+
+function __inlineSelection_flatten(root){
+  const out = { plain: '', map: [], length: 0 };
+  if (!root || !document.createTreeWalker) return out;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node){
+      return node && node.nodeValue && node.nodeValue.length
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    }
+  });
+  let node = null;
+  while ((node = walker.nextNode())) {
+    const text = String(node.nodeValue || '');
+    const start = out.length;
+    const end = start + text.length;
+    out.map.push({ node, start, end });
+    out.plain += text;
+    out.length = end;
+  }
+  return out;
+}
+
+function __inlineSelection_offsetInRoot(root, node, offset){
+  if (!root || !node) return null;
+  try {
+    const r = document.createRange();
+    r.selectNodeContents(root);
+    r.setEnd(node, Math.max(0, Number(offset) || 0));
+    return r.toString().length;
+  } catch (_) { return null; }
+}
+
+function __inlineSelection_rangeToPos(range, root){
+  if (!range || !root) return null;
+  const start = __inlineSelection_offsetInRoot(root, range.startContainer, range.startOffset);
+  const end = __inlineSelection_offsetInRoot(root, range.endContainer, range.endOffset);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return null;
+  return { start, end };
+}
+
+function __inlineSelection_posToRange(pos, root){
+  if (!pos || !root) return null;
+  const flat = __inlineSelection_flatten(root);
+  const start = Math.max(0, Math.floor(Number(pos.start) || 0));
+  const end = Math.max(0, Math.floor(Number(pos.end) || 0));
+  if (start >= end || end > flat.length) return null;
+  const locate = (offset) => {
+    for (let i = 0; i < flat.map.length; i += 1) {
+      const seg = flat.map[i];
+      if (offset >= seg.start && offset <= seg.end) return { node: seg.node, offset: offset - seg.start };
+    }
+    return null;
+  };
+  const a = locate(start);
+  const b = locate(end);
+  if (!a || !b) return null;
+  try {
+    const r = document.createRange();
+    r.setStart(a.node, a.offset);
+    r.setEnd(b.node, b.offset);
+    return r;
+  } catch (_) { return null; }
+}
+
+function __inlineSelection_rangeToQuote(range, root, ctx){
+  const pos = __inlineSelection_rangeToPos(range, root);
+  if (!pos) return null;
+  const flat = __inlineSelection_flatten(root);
+  const size = Math.max(0, Math.floor(Number(ctx) || 32));
+  return {
+    exact: flat.plain.slice(pos.start, pos.end),
+    prefix: flat.plain.slice(Math.max(0, pos.start - size), pos.start),
+    suffix: flat.plain.slice(pos.end, Math.min(flat.length, pos.end + size)),
+    approx: pos.start,
+  };
+}
+
+function __inlineSelection_findByQuote(root, quote){
+  if (!root || !quote || !quote.exact) return null;
+  const flat = __inlineSelection_flatten(root);
+  const exact = String(quote.exact || '');
+  const prefix = String(quote.prefix || '');
+  const suffix = String(quote.suffix || '');
+  const approx = Number.isFinite(Number(quote.approx)) ? Math.max(0, Math.floor(Number(quote.approx))) : null;
+  const matches = [];
+  for (let idx = flat.plain.indexOf(exact); idx !== -1; idx = flat.plain.indexOf(exact, idx + 1)) {
+    const end = idx + exact.length;
+    if (prefix && !flat.plain.slice(Math.max(0, idx - prefix.length), idx).endsWith(prefix)) continue;
+    if (suffix && !flat.plain.slice(end, end + suffix.length).startsWith(suffix)) continue;
+    matches.push({ start: idx, dist: approx == null ? 0 : Math.abs(idx - approx) });
+  }
+  if (!matches.length) return null;
+  matches.sort(function (a, b) {
+    if (a.dist !== b.dist) return a.dist - b.dist;
+    return a.start - b.start;
+  });
+  return __inlineSelection_posToRange({ start: matches[0].start, end: matches[0].start + exact.length }, root);
+}
+
+function __inlineSelection_rangeMatchesQuote(range, quote){
+  if (!range) return false;
+  if (!quote || !quote.exact) return true;
+  const actual = String(range.toString() || '');
+  if (actual === String(quote.exact || '')) return true;
+  return __inlineSelection_normalizeText(actual) === __inlineSelection_normalizeText(quote.exact);
+}
+
+function __inlineSelection_textSiblingIndex(node){
+  let index = 1;
+  let prev = node;
+  while ((prev = prev.previousSibling)) {
+    if (prev.nodeType === 3) index += 1;
+  }
+  return index;
+}
+
+function __inlineSelection_elementSiblingIndex(node){
+  let index = 1;
+  let prev = node;
+  while ((prev = prev.previousSibling)) {
+    if (prev.nodeType === 1 && prev.nodeName === node.nodeName) index += 1;
+  }
+  return index;
+}
+
+function __inlineSelection_xpathFromNode(node, root){
+  if (!node || !root) return '';
+  if (node === root) return '.';
+  const parts = [];
+  let cur = node;
+  while (cur && cur !== root) {
+    if (cur.nodeType === 3) {
+      parts.unshift('text()[' + __inlineSelection_textSiblingIndex(cur) + ']');
+    } else if (cur.nodeType === 1) {
+      parts.unshift(cur.nodeName.toLowerCase() + '[' + __inlineSelection_elementSiblingIndex(cur) + ']');
+    }
+    cur = cur.parentNode;
+  }
+  return cur === root ? './' + parts.join('/') : '';
+}
+
+function __inlineSelection_nodeFromXPath(xpath, root){
+  if (!xpath || !root) return null;
+  try {
+    const result = document.evaluate(String(xpath), root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    return result && result.singleNodeValue ? result.singleNodeValue : null;
+  } catch (_) { return null; }
+}
+
+function __inlineSelection_rangeToXPath(range, root){
+  const pos = __inlineSelection_rangeToPos(range, root);
+  const normalized = pos ? __inlineSelection_posToRange(pos, root) : null;
+  if (!normalized) return null;
+  return {
+    startXPath: __inlineSelection_xpathFromNode(normalized.startContainer, root),
+    startOffset: normalized.startOffset,
+    endXPath: __inlineSelection_xpathFromNode(normalized.endContainer, root),
+    endOffset: normalized.endOffset,
+  };
+}
+
+function __inlineSelection_xpathToRange(anchor, root){
+  if (!anchor || !root || !anchor.startXPath || !anchor.endXPath) return null;
+  const startNode = __inlineSelection_nodeFromXPath(anchor.startXPath, root);
+  const endNode = __inlineSelection_nodeFromXPath(anchor.endXPath, root);
+  if (!startNode || !endNode || startNode.nodeType !== 3 || endNode.nodeType !== 3) return null;
+  try {
+    const r = document.createRange();
+    const startOffset = Math.max(0, Math.min(startNode.nodeValue.length, Number(anchor.startOffset) || 0));
+    const endOffset = Math.max(0, Math.min(endNode.nodeValue.length, Number(anchor.endOffset) || 0));
+    r.setStart(startNode, startOffset);
+    r.setEnd(endNode, endOffset);
+    return r.collapsed ? null : r;
+  } catch (_) { return null; }
+}
+
+function __inlineSelection_findRootFromDiagnostic(diag){
+  const scrollEl = __inlineSelection_getReaderScroll();
+  if (!scrollEl || !diag) return null;
+  const messageId = String(diag.selectedMessageId || '').trim();
+  if (messageId) {
+    const sel = '[data-message-id="' + __inlineSelection_cssEscape(messageId) + '"]';
+    try {
+      const byId = scrollEl.querySelector(sel);
+      const turn = byId && byId.closest && byId.closest('[data-turn]');
+      if (byId && turn && scrollEl.contains(turn)) return { root: byId, turn };
+    } catch (_) {}
+  }
+  const turnIdx = Math.max(1, Math.floor(Number(diag.selectedTurnIdx) || 0));
+  if (turnIdx > 0) {
+    const turns = Array.prototype.slice.call(scrollEl.querySelectorAll('[data-turn]'));
+    const turn = turns[turnIdx - 1] || null;
+    if (turn) {
+      const root = turn.querySelector('[data-message-author-role], [data-message-id]') || turn;
+      return { root, turn };
+    }
+  }
+  return null;
+}
+
+function __inlineSelection_resolve(input){
+  try {
+    if (!__inlineSelection_isSavedReaderMounted()) return { ok: false, reason: 'not-saved-reader' };
+    const diag = input && input.ok ? input : (input || {});
+    const anchor = diag.anchor && typeof diag.anchor === 'object' ? diag.anchor : {};
+    const located = __inlineSelection_findRootFromDiagnostic(diag);
+    if (!located || !located.root) return { ok: false, reason: 'message-not-found' };
+    let range = null;
+    let method = '';
+    if (anchor.textQuote) {
+      range = __inlineSelection_findByQuote(located.root, anchor.textQuote);
+      if (range) method = 'textQuote';
+    }
+    if (!range && anchor.textPos) {
+      const byPos = __inlineSelection_posToRange(anchor.textPos, located.root);
+      if (byPos && __inlineSelection_rangeMatchesQuote(byPos, anchor.textQuote)) {
+        range = byPos;
+        method = 'textPos';
+      }
+    }
+    if (!range && anchor.xpath) {
+      const byXpath = __inlineSelection_xpathToRange(anchor.xpath, located.root);
+      if (byXpath && __inlineSelection_rangeMatchesQuote(byXpath, anchor.textQuote)) {
+        range = byXpath;
+        method = 'xpath';
+      }
+    }
+    if (!range) return { ok: false, reason: 'selection-not-resolved' };
+    return {
+      ok: true,
+      selectedText: String(range.toString() || ''),
+      selectedTurnIdx: Math.max(1, Math.floor(Number(diag.selectedTurnIdx) || __inlineSelection_turnIndex(located.turn, __inlineSelection_getReaderScroll()))),
+      selectedMessageId: diag.selectedMessageId || __inlineSelection_readMessageId(located.root, located.turn),
+      role: diag.role || __inlineSelection_readRole(located.root, located.turn),
+      method,
+    };
+  } catch (err) {
+    return { ok: false, reason: 'resolve-error', error: String(err && (err.message || err) || err) };
+  }
+}
+
+function __inlineSelection_capture(){
+  try {
+    if (!__inlineSelection_isSavedReaderMounted()) return { ok: false, reason: 'not-saved-reader' };
+    if (typeof W.getSelection !== 'function') return { ok: false, reason: 'selection-api-unavailable' };
+    const selection = W.getSelection();
+    if (!selection || selection.rangeCount < 1) return { ok: false, reason: 'empty-selection' };
+    const raw = selection.getRangeAt(0);
+    if (!raw || raw.collapsed) return { ok: false, reason: 'empty-selection' };
+    const selectedText = String(raw.toString() || '');
+    if (!__inlineSelection_normalizeText(selectedText)) return { ok: false, reason: 'empty-selection' };
+    if (__inlineSelection_isExcludedUi(raw.startContainer) || __inlineSelection_isExcludedUi(raw.endContainer) || __inlineSelection_isExcludedUi(raw.commonAncestorContainer)) {
+      return { ok: false, reason: 'non-reader-selection' };
+    }
+    const scrollEl = __inlineSelection_getReaderScroll();
+    const startTurn = __inlineSelection_turnForNode(raw.startContainer, scrollEl);
+    const endTurn = __inlineSelection_turnForNode(raw.endContainer, scrollEl);
+    if (!startTurn || !endTurn) return { ok: false, reason: 'non-reader-selection' };
+    if (startTurn !== endTurn) return { ok: false, reason: 'selection-crosses-turns' };
+    const startMsg = __inlineSelection_messageForNode(raw.startContainer, startTurn);
+    const endMsg = __inlineSelection_messageForNode(raw.endContainer, startTurn);
+    if (startMsg && endMsg && startMsg !== endMsg) return { ok: false, reason: 'selection-crosses-messages' };
+    const messageEl = startMsg || endMsg || startTurn;
+    if (!messageEl.contains(raw.startContainer) || !messageEl.contains(raw.endContainer)) {
+      return { ok: false, reason: 'selection-outside-message' };
+    }
+    const range = raw.cloneRange();
+    const textPos = __inlineSelection_rangeToPos(range, messageEl);
+    const textQuote = __inlineSelection_rangeToQuote(range, messageEl, 32);
+    const xpath = __inlineSelection_rangeToXPath(range, messageEl);
+    if (!textPos || !textQuote || !xpath) return { ok: false, reason: 'anchor-unavailable' };
+    return {
+      ok: true,
+      selectedText,
+      selectedTurnIdx: __inlineSelection_turnIndex(startTurn, scrollEl),
+      selectedMessageId: __inlineSelection_readMessageId(messageEl, startTurn),
+      role: __inlineSelection_readRole(messageEl, startTurn),
+      anchor: { textQuote, textPos, xpath },
+    };
+  } catch (err) {
+    return { ok: false, reason: 'capture-error', error: String(err && (err.message || err) || err) };
+  }
+}
+
+function __inlineSelection_selfCheck(){
+  return {
+    ok: true,
+    version: '0.1.0-phase-5a',
+    passive: true,
+    hasSelectionApi: typeof W.getSelection === 'function',
+    hasRangeApi: typeof document.createRange === 'function',
+    savedReaderMounted: __inlineSelection_isSavedReaderMounted(),
+    captureAvailable: typeof __inlineSelection_capture === 'function',
+    resolveAvailable: typeof __inlineSelection_resolve === 'function',
+  };
+}
+
 try {
   W.H2O = W.H2O || {};
   W.H2O.Studio = W.H2O.Studio || {};
+  W.H2O.Studio.inlineSelection = Object.assign({}, W.H2O.Studio.inlineSelection || {}, {
+    __installed: true,
+    version: '0.1.0-phase-5a',
+    capture: __inlineSelection_capture,
+    resolve: __inlineSelection_resolve,
+    selfCheck: __inlineSelection_selfCheck,
+  });
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
     W.H2O.Studio.RibbonBridge = {
       __installed: true,
