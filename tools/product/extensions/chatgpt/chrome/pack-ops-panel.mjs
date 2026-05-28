@@ -287,6 +287,8 @@ function makePanelJs() {
 
   const STORAGE_KEY = ${JSON.stringify(STORAGE_KEY)};
   const DEV_CONTROLS_NAME = "H2O Dev Controls";
+  const STUDIO_LAUNCHER_NAME = "H2O Studio Launcher";
+  const PROD_STUDIO_NAME = "H2O Cockpit Pro";
   const DEV_CONTROLS_STUDIO_PATH = "surfaces/studio/studio.html";
   const DEV_CONTROLS_CONTROL_HUB_MSG = "h2o-ext-live:control-hub-open";
   const DEV_CONTROLS_IDENTITY_FIRST_RUN_MSG = "h2o-ext-identity-first-run:v1";
@@ -343,6 +345,21 @@ function makePanelJs() {
     return null;
   }
 
+  async function findStudioExtension() {
+    const items = await managementGetAll();
+    const candidates = [];
+    for (const item of items) {
+      if (!item || item.id === chrome.runtime.id) continue;
+      if (item.type !== "extension" || item.enabled === false) continue;
+      const name = String(item.name || "");
+      if (name.startsWith(STUDIO_LAUNCHER_NAME)) candidates.push({ rank: 0, item });
+      else if (name.startsWith(PROD_STUDIO_NAME)) candidates.push({ rank: 1, item });
+      else if (name.startsWith(DEV_CONTROLS_NAME)) candidates.push({ rank: 2, item });
+    }
+    candidates.sort((a, b) => a.rank - b.rank);
+    return candidates[0]?.item || null;
+  }
+
   function buildDevControlsStudioUrl(extId) {
     return "chrome-extension://" + String(extId || "") + "/" + DEV_CONTROLS_STUDIO_PATH;
   }
@@ -397,20 +414,22 @@ function makePanelJs() {
     const setupPromptBtn = document.getElementById("show-setup-prompt");
     if (!(studioBtn instanceof HTMLButtonElement) || !(controlHubBtn instanceof HTMLButtonElement) || !(setupPromptBtn instanceof HTMLButtonElement)) return null;
     try {
-      const ext = await findDevControlsExtension();
-      studioBtn.disabled = !ext;
-      controlHubBtn.disabled = !ext;
-      setupPromptBtn.disabled = !ext;
-      studioBtn.title = !ext
-        ? "Load the H2O Dev Controls extension to open Studio"
-        : "Open the dev-controls Studio home in a new tab";
+      const studioExt = await findStudioExtension();
+      const devExt = await findDevControlsExtension();
+      studioBtn.disabled = !studioExt;
+      controlHubBtn.disabled = !devExt;
+      setupPromptBtn.disabled = !devExt;
+      studioBtn.title = !studioExt
+        ? "Load the H2O Studio Launcher extension to open Studio"
+        : "Open Chrome Studio in a new tab";
+      const ext = devExt;
       controlHubBtn.title = !ext
         ? "Open ChatGPT and trigger Control Hub (requires H2O Dev Controls loader)"
         : "Open ChatGPT and trigger the same in-page Control Hub as Cockpit Pro";
       setupPromptBtn.title = !ext
         ? "Load the H2O Dev Controls extension first"
         : "Force-show the Cockpit Pro/H2O first-run setup prompt on the active ChatGPT tab";
-      return ext;
+      return { studioExt, devExt };
     } catch (err) {
       studioBtn.disabled = false;
       controlHubBtn.disabled = false;
@@ -521,8 +540,8 @@ function makePanelJs() {
     if (studioBtn instanceof HTMLButtonElement) studioBtn.disabled = true;
     setStatus("Opening Studio...");
     try {
-      const ext = await findDevControlsExtension();
-      if (!ext) throw new Error("H2O Dev Controls extension not found");
+      const ext = await findStudioExtension();
+      if (!ext) throw new Error("H2O Studio Launcher extension not found");
       await openWorkbenchUrl(buildDevControlsStudioUrl(ext.id));
       setStatus("Studio opened");
       window.close();

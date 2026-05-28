@@ -161,6 +161,7 @@ const CHAT_MATCH = ${JSON.stringify(CHAT_MATCH)};
 // surfaces/studio/studio.html which does not exist in non-prod outputs.
 const ARCHIVE_WORKBENCH_ENABLED = ${JSON.stringify(STUDIO_HOSTED_HERE)};
 const STUDIO_AUTO_RESTORE_ENABLED = ${JSON.stringify(STUDIO_AUTO_RESTORE_ON)};
+const STUDIO_SERVICE_WORKER_BOOT_AT = Date.now();
 // In-flight guards prevent racing creates. Both openOrFocusStudio (toolbar
 // click) and scheduleStudioPresenceRestore (sw-boot / onInstalled / onStartup)
 // can fire concurrently; without these, two queries can race the tabs API
@@ -1042,6 +1043,7 @@ const LIBRARY_SHARED_MINIMAL_SCHEMA_STORES = Object.freeze([
   "migrationState",
   "syncState",
 ]);
+const FOLDER_BRIDGE_MESSAGE_TIMEOUT_MS = 3500;
 const LIBRARY_SHARED_PLANNED_STORES = Object.freeze([
   "chatRegistry",
   "folders",
@@ -3193,6 +3195,36 @@ async function writeFolderBindingCache(chatId, binding, nsDisk = DEFAULT_NS_DISK
   });
 }
 
+function sendFolderBridgeMessage(tabId, message, timeoutMs = FOLDER_BRIDGE_MESSAGE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = 0;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn(value);
+    };
+
+    try {
+      const op = String(message?.req?.op || "folder bridge");
+      timer = setTimeout(() => {
+        finish(reject, new Error(op + " timed out waiting for ChatGPT tab folder bridge"));
+      }, timeoutMs);
+      chrome.tabs.sendMessage(tabId, message, (resp) => {
+        const le = chrome.runtime.lastError;
+        if (le) return finish(reject, new Error(String(le.message || le)));
+        if (!resp || resp.ok === false) {
+          return finish(reject, new Error(String(resp && resp.error || "folder bridge failed")));
+        }
+        finish(resolve, resp.result);
+      });
+    } catch (error) {
+      finish(reject, error);
+    }
+  });
+}
+
 async function queryFolderBridge(op, payload = {}, nsDisk = DEFAULT_NS_DISK) {
   const tabs = await new Promise((resolve, reject) => {
     chrome.tabs.query({ url: [CHAT_MATCH] }, (rows) => {
@@ -3210,18 +3242,9 @@ async function queryFolderBridge(op, payload = {}, nsDisk = DEFAULT_NS_DISK) {
     if (!tabId) continue;
 
     try {
-      const result = await new Promise((resolve, reject) => {
-        chrome.tabs.sendMessage(tabId, {
-          type: MSG_FOLDERS,
-          req: { op, payload, nsDisk },
-        }, (resp) => {
-          const le = chrome.runtime.lastError;
-          if (le) return reject(new Error(String(le.message || le)));
-          if (!resp || resp.ok === false) {
-            return reject(new Error(String(resp && resp.error || "folder bridge failed")));
-          }
-          resolve(resp.result);
-        });
+      const result = await sendFolderBridgeMessage(tabId, {
+        type: MSG_FOLDERS,
+        req: { op, payload, nsDisk },
       });
       return result;
     } catch (error) {
@@ -3371,16 +3394,35 @@ function getStoredStudioLastHash() {
   });
 }
 
+function shouldRefreshExistingStudioTab() {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.get !== "function") {
+        resolve(false);
+        return;
+      }
+      chrome.storage.local.get(STUDIO_PRESENCE_KEY, (result) => {
+        void chrome.runtime.lastError;
+        const presence = result && typeof result === "object" ? result[STUDIO_PRESENCE_KEY] : null;
+        const lastSeen = Number(presence && presence.lastSeenAt || 0);
+        resolve(!(Number.isFinite(lastSeen) && lastSeen >= STUDIO_SERVICE_WORKER_BOOT_AT));
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 // Open Studio in a new tab, OR focus the existing Studio tab if one is already
 // open. This is the fast path bound to chrome.action.onClicked in profiles
 // without a popup (prod, dev-lean). Behavior:
 //   - explicit routeRaw  : normalize it and use that as the hash
 //   - no routeRaw        : read last-saved hash from chrome.storage.local;
 //                           fall back to "#/saved" if missing/invalid
-//   - existing tab found : focus tab + focus window; only rewrite URL if the
-//                           caller passed an explicit route AND it differs
-//                           from the tab's current hash (never silently
-//                           rewrite the user's view on a plain icon click)
+//   - existing tab found : focus tab + focus window; rewrite only for an
+//                           explicit route, or reload the current Studio URL
+//                           if the page has not heartbeated since this
+//                           service worker booted (extension-reload recovery)
 //   - no existing tab    : chrome.tabs.create at the resolved URL
 async function openOrFocusStudio(routeRaw = "") {
   if (!ARCHIVE_WORKBENCH_ENABLED) {
@@ -3403,10 +3445,9 @@ async function openOrFocusStudio(routeRaw = "") {
   }
   const url = baseUrl + hash;
 
-  // Query all tabs and filter to our Studio surface URL prefix. We avoid
-  // chrome.tabs.query({ url }) here because that filter requires either the
-  // "tabs" permission or matching host_permissions — neither of which prod
-  // grants. For the extension's own pages, tab.url is always visible.
+  // Query all tabs and filter to our Studio surface URL prefix. The Studio
+  // launcher grants "tabs" specifically because this focus/reload path needs
+  // to see extension-page URLs reliably after an unpacked-extension reload.
   const existing = await new Promise((resolve) => {
     try {
       chrome.tabs.query({}, (rows) => {
@@ -3430,9 +3471,17 @@ async function openOrFocusStudio(routeRaw = "") {
         const existingHash = (() => {
           try { return new URL(tab.url).hash || ""; } catch { return ""; }
         })();
-        if (existingHash !== hash) {
-          chrome.tabs.update(tabId, { url });
+        const refreshExisting = await shouldRefreshExistingStudioTab();
+        if (existingHash !== hash || refreshExisting) {
+          chrome.tabs.update(tabId, { url: refreshExisting && !callerProvidedRoute ? (baseUrl + (existingHash || hash)) : url });
         }
+      } catch {}
+    } else if (tabId && await shouldRefreshExistingStudioTab()) {
+      try {
+        const existingHash = (() => {
+          try { return new URL(tab.url).hash || ""; } catch { return ""; }
+        })();
+        chrome.tabs.update(tabId, { url: baseUrl + (existingHash || hash) });
       } catch {}
     }
     return { ok: true, tabId, source: "existing-tab", url: (tab && tab.url) || url };

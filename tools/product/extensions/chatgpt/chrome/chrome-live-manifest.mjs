@@ -64,7 +64,9 @@ export function makeChromeLiveManifest({
     },
   };
   if (DEV_HAS_CONTROLS) action.default_popup = "popup.html";
-  const permissions = DEV_HAS_CONTROLS ? ["storage", "tabs", "contextMenus"] : ["storage", "contextMenus"];
+  const permissions = DEV_HAS_CONTROLS || STUDIO_ONLY
+    ? ["storage", "tabs", "contextMenus"]
+    : ["storage", "contextMenus"];
   if (oauthGoogleEnabled) permissions.push("identity");
   const manifest = {
     manifest_version: 3,
