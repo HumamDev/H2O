@@ -665,6 +665,10 @@
        past-tense local apply receipts after successful local color commits.
        No remote apply, WebDAV, convergence, storage write, or mutation. -->
   <script src="./sync/folder-apply-event.tauri.js"></script>
+  <!-- F10.8.1: Desktop/Tauri-only local relay outbox. Appends validated
+       envelopes to durable local staging only. No upload, download, inbox,
+       WebDAV, convergence, remote apply, or automatic sync. -->
+  <script src="./sync/relay-outbox.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>

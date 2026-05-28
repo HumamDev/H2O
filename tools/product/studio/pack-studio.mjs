@@ -210,6 +210,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // past-tense local apply receipts after successful local color commits.
   // No remote apply, WebDAV, convergence, storage write, or mutation.
   "sync/folder-apply-event.tauri.js",
+  // F10.8.1: Desktop/Tauri-only local relay outbox. Appends validated
+  // envelopes to durable local staging only. No upload, download, inbox,
+  // WebDAV, convergence, remote apply, or automatic sync.
+  "sync/relay-outbox.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -384,6 +388,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-metadata-apply-checks.tauri.js",
   "sync/folder-color-apply.tauri.js",
   "sync/folder-apply-event.tauri.js",
+  "sync/relay-outbox.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
