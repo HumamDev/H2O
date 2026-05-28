@@ -37,22 +37,34 @@
   var ADAPTER_NAME = 'mv3';
   var ADAPTER_VERSION = '0.1.0';
   var BROADCAST_PREFIX = 'h2o:studio:platform:broadcast:';
+  var MESSAGE_TIMEOUT_MS = 12000;
 
   /* ───────────────────────── messaging ───────────────────────── */
 
   function messagingSend(target, message) {
     return new Promise(function (resolve, reject) {
       if (!hasRuntime) return reject(new Error('chrome.runtime unavailable'));
+      var settled = false;
+      var timer = 0;
+      function finish(fn, value) {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        fn(value);
+      }
       try {
+        timer = setTimeout(function () {
+          finish(reject, new Error('chrome.runtime.sendMessage timed out for ' + String(target || 'message')));
+        }, MESSAGE_TIMEOUT_MS);
         /* `target` is informational today (used by Tauri to pick a command).
          * In MV3 the bg.js service worker routes by message envelope. */
         chromeApi.runtime.sendMessage(message, function (response) {
           var err = chromeApi.runtime && chromeApi.runtime.lastError;
-          if (err) return reject(new Error(err.message || String(err)));
-          resolve(response);
+          if (err) return finish(reject, new Error(err.message || String(err)));
+          finish(resolve, response);
         });
       } catch (e) {
-        reject(e);
+        finish(reject, e);
       }
     });
   }
