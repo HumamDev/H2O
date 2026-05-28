@@ -263,6 +263,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // lists local publication lifecycle rows only. No publish, outbox enqueue,
   // upload, apply, convergence, or remote mutation.
   "sync/publication-ledger.tauri.js",
+  // F10.8.6g2: Desktop/Tauri-only proposal publication. Publishes generated
+  // proposal candidates into the local relay outbox only. No upload, WebDAV,
+  // apply, applyEvent, convergence, or remote mutation.
+  "sync/proposal-publication.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -449,6 +453,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/convergence-proposal-generator.tauri.js",
   "sync/convergence-conflict-candidate-generator.tauri.js",
   "sync/publication-ledger.tauri.js",
+  "sync/proposal-publication.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
