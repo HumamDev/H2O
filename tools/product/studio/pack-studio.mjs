@@ -157,6 +157,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // conflictCandidate envelope emission, applyEvent, merge, write-back,
   // storage write, transport, polling, or WebDAV.
   "sync/folder-sync-diff.js",
+  // F10.6.3: Chrome Studio proposal-preview envelope generation. Converts
+  // proposalEligible F10.6.2 folder diff entries into F10.2 kind="preview" /
+  // dryRun=true envelopes only. No proposal, conflictCandidate, applyEvent,
+  // merge, write-back, storage write, runtime broadcast, polling, or WebDAV.
+  "sync/folder-sync-proposal-preview.mv3.js",
   // F2: peer-identity scaffold. Mints + persists per-install peer identity
   // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
   // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
@@ -352,6 +357,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/capture-evidence-preview.mv3.js",
   "sync/folder-sync-canonical.js",
   "sync/folder-sync-diff.js",
+  "sync/folder-sync-proposal-preview.mv3.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",

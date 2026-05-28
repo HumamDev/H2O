@@ -599,6 +599,13 @@
        write-back, storage write, transport, polling, or WebDAV. Registers
        H2O.Studio.diagnostics.diffFolderSnapshots. -->
   <script src="./sync/folder-sync-diff.js"></script>
+  <!-- F10.6.3: Chrome Studio proposal-preview envelope generation.
+       Converts proposalEligible F10.6.2 folder diff entries into
+       F10.2 kind="preview" / dryRun=true envelopes only. No proposal,
+       conflictCandidate, applyEvent, merge, write-back, storage write,
+       runtime broadcast, polling, or WebDAV. Registers
+       H2O.Studio.diagnostics.previewFolderSyncProposal. -->
+  <script src="./sync/folder-sync-proposal-preview.mv3.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no
