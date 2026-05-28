@@ -35,6 +35,7 @@
   var ENVELOPE_SCHEMA = 'h2o.crossPlatform.envelope.v1';
   var VERSION = '0.1.0-f10.8.1';
   var RELAY_STATUS_PENDING = 'pending-upload';
+  var RELAY_STATUS_UPLOADED = 'uploaded';
   var ALLOWED_KINDS = ['evidence', 'preview', 'proposal', 'conflictCandidate', 'applyEvent'];
   var SURFACE_KINDS = ['desktop-tauri', 'browser-studio', 'browser-runtime', 'mobile'];
   var FOREVER_NO_FIELDS = [
@@ -266,13 +267,14 @@
   }
 
   function validRow(row) {
+    var relayStatus = cleanString(row.relayStatus);
     return isObject(row)
       && row.schema === ROW_SCHEMA
       && isSha256Hex(row.envelopeDigest)
       && isSha256Hex(row.eventDigest)
       && isSha256Hex(row.dedupeKey)
       && ALLOWED_KINDS.indexOf(cleanString(row.kind)) !== -1
-      && row.relayStatus === RELAY_STATUS_PENDING
+      && (relayStatus === RELAY_STATUS_PENDING || relayStatus === RELAY_STATUS_UPLOADED)
       && typeof row.serializedEnvelope === 'string'
       && row.serializedEnvelope.length > 0;
   }
@@ -317,6 +319,8 @@
       relayStatus: row.relayStatus,
       serializedEnvelopePresent: typeof row.serializedEnvelope === 'string' && row.serializedEnvelope.length > 0
     };
+    if (row.uploadedAtIso) summary.uploadedAtIso = row.uploadedAtIso;
+    if (row.remoteObjectKey) summary.remoteObjectKey = row.remoteObjectKey;
     if (includeSerializedEnvelope === true) summary.serializedEnvelope = row.serializedEnvelope;
     return summary;
   }
@@ -393,7 +397,8 @@
       row: rowSummary(row, false),
       counts: {
         rows: next.rows.length,
-        pendingUpload: next.rows.filter(function (item) { return item.relayStatus === RELAY_STATUS_PENDING; }).length
+        pendingUpload: next.rows.filter(function (item) { return item.relayStatus === RELAY_STATUS_PENDING; }).length,
+        uploaded: next.rows.filter(function (item) { return item.relayStatus === RELAY_STATUS_UPLOADED; }).length
       },
       blockers: [],
       warnings: validation.warnings
@@ -412,7 +417,7 @@
         ok: false,
         storageKey: OUTBOX_KEY,
         rows: [],
-        counts: { rows: 0, pendingUpload: 0 },
+        counts: { rows: 0, pendingUpload: 0, uploaded: 0 },
         blockers: ['storage-unavailable'],
         warnings: []
       };
@@ -423,7 +428,7 @@
         ok: false,
         storageKey: OUTBOX_KEY,
         rows: [],
-        counts: { rows: 0, pendingUpload: 0 },
+        counts: { rows: 0, pendingUpload: 0, uploaded: 0 },
         blockers: ['outbox-malformed'],
         warnings: []
       };
@@ -437,7 +442,8 @@
       rows: outbox.rows.map(function (row) { return rowSummary(row, includeSerializedEnvelope); }),
       counts: {
         rows: outbox.rows.length,
-        pendingUpload: outbox.rows.filter(function (row) { return row.relayStatus === RELAY_STATUS_PENDING; }).length
+        pendingUpload: outbox.rows.filter(function (row) { return row.relayStatus === RELAY_STATUS_PENDING; }).length,
+        uploaded: outbox.rows.filter(function (row) { return row.relayStatus === RELAY_STATUS_UPLOADED; }).length
       },
       blockers: [],
       warnings: []

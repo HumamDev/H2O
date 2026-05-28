@@ -673,6 +673,10 @@
        quarantines, and stores remote envelopes only. No apply, convergence,
        WebDAV, networking, automatic review, or automatic sync. -->
   <script src="./sync/relay-inbox.tauri.js"></script>
+  <!-- F10.8.3: Desktop/Tauri-only manual WebDAV relay adapter. Uploads
+       outbox envelopes and downloads remote blobs into inbox validation only.
+       No convergence, apply, automatic merge, review, polling, or sync loop. -->
+  <script src="./sync/webdav-relay.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
