@@ -13,6 +13,8 @@ const LABEL_CATALOG_OPS = ["getLabelsCatalog"];
 const CATEGORY_CATALOG_OPS = ["getCategoriesCatalog"];
 const CATEGORY_SET_OPS = ["setSnapshotCategory"];
 const CATEGORY_RECLASSIFY_OPS = ["reclassifySnapshotCategory"];
+const STUDIO_ARCHIVE_TIMEOUT_MS = 4500;
+const STUDIO_BOOT_AUX_TIMEOUT_MS = 2500;
 const FOLDER_FILTER_NONE = "__none__";
 const FOLDER_SIDEBAR_UI_STATE = {
   showFolderCountPills: false,
@@ -36,6 +38,7 @@ const FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DUPLICATE FOLDERS";
 const FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT = "DELETE EMPTY DESKTOP FOLDERS";
 const FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT = "REFRESH DESKTOP FOLDER MIRROR";
 const FOLDER_CLEANUP_DRY_RUN_FRESHNESS_MS = 5 * 60 * 1000;
+const FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT = "PREVIEW ONLY - NO CLEANUP";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
@@ -61,6 +64,9 @@ const FOLDER_PARITY_SETTINGS_UI_STATE = {
   activeTab: "overview",
   cleanupSubtab: "overview",
   statuses: Object.create(null),
+  sectionTabs: Object.create(null),
+  cleanupDryRunPlan: null,
+  cleanupApplyPreview: null,
 };
 const FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE = {
   selected: false,
@@ -75,6 +81,32 @@ const INTERFACE_COLORS = [
   { name: "blue", value: "rgba(70,100,200,1)" },
   { name: "green", value: "rgba(60,150,90,1)" },
 ];
+
+function studioTimeoutError(label, timeoutMs){
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.code = "timeout";
+  return error;
+}
+
+function promiseWithTimeout(promise, timeoutMs, label){
+  const ms = Math.max(1, Number(timeoutMs) || 1);
+  let timer = 0;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(studioTimeoutError(label || "operation", ms)), ms);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+async function promiseWithTimeoutFallback(promise, timeoutMs, label, fallback){
+  try {
+    return await promiseWithTimeout(promise, timeoutMs, label);
+  } catch (error) {
+    try { console.warn("[H2O.Studio] " + String(label || "operation") + " unavailable", error); } catch {}
+    return fallback;
+  }
+}
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -1256,7 +1288,15 @@ async function callArchive(op, payload = {}, nsDisk){
 
 async function tryArchiveOp(op, payload = {}, nsDisk){
   try {
-    return { ok: true, op, result: await callArchive(op, payload, nsDisk) };
+    return {
+      ok: true,
+      op,
+      result: await promiseWithTimeout(
+        callArchive(op, payload, nsDisk),
+        STUDIO_ARCHIVE_TIMEOUT_MS,
+        `archive op ${op}`
+      ),
+    };
   } catch (error){
     return { ok: false, op, error };
   }
@@ -3372,7 +3412,11 @@ async function fetchFolderParityCatalog(force = false){
   // union. The canonical sidebar path uses fetchFolderParityPartition.
   const api = W.H2O?.Library?.FolderParity;
   if (typeof api?.getDisplayModel !== "function") return [];
-  const model = await api.getDisplayModel({ fresh: !!force });
+  const model = await promiseWithTimeout(
+    api.getDisplayModel({ fresh: !!force }),
+    STUDIO_BOOT_AUX_TIMEOUT_MS,
+    "FolderParity.getDisplayModel"
+  );
   const rows = mapFolderParityRowsToCatalog(model?.rows || []);
   return rows.length ? rows : [];
 }
@@ -3382,7 +3426,11 @@ async function fetchFolderParityPartition(force = false){
   if (typeof api?.getDisplayModel !== "function") {
     return { canonical: [], review: [], fallbackUsed: false };
   }
-  const model = await api.getDisplayModel({ fresh: !!force });
+  const model = await promiseWithTimeout(
+    api.getDisplayModel({ fresh: !!force }),
+    STUDIO_BOOT_AUX_TIMEOUT_MS,
+    "FolderParity.getDisplayModel"
+  );
   return {
     canonical: mapFolderParityRowsToCatalog(model?.canonicalRows || []),
     review: mapFolderParityRowsToCatalog(model?.localReviewRows || []),
@@ -3415,7 +3463,11 @@ async function fetchLabelCatalog(force = false){
   const ws = getLibraryWorkspace();
   if (ws?.getLabels){
     try {
-      const list = await ws.getLabels({ fresh: !!force });
+      const list = await promiseWithTimeout(
+        ws.getLabels({ fresh: !!force }),
+        STUDIO_BOOT_AUX_TIMEOUT_MS,
+        "LibraryWorkspace.getLabels"
+      );
       if (Array.isArray(list)){
         state.labelCatalog = normalizeLabelCatalog(list);
         return Array.isArray(state.labelCatalog) ? state.labelCatalog.slice() : [];
@@ -3434,7 +3486,11 @@ async function fetchCategoryCatalog(force = false){
   const ws = getLibraryWorkspace();
   if (ws?.getCategories){
     try {
-      const list = await ws.getCategories({ fresh: !!force });
+      const list = await promiseWithTimeout(
+        ws.getCategories({ fresh: !!force }),
+        STUDIO_BOOT_AUX_TIMEOUT_MS,
+        "LibraryWorkspace.getCategories"
+      );
       if (Array.isArray(list)){
         state.categoryCatalog = normalizeCategoryCatalog(list);
         return Array.isArray(state.categoryCatalog) ? state.categoryCatalog.slice() : [];
@@ -3578,8 +3634,18 @@ function mergeRowFolderData(row, bindingMap){
 async function enrichRowsWithFolderData(rows, force = false){
   const baseRows = await enrichRowsWithNativeInterfaceData(rows);
   const [, bindingMap] = await Promise.all([
-    fetchFolderCatalog(force).catch(() => ({ canonical: [], review: [] })),
-    resolveFolderBindingsForChatIds(baseRows.map((row) => row.chatId)).catch(() => new Map()),
+    promiseWithTimeoutFallback(
+      fetchFolderCatalog(force),
+      STUDIO_BOOT_AUX_TIMEOUT_MS,
+      "fetchFolderCatalog",
+      { canonical: [], review: [] }
+    ),
+    promiseWithTimeoutFallback(
+      resolveFolderBindingsForChatIds(baseRows.map((row) => row.chatId)),
+      STUDIO_BOOT_AUX_TIMEOUT_MS,
+      "resolveFolderBindingsForChatIds",
+      new Map()
+    ),
   ]);
   // fetchFolderCatalog already wrote state.folderCatalog (canonical) and
   // state.folderLocalReview (review). Row-derived folders no longer pollute
@@ -5218,12 +5284,31 @@ async function renderList(view, folderId = "", opts = {}){
   setRouteMeta("Studio", viewCopy(nextView), "Loading archive state");
 
   try {
-    const fetched = await fetchWorkbenchRows(!!opts.force);
+    const fetched = await promiseWithTimeout(
+      fetchWorkbenchRows(!!opts.force),
+      STUDIO_ARCHIVE_TIMEOUT_MS * 2,
+      "fetchWorkbenchRows"
+    );
     if (token !== state.renderToken) return;
     const [allRows] = await Promise.all([
-      enrichRowsWithFolderData(fetched, !!opts.force),
-      fetchLabelCatalog(!!opts.force).catch(() => []),
-      fetchCategoryCatalog(!!opts.force).catch(() => []),
+      promiseWithTimeoutFallback(
+        enrichRowsWithFolderData(fetched, !!opts.force),
+        STUDIO_BOOT_AUX_TIMEOUT_MS + 1000,
+        "enrichRowsWithFolderData",
+        fetched
+      ),
+      promiseWithTimeoutFallback(
+        fetchLabelCatalog(!!opts.force),
+        STUDIO_BOOT_AUX_TIMEOUT_MS,
+        "fetchLabelCatalog",
+        []
+      ),
+      promiseWithTimeoutFallback(
+        fetchCategoryCatalog(!!opts.force),
+        STUDIO_BOOT_AUX_TIMEOUT_MS,
+        "fetchCategoryCatalog",
+        []
+      ),
     ]);
     if (token !== state.renderToken) return;
 
@@ -5320,11 +5405,16 @@ async function renderReader(snapshotId){
     renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
 
     await Promise.all([
-      fetchFolderCatalog(false).catch(() => ({ canonical: [], review: [] })),
-      fetchLabelCatalog(false).catch(() => []),
-      fetchCategoryCatalog(false).catch(() => []),
+      promiseWithTimeoutFallback(fetchFolderCatalog(false), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchFolderCatalog", { canonical: [], review: [] }),
+      promiseWithTimeoutFallback(fetchLabelCatalog(false), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchLabelCatalog", []),
+      promiseWithTimeoutFallback(fetchCategoryCatalog(false), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchCategoryCatalog", []),
     ]);
-    const bindings = await resolveFolderBindingsForChatIds([snap.chatId]).catch(() => new Map());
+    const bindings = await promiseWithTimeoutFallback(
+      resolveFolderBindingsForChatIds([snap.chatId]),
+      STUDIO_BOOT_AUX_TIMEOUT_MS,
+      "resolveFolderBindingsForChatIds",
+      new Map()
+    );
     if (token !== state.renderToken) return;
     if (bindings.has(snap.chatId)) {
       const binding = normalizeFolderBinding(bindings.get(snap.chatId));
@@ -5705,10 +5795,75 @@ function prepareVisibleStudioFoldersBody(){
   const listSubtitle = $("#listSubtitle");
   const listFilters = $("#listFilters");
   if (listTitle) listTitle.textContent = "Folders";
-  if (listSubtitle) listSubtitle.textContent = "Loading folder parity model...";
+  if (listSubtitle) listSubtitle.textContent = "Preparing folders...";
   if (listFilters) listFilters.innerHTML = "";
   setRouteMeta("Library", "Folders", "Library workspace · folders · labels · categories · projects · tags");
   return listEl;
+}
+
+function makeVisibleStudioFoldersFallbackModel(reason = "studio-sidebar-cache"){
+  const canonicalRows = normalizeFolderCatalog(state.folderCatalog)
+    .map((row) => ({
+      ...row,
+      id: row.id || row.folderId,
+      folderId: row.folderId || row.id,
+      isCanonical: true,
+      source: row.source || reason,
+      nativeMembershipCount: Number(row.nativeMembershipCount ?? row.canonicalCount ?? row.knownCount ?? 0) || 0,
+      knownCount: Number(row.knownCount ?? row.savedCount ?? 0) || 0,
+    }))
+    .filter((row) => row.folderId);
+  const localReviewRows = normalizeFolderCatalog(state.folderLocalReview)
+    .map((row) => ({
+      ...row,
+      id: row.id || row.folderId,
+      folderId: row.folderId || row.id,
+      isCanonical: false,
+      source: row.source || reason,
+      nativeMembershipCount: Number(row.nativeMembershipCount ?? row.canonicalCount ?? 0) || 0,
+      knownCount: Number(row.knownCount ?? row.savedCount ?? 0) || 0,
+    }))
+    .filter((row) => row.folderId);
+  return {
+    readOnly: true,
+    surface: STUDIO_isTauri() ? "desktop-studio" : "chrome-studio",
+    generatedAt: new Date().toISOString(),
+    canonicalSource: reason,
+    fallbackUsed: true,
+    canonicalRows,
+    localReviewRows,
+  };
+}
+
+async function hydrateVisibleStudioFoldersRouteShell(force = false){
+  if (!isVisibleStudioFoldersRoute()) return null;
+  const view = state.lastView || "saved";
+  const folderId = state.lastFolderId || "";
+  const initialRows = Array.isArray(state.rowsCache) ? state.rowsCache.slice() : [];
+  renderFolderSidebar(initialRows, view, folderId);
+  renderSidebarChatList(filterRows(initialRows, view, "", folderId, state.lastTagFilter), view, folderId, "");
+  const fetched = await promiseWithTimeoutFallback(
+    fetchWorkbenchRows(!!force),
+    STUDIO_ARCHIVE_TIMEOUT_MS,
+    "fetchWorkbenchRows",
+    Array.isArray(state.rowsCache) ? state.rowsCache.slice() : []
+  );
+  const rows = await promiseWithTimeoutFallback(
+    enrichRowsWithFolderData(Array.isArray(fetched) ? fetched : [], !!force),
+    STUDIO_BOOT_AUX_TIMEOUT_MS + 1000,
+    "enrichRowsWithFolderData",
+    Array.isArray(state.rowsCache) ? state.rowsCache.slice() : (Array.isArray(fetched) ? fetched : [])
+  );
+  await Promise.all([
+    promiseWithTimeoutFallback(fetchFolderCatalog(false), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchFolderCatalog", { canonical: [], review: [] }),
+    promiseWithTimeoutFallback(fetchLabelCatalog(!!force), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchLabelCatalog", []),
+    promiseWithTimeoutFallback(fetchCategoryCatalog(!!force), STUDIO_BOOT_AUX_TIMEOUT_MS, "fetchCategoryCatalog", []),
+  ]);
+  if (!isVisibleStudioFoldersRoute()) return { rows };
+  const safeRows = Array.isArray(rows) ? rows : [];
+  renderFolderSidebar(safeRows, view, folderId);
+  renderSidebarChatList(filterRows(safeRows, view, "", folderId, state.lastTagFilter), view, folderId, "");
+  return { rows: safeRows };
 }
 
 async function renderVisibleStudioFoldersPageBody(opts = {}){
@@ -5725,6 +5880,10 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
       </section>
     `;
   }
+  const shellHydration = hydrateVisibleStudioFoldersRouteShell(!!opts.force).catch((error) => {
+    try { console.warn("[H2O.Studio] folders route shell hydration failed", error); } catch {}
+    return null;
+  });
 
   const parity = W.H2O?.Library?.FolderParity;
   if (typeof parity?.getDisplayModel !== "function") {
@@ -5741,20 +5900,48 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
     return;
   }
 
-  let model = null;
-  try {
-    model = await parity.getDisplayModel({ fresh: opts.force !== false });
-  } catch (error) {
-    if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
-    const errorListEl = prepareVisibleStudioFoldersBody() || listEl;
-    if (errorListEl) {
-      errorListEl.innerHTML = `
-        <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="error" style="padding:16px 18px 24px">
-          <div class="wbState wbState--error">${esc(error?.message || "Failed to load folder parity model.")}</div>
-        </section>
-      `;
+  let model = opts.model && typeof opts.model === "object" ? opts.model : null;
+  if (!model) {
+    let modelPromise = null;
+    try {
+      modelPromise = parity.getDisplayModel({ fresh: opts.force !== false });
+      model = await promiseWithTimeout(
+        modelPromise,
+        STUDIO_BOOT_AUX_TIMEOUT_MS,
+        "FolderParity.getDisplayModel"
+      );
+    } catch (error) {
+      if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
+      if (modelPromise && typeof modelPromise.then === "function") {
+        modelPromise.then((lateModel) => {
+          if (!isVisibleStudioFoldersRoute()) return;
+          renderVisibleStudioFoldersPageBody({ force: false, model: lateModel }).catch(console.warn);
+        }).catch(() => {});
+      }
+      model = makeVisibleStudioFoldersFallbackModel("folder-parity-pending");
+      let hasFallbackRows = (Array.isArray(model.canonicalRows) && model.canonicalRows.length)
+        || (Array.isArray(model.localReviewRows) && model.localReviewRows.length);
+      if (!hasFallbackRows) {
+        await shellHydration.catch(() => null);
+        model = makeVisibleStudioFoldersFallbackModel("folder-parity-pending");
+        hasFallbackRows = (Array.isArray(model.canonicalRows) && model.canonicalRows.length)
+          || (Array.isArray(model.localReviewRows) && model.localReviewRows.length);
+      }
+      if (!hasFallbackRows) {
+        const waitingListEl = prepareVisibleStudioFoldersBody() || listEl;
+        if (waitingListEl) {
+          waitingListEl.innerHTML = `
+            <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="waiting" style="padding:16px 18px 24px">
+              <div class="wbState">Preparing folder rows. FolderParity will refresh this page when ready.</div>
+            </section>
+          `;
+        }
+        W.setTimeout(() => {
+          if (isVisibleStudioFoldersRoute()) renderVisibleStudioFoldersPageBody({ force: false }).catch(console.warn);
+        }, 800);
+        return;
+      }
     }
-    return;
   }
   if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
   const finalListEl = prepareVisibleStudioFoldersBody() || listEl;
@@ -6201,12 +6388,33 @@ function renderSettingsRoute(){
         <button type="button" data-folder-parity-tab="operations" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations")}">Operations / Proofs</button>
       </div>
       <div id="wbSettingsFolderParityPanelOverview" data-folder-parity-panel="overview" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
+        ${settingsFolderSectionTabsHtml("parity-overview", [
+          { id: "summary", label: "Summary" },
+          { id: "counts", label: "Counts" },
+          { id: "diagnostics", label: "Diagnostics" },
+          { id: "risks", label: "Risks" },
+        ], "summary")}
+        <div ${settingsFolderSectionPanelAttrs("parity-overview", "summary", "summary")}>
         <div id="wbSettingsFolderParityHealth" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-overview", "counts", "summary")}>
         <div id="wbSettingsFolderParityOverviewMeta" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-overview", "diagnostics", "summary")}>
         <div id="wbSettingsFolderParityStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-overview", "risks", "summary")}>
         <div id="wbSettingsFolderParityWarn" style="font-size:12px;opacity:.72">Read-only. No cleanup performed. Cleanup requires reviewed approval.</div>
+        </div>
       </div>
       <div id="wbSettingsFolderParityPanelCanonical" data-folder-parity-panel="canonical" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("parity-canonical", [
+          { id: "rows", label: "Rows" },
+          { id: "counts", label: "Counts" },
+          { id: "conflicts", label: "Conflicts" },
+          { id: "json", label: "JSON" },
+        ], "rows")}
+        <div ${settingsFolderSectionPanelAttrs("parity-canonical", "rows", "rows")}>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
           <div>
             <div style="font-weight:600">Canonical Folders</div>
@@ -6215,8 +6423,25 @@ function renderSettingsRoute(){
           <div data-folder-parity-status="canonicalRows">${settingsFolderParityStatusBadgeHtml("not-tested")}</div>
         </div>
         <div id="wbSettingsFolderParityCanonicalRows" style="display:flex;flex-direction:column;gap:7px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-canonical", "counts", "rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Canonical folder counts are read-only and refresh through FolderParity diagnostics. Use Rows for the live canonical count labels.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-canonical", "conflicts", "rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Duplicate names are review-only. Case and English imported duplicates stay outside the canonical list and must never be merged by name.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-canonical", "json", "rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Copy report JSON from the Folder Parity header for the current canonical diagnostics JSON. This section is read-only.</div>
+        </div>
       </div>
       <div id="wbSettingsFolderParityPanelLocalReview" data-folder-parity-panel="local-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("parity-local-review", [
+          { id: "review-rows", label: "Review Rows" },
+          { id: "extra-rows", label: "Extra Rows" },
+          { id: "test-rows", label: "Test Rows" },
+          { id: "conflicts", label: "Conflicts" },
+        ], "review-rows")}
+        <div ${settingsFolderSectionPanelAttrs("parity-local-review", "review-rows", "review-rows")}>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
           <div>
             <div style="font-weight:600">Local Review</div>
@@ -6225,9 +6450,26 @@ function renderSettingsRoute(){
           <div id="wbSettingsFolderParityLocalReviewSummary">${settingsFolderParityStatusBadgeHtml("not-tested")}</div>
         </div>
         <div id="wbSettingsFolderParityLists" style="display:flex;flex-direction:column;gap:6px;font-size:13px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-local-review", "extra-rows", "review-rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Extra local rows are preserved for review. They are not canonical and are not cleanup permission.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-local-review", "test-rows", "review-rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">RT, Empty, and F5D rows are test candidates only after exact-ID reviewed planning. No cleanup is performed here.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-local-review", "conflicts", "review-rows")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Same-name conflicts such as Case and English are review-only. Never merge by folder name.</div>
+        </div>
       </div>
       <div id="wbSettingsFolderParityPanelMirrorRefresh" data-folder-parity-panel="mirror-refresh" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
       <div id="wbSettingsFolderMirrorRefresh" style="${STUDIO_isTauri() ? "display:flex" : "display:none"};flex-direction:column;gap:8px;padding:10px;margin-top:0;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px">
+        ${settingsFolderSectionTabsHtml("parity-mirror-refresh", [
+          { id: "input", label: "Input" },
+          { id: "preview", label: "Preview" },
+          { id: "confirmation", label: "Confirmation" },
+          { id: "result", label: "Result" },
+        ], "input")}
+        <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "input", "input")}>
         <div>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
             <div style="font-weight:600">Refresh Desktop folder mirror</div>
@@ -6245,10 +6487,14 @@ function renderSettingsRoute(){
         <textarea id="wbSettingsFolderMirrorRefreshJson" spellcheck="false" autocomplete="off"
                   placeholder="Or paste raw Native/Chrome folder-state JSON here"
                   style="min-height:76px;resize:vertical;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.pastedJson || "")}</textarea>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "preview", "input")}>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button id="wbSettingsFolderMirrorRefreshPreview" type="button" style="${btnStyle}">Preview Desktop mirror refresh</button>
           <button id="wbSettingsFolderMirrorRefreshCopyPlan" type="button" style="${btnStyle}">Copy refresh plan JSON</button>
         </div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "confirmation", "input")}>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
           <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT)}</code> to enable mirror refresh.</span>
           <input id="wbSettingsFolderMirrorRefreshConfirm" type="text" autocomplete="off" spellcheck="false"
@@ -6256,9 +6502,12 @@ function renderSettingsRoute(){
                  style="padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
         </label>
         <button id="wbSettingsFolderMirrorRefreshRun" type="button" style="${btnStyle}" disabled>Refresh Desktop folder mirror</button>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "result", "input")}>
         <div id="wbSettingsFolderMirrorRefreshStatus" style="font-size:12px;opacity:.72">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status || "Desktop mirror only. Native, Chrome, folders, and folder_bindings are not changed.")}</div>
         <div id="wbSettingsFolderMirrorRefreshDeltaSummary" style="display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.45" hidden></div>
         <pre id="wbSettingsFolderMirrorRefreshPreviewOut" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+        </div>
       </div>
       </div>
       <div id="wbSettingsFolderParityPanelCleanupReview" data-folder-parity-panel="cleanup-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
@@ -6277,39 +6526,147 @@ function renderSettingsRoute(){
           <button type="button" data-folder-cleanup-subtab="overview" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview")}">Overview</button>
           <button type="button" data-folder-cleanup-subtab="candidates" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates")}">Candidates</button>
           <button type="button" data-folder-cleanup-subtab="dry-run" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run")}">Dry-run Plan</button>
+          <button type="button" data-folder-cleanup-subtab="apply-preview" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "apply-preview" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "apply-preview")}">Preview Gate</button>
           <button type="button" data-folder-cleanup-subtab="conflicts" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts")}">Conflicts</button>
           <button type="button" data-folder-cleanup-subtab="desktop" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop")}">Desktop</button>
           <button type="button" data-folder-cleanup-subtab="orphans" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "true" : "false"}" style="${settingsFolderCleanupSubtabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans")}">Orphans</button>
         </div>
         <div data-folder-cleanup-subpanel="overview" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "overview" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-overview", [
+          { id: "summary", label: "Summary" },
+          { id: "safety", label: "Safety Rules" },
+          { id: "counts", label: "Counts" },
+          { id: "risks", label: "Current Risks" },
+        ], "summary")}
+        <div ${settingsFolderSectionPanelAttrs("cleanup-overview", "summary", "summary")}>
+        <div style="font-size:12px;opacity:.72">No cleanup is performed. Use the Candidates and Dry-run Plan subtabs to inspect a reviewed no-mutation plan before any future implementation phase.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-overview", "safety", "summary")}>
         <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">
           Read-only: this panel only renders FolderParity diagnostics. It does not delete, merge, repair, normalize, write Chrome storage, write Desktop SQLite, call Native owner operations, or mutate folder mirrors.
         </div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-overview", "counts", "summary")}>
         <div id="wbSettingsFolderCleanupReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
-        <div style="font-size:12px;opacity:.72">No cleanup is performed. Use the Candidates and Dry-run Plan subtabs to inspect a reviewed no-mutation plan before any future implementation phase.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-overview", "risks", "summary")}>
+        <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Duplicate names, test/import rows, and orphan memberships are diagnostic risks only. They are not deletion permission.</div>
+        </div>
         </div>
         <div data-folder-cleanup-subpanel="candidates" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "candidates" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-candidates", [
+          { id: "all", label: "All Candidates" },
+          { id: "conflicts", label: "Conflicts" },
+          { id: "tests", label: "Test Candidates" },
+          { id: "preserve", label: "Preserve Canonical" },
+          { id: "blocked", label: "Blocked / Review Only" },
+        ], "all")}
+        <div ${settingsFolderSectionPanelAttrs("cleanup-candidates", "all", "all")}>
         <div style="font-size:12px;opacity:.72">Selectable rows are non-canonical review candidates only. Native-owned canonical rows are preserve-only.</div>
         <div id="wbSettingsFolderCleanupReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
         </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-candidates", "conflicts", "all")}>
+        <div id="wbSettingsFolderCleanupReviewGroupsConflicts" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-candidates", "tests", "all")}>
+        <div id="wbSettingsFolderCleanupReviewGroupsTests" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-candidates", "preserve", "all")}>
+        <div id="wbSettingsFolderCleanupReviewGroupsPreserve" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-candidates", "blocked", "all")}>
+        <div id="wbSettingsFolderCleanupReviewGroupsBlocked" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        </div>
         <div data-folder-cleanup-subpanel="dry-run" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "dry-run" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-dry-run", [
+          { id: "controls", label: "Controls" },
+          { id: "result", label: "Dry-run Result" },
+          { id: "selected", label: "Selected Rows" },
+          { id: "reasons", label: "Reason Codes" },
+          { id: "json", label: "JSON Preview" },
+        ], "controls")}
         <div id="wbSettingsFolderCleanupDryRunBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div ${settingsFolderSectionPanelAttrs("cleanup-dry-run", "controls", "controls")}>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
               <div style="font-weight:600">Dry-run cleanup plan</div>
               <div id="wbSettingsFolderCleanupDryRunSummary" style="opacity:.72;font-size:12px">Select review rows, then generate a dry-run plan. No cleanup is performed.</div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button id="wbSettingsFolderCleanupDryRunGenerate" type="button" style="${btnStyle}">Generate dry-run plan</button>
+              <button id="wbSettingsFolderCleanupDryRunGenerate" data-folder-cleanup-dry-run-action="generate" type="button" style="${btnStyle}">Generate dry-run plan</button>
               <button id="wbSettingsFolderCleanupDryRunCopy" type="button" style="${btnStyle}" disabled>Copy dry-run plan JSON</button>
             </div>
           </div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-dry-run", "result", "controls")}>
+          <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+            <button data-folder-cleanup-dry-run-action="generate" type="button" style="${btnStyle}">Generate dry-run plan</button>
+          </div>
           <div id="wbSettingsFolderCleanupDryRunRows" style="display:flex;flex-direction:column;gap:6px;font-size:12px"></div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-dry-run", "selected", "controls")}>
+          <div id="wbSettingsFolderCleanupDryRunSelectedRows" style="display:flex;flex-direction:column;gap:6px;font-size:12px">Generate a dry-run plan to inspect selected rows.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-dry-run", "reasons", "controls")}>
+          <div id="wbSettingsFolderCleanupDryRunReasonCodes" style="display:flex;flex-direction:column;gap:6px;font-size:12px">Generate a dry-run plan to inspect reason codes.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-dry-run", "json", "controls")}>
           <pre id="wbSettingsFolderCleanupDryRunJson" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:220px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+          </div>
+        </div>
+        </div>
+        <div data-folder-cleanup-subpanel="apply-preview" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "apply-preview" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "apply-preview" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-apply-preview", [
+          { id: "controls", label: "Controls" },
+          { id: "result", label: "Preview Result" },
+          { id: "blockers", label: "Blockers" },
+          { id: "confirmation", label: "Confirmation" },
+          { id: "json", label: "JSON Preview" },
+        ], "controls")}
+        <div id="wbSettingsFolderCleanupApplyPreviewBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div ${settingsFolderSectionPanelAttrs("cleanup-apply-preview", "controls", "controls")}>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:600">Preview Gate</div>
+              <div id="wbSettingsFolderCleanupApplyPreviewSummary" style="opacity:.72;font-size:12px">Preview only: no cleanup is applied.</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="wbSettingsFolderCleanupApplyPreviewGenerate" data-folder-cleanup-apply-preview-action="generate" type="button" style="${btnStyle}">Generate apply preview</button>
+              <button id="wbSettingsFolderCleanupApplyPreviewCopy" data-folder-cleanup-apply-preview-action="copy" type="button" style="${btnStyle}" disabled>Copy preview gate JSON</button>
+            </div>
+          </div>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Preview only: no cleanup is applied. This tab never writes folder state, Native state, Chrome storage, Desktop mirror, Desktop SQLite, or Rust-backed data.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-apply-preview", "result", "controls")}>
+          <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+            <button data-folder-cleanup-apply-preview-action="generate" type="button" style="${btnStyle}">Generate apply preview</button>
+          </div>
+          <div id="wbSettingsFolderCleanupApplyPreviewRows" style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+            <div style="border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px;opacity:.78">Click Generate apply preview to render the preview-only gate. No cleanup is applied.</div>
+          </div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-apply-preview", "blockers", "controls")}>
+          <div id="wbSettingsFolderCleanupApplyPreviewBlockers" style="display:flex;flex-direction:column;gap:6px;font-size:12px">Generate apply preview to inspect blockers.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-apply-preview", "confirmation", "controls")}>
+          <div id="wbSettingsFolderCleanupApplyPreviewConfirmation" style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">requiredConfirmationText: ${esc(FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT)}</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-apply-preview", "json", "controls")}>
+          <pre id="wbSettingsFolderCleanupApplyPreviewJson" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:220px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+          </div>
         </div>
         </div>
         <div data-folder-cleanup-subpanel="conflicts" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "conflicts" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-conflicts", [
+          { id: "case", label: "Case Conflict" },
+          { id: "english", label: "English Conflict" },
+          { id: "rules", label: "Rules" },
+        ], "case")}
+        <div ${settingsFolderSectionPanelAttrs("cleanup-conflicts", "rules", "case")}>
         <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Never merge by name. Same-name rows such as Case and English are review-only conflicts until a future exact-ID plan exists.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-conflicts", "case", "case")}>
         <div id="wbSettingsFolderConflictReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
@@ -6324,8 +6681,19 @@ function renderSettingsRoute(){
           <div id="wbSettingsFolderConflictGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
         </div>
         </div>
+        <div ${settingsFolderSectionPanelAttrs("cleanup-conflicts", "english", "case")}>
+        <div id="wbSettingsFolderConflictGroupsEnglish" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+        </div>
+        </div>
         <div data-folder-cleanup-subpanel="desktop" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "desktop" ? "flex" : "none"};flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("cleanup-desktop", [
+          { id: "summary", label: "Summary" },
+          { id: "rows", label: "Desktop Rows" },
+          { id: "sqlite", label: "SQLite Bindings" },
+          { id: "json", label: "Desktop Report JSON" },
+        ], "summary")}
         <div id="wbSettingsFolderDesktopReview" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div ${settingsFolderSectionPanelAttrs("cleanup-desktop", "summary", "summary")}>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
             <div>
               <div style="font-weight:600">Desktop Cleanup Review</div>
@@ -6337,11 +6705,29 @@ function renderSettingsRoute(){
             </div>
           </div>
           <div id="wbSettingsFolderDesktopReviewChips" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px"></div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-desktop", "rows", "summary")}>
           <div id="wbSettingsFolderDesktopReviewGroups" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-desktop", "sqlite", "summary")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Desktop SQLite bindings are inspected only through diagnostics in this phase. No direct SQLite cleanup is performed.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-desktop", "json", "summary")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Copy Desktop cleanup report JSON to copy the current read-only Desktop report.</div>
+          </div>
         </div>
         </div>
         <div data-folder-cleanup-subpanel="orphans" ${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "" : "hidden"} style="display:${FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab === "orphans" ? "flex" : "none"};flex-direction:column;gap:8px">
+          ${settingsFolderSectionTabsHtml("cleanup-orphans", [
+            { id: "summary", label: "Summary" },
+            { id: "memberships", label: "Orphan Memberships" },
+            { id: "risk", label: "Risk Explanation" },
+            { id: "json", label: "Report JSON" },
+          ], "summary")}
+          <div ${settingsFolderSectionPanelAttrs("cleanup-orphans", "risk", "summary")}>
           <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Orphan membership/binding risk is diagnostic. It is not deletion permission and does not authorize cleanup.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-orphans", "summary", "summary")}>
           <div id="wbSettingsFolderDesktopOrphanBindingBox" style="border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
               <div>
@@ -6355,15 +6741,39 @@ function renderSettingsRoute(){
             </div>
             <div id="wbSettingsFolderDesktopOrphanBindingBody" style="display:flex;flex-direction:column;gap:8px;font-size:13px"></div>
           </div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-orphans", "memberships", "summary")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Orphan membership facts appear in the Summary tab after refresh. They remain read-only diagnostics.</div>
+          </div>
+          <div ${settingsFolderSectionPanelAttrs("cleanup-orphans", "json", "summary")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Copy orphan binding report JSON to copy the current read-only report.</div>
+          </div>
         </div>
       </div>
       </div>
       <div id="wbSettingsFolderParityPanelOperations" data-folder-parity-panel="operations" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+        ${settingsFolderSectionTabsHtml("parity-operations", [
+          { id: "status", label: "Operation Status" },
+          { id: "proofs", label: "Proofs" },
+          { id: "diagnostics", label: "Diagnostics" },
+          { id: "json", label: "JSON" },
+        ], "status")}
+        <div ${settingsFolderSectionPanelAttrs("parity-operations", "status", "status")}>
         <div>
           <div style="font-weight:600">Operations / Proofs</div>
           <div style="opacity:.72;font-size:12px">Read-only status summary. This tab does not run folder color, rename, delete, cleanup, or apply operations.</div>
         </div>
         <div id="wbSettingsFolderParityOperationsRows" style="display:flex;flex-direction:column;gap:7px"></div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-operations", "proofs", "status")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Runtime proofs are recorded in folder parity docs. This UI only reports current read-only operation status.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-operations", "diagnostics", "status")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Refresh diagnostics to update current FolderParity status. No metadata operation is applied from this tab.</div>
+        </div>
+        <div ${settingsFolderSectionPanelAttrs("parity-operations", "json", "status")}>
+          <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Copy report JSON from the Folder Parity header for the current read-only report.</div>
+        </div>
       </div>
       <pre id="wbSettingsFolderParityLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -6444,14 +6854,35 @@ async function refreshSettingsDiagnostics(panel){
     }
   }
   refreshSettingsSync(panel).catch((err) => {
+    const summary = panel.querySelector("#wbSettingsSyncSummary");
+    const status = panel.querySelector("#wbSettingsSyncStatus");
     const log = panel.querySelector("#wbSettingsSyncLog");
+    if (summary) summary.textContent = "Sync status unavailable.";
+    if (status) status.innerHTML = settingsSyncRowsHtml([
+      ["Runtime", STUDIO_isTauri() ? "Desktop/Tauri" : "Chrome/MV3"],
+      ["Status", "failed"],
+      ["Reason", String(err && (err.message || err))],
+    ]);
     if (log) {
       log.hidden = false;
       log.textContent = "Sync status refresh failed.\n" + String(err && (err.stack || err.message || err));
     }
   });
   refreshSettingsFolderParity(panel).catch((err) => {
+    const summary = panel.querySelector("#wbSettingsFolderParitySummary");
+    const status = panel.querySelector("#wbSettingsFolderParityStatus");
+    const warn = panel.querySelector("#wbSettingsFolderParityWarn");
+    if (summary) summary.textContent = "Folder parity diagnostics unavailable.";
+    if (status) status.innerHTML = settingsSyncRowsHtml([
+      ["Status", "failed"],
+      ["Reason", String(err && (err.message || err))],
+    ]);
+    if (warn) {
+      warn.hidden = false;
+      warn.textContent = String(err && (err.message || err));
+    }
     settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", "Refresh failed");
+    settingsFolderParityRenderOperationRows(panel);
     settingsFolderParityLog(panel, "Folder parity diagnostics failed.\n" + String(err && (err.stack || err.message || err)));
   });
 }
@@ -6615,14 +7046,23 @@ function settingsFolderParityPanelTabStyle(active){
 
 function settingsFolderParityEnsureTabBinding(panel){
   if (!panel) return;
-  const version = "p8i-c2-folder-parity-tabs-dry-run-v1";
+  const version = "p8i-section-tabs-v1";
   if (panel.__h2oFolderParityTabBindingVersion === version) return;
   panel.__h2oFolderParityTabBindingVersion = version;
   panel.addEventListener("click", (event) => {
+    const sectionTab = event.target?.closest?.("[data-folder-section-tab]");
+    if (sectionTab && panel.contains(sectionTab)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      settingsFolderSectionSetActive(panel, sectionTab.getAttribute("data-folder-section-scope"), sectionTab.getAttribute("data-folder-section-tab"));
+      return;
+    }
     const tab = event.target?.closest?.("[data-folder-parity-tab]");
     if (!tab || !panel.contains(tab)) return;
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation?.();
     settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
   }, true);
   panel.addEventListener("click", (event) => {
@@ -6630,14 +7070,24 @@ function settingsFolderParityEnsureTabBinding(panel){
     if (!tab || !panel.contains(tab)) return;
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation?.();
     settingsFolderCleanupSetActiveSubtab(panel, tab.getAttribute("data-folder-cleanup-subtab"));
   }, true);
   panel.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
+    const sectionTab = event.target?.closest?.("[data-folder-section-tab]");
+    if (sectionTab && panel.contains(sectionTab)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      settingsFolderSectionSetActive(panel, sectionTab.getAttribute("data-folder-section-scope"), sectionTab.getAttribute("data-folder-section-tab"));
+      return;
+    }
     const tab = event.target?.closest?.("[data-folder-parity-tab]");
     if (!tab || !panel.contains(tab)) return;
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation?.();
     settingsFolderParitySetActiveTab(panel, tab.getAttribute("data-folder-parity-tab"));
   }, true);
   panel.addEventListener("keydown", (event) => {
@@ -6646,13 +7096,15 @@ function settingsFolderParityEnsureTabBinding(panel){
     if (!tab || !panel.contains(tab)) return;
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation?.();
     settingsFolderCleanupSetActiveSubtab(panel, tab.getAttribute("data-folder-cleanup-subtab"));
   }, true);
   panel.addEventListener("click", (event) => {
-    const generateBtn = event.target?.closest?.("#wbSettingsFolderCleanupDryRunGenerate");
+    const generateBtn = event.target?.closest?.("[data-folder-cleanup-dry-run-action='generate'], #wbSettingsFolderCleanupDryRunGenerate");
     if (generateBtn && panel.contains(generateBtn)) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation?.();
       generateSettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
       return;
     }
@@ -6660,16 +7112,43 @@ function settingsFolderParityEnsureTabBinding(panel){
     if (copyBtn && panel.contains(copyBtn)) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation?.();
       copySettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+      return;
+    }
+    const applyPreviewBtn = event.target?.closest?.("[data-folder-cleanup-apply-preview-action='generate'], #wbSettingsFolderCleanupApplyPreviewGenerate");
+    if (applyPreviewBtn && panel.contains(applyPreviewBtn)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      generateSettingsFolderCleanupApplyPreview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+      return;
+    }
+    const applyPreviewCopyBtn = event.target?.closest?.("[data-folder-cleanup-apply-preview-action='copy'], #wbSettingsFolderCleanupApplyPreviewCopy");
+    if (applyPreviewCopyBtn && panel.contains(applyPreviewCopyBtn)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      copySettingsFolderCleanupApplyPreview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
     }
   }, true);
   panel.addEventListener("change", (event) => {
     const target = event.target;
     if (!target || target.getAttribute?.("data-folder-cleanup-dry-run-select") !== "1" || !panel.contains(target)) return;
+    const folderId = String(target.getAttribute("data-folder-id") || "").trim();
+    if (folderId) {
+      panel.querySelectorAll("[data-folder-cleanup-dry-run-select='1'][data-folder-id]").forEach((input) => {
+        if (String(input.getAttribute("data-folder-id") || "").trim() !== folderId) return;
+        if (input !== target) input.checked = !!target.checked;
+      });
+    }
     settingsFolderCleanupDryRunSelectedIds(panel);
     panel.__h2oFolderCleanupDryRunPlan = null;
+    FOLDER_PARITY_SETTINGS_UI_STATE.cleanupDryRunPlan = null;
     const summary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
     const rows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+    const selectedRows = panel.querySelector("#wbSettingsFolderCleanupDryRunSelectedRows");
+    const reasonCodes = panel.querySelector("#wbSettingsFolderCleanupDryRunReasonCodes");
     const json = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
     const copy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
     const box = panel.querySelector("#wbSettingsFolderCleanupDryRunBox");
@@ -6679,12 +7158,15 @@ function settingsFolderParityEnsureTabBinding(panel){
       rows.innerHTML = "";
     }
     if (box) box.removeAttribute("data-folder-cleanup-dry-run-rendered");
+    if (selectedRows) selectedRows.innerHTML = "";
+    if (reasonCodes) reasonCodes.innerHTML = "";
     if (json) {
       json.hidden = true;
       json.textContent = "";
       json.removeAttribute("data-folder-cleanup-dry-run-rendered");
     }
     if (copy) copy.disabled = true;
+    settingsFolderCleanupClearApplyPreview(panel);
   }, true);
 }
 
@@ -6701,6 +7183,7 @@ function settingsFolderParitySetActiveTab(panel, tabId){
     btn.setAttribute("aria-selected", active ? "true" : "false");
     btn.style.cssText = settingsFolderParityPanelTabStyle(active);
   });
+  settingsFolderParityUpdateActiveViewMarker(panel);
 }
 
 function settingsFolderCleanupSubtabStyle(active){
@@ -6717,6 +7200,108 @@ function settingsFolderCleanupSubtabStyle(active){
   ].join(";");
 }
 
+function settingsFolderSectionActive(scope, fallback){
+  const key = String(scope || "").trim();
+  const stored = key ? FOLDER_PARITY_SETTINGS_UI_STATE.sectionTabs[key] : "";
+  return String(stored || fallback || "summary").trim() || "summary";
+}
+
+function settingsFolderSectionTabStyle(active){
+  return [
+    "padding:5px 8px",
+    "border-radius:999px",
+    "border:1px solid " + (active ? "rgba(96,165,250,.42)" : "rgba(255,255,255,.10)"),
+    "background:" + (active ? "rgba(96,165,250,.14)" : "rgba(255,255,255,.025)"),
+    "color:inherit",
+    "font:inherit",
+    "font-size:11px",
+    "cursor:pointer",
+    "pointer-events:auto",
+  ].join(";");
+}
+
+function settingsFolderSectionTabsHtml(scope, tabs, fallback){
+  const key = String(scope || "").trim();
+  const rows = Array.isArray(tabs) ? tabs : [];
+  const active = settingsFolderSectionActive(key, fallback || rows[0]?.id || "summary");
+  return `
+    <div role="tablist" aria-label="${esc(key || "Folder section")} sections" data-folder-section-tabs="${esc(key)}" style="display:flex;gap:6px;flex-wrap:wrap">
+      ${rows.map((tab) => {
+        const id = String(tab?.id || "").trim();
+        const label = String(tab?.label || id || "Section");
+        const isActive = id === active;
+        return `<button type="button" role="tab" data-folder-section-scope="${esc(key)}" data-folder-section-tab="${esc(id)}" aria-selected="${isActive ? "true" : "false"}" style="${settingsFolderSectionTabStyle(isActive)}">${esc(label)}</button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function settingsFolderSectionPanelAttrs(scope, id, fallback){
+  const key = String(scope || "").trim();
+  const panelId = String(id || "").trim();
+  const active = settingsFolderSectionActive(key, fallback || panelId);
+  const isActive = panelId === active;
+  return `data-folder-section-scope="${esc(key)}" data-folder-section-panel="${esc(panelId)}" ${isActive ? "" : "hidden"} style="display:${isActive ? "flex" : "none"};flex-direction:column;gap:8px"`;
+}
+
+function settingsFolderSectionSetActive(panel, scope, sectionId){
+  const key = String(scope || "").trim();
+  const next = String(sectionId || "").trim();
+  if (!panel || !key || !next) return;
+  FOLDER_PARITY_SETTINGS_UI_STATE.sectionTabs[key] = next;
+  panel.querySelectorAll("[data-folder-section-panel]").forEach((el) => {
+    if (el.getAttribute("data-folder-section-scope") !== key) return;
+    const active = el.getAttribute("data-folder-section-panel") === next;
+    el.hidden = !active;
+    el.style.display = active ? "flex" : "none";
+  });
+  panel.querySelectorAll("[data-folder-section-tab]").forEach((btn) => {
+    if (btn.getAttribute("data-folder-section-scope") !== key) return;
+    const active = btn.getAttribute("data-folder-section-tab") === next;
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.style.cssText = settingsFolderSectionTabStyle(active);
+  });
+  settingsFolderParityUpdateActiveViewMarker(panel);
+}
+
+function settingsFolderParityActiveViewId(){
+  const main = String(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab || "overview").trim() || "overview";
+  const parts = [main];
+  if (main === "cleanup-review") {
+    const cleanup = String(FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab || "overview").trim() || "overview";
+    parts.push(cleanup === "apply-preview" ? "preview-gate" : cleanup);
+    const sectionScope = cleanup === "apply-preview" ? "cleanup-apply-preview" : `cleanup-${cleanup}`;
+    const sectionFallback = cleanup === "apply-preview" ? "controls" : "summary";
+    const section = settingsFolderSectionActive(sectionScope, sectionFallback);
+    if (section) parts.push(section);
+  } else {
+    const section = settingsFolderSectionActive(`parity-${main}`, main === "canonical" ? "rows" : "summary");
+    if (section) parts.push(section);
+  }
+  return parts.join(".");
+}
+
+function settingsFolderParityUpdateActiveViewMarker(panel){
+  const root = panel?.querySelector?.("#wbSettingsFolderParityBox");
+  if (!root) return;
+  root.setAttribute("data-folder-parity-active-view", settingsFolderParityActiveViewId());
+}
+
+function settingsFolderParityScrollTo(panel, target){
+  const container = panel || document.getElementById("viewSettingsPanel");
+  const el = target || container?.querySelector?.("#wbSettingsFolderParityBox");
+  if (!container || !el) return;
+  try {
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = el.getBoundingClientRect();
+    const nextTop = Math.max(0, container.scrollTop + targetRect.top - containerRect.top - 10);
+    if (typeof container.scrollTo === "function") container.scrollTo({ top: nextTop, behavior: "auto" });
+    else container.scrollTop = nextTop;
+  } catch {
+    try { el.scrollIntoView({ block: "start", inline: "nearest" }); } catch {}
+  }
+}
+
 function settingsFolderCleanupSetActiveSubtab(panel, subtabId){
   const next = String(subtabId || "overview").trim() || "overview";
   FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab = next;
@@ -6730,6 +7315,13 @@ function settingsFolderCleanupSetActiveSubtab(panel, subtabId){
     btn.setAttribute("aria-selected", active ? "true" : "false");
     btn.style.cssText = settingsFolderCleanupSubtabStyle(active);
   });
+  settingsFolderParityUpdateActiveViewMarker(panel);
+  if (next === "apply-preview" && panel && !panel.__h2oFolderCleanupApplyPreview) {
+    const preview = FOLDER_PARITY_SETTINGS_UI_STATE.cleanupApplyPreview
+      || settingsFolderCleanupApplyPreviewNoDryRun(panel.__h2oFolderCleanupReviewPlan?.surface || "");
+    panel.__h2oFolderCleanupApplyPreview = preview;
+    settingsFolderCleanupRenderApplyPreview(panel, preview);
+  }
 }
 
 function settingsFolderParityShortId(value){
@@ -7079,8 +7671,8 @@ async function settingsFolderCleanupLoadReviewInputs(){
   if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
     throw new Error("FolderParity review APIs unavailable");
   }
-  const selfCheck = await parity.selfCheck({ fresh: true });
-  const displayModel = await parity.getDisplayModel({ fresh: true });
+  const selfCheck = await promiseWithTimeout(parity.selfCheck({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.selfCheck");
+  const displayModel = await promiseWithTimeout(parity.getDisplayModel({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.getDisplayModel");
   return {
     selfCheck,
     displayModel,
@@ -7941,6 +8533,10 @@ function settingsFolderCleanupRenderPlan(panel, plan){
   const summary = panel?.querySelector("#wbSettingsFolderCleanupReviewSummary");
   const chips = panel?.querySelector("#wbSettingsFolderCleanupReviewChips");
   const groups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroups");
+  const conflictGroups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroupsConflicts");
+  const testGroups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroupsTests");
+  const preserveGroups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroupsPreserve");
+  const blockedGroups = panel?.querySelector("#wbSettingsFolderCleanupReviewGroupsBlocked");
   const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupReviewCopy");
   const selectedIds = new Set(Array.isArray(panel?.__h2oFolderCleanupDryRunSelectedIds) ? panel.__h2oFolderCleanupDryRunSelectedIds : []);
   if (summary) {
@@ -7961,6 +8557,37 @@ function settingsFolderCleanupRenderPlan(panel, plan){
       settingsFolderCleanupGroupHtml("Preserve canonical", plan?.groups?.canonicalProtected, "No canonical rows available.", selectedIds),
       settingsFolderCleanupGroupHtml("Same-name conflict / review only", plan?.groups?.sameNameConflicts, "No same-name conflicts detected.", selectedIds),
       settingsFolderCleanupGroupHtml("Empty test cleanup candidates", plan?.groups?.safeEmptyCandidates, "No empty extra/test candidates are currently safe for a future reviewed cleanup.", selectedIds),
+      settingsFolderCleanupGroupHtml("Bound review", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected.", selectedIds),
+      settingsFolderCleanupGroupHtml("Orphan risk", plan?.groups?.orphanMemberships, "No orphan native memberships detected.", selectedIds),
+      settingsFolderCleanupGroupHtml("Unsafe to delete", plan?.groups?.unsafeToDelete, "No additional unsafe review rows detected.", selectedIds),
+    ].join("");
+  }
+  if (conflictGroups) {
+    conflictGroups.innerHTML = settingsFolderCleanupGroupHtml(
+      "Same-name conflict / review only",
+      plan?.groups?.sameNameConflicts,
+      "No same-name conflicts detected.",
+      selectedIds
+    );
+  }
+  if (testGroups) {
+    testGroups.innerHTML = settingsFolderCleanupGroupHtml(
+      "Empty test cleanup candidates",
+      plan?.groups?.safeEmptyCandidates,
+      "No empty extra/test candidates are currently safe for a future reviewed cleanup.",
+      selectedIds
+    );
+  }
+  if (preserveGroups) {
+    preserveGroups.innerHTML = settingsFolderCleanupGroupHtml(
+      "Preserve canonical",
+      plan?.groups?.canonicalProtected,
+      "No canonical rows available.",
+      selectedIds
+    );
+  }
+  if (blockedGroups) {
+    blockedGroups.innerHTML = [
       settingsFolderCleanupGroupHtml("Bound review", plan?.groups?.boundReviewCandidates, "No bound extra/test candidates detected.", selectedIds),
       settingsFolderCleanupGroupHtml("Orphan risk", plan?.groups?.orphanMemberships, "No orphan native memberships detected.", selectedIds),
       settingsFolderCleanupGroupHtml("Unsafe to delete", plan?.groups?.unsafeToDelete, "No additional unsafe review rows detected.", selectedIds),
@@ -7995,6 +8622,33 @@ function settingsFolderCleanupDryRunSelectedIds(panel){
   const unique = Array.from(new Set(ids));
   if (panel) panel.__h2oFolderCleanupDryRunSelectedIds = unique;
   return unique;
+}
+
+function settingsFolderCleanupClearApplyPreview(panel){
+  if (!panel) return;
+  panel.__h2oFolderCleanupApplyPreview = null;
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupApplyPreview = null;
+  const summary = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewSummary");
+  const rows = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewRows");
+  const blockers = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewBlockers");
+  const confirmation = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewConfirmation");
+  const json = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewJson");
+  const copy = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewCopy");
+  const box = panel.querySelector("#wbSettingsFolderCleanupApplyPreviewBox");
+  if (summary) summary.textContent = "Preview only: no cleanup is applied.";
+  if (rows) {
+    rows.innerHTML = "";
+    rows.removeAttribute("data-folder-cleanup-apply-preview-rendered");
+  }
+  if (blockers) blockers.innerHTML = "";
+  if (confirmation) confirmation.innerHTML = "";
+  if (json) {
+    json.hidden = true;
+    json.textContent = "";
+    json.removeAttribute("data-folder-cleanup-apply-preview-rendered");
+  }
+  if (copy) copy.disabled = true;
+  if (box) box.removeAttribute("data-folder-cleanup-apply-preview-rendered");
 }
 
 function settingsFolderCleanupDryRunDecision(candidate, staleDiagnostics){
@@ -8111,14 +8765,16 @@ function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
   const box = panel?.querySelector("#wbSettingsFolderCleanupDryRunBox");
   const summary = panel?.querySelector("#wbSettingsFolderCleanupDryRunSummary");
   const rowsEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunRows");
+  const selectedRowsEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunSelectedRows");
+  const reasonCodesEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunReasonCodes");
   const jsonEl = panel?.querySelector("#wbSettingsFolderCleanupDryRunJson");
   const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupDryRunCopy");
+  const rows = Array.isArray(dryRunPlan?.candidates) ? dryRunPlan.candidates : [];
   if (box) box.setAttribute("data-folder-cleanup-dry-run-rendered", "1");
   if (summary) {
     summary.textContent = `schema: ${dryRunPlan?.schema || "h2o.folder-cleanup-dry-run.v1"} · selectedCount: ${dryRunPlan?.selectedCount || 0} · allowedCount: ${dryRunPlan?.allowedCount || 0} · blockedCount: ${dryRunPlan?.blockedCount || 0} · reasonCodes: ${(dryRunPlan?.reasonCodes || []).join(", ") || "dry-run-only, no-mutation-phase"} · No cleanup is performed.`;
   }
   if (rowsEl) {
-    const rows = Array.isArray(dryRunPlan?.candidates) ? dryRunPlan.candidates : [];
     const metaHtml = `
       <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
         <strong>Dry-run result</strong><span data-folder-cleanup-dry-run-rendered="1">rendered</span>
@@ -8143,6 +8799,27 @@ function settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan){
     rowsEl.innerHTML = metaHtml + rowHtml;
     rowsEl.setAttribute("data-folder-cleanup-dry-run-rendered", "1");
   }
+  if (selectedRowsEl) {
+    selectedRowsEl.innerHTML = rows.length ? rows.map((candidate) => `
+      <div style="display:grid;grid-template-columns:minmax(140px,1fr) max-content;gap:8px;align-items:start;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px">
+        <div>
+          <div style="font-weight:600">${esc(candidate.name || candidate.folderId || "(unnamed)")}</div>
+          <div style="opacity:.68;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">${esc(candidate.folderId || "(missing folder id)")}</div>
+        </div>
+        <span style="border:1px solid ${candidate.decision === "allowed" ? "rgba(34,197,94,.45)" : "rgba(234,179,8,.45)"};background:${candidate.decision === "allowed" ? "rgba(34,197,94,.13)" : "rgba(234,179,8,.12)"};border-radius:999px;padding:2px 8px;font-size:11px">${esc(candidate.decision)}</span>
+      </div>
+    `).join("") : `<div style="border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px;opacity:.78">No rows selected. selectedCount: 0.</div>`;
+  }
+  if (reasonCodesEl) {
+    const codes = Array.isArray(dryRunPlan?.reasonCodes) && dryRunPlan.reasonCodes.length
+      ? dryRunPlan.reasonCodes
+      : ["no-selection", "dry-run-only", "no-mutation-phase"];
+    reasonCodesEl.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${codes.map((code) => `<span style="border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.035);border-radius:999px;padding:3px 8px;font-size:11px">${esc(code)}</span>`).join("")}
+      </div>
+    `;
+  }
   if (jsonEl) {
     jsonEl.hidden = false;
     jsonEl.textContent = JSON.stringify(dryRunPlan || {}, null, 2);
@@ -8158,8 +8835,11 @@ async function generateSettingsFolderCleanupDryRunPlan(panel){
   const selectedIds = settingsFolderCleanupDryRunSelectedIds(panel);
   const dryRunPlan = settingsFolderCleanupBuildDryRunPlan(reviewPlan, selectedIds);
   panel.__h2oFolderCleanupDryRunPlan = dryRunPlan;
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupDryRunPlan = dryRunPlan;
+  settingsFolderCleanupClearApplyPreview(panel);
   settingsFolderCleanupSetActiveSubtab(panel, "dry-run");
   settingsFolderCleanupRenderDryRunPlan(panel, dryRunPlan);
+  settingsFolderSectionSetActive(panel, "cleanup-dry-run", "result");
   settingsFolderParityLog(panel, "Dry-run folder cleanup plan generated. No cleanup performed.");
   return dryRunPlan;
 }
@@ -8180,6 +8860,247 @@ async function copySettingsFolderCleanupDryRunPlan(panel){
   }
   try { console.log("H2O_FOLDER_CLEANUP_DRY_RUN_PLAN", plan); } catch {}
   settingsFolderParityLog(panel, "Clipboard unavailable; dry-run folder cleanup plan printed to console as H2O_FOLDER_CLEANUP_DRY_RUN_PLAN.");
+}
+
+function settingsFolderCleanupApplyPreviewRows(dryRunPlan, staleDiagnostics, missingHash){
+  const candidates = Array.isArray(dryRunPlan?.candidates) ? dryRunPlan.candidates : [];
+  return candidates.map((candidate) => {
+    const baseCodes = Array.isArray(candidate?.reasonCodes) ? candidate.reasonCodes : [];
+    const reasonCodes = new Set(baseCodes);
+    reasonCodes.add("preview-only");
+    reasonCodes.add("no-mutation-phase");
+    reasonCodes.add("confirmation-required");
+    if (!candidate?.folderId) reasonCodes.add("exact-id-required");
+    if (staleDiagnostics) reasonCodes.add("stale-diagnostics");
+    if (missingHash) reasonCodes.add("missing-dry-run-hash");
+    if (/preserve canonical/i.test(String(candidate?.className || ""))) reasonCodes.add("preserve-canonical");
+    if (/same-name conflict/i.test(String(candidate?.className || ""))) reasonCodes.add("same-name-conflict-review-only");
+    const facts = candidate?.facts && typeof candidate.facts === "object" ? candidate.facts : {};
+    if (settingsFolderCleanupNumber(facts.localBindingCount) > 0) reasonCodes.add("binding-count-nonzero");
+    if (settingsFolderCleanupNumber(facts.knownCount) > 0) reasonCodes.add("known-count-nonzero");
+    if (baseCodes.includes("orphan-risk-review-required")) reasonCodes.add("orphan-risk-review-required");
+    const previewAllowed = candidate?.decision === "allowed" && !staleDiagnostics && !missingHash && !!candidate?.folderId;
+    return {
+      folderId: String(candidate?.folderId || ""),
+      name: String(candidate?.name || candidate?.folderId || "Folder review item"),
+      decision: previewAllowed ? "preview-allowed" : "preview-blocked",
+      reasonCodes: Array.from(reasonCodes).filter(Boolean),
+      facts: {
+        source: String(candidate?.source || ""),
+        className: String(candidate?.className || ""),
+        risk: String(candidate?.risk || ""),
+        nativeMembershipCount: facts.nativeMembershipCount ?? null,
+        knownCount: facts.knownCount ?? null,
+        localBindingCount: facts.localBindingCount ?? null,
+        badges: Array.isArray(facts.badges) ? facts.badges : [],
+      },
+    };
+  });
+}
+
+function settingsFolderCleanupApplyPreviewNoDryRun(surface = ""){
+  return {
+    schema: "h2o.folder-cleanup-apply-preview.v1",
+    surface: String(surface || ""),
+    generatedAt: new Date().toISOString(),
+    noMutation: true,
+    applyAllowed: false,
+    dryRunRequired: true,
+    dryRunPlanHash: "",
+    selectedCount: 0,
+    allowedPreviewCount: 0,
+    blockedPreviewCount: 0,
+    confirmationRequired: true,
+    requiredConfirmationText: FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT,
+    blockers: ["dry-run-required", "missing-dry-run-hash", "preview-only", "no-mutation-phase"],
+    reasonCodes: ["dry-run-required", "missing-dry-run-hash", "preview-only", "no-mutation-phase", "confirmation-required"],
+    rows: [],
+  };
+}
+
+function settingsFolderCleanupDryRunPlanHash(dryRunPlan){
+  const text = settingsFolderMirrorStableStringify(dryRunPlan || {});
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function settingsFolderCleanupBuildApplyPreview(dryRunPlan){
+  if (!dryRunPlan) return settingsFolderCleanupApplyPreviewNoDryRun("");
+  const diagnosticsFreshnessMs = dryRunPlan?.diagnosticsFreshnessMs == null
+    ? null
+    : settingsFolderCleanupNumber(dryRunPlan.diagnosticsFreshnessMs);
+  const staleDiagnostics = diagnosticsFreshnessMs == null || diagnosticsFreshnessMs > FOLDER_CLEANUP_DRY_RUN_FRESHNESS_MS;
+  const dryRunPlanHash = settingsFolderCleanupDryRunPlanHash(dryRunPlan);
+  const missingHash = !dryRunPlanHash;
+  const rows = settingsFolderCleanupApplyPreviewRows(dryRunPlan, staleDiagnostics, missingHash);
+  const allowedPreviewCount = rows.filter((row) => row.decision === "preview-allowed").length;
+  const blockedPreviewCount = rows.length - allowedPreviewCount;
+  const reasonCodes = Array.from(new Set([
+    ...rows.flatMap((row) => Array.isArray(row.reasonCodes) ? row.reasonCodes : []),
+    "preview-only",
+    "no-mutation-phase",
+    "confirmation-required",
+    ...(staleDiagnostics ? ["stale-diagnostics"] : []),
+    ...(missingHash ? ["missing-dry-run-hash"] : []),
+  ].filter(Boolean)));
+  const blockers = Array.from(new Set([
+    "preview-only",
+    "no-mutation-phase",
+    ...(staleDiagnostics ? ["stale-diagnostics"] : []),
+    ...(missingHash ? ["missing-dry-run-hash"] : []),
+  ]));
+  return {
+    schema: "h2o.folder-cleanup-apply-preview.v1",
+    surface: String(dryRunPlan?.surface || ""),
+    generatedAt: new Date().toISOString(),
+    noMutation: true,
+    applyAllowed: false,
+    dryRunRequired: false,
+    dryRunPlanHash,
+    selectedCount: settingsFolderCleanupNumber(dryRunPlan?.selectedCount),
+    allowedPreviewCount,
+    blockedPreviewCount,
+    confirmationRequired: true,
+    requiredConfirmationText: FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT,
+    blockers,
+    reasonCodes,
+    rows,
+  };
+}
+
+function settingsFolderCleanupRenderApplyPreview(panel, preview){
+  const box = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewBox");
+  const summary = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewSummary");
+  const rowsEl = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewRows");
+  const blockersEl = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewBlockers");
+  const confirmationEl = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewConfirmation");
+  const jsonEl = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewJson");
+  const copyBtn = panel?.querySelector("#wbSettingsFolderCleanupApplyPreviewCopy");
+  const rows = Array.isArray(preview?.rows) ? preview.rows : [];
+  if (box) box.setAttribute("data-folder-cleanup-apply-preview-rendered", "1");
+  if (summary) {
+    summary.textContent = `schema: ${preview?.schema || "h2o.folder-cleanup-apply-preview.v1"} · noMutation: true · applyAllowed: false · selectedCount: ${preview?.selectedCount || 0} · allowedPreviewCount: ${preview?.allowedPreviewCount || 0} · blockedPreviewCount: ${preview?.blockedPreviewCount || 0} · requiredConfirmationText: ${preview?.requiredConfirmationText || FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT} · reasonCodes: ${(preview?.reasonCodes || []).join(", ") || "preview-only, no-mutation-phase"} · blockers: ${(preview?.blockers || []).join(", ") || "preview-only, no-mutation-phase"}`;
+  }
+  if (rowsEl) {
+    const metaHtml = `
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <strong>Apply preview result</strong><span data-folder-cleanup-apply-preview-rendered="1">rendered</span>
+        <strong>schema:</strong><span>${esc(preview?.schema || "h2o.folder-cleanup-apply-preview.v1")}</span>
+        <strong>noMutation:</strong><span>true</span>
+        <strong>applyAllowed:</strong><span>false</span>
+        <strong>selectedCount:</strong><span>${esc(preview?.selectedCount ?? 0)}</span>
+        <strong>allowedPreviewCount:</strong><span>${esc(preview?.allowedPreviewCount ?? 0)}</span>
+        <strong>blockedPreviewCount:</strong><span>${esc(preview?.blockedPreviewCount ?? 0)}</span>
+        <strong>requiredConfirmationText:</strong><span>${esc(preview?.requiredConfirmationText || FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT)}</span>
+        <strong>reasonCodes:</strong><span>${esc((preview?.reasonCodes || []).join(", ") || "preview-only, no-mutation-phase")}</span>
+        <strong>blockers:</strong><span>${esc((preview?.blockers || []).join(", ") || "none")}</span>
+      </div>
+    `;
+    const rowHtml = rows.length ? rows.map((row) => `
+      <div style="display:grid;grid-template-columns:minmax(140px,1fr) max-content minmax(180px,2fr);gap:8px;align-items:start;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px">
+        <div>
+          <div style="font-weight:600">${esc(row.name || row.folderId || "(unnamed)")}</div>
+          <div style="opacity:.68;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">${esc(row.folderId || "(missing folder id)")}</div>
+        </div>
+        <span style="border:1px solid ${row.decision === "preview-allowed" ? "rgba(34,197,94,.45)" : "rgba(234,179,8,.45)"};background:${row.decision === "preview-allowed" ? "rgba(34,197,94,.13)" : "rgba(234,179,8,.12)"};border-radius:999px;padding:2px 8px;font-size:11px">${esc(row.decision)}</span>
+        <div style="font-size:12px;opacity:.78">${esc((row.reasonCodes || []).join(", "))}</div>
+      </div>
+    `).join("") : `<div style="border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.025);border-radius:8px;padding:8px;opacity:.78">No dry-run rows available. blockers: ${(preview?.blockers || []).join(", ") || "dry-run-required"}.</div>`;
+    rowsEl.innerHTML = metaHtml + rowHtml;
+    rowsEl.setAttribute("data-folder-cleanup-apply-preview-rendered", "1");
+  }
+  if (blockersEl) {
+    const blockers = Array.isArray(preview?.blockers) && preview.blockers.length
+      ? preview.blockers
+      : ["preview-only", "no-mutation-phase"];
+    const reasonCodes = Array.isArray(preview?.reasonCodes) && preview.reasonCodes.length
+      ? preview.reasonCodes
+      : ["preview-only", "no-mutation-phase"];
+    blockersEl.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div><strong>blockers:</strong> ${esc(blockers.join(", "))}</div>
+        <div><strong>reasonCodes:</strong> ${esc(reasonCodes.join(", "))}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${reasonCodes.map((code) => `<span style="border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.035);border-radius:999px;padding:3px 8px;font-size:11px">${esc(code)}</span>`).join("")}
+        </div>
+      </div>
+    `;
+  }
+  if (confirmationEl) {
+    confirmationEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);border-radius:8px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <strong>requiredConfirmationText:</strong><span>${esc(preview?.requiredConfirmationText || FOLDER_CLEANUP_APPLY_PREVIEW_CONFIRM_TEXT)}</span>
+        <strong>confirmationRequired:</strong><span>${esc(preview?.confirmationRequired !== false)}</span>
+        <strong>applyAllowed:</strong><span>false</span>
+        <strong>noMutation:</strong><span>true</span>
+      </div>
+    `;
+  }
+  if (jsonEl) {
+    jsonEl.hidden = false;
+    jsonEl.textContent = JSON.stringify(preview || {}, null, 2);
+    jsonEl.setAttribute("data-folder-cleanup-apply-preview-rendered", "1");
+  }
+  if (copyBtn) copyBtn.disabled = !preview;
+}
+
+function settingsFolderCleanupEnsurePreviewGateVisible(panel, preview){
+  const currentPanel = document.getElementById("viewSettingsPanel") || panel;
+  if (!currentPanel) return;
+  currentPanel.hidden = false;
+  if (preview) {
+    currentPanel.__h2oFolderCleanupApplyPreview = preview;
+    FOLDER_PARITY_SETTINGS_UI_STATE.cleanupApplyPreview = preview;
+  }
+  settingsFolderParitySetActiveTab(currentPanel, "cleanup-review");
+  settingsFolderCleanupSetActiveSubtab(currentPanel, "apply-preview");
+  if (preview) settingsFolderCleanupRenderApplyPreview(currentPanel, preview);
+  settingsFolderSectionSetActive(currentPanel, "cleanup-apply-preview", "result");
+  settingsFolderParityUpdateActiveViewMarker(currentPanel);
+  const target = currentPanel.querySelector("#wbSettingsFolderCleanupApplyPreviewRows")
+    || currentPanel.querySelector("[data-folder-section-scope='cleanup-apply-preview'][data-folder-section-panel='result']")
+    || currentPanel.querySelector("#wbSettingsFolderCleanupApplyPreviewBox")
+    || currentPanel.querySelector("#wbSettingsFolderParityBox")
+    || currentPanel;
+  settingsFolderParityScrollTo(currentPanel, target);
+  try { target.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+}
+
+async function generateSettingsFolderCleanupApplyPreview(panel){
+  if (!panel) return null;
+  const dryRunPlan = panel.__h2oFolderCleanupDryRunPlan || FOLDER_PARITY_SETTINGS_UI_STATE.cleanupDryRunPlan || null;
+  const preview = dryRunPlan
+    ? settingsFolderCleanupBuildApplyPreview(dryRunPlan)
+    : settingsFolderCleanupApplyPreviewNoDryRun(panel.__h2oFolderCleanupReviewPlan?.surface || "");
+  panel.__h2oFolderCleanupApplyPreview = preview;
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupApplyPreview = preview;
+  FOLDER_PARITY_SETTINGS_UI_STATE.activeTab = "cleanup-review";
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupSubtab = "apply-preview";
+  settingsFolderCleanupEnsurePreviewGateVisible(panel, preview);
+  settingsFolderParityLog(panel, "Preview-only cleanup apply gate generated. No cleanup performed.");
+  return preview;
+}
+
+async function copySettingsFolderCleanupApplyPreview(panel){
+  if (!panel) return;
+  let preview = panel.__h2oFolderCleanupApplyPreview;
+  if (!preview) preview = await generateSettingsFolderCleanupApplyPreview(panel);
+  const text = JSON.stringify(preview || {}, null, 2);
+  try {
+    if (W.navigator?.clipboard?.writeText) {
+      await W.navigator.clipboard.writeText(text);
+      settingsFolderParityLog(panel, "Preview-only cleanup apply JSON copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    settingsFolderParityLog(panel, "Clipboard copy failed; preview-only apply JSON printed to console.\n" + String(err && (err.message || err)));
+  }
+  try { console.log("H2O_FOLDER_CLEANUP_APPLY_PREVIEW", preview); } catch {}
+  settingsFolderParityLog(panel, "Clipboard unavailable; preview-only cleanup apply JSON printed to console as H2O_FOLDER_CLEANUP_APPLY_PREVIEW.");
 }
 
 function settingsFolderCleanupRenderDeletePanel(panel, plan){
@@ -8384,16 +9305,26 @@ function settingsFolderConflictHtml(conflict){
 function settingsFolderConflictRenderPlan(panel, plan){
   const summary = panel?.querySelector("#wbSettingsFolderConflictSummary");
   const groups = panel?.querySelector("#wbSettingsFolderConflictGroups");
+  const englishGroups = panel?.querySelector("#wbSettingsFolderConflictGroupsEnglish");
   const copyBtn = panel?.querySelector("#wbSettingsFolderConflictCopy");
   const conflicts = Array.isArray(plan?.conflicts) ? plan.conflicts : [];
+  const conflictName = (conflict) => String(conflict?.normalizedName || conflict?.name || "").trim().toLowerCase();
+  const caseConflicts = conflicts.filter((conflict) => conflictName(conflict) === "case");
+  const englishConflicts = conflicts.filter((conflict) => conflictName(conflict) === "english");
   if (summary) {
     const mirrorText = plan?.mirrorWarning ? ` Mirror buckets unavailable: ${plan.mirrorWarning}` : "";
     summary.textContent = `${conflicts.length} same-name conflict group${conflicts.length === 1 ? "" : "s"}. Review-only. No merge or deletion performed.${mirrorText}`;
   }
   if (groups) {
-    groups.innerHTML = conflicts.length
-      ? conflicts.map(settingsFolderConflictHtml).join("")
-      : `<div style="opacity:.72;font-size:12px">No same-name folder conflicts detected.</div>`;
+    const rows = caseConflicts.length ? caseConflicts : conflicts;
+    groups.innerHTML = rows.length
+      ? rows.map(settingsFolderConflictHtml).join("")
+      : `<div style="opacity:.72;font-size:12px">No Case conflict detected.</div>`;
+  }
+  if (englishGroups) {
+    englishGroups.innerHTML = englishConflicts.length
+      ? englishConflicts.map(settingsFolderConflictHtml).join("")
+      : `<div style="opacity:.72;font-size:12px">No English conflict detected.</div>`;
   }
   if (copyBtn) copyBtn.disabled = false;
   settingsFolderConflictRenderDeletePanel(panel, plan);
@@ -8404,8 +9335,8 @@ async function settingsFolderConflictLoadInputs(seed = null){
   if (!parity || typeof parity.selfCheck !== "function" || typeof parity.getDisplayModel !== "function") {
     throw new Error("FolderParity conflict review APIs unavailable");
   }
-  const selfCheck = seed?.selfCheck || await parity.selfCheck({ fresh: true });
-  const displayModel = seed?.displayModel || await parity.getDisplayModel({ fresh: true });
+  const selfCheck = seed?.selfCheck || await promiseWithTimeout(parity.selfCheck({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.selfCheck");
+  const displayModel = seed?.displayModel || await promiseWithTimeout(parity.getDisplayModel({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.getDisplayModel");
   let mirror = null;
   let mirrorWarning = "";
   if (settingsFolderCleanupIsChromeSurface()) {
@@ -9419,7 +10350,7 @@ async function settingsFolderDesktopLoadOrphanBindingReview(seed = null){
   const foldersStore = W.H2O?.Studio?.store?.folders;
   const storeMethods = Object.keys(foldersStore || {}).filter((key) => typeof foldersStore[key] === "function").sort();
   const selfCheck = seed?.selfCheck || (typeof W.H2O?.Library?.FolderParity?.selfCheck === "function"
-    ? await W.H2O.Library.FolderParity.selfCheck({ fresh: true })
+    ? await promiseWithTimeout(W.H2O.Library.FolderParity.selfCheck({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.selfCheck")
     : null);
 
   if (!STUDIO_isTauri()) {
@@ -9623,8 +10554,8 @@ function settingsFolderDesktopOrphanBindingReport(review, selfCheck, extra = {})
 
 async function settingsFolderDesktopLoadReviewInputs(seed = null){
   const parity = W.H2O?.Library?.FolderParity;
-  const selfCheck = seed?.selfCheck || (typeof parity?.selfCheck === "function" ? await parity.selfCheck({ fresh: true }) : null);
-  const displayModel = seed?.displayModel || (typeof parity?.getDisplayModel === "function" ? await parity.getDisplayModel({ fresh: true }) : { rows: [], canonicalRows: [], localReviewRows: [] });
+  const selfCheck = seed?.selfCheck || (typeof parity?.selfCheck === "function" ? await promiseWithTimeout(parity.selfCheck({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.selfCheck") : null);
+  const displayModel = seed?.displayModel || (typeof parity?.getDisplayModel === "function" ? await promiseWithTimeout(parity.getDisplayModel({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.getDisplayModel") : { rows: [], canonicalRows: [], localReviewRows: [] });
   const desktopFacts = await settingsFolderDesktopLoadFacts();
   const chromeFacts = await settingsFolderDesktopLoadChromeFacts();
   return {
@@ -10689,6 +11620,8 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   const copyBtn = panel.querySelector("#wbSettingsFolderCleanupReviewCopy");
   const dryRunSummary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
   const dryRunRows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+  const dryRunSelectedRows = panel.querySelector("#wbSettingsFolderCleanupDryRunSelectedRows");
+  const dryRunReasonCodes = panel.querySelector("#wbSettingsFolderCleanupDryRunReasonCodes");
   const dryRunJson = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
   const dryRunCopy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
   const parity = W.H2O?.Library?.FolderParity;
@@ -10701,11 +11634,14 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   if (summary) summary.textContent = "Refreshing review-only cleanup candidates…";
   if (copyBtn) copyBtn.disabled = true;
   panel.__h2oFolderCleanupDryRunPlan = null;
+  FOLDER_PARITY_SETTINGS_UI_STATE.cleanupDryRunPlan = null;
   if (dryRunSummary) dryRunSummary.textContent = "Select review rows, then generate a dry-run plan. No cleanup is performed.";
   if (dryRunRows) {
     dryRunRows.innerHTML = "";
     dryRunRows.removeAttribute("data-folder-cleanup-dry-run-rendered");
   }
+  if (dryRunSelectedRows) dryRunSelectedRows.innerHTML = "";
+  if (dryRunReasonCodes) dryRunReasonCodes.innerHTML = "";
   if (dryRunJson) {
     dryRunJson.hidden = true;
     dryRunJson.textContent = "";
@@ -10713,8 +11649,9 @@ async function refreshSettingsFolderCleanupReview(panel, seed = null){
   }
   if (dryRunCopy) dryRunCopy.disabled = true;
   panel.querySelector("#wbSettingsFolderCleanupDryRunBox")?.removeAttribute("data-folder-cleanup-dry-run-rendered");
+  settingsFolderCleanupClearApplyPreview(panel);
   const loaded = seed?.selfCheck
-    ? { selfCheck: seed.selfCheck, displayModel: await parity.getDisplayModel({ fresh: true }) }
+    ? { selfCheck: seed.selfCheck, displayModel: await promiseWithTimeout(parity.getDisplayModel({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.getDisplayModel") }
     : await settingsFolderCleanupLoadReviewInputs();
   const plan = loaded.plan || settingsFolderCleanupBuildReviewPlan(loaded.selfCheck, loaded.displayModel);
   panel.__h2oFolderCleanupReviewPlan = plan;
@@ -10747,10 +11684,33 @@ async function refreshSettingsFolderParity(panel){
 
   if (summary) summary.textContent = "Refreshing read-only folder parity diagnostics…";
   if (copyBtn) copyBtn.disabled = true;
-  const report = await parity.diagnose({ fresh: true });
-  const selfCheck = typeof parity.selfCheck === "function"
-    ? await parity.selfCheck({ report })
-    : null;
+  let report = null;
+  let selfCheck = null;
+  try {
+    report = await promiseWithTimeout(parity.diagnose({ fresh: true }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.diagnose");
+    selfCheck = typeof parity.selfCheck === "function"
+      ? await promiseWithTimeout(parity.selfCheck({ report }), STUDIO_BOOT_AUX_TIMEOUT_MS, "FolderParity.selfCheck")
+      : null;
+  } catch (err) {
+    const reason = String(err && (err.message || err));
+    if (summary) summary.textContent = "Folder parity diagnostics unavailable.";
+    if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml([
+      ["Status", "failed"],
+      ["Reason", reason],
+    ]);
+    if (warnEl) {
+      warnEl.hidden = false;
+      warnEl.textContent = reason;
+    }
+    settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", reason);
+    settingsFolderParityRenderOperationRows(panel);
+    panel.__h2oFolderParityReport = {
+      selfCheck: null,
+      diagnostics: { ok: false, error: reason, generatedAt: new Date().toISOString() },
+    };
+    if (copyBtn) copyBtn.disabled = false;
+    return;
+  }
   panel.__h2oFolderParityReport = { selfCheck, diagnostics: report };
   settingsFolderParitySetOperationStatus(
     panel,
@@ -11182,12 +12142,29 @@ async function refreshSettingsSync(panel){
 
   if (title) title.textContent = "Chrome Sync Folder";
   if (summary) summary.textContent = "Connect the local sync folder, run manual Sync Now, and control existing safe auto-sync triggers.";
-  const folder = W.H2O?.Studio?.sync?.folder || null;
-  const diag = folder && typeof folder.diagnose === "function"
-    ? (folder.diagnose() || {})
-    : (folder && typeof folder.status === "function" ? (folder.status() || {}) : {});
-  const rowsAfter = W.H2O?.LibraryIndex?.getAll?.()?.length;
-  const counts = W.H2O?.LibraryIndex?.counts?.();
+  let statusError = "";
+  let folder = null;
+  let diag = {};
+  let rowsAfter = null;
+  let counts = null;
+  try { folder = W.H2O?.Studio?.sync?.folder || null; }
+  catch (err) { statusError = String(err && (err.message || err)); }
+  try {
+    diag = folder && typeof folder.diagnose === "function"
+      ? (folder.diagnose() || {})
+      : (folder && typeof folder.status === "function" ? (folder.status() || {}) : {});
+  } catch (err) {
+    statusError = String(err && (err.message || err));
+    diag = {};
+  }
+  try {
+    const allRows = W.H2O?.LibraryIndex?.getAll?.();
+    rowsAfter = Array.isArray(allRows) ? allRows.length : null;
+  } catch (err) {
+    statusError = statusError || String(err && (err.message || err));
+  }
+  try { counts = W.H2O?.LibraryIndex?.counts?.() || null; }
+  catch (err) { statusError = statusError || String(err && (err.message || err)); }
   const rows = [
     ["Runtime", "Chrome/MV3"],
     ["Folder API", folder ? "available" : "unavailable"],
@@ -11201,7 +12178,9 @@ async function refreshSettingsSync(panel){
     ["Rows", rowsAfter != null ? String(rowsAfter) : ""],
     ["Saved count", counts && counts.views ? String(counts.views.saved || 0) : ""],
   ];
+  if (statusError) rows.push(["Status error", statusError]);
   if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);
+  if (summary && statusError) summary.textContent = "Chrome sync status loaded with diagnostics warnings.";
   const connectBtn = panel.querySelector("#wbSettingsSyncConnectFolder");
   const disconnectBtn = panel.querySelector("#wbSettingsSyncDisconnectFolder");
   const syncNowBtn = panel.querySelector("#wbSettingsSyncNow");
@@ -11323,30 +12302,59 @@ function bindSettingsSyncControls(panel){
     copySettingsFolderCleanupReviewPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
-  panel.querySelector("#wbSettingsFolderCleanupReviewGroups")?.addEventListener("change", (ev) => {
+  panel.querySelector("#wbSettingsFolderCleanupReview")?.addEventListener("change", (ev) => {
     const target = ev.target;
     if (!target || target.getAttribute?.("data-folder-cleanup-dry-run-select") !== "1") return;
+    const folderId = String(target.getAttribute("data-folder-id") || "").trim();
+    if (folderId) {
+      panel.querySelectorAll("[data-folder-cleanup-dry-run-select='1'][data-folder-id]").forEach((input) => {
+        if (String(input.getAttribute("data-folder-id") || "").trim() !== folderId) return;
+        if (input !== target) input.checked = !!target.checked;
+      });
+    }
     settingsFolderCleanupDryRunSelectedIds(panel);
     panel.__h2oFolderCleanupDryRunPlan = null;
+    FOLDER_PARITY_SETTINGS_UI_STATE.cleanupDryRunPlan = null;
     const summary = panel.querySelector("#wbSettingsFolderCleanupDryRunSummary");
     const rows = panel.querySelector("#wbSettingsFolderCleanupDryRunRows");
+    const selectedRows = panel.querySelector("#wbSettingsFolderCleanupDryRunSelectedRows");
+    const reasonCodes = panel.querySelector("#wbSettingsFolderCleanupDryRunReasonCodes");
     const json = panel.querySelector("#wbSettingsFolderCleanupDryRunJson");
     const copy = panel.querySelector("#wbSettingsFolderCleanupDryRunCopy");
     if (summary) summary.textContent = "Selection changed. Generate a fresh dry-run plan. No cleanup is performed.";
     if (rows) rows.innerHTML = "";
+    if (selectedRows) selectedRows.innerHTML = "";
+    if (reasonCodes) reasonCodes.innerHTML = "";
     if (json) {
       json.hidden = true;
       json.textContent = "";
     }
     if (copy) copy.disabled = true;
+    settingsFolderCleanupClearApplyPreview(panel);
   });
 
-  panel.querySelector("#wbSettingsFolderCleanupDryRunGenerate")?.addEventListener("click", () => {
+  panel.querySelector("#wbSettingsFolderCleanupDryRunGenerate")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
     generateSettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
-  panel.querySelector("#wbSettingsFolderCleanupDryRunCopy")?.addEventListener("click", () => {
+  panel.querySelector("#wbSettingsFolderCleanupDryRunCopy")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
     copySettingsFolderCleanupDryRunPlan(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupApplyPreviewGenerate")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    generateSettingsFolderCleanupApplyPreview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
+  });
+
+  panel.querySelector("#wbSettingsFolderCleanupApplyPreviewCopy")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    copySettingsFolderCleanupApplyPreview(panel).catch((err) => settingsFolderParityLog(panel, String(err && (err.stack || err.message || err))));
   });
 
   panel.querySelector("#wbSettingsFolderConflictRefresh")?.addEventListener("click", () => {
@@ -12351,7 +13359,7 @@ function __ribbonBridge_sanitizeFilenameStem(title){
   try {
     var raw = String(title == null ? '' : title);
     /* Strip control chars (0x00-0x1F + 0x7F) and Windows-reserved punct. */
-    var cleaned = raw.replace(/[ -<>:"/\\|?*]/g, '-');
+    var cleaned = raw.replace(/[\x00-\x1F\x7F<>:"/\\|?*]/g, '-');
     /* Collapse whitespace runs to single spaces, then spaces to '-'. */
     cleaned = cleaned.replace(/\s+/g, ' ').trim().replace(/ /g, '-');
     /* Collapse runs of '-' to single '-'. */
