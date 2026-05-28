@@ -747,6 +747,10 @@
        successful local color convergence by recording consumed-operation and
        watermark rows only. No apply, publication, transport, or remote mutation. -->
   <script src="./sync/convergence-bookkeeping.tauri.js"></script>
+  <!-- F10.8.9d: Desktop/Tauri-only convergence action review UI. Calls existing
+       preflight, local color convergence, and bookkeeping APIs only from
+       explicit operator controls. No new convergence logic or transport. -->
+  <script src="./sync/convergence-action-ui.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
