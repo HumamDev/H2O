@@ -1,5 +1,5 @@
 /*
- * @version 2.5.30
+ * @version 2.5.33
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
@@ -9184,13 +9184,16 @@ html[data-h2o-runtime="tauri"] .wbShell{
 
 html[data-h2o-runtime="tauri"] .wbTauriDragStrip{
   display:block;
-  flex:0 0 var(--wb-tauri-drag-h);
+  flex:0 0 0;
   height:var(--wb-tauri-drag-h);
   min-height:var(--wb-tauri-drag-h);
-  position:relative;
+  position:absolute;
+  top:0;
+  left:0;
+  right:0;
   z-index:1;
   background:var(--wb-ribbon-bg);
-  border-bottom:1px solid var(--wb-border);
+  border-bottom:0;
   box-shadow:none;
   pointer-events:auto;
   user-select:none;
@@ -9239,22 +9242,33 @@ html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]){
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonBar{
   min-height:42px;
+  padding-left:118px;
   padding-top:0;
   padding-bottom:0;
-  -webkit-app-region:no-drag;
+  -webkit-app-region:drag;
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTabs{
-  align-items:center;
+  align-self:stretch;
+  align-items:flex-end;
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab{
-  border-radius:8px;
+  height:36px;
+  margin-top:6px;
+  margin-bottom:-1px;
+  align-items:center;
+  border-radius:8px 8px 0 0;
+  border-bottom-color:transparent;
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab[aria-selected="true"],
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab.is-active{
-  border-bottom-color:var(--wb-border);
+  position:relative;
+  z-index:1;
+  background:var(--wb-surface-soft);
+  border-color:var(--wb-border);
+  border-bottom-color:var(--wb-surface-soft);
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) :where(

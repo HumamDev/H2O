@@ -16,8 +16,9 @@
  *   - No selectors against the ChatGPT replay DOM (no cg* queries).
  *   - No imports from src-surfaces-base/desk/.
  *   - Storage limited to the two ribbon prefs keys (delegated to the shell).
- *   - Visibility is driven by chat-type context from studio.js. The ribbon
- *     hides itself entirely when chatType is null.
+ *   - Visibility is driven by chat-type context from studio.js. When no
+ *     reader chatType is active, the surface renders the saved-chat ribbon
+ *     as the desktop/list default.
  *
  * Dependencies:
  *   - H2O.Studio.ribbon (ribbon-shell.studio.js, loaded earlier)
@@ -3112,21 +3113,11 @@
   /* ── Render orchestration ─────────────────────────────────────────── */
   function render(container, shell) {
     const ctx = shell.getContext();
-    const chatType = (ctx && ctx.chatType) || null;
+    const contextChatType = (ctx && ctx.chatType) || null;
+    const chatType = contextChatType || 'saved';
     const collapsed = !!shell.getCollapsed();
     parkRefreshControl(container);
     parkMetadataControls(container);
-
-    /* Visibility: ribbon entirely hidden when no chat is open. */
-    if (!chatType) {
-      container.hidden = true;
-      container.dataset.chatType = '';
-      container.dataset.collapsed = '';
-      /* Still clear content so a focus inside the hidden node has nothing
-       * to grab. */
-      container.innerHTML = '';
-      return;
-    }
 
     container.hidden = false;
     container.dataset.chatType = chatType;
@@ -3330,9 +3321,8 @@
       }
     } catch (_) { /* swallow */ }
 
-    /* Initial paint. Until studio.js calls shell.setContext, chatType is
-     * null so the ribbon stays hidden — which is the correct passive
-     * default. */
+    /* Initial paint. Until studio.js calls shell.setContext, the surface
+     * renders the saved-chat ribbon as the desktop/list default. */
     render(container, shell);
 
     /* Mark the shell mounted (no-op in Phase 1a but emits 'ready'). */
