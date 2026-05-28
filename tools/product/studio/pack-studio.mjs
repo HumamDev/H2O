@@ -245,6 +245,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // only. No convergence, apply, proposal generation, conflictCandidate
   // generation, WebDAV changes, storage mutation, or mobile write-back.
   "sync/convergence-planner.tauri.js",
+  // F10.8.6d: Desktop/Tauri-only manual convergence review UI. Renders
+  // buildConvergencePlan() buckets only. No convergence actions, apply
+  // buttons, proposal creation, WebDAV calls, auto-refresh, or merge.
+  "sync/convergence-review-ui.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -427,6 +431,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/convergence-readiness.tauri.js",
   "sync/remote-envelope-projector.tauri.js",
   "sync/convergence-planner.tauri.js",
+  "sync/convergence-review-ui.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
