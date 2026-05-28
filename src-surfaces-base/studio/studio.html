@@ -695,6 +695,11 @@
        convergence, apply, proposal generation, conflictCandidate generation,
        WebDAV changes, storage mutation, or mobile write-back. -->
   <script src="./sync/remote-envelope-projector.tauri.js"></script>
+  <!-- F10.8.6c: Desktop/Tauri-only convergence planner. Classifies remote
+       observed state against a local canonical snapshot and readiness signals
+       only. No convergence, apply, proposal generation, conflictCandidate
+       generation, WebDAV changes, storage mutation, or mobile write-back. -->
+  <script src="./sync/convergence-planner.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
