@@ -280,6 +280,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No convergence, apply, watermark advancement, publication, transport,
   // WebDAV, or remote mutation.
   "sync/consumed-operation-ledger.tauri.js",
+  // F10.8.9a: Desktop/Tauri-only convergence preflight. Validates selected
+  // color-only proposalEligible planner entries only. No convergence, apply,
+  // watermark advancement, applyEvent, publication, transport, or mutation.
+  "sync/convergence-preflight.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -470,6 +474,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/conflict-publication.tauri.js",
   "sync/convergence-watermarks.tauri.js",
   "sync/consumed-operation-ledger.tauri.js",
+  "sync/convergence-preflight.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
