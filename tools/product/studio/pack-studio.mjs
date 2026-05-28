@@ -235,6 +235,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No convergence, proposal generation, apply, WebDAV, storage mutation,
   // polling, network, automatic repair, or mobile write-back.
   "sync/convergence-readiness.tauri.js",
+  // F10.8.6b: Desktop/Tauri-only remote envelope projector. Reads accepted
+  // relay inbox envelopes into a redacted remote-observed state only. No
+  // convergence, apply, proposal generation, conflictCandidate generation,
+  // WebDAV changes, storage mutation, or mobile write-back.
+  "sync/remote-envelope-projector.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -415,6 +420,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/relay-index.tauri.js",
   "sync/manual-sync-ui.tauri.js",
   "sync/convergence-readiness.tauri.js",
+  "sync/remote-envelope-projector.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
