@@ -276,6 +276,139 @@ boundaries: no merge, no apply, no write-back, no proposal. F10.3.1
 bridge), F10.6 (proposal flow), and F10.7 (remote apply / write-back)
 remain unauthorized.
 
+## Runtime proof — F10.4 — 2026-05-28
+
+The read-only Settings card for the proven F10.3 bridge has been
+landed, hardened, and validated in live Chrome Studio against a real
+Desktop-exported `latest.json`.
+
+### Card appearance
+
+The **Bundle Envelope Preview** card mounts under
+`Settings → Local Sync`, immediately after the existing Chrome Sync
+Folder card. The card carries:
+
+- A status badge (`— Not yet checked` / `✅ ok` / `⚠️ ok with warnings`
+  / `❌ blocked` / `❌ error`).
+- A single **Run preview check** button.
+- A last-checked ISO timestamp + bridge-loaded indicator.
+- Result fields: envelope kind, `ok`, `bundleBytes` (with KiB
+  formatting), `bundleSchema`, blocker count + readable-label list,
+  warning count + readable-label list, peer hash presence rows
+  (`physicalDeviceIdHash`, `installIdHash`, `syncPeerIdHash` — each
+  shown as `✓ present` / `(absent)` by default, with an opt-in
+  "Show raw peer hashes" toggle that reveals the 64-char hex strings
+  for the current session only), and section counts (chats, snapshots,
+  folders, labels, tags, categories).
+
+### Run preview check works
+
+Clicking the button invokes
+`H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes()` exactly
+once, disables and relabels the button to `Running…`, populates the
+card from the result, and re-enables. Confirmed end-to-end against
+the F10.3d-enriched Desktop bundle:
+
+- `ok: true`
+- `envelope.kind === "bundle"`
+- `bundleBytes > 0` (~332 KiB on the proving bundle)
+- `blockers: []`
+- `warnings: []` (no `source-peer-*-absent-from-bundle` entries,
+  confirming the F10.3d peer-envelope enrichment round-trips)
+- All three peer hashes populated as 64-char lowercase sha256 hex.
+
+### Card survives rerenders
+
+After the initial mount-hardening commit (`81a82eb`), the card
+vanished after `Run preview check` because `studio.js`'s
+`renderSettingsRoute` was rebuilding the Settings panel via
+`panel.innerHTML = ""` and the MutationObserver had been
+disconnected after first mount. The follow-up fix (`18c7131`)
+removed the disconnect-after-mount step; the observer now stays
+armed for the page lifetime, the duplicate-guard in `tryMount()`
+keeps per-mutation cost effectively zero, and cached results
+(`state.lastResult`) replay into freshly-inserted cards transparently.
+
+Verified live: clicking `Run preview check` no longer makes the
+card disappear; the same result remains visible across navigation
+away from and back to `#/settings`; repeated clicks do not produce
+duplicate cards. The operator self-test confirms:
+
+```js
+H2O.Studio.diagnostics.__bundleEnvelopePreviewCardSelfTest()
+// {
+//   installed: true,
+//   moduleVersion: 'F10.4-1.0.2-survives-rerenders',
+//   bridgeLoaded: true,
+//   anchorPresent: true,
+//   cardMounted: true,
+//   observerActive: true,     // <-- permanent (was the fix)
+//   ...
+// }
+```
+
+### Sidebar All folders / Settings fixes validated
+
+Two sidebar bugs surfaced during F10.4 operator testing and were
+fixed in commit `d7b5341`:
+
+- **All folders sidebar row disappeared after click.** Root cause:
+  `studio.js`'s `collectFolderSidebarItems()` (independent of
+  S0Z1g's `renderFolders()`) wrote the same `#folderList` host
+  without including the "All folders" entry, so its last-writer-wins
+  rebuild dropped the row on every Studio state change. Fix: added
+  an "All folders" utility item alongside "Unfiled" in
+  `collectFolderSidebarItems`, an `item.href` override path through
+  `renderFolderSidebarRow`, and a `location.hash === "#/library/folders"`
+  active-state branch in `setActiveFolder`. The row now persists
+  across navigations and shows `.active` when on the catalog route.
+
+- **Settings nav button looked clipped at the end of the
+  scrollable sidebar.** Root cause: `.wbSidebarSection--settings`
+  had no dedicated CSS and sat flush against the sidebar's 14px
+  bottom edge. Fix: added a `margin-top:6px; padding-top:8px;
+  padding-bottom:6px; border-top:1px solid var(--wb-border)` rule.
+  Settings now has a visible separator above and a stable padding
+  gap below.
+
+### Still read-only
+
+F10.4 does not introduce any write path. The card calls exactly
+one Studio API (`previewLatestBundleAsEnvelopes`); it does not call
+`H2O.Studio.sync.folder.syncNow` / `connectFolder` / `folderImport.*`;
+it never writes to `chrome.storage`; it never broadcasts via
+`chrome.runtime`; it never adds a proposal / applyEvent / remote
+apply / merge / write-back surface. Raw peer hashes stay hidden by
+default. The operator's "Show raw peer hashes" toggle is session-only
+and does not persist. No new chrome.storage key was added. No new
+`chrome.runtime` message type was added. No
+`@h2o/cross-platform-envelope` import landed in any runtime code
+path (F10.2.2 CP-10.1 still reports 0 findings).
+
+### Commits proving the F10.4 chain
+
+| Commit | What it proved |
+|---|---|
+| [`3b1b4ac`](#) | Initial F10.4 card mount under Settings → Local Sync. |
+| [`81a82eb`](#) | Mount hardening: try/catch, hashchange fallback, operator self-test helper. |
+| [`18c7131`](#) | Removed disconnect-after-mount so the card survives Settings rerenders triggered by `Run preview check`. |
+| [`d7b5341`](#) | Sidebar follow-ups: "All folders" row stops disappearing; Settings nav has visible breathing room at end-of-scroll; active state highlights the All folders catalog route. |
+
+### Next allowed phase
+
+**F10.5 — native-extension evidence bridge — planning only.** With
+the Desktop → Chrome `bundle` envelope path proven end-to-end and
+surfaced via a read-only Settings card, the next authorized step
+is to plan (not implement) an evidence-emission path from the
+Native ChatGPT Extension into Chrome Studio under the same F10.2
+envelope contract. F10.5 planning must respect the same hard
+boundaries as F10.3 and F10.4: no merge, no apply, no write-back,
+no proposal. F10.3.1 (recursive envelope enumeration inside
+`payload.envelopes`), F10.6 (proposal flow), and F10.7 (remote
+apply / write-back) remain unauthorized. Mobile write-back,
+WebDAV / cloud relay, and native durable peer work remain
+forbidden until separate safety models authorize them.
+
 ## Phase status
 
 | Phase | Status |
@@ -285,9 +418,9 @@ remain unauthorized.
 | F10.2.0 — envelope spec | Complete (`febd731`, `92d3eb3`) |
 | F10.2.1 — static helper | Complete (`a3fb7ac`) |
 | F10.2.2 — repo validation scan | Complete (`7093801`) |
-| **F10.3 — bridge v1: Desktop bundle → Chrome envelope preview** | **Proven (`94c59f3`, `b26884e`, `85502de`, `f88d496`) — runtime verified 2026-05-27** |
+| F10.3 — bridge v1: Desktop bundle → Chrome envelope preview | Proven (`94c59f3`, `b26884e`, `85502de`, `f88d496`) — runtime verified 2026-05-27 |
 | F10.3.1 — recursive envelope enumeration | Not authorized |
-| F10.4 — operator UI for the preview | Planning only (next allowed step) |
-| F10.5 — native-extension evidence bridge | Not authorized |
+| **F10.4 — operator UI for the preview** | **Proven (`3b1b4ac`, `81a82eb`, `18c7131`, `d7b5341`) — runtime verified 2026-05-28** |
+| F10.5 — native-extension evidence bridge | Planning only (next allowed step) |
 | F10.6 — proposal flow | Not authorized |
 | F10.7 — remote apply / write-back | Forbidden until separate safety model |
