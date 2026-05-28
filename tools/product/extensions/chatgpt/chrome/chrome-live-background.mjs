@@ -120,6 +120,10 @@ const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
  * S0F1c's existing readNativeChatRegistryRecords() can pick up
  * linked-only records propagated from prod Cockpit Pro's native broadcast. */
 const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+/* F10.5.3 — count-safe capture mirror: cross-extension message type +
+ * the chrome.storage.local key the Studio Launcher reads (F10.5 bridge). */
+const MSG_NATIVE_CAPTURE_MIRROR = "h2o:capture:native-mirror:v1";
+const NATIVE_CAPTURE_MIRROR_KEY = "h2o:prm:cgx:capture:mirror:v1";
 const MSG_FOLDER_METADATA_OPERATION_RESULTS = "h2o:library:folder-metadata-operation-results:v1";
 const STUDIO_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:v1";
 const NATIVE_BROADCAST_KEY = "h2o:library:cross-surface:broadcast:native:v1";
@@ -4421,6 +4425,34 @@ async function handleExternalNativeLinkedRecordsMessage(msg, sender) {
       senderId,
       error: String((e && (e.stack || e.message || e)) || "merge-failed"),
       linkedRecordsCount: linkedRecords.length,
+    };
+  }
+}
+
+/* F10.5.3 — receive the count-safe capture mirror digest forwarded from
+ * prod Cockpit Pro and persist it to the Studio Launcher's own
+ * chrome.storage.local so the F10.5 evidence bridge can read it. The
+ * digest is written verbatim — no raw payload transformation. */
+async function handleExternalNativeCaptureMirrorMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const mirror = (msg && msg.mirror && typeof msg.mirror === "object" && !Array.isArray(msg.mirror))
+    ? msg.mirror
+    : null;
+  if (mirror === null) {
+    return { ok: false, status: "invalid-capture-mirror", senderId };
+  }
+  try {
+    await storageSet({ [NATIVE_CAPTURE_MIRROR_KEY]: mirror });
+    return { ok: true, status: "written", senderId, key: NATIVE_CAPTURE_MIRROR_KEY };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "write-failed",
+      senderId,
+      error: String((e && (e.stack || e.message || e)) || "write-failed"),
     };
   }
 }
@@ -11688,6 +11720,19 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         sendResponse(await handleExternalNativeLinkedRecordsMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
+
+  /* F10.5.3 — dispatch arm for the cross-extension capture-mirror message.
+   * Same async sendResponse pattern as the linked-records arm. */
+  if (msg.type === MSG_NATIVE_CAPTURE_MIRROR) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalNativeCaptureMirrorMessage(msg, _sender));
       } catch (e) {
         sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
       }

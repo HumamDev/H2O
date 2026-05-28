@@ -3953,8 +3953,15 @@ export function makeChromeLiveLoaderJs({
      * records the prod broadcast already builds via snapshotLinkedRecords. */
     const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
     const MSG_FOLDER_METADATA_OPERATION_RESULTS = "h2o:library:folder-metadata-operation-results:v1";
+    /* F10.5.3 — count-safe capture mirror. Parallel to the linked-records
+     * bridge above: the page-world 3X1c Capture Mirror writes this key via
+     * the h2o-ext-cs bridge; the content script persists it to
+     * chrome.storage.local and forwards it to the Studio Launcher so the
+     * standalone Studio's F10.5 evidence bridge can read capture counts. */
+    const CAPTURE_MIRROR_KEY = "h2o:prm:cgx:capture:mirror:v1";
+    const MSG_NATIVE_CAPTURE_MIRROR = "h2o:capture:native-mirror:v1";
     const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
-    const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY]);
+    const WATCHED = new Set([STUDIO_KEY, NATIVE_KEY, CAPTURE_MIRROR_KEY]);
     const DIAG = (typeof TAG === "string" ? TAG : "[H2O cs-bridge]");
     const dlog = (...args) => { try { console.info(DIAG, "cs-bridge", ...args); } catch (_) {} };
 
@@ -3999,6 +4006,7 @@ export function makeChromeLiveLoaderJs({
       if (!WATCHED.has(String(key || ""))) return;
       forwardNativeFolderStateToStudioLauncher(srcLabel, key, value);
       forwardNativeLinkedRecordsToStudioLauncher(srcLabel, key, value);
+      forwardNativeCaptureMirrorToStudioLauncher(srcLabel, key, value);
       forwardNativeFolderMetadataOperationResultsToStudioLauncher(srcLabel, key, value);
       if (!hasStorage) {
         dlog("write.skip", srcLabel + " no chrome.storage");
@@ -4198,6 +4206,43 @@ export function makeChromeLiveLoaderJs({
         });
       } catch (e) {
         dlog("linkedRecords.external.throw", String(e && (e.message || e)));
+      }
+    }
+
+    /* F10.5.3 — forward the count-safe capture mirror digest to the Studio
+     * Launcher extension. Clone of forwardNativeLinkedRecordsToStudioLauncher,
+     * gated on CAPTURE_MIRROR_KEY. The mirror value is already counts/hashes
+     * only (built by 3X1c); it is forwarded verbatim, no transformation. */
+    function forwardNativeCaptureMirrorToStudioLauncher(srcLabel, key, value) {
+      if (String(key || "") !== CAPTURE_MIRROR_KEY) return;
+      const mirror = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+      if (mirror === null) return;
+      if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") return;
+      const ownId = String(chrome.runtime.id || "");
+      if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) return;
+      try {
+        chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+          type: MSG_NATIVE_CAPTURE_MIRROR,
+          key: CAPTURE_MIRROR_KEY,
+          source: "native-content-bridge",
+          sourceExtensionId: ownId,
+          sourceLabel: String(srcLabel || ""),
+          ts: Date.now(),
+          mirror,
+        }, (resp) => {
+          const le = chrome.runtime && chrome.runtime.lastError;
+          if (le) {
+            dlog("captureMirror.external.skip", String(le.message || le));
+            return;
+          }
+          if (!resp || resp.ok === false) {
+            dlog("captureMirror.external.err", String((resp && resp.error) || "no-response"));
+            return;
+          }
+          dlog("captureMirror.external.ok", String(resp.status || "ok"));
+        });
+      } catch (e) {
+        dlog("captureMirror.external.throw", String(e && (e.message || e)));
       }
     }
 
