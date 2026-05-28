@@ -704,6 +704,11 @@
        buildConvergencePlan() buckets only. No convergence actions, apply
        buttons, proposal creation, WebDAV calls, auto-refresh, or merge. -->
   <script src="./sync/convergence-review-ui.tauri.js"></script>
+  <!-- F10.8.6e: Desktop/Tauri-only proposal candidate generator. Converts
+       currently revalidated proposalEligible planner entries into local
+       generated proposal candidates only. No publish, outbox enqueue, apply,
+       applyEvent, conflictCandidate, convergence, or WebDAV. -->
+  <script src="./sync/convergence-proposal-generator.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
