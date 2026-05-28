@@ -593,6 +593,12 @@
        runtime broadcast, polling, WebDAV, or write-back. Registers
        H2O.Studio.diagnostics.canonicalizeFolderSnapshot. -->
   <script src="./sync/folder-sync-canonical.js"></script>
+  <!-- F10.6.2: read-only folder sync diff engine. Consumes F10.6.1 canonical
+       snapshots only and returns a report-only folder diff. No proposal
+       envelope, conflictCandidate envelope emission, applyEvent, merge,
+       write-back, storage write, transport, polling, or WebDAV. Registers
+       H2O.Studio.diagnostics.diffFolderSnapshots. -->
+  <script src="./sync/folder-sync-diff.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no
