@@ -406,30 +406,34 @@
   }
 
   // ── Mount ─────────────────────────────────────────────────────────────
-  // The MutationObserver is held in module scope so it can be disconnected
-  // after a successful mount and re-armed when Settings is torn down /
-  // rebuilt (e.g., navigating away from #/settings and back). This
-  // bounds the observer's lifetime so it does not add overhead during
-  // Studio's main hydration loop after the card has been placed.
+  // The MutationObserver is held in module scope and stays alive for the
+  // page lifetime. It is NOT disconnected after a successful mount.
+  //
+  // Rationale (post-bug discovery): Studio's renderSettingsRoute can
+  // rebuild the Settings panel from scratch at any time — `focus` and
+  // `visibilitychange` re-enter the route, and the click handler for
+  // "Run preview check" awaits an async diagnostic that may interleave
+  // with one of those re-entries. When that happens, studio.js does
+  // `panel.innerHTML = ""` followed by a fresh `panel.innerHTML =
+  // <new template>`, which wipes this card from the DOM. An observer
+  // that disconnected after first mount would miss the rebuild and
+  // never re-insert the card — which is exactly the symptom that
+  // appeared after Run preview check.
+  //
+  // Cost of staying armed: a single getElementById(ID.card) call per
+  // MutationObserver microtask. That is well under any threshold that
+  // would slow the main thread; coalesced mutations make it cheap.
+  // The duplicate-guard in tryMount() makes re-firing harmless when
+  // the card is already mounted.
   var activeObserver = null;
-
-  function disconnectObserver() {
-    if (activeObserver) {
-      try { activeObserver.disconnect(); } catch (_) { /* swallow */ }
-      activeObserver = null;
-    }
-  }
 
   function tryMount() {
     // Defensive: never let a mount attempt throw out of the observer
-    // callback. A throw here would terminate that callback firing but
-    // would not disable subsequent firings; still, swallowing keeps the
-    // module quiet in the operator's console.
+    // callback or out of the bootstrap path.
     try {
       if (document.getElementById(ID.card)) {
-        // Already mounted — refresh bridge-loaded status text only.
-        refreshBridgeStatus();
-        disconnectObserver();
+        // Card already mounted — duplicate-guard makes the observer
+        // callback effectively free. No DOM mutation, no remount.
         return true;
       }
       var anchor = document.querySelector('#wbSettingsSyncBox');
@@ -440,23 +444,25 @@
       setText(ID.lastChecked, fmtIso(state.lastCheckedAt));
       state.mounted = true;
       // Replay cached result if present (e.g. after Settings rebuild).
+      // This makes the card transparently restore the last preview
+      // result the operator saw, even if the card was wiped and
+      // re-inserted between clicks.
       if (state.lastResult) {
         renderResult(state.lastResult);
       } else if (state.lastError) {
         renderError(state.lastError);
+      } else if (state.lastCheckedAt) {
+        setText(ID.lastChecked, fmtIso(state.lastCheckedAt));
       }
-      // Card is in place; stop observing until something tears it down.
-      disconnectObserver();
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  // Watch document.body for Settings overlay (re)mounts and inject the
-  // card whenever #wbSettingsSyncBox appears without our card sibling.
-  // Disconnects on successful mount; re-arms on demand below.
-  // No setInterval; observer-driven (+ hashchange fallback).
+  // Watch document.body for Settings overlay (re)mounts and re-insert
+  // the card whenever #wbSettingsSyncBox appears without our card
+  // sibling. Permanent observer — no disconnect, no setInterval.
   function installObserver() {
     if (typeof global.MutationObserver !== 'function') return;
     if (activeObserver) return;
@@ -471,16 +477,15 @@
     } catch (_) { /* swallow */ }
   }
 
-  // Hashchange fallback: if the operator navigates away from Settings
-  // and back, the Settings panel rebuild may not be caught by the
-  // (disconnected) observer. On any hashchange, if the card is missing,
-  // re-arm the observer and try to mount immediately.
+  // Hashchange belt-and-suspenders: ensures the observer is armed and
+  // a mount attempt runs whenever the URL hash changes. Since the
+  // observer is now permanent, this is redundant in the normal case,
+  // but kept as a defense-in-depth path against any environment where
+  // the MutationObserver misses a rebuild for any reason.
   function onHashChange() {
     try {
-      if (!document.getElementById(ID.card)) {
-        installObserver();
-        tryMount();
-      }
+      installObserver();
+      tryMount();
     } catch (_) { /* swallow */ }
   }
 
@@ -504,7 +509,7 @@
   H2O.Studio.diagnostics.__bundleEnvelopePreviewCardSelfTest = function () {
     return {
       installed: true,
-      moduleVersion: 'F10.4-1.0.1-hardened',
+      moduleVersion: 'F10.4-1.0.2-survives-rerenders',
       bridgeLoaded: typeof H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes === 'function',
       anchorPresent: !!document.querySelector('#wbSettingsSyncBox'),
       cardMounted: !!document.getElementById(ID.card),
