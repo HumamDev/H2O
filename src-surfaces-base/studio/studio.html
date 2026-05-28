@@ -606,6 +606,12 @@
        runtime broadcast, polling, or WebDAV. Registers
        H2O.Studio.diagnostics.previewFolderSyncProposal. -->
   <script src="./sync/folder-sync-proposal-preview.mv3.js"></script>
+  <!-- F10.6.4: read-only folder conflict report layer. Consumes F10.6.2
+       diff output only and returns enum-only hard/soft report rows. No
+       proposal, conflictCandidate envelope, applyEvent, merge, write-back,
+       storage write, runtime broadcast, polling, or WebDAV. Registers
+       H2O.Studio.diagnostics.buildFolderConflictReport. -->
+  <script src="./sync/folder-sync-conflict-report.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no

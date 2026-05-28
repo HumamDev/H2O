@@ -162,6 +162,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // dryRun=true envelopes only. No proposal, conflictCandidate, applyEvent,
   // merge, write-back, storage write, runtime broadcast, polling, or WebDAV.
   "sync/folder-sync-proposal-preview.mv3.js",
+  // F10.6.4: read-only folder conflict report layer. Consumes F10.6.2 diff
+  // output only and returns enum-only hard/soft report rows. No proposal,
+  // conflictCandidate envelope, applyEvent, merge, write-back, storage write,
+  // runtime broadcast, polling, or WebDAV.
+  "sync/folder-sync-conflict-report.js",
   // F2: peer-identity scaffold. Mints + persists per-install peer identity
   // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
   // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
@@ -358,6 +363,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-sync-canonical.js",
   "sync/folder-sync-diff.js",
   "sync/folder-sync-proposal-preview.mv3.js",
+  "sync/folder-sync-conflict-report.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",
