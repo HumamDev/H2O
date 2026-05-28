@@ -751,6 +751,10 @@
        preflight, local color convergence, and bookkeeping APIs only from
        explicit operator controls. No new convergence logic or transport. -->
   <script src="./sync/convergence-action-ui.tauri.js"></script>
+  <!-- F10.9.1: Desktop/Tauri-only rename materialization diagnostic. Verifies
+       local proposedName against remote targetNameHash and safety ledgers only.
+       No rename, apply, convergence, publication, transport, or mutation. -->
+  <script src="./sync/rename-materialization-diagnostic.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>

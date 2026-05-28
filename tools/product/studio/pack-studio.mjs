@@ -296,6 +296,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // preflight, local color convergence, and bookkeeping APIs only from explicit
   // operator controls. No new convergence logic or transport.
   "sync/convergence-action-ui.tauri.js",
+  // F10.9.1: Desktop/Tauri-only rename materialization diagnostic. Verifies
+  // local proposedName against remote targetNameHash and safety ledgers only.
+  // No rename, apply, convergence, publication, transport, or mutation.
+  "sync/rename-materialization-diagnostic.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -490,6 +494,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/color-convergence-action.tauri.js",
   "sync/convergence-bookkeeping.tauri.js",
   "sync/convergence-action-ui.tauri.js",
+  "sync/rename-materialization-diagnostic.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
