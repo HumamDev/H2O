@@ -739,6 +739,10 @@
        color-only proposalEligible planner entries only. No convergence, apply,
        watermark advancement, applyEvent, publication, transport, or mutation. -->
   <script src="./sync/convergence-preflight.tauri.js"></script>
+  <!-- F10.8.9b: Desktop/Tauri-only local color convergence action. Executes one
+       approved color-only local apply and returns an applyEvent receipt only.
+       No watermark, consumed ledger, publication, transport, or batch action. -->
+  <script src="./sync/color-convergence-action.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
