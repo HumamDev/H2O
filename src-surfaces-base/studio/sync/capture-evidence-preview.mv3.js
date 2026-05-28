@@ -434,6 +434,52 @@
     });
   }
 
+  // ── Source peer envelope (chrome-studio's own F2 identity) ──────────
+  // The cross-platform envelope base schema requires sourcePeerEnvelope
+  // to carry real sha256 hashes (validate-base.ts source-attribution).
+  // Chrome-studio IS the envelope producer, so hash its own F2 peer
+  // identity (H2O.Studio.identity): installId / physicalDeviceId /
+  // syncPeerId. These are the producer's install/device identifiers, NOT
+  // capture data — hashing them is exactly the RedactedPeerEnvelope
+  // contract. Returns empty hashes (→ envelope-schema-too-new, honest
+  // absent-data) only if the F2 identity is unavailable.
+  async function buildSourcePeerEnvelope(warnings) {
+    var out = {
+      physicalDeviceIdHash: '',
+      installIdHash: '',
+      syncPeerIdHash: '',
+      surfaceKind: 'browser-studio',
+    };
+    var identity = null;
+    try {
+      var idApi = H2O.Studio && H2O.Studio.identity;
+      if (idApi && typeof idApi.whenReady === 'function') {
+        identity = await idApi.whenReady();
+      } else if (idApi && typeof idApi.get === 'function') {
+        identity = idApi.get();
+      }
+    } catch (_) { identity = null; }
+    if (!identity || typeof identity !== 'object') {
+      warnings.push('source-peer-identity-unavailable');
+      return out;
+    }
+    try {
+      if (typeof identity.physicalDeviceId === 'string' && identity.physicalDeviceId) {
+        out.physicalDeviceIdHash = await sha256Hex(identity.physicalDeviceId);
+      }
+      if (typeof identity.installId === 'string' && identity.installId) {
+        out.installIdHash = await sha256Hex(identity.installId);
+      }
+      if (typeof identity.syncPeerId === 'string' && identity.syncPeerId) {
+        out.syncPeerIdHash = await sha256Hex(identity.syncPeerId);
+      }
+    } catch (_) { /* leave partial; the format gate will surface it */ }
+    if (!isSha256Hex(out.physicalDeviceIdHash) || !isSha256Hex(out.installIdHash) || !isSha256Hex(out.syncPeerIdHash)) {
+      warnings.push('source-peer-identity-incomplete');
+    }
+    return out;
+  }
+
   function makeEarlyResult(observedAtIso, blockers, warnings) {
     return {
       schema: RESULT_SCHEMA,
@@ -636,6 +682,7 @@
       captureStoreVersion: payload.captureStoreVersion,
     }));
     var payloadHash = await sha256Hex(jsonCanonical(payload));
+    var sourcePeerEnvelope = await buildSourcePeerEnvelope(warnings);
 
     // ── 8. Construct envelope (kind: 'evidence', literal kind field) ──
     // The kind is a string literal so F10.2.2 scan-kind-literal-drift
@@ -653,18 +700,12 @@
       sourcePlatform: {
         platformId: 'chrome-studio',
         surfaceKind: 'browser-studio',
-        // Chrome-studio observing native runtime. The peer envelope is
-        // left as empty hash strings because the chrome-studio bridge
-        // does not currently carry an F2 redacted peer envelope of its
-        // own; F10.3d's pattern only enriches Desktop. Format gate will
-        // surface this as 'envelope-schema-too-new' the same way F10.3
-        // did pre-F10.3d, which is the honest "absent data" signal.
-        sourcePeerEnvelope: {
-          physicalDeviceIdHash: '',
-          installIdHash: '',
-          syncPeerIdHash: '',
-          surfaceKind: 'browser-studio',
-        },
+        // Chrome-studio is the envelope PRODUCER, so it carries its own
+        // F2 redacted peer envelope — real sha256 of H2O.Studio.identity
+        // (installId / physicalDeviceId / syncPeerId), built above. Empty
+        // hashes (→ envelope-schema-too-new) only if the F2 identity is
+        // unavailable, which is the honest absent-data signal.
+        sourcePeerEnvelope: sourcePeerEnvelope,
       },
       declaredAuthority: 'preview-coordinator',
       effectiveAuthority: 'preview-coordinator',
