@@ -496,6 +496,21 @@
     try { return (H2O && H2O.Studio && H2O.Studio.RibbonBridge) || null; }
     catch (_) { return null; }
   }
+  /* Phase 5b-1 — read the held inline-selection capture (snapshotted by
+   * studio.js on selectionchange so a ribbon-button click that collapses
+   * the selection does not lose it). Returns the last successful capture
+   * diagnostic or null. */
+  function getHeldInlineCapture() {
+    try {
+      const isel = H2O && H2O.Studio && H2O.Studio.inlineSelection;
+      if (isel && typeof isel.getHeldCapture === 'function') return isel.getHeldCapture();
+    } catch (_) {}
+    return null;
+  }
+  function getOverlayApi() {
+    try { return (H2O && H2O.Studio && H2O.Studio.overlay) || null; }
+    catch (_) { return null; }
+  }
   function getInference() {
     try {
       const platform = getPlatform();
@@ -2146,12 +2161,79 @@
    * always submits a `clear-formatting` op which the reducer treats as
    * a reset marker, wiping all per-message decorations for the turn at
    * that point in op order. */
-  ACTION_HANDLERS['bold'] = buildToggleHandler('bold', 'bold', { enabled: true }, {
+  /* ── Phase 5b-1 — inline-aware Bold / Italic ──────────────────────────
+   * If the user has a valid held inline selection that belongs to the
+   * currently-selected turn, the B / I buttons submit an `inline-format`
+   * op over that range (toggle decided by current coverage). Otherwise
+   * the existing Phase 4-1 message-level toggle behaviour is preserved
+   * unchanged. Underline / Strikethrough stay message-level only in
+   * 5b-1 (no inline U/S yet). */
+  function buildFontHandler(kind, messageLabels) {
+    const messageLevel = buildToggleHandler(kind, kind, { enabled: true }, messageLabels);
+    const Label = (kind === 'italic') ? 'Italic' : 'Bold';
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        const held = getHeldInlineCapture();
+        const pos = held && held.anchor && held.anchor.textPos;
+        const inlineValid = !!(held && held.ok && held.anchor && pos
+          && Number.isFinite(turnIdx) && turnIdx > 0
+          && Number(held.selectedTurnIdx) === turnIdx
+          && Number.isFinite(Number(pos.start)) && Number.isFinite(Number(pos.end))
+          && Number(pos.end) > Number(pos.start));
+
+        if (!inlineValid) {
+          /* No valid inline selection → message-level behaviour unchanged. */
+          messageLevel.onClick(ctx, setStatus);
+          return;
+        }
+
+        const start = Number(pos.start);
+        const end = Number(pos.end);
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getInlineStateForTurn === 'function')
+          ? Promise.resolve(bridge.getInlineStateForTurn(turnIdx))
+          : Promise.resolve({ bold: [], italic: [] });
+        readP.then(function (inlineState) {
+          const ov = getOverlayApi();
+          const intervals = (inlineState && Array.isArray(inlineState[kind])) ? inlineState[kind] : [];
+          let covered = false;
+          if (ov && typeof ov.intervalsCover === 'function') {
+            covered = ov.intervalsCover(intervals, start, end);
+          }
+          const enabled = !covered; /* toggle: covered → remove, else apply */
+          const opSpec = {
+            type: 'inline-format',
+            target: {
+              kind: 'inline',
+              turnIdx: turnIdx,
+              messageId: held.selectedMessageId || ctx.selectedMessageId || null,
+              anchor: held.anchor,
+            },
+            payload: { style: kind, enabled: enabled },
+            inverse: { style: kind, enabled: covered },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: enabled ? ('Applying ' + Label.toLowerCase() + ' to selection…')
+                             : ('Removing ' + Label.toLowerCase() + ' from selection…'),
+            success: enabled ? (Label + ' applied to selection')
+                             : (Label + ' removed from selection'),
+            fail: Label + ' failed',
+          });
+        }, function () {
+          /* Inline state read failed → fall back to message-level. */
+          messageLevel.onClick(ctx, setStatus);
+        });
+      },
+    };
+  }
+  ACTION_HANDLERS['bold'] = buildFontHandler('bold', {
     applyingLabel: 'Applying bold…', removingLabel: 'Removing bold…',
     appliedLabel: 'Bold applied', removedLabel: 'Bold removed',
     failLabel: 'Bold failed',
   });
-  ACTION_HANDLERS['italic'] = buildToggleHandler('italic', 'italic', { enabled: true }, {
+  ACTION_HANDLERS['italic'] = buildFontHandler('italic', {
     applyingLabel: 'Applying italic…', removingLabel: 'Removing italic…',
     appliedLabel: 'Italic applied', removedLabel: 'Italic removed',
     failLabel: 'Italic failed',

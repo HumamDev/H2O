@@ -5062,6 +5062,9 @@ function buildReaderDOM(snap){
       Promise.resolve(__store.get(__sid)).then((__overlay) => {
         try { __applier(root, snap, __overlay || null); }
         catch (_) { /* applier never throws, but defensive catch anyway */ }
+        /* Phase 5b-1 — inline Bold/Italic render pass on initial mount. */
+        try { __inlineRender_apply(root, snap, __overlay || null); }
+        catch (_) { /* inline render never throws, defensive catch */ }
         /* Phase 2b — publish hasOverlay to the ribbon context so the
          * Format buttons can read it from ctx (in addition to the per-
          * action isEnabled checks that look at chatType + selection).
@@ -14124,7 +14127,11 @@ function __ribbonBridge_applyOverlayOp(opSpec){
         try {
           const readerEl = document.getElementById('viewReader');
           const frame = readerEl && readerEl.querySelector('.cgFrame');
-          if (frame) outcome = ov.applyOverlay(frame, snap, saved);
+          if (frame) {
+            outcome = ov.applyOverlay(frame, snap, saved);
+            /* Phase 5b-1 — inline render pass after each forward op. */
+            try { __inlineRender_apply(frame, snap, saved); } catch (_) {}
+          }
         } catch (_) { /* swallow — apply failure does not invalidate the persisted op */ }
         /* Publish hasOverlay = true now.
          * Phase 2d — also republish undoCount / redoCount so the Home
@@ -14169,6 +14176,8 @@ function __ribbonBridge_publishAndRender(snap, saved){
     const frame = readerEl && readerEl.querySelector('.cgFrame');
     if (frame && ov && typeof ov.applyOverlay === 'function') {
       outcome = ov.applyOverlay(frame, snap, saved);
+      /* Phase 5b-1 — inline render pass after undo/redo stack change. */
+      try { __inlineRender_apply(frame, snap, saved); } catch (_) {}
     }
   } catch (_) { /* swallow — apply failure does not invalidate the persisted stack change */ }
   try {
@@ -14770,7 +14779,7 @@ function __inlineSelection_capture(){
 function __inlineSelection_selfCheck(){
   return {
     ok: true,
-    version: '0.1.0-phase-5a',
+    version: '0.1.0-phase-5b-1',
     passive: true,
     hasSelectionApi: typeof W.getSelection === 'function',
     hasRangeApi: typeof document.createRange === 'function',
@@ -14780,14 +14789,242 @@ function __inlineSelection_selfCheck(){
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Phase 5b-1 — inline Bold / Italic: range resolver + reader render pass
+ *
+ * resolveToRange is the range-returning sibling of Phase 5a's resolve()
+ * (resolve returns only metadata). It reuses the same three-tier anchor
+ * strategy (textQuote → textPos → xpath) and returns a live Range.
+ *
+ * The render pass is idempotent: it unwraps every prior
+ * [data-overlay-inline] span in scope, then re-wraps from the overlay's
+ * reduced interval sets. It NEVER mutates snap.messages and only touches
+ * the live reader DOM (which is rebuilt from snapshot on every reader
+ * mount, so injected spans are disposable). On baseDigest drift it skips
+ * (mirrors the applier's no-op-on-drift invariant). Unresolved intervals
+ * are counted and skipped — never thrown. Reader-only in 5b-1.
+ * ───────────────────────────────────────────────────────────────────── */
+
+function __inlineSelection_resolveToRange(anchorOrDiag, root){
+  try {
+    if (!root) return null;
+    const anchor = (anchorOrDiag && anchorOrDiag.anchor && typeof anchorOrDiag.anchor === 'object')
+      ? anchorOrDiag.anchor
+      : (anchorOrDiag && typeof anchorOrDiag === 'object' ? anchorOrDiag : {});
+    if (anchor.textQuote) {
+      const byQuote = __inlineSelection_findByQuote(root, anchor.textQuote);
+      if (byQuote) return byQuote;
+    }
+    if (anchor.textPos) {
+      const byPos = __inlineSelection_posToRange(anchor.textPos, root);
+      if (byPos && (!anchor.textQuote || __inlineSelection_rangeMatchesQuote(byPos, anchor.textQuote))) return byPos;
+    }
+    if (anchor.xpath) {
+      const byXpath = __inlineSelection_xpathToRange(anchor.xpath, root);
+      if (byXpath && (!anchor.textQuote || __inlineSelection_rangeMatchesQuote(byXpath, anchor.textQuote))) return byXpath;
+    }
+    return null;
+  } catch (_) { return null; }
+}
+
+/* Unwrap every prior inline span in `scope`, hoisting children and
+ * normalising adjacent text nodes. Returns the count removed. */
+function __inlineRender_unwrapAll(scope){
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+  let removed = 0;
+  try {
+    const els = scope.querySelectorAll('[data-overlay-inline]');
+    for (let i = 0; i < els.length; i += 1) {
+      const el = els[i];
+      const p = el.parentNode;
+      if (!p) continue;
+      while (el.firstChild) p.insertBefore(el.firstChild, el);
+      p.removeChild(el);
+      try { if (p.normalize) p.normalize(); } catch (_) {}
+      removed += 1;
+    }
+  } catch (_) { /* swallow */ }
+  return removed;
+}
+
+/* Collect text nodes intersecting a range whose endpoints are text nodes
+ * (posToRange guarantees this). Single-node fast path + multi-node walk. */
+function __inlineRender_collectTextNodes(range){
+  const startNode = range.startContainer;
+  const endNode = range.endContainer;
+  if (startNode === endNode) return [startNode];
+  const root = range.commonAncestorContainer;
+  const out = [];
+  try {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let started = false;
+    let n = null;
+    while ((n = walker.nextNode())) {
+      if (n === startNode) started = true;
+      if (started) out.push(n);
+      if (n === endNode) break;
+    }
+  } catch (_) { return [startNode]; }
+  return out;
+}
+
+/* Wrap a resolved range in <strong>/<em data-overlay-inline>. Wraps
+ * per-text-node (never surroundContents — that throws on partial node
+ * selection). Skips slices already inside a same-style wrapper. Returns
+ * the number of wrapper elements inserted. Mirrors the highlighter's
+ * proven splitText technique. */
+function __inlineRender_wrapRange(range, style){
+  if (!range || range.collapsed) return 0;
+  const startNode = range.startContainer;
+  const startOff = range.startOffset;
+  const endNode = range.endContainer;
+  const endOff = range.endOffset;
+  if (!startNode || !endNode || startNode.nodeType !== 3 || endNode.nodeType !== 3) return 0;
+  const tag = (style === 'italic') ? 'em' : 'strong';
+  const val = (style === 'italic') ? 'italic' : 'bold';
+  const sel = '[data-overlay-inline="' + val + '"]';
+  let wrapped = 0;
+  const nodes = __inlineRender_collectTextNodes(range);
+  for (let i = 0; i < nodes.length; i += 1) {
+    let tn = nodes[i];
+    if (!tn || tn.nodeType !== 3) continue;
+    let s = 0;
+    let e = tn.nodeValue.length;
+    if (tn === startNode) s = startOff;
+    if (tn === endNode) e = endOff;
+    if (e <= s) continue;
+    const slice = tn.nodeValue.slice(s, e);
+    if (!slice) continue;
+    try {
+      if (tn.parentElement && typeof tn.parentElement.closest === 'function' && tn.parentElement.closest(sel)) {
+        continue; /* already wrapped in same style */
+      }
+    } catch (_) { /* ignore */ }
+    try {
+      if (e < tn.nodeValue.length) tn.splitText(e);
+      let mid = tn;
+      if (s > 0) mid = tn.splitText(s);
+      const el = document.createElement(tag);
+      el.setAttribute('data-overlay-inline', val);
+      if (mid.parentNode) {
+        mid.parentNode.insertBefore(el, mid);
+        el.appendChild(mid);
+        wrapped += 1;
+      }
+    } catch (_) { /* swallow per-node */ }
+  }
+  return wrapped;
+}
+
+/* Idempotent inline render pass. Runs after ov.applyOverlay on the same
+ * scope element. Never throws; never mutates snap.messages. */
+function __inlineRender_apply(scopeEl, snap, overlay){
+  const result = { applied: false, wrapped: 0, skipped: 0, unwrapped: 0 };
+  try {
+    if (!scopeEl || typeof scopeEl.querySelectorAll !== 'function') return result;
+    /* Always unwrap prior spans first — guarantees DOM converges to the
+     * current overlay state regardless of prior renders. */
+    result.unwrapped = __inlineRender_unwrapAll(scopeEl);
+    const ov = W.H2O?.Studio?.overlay;
+    if (!ov || typeof ov.computeInlineState !== 'function') return result;
+    if (!overlay || typeof overlay !== 'object') return result;
+    /* Skip on drift — mirror the applier's no-op-on-drift invariant. */
+    try {
+      if (overlay.baseDigest && typeof ov.computeBaseDigest === 'function') {
+        const cur = ov.computeBaseDigest(snap);
+        if (cur !== overlay.baseDigest) return result;
+      }
+    } catch (_) { /* ignore digest failure — fall through */ }
+    const turns = Array.prototype.slice.call(scopeEl.querySelectorAll('[data-turn]'));
+    for (let t = 0; t < turns.length; t += 1) {
+      const turn = turns[t];
+      const turnIdx = t + 1;
+      let inline = null;
+      try { inline = ov.computeInlineState(overlay, turnIdx); }
+      catch (_) { inline = null; }
+      if (!inline) continue;
+      const boldIv = Array.isArray(inline.bold) ? inline.bold : [];
+      const italicIv = Array.isArray(inline.italic) ? inline.italic : [];
+      if (!boldIv.length && !italicIv.length) continue;
+      /* Same message-root basis as Phase 5a capture. */
+      const msgRoot = (turn.querySelector && turn.querySelector('[data-message-author-role], [data-message-id]')) || turn;
+      const styles = [['bold', boldIv], ['italic', italicIv]];
+      for (let k = 0; k < styles.length; k += 1) {
+        const style = styles[k][0];
+        const intervals = styles[k][1];
+        for (let m = 0; m < intervals.length; m += 1) {
+          const iv = intervals[m];
+          if (!Array.isArray(iv)) { result.skipped += 1; continue; }
+          const span = Number(iv[1]) - Number(iv[0]);
+          /* Re-resolve from offsets each time. Wrapping never changes
+           * text CONTENT (only node boundaries), so the flattened-text
+           * coordinate space stays valid across successive wraps. */
+          const range = __inlineSelection_posToRange({ start: iv[0], end: iv[1] }, msgRoot);
+          if (!range) { result.skipped += 1; continue; }
+          const got = String(range.toString() || '').length;
+          if (got !== span) { result.skipped += 1; continue; }
+          const w = __inlineRender_wrapRange(range, style);
+          if (w > 0) result.wrapped += w; else result.skipped += 1;
+        }
+      }
+    }
+    result.applied = true;
+  } catch (_) { /* never throw — inline render must not break the reader */ }
+  return result;
+}
+
+/* Phase 5b-1 — held inline-selection capture. The ribbon B/I buttons
+ * read this at click time: clicking a ribbon button blurs the reader and
+ * collapses window.getSelection(), so we snapshot the LAST SUCCESSFUL
+ * capture on selectionchange and never overwrite it with a failure. The
+ * consumer validates turnIdx + re-resolution before using it. */
+var __heldInlineCapture = null;
+function __inlineSelection_getHeldCapture(){ return __heldInlineCapture; }
+function __inlineSelection_clearHeldCapture(){ __heldInlineCapture = null; }
+try {
+  if (!W.__h2oInlineSelectionListenerInstalled && typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    W.__h2oInlineSelectionListenerInstalled = true;
+    document.addEventListener('selectionchange', function () {
+      try {
+        const cap = __inlineSelection_capture();
+        /* Only store OK captures so a button-click selection collapse
+         * does not wipe the held value. */
+        if (cap && cap.ok) { cap.__heldAt = Date.now(); __heldInlineCapture = cap; }
+      } catch (_) { /* swallow */ }
+    });
+  }
+} catch (_) { /* swallow */ }
+
+/* Phase 5b-1 — bridge accessor: inline interval state for a turn. Thin
+ * wrapper over computeInlineState; used by the ribbon to decide
+ * toggle-off vs toggle-on for a selected range. Never throws. */
+function __ribbonBridge_getInlineStateForTurn(turnIdx){
+  const empty = { bold: [], italic: [] };
+  try {
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) return Promise.resolve(empty);
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    const ov = W.H2O?.Studio?.overlay;
+    if (!ovStore || !ov || typeof ov.computeInlineState !== 'function') return Promise.resolve(empty);
+    return Promise.resolve(ovStore.get(String(snap.snapshotId))).then(function (overlay) {
+      if (!overlay) return empty;
+      try { return ov.computeInlineState(overlay, Number(turnIdx)); }
+      catch (_) { return empty; }
+    }, function () { return empty; });
+  } catch (_) { return Promise.resolve(empty); }
+}
+
 try {
   W.H2O = W.H2O || {};
   W.H2O.Studio = W.H2O.Studio || {};
   W.H2O.Studio.inlineSelection = Object.assign({}, W.H2O.Studio.inlineSelection || {}, {
     __installed: true,
-    version: '0.1.0-phase-5a',
+    version: '0.1.0-phase-5b-1',
     capture: __inlineSelection_capture,
     resolve: __inlineSelection_resolve,
+    resolveToRange: __inlineSelection_resolveToRange,
+    getHeldCapture: __inlineSelection_getHeldCapture,
+    clearHeldCapture: __inlineSelection_clearHeldCapture,
     selfCheck: __inlineSelection_selfCheck,
   });
   if (!W.H2O.Studio.RibbonBridge || !W.H2O.Studio.RibbonBridge.__installed) {
@@ -14797,6 +15034,7 @@ try {
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
+      getInlineStateForTurn: __ribbonBridge_getInlineStateForTurn,
       getStructureState: __ribbonBridge_getStructureState,
       applyOverlayOp: __ribbonBridge_applyOverlayOp,
       undo: __ribbonBridge_undo,
@@ -14819,6 +15057,7 @@ try {
     /* Idempotent additive upgrade. */
     if (!W.H2O.Studio.RibbonBridge.getOverlay) W.H2O.Studio.RibbonBridge.getOverlay = __ribbonBridge_getOverlay;
     if (!W.H2O.Studio.RibbonBridge.getMessageStateForTurn) W.H2O.Studio.RibbonBridge.getMessageStateForTurn = __ribbonBridge_getMessageStateForTurn;
+    if (!W.H2O.Studio.RibbonBridge.getInlineStateForTurn) W.H2O.Studio.RibbonBridge.getInlineStateForTurn = __ribbonBridge_getInlineStateForTurn;
     if (!W.H2O.Studio.RibbonBridge.getStructureState) W.H2O.Studio.RibbonBridge.getStructureState = __ribbonBridge_getStructureState;
     if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
     /* Phase 2d — undo/redo/getHistoryState additive upgrade. */

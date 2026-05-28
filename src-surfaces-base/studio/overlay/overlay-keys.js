@@ -94,6 +94,20 @@
      * left-stripe on the turn wrapper — they are NEVER persisted to the
      * Library tag store (H2O.Studio.store.tags) and NEVER bind to chats. */
     visualTag: 'visual-tag',
+    /* Phase 5b-1 — inline character formatting (Bold / Italic only) for a
+     * selected text RANGE inside one saved-reader message. Unlike Phase
+     * 4-1's message-level bold/italic (a whole-turn boolean), this op
+     * carries a Phase 5a selection anchor in the target and applies to a
+     * sub-range:
+     *   target:  { kind: 'inline', turnIdx, messageId, anchor: {textQuote,textPos,xpath} }
+     *   payload: { style: 'bold'|'italic', enabled: boolean }
+     * The reducer reduces these into per-message merged integer-interval
+     * sets (bold / italic) in the message's flattened-text coordinate
+     * space; the studio.js render pass resolves intervals to live ranges
+     * and wraps them in <strong>/<em data-overlay-inline> spans. Reader-
+     * only in 5b-1 (no export). clear-formatting clears inline intervals
+     * for the message alongside the message-level decorations. */
+    inlineFormat: 'inline-format',
   });
 
   var OverlayTargets = Object.freeze({

@@ -504,6 +504,149 @@
     return state;
   }
 
+  /* ── Phase 5b-1 — inline character formatting interval reducer ────────
+   *
+   * Inline Bold/Italic apply to a sub-RANGE of one message, anchored by
+   * Phase 5a's selection anchor. Each `inline-format` op carries:
+   *   target:  { kind: 'inline', turnIdx, messageId, anchor: { textPos: {start,end}, ... } }
+   *   payload: { style: 'bold'|'italic', enabled: boolean }
+   *
+   * The reducer reduces all active inline-format ops for a turn into two
+   * merged, sorted, non-overlapping integer-interval sets (bold / italic)
+   * in the message's flattened-text coordinate space. These are PURE
+   * integer operations — no DOM — so they are fully unit-testable. The
+   * studio.js render pass turns intervals into live ranges + spans.
+   *
+   * enabled:true  → union the anchor's [start,end) interval into the set.
+   * enabled:false → subtract [start,end) from the set (may split a span).
+   *
+   * clear-formatting (Phase 4-1 message reset) ALSO clears inline
+   * intervals for the turn at its point in op order — consistent with
+   * "wipe all per-message decorations". */
+
+  /* Merge a list of [start,end) intervals: sort by start, coalesce
+   * overlapping or contiguous runs. Returns a new sorted array. */
+  function mergeIntervals(list) {
+    if (!Array.isArray(list) || list.length === 0) return [];
+    var arr = [];
+    for (var i = 0; i < list.length; i += 1) {
+      var iv = list[i];
+      if (!Array.isArray(iv)) continue;
+      var s = Number(iv[0]);
+      var e = Number(iv[1]);
+      if (!isFinite(s) || !isFinite(e) || e <= s) continue;
+      arr.push([s, e]);
+    }
+    if (!arr.length) return [];
+    arr.sort(function (a, b) { return a[0] - b[0]; });
+    var out = [[arr[0][0], arr[0][1]]];
+    for (var j = 1; j < arr.length; j += 1) {
+      var last = out[out.length - 1];
+      if (arr[j][0] > last[1]) out.push([arr[j][0], arr[j][1]]);
+      else if (arr[j][1] > last[1]) last[1] = arr[j][1];
+    }
+    return out;
+  }
+
+  /* Union a single [s,e) interval into an existing merged set. */
+  function unionInterval(list, s, e) {
+    var base = Array.isArray(list) ? list.slice() : [];
+    base.push([Number(s), Number(e)]);
+    return mergeIntervals(base);
+  }
+
+  /* Subtract [s,e) from a merged set, splitting intervals as needed.
+   * Returns a new merged (already non-overlapping) array. */
+  function subtractInterval(list, s, e) {
+    var ss = Number(s);
+    var ee = Number(e);
+    var out = [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i += 1) {
+      var iv = list[i];
+      if (!Array.isArray(iv)) continue;
+      var a = Number(iv[0]);
+      var b = Number(iv[1]);
+      if (!isFinite(a) || !isFinite(b) || b <= a) continue;
+      if (!isFinite(ss) || !isFinite(ee) || ee <= ss) { out.push([a, b]); continue; }
+      if (b <= ss || a >= ee) { out.push([a, b]); continue; } /* no overlap */
+      if (a < ss) out.push([a, ss]);
+      if (b > ee) out.push([ee, b]);
+    }
+    return out;
+  }
+
+  /* Returns true when the merged set fully covers [s,e). Used by the
+   * ribbon to decide toggle-off vs toggle-on for a selected range. */
+  function intervalsCover(list, s, e) {
+    var ss = Number(s);
+    var ee = Number(e);
+    if (!Array.isArray(list) || !isFinite(ss) || !isFinite(ee) || ee <= ss) return false;
+    for (var i = 0; i < list.length; i += 1) {
+      var iv = list[i];
+      if (!Array.isArray(iv)) continue;
+      if (Number(iv[0]) <= ss && Number(iv[1]) >= ee) return true;
+    }
+    return false;
+  }
+
+  function isInlineTarget(target) {
+    if (!isObject(target)) return false;
+    if (target.kind !== 'inline') return false;
+    return Number.isFinite(Number(target.turnIdx));
+  }
+
+  /* Reduce overlay ops into the inline interval sets for one turn.
+   * Returns { bold: [[s,e],...], italic: [[s,e],...] }. Active-set aware
+   * (Phase 2d). Never throws. */
+  function computeInlineState(overlay, turnIdx) {
+    var stateBold = [];
+    var stateItalic = [];
+    var emptyResult = { bold: [], italic: [] };
+    if (!isObject(overlay)) return emptyResult;
+    var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
+    var idx = Number(turnIdx);
+    if (!isFinite(idx)) return emptyResult;
+    var active = getActiveOpIdSet(overlay);
+
+    for (var i = 0; i < ops.length; i += 1) {
+      var op = ops[i];
+      if (!isObject(op)) continue;
+      if (!isOpActive(active, op.id)) continue;
+      var type = String(op.type);
+
+      /* clear-formatting wipes inline intervals for this turn too. */
+      if (type === 'clear-formatting') {
+        if (isMessageTarget(op.target) && Number(op.target.turnIdx) === idx) {
+          stateBold = [];
+          stateItalic = [];
+        }
+        continue;
+      }
+
+      if (type !== 'inline-format') continue;
+      if (!isInlineTarget(op.target)) continue;
+      if (Number(op.target.turnIdx) !== idx) continue;
+
+      var anchor = isObject(op.target.anchor) ? op.target.anchor : {};
+      var pos = isObject(anchor.textPos) ? anchor.textPos : null;
+      if (!pos) continue;
+      var s = Number(pos.start);
+      var e = Number(pos.end);
+      if (!isFinite(s) || !isFinite(e) || e <= s) continue;
+
+      var payload = isObject(op.payload) ? op.payload : {};
+      var style = String(payload.style || '');
+      var enabled = !!payload.enabled;
+      if (style === 'bold') {
+        stateBold = enabled ? unionInterval(stateBold, s, e) : subtractInterval(stateBold, s, e);
+      } else if (style === 'italic') {
+        stateItalic = enabled ? unionInterval(stateItalic, s, e) : subtractInterval(stateItalic, s, e);
+      }
+    }
+    return { bold: stateBold, italic: stateItalic };
+  }
+
   /* Apply a computed state to a single turn element by toggling
    * `data-overlay-*` attributes. CSS rules in studio.css handle the
    * visual rendering. This NEVER touches the turn element's children
@@ -1189,6 +1332,14 @@
      * not freeze for V8 perf, but consumers MUST treat as read-only). */
     visualTagOrder: VISUAL_TAG_ORDER,
     visualTagGlyphs: VISUAL_TAG_GLYPHS,
+    /* Phase 5b-1 — inline interval reducer + pure interval helpers. The
+     * studio.js render pass consumes computeInlineState to wrap ranges;
+     * the ribbon consumes intervalsCover to decide toggle-off vs -on. */
+    computeInlineState: computeInlineState,
+    mergeIntervals: mergeIntervals,
+    unionInterval: unionInterval,
+    subtractInterval: subtractInterval,
+    intervalsCover: intervalsCover,
   };
 
   H2O.Studio.overlay = api;

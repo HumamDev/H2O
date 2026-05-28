@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 4-4)
+Status: Active (Phase 5b-1)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1754,6 +1754,134 @@ to interpret, which we explicitly chose to avoid.
   out of scope.
 - **Tag-filtered reader view** ("show only To Do") — out of scope; the
   user can already scroll/search.
+
+## Phase 5b-1 — inline Bold / Italic (reader-only)
+
+Phase 5b-1 is the first inline (sub-message text-range) formatting slice.
+It adds **inline Bold and Italic only** for a selected text range inside a
+single saved-reader message, built on the Phase 5a passive selection
+anchors. Reader-only: **no export support yet** (Markdown/DOCX/PDF do not
+render inline B/I in this slice). No underline / strikethrough / color
+inline yet. No contentEditable. No snapshot mutation.
+
+### Relationship to Phase 4-1 (message-level Bold/Italic)
+
+Phase 4-1 bold/italic are **whole-turn** booleans (`data-overlay-bold` on
+the turn wrapper, CSS bolds the entire body). Phase 5b-1 is a separate,
+**range-scoped** layer. The two coexist as independent decoration
+channels:
+
+- The ribbon's B / I buttons are now **selection-aware**: with a valid
+  inline selection on the selected turn they submit an `inline-format`
+  op; otherwise they preserve the Phase 4-1 message-level toggle exactly.
+
+### Op model
+
+| Field | Value |
+|-------|-------|
+| `type` | `inline-format` |
+| `target` | `{ kind: 'inline', turnIdx, messageId, anchor: { textQuote, textPos, xpath } }` (anchor is the verbatim Phase 5a capture anchor) |
+| `payload` | `{ style: 'bold' \| 'italic', enabled: boolean }` |
+| `inverse` | `{ style, enabled: <prev coverage> }` (forward-compat metadata) |
+
+`target.anchor.textPos = { start, end }` are integer offsets into the
+**message element's flattened text** (the same coordinate space Phase 5a
+captured against). All inline ops on a message share that space, so the
+reducer can operate purely on integers.
+
+### Interval reducer (`computeInlineState`)
+
+`H2O.Studio.overlay.computeInlineState(overlay, turnIdx)` reduces active
+`inline-format` ops into two merged, sorted, non-overlapping integer
+interval sets:
+
+```
+{ bold: [[start,end], …], italic: [[start,end], …] }
+```
+
+- `enabled:true` → `unionInterval` the anchor's `[start,end)` into the set.
+- `enabled:false` → `subtractInterval` (may split an interval).
+- Active-set aware (Phase 2d): ops not in `undoStack` are skipped, so
+  undo/redo works with zero new machinery.
+- `clear-formatting` (Phase 4-1 message reset) **also clears inline
+  intervals** for the turn at its point in op order.
+
+Pure interval helpers exposed: `mergeIntervals`, `unionInterval`,
+`subtractInterval`, `intervalsCover` (the last is used by the ribbon to
+decide toggle-off vs toggle-on for a selected range).
+
+### Render strategy (idempotent, reader-only)
+
+`studio.js` runs an inline render pass immediately after every
+`ov.applyOverlay` call (initial reader mount, after a forward op, and
+after undo/redo). The pass:
+
+1. **Unwraps** every prior `[data-overlay-inline]` element in scope
+   (hoist children + `normalize()`), giving a clean slate.
+2. **Skips on drift** — if `overlay.baseDigest !== computeBaseDigest(snap)`
+   it returns without wrapping (mirrors the applier's no-op-on-drift
+   invariant).
+3. For each `[data-turn]`, reduces `computeInlineState`, then for each
+   interval resolves a live `Range` via the Phase 5a `posToRange`
+   (offset-based; text content is invariant under wrapping so offsets
+   stay valid across successive wraps) and wraps it in
+   `<strong data-overlay-inline="bold">` / `<em data-overlay-inline="italic">`.
+4. Wrapping is **per-text-node** (the highlighter's proven `splitText`
+   technique — never `surroundContents`), skips slices already inside a
+   same-style wrapper, and supports bold⊗italic overlap via clean
+   nesting.
+5. **Counts skipped** intervals (unresolved / length-mismatch) without
+   throwing.
+
+A range-returning resolver `H2O.Studio.inlineSelection.resolveToRange(anchor, rootEl)`
+was added (Phase 5a's `resolve()` returns only metadata). It reuses the
+same three-tier strategy (textQuote → textPos → xpath).
+
+### Selection handling (ribbon)
+
+Clicking a ribbon button blurs the reader and collapses
+`window.getSelection()`. studio.js therefore snapshots the **last
+successful** `capture()` on `selectionchange` into a held value
+(`getHeldCapture()`), never overwriting it with a failure. The B / I
+handler validates the held capture's `selectedTurnIdx` matches the
+ribbon's selected turn before using it; otherwise it falls back to
+message-level.
+
+### Drift / degraded behaviour
+
+- Overlay-level `baseDigest` drift → the whole applier (and the inline
+  pass) no-ops; inline ops ride along untouched in the log.
+- A single interval that fails to resolve (offset/length mismatch) is
+  **skipped and counted**; the op is never deleted (overlay
+  "never-destroy-ops" invariant).
+- No offset rebasing in 5b-1.
+
+### Status strings
+
+- `Bold applied to selection` / `Bold removed from selection`
+- `Italic applied to selection` / `Italic removed from selection`
+- Message-level fallback strings (`Bold applied`, `Bold removed`, …)
+  unchanged.
+
+### Out of scope for 5b-1
+
+- **Export** (Markdown `**`/`*`, DOCX run-segmentation, PDF/print spans)
+  — deferred to a later 5b/5d slice. Inline B/I is reader-only here.
+- **Underline / Strikethrough / Color inline** — message-level only for
+  now.
+- **Rich-turn full parity** — canonical reader DOM is the primary target;
+  rich-turns resolve via textQuote where possible and skip otherwise.
+- **contentEditable**, **multi-message ranges**, **offset rebasing**.
+
+### Compliance notes for 5b-1
+
+- No new storage keys. No schema migration. The `inline-format` op rides
+  the existing EditOverlay op stream + Phase 2d active-set undo/redo.
+- No snapshot mutation. The render pass mutates only the live reader DOM
+  (rebuilt from snapshot on every mount; injected spans are disposable).
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch`. No provider/network work.
+- No highlight-system changes; inline spans coexist with `<mark>` spans.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

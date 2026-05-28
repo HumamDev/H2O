@@ -1,5 +1,5 @@
 /*
- * @version 2.5.33
+ * @version 2.5.35
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
@@ -7600,6 +7600,28 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
+ * Phase 5b-1 — inline Bold / Italic (selected-range character formatting)
+ *
+ * The reader render pass in studio.js injects real elements into the
+ * message body for a selected range:
+ *   <strong data-overlay-inline="bold">…</strong>
+ *   <em     data-overlay-inline="italic">…</em>
+ *
+ * These are reader-only render-time spans (rebuilt idempotently on every
+ * render from the EditOverlay `inline-format` ops). The rules below pin
+ * the visual weight/style explicitly (rather than relying on the UA
+ * default for <strong>/<em>) so the effect is consistent regardless of
+ * the surrounding reader typography, and they nest cleanly when a range
+ * is both bold and italic. Print/export styling is deferred to a later
+ * 5b/5d slice; screen rendering must not break in the meantime. */
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="bold"]{
+  font-weight:700;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="italic"]{
+  font-style:italic;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
  *
  * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
@@ -9251,6 +9273,33 @@ html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonBar{
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTabs{
   align-self:stretch;
   align-items:flex-end;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbonTopActions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  flex:0 0 auto;
+  gap:6px;
+  min-height:42px;
+  margin-left:6px;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbonTopActions .wbAppearanceBtn{
+  width:30px;
+  min-width:30px;
+  height:30px;
+  min-height:30px;
+  padding:0;
+  border-radius:8px;
+  background:transparent;
+  border-color:transparent;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbonTopActions .wbAppearanceBtn:hover,
+html[data-h2o-runtime="tauri"] .wbRibbonTopActions .wbAppearanceBtn.is-on{
+  background:var(--wb-surface-soft);
+  border-color:var(--wb-border);
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab{
