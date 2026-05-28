@@ -661,6 +661,10 @@
        existing transactional F7 Tauri command. No applyEvent, remote apply,
        WebDAV, mobile write-back, retry, or automatic merge. -->
   <script src="./sync/folder-color-apply.tauri.js"></script>
+  <!-- F10.7.2: Desktop/Tauri-only applyEvent receipt builder. Emits redacted
+       past-tense local apply receipts after successful local color commits.
+       No remote apply, WebDAV, convergence, storage write, or mutation. -->
+  <script src="./sync/folder-apply-event.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
