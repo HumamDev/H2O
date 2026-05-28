@@ -137,6 +137,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // and presents it as a redacted cross-platform `bundle` envelope per
   // F10.2.0. No merge, no apply, no proposal, no write-back.
   "sync/bundle-envelope-preview.mv3.js",
+  // F10.5: Chrome/MV3-only native-extension capture evidence preview
+  // bridge. Operator-triggered diagnostic only; observes existing
+  // native ChatGPT extension capture-store data via the read-only
+  // H2O.Studio.store.capture facade and presents counts + structural
+  // metadata as a redacted cross-platform `evidence` envelope per
+  // F10.2.0. Never copies capture text / title / tags into payload.
+  // No native-extension code change. No new chrome.runtime MSG_* type.
+  // No chrome.storage write.
+  "sync/capture-evidence-preview.mv3.js",
   // F2: peer-identity scaffold. Mints + persists per-install peer identity
   // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
   // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
@@ -329,6 +338,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
   "sync/bundle-envelope-preview.mv3.js",
+  "sync/capture-evidence-preview.mv3.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",

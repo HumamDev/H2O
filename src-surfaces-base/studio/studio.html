@@ -575,6 +575,16 @@
        write, no chrome.runtime broadcast, no folder-import call. Registers
        H2O.Studio.diagnostics.previewLatestBundleAsEnvelopes. -->
   <script src="./sync/bundle-envelope-preview.mv3.js"></script>
+  <!-- F10.5: Chrome/MV3-only operator-triggered diagnostic that observes
+       the existing native ChatGPT extension capture-store data via the
+       read-only H2O.Studio.store.capture facade and presents a redacted
+       cross-platform `evidence` envelope per F10.2.0. Counts and
+       structural metadata only — never reads raw capture text/title/tags
+       into the envelope. No native-extension code change. No merge, no
+       apply, no proposal, no write-back, no chrome.storage write, no
+       chrome.runtime broadcast, no new MSG_* type. Registers
+       H2O.Studio.diagnostics.previewNativeCaptureAsEvidence. -->
+  <script src="./sync/capture-evidence-preview.mv3.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no
