@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 5d-2)
+Status: Active (Phase 5d-A)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -2227,6 +2227,71 @@ double-application).
 - No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
   `fetch`; no serializer/CSS/ribbon/studio.js/platform changes.
 - ZIP stays stored-mode (method 0); CRC32 + XML-validity unaffected.
+
+## Phase 5d-A — inline export: PDF / Print
+
+Phase 5d-A completes the Phase 5d inline-export arc by ensuring inline
+formatting survives the PDF / Print path. **CSS-only** — no JS, no
+serializer/DOCX/ribbon changes.
+
+### Why it's CSS-only
+
+The PDF/Print bridge (`RibbonBridge.openPrintView`) prints the **live
+reader DOM** via `window.print()`. That DOM already contains the inline
+spans injected by the Phase 5b-1/5c-1/5c-2 render pass:
+
+```
+<strong data-overlay-inline="bold">…</strong>
+<em     data-overlay-inline="italic">…</em>
+<u      data-overlay-inline="underline">…</u>
+<s      data-overlay-inline="strikethrough">…</s>
+<span   data-overlay-inline="text-color" data-overlay-inline-color="red|green|blue|orange|gray">…</span>
+```
+
+So inline formatting is already *structurally* present in print. The only
+gap was that the `@media print` block had **no rules** for
+`[data-overlay-inline]`, so the print resets (notably the black-text
+reset) could flatten inline color, and decoration/weight relied on UA
+defaults. 5d-A adds the missing `@media print` rules.
+
+### Rules added (in the existing `@media print` block)
+
+| Selector (inside `[data-message-author-role]`) | Declaration |
+|------------------------------------------------|-------------|
+| `[data-overlay-inline="bold"]` | `font-weight: 700 !important` |
+| `[data-overlay-inline="italic"]` | `font-style: italic !important` |
+| `[data-overlay-inline="underline"]` | `text-decoration-line: underline !important` |
+| `[data-overlay-inline="strikethrough"]` | `text-decoration-line: line-through !important` |
+| `[data-overlay-inline="text-color"][data-overlay-inline-color="red"]` | `color: #C53030 !important` + `print-color-adjust: exact` + `-webkit-print-color-adjust: exact` |
+| …green `#2F855A`, blue `#2C5282`, orange `#C05621`, gray `#4A5568` | same pattern |
+
+`!important` wins against the `@media print` body/black-text resets;
+`print-color-adjust: exact` (+ `-webkit-` prefix) prevents the print
+pipeline from stripping the foreground color. Hex pinned to the DOCX
+`TEXT_COLOR_HEX` map → identical PDF + DOCX + screen rendering.
+
+### Interactions / non-disturbance
+
+- Mirrors the committed screen selectors exactly (element-level spans
+  inside `[data-message-author-role]`), placed right after the existing
+  Phase 4-2 **message-level** text-color print rules — which are left
+  untouched (message-level uses `[data-turn][data-overlay-text-color=…]`,
+  a distinct selector).
+- Underline + strikethrough on the same range nest as `<u><s>`; each
+  contributes its own `text-decoration-line`, so both print.
+
+### Out of scope for 5d-A
+
+- Any JS / print-bridge change (none needed — print already uses the live
+  DOM).
+- Markdown / DOCX changes (delivered in 5d-1 / 5d-2; untouched).
+- Ribbon / reader-render / platform / storage changes.
+
+### Compliance notes for 5d-A
+
+- CSS-only; no snapshot mutation, no JS, no storage, no new keys.
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch`. No serializer/DOCX-writer/ribbon/studio.js/platform changes.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

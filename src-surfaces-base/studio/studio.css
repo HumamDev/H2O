@@ -8375,6 +8375,56 @@ body[data-route="reader"] #studioDock.wbDock--open {
     color: #4A5568 !important;
   }
 
+  /* ── Phase 5d-A — inline (selected-range) formatting in print ──────
+   * The PDF/Print path prints the LIVE reader DOM, which already
+   * contains the inline spans injected by the Phase 5b-1/5c-1/5c-2
+   * render pass:
+   *   <strong/em/u/s data-overlay-inline="bold|italic|underline|strikethrough">
+   *   <span data-overlay-inline="text-color" data-overlay-inline-color="…">
+   * Mirror the screen rules with !important so inline formatting survives
+   * the @media-print resets above. Selectors match the committed screen
+   * selectors (element-level spans inside [data-message-author-role]).
+   * Color rules carry print-color-adjust:exact so the foreground color
+   * is not stripped by the print pipeline; hex pinned to the DOCX
+   * TEXT_COLOR_HEX map (identical PDF + DOCX + screen rendering). */
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="bold"] {
+    font-weight: 700 !important;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="italic"] {
+    font-style: italic !important;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="underline"] {
+    text-decoration-line: underline !important;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="strikethrough"] {
+    text-decoration-line: line-through !important;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="red"] {
+    color: #C53030 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="green"] {
+    color: #2F855A !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="blue"] {
+    color: #2C5282 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="orange"] {
+    color: #C05621 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="gray"] {
+    color: #4A5568 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
   /* ── Phase 4-3 — paragraph controls in print ───────────────────────
    * Mirror the screen rules; !important to win against the print
    * reset block above. Same screen-list single-marker limitation
