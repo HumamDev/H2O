@@ -275,6 +275,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // append-only per-peer/per-subject watermark records only. No automatic
   // advancement, convergence, apply, publication, WebDAV, or remote mutation.
   "sync/convergence-watermarks.tauri.js",
+  // F10.8.8: Desktop/Tauri-only consumed operation ledger. Records processed,
+  // ignored, blocked, duplicate, replay, expired, or superseded operations only.
+  // No convergence, apply, watermark advancement, publication, transport,
+  // WebDAV, or remote mutation.
+  "sync/consumed-operation-ledger.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -464,6 +469,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/proposal-publication.tauri.js",
   "sync/conflict-publication.tauri.js",
   "sync/convergence-watermarks.tauri.js",
+  "sync/consumed-operation-ledger.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 

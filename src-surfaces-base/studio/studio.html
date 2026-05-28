@@ -730,6 +730,11 @@
        append-only per-peer/per-subject watermark records only. No automatic
        advancement, convergence, apply, publication, WebDAV, or remote mutation. -->
   <script src="./sync/convergence-watermarks.tauri.js"></script>
+  <!-- F10.8.8: Desktop/Tauri-only consumed operation ledger. Records processed,
+       ignored, blocked, duplicate, replay, expired, or superseded operations
+       only. No convergence, apply, watermark advancement, publication,
+       transport, WebDAV, or remote mutation. -->
+  <script src="./sync/consumed-operation-ledger.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
