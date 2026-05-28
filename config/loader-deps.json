@@ -96,6 +96,7 @@
         "3W1a._Context_Engine_.js",
         "3W2a._Context_Tab_.js",
         "3X1a._Capture_Engine_.js",
+        "3X1c._Capture_Mirror_.js",
         "3X2a._Capture_Tab_.js",
         "3Y2a._Finder_.js"
       ]
@@ -1548,6 +1549,18 @@
       "group": "DOCK_BASE",
       "provides": [
         "dock.captureEngine"
+      ],
+      "optionalDependsOn": []
+    },
+    "3X1c._Capture_Mirror_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "3X1a._Capture_Engine_.js"
+      ],
+      "after": [],
+      "group": "DOCK_BASE",
+      "provides": [
+        "dock.captureMirror"
       ],
       "optionalDependsOn": []
     },
