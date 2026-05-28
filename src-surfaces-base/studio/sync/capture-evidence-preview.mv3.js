@@ -98,6 +98,8 @@
   // Studio at chrome-extension://, a different origin than chatgpt.com).
   var CAPTURE_MIRROR_KEY = 'h2o:prm:cgx:capture:mirror:v1';
   var MIRROR_SCHEMA = 'h2o.prm.cgx.capture.mirror.v1';
+  var PEER_IDENTITY_KEY = 'h2o:sync:peer-identity:v1';
+  var PEER_IDENTITY_SCHEMA = 'h2o.studio.peer-identity.v1';
 
   // Forever-no field names (mirrored from F10.2.0 §5.3 deny list).
   // The bridge's defensive payload scan refuses to emit if any of
@@ -236,6 +238,24 @@
       if (s && typeof s.get === 'function') return s;
     } catch (_) { /* swallow */ }
     return null;
+  }
+
+  function getChromeStorageKey(key) {
+    return new Promise(function (resolve) {
+      var s = chromeLocalRef();
+      if (!s) { resolve(null); return; }
+      var settled = false;
+      function finish(v) { if (!settled) { settled = true; resolve(v); } }
+      try {
+        s.get(key, function (items) {
+          try {
+            var rt = global.chrome && global.chrome.runtime;
+            if (rt && rt.lastError) { finish(null); return; }
+            finish(items && Object.prototype.hasOwnProperty.call(items, key) ? items[key] : null);
+          } catch (_) { finish(null); }
+        });
+      } catch (_) { finish(null); }
+    });
   }
 
   // Strip CAPTURE_STORE_PREFIX from a key, returning the chatId, or '' if
@@ -414,35 +434,68 @@
     };
   }
   function readMirrorDigest() {
-    return new Promise(function (resolve) {
-      var s = chromeLocalRef();
-      if (!s) { resolve(null); return; }
-      var settled = false;
-      function finish(v) { if (!settled) { settled = true; resolve(v); } }
-      try {
-        s.get(CAPTURE_MIRROR_KEY, function (items) {
-          try {
-            var rt = global.chrome && global.chrome.runtime;
-            if (rt && rt.lastError) { finish(null); return; }
-            var d = items && items[CAPTURE_MIRROR_KEY];
-            if (!d || typeof d !== 'object' || Array.isArray(d)) { finish(null); return; }
-            if (d.schema !== MIRROR_SCHEMA) { finish(null); return; }
-            finish(d);
-          } catch (_) { finish(null); }
-        });
-      } catch (_) { finish(null); }
+    return getChromeStorageKey(CAPTURE_MIRROR_KEY).then(function (d) {
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+      if (d.schema !== MIRROR_SCHEMA) return null;
+      return d;
     });
   }
 
-  // ── Source peer envelope (chrome-studio's own F2 identity) ──────────
+  function isUsablePeerIdentity(identity) {
+    return !!(
+      identity &&
+      typeof identity === 'object' &&
+      !Array.isArray(identity) &&
+      identity.schema === PEER_IDENTITY_SCHEMA &&
+      typeof identity.physicalDeviceId === 'string' &&
+      identity.physicalDeviceId &&
+      typeof identity.installId === 'string' &&
+      identity.installId &&
+      typeof identity.syncPeerId === 'string' &&
+      identity.syncPeerId
+    );
+  }
+
+  async function readStoredPeerIdentity() {
+    var identity = await getChromeStorageKey(PEER_IDENTITY_KEY);
+    return isUsablePeerIdentity(identity) ? identity : null;
+  }
+
+  async function hashPeerIdentity(identity, surfaceKind) {
+    return {
+      physicalDeviceIdHash: await sha256Hex(identity.physicalDeviceId),
+      installIdHash: await sha256Hex(identity.installId),
+      syncPeerIdHash: await sha256Hex(identity.syncPeerId),
+      surfaceKind: surfaceKind || 'browser-studio',
+    };
+  }
+
+  async function buildExtensionContextPeerEnvelope(warnings) {
+    var runtimeId = '';
+    try { runtimeId = String(global.chrome && global.chrome.runtime && global.chrome.runtime.id || ''); }
+    catch (_) { runtimeId = ''; }
+    if (!runtimeId) {
+      warnings.push('source-peer-extension-context-unavailable');
+      return null;
+    }
+    warnings.push('source-peer-identity-derived-from-extension-context');
+    return {
+      physicalDeviceIdHash: await sha256Hex('h2o.chrome-studio.peer.v1:physical-device:' + runtimeId),
+      installIdHash: await sha256Hex('h2o.chrome-studio.peer.v1:install:' + runtimeId),
+      syncPeerIdHash: await sha256Hex('studio-chrome:mv3-chrome:idb-archive:' + runtimeId),
+      surfaceKind: 'browser-studio',
+    };
+  }
+
+  // ── Source peer envelope (chrome-studio's own producer identity) ────
   // The cross-platform envelope base schema requires sourcePeerEnvelope
   // to carry real sha256 hashes (validate-base.ts source-attribution).
-  // Chrome-studio IS the envelope producer, so hash its own F2 peer
-  // identity (H2O.Studio.identity): installId / physicalDeviceId /
-  // syncPeerId. These are the producer's install/device identifiers, NOT
-  // capture data — hashing them is exactly the RedactedPeerEnvelope
-  // contract. Returns empty hashes (→ envelope-schema-too-new, honest
-  // absent-data) only if the F2 identity is unavailable.
+  // Chrome-studio IS the envelope producer, so prefer its canonical F2
+  // peer identity (H2O.Studio.identity). If that API is not ready, read
+  // the same persisted F2 key directly from chrome.storage.local
+  // read-only. As a final standalone-Studio fallback, derive stable
+  // hashed producer IDs from chrome.runtime.id. These are still
+  // redacted producer identifiers and are not capture data.
   async function buildSourcePeerEnvelope(warnings) {
     var out = {
       physicalDeviceIdHash: '',
@@ -459,19 +512,15 @@
         identity = idApi.get();
       }
     } catch (_) { identity = null; }
-    if (!identity || typeof identity !== 'object') {
-      warnings.push('source-peer-identity-unavailable');
-      return out;
+    if (!isUsablePeerIdentity(identity)) {
+      identity = await readStoredPeerIdentity();
     }
     try {
-      if (typeof identity.physicalDeviceId === 'string' && identity.physicalDeviceId) {
-        out.physicalDeviceIdHash = await sha256Hex(identity.physicalDeviceId);
-      }
-      if (typeof identity.installId === 'string' && identity.installId) {
-        out.installIdHash = await sha256Hex(identity.installId);
-      }
-      if (typeof identity.syncPeerId === 'string' && identity.syncPeerId) {
-        out.syncPeerIdHash = await sha256Hex(identity.syncPeerId);
+      if (isUsablePeerIdentity(identity)) {
+        out = await hashPeerIdentity(identity, 'browser-studio');
+      } else {
+        warnings.push('source-peer-identity-unavailable');
+        out = (await buildExtensionContextPeerEnvelope(warnings)) || out;
       }
     } catch (_) { /* leave partial; the format gate will surface it */ }
     if (!isSha256Hex(out.physicalDeviceIdHash) || !isSha256Hex(out.installIdHash) || !isSha256Hex(out.syncPeerIdHash)) {
