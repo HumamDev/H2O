@@ -586,6 +586,13 @@
        chrome.runtime broadcast, no new MSG_* type. Registers
        H2O.Studio.diagnostics.previewNativeCaptureAsEvidence. -->
   <script src="./sync/capture-evidence-preview.mv3.js"></script>
+  <!-- F10.6.1: Chrome Studio read-only folder sync canonicalizer. Operator-
+       triggered diagnostic only; canonicalizes existing folder diagnostics into
+       folder.metadata and diff/preview-only folderBinding objects. No diff
+       engine, proposal, conflictCandidate, applyEvent, storage write,
+       runtime broadcast, polling, WebDAV, or write-back. Registers
+       H2O.Studio.diagnostics.canonicalizeFolderSnapshot. -->
+  <script src="./sync/folder-sync-canonical.js"></script>
   <!-- F2: peer-identity scaffold. Mints + persists a per-install peer
        identity (installId / physicalDeviceId / syncPeerId + surfaceKind /
        appKind / storeKind). Identity-only — no envelope stamping, no

@@ -146,6 +146,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No native-extension code change. No new chrome.runtime MSG_* type.
   // No chrome.storage write.
   "sync/capture-evidence-preview.mv3.js",
+  // F10.6.1: Chrome Studio read-only folder sync canonicalizer. Operator-
+  // triggered diagnostic only; canonicalizes existing folder diagnostics into
+  // folder.metadata and diff/preview-only folderBinding objects. No diff
+  // engine, proposal, conflictCandidate, applyEvent, storage write,
+  // runtime broadcast, polling, WebDAV, or write-back.
+  "sync/folder-sync-canonical.js",
   // F2: peer-identity scaffold. Mints + persists per-install peer identity
   // (installId / physicalDeviceId / syncPeerId, surfaceKind / appKind /
   // storeKind). Single persistent key 'h2o:sync:peer-identity:v1' via
@@ -339,6 +345,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/folder-import.mv3.js",
   "sync/bundle-envelope-preview.mv3.js",
   "sync/capture-evidence-preview.mv3.js",
+  "sync/folder-sync-canonical.js",
   "sync/peer-identity.js",
   "sync/export-log.js",
   "sync/peer-transport.js",
