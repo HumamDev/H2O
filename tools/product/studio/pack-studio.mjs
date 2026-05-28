@@ -230,6 +230,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // surface over existing relay APIs. No automatic sync, convergence, merge,
   // or apply.
   "sync/manual-sync-ui.tauri.js",
+  // F10.8.6a: Desktop/Tauri-only convergence readiness diagnostic. Reads
+  // installed sync primitive availability and local relay/readiness state only.
+  // No convergence, proposal generation, apply, WebDAV, storage mutation,
+  // polling, network, automatic repair, or mobile write-back.
+  "sync/convergence-readiness.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -409,6 +414,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/webdav-relay.tauri.js",
   "sync/relay-index.tauri.js",
   "sync/manual-sync-ui.tauri.js",
+  "sync/convergence-readiness.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 

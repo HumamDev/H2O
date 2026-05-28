@@ -685,6 +685,11 @@
        surface over outbox, inbox, relay index, preview/conflict/apply receipts.
        No automatic sync, convergence, merge, or apply. -->
   <script src="./sync/manual-sync-ui.tauri.js"></script>
+  <!-- F10.8.6a: Desktop/Tauri-only convergence readiness diagnostic. Reads
+       installed sync primitive availability and local relay/readiness state
+       only. No convergence, proposal generation, apply, WebDAV, storage
+       mutation, polling, network, automatic repair, or mobile write-back. -->
+  <script src="./sync/convergence-readiness.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
