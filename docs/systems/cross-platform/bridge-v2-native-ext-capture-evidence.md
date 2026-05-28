@@ -62,21 +62,91 @@ into `chrome.storage.local`** — unlike Library state, which uses a
 
 This bridge therefore reads `localStorage` first (the authoritative
 backend the native engine writes and the `H2O.Studio.store.capture`
-facade reads) and `chrome.storage.local` second (a forward-looking
-secondary wire), merged by chatId, all strictly read-only.
+facade reads), all strictly read-only. When Studio runs in-page on
+chatgpt.com it shares that origin and observes capture data directly
+(`observationSource: "page-localStorage"`).
 
-**Cross-context caveat.** The bridge observes capture data only when the
-Studio surface shares the **same `localStorage` origin** as the capture
-engine (Studio running in-page on chatgpt.com). If Studio runs as a
-standalone packaged extension page (`chrome-extension://…`, e.g. the
-Studio Launcher variant), its `localStorage` is a *different* origin and
-will not contain the native capture keys; with no `chrome.storage.local`
-mirror in place, the result is an empty observation
-(`no-capture-stores-found`). Closing that gap would require the native
-content-script to mirror per-chat capture stores into
-`chrome.storage.local` — a **native-extension change that is explicitly
-gated** and out of scope for F10.5 (tracked as deferred follow-up
-F10.5.3 below).
+When Studio runs as a standalone packaged extension page
+(`chrome-extension://…`, a *different* origin than chatgpt.com), its
+`localStorage` does not contain the native capture keys. **F10.5.3
+closes that gap** with a count-safe mirror (see below); the bridge then
+reads the mirror digest from `chrome.storage.local`
+(`observationSource: "native-mirror"`). Only if neither a page-localStorage
+store nor a mirror digest is present does it warn `no-capture-stores-found`.
+
+## F10.5.3 — Native capture mirror (implemented)
+
+The standalone-Studio origin gap is bridged by a count-safe mirror that
+reuses the same native↔Studio + cross-extension pipeline as `0F1h Library
+Sync`.
+
+**Pipeline (page → content bridge → prod storage → launcher → Studio):**
+
+1. **`src-runtime-base/3X1c` Capture Mirror** (page world, loads after
+   3X1a; `dependsOn` it in `config/loader-deps.json`). Subscribes to
+   `W.H2O.Capture.onChange` (+ the `h2o:capture:changed` event); on boot
+   and on debounced change (≈750 ms trailing, ≈5 s max-wait, skips a
+   byte-identical digest) it enumerates `localStorage`
+   `h2o:prm:cgx:capture:store:v1:*`, reads **only** `status / pinned /
+   kind / createdAt / updatedAt`, SHA-256-hashes each chatId, builds the
+   count-safe digest, runs a forever-no key guard, and emits it via the
+   `h2o-ext-cs:v1:write` bridge (`window.postMessage` + the
+   `h2o-ext-cs:write` document CustomEvent).
+2. **`loader.js` content script** (`chrome-live-loader.mjs`) WATCHes the
+   mirror key, persists it to **prod `chrome.storage.local`** (read by the
+   prod extension's own Studio page) and **forwards** it cross-extension
+   to the Studio Launcher (`forwardNativeCaptureMirrorToStudioLauncher` →
+   `chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, …)`).
+3. **`bg.js`** (`chrome-live-background.mjs`) of the Studio Launcher
+   receives `MSG_NATIVE_CAPTURE_MIRROR` via `onMessageExternal`
+   (`handleExternalNativeCaptureMirrorMessage`) and writes the digest
+   **verbatim** to the Launcher's own `chrome.storage.local`.
+4. **F10.5 bridge** reads `chrome.storage.local["h2o:prm:cgx:capture:mirror:v1"]`,
+   validates `schema === "h2o.prm.cgx.capture.mirror.v1"`, sanitizes every
+   count/range, and builds the evidence payload from it.
+
+**Mirror key:** `h2o:prm:cgx:capture:mirror:v1` (single key, overwritten
+each change — no growth, atomic, trivial cleanup).
+
+**Mirror digest shape (counts + hashes only):**
+
+| Field | Type |
+|---|---|
+| `schema` | `"h2o.prm.cgx.capture.mirror.v1"` |
+| `mirrorVersion` | integer (1) |
+| `captureStoreVersion` | integer |
+| `updatedAtIso` | ISO seconds UTC (mirror write time) |
+| `chatsObservedCount` | integer |
+| `totalItemCount` | integer |
+| `itemsByStatus` | `{ new, reviewed, archived, converted, dismissed, other }` |
+| `pinnedCount` | integer |
+| `itemsByKindBucket` | `{ captureSnippetKind, otherKind }` |
+| `timestampRangeIso` | `{ earliestCreatedAtIso, latestUpdatedAtIso }` |
+| `chatsObservedHash` | sha256 hex over the sorted sha256(chatId) list |
+
+**Privacy:** the mirror carries **counts and hashes only**. It never
+mirrors `item.text / title / tags / routeSuggestion / source.role /
+source.msgId / source.url / source.selectionText / convertedTo`, raw
+`item.id`, or raw `chatId` (chatId is SHA-256 hashed; itemId is never
+included, even hashed). 3X1c runs a forever-no key guard before every
+emit; the F10.5 bridge runs its forever-no payload scan before emission.
+
+**Rollback:** all additive and independently revertible — unregister
+3X1c from `config/dev-order.tsv` + `loader-deps.json`; revert the
+`chrome-live-loader.mjs` WATCHED/forward additions; revert the
+`chrome-live-background.mjs` receiver; revert the bridge's mirror path
+(it then falls back to localStorage-only). Optional one-time cleanup:
+`chrome.storage.local.remove("h2o:prm:cgx:capture:mirror:v1")` in both
+extensions.
+
+**Runtime proof checklist:**
+
+1. On chatgpt.com, capture one item.
+2. In an extension context, `chrome.storage.local.get("h2o:prm:cgx:capture:mirror:v1")`
+   → a count-safe digest; assert no `text`/`title`/`tags`/raw `chatId`.
+3. In standalone Studio: `await H2O.Studio.diagnostics.previewNativeCaptureAsEvidence()`
+   → `kind:"evidence"`, `chats>=1`, `items>=1`,
+   `observationSource:"native-mirror"`, no raw/free-text payload keys.
 
 ## Constructed envelope shape
 
@@ -129,6 +199,7 @@ free-text fields. No raw chat IDs. No raw item IDs.
 | `itemsByKindBucket` | `{ captureSnippetKind, otherKind: number }` | Coarse bucket. The native kind `"text"` (default) is counted as `captureSnippetKind`; everything else as `otherKind`. The key name `captureSnippetKind` is deliberate — the literal `text` is never used as a payload key name per the F10.2.0 §5.3 forever-no deny list. |
 | `timestampRangeIso` | `{ earliestCreatedAtIso, latestUpdatedAtIso: string \| null }` | Min `createdAt` and max `updatedAt` across observed items, converted to ISO seconds UTC. `null` for empty observation. |
 | `chatsObservedHash` | string (sha256 hex) | sha256 of the canonical-sorted list of sha256(chatId). Lets a consumer detect "same set of chats observed" without seeing raw chat IDs. |
+| `observationSource` | string | `"page-localStorage"` (read directly from page-origin localStorage) or `"native-mirror"` (read from the F10.5.3 count-safe mirror digest in `chrome.storage.local`). |
 | `warningsObserved` | string[] | Code strings from a fixed allowlist (e.g. `no-capture-stores-found`, `capture-store-read-errors`). |
 
 ## Forbidden payload data
@@ -263,14 +334,12 @@ Triggers warranting rollback:
 - **F10.5.2 — Per-chat evidence aggregation.** Optional later enrichment
   that surfaces per-chat counts under hashed chat-id buckets while still
   not emitting any raw chat ID or text. Not yet authorized.
-- **F10.5.3 — Native capture → `chrome.storage.local` mirror (gated).**
-  Required only if Studio must observe capture data while running as a
-  standalone extension page (a different `localStorage` origin than the
-  chatgpt.com capture engine). The native content-script would mirror
-  per-chat capture stores into `chrome.storage.local` so the existing
-  read-only secondary path in this bridge can see them. This is a
-  **native-extension change** and is **not authorized**; it must be
-  planned and reviewed separately under the F10 safety model.
+- **F10.5.3 — Native capture → `chrome.storage.local` mirror. Implemented.**
+  See [F10.5.3 — Native capture mirror](#f1053--native-capture-mirror-implemented)
+  above. A count-safe digest is mirrored from the chatgpt.com page world
+  into `chrome.storage.local` (and cross-extension-forwarded to the Studio
+  Launcher), so the standalone Studio's F10.5 bridge returns real capture
+  counts (`observationSource: "native-mirror"`).
 
 All deferrals respect the same hard boundaries: evidence only, no
 write-back, no native-extension code change, no new `MSG_*` types.
@@ -289,6 +358,6 @@ write-back, no native-extension code change, no new `MSG_*` types.
 | **F10.5 — bridge v2: native-ext capture → Chrome evidence preview** | **Current** |
 | F10.5.1 — Settings card for the capture-evidence diagnostic | Not authorized |
 | F10.5.2 — per-chat evidence aggregation | Not authorized |
-| F10.5.3 — native capture → `chrome.storage.local` mirror | Not authorized (gated native change) |
+| **F10.5.3 — native capture → `chrome.storage.local` mirror** | **Implemented** |
 | F10.6 — proposal flow | Not authorized |
 | F10.7 — remote apply / write-back | Forbidden until separate safety model |

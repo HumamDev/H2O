@@ -92,6 +92,13 @@
   var CAPTURE_KIND_TEXT_BUCKET = 'text';
   var DEFAULT_MAX_CHATS = 5000;
 
+  // F10.5.3 — native capture mirror (count-safe digest the 3X1c page-world
+  // module writes via the h2o-ext-cs bridge into chrome.storage.local).
+  // Consumed when no page-localStorage stores are reachable (standalone
+  // Studio at chrome-extension://, a different origin than chatgpt.com).
+  var CAPTURE_MIRROR_KEY = 'h2o:prm:cgx:capture:mirror:v1';
+  var MIRROR_SCHEMA = 'h2o.prm.cgx.capture.mirror.v1';
+
   // Forever-no field names (mirrored from F10.2.0 §5.3 deny list).
   // The bridge's defensive payload scan refuses to emit if any of
   // these surface as object keys in the constructed payload tree.
@@ -372,6 +379,61 @@
     }
   }
 
+  // ── F10.5.3 mirror-digest consumption (standalone Studio) ───────────
+  // When no page-localStorage capture stores are reachable, the native
+  // 3X1c Capture Mirror has forwarded a count-safe digest into
+  // chrome.storage.local. Read it, validate the schema, and sanitize
+  // every count/range before use (treat as untrusted input, defense in
+  // depth). NEVER trusts free-text — the digest carries counts/hashes only.
+  function clampCount(n) {
+    return (typeof n === 'number' && isFinite(n) && n > 0) ? Math.floor(n) : 0;
+  }
+  function sanitizeStatusCounts(o) {
+    var s = (o && typeof o === 'object') ? o : {};
+    return {
+      new: clampCount(s.new),
+      reviewed: clampCount(s.reviewed),
+      archived: clampCount(s.archived),
+      converted: clampCount(s.converted),
+      dismissed: clampCount(s.dismissed),
+      other: clampCount(s.other),
+    };
+  }
+  function sanitizeKindBucket(o) {
+    var k = (o && typeof o === 'object') ? o : {};
+    return {
+      captureSnippetKind: clampCount(k.captureSnippetKind),
+      otherKind: clampCount(k.otherKind),
+    };
+  }
+  function sanitizeTimestampRangeIso(o) {
+    var t = (o && typeof o === 'object') ? o : {};
+    return {
+      earliestCreatedAtIso: isValidIsoSeconds(t.earliestCreatedAtIso) ? t.earliestCreatedAtIso : null,
+      latestUpdatedAtIso: isValidIsoSeconds(t.latestUpdatedAtIso) ? t.latestUpdatedAtIso : null,
+    };
+  }
+  function readMirrorDigest() {
+    return new Promise(function (resolve) {
+      var s = chromeLocalRef();
+      if (!s) { resolve(null); return; }
+      var settled = false;
+      function finish(v) { if (!settled) { settled = true; resolve(v); } }
+      try {
+        s.get(CAPTURE_MIRROR_KEY, function (items) {
+          try {
+            var rt = global.chrome && global.chrome.runtime;
+            if (rt && rt.lastError) { finish(null); return; }
+            var d = items && items[CAPTURE_MIRROR_KEY];
+            if (!d || typeof d !== 'object' || Array.isArray(d)) { finish(null); return; }
+            if (d.schema !== MIRROR_SCHEMA) { finish(null); return; }
+            finish(d);
+          } catch (_) { finish(null); }
+        });
+      } catch (_) { finish(null); }
+    });
+  }
+
   function makeEarlyResult(observedAtIso, blockers, warnings) {
     return {
       schema: RESULT_SCHEMA,
@@ -447,10 +509,20 @@
     if (stats.readErrors > 0) {
       warnings.push('capture-store-read-errors');
     }
+    // ── F10.5.3: when no page-localStorage stores are reachable (the
+    // standalone-Studio origin gap), fall back to the native capture
+    // mirror digest forwarded into chrome.storage.local. ──────────────
+    var observationSource = 'page-localStorage';
+    var mirrorDigest = null;
     if (chatStores.size === 0) {
-      warnings.push('no-capture-stores-found');
-      // Still emit a valid envelope describing the zero-observation
-      // state so downstream consumers can confirm the bridge ran.
+      mirrorDigest = await readMirrorDigest();
+      if (mirrorDigest) {
+        observationSource = 'native-mirror';
+      } else {
+        warnings.push('no-capture-stores-found');
+        // Still emit a valid envelope describing the zero-observation
+        // state so downstream consumers can confirm the bridge ran.
+      }
     }
 
     // ── 3. Per-chat aggregation (counts only) ─────────────────────────
@@ -482,12 +554,34 @@
       ? await sha256Hex(JSON.stringify(perChatHashes))
       : await sha256Hex('h2o.f10.5.no-chats-observed');
 
+    // ── 4b. Apply mirror digest (standalone-Studio path) ──────────────
+    // Default to the page-localStorage aggregates; when a mirror digest
+    // was read (no direct stores), override the counts/range/hash from
+    // the sanitized digest. The digest is already counts/hashes only.
+    var observedCount = agg.chatsObserved.length;
+    var timestampRangeIso = {
+      earliestCreatedAtIso: epochMsToIsoSeconds(agg.earliestCreatedAt),
+      latestUpdatedAtIso: epochMsToIsoSeconds(agg.latestUpdatedAt),
+    };
+    if (mirrorDigest) {
+      agg.captureStoreVersion = clampCount(mirrorDigest.captureStoreVersion);
+      agg.totalItemCount = clampCount(mirrorDigest.totalItemCount);
+      agg.pinnedCount = clampCount(mirrorDigest.pinnedCount);
+      agg.itemsByStatus = sanitizeStatusCounts(mirrorDigest.itemsByStatus);
+      agg.itemsByKindBucket = sanitizeKindBucket(mirrorDigest.itemsByKindBucket);
+      observedCount = clampCount(mirrorDigest.chatsObservedCount);
+      timestampRangeIso = sanitizeTimestampRangeIso(mirrorDigest.timestampRangeIso);
+      if (isSha256Hex(mirrorDigest.chatsObservedHash)) {
+        chatsObservedHash = mirrorDigest.chatsObservedHash;
+      }
+    }
+
     // ── 5. Build payload (counts + structural metadata ONLY) ──────────
     var payload = {
       observationKind: 'native-extension.capture-state',
       observedAtIso: observedAtIso,
       captureStoreVersion: agg.captureStoreVersion != null ? agg.captureStoreVersion : 0,
-      chatsObservedCount: agg.chatsObserved.length,
+      chatsObservedCount: observedCount,
       totalItemCount: agg.totalItemCount,
       itemsByStatus: {
         new: agg.itemsByStatus.new,
@@ -502,11 +596,9 @@
         captureSnippetKind: agg.itemsByKindBucket.captureSnippetKind,
         otherKind: agg.itemsByKindBucket.otherKind,
       },
-      timestampRangeIso: {
-        earliestCreatedAtIso: epochMsToIsoSeconds(agg.earliestCreatedAt),
-        latestUpdatedAtIso: epochMsToIsoSeconds(agg.latestUpdatedAt),
-      },
+      timestampRangeIso: timestampRangeIso,
       chatsObservedHash: chatsObservedHash,
+      observationSource: observationSource,
       warningsObserved: warnings.slice(),
     };
 
@@ -522,7 +614,7 @@
         redacted: true,
         envelope: null,
         observation: {
-          chatsObservedCount: agg.chatsObserved.length,
+          chatsObservedCount: observedCount,
           totalItemCount: agg.totalItemCount,
         },
         findings: { blockers: blockers.slice(), warnings: warnings.slice() },
@@ -623,7 +715,7 @@
       redacted: true,
       envelope: envelope,
       observation: {
-        chatsObservedCount: agg.chatsObserved.length,
+        chatsObservedCount: observedCount,
         totalItemCount: agg.totalItemCount,
       },
       findings: { blockers: dedupedBlockers, warnings: warnings.slice() },
