@@ -2319,9 +2319,40 @@
       onClick: function (ctx, setStatus) {
         const turnIdx = Number(ctx && ctx.selectedTurnIdx);
         if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
-        /* When kind === null the reducer clears the color field; the
-         * status reads "Text color cleared" instead of a specific name. */
         const isClear = (kind === null);
+
+        /* Phase 5c-2 — inline-aware: a valid held inline selection on the
+         * selected turn paints (or clears) the color over the RANGE via an
+         * `inline-format` op; otherwise the existing Phase 4-2 message-level
+         * text-color behaviour is preserved unchanged. Clicking a color
+         * always paints (last-wins); None clears the color over the range. */
+        const held = getHeldInlineCapture();
+        const pos = held && held.anchor && held.anchor.textPos;
+        const inlineValid = !!(held && held.ok && held.anchor && pos
+          && Number(held.selectedTurnIdx) === turnIdx
+          && Number.isFinite(Number(pos.start)) && Number.isFinite(Number(pos.end))
+          && Number(pos.end) > Number(pos.start));
+
+        if (inlineValid) {
+          const opSpec = {
+            type: 'inline-format',
+            target: {
+              kind: 'inline',
+              turnIdx: turnIdx,
+              messageId: held.selectedMessageId || ctx.selectedMessageId || null,
+              anchor: held.anchor,
+            },
+            payload: { style: 'text-color', kind: kind },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: isClear ? 'Clearing text color (selection)…' : ('Applying text color (' + label + ', selection)…'),
+            success: isClear ? 'Text color cleared (selection)' : ('Text color: ' + label + ' (selection)'),
+            fail: 'Text color failed',
+          });
+          return;
+        }
+
+        /* No inline selection → message-level behaviour unchanged. */
         const opSpec = {
           type: 'text-color',
           target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },

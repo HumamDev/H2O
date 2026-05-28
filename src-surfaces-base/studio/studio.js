@@ -14873,7 +14873,7 @@ function __inlineRender_collectTextNodes(range){
  * selection). Skips slices already inside a same-style wrapper. Returns
  * the number of wrapper elements inserted. Mirrors the highlighter's
  * proven splitText technique. */
-function __inlineRender_wrapRange(range, style){
+function __inlineRender_wrapRange(range, style, colorKind){
   if (!range || range.collapsed) return 0;
   const startNode = range.startContainer;
   const startOff = range.startOffset;
@@ -14881,11 +14881,18 @@ function __inlineRender_wrapRange(range, style){
   const endOff = range.endOffset;
   if (!startNode || !endNode || startNode.nodeType !== 3 || endNode.nodeType !== 3) return 0;
   /* Phase 5b-1: bold→<strong>, italic→<em>. Phase 5c-1: underline→<u>,
-   * strikethrough→<s>. The attribute value mirrors the style name. */
-  const TAG_BY_STYLE = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's' };
+   * strikethrough→<s>. Phase 5c-2: text-color→<span> carrying the color
+   * VALUE in data-overlay-inline-color. The attribute value mirrors the
+   * style name (text-color spans always use val="text-color"). */
+  const TAG_BY_STYLE = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's', 'text-color': 'span' };
+  const isColor = (style === 'text-color');
   const val = (TAG_BY_STYLE[style] ? style : 'bold');
   const tag = TAG_BY_STYLE[val];
-  const sel = '[data-overlay-inline="' + val + '"]';
+  /* Value-aware guard for color: skip only when already wrapped in the
+   * SAME color (so red→blue re-wraps, same-color re-render does not). */
+  const sel = isColor
+    ? '[data-overlay-inline="text-color"][data-overlay-inline-color="' + String(colorKind) + '"]'
+    : '[data-overlay-inline="' + val + '"]';
   let wrapped = 0;
   const nodes = __inlineRender_collectTextNodes(range);
   for (let i = 0; i < nodes.length; i += 1) {
@@ -14900,7 +14907,7 @@ function __inlineRender_wrapRange(range, style){
     if (!slice) continue;
     try {
       if (tn.parentElement && typeof tn.parentElement.closest === 'function' && tn.parentElement.closest(sel)) {
-        continue; /* already wrapped in same style */
+        continue; /* already wrapped in same style (same color for text-color) */
       }
     } catch (_) { /* ignore */ }
     try {
@@ -14909,6 +14916,7 @@ function __inlineRender_wrapRange(range, style){
       if (s > 0) mid = tn.splitText(s);
       const el = document.createElement(tag);
       el.setAttribute('data-overlay-inline', val);
+      if (isColor) el.setAttribute('data-overlay-inline-color', String(colorKind));
       if (mid.parentNode) {
         mid.parentNode.insertBefore(el, mid);
         el.appendChild(mid);
@@ -14950,10 +14958,13 @@ function __inlineRender_apply(scopeEl, snap, overlay){
       const italicIv = Array.isArray(inline.italic) ? inline.italic : [];
       const underlineIv = Array.isArray(inline.underline) ? inline.underline : [];
       const strikeIv = Array.isArray(inline.strikethrough) ? inline.strikethrough : [];
-      if (!boldIv.length && !italicIv.length && !underlineIv.length && !strikeIv.length) continue;
+      /* Phase 5c-2 — color segments: array of { start, end, kind }. */
+      const colorSegs = Array.isArray(inline.textColor) ? inline.textColor : [];
+      if (!boldIv.length && !italicIv.length && !underlineIv.length && !strikeIv.length && !colorSegs.length) continue;
       /* Same message-root basis as Phase 5a capture. */
       const msgRoot = (turn.querySelector && turn.querySelector('[data-message-author-role], [data-message-id]')) || turn;
-      /* Fixed apply order → deterministic nesting + idempotent re-render. */
+      /* Fixed apply order → deterministic nesting + idempotent re-render.
+       * Color is applied LAST so its <span> nests innermost. */
       const styles = [['bold', boldIv], ['italic', italicIv], ['underline', underlineIv], ['strikethrough', strikeIv]];
       for (let k = 0; k < styles.length; k += 1) {
         const style = styles[k][0];
@@ -14972,6 +14983,20 @@ function __inlineRender_apply(scopeEl, snap, overlay){
           const w = __inlineRender_wrapRange(range, style);
           if (w > 0) result.wrapped += w; else result.skipped += 1;
         }
+      }
+      /* Phase 5c-2 — paint color segments (value-carrying). */
+      for (let cs = 0; cs < colorSegs.length; cs += 1) {
+        const seg = colorSegs[cs];
+        if (!seg || typeof seg !== 'object') { result.skipped += 1; continue; }
+        const cstart = Number(seg.start);
+        const cend = Number(seg.end);
+        const ckind = seg.kind;
+        if (!isFinite(cstart) || !isFinite(cend) || cend <= cstart || !ckind) { result.skipped += 1; continue; }
+        const crange = __inlineSelection_posToRange({ start: cstart, end: cend }, msgRoot);
+        if (!crange) { result.skipped += 1; continue; }
+        if (String(crange.toString() || '').length !== (cend - cstart)) { result.skipped += 1; continue; }
+        const cw = __inlineRender_wrapRange(crange, 'text-color', ckind);
+        if (cw > 0) result.wrapped += cw; else result.skipped += 1;
       }
     }
     result.applied = true;
@@ -15005,7 +15030,7 @@ try {
  * wrapper over computeInlineState; used by the ribbon to decide
  * toggle-off vs toggle-on for a selected range. Never throws. */
 function __ribbonBridge_getInlineStateForTurn(turnIdx){
-  const empty = { bold: [], italic: [] };
+  const empty = { bold: [], italic: [], underline: [], strikethrough: [], textColor: [] };
   try {
     const snap = state && state.currentReaderSnapshot;
     if (!snap || !snap.snapshotId) return Promise.resolve(empty);

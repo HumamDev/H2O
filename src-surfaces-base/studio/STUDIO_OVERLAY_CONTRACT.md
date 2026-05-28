@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 5c-1)
+Status: Active (Phase 5c-2)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1957,6 +1957,107 @@ Target shape unchanged: `{ kind:'inline', turnIdx, messageId, anchor }`.
 - No snapshot mutation; render pass touches only the live reader DOM.
 - No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
   `fetch`; no platform/Tauri/MV3/tooling changes.
+
+## Phase 5c-2 — inline Text Color (reader-only)
+
+Phase 5c-2 adds a fifth inline channel — **text color** — for a selected
+text range. Unlike the four boolean inline styles (bold/italic/underline/
+strikethrough), color is a **value/paint** model: each segment carries a
+`kind`, and overlapping paints resolve **last-wins**. **Reader-only — no
+export.** No new op type — reuses `inline-format`.
+
+### Op model
+
+`inline-format` payload gains a value-carrying style:
+```
+{ style: 'text-color', kind: 'red'|'green'|'blue'|'orange'|'gray'|null }
+```
+- `kind: <name>` → paint that color over the anchor range (last-wins).
+- `kind: null` → clear color over the range (the "None" swatch).
+- No `enabled` field — `kind:null` is the clear signal.
+
+Target shape unchanged: `{ kind:'inline', turnIdx, messageId, anchor }`.
+
+### Reducer — cut-then-paint
+
+`computeInlineState` return shape gains a fifth key:
+```
+{ bold:[[s,e]], italic:[[s,e]], underline:[[s,e]], strikethrough:[[s,e]],
+  textColor:[ { start, end, kind }, … ] }   // sorted, non-overlapping
+```
+
+New pure helpers (exposed on `H2O.Studio.overlay`):
+- `cutColorSegments(segments, s, e)` — remove `[s,e)` from every segment,
+  splitting as needed (color analogue of `subtractInterval`, preserves `kind`).
+- `paintColor(segments, s, e, kind)` — `cut` then append `{start:s,end:e,kind}`,
+  sort by `start`, coalesce adjacent same-kind. Yields last-wins.
+- `colorAt(segments, s, e)` — the single kind if `[s,e)` is uniformly one
+  color, else null (color analogue of `intervalsCover`; optional active-swatch).
+
+Reducer branch: `text-color` with a known kind paints; with `null`/unknown
+cuts. **`clear-inline` (5c-1)** now also cuts color segments over the range
+(in addition to subtracting the four boolean sets). **Message-level
+`clear-formatting`** resets `textColor` to `[]` alongside the boolean sets.
+
+Active-set undo/redo applies for free — undone color ops aren't seen by the
+reducer, so the segment set recomputes correctly.
+
+### Rendering (value-aware spans)
+
+- Color segments render as
+  `<span data-overlay-inline="text-color" data-overlay-inline-color="red">`.
+- `wrapRange(range, 'text-color', kind)` uses `<span>` + sets both attributes.
+- **Value-aware skip-guard:** a slice is skipped only when already inside a
+  `[data-overlay-inline-color="<kind>"]` of the SAME color — so a same-color
+  re-render does not duplicate, while red→blue re-wraps correctly after the
+  unwrap-then-rewrap pass.
+- Color is applied **after** the four boolean channels (innermost `<span>`),
+  giving deterministic nesting + idempotent re-render.
+- The all-empty early-out guard now also checks `textColor.length`, so a
+  color-only message still renders.
+- Stale-anchor / baseDigest-drift skip behaviour unchanged.
+
+### CSS
+
+Five screen rules pin the inline color hex to the Phase 4-2 palette
+(`red #C53030, green #2F855A, blue #2C5282, orange #C05621, gray #4A5568`).
+The inline span (element-level) overrides the message-level
+`data-overlay-text-color` body color over its range by specificity.
+
+### Ribbon
+
+The Text Color swatches become inline-aware (reuse the held-capture
+routing): valid held inline selection → `inline-format { style:'text-color',
+kind }`; None → `kind:null` (clear over range); no inline selection →
+existing Phase 4-2 message-level `text-color` op unchanged. Clicking a color
+always paints (last-wins, no toggle-off-on-same-color — matches message-level).
+
+### Status strings
+
+`Text color: red (selection)` … `Text color: gray (selection)`,
+`Text color cleared (selection)`. Message-level fallback strings unchanged.
+
+### Interactions
+
+- **Message-level text color** (turn attribute, whole body) + inline color
+  span compose; inline overrides over its range by specificity.
+- **Highlight spans** (`<mark>`, background) are independent of color
+  (foreground); the inline unwrap pass only removes `[data-overlay-inline]`,
+  never `<mark>`.
+
+### Out of scope for 5c-2
+
+- **Export** (Markdown lossy; DOCX `<w:color>` via 5d run-segmentation;
+  PDF/print color CSS) — deferred to 5d.
+- contentEditable, snapshot mutation, new storage keys, `overlay-keys.js`
+  change, platform/Tauri/MV3/tooling changes.
+
+### Compliance notes for 5c-2
+
+- No new op type; no `overlay-keys.js` change. Reuses `inline-format`.
+- No snapshot mutation; render pass touches only the live reader DOM.
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` / `fetch`;
+  no serializer/DOCX-writer changes; no platform changes.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

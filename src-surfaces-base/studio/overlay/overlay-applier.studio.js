@@ -523,14 +523,21 @@
    * enabled:true  → union the anchor's [start,end) interval into the set.
    * enabled:false → subtract [start,end) from the set (may split a span).
    *
+   * Phase 5c-2 adds a fifth channel — text color — as a VALUE/paint model
+   * (not a boolean interval set): `{ style:'text-color', kind }` where
+   * kind ∈ {red,green,blue,orange,gray} paints (cut-then-paint, last-wins)
+   * and kind===null cuts color over the range. State is an array of
+   * `{ start, end, kind }` segments, sorted + non-overlapping.
+   *
    * Phase 5c-1 `clear-inline` style → subtract the anchor's [start,end)
-   * interval from ALL four boolean sets (range-scoped; leaves intervals
-   * outside the range untouched). It does NOT touch message-level
-   * decorations — those are a separate channel.
+   * interval from ALL four boolean sets AND cut color segments over the
+   * range (5c-2). Range-scoped; leaves intervals/segments outside the
+   * range untouched. It does NOT touch message-level decorations — those
+   * are a separate channel.
    *
    * clear-formatting (Phase 4-1 message reset, target kind:'message') ALSO
-   * clears ALL inline interval sets for the turn at its point in op order
-   * — consistent with "wipe all per-message decorations". */
+   * clears ALL inline interval sets + color segments for the turn at its
+   * point in op order — consistent with "wipe all per-message decorations". */
 
   /* Merge a list of [start,end) intervals: sort by start, coalesce
    * overlapping or contiguous runs. Returns a new sorted array. */
@@ -598,6 +605,80 @@
     return false;
   }
 
+  /* ── Phase 5c-2 — inline text-color segment helpers ───────────────────
+   *
+   * Unlike the boolean styles (which are binary union/subtract interval
+   * sets), text color is a VALUE: each segment carries a `kind`, and
+   * overlapping paints resolve last-wins. Segments are kept sorted by
+   * `start` and non-overlapping. These are PURE — no DOM — so they are
+   * fully unit-testable. */
+
+  /* Cut [s,e) out of every color segment, splitting as needed. Segments
+   * fully outside [s,e) pass through unchanged. Returns a new array. */
+  function cutColorSegments(segments, s, e) {
+    var ss = Number(s);
+    var ee = Number(e);
+    var out = [];
+    if (!Array.isArray(segments)) return out;
+    for (var i = 0; i < segments.length; i += 1) {
+      var seg = segments[i];
+      if (!isObject(seg)) continue;
+      var a = Number(seg.start);
+      var b = Number(seg.end);
+      var kind = seg.kind;
+      if (!isFinite(a) || !isFinite(b) || b <= a) continue;
+      if (!isFinite(ss) || !isFinite(ee) || ee <= ss) { out.push({ start: a, end: b, kind: kind }); continue; }
+      if (b <= ss || a >= ee) { out.push({ start: a, end: b, kind: kind }); continue; } /* no overlap */
+      if (a < ss) out.push({ start: a, end: ss, kind: kind });
+      if (b > ee) out.push({ start: ee, end: b, kind: kind });
+    }
+    return out;
+  }
+
+  /* Paint [s,e) with `kind` (last-wins): cut the region first, then add
+   * the new segment, then sort + coalesce adjacent same-kind segments.
+   * Returns a new sorted, non-overlapping array. */
+  function paintColor(segments, s, e, kind) {
+    var ss = Number(s);
+    var ee = Number(e);
+    if (!isFinite(ss) || !isFinite(ee) || ee <= ss) return Array.isArray(segments) ? segments.slice() : [];
+    var base = cutColorSegments(segments, ss, ee);
+    base.push({ start: ss, end: ee, kind: kind });
+    base.sort(function (x, y) { return x.start - y.start; });
+    /* Coalesce adjacent/overlapping same-kind segments (defensive; cut
+     * guarantees non-overlap, so this only merges touching same-kind). */
+    var out = [];
+    for (var i = 0; i < base.length; i += 1) {
+      var seg = base[i];
+      var last = out.length ? out[out.length - 1] : null;
+      if (last && last.kind === seg.kind && seg.start <= last.end) {
+        if (seg.end > last.end) last.end = seg.end;
+      } else {
+        out.push({ start: seg.start, end: seg.end, kind: seg.kind });
+      }
+    }
+    return out;
+  }
+
+  /* Returns the single kind covering [s,e) when the range is uniformly one
+   * color, else null. Color analogue of intervalsCover; used by the ribbon
+   * for optional active-swatch display. */
+  function colorAt(segments, s, e) {
+    var ss = Number(s);
+    var ee = Number(e);
+    if (!Array.isArray(segments) || !isFinite(ss) || !isFinite(ee) || ee <= ss) return null;
+    for (var i = 0; i < segments.length; i += 1) {
+      var seg = segments[i];
+      if (!isObject(seg)) continue;
+      if (Number(seg.start) <= ss && Number(seg.end) >= ee) return seg.kind == null ? null : String(seg.kind);
+    }
+    return null;
+  }
+
+  function isInlineColorKind(k) {
+    return k === 'red' || k === 'green' || k === 'blue' || k === 'orange' || k === 'gray';
+  }
+
   function isInlineTarget(target) {
     if (!isObject(target)) return false;
     if (target.kind !== 'inline') return false;
@@ -612,7 +693,8 @@
     var stateItalic = [];
     var stateUnderline = [];
     var stateStrikethrough = [];
-    var emptyResult = { bold: [], italic: [], underline: [], strikethrough: [] };
+    var stateColor = [];
+    var emptyResult = { bold: [], italic: [], underline: [], strikethrough: [], textColor: [] };
     if (!isObject(overlay)) return emptyResult;
     var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
     var idx = Number(turnIdx);
@@ -632,6 +714,7 @@
           stateItalic = [];
           stateUnderline = [];
           stateStrikethrough = [];
+          stateColor = [];
         }
         continue;
       }
@@ -658,16 +741,28 @@
         stateUnderline = enabled ? unionInterval(stateUnderline, s, e) : subtractInterval(stateUnderline, s, e);
       } else if (style === 'strikethrough') {
         stateStrikethrough = enabled ? unionInterval(stateStrikethrough, s, e) : subtractInterval(stateStrikethrough, s, e);
+      } else if (style === 'text-color') {
+        /* Phase 5c-2 — value/paint channel. kind paints (last-wins via
+         * cut-then-paint); null cuts (clear color over range). Unknown
+         * kinds are treated as a cut (defensive). */
+        var ckind = payload.kind;
+        if (isInlineColorKind(ckind)) {
+          stateColor = paintColor(stateColor, s, e, ckind);
+        } else {
+          stateColor = cutColorSegments(stateColor, s, e);
+        }
       } else if (style === 'clear-inline') {
-        /* Phase 5c-1 — range-scoped clear: subtract [s,e) from all four
-         * boolean sets. Intervals outside [s,e) are preserved (split). */
+        /* Phase 5c-1 / 5c-2 — range-scoped clear: subtract [s,e) from all
+         * four boolean sets AND cut color segments over [s,e). Intervals/
+         * segments outside [s,e) are preserved (split). */
         stateBold = subtractInterval(stateBold, s, e);
         stateItalic = subtractInterval(stateItalic, s, e);
         stateUnderline = subtractInterval(stateUnderline, s, e);
         stateStrikethrough = subtractInterval(stateStrikethrough, s, e);
+        stateColor = cutColorSegments(stateColor, s, e);
       }
     }
-    return { bold: stateBold, italic: stateItalic, underline: stateUnderline, strikethrough: stateStrikethrough };
+    return { bold: stateBold, italic: stateItalic, underline: stateUnderline, strikethrough: stateStrikethrough, textColor: stateColor };
   }
 
   /* Apply a computed state to a single turn element by toggling
@@ -1363,6 +1458,10 @@
     unionInterval: unionInterval,
     subtractInterval: subtractInterval,
     intervalsCover: intervalsCover,
+    /* Phase 5c-2 — inline text-color segment helpers. */
+    cutColorSegments: cutColorSegments,
+    paintColor: paintColor,
+    colorAt: colorAt,
   };
 
   H2O.Studio.overlay = api;

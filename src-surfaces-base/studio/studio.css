@@ -7631,6 +7631,27 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="strikethrough"]{
   text-decoration-line:line-through;
 }
+/* Phase 5c-2 — inline Text Color. The render pass injects
+ * <span data-overlay-inline="text-color" data-overlay-inline-color="red">.
+ * Hex values are pinned to the Phase 4-2 message-level text-color palette
+ * (TEXT_COLOR_HEX) so inline + message-level + (future) DOCX render
+ * identically. The inline span is element-level and therefore overrides
+ * the message-level body color over its range by specificity. */
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="red"]{
+  color:#C53030;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="green"]{
+  color:#2F855A;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="blue"]{
+  color:#2C5282;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="orange"]{
+  color:#C05621;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="text-color"][data-overlay-inline-color="gray"]{
+  color:#4A5568;
+}
 
 /* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
