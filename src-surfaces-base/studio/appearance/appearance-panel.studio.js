@@ -1,7 +1,8 @@
 /* H2O Studio — Appearance Panel (top-right options menu)
  *
- * Owns the visible UI: a top-right trigger button mounted into the .wbTop
- * header and a popover panel (Theme / Typography / Reading / Options).
+ * Owns the visible UI: a top-right trigger button mounted into the Tauri
+ * desktop ribbon menu strip when present, otherwise into the .wbTop header,
+ * and a popover panel (Theme / Typography / Reading / Options).
  *
  * Subscribes to H2O.Studio.appearance for state and calls .set() to update.
  * The panel is appended to document.body (matches the .wbCmdBar /
@@ -33,6 +34,8 @@
   var openState = false;
   var controlRefs = {};   /* logicalKey -> { update: fn(value) } */
   var unsubscribe = null;
+  var rehomeObserver = null;
+  var rehomePending = false;
 
   /* ── Tiny DOM helpers ──────────────────────────────────────────────── */
   function el(tag, attrs, children) {
@@ -61,43 +64,99 @@
     return node;
   }
 
-  /* ── Trigger button (mounted into .wbTop) ─────────────────────────── */
+  /* ── Trigger button (mounted into desktop menu strip or .wbTop) ───── */
   var TRIGGER_SVG = '<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">'
     + '<circle cx="5" cy="12" r="1.6"/>'
     + '<circle cx="12" cy="12" r="1.6"/>'
     + '<circle cx="19" cy="12" r="1.6"/>'
     + '</svg>';
 
-  function mountTrigger() {
+  function makeRibbonTopSlot(bar) {
+    if (!bar) return null;
+    var slot = bar.querySelector('[data-role="appearance-menu-actions"]');
+    if (slot) return slot;
+    slot = el('div', {
+      class: 'wbRibbonTopActions',
+      'data-role': 'appearance-menu-actions',
+      'aria-label': 'Ribbon menu actions',
+    });
+    var collapse = bar.querySelector('.wbRibbonCollapse');
+    bar.insertBefore(slot, collapse || null);
+    return slot;
+  }
+
+  function getTriggerSlot() {
+    var desktopBar = document.querySelector('html[data-h2o-runtime="tauri"] .wbRibbonBar');
+    if (desktopBar) return makeRibbonTopSlot(desktopBar);
+
     var topbar = document.querySelector('.wbTop');
-    if (!topbar) return false;
+    if (!topbar) return null;
     var slot = topbar.querySelector('.wbTopGroup--actions');
     if (!slot) {
       slot = el('div', { class: 'wbTopGroup wbTopGroup--actions' });
       topbar.appendChild(slot);
     }
+    return slot;
+  }
+
+  function mountTrigger() {
+    var slot = getTriggerSlot();
+    if (!slot) return false;
     /* Idempotency: don't double-mount on re-render. */
     if (slot.querySelector('.wbAppearanceBtn')) {
       triggerBtn = slot.querySelector('.wbAppearanceBtn');
       return true;
     }
-    triggerBtn = el('button', {
-      type: 'button',
-      class: 'wbIconBtn wbIconBtn--topbar wbAppearanceBtn',
-      'aria-label': 'Appearance and view options',
-      title: 'Appearance',
-      'aria-haspopup': 'dialog',
-      'aria-expanded': 'false',
-      'aria-pressed': 'false',
-      html: TRIGGER_SVG,
-    });
-    triggerBtn.addEventListener('click', function (ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      toggle();
-    });
+    if (!triggerBtn) triggerBtn = document.querySelector('.wbAppearanceBtn');
+    if (!triggerBtn) {
+      triggerBtn = el('button', {
+        type: 'button',
+        class: 'wbIconBtn wbIconBtn--topbar wbAppearanceBtn',
+        'aria-label': 'Appearance and view options',
+        title: 'Appearance',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'aria-pressed': 'false',
+        html: TRIGGER_SVG,
+      });
+      triggerBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggle();
+      });
+    }
     slot.appendChild(triggerBtn);
+    if (openState) position();
     return true;
+  }
+
+  function scheduleTriggerRehome() {
+    if (rehomePending) return;
+    rehomePending = true;
+    setTimeout(function () {
+      rehomePending = false;
+      mountTrigger();
+    }, 0);
+  }
+
+  function installTriggerRehomeWatcher() {
+    if (rehomeObserver || !document.body || typeof MutationObserver !== 'function') return;
+    rehomeObserver = new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i += 1) {
+        var r = records[i];
+        if (!r || !r.addedNodes || !r.addedNodes.length) continue;
+        for (var j = 0; j < r.addedNodes.length; j += 1) {
+          var node = r.addedNodes[j];
+          if (!node || node.nodeType !== 1) continue;
+          if ((node.classList && (node.classList.contains('wbRibbonBar') || node.classList.contains('wbRibbon'))) ||
+              (node.querySelector && node.querySelector('.wbRibbonBar'))) {
+            scheduleTriggerRehome();
+            return;
+          }
+        }
+      }
+    });
+    rehomeObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   /* ── Panel construction ────────────────────────────────────────────── */
@@ -387,6 +446,7 @@
 
   /* ── Boot ──────────────────────────────────────────────────────────── */
   function bootMount() {
+    installTriggerRehomeWatcher();
     if (mountTrigger()) return true;
     return false;
   }

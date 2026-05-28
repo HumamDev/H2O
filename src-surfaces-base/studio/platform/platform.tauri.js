@@ -562,6 +562,105 @@
     }
   }
 
+  function getCurrentTauriWindow() {
+    var tauri = (global.__TAURI__ || (global.__TAURI_INTERNALS__ && global.__TAURI_INTERNALS__.plugins)) || null;
+    var winNs = tauri && tauri.window ? tauri.window : null;
+    if (!winNs) return null;
+    try {
+      if (typeof winNs.getCurrentWindow === 'function') return winNs.getCurrentWindow();
+      if (typeof winNs.getCurrent === 'function') return winNs.getCurrent();
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function windowStartDragging() {
+    var current = getCurrentTauriWindow();
+    if (current && typeof current.startDragging === 'function') {
+      try {
+        var p = current.startDragging();
+        if (p && typeof p.then === 'function') return p;
+        return Promise.resolve(p);
+      } catch (e) { /* fall through to raw invoke */ }
+    }
+    var invoke = getTauriInvoke();
+    if (!invoke) return Promise.reject(new Error('platform.window.startDragging: tauri invoke unavailable'));
+    try {
+      return invoke('plugin:window|start_dragging');
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  function installRibbonMenuDrag(chrome) {
+    if (!chrome || chrome.__h2oRibbonMenuDragInstalled) return;
+    chrome.__h2oRibbonMenuDragInstalled = true;
+
+    var suppressClickUntil = 0;
+
+    function eligiblePointerDown(ev) {
+      if (!ev || ev.button !== 0) return null;
+      var target = ev.target;
+      if (!target || typeof target.closest !== 'function') return null;
+      var bar = target.closest('.wbRibbonBar');
+      if (!bar || !chrome.contains(bar)) return null;
+      if (target.closest('input,select,textarea,a,[contenteditable="true"],.wbRibbonCollapse')) return null;
+      var tab = target.closest('.wbRibbonTab');
+      if (target.closest('button,[role="button"]') && !tab) return null;
+      return { bar: bar, tab: tab };
+    }
+
+    function cleanup(list) {
+      if (!list) return;
+      try { global.removeEventListener('pointermove', list.move, true); } catch (_) { /* ignore */ }
+      try { global.removeEventListener('pointerup', list.up, true); } catch (_) { /* ignore */ }
+      try { global.removeEventListener('pointercancel', list.up, true); } catch (_) { /* ignore */ }
+      try { global.clearTimeout(list.timer); } catch (_) { /* ignore */ }
+    }
+
+    chrome.addEventListener('pointerdown', function (ev) {
+      var hit = eligiblePointerDown(ev);
+      if (!hit) return;
+
+      var startX = Number(ev.clientX || 0);
+      var startY = Number(ev.clientY || 0);
+      var active = { started: false, timer: null, move: null, up: null };
+
+      function beginDrag(triggerEv) {
+        if (active.started) return;
+        active.started = true;
+        suppressClickUntil = Date.now() + 600;
+        if (triggerEv && typeof triggerEv.preventDefault === 'function') {
+          try { triggerEv.preventDefault(); } catch (_) { /* ignore */ }
+        }
+        windowStartDragging().catch(function (e) {
+          try { console.warn('[H2O.Studio.platform.tauri] startDragging failed', e); }
+          catch (_) { /* ignore */ }
+        });
+      }
+
+      active.move = function (moveEv) {
+        var dx = Math.abs(Number(moveEv.clientX || 0) - startX);
+        var dy = Math.abs(Number(moveEv.clientY || 0) - startY);
+        if (dx > 3 || dy > 3) beginDrag(moveEv);
+      };
+      active.up = function () { cleanup(active); };
+      active.timer = global.setTimeout(function () { beginDrag(ev); }, 260);
+
+      try { global.addEventListener('pointermove', active.move, true); } catch (_) { /* ignore */ }
+      try { global.addEventListener('pointerup', active.up, true); } catch (_) { /* ignore */ }
+      try { global.addEventListener('pointercancel', active.up, true); } catch (_) { /* ignore */ }
+    }, true);
+
+    chrome.addEventListener('click', function (ev) {
+      if (Date.now() > suppressClickUntil) return;
+      if (!ev || !ev.target || typeof ev.target.closest !== 'function') return;
+      if (!ev.target.closest('.wbRibbonBar')) return;
+      try { ev.preventDefault(); } catch (_) { /* ignore */ }
+      try { ev.stopPropagation(); } catch (_) { /* ignore */ }
+      try { ev.stopImmediatePropagation(); } catch (_) { /* ignore */ }
+    }, true);
+  }
+
   function installTauriDesktopChrome() {
     try {
       var doc = global.document;
@@ -594,6 +693,7 @@
           }
 
           if (ribbon.parentNode !== chrome) chrome.appendChild(ribbon);
+          installRibbonMenuDrag(chrome);
 
           var controlParking = doc.getElementById('studioRibbonControlParking');
           if (controlParking && controlParking.parentNode !== chrome) chrome.appendChild(controlParking);
@@ -638,7 +738,12 @@
     capture: { available: false },
     auth: { available: false },
     clipboard: { writeText: clipboardWriteText },
-    window: { available: true, setAlwaysOnTop: windowSetAlwaysOnTop, openDevtools: windowOpenDevtools },
+    window: {
+      available: true,
+      setAlwaysOnTop: windowSetAlwaysOnTop,
+      openDevtools: windowOpenDevtools,
+      startDragging: windowStartDragging,
+    },
     /* Tauri-specific extension (not part of the fallback shape; callers
      * may feature-detect via `platform.openUrl` or `platform.env.isTauri`). */
     openUrl: openUrl,

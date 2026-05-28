@@ -1,7 +1,7 @@
 <!--
- * @version 2.5.33
+ * @version 2.5.35
  * Changes: fixed shell, collapsed rail, simplified topbar;
- *          stylesheet href carries ?v=2.5.33 cache-bust because the Tauri
+ *          stylesheet href carries ?v=2.5.35 cache-bust because the Tauri
  *          V2 dev server (http://127.0.0.1:1430/) emits no
  *          Last-Modified/ETag/Cache-Control headers, so WKWebView
  *          otherwise serves previously-fetched Studio assets indefinitely
@@ -28,7 +28,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>H2O Studio vNext</title>
-  <link rel="stylesheet" href="./studio.css?v=2.5.33" />
+  <link rel="stylesheet" href="./studio.css?v=2.5.35" />
 </head>
 <body data-h2o-studio-mode="1">
   <div class="wbShell">
@@ -252,7 +252,7 @@
        STUDIO_PORTABILITY_CONTRACT.md. -->
   <script src="./platform/index.js"></script>
   <script src="./platform/platform.mv3.js"></script>
-  <script src="./platform/platform.tauri.js"></script>
+  <script src="./platform/platform.tauri.js?v=2.5.35"></script>
   <script src="./platform/selectors.contract.js"></script>
 
   <!-- ── Studio Dock Constants (Phase 0B) ───────────────────────────────
@@ -314,7 +314,7 @@
        Contracts: src-surfaces-base/studio/appearance/ (module folder). -->
   <script src="./appearance/appearance-keys.js"></script>
   <script src="./appearance/appearance-store.studio.js"></script>
-  <script src="./appearance/appearance-panel.studio.js"></script>
+  <script src="./appearance/appearance-panel.studio.js?v=2.5.35"></script>
 
   <!-- ── Studio Dock Shell (Phase 1a + 1b) ──────────────────────────────
        Publishes H2O.Studio.dock — passive, mountless tab registry plus
@@ -865,6 +865,6 @@
   <script src="./S9D1a. 🎬 Auto Emoji Title - Studio.js"></script>
   <!-- ─────────────────────────────────────────────────────────────────── -->
 
-  <script src="./studio.js?v=2.5.33"></script>
+  <script src="./studio.js?v=2.5.35"></script>
 </body>
 </html>
