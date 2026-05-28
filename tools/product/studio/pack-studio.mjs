@@ -271,6 +271,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // generated conflictCandidate artifacts into the local relay outbox only.
   // No upload, WebDAV, apply, applyEvent, convergence, or remote mutation.
   "sync/conflict-publication.tauri.js",
+  // F10.8.7: Desktop/Tauri-only convergence watermark persistence. Explicit
+  // append-only per-peer/per-subject watermark records only. No automatic
+  // advancement, convergence, apply, publication, WebDAV, or remote mutation.
+  "sync/convergence-watermarks.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -459,6 +463,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/publication-ledger.tauri.js",
   "sync/proposal-publication.tauri.js",
   "sync/conflict-publication.tauri.js",
+  "sync/convergence-watermarks.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 

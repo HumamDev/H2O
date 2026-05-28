@@ -726,6 +726,10 @@
        generated conflictCandidate artifacts into the local relay outbox only.
        No upload, WebDAV, apply, applyEvent, convergence, or remote mutation. -->
   <script src="./sync/conflict-publication.tauri.js"></script>
+  <!-- F10.8.7: Desktop/Tauri-only convergence watermark persistence. Explicit
+       append-only per-peer/per-subject watermark records only. No automatic
+       advancement, convergence, apply, publication, WebDAV, or remote mutation. -->
+  <script src="./sync/convergence-watermarks.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
