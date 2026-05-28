@@ -1,6 +1,6 @@
 # Studio Edit Overlay Contract
 
-Status: Active (Phase 5b-1)
+Status: Active (Phase 5c-1)
 Audience: Anyone implementing or reviewing edit-overlay code in
 `src-surfaces-base/studio/overlay/` or `src-surfaces-base/studio/store/editOverlay.js`.
 Companion: `STUDIO_STORAGE_CONTRACT.md`, `STUDIO_DEVELOPMENT_RULES.md`,
@@ -1882,6 +1882,81 @@ message-level.
 - No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
   `fetch`. No provider/network work.
 - No highlight-system changes; inline spans coexist with `<mark>` spans.
+
+## Phase 5c-1 — inline Underline / Strikethrough / range Clear (reader-only)
+
+Phase 5c-1 extends the Phase 5b-1 inline model with two more boolean
+character styles and a range-scoped clear. **Reader-only — no export.**
+**No inline text color** (that is Phase 5c-2). No new op type — reuses
+`inline-format`.
+
+### Op model (extends 5b-1)
+
+`inline-format` payload gains two boolean styles + one clear style:
+
+| Payload | Reducer field | Reduction |
+|---------|---------------|-----------|
+| `{ style:'underline', enabled }` | `underline: [[s,e]…]` | union (true) / subtract (false) |
+| `{ style:'strikethrough', enabled }` | `strikethrough: [[s,e]…]` | union / subtract |
+| `{ style:'clear-inline' }` | — | subtract anchor `[s,e)` from **all four** boolean sets (bold/italic/underline/strikethrough), range-scoped |
+
+Target shape unchanged: `{ kind:'inline', turnIdx, messageId, anchor }`.
+
+### Reducer (`computeInlineState` extended return)
+
+```
+{ bold:[[s,e]], italic:[[s,e]], underline:[[s,e]], strikethrough:[[s,e]] }
+```
+
+- Underline/Strikethrough use the same `unionInterval` / `subtractInterval`
+  / `mergeIntervals` helpers + active-set filter as bold/italic.
+- `clear-inline` subtracts the selected range from all four sets; intervals
+  **outside** the range are preserved (split as needed). It does **not**
+  touch message-level decorations.
+- Message-level `clear-formatting` (Phase 4-1, `target.kind:'message'`)
+  still wipes **all** inline interval sets for the turn.
+
+### Render (studio.js render pass)
+
+- The styles loop now wraps four channels in a fixed order
+  (bold → italic → underline → strikethrough) so DOM nesting is
+  deterministic and the unwrap-then-rewrap pass stays idempotent.
+- Tag map: `underline → <u data-overlay-inline="underline">`,
+  `strikethrough → <s data-overlay-inline="strikethrough">`.
+- **Underline + strikethrough combine** via nested `<u><s>` — CSS uses
+  `text-decoration-line` (not the shorthand), so each element contributes
+  its own line and both render together.
+- Per-text-node wrapping with same-style skip-guard (5b-1) unchanged;
+  drift / unresolved-anchor skip unchanged.
+
+### Ribbon
+
+- **U / S buttons** are now inline-aware (reuse `buildFontHandler`): valid
+  held inline selection on the selected turn → `inline-format` toggle
+  (off when the range is already fully covered); otherwise → existing
+  Phase 4-1 message-level toggle.
+- **Clear formatting** is selection-aware: valid held inline selection →
+  `inline-format { style:'clear-inline' }` (range-scoped); otherwise →
+  existing whole-turn `clear-formatting` reset.
+
+### Status strings
+
+`Underline applied to selection` / `Underline removed from selection`,
+`Strikethrough applied to selection` / `… removed from selection`,
+`Inline formatting cleared`. Message-level fallback strings unchanged.
+
+### Out of scope for 5c-1
+
+- **Inline text color** (Phase 5c-2 — value/paint model).
+- **Export** (Markdown/DOCX/PDF) — deferred to 5d run-segmentation.
+- contentEditable, snapshot mutation, new storage keys.
+
+### Compliance notes for 5c-1
+
+- No new op type; no `overlay-keys.js` change. Reuses `inline-format`.
+- No snapshot mutation; render pass touches only the live reader DOM.
+- No `chrome.*` / `localStorage` / `sessionStorage` / `indexedDB` /
+  `fetch`; no platform/Tauri/MV3/tooling changes.
 
 ## Compliance checklist (per-PR; Phase 2a and beyond)
 

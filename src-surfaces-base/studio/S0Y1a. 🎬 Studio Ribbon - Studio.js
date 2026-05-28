@@ -2170,7 +2170,8 @@
    * 5b-1 (no inline U/S yet). */
   function buildFontHandler(kind, messageLabels) {
     const messageLevel = buildToggleHandler(kind, kind, { enabled: true }, messageLabels);
-    const Label = (kind === 'italic') ? 'Italic' : 'Bold';
+    const LABELS = { bold: 'Bold', italic: 'Italic', underline: 'Underline', strikethrough: 'Strikethrough' };
+    const Label = LABELS[kind] || 'Bold';
     return {
       isEnabled: formatActionsIsEnabled,
       onClick: function (ctx, setStatus) {
@@ -2238,26 +2239,61 @@
     appliedLabel: 'Italic applied', removedLabel: 'Italic removed',
     failLabel: 'Italic failed',
   });
-  ACTION_HANDLERS['underline'] = buildToggleHandler('underline', 'underline', { enabled: true }, {
+  /* Phase 5c-1 — Underline / Strikethrough become inline-aware exactly
+   * like Bold / Italic: a valid held inline selection on the selected
+   * turn submits an `inline-format` op over the range; otherwise the
+   * existing Phase 4-1 message-level toggle behaviour is preserved. */
+  ACTION_HANDLERS['underline'] = buildFontHandler('underline', {
     applyingLabel: 'Applying underline…', removingLabel: 'Removing underline…',
     appliedLabel: 'Underline applied', removedLabel: 'Underline removed',
     failLabel: 'Underline failed',
   });
-  ACTION_HANDLERS['strikethrough'] = buildToggleHandler('strikethrough', 'strikethrough', { enabled: true }, {
+  ACTION_HANDLERS['strikethrough'] = buildFontHandler('strikethrough', {
     applyingLabel: 'Applying strikethrough…', removingLabel: 'Removing strikethrough…',
     appliedLabel: 'Strikethrough applied', removedLabel: 'Strikethrough removed',
     failLabel: 'Strikethrough failed',
   });
 
-  /* Clear formatting — not a toggle. Always submits a `clear-formatting`
-   * op which the reducer treats as a per-turn reset marker. The op only
-   * affects the message identified by selectedTurnIdx; structure
-   * decorations (sections / dividers / TOC) are untouched. */
+  /* Clear formatting — selection-aware (Phase 5c-1).
+   *   - Valid held inline selection on the selected turn → submit a
+   *     range-scoped `inline-format { style:'clear-inline' }` op, which
+   *     the reducer subtracts from the four inline boolean sets over the
+   *     selected range only. Message-level decorations are untouched.
+   *   - No valid inline selection → existing whole-turn `clear-formatting`
+   *     reset (Phase 4-1) which wipes all per-message decorations
+   *     (including ALL inline intervals for the turn). */
   ACTION_HANDLERS['clear-formatting'] = {
     isEnabled: formatActionsIsEnabled,
     onClick: function (ctx, setStatus) {
       const turnIdx = Number(ctx && ctx.selectedTurnIdx);
       if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+      const held = getHeldInlineCapture();
+      const pos = held && held.anchor && held.anchor.textPos;
+      const inlineValid = !!(held && held.ok && held.anchor && pos
+        && Number(held.selectedTurnIdx) === turnIdx
+        && Number.isFinite(Number(pos.start)) && Number.isFinite(Number(pos.end))
+        && Number(pos.end) > Number(pos.start));
+
+      if (inlineValid) {
+        const opSpec = {
+          type: 'inline-format',
+          target: {
+            kind: 'inline',
+            turnIdx: turnIdx,
+            messageId: held.selectedMessageId || ctx.selectedMessageId || null,
+            anchor: held.anchor,
+          },
+          payload: { style: 'clear-inline' },
+        };
+        runOverlayOp(opSpec, setStatus, {
+          pending: 'Clearing inline formatting…',
+          success: 'Inline formatting cleared',
+          fail: 'Clear inline formatting failed',
+        });
+        return;
+      }
+
+      /* No inline selection → whole-turn message-level reset (unchanged). */
       const opSpec = {
         type: 'clear-formatting',
         target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },

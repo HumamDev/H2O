@@ -7620,6 +7620,17 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="italic"]{
   font-style:italic;
 }
+/* Phase 5c-1 — inline Underline / Strikethrough. The render pass injects
+ * <u data-overlay-inline="underline"> / <s data-overlay-inline="strikethrough">.
+ * `text-decoration-line` (not the `text-decoration` shorthand) is used so
+ * nested <u><s> elements each contribute their own line and BOTH render
+ * when a range is underlined AND struck through. */
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="underline"]{
+  text-decoration-line:underline;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="strikethrough"]{
+  text-decoration-line:line-through;
+}
 
 /* ──────────────────────────────────────────────────────────────────────
  * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)

@@ -14880,8 +14880,11 @@ function __inlineRender_wrapRange(range, style){
   const endNode = range.endContainer;
   const endOff = range.endOffset;
   if (!startNode || !endNode || startNode.nodeType !== 3 || endNode.nodeType !== 3) return 0;
-  const tag = (style === 'italic') ? 'em' : 'strong';
-  const val = (style === 'italic') ? 'italic' : 'bold';
+  /* Phase 5b-1: bold→<strong>, italic→<em>. Phase 5c-1: underline→<u>,
+   * strikethrough→<s>. The attribute value mirrors the style name. */
+  const TAG_BY_STYLE = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's' };
+  const val = (TAG_BY_STYLE[style] ? style : 'bold');
+  const tag = TAG_BY_STYLE[val];
   const sel = '[data-overlay-inline="' + val + '"]';
   let wrapped = 0;
   const nodes = __inlineRender_collectTextNodes(range);
@@ -14945,10 +14948,13 @@ function __inlineRender_apply(scopeEl, snap, overlay){
       if (!inline) continue;
       const boldIv = Array.isArray(inline.bold) ? inline.bold : [];
       const italicIv = Array.isArray(inline.italic) ? inline.italic : [];
-      if (!boldIv.length && !italicIv.length) continue;
+      const underlineIv = Array.isArray(inline.underline) ? inline.underline : [];
+      const strikeIv = Array.isArray(inline.strikethrough) ? inline.strikethrough : [];
+      if (!boldIv.length && !italicIv.length && !underlineIv.length && !strikeIv.length) continue;
       /* Same message-root basis as Phase 5a capture. */
       const msgRoot = (turn.querySelector && turn.querySelector('[data-message-author-role], [data-message-id]')) || turn;
-      const styles = [['bold', boldIv], ['italic', italicIv]];
+      /* Fixed apply order → deterministic nesting + idempotent re-render. */
+      const styles = [['bold', boldIv], ['italic', italicIv], ['underline', underlineIv], ['strikethrough', strikeIv]];
       for (let k = 0; k < styles.length; k += 1) {
         const style = styles[k][0];
         const intervals = styles[k][1];

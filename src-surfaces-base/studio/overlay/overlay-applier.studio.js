@@ -504,25 +504,33 @@
     return state;
   }
 
-  /* ── Phase 5b-1 — inline character formatting interval reducer ────────
+  /* ── Phase 5b-1 / 5c-1 — inline character formatting interval reducer ──
    *
-   * Inline Bold/Italic apply to a sub-RANGE of one message, anchored by
-   * Phase 5a's selection anchor. Each `inline-format` op carries:
+   * Inline Bold/Italic/Underline/Strikethrough apply to a sub-RANGE of one
+   * message, anchored by Phase 5a's selection anchor. Each `inline-format`
+   * op carries:
    *   target:  { kind: 'inline', turnIdx, messageId, anchor: { textPos: {start,end}, ... } }
-   *   payload: { style: 'bold'|'italic', enabled: boolean }
+   *   payload: { style: 'bold'|'italic'|'underline'|'strikethrough', enabled: boolean }
+   *          | { style: 'clear-inline' }   (Phase 5c-1 range-scoped clear)
    *
-   * The reducer reduces all active inline-format ops for a turn into two
-   * merged, sorted, non-overlapping integer-interval sets (bold / italic)
-   * in the message's flattened-text coordinate space. These are PURE
-   * integer operations — no DOM — so they are fully unit-testable. The
-   * studio.js render pass turns intervals into live ranges + spans.
+   * The reducer reduces all active inline-format ops for a turn into four
+   * merged, sorted, non-overlapping integer-interval sets (bold / italic /
+   * underline / strikethrough) in the message's flattened-text coordinate
+   * space. These are PURE integer operations — no DOM — so they are fully
+   * unit-testable. The studio.js render pass turns intervals into live
+   * ranges + spans.
    *
    * enabled:true  → union the anchor's [start,end) interval into the set.
    * enabled:false → subtract [start,end) from the set (may split a span).
    *
-   * clear-formatting (Phase 4-1 message reset) ALSO clears inline
-   * intervals for the turn at its point in op order — consistent with
-   * "wipe all per-message decorations". */
+   * Phase 5c-1 `clear-inline` style → subtract the anchor's [start,end)
+   * interval from ALL four boolean sets (range-scoped; leaves intervals
+   * outside the range untouched). It does NOT touch message-level
+   * decorations — those are a separate channel.
+   *
+   * clear-formatting (Phase 4-1 message reset, target kind:'message') ALSO
+   * clears ALL inline interval sets for the turn at its point in op order
+   * — consistent with "wipe all per-message decorations". */
 
   /* Merge a list of [start,end) intervals: sort by start, coalesce
    * overlapping or contiguous runs. Returns a new sorted array. */
@@ -602,7 +610,9 @@
   function computeInlineState(overlay, turnIdx) {
     var stateBold = [];
     var stateItalic = [];
-    var emptyResult = { bold: [], italic: [] };
+    var stateUnderline = [];
+    var stateStrikethrough = [];
+    var emptyResult = { bold: [], italic: [], underline: [], strikethrough: [] };
     if (!isObject(overlay)) return emptyResult;
     var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
     var idx = Number(turnIdx);
@@ -615,11 +625,13 @@
       if (!isOpActive(active, op.id)) continue;
       var type = String(op.type);
 
-      /* clear-formatting wipes inline intervals for this turn too. */
+      /* clear-formatting (message-level) wipes ALL inline intervals. */
       if (type === 'clear-formatting') {
         if (isMessageTarget(op.target) && Number(op.target.turnIdx) === idx) {
           stateBold = [];
           stateItalic = [];
+          stateUnderline = [];
+          stateStrikethrough = [];
         }
         continue;
       }
@@ -642,9 +654,20 @@
         stateBold = enabled ? unionInterval(stateBold, s, e) : subtractInterval(stateBold, s, e);
       } else if (style === 'italic') {
         stateItalic = enabled ? unionInterval(stateItalic, s, e) : subtractInterval(stateItalic, s, e);
+      } else if (style === 'underline') {
+        stateUnderline = enabled ? unionInterval(stateUnderline, s, e) : subtractInterval(stateUnderline, s, e);
+      } else if (style === 'strikethrough') {
+        stateStrikethrough = enabled ? unionInterval(stateStrikethrough, s, e) : subtractInterval(stateStrikethrough, s, e);
+      } else if (style === 'clear-inline') {
+        /* Phase 5c-1 — range-scoped clear: subtract [s,e) from all four
+         * boolean sets. Intervals outside [s,e) are preserved (split). */
+        stateBold = subtractInterval(stateBold, s, e);
+        stateItalic = subtractInterval(stateItalic, s, e);
+        stateUnderline = subtractInterval(stateUnderline, s, e);
+        stateStrikethrough = subtractInterval(stateStrikethrough, s, e);
       }
     }
-    return { bold: stateBold, italic: stateItalic };
+    return { bold: stateBold, italic: stateItalic, underline: stateUnderline, strikethrough: stateStrikethrough };
   }
 
   /* Apply a computed state to a single turn element by toggling
