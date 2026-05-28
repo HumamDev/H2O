@@ -45,6 +45,7 @@
   const STORE_PREFIX = 'h2o:prm:cgx:capture:store:v1:'; // 3X1a keyStore shape
   const MIRROR_KEY = 'h2o:prm:cgx:capture:mirror:v1';
   const MIRROR_SCHEMA = 'h2o.prm.cgx.capture.mirror.v1';
+  const VERSION = '1.0.0-f10.5.3';
   const KIND_TEXT_BUCKET = 'text'; // 3X1a default item.kind; value only, never a key
   const CHANGE_EVENT = 'h2o:capture:changed'; // 3X1a EV.changed
   const MAX_CHATS = 5000;
@@ -248,10 +249,12 @@
     const t = Date.now();
     try { W.postMessage({ type: BRIDGE_WRITE, key: MIRROR_KEY, value: digest, t: t }, '*'); } catch (_) {}
     try { D.dispatchEvent(new CustomEvent(EV_WRITE, { detail: { key: MIRROR_KEY, value: digest, t: t } })); } catch (_) {}
+    lastEmitAtIso = nowIsoSeconds();
   }
 
   let lastSig = null;
   let lastDigest = null;
+  let lastEmitAtIso = null;
 
   async function run() {
     let digest;
@@ -325,10 +328,43 @@
     return usedApi;
   }
 
+  // ── Public API (so load is observable; mirrors 3X1a's installApi) ───
+  function selfTest() {
+    return {
+      installed: true,
+      version: VERSION,
+      mirrorKey: MIRROR_KEY,
+      schema: MIRROR_SCHEMA,
+      webCryptoAvailable: webCryptoAvailable(),
+      captureApiPresent: !!(W.H2O && W.H2O.Capture && typeof W.H2O.Capture.onChange === 'function'),
+      bridgeWriteType: BRIDGE_WRITE,
+      lastEmitAtIso: lastEmitAtIso,
+      lastChatsObservedCount: lastDigest ? lastDigest.chatsObservedCount : null,
+      lastTotalItemCount: lastDigest ? lastDigest.totalItemCount : null,
+      pendingDebounce: !!debTimer,
+    };
+  }
+  function installApi() {
+    const api = {
+      version: VERSION,
+      mirrorKey: MIRROR_KEY,
+      schema: MIRROR_SCHEMA,
+      selfTest: selfTest,
+      // Force an immediate (re)build + emit; returns a Promise. Count-safe.
+      run: function () { return run(); },
+      // The last emitted count-safe digest (or null). Safe to expose.
+      getLastDigest: function () { return lastDigest; },
+    };
+    W.H2O = W.H2O || {};
+    W.H2O.CaptureMirror = W.H2O.CaptureMirror || api;
+  }
+
   // ── Boot ────────────────────────────────────────────────────────────
   function boot() {
-    if (!webCryptoAvailable()) return; // SHA-256 required; bail silently
+    installApi(); // expose H2O.CaptureMirror first so selfTest() is always
+                  // callable — even if Web Crypto is unavailable.
     bindBridgeReady();
+    if (!webCryptoAvailable()) return; // SHA-256 required to build digests
     sendProbe();
     bindCaptureChanges();
     schedule(); // initial digest after boot
