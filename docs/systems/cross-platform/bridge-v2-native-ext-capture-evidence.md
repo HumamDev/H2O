@@ -14,13 +14,13 @@ This document is the bridge's contract. The implementation lives in
 
 | In | Out |
 |---|---|
-| Chrome Studio observes the native ChatGPT extension's existing capture-store data via the already-shipped read-only `H2O.Studio.store.capture` facade. | Chrome Studio modifying any native-extension data. |
+| Chrome Studio observes the native ChatGPT extension's existing capture-store data by reading the same backend the native Capture Engine (3X1a) writes — `localStorage` (primary) and `chrome.storage.local` (secondary native↔Studio wire) — strictly read-only. | Chrome Studio modifying any native-extension data. |
 | Aggregates counts + structural metadata into a `kind: "evidence"` envelope per F10.2.0 §3.evidence. | Constructing any other envelope kind (no `proposal`, `applyEvent`, `conflictCandidate`, `bundle`, `preview`, `cacheMetadata`). |
 | Operator-triggered one-shot diagnostic via `H2O.Studio.diagnostics.previewNativeCaptureAsEvidence()`. | Background polling, automatic refresh, daemon-like behavior. |
-| Reads native runtime's chrome.storage capture keys (read-only) for enumeration; reads per-chat stores via the facade. | Any `chrome.storage.local.set` / `.remove` call. Any write to native runtime state. |
+| Enumerates + reads native runtime's per-chat capture-store keys read-only from `localStorage` (where 3X1a persists them) and `chrome.storage.local`, merged by chatId. | Any `localStorage` write. Any `chrome.storage.local.set` / `.remove` call. Any write to native runtime state. |
 | Real sha256 hashes computed via the browser's built-in `crypto.subtle.digest`. | Fake / placeholder hashes. |
 | Returns a redacted diagnostic result containing the envelope + format-gate findings. | Any chrome.runtime broadcast of envelope content. Any new `MSG_*` chrome.runtime message type. |
-| Reuses the existing Phase 1g `H2O.Studio.store.capture` facade. | Modifying the facade. Calling any facade write method. |
+| Reads the same verbatim key + backend as the read-only `H2O.Studio.store.capture` facade, but directly (the facade's `getStore()` is lazy/async — `null` on first synchronous call, unusable for a one-shot). | Modifying the facade. Any facade or native write method. |
 
 ## Public API
 
@@ -42,13 +42,41 @@ options?: {
   nowIso?: string;             // override observedAt for tests; bridge
                                 // never reads Date.now() when this is
                                 // provided.
-  chatIds?: string[];          // optional explicit chat-id list (bypass
-                                // chrome.storage enumeration; useful for
-                                // tests / scoped observation).
+  chatIds?: string[];          // optional explicit chat-id list (restricts
+                                // the localStorage / chrome.storage scan;
+                                // useful for tests / scoped observation).
   maxChats?: number;           // override default 5000; clamped to 5000
                                 // hard cap.
 }
 ```
+
+## Read path & cross-context note
+
+The native Capture Engine (`src-runtime-base/3X1a`) runs in the
+chatgpt.com **page world** (injected by `loader.js`) and persists each
+per-chat store to `localStorage` under
+`h2o:prm:cgx:capture:store:v1:<chatId>` (3X1a `saveStore` → `lsSet` →
+`localStorage.setItem`). There is currently **no mirror of capture data
+into `chrome.storage.local`** — unlike Library state, which uses a
+`chrome.storage.local` broadcast wire (`S0F1h Library Sync`).
+
+This bridge therefore reads `localStorage` first (the authoritative
+backend the native engine writes and the `H2O.Studio.store.capture`
+facade reads) and `chrome.storage.local` second (a forward-looking
+secondary wire), merged by chatId, all strictly read-only.
+
+**Cross-context caveat.** The bridge observes capture data only when the
+Studio surface shares the **same `localStorage` origin** as the capture
+engine (Studio running in-page on chatgpt.com). If Studio runs as a
+standalone packaged extension page (`chrome-extension://…`, e.g. the
+Studio Launcher variant), its `localStorage` is a *different* origin and
+will not contain the native capture keys; with no `chrome.storage.local`
+mirror in place, the result is an empty observation
+(`no-capture-stores-found`). Closing that gap would require the native
+content-script to mirror per-chat capture stores into
+`chrome.storage.local` — a **native-extension change that is explicitly
+gated** and out of scope for F10.5 (tracked as deferred follow-up
+F10.5.3 below).
 
 ## Constructed envelope shape
 
@@ -101,7 +129,7 @@ free-text fields. No raw chat IDs. No raw item IDs.
 | `itemsByKindBucket` | `{ captureSnippetKind, otherKind: number }` | Coarse bucket. The native kind `"text"` (default) is counted as `captureSnippetKind`; everything else as `otherKind`. The key name `captureSnippetKind` is deliberate — the literal `text` is never used as a payload key name per the F10.2.0 §5.3 forever-no deny list. |
 | `timestampRangeIso` | `{ earliestCreatedAtIso, latestUpdatedAtIso: string \| null }` | Min `createdAt` and max `updatedAt` across observed items, converted to ISO seconds UTC. `null` for empty observation. |
 | `chatsObservedHash` | string (sha256 hex) | sha256 of the canonical-sorted list of sha256(chatId). Lets a consumer detect "same set of chats observed" without seeing raw chat IDs. |
-| `warningsObserved` | string[] | Code strings from a fixed allowlist (e.g. `no-capture-stores-found`, `capture-facade-read-errors`). |
+| `warningsObserved` | string[] | Code strings from a fixed allowlist (e.g. `no-capture-stores-found`, `capture-store-read-errors`). |
 
 ## Forbidden payload data
 
@@ -138,10 +166,10 @@ The outer result's `findings.warnings` may include:
 | Warning code | Meaning |
 |---|---|
 | `web-crypto-unavailable` | `crypto.subtle.digest` is not present in this context. |
-| `capture-facade-unavailable` | `H2O.Studio.store.capture.getStore` is not present. Likely the Studio store module is not loaded. |
-| `capture-store-enumeration-failed` | `chrome.storage.local.get(null, ...)` threw or returned an unusable value. |
-| `no-capture-stores-found` | No capture-store keys were found in chrome.storage.local. Empty observation. Envelope is still emitted with zero counts. |
-| `capture-facade-read-errors` | One or more `facade.getStore(chatId)` calls threw. The errors are counted but not surfaced verbatim (no per-error message text in the envelope). |
+| `capture-storage-unavailable` | Neither `localStorage` nor `chrome.storage.local` is reachable in this context. |
+| `capture-store-enumeration-failed` | A `localStorage` key scan or `chrome.storage.local.get(null, ...)` threw / returned an unusable value. |
+| `no-capture-stores-found` | No capture-store keys were found in either backend. Empty observation. Envelope is still emitted with zero counts. (In the standalone-extension-page topology this is expected — see [Read path & cross-context note](#read-path--cross-context-note).) |
+| `capture-store-read-errors` | One or more per-chat store values failed to read / JSON-parse. Counted, not surfaced verbatim (no value text in the envelope). |
 
 The outer result's `findings.blockers` may include:
 
@@ -224,7 +252,7 @@ Triggers warranting rollback:
 - Bridge originates any `chrome.runtime.sendMessage` — **rollback immediately**.
 - Bridge constructs any envelope kind other than `evidence` — **rollback immediately**.
 - Bridge's payload contains chat text, message bodies, URLs, file paths, or any forever-no field name — **rollback immediately**.
-- Bridge calls native-extension code paths beyond the read-only `H2O.Studio.store.capture` facade — **rollback immediately**.
+- Bridge writes to `localStorage` or `chrome.storage`, or invokes any native-extension code path — **rollback immediately**.
 
 ## Deferred follow-ups
 
@@ -235,8 +263,16 @@ Triggers warranting rollback:
 - **F10.5.2 — Per-chat evidence aggregation.** Optional later enrichment
   that surfaces per-chat counts under hashed chat-id buckets while still
   not emitting any raw chat ID or text. Not yet authorized.
+- **F10.5.3 — Native capture → `chrome.storage.local` mirror (gated).**
+  Required only if Studio must observe capture data while running as a
+  standalone extension page (a different `localStorage` origin than the
+  chatgpt.com capture engine). The native content-script would mirror
+  per-chat capture stores into `chrome.storage.local` so the existing
+  read-only secondary path in this bridge can see them. This is a
+  **native-extension change** and is **not authorized**; it must be
+  planned and reviewed separately under the F10 safety model.
 
-Both deferrals respect the same hard boundaries: evidence only, no
+All deferrals respect the same hard boundaries: evidence only, no
 write-back, no native-extension code change, no new `MSG_*` types.
 
 ## Phase status
@@ -253,5 +289,6 @@ write-back, no native-extension code change, no new `MSG_*` types.
 | **F10.5 — bridge v2: native-ext capture → Chrome evidence preview** | **Current** |
 | F10.5.1 — Settings card for the capture-evidence diagnostic | Not authorized |
 | F10.5.2 — per-chat evidence aggregation | Not authorized |
+| F10.5.3 — native capture → `chrome.storage.local` mirror | Not authorized (gated native change) |
 | F10.6 — proposal flow | Not authorized |
 | F10.7 — remote apply / write-back | Forbidden until separate safety model |

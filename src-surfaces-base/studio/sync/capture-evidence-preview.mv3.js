@@ -3,22 +3,30 @@
  * Operator-triggered DIAGNOSTIC ONLY. Read-only. No merge. No apply.
  * No write-back. No proposal. No remote apply. No background sync.
  *
- * Observes the existing native ChatGPT extension capture-store data
- * via the already-shipped read-only H2O.Studio.store.capture facade
- * and presents an aggregate-counts-only F10.2.0 `evidence` envelope
- * for Chrome Studio preview. No native-extension code change. No new
- * chrome.runtime message type. No chrome.storage write. The native
- * runtime's data is the SUBJECT of observation; chrome-studio is the
- * envelope PRODUCER (honest authority attribution per F10.5 plan §3).
+ * Observes the existing native ChatGPT extension capture-store data —
+ * which the native Capture Engine (src-runtime-base/3X1a) persists to
+ * localStorage under the `h2o:prm:cgx:capture:store:v1:<chatId>` key
+ * shape — and presents an aggregate-counts-only F10.2.0 `evidence`
+ * envelope for Chrome Studio preview. The bridge reads that backend
+ * directly (read-only): localStorage primarily, plus chrome.storage.local
+ * as a secondary native<->Studio wire, merged by chatId. This is the
+ * identical backend + verbatim key the read-only H2O.Studio.store.capture
+ * facade reads via H2O.Studio.platform.storage. No native-extension code
+ * change. No new chrome.runtime message type. No storage write. The
+ * native runtime's data is the SUBJECT of observation; chrome-studio is
+ * the envelope PRODUCER (honest authority attribution per F10.5 plan §3).
  *
  * Safety invariants:
  *   - Chrome MV3 only (bails on detectTauri()).
  *   - Operator-triggered. No setInterval, no auto-run, no polling.
- *   - Reads chrome.storage.local for key enumeration (read-only).
- *   - Reads per-chat capture stores via H2O.Studio.store.capture
- *     facade (read-only consumption).
- *   - NEVER touches H2O.Studio.store.capture write paths (the facade
- *     does not expose any, but documented as invariant regardless).
+ *   - Enumerates + reads capture stores read-only from localStorage
+ *     (localStorage.key / getItem only) and chrome.storage.local
+ *     (storage.get only). NEVER setItem / removeItem / clear / set.
+ *     No localStorage write. No chrome.storage write.
+ *   - Reads localStorage directly rather than via the lazy/async
+ *     H2O.Studio.store.capture facade (whose getStore() returns null on
+ *     the first synchronous call); direct read is race-free and returns
+ *     identical bytes from the same backend. NEVER mutates a stored blob.
  *   - NEVER copies any free-text capture field into the returned
  *     envelope payload — specifically NOT item.text, item.title,
  *     item.tags, item.routeSuggestion, item.source.role,
@@ -74,9 +82,12 @@
   var RESULT_SCHEMA = 'h2o.studio.sync.native-capture-evidence-preview.v1';
   var BRIDGE_VERSION_TAG = 'h2o.platform.capabilities.v1#f10.5-bridge-v1';
 
-  // Native ChatGPT extension capture-store key shape. Verbatim from
-  // 3X1a runtime CFG.storeVersion (1) per apps/extensions/chatgpt/
-  // chrome/prod/surfaces/studio/store/capture.js phase-1g comment.
+  // Native ChatGPT extension capture-store key shape. The native Capture
+  // Engine (src-runtime-base/3X1a:73,95) writes each per-chat store under
+  // `${NS}:store:v${storeVersion}:${chatId}` where NS='h2o:prm:cgx:capture'
+  // and CFG.storeVersion=1. The Studio capture facade reads the same
+  // verbatim key via platform.storage (localStorage). If the native engine
+  // bumps storeVersion in a future migration, update this prefix in lock-step.
   var CAPTURE_STORE_PREFIX = 'h2o:prm:cgx:capture:store:v1:';
   var CAPTURE_KIND_TEXT_BUCKET = 'text';
   var DEFAULT_MAX_CHATS = 5000;
@@ -197,63 +208,117 @@
     return null;
   }
 
-  // ── Capture-store chatId enumeration ────────────────────────────────
-  // Reads all keys from chrome.storage.local (read-only) and filters to
-  // capture-store keys. Returns the per-chat ids (after stripping the
-  // namespace prefix). Bails out and returns null if storage is
-  // unreadable.
-  function enumerateCaptureChatIds(maxChats) {
+  // ── Storage handles (read-only) ─────────────────────────────────────
+  // The native ChatGPT Capture Engine (src-runtime-base/3X1a:73,95)
+  // persists each per-chat store to localStorage. chrome.storage.local
+  // is the established native<->Studio cross-context wire (cf. Library
+  // Sync). The bridge reads BOTH, strictly read-only, and never writes.
+  function localStorageRef() {
+    try {
+      var ls = global.localStorage;
+      if (ls && typeof ls.getItem === 'function' && typeof ls.key === 'function'
+          && typeof ls.length === 'number') {
+        return ls;
+      }
+    } catch (_) { /* access can throw in sandboxed / partitioned contexts */ }
+    return null;
+  }
+  function chromeLocalRef() {
+    try {
+      var s = global.chrome && global.chrome.storage && global.chrome.storage.local;
+      if (s && typeof s.get === 'function') return s;
+    } catch (_) { /* swallow */ }
+    return null;
+  }
+
+  // Strip CAPTURE_STORE_PREFIX from a key, returning the chatId, or '' if
+  // the key is not a capture *store* key. The ui-prefix
+  // ('…:capture:ui:v1:') and the migration marker ('…:capture:migrate:…')
+  // both fail the indexOf===0 test against the store-prefix, so they are
+  // excluded automatically.
+  function chatIdFromStoreKey(key) {
+    if (typeof key !== 'string') return '';
+    if (key.indexOf(CAPTURE_STORE_PREFIX) !== 0) return '';
+    return key.slice(CAPTURE_STORE_PREFIX.length);
+  }
+
+  // Coerce a raw stored value into a store object. localStorage holds a
+  // JSON string; chrome.storage holds a structured clone (object) or, if
+  // a producer stored a string, a string. Returns the object, null
+  // (absent), or undefined (parse error — counted as a read error).
+  function parseStoreValue(raw) {
+    if (raw == null) return null;
+    if (typeof raw === 'object') return raw;
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw); } catch (_) { return undefined; }
+    }
+    return undefined;
+  }
+
+  // ── Read-only collectors (populate a chatId -> store Map) ───────────
+  // filterSet (optional) restricts to specific chatIds. `into` is shared
+  // across both backends; a chatId already present is not overwritten, so
+  // localStorage (collected first) takes precedence over chrome.storage.
+  function collectFromLocalStorage(filterSet, maxChats, into, stats) {
+    var ls = localStorageRef();
+    if (!ls) { stats.localStorageAvailable = false; return; }
+    stats.localStorageAvailable = true;
+    var total;
+    try { total = ls.length; } catch (_) { stats.localStorageError = true; return; }
+    for (var i = 0; i < total; i++) {
+      if (into.size >= maxChats) break;
+      var key;
+      try { key = ls.key(i); } catch (_) { continue; }
+      var chatId = chatIdFromStoreKey(key);
+      if (!chatId) continue;
+      if (filterSet && !filterSet[chatId]) continue;
+      if (into.has(chatId)) continue;
+      var raw;
+      try { raw = ls.getItem(key); } catch (_) { stats.readErrors += 1; continue; }
+      var store = parseStoreValue(raw);
+      if (store === undefined) { stats.readErrors += 1; continue; }
+      if (store && typeof store === 'object') into.set(chatId, store);
+    }
+  }
+
+  function collectFromChromeStorage(filterSet, maxChats, into, stats) {
     return new Promise(function (resolve) {
-      var storage;
+      var s = chromeLocalRef();
+      if (!s) { stats.chromeStorageAvailable = false; resolve(); return; }
+      stats.chromeStorageAvailable = true;
+      var settled = false;
+      function finish() { if (!settled) { settled = true; resolve(); } }
       try {
-        storage = global.chrome && global.chrome.storage && global.chrome.storage.local;
-      } catch (_) {
-        resolve(null);
-        return;
-      }
-      if (!storage || typeof storage.get !== 'function') {
-        resolve(null);
-        return;
-      }
-      try {
-        storage.get(null, function (items) {
-          if (!items || typeof items !== 'object') {
-            resolve([]);
-            return;
-          }
-          var ids = [];
-          var allKeys = Object.keys(items);
-          for (var i = 0; i < allKeys.length; i++) {
-            var key = allKeys[i];
-            if (key.indexOf(CAPTURE_STORE_PREFIX) !== 0) continue;
-            var chatId = key.slice(CAPTURE_STORE_PREFIX.length);
-            if (!chatId) continue;
-            ids.push(chatId);
-            if (ids.length >= maxChats) break;
-          }
-          resolve(ids);
+        s.get(null, function (items) {
+          try {
+            var rt = global.chrome && global.chrome.runtime;
+            if (rt && rt.lastError) { stats.chromeStorageError = true; finish(); return; }
+            if (!items || typeof items !== 'object') { finish(); return; }
+            var keys = Object.keys(items);
+            for (var i = 0; i < keys.length; i++) {
+              if (into.size >= maxChats) break;
+              var chatId = chatIdFromStoreKey(keys[i]);
+              if (!chatId) continue;
+              if (filterSet && !filterSet[chatId]) continue;
+              if (into.has(chatId)) continue;      // localStorage already won
+              var store = parseStoreValue(items[keys[i]]);
+              if (store === undefined) { stats.readErrors += 1; continue; }
+              if (store && typeof store === 'object') into.set(chatId, store);
+            }
+          } catch (_) { stats.chromeStorageError = true; }
+          finish();
         });
-      } catch (_) {
-        resolve(null);
-      }
+      } catch (_) { stats.chromeStorageError = true; finish(); }
     });
   }
 
   // ── Per-chat aggregation (counts and structural metadata only) ──────
-  // Reads store.items via the existing facade and increments counters
-  // by reading only status, pinned, kind, createdAt, updatedAt.
-  // NEVER copies item.text / item.title / item.tags / item.id raw /
-  // item.source.* / item.routeSuggestion / item.convertedTo. The
-  // function signature only returns counts.
-  function aggregateChatStore(facade, chatId, agg) {
-    var store = null;
-    try {
-      store = facade.getStore(chatId);
-    } catch (_) {
-      agg.errorCount += 1;
-      return false;
-    }
-    if (!store || typeof store !== 'object') return false;
+  // Reads a store OBJECT (already loaded by the collectors above) and
+  // increments counters by reading only status, pinned, kind, createdAt,
+  // updatedAt. NEVER copies item.text / item.title / item.tags /
+  // item.id raw / item.source.* / item.routeSuggestion / item.convertedTo.
+  function aggregateStore(store, agg) {
+    if (!store || typeof store !== 'object') return;
     if (agg.captureStoreVersion === null && typeof store.version === 'number') {
       agg.captureStoreVersion = store.version;
     }
@@ -272,8 +337,8 @@
       // Pinned.
       if (item.pinned === true) agg.pinnedCount += 1;
       // Kind bucket. Coarse — 'text' (the native default) goes into
-      // captureSnippetKind; everything else into otherKind. The key
-      // 'text' is deliberately NOT used as a payload key name.
+      // captureSnippetKind; everything else into otherKind. The literal
+      // 'text' is a comparison value only — never a payload key name.
       var kind = typeof item.kind === 'string' ? item.kind : '';
       if (kind === CAPTURE_KIND_TEXT_BUCKET) {
         agg.itemsByKindBucket.captureSnippetKind += 1;
@@ -296,7 +361,6 @@
         }
       }
     }
-    return true;
   }
 
   function epochMsToIsoSeconds(ms) {
@@ -338,33 +402,52 @@
       return makeEarlyResult(observedAtIso, blockers, warnings);
     }
 
-    // ── 1. Locate capture facade (read-only consumption) ──────────────
-    var facade;
-    try {
-      facade = H2O.Studio && H2O.Studio.store && H2O.Studio.store.capture;
-    } catch (_) { facade = null; }
-    if (!facade || typeof facade.getStore !== 'function') {
-      warnings.push('capture-facade-unavailable');
-      return makeEarlyResult(observedAtIso, blockers, warnings);
-    }
-
-    // ── 2. Enumerate chat ids (read-only chrome.storage scan) ─────────
+    // ── 1. Resolve maxChats + optional chatId filter ──────────────────
     var maxChats = (typeof opts.maxChats === 'number' && opts.maxChats > 0)
       ? Math.min(opts.maxChats, DEFAULT_MAX_CHATS)
       : DEFAULT_MAX_CHATS;
-    var chatIds;
+    var filterSet = null;
     if (Array.isArray(opts.chatIds)) {
-      chatIds = opts.chatIds.filter(function (id) {
-        return typeof id === 'string' && id.length > 0;
-      }).slice(0, maxChats);
-    } else {
-      chatIds = await enumerateCaptureChatIds(maxChats);
+      filterSet = Object.create(null);
+      for (var fi = 0; fi < opts.chatIds.length; fi++) {
+        var fid = opts.chatIds[fi];
+        if (typeof fid === 'string' && fid.length > 0) filterSet[fid] = true;
+      }
     }
-    if (chatIds === null) {
-      warnings.push('capture-store-enumeration-failed');
+
+    // ── 2. Collect per-chat capture stores (read-only, dual backend) ──
+    // The native Capture Engine (src-runtime-base/3X1a) persists each
+    // per-chat store to localStorage under CAPTURE_STORE_PREFIX + chatId;
+    // chrome.storage.local is the established native<->Studio wire (cf.
+    // Library Sync). Read BOTH, strictly read-only, merged by chatId
+    // (localStorage takes precedence). This observes the SAME backend +
+    // verbatim key the H2O.Studio.store.capture facade reads, but does so
+    // directly: the facade's getStore() is lazy/async (returns null on
+    // the first synchronous call, hydrates on a later tick), which is
+    // unusable for a one-shot diagnostic. Direct read-only access is
+    // race-free and returns identical bytes.
+    var chatStores = new Map();
+    var stats = {
+      localStorageAvailable: false,
+      localStorageError: false,
+      chromeStorageAvailable: false,
+      chromeStorageError: false,
+      readErrors: 0,
+    };
+    collectFromLocalStorage(filterSet, maxChats, chatStores, stats);
+    await collectFromChromeStorage(filterSet, maxChats, chatStores, stats);
+
+    if (!stats.localStorageAvailable && !stats.chromeStorageAvailable) {
+      warnings.push('capture-storage-unavailable');
       return makeEarlyResult(observedAtIso, blockers, warnings);
     }
-    if (chatIds.length === 0) {
+    if (stats.localStorageError || stats.chromeStorageError) {
+      warnings.push('capture-store-enumeration-failed');
+    }
+    if (stats.readErrors > 0) {
+      warnings.push('capture-store-read-errors');
+    }
+    if (chatStores.size === 0) {
       warnings.push('no-capture-stores-found');
       // Still emit a valid envelope describing the zero-observation
       // state so downstream consumers can confirm the bridge ran.
@@ -379,16 +462,12 @@
       itemsByKindBucket: { captureSnippetKind: 0, otherKind: 0 },
       earliestCreatedAt: null,
       latestUpdatedAt: null,
-      errorCount: 0,
       chatsObserved: [],
     };
-    for (var i = 0; i < chatIds.length; i++) {
-      var ok = aggregateChatStore(facade, chatIds[i], agg);
-      if (ok) agg.chatsObserved.push(chatIds[i]);
-    }
-    if (agg.errorCount > 0) {
-      warnings.push('capture-facade-read-errors');
-    }
+    chatStores.forEach(function (store, chatId) {
+      aggregateStore(store, agg);
+      agg.chatsObserved.push(chatId);
+    });
 
     // ── 4. chatsObservedHash: sha256 of sorted sha256(chatId) list ────
     // Allows a consumer to detect "same set of observed chats" without
