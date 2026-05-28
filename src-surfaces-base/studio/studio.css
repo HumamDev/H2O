@@ -354,6 +354,21 @@ body[data-sidebar="closed"] .wbRail{
   min-height:0;
 }
 
+/* F10.4-sidebar-fix: give the Settings section visual breathing room at
+   the end of the sidebar. Previously the Settings nav button sat flush
+   against the sidebar's 14px bottom padding edge, which looked clipped
+   when the operator scrolled to the bottom. The top border + small
+   padding gap create a stable visual separator from the preceding
+   Saved-chats section and a guaranteed visible gap below the link
+   regardless of scroll position. No change to flex behavior
+   (flex:0 0 auto already inherited). */
+.wbSide--sidebar > .wbSidebarSection--settings{
+  margin-top:6px;
+  padding-top:8px;
+  padding-bottom:6px;
+  border-top:1px solid var(--wb-border);
+}
+
 .wbSide--sidebar::-webkit-scrollbar{
   width:0;
   height:0;

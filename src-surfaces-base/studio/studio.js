@@ -3663,8 +3663,20 @@ function setActiveNav(view){
 function setActiveFolder(folderId){
   const selected = normalizeFolderFilter(folderId);
   state.lastFolderId = selected;
+  // F10.4-sidebar-fix: when the operator is on the #/library/folders
+  // catalog page, mark the synthetic "All folders" utility row active
+  // even though selected/state.lastFolderId is the empty filter. Other
+  // folder rows take precedence — only the dedicated catalog hash
+  // counts as "all folders is the current view".
+  const isAllFoldersRoute = (() => {
+    try { return String(W.location?.hash || "") === "#/library/folders"; }
+    catch (_) { return false; }
+  })();
   $$(".wbFolderItem[data-folder-id]").forEach((node) => {
-    node.classList.toggle("active", String(node.dataset.folderId || "") === selected);
+    const dataId = String(node.dataset.folderId || "");
+    const isMatch = dataId === selected
+      || (isAllFoldersRoute && dataId === "__all_folders__");
+    node.classList.toggle("active", isMatch);
   });
 }
 
@@ -3750,6 +3762,24 @@ function collectFolderSidebarItems(rows, view, mode = "canonical"){
   }
   if (mode === "canonical") {
     out.push({ folderId: FOLDER_FILTER_NONE, label: "Unfiled", count: unfiledCount, kind: "utility" });
+    // F10.4-sidebar-fix: pin "All folders" as a utility sibling of
+    // "Unfiled" so studio.js's renderFolderSidebar (which rebuilds
+    // #folderList via host.innerHTML = "") stops dropping it whenever
+    // state.lastFolderId/view/etc. changes. The S0Z1g sidebar renderer
+    // also injects this row via buildAllFoldersSidebarItem; either may
+    // win the last-writer race, but now both produce the same row.
+    // href overrides buildListHash so the row navigates to the
+    // dedicated #/library/folders catalog page rather than the chat
+    // list. kind:"utility" matches Unfiled to share the existing
+    // utility-row render path.
+    out.push({
+      folderId: "__all_folders__",
+      label: "All folders",
+      count: base.length,
+      kind: "utility",
+      href: "#/library/folders",
+      isAllFoldersLink: true,
+    });
   }
   return out;
 }
@@ -3843,7 +3873,10 @@ function renderFolderSidebarRow(view, item, opts){
   const rowTitle = countDetails ? `${displayLabel} — ${countDetails}` : displayLabel;
   if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
   if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
-  link.href = buildListHash(view, item.folderId);
+  // F10.4-sidebar-fix: honor item.href override so utility rows like
+  // "All folders" (#/library/folders) route to their dedicated page
+  // instead of the default chat-list hash.
+  link.href = item.href ? String(item.href) : buildListHash(view, item.folderId);
   link.title = rowTitle;
   link.setAttribute("aria-label", countDetails ? `${displayLabel}, ${countDetails}` : displayLabel);
   if (compactCounts) link.style.gridTemplateColumns = "16px minmax(0,1fr) 24px";
