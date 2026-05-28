@@ -222,6 +222,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // envelopes and downloads remote blobs into inbox validation only. No
   // convergence, apply, automatic merge, review, polling, or sync loop.
   "sync/webdav-relay.tauri.js",
+  // F10.8.4: Desktop/Tauri-only relay index and dedupe ledger. Derived from
+  // durable outbox/inbox stores only. No writes, transport, convergence,
+  // apply, or automatic sync.
+  "sync/relay-index.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -399,6 +403,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/relay-outbox.tauri.js",
   "sync/relay-inbox.tauri.js",
   "sync/webdav-relay.tauri.js",
+  "sync/relay-index.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
