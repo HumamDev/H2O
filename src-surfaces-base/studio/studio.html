@@ -709,6 +709,11 @@
        generated proposal candidates only. No publish, outbox enqueue, apply,
        applyEvent, conflictCandidate, convergence, or WebDAV. -->
   <script src="./sync/convergence-proposal-generator.tauri.js"></script>
+  <!-- F10.8.6f: Desktop/Tauri-only conflictCandidate generator. Converts
+       currently revalidated conflicted planner entries into local generated
+       conflictCandidate candidates only. No publish, outbox enqueue, apply,
+       proposal, applyEvent, convergence, or WebDAV. -->
+  <script src="./sync/convergence-conflict-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
