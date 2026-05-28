@@ -1,7 +1,7 @@
 <!--
- * @version 2.5.20
+ * @version 2.5.30
  * Changes: fixed shell, collapsed rail, simplified topbar;
- *          stylesheet href carries ?v=2.5.20 cache-bust because the Tauri
+ *          stylesheet href carries ?v=2.5.30 cache-bust because the Tauri
  *          V2 dev server (http://127.0.0.1:1430/) emits no
  *          Last-Modified/ETag/Cache-Control headers, so WKWebView
  *          otherwise serves previously-fetched Studio assets indefinitely
@@ -28,7 +28,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>H2O Studio vNext</title>
-  <link rel="stylesheet" href="./studio.css?v=2.5.20" />
+  <link rel="stylesheet" href="./studio.css?v=2.5.30" />
 </head>
 <body data-h2o-studio-mode="1">
   <div class="wbShell">
@@ -161,7 +161,8 @@
            Owned by S0Y1a. 🎬 Studio Ribbon - Studio.js; populated only when
            studio.js calls H2O.Studio.ribbon.setContext({ chatType: ... }).
            Default state is hidden; no DOM is mounted until a chat reader
-           context is active. -->
+           context is active. The Tauri adapter may re-home this element into
+           its desktop chrome strip at runtime; static HTML stays MV3-safe. -->
       <section id="studioRibbon"
                class="wbRibbon"
                role="region"
@@ -759,6 +760,6 @@
   <script src="./S9D1a. 🎬 Auto Emoji Title - Studio.js"></script>
   <!-- ─────────────────────────────────────────────────────────────────── -->
 
-  <script src="./studio.js?v=2.5.20"></script>
+  <script src="./studio.js?v=2.5.30"></script>
 </body>
 </html>

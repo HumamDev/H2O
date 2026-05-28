@@ -1,5 +1,5 @@
 /*
- * @version 2.5.19
+ * @version 2.5.30
  * Changes: fixed shell, collapsed rail, reader-owned scroll;
  *          narrow viewport (<=960px) keeps sidebar as a real grid pane
  *          (overlay mode removed) so list rows do not underlap the sidebar;
@@ -9130,7 +9130,13 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
   border-top-color: var(--wb-settings-divider) !important;
 }
 
-/* ── v2.5.18 — Tauri desktop runtime: macOS traffic-light buttons ───────
+/* Hidden unless Studio is running inside the Tauri desktop shell. */
+.wbTauriDesktopChrome,
+.wbTauriDragStrip{
+  display:none;
+}
+
+/* ── v2.5.23 — Tauri desktop runtime: OneNote-style app chrome ──────────
  *
  * apps/studio/desktop/src-tauri/tauri.conf.json sets
  *   titleBarStyle: "Overlay", hiddenTitle: true,
@@ -9140,27 +9146,166 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
  * bar. The window content extends full-bleed under the title-bar area;
  * macOS still owns the topmost ~28px as a drag region.
  *
- * The traffic-light buttons sit at roughly x=14..86, y=18..30. Without
- * extra padding they would overlap the sidebar header ("H2O Cockpit Pro
- * / Studio") and the rail's collapse button. The rules below add a
- * desktop-only top padding to those surfaces so the buttons sit in
- * empty space above the content. The padding is scoped to
- * `html[data-h2o-runtime="tauri"]` (set by platform.tauri.js at
- * adapter register time) so MV3 / web extension Studio is untouched.
+ * The Tauri adapter creates a desktop chrome strip before .wbShell and
+ * re-homes #studioRibbon there at runtime. Keeping the static HTML in its
+ * normal .wbStage location preserves MV3/Chrome layout, while Tauri gets
+ * an app-level ribbon above the route title bar. The traffic-light band is
+ * a real flex row, not a fixed overlay, so the sidebar and stage never sit
+ * underneath the macOS window buttons. Rules are scoped to
+ * `html[data-h2o-runtime="tauri"]` (set by platform.tauri.js) so MV3/web
+ * extension Studio is untouched.
  * ─────────────────────────────────────────────────────────────────────── */
 
-/* Push the sidebar header below the traffic-light band so the H2O badge
- * + Cockpit Pro / Studio title sit cleanly under the OS buttons. */
-html[data-h2o-runtime="tauri"] .wbSidebarHead{
-  padding-top: 28px;
+html[data-h2o-runtime="tauri"] body{
+  --wb-tauri-titlebar-h:52px;
+  --wb-tauri-drag-h:42px;
+  display:flex;
+  flex-direction:column;
+  min-height:100vh;
+  min-height:100dvh;
 }
 
-/* Same for the collapsed-rail state — the open-sidebar button at the
- * top of the rail also needs to sit below the traffic-light band. */
+html[data-h2o-runtime="tauri"] .wbTauriDesktopChrome{
+  display:flex;
+  flex:0 0 auto;
+  flex-direction:column;
+  min-width:0;
+  position:relative;
+  z-index:80;
+  background:var(--wb-ribbon-bg);
+}
+
+html[data-h2o-runtime="tauri"] .wbShell{
+  flex:1 1 auto;
+  min-height:0 !important;
+  height:auto !important;
+  margin-top:0;
+}
+
+html[data-h2o-runtime="tauri"] .wbTauriDragStrip{
+  display:block;
+  flex:0 0 var(--wb-tauri-drag-h);
+  height:var(--wb-tauri-drag-h);
+  min-height:var(--wb-tauri-drag-h);
+  position:relative;
+  z-index:1;
+  background:var(--wb-ribbon-bg);
+  border-bottom:1px solid var(--wb-border);
+  box-shadow:none;
+  pointer-events:auto;
+  user-select:none;
+  -webkit-user-select:none;
+  -webkit-app-region:drag;
+}
+
+html[data-h2o-runtime="tauri"] .wbTop{
+  box-sizing:border-box;
+  position:relative;
+  top:auto;
+  left:auto;
+  right:auto;
+  grid-row:1;
+  align-self:stretch;
+  z-index:2;
+  min-height:var(--wb-tauri-titlebar-h);
+  height:var(--wb-tauri-titlebar-h);
+  max-height:var(--wb-tauri-titlebar-h);
+  padding:0 30px;
+  overflow:visible;
+  border-bottom:1px solid var(--wb-border);
+  background:var(--wb-topbar-bg);
+  backdrop-filter:blur(18px);
+  -webkit-app-region:no-drag;
+}
+
+html[data-h2o-runtime="tauri"] .wbTopGroup--meta{
+  min-width:0;
+}
+
+html[data-h2o-runtime="tauri"] .wbTopGroup--actions{
+  align-items:center;
+  overflow:visible;
+}
+
+html[data-h2o-runtime="tauri"] .wbRouteTitle{
+  font-size:16px;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]){
+  flex:0 0 auto;
+  position:relative;
+  z-index:2;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonBar{
+  min-height:42px;
+  padding-top:0;
+  padding-bottom:0;
+  -webkit-app-region:no-drag;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTabs{
+  align-items:center;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab{
+  border-radius:8px;
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab[aria-selected="true"],
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonTab.is-active{
+  border-bottom-color:var(--wb-border);
+}
+
+html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) :where(
+  button,
+  [role="button"],
+  .wbRibbonTab,
+  .wbRibbonCollapse
+){
+  -webkit-app-region:no-drag;
+}
+
+html[data-h2o-runtime="tauri"] .wbStage{
+  position:relative;
+  z-index:70;
+  grid-template-rows:var(--wb-tauri-titlebar-h) minmax(0,1fr);
+  padding-top:0;
+  min-height:0 !important;
+  height:100% !important;
+}
+
+html[data-h2o-runtime="tauri"] .wbMain{
+  grid-row:2;
+  min-height:0;
+}
+
 html[data-h2o-runtime="tauri"] .wbRail{
-  padding-top: 38px;
+  padding-top:10px;
 }
 
-/* The top route header (.wbTop) sits to the right of the sidebar so
- * traffic lights never overlap it geometrically. No padding needed
- * there. Likewise .wbStage's other rows are right of the sidebar. */
+html[data-h2o-runtime="tauri"] .wbSide--sidebar{
+  padding-top:10px;
+}
+
+html[data-h2o-runtime="tauri"] body[data-sidebar="closed"] .wbRail{
+  background:var(--wb-sidebar);
+  border-right-color:var(--wb-border);
+}
+
+html[data-h2o-runtime="tauri"] :where(
+  button,
+  input,
+  select,
+  textarea,
+  a,
+  [role="button"],
+  .wbTopGroup--actions,
+  .wbAppearanceBtn,
+  .wbAppearancePanel,
+  .wbRibbon,
+  .wbRail,
+  .wbSide--sidebar
+){
+  -webkit-app-region:no-drag;
+}

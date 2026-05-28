@@ -552,6 +552,68 @@
     }
   }
 
+  function windowOpenDevtools() {
+    var invoke = getTauriInvoke();
+    if (!invoke) return Promise.reject(new Error('platform.window.openDevtools: tauri invoke unavailable'));
+    try {
+      return invoke('open_studio_devtools');
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  function installTauriDesktopChrome() {
+    try {
+      var doc = global.document;
+      if (!doc || !doc.documentElement) return;
+      doc.documentElement.setAttribute('data-h2o-runtime', 'tauri');
+
+      function mount() {
+        try {
+          var shell = doc.querySelector('.wbShell');
+          var ribbon = doc.getElementById('studioRibbon');
+          if (!shell || !ribbon || !shell.parentNode) return false;
+
+          var chrome = doc.getElementById('studioDesktopChrome');
+          if (!chrome) {
+            chrome = doc.createElement('div');
+            chrome.id = 'studioDesktopChrome';
+            chrome.className = 'wbTauriDesktopChrome';
+            chrome.setAttribute('data-h2o-tauri-desktop-chrome', '1');
+            shell.parentNode.insertBefore(chrome, shell);
+          }
+          chrome.hidden = false;
+
+          var strip = chrome.querySelector('.wbTauriDragStrip');
+          if (!strip) {
+            strip = doc.createElement('div');
+            strip.className = 'wbTauriDragStrip';
+            strip.setAttribute('data-tauri-drag-region', '');
+            strip.setAttribute('aria-hidden', 'true');
+            chrome.appendChild(strip);
+          }
+
+          if (ribbon.parentNode !== chrome) chrome.appendChild(ribbon);
+
+          var controlParking = doc.getElementById('studioRibbonControlParking');
+          if (controlParking && controlParking.parentNode !== chrome) chrome.appendChild(controlParking);
+          var metadataParking = doc.getElementById('studioRibbonMetadataParking');
+          if (metadataParking && metadataParking.parentNode !== chrome) chrome.appendChild(metadataParking);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      if (!mount()) {
+        if (doc.readyState === 'loading') {
+          doc.addEventListener('DOMContentLoaded', mount, { once: true });
+        }
+        global.setTimeout(mount, 0);
+      }
+    } catch (_) { /* ignore */ }
+  }
+
   /* ── Public adapter ─────────────────────────────────────────────── */
   var adapter = {
     name: ADAPTER_NAME,
@@ -576,7 +638,7 @@
     capture: { available: false },
     auth: { available: false },
     clipboard: { writeText: clipboardWriteText },
-    window: { available: true, setAlwaysOnTop: windowSetAlwaysOnTop },
+    window: { available: true, setAlwaysOnTop: windowSetAlwaysOnTop, openDevtools: windowOpenDevtools },
     /* Tauri-specific extension (not part of the fallback shape; callers
      * may feature-detect via `platform.openUrl` or `platform.env.isTauri`). */
     openUrl: openUrl,
@@ -585,6 +647,7 @@
   try {
     platform.__registerAdapter(adapter);
     try { console.log('[H2O.Studio.platform] tauri adapter registered'); } catch (_) { /* ignore */ }
+    installTauriDesktopChrome();
   } catch (e) {
     try { console.error('[H2O.Studio.platform.tauri] registration failed', e); } catch (_) { /* ignore */ }
   }

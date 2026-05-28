@@ -1968,10 +1968,17 @@ fn nowish_millis() -> i64 {
         .unwrap_or(0)
 }
 
+#[tauri::command]
+fn open_studio_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.open_devtools();
+    Ok(())
+}
+
 #[cfg(debug_assertions)]
 macro_rules! h2o_studio_invoke_handler {
     () => {
         tauri::generate_handler![
+            open_studio_devtools,
             f5g4_prove_tombstone_review_apply_transaction,
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
@@ -1990,6 +1997,7 @@ macro_rules! h2o_studio_invoke_handler {
 macro_rules! h2o_studio_invoke_handler {
     () => {
         tauri::generate_handler![
+            open_studio_devtools,
             f5g4_prove_tombstone_review_apply_transaction,
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
