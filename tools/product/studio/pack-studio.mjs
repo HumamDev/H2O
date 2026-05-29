@@ -312,6 +312,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // local generated proposal candidates with targetNameHash only. No rename,
   // apply, publication, outbox enqueue, convergence, or transport.
   "sync/rename-proposal-candidate-generator.tauri.js",
+  // F10.9.4: Desktop/Tauri-only local rename convergence action. Executes one
+  // approved local folder rename only. No applyEvent, publication, bookkeeping,
+  // transport, move, create, delete, binding, or mobile write-back.
+  "sync/rename-convergence-action.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -511,6 +515,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/rename-materialization-diagnostic.tauri.js",
   "sync/rename-convergence-preflight.tauri.js",
   "sync/rename-proposal-candidate-generator.tauri.js",
+  "sync/rename-convergence-action.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
