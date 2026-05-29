@@ -377,6 +377,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // existing materialization, preflight, local move, and bookkeeping APIs from
   // explicit operator controls only. No new move logic or transport.
   "sync/move-convergence-ui.tauri.js",
+  // F12.0.1: Desktop/Tauri-only delete materialization diagnostic. Checks
+  // empty-folder, base-fresh, delete-vs-edit, recovery, and F5 tombstone
+  // capability only. No delete, apply, convergence, publication, or transport.
+  "sync/delete-materialization-diagnostic.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -599,6 +603,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/move-convergence-bookkeeping.tauri.js",
   "sync/move-convergence-proof.tauri.js",
   "sync/move-convergence-ui.tauri.js",
+  "sync/delete-materialization-diagnostic.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 

@@ -815,6 +815,10 @@
        existing materialization, preflight, local move, and bookkeeping APIs
        from explicit operator controls only. No new move logic or transport. -->
   <script src="./sync/move-convergence-ui.tauri.js"></script>
+  <!-- F12.0.1: Desktop/Tauri-only delete materialization diagnostic. Checks
+       empty-folder, base-fresh, delete-vs-edit, recovery, and F5 tombstone
+       capability only. No delete, apply, convergence, publication, or transport. -->
+  <script src="./sync/delete-materialization-diagnostic.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
