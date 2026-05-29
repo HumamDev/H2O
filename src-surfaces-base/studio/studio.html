@@ -783,6 +783,10 @@
        Orchestrates existing rename validation/action APIs only. No new
        convergence behavior, publication, transport, WebDAV, or mobile write-back. -->
   <script src="./sync/rename-convergence-proof.tauri.js"></script>
+  <!-- F11.0.1: Desktop/Tauri-only move materialization diagnostic. Validates
+       local tree parent/orphan/cycle/depth/duplicate-sibling safety only.
+       No move, apply, convergence, publication, transport, or mutation. -->
+  <script src="./sync/move-materialization-diagnostic.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
