@@ -803,6 +803,14 @@
        redacted applyEvent evidence only after successful local move results.
        No move, apply, watermark, consumed ledger, publication, or transport. -->
   <script src="./sync/move-apply-event.tauri.js"></script>
+  <!-- F11.0.5: Desktop/Tauri-only move convergence bookkeeping. Builds the
+       move applyEvent receipt, records consumed-operation and watermark rows
+       only. No move, second apply, publication, enqueue, upload, or WebDAV. -->
+  <script src="./sync/move-convergence-bookkeeping.tauri.js"></script>
+  <!-- F11.0.5: Desktop/Tauri-only move convergence runtime proof harness.
+       Orchestrates existing move validation/action APIs only. No new
+       convergence behavior, publication, transport, WebDAV, or mobile write-back. -->
+  <script src="./sync/move-convergence-proof.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>

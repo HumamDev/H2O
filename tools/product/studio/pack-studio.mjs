@@ -365,6 +365,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // redacted applyEvent evidence only after successful local move results.
   // No move, apply, watermark, consumed ledger, publication, or transport.
   "sync/move-apply-event.tauri.js",
+  // F11.0.5: Desktop/Tauri-only move convergence bookkeeping. Builds the
+  // move applyEvent receipt, records consumed-operation and watermark rows
+  // only. No move, second apply, publication, enqueue, upload, or WebDAV.
+  "sync/move-convergence-bookkeeping.tauri.js",
+  // F11.0.5: Desktop/Tauri-only move convergence runtime proof harness.
+  // Orchestrates existing move validation/action APIs only. No new
+  // convergence behavior, publication, transport, WebDAV, or mobile write-back.
+  "sync/move-convergence-proof.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -584,6 +592,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/move-proposal-candidate-generator.tauri.js",
   "sync/move-convergence-action.tauri.js",
   "sync/move-apply-event.tauri.js",
+  "sync/move-convergence-bookkeeping.tauri.js",
+  "sync/move-convergence-proof.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
