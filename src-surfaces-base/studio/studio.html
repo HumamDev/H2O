@@ -799,6 +799,10 @@
        one approved local parent update only. No applyEvent, publication,
        bookkeeping, transport, create, delete, binding, or mobile write-back. -->
   <script src="./sync/move-convergence-action.tauri.js"></script>
+  <!-- F11.0.4b: Desktop/Tauri-only move applyEvent receipt builder. Emits
+       redacted applyEvent evidence only after successful local move results.
+       No move, apply, watermark, consumed ledger, publication, or transport. -->
+  <script src="./sync/move-apply-event.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
