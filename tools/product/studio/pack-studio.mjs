@@ -34,6 +34,19 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
 
+  // Dock Panel read-only tab modules (Phase 1b-1e + Finder). studio.html
+  // references all eight after their store façades; without these entries
+  // the build emits ERR_FILE_NOT_FOUND for the dock/tabs/*.tab.studio.js
+  // <script> tags. Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
+  "dock/tabs/highlights.tab.studio.js",
+  "dock/tabs/bookmarks.tab.studio.js",
+  "dock/tabs/notes.tab.studio.js",
+  "dock/tabs/attachments.tab.studio.js",
+  "dock/tabs/navigator.tab.studio.js",
+  "dock/tabs/context.tab.studio.js",
+  "dock/tabs/capture.tab.studio.js",
+  "dock/tabs/finder.tab.studio.js",
+
   // Studio Ribbon shell — passive constants and registry. studio.html
   // references these before the visible S0Y1a ribbon surface module.
   "ribbon/ribbon-keys.js",
@@ -447,6 +460,16 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Dock Panel shell — see SOURCE_FILES list above for context.
   "dock/dock-keys.js",
   "dock/dock-shell.studio.js",
+
+  // Dock Panel read-only tab modules — see SOURCE_FILES list above.
+  "dock/tabs/highlights.tab.studio.js",
+  "dock/tabs/bookmarks.tab.studio.js",
+  "dock/tabs/notes.tab.studio.js",
+  "dock/tabs/attachments.tab.studio.js",
+  "dock/tabs/navigator.tab.studio.js",
+  "dock/tabs/context.tab.studio.js",
+  "dock/tabs/capture.tab.studio.js",
+  "dock/tabs/finder.tab.studio.js",
 
   // Studio Ribbon shell — see SOURCE_FILES list above for context.
   "ribbon/ribbon-keys.js",
