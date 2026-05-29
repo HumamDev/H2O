@@ -7,6 +7,7 @@ import {
   compareArchiveWorkbenchToSource,
   getArchiveWorkbenchSourcePresence,
   getArchiveWorkbenchPresence,
+  studioHtmlMissingFromAllowlist,
   ARCHIVE_WORKBENCH_SOURCE_FILES,
 } from "../product/studio/pack-studio.mjs";
 import { extensionBuildDir, RUNTIME_BASE_REL } from "../paths.mjs";
@@ -215,6 +216,23 @@ function printArchiveWorkbenchChecks(srcDir) {
     console.log(`[dev:check] archiveWorkbench unexpected dev-lean host files: ${leanPresence.join(", ")}`);
     process.exitCode = 1;
   }
+
+  // studio.html <script src> drift guard: every LOCAL script ref in studio.html
+  // must be in the pack allowlist (ARCHIVE_WORKBENCH_SOURCE_FILES), or it is
+  // dropped from the packaged Chrome/Tauri build and 404s at runtime. Directional
+  // check (refs MUST be packed; unreferenced allowlist entries are not flagged).
+  let studioHtmlUnpacked = [];
+  try {
+    studioHtmlUnpacked = studioHtmlMissingFromAllowlist(srcDir);
+  } catch (error) {
+    console.log(`[dev:check] archiveWorkbench studio.html ref-check error: ${error && error.message}`);
+    process.exitCode = 1;
+  }
+  console.log(`[dev:check] archiveWorkbench.studioHtmlUnpackedRefs=${studioHtmlUnpacked.length}`);
+  for (const ref of studioHtmlUnpacked) {
+    console.log(`[dev:check] studio.html references unpacked file: ${ref}`);
+  }
+  if (studioHtmlUnpacked.length) process.exitCode = 1;
 }
 
 function main() {

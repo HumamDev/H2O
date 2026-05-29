@@ -713,6 +713,54 @@ export function getArchiveWorkbenchSourcePresence(srcRoot) {
   return ARCHIVE_WORKBENCH_SOURCE_FILES.filter((name) => fileExists(path.join(dir, name)));
 }
 
+/* ── studio.html <script src> drift guard ──────────────────────────────────
+ * studio.html loads feature modules via <script src="./…"> tags. Every LOCAL
+ * ref must also appear in ARCHIVE_WORKBENCH_SOURCE_FILES so the pack step
+ * copies it into the Chrome/Tauri build; a ref absent from the allowlist is
+ * silently dropped and 404s only at runtime (this historically bit the overlay
+ * export modules and the dock/tabs modules). These helpers let dev:check fail
+ * such drift automatically. Directional by design: studio.html refs MUST be
+ * packed, but allowlist entries not referenced by studio.html (studio.css,
+ * desktop-only *.tauri.js adapters loaded by other means, etc.) are NOT
+ * flagged. */
+
+/* Pure: extract normalized LOCAL <script src> refs from an HTML string.
+ * Strips a leading "./" and any "?query"; skips non-local schemes
+ * (http(s):, protocol-relative //, chrome-extension:, data:) and inline
+ * <script> blocks (no src). */
+export function parseStudioHtmlScriptRefs(html) {
+  const out = [];
+  const re = /<script\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(String(html || ""))) !== null) {
+    let ref = String(m[1] || "").trim();
+    if (!ref) continue;
+    if (/^(https?:|\/\/|chrome-extension:|data:)/i.test(ref)) continue; /* non-local */
+    ref = ref.replace(/^\.\//, "").replace(/\?.*$/, ""); /* strip ./ and ?query */
+    if (ref) out.push(ref);
+  }
+  return out;
+}
+
+/* Pure: sorted, de-duplicated refs present in `html`'s <script src> tags but
+ * absent from `allowlist`. */
+export function studioHtmlRefsMissingFrom(html, allowlist) {
+  const allow = new Set(allowlist || []);
+  const missing = new Set();
+  for (const ref of parseStudioHtmlScriptRefs(html)) {
+    if (!allow.has(ref)) missing.add(ref);
+  }
+  return Array.from(missing).sort();
+}
+
+/* Disk: read <srcRoot>/<ARCHIVE_WORKBENCH_SOURCE_REL>/studio.html and return
+ * the sorted local <script src> refs missing from the pack allowlist. Throws
+ * if studio.html cannot be read (a missing studio.html is itself a failure). */
+export function studioHtmlMissingFromAllowlist(srcRoot) {
+  const htmlPath = path.join(archiveWorkbenchSourceDir(srcRoot), "studio.html");
+  return studioHtmlRefsMissingFrom(readText(htmlPath), ARCHIVE_WORKBENCH_SOURCE_FILES);
+}
+
 export function archiveWorkbenchOutDir(outDir) {
   return path.join(String(outDir || ""), "surfaces", "studio");
 }
