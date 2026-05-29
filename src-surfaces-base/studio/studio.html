@@ -771,6 +771,10 @@
        redacted applyEvent evidence only after successful local rename results.
        No rename, apply, watermark, consumed ledger, publication, or transport. -->
   <script src="./sync/rename-apply-event.tauri.js"></script>
+  <!-- F10.9.6: Desktop/Tauri-only rename convergence bookkeeping. Builds the
+       rename applyEvent receipt, records consumed-operation and watermark rows
+       only. No rename, second apply, publication, enqueue, upload, or WebDAV. -->
+  <script src="./sync/rename-convergence-bookkeeping.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
