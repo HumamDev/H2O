@@ -823,6 +823,10 @@
        materialization and validates replay/consumed/watermark safety only.
        No delete, apply, convergence, publication, transport, or mutation. -->
   <script src="./sync/delete-convergence-preflight.tauri.js"></script>
+  <!-- F12.0.3: Desktop/Tauri-only delete proposal candidate generator. Emits
+       generated proposal candidates with F5 predicate data only. No delete,
+       tombstone minting, F5 handoff, publication, convergence, or transport. -->
+  <script src="./sync/delete-proposal-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
