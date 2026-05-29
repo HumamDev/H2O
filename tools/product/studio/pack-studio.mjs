@@ -39,11 +39,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "ribbon/ribbon-keys.js",
   "ribbon/ribbon-shell.studio.js",
 
-  // Studio Edit Overlay (Phase 2a) — passive constants and no-op applier.
-  // studio.html references these before store/editOverlay.js; keep copied
-  // with the same subdir names to avoid runtime script 404s.
+  // Studio Edit Overlay — overlay keys/applier (Phase 2a) plus the Markdown
+  // serializer (Phase 3a) and DOCX writer (Phase 3c), all extended for inline
+  // formatting in Phase 5d. studio.html references all four before
+  // store/editOverlay.js; keep copied with the same subdir names to avoid
+  // runtime script 404s. Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
   "overlay/overlay-keys.js",
   "overlay/overlay-applier.studio.js",
+  "overlay/overlay-serializer.studio.js",
+  "overlay/overlay-docx-writer.studio.js",
 
   // Studio Appearance / View Options (v2.5.8) — top-right options panel.
   // Passive constants + store + panel. studio.html references all three;
@@ -427,6 +431,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Studio Edit Overlay — see SOURCE_FILES list above for context.
   "overlay/overlay-keys.js",
   "overlay/overlay-applier.studio.js",
+  "overlay/overlay-serializer.studio.js",
+  "overlay/overlay-docx-writer.studio.js",
 
   // Studio Appearance / View Options — see SOURCE_FILES list above.
   "appearance/appearance-keys.js",
