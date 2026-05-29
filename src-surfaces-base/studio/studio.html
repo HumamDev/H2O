@@ -779,6 +779,10 @@
        existing materialization, preflight, local rename, and bookkeeping APIs
        from explicit operator controls only. No new rename logic or transport. -->
   <script src="./sync/rename-convergence-ui.tauri.js"></script>
+  <!-- F10.9.8: Desktop/Tauri-only rename convergence runtime proof harness.
+       Orchestrates existing rename validation/action APIs only. No new
+       convergence behavior, publication, transport, WebDAV, or mobile write-back. -->
+  <script src="./sync/rename-convergence-proof.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
