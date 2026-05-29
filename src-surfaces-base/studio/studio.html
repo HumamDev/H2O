@@ -755,6 +755,10 @@
        local proposedName against remote targetNameHash and safety ledgers only.
        No rename, apply, convergence, publication, transport, or mutation. -->
   <script src="./sync/rename-materialization-diagnostic.tauri.js"></script>
+  <!-- F10.9.2: Desktop/Tauri-only rename convergence preflight. Wraps the
+       materialization diagnostic and blocks rename-vs-move/delete cases only.
+       No rename, apply, convergence, publication, transport, or mutation. -->
+  <script src="./sync/rename-convergence-preflight.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
