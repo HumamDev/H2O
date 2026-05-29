@@ -831,6 +831,10 @@
        Validates generated delete proposals for F5 review eligibility only.
        No F5 row, tombstone, delete, applyEvent, publication, or transport. -->
   <script src="./sync/delete-f5-handoff-preview.tauri.js"></script>
+  <!-- F12.0.4b: Desktop/Tauri-only delete F5 review row ledger. Appends
+       pending-review metadata rows only after handoff preview readiness.
+       No tombstone, delete, apply, applyEvent, publication, or transport. -->
+  <script src="./sync/delete-f5-review-row.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
