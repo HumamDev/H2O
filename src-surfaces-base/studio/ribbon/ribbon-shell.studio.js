@@ -254,13 +254,137 @@
     return Object.assign({}, t[groupId] || {});
   }
 
-  /* ── No-op mount stubs (S0Y1a owns DOM) ───────────────────────────── */
+  /* ── Phase 6a — passive horizontal-overflow affordance ────────────────
+   * The active .wbRibbonPanel scrolls horizontally when its groups exceed the
+   * available width (S0Y1a owns the DOM). This watcher only READS panel
+   * geometry and writes a decorative data-overflow="none|start|mid|end"
+   * attribute that studio.css turns into an edge fade, so hidden groups are
+   * discoverable. Fully passive: no structural DOM changes, no action
+   * behaviour, no interference with S0Y1a's [hidden]/[aria-selected] toggling.
+   * Silent no-op without DOM / rAF (e.g. headless smokes); resize tracking
+   * uses ResizeObserver when available, else a window resize listener. */
+  const overflowWatch = (function () {
+    let watched = (typeof WeakSet === 'function') ? new WeakSet() : null;
+    const records = [];        /* { panel, ro, onScroll } — prune/teardown */
+    let rafId = 0;
+    let subscribed = false;
+    let onWinResize = null;
+
+    function raf(fn) {
+      if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(fn);
+      return setTimeout(fn, 16);
+    }
+    function cancelRaf(id) {
+      if (typeof cancelAnimationFrame === 'function') { try { cancelAnimationFrame(id); } catch (_) {} }
+      else { try { clearTimeout(id); } catch (_) {} }
+    }
+    function hasDom() {
+      const root = internalState.mountContainer;
+      return !!root && typeof root.querySelectorAll === 'function';
+    }
+    function panels() {
+      if (!hasDom()) return [];
+      try { return Array.prototype.slice.call(internalState.mountContainer.querySelectorAll('.wbRibbonPanel')); }
+      catch (_) { return []; }
+    }
+    function evaluate(panel) {
+      if (!panel) return;
+      let state;
+      try {
+        const max = panel.scrollWidth - panel.clientWidth;
+        const sl = panel.scrollLeft;
+        if (max <= 1) state = 'none';
+        else if (sl <= 1) state = 'start';
+        else if (sl >= max - 1) state = 'end';
+        else state = 'mid';
+      } catch (_) { return; }
+      try { if (panel.getAttribute('data-overflow') !== state) panel.setAttribute('data-overflow', state); }
+      catch (_) { /* swallow */ }
+    }
+    function prune() {
+      for (let i = records.length - 1; i >= 0; i -= 1) {
+        const r = records[i];
+        if (r.panel && r.panel.isConnected) continue;
+        try { if (r.ro) r.ro.disconnect(); } catch (_) {}
+        try { if (r.panel) r.panel.removeEventListener('scroll', r.onScroll); } catch (_) {}
+        records.splice(i, 1);
+      }
+    }
+    function bindNew() {
+      const list = panels();
+      for (let i = 0; i < list.length; i += 1) {
+        const panel = list[i];
+        if (watched && watched.has(panel)) continue;
+        const onScroll = function () { evaluate(panel); };
+        try { panel.addEventListener('scroll', onScroll, { passive: true }); }
+        catch (_) { try { panel.addEventListener('scroll', onScroll); } catch (__) {} }
+        let ro = null;
+        if (typeof ResizeObserver === 'function') {
+          try { ro = new ResizeObserver(function () { evaluate(panel); }); ro.observe(panel); }
+          catch (_) { ro = null; }
+        }
+        if (watched) watched.add(panel);
+        records.push({ panel: panel, ro: ro, onScroll: onScroll });
+      }
+    }
+    function refreshNow() {
+      rafId = 0;
+      prune();
+      bindNew();
+      const list = panels();
+      for (let i = 0; i < list.length; i += 1) evaluate(list[i]);
+    }
+    function schedule() {
+      if (!hasDom()) return;
+      if (rafId) return;
+      rafId = raf(refreshNow);
+    }
+    function attach() {
+      if (!hasDom()) return;
+      if (!subscribed) {
+        subscribed = true;
+        subscribe(function (evt) {
+          if (!evt) return;
+          if (evt.event === RibbonEvents.tabChanged ||
+              evt.event === RibbonEvents.collapsedChanged ||
+              evt.event === RibbonEvents.contextChanged ||
+              evt.event === RibbonEvents.tabRegistered) {
+            schedule();
+          }
+        });
+        if (typeof addEventListener === 'function') {
+          onWinResize = function () { schedule(); };
+          try { addEventListener('resize', onWinResize, { passive: true }); }
+          catch (_) { try { addEventListener('resize', onWinResize); } catch (__) { onWinResize = null; } }
+        }
+      }
+      schedule();
+    }
+    function teardown() {
+      if (rafId) { cancelRaf(rafId); rafId = 0; }
+      for (let i = 0; i < records.length; i += 1) {
+        const r = records[i];
+        try { if (r.ro) r.ro.disconnect(); } catch (_) {}
+        try { if (r.panel) r.panel.removeEventListener('scroll', r.onScroll); } catch (_) {}
+        try { if (r.panel) r.panel.removeAttribute('data-overflow'); } catch (_) {}
+      }
+      records.length = 0;
+      if (typeof WeakSet === 'function') watched = new WeakSet();
+    }
+    return { attach: attach, teardown: teardown };
+  })();
+
+  /* ── Mount stubs (S0Y1a owns DOM). Phase 6a: mount also attaches the
+   *    passive overflow watcher above; it only reads geometry + writes a
+   *    decorative data-overflow attribute. ───────────────────────────── */
   function mount(container) {
     internalState.mountContainer = container || null;
     internalState.mounted = true;
     softEmit(RibbonEvents.ready, {});
+    try { overflowWatch.attach(); } catch (e) { recordError('overflow:attach', e); }
   }
   function unmount() {
+    try { overflowWatch.teardown(); } catch (e) { recordError('overflow:teardown', e); }
     internalState.mountContainer = null;
     internalState.mounted = false;
   }

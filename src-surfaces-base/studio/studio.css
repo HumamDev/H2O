@@ -7032,6 +7032,27 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   outline:none;
 }
 
+/* ── Phase 6a — horizontal overflow affordance ────────────────────────────
+   ribbon-shell.studio.js sets data-overflow on the active .wbRibbonPanel
+   (none|start|mid|end) from a passive scroll/resize watcher. We fade the
+   scrolling edge(s) via mask-image so off-screen groups are discoverable.
+   The mask is visual only — it never blocks pointer events, and horizontal
+   scrolling is unchanged. Theme-independent (luminance mask, no colour
+   tokens). With no data-overflow attribute (JS absent / not yet run) there is
+   no mask, so the panel degrades to the plain scrolling row. */
+.wbRibbonPanel[data-overflow="start"]{
+  -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+          mask-image:linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+}
+.wbRibbonPanel[data-overflow="end"]{
+  -webkit-mask-image:linear-gradient(to right, transparent 0, #000 28px);
+          mask-image:linear-gradient(to right, transparent 0, #000 28px);
+}
+.wbRibbonPanel[data-overflow="mid"]{
+  -webkit-mask-image:linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+          mask-image:linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+}
+
 .wbRibbonGroup{
   display:flex;
   flex-direction:column;
