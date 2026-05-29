@@ -827,6 +827,10 @@
        generated proposal candidates with F5 predicate data only. No delete,
        tombstone minting, F5 handoff, publication, convergence, or transport. -->
   <script src="./sync/delete-proposal-candidate-generator.tauri.js"></script>
+  <!-- F12.0.4a: Desktop/Tauri-only delete proposal to F5 handoff preview.
+       Validates generated delete proposals for F5 review eligibility only.
+       No F5 row, tombstone, delete, applyEvent, publication, or transport. -->
+  <script src="./sync/delete-f5-handoff-preview.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>

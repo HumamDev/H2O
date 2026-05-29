@@ -389,6 +389,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // generated proposal candidates with F5 predicate data only. No delete,
   // tombstone minting, F5 handoff, publication, convergence, or transport.
   "sync/delete-proposal-candidate-generator.tauri.js",
+  // F12.0.4a: Desktop/Tauri-only delete proposal to F5 handoff preview.
+  // Validates generated delete proposals for F5 review eligibility only. No
+  // F5 row, tombstone, delete, applyEvent, publication, or transport.
+  "sync/delete-f5-handoff-preview.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -614,6 +618,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/delete-materialization-diagnostic.tauri.js",
   "sync/delete-convergence-preflight.tauri.js",
   "sync/delete-proposal-candidate-generator.tauri.js",
+  "sync/delete-f5-handoff-preview.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
