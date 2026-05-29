@@ -819,6 +819,10 @@
        empty-folder, base-fresh, delete-vs-edit, recovery, and F5 tombstone
        capability only. No delete, apply, convergence, publication, or transport. -->
   <script src="./sync/delete-materialization-diagnostic.tauri.js"></script>
+  <!-- F12.0.2: Desktop/Tauri-only delete convergence preflight. Wraps delete
+       materialization and validates replay/consumed/watermark safety only.
+       No delete, apply, convergence, publication, transport, or mutation. -->
+  <script src="./sync/delete-convergence-preflight.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
