@@ -791,6 +791,10 @@
        materialization and validates replay/consumed/watermark safety only.
        No move, apply, convergence, publication, transport, or mutation. -->
   <script src="./sync/move-convergence-preflight.tauri.js"></script>
+  <!-- F11.0.3: Desktop/Tauri-only move proposal candidate generator. Emits
+       local generated proposal candidates with redacted parent subject hashes
+       only. No move, apply, publication, convergence, or transport. -->
+  <script src="./sync/move-proposal-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
