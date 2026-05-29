@@ -357,6 +357,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // local generated proposal candidates with redacted parent subject hashes
   // only. No move, apply, publication, convergence, or transport.
   "sync/move-proposal-candidate-generator.tauri.js",
+  // F11.0.4a: Desktop/Tauri-only local move convergence action. Executes
+  // one approved local parent update only. No applyEvent, publication,
+  // bookkeeping, transport, create, delete, binding, or mobile write-back.
+  "sync/move-convergence-action.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -574,6 +578,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/move-materialization-diagnostic.tauri.js",
   "sync/move-convergence-preflight.tauri.js",
   "sync/move-proposal-candidate-generator.tauri.js",
+  "sync/move-convergence-action.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
