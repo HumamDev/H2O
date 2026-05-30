@@ -204,6 +204,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // watermark/consumed-op writes. For rename the raw title NEVER
   // appears in the result — only a titleHash.
   "sync/chat/chat-convergence-preflight.tauri.js",
+  // F14.3.4: Desktop/Tauri chat archive proposal candidate generator.
+  // Single-purpose: archive only. Composes F14.3.3 preflight + F14.2.x
+  // kernel envelope helpers (identity-kit, replay composer) to build a
+  // redacted candidate envelope + a generated ledger row. No
+  // publication, no outbox/relay, no apply, no Native interaction, no
+  // mirror/watermark/consumed-op writes. Raw chatId / title /
+  // accountId never appear in any output field.
+  "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -703,6 +711,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
+  "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

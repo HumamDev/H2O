@@ -656,6 +656,16 @@
        — only a titleHash. Registers
        H2O.Desktop.Sync.runChatConvergencePreflight + install/version. -->
   <script src="./sync/chat/chat-convergence-preflight.tauri.js"></script>
+  <!-- F14.3.4: Desktop/Tauri chat archive proposal candidate generator.
+       Single-purpose: archive only. Composes F14.3.3 preflight + F14.2.x
+       kernel envelope helpers (identity-kit, replay composer) to build a
+       redacted candidate envelope + a generated ledger row. Status:
+       "generated" | "noop" | "blocked". No publication, no outbox, no
+       relay, no apply, no Native interaction, no mirror/watermark/
+       consumed-op writes. Raw chatId / title / accountId never appear
+       in any output field. Registers
+       H2O.Desktop.Sync.generateChatArchiveProposalCandidate + markers. -->
+  <script src="./sync/chat/chat-archive-proposal-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
