@@ -587,6 +587,12 @@
        pruning, retention policy, replay policy ownership, publication,
        watermark, apply, convergence, network, or mobile behavior. -->
   <script src="./sync/kernel/consumed-op.tauri.js"></script>
+  <!-- F14.2.7: Desktop/Tauri L0 tombstone reader / F5 handoff primitive.
+       Registers caller-supplied tombstone and F5 handoff/review shaping and
+       validation helpers. No tombstone creation, delete, storage access,
+       F5 review action, retention policy, apply, convergence, or mobile
+       behavior. -->
+  <script src="./sync/kernel/tombstone-reader.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
