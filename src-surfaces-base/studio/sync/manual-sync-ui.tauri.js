@@ -528,6 +528,4 @@
   H2O.Desktop.Sync.__manualSyncUiInstalled = true;
   H2O.Desktop.Sync.__manualSyncUiVersion = VERSION;
 
-  bootLauncher();
-
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));

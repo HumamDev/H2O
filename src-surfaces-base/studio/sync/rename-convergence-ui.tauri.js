@@ -688,6 +688,4 @@
   H2O.Desktop.Sync.__renameConvergenceUiInstalled = true;
   H2O.Desktop.Sync.__renameConvergenceUiVersion = VERSION;
 
-  bootLauncher();
-
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));

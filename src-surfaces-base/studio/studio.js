@@ -6321,7 +6321,7 @@ function settingsReleaseEmbeddedToolPanels(){
     if (!node) continue;
     try {
       node.removeAttribute("data-settings-hosted");
-      document.body.appendChild(node);
+      node.remove();
     } catch (_) { /* ignore */ }
   }
 }

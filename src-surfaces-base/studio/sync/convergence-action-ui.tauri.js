@@ -539,6 +539,4 @@
   H2O.Desktop.Sync.__convergenceActionUiInstalled = true;
   H2O.Desktop.Sync.__convergenceActionUiVersion = VERSION;
 
-  bootLauncher();
-
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
