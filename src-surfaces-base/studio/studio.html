@@ -598,6 +598,13 @@
        shaping/validation helpers. No outbox enqueue, publication action,
        transport, storage access, apply, convergence, or mobile behavior. -->
   <script src="./sync/kernel/publication-kit.tauri.js"></script>
+  <!-- F14.2.9: Desktop/Tauri L1 replay-defense composer. Registers
+       caller-supplied replay candidate shaping and validation composition
+       over identity, consumed-operation, watermark, publication, tombstone,
+       and origin-tag primitives. No storage access, policy ownership,
+       watermark advancement, publication, apply, convergence, or mobile
+       behavior. -->
+  <script src="./sync/kernel/replay-composer.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
