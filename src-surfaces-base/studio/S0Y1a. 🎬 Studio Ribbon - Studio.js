@@ -3245,6 +3245,24 @@
           };
           if (isSwatchAction) {
             attrs['aria-label'] = action.label;
+            /* Phase 6e-1 — Active state for Highlight brush only. Text
+             * Color active state is deferred to 6e-2; mixed / inline
+             * state to 6e-3. We mark the brush whose suffix matches
+             * the current brush color (via the IHighlighter helper
+             * that wraps H2O.Studio.store.highlights). Absence of
+             * the attribute means "not pressed" — matches the
+             * .wbSidebarNativeSwatch[aria-pressed="true"] idiom. */
+            if (action.id.indexOf('highlight-brush-') === 0) {
+              try {
+                const ih = getIHighlighter();
+                const cur = (ih && typeof ih.getCurrentColor === 'function')
+                  ? String(ih.getCurrentColor() || '').trim().toLowerCase()
+                  : '';
+                if (cur && cur === action.id.slice('highlight-brush-'.length)) {
+                  attrs['aria-pressed'] = 'true';
+                }
+              } catch (_) { /* leave unpressed */ }
+            }
           }
           if (enabled) {
             /* Drop the "Coming soon" placeholder tooltip when the action is
@@ -3422,6 +3440,15 @@
             const msg = (e && (e.message || String(e))) || 'unknown error';
             setStatus('Action failed: ' + msg);
           }
+          /* Phase 6e-1 — Highlight brush clicks change the active swatch.
+           * The highlights-store subscription wired in init() normally
+           * re-renders us synchronously via notifySubscribers; this
+           * defensive call covers boot-race scenarios where the store
+           * wasn't ready at subscribe time. render() is idempotent so
+           * a double-render is harmless. */
+          if (actionId.indexOf('highlight-brush-') === 0) {
+            try { render(container, shell); } catch (_) { /* swallow */ }
+          }
           safeEmit('evt:h2o:studio:ribbon:action-invoked', { action: actionId });
         }
         return;
@@ -3479,6 +3506,20 @@
       if (prefs && typeof prefs.subscribe === 'function') {
         prefs.subscribe(function (evt) {
           if (evt && evt.type === 'ready') render(container, shell);
+        });
+      }
+    } catch (_) { /* swallow */ }
+
+    /* Phase 6e-1 — Subscribe to the highlights store so the active brush
+     * swatch ring follows external changes (S3H1a popup picker, keyboard
+     * cycle, cross-tab). The store notifies synchronously after every
+     * setCurrentColor / update / cross-tab event; we re-render
+     * unconditionally — render() is cheap and idempotent. */
+    try {
+      const hs = H2O.Studio && H2O.Studio.store && H2O.Studio.store.highlights;
+      if (hs && typeof hs.subscribe === 'function') {
+        hs.subscribe(function (_evt) {
+          try { render(container, shell); } catch (_) { /* swallow */ }
         });
       }
     } catch (_) { /* swallow */ }

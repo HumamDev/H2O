@@ -7301,6 +7301,21 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbRibbonAction[data-action-id="highlight-brush-purple"]::before { background:#A855F7; }
 .wbRibbonAction[data-action-id="highlight-brush-orange"]::before { background:#FF914D; }
 
+/* ── Phase 6e-1 — Active Highlight brush swatch ─────────────────────────────
+ * Show which Highlight brush swatch matches the current brush color (from
+ * H2O.Studio.store.highlights via the IHighlighter helper). Uses outline +
+ * box-shadow rather than border so the 24px swatch box and centred ::before
+ * dot from Phase 6c stay byte-identical — no layout shift. Mirrors the
+ * focus-visible ring recipe above (--wb-focus + soft halo) and the
+ * outline-offset idiom used by .wbSidebarNativeSwatch[aria-pressed="true"].
+ * Text Color active state is deferred to Phase 6e-2; inline / mixed
+ * state to Phase 6e-3. */
+.wbRibbonAction[data-action-id^="highlight-brush-"][aria-pressed="true"]{
+  outline:2px solid var(--wb-focus);
+  outline-offset:2px;
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+
 .wbRibbonSeparator{
   flex:0 0 auto;
   width:1px;
