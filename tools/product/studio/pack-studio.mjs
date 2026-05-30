@@ -428,6 +428,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // identity/cardinality and verifies live/tombstone/orphan safety only. No
   // binding, apply, convergence, publication, or transport.
   "sync/binding-materialization-diagnostic.tauri.js",
+  // F13.0.3: Desktop/Tauri-only binding convergence preflight. Wraps
+  // materialization and validates watermark/replay/consumed safety only. No
+  // binding, apply, convergence, publication, or transport.
+  "sync/binding-convergence-preflight.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -662,6 +666,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/delete-convergence-ui.tauri.js",
   "sync/binding-identity-cardinality-diagnostic.tauri.js",
   "sync/binding-materialization-diagnostic.tauri.js",
+  "sync/binding-convergence-preflight.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
