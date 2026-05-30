@@ -840,6 +840,11 @@
        performs one tombstone-first local transaction only. No receipt envelope,
        bookkeeping, publication, transport, convergence fan-out, or mobile write-back. -->
   <script src="./sync/delete-reviewed-apply.tauri.js"></script>
+  <!-- F12.0.4d: Desktop/Tauri-only delete applyEvent receipt builder. Emits
+       redacted past-tense evidence only after successful reviewed delete
+       results and local tombstone/audit verification. No delete, apply,
+       bookkeeping, publication, transport, or mobile write-back. -->
+  <script src="./sync/delete-apply-event.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>

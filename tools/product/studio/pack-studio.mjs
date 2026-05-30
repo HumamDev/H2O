@@ -402,6 +402,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // performs one tombstone-first local transaction only. No receipt envelope,
   // bookkeeping, publication, transport, convergence fan-out, or mobile write-back.
   "sync/delete-reviewed-apply.tauri.js",
+  // F12.0.4d: Desktop/Tauri-only delete applyEvent receipt builder. Emits
+  // redacted past-tense evidence only after successful reviewed delete results
+  // and local tombstone/audit verification. No delete, apply, bookkeeping,
+  // publication, transport, or mobile write-back.
+  "sync/delete-apply-event.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -630,6 +635,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/delete-f5-handoff-preview.tauri.js",
   "sync/delete-f5-review-row.tauri.js",
   "sync/delete-reviewed-apply.tauri.js",
+  "sync/delete-apply-event.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
