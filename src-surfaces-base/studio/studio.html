@@ -581,6 +581,12 @@
        reads, replay, publication, apply, convergence, network, or mobile
        behavior. -->
   <script src="./sync/kernel/watermark-service.tauri.js"></script>
+  <!-- F14.2.6: Desktop/Tauri L0 consumed-operation primitive. Registers
+       consumed-operation shaping, origin-tag validation, caller-supplied
+       lookup helpers, and replay-safety assistance. No storage access,
+       pruning, retention policy, replay policy ownership, publication,
+       watermark, apply, convergence, network, or mobile behavior. -->
+  <script src="./sync/kernel/consumed-op.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

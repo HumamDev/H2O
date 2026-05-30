@@ -156,6 +156,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F14.2.5: Desktop/Tauri L0 watermark monotonicity service. Inert
   // caller-supplied watermark comparison and forward-only validation only.
   "sync/kernel/watermark-service.tauri.js",
+  // F14.2.6: Desktop/Tauri L0 consumed-operation primitive. Inert shared
+  // consumed-operation shaping, origin-tag validation, lookup, and
+  // replay-safety assistance only.
+  "sync/kernel/consumed-op.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -645,6 +649,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/blockers.tauri.js",
   "sync/kernel/result-shape.tauri.js",
   "sync/kernel/watermark-service.tauri.js",
+  "sync/kernel/consumed-op.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
