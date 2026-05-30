@@ -878,6 +878,10 @@
        generated binding proposal candidate and inserts one local binding plus
        audit row only. No applyEvent, bookkeeping, publication, or transport. -->
   <script src="./sync/binding-reviewed-apply.tauri.js"></script>
+  <!-- F13.0.5b: Desktop/Tauri-only binding applyEvent receipt builder. Emits
+       redacted applyEvent receipts only after successful reviewed binding add.
+       No binding, bookkeeping, publication, transport, or mobile write-back. -->
+  <script src="./sync/binding-apply-event.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
