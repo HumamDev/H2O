@@ -143,6 +143,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // scanner/enforcer only; no domain adoption, publication, replay,
   // watermark, apply, convergence, storage, network, or mobile behavior.
   "sync/kernel/privacy-scan.tauri.js",
+  // F14.2.3: Desktop/Tauri L0 identity kit primitive. Inert shared
+  // canonical JSON, hash, subjectId, dedupeKey, lineageId, and identity
+  // validation helpers only; no domain adoption or behavior change.
+  "sync/kernel/identity-kit.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -628,6 +632,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
   "sync/kernel/privacy-scan.tauri.js",
+  "sync/kernel/identity-kit.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

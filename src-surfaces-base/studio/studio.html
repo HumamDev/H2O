@@ -561,6 +561,11 @@
        enforceRedactionClass. No domain adoption, publication, replay,
        watermark, apply, convergence, storage, network, or mobile behavior. -->
   <script src="./sync/kernel/privacy-scan.tauri.js"></script>
+  <!-- F14.2.3: Desktop/Tauri L0 identity kit primitive. Registers
+       canonicalJSON, sha256Hex, subjectId/dedupeKey/lineageId generation, and
+       identity validation helpers. No domain adoption, publication, replay,
+       watermark, apply, convergence, storage, network, or mobile behavior. -->
+  <script src="./sync/kernel/identity-kit.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
