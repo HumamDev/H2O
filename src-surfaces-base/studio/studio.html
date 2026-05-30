@@ -882,6 +882,14 @@
        redacted applyEvent receipts only after successful reviewed binding add.
        No binding, bookkeeping, publication, transport, or mobile write-back. -->
   <script src="./sync/binding-apply-event.tauri.js"></script>
+  <!-- F13.0.6: Desktop/Tauri-only binding convergence bookkeeping. Builds the
+       binding applyEvent receipt, records consumed operation + watermark only.
+       No binding, publication, transport, or mobile write-back. -->
+  <script src="./sync/binding-convergence-bookkeeping.tauri.js"></script>
+  <!-- F13.0.6: Desktop/Tauri-only binding convergence proof harness.
+       Orchestrates existing binding diagnostics/action/bookkeeping APIs only.
+       No new binding behavior, publication, transport, or mobile write-back. -->
+  <script src="./sync/binding-convergence-proof.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
