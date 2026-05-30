@@ -862,6 +862,10 @@
        Verifies canonical bindingSubjectId order and reports active membership
        policy only. No binding, apply, convergence, publication, or transport. -->
   <script src="./sync/binding-identity-cardinality-diagnostic.tauri.js"></script>
+  <!-- F13.0.2: Desktop/Tauri-only binding materialization diagnostic. Wraps
+       identity/cardinality and verifies live/tombstone/orphan safety only.
+       No binding, apply, convergence, publication, or transport. -->
+  <script src="./sync/binding-materialization-diagnostic.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
