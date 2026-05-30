@@ -575,6 +575,12 @@
        result builders and ok/actionable calculations over caller-provided
        blockers/warnings. No domain adoption or behavior change. -->
   <script src="./sync/kernel/result-shape.tauri.js"></script>
+  <!-- F14.2.5: Desktop/Tauri L0 watermark monotonicity service. Registers
+       caller-supplied watermark shaping, comparison, and forward-only
+       validation helpers. No watermark writes, storage reads, domain state
+       reads, replay, publication, apply, convergence, network, or mobile
+       behavior. -->
+  <script src="./sync/kernel/watermark-service.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
