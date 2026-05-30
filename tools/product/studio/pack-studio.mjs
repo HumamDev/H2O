@@ -196,6 +196,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // mutation, no publication, no apply, no watermark or consumed-op
   // writes.
   "sync/chat/chat-diagnostics.tauri.js",
+  // F14.3.3: Desktop/Tauri read-only chat convergence preflight.
+  // Composes the chat canonicalizer + chat diagnostics + kernel watermark
+  // service + replay composer + owner-handoff validation to decide
+  // whether an archive/rename operation is safe to become
+  // proposal-eligible. No mutation, no publication, no apply, no
+  // watermark/consumed-op writes. For rename the raw title NEVER
+  // appears in the result — only a titleHash.
+  "sync/chat/chat-convergence-preflight.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -694,6 +702,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/audit-proof-framework.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
+  "sync/chat/chat-convergence-preflight.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

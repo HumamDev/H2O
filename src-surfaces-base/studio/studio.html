@@ -644,6 +644,18 @@
        consumed-op primitive, tombstone reader, owner-handoff validation.
        Registers H2O.Desktop.Sync.run* APIs + install/version markers. -->
   <script src="./sync/chat/chat-diagnostics.tauri.js"></script>
+  <!-- F14.3.3: Desktop/Tauri read-only chat convergence preflight.
+       Composes the F14.3.1 canonicalizer + the F14.3.2 diagnostics + the
+       F14.2.x kernel (identity, privacy, blockers, watermark service,
+       consumed-op, tombstone reader, replay composer, owner-handoff
+       validation). Determines whether a selected archive/rename
+       operation is safe to become proposal-eligible. Read-only: no
+       proposal, no publication, no apply, no Native/mirror write, no
+       watermark write, no consumed-op write, no storage mutation. For
+       rename, the raw title NEVER appears in any preflight output field
+       — only a titleHash. Registers
+       H2O.Desktop.Sync.runChatConvergencePreflight + install/version. -->
+  <script src="./sync/chat/chat-convergence-preflight.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
