@@ -436,6 +436,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // generated binding-add proposal candidates only. No binding, apply,
   // publication, convergence, transport, or mobile write-back.
   "sync/binding-proposal-candidate-generator.tauri.js",
+  // F13.0.5a: Desktop/Tauri-only reviewed binding-add apply. Consumes one
+  // generated binding proposal candidate and inserts one local binding plus
+  // audit row only. No applyEvent, bookkeeping, publication, or transport.
+  "sync/binding-reviewed-apply.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -672,6 +676,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/binding-materialization-diagnostic.tauri.js",
   "sync/binding-convergence-preflight.tauri.js",
   "sync/binding-proposal-candidate-generator.tauri.js",
+  "sync/binding-reviewed-apply.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
