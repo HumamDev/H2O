@@ -139,6 +139,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: full-bundle export. Reads SQLite-backed public store
   // adapters and emits Chrome-compatible h2o.studio.fullBundle.v2.
   "ingestion/export-bundle.tauri.js",
+  // F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Inert shared
+  // scanner/enforcer only; no domain adoption, publication, replay,
+  // watermark, apply, convergence, storage, network, or mobile behavior.
+  "sync/kernel/privacy-scan.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -623,6 +627,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/tombstone-reviews.mv3.js",
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
+  "sync/kernel/privacy-scan.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

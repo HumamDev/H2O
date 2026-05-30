@@ -556,6 +556,11 @@
        adapters and emits Chrome-compatible h2o.studio.fullBundle.v2
        without changing Chrome import logic or mutating Desktop data. -->
   <script src="./ingestion/export-bundle.tauri.js"></script>
+  <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
+       H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
+       enforceRedactionClass. No domain adoption, publication, replay,
+       watermark, apply, convergence, storage, network, or mobile behavior. -->
+  <script src="./sync/kernel/privacy-scan.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
