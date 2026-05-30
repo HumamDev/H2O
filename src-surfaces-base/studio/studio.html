@@ -611,6 +611,11 @@
        storage access, F5 action, Native action, apply, convergence, or mobile
        behavior. -->
   <script src="./sync/kernel/owner-handoff.tauri.js"></script>
+  <!-- F14.2.11: Desktop/Tauri L1 lifecycle state-machine framework.
+       Registers caller-supplied lifecycle state, transition, history, and
+       metadata shaping/validation helpers. No storage access, transition
+       execution, workflow execution, domain logic, or mobile behavior. -->
+  <script src="./sync/kernel/lifecycle-framework.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
