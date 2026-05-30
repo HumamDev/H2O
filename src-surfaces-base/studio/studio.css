@@ -7255,6 +7255,52 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   background:transparent;
 }
 
+/* ── Phase 6c — Text Color + Highlight swatches ─────────────────────────────
+ * Visible color/brush actions render as compact ~24px swatches with a
+ * centered ~14px color dot via CSS ::before. The button's text content
+ * stays in the DOM as the accessible name (font-size:0 hides it visually);
+ * S0Y1a's render adds aria-label + a persistent title for the same action
+ * ids so screen readers announce the colour name and a hover tooltip
+ * surfaces it. None / Clear / Hide deliberately stay as text pills. Hexes
+ * mirror the pinned data-overlay-text-color palette (same file) and the
+ * H2O.IHighlighter brush palette. Active/selected state is out of scope. */
+.wbRibbonAction[data-action-id^="text-color-"]:not([data-action-id="text-color-none"]),
+.wbRibbonAction[data-action-id^="highlight-brush-"]{
+  width:24px;
+  min-width:24px;
+  height:24px;
+  padding:0;
+  font-size:0;
+  line-height:0;
+  color:transparent;
+}
+.wbRibbonAction[data-action-id^="text-color-"]:not([data-action-id="text-color-none"])::before,
+.wbRibbonAction[data-action-id^="highlight-brush-"]::before{
+  content:"";
+  display:block;
+  width:14px;
+  height:14px;
+  border-radius:50%;
+  margin:0 auto;
+  border:1px solid var(--wb-border);
+  box-sizing:border-box;
+}
+/* Text Color palette — mirrors the data-overlay-text-color rules in this file. */
+.wbRibbonAction[data-action-id="text-color-red"]::before    { background:#C53030; }
+.wbRibbonAction[data-action-id="text-color-green"]::before  { background:#2F855A; }
+.wbRibbonAction[data-action-id="text-color-blue"]::before   { background:#2C5282; }
+.wbRibbonAction[data-action-id="text-color-orange"]::before { background:#C05621; }
+.wbRibbonAction[data-action-id="text-color-gray"]::before   { background:#4A5568; }
+/* Highlight palette — mirrors the H2O.IHighlighter brush hexes. */
+.wbRibbonAction[data-action-id="highlight-brush-blue"]::before   { background:#3B82F6; }
+.wbRibbonAction[data-action-id="highlight-brush-red"]::before    { background:#FF4C4C; }
+.wbRibbonAction[data-action-id="highlight-brush-green"]::before  { background:#22C55E; }
+.wbRibbonAction[data-action-id="highlight-brush-gold"]::before   { background:#FFD54F; }
+.wbRibbonAction[data-action-id="highlight-brush-sky"]::before    { background:#7DD3FC; }
+.wbRibbonAction[data-action-id="highlight-brush-pink"]::before   { background:#F472B6; }
+.wbRibbonAction[data-action-id="highlight-brush-purple"]::before { background:#A855F7; }
+.wbRibbonAction[data-action-id="highlight-brush-orange"]::before { background:#FF914D; }
+
 .wbRibbonSeparator{
   flex:0 0 auto;
   width:1px;

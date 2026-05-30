@@ -3229,15 +3229,28 @@
             try { disabledTooltip = handler.disabledTooltip(ctx) || disabledTooltip; }
             catch (_) { /* keep catalogue tooltip */ }
           }
+          /* Phase 6c — Text Color + Highlight swatches: CSS hides the visible
+           * label (font-size:0) so we surface aria-label + a persistent title
+           * to keep the accessible name and give a hover tooltip ("Red",
+           * "Blue", ...). Catalogue / handlers / labels are unchanged. */
+          const isSwatchAction = typeof action.id === 'string' && (
+            (action.id.indexOf('text-color-') === 0 && action.id !== 'text-color-none') ||
+            action.id.indexOf('highlight-brush-') === 0
+          );
           const attrs = {
             type: 'button',
             class: 'wbRibbonAction',
             'data-action-id': action.id,
             'aria-disabled': enabled ? 'false' : 'true',
           };
+          if (isSwatchAction) {
+            attrs['aria-label'] = action.label;
+          }
           if (enabled) {
-            /* Drop the "Coming soon" placeholder tooltip when the action is wired. */
-            attrs.title = '';
+            /* Drop the "Coming soon" placeholder tooltip when the action is
+             * wired — except for Phase 6c swatches, where the label IS the
+             * tooltip. */
+            attrs.title = isSwatchAction ? action.label : '';
           } else {
             attrs.title = disabledTooltip;
             attrs.disabled = 'disabled';
