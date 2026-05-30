@@ -452,6 +452,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Orchestrates existing binding diagnostics/action/bookkeeping APIs only.
   // No new binding behavior, publication, transport, or mobile write-back.
   "sync/binding-convergence-proof.tauri.js",
+  // F13.0.7: Desktop/Tauri-only binding convergence review/action UI. Calls
+  // existing identity, materialization, preflight, reviewed bind-add, and
+  // bookkeeping APIs from explicit operator controls only. No new binding
+  // logic, publication, transport, WebDAV, or mobile write-back.
+  "sync/binding-convergence-ui.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -692,6 +697,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/binding-apply-event.tauri.js",
   "sync/binding-convergence-bookkeeping.tauri.js",
   "sync/binding-convergence-proof.tauri.js",
+  "sync/binding-convergence-ui.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
