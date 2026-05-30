@@ -407,6 +407,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // and local tombstone/audit verification. No delete, apply, bookkeeping,
   // publication, transport, or mobile write-back.
   "sync/delete-apply-event.tauri.js",
+  // F12.0.5: Desktop/Tauri-only delete convergence bookkeeping. Builds the
+  // delete applyEvent receipt, records consumed-operation and watermark rows
+  // only. No delete, second apply, publication, enqueue, upload, or WebDAV.
+  "sync/delete-convergence-bookkeeping.tauri.js",
+  // F12.0.5: Desktop/Tauri-only delete convergence runtime proof harness.
+  // Orchestrates existing reviewed-delete validation/action APIs only. No new
+  // delete behavior, publication, transport, WebDAV, or mobile write-back.
+  "sync/delete-convergence-proof.tauri.js",
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
@@ -636,6 +644,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/delete-f5-review-row.tauri.js",
   "sync/delete-reviewed-apply.tauri.js",
   "sync/delete-apply-event.tauri.js",
+  "sync/delete-convergence-bookkeeping.tauri.js",
+  "sync/delete-convergence-proof.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "sync/multi-peer-runner.js",
 
