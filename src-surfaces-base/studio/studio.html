@@ -870,6 +870,10 @@
        materialization and validates watermark/replay/consumed safety only.
        No binding, apply, convergence, publication, or transport. -->
   <script src="./sync/binding-convergence-preflight.tauri.js"></script>
+  <!-- F13.0.4: Desktop/Tauri-only binding proposal candidate generator.
+       Emits generated binding-add proposal candidates only. No binding, apply,
+       publication, convergence, transport, or mobile write-back. -->
+  <script src="./sync/binding-proposal-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: debug F7.4.3 folder color apply validation harness. Registers
        a dormant H2O.Studio.devValidation.f7FolderColorApplyValidation runner. -->
   <script src="./dev/f7-folder-color-apply-validation.tauri.js"></script>
