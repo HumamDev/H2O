@@ -530,6 +530,7 @@
       '<h2 class="h2oDeleteConvTitle">Delete convergence review</h2>' +
       '<p class="h2oDeleteConvNote">UI only. One folder at a time. No batch delete, auto refresh, publication, transport, or remote mutation.</p>' +
       '</div><div class="h2oDeleteConvControls">' +
+      '<a class="h2oDeleteConvBtn" href="#/settings/convergence/delete">Open in Settings</a>' +
       '<button class="h2oDeleteConvBtn" id="h2o-delete-convergence-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oDeleteConvBtn h2oDeleteConvPrimary" id="h2o-delete-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oDeleteConvBtn h2oDeleteConvPrimary" id="h2o-delete-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Delete Preflight</button>' +

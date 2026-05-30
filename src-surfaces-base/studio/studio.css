@@ -9277,6 +9277,138 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
   box-shadow: var(--wb-settings-card-shadow) !important;
 }
 
+.wbSettingsShell{
+  display:grid;
+  grid-template-columns:minmax(150px,190px) minmax(0,1fr);
+  gap:16px;
+  min-height:calc(100vh - 88px);
+}
+
+.wbSettingsShellRail,
+.wbSettingsSubnav{
+  display:flex;
+  gap:8px;
+}
+
+.wbSettingsShellRail{
+  position:sticky;
+  top:0;
+  align-self:start;
+  flex-direction:column;
+  padding:12px;
+  border:1px solid var(--wb-settings-card-border);
+  border-radius:16px;
+  background:var(--wb-settings-card-bg);
+  box-shadow:var(--wb-settings-card-shadow);
+}
+
+.wbSettingsShellMain{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+
+.wbSettingsShellHeader{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  padding:16px;
+  border:1px solid var(--wb-settings-card-border);
+  border-radius:18px;
+  background:var(--wb-settings-card-bg);
+  box-shadow:var(--wb-settings-card-shadow);
+}
+
+.wbSettingsShellEyebrow{
+  margin:0 0 5px;
+  color:var(--wb-muted);
+  font-size:12px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+
+.wbSettingsShellTitle{
+  margin:0;
+  font-size:22px;
+  line-height:1.15;
+}
+
+.wbSettingsShellCopy{
+  margin:8px 0 0;
+  color:var(--wb-muted);
+  font-size:13px;
+}
+
+.wbSettingsSubnav{
+  flex-wrap:wrap;
+  padding:10px;
+  border:1px solid var(--wb-settings-card-border);
+  border-radius:16px;
+  background:var(--wb-settings-card-bg);
+}
+
+.wbSettingsShellLink{
+  display:inline-flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  min-height:34px;
+  padding:7px 10px;
+  border:1px solid transparent;
+  border-radius:12px;
+  color:var(--wb-text);
+  text-decoration:none;
+  font-size:13px;
+}
+
+.wbSettingsShellLink:hover{
+  background:var(--wb-settings-btn-hover-bg);
+  border-color:var(--wb-settings-btn-hover-border);
+}
+
+.wbSettingsShellLink.isActive{
+  background:var(--wb-settings-btn-bg);
+  border-color:var(--wb-settings-btn-border);
+  font-weight:700;
+}
+
+.wbSettingsEmbeddedTool{
+  min-width:0;
+}
+
+.wbSettingsEmbeddedLoading{
+  padding:16px;
+  border-radius:16px;
+  color:var(--wb-muted);
+}
+
+.wbSettingsEmbeddedTool > section[data-settings-hosted="true"]{
+  position:static !important;
+  inset:auto !important;
+  right:auto !important;
+  top:auto !important;
+  bottom:auto !important;
+  width:100% !important;
+  max-width:none !important;
+  max-height:none !important;
+  overflow:visible !important;
+  z-index:auto !important;
+  box-shadow:var(--wb-settings-card-shadow) !important;
+  border-radius:18px !important;
+}
+
+@media(max-width:860px){
+  .wbSettingsShell{
+    grid-template-columns:1fr;
+  }
+  .wbSettingsShellRail{
+    position:static;
+    flex-direction:row;
+    flex-wrap:wrap;
+  }
+}
+
 [data-settings-rendered="1"] [style*="background:rgba(255,255,255,.02)"]{
   background: var(--wb-settings-card-bg) !important;
   border: 1px solid var(--wb-settings-card-border) !important;

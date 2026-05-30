@@ -353,6 +353,7 @@
       '<h2 class="h2oSyncTitle">Relay control surface</h2>' +
       '<p class="h2oSyncNote">Manual only. No apply, convergence, automatic refresh, automatic merge, or raw remote names.</p></div>' +
       '<div><button class="h2oSyncBtn" id="h2o-sync-refresh">Refresh counts</button> ' +
+      '<a class="h2oSyncBtn" href="#/settings/sync/status">Open in Settings</a> ' +
       '<button class="h2oSyncBtn h2oSyncDanger" id="h2o-sync-close">Close</button></div>' +
       '</div><div class="h2oSyncBody">' +
       (state.message ? '<div class="h2oSyncCard">' + escapeHtml(state.message) + '</div>' : '') +

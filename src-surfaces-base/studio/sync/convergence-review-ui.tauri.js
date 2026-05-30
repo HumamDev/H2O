@@ -198,6 +198,7 @@
       '<h2 class="h2oConvTitle">Convergence review</h2>' +
       '<p class="h2oConvNote">Review only. No apply, convergence, proposal creation, automatic merge, or transport action.</p>' +
       '</div><div><button class="h2oConvBtn" id="h2o-convergence-refresh">Refresh plan</button> ' +
+      '<a class="h2oConvBtn" href="#/settings/convergence/review">Open in Settings</a> ' +
       '<button class="h2oConvBtn h2oConvDanger" id="h2o-convergence-close">Close</button></div></div>' +
       '<div class="h2oConvBody">' +
       (state.message ? '<p class="h2oConvNote">' + escapeHtml(state.message) + '</p>' : '') +

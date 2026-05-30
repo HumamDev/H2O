@@ -447,6 +447,7 @@
       '<h2 class="h2oMoveConvTitle">Move convergence review</h2>' +
       '<p class="h2oMoveConvNote">UI only. One move-only subject at a time. No batch move, auto refresh, publication, transport, or remote mutation.</p>' +
       '</div><div class="h2oMoveConvControls">' +
+      '<a class="h2oMoveConvBtn" href="#/settings/convergence/move">Open in Settings</a>' +
       '<button class="h2oMoveConvBtn" id="h2o-move-convergence-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oMoveConvBtn h2oMoveConvPrimary" id="h2o-move-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oMoveConvBtn h2oMoveConvPrimary" id="h2o-move-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Move Preflight</button>' +

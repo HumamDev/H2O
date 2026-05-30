@@ -426,6 +426,7 @@
       '<h2 class="h2oBindConvTitle">Binding convergence review</h2>' +
       '<p class="h2oBindConvNote">UI only. One binding at a time. No batch binding, auto refresh, publication, transport, or remote mutation.</p>' +
       '</div><div class="h2oBindConvControls">' +
+      '<a class="h2oBindConvBtn" href="#/settings/convergence/binding">Open in Settings</a>' +
       '<button class="h2oBindConvBtn" id="h2o-binding-convergence-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oBindConvBtn h2oBindConvPrimary" id="h2o-binding-convergence-identity" type="button" ' + (canRun ? '' : 'disabled') + '>Run Identity Check</button>' +
       '<button class="h2oBindConvBtn h2oBindConvPrimary" id="h2o-binding-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +

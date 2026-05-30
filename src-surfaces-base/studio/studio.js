@@ -1344,7 +1344,15 @@ function parseHash(){
   }
   // Settings page — sidebar entry-point that exposes #/migrate/* through
   // user-facing cards. Owned by renderSettingsRoute below.
-  if (parts[0] === "settings") return { name: "settings" };
+  if (parts[0] === "settings") {
+    let section = "account";
+    let subsection = "";
+    try { section = decodeURIComponent(parts[1] || "account").toLowerCase(); }
+    catch { section = String(parts[1] || "account").toLowerCase(); }
+    try { subsection = decodeURIComponent(parts[2] || "").toLowerCase(); }
+    catch { subsection = String(parts[2] || "").toLowerCase(); }
+    return { name: "settings", section, subsection };
+  }
   const search = new URLSearchParams(searchRaw);
   return {
     name: "list",
@@ -6039,6 +6047,7 @@ async function renderRoute(opts = {}){
     if (migratePanel) migratePanel.hidden = true;
   }
   if (route.name !== "settings") {
+    settingsReleaseEmbeddedToolPanels();
     const settingsPanel = document.getElementById("viewSettingsPanel");
     if (settingsPanel) settingsPanel.hidden = true;
   }
@@ -6086,7 +6095,7 @@ async function renderRoute(opts = {}){
     return;
   }
   if (route.name === "settings") {
-    renderSettingsRoute();
+    await renderSettingsRoute(route);
     return;
   }
   await renderList(route.view, route.folderId, {
@@ -6277,12 +6286,253 @@ function settingsHideOtherPanels(){
   if (migratePanel) migratePanel.hidden = true;
 }
 
-function renderSettingsRoute(){
+const SETTINGS_SYNC_SUBROUTES = Object.freeze({
+  status: { label: "Status", hash: "#/settings/sync/status" },
+  outbox: { label: "Outbox", hash: "#/settings/sync/outbox" },
+  inbox: { label: "Inbox", hash: "#/settings/sync/inbox" },
+  relay: { label: "Relay", hash: "#/settings/sync/relay" },
+  "apply-log": { label: "Apply Log", hash: "#/settings/sync/apply-log" },
+});
+
+const SETTINGS_CONVERGENCE_SUBROUTES = Object.freeze({
+  review: { label: "Review", hash: "#/settings/convergence/review" },
+  color: { label: "Color", hash: "#/settings/convergence/color" },
+  rename: { label: "Rename", hash: "#/settings/convergence/rename" },
+  move: { label: "Move", hash: "#/settings/convergence/move" },
+  delete: { label: "Delete", hash: "#/settings/convergence/delete" },
+  binding: { label: "Binding", hash: "#/settings/convergence/binding" },
+});
+
+const SETTINGS_EMBEDDED_TOOL_PANEL_IDS = Object.freeze([
+  "h2o-manual-sync-panel",
+  "h2o-convergence-review-panel",
+  "h2o-convergence-action-panel",
+  "h2o-rename-convergence-panel",
+  "h2o-move-convergence-panel",
+  "h2o-delete-convergence-panel",
+  "h2o-binding-convergence-panel",
+]);
+
+function settingsReleaseEmbeddedToolPanels(){
+  const settingsPanel = document.getElementById("viewSettingsPanel");
+  if (!settingsPanel || typeof document === "undefined" || !document.body) return;
+  for (const id of SETTINGS_EMBEDDED_TOOL_PANEL_IDS) {
+    const node = settingsPanel.querySelector("#" + id);
+    if (!node) continue;
+    try {
+      node.removeAttribute("data-settings-hosted");
+      document.body.appendChild(node);
+    } catch (_) { /* ignore */ }
+  }
+}
+
+function settingsNormalizeSubroute(section, subsection){
+  const raw = String(subsection || "").toLowerCase();
+  if (section === "sync") return SETTINGS_SYNC_SUBROUTES[raw] ? raw : "status";
+  if (section === "convergence") return SETTINGS_CONVERGENCE_SUBROUTES[raw] ? raw : "review";
+  return raw;
+}
+
+function settingsNavLinkHtml(label, hash, active){
+  return `<a class="wbSettingsShellLink${active ? " isActive" : ""}" href="${esc(hash)}" ${active ? 'aria-current="page"' : ""}>${esc(label)}</a>`;
+}
+
+function settingsSubnavHtml(section, activeSubroute){
+  const map = section === "sync" ? SETTINGS_SYNC_SUBROUTES : SETTINGS_CONVERGENCE_SUBROUTES;
+  return Object.keys(map).map((key) => settingsNavLinkHtml(map[key].label, map[key].hash, key === activeSubroute)).join("");
+}
+
+function settingsToolSpec(section, subsection){
+  if (section === "sync") {
+    return {
+      title: "Sync",
+      eyebrow: "Manual relay tools",
+      description: "Existing manual sync UI, hosted inside Settings. Manual only: no automatic sync, no convergence, no apply.",
+      panelId: "h2o-manual-sync-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openManualSyncPanel?.(),
+      filter: () => settingsFocusManualSyncSection(subsection),
+    };
+  }
+  const convergence = {
+    review: {
+      title: "Convergence Review",
+      description: "Existing read-only convergence review panel hosted inside Settings.",
+      panelId: "h2o-convergence-review-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openConvergenceReview?.(),
+    },
+    color: {
+      title: "Color Convergence",
+      description: "Existing color convergence action panel hosted inside Settings.",
+      panelId: "h2o-convergence-action-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openConvergenceActionPanel?.(),
+    },
+    rename: {
+      title: "Rename Convergence",
+      description: "Existing rename convergence action panel hosted inside Settings.",
+      panelId: "h2o-rename-convergence-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openRenameConvergencePanel?.(),
+    },
+    move: {
+      title: "Move Convergence",
+      description: "Existing move convergence action panel hosted inside Settings.",
+      panelId: "h2o-move-convergence-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openMoveConvergencePanel?.(),
+    },
+    delete: {
+      title: "Delete Convergence",
+      description: "Existing delete convergence action panel hosted inside Settings.",
+      panelId: "h2o-delete-convergence-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openDeleteConvergencePanel?.(),
+    },
+    binding: {
+      title: "Binding Convergence",
+      description: "Existing binding convergence action panel hosted inside Settings.",
+      panelId: "h2o-binding-convergence-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openBindingConvergencePanel?.(),
+    },
+  };
+  const item = convergence[subsection] || convergence.review;
+  return {
+    eyebrow: "Convergence tools",
+    ...item,
+  };
+}
+
+function renderSettingsToolShell(panel, section, subsection){
+  const spec = settingsToolSpec(section, subsection);
+  const syncActive = section === "sync";
+  const convActive = section === "convergence";
+  panel.innerHTML = `
+    <div class="wbSettingsShell">
+      <nav class="wbSettingsShellRail" aria-label="Settings sections">
+        ${settingsNavLinkHtml("Account", "#/settings/account", section === "account")}
+        ${settingsNavLinkHtml("Library", "#/settings/library", section === "library")}
+        ${settingsNavLinkHtml("Sync", "#/settings/sync/status", syncActive)}
+        ${settingsNavLinkHtml("Convergence", "#/settings/convergence/review", convActive)}
+        ${settingsNavLinkHtml("Diagnostics", "#/settings/diagnostics", section === "diagnostics")}
+        ${settingsNavLinkHtml("Data", "#/settings/data", section === "data")}
+        ${settingsNavLinkHtml("About", "#/settings/about", section === "about")}
+      </nav>
+      <section class="wbSettingsShellMain" aria-label="${esc(spec.title)}">
+        <div class="wbSettingsShellHeader">
+          <div>
+            <div class="wbSettingsShellEyebrow">${esc(spec.eyebrow)}</div>
+            <h2 class="wbSettingsShellTitle">${esc(spec.title)}</h2>
+            <p class="wbSettingsShellCopy">${esc(spec.description)}</p>
+          </div>
+        </div>
+        <nav class="wbSettingsSubnav" aria-label="${syncActive ? "Sync" : "Convergence"} tools">
+          ${settingsSubnavHtml(section, subsection)}
+        </nav>
+        <div id="wbSettingsEmbeddedToolHost" class="wbSettingsEmbeddedTool" data-settings-tool-section="${esc(section)}" data-settings-tool-subroute="${esc(subsection)}">
+          <div class="wbSettingsCard wbSettingsEmbeddedLoading">Opening existing ${esc(spec.title)} panel…</div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function settingsFocusManualSyncSection(subsection){
+  const host = document.getElementById("wbSettingsEmbeddedToolHost");
+  if (!host) return;
+  const panel = host.querySelector("#h2o-manual-sync-panel");
+  if (!panel) return;
+  const sectionMatchers = {
+    status: [/Sync Status/i],
+    outbox: [/Outbox/i],
+    inbox: [/Inbox/i],
+    relay: [/Pull/i],
+    "apply-log": [/Apply Log/i],
+  };
+  const matchers = sectionMatchers[subsection] || sectionMatchers.status;
+  const sections = Array.from(panel.querySelectorAll(".h2oSyncSection"));
+  for (const section of sections) {
+    const summary = section.querySelector("summary");
+    const label = String(summary && summary.textContent || "");
+    const visible = matchers.some((re) => re.test(label));
+    section.hidden = !visible;
+    section.style.display = visible ? "" : "none";
+    if (visible) {
+      try { section.open = true; } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function settingsInstallManualSyncFilter(host, subsection){
+  if (!host || typeof MutationObserver !== "function") return;
+  try { host.__h2oSettingsManualSyncObserver?.disconnect?.(); } catch {}
+  let pending = false;
+  const run = () => {
+    pending = false;
+    settingsFocusManualSyncSection(subsection);
+  };
+  const observer = new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    Promise.resolve().then(run);
+  });
+  observer.observe(host, { childList: true, subtree: true });
+  host.__h2oSettingsManualSyncObserver = observer;
+}
+
+async function settingsMountEmbeddedTool(section, subsection){
+  const host = document.getElementById("wbSettingsEmbeddedToolHost");
+  if (!host) return;
+  const spec = settingsToolSpec(section, subsection);
+  try {
+    if (!STUDIO_isTauri()) {
+      host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">This Settings-hosted ${esc(spec.title)} panel is available in Desktop Studio.</div>`;
+      return;
+    }
+    if (typeof spec.open !== "function" || !W.H2O?.Desktop?.Sync) {
+      host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">${esc(spec.title)} API is not installed in this runtime.</div>`;
+      return;
+    }
+    await spec.open();
+    const toolPanel = document.getElementById(spec.panelId);
+    if (!toolPanel) {
+      host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">${esc(spec.title)} panel did not mount.</div>`;
+      return;
+    }
+    host.innerHTML = "";
+    toolPanel.setAttribute("data-settings-hosted", "true");
+    host.appendChild(toolPanel);
+    if (section === "sync") {
+      settingsFocusManualSyncSection(subsection);
+      settingsInstallManualSyncFilter(host, subsection);
+    }
+  } catch (err) {
+    host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">Failed to open ${esc(spec.title)}: ${esc(err && (err.message || err))}</div>`;
+  }
+}
+
+async function renderSettingsToolRoute(panel, route){
+  const section = String(route && route.section || "").toLowerCase();
+  const subsection = settingsNormalizeSubroute(section, route && route.subsection);
+  const routeKey = section + "/" + subsection;
+  if (panel.dataset.settingsRendered === "1" && panel.dataset.settingsRenderedKey === routeKey && panel.firstChild) {
+    await settingsMountEmbeddedTool(section, subsection);
+    return;
+  }
+  panel.dataset.settingsRendered = "1";
+  panel.dataset.settingsRenderedKey = routeKey;
+  delete panel.dataset.syncControlsBound;
+  renderSettingsToolShell(panel, section, subsection);
+  await settingsMountEmbeddedTool(section, subsection);
+}
+
+async function renderSettingsRoute(route = { section: "account", subsection: "" }){
   settingsHideOtherPanels();
+  const settingsSection = String(route && route.section || "account").toLowerCase();
+  const isHostedToolRoute = settingsSection === "sync" || settingsSection === "convergence";
   setRouteMeta("Settings", "Studio Settings", "Studio configuration · data & migration · storage diagnostics");
   const panel = settingsOverlayEnsure();
   if (!panel) return;
   panel.hidden = false;
+  if (isHostedToolRoute) {
+    await renderSettingsToolRoute(panel, route);
+    return;
+  }
   settingsFolderParityEnsureTabBinding(panel);
 
   // Idempotency: same guard as renderMigrateRoute (focus / visibilitychange

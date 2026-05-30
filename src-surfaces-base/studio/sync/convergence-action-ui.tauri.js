@@ -365,6 +365,7 @@
       '<h2 class="h2oConvActionTitle">Convergence action review</h2>' +
       '<p class="h2oConvActionNote">UI only. One color-only subject at a time. No batch apply, auto refresh, transport, publication, or remote mutation.</p>' +
       '</div><div class="h2oConvActionControls">' +
+      '<a class="h2oConvActionBtn" href="#/settings/convergence/color">Open in Settings</a>' +
       '<button class="h2oConvActionBtn" id="h2o-convergence-action-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oConvActionBtn h2oConvActionPrimary" id="h2o-convergence-action-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Preflight</button>' +
       '<button class="h2oConvActionBtn h2oConvActionApply" id="h2o-convergence-action-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Local Color Convergence</button>' +

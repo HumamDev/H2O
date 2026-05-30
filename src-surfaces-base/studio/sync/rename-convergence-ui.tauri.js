@@ -457,6 +457,7 @@
       '<h2 class="h2oRenameConvTitle">Rename convergence review</h2>' +
       '<p class="h2oRenameConvNote">UI only. One rename-only subject at a time. No batch rename, auto refresh, publication, transport, or remote mutation.</p>' +
       '</div><div class="h2oRenameConvControls">' +
+      '<a class="h2oRenameConvBtn" href="#/settings/convergence/rename">Open in Settings</a>' +
       '<button class="h2oRenameConvBtn" id="h2o-rename-convergence-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oRenameConvBtn h2oRenameConvPrimary" id="h2o-rename-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oRenameConvBtn h2oRenameConvPrimary" id="h2o-rename-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Rename Preflight</button>' +
