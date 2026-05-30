@@ -171,6 +171,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // validation orchestration over identity, consumed-operation, watermark,
   // publication, tombstone, and origin-tag helpers only.
   "sync/kernel/replay-composer.tauri.js",
+  // F14.2.10: Desktop/Tauri L1 owner-handoff primitive. Inert shared owner,
+  // authority, handoff request, and handoff result shaping/validation only.
+  "sync/kernel/owner-handoff.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -664,6 +667,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/tombstone-reader.tauri.js",
   "sync/kernel/publication-kit.tauri.js",
   "sync/kernel/replay-composer.tauri.js",
+  "sync/kernel/owner-handoff.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
