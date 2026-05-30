@@ -6360,6 +6360,14 @@ function settingsSubnavHtml(section, activeSubroute){
   return Object.keys(map).map((key) => settingsNavLinkHtml(map[key].label, map[key].hash, key === activeSubroute)).join("");
 }
 
+function settingsDiagnosticsSubnavHtml(activeSubroute){
+  const active = String(activeSubroute || "storage").toLowerCase();
+  return [
+    settingsNavLinkHtml("Storage", "#/settings/diagnostics", active === "storage"),
+    settingsNavLinkHtml("Folder Parity", "#/settings/diagnostics/folder-parity", active === "folder-parity"),
+  ].join("");
+}
+
 function settingsTopLevelMeta(section){
   const meta = {
     account: {
@@ -6493,8 +6501,8 @@ function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
         ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
         ${settingsInfoCardHtml(
           "Folder Parity Diagnostics",
-          "Folder parity diagnostics remain read-only and are reserved for a dedicated Diagnostics subsection. This placeholder keeps the global shell stable without moving or changing folder parity behavior in this repair.",
-          "",
+          "Existing Folder Parity, Folder Cleanup, Desktop Mirror Refresh, conflict review, orphan binding review, and Operations / Proofs diagnostics.",
+          `<a href="#/settings/diagnostics/folder-parity" style="${btnStyle}">Open Folder Parity</a>`,
           cardStyle
         )}
       </div>
@@ -6733,6 +6741,7 @@ function renderSettingsSectionShell(panel, section){
             <p class="wbSettingsShellCopy">${esc(meta.description)}</p>
           </div>
         </div>
+        ${key === "diagnostics" ? `<nav class="wbSettingsSubnav" aria-label="Diagnostics tools">${settingsDiagnosticsSubnavHtml("storage")}</nav>` : ""}
         <div class="wbSettingsSectionBody" data-settings-section="${esc(key)}">
           ${settingsTopLevelContentHtml(key, cardStyle, btnStyle, extensionMeta)}
         </div>
@@ -6757,10 +6766,54 @@ async function renderSettingsTopLevelRoute(panel, route){
   renderSettingsSectionShell(panel, section);
 }
 
+function settingsWrapFolderParityRoute(panel, parityNode){
+  const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
+  const fallback = `
+    <div class="wbSettingsCard" style="${cardStyle}">
+      Folder Parity diagnostics could not mount because the legacy Folder Parity panel was not rendered.
+    </div>
+  `;
+  panel.innerHTML = `
+    <div class="wbSettingsShell">
+      <nav class="wbSettingsShellRail" aria-label="Settings sections">
+        ${settingsShellRailHtml("diagnostics")}
+      </nav>
+      <section class="wbSettingsShellMain" aria-label="Folder Parity Diagnostics">
+        <div class="wbSettingsShellHeader">
+          <div>
+            <div class="wbSettingsShellEyebrow">Diagnostics</div>
+            <h2 class="wbSettingsShellTitle">Folder Parity</h2>
+            <p class="wbSettingsShellCopy">Existing Folder Parity and Folder Cleanup diagnostics, mounted inside the Settings shell without changing parity behavior.</p>
+          </div>
+        </div>
+        <nav class="wbSettingsSubnav" aria-label="Diagnostics tools">
+          ${settingsDiagnosticsSubnavHtml("folder-parity")}
+        </nav>
+        <div id="wbSettingsFolderParityHost" class="wbSettingsSectionBody" data-settings-section="diagnostics" data-settings-subsection="folder-parity">
+          ${parityNode ? "" : fallback}
+        </div>
+      </section>
+    </div>
+  `;
+  const host = panel.querySelector("#wbSettingsFolderParityHost");
+  if (host && parityNode) host.appendChild(parityNode);
+  panel.dataset.settingsRendered = "1";
+  panel.dataset.settingsRenderedKey = "diagnostics/folder-parity";
+  delete panel.dataset.syncControlsBound;
+  settingsFolderParityEnsureTabBinding(panel);
+  bindSettingsSyncControls(panel);
+  refreshSettingsFolderParity(panel).catch((err) => {
+    settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", "Refresh failed");
+    settingsFolderParityLog(panel, String(err && (err.stack || err.message || err)));
+  });
+}
+
 async function renderSettingsRoute(route = { section: "account", subsection: "" }){
   settingsHideOtherPanels();
   const settingsSection = String(route && route.section || "account").toLowerCase();
   const isHostedToolRoute = settingsSection === "sync" || settingsSection === "convergence";
+  const isFolderParityRoute = settingsSection === "diagnostics"
+    && String(route && route.subsection || "").toLowerCase() === "folder-parity";
   setRouteMeta("Settings", "Studio Settings", "Studio configuration · data & migration · storage diagnostics");
   const panel = settingsOverlayEnsure();
   if (!panel) return;
@@ -6769,8 +6822,10 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
     await renderSettingsToolRoute(panel, route);
     return;
   }
-  await renderSettingsTopLevelRoute(panel, route);
-  return;
+  if (!isFolderParityRoute) {
+    await renderSettingsTopLevelRoute(panel, route);
+    return;
+  }
   settingsFolderParityEnsureTabBinding(panel);
 
   // Idempotency: same guard as renderMigrateRoute (focus / visibilitychange
@@ -7284,6 +7339,11 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
       Tip: each Chrome extension ID has its own isolated <code>chrome.storage.local</code> and IndexedDB. If your data ever disappears after rebuilding from a new path, it's almost certainly still alive under the previous extension ID — use Import on the old extension's bundle to restore.
     </div>
   `;
+
+  if (isFolderParityRoute) {
+    settingsWrapFolderParityRoute(panel, panel.querySelector("#wbSettingsFolderParityBox"));
+    return;
+  }
 
   bindSettingsSyncControls(panel);
   refreshSettingsDiagnostics(panel);
