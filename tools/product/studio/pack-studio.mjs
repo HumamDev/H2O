@@ -180,6 +180,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F14.2.12: Desktop/Tauri L1 audit / proof framework. Inert shared audit,
   // proof, history, summary, and metadata shaping/validation only.
   "sync/kernel/audit-proof-framework.tauri.js",
+  // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
+  // function over one chat record (Native mirror / Library Index /
+  // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
+  // Uses kernel identity-kit + privacy-scan. No storage writes, no
+  // mutation, no publication, no proposal, no preflight, no apply, no
+  // watermark advance, no consumed-op writes. Quarantines on missing
+  // chatId, missing account binding, schema mismatch, or any forbidden
+  // field in input or output.
+  "sync/chat/chat-canonicalizer.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -676,6 +685,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/owner-handoff.tauri.js",
   "sync/kernel/lifecycle-framework.tauri.js",
   "sync/kernel/audit-proof-framework.tauri.js",
+  "sync/chat/chat-canonicalizer.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

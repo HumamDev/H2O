@@ -622,6 +622,16 @@
        execution, storage access, workflow execution, publication, or apply
        behavior. -->
   <script src="./sync/kernel/audit-proof-framework.tauri.js"></script>
+  <!-- F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer.
+       Pure function over one chat record (Native mirror / Library Index /
+       Registry Core projection) -> the F14.3.0 canonical chat snapshot.
+       Uses kernel identity-kit + privacy-scan. No storage writes, no
+       mutation, no publication, no proposal, no preflight, no apply, no
+       watermark advance, no consumed-op writes. Quarantines on missing
+       chatId, missing account binding, schema mismatch, or any forbidden
+       field in input or output. Registers
+       H2O.Desktop.Sync.canonicalizeChatMetadata. -->
+  <script src="./sync/chat/chat-canonicalizer.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
