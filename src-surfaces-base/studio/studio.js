@@ -6303,6 +6303,16 @@ const SETTINGS_CONVERGENCE_SUBROUTES = Object.freeze({
   binding: { label: "Binding", hash: "#/settings/convergence/binding" },
 });
 
+const SETTINGS_TOP_LEVEL_ROUTES = Object.freeze({
+  account: { label: "Account", hash: "#/settings/account" },
+  library: { label: "Library", hash: "#/settings/library" },
+  sync: { label: "Sync", hash: "#/settings/sync" },
+  convergence: { label: "Convergence", hash: "#/settings/convergence" },
+  diagnostics: { label: "Diagnostics", hash: "#/settings/diagnostics" },
+  data: { label: "Data", hash: "#/settings/data" },
+  about: { label: "About", hash: "#/settings/about" },
+});
+
 const SETTINGS_EMBEDDED_TOOL_PANEL_IDS = Object.freeze([
   "h2o-manual-sync-panel",
   "h2o-convergence-review-panel",
@@ -6337,9 +6347,181 @@ function settingsNavLinkHtml(label, hash, active){
   return `<a class="wbSettingsShellLink${active ? " isActive" : ""}" href="${esc(hash)}" ${active ? 'aria-current="page"' : ""}>${esc(label)}</a>`;
 }
 
+function settingsShellRailHtml(activeSection){
+  const active = String(activeSection || "account").toLowerCase();
+  return Object.keys(SETTINGS_TOP_LEVEL_ROUTES).map((key) => {
+    const item = SETTINGS_TOP_LEVEL_ROUTES[key];
+    return settingsNavLinkHtml(item.label, item.hash, key === active);
+  }).join("");
+}
+
 function settingsSubnavHtml(section, activeSubroute){
   const map = section === "sync" ? SETTINGS_SYNC_SUBROUTES : SETTINGS_CONVERGENCE_SUBROUTES;
   return Object.keys(map).map((key) => settingsNavLinkHtml(map[key].label, map[key].hash, key === activeSubroute)).join("");
+}
+
+function settingsTopLevelMeta(section){
+  const meta = {
+    account: {
+      title: "Account",
+      eyebrow: "Identity and preferences",
+      description: "Account-facing Settings shell. Identity and preference controls can be migrated here without changing runtime behavior.",
+    },
+    library: {
+      title: "Library",
+      eyebrow: "Library workspace",
+      description: "Library settings shell for folders, chats, snapshots, captures, labels, and categories.",
+    },
+    diagnostics: {
+      title: "Diagnostics",
+      eyebrow: "Storage diagnostics",
+      description: "Read-only runtime and storage diagnostics. No sync, convergence, or apply behavior is changed here.",
+    },
+    data: {
+      title: "Data",
+      eyebrow: "Export, import, backup",
+      description: "Existing Studio migration and backup entry points, grouped into the Settings shell.",
+    },
+    about: {
+      title: "About",
+      eyebrow: "Build and documentation",
+      description: "Version, build-channel, and operator documentation placeholders for Studio.",
+    },
+  };
+  return meta[section] || meta.account;
+}
+
+function settingsInfoCardHtml(title, body, actionHtml = "", cardStyle = ""){
+  return `
+    <div class="wbSettingsCard" style="${cardStyle}">
+      <div style="font-weight:600">${esc(title)}</div>
+      <div style="opacity:.72;font-size:12px;line-height:1.45;flex:1">${body}</div>
+      ${actionHtml}
+    </div>
+  `;
+}
+
+function settingsDataSectionHtml(cardStyle, btnStyle){
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
+      <div class="wbSettingsCard" style="${cardStyle}">
+        <div style="font-weight:600">Export Studio Bundle</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Download a full JSON bundle of your chats, snapshots, folders, labels, categories, projects, highlights, library KV, and UI prefs. Auth tokens are never exported.</div>
+        <a href="#/migrate/export" style="${btnStyle}">Open Export</a>
+      </div>
+      <div class="wbSettingsCard" style="${cardStyle}">
+        <div style="font-weight:600">Import Studio Bundle</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Apply a previously exported bundle to this extension. The flow auto-backs-up current data and dry-runs before any write. Merge mode never overwrites existing records.</div>
+        <a href="#/migrate/import" style="${btnStyle}">Open Import</a>
+      </div>
+      <div class="wbSettingsCard" style="${cardStyle}">
+        <div style="font-weight:600">Backup Current Studio Data</div>
+        <div style="opacity:.7;font-size:12px;flex:1">Generate a snapshot of this extension's Studio data right now. Same operation as Export; pair it with Import to migrate across extension IDs or restore from a known-good state.</div>
+        <a href="#/migrate/export" style="${btnStyle}">Open Backup</a>
+      </div>
+    </div>
+  `;
+}
+
+function settingsStorageDiagnosticsHtml(meta, cardStyle){
+  return `
+    <div id="wbSettingsDiagBox" class="wbSettingsCard" style="${cardStyle}">
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+        <div style="opacity:.6">Extension ID</div>           <div id="wbSettingsDiagId">${esc(meta.id || "(unavailable)")}</div>
+        <div style="opacity:.6">Extension name</div>         <div id="wbSettingsDiagName">${esc(meta.name || "(unavailable)")}</div>
+        <div style="opacity:.6">Version</div>                <div id="wbSettingsDiagVersion">${esc(meta.version || "(unavailable)")}</div>
+        <div style="opacity:.6">Saved chats</div>            <div id="wbSettingsDiagChats">(loading...)</div>
+        <div style="opacity:.6">Build channel</div>          <div id="wbSettingsDiagBuild">(loading...)</div>
+      </div>
+      <div id="wbSettingsDiagWarn" style="margin-top:8px;font-size:12px;opacity:.75" hidden></div>
+    </div>
+    <div style="margin-top:8px;font-size:12px;opacity:.6">
+      Tip: each Chrome extension ID has its own isolated <code>chrome.storage.local</code> and IndexedDB. If your data ever disappears after rebuilding from a new path, it is usually still alive under the previous extension ID. Use Data -> Import on the old extension's bundle to restore.
+    </div>
+  `;
+}
+
+function settingsLegacySyncStatusHtml(cardStyle, btnStyle){
+  return `
+    <div id="wbSettingsSyncBox" class="wbSettingsCard" style="${cardStyle}">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div id="wbSettingsSyncTitle" style="font-weight:600">Desktop to Chrome Sync</div>
+          <div id="wbSettingsSyncSummary" style="opacity:.7;font-size:12px">Reading sync status...</div>
+        </div>
+        <button id="wbSettingsSyncRefresh" type="button" style="${btnStyle}">Refresh Status</button>
+      </div>
+      <div id="wbSettingsSyncStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+      <div id="wbSettingsSyncDesktopControls" style="display:none;gap:8px;flex-wrap:wrap">
+        <button id="wbSettingsSyncExportLatest" type="button" style="${btnStyle}">Write latest.json</button>
+        <button id="wbSettingsSyncEnableDesktopAuto" type="button" style="${btnStyle}">Enable Auto Export</button>
+        <button id="wbSettingsSyncDisableDesktopAuto" type="button" style="${btnStyle}">Disable Auto Export</button>
+      </div>
+      <div id="wbSettingsSyncFolderStateImport" style="display:none;flex-direction:column;gap:8px;padding-top:10px;margin-top:4px;border-top:1px solid rgba(255,255,255,.06)">
+        <div style="font-size:12px;opacity:.7;line-height:1.4">
+          Import a manually captured Chrome/Studio folder-state JSON file. Routes through
+          <code>H2O.Studio.sync.importFromFile()</code>; folder-only payloads take the
+          <code>importFolderStateOnly</code> fast path. Read-only on the source file; no Chrome
+          write-back, no daemon, no bidirectional sync.
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="wbSettingsSyncFolderStatePath" type="text" spellcheck="false" autocomplete="off"
+                 value="/Users/hobayda/H2O Studio Sync/real-folder-state.json"
+                 placeholder="/absolute/path/to/folder-state.json"
+                 style="flex:1;min-width:240px;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px" />
+          <button id="wbSettingsSyncFolderStatePickBtn" type="button" style="${btnStyle}" title="Open native file picker to select a folder-state JSON">Choose file...</button>
+          <button id="wbSettingsSyncFolderStateImportBtn" type="button" style="${btnStyle}">Import folder-state</button>
+        </div>
+      </div>
+      <div id="wbSettingsSyncChromeControls" style="display:none;gap:8px;flex-wrap:wrap">
+        <button id="wbSettingsSyncConnectFolder" type="button" style="${btnStyle}">Connect Folder</button>
+        <button id="wbSettingsSyncDisconnectFolder" type="button" style="${btnStyle}">Disconnect</button>
+        <button id="wbSettingsSyncNow" type="button" style="${btnStyle}">Sync Now</button>
+        <button id="wbSettingsSyncEnableChromeAuto" type="button" style="${btnStyle}">Enable Auto Sync</button>
+        <button id="wbSettingsSyncDisableChromeAuto" type="button" style="${btnStyle}">Disable Auto Sync</button>
+      </div>
+      <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
+    </div>
+  `;
+}
+
+function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
+  if (section === "data") return settingsDataSectionHtml(cardStyle, btnStyle);
+  if (section === "diagnostics") {
+    return `
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
+        ${settingsInfoCardHtml(
+          "Folder Parity Diagnostics",
+          "Folder parity diagnostics remain read-only and are reserved for a dedicated Diagnostics subsection. This placeholder keeps the global shell stable without moving or changing folder parity behavior in this repair.",
+          "",
+          cardStyle
+        )}
+      </div>
+    `;
+  }
+  if (section === "library") {
+    return `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        ${settingsInfoCardHtml("Folders", "Library folder controls remain in the Library workspace. This Settings section is a safe shell placeholder for future library preferences.", `<a href="#/library/folders" style="${btnStyle}">Open Library Folders</a>`, cardStyle)}
+        ${settingsInfoCardHtml("Chats and Snapshots", "Saved chats, snapshots, captures, labels, and categories are not moved in this repair. No Library data behavior changes.", `<a href="#/library/dashboard" style="${btnStyle}">Open Library</a>`, cardStyle)}
+      </div>
+    `;
+  }
+  if (section === "about") {
+    return `
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
+        ${settingsInfoCardHtml("Documentation", "About/documentation links can be added here in a later phase. This repair only establishes the global Settings shell.", "", cardStyle)}
+      </div>
+    `;
+  }
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+      ${settingsInfoCardHtml("Account Identity", "Account-specific controls are not migrated yet. This placeholder preserves the approved Settings shell route without adding account behavior.", "", cardStyle)}
+      ${settingsInfoCardHtml("Preferences", "Preference controls can be moved here later. This repair does not change current preferences, sync, diagnostics, or convergence behavior.", "", cardStyle)}
+    </div>
+  `;
 }
 
 function settingsToolSpec(section, subsection){
@@ -6402,16 +6584,13 @@ function renderSettingsToolShell(panel, section, subsection){
   const spec = settingsToolSpec(section, subsection);
   const syncActive = section === "sync";
   const convActive = section === "convergence";
+  const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
+  const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
+  const statusHtml = syncActive && subsection === "status" ? settingsLegacySyncStatusHtml(cardStyle, btnStyle) : "";
   panel.innerHTML = `
     <div class="wbSettingsShell">
       <nav class="wbSettingsShellRail" aria-label="Settings sections">
-        ${settingsNavLinkHtml("Account", "#/settings/account", section === "account")}
-        ${settingsNavLinkHtml("Library", "#/settings/library", section === "library")}
-        ${settingsNavLinkHtml("Sync", "#/settings/sync/status", syncActive)}
-        ${settingsNavLinkHtml("Convergence", "#/settings/convergence/review", convActive)}
-        ${settingsNavLinkHtml("Diagnostics", "#/settings/diagnostics", section === "diagnostics")}
-        ${settingsNavLinkHtml("Data", "#/settings/data", section === "data")}
-        ${settingsNavLinkHtml("About", "#/settings/about", section === "about")}
+        ${settingsShellRailHtml(section)}
       </nav>
       <section class="wbSettingsShellMain" aria-label="${esc(spec.title)}">
         <div class="wbSettingsShellHeader">
@@ -6424,6 +6603,7 @@ function renderSettingsToolShell(panel, section, subsection){
         <nav class="wbSettingsSubnav" aria-label="${syncActive ? "Sync" : "Convergence"} tools">
           ${settingsSubnavHtml(section, subsection)}
         </nav>
+        ${statusHtml}
         <div id="wbSettingsEmbeddedToolHost" class="wbSettingsEmbeddedTool" data-settings-tool-section="${esc(section)}" data-settings-tool-subroute="${esc(subsection)}">
           <div class="wbSettingsCard wbSettingsEmbeddedLoading">Opening existing ${esc(spec.title)} panel…</div>
         </div>
@@ -6511,6 +6691,7 @@ async function renderSettingsToolRoute(panel, route){
   const subsection = settingsNormalizeSubroute(section, route && route.subsection);
   const routeKey = section + "/" + subsection;
   if (panel.dataset.settingsRendered === "1" && panel.dataset.settingsRenderedKey === routeKey && panel.firstChild) {
+    if (section === "sync" && subsection === "status") settingsBindLegacySyncStatus(panel);
     await settingsMountEmbeddedTool(section, subsection);
     return;
   }
@@ -6518,7 +6699,62 @@ async function renderSettingsToolRoute(panel, route){
   panel.dataset.settingsRenderedKey = routeKey;
   delete panel.dataset.syncControlsBound;
   renderSettingsToolShell(panel, section, subsection);
+  if (section === "sync" && subsection === "status") settingsBindLegacySyncStatus(panel);
   await settingsMountEmbeddedTool(section, subsection);
+}
+
+function settingsBindLegacySyncStatus(panel){
+  if (!panel || !panel.querySelector("#wbSettingsSyncBox")) return;
+  bindSettingsSyncControls(panel);
+  refreshSettingsSync(panel).catch((err) => settingsSyncLog(panel, String(err && (err.stack || err.message || err))));
+  STUDIO_settingsReadFolderStateLastPath().then((stored) => {
+    if (!stored) return;
+    const input = panel.querySelector("#wbSettingsSyncFolderStatePath");
+    if (input) input.value = stored;
+  }).catch(() => { /* ignore */ });
+}
+
+function renderSettingsSectionShell(panel, section){
+  const key = SETTINGS_TOP_LEVEL_ROUTES[section] ? section : "account";
+  const meta = settingsTopLevelMeta(key);
+  const extensionMeta = migrateExtensionLabel();
+  const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
+  const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
+  panel.innerHTML = `
+    <div class="wbSettingsShell">
+      <nav class="wbSettingsShellRail" aria-label="Settings sections">
+        ${settingsShellRailHtml(key)}
+      </nav>
+      <section class="wbSettingsShellMain" aria-label="${esc(meta.title)}">
+        <div class="wbSettingsShellHeader">
+          <div>
+            <div class="wbSettingsShellEyebrow">${esc(meta.eyebrow)}</div>
+            <h2 class="wbSettingsShellTitle">${esc(meta.title)}</h2>
+            <p class="wbSettingsShellCopy">${esc(meta.description)}</p>
+          </div>
+        </div>
+        <div class="wbSettingsSectionBody" data-settings-section="${esc(key)}">
+          ${settingsTopLevelContentHtml(key, cardStyle, btnStyle, extensionMeta)}
+        </div>
+      </section>
+    </div>
+  `;
+  if (key === "diagnostics" || key === "about") refreshSettingsDiagnostics(panel);
+}
+
+async function renderSettingsTopLevelRoute(panel, route){
+  const section = SETTINGS_TOP_LEVEL_ROUTES[String(route && route.section || "").toLowerCase()]
+    ? String(route.section).toLowerCase()
+    : "account";
+  const routeKey = section;
+  if (panel.dataset.settingsRendered === "1" && panel.dataset.settingsRenderedKey === routeKey && panel.firstChild) {
+    if (section === "diagnostics" || section === "about") refreshSettingsDiagnostics(panel);
+    return;
+  }
+  panel.dataset.settingsRendered = "1";
+  panel.dataset.settingsRenderedKey = routeKey;
+  delete panel.dataset.syncControlsBound;
+  renderSettingsSectionShell(panel, section);
 }
 
 async function renderSettingsRoute(route = { section: "account", subsection: "" }){
@@ -6533,6 +6769,8 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
     await renderSettingsToolRoute(panel, route);
     return;
   }
+  await renderSettingsTopLevelRoute(panel, route);
+  return;
   settingsFolderParityEnsureTabBinding(panel);
 
   // Idempotency: same guard as renderMigrateRoute (focus / visibilitychange
