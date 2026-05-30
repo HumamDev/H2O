@@ -177,6 +177,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // F14.2.11: Desktop/Tauri L1 lifecycle state-machine framework. Inert
   // shared state, transition, history, and metadata shaping/validation only.
   "sync/kernel/lifecycle-framework.tauri.js",
+  // F14.2.12: Desktop/Tauri L1 audit / proof framework. Inert shared audit,
+  // proof, history, summary, and metadata shaping/validation only.
+  "sync/kernel/audit-proof-framework.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -672,6 +675,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/replay-composer.tauri.js",
   "sync/kernel/owner-handoff.tauri.js",
   "sync/kernel/lifecycle-framework.tauri.js",
+  "sync/kernel/audit-proof-framework.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

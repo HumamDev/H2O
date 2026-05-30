@@ -616,6 +616,12 @@
        metadata shaping/validation helpers. No storage access, transition
        execution, workflow execution, domain logic, or mobile behavior. -->
   <script src="./sync/kernel/lifecycle-framework.tauri.js"></script>
+  <!-- F14.2.12: Desktop/Tauri L1 audit / proof framework. Registers
+       caller-supplied audit record, proof record, history, summary, and
+       metadata shaping/validation helpers. No proof execution, audit
+       execution, storage access, workflow execution, publication, or apply
+       behavior. -->
+  <script src="./sync/kernel/audit-proof-framework.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
