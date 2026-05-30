@@ -164,6 +164,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Inert caller-supplied tombstone and F5 handoff/review shaping and
   // validation only.
   "sync/kernel/tombstone-reader.tauri.js",
+  // F14.2.8: Desktop/Tauri L1 publication kit primitive. Inert shared
+  // publication status, metadata, receipt, and validation helpers only.
+  "sync/kernel/publication-kit.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -655,6 +658,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/watermark-service.tauri.js",
   "sync/kernel/consumed-op.tauri.js",
   "sync/kernel/tombstone-reader.tauri.js",
+  "sync/kernel/publication-kit.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
