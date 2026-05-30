@@ -6929,7 +6929,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   align-items:center;
   justify-content:space-between;
   gap:var(--wb-space-3);
-  min-height:36px;
+  min-height:34px;
   padding:0 14px;
   border-bottom:1px solid var(--wb-border);
 }
@@ -7021,7 +7021,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   align-items:stretch;
   gap:var(--wb-space-3);
   min-width:0;
-  padding:10px 14px 12px;
+  padding:8px 14px 10px;
   overflow-x:auto;
   scrollbar-width:thin;
 }
@@ -7058,7 +7058,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   flex-direction:column;
   align-items:flex-start;
   justify-content:space-between;
-  gap:6px;
+  gap:5px;
   flex:0 0 auto;
   min-width:0;
 }
@@ -7066,7 +7066,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbRibbonGroupActions{
   display:flex;
   align-items:center;
-  gap:4px;
+  gap:3px;
   flex-wrap:nowrap;
 }
 
@@ -7212,10 +7212,10 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 }
 
 .wbRibbonGroupLabel{
-  font-size:10.5px;
-  letter-spacing:.06em;
+  font-size:10px;
+  letter-spacing:.07em;
   text-transform:uppercase;
-  color:var(--wb-muted);
+  color:var(--wb-text-soft);
   padding:0 2px;
   user-select:none;
 }
@@ -7226,14 +7226,14 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  height:30px;
-  padding:0 10px;
+  height:28px;
+  padding:0 9px;
   border:1px solid var(--wb-border);
-  border-radius:6px;
+  border-radius:7px;
   background:var(--wb-surface-soft);
   color:var(--wb-text);
   font:inherit;
-  font-size:12px;
+  font-size:11.5px;
   font-weight:500;
   white-space:nowrap;
   cursor:pointer;
@@ -7317,20 +7317,16 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   display:none;
 }
 
-/* Responsive — at narrow widths drop the group label to one row to keep the
-   ribbon below ~88px. No layout rework, no overflow menu wired in Phase 1a;
-   the panel itself scrolls horizontally. */
+/* Responsive — Phase 6b compacted the defaults to the floor (28px height /
+   11.5px font), so this narrow tier only trims horizontal padding further;
+   height + font stay at the accessible default. The panel still scrolls
+   horizontally and the Phase 6a edge-fade indicates off-screen groups. */
 @media (max-width: 900px){
   .wbRibbonPanel{
     padding:8px 12px 10px;
   }
-  .wbRibbonGroupLabel{
-    font-size:10px;
-  }
   .wbRibbonAction{
-    height:28px;
     padding:0 8px;
-    font-size:11.5px;
   }
 }
 
