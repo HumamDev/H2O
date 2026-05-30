@@ -632,6 +632,18 @@
        field in input or output. Registers
        H2O.Desktop.Sync.canonicalizeChatMetadata. -->
   <script src="./sync/chat/chat-canonicalizer.tauri.js"></script>
+  <!-- F14.3.2: Desktop/Tauri read-only chat diagnostics. Six diagnostic
+       primitives over the F14.3.0 canonical chat model:
+       runChatMaterializationDiagnostic, runCrossAccountIdentityCheck,
+       runNativeOwnerReachabilityProbe, runMirrorStalenessProbe,
+       runChatTombstoneCheck, runChatForbiddenFieldScan. Pure functions:
+       no storage writes, no mirror writes, no proposal generation, no
+       publication, no apply, no owner-handoff execution, no watermark
+       advancement, no consumed-op writes. Adopts kernel identity-kit,
+       privacy scanner, blockers/result-shape, lifecycle framework,
+       consumed-op primitive, tombstone reader, owner-handoff validation.
+       Registers H2O.Desktop.Sync.run* APIs + install/version markers. -->
+  <script src="./sync/chat/chat-diagnostics.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

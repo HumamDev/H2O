@@ -189,6 +189,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // chatId, missing account binding, schema mismatch, or any forbidden
   // field in input or output.
   "sync/chat/chat-canonicalizer.tauri.js",
+  // F14.3.2: Desktop/Tauri read-only chat diagnostics. Six diagnostic
+  // primitives consuming the chat canonicalizer + kernel identity /
+  // privacy / blockers / lifecycle / consumed-op / tombstone-reader /
+  // owner-handoff (validation only — no handoff execution). No
+  // mutation, no publication, no apply, no watermark or consumed-op
+  // writes.
+  "sync/chat/chat-diagnostics.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -686,6 +693,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/kernel/lifecycle-framework.tauri.js",
   "sync/kernel/audit-proof-framework.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
+  "sync/chat/chat-diagnostics.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
