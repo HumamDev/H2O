@@ -740,6 +740,11 @@
        read-only Native owner handoff request. No Native/F5 execution, apply,
        publication, relay/outbox, watermark, or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-native-archive-handoff-preview.tauri.js"></script>
+  <!-- F14.4.7b: Desktop/Tauri snapshot F5 tombstone handoff preview.
+       Validates generated snapshot tombstone proposal candidates and shapes a
+       read-only F5 owner handoff request. No F5/Native execution, apply,
+       publication, relay/outbox, watermark, or consumed-op writes. -->
+  <script src="./sync/snapshot/snapshot-f5-tombstone-handoff-preview.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
