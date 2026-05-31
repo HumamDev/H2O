@@ -215,6 +215,29 @@
     if (operation === OP_RESTORE_PROPOSED) return 'captured';
     return '';
   }
+  function canonicalLifecycleState(value, mode) {
+    var state = cleanLower(value);
+    if (state === 'captured' || state === 'live') return 'active';
+    if (state === 'deleted' || state === 'removed') return 'tombstoned';
+    if (state === 'tombstoned' && mode === 'restorable') return 'retained';
+    return state || 'unknown';
+  }
+  function canonicalTargetStateFor(operation) {
+    if (operation === OP_ARCHIVE_PROPOSED) return 'archived';
+    if (operation === OP_TOMBSTONE_PROPOSED) return 'retained';
+    if (operation === OP_RESTORE_PROPOSED) return 'active';
+    return 'unknown';
+  }
+  function shapeWithKernel(method, fallback, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return fallback;
+    try {
+      return kernel[method](fallback);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return fallback;
+    }
+  }
   function foreverNoKey(value) {
     if (Array.isArray(value)) {
       for (var i = 0; i < value.length; i += 1) {
@@ -500,6 +523,94 @@
 
     var recordedAtIso = nowIsoSeconds();
     var sideEffects = sideEffectSummary();
+    var canonicalSourceState = canonicalLifecycleState(proposal.fromState, proposal.restoreFromTombstone ? 'restorable' : '');
+    var canonicalTargetState = canonicalTargetStateFor(proposal.operation);
+    var originTag = shapeWithKernel('shapeOriginTag', {
+      originKind: KIND_APPLY_EVENT,
+      sourcePeerId: cleanLower(safeObject(receiptInfo.actorPeer).syncPeerIdHash),
+      sourcePlatform: 'desktop-tauri',
+      envelopeKind: KIND_APPLY_EVENT,
+      operationKind: proposal.applyOperation,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey
+    }, warnings, 'origin-tag-shape-threw');
+    var lifecycleTransition = shapeWithKernel('shapeLifecycleTransition', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      transitionName: proposal.applyOperation,
+      fromState: canonicalSourceState,
+      toState: canonicalTargetState,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      actorPeer: receiptInfo.actorPeer,
+      reasonCode: 'snapshot-convergence-bookkeeping',
+      transitionedAtIso: receiptInfo.appliedAtIso,
+      metadata: {
+        legacySourceState: proposal.fromState,
+        legacyTargetState: proposal.targetState,
+        receiptOnly: receiptInfo.receiptOnly
+      }
+    }, warnings, 'lifecycle-transition-shape-threw');
+    var lifecycleState = shapeWithKernel('shapeLifecycleState', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      state: canonicalTargetState,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      ownerKind: handoff.ownerKind,
+      enteredAtIso: receiptInfo.appliedAtIso,
+      metadata: {
+        legacyTargetState: proposal.targetState,
+        receiptOnly: receiptInfo.receiptOnly
+      }
+    }, warnings, 'lifecycle-state-shape-threw');
+    var replayCandidate = shapeWithKernel('shapeReplayCandidate', {
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      operation: proposal.applyOperation,
+      operationKind: proposal.applyOperation,
+      operationIntent: OPERATION_INTENT,
+      baseHash: proposal.baseHash,
+      targetHash: proposal.targetHash,
+      revisionHash: proposal.targetHash,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      actorPeer: receiptInfo.actorPeer,
+      originTag: originTag,
+      metadata: {
+        operationName: proposal.operationName,
+        receiptOnly: receiptInfo.receiptOnly
+      }
+    }, warnings, 'replay-candidate-shape-threw');
+    var auditRecord = shapeWithKernel('shapeAuditRecord', {
+      auditId: receiptInfo.auditId,
+      auditMaintenanceId: receiptInfo.auditMaintenanceId,
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      operation: proposal.applyOperation,
+      operationIntent: OPERATION_INTENT,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      transactionId: receiptInfo.transactionId,
+      actorPeer: receiptInfo.actorPeer,
+      preStateHash: proposal.baseHash,
+      postStateHash: proposal.targetHash,
+      auditResult: 'success',
+      auditAtIso: recordedAtIso,
+      validationSummary: { ok: true, blockers: [], warnings: codeList(warnings) },
+      metadata: {
+        policyVersion: 'h2o.snapshot.convergence-bookkeeping.v1',
+        predicateVersion: proposal.predicateVersion
+      }
+    }, warnings, 'audit-record-shape-threw');
     var bookkeepingRow = {
       schema: ROW_SCHEMA,
       rowId: generateUuid(),
@@ -536,6 +647,13 @@
       postStateHash: proposal.targetHash,
       sourceLifecycleState: proposal.fromState,
       targetLifecycleState: proposal.targetState,
+      canonicalSourceLifecycleState: canonicalSourceState,
+      canonicalTargetLifecycleState: canonicalTargetState,
+      lifecycleState: lifecycleState,
+      lifecycleTransition: lifecycleTransition,
+      originTag: originTag,
+      replayCandidate: replayCandidate,
+      auditRecord: auditRecord,
       predicateVersion: proposal.predicateVersion,
       justifyingEvidenceDigests: proposal.justifyingEvidenceDigests.slice(),
       actorPeer: receiptInfo.actorPeer,

@@ -484,6 +484,62 @@
       ownerNameHash: isSha256Hex(source.ownerNameHash) ? cleanLower(source.ownerNameHash) : ''
     };
   }
+  function canonicalLifecycleState(value) {
+    var state = cleanLower(value);
+    if (state === 'captured' || state === 'live') return 'active';
+    if (state === 'deleted' || state === 'removed') return 'tombstoned';
+    return state || 'unknown';
+  }
+  function shapeWithKernel(method, fallback, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return fallback;
+    try {
+      return kernel[method](fallback);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return fallback;
+    }
+  }
+  function buildLifecycleShapes(candidate, identity, actorPeer, eventDigest, appliedAt, warnings) {
+    var fromState = canonicalLifecycleState(candidate.fromState || 'captured');
+    var toState = 'retained';
+    var transition = shapeWithKernel('shapeLifecycleTransition', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: identity.subjectId,
+      transitionName: candidate.applyOperation,
+      fromState: fromState,
+      toState: toState,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      actorPeer: actorPeer,
+      reasonCode: 'snapshot-tombstone-applyEvent-receipt',
+      transitionedAtIso: appliedAt,
+      metadata: {
+        proposalOperation: candidate.proposalOperation,
+        legacyTargetState: 'tombstoned',
+        receiptOnly: true
+      }
+    }, warnings, 'lifecycle-transition-shape-threw');
+    var state = shapeWithKernel('shapeLifecycleState', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: identity.subjectId,
+      state: toState,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      ownerKind: 'f5',
+      enteredAtIso: appliedAt,
+      metadata: {
+        sourceState: fromState,
+        legacyTargetState: 'tombstoned',
+        receiptOnly: true
+      }
+    }, warnings, 'lifecycle-state-shape-threw');
+    return { lifecycleState: state, lifecycleTransition: transition };
+  }
   function validateReplay(candidate, identity, actorPeer, preHash, postHash, f5Evidence, blockers, warnings) {
     var kernel = H2O.Desktop.Sync.kernel || null;
     if (!kernel || typeof kernel.composeReplayDefense !== 'function') {
@@ -615,6 +671,7 @@
     if (cleanString(tombstone.recordKind) !== 'snapshot') addCode(blockers, 'f5-evidence-recordKind-invalid');
     if (cleanLower(tombstone.priorDigest) !== candidate.baseHash) addCode(blockers, 'f5-evidence-priorDigest-mismatch');
 
+    var kernelTombstone = shapeWithKernel('shapeTombstone', tombstone, warnings, 'tombstone-shape-threw');
     var preview = {
       schema: F5_EVIDENCE_PREVIEW_SCHEMA,
       previewOnly: true,
@@ -625,6 +682,7 @@
       deletedBySyncPeerId: cleanString(tombstone.deletedBySyncPeerId),
       deleteReason: cleanString(tombstone.deleteReason),
       priorDigest: candidate.baseHash,
+      kernelTombstone: kernelTombstone,
       evidenceValid: blockers.indexOf('f5-evidence-missing') === -1 &&
         blockers.indexOf('f5-evidence-not-tombstoned') === -1 &&
         blockers.indexOf('f5-evidence-tombstoneId-missing') === -1 &&
@@ -668,6 +726,18 @@
       }
     };
     var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.shapeOriginTag === 'function') {
+      try { row.originTag = kernel.shapeOriginTag(Object.assign({}, row.originTag, { originKind: KIND_APPLY_EVENT })); }
+      catch (_) { /* keep local shape */ }
+    }
+    if (kernel && typeof kernel.shapeConsumedOperation === 'function') {
+      try {
+        row = Object.assign({}, kernel.shapeConsumedOperation(row), {
+          schema: CONSUMED_PREVIEW_SCHEMA,
+          previewOnly: true
+        });
+      } catch (_) { /* keep local shape */ }
+    }
     if (kernel && typeof kernel.validateConsumedOperation === 'function') {
       try {
         var validation = kernel.validateConsumedOperation(row);
@@ -694,14 +764,24 @@
       dedupeKey: identity.dedupeKey
     };
     var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.shapeWatermark === 'function') {
+      try { watermark = Object.assign({}, kernel.shapeWatermark(watermark), { schema: WATERMARK_PREVIEW_SCHEMA }); }
+      catch (_) { addCode(warnings, 'watermark-shape-threw'); }
+    }
     if (kernel && typeof kernel.validateWatermarkValue === 'function') {
       try {
         var validation = kernel.validateWatermarkValue(watermark, 'proposed');
         codeList(validation && validation.blockers).forEach(function (code) { addCode(blockers, code); });
         codeList(validation && validation.warnings).forEach(function (code) { addCode(warnings, code); });
+        var watermarkState = null;
+        if (kernel && typeof kernel.shapeWatermarkState === 'function') {
+          try { watermarkState = kernel.shapeWatermarkState({ proposedWatermark: validation.watermark || watermark, allowIdempotent: true }); }
+          catch (_) { addCode(warnings, 'watermark-state-shape-threw'); }
+        }
         return Object.assign({}, safeObject(validation && validation.watermark), {
           schema: WATERMARK_PREVIEW_SCHEMA,
-          previewOnly: true
+          previewOnly: true,
+          watermarkState: watermarkState
         });
       } catch (_) {
         addCode(warnings, 'watermark-validation-threw');
@@ -718,6 +798,7 @@
       ok: false,
       applyEvent: null,
       auditMetadata: null,
+      auditRecord: null,
       f5Evidence: null,
       proposedF5Record: null,
       proposedConsumedOperation: null,
@@ -765,6 +846,7 @@
     if (!auditId) addCode(blockers, 'auditMaintenanceId-required');
     if (blockers.length) return failure(blockers, warnings);
 
+    var lifecycleShapes = buildLifecycleShapes(candidate, identity, actorPeer, '', appliedAt, warnings);
     var payload = {
       auditMaintenanceId: auditId,
       operationId: opId,
@@ -787,6 +869,8 @@
         fromState: candidate.fromState || 'captured',
         toState: 'tombstoned'
       },
+      kernelLifecycleState: lifecycleShapes.lifecycleState,
+      kernelLifecycleTransition: lifecycleShapes.lifecycleTransition,
       actorPeer: actorPeer,
       owner: ownerSummary(args.handoffPreview),
       f5Evidence: f5Evidence,
@@ -873,6 +957,13 @@
       }
     };
     auditMetadata = validateAuditMetadata(auditMetadata, blockers, warnings);
+    var auditRecord = shapeWithKernel('shapeAuditRecord', Object.assign({
+      preStateHash: preHash,
+      postStateHash: postHash,
+      auditResult: 'success',
+      auditAtIso: appliedAt,
+      validationSummary: { ok: true, blockers: [], warnings: codeList(warnings) }
+    }, auditMetadata), warnings, 'audit-record-shape-threw');
     var consumedPreview = proposedConsumedOperation(candidate, identity, actorPeer, eventDigest, appliedAt, {
       warnings: warnings
     });
@@ -880,6 +971,7 @@
 
     scanPrivacy(applyEvent, blockers, warnings);
     scanPrivacy(auditMetadata, blockers, warnings);
+    scanPrivacy(auditRecord, blockers, warnings);
     scanPrivacy(f5Evidence, blockers, warnings);
     scanPrivacy(consumedPreview, blockers, warnings);
     scanPrivacy(watermarkPreview, blockers, warnings);
@@ -891,6 +983,9 @@
       ok: true,
       applyEvent: applyEvent,
       auditMetadata: auditMetadata,
+      auditRecord: auditRecord,
+      lifecycleState: lifecycleShapes.lifecycleState,
+      lifecycleTransition: lifecycleShapes.lifecycleTransition,
       f5Evidence: f5Evidence,
       proposedF5Record: f5Evidence,
       proposedConsumedOperation: consumedPreview,

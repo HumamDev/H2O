@@ -263,7 +263,13 @@
       dedupeKey: cleanString(row.dedupeKey),
       status: cleanString(row.status),
       generatedAtIso: cleanString(row.generatedAtIso),
-      expiresAt: cleanString(row.expiresAt)
+      expiresAt: cleanString(row.expiresAt),
+      lifecycleState: safeObject(row.lifecycleState),
+      lifecycleTransition: safeObject(row.lifecycleTransition),
+      originTag: safeObject(row.originTag),
+      replayCandidate: safeObject(row.replayCandidate),
+      proposedWatermark: safeObject(row.proposedWatermark),
+      watermarkState: safeObject(row.watermarkState)
     };
   }
   function summarizePreflight(preflight) {
@@ -281,6 +287,103 @@
       targetLifecycleState: cleanString(target.targetLifecycleState),
       blockers: codeList(p.blockers),
       warnings: codeList(p.warnings)
+    };
+  }
+
+  function canonicalLifecycleState(value, mode) {
+    var state = cleanLower(value);
+    if (state === 'captured' || state === 'live') return 'active';
+    if (state === 'deleted' || state === 'removed') return 'tombstoned';
+    if (state === 'tombstoned' && mode === 'restorable') return 'retained';
+    return state || 'unknown';
+  }
+  function shapeWithKernel(method, fallback, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return fallback;
+    try {
+      return kernel[method](fallback);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return fallback;
+    }
+  }
+  function buildKernelProposalShapes(args, warnings) {
+    var fromState = canonicalLifecycleState(args.fromState, args.fromStateContext);
+    var toState = canonicalLifecycleState(args.toState, args.toStateContext);
+    var originTag = shapeWithKernel('shapeOriginTag', {
+      originKind: ENVELOPE_KIND,
+      sourcePeerId: cleanLower(safeObject(args.actorPeer).syncPeerIdHash),
+      sourcePlatform: 'desktop-tauri',
+      envelopeKind: ENVELOPE_KIND,
+      operationKind: cleanString(args.operationKind),
+      lineageId: cleanString(args.lineageId),
+      eventDigest: cleanLower(args.eventDigest),
+      dedupeKey: cleanLower(args.dedupeKey)
+    }, warnings, 'origin-tag-shape-threw');
+    var replayCandidate = shapeWithKernel('shapeReplayCandidate', {
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanLower(args.subjectId),
+      operation: cleanString(args.operation),
+      operationKind: cleanString(args.operationKind),
+      operationIntent: OPERATION_INTENT,
+      baseHash: cleanLower(args.baseHash),
+      targetHash: cleanLower(args.targetHash),
+      revisionHash: cleanLower(args.targetHash),
+      lineageId: cleanString(args.lineageId),
+      eventDigest: cleanLower(args.eventDigest),
+      dedupeKey: cleanLower(args.dedupeKey),
+      actorPeer: safeObject(args.actorPeer),
+      originTag: originTag,
+      metadata: { domain: SUBJECT_TYPE, lifecycleTargetState: toState, previewOnly: true }
+    }, warnings, 'replay-candidate-shape-threw');
+    var lifecycleTransition = shapeWithKernel('shapeLifecycleTransition', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanLower(args.subjectId),
+      transitionName: cleanString(args.operation),
+      fromState: fromState,
+      toState: toState,
+      lineageId: cleanString(args.lineageId),
+      eventDigest: cleanLower(args.eventDigest),
+      dedupeKey: cleanLower(args.dedupeKey),
+      actorPeer: safeObject(args.actorPeer),
+      reasonCode: 'snapshot-proposal-candidate',
+      requestedAtIso: cleanString(args.createdAtIso),
+      transitionedAtIso: cleanString(args.createdAtIso),
+      metadata: { operationIntent: OPERATION_INTENT, previewOnly: true }
+    }, warnings, 'lifecycle-transition-shape-threw');
+    var lifecycleState = shapeWithKernel('shapeLifecycleState', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanLower(args.subjectId),
+      state: toState,
+      lineageId: cleanString(args.lineageId),
+      eventDigest: cleanLower(args.eventDigest),
+      dedupeKey: cleanLower(args.dedupeKey),
+      ownerKind: ENVELOPE_KIND,
+      enteredAtIso: cleanString(args.createdAtIso),
+      metadata: { sourceState: fromState, previewOnly: true }
+    }, warnings, 'lifecycle-state-shape-threw');
+    var proposedWatermark = shapeWithKernel('shapeWatermark', {
+      peerId: cleanLower(safeObject(args.actorPeer).syncPeerIdHash),
+      subjectId: cleanLower(args.subjectId),
+      lineageId: cleanString(args.lineageId),
+      revisionHash: cleanLower(args.targetHash),
+      watermarkAtIso: cleanString(args.createdAtIso),
+      recordedAtIso: cleanString(args.createdAtIso),
+      dedupeKey: cleanLower(args.dedupeKey)
+    }, warnings, 'watermark-shape-threw');
+    var watermarkState = shapeWithKernel('shapeWatermarkState', {
+      proposedWatermark: proposedWatermark,
+      allowIdempotent: true
+    }, warnings, 'watermark-state-shape-threw');
+    return {
+      lifecycleState: lifecycleState,
+      lifecycleTransition: lifecycleTransition,
+      originTag: originTag,
+      replayCandidate: replayCandidate,
+      proposedWatermark: proposedWatermark,
+      watermarkState: watermarkState
     };
   }
 
@@ -733,6 +836,20 @@
     scanCandidatePrivacy(envelope, blockers, warnings);
     if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
 
+    var kernelShapes = buildKernelProposalShapes({
+      subjectId: subjectId,
+      lineageId: envelope.lineageId,
+      dedupeKey: identity.dedupeKey,
+      eventDigest: eventDigest,
+      actorPeer: peer,
+      baseHash: baseHash,
+      targetHash: targetHash,
+      operation: OPERATION,
+      operationKind: 'snapshot.archive.proposal',
+      fromState: snapshot.lifecycleState,
+      toState: 'archived',
+      createdAtIso: createdAt
+    }, warnings);
     var row = {
       schema: ROW_SCHEMA,
       rowId: generateUuid(),
@@ -753,6 +870,12 @@
       status: STATUS_GENERATED,
       sourceDomain: SUBJECT_TYPE,
       targetState: { lifecycleState: 'archived' },
+      lifecycleState: kernelShapes.lifecycleState,
+      lifecycleTransition: kernelShapes.lifecycleTransition,
+      originTag: kernelShapes.originTag,
+      replayCandidate: kernelShapes.replayCandidate,
+      proposedWatermark: kernelShapes.proposedWatermark,
+      watermarkState: kernelShapes.watermarkState,
       canonicalSnapshotSummary: {
         subjectId: subjectId,
         revisionHash: baseHash,

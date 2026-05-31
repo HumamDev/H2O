@@ -494,6 +494,65 @@
       ownerNameHash: isSha256Hex(source.ownerNameHash) ? cleanLower(source.ownerNameHash) : ''
     };
   }
+  function canonicalLifecycleState(value, mode) {
+    var state = cleanLower(value);
+    if (state === 'captured' || state === 'live') return 'active';
+    if (state === 'deleted' || state === 'removed') return 'tombstoned';
+    if (state === 'tombstoned' && mode === 'restorable') return 'retained';
+    return state || 'unknown';
+  }
+  function shapeWithKernel(method, fallback, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return fallback;
+    try {
+      return kernel[method](fallback);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return fallback;
+    }
+  }
+  function buildLifecycleShapes(candidate, identity, actorPeer, eventDigest, appliedAt, warnings) {
+    var fromState = canonicalLifecycleState(candidate.fromState, candidate.restoreFromTombstone ? 'restorable' : '');
+    var toState = 'active';
+    var transition = shapeWithKernel('shapeLifecycleTransition', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: identity.subjectId,
+      transitionName: candidate.applyOperation,
+      fromState: fromState,
+      toState: toState,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      actorPeer: actorPeer,
+      reasonCode: 'snapshot-restore-applyEvent-receipt',
+      transitionedAtIso: appliedAt,
+      metadata: {
+        proposalOperation: candidate.proposalOperation,
+        legacySourceState: candidate.fromState,
+        legacyTargetState: 'captured',
+        receiptOnly: true
+      }
+    }, warnings, 'lifecycle-transition-shape-threw');
+    var state = shapeWithKernel('shapeLifecycleState', {
+      domain: 'snapshot',
+      subjectType: SUBJECT_TYPE,
+      subjectId: identity.subjectId,
+      state: toState,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      ownerKind: 'native',
+      enteredAtIso: appliedAt,
+      metadata: {
+        sourceState: fromState,
+        legacySourceState: candidate.fromState,
+        legacyTargetState: 'captured',
+        receiptOnly: true
+      }
+    }, warnings, 'lifecycle-state-shape-threw');
+    return { lifecycleState: state, lifecycleTransition: transition };
+  }
   function validateReplay(candidate, identity, actorPeer, preHash, postHash, f5RestoreEvidence, blockers, warnings) {
     var kernel = H2O.Desktop.Sync.kernel || null;
     if (!kernel || typeof kernel.composeReplayDefense !== 'function') {
@@ -637,6 +696,20 @@
       addCode(warnings, 'f5-restore-evidence-original-deletedAt-not-provided');
     }
 
+    var kernelTombstone = shapeWithKernel('shapeTombstone', {
+      tombstoneId: tombstoneId,
+      recordKind: cleanString(row.recordKind || row.record_kind || handoffEvidence.recordKind) || 'snapshot',
+      recordId: cleanString(row.recordId || row.record_id || candidate.subjectId),
+      subjectId: subjectId,
+      deletedAt: deletedAt,
+      deletedBySyncPeerId: cleanString(row.deletedBySyncPeerId || row.deleted_by_sync_peer_id || actorPeer.syncPeerIdHash),
+      deleteReason: cleanString(row.deleteReason || row.delete_reason) || 'snapshot-restore-applyEvent-receipt',
+      priorDigest: priorDigest || candidate.baseHash,
+      restoredAt: restoredAt,
+      restoredBySyncPeerId: restoredBy,
+      createdAt: cleanString(row.createdAt || row.created_at || deletedAt),
+      updatedAt: cleanString(row.updatedAt || row.updated_at || restoredAt)
+    }, warnings, 'tombstone-shape-threw');
     var preview = {
       schema: F5_RESTORE_PREVIEW_SCHEMA,
       previewOnly: true,
@@ -648,6 +721,7 @@
       restoredBySyncPeerId: restoredBy,
       priorDigest: priorDigest || candidate.baseHash,
       sourceTombstoneEvidenceDigest: isSha256Hex(row.sourceTombstoneEvidenceDigest) ? cleanLower(row.sourceTombstoneEvidenceDigest) : '',
+      kernelTombstone: kernelTombstone,
       evidenceValid: blockers.indexOf('f5-restore-evidence-missing') === -1 &&
         blockers.indexOf('f5-restore-evidence-tombstoneId-missing') === -1 &&
         blockers.indexOf('f5-restore-evidence-subjectId-mismatch') === -1 &&
@@ -692,6 +766,18 @@
       }
     };
     var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.shapeOriginTag === 'function') {
+      try { row.originTag = kernel.shapeOriginTag(Object.assign({}, row.originTag, { originKind: KIND_APPLY_EVENT })); }
+      catch (_) { /* keep local shape */ }
+    }
+    if (kernel && typeof kernel.shapeConsumedOperation === 'function') {
+      try {
+        row = Object.assign({}, kernel.shapeConsumedOperation(row), {
+          schema: CONSUMED_PREVIEW_SCHEMA,
+          previewOnly: true
+        });
+      } catch (_) { /* keep local shape */ }
+    }
     if (kernel && typeof kernel.validateConsumedOperation === 'function') {
       try {
         var validation = kernel.validateConsumedOperation(row);
@@ -718,14 +804,24 @@
       dedupeKey: identity.dedupeKey
     };
     var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.shapeWatermark === 'function') {
+      try { watermark = Object.assign({}, kernel.shapeWatermark(watermark), { schema: WATERMARK_PREVIEW_SCHEMA }); }
+      catch (_) { addCode(warnings, 'watermark-shape-threw'); }
+    }
     if (kernel && typeof kernel.validateWatermarkValue === 'function') {
       try {
         var validation = kernel.validateWatermarkValue(watermark, 'proposed');
         codeList(validation && validation.blockers).forEach(function (code) { addCode(blockers, code); });
         codeList(validation && validation.warnings).forEach(function (code) { addCode(warnings, code); });
+        var watermarkState = null;
+        if (kernel && typeof kernel.shapeWatermarkState === 'function') {
+          try { watermarkState = kernel.shapeWatermarkState({ proposedWatermark: validation.watermark || watermark, allowIdempotent: true }); }
+          catch (_) { addCode(warnings, 'watermark-state-shape-threw'); }
+        }
         return Object.assign({}, safeObject(validation && validation.watermark), {
           schema: WATERMARK_PREVIEW_SCHEMA,
-          previewOnly: true
+          previewOnly: true,
+          watermarkState: watermarkState
         });
       } catch (_) {
         addCode(warnings, 'watermark-validation-threw');
@@ -742,6 +838,7 @@
       ok: false,
       applyEvent: null,
       auditMetadata: null,
+      auditRecord: null,
       f5RestoreEvidence: null,
       proposedF5RestoreRecord: null,
       proposedConsumedOperation: null,
@@ -789,6 +886,7 @@
     if (!auditId) addCode(blockers, 'auditMaintenanceId-required');
     if (blockers.length) return failure(blockers, warnings);
 
+    var lifecycleShapes = buildLifecycleShapes(candidate, identity, actorPeer, '', appliedAt, warnings);
     var payload = {
       auditMaintenanceId: auditId,
       operationId: opId,
@@ -812,6 +910,8 @@
         fromState: candidate.fromState,
         toState: 'captured'
       },
+      kernelLifecycleState: lifecycleShapes.lifecycleState,
+      kernelLifecycleTransition: lifecycleShapes.lifecycleTransition,
       actorPeer: actorPeer,
       owner: ownerSummary(args.handoffPreview),
       f5RestoreEvidence: f5RestoreEvidence,
@@ -900,6 +1000,13 @@
       }
     };
     auditMetadata = validateAuditMetadata(auditMetadata, blockers, warnings);
+    var auditRecord = shapeWithKernel('shapeAuditRecord', Object.assign({
+      preStateHash: preHash,
+      postStateHash: postHash,
+      auditResult: 'success',
+      auditAtIso: appliedAt,
+      validationSummary: { ok: true, blockers: [], warnings: codeList(warnings) }
+    }, auditMetadata), warnings, 'audit-record-shape-threw');
     var consumedPreview = proposedConsumedOperation(candidate, identity, actorPeer, eventDigest, appliedAt, {
       warnings: warnings
     });
@@ -907,6 +1014,7 @@
 
     scanPrivacy(applyEvent, blockers, warnings);
     scanPrivacy(auditMetadata, blockers, warnings);
+    scanPrivacy(auditRecord, blockers, warnings);
     if (f5RestoreEvidence) scanPrivacy(f5RestoreEvidence, blockers, warnings);
     scanPrivacy(consumedPreview, blockers, warnings);
     scanPrivacy(watermarkPreview, blockers, warnings);
@@ -918,6 +1026,9 @@
       ok: true,
       applyEvent: applyEvent,
       auditMetadata: auditMetadata,
+      auditRecord: auditRecord,
+      lifecycleState: lifecycleShapes.lifecycleState,
+      lifecycleTransition: lifecycleShapes.lifecycleTransition,
       f5RestoreEvidence: f5RestoreEvidence,
       proposedF5RestoreRecord: f5RestoreEvidence,
       proposedConsumedOperation: consumedPreview,
