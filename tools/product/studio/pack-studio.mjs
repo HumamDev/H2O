@@ -278,6 +278,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // validate F5 tombstone evidence. No Native/F5 execution, apply,
   // publication, relay/outbox, watermark, or consumed-op writes.
   "sync/snapshot/snapshot-restore-handoff-preview.tauri.js",
+  // F14.4.8a: Desktop/Tauri snapshot archive applyEvent receipt builder.
+  // Receipt only: builds redacted applyEvent + audit/consumed/watermark
+  // preview shapes. No Native/F5 execution, apply, publication, relay/outbox,
+  // watermark, or consumed-op writes.
+  "sync/snapshot/snapshot-archive-apply-event-receipt.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -793,6 +798,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-native-archive-handoff-preview.tauri.js",
   "sync/snapshot/snapshot-f5-tombstone-handoff-preview.tauri.js",
   "sync/snapshot/snapshot-restore-handoff-preview.tauri.js",
+  "sync/snapshot/snapshot-archive-apply-event-receipt.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
