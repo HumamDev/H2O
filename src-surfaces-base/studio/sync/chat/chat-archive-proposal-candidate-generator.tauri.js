@@ -1,72 +1,9 @@
 /* H2O Desktop Sync - F14.3.4 chat archive proposal candidate generator
  *
- * Single-purpose generator for **archive** convergence candidates only.
- * Composes F14.3.1 canonicalizer + F14.3.2 diagnostics + F14.3.3 preflight
- * + F14.2.x kernel envelope helpers (identity-kit, replay composer,
- * privacy scanner, result-shape).
- *
- * Public API:
- *   H2O.Desktop.Sync.generateChatArchiveProposalCandidate(input)
- *     -> Promise<result>
- *
- *   H2O.Desktop.Sync.__chatArchiveProposalInstalled
- *   H2O.Desktop.Sync.__chatArchiveProposalVersion
- *
- * Input shape: identical to F14.3.3 preflight input + optional
- *   actorPeerSyncHash, justifyingEvidenceDigests, perEnvelopeSalt.
- * The operation MUST be omitted or equal to "archive". Rename (or any
- * other operation) is rejected at gate 1.
- *
- * Output shape:
- *   {
- *     schema, version,
- *     ok,                          // boolean: no blockers
- *     status,                      // "generated" | "noop" | "blocked"
- *     noop,                        // boolean: archive target already holds
- *     candidate,                   // proposal candidate object (or null)
- *     ledgerRow,                   // generated candidate ledger row (or null)
- *     preflight,                   // the full preflight result (read-only)
- *     blockers, warnings,
- *     observedAtIso
- *   }
- *
- * Candidate shape (redacted only; never raw chatId / title / accountId):
- *   {
- *     kind: "proposal",
- *     subjectType: "chat.metadata",
- *     operation: "chat-metadata-archive-proposed",
- *     operationIntent: "update",
- *     subjectId, lineageId, dedupeKey,
- *     redactionClass: "redacted",
- *     proposedAtIso,
- *     payload: {
- *       proposedOperation: { kind: "chat-archive-update", archived, currentArchived },
- *       expectedPostState: { archived, revisionHashBefore },
- *       predicateVersion: "h2o.chat.archive.predicate.v1",
- *       justifyingEvidenceDigests: string[]
- *     }
- *   }
- *
- * Ledger row shape:
- *   {
- *     schema, candidateId, status: "generated",
- *     subjectId, lineageId, dedupeKey,
- *     operation, operationIntent,
- *     generatedAtIso,
- *     canonicalSnapshotSummary: { subjectId, revisionHash,
- *       originAccountIdHash, schemaVersion, archived },
- *     targetState: { archived }
- *   }
- *
- * Hard boundaries (enforced by construction):
- *   - No publication, no outbox/relay touch, no apply.
- *   - No owner-handoff execution (only validation via preflight).
- *   - No Native interaction, no mirror write.
- *   - No watermark write, no consumed-op write, no storage mutation.
- *   - No rename support (single-purpose generator).
- *   - No raw chatId, title, or accountId in any output field —
- *     enforced by reading only the redacted canonical snapshot + a
- *     defense-in-depth privacy scan on the assembled output.
+ * Candidate generation only. This module emits a redacted local proposal
+ * candidate and appends one generated candidate ledger row. It never publishes,
+ * enqueues relay outbox rows, applies, calls Native owner handoff, advances
+ * watermarks, or records consumed operations.
  */
 (function (global) {
   'use strict';
@@ -75,7 +12,9 @@
     try {
       if (typeof global.__TAURI_INTERNALS__ !== 'undefined') return true;
       if (typeof global.__TAURI__ !== 'undefined') return true;
-    } catch (_) { /* swallow */ }
+      if (global.H2O && global.H2O.Studio && global.H2O.Studio.platform &&
+          global.H2O.Studio.platform.env && global.H2O.Studio.platform.env.isTauri === true) return true;
+    } catch (_) { /* ignore */ }
     return false;
   }
   if (!detectTauri()) return;
@@ -85,411 +24,803 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__chatArchiveProposalInstalled) return;
 
-  var VERSION = '0.1.0-f14.3.4';
+  var VERSION = '0.2.0-f14.3.4';
   var RESULT_SCHEMA = 'h2o.desktop.sync.chat-archive-proposal-candidate-generator.v1';
-  var LEDGER_ROW_SCHEMA = 'h2o.desktop.sync.chat-archive-proposal-ledger-row.v1';
-  var ALLOWED_OPERATION = 'archive';
-  var ENVELOPE_OPERATION = 'chat-metadata-archive-proposed';
-  var ENVELOPE_OPERATION_INTENT = 'update';
-  var ENVELOPE_SUBJECT_TYPE = 'chat.metadata';
+  var LEDGER_SCHEMA = 'h2o.desktop.sync.convergence-proposal-candidate-ledger.v1';
+  var ROW_SCHEMA = 'h2o.desktop.sync.convergence-proposal-candidate-row.v1';
+  var ENVELOPE_SCHEMA = 'h2o.crossPlatform.envelope.v1';
+  var LEDGER_KEY = 'h2o:sync:convergence-proposal-candidates:v1';
+  var SUBJECT_TYPE = 'chat.metadata';
   var ENVELOPE_KIND = 'proposal';
+  var OPERATION = 'chat-metadata-archive-proposed';
+  var OPERATION_INTENT = 'update';
+  var DOMAIN_OPERATION = 'archive';
+  var STATUS_GENERATED = 'generated';
   var PREDICATE_VERSION = 'h2o.chat.archive.predicate.v1';
+  var CAPABILITY_TAG = 'h2o.platform.capabilities.v1#f14.3.4-desktop-chat-archive-proposal-v1';
+  var EXPIRES_AFTER_MINUTES = 20;
+  var PRIVACY_FORBIDDEN_FIELDS = [
+    'content', 'body', 'text', 'messages', 'message_array', 'conversation',
+    'attachments', 'files', 'file_ids', 'image_urls', 'audio_urls',
+    'name', 'title', 'chatTitle', 'rawTitle', 'proposedTitle',
+    'rawId', 'chatId', 'accountId', 'rawAccountId',
+    'path', 'url', 'share_url', 'share_token', 'password', 'apiKey',
+    'session_token', 'cookies', 'token'
+  ];
 
-  // ── Tiny helpers ────────────────────────────────────────────────────
+  function isObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function safeObject(value) {
+    return isObject(value) ? value : {};
+  }
+
+  function asArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function cleanLower(value) {
+    return cleanString(value).toLowerCase();
+  }
+
   function nowIsoSeconds() {
     return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   }
-  function isObject(value) {
-    return value && typeof value === 'object' && !Array.isArray(value);
+
+  function addMinutesIso(minutes) {
+    return new Date(Date.now() + minutes * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   }
-  function cleanString(value) {
-    return typeof value === 'string' ? value : '';
-  }
-  function getSync() { return (H2O && H2O.Desktop && H2O.Desktop.Sync) || {}; }
-  function getKernel() { return getSync().kernel || null; }
+
   function addCode(list, code) {
-    var normalized = cleanString(code).trim();
-    if (!normalized) return;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].code === normalized) return;
-    }
-    list.push({ code: normalized });
+    var normalized = cleanString(code);
+    if (!normalized || list.indexOf(normalized) !== -1) return;
+    list.push(normalized);
   }
-  function mergeCodes(into, from) {
-    if (!Array.isArray(from)) return;
-    for (var i = 0; i < from.length; i++) {
-      var entry = from[i];
-      if (entry && typeof entry === 'object' && typeof entry.code === 'string') {
-        addCode(into, entry.code);
-      } else if (typeof entry === 'string') {
-        addCode(into, entry);
+
+  function codeList(value) {
+    return asArray(value).map(function (item) {
+      return isObject(item) ? cleanString(item.code) : cleanString(item);
+    }).filter(Boolean).filter(function (code, index, arr) {
+      return arr.indexOf(code) === index;
+    });
+  }
+
+  function isSha256Hex(value) {
+    return /^[0-9a-f]{64}$/.test(cleanLower(value));
+  }
+
+  function isIso(value) {
+    var text = cleanString(value);
+    return !!text && Number.isFinite(Date.parse(text));
+  }
+
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!isObject(value)) return value;
+    var out = {};
+    Object.keys(value).sort().forEach(function (key) {
+      if (typeof value[key] !== 'undefined') out[key] = canonicalize(value[key]);
+    });
+    return out;
+  }
+
+  function canonicalJson(value) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.canonicalJSON === 'function') {
+      try { return kernel.canonicalJSON(value); } catch (_) { /* fall through */ }
+    }
+    return JSON.stringify(canonicalize(value));
+  }
+
+  function bytesToHex(bytes) {
+    var hex = '';
+    for (var i = 0; i < bytes.length; i += 1) {
+      var part = bytes[i].toString(16);
+      hex += part.length === 1 ? '0' + part : part;
+    }
+    return hex;
+  }
+
+  function webCryptoAvailable() {
+    try {
+      return !!(global.crypto && global.crypto.subtle && global.crypto.subtle.digest);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function sha256Hex(value) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.sha256Hex === 'function') {
+      try {
+        var fromKernel = await kernel.sha256Hex(value);
+        if (isSha256Hex(fromKernel)) return cleanLower(fromKernel);
+      } catch (_) { /* fall through */ }
+    }
+    if (!webCryptoAvailable()) return '';
+    var text = typeof value === 'string' ? value : canonicalJson(value);
+    var data = new TextEncoder().encode(text);
+    var buffer = await global.crypto.subtle.digest('SHA-256', data);
+    return bytesToHex(new Uint8Array(buffer));
+  }
+
+  function generateUuid() {
+    try {
+      if (global.crypto && typeof global.crypto.randomUUID === 'function') {
+        return global.crypto.randomUUID();
       }
+    } catch (_) { /* fall through */ }
+    var bytes = new Uint8Array(16);
+    if (global.crypto && typeof global.crypto.getRandomValues === 'function') {
+      global.crypto.getRandomValues(bytes);
+    } else {
+      for (var i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
     }
-  }
-  function isSha256HexLocal(s) {
-    var kernel = getKernel();
-    if (kernel && typeof kernel.isSha256Hex === 'function') {
-      try { return !!kernel.isSha256Hex(s); } catch (_) { /* fall through */ }
-    }
-    return typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var h = bytesToHex(bytes);
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' +
+      h.slice(16, 20) + '-' + h.slice(20, 32);
   }
 
-  // ── Kernel identity helpers (kernel-first; fall back to canonicalJSON
-  //    + sha256Hex composition) ─────────────────────────────────────────
-  async function deriveDedupeKey(kernel, parts) {
-    if (kernel && typeof kernel.generateDedupeKey === 'function') {
+  function storageRef() {
+    try {
+      var s = global.chrome && global.chrome.storage && global.chrome.storage.local;
+      if (s && typeof s.get === 'function' && typeof s.set === 'function') return s;
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function storageGet(key) {
+    return new Promise(function (resolve, reject) {
+      var s = storageRef();
+      if (!s) { reject(new Error('storage-unavailable')); return; }
       try {
-        var r = await kernel.generateDedupeKey(parts);
-        var key = (r && (r.dedupeKey || r.value)) || (typeof r === 'string' ? r : '');
-        if (isSha256HexLocal(key)) return key;
-      } catch (_) { /* fall through */ }
+        s.get([key], function (items) {
+          var lastError = global.chrome && global.chrome.runtime && global.chrome.runtime.lastError;
+          if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+          resolve(items && Object.prototype.hasOwnProperty.call(items, key) ? items[key] : null);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function storageSet(key, value) {
+    return new Promise(function (resolve, reject) {
+      var s = storageRef();
+      if (!s) { reject(new Error('storage-unavailable')); return; }
+      try {
+        var payload = {};
+        payload[key] = value;
+        s.set(payload, function () {
+          var lastError = global.chrome && global.chrome.runtime && global.chrome.runtime.lastError;
+          if (lastError) { reject(new Error(String(lastError.message || lastError))); return; }
+          resolve();
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function normalizeLedger(raw) {
+    if (!raw) return { schema: LEDGER_SCHEMA, createdAtIso: nowIsoSeconds(), rows: [] };
+    if (!isObject(raw) || raw.schema !== LEDGER_SCHEMA || !Array.isArray(raw.rows)) return null;
+    return {
+      schema: LEDGER_SCHEMA,
+      createdAtIso: cleanString(raw.createdAtIso) || nowIsoSeconds(),
+      updatedAtIso: cleanString(raw.updatedAtIso),
+      rows: raw.rows.slice()
+    };
+  }
+
+  function foreverNoKey(value) {
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i += 1) {
+        var arrHit = foreverNoKey(value[i]);
+        if (arrHit) return arrHit;
+      }
+      return '';
     }
-    if (kernel && typeof kernel.canonicalJSON === 'function' && typeof kernel.sha256Hex === 'function') {
-      try {
-        return await kernel.sha256Hex(kernel.canonicalJSON({
-          subjectId: cleanString(parts.subjectId),
-          operation: cleanString(parts.operation),
-          baseHash: cleanString(parts.baseHash),
-          actorPeerSyncHash: cleanString(parts.actorPeerSyncHash)
-        }));
-      } catch (_) { /* fall through */ }
+    if (!isObject(value)) return '';
+    var keys = Object.keys(value);
+    for (var k = 0; k < keys.length; k += 1) {
+      var key = keys[k];
+      if (PRIVACY_FORBIDDEN_FIELDS.indexOf(key) !== -1) return key;
+      if (/token$/i.test(key) && key !== 'previewToken') return key;
+      var childHit = foreverNoKey(value[key]);
+      if (childHit) return childHit;
     }
     return '';
   }
 
-  async function deriveLineageId(kernel, parts) {
-    if (kernel && typeof kernel.generateLineageId === 'function') {
-      try {
-        var r = await kernel.generateLineageId(parts);
-        var lid = (r && (r.lineageId || r.value)) || (typeof r === 'string' ? r : '');
-        if (isSha256HexLocal(lid)) return lid;
-      } catch (_) { /* fall through */ }
-    }
-    if (kernel && typeof kernel.canonicalJSON === 'function' && typeof kernel.sha256Hex === 'function') {
-      try {
-        return await kernel.sha256Hex(kernel.canonicalJSON({
-          subjectId: cleanString(parts.subjectId),
-          operation: cleanString(parts.operation),
-          stamp: cleanString(parts.stamp),
-          actorPeerSyncHash: cleanString(parts.actorPeerSyncHash)
-        }));
-      } catch (_) { /* fall through */ }
-    }
-    return '';
+  function failure(blockers, warnings, extra) {
+    return Object.assign({
+      schema: RESULT_SCHEMA,
+      version: VERSION,
+      ok: false,
+      status: 'blocked',
+      generated: false,
+      noop: false,
+      proposalCandidate: null,
+      candidateRow: null,
+      candidateId: null,
+      blockers: codeList(blockers),
+      warnings: codeList(warnings)
+    }, isObject(extra) ? extra : {});
   }
 
-  async function deriveCandidateId(kernel, parts) {
-    if (kernel && typeof kernel.canonicalJSON === 'function' && typeof kernel.sha256Hex === 'function') {
-      try {
-        return await kernel.sha256Hex(kernel.canonicalJSON({
-          dedupeKey: cleanString(parts.dedupeKey),
-          stamp: cleanString(parts.stamp)
-        }));
-      } catch (_) { /* fall through */ }
-    }
-    return '';
-  }
-
-  function makeResult(opts) {
+  function noopResult(warnings, preflight) {
     return {
       schema: RESULT_SCHEMA,
       version: VERSION,
-      ok: !!opts.ok,
-      status: opts.status || 'blocked',
-      noop: !!opts.noop,
-      candidate: opts.candidate || null,
-      ledgerRow: opts.ledgerRow || null,
-      preflight: opts.preflight || null,
-      blockers: opts.blockers || [],
-      warnings: opts.warnings || [],
-      observedAtIso: opts.observedAtIso || nowIsoSeconds()
+      ok: true,
+      status: 'noop',
+      generated: false,
+      noop: true,
+      proposalCandidate: null,
+      candidateRow: null,
+      candidateId: null,
+      preflightSummary: summarizePreflight(preflight),
+      blockers: [],
+      warnings: codeList(warnings)
     };
   }
 
-  // ── Public API ──────────────────────────────────────────────────────
-  async function generateChatArchiveProposalCandidate(input) {
-    var observedAtIso = (isObject(input) && typeof input.observedAtIso === 'string')
-      ? input.observedAtIso
-      : nowIsoSeconds();
-    var blockers = [];
-    var warnings = [];
+  function rowSummary(row) {
+    return {
+      schema: ROW_SCHEMA,
+      rowId: cleanString(row.rowId),
+      envelopeId: cleanString(row.envelopeId),
+      lineageId: cleanString(row.lineageId),
+      subjectId: cleanString(row.subjectId),
+      operation: cleanString(row.operation),
+      operationIntent: cleanString(row.operationIntent),
+      baseHash: cleanString(row.baseHash),
+      targetHash: cleanString(row.targetHash),
+      eventDigest: cleanString(row.eventDigest),
+      dedupeKey: cleanString(row.dedupeKey),
+      status: cleanString(row.status),
+      generatedAtIso: cleanString(row.generatedAtIso),
+      expiresAt: cleanString(row.expiresAt)
+    };
+  }
 
-    // Gate 0: input present
-    if (!isObject(input)) {
-      addCode(blockers, 'input-missing');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
-    }
+  function summarizePreflight(preflight) {
+    var p = safeObject(preflight);
+    var s = safeObject(p.canonicalSnapshot);
+    var target = safeObject(p.targetSummary);
+    return {
+      ok: p.ok === true,
+      actionable: p.actionable === true,
+      noop: p.noop === true,
+      operation: cleanString(p.operation),
+      subjectId: isSha256Hex(s.subjectId) ? cleanLower(s.subjectId) : '',
+      revisionHash: isSha256Hex(s.revisionHash) ? cleanLower(s.revisionHash) : '',
+      archived: s.archived === true,
+      targetArchived: target.archived === true,
+      blockers: codeList(p.blockers),
+      warnings: codeList(p.warnings)
+    };
+  }
 
-    // Gate 1: operation must be 'archive' (or omitted; defaulted)
-    var operation = (typeof input.operation === 'string' && input.operation.length > 0)
-      ? input.operation
-      : ALLOWED_OPERATION;
-    if (operation !== ALLOWED_OPERATION) {
-      addCode(blockers, 'operation-not-archive');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
-    }
-
-    // Gate 2: expectedTarget.archived must be boolean
-    var expectedTarget = isObject(input.expectedTarget) ? input.expectedTarget : null;
-    if (!expectedTarget || typeof expectedTarget.archived !== 'boolean') {
-      addCode(blockers, 'expected-target-invalid:archive-bool-required');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
-    }
-
-    // Gate 3: chatRecord must be present
-    if (!isObject(input.chatRecord)) {
-      addCode(blockers, 'chat-record-missing');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
-    }
-
-    var sync = getSync();
-    var kernel = getKernel();
-
-    // Gate 4: preflight must be available
-    if (typeof sync.runChatConvergencePreflight !== 'function') {
-      addCode(blockers, 'chat-preflight-unavailable');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
-    }
-
-    // ── Run preflight (forwards all caller-supplied context) ──────────
-    var preflightInput = Object.assign({}, input, {
-      operation: ALLOWED_OPERATION,
-      expectedTarget: { archived: expectedTarget.archived }
-    });
-    var preflight;
+  async function sourcePeerEnvelope(blockers) {
+    var identity = H2O.Studio && H2O.Studio.identity;
+    var raw = null;
     try {
-      preflight = await sync.runChatConvergencePreflight(preflightInput);
+      if (identity && typeof identity.get === 'function') raw = identity.get();
     } catch (_) {
-      addCode(blockers, 'preflight-threw');
-      return makeResult({ blockers: blockers, warnings: warnings, observedAtIso: observedAtIso });
+      raw = null;
     }
-
-    // Forward preflight blockers/warnings even on noop paths so callers
-    // always see the diagnostic context.
-    mergeCodes(warnings, preflight && preflight.warnings);
-
-    if (!preflight || preflight.ok !== true) {
-      mergeCodes(blockers, preflight && preflight.blockers);
-      addCode(blockers, 'preflight-not-actionable');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight || null,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
+    if (!isObject(raw) || (!cleanString(raw.physicalDeviceIdHash) && !cleanString(raw.physicalDeviceId)) ||
+        (!cleanString(raw.installIdHash) && !cleanString(raw.installId)) ||
+        (!cleanString(raw.syncPeerIdHash) && !cleanString(raw.syncPeerId))) {
+      addCode(blockers, 'invalid-peer-identity');
+      return null;
     }
+    var peer = {
+      physicalDeviceIdHash: cleanString(raw.physicalDeviceIdHash) || await sha256Hex(cleanString(raw.physicalDeviceId)),
+      installIdHash: cleanString(raw.installIdHash) || await sha256Hex(cleanString(raw.installId)),
+      syncPeerIdHash: cleanString(raw.syncPeerIdHash) || await sha256Hex(cleanString(raw.syncPeerId))
+    };
+    if (!validatePeer(peer)) addCode(blockers, 'invalid-peer-identity');
+    return peer;
+  }
 
-    if (preflight.noop === true) {
-      // Already in target state → no candidate generated.
-      return makeResult({
-        ok: true, status: 'noop', noop: true,
-        candidate: null, ledgerRow: null,
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
-    }
+  function validatePeer(peer) {
+    return isSha256Hex(peer && peer.physicalDeviceIdHash) &&
+      isSha256Hex(peer && peer.installIdHash) &&
+      isSha256Hex(peer && peer.syncPeerIdHash);
+  }
 
-    if (preflight.actionable !== true) {
-      addCode(blockers, 'preflight-not-actionable');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
-    }
-
-    // Gate 5: kernel identity-kit required
-    if (!kernel
-        || typeof kernel.canonicalJSON !== 'function'
-        || typeof kernel.sha256Hex !== 'function') {
+  async function buildIdentity(snapshot, peer, blockers, warnings) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel.generateSubjectId !== 'function' ||
+        typeof kernel.generateDedupeKey !== 'function' ||
+        typeof kernel.generateLineageId !== 'function') {
       addCode(blockers, 'kernel-identity-kit-unavailable');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
+      return null;
     }
 
-    var snapshot = preflight.canonicalSnapshot;
-    if (!isObject(snapshot)
-        || !isSha256HexLocal(snapshot.subjectId)
-        || !isSha256HexLocal(snapshot.revisionHash)) {
-      addCode(blockers, 'canonical-snapshot-malformed');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
-    }
-
-    var actorPeerSyncHash = cleanString(input.actorPeerSyncHash);
-
-    // ── Derive identity (kernel-first; deterministic fall-back) ────────
-    var dedupeKey = await deriveDedupeKey(kernel, {
-      subjectId: snapshot.subjectId,
-      operation: ENVELOPE_OPERATION,
-      baseHash: snapshot.revisionHash,
-      actorPeerSyncHash: actorPeerSyncHash
+    var subject = await kernel.generateSubjectId({
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanLower(snapshot.subjectId),
+      operation: OPERATION,
+      baseHash: cleanLower(snapshot.revisionHash),
+      actorPeer: peer
     });
-    if (!isSha256HexLocal(dedupeKey)) {
-      addCode(blockers, 'dedupe-key-generation-failed');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
-    }
+    codeList(subject && subject.blockers).forEach(function (code) { addCode(blockers, code); });
+    codeList(subject && subject.warnings).forEach(function (code) { addCode(warnings, code); });
+    var subjectId = cleanLower(subject && subject.subjectId);
+    if (!isSha256Hex(subjectId)) addCode(blockers, 'subject-id-generation-failed');
 
-    var lineageId = await deriveLineageId(kernel, {
-      subjectId: snapshot.subjectId,
-      operation: ENVELOPE_OPERATION,
-      stamp: observedAtIso,
-      actorPeerSyncHash: actorPeerSyncHash
+    var dedupe = await kernel.generateDedupeKey({
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      operation: OPERATION,
+      baseHash: cleanLower(snapshot.revisionHash),
+      actorPeer: peer
     });
-    if (!isSha256HexLocal(lineageId)) {
-      addCode(blockers, 'lineage-id-generation-failed');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
-      });
-    }
+    codeList(dedupe && dedupe.blockers).forEach(function (code) { addCode(blockers, code); });
+    codeList(dedupe && dedupe.warnings).forEach(function (code) { addCode(warnings, code); });
+    var dedupeKey = cleanLower(dedupe && dedupe.dedupeKey);
+    if (!isSha256Hex(dedupeKey)) addCode(blockers, 'dedupe-key-generation-failed');
 
-    // ── Optional: explicit replay-defense check on the candidate ──────
-    // The preflight already runs this gate; the explicit re-check here is
-    // defense in depth and uses the kernel replay composer when present.
+    var lineage = await kernel.generateLineageId({
+      deterministic: true,
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      operation: OPERATION,
+      baseHash: cleanLower(snapshot.revisionHash),
+      actorPeer: peer
+    });
+    codeList(lineage && lineage.blockers).forEach(function (code) { addCode(blockers, code); });
+    codeList(lineage && lineage.warnings).forEach(function (code) { addCode(warnings, code); });
+    var lineageId = cleanLower(lineage && lineage.lineageId);
+    if (!isSha256Hex(lineageId)) addCode(blockers, 'lineage-id-generation-failed');
+
+    return {
+      subjectId: subjectId,
+      dedupeKey: dedupeKey,
+      lineageId: lineageId
+    };
+  }
+
+  async function buildPreflightProofDigest(preflight, expectedTarget) {
+    var p = safeObject(preflight);
+    var s = safeObject(p.canonicalSnapshot);
+    return sha256Hex({
+      schema: 'h2o.desktop.sync.chat-archive-preflight-proof.v1',
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanLower(s.subjectId),
+      revisionHash: cleanLower(s.revisionHash),
+      operation: DOMAIN_OPERATION,
+      actionable: p.actionable === true,
+      currentArchived: s.archived === true,
+      targetArchived: expectedTarget.archived === true,
+      validationSummary: safeObject(p.validationSummary)
+    });
+  }
+
+  async function justifyingDigests(input, preflight, expectedTarget, blockers) {
+    var explicit = asArray(input.justifyingEvidenceDigests)
+      .map(cleanLower)
+      .filter(isSha256Hex);
+    if (explicit.length) return explicit.filter(function (digest, index, arr) {
+      return arr.indexOf(digest) === index;
+    });
+    var proofDigest = await buildPreflightProofDigest(preflight, expectedTarget);
+    if (!isSha256Hex(proofDigest)) {
+      addCode(blockers, 'justifying-evidence-digests-unavailable');
+      return [];
+    }
+    return [proofDigest];
+  }
+
+  async function expectedPostStateHash(subjectId, baseHash, expectedTarget) {
+    return sha256Hex({
+      schema: 'h2o.desktop.sync.chat-archive-expected-post-state.v1',
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      baseHash: baseHash,
+      archived: expectedTarget.archived === true,
+      predicateVersion: PREDICATE_VERSION
+    });
+  }
+
+  function buildProposedOperation(subjectId, baseHash, targetHash, expectedTarget, currentArchived) {
+    return {
+      operation: OPERATION,
+      operationIntent: OPERATION_INTENT,
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      baseHash: baseHash,
+      targetHash: targetHash,
+      archiveState: expectedTarget.archived === true,
+      currentArchiveState: currentArchived === true,
+      predicateVersion: PREDICATE_VERSION,
+      sourceGate: 'chat-convergence-preflight.v1'
+    };
+  }
+
+  function buildExpectedPostState(subjectId, baseHash, targetHash, expectedTarget) {
+    return {
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      baseHash: baseHash,
+      expectedPostStateHash: targetHash,
+      archived: expectedTarget.archived === true,
+      predicateVersion: PREDICATE_VERSION
+    };
+  }
+
+  function envelopeForEventDigest(envelope) {
+    var clone = JSON.parse(JSON.stringify(envelope));
+    delete clone.eventDigest;
+    delete clone.warnings;
+    delete clone.blockers;
+    return clone;
+  }
+
+  function validateProposalEnvelope(envelope, blockers) {
+    var env = safeObject(envelope);
+    var payload = safeObject(env.payload);
+    var op = safeObject(payload.proposedOperation);
+    var expected = safeObject(payload.expectedPostState);
+    if (env.schema !== ENVELOPE_SCHEMA) addCode(blockers, 'envelope-schema-too-new');
+    if (env.envelopeVersion !== 'v1' || env.envelopeKindVersion !== 'v1') addCode(blockers, 'envelope-schema-too-new');
+    if (env.kind !== ENVELOPE_KIND) addCode(blockers, 'envelope-schema-too-new');
+    if (!cleanString(env.id) || !isSha256Hex(env.lineageId)) addCode(blockers, 'envelope-schema-too-new');
+    if (cleanString(safeObject(env.sourcePlatform).platformId) !== 'desktop-studio') addCode(blockers, 'platform-not-authorized-for-kind');
+    if (cleanString(safeObject(env.sourcePlatform).surfaceKind) !== 'desktop-tauri') addCode(blockers, 'surface-authority-mismatch');
+    if (!validatePeer(safeObject(safeObject(env.sourcePlatform).sourcePeerEnvelope))) addCode(blockers, 'envelope-schema-too-new');
+    if (env.declaredAuthority !== 'strong-local-authority') addCode(blockers, 'surface-authority-mismatch');
+    if (env.effectiveAuthority !== 'strong-local-authority') addCode(blockers, 'surface-authority-mismatch');
+    if (env.capabilityUsed !== 'propose') addCode(blockers, 'capability-not-on-platform-allowlist');
+    if (!isSha256Hex(env.capabilitySnapshotHash)) addCode(blockers, 'envelope-schema-too-new');
+    if (env.subjectType !== SUBJECT_TYPE || !isSha256Hex(env.subjectId)) addCode(blockers, 'envelope-schema-too-new');
+    if (env.operation !== OPERATION || env.operationIntent !== OPERATION_INTENT) addCode(blockers, 'operation-intent-wrong-for-kind');
+    if (env.redactionClass !== 'redacted') addCode(blockers, 'envelope-schema-too-new');
+    if (env.dryRun !== null || env.transactional !== null) addCode(blockers, 'operation-intent-wrong-for-kind');
+    if (!isSha256Hex(env.dedupeKey) || !isSha256Hex(env.payloadHash) || !isSha256Hex(env.eventDigest)) addCode(blockers, 'envelope-schema-too-new');
+    if (!isIso(env.createdAt) || !isIso(env.expiresAt)) addCode(blockers, 'envelope-schema-too-new');
+    if (!Array.isArray(payload.justifyingEvidenceDigests) || !payload.justifyingEvidenceDigests.length) addCode(blockers, 'envelope-schema-too-new');
+    asArray(payload.justifyingEvidenceDigests).forEach(function (digest) {
+      if (!isSha256Hex(digest)) addCode(blockers, 'envelope-schema-too-new');
+    });
+    if (!isObject(payload.proposedOperation)) addCode(blockers, 'envelope-schema-too-new');
+    if (!isObject(payload.expectedPostState)) addCode(blockers, 'envelope-schema-too-new');
+    if (payload.predicateVersion !== PREDICATE_VERSION) addCode(blockers, 'envelope-schema-too-new');
+    if (op.operation !== OPERATION || op.operationIntent !== OPERATION_INTENT) addCode(blockers, 'operation-intent-wrong-for-kind');
+    if (expected.archived !== true && expected.archived !== false) addCode(blockers, 'envelope-schema-too-new');
+    if (!Array.isArray(env.warnings) || !Array.isArray(env.blockers)) addCode(blockers, 'envelope-schema-too-new');
+    var forbidden = foreverNoKey(envelope);
+    if (forbidden) addCode(blockers, 'payload-contains-forever-no-field');
+  }
+
+  function duplicateCandidate(ledger, dedupeKey, eventDigest, subjectId, baseHash, targetHash, blockers) {
+    var rows = asArray(ledger && ledger.rows);
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = safeObject(rows[i]);
+      if (cleanString(row.dedupeKey) === dedupeKey) addCode(blockers, 'duplicate-proposal-candidate');
+      if (eventDigest && cleanString(row.eventDigest) === eventDigest) addCode(blockers, 'duplicate-proposal-candidate');
+      if (cleanLower(row.subjectId) === subjectId &&
+          cleanLower(row.baseHash) === baseHash &&
+          cleanLower(row.targetHash) === targetHash) {
+        addCode(blockers, 'duplicate-proposal-candidate');
+      }
+    }
+  }
+
+  function scanCandidatePrivacy(value, blockers, warnings) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (kernel && typeof kernel.scanPrivacy === 'function') {
+      try {
+        var scan = kernel.scanPrivacy(value, {
+          subjectType: SUBJECT_TYPE,
+          redactionClass: 'redacted',
+          allowedRedactionClasses: ['redacted'],
+          forbiddenList: PRIVACY_FORBIDDEN_FIELDS,
+          foreverNoFields: PRIVACY_FORBIDDEN_FIELDS
+        });
+        codeList(scan && scan.blockers).forEach(function (code) { addCode(blockers, code); });
+        codeList(scan && scan.warnings).forEach(function (code) { addCode(warnings, code); });
+      } catch (_) {
+        addCode(warnings, 'privacy-scan-threw');
+      }
+    }
+    if (typeof H2O.Desktop.Sync.runChatForbiddenFieldScan === 'function') {
+      try {
+        var chatScan = H2O.Desktop.Sync.runChatForbiddenFieldScan(value);
+        codeList(chatScan && chatScan.blockers).forEach(function (code) { addCode(blockers, code); });
+        codeList(chatScan && chatScan.warnings).forEach(function (code) { addCode(warnings, code); });
+      } catch (_) {
+        addCode(warnings, 'chat-forbidden-field-scan-threw');
+      }
+    }
+    var forbidden = foreverNoKey(value);
+    if (forbidden) {
+      addCode(blockers, 'payload-contains-forever-no-field');
+      addCode(warnings, 'blocked-forbidden-key-' + forbidden);
+    }
+  }
+
+  function validatePublicationMetadata(row, peer, blockers, warnings) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel.validatePublicationMetadata !== 'function') {
+      addCode(warnings, 'publication-kit-unavailable');
+      return;
+    }
+    var metadata = {
+      candidateKind: 'proposal',
+      candidateRowId: row.rowId,
+      envelopeId: row.envelopeId,
+      lineageId: row.lineageId,
+      subjectId: row.subjectId,
+      eventDigest: row.eventDigest,
+      dedupeKey: row.dedupeKey,
+      sourceLedgerKey: LEDGER_KEY,
+      actorPeer: peer,
+      publicationStatus: STATUS_GENERATED,
+      relayStatus: '',
+      createdAtIso: row.generatedAtIso,
+      domain: SUBJECT_TYPE
+    };
+    try {
+      var result = kernel.validatePublicationMetadata(metadata, {
+        allowedCandidateKinds: ['proposal'],
+        allowedPublicationStatuses: [STATUS_GENERATED],
+        allowedRelayStatuses: [''],
+        requireActorPeer: true,
+        requireKnownSourceLedgerKey: true,
+        privacyPolicy: {
+          subjectType: SUBJECT_TYPE,
+          redactionClass: 'redacted',
+          forbiddenList: PRIVACY_FORBIDDEN_FIELDS,
+          foreverNoFields: PRIVACY_FORBIDDEN_FIELDS
+        }
+      });
+      codeList(result && result.blockers).forEach(function (code) { addCode(blockers, code); });
+      codeList(result && result.warnings).forEach(function (code) { addCode(warnings, code); });
+    } catch (_) {
+      addCode(warnings, 'publication-kit-validation-threw');
+    }
+  }
+
+  function replayRecheck(input, subjectId, baseHash, blockers, warnings) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
     var replayLog = Array.isArray(input.replayLog)
       ? input.replayLog
       : (Array.isArray(input.consumedOperationsLog) ? input.consumedOperationsLog : null);
-    if (replayLog && kernel && typeof kernel.composeReplayDefense === 'function') {
-      try {
-        var rd = kernel.composeReplayDefense({
-          subjectId: snapshot.subjectId,
-          operation: ENVELOPE_OPERATION,
-          revisionHash: snapshot.revisionHash,
-          log: replayLog
-        });
-        if (rd && rd.ok === false) {
-          addCode(blockers, 'replay-detected');
-          mergeCodes(blockers, rd.blockers);
-          mergeCodes(warnings, rd.warnings);
-          return makeResult({
-            ok: false, status: 'blocked',
-            preflight: preflight,
-            blockers: blockers, warnings: warnings,
-            observedAtIso: observedAtIso
-          });
-        }
-      } catch (_) { /* swallow — preflight gate already enforces */ }
-    }
-
-    // ── Assemble the candidate envelope (redacted; identity hashes only) ─
-    var candidate = {
-      kind: ENVELOPE_KIND,
-      subjectType: ENVELOPE_SUBJECT_TYPE,
-      operation: ENVELOPE_OPERATION,
-      operationIntent: ENVELOPE_OPERATION_INTENT,
-      subjectId: snapshot.subjectId,
-      lineageId: lineageId,
-      dedupeKey: dedupeKey,
-      redactionClass: 'redacted',
-      proposedAtIso: observedAtIso,
-      payload: {
-        proposedOperation: {
-          kind: 'chat-archive-update',
-          archived: expectedTarget.archived,
-          currentArchived: snapshot.archived
-        },
-        expectedPostState: {
-          archived: expectedTarget.archived,
-          revisionHashBefore: snapshot.revisionHash
-        },
-        predicateVersion: PREDICATE_VERSION,
-        justifyingEvidenceDigests: Array.isArray(input.justifyingEvidenceDigests)
-          ? input.justifyingEvidenceDigests.filter(function (d) {
-              return typeof d === 'string' && d.length > 0;
-            })
-          : []
-      }
-    };
-
-    // ── Assemble the ledger row ────────────────────────────────────────
-    var candidateId = await deriveCandidateId(kernel, {
-      dedupeKey: dedupeKey,
-      stamp: observedAtIso
-    });
-    if (!isSha256HexLocal(candidateId)) {
-      addCode(blockers, 'candidate-id-generation-failed');
-      return makeResult({
-        ok: false, status: 'blocked',
-        preflight: preflight,
-        blockers: blockers, warnings: warnings,
-        observedAtIso: observedAtIso
+    if (!Array.isArray(replayLog)) return;
+    if (!kernel || typeof kernel.composeReplayDefense !== 'function') return;
+    try {
+      var replay = kernel.composeReplayDefense({
+        subjectId: subjectId,
+        operation: DOMAIN_OPERATION,
+        revisionHash: baseHash,
+        log: replayLog
       });
-    }
-    var ledgerRow = {
-      schema: LEDGER_ROW_SCHEMA,
-      candidateId: candidateId,
-      status: 'generated',
-      subjectId: snapshot.subjectId,
-      lineageId: lineageId,
-      dedupeKey: dedupeKey,
-      operation: ENVELOPE_OPERATION,
-      operationIntent: ENVELOPE_OPERATION_INTENT,
-      generatedAtIso: observedAtIso,
-      canonicalSnapshotSummary: {
-        subjectId: snapshot.subjectId,
-        revisionHash: snapshot.revisionHash,
-        originAccountIdHash: snapshot.originAccountIdHash,
-        schemaVersion: snapshot.schemaVersion,
-        archived: snapshot.archived
-      },
-      targetState: {
-        archived: expectedTarget.archived
+      if (replay && replay.ok === false) {
+        addCode(blockers, 'replay-unsafe');
+        codeList(replay.blockers).forEach(function (code) { addCode(blockers, code); });
       }
-    };
-
-    // ── Defense in depth: scan the assembled output for forbidden fields ──
-    if (typeof sync.runChatForbiddenFieldScan === 'function') {
-      try {
-        var scan = sync.runChatForbiddenFieldScan({
-          candidate: candidate,
-          ledgerRow: ledgerRow
-        });
-        if (scan && scan.ok === false) {
-          addCode(blockers, 'chat-preflight-output-contains-forbidden-field');
-          mergeCodes(blockers, scan.blockers);
-          mergeCodes(warnings, scan.warnings);
-          return makeResult({
-            ok: false, status: 'blocked',
-            preflight: preflight,
-            blockers: blockers, warnings: warnings,
-            observedAtIso: observedAtIso
-          });
-        }
-      } catch (_) { /* swallow — fall through to emit */ }
+      codeList(replay && replay.warnings).forEach(function (code) { addCode(warnings, code); });
+    } catch (_) {
+      addCode(warnings, 'replay-composer-threw');
     }
-
-    return makeResult({
-      ok: true, status: 'generated',
-      candidate: candidate,
-      ledgerRow: ledgerRow,
-      preflight: preflight,
-      blockers: blockers,
-      warnings: warnings,
-      observedAtIso: observedAtIso
-    });
   }
 
-  // ── Registration (idempotent) ───────────────────────────────────────
+  async function generateChatArchiveProposalCandidate(input) {
+    var args = safeObject(input);
+    var blockers = [];
+    var warnings = [];
+
+    if (!webCryptoAvailable()) addCode(blockers, 'web-crypto-unavailable');
+    if (!isObject(input)) addCode(blockers, 'input-missing');
+    if (cleanString(args.operation) !== DOMAIN_OPERATION) addCode(blockers, 'operation-not-archive');
+    var expectedTarget = safeObject(args.expectedTarget);
+    if (typeof expectedTarget.archived !== 'boolean') addCode(blockers, 'expected-target-invalid:archive-bool-required');
+    if (!isObject(args.chatRecord)) addCode(blockers, 'chat-record-missing');
+    if (blockers.length) return failure(blockers, warnings);
+
+    if (typeof H2O.Desktop.Sync.runChatConvergencePreflight !== 'function') {
+      addCode(blockers, 'chat-preflight-unavailable');
+      return failure(blockers, warnings);
+    }
+
+    var preflight;
+    try {
+      preflight = await H2O.Desktop.Sync.runChatConvergencePreflight(Object.assign({}, args, {
+        operation: DOMAIN_OPERATION,
+        expectedTarget: { archived: expectedTarget.archived }
+      }));
+    } catch (_) {
+      addCode(blockers, 'preflight-threw');
+      return failure(blockers, warnings);
+    }
+
+    codeList(preflight && preflight.warnings).forEach(function (code) { addCode(warnings, code); });
+    if (!preflight || preflight.ok !== true) {
+      codeList(preflight && preflight.blockers).forEach(function (code) { addCode(blockers, code); });
+      addCode(blockers, 'preflight-not-ok');
+      return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+    }
+    if (preflight.noop === true) return noopResult(warnings, preflight);
+    if (preflight.actionable !== true) {
+      addCode(blockers, 'preflight-not-actionable');
+      return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+    }
+    if (preflight.operation !== DOMAIN_OPERATION) {
+      addCode(blockers, 'preflight-operation-not-archive');
+      return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+    }
+
+    var snapshot = safeObject(preflight.canonicalSnapshot);
+    if (!isSha256Hex(snapshot.subjectId)) addCode(blockers, 'canonical-subject-id-invalid');
+    if (!isSha256Hex(snapshot.revisionHash)) addCode(blockers, 'canonical-revision-hash-invalid');
+    if (snapshot.archived !== true && snapshot.archived !== false) addCode(blockers, 'canonical-archive-state-invalid');
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var peer = await sourcePeerEnvelope(blockers);
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var identity = await buildIdentity(snapshot, peer, blockers, warnings);
+    if (blockers.length || !identity) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var subjectId = identity.subjectId;
+    var baseHash = cleanLower(snapshot.revisionHash);
+    var targetHash = await expectedPostStateHash(subjectId, baseHash, expectedTarget);
+    if (!isSha256Hex(targetHash)) addCode(blockers, 'target-hash-generation-failed');
+    var justifyingEvidenceDigests = await justifyingDigests(args, preflight, expectedTarget, blockers);
+    replayRecheck(args, subjectId, baseHash, blockers, warnings);
+
+    var ledger = null;
+    if (!blockers.length) {
+      try {
+        ledger = normalizeLedger(await storageGet(LEDGER_KEY));
+      } catch (_) {
+        addCode(blockers, 'proposal-ledger-unavailable');
+      }
+      if (!ledger) addCode(blockers, 'proposal-ledger-malformed');
+      else duplicateCandidate(ledger, identity.dedupeKey, '', subjectId, baseHash, targetHash, blockers);
+    }
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var createdAt = nowIsoSeconds();
+    var expiresAt = addMinutesIso(EXPIRES_AFTER_MINUTES);
+    var proposedOperation = buildProposedOperation(
+      subjectId,
+      baseHash,
+      targetHash,
+      expectedTarget,
+      snapshot.archived
+    );
+    var expectedPostState = buildExpectedPostState(subjectId, baseHash, targetHash, expectedTarget);
+    var payload = {
+      justifyingEvidenceDigests: justifyingEvidenceDigests,
+      proposedOperation: proposedOperation,
+      expectedPostState: expectedPostState,
+      predicateVersion: PREDICATE_VERSION
+    };
+    var payloadHash = await sha256Hex(payload);
+    var capabilitySnapshotHash = await sha256Hex(CAPABILITY_TAG);
+    if (!isSha256Hex(payloadHash)) addCode(blockers, 'payload-hash-generation-failed');
+    if (!isSha256Hex(capabilitySnapshotHash)) addCode(blockers, 'capability-hash-generation-failed');
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var envelopeBase = {
+      schema: ENVELOPE_SCHEMA,
+      envelopeVersion: 'v1',
+      envelopeKindVersion: 'v1',
+      kind: ENVELOPE_KIND,
+      id: generateUuid(),
+      lineageId: identity.lineageId,
+      createdAt: createdAt,
+      expiresAt: expiresAt,
+      sequence: null,
+      exportSequence: null,
+      sourcePlatform: {
+        platformId: 'desktop-studio',
+        surfaceKind: 'desktop-tauri',
+        sourcePeerEnvelope: peer
+      },
+      declaredAuthority: 'strong-local-authority',
+      effectiveAuthority: 'strong-local-authority',
+      capabilityUsed: 'propose',
+      capabilitySnapshotHash: capabilitySnapshotHash,
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      operation: OPERATION,
+      operationIntent: OPERATION_INTENT,
+      redactionClass: 'redacted',
+      dryRun: null,
+      transactional: null,
+      dedupeKey: identity.dedupeKey,
+      payloadHash: payloadHash,
+      payload: payload
+    };
+    var eventDigest = await sha256Hex(envelopeForEventDigest(envelopeBase));
+    if (!isSha256Hex(eventDigest)) addCode(blockers, 'event-digest-generation-failed');
+    var envelope = Object.assign({}, envelopeBase, {
+      eventDigest: eventDigest,
+      warnings: warnings.slice(),
+      blockers: []
+    });
+    validateProposalEnvelope(envelope, blockers);
+    scanCandidatePrivacy(envelope, blockers, warnings);
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var row = {
+      schema: ROW_SCHEMA,
+      rowId: generateUuid(),
+      envelopeId: envelope.id,
+      lineageId: envelope.lineageId,
+      subjectId: subjectId,
+      operation: OPERATION,
+      operationIntent: OPERATION_INTENT,
+      baseHash: baseHash,
+      targetHash: targetHash,
+      justifyingEvidenceDigests: justifyingEvidenceDigests.slice(),
+      predicateVersion: PREDICATE_VERSION,
+      generatedAtIso: createdAt,
+      expiresAt: expiresAt,
+      dedupeKey: identity.dedupeKey,
+      eventDigest: eventDigest,
+      actorPeer: peer,
+      status: STATUS_GENERATED,
+      sourceDomain: SUBJECT_TYPE,
+      targetState: { archived: expectedTarget.archived === true },
+      canonicalSnapshotSummary: {
+        subjectId: subjectId,
+        revisionHash: baseHash,
+        originAccountIdHash: isSha256Hex(snapshot.originAccountIdHash) ? cleanLower(snapshot.originAccountIdHash) : '',
+        schemaVersion: cleanString(snapshot.schemaVersion),
+        archived: snapshot.archived === true
+      },
+      validationSummary: summarizePreflight(preflight),
+      serializedEnvelope: canonicalJson(envelope)
+    };
+    validatePublicationMetadata(row, peer, blockers, warnings);
+    scanCandidatePrivacy(row, blockers, warnings);
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    duplicateCandidate(ledger, identity.dedupeKey, eventDigest, subjectId, baseHash, targetHash, blockers);
+    if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+
+    var next = {
+      schema: LEDGER_SCHEMA,
+      createdAtIso: ledger.createdAtIso,
+      updatedAtIso: createdAt,
+      rows: ledger.rows.concat([row])
+    };
+    try {
+      await storageSet(LEDGER_KEY, next);
+    } catch (_) {
+      return failure(['proposal-ledger-write-failed'], warnings, { preflightSummary: summarizePreflight(preflight) });
+    }
+
+    return {
+      schema: RESULT_SCHEMA,
+      version: VERSION,
+      ok: true,
+      status: STATUS_GENERATED,
+      generated: true,
+      noop: false,
+      proposalCandidate: envelope,
+      candidateRow: rowSummary(row),
+      candidateId: row.rowId,
+      preflightSummary: summarizePreflight(preflight),
+      blockers: [],
+      warnings: codeList(warnings)
+    };
+  }
+
   H2O.Desktop.Sync.generateChatArchiveProposalCandidate = generateChatArchiveProposalCandidate;
   H2O.Desktop.Sync.__chatArchiveProposalInstalled = true;
   H2O.Desktop.Sync.__chatArchiveProposalVersion = VERSION;
-
+  H2O.Desktop.Sync.__chatArchiveProposalLedgerKey = LEDGER_KEY;
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this));
