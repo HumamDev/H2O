@@ -757,6 +757,12 @@
        Receipt only: no Native/F5 execution, apply, publication, relay/outbox,
        watermark, or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-archive-apply-event-receipt.tauri.js"></script>
+  <!-- F14.4.8b: Desktop/Tauri snapshot tombstone applyEvent receipt builder.
+       Builds a redacted applyEvent receipt plus audit/F5/consumed/watermark
+       preview shapes from a successful hypothetical F5 tombstone handoff.
+       Receipt only: no Native/F5 execution, apply, publication, relay/outbox,
+       watermark, or consumed-op writes. -->
+  <script src="./sync/snapshot/snapshot-tombstone-apply-event-receipt.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
