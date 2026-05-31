@@ -6,8 +6,8 @@
  *   - Evaluates privacy policy only. No domain policy decisions.
  *   - No publication, replay, watermark, relay, WebDAV, storage, network,
  *     polling, timers, apply, convergence, or mobile behavior.
- *   - F14.3.8 adds a domain forbidden-field wrapper for chat metadata while
- *     preserving the base forever-no scanner behavior.
+ *   - F14.3.8 adds a domain forbidden-field wrapper for chat metadata.
+ *   - F14.5.8 adds the capture fresh domain forbidden policy.
  *
  * Public API:
  *   H2O.Desktop.Sync.kernel.scanPrivacy(value, policy?)
@@ -35,7 +35,7 @@
   var kernel = H2O.Desktop.Sync.kernel;
   if (kernel.__privacyScanInstalled) return;
 
-  var VERSION = '0.2.0-f14.3.8';
+  var VERSION = '0.3.0-f14.5.8';
   var RESULT_SCHEMA = 'h2o.desktop.sync.kernel.privacy-scan.v1';
 
   var REDACTED = 'redacted';
@@ -129,6 +129,47 @@
     'messageId',
     'message_id',
     'rawMessageId'
+  ];
+  var CAPTURE_ALWAYS_FORBIDDEN_FIELDS = [
+    'body',
+    'content',
+    'contentHtml',
+    'contentText',
+    'html',
+    'markdown',
+    'messages',
+    'message',
+    'text',
+    'title',
+    'tags',
+    'routeSuggestion',
+    'attachments',
+    'attachmentBytes',
+    'file',
+    'filename',
+    'path',
+    'url',
+    'href',
+    'sourceUrl',
+    'model',
+    'email',
+    'password',
+    'apiKey',
+    'accessToken',
+    'refreshToken',
+    'recoveredFromSubjectIdHash',
+    'recoveryProvenance',
+    'recoveryTrustGrade',
+    'recoveryAtIso'
+  ];
+  var CAPTURE_REDACTED_FORBIDDEN_FIELDS = [
+    'accountId',
+    'chatId',
+    'snapshotId',
+    'turnId',
+    'itemId',
+    'messageId',
+    'msgId'
   ];
 
   function isObject(value) {
@@ -350,6 +391,19 @@
         subjectType: 'chat.metadata',
         forbiddenList: uniqueStringList(forbidden),
         foreverNoFields: uniqueStringList(baseForeverNo.concat(CHAT_METADATA_ALWAYS_FORBIDDEN_FIELDS)),
+        allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+      };
+    }
+    if (tag === 'capture' || tag === 'capture.fresh' || tag === 'capture.artifact') {
+      var captureForbidden = baseForeverNo.concat(CAPTURE_ALWAYS_FORBIDDEN_FIELDS);
+      if (redactionClass === REDACTED || redactionClass === METADATA_ONLY || !redactionClass) {
+        captureForbidden = captureForbidden.concat(CAPTURE_REDACTED_FORBIDDEN_FIELDS);
+      }
+      return {
+        supported: true,
+        subjectType: 'capture.artifact',
+        forbiddenList: uniqueStringList(captureForbidden),
+        foreverNoFields: uniqueStringList(baseForeverNo.concat(CAPTURE_ALWAYS_FORBIDDEN_FIELDS)),
         allowTokenFields: [TOKEN_FIELD_EXCEPTION]
       };
     }

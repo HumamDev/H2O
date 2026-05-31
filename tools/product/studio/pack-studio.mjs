@@ -309,6 +309,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // receipts, bookkeeping rows, and proof status. No apply, publication,
   // relay/outbox, Native/F5 execution, watermark, or consumed-op writes.
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
+  // F14.5.8: Desktop/Tauri capture fresh runtime. Builds fresh canonical
+  // CaptureArtifact/CaptureEvent objects plus owner-handoff, replay, audit,
+  // consumed-operation, and watermark preview shapes. Fresh mode only: no
+  // recovery, publication, relay/outbox, F5, Native mutation, execute lane,
+  // apply, or storage write.
+  "sync/capture/capture-fresh-runtime.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
