@@ -219,6 +219,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // relay/outbox, apply, Native interaction, watermark, or consumed-op
   // writes.
   "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
+  // F14.3.6a: Desktop/Tauri chat Native owner handoff preview.
+  // Resolves generated archive/rename proposal candidates, validates
+  // redaction + Native owner authority/reachability, and shapes an
+  // owner-handoff request through the kernel. Read-only: no Native call,
+  // handoff execution, publication, relay/outbox, apply, applyEvent,
+  // watermark, or consumed-op writes.
+  "sync/chat/chat-native-handoff-preview.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -720,6 +727,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-convergence-preflight.tauri.js",
   "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
   "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
+  "sync/chat/chat-native-handoff-preview.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
