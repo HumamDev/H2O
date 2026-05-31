@@ -257,6 +257,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Candidate ledger append only: no publication, relay, restore/apply,
   // Native execution, owner handoff, watermark, or consumed-op writes.
   "sync/snapshot/snapshot-archive-proposal-candidate-generator.tauri.js",
+  // F14.4.5: Desktop/Tauri snapshot tombstone proposal candidate generator.
+  // Candidate ledger append only: no publication, relay, restore/apply,
+  // Native/F5 execution, owner handoff, watermark, or consumed-op writes.
+  "sync/snapshot/snapshot-tombstone-proposal-candidate-generator.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -767,6 +771,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-diagnostics.tauri.js",
   "sync/snapshot/snapshot-convergence-preflight.tauri.js",
   "sync/snapshot/snapshot-archive-proposal-candidate-generator.tauri.js",
+  "sync/snapshot/snapshot-tombstone-proposal-candidate-generator.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
