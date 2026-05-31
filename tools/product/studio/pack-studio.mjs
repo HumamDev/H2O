@@ -309,6 +309,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // receipts, bookkeeping rows, and proof status. No apply, publication,
   // relay/outbox, Native/F5 execution, watermark, or consumed-op writes.
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
+  // F14.5.5.1: Desktop/Tauri snapshot F5 review queue. Append-only
+  // event-sourced ledger implementing the F14.5.5 contract. Ingests
+  // shapeF5Handoff from snapshot tombstone receipts, persists
+  // shapeF5Review rows in pending state, captures operator decisions
+  // under approval-token guard, observes automatic expiry transitions,
+  // surfaces actionable rows for F14.6. No Native execution, no F5
+  // work outside the ledger, no apply, no publication/relay/outbox,
+  // no watermark writes, no consumed-op writes, no own timer.
+  "sync/snapshot/snapshot-f5-review-queue.tauri.js",
   // F14.5.8: Desktop/Tauri capture fresh runtime. Builds fresh canonical
   // CaptureArtifact/CaptureEvent objects plus owner-handoff, replay, audit,
   // consumed-operation, and watermark preview shapes. Fresh mode only: no
@@ -836,6 +845,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-convergence-bookkeeping.tauri.js",
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
+  "sync/snapshot/snapshot-f5-review-queue.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

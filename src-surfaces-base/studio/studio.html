@@ -785,6 +785,16 @@
        receipts, bookkeeping rows, and proof status. No apply, publication,
        relay/outbox, Native/F5 execution, watermark, or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-convergence-ui.tauri.js"></script>
+  <!-- F14.5.5.1: Desktop/Tauri snapshot F5 review queue.
+       Append-only event-sourced ledger implementing the F14.5.5 contract.
+       Ingests shapeF5Handoff from snapshot tombstone receipts, persists
+       shapeF5Review rows in pending state, captures operator approve-seal
+       / approve-restore decisions under approval-token guard, observes
+       automatic expiry transitions, and surfaces actionable rows for
+       F14.6. No Native execution, no F5 work outside the ledger, no
+       apply, no publication/relay/outbox, no watermark writes, no
+       consumed-op writes, no own timer. -->
+  <script src="./sync/snapshot/snapshot-f5-review-queue.tauri.js"></script>
   <!-- F14.5.8: Desktop/Tauri capture fresh runtime.
        Builds fresh canonical CaptureArtifact/CaptureEvent objects plus
        owner-handoff, replay, audit, consumed-operation, and watermark preview
