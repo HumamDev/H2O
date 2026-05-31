@@ -324,6 +324,16 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // recovery, publication, relay/outbox, F5, Native mutation, execute lane,
   // apply, or storage write.
   "sync/capture/capture-fresh-runtime.tauri.js",
+  // F14.5.9: Desktop/Tauri capture recovery runtime. Adds
+  // H2O.Capture.executeRecovery. Canonicalizes external redacted evidence
+  // (studio-full-bundle-v2, mv3-cache-export, manual-redacted-evidence) into
+  // a NEW snapshot subject linked to the lost/degraded subject via
+  // recoveredFromSubjectIdHash. chatgpt-export-zip is blocked with
+  // recovery-provenance-zip-deferred. No execute lane, no publication, no
+  // relay/outbox, no F5 state mutation, no Native call, no apply, no remote
+  // apply, no cross-install transfer, no watermark/consumed-op write. Lost
+  // subject lifecycle is untouched.
+  "sync/capture/capture-recovery-runtime.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.

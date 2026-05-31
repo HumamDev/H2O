@@ -801,6 +801,16 @@
        shapes. Fresh mode only: no recovery, publication, relay/outbox, F5,
        Native mutation, execute lane, apply, or storage write. -->
   <script src="./sync/capture/capture-fresh-runtime.tauri.js"></script>
+  <!-- F14.5.9: Desktop/Tauri capture recovery runtime. Adds
+       H2O.Capture.executeRecovery. Canonicalizes external redacted
+       evidence into a NEW snapshot subject linked to the lost/degraded
+       subject via recoveredFromSubjectIdHash. Sources: studio-full-bundle-v2,
+       mv3-cache-export, manual-redacted-evidence; chatgpt-export-zip is
+       blocked with recovery-provenance-zip-deferred. No execute lane, no
+       publication, no relay/outbox, no F5 state mutation, no Native call,
+       no apply, no remote apply, no cross-install transfer, no watermark
+       or consumed-op write. Lost subject lifecycle is untouched. -->
+  <script src="./sync/capture/capture-recovery-runtime.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
