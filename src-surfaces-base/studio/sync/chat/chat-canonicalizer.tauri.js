@@ -68,13 +68,23 @@
   // default list. These names must never appear as keys in either the
   // input record or the emitted snapshot. The list mirrors F14.3.0 §4.
   var CHAT_FORBIDDEN_EXTRA = [
-    'messages', 'message_array', 'conversation', 'excerpts', 'snippets',
+    'messages', 'message_array', 'conversation', 'text', 'content', 'body',
+    'excerpts', 'snippets',
     'attachments', 'files', 'file_ids', 'image_urls', 'audio_urls',
     'system_prompt', 'instructions', 'custom_instructions', 'seed_prompt',
     'tool_calls', 'function_calls', 'plugins',
     'model', 'model_slug', 'model_version',
     'participants', 'share_token', 'share_url', 'sharing', 'visibility',
-    'public_flag', 'cookies', 'session_token', 'user_agent'
+    'public_flag', 'url', 'path', 'cookies', 'session_token', 'sessionToken',
+    'user_agent', 'userAgent', 'ip', 'IP', 'ipAddress', 'ip_address'
+  ];
+
+  var CHAT_REDACTED_FORBIDDEN_EXTRA = [
+    'name', 'title', 'chatTitle', 'rawTitle', 'proposedTitle',
+    'rawId', 'chatId', 'chat_id',
+    'accountId', 'account_id', 'rawAccountId',
+    'userId', 'user_id', 'rawUserId',
+    'messageId', 'message_id', 'rawMessageId'
   ];
 
   // ── Small helpers ───────────────────────────────────────────────────
@@ -188,12 +198,14 @@
   }
 
   // ── Forbidden-field scanning (kernel-first, internal fallback) ───────
-  function combinedForbiddenList() {
+  function combinedForbiddenList(includeRedactedOnly) {
     var kernel = getKernel();
-    var base = (kernel && Array.isArray(kernel.defaultForeverNoFields))
-      ? kernel.defaultForeverNoFields
+    var base = (kernel && typeof kernel.defaultForeverNoFields === 'function')
+      ? kernel.defaultForeverNoFields()
       : ['content', 'body', 'text', 'messages', 'attachments', 'url', 'path', 'password', 'apiKey'];
-    return base.concat(CHAT_FORBIDDEN_EXTRA);
+    return includeRedactedOnly
+      ? base.concat(CHAT_FORBIDDEN_EXTRA).concat(CHAT_REDACTED_FORBIDDEN_EXTRA)
+      : base.concat(CHAT_FORBIDDEN_EXTRA);
   }
 
   function findForbiddenKeysInternal(value, forbiddenList, hitsOut) {
@@ -216,13 +228,44 @@
     }
   }
 
-  function scanForbidden(target) {
+  function hitNamesFromDomainScan(scan) {
+    var out = [];
+    var hits = Array.isArray(scan && scan.forbiddenFields)
+      ? scan.forbiddenFields
+      : (Array.isArray(scan && scan.hits) ? scan.hits : []);
+    for (var i = 0; i < hits.length; i++) {
+      var hit = hits[i];
+      var name = isObject(hit) ? cleanString(hit.fieldName || hit.fieldPath) : cleanString(hit);
+      if (name && out.indexOf(name) === -1) out.push(name);
+    }
+    return out;
+  }
+
+  function scanForbidden(target, opts) {
     var kernel = getKernel();
-    var list = combinedForbiddenList();
+    var options = isObject(opts) ? opts : {};
+    var includeRedactedOnly = options.deviceLocalInput !== true;
+    if (kernel && typeof kernel.scanDomainForbiddenFields === 'function') {
+      try {
+        var scanTarget = target;
+        if (options.deviceLocalInput === true && isObject(target)) {
+          scanTarget = Object.assign({}, target, { redactionClass: 'device-local' });
+        }
+        var domainScan = kernel.scanDomainForbiddenFields(SUBJECT_TYPE, scanTarget);
+        return hitNamesFromDomainScan(domainScan);
+      } catch (_) { /* fall through to internal scanner */ }
+    }
+    var list = combinedForbiddenList(includeRedactedOnly);
     if (kernel && typeof kernel.findForbiddenFields === 'function') {
       try {
-        var kernelHits = kernel.findForbiddenFields(target, list);
-        if (Array.isArray(kernelHits) && kernelHits.length > 0) return kernelHits.slice();
+        var kernelHits = kernel.findForbiddenFields(target, {
+          subjectType: SUBJECT_TYPE,
+          redactionClass: includeRedactedOnly ? 'redacted' : 'device-local',
+          allowedRedactionClasses: ['redacted', 'device-local'],
+          forbiddenList: list,
+          foreverNoFields: combinedForbiddenList(false)
+        });
+        if (Array.isArray(kernelHits) && kernelHits.length > 0) return hitNamesFromDomainScan({ forbiddenFields: kernelHits });
       } catch (_) { /* fall through to internal scanner */ }
     }
     var hits = [];
@@ -314,7 +357,7 @@
     }
 
     // Gate 1: forbidden fields in input (kernel + chat-extended list).
-    var inputForbidden = scanForbidden(input);
+    var inputForbidden = scanForbidden(input, { deviceLocalInput: true });
     if (inputForbidden.length > 0) {
       var inHits = [];
       for (var ih = 0; ih < Math.min(inputForbidden.length, 6); ih++) {

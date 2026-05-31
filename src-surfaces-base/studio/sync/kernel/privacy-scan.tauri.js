@@ -6,13 +6,14 @@
  *   - Evaluates privacy policy only. No domain policy decisions.
  *   - No publication, replay, watermark, relay, WebDAV, storage, network,
  *     polling, timers, apply, convergence, or mobile behavior.
- *   - Existing domain lanes are not wired to this module in F14.2.2, so their
- *     output remains unchanged.
+ *   - F14.3.8 adds a domain forbidden-field wrapper for chat metadata while
+ *     preserving the base forever-no scanner behavior.
  *
  * Public API:
  *   H2O.Desktop.Sync.kernel.scanPrivacy(value, policy?)
  *   H2O.Desktop.Sync.kernel.findForbiddenFields(value, policy?)
  *   H2O.Desktop.Sync.kernel.enforceRedactionClass(policy?)
+ *   H2O.Desktop.Sync.kernel.scanDomainForbiddenFields(domainTag, target)
  */
 (function (global) {
   'use strict';
@@ -34,7 +35,7 @@
   var kernel = H2O.Desktop.Sync.kernel;
   if (kernel.__privacyScanInstalled) return;
 
-  var VERSION = '0.1.0-f14.2.2';
+  var VERSION = '0.2.0-f14.3.8';
   var RESULT_SCHEMA = 'h2o.desktop.sync.kernel.privacy-scan.v1';
 
   var REDACTED = 'redacted';
@@ -68,6 +69,67 @@
   ];
 
   var TOKEN_FIELD_EXCEPTION = 'previewToken';
+  var CHAT_METADATA_ALWAYS_FORBIDDEN_FIELDS = [
+    'messages',
+    'message_array',
+    'conversation',
+    'text',
+    'content',
+    'body',
+    'excerpts',
+    'snippets',
+    'attachments',
+    'files',
+    'file_ids',
+    'image_urls',
+    'audio_urls',
+    'system_prompt',
+    'instructions',
+    'custom_instructions',
+    'seed_prompt',
+    'tool_calls',
+    'function_calls',
+    'plugins',
+    'model',
+    'model_slug',
+    'model_version',
+    'participants',
+    'share_token',
+    'share_url',
+    'sharing',
+    'visibility',
+    'public_flag',
+    'url',
+    'path',
+    'cookies',
+    'session_token',
+    'sessionToken',
+    'user_agent',
+    'userAgent',
+    'ip',
+    'IP',
+    'ipAddress',
+    'ip_address'
+  ];
+  var CHAT_METADATA_REDACTED_FORBIDDEN_FIELDS = [
+    'name',
+    'title',
+    'chatTitle',
+    'rawTitle',
+    'proposedTitle',
+    'rawId',
+    'chatId',
+    'chat_id',
+    'accountId',
+    'account_id',
+    'rawAccountId',
+    'userId',
+    'user_id',
+    'rawUserId',
+    'messageId',
+    'message_id',
+    'rawMessageId'
+  ];
 
   function isObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -92,6 +154,23 @@
   }
 
   function normalizeStringList(value) {
+    var out = [];
+    asArray(value).forEach(function (item) {
+      var normalized = cleanString(item);
+      if (normalized && out.indexOf(normalized) === -1) out.push(normalized);
+    });
+    return out;
+  }
+
+  function codeList(value) {
+    return asArray(value).map(function (item) {
+      return isObject(item) ? cleanString(item.code) : cleanString(item);
+    }).filter(Boolean).filter(function (code, index, arr) {
+      return arr.indexOf(code) === index;
+    });
+  }
+
+  function uniqueStringList(value) {
     var out = [];
     asArray(value).forEach(function (item) {
       var normalized = cleanString(item);
@@ -258,6 +337,71 @@
     return hits;
   }
 
+  function domainPolicy(domainTag, redactionClass) {
+    var tag = cleanString(domainTag);
+    var baseForeverNo = DEFAULT_FOREVER_NO_FIELDS.slice();
+    if (tag === 'chat.metadata') {
+      var forbidden = baseForeverNo.concat(CHAT_METADATA_ALWAYS_FORBIDDEN_FIELDS);
+      if (redactionClass === REDACTED || !redactionClass) {
+        forbidden = forbidden.concat(CHAT_METADATA_REDACTED_FORBIDDEN_FIELDS);
+      }
+      return {
+        supported: true,
+        subjectType: 'chat.metadata',
+        forbiddenList: uniqueStringList(forbidden),
+        foreverNoFields: uniqueStringList(baseForeverNo.concat(CHAT_METADATA_ALWAYS_FORBIDDEN_FIELDS)),
+        allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+      };
+    }
+    return {
+      supported: false,
+      subjectType: tag,
+      forbiddenList: [],
+      foreverNoFields: baseForeverNo,
+      allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+    };
+  }
+
+  function scanDomainForbiddenFields(domainTag, target) {
+    var tag = cleanString(domainTag);
+    var redactionClass = redactionClassFrom(target, {});
+    var policy = domainPolicy(tag, redactionClass);
+    var blockers = [];
+    var warnings = [];
+    if (!tag) addCode(blockers, 'domain-tag-missing');
+    if (!policy.supported) addCode(warnings, 'domain-forbidden-policy-not-registered');
+
+    var scan = scanPrivacy(target, {
+      subjectType: policy.subjectType || tag,
+      redactionClass: redactionClass,
+      allowedRedactionClasses: REDACTION_CLASSES.slice(),
+      forbiddenList: policy.forbiddenList,
+      foreverNoFields: policy.foreverNoFields,
+      allowTokenFields: policy.allowTokenFields
+    });
+    codeList(scan.blockers).forEach(function (code) { addCode(blockers, code); });
+    codeList(scan.warnings).forEach(function (code) { addCode(warnings, code); });
+
+    var forbiddenFields = asArray(scan.forbiddenFields);
+    var hitNames = [];
+    forbiddenFields.forEach(function (hit) {
+      var name = cleanString(hit && hit.fieldName);
+      if (name && hitNames.indexOf(name) === -1) hitNames.push(name);
+    });
+    return {
+      schema: RESULT_SCHEMA,
+      ok: blockers.length === 0,
+      domainTag: tag,
+      subjectType: policy.subjectType || tag,
+      subjectFamily: subjectFamily(policy.subjectType || tag),
+      redactionClass: redactionClass,
+      forbiddenFields: forbiddenFields,
+      hits: hitNames,
+      warnings: warnings,
+      blockers: blockers
+    };
+  }
+
   function scanPrivacy(value, policy) {
     var options = normalizePolicy(policy);
     var blockers = [];
@@ -291,6 +435,7 @@
 
   kernel.scanPrivacy = scanPrivacy;
   kernel.findForbiddenFields = findForbiddenFields;
+  kernel.scanDomainForbiddenFields = scanDomainForbiddenFields;
   kernel.enforceRedactionClass = enforceRedactionClass;
   kernel.defaultForeverNoFields = defaultForeverNoFields;
   kernel.defaultRedactionClasses = defaultRedactionClasses;

@@ -262,6 +262,17 @@
 
   function scanPrivacy(value, blockers, warnings) {
     var kernel = H2O.Desktop.Sync.kernel || null;
+    var domainScanned = false;
+    if (kernel && typeof kernel.scanDomainForbiddenFields === 'function') {
+      try {
+        var domainScan = kernel.scanDomainForbiddenFields(SUBJECT_TYPE, value);
+        domainScanned = true;
+        codeList(domainScan && domainScan.blockers).forEach(function (code) { addCode(blockers, code); });
+        codeList(domainScan && domainScan.warnings).forEach(function (code) { addCode(warnings, code); });
+      } catch (_) {
+        addCode(warnings, 'domain-forbidden-field-scan-threw');
+      }
+    }
     if (kernel && typeof kernel.scanPrivacy === 'function') {
       try {
         var scan = kernel.scanPrivacy(value, {
@@ -277,7 +288,7 @@
         addCode(warnings, 'privacy-scan-threw');
       }
     }
-    if (typeof H2O.Desktop.Sync.runChatForbiddenFieldScan === 'function') {
+    if (!domainScanned && typeof H2O.Desktop.Sync.runChatForbiddenFieldScan === 'function') {
       try {
         var chatScan = H2O.Desktop.Sync.runChatForbiddenFieldScan(value);
         codeList(chatScan && chatScan.blockers).forEach(function (code) { addCode(blockers, code); });

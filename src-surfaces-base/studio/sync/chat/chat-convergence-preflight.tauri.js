@@ -150,6 +150,27 @@
     return true;
   }
 
+  function scanChatDomainForbiddenFields(target, opts) {
+    var options = isObject(opts) ? opts : {};
+    var kernel = getKernel();
+    if (kernel && typeof kernel.scanDomainForbiddenFields === 'function') {
+      try {
+        var scanTarget = target;
+        if (options.deviceLocalInput === true && isObject(target)) {
+          scanTarget = Object.assign({}, target, { redactionClass: 'device-local' });
+        }
+        return kernel.scanDomainForbiddenFields('chat.metadata', scanTarget);
+      }
+      catch (_) { /* fall through */ }
+    }
+    var sync = getSync();
+    if (typeof sync.runChatForbiddenFieldScan === 'function') {
+      try { return sync.runChatForbiddenFieldScan(target); }
+      catch (_) { /* fall through */ }
+    }
+    return null;
+  }
+
   // Empty validation summary (every gate starts false; flipped to true as it passes).
   function emptySummary() {
     return {
@@ -191,30 +212,25 @@
       observedAtIso: parts.observedAtIso || nowIsoSeconds()
     };
 
-    var sync = getSync();
-    if (typeof sync.runChatForbiddenFieldScan === 'function') {
-      try {
-        var outScan = sync.runChatForbiddenFieldScan(result);
-        if (outScan && outScan.ok === false) {
-          var leakBlockers = blockers.slice();
-          addCode(leakBlockers, 'chat-preflight-output-contains-forbidden-field');
-          mergeCodes(leakBlockers, outScan.blockers);
-          return {
-            schema: RESULT_SCHEMA,
-            version: VERSION,
-            ok: false,
-            actionable: false,
-            operation: parts.operation || '',
-            noop: false,
-            canonicalSnapshot: null,
-            targetSummary: null,
-            blockers: leakBlockers,
-            warnings: warnings,
-            validationSummary: parts.validationSummary || emptySummary(),
-            observedAtIso: parts.observedAtIso || nowIsoSeconds()
-          };
-        }
-      } catch (_) { /* silent — fall back to assembled result */ }
+    var outScan = scanChatDomainForbiddenFields(result);
+    if (outScan && outScan.ok === false) {
+      var leakBlockers = blockers.slice();
+      addCode(leakBlockers, 'chat-preflight-output-contains-forbidden-field');
+      mergeCodes(leakBlockers, outScan.blockers);
+      return {
+        schema: RESULT_SCHEMA,
+        version: VERSION,
+        ok: false,
+        actionable: false,
+        operation: parts.operation || '',
+        noop: false,
+        canonicalSnapshot: null,
+        targetSummary: null,
+        blockers: leakBlockers,
+        warnings: warnings,
+        validationSummary: parts.validationSummary || emptySummary(),
+        observedAtIso: parts.observedAtIso || nowIsoSeconds()
+      };
     }
     return result;
   }
@@ -353,15 +369,15 @@
     // was already scanned by the canonicalizer; expectedTarget is fresh
     // caller input and must be checked here).
     summary.forbiddenFieldsClear = true;
-    if (typeof sync.runChatForbiddenFieldScan === 'function') {
-      var fs = sync.runChatForbiddenFieldScan({ expectedTarget: input.expectedTarget });
-      if (fs && fs.ok === false) {
-        summary.forbiddenFieldsClear = false;
-        mergeCodes(blockers, fs.blockers);
-        mergeCodes(warnings, fs.warnings);
-      }
-    } else {
+    var fs = scanChatDomainForbiddenFields({ expectedTarget: input.expectedTarget }, { deviceLocalInput: true });
+    if (fs && fs.ok === false) {
+      summary.forbiddenFieldsClear = false;
+      mergeCodes(blockers, fs.blockers);
+      mergeCodes(warnings, fs.warnings);
+    } else if (!fs) {
       addCode(warnings, 'forbidden-field-scan-unavailable');
+    } else {
+      mergeCodes(warnings, fs.warnings);
     }
 
     // Gate 8: consumed-op safety (via materialization diagnostic's

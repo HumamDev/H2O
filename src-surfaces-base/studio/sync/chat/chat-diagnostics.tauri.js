@@ -19,7 +19,7 @@
  *
  * Kernel adoption:
  *   identity-kit (sha256Hex / isSha256Hex / canonicalJSON)
- *   privacy-scan (findForbiddenFields / defaultForeverNoFields)
+ *   privacy-scan (scanDomainForbiddenFields / defaultForeverNoFields)
  *   blockers + result-shape (createBlocker / addBlocker / createResult helpers)
  *   lifecycle-framework (shapeLifecycleState — labelling only)
  *   consumed-op primitive (validateReplayCandidate / assistConsumedSafe)
@@ -591,19 +591,26 @@
   // kernel's default list. The privacy scanner is preferred; an internal
   // recursive scan is the fallback path.
   var CHAT_FORBIDDEN_EXTRA = [
-    'messages', 'message_array', 'conversation', 'excerpts', 'snippets',
+    'messages', 'message_array', 'conversation', 'text', 'content', 'body',
+    'excerpts', 'snippets',
     'attachments', 'files', 'file_ids', 'image_urls', 'audio_urls',
     'system_prompt', 'instructions', 'custom_instructions', 'seed_prompt',
     'tool_calls', 'function_calls', 'plugins',
     'model', 'model_slug', 'model_version',
     'participants', 'share_token', 'share_url', 'sharing', 'visibility',
-    'public_flag', 'cookies', 'session_token', 'user_agent'
+    'public_flag', 'url', 'path', 'cookies', 'session_token', 'sessionToken',
+    'user_agent', 'userAgent', 'ip', 'IP', 'ipAddress', 'ip_address',
+    'name', 'title', 'chatTitle', 'rawTitle', 'proposedTitle',
+    'rawId', 'chatId', 'chat_id',
+    'accountId', 'account_id', 'rawAccountId',
+    'userId', 'user_id', 'rawUserId',
+    'messageId', 'message_id', 'rawMessageId'
   ];
 
   function combinedForbiddenList() {
     var kernel = getKernel();
-    var base = (kernel && Array.isArray(kernel.defaultForeverNoFields))
-      ? kernel.defaultForeverNoFields
+    var base = (kernel && typeof kernel.defaultForeverNoFields === 'function')
+      ? kernel.defaultForeverNoFields()
       : ['content', 'body', 'text', 'messages', 'attachments', 'url', 'path', 'password', 'apiKey'];
     return base.concat(CHAT_FORBIDDEN_EXTRA);
   }
@@ -632,10 +639,33 @@
     var list = combinedForbiddenList();
     var kernel = getKernel();
     var hits = null;
-    if (kernel && typeof kernel.findForbiddenFields === 'function') {
+    if (kernel && typeof kernel.scanDomainForbiddenFields === 'function') {
       try {
-        var kernelHits = kernel.findForbiddenFields(target, list);
-        if (Array.isArray(kernelHits)) hits = kernelHits.slice();
+        var domainScan = kernel.scanDomainForbiddenFields(SUBJECT_TYPE, target);
+        if (domainScan && Array.isArray(domainScan.forbiddenFields)) {
+          hits = domainScan.forbiddenFields.map(function (hit) {
+            return isObject(hit) ? cleanString(hit.fieldName || hit.fieldPath) : cleanString(hit);
+          }).filter(Boolean);
+        } else if (domainScan && Array.isArray(domainScan.hits)) {
+          hits = domainScan.hits.slice();
+        }
+        mergeCodes(warnings, domainScan && domainScan.warnings);
+      } catch (_) { /* fall through */ }
+    }
+    if (hits === null && kernel && typeof kernel.findForbiddenFields === 'function') {
+      try {
+        var kernelHits = kernel.findForbiddenFields(target, {
+          subjectType: SUBJECT_TYPE,
+          redactionClass: 'redacted',
+          allowedRedactionClasses: ['redacted'],
+          forbiddenList: list,
+          foreverNoFields: list
+        });
+        if (Array.isArray(kernelHits)) {
+          hits = kernelHits.map(function (hit) {
+            return isObject(hit) ? cleanString(hit.fieldName || hit.fieldPath) : cleanString(hit);
+          }).filter(Boolean);
+        }
       } catch (_) { /* fall through */ }
     }
     if (hits === null) {
