@@ -391,12 +391,17 @@ function extractTurnPlaintext(frameEl){
   }
 }
 
-function mountEditTextarea(hostEl, snapshotId, turnIdx, originalText, onSave, onCancel){
+function mountEditTextarea(hostEl, snapshotId, turnIdx, originalText, onSave, onCancel, opts){
   hostEl.innerHTML = "";
   hostEl.classList.add("wbTurn--editing");
 
+  /* Phase 7b repair — the wrap is a .cgMsgBody so the textarea
+   * inherits the same font/size/line-height/color as the rendered
+   * message body. The outer .wbEditWrap is just for actions row
+   * structure; visual identity comes from the .wbTurn--editing host
+   * shadow (see studio.css). */
   const wrap = document.createElement("div");
-  wrap.className = "wbEditWrap";
+  wrap.className = "cgMsgBody wbEditWrap";
 
   const textarea = document.createElement("textarea");
   textarea.className = "wbEditTextarea";
@@ -421,16 +426,58 @@ function mountEditTextarea(hostEl, snapshotId, turnIdx, originalText, onSave, on
   actions.append(saveBtn, cancelBtn);
   wrap.append(textarea, actions);
   hostEl.appendChild(wrap);
-  textarea.focus();
-  textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+  /* Phase 7b repair — focus + caret on next frame so the focus survives
+   * any synchronous mutations triggered by the click path that mounted
+   * us (the selection handler runs first, then this mount). */
+  try {
+    textarea.focus();
+    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+  } catch (_) { /* swallow */ }
+  setTimeout(function () {
+    try {
+      if (document.activeElement !== textarea) textarea.focus();
+    } catch (_) { /* swallow */ }
+  }, 0);
 
-  saveBtn.addEventListener("click", () => {
+  /* Phase 7b — Two save paths. Default (legacy pencil): writes the
+   * localStorage edit-override + mutates the in-memory snapshot via
+   * persistEditToExtensionSnapshot. Overlay path (Edit-Mode button):
+   * opts.persistViaOverlay === true → skip BOTH legacy writes; instead
+   * call opts.applyOverlayOp(newText) which is expected to dispatch a
+   * `text-replace` overlay op via RibbonBridge.applyOverlayOp. onSave
+   * still fires with newText so the caller can repaint via
+   * applyEditedMessageBody. */
+  const persistViaOverlay = !!(opts && opts.persistViaOverlay);
+  const applyOverlayOp = opts && typeof opts.applyOverlayOp === 'function'
+    ? opts.applyOverlayOp
+    : null;
+
+  saveBtn.addEventListener("click", (ev) => {
+    /* Phase 7b repair — stop propagation so the click never reaches the
+     * reader's selection handler, which would re-process the click
+     * and potentially re-mount the editor or move the selection ring
+     * out of the editing turn. */
+    try { ev.stopPropagation(); } catch (_) {}
+    try { ev.preventDefault(); } catch (_) {}
     const newText = textarea.value;
+    if (persistViaOverlay) {
+      /* Phase 7b — overlay path. Do NOT touch localStorage override,
+       * do NOT mutate snapshot.messages. Dispatch the text-replace op
+       * via the supplied callback; onSave repaints the reader. */
+      try {
+        if (applyOverlayOp) applyOverlayOp(newText);
+      } catch (_) { /* swallow — caller's responsibility to surface */ }
+      onSave(newText);
+      return;
+    }
+    /* Legacy path (pencil). Untouched until Phase 7e removes it. */
     setEditOverride(snapshotId, turnIdx, newText);
     persistEditToExtensionSnapshot(snapshotId, turnIdx, newText);
     onSave(newText);
   });
-  cancelBtn.addEventListener("click", () => {
+  cancelBtn.addEventListener("click", (ev) => {
+    try { ev.stopPropagation(); } catch (_) {}
+    try { ev.preventDefault(); } catch (_) {}
     onCancel();
   });
 
@@ -447,6 +494,135 @@ function mountEditTextarea(hostEl, snapshotId, turnIdx, originalText, onSave, on
   });
 
   return { textarea, saveBtn, cancelBtn };
+}
+
+/* Phase 7b — mount the overlay-dispatched editor on a turn. Called by the
+ * reader click handler when the user clicks an already-selected turn while
+ * the Format-tab Edit Mode toggle is on. Reuses mountEditTextarea + the
+ * existing capture/restore + applyEditedMessageBody machinery; the only
+ * difference vs. the legacy pencil is that Save dispatches a `text-replace`
+ * overlay op via RibbonBridge.applyOverlayOp INSTEAD of writing to the
+ * localStorage override + mutating snapshot.messages. */
+function __mountOverlayEditorOnTurn(turnEl, snap, turnIdx) {
+  try {
+    if (!(turnEl instanceof Element) || !snap) return;
+    if (turnEl.classList.contains('wbTurn--editing')) return;
+    const messageEl = turnEl.querySelector('[data-message-author-role]');
+    if (!messageEl) return;
+    const role = String(messageEl.getAttribute('data-message-author-role') || '');
+    if (!role) return;
+    const messageId = String(turnEl.getAttribute('data-message-id') || '');
+    /* Phase 7b repair 6 — IN-PLACE editing via contentEditable on the
+     * existing rendered text. The textarea-in-a-box approach was the
+     * wrong UX: the editor changed the message shape, added Save/Cancel
+     * controls under the text, and required a separate visual shell.
+     * The user wants the rendered text itself to become editable while
+     * preserving its exact layout/typography/width/wrapping, with no
+     * separate controls. contentEditable on the message body is the
+     * only DOM surface that achieves this — a textarea cannot reproduce
+     * the rendered markdown structure (paragraph margins, lists, code
+     * blocks). We use contentEditable strictly as an editing surface;
+     * persistence still flows through the text-replace overlay op
+     * (NEVER the snapshot). Auto-save fires on blur OR click-outside;
+     * revert is handled by the existing Ribbon Undo/Redo (Phase 2d
+     * active-set machinery). No Save/Cancel buttons. */
+    /* Phase 7b repair 7 — restrict the editable target to the actual
+     * message body. NEVER editable: title bars, timestamps, "Thought
+     * for ..." annotations, page dividers, or any sibling metadata
+     * that lives on the turn or messageEl but outside the body. For
+     * canonical messages, .cgMsgBody is the body wrapper applyEdited
+     * MessageBody / buildCanonicalTurn always creates. For rich
+     * ChatGPT DOM messages (mountRichTurns), the body wrapper may not
+     * exist — we flatten to canonical-body structure so editing always
+     * targets a known clean wrapper. Save preserves text via the
+     * text-replace overlay op; cancel-without-change restores the
+     * original HTML below. */
+    const originalHTML = messageEl.innerHTML;
+    const originalText = extractTurnPlaintext(messageEl);
+    let editable = messageEl.querySelector('.cgMsgBody');
+    let flattenedFromRich = false;
+    if (!editable) {
+      try {
+        applyEditedMessageBody(messageEl, role, originalText);
+        editable = messageEl.querySelector('.cgMsgBody');
+        flattenedFromRich = true;
+      } catch (_) { /* swallow — fall through to no-edit */ }
+      if (!editable) return;
+    }
+    let committed = false;
+    function commitAndExit(opts) {
+      if (committed) return;
+      committed = true;
+      const dispatch = !!(opts && opts.dispatch);
+      try { editable.removeEventListener('blur', onBlur, true); } catch (_) {}
+      try { editable.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
+      try { document.removeEventListener('mousedown', onDocMouseDown, true); } catch (_) {}
+      try { editable.removeAttribute('contenteditable'); } catch (_) {}
+      try { editable.removeAttribute('spellcheck'); } catch (_) {}
+      try { turnEl.classList.remove('wbTurn--editing'); } catch (_) {}
+      try { messageEl.classList.remove('wbTurn--editing'); } catch (_) {}
+      if (!dispatch) {
+        /* Cancel — if we flattened a rich message just to mount the
+         * editor, restore its original HTML so the user doesn't lose
+         * rich formatting on a cancel-without-edit. */
+        if (flattenedFromRich) {
+          try { messageEl.innerHTML = originalHTML; } catch (_) {}
+        }
+        return;
+      }
+      const newText = String((editable.textContent || '')).replace(/\s+$/g, '');
+      if (newText === originalText) {
+        /* Auto-save fired but text unchanged. Same restore as cancel. */
+        if (flattenedFromRich) {
+          try { messageEl.innerHTML = originalHTML; } catch (_) {}
+        }
+        return;
+      }
+      try {
+        const bridge = W.H2O && W.H2O.Studio && W.H2O.Studio.RibbonBridge;
+        if (bridge && typeof bridge.applyOverlayOp === 'function') {
+          bridge.applyOverlayOp({
+            type: 'text-replace',
+            target: { kind: 'message', turnIdx: Number(turnIdx) || 0, messageId: messageId || null },
+            payload: { text: newText },
+          });
+        }
+      } catch (_) { /* swallow — overlay store unavailable; in-DOM edit still visible until next render */ }
+    }
+    function onBlur() { commitAndExit({ dispatch: true }); }
+    function onKeyDown(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        commitAndExit({ dispatch: true });
+      }
+    }
+    function onDocMouseDown(ev) {
+      try {
+        if (!turnEl.contains(ev.target)) commitAndExit({ dispatch: true });
+      } catch (_) { commitAndExit({ dispatch: true }); }
+    }
+    /* Mark editing + make editable */
+    try { turnEl.classList.add('wbTurn--editing'); } catch (_) {}
+    try { editable.setAttribute('contenteditable', 'true'); } catch (_) {}
+    try { editable.setAttribute('spellcheck', 'true'); } catch (_) {}
+    /* Wire listeners. Capture-phase so we run before any other
+     * focusing logic in the reader/ribbon. */
+    try { editable.addEventListener('blur', onBlur, true); } catch (_) {}
+    try { editable.addEventListener('keydown', onKeyDown, true); } catch (_) {}
+    try { document.addEventListener('mousedown', onDocMouseDown, true); } catch (_) {}
+    /* Focus + caret at end on next tick (avoid the selection click
+     * that mounted us stealing focus back). */
+    setTimeout(function () {
+      try {
+        editable.focus();
+        const r = document.createRange();
+        r.selectNodeContents(editable);
+        r.collapse(false);
+        const sel = (typeof window !== 'undefined' && window.getSelection) ? window.getSelection() : null;
+        if (sel) { sel.removeAllRanges(); sel.addRange(r); }
+      } catch (_) { /* swallow */ }
+    }, 0);
+  } catch (_) { /* swallow — editor mount must never break the reader */ }
 }
 
 function normalizeText(s){
@@ -2396,7 +2572,17 @@ function buildCanonicalConversation(container, snap){
     });
     if (role === "assistant"){
       answerIdx = nextAnswerIdx;
-      attachAssistantEditButton(turn, messageEl, snap?.snapshotId || "", turnNo);
+      /* Phase 7b repair 2 — legacy pencil disabled. The Format-tab
+       * Edit Mode toggle (Phase 7a) + click-to-edit (Phase 7b) is now
+       * the canonical entry point; the per-assistant pencil
+       * (attachAssistantEditButton) used to write to the local
+       * snapshot.messages via persistEditToExtensionSnapshot and is
+       * no longer mounted. The helper function definition remains at
+       * studio.js (around the function attachAssistantEditButton site)
+       * so any cleanup hooks (deleteEditOverridesForSnapshot etc.)
+       * stay link-safe; Phase 7e will fully remove the helper +
+       * legacy override read paths. */
+      /* attachAssistantEditButton(turn, messageEl, snap?.snapshotId || "", turnNo);  // disabled in Phase 7b repair 2 */
       assistantTurns.push(turn);
     }
     container.appendChild(turn);
@@ -2456,7 +2642,10 @@ function mountRichTurns(container, richTurns, snapshotId, snap){
 
     if (role === "assistant"){
       assistantIdx = answerIdx;
-      attachAssistantEditButton(host, messageEl, sid, turn.turnIdx);
+      /* Phase 7b repair 2 — legacy pencil disabled on the rich/replay
+       * mount path too. See the canonical path above for the rationale.
+       * Phase 7e will remove the helper outright. */
+      /* attachAssistantEditButton(host, messageEl, sid, turn.turnIdx);  // disabled in Phase 7b repair 2 */
       assistantHosts.push(host);
     } else if (role === "user"){
       attachUserAttachmentsToTurn(host, messageEl, userAttachments(role));
@@ -5118,13 +5307,27 @@ function buildReaderDOM(snap){
           const turnIdx = allTurns.indexOf(turn) + 1; /* 1-based */
           if (turnIdx <= 0) return;
           const messageId = String(turn.getAttribute('data-message-id') || '');
-          /* Move the visible outline */
-          for (let i = 0; i < allTurns.length; i += 1) {
-            try { allTurns[i].classList.remove('is-ribbon-selected'); } catch (_) {}
+          /* Phase 7b repair 7 — In Edit Mode, skip the selection-class
+           * side-effect entirely. The user explicitly does NOT want any
+           * selection visual (bg tint, ::before bar, outline) to appear
+           * before/while editing. Single-click in Edit Mode goes
+           * STRAIGHT to mounting the editor; no intermediate selected
+           * state. Outside Edit Mode the existing selection behavior
+           * is preserved unchanged. */
+          const readerRoot = document.querySelector('.wbReader');
+          const editModeOn = !!(readerRoot && readerRoot.dataset && readerRoot.dataset.editMode === 'on');
+          if (!editModeOn) {
+            /* Move the visible outline */
+            for (let i = 0; i < allTurns.length; i += 1) {
+              try { allTurns[i].classList.remove('is-ribbon-selected'); } catch (_) {}
+            }
+            turn.classList.add('is-ribbon-selected');
           }
-          turn.classList.add('is-ribbon-selected');
           /* Push to ribbon context — additive merge preserves existing
-           * route/title/etc context fields populated by renderRoute. */
+           * route/title/etc context fields populated by renderRoute.
+           * Done in both modes so the Format-tab actions stay
+           * context-aware regardless of whether selection is visually
+           * rendered. */
           const ribbon = W?.H2O?.Studio?.ribbon;
           if (ribbon && typeof ribbon.setContext === 'function') {
             const ctx = ribbon.getContext();
@@ -5133,6 +5336,12 @@ function buildReaderDOM(snap){
               selectedTurnIdx: turnIdx,
             }));
           }
+          /* Phase 7b repair 7 — single-click-to-edit in Edit Mode. */
+          try {
+            if (editModeOn && !turn.classList.contains('wbTurn--editing')) {
+              __mountOverlayEditorOnTurn(turn, snap, turnIdx);
+            }
+          } catch (_) { /* swallow — editor mount must never break selection */ }
         } catch (_) { /* swallow — selection must never break the reader */ }
       });
     }
@@ -15807,6 +16016,33 @@ function __inlineRender_apply(scopeEl, snap, overlay){
     for (let t = 0; t < turns.length; t += 1) {
       const turn = turns[t];
       const turnIdx = t + 1;
+      /* Phase 7b — Skip turns with an open editor (wbTurn--editing). The
+       * inline unwrap pass above + the per-turn applyEditedMessageBody
+       * below would otherwise clobber the in-flight textarea. The
+       * editor's save handler explicitly re-renders this turn after
+       * dispatching the text-replace op, so skipping here is safe. */
+      if (turn.classList && turn.classList.contains('wbTurn--editing')) continue;
+      /* Phase 7b — Apply full body text-replace BEFORE the inline
+       * interval passes. computeInlineState short-circuits to empty for
+       * replaced turns (intervals point at pre-edit offsets and cannot
+       * be safely rebased), so the loops below are a no-op for them —
+       * but we still need to paint the replacement body. Idempotent:
+       * re-running with the same overlay produces the same DOM. */
+      try {
+        if (ov && typeof ov.computeMessageState === 'function') {
+          const ms = ov.computeMessageState(overlay, turnIdx);
+          if (ms && ms.textReplace && typeof ms.textReplace.body === 'string') {
+            const msgEl = turn.querySelector('[data-message-author-role]');
+            const role = msgEl && String(msgEl.getAttribute('data-message-author-role') || '');
+            if (msgEl && role) {
+              try { turn.classList.add('wbTurn--edited'); } catch (_) {}
+              try { turn.setAttribute('data-overlay-edited', 'true'); } catch (_) {}
+              applyEditedMessageBody(msgEl, role, ms.textReplace.body);
+            }
+            continue;
+          }
+        }
+      } catch (_) { /* swallow — fall through to inline pass */ }
       let inline = null;
       try { inline = ov.computeInlineState(overlay, turnIdx); }
       catch (_) { inline = null; }

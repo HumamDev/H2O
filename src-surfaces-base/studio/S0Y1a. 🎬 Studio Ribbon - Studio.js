@@ -3017,6 +3017,34 @@
     return true;
   }
 
+  /* Phase 7b repair 10 — Back / Forward handlers wired to the
+   * browser-native window.history API. Not invented behavior — the
+   * Studio uses hash-based routing on top of window.history, so
+   * standard back/forward navigation moves through the user's route
+   * history (saved chats viewed, library pages, settings, etc.).
+   * isEnabled returns true unconditionally; the browser silently
+   * no-ops if there's nothing to go back/forward to. */
+  ACTION_HANDLERS['back'] = {
+    isEnabled: function () { return true; },
+    onClick: function (_ctx, setStatus) {
+      try {
+        if (typeof window !== 'undefined' && window.history && typeof window.history.back === 'function') {
+          window.history.back();
+        }
+      } catch (_) { /* swallow */ }
+    },
+  };
+  ACTION_HANDLERS['forward'] = {
+    isEnabled: function () { return true; },
+    onClick: function (_ctx, setStatus) {
+      try {
+        if (typeof window !== 'undefined' && window.history && typeof window.history.forward === 'function') {
+          window.history.forward();
+        }
+      } catch (_) { /* swallow */ }
+    },
+  };
+
   ACTION_HANDLERS['undo'] = {
     isEnabled: function (ctx) {
       if (!historyBaseEnabled(ctx)) return false;
@@ -3171,6 +3199,84 @@
       'data-testid': 'wbRibbonStatus',
     });
     strip.appendChild(statusEl);
+
+    /* Phase 7b repair 10 — Right-side toolbar group.
+     *
+     * Required visual order (per the user's screenshots):
+     *   status · "..." · Back · Forward · Undo · Redo · ↓
+     *
+     * The "..." three-dots is the Appearance Panel trigger, mounted
+     * at runtime by appearance/appearance-panel.studio.js into a slot
+     * with attribute [data-role="appearance-menu-actions"]. If the
+     * slot doesn't exist when that module runs, it CREATES one and
+     * inserts it just before the collapse chevron — which would land
+     * AFTER our Back/Forward/Undo/Redo and give the wrong order.
+     *
+     * We PRE-CREATE the slot here (empty) so the appearance panel
+     * finds it via querySelector and just appends its trigger to it.
+     * That guarantees the "..." sits BEFORE our Back/Forward/Undo/Redo
+     * in the DOM, matching the spec order.
+     *
+     * Back / Forward use window.history.back() / forward() — browser-
+     * native, not invented. The handlers live near the other
+     * ACTION_HANDLERS in this module. */
+    strip.appendChild(el('div', {
+      class: 'wbRibbonMenuActions',
+      'data-role': 'appearance-menu-actions',
+      'aria-label': 'Ribbon menu actions',
+    }));
+    strip.appendChild(el('button', {
+      type: 'button',
+      class: 'wbRibbonAction wbRibbonNavBtn',
+      'data-action-id': 'back',
+      'aria-label': 'Back',
+      title: 'Back',
+    }, '←'));
+    strip.appendChild(el('button', {
+      type: 'button',
+      class: 'wbRibbonAction wbRibbonNavBtn',
+      'data-action-id': 'forward',
+      'aria-label': 'Forward',
+      title: 'Forward',
+    }, '→'));
+    /* Phase 7b repair 11 — Undo / Redo SVG icons. The unicode glyphs
+     * (↶ / ↷) rendered as small text-style ugly glyphs at the row's
+     * font-size; replaced with proper inline SVG that mirrors the
+     * reference image — thin-stroke curved arrows with rounded caps,
+     * 18px square, currentColor for theme harmony. The SVG is
+     * injected via innerHTML after creation since the el() helper
+     * here only accepts a text child. */
+    const undoBtn = el('button', {
+      type: 'button',
+      class: 'wbRibbonAction wbRibbonQuickBtn',
+      'data-action-id': 'undo',
+      'aria-label': 'Undo',
+      title: 'Undo',
+    });
+    undoBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" '
+        + 'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" '
+        + 'stroke-linejoin="round" aria-hidden="true" focusable="false">'
+      + '<path d="M3 7v6h6"/>'
+      + '<path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>'
+      + '</svg>';
+    strip.appendChild(undoBtn);
+
+    const redoBtn = el('button', {
+      type: 'button',
+      class: 'wbRibbonAction wbRibbonQuickBtn',
+      'data-action-id': 'redo',
+      'aria-label': 'Redo',
+      title: 'Redo',
+    });
+    redoBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" '
+        + 'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" '
+        + 'stroke-linejoin="round" aria-hidden="true" focusable="false">'
+      + '<path d="M21 7v6h-6"/>'
+      + '<path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>'
+      + '</svg>';
+    strip.appendChild(redoBtn);
 
     const collapseBtn = el('button', {
       type: 'button',

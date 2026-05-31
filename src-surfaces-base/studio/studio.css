@@ -3650,6 +3650,15 @@ div[class*="prose"] {
   position: relative;
 }
 
+/* Phase 7b repair 3 — legacy pencil hidden via CSS as defense-in-depth.
+ * The JS mount sites at studio.js were already commented out (Phase 7b
+ * repair 2). This rule guarantees the pencil cannot render even if any
+ * indirect path instantiates the element. Phase 7e removes the .wbEditBtn
+ * styles + the createElement code entirely. */
+.wbEditBtn{
+  display: none !important;
+}
+
 .wbEditBtn{
   position: absolute;
   top: 6px;
@@ -3694,7 +3703,16 @@ div[class*="prose"] {
 }
 
 
-/* ── Edit textarea overlay ── */
+/* ── Edit textarea overlay ──
+ *
+ * Phase 7b repair: the editor renders INLINE inside the message body,
+ * inheriting the body's font/size/color/line-height/padding so the
+ * editing experience feels like editing the message itself, not a
+ * popup over it. The textarea has no visible border, no background of
+ * its own, and no rounded corners — the visual state lives on the
+ * .wbTurn--editing host (premium blue tint + ring; see the
+ * data-edit-mode block in the selection section above). The actions
+ * row sits below the body separated by a thin divider. */
 
 .wbTurn--editing .wbEditBtn{
   display: none;
@@ -3703,35 +3721,49 @@ div[class*="prose"] {
 .wbEditWrap{
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 0;
+  gap: 0;
+  padding: 0;
+  width: 100%;
 }
 
 .wbEditTextarea{
   width: 100%;
-  min-height: 100px;
-  padding: 12px 14px;
-  border: 1px solid var(--wb-border-strong);
-  border-radius: 12px;
-  background: var(--wb-sidebar-elevated);
-  color: var(--wb-text);
-  font-family: var(--font);
-  font-size: 15px;
-  line-height: 1.65;
+  min-height: 1.625em;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  caret-color: var(--wb-text, currentColor);
+  cursor: text;
   resize: vertical;
   outline: none;
-  transition: border-color .14s ease, box-shadow .14s ease;
+  box-shadow: none;
+  transition: none;
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .wbEditTextarea:focus{
-  border-color: var(--wb-focus-ring);
-  box-shadow: 0 0 0 2px var(--wb-focus-ring);
+  outline: none;
+  border: none;
+  box-shadow: none;
 }
 
 .wbEditActions{
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--wb-border, rgba(255,255,255,.10));
 }
 
 .wbEditSaveBtn{
@@ -7432,6 +7464,20 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   pointer-events:none;
 }
 
+/* Tauri Desktop reader: clicks still select a turn for Ribbon context,
+ * but should not paint a blue row tint, left rail, or selection shadow. */
+html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected{
+  background:transparent !important;
+  box-shadow:none !important;
+  outline:none !important;
+  transition:none !important;
+}
+html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::before,
+html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
+  content:none !important;
+  display:none !important;
+}
+
 /* ── Phase 7a — Edit mode visuals ─────────────────────────────────────────
  * When the Format-tab Edit toggle is on, the reader root carries
  * data-edit-mode="on". Two additive rules:
@@ -7449,15 +7495,220 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
  * box-shadow on .is-ribbon-selected (free coverage; the new ring also
  * disappears in print). Phase 7b adds the click-to-edit textarea +
  * text-replace overlay op; this slice is visuals-only. */
-.wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected{
-  outline:2px solid var(--wb-focus);
-  outline-offset:2px;
-  box-shadow:0 0 0 2px rgba(122,182,255,.18);
-}
+/* Phase 7b repair 5 — Phase 7a's whole-turn edit-mode ring was the
+ * source of the "big blue rectangle around the whole message" the user
+ * kept seeing. The rule (now removed) was:
+ *   .wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected:not(.wbTurn--editing){
+ *     outline:2px solid var(--wb-focus);
+ *     outline-offset:2px;
+ *     box-shadow:0 0 0 2px rgba(122,182,255,.18);
+ *   }
+ * It fired the moment Edit Mode was on AND any turn was selected,
+ * producing a row-wide blue outline around the whole turn container.
+ *
+ * In the new design, ALL meaningful blue treatment lives on
+ * .wbEditWrap (the inner editor wrapper sized to the editable text
+ * block). The "selected in edit mode" state inherits the existing
+ * subtle .is-ribbon-selected bg tint + 3px ::before bar from
+ * studio.css L7440-7453 — same as outside edit mode. The Edit
+ * ribbon button still gets its own pressed ring; keep that rule. */
 .wbRibbonAction[data-action-id="edit-mode"][aria-pressed="true"]{
   outline:2px solid var(--wb-focus);
   outline-offset:2px;
   box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+/* Phase 7b repair 6 — Edit Mode no longer paints a boxed editor or
+ * any large blue container around the turn. The earlier wbEditWrap
+ * shell + turn-container outline rules were producing visible
+ * "container around the whole message" shapes the user did NOT want.
+ * In the new design, contentEditable on the existing rendered text
+ * makes the text editable IN PLACE while preserving all body
+ * typography, width, wrapping, and layout. The only visual cue is
+ * the native browser caret on the editable element, plus the
+ * outline-none + caret-color rules below to keep the surface clean.
+ * Save/Cancel controls are gone — auto-save fires on blur /
+ * click-outside; revert flows through the Ribbon Undo. */
+.wbReader[data-edit-mode="on"] [data-turn].wbTurn--editing{
+  background:transparent;
+  outline:none;
+  box-shadow:none;
+  border-radius:0;
+}
+/* Strip the browser's default contenteditable focus outline + ensure
+ * the caret is high-contrast. Optional very-subtle background tint on
+ * the editable element only (no shape change, just a hint of
+ * "editing"). cgMsgBody owns the editing surface for canonical
+ * messages; the messageEl is the fallback for rich DOM where no
+ * cgMsgBody child exists. */
+.wbReader[data-edit-mode="on"] [data-turn].wbTurn--editing [contenteditable="true"]{
+  outline:none !important;
+  caret-color:var(--wb-text, currentColor);
+  cursor:text;
+  background:rgba(122,182,255,.04);
+  border-radius:6px;
+  transition:background-color 180ms ease;
+}
+/* Phase 7b repair 7 — defense-in-depth selection suppression in Edit
+ * Mode. The JS now skips adding .is-ribbon-selected entirely when
+ * data-edit-mode="on" (see studio.js click handler), but if any other
+ * code path adds the class while edit mode is on, these rules force-
+ * suppress the bg tint + the 3px ::before bar. !important defends
+ * against cascade overrides from anywhere else. */
+.wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected{
+  background:transparent !important;
+}
+.wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected::before,
+.wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected::after{
+  display:none !important;
+}
+/* Phase 7b repair 7 — Edit button: larger + strong active state. The
+ * user found the default ribbon-action sizing too subtle for a mode
+ * toggle. Make the button visibly chunkier and its active state a
+ * filled blue pill so it reads as "this mode is on". */
+.wbRibbonAction[data-action-id="edit-mode"]{
+  min-width:64px;
+  padding:0 16px;
+  font-weight:600;
+  font-size:13px;
+}
+.wbRibbonAction[data-action-id="edit-mode"][aria-pressed="true"]{
+  background:var(--wb-focus);
+  color:#fff;
+  border-color:var(--wb-focus);
+  outline:none;
+  box-shadow:0 0 0 2px rgba(122,182,255,.18), 0 4px 12px rgba(122,182,255,.20);
+  font-weight:700;
+}
+.wbRibbonAction[data-action-id="edit-mode"][aria-pressed="true"]:hover{
+  background:var(--wb-focus);
+  color:#fff;
+  border-color:var(--wb-focus);
+}
+/* Phase 7b repair 10 — Right-side toolbar group on the tab-strip
+ * lane. Order: status · "..." (appearance trigger) · Back · Forward ·
+ * Undo · Redo · ↓ (collapse). All buttons sized to match the 30px tab
+ * height so they share the row rhythm.
+ *
+ * Two visual variants share the same row position:
+ *   .wbRibbonNavBtn  — Back / Forward: circular icon button with a
+ *                      thin ring outline, mimicking the user-provided
+ *                      reference (images 2 + 3).
+ *   .wbRibbonQuickBtn — Undo / Redo: text-style thin arrow icon, no
+ *                       border (matches user-provided reference image 1). */
+.wbRibbonQuickBtn,
+.wbRibbonNavBtn{
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:30px;
+  min-width:30px;
+  cursor:pointer;
+  font-weight:500;
+  line-height:1;
+  transition:background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.wbRibbonNavBtn + .wbRibbonNavBtn,
+.wbRibbonNavBtn + .wbRibbonQuickBtn,
+.wbRibbonQuickBtn + .wbRibbonQuickBtn{
+  margin-left:4px;
+}
+.wbRibbonMenuActions + .wbRibbonNavBtn{
+  margin-left:6px;
+}
+
+/* Phase 7b repair 13 — smaller Back / Forward CIRCULAR ring buttons.
+ * Repair 12 set width:22px / height:22px but did NOT override the
+ * shared .wbRibbonQuickBtn, .wbRibbonNavBtn rule's min-width:30px /
+ * height:30px → the button rendered 30×22, an egg/oval. Fix: also
+ * pin min-width and min-height to 22px so the button is a TRUE
+ * circle (width == height + border-radius:50%). */
+.wbRibbonNavBtn{
+  width:22px;
+  min-width:22px;
+  height:22px;
+  min-height:22px;
+  padding:0;
+  border:1px solid var(--wb-border, rgba(255,255,255,.18));
+  border-radius:50%;
+  background:transparent;
+  color:var(--wb-text-soft);
+  font-size:11px;
+  flex:0 0 22px;
+}
+.wbRibbonNavBtn:hover{
+  background:var(--wb-surface-hover);
+  border-color:rgba(255,255,255,.34);
+  color:var(--wb-text);
+}
+.wbRibbonNavBtn:focus-visible{
+  outline:none;
+  border-color:var(--wb-focus);
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+
+/* Phase 7b repair 12 — Strip the circle around the three-dots
+ * appearance trigger when it lives inside our pre-created
+ * .wbRibbonMenuActions slot. .wbAppearanceBtn inherits from
+ * .wbIconBtn--topbar which sets border-radius:999px + a border + a
+ * subtle fill — that's the visible "circle around the dots" the user
+ * wants gone. Override here to render the dots as a bare icon-only
+ * button matching the Undo / Redo container shape. */
+.wbRibbonMenuActions .wbAppearanceBtn{
+  width:28px;
+  min-width:28px;
+  height:28px;
+  min-height:28px;
+  padding:0;
+  border:1px solid transparent;
+  border-radius:8px;
+  background:transparent;
+}
+.wbRibbonMenuActions .wbAppearanceBtn:hover,
+.wbRibbonMenuActions .wbAppearanceBtn.is-on{
+  background:var(--wb-surface-hover);
+  border-color:transparent;
+}
+
+/* Phase 7b repair 11 — Undo / Redo SVG icon buttons. The SVG inside
+ * each button is 18x18 with stroke="currentColor" so it follows the
+ * button's color in hover/focus. Container is a 28px square hit-
+ * target so the row stays tight. No font-size; the SVG sizes itself. */
+.wbRibbonQuickBtn{
+  width:28px;
+  height:28px;
+  padding:0;
+  border:1px solid transparent;
+  border-radius:8px;
+  background:transparent;
+  color:var(--wb-text-soft);
+}
+.wbRibbonQuickBtn > svg{
+  width:18px;
+  height:18px;
+  flex:0 0 auto;
+}
+.wbRibbonQuickBtn:hover{
+  background:var(--wb-surface-hover);
+  color:var(--wb-text);
+}
+.wbRibbonQuickBtn:focus-visible{
+  outline:none;
+  border-color:var(--wb-focus);
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+/* Phase 7b repair — width override fires on BOTH canonical user
+ * bubbles (.cgMsg--user) AND rich-DOM user messages (the
+ * [data-message-author-role="user"] inside .wbRichRoot which has
+ * its own constrained styling cascade — see rules around L4025-4029).
+ * !important defends against cascade overrides from those rules and
+ * any inline width set during rich-DOM mount. */
+.wbReader[data-edit-mode="on"] [data-turn].wbTurn--editing .cgMsg--user,
+.wbReader[data-edit-mode="on"] [data-turn].wbTurn--editing [data-message-author-role="user"]{
+  width:100% !important;
+  max-width:none !important;
+  background:transparent !important;
+  padding:0 !important;
 }
 
 /* Heading: scale up the message body font size + weight. Per level. */

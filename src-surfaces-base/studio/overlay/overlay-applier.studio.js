@@ -345,6 +345,17 @@
         warning:    false,
         idea:       false,
       },
+      /* Phase 7b — full message body replacement. Null when no active
+       * text-replace op targets this message; otherwise { body: string }.
+       * Composes with message-level decorations (bold/quote/heading/etc.)
+       * — those wrap the body returned by resolveMessageText. Composes
+       * with inline ranges + highlights by SUPPRESSING them (computeInline
+       * State returns empty intervals when textReplace is set) because
+       * those anchor to the pre-edit character offsets. clear-formatting
+       * does NOT clear textReplace — text replacement is content, not
+       * decoration; an explicit reset (separate op) is required to drop
+       * an edit. */
+      textReplace: null,
     };
   }
 
@@ -495,13 +506,70 @@
         /* Phase 4-1 — clear-formatting reset. Wipes ALL per-message
          * decoration fields (Phase 2b + Phase 4-1 + Phase 4-2 + Phase
          * 4-3 + Phase 4-4) at this point in op order. Subsequent active
-         * ops apply normally on top of the cleared state. */
-        case 'clear-formatting':
+         * ops apply normally on top of the cleared state. NOTE: this
+         * deliberately does NOT clear Phase 7b textReplace — text
+         * replacement is content, not decoration. To drop an edit the
+         * caller submits a new text-replace op with the original body
+         * (or undoes the existing op via the active-set machinery). */
+        case 'clear-formatting': {
+          var keepTextReplace = state.textReplace;
           state = defaultMessageState();
+          state.textReplace = keepTextReplace;
           break;
+        }
+        /* Phase 7b — full message body replacement. Last active op of
+         * (type, target) wins; setting payload.text to a string stores
+         * the replacement, null/missing clears (legacy compatibility —
+         * lets an explicit reset op clear without removing the op id
+         * from the active set). Pure data; no snapshot mutation. */
+        case 'text-replace': {
+          if (typeof payload.text === 'string') {
+            state.textReplace = { body: payload.text };
+          } else if (payload.text === null) {
+            state.textReplace = null;
+          }
+          break;
+        }
       }
     }
     return state;
+  }
+
+  /* Phase 7b — resolveMessageText: composes canonical snapshot text with
+   * any active text-replace op for a given turnIdx. Pure; never throws;
+   * never reads or writes the legacy localStorage override (callers
+   * supply a fallback string if they want one). Returns the string to
+   * display / serialize / export for that message body.
+   *
+   *   snap     — { messages: [{ text }, ...] } or any snapshot-shaped object
+   *   overlay  — overlay state (the value applyOverlay reads from)
+   *   turnIdx  — 1-based turn index matching computeMessageState
+   *
+   * Resolution order:
+   *   1. If overlay has an active text-replace op for (turnIdx), return
+   *      that op's body string.
+   *   2. Else return snap.messages[turnIdx - 1].text (or '' if missing).
+   * Callers that need legacy-override fallback wrap the result themselves
+   * with getEditOverride(...) — this helper is intentionally
+   * overlay-pure so it stays a single source of truth across reader,
+   * serializer, and DOCX writer. */
+  function resolveMessageText(snap, overlay, turnIdx) {
+    var idx = Number(turnIdx);
+    var canonical = '';
+    try {
+      if (isObject(snap) && Array.isArray(snap.messages)) {
+        var row = snap.messages[idx - 1];
+        if (row && typeof row.text === 'string') canonical = row.text;
+      }
+    } catch (_) { /* swallow — canonical falls back to '' */ }
+    if (!isObject(overlay) || !isFinite(idx)) return canonical;
+    try {
+      var st = computeMessageState(overlay, idx);
+      if (st && st.textReplace && typeof st.textReplace.body === 'string') {
+        return st.textReplace.body;
+      }
+    } catch (_) { /* swallow — fall back to canonical */ }
+    return canonical;
   }
 
   /* ── Phase 5b-1 / 5c-1 — inline character formatting interval reducer ──
@@ -805,7 +873,15 @@
 
   /* Reduce overlay ops into the inline interval sets for one turn.
    * Returns { bold: [[s,e],...], italic: [[s,e],...] }. Active-set aware
-   * (Phase 2d). Never throws. */
+   * (Phase 2d). Never throws.
+   *
+   * Phase 7b — If an active text-replace op targets this turn, inline
+   * intervals are suppressed (returned as empty). Inline ranges anchor
+   * to the pre-edit character offsets, which cannot be safely rebased
+   * onto a freely-replaced body. Highlights are likewise suppressed at
+   * the reader render layer (studio.js) for messages with active
+   * text-replace; this function is responsible for B/I/U/S + color
+   * intervals only. */
   function computeInlineState(overlay, turnIdx) {
     var stateBold = [];
     var stateItalic = [];
@@ -817,6 +893,18 @@
     var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
     var idx = Number(turnIdx);
     if (!isFinite(idx)) return emptyResult;
+    /* Phase 7b — short-circuit when this message has an active
+     * text-replace; inline interval ranges would point at the wrong
+     * characters in the replaced body. The reducer below ALSO
+     * defensively never sees inline ops on a replaced turn because the
+     * dispatcher submits the text-replace AFTER any prior inline ops,
+     * but this guard is the canonical answer. */
+    try {
+      var ms = computeMessageState(overlay, idx);
+      if (ms && ms.textReplace && typeof ms.textReplace.body === 'string') {
+        return emptyResult;
+      }
+    } catch (_) { /* swallow — falls through to normal inline reduction */ }
     var active = getActiveOpIdSet(overlay);
 
     for (var i = 0; i < ops.length; i += 1) {
@@ -1582,6 +1670,12 @@
     colorAt: colorAt,
     /* Phase 5d-1 — pure inline-run segmenter shared by export paths. */
     buildInlineRuns: buildInlineRuns,
+    /* Phase 7b — full message body replacement helper. Pure: reads the
+     * canonical snapshot body and overrides with any active
+     * text-replace op for the requested turnIdx. Consumed by the reader
+     * render in studio.js; will also be consumed by the Markdown
+     * serializer / DOCX writer / print path in Phase 7d. */
+    resolveMessageText: resolveMessageText,
   };
 
   H2O.Studio.overlay = api;

@@ -108,6 +108,22 @@
      * only in 5b-1 (no export). clear-formatting clears inline intervals
      * for the message alongside the message-level decorations. */
     inlineFormat: 'inline-format',
+    /* Phase 7b — full message-body text replacement. Payload:
+     *   target:  { kind: 'message', turnIdx, messageId? }
+     *   payload: { text: string }
+     * The applier stores the latest active payload.text per messageId in
+     * state.textReplace; reader / serializer / DOCX writer call the new
+     * `resolveMessageText` helper which returns the replacement text when
+     * an active text-replace op is present, else the canonical snapshot
+     * text (or — for back-compat — the legacy getEditOverride value).
+     * This op NEVER mutates snapshot.messages and NEVER writes to the
+     * legacy override key — overlay-only state, persisted only in the
+     * edit-overlay store and replayed via the existing applyOverlayOp
+     * + undo/redo machinery. Inline format ranges and highlights are
+     * suppressed for messages that have an active text-replace because
+     * inline ranges anchor to the pre-edit text's character offsets
+     * which cannot be safely rebased after a free-form replace. */
+    textReplace: 'text-replace',
   });
 
   var OverlayTargets = Object.freeze({
