@@ -304,6 +304,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // apply, publication, relay/outbox, storage mutation, watermark, or
   // consumed-op writes.
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
+  // F14.4.11: Desktop/Tauri snapshot convergence UI.
+  // Read-only evidence panel for snapshot candidates, handoff previews,
+  // receipts, bookkeeping rows, and proof status. No apply, publication,
+  // relay/outbox, Native/F5 execution, watermark, or consumed-op writes.
+  "sync/snapshot/snapshot-convergence-ui.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -824,6 +829,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-restore-apply-event-receipt.tauri.js",
   "sync/snapshot/snapshot-convergence-bookkeeping.tauri.js",
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
+  "sync/snapshot/snapshot-convergence-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

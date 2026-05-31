@@ -6304,6 +6304,7 @@ const SETTINGS_CONVERGENCE_SUBROUTES = Object.freeze({
   move: { label: "Move", hash: "#/settings/convergence/move" },
   delete: { label: "Delete", hash: "#/settings/convergence/delete" },
   binding: { label: "Binding", hash: "#/settings/convergence/binding" },
+  snapshot: { label: "Snapshot", hash: "#/settings/convergence/snapshot" },
 });
 
 const SETTINGS_TOP_LEVEL_ROUTES = Object.freeze({
@@ -6324,6 +6325,7 @@ const SETTINGS_EMBEDDED_TOOL_PANEL_IDS = Object.freeze([
   "h2o-move-convergence-panel",
   "h2o-delete-convergence-panel",
   "h2o-binding-convergence-panel",
+  "h2o-snapshot-convergence-panel",
 ]);
 
 const SETTINGS_EVALUATION_STORAGE_KEY = "h2o:studio:settings-migration-evaluation:v1";
@@ -6361,6 +6363,7 @@ const SETTINGS_EVALUATION_PARITY_ROUTES = Object.freeze([
   ["Floating Move Convergence", "#/settings/convergence/move"],
   ["Floating Delete Convergence", "#/settings/convergence/delete"],
   ["Floating Binding Convergence", "#/settings/convergence/binding"],
+  ["Snapshot Convergence", "#/settings/convergence/snapshot"],
 ]);
 
 function settingsEvaluationNormalize(value, allowed, fallback){
@@ -6823,6 +6826,12 @@ function settingsToolSpec(section, subsection){
       description: "Existing binding convergence action panel hosted inside Settings.",
       panelId: "h2o-binding-convergence-panel",
       open: () => W.H2O?.Desktop?.Sync?.openBindingConvergencePanel?.(),
+    },
+    snapshot: {
+      title: "Snapshot Convergence",
+      description: "Read-only snapshot convergence evidence panel hosted inside Settings.",
+      panelId: "h2o-snapshot-convergence-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openSnapshotConvergencePanel?.({ settingsHosted: true }),
     },
   };
   const item = convergence[subsection] || convergence.review;
