@@ -476,6 +476,120 @@
     }
   }
 
+  function shapeKernelObject(method, value, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return value;
+    try {
+      return kernel[method](value);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return value;
+    }
+  }
+
+  function buildKernelBookkeepingShapes(args, proposal, handoff, receiptInfo, audit, recordedAtIso, warnings) {
+    var actorPeer = safeObject(receiptInfo.actorPeer);
+    var originTag = shapeKernelObject('shapeOriginTag', {
+      originKind: 'applyEvent',
+      sourcePeerId: cleanLower(actorPeer.syncPeerIdHash),
+      sourcePlatform: 'desktop-tauri',
+      envelopeKind: KIND_RECEIPT,
+      operationKind: proposal.applyOperation,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey
+    }, warnings, 'origin-tag-shape-threw');
+    var replayCandidate = shapeKernelObject('shapeReplayCandidate', {
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      operation: proposal.applyOperation,
+      operationKind: proposal.applyOperation,
+      operationIntent: OPERATION_INTENT,
+      baseHash: proposal.baseHash,
+      targetHash: proposal.targetHash,
+      revisionHash: proposal.targetHash,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      actorPeer: actorPeer,
+      originTag: originTag,
+      metadata: {
+        bookkeepingStatus: STATUS_RECORDED,
+        proposalOperation: proposal.operation
+      }
+    }, warnings, 'replay-candidate-shape-threw');
+    var consumedOperationPreview = shapeKernelObject('shapeConsumedOperation', {
+      consumedId: receiptInfo.auditMaintenanceId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      lineageId: proposal.lineageId,
+      subjectId: proposal.subjectId,
+      sourcePeerId: cleanLower(actorPeer.syncPeerIdHash),
+      envelopeKind: KIND_RECEIPT,
+      operationKind: proposal.applyOperation,
+      consumedStatus: 'consumed',
+      consumedAtIso: receiptInfo.appliedAtIso,
+      actorPeer: actorPeer,
+      originTag: originTag,
+      reason: 'chat-convergence-bookkeeping-preview',
+      validationSummary: {
+        ok: true,
+        checkedAtIso: recordedAtIso,
+        blockers: [],
+        warnings: []
+      }
+    }, warnings, 'consumed-operation-shape-threw');
+    var watermarkPreview = shapeKernelObject('shapeWatermark', {
+      watermarkId: receiptInfo.transactionId,
+      peerId: cleanLower(actorPeer.syncPeerIdHash),
+      subjectId: proposal.subjectId,
+      lineageId: proposal.lineageId,
+      revisionHash: proposal.targetHash,
+      watermarkAtIso: receiptInfo.appliedAtIso,
+      recordedAtIso: recordedAtIso,
+      dedupeKey: receiptInfo.dedupeKey
+    }, warnings, 'watermark-shape-threw');
+    var watermarkState = shapeKernelObject('shapeWatermarkState', {
+      proposedWatermark: watermarkPreview,
+      allowIdempotent: true
+    }, warnings, 'watermark-state-shape-threw');
+    var auditRecord = shapeKernelObject('shapeAuditRecord', Object.assign({}, safeObject(audit), {
+      auditId: receiptInfo.auditId,
+      auditMaintenanceId: receiptInfo.auditMaintenanceId,
+      domain: 'chat',
+      subjectType: SUBJECT_TYPE,
+      subjectId: proposal.subjectId,
+      operation: proposal.applyOperation,
+      operationIntent: OPERATION_INTENT,
+      lineageId: proposal.lineageId,
+      eventDigest: receiptInfo.eventDigest,
+      dedupeKey: receiptInfo.dedupeKey,
+      transactionId: receiptInfo.transactionId,
+      actorPeer: actorPeer,
+      preStateHash: proposal.baseHash,
+      postStateHash: proposal.targetHash,
+      auditResult: 'success',
+      auditAtIso: recordedAtIso,
+      validationSummary: {
+        ok: true,
+        blockers: [],
+        warnings: []
+      }
+    }), warnings, 'audit-record-shape-threw');
+    var ownerHandoff = shapeKernelObject('shapeOwnerHandoff', safeObject(safeObject(args.handoffPreview).handoffRequest), warnings, 'owner-handoff-shape-threw');
+    return {
+      originTag: originTag,
+      replayCandidate: replayCandidate,
+      consumedOperationPreview: consumedOperationPreview,
+      watermarkPreview: watermarkPreview,
+      watermarkState: watermarkState,
+      auditRecord: auditRecord,
+      ownerHandoff: ownerHandoff,
+      ownerKind: handoff.ownerKind,
+      ownerPlatformId: handoff.ownerPlatformId
+    };
+  }
+
   function failure(blockers, warnings) {
     return {
       schema: RESULT_SCHEMA,
@@ -514,6 +628,7 @@
     if (blockers.length) return failure(blockers, warnings);
 
     var recordedAtIso = nowIsoSeconds();
+    var kernelShapes = buildKernelBookkeepingShapes(args, proposal, handoff, receiptInfo, audit, recordedAtIso, warnings);
     var bookkeepingRow = {
       schema: ROW_SCHEMA,
       rowId: generateUuid(),
@@ -565,6 +680,13 @@
         watermarkWritten: false,
         consumedOperationWritten: false
       },
+      originTag: kernelShapes.originTag,
+      replayCandidate: kernelShapes.replayCandidate,
+      consumedOperationPreview: kernelShapes.consumedOperationPreview,
+      watermarkPreview: kernelShapes.watermarkPreview,
+      watermarkState: kernelShapes.watermarkState,
+      ownerHandoff: kernelShapes.ownerHandoff,
+      auditRecord: kernelShapes.auditRecord,
       serializedApplyReceipt: canonicalJson({
         applyEvent: receipt,
         auditMetadata: audit

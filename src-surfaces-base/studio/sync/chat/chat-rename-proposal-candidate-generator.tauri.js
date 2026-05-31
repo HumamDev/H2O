@@ -286,7 +286,11 @@
       status: cleanString(row.status),
       generatedAtIso: cleanString(row.generatedAtIso),
       expiresAt: cleanString(row.expiresAt),
-      titleHash: cleanString(row.titleHash)
+      titleHash: cleanString(row.titleHash),
+      originTag: safeObject(row.originTag),
+      replayCandidate: safeObject(row.replayCandidate),
+      proposedWatermark: safeObject(row.proposedWatermark),
+      watermarkState: safeObject(row.watermarkState)
     };
   }
 
@@ -626,6 +630,65 @@
     }
   }
 
+  function buildKernelProposalShapes(peer, subjectId, baseHash, targetHash, lineageId, eventDigest, dedupeKey, createdAt) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    var originTagInput = {
+      originKind: 'proposal',
+      sourcePeerId: cleanLower(peer && peer.syncPeerIdHash),
+      sourcePlatform: 'desktop-tauri',
+      envelopeKind: ENVELOPE_KIND,
+      operationKind: OPERATION,
+      lineageId: lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: dedupeKey
+    };
+    var originTag = kernel && typeof kernel.shapeOriginTag === 'function'
+      ? kernel.shapeOriginTag(originTagInput)
+      : originTagInput;
+    var replayInput = {
+      subjectType: SUBJECT_TYPE,
+      subjectId: subjectId,
+      operation: OPERATION,
+      operationKind: DOMAIN_OPERATION,
+      operationIntent: OPERATION_INTENT,
+      baseHash: baseHash,
+      targetHash: targetHash,
+      revisionHash: baseHash,
+      lineageId: lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: dedupeKey,
+      actorPeer: peer,
+      originTag: originTag,
+      metadata: {
+        candidateStatus: STATUS_GENERATED,
+        sourceDomain: SUBJECT_TYPE
+      }
+    };
+    var proposedWatermarkInput = {
+      peerId: cleanLower(peer && peer.syncPeerIdHash),
+      subjectId: subjectId,
+      lineageId: lineageId,
+      revisionHash: targetHash,
+      watermarkAtIso: createdAt,
+      recordedAtIso: createdAt,
+      dedupeKey: dedupeKey
+    };
+    var proposedWatermark = kernel && typeof kernel.shapeWatermark === 'function'
+      ? kernel.shapeWatermark(proposedWatermarkInput)
+      : proposedWatermarkInput;
+    var watermarkState = kernel && typeof kernel.shapeWatermarkState === 'function'
+      ? kernel.shapeWatermarkState({ proposedWatermark: proposedWatermark, allowIdempotent: true })
+      : { proposedWatermark: proposedWatermark };
+    return {
+      originTag: originTag,
+      replayCandidate: kernel && typeof kernel.shapeReplayCandidate === 'function'
+        ? kernel.shapeReplayCandidate(replayInput)
+        : replayInput,
+      proposedWatermark: proposedWatermark,
+      watermarkState: watermarkState
+    };
+  }
+
   async function generateChatRenameProposalCandidate(input) {
     var args = safeObject(input);
     var blockers = [];
@@ -770,6 +833,7 @@
     validateProposalEnvelope(envelope, blockers);
     scanCandidatePrivacy(envelope, blockers, warnings);
     if (blockers.length) return failure(blockers, warnings, { preflightSummary: summarizePreflight(preflight) });
+    var kernelShapes = buildKernelProposalShapes(peer, subjectId, baseHash, targetHash, identity.lineageId, eventDigest, identity.dedupeKey, createdAt);
 
     var row = {
       schema: ROW_SCHEMA,
@@ -799,6 +863,10 @@
         schemaVersion: cleanString(snapshot.schemaVersion),
         titleHash: cleanLower(snapshot.titleHash)
       },
+      originTag: kernelShapes.originTag,
+      replayCandidate: kernelShapes.replayCandidate,
+      proposedWatermark: kernelShapes.proposedWatermark,
+      watermarkState: kernelShapes.watermarkState,
       validationSummary: summarizePreflight(preflight),
       serializedEnvelope: canonicalJson(envelope)
     };

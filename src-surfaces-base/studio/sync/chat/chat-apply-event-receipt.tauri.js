@@ -667,6 +667,106 @@
     return safeObject(result && result.auditMetadata) || metadata;
   }
 
+  function shapeKernelObject(method, value, warnings, warningCode) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return value;
+    try {
+      return kernel[method](value);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return value;
+    }
+  }
+
+  function buildReceiptKernelShapes(candidate, identity, actorPeer, eventDigest, auditMetadata, auditId, opId, txnId, preHash, postHash, appliedAtIso, createdAtIso, warnings) {
+    var originTag = shapeKernelObject('shapeOriginTag', {
+      originKind: 'applyEvent',
+      sourcePeerId: cleanLower(actorPeer && actorPeer.syncPeerIdHash),
+      sourcePlatform: 'desktop-tauri',
+      envelopeKind: KIND_APPLY_EVENT,
+      operationKind: candidate.applyOperation,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey
+    }, warnings, 'origin-tag-shape-threw');
+    var replayCandidate = shapeKernelObject('shapeReplayCandidate', {
+      subjectType: SUBJECT_TYPE,
+      subjectId: identity.subjectId,
+      operation: candidate.applyOperation,
+      operationKind: candidate.applyOperation,
+      operationIntent: OPERATION_INTENT,
+      baseHash: preHash,
+      targetHash: postHash,
+      revisionHash: postHash,
+      lineageId: identity.lineageId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      actorPeer: actorPeer,
+      originTag: originTag,
+      metadata: {
+        receiptOnly: true,
+        proposalOperation: candidate.proposalOperation
+      }
+    }, warnings, 'replay-candidate-shape-threw');
+    var consumedOperationPreview = shapeKernelObject('shapeConsumedOperation', {
+      consumedId: opId,
+      eventDigest: eventDigest,
+      dedupeKey: identity.dedupeKey,
+      lineageId: identity.lineageId,
+      subjectId: identity.subjectId,
+      sourcePeerId: cleanLower(actorPeer && actorPeer.syncPeerIdHash),
+      envelopeKind: KIND_APPLY_EVENT,
+      operationKind: candidate.applyOperation,
+      consumedStatus: 'consumed',
+      consumedAtIso: appliedAtIso,
+      actorPeer: actorPeer,
+      originTag: originTag,
+      reason: 'chat-apply-event-receipt-preview',
+      validationSummary: {
+        ok: true,
+        checkedAtIso: createdAtIso,
+        blockers: [],
+        warnings: []
+      }
+    }, warnings, 'consumed-operation-shape-threw');
+    var watermarkPreview = shapeKernelObject('shapeWatermark', {
+      watermarkId: txnId,
+      peerId: cleanLower(actorPeer && actorPeer.syncPeerIdHash),
+      subjectId: identity.subjectId,
+      lineageId: identity.lineageId,
+      revisionHash: postHash,
+      watermarkAtIso: appliedAtIso,
+      recordedAtIso: createdAtIso,
+      dedupeKey: identity.dedupeKey
+    }, warnings, 'watermark-shape-threw');
+    var watermarkState = shapeKernelObject('shapeWatermarkState', {
+      proposedWatermark: watermarkPreview,
+      allowIdempotent: true
+    }, warnings, 'watermark-state-shape-threw');
+    var auditRecord = shapeKernelObject('shapeAuditRecord', Object.assign({}, safeObject(auditMetadata), {
+      auditId: auditId,
+      auditMaintenanceId: auditId,
+      transactionId: txnId,
+      preStateHash: preHash,
+      postStateHash: postHash,
+      auditResult: 'success',
+      auditAtIso: createdAtIso,
+      validationSummary: {
+        ok: true,
+        blockers: [],
+        warnings: []
+      }
+    }), warnings, 'audit-record-shape-threw');
+    return {
+      originTag: originTag,
+      replayCandidate: replayCandidate,
+      consumedOperationPreview: consumedOperationPreview,
+      watermarkPreview: watermarkPreview,
+      watermarkState: watermarkState,
+      auditRecord: auditRecord
+    };
+  }
+
   function failure(blockers, warnings) {
     return {
       schema: RESULT_SCHEMA,
@@ -748,6 +848,7 @@
     if (!isSha256Hex(payloadHash)) addCode(blockers, 'payload-hash-generation-failed');
     if (blockers.length) return failure(blockers, warnings);
 
+    var createdAtIso = nowIsoSeconds();
     var envelopeBase = {
       schema: ENVELOPE_SCHEMA,
       envelopeVersion: 'v1',
@@ -755,7 +856,7 @@
       kind: KIND_APPLY_EVENT,
       id: generateUuid(),
       lineageId: identity.lineageId,
-      createdAt: nowIsoSeconds(),
+      createdAt: createdAtIso,
       sequence: null,
       exportSequence: null,
       sourcePlatform: {
@@ -812,6 +913,8 @@
     auditMetadata = validateAuditMetadata(auditMetadata, blockers, warnings);
     scanPrivacy(applyEvent, blockers, warnings);
     scanPrivacy(auditMetadata, blockers, warnings);
+    var kernelShapes = buildReceiptKernelShapes(candidate, identity, actorPeer, eventDigest, auditMetadata, auditId, opId, txnId, preHash, postHash, appliedAt, createdAtIso, warnings);
+    scanPrivacy(kernelShapes, blockers, warnings);
     if (blockers.length) return failure(blockers, warnings);
 
     return {
@@ -820,6 +923,12 @@
       ok: true,
       applyEvent: applyEvent,
       auditMetadata: auditMetadata,
+      auditRecord: kernelShapes.auditRecord,
+      originTag: kernelShapes.originTag,
+      replayCandidate: kernelShapes.replayCandidate,
+      consumedOperationPreview: kernelShapes.consumedOperationPreview,
+      watermarkPreview: kernelShapes.watermarkPreview,
+      watermarkState: kernelShapes.watermarkState,
       blockers: [],
       warnings: codeList(warnings)
     };

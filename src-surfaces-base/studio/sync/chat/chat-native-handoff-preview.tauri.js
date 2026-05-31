@@ -573,6 +573,9 @@
     codeList(ownerValidation && ownerValidation.warnings).forEach(function (code) { addCode(warnings, code); });
 
     var owner = safeObject(ownerValidation && ownerValidation.owner);
+    if (kernel && typeof kernel.shapeOwnerDeclaration === 'function') {
+      try { owner = kernel.shapeOwnerDeclaration(owner); } catch (_) { addCode(warnings, 'owner-declaration-shape-threw'); }
+    }
     if (owner.ownerKind !== OWNER_KIND_NATIVE) addCode(blockers, 'native-owner-kind-not-native');
     if (owner.authorityLevel !== REQUIRED_AUTHORITY) addCode(blockers, 'native-owner-authority-insufficient');
     if (!ownerSubjectAuthorized(owner)) addCode(blockers, 'native-owner-subjectType-not-authorized');
@@ -633,9 +636,20 @@
     return preflight;
   }
 
-  function buildAuthorityMetadata(args, owner, candidateSummary, createdAtIso) {
+  function shapeKernelObject(method, value, warningCode, warnings) {
+    var kernel = H2O.Desktop.Sync.kernel || null;
+    if (!kernel || typeof kernel[method] !== 'function') return value;
+    try {
+      return kernel[method](value);
+    } catch (_) {
+      addCode(warnings, warningCode);
+      return value;
+    }
+  }
+
+  function buildAuthorityMetadata(args, owner, candidateSummary, createdAtIso, warnings) {
     var explicit = safeObject(args.authorityMetadata);
-    return {
+    return shapeKernelObject('shapeAuthorityMetadata', {
       platformId: cleanString(explicit.platformId) || cleanString(owner.platformId) || 'native-owner',
       surfaceKind: cleanString(explicit.surfaceKind) || cleanString(owner.surfaceKind) || 'native',
       declaredAuthority: cleanString(explicit.declaredAuthority) || cleanString(owner.authorityLevel) || REQUIRED_AUTHORITY,
@@ -650,16 +664,16 @@
         operation: candidateSummary.operationDomain,
         previewOnly: true
       }
-    };
+    }, 'authority-metadata-shape-threw', warnings);
   }
 
-  function buildHandoffInput(args, owner, candidateSummary, createdAtIso) {
-    return {
+  function buildHandoffInput(args, owner, candidateSummary, createdAtIso, warnings) {
+    var handoffInput = {
       handoffId: cleanString(args.handoffId) || generateUuid(),
       handoffStatus: HANDOFF_STATUS,
       owner: owner,
       ownerDeclaration: owner,
-      authority: buildAuthorityMetadata(args, owner, candidateSummary, createdAtIso),
+      authority: buildAuthorityMetadata(args, owner, candidateSummary, createdAtIso, warnings),
       subjectType: SUBJECT_TYPE,
       subjectId: candidateSummary.subjectId,
       operation: candidateSummary.operation,
@@ -679,6 +693,7 @@
         previewOnly: true
       }
     };
+    return shapeKernelObject('shapeOwnerHandoff', handoffInput, 'owner-handoff-shape-threw', warnings);
   }
 
   function validateHandoff(handoffInput, blockers, warnings) {
@@ -791,7 +806,7 @@
     if (!summary.preflightRerun) summary.preflightSafe = true;
 
     var createdAtIso = nowIsoSeconds();
-    var handoffInput = buildHandoffInput(args, owner, candidateSummary, createdAtIso);
+    var handoffInput = buildHandoffInput(args, owner, candidateSummary, createdAtIso, warnings);
     scanPrivacy(handoffInput, blockers, warnings);
     if (blockers.length) return blocked(blockers, warnings, summary);
 
