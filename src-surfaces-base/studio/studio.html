@@ -691,6 +691,14 @@
        watermark, or consumed-op writes. Registers
        H2O.Desktop.Sync.buildChatApplyEventReceipt. -->
   <script src="./sync/chat/chat-apply-event-receipt.tauri.js"></script>
+  <!-- F14.3.7: Desktop/Tauri chat convergence completion layer.
+       Adds append-only local bookkeeping rows, a read-only archive/rename
+       proof harness, and a read-only chat convergence panel. No Native
+       execution, publication, relay/outbox, apply, watermark writes, or
+       consumed-op writes. -->
+  <script src="./sync/chat/chat-convergence-bookkeeping.tauri.js"></script>
+  <script src="./sync/chat/chat-convergence-proof.tauri.js"></script>
+  <script src="./sync/chat/chat-convergence-ui.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

@@ -233,6 +233,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // execution, publication, relay/outbox, storage mutation, watermark, or
   // consumed-op writes.
   "sync/chat/chat-apply-event-receipt.tauri.js",
+  // F14.3.7: Desktop/Tauri chat convergence completion layer. Adds
+  // append-only local bookkeeping rows, a read-only archive/rename proof
+  // harness, and a read-only chat convergence panel. No Native execution,
+  // publication, relay/outbox, apply, watermark, or consumed-op writes.
+  "sync/chat/chat-convergence-bookkeeping.tauri.js",
+  "sync/chat/chat-convergence-proof.tauri.js",
+  "sync/chat/chat-convergence-ui.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -736,6 +743,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
   "sync/chat/chat-native-handoff-preview.tauri.js",
   "sync/chat/chat-apply-event-receipt.tauri.js",
+  "sync/chat/chat-convergence-bookkeeping.tauri.js",
+  "sync/chat/chat-convergence-proof.tauri.js",
+  "sync/chat/chat-convergence-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
