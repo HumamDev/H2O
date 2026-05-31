@@ -7432,6 +7432,34 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   pointer-events:none;
 }
 
+/* ── Phase 7a — Edit mode visuals ─────────────────────────────────────────
+ * When the Format-tab Edit toggle is on, the reader root carries
+ * data-edit-mode="on". Two additive rules:
+ *   (1) Layer a premium ring on the currently-selected turn ABOVE the
+ *       existing selection bg + 3px ::before bar at L7417-7433 — no
+ *       modification of those rules, no removal of the existing
+ *       affordance. The selection mark remains; the ring is an
+ *       additional cue that we're in edit mode.
+ *   (2) Paint the Edit ribbon button itself with the same ring when
+ *       aria-pressed="true", mirroring the Phase 6e-1 swatch idiom at
+ *       L7313-7316.
+ * Both reuse --wb-focus + the 122,182,255 halo from the existing
+ * focus-visible recipe (L7246-7250) — no new tokens. The print
+ * override at studio.css:8253-8260 already neutralizes outline /
+ * box-shadow on .is-ribbon-selected (free coverage; the new ring also
+ * disappears in print). Phase 7b adds the click-to-edit textarea +
+ * text-replace overlay op; this slice is visuals-only. */
+.wbReader[data-edit-mode="on"] [data-turn].is-ribbon-selected{
+  outline:2px solid var(--wb-focus);
+  outline-offset:2px;
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+.wbRibbonAction[data-action-id="edit-mode"][aria-pressed="true"]{
+  outline:2px solid var(--wb-focus);
+  outline-offset:2px;
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+
 /* Heading: scale up the message body font size + weight. Per level. */
 .wbReader [data-turn][data-overlay-heading="h1"] [data-message-author-role]{
   font-size:1.7em;

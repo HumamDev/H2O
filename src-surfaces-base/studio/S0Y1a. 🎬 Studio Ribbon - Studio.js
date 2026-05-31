@@ -68,6 +68,21 @@
       id: 'format', label: 'Format',
       chatTypes: ['saved'],
       groups: [
+        /* Phase 7a — Edit mode toggle. Single button at the very start
+         * of the Format tab that flips a ribbon-local editMode boolean
+         * and toggles data-edit-mode="on" on the reader root .wbReader.
+         * The existing reader click handler (studio.js:5099-5139) keeps
+         * setting .is-ribbon-selected on click; CSS in studio.css then
+         * paints the premium ring on the selected turn whenever
+         * data-edit-mode is "on". No text mutation, no textarea, no
+         * overlay op, no export change in this slice. Phase 7b adds
+         * click-to-edit textarea + text-replace overlay; Phase 7c adds
+         * undo/redo + reset; Phase 7d adds export integration; Phase 7e
+         * removes the legacy per-message pencil mounts (studio.js:2399
+         * and 2459). */
+        { id: 'edit', label: 'Edit Mode', actions: [
+          { id: 'edit-mode', label: 'Edit' },
+        ] },
         { id: 'headings', label: 'Headings', actions: [
           { id: 'h1', label: 'H1' },
           { id: 'h2', label: 'H2' },
@@ -2765,6 +2780,36 @@
     return true;
   }
 
+  /* Phase 7a — Edit mode toggle. Module-local boolean flipped by the
+   * Edit Mode button at the start of the Format tab. The handler also
+   * mirrors the state to data-edit-mode on the reader root .wbReader so
+   * studio.css can paint the premium ring on the currently-selected
+   * turn. Click-to-select reuses the existing reader handler at
+   * studio.js:5099-5139 — no new selection model. This slice does NOT:
+   * mount a textarea, dispatch a text-replace overlay op, mutate any
+   * snapshot, change any export writer, or remove the legacy pencil
+   * mounts at studio.js:2399 / 2459 — those are 7b / 7d / 7e
+   * respectively. */
+  let editMode = false;
+  ACTION_HANDLERS['edit-mode'] = {
+    isEnabled: function (ctx) {
+      return !!(ctx && ctx.chatType === 'saved');
+    },
+    onClick: function (_ctx, setStatus) {
+      editMode = !editMode;
+      try {
+        const root = (typeof document !== 'undefined')
+          ? document.querySelector('.wbReader')
+          : null;
+        if (root) {
+          if (editMode) root.dataset.editMode = 'on';
+          else delete root.dataset.editMode;
+        }
+      } catch (_) { /* swallow — CSS gate just won't fire */ }
+      setStatus('Edit mode: ' + (editMode ? 'on' : 'off'));
+    },
+  };
+
   ACTION_HANDLERS['add-section'] = {
     /* Enabled whenever a saved reader is open. No selection required —
      * defaults to inserting at the top of the snapshot. */
@@ -3268,6 +3313,13 @@
                 }
               } catch (_) { /* leave unpressed */ }
             }
+          }
+          /* Phase 7a — Edit Mode toggle pressed state. Mirrors the 6e-1
+           * aria-pressed idiom (absence of the attribute = "off"). The
+           * Edit button is NOT a swatch action so this lives outside
+           * the isSwatchAction branch. */
+          if (action.id === 'edit-mode' && editMode) {
+            attrs['aria-pressed'] = 'true';
           }
           if (enabled) {
             /* Drop the "Coming soon" placeholder tooltip when the action is
