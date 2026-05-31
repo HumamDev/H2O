@@ -729,6 +729,12 @@
        publication, relay/outbox, restore, apply, Native/F5 execution, owner
        handoff, watermark, or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-tombstone-proposal-candidate-generator.tauri.js"></script>
+  <!-- F14.4.6: Desktop/Tauri snapshot restore proposal candidate generator.
+       Generates local redacted restore proposal candidates from actionable
+       snapshot preflight results. Candidate ledger append only: no
+       publication, relay/outbox, restore execution, apply, Native/F5 execution, owner
+       handoff, watermark, or consumed-op writes. -->
+  <script src="./sync/snapshot/snapshot-restore-proposal-candidate-generator.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
