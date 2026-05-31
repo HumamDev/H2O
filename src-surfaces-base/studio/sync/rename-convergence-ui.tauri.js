@@ -258,6 +258,8 @@
       '.h2oRenameConvNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oRenameConvControls{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}',
       '.h2oRenameConvBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oRenameConvClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-rename-convergence-panel[data-settings-hosted="true"] .h2oRenameConvClose{display:none}',
       '.h2oRenameConvBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oRenameConvPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oRenameConvApply{background:rgba(34,197,94,.18);border-color:rgba(74,222,128,.42)}',
@@ -464,6 +466,7 @@
       '<button class="h2oRenameConvBtn h2oRenameConvPrimary" id="h2o-rename-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oRenameConvBtn h2oRenameConvPrimary" id="h2o-rename-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Rename Preflight</button>' +
       '<button class="h2oRenameConvBtn h2oRenameConvApply" id="h2o-rename-convergence-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Rename Convergence</button>' +
+      '<button class="h2oRenameConvBtn h2oRenameConvClose" id="h2o-rename-convergence-close" type="button" aria-label="Close Rename Convergence panel" title="Close">×</button>' +
       '</div></div><div class="h2oRenameConvBody">' +
       (state.message ? '<p class="h2oRenameConvNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oRenameConvGrid">' +
@@ -484,11 +487,13 @@
   }
 
   function bindPanel() {
+    var close = document.getElementById('h2o-rename-convergence-close');
     var refresh = document.getElementById('h2o-rename-convergence-refresh');
     var materialize = document.getElementById('h2o-rename-convergence-materialize');
     var preflight = document.getElementById('h2o-rename-convergence-preflight');
     var execute = document.getElementById('h2o-rename-convergence-execute');
     var nameInput = document.getElementById('h2o-rename-convergence-name');
+    if (close) close.addEventListener('click', closeRenameConvergencePanel);
     if (refresh) refresh.addEventListener('click', function () { refreshRenameConvergencePanel(); });
     if (materialize) materialize.addEventListener('click', function () { runSelectedMaterialization(); });
     if (preflight) preflight.addEventListener('click', function () { runSelectedRenamePreflight(); });
@@ -532,6 +537,12 @@
     state.message = '';
     await refreshRenameConvergencePanel();
     return state.snapshot;
+  }
+
+  function closeRenameConvergencePanel() {
+    state.open = false;
+    var panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   }
 
   async function refreshRenameConvergencePanel() {
@@ -692,6 +703,7 @@
   }
 
   H2O.Desktop.Sync.openRenameConvergencePanel = openRenameConvergencePanel;
+  H2O.Desktop.Sync.closeRenameConvergencePanel = closeRenameConvergencePanel;
   H2O.Desktop.Sync.refreshRenameConvergencePanel = refreshRenameConvergencePanel;
   H2O.Desktop.Sync.installRenameConvergenceLauncher = installLauncher;
   H2O.Desktop.Sync.removeRenameConvergenceLauncher = removeLauncher;

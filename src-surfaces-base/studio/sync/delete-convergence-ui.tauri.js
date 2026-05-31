@@ -265,6 +265,8 @@
       '.h2oDeleteConvNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oDeleteConvControls{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}',
       '.h2oDeleteConvBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oDeleteConvClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-delete-convergence-panel[data-settings-hosted="true"] .h2oDeleteConvClose{display:none}',
       '.h2oDeleteConvBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oDeleteConvPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oDeleteConvReview{background:rgba(245,158,11,.20);border-color:rgba(251,191,36,.46)}',
@@ -538,6 +540,7 @@
       '<button class="h2oDeleteConvBtn h2oDeleteConvPrimary" id="h2o-delete-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Delete Preflight</button>' +
       '<button class="h2oDeleteConvBtn h2oDeleteConvReview" id="h2o-delete-convergence-create-review" type="button" ' + (canReview ? '' : 'disabled') + '>Create F5 Review Row</button>' +
       '<button class="h2oDeleteConvBtn h2oDeleteConvDelete" id="h2o-delete-convergence-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Reviewed Delete</button>' +
+      '<button class="h2oDeleteConvBtn h2oDeleteConvClose" id="h2o-delete-convergence-close" type="button" aria-label="Close Delete Convergence panel" title="Close">×</button>' +
       '</div></div><div class="h2oDeleteConvBody">' +
       (state.message ? '<p class="h2oDeleteConvNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oDeleteConvGrid">' +
@@ -560,6 +563,7 @@
   }
 
   function bindPanel() {
+    var close = document.getElementById('h2o-delete-convergence-close');
     var refresh = document.getElementById('h2o-delete-convergence-refresh');
     var materialize = document.getElementById('h2o-delete-convergence-materialize');
     var preflight = document.getElementById('h2o-delete-convergence-preflight');
@@ -567,6 +571,7 @@
     var execute = document.getElementById('h2o-delete-convergence-execute');
     var candidate = document.getElementById('h2o-delete-convergence-candidate');
     var review = document.getElementById('h2o-delete-convergence-review');
+    if (close) close.addEventListener('click', closeDeleteConvergencePanel);
     if (refresh) refresh.addEventListener('click', function () { refreshDeleteConvergencePanel(); });
     if (materialize) materialize.addEventListener('click', function () { runSelectedMaterialization(); });
     if (preflight) preflight.addEventListener('click', function () { runSelectedDeletePreflight(); });
@@ -617,6 +622,12 @@
     state.message = '';
     await refreshDeleteConvergencePanel();
     return state.snapshot;
+  }
+
+  function closeDeleteConvergencePanel() {
+    state.open = false;
+    var panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   }
 
   async function refreshDeleteConvergencePanel() {
@@ -832,6 +843,7 @@
   }
 
   H2O.Desktop.Sync.openDeleteConvergencePanel = openDeleteConvergencePanel;
+  H2O.Desktop.Sync.closeDeleteConvergencePanel = closeDeleteConvergencePanel;
   H2O.Desktop.Sync.refreshDeleteConvergencePanel = refreshDeleteConvergencePanel;
   H2O.Desktop.Sync.installDeleteConvergenceLauncher = installLauncher;
   H2O.Desktop.Sync.removeDeleteConvergenceLauncher = removeLauncher;

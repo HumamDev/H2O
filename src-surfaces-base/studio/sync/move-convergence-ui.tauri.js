@@ -248,6 +248,8 @@
       '.h2oMoveConvNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oMoveConvControls{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}',
       '.h2oMoveConvBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oMoveConvClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-move-convergence-panel[data-settings-hosted="true"] .h2oMoveConvClose{display:none}',
       '.h2oMoveConvBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oMoveConvPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oMoveConvApply{background:rgba(34,197,94,.18);border-color:rgba(74,222,128,.42)}',
@@ -454,6 +456,7 @@
       '<button class="h2oMoveConvBtn h2oMoveConvPrimary" id="h2o-move-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oMoveConvBtn h2oMoveConvPrimary" id="h2o-move-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Move Preflight</button>' +
       '<button class="h2oMoveConvBtn h2oMoveConvApply" id="h2o-move-convergence-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Move Convergence</button>' +
+      '<button class="h2oMoveConvBtn h2oMoveConvClose" id="h2o-move-convergence-close" type="button" aria-label="Close Move Convergence panel" title="Close">×</button>' +
       '</div></div><div class="h2oMoveConvBody">' +
       (state.message ? '<p class="h2oMoveConvNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oMoveConvGrid">' +
@@ -474,10 +477,12 @@
   }
 
   function bindPanel() {
+    var close = document.getElementById('h2o-move-convergence-close');
     var refresh = document.getElementById('h2o-move-convergence-refresh');
     var materialize = document.getElementById('h2o-move-convergence-materialize');
     var preflight = document.getElementById('h2o-move-convergence-preflight');
     var execute = document.getElementById('h2o-move-convergence-execute');
+    if (close) close.addEventListener('click', closeMoveConvergencePanel);
     if (refresh) refresh.addEventListener('click', function () { refreshMoveConvergencePanel(); });
     if (materialize) materialize.addEventListener('click', function () { runSelectedMaterialization(); });
     if (preflight) preflight.addEventListener('click', function () { runSelectedMovePreflight(); });
@@ -509,6 +514,12 @@
     state.message = '';
     await refreshMoveConvergencePanel();
     return state.snapshot;
+  }
+
+  function closeMoveConvergencePanel() {
+    state.open = false;
+    var panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   }
 
   async function refreshMoveConvergencePanel() {
@@ -662,6 +673,7 @@
   }
 
   H2O.Desktop.Sync.openMoveConvergencePanel = openMoveConvergencePanel;
+  H2O.Desktop.Sync.closeMoveConvergencePanel = closeMoveConvergencePanel;
   H2O.Desktop.Sync.refreshMoveConvergencePanel = refreshMoveConvergencePanel;
   H2O.Desktop.Sync.installMoveConvergenceLauncher = installLauncher;
   H2O.Desktop.Sync.removeMoveConvergenceLauncher = removeLauncher;

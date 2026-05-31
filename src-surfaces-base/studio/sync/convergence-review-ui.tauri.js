@@ -175,6 +175,8 @@
       '.h2oConvTitle{margin:0;font-size:20px;line-height:1.15}',
       '.h2oConvNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oConvBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oConvClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-convergence-review-panel[data-settings-hosted="true"] .h2oConvClose{display:none}',
       '.h2oConvDanger{background:rgba(239,68,68,.16);border-color:rgba(248,113,113,.38)}',
       '.h2oConvGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}',
       '.h2oConvMetric{border:1px solid rgba(148,163,184,.22);border-radius:16px;padding:12px;background:rgba(148,163,184,.08)}',
@@ -201,7 +203,7 @@
       '<p class="h2oConvNote">Review only. No apply, convergence, proposal creation, automatic merge, or transport action.</p>' +
       '</div><div><button class="h2oConvBtn" id="h2o-convergence-refresh">Refresh plan</button> ' +
       '<a class="h2oConvBtn" href="#/settings/convergence/review">Open in Settings</a> ' +
-      '<button class="h2oConvBtn h2oConvDanger" id="h2o-convergence-close">Close</button></div></div>' +
+      '<button class="h2oConvBtn h2oConvDanger h2oConvClose" id="h2o-convergence-close" type="button" aria-label="Close Convergence Review panel" title="Close">×</button></div></div>' +
       '<div class="h2oConvBody">' +
       (state.message ? '<p class="h2oConvNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oConvGrid">' +
@@ -295,6 +297,7 @@
   }
 
   H2O.Desktop.Sync.openConvergenceReview = openConvergenceReview;
+  H2O.Desktop.Sync.closeConvergenceReview = closeConvergenceReview;
   H2O.Desktop.Sync.refreshConvergenceReview = refreshConvergenceReview;
   H2O.Desktop.Sync.installConvergenceReviewLauncher = installLauncher;
   H2O.Desktop.Sync.removeConvergenceReviewLauncher = removeLauncher;

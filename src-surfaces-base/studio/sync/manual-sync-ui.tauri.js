@@ -19,6 +19,8 @@
     try {
       if (typeof global.__TAURI_INTERNALS__ !== 'undefined') return true;
       if (typeof global.__TAURI__ !== 'undefined') return true;
+      if (global.H2O && global.H2O.Studio && global.H2O.Studio.platform &&
+          global.H2O.Studio.platform.env && global.H2O.Studio.platform.env.isTauri === true) return true;
     } catch (_) { /* ignore */ }
     return false;
   }
@@ -252,6 +254,8 @@
       '.h2oSyncTitle{margin:0;font-size:20px;line-height:1.15}',
       '.h2oSyncNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oSyncBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oSyncClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-manual-sync-panel[data-settings-hosted="true"] .h2oSyncClose{display:none}',
       '.h2oSyncBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oSyncPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oSyncDanger{background:rgba(239,68,68,.16);border-color:rgba(248,113,113,.38)}',
@@ -354,7 +358,7 @@
       '<p class="h2oSyncNote">Manual only. No apply, convergence, automatic refresh, automatic merge, or raw remote names.</p></div>' +
       '<div><button class="h2oSyncBtn" id="h2o-sync-refresh">Refresh counts</button> ' +
       '<a class="h2oSyncBtn" href="#/settings/sync/status">Open in Settings</a> ' +
-      '<button class="h2oSyncBtn h2oSyncDanger" id="h2o-sync-close">Close</button></div>' +
+      '<button class="h2oSyncBtn h2oSyncDanger h2oSyncClose" id="h2o-sync-close" type="button" aria-label="Close Manual Sync panel" title="Close">×</button></div>' +
       '</div><div class="h2oSyncBody">' +
       (state.message ? '<div class="h2oSyncCard">' + escapeHtml(state.message) + '</div>' : '') +
       '<section class="h2oSyncSection" open><summary>1. Sync Status</summary><div class="h2oSyncSectionBody">' +
@@ -513,6 +517,12 @@
     document.body.appendChild(button);
   }
 
+  function removeLauncher() {
+    if (typeof document === 'undefined') return;
+    var button = document.getElementById(LAUNCHER_ID);
+    if (button) button.remove();
+  }
+
   function bootLauncher() {
     if (typeof document === 'undefined') return;
     if (document.readyState === 'loading') {
@@ -525,6 +535,8 @@
   H2O.Desktop.Sync.openManualSyncPanel = openManualSyncPanel;
   H2O.Desktop.Sync.closeManualSyncPanel = closeManualSyncPanel;
   H2O.Desktop.Sync.refreshManualSyncPanel = refreshManualSyncPanel;
+  H2O.Desktop.Sync.installManualSyncLauncher = installLauncher;
+  H2O.Desktop.Sync.removeManualSyncLauncher = removeLauncher;
   H2O.Desktop.Sync.__manualSyncUiInstalled = true;
   H2O.Desktop.Sync.__manualSyncUiVersion = VERSION;
 

@@ -202,6 +202,8 @@
       '.h2oConvActionNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oConvActionControls{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}',
       '.h2oConvActionBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oConvActionClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-convergence-action-panel[data-settings-hosted="true"] .h2oConvActionClose{display:none}',
       '.h2oConvActionBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oConvActionPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oConvActionApply{background:rgba(34,197,94,.18);border-color:rgba(74,222,128,.42)}',
@@ -371,6 +373,7 @@
       '<button class="h2oConvActionBtn" id="h2o-convergence-action-refresh" type="button" ' + (state.busy ? 'disabled' : '') + '>Refresh</button>' +
       '<button class="h2oConvActionBtn h2oConvActionPrimary" id="h2o-convergence-action-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Preflight</button>' +
       '<button class="h2oConvActionBtn h2oConvActionApply" id="h2o-convergence-action-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Local Color Convergence</button>' +
+      '<button class="h2oConvActionBtn h2oConvActionDanger h2oConvActionClose" id="h2o-convergence-action-close" type="button" aria-label="Close Convergence Action panel" title="Close">×</button>' +
       '</div></div><div class="h2oConvActionBody">' +
       (state.message ? '<p class="h2oConvActionNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oConvActionGrid">' +
@@ -390,9 +393,11 @@
   }
 
   function bindPanel() {
+    var close = document.getElementById('h2o-convergence-action-close');
     var refresh = document.getElementById('h2o-convergence-action-refresh');
     var preflight = document.getElementById('h2o-convergence-action-preflight');
     var execute = document.getElementById('h2o-convergence-action-execute');
+    if (close) close.addEventListener('click', closeConvergenceActionPanel);
     if (refresh) refresh.addEventListener('click', function () { refreshConvergenceActionPanel(); });
     if (preflight) preflight.addEventListener('click', function () { runSelectedPreflight(); });
     if (execute) execute.addEventListener('click', function () { executeSelectedConvergence(); });
@@ -423,6 +428,12 @@
     state.message = '';
     await refreshConvergenceActionPanel();
     return state.snapshot;
+  }
+
+  function closeConvergenceActionPanel() {
+    state.open = false;
+    var panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   }
 
   async function refreshConvergenceActionPanel() {
@@ -543,6 +554,7 @@
   }
 
   H2O.Desktop.Sync.openConvergenceActionPanel = openConvergenceActionPanel;
+  H2O.Desktop.Sync.closeConvergenceActionPanel = closeConvergenceActionPanel;
   H2O.Desktop.Sync.refreshConvergenceActionPanel = refreshConvergenceActionPanel;
   H2O.Desktop.Sync.installConvergenceActionLauncher = installLauncher;
   H2O.Desktop.Sync.removeConvergenceActionLauncher = removeLauncher;

@@ -6292,6 +6292,8 @@ const SETTINGS_SYNC_SUBROUTES = Object.freeze({
   outbox: { label: "Outbox", hash: "#/settings/sync/outbox" },
   inbox: { label: "Inbox", hash: "#/settings/sync/inbox" },
   relay: { label: "Relay", hash: "#/settings/sync/relay" },
+  "proposal-review": { label: "Proposal Review", hash: "#/settings/sync/proposal-review" },
+  "conflict-review": { label: "Conflict Review", hash: "#/settings/sync/conflict-review" },
   "apply-log": { label: "Apply Log", hash: "#/settings/sync/apply-log" },
 });
 
@@ -6339,6 +6341,27 @@ const SETTINGS_EVALUATION_DEFAULTS = Object.freeze({
   settingsLayout: "new",
   convergenceAccess: "settings",
 });
+const SETTINGS_EVALUATION_PARITY_ROUTES = Object.freeze([
+  ["Legacy Data & Migration - Export", "#/settings/data"],
+  ["Legacy Data & Migration - Import", "#/settings/data"],
+  ["Legacy Data & Migration - Backup", "#/settings/data"],
+  ["Legacy Local Sync - Status / folder-state import", "#/settings/sync/status"],
+  ["Floating Manual Sync - Sync Status", "#/settings/sync/status"],
+  ["Floating Manual Sync - Outbox", "#/settings/sync/outbox"],
+  ["Floating Manual Sync - Pull / Relay", "#/settings/sync/relay"],
+  ["Floating Manual Sync - Inbox", "#/settings/sync/inbox"],
+  ["Floating Manual Sync - Proposal Review", "#/settings/sync/proposal-review"],
+  ["Floating Manual Sync - Conflict Review", "#/settings/sync/conflict-review"],
+  ["Floating Manual Sync - Apply Log", "#/settings/sync/apply-log"],
+  ["Legacy Folder Parity / Cleanup diagnostics", "#/settings/diagnostics/folder-parity"],
+  ["Legacy Storage Diagnostics", "#/settings/diagnostics"],
+  ["Floating Convergence Review", "#/settings/convergence/review"],
+  ["Floating Color Convergence Action", "#/settings/convergence/color"],
+  ["Floating Rename Convergence", "#/settings/convergence/rename"],
+  ["Floating Move Convergence", "#/settings/convergence/move"],
+  ["Floating Delete Convergence", "#/settings/convergence/delete"],
+  ["Floating Binding Convergence", "#/settings/convergence/binding"],
+]);
 
 function settingsEvaluationNormalize(value, allowed, fallback){
   const key = String(value || "").trim().toLowerCase();
@@ -6413,6 +6436,32 @@ function settingsEvaluationSelectHtml(field, current, options){
   `;
 }
 
+function settingsEvaluationParityTableHtml(){
+  return `
+    <details data-settings-evaluation-parity="1" style="border:1px solid rgba(255,255,255,.10);border-radius:10px;padding:10px;background:rgba(255,255,255,.025)">
+      <summary style="cursor:pointer;font-weight:650">Feature parity map</summary>
+      <div style="overflow:auto;margin-top:10px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;line-height:1.45">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.10);opacity:.7">Legacy/Floating Feature</th>
+              <th style="text-align:left;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.10);opacity:.7">New Settings Route</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${SETTINGS_EVALUATION_PARITY_ROUTES.map(([feature, route]) => `
+              <tr>
+                <td style="padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06)">${esc(feature)}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06)"><a href="${esc(route)}" style="color:inherit">${esc(route)}</a></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
 function settingsEvaluationPanelHtml(){
   const state = settingsEvaluationRead();
   const resolved = settingsEvaluationResolvedLayout();
@@ -6437,6 +6486,7 @@ function settingsEvaluationPanelHtml(){
           ${settingsEvaluationSelectHtml("convergenceAccess", state.convergenceAccess, SETTINGS_EVALUATION_CONVERGENCE_ACCESS)}
         </label>
       </div>
+      ${settingsEvaluationParityTableHtml()}
     </section>
   `;
 }
@@ -6475,6 +6525,7 @@ function settingsBindEvaluationControls(panel){
 function settingsConvergenceLauncherSpecs(){
   const sync = W.H2O?.Desktop?.Sync || {};
   return [
+    { id: "h2o-manual-sync-launcher", install: sync.installManualSyncLauncher, remove: sync.removeManualSyncLauncher },
     { id: "h2o-convergence-review-launcher", install: sync.installConvergenceReviewLauncher, remove: sync.removeConvergenceReviewLauncher },
     { id: "h2o-convergence-action-launcher", install: sync.installConvergenceActionLauncher, remove: sync.removeConvergenceActionLauncher },
     { id: "h2o-rename-convergence-launcher", install: sync.installRenameConvergenceLauncher, remove: sync.removeRenameConvergenceLauncher },
@@ -6825,6 +6876,8 @@ function settingsFocusManualSyncSection(subsection){
     outbox: [/Outbox/i],
     inbox: [/Inbox/i],
     relay: [/Pull/i],
+    "proposal-review": [/Proposal Review/i],
+    "conflict-review": [/Conflict Review/i],
     "apply-log": [/Apply Log/i],
   };
   const matchers = sectionMatchers[subsection] || sectionMatchers.status;

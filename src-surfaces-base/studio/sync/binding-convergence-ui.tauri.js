@@ -193,6 +193,8 @@
       '.h2oBindConvNote{margin:8px 0 0;color:var(--wb-muted,#94a3b8)}',
       '.h2oBindConvControls{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}',
       '.h2oBindConvBtn{border:1px solid rgba(148,163,184,.34);border-radius:12px;background:rgba(148,163,184,.12);color:inherit;padding:9px 12px;font-weight:650;cursor:pointer}',
+      '.h2oBindConvClose{min-width:38px;height:38px;padding:0;border-radius:999px;font-size:20px;line-height:1}',
+      '#h2o-binding-convergence-panel[data-settings-hosted="true"] .h2oBindConvClose{display:none}',
       '.h2oBindConvBtn[disabled]{opacity:.55;cursor:not-allowed}',
       '.h2oBindConvPrimary{background:rgba(59,130,246,.24);border-color:rgba(96,165,250,.5)}',
       '.h2oBindConvApply{background:rgba(20,184,166,.20);border-color:rgba(45,212,191,.46)}',
@@ -434,6 +436,7 @@
       '<button class="h2oBindConvBtn h2oBindConvPrimary" id="h2o-binding-convergence-materialize" type="button" ' + (canRun ? '' : 'disabled') + '>Run Materialization Check</button>' +
       '<button class="h2oBindConvBtn h2oBindConvPrimary" id="h2o-binding-convergence-preflight" type="button" ' + (canRun ? '' : 'disabled') + '>Run Binding Preflight</button>' +
       '<button class="h2oBindConvBtn h2oBindConvApply" id="h2o-binding-convergence-execute" type="button" ' + (canExecute ? '' : 'disabled') + '>Execute Reviewed Bind Add</button>' +
+      '<button class="h2oBindConvBtn h2oBindConvClose" id="h2o-binding-convergence-close" type="button" aria-label="Close Binding Convergence panel" title="Close">×</button>' +
       '</div></div><div class="h2oBindConvBody">' +
       (state.message ? '<p class="h2oBindConvNote">' + escapeHtml(state.message) + '</p>' : '') +
       '<div class="h2oBindConvGrid">' +
@@ -455,6 +458,7 @@
   }
 
   function bindPanel() {
+    var close = document.getElementById('h2o-binding-convergence-close');
     var refresh = document.getElementById('h2o-binding-convergence-refresh');
     var identity = document.getElementById('h2o-binding-convergence-identity');
     var materialize = document.getElementById('h2o-binding-convergence-materialize');
@@ -463,6 +467,7 @@
     var chat = document.getElementById('h2o-binding-convergence-chat');
     var folder = document.getElementById('h2o-binding-convergence-folder');
     var candidate = document.getElementById('h2o-binding-convergence-candidate');
+    if (close) close.addEventListener('click', closeBindingConvergencePanel);
     if (refresh) refresh.addEventListener('click', function () { refreshBindingConvergencePanel(); });
     if (identity) identity.addEventListener('click', function () { runSelectedIdentityCheck(); });
     if (materialize) materialize.addEventListener('click', function () { runSelectedMaterialization(); });
@@ -538,6 +543,12 @@
     state.message = '';
     await refreshBindingConvergencePanel();
     return state.snapshot;
+  }
+
+  function closeBindingConvergencePanel() {
+    state.open = false;
+    var panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   }
 
   async function refreshBindingConvergencePanel() {
@@ -732,6 +743,7 @@
   }
 
   H2O.Desktop.Sync.openBindingConvergencePanel = openBindingConvergencePanel;
+  H2O.Desktop.Sync.closeBindingConvergencePanel = closeBindingConvergencePanel;
   H2O.Desktop.Sync.refreshBindingConvergencePanel = refreshBindingConvergencePanel;
   H2O.Desktop.Sync.installBindingConvergenceLauncher = installLauncher;
   H2O.Desktop.Sync.removeBindingConvergenceLauncher = removeLauncher;
