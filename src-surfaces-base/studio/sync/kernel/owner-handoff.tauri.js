@@ -20,7 +20,6 @@
  *   H2O.Desktop.Sync.kernel.validateAuthorityMetadata(input, policy?)
  *   H2O.Desktop.Sync.kernel.shapeOwnerHandoff(input)
  *   H2O.Desktop.Sync.kernel.validateOwnerHandoff(input, policy?)
- *   H2O.Desktop.Sync.kernel.shapeOwnerHandoffResult(input)
  */
 (function (global) {
   'use strict';
@@ -47,7 +46,6 @@
   var HANDOFF_SCHEMA = 'h2o.desktop.sync.kernel.owner-handoff.v1';
   var OWNER_SCHEMA = 'h2o.desktop.sync.kernel.owner-declaration.v1';
   var AUTHORITY_SCHEMA = 'h2o.desktop.sync.kernel.owner-authority.v1';
-  var HANDOFF_RESULT_SCHEMA = 'h2o.desktop.sync.kernel.owner-handoff-result.v1';
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
   var OWNER_KINDS = [
@@ -486,22 +484,6 @@
     });
   }
 
-  function shapeOwnerHandoffResult(input) {
-    var source = safeObject(input);
-    var handoff = source.handoff ? shapeOwnerHandoff(source.handoff) : null;
-    var owner = source.owner ? shapeOwnerDeclaration(source.owner) : handoff ? handoff.owner : null;
-    return {
-      schema: HANDOFF_RESULT_SCHEMA,
-      ok: source.ok === true,
-      valid: source.valid !== false && source.ok === true,
-      handoff: handoff,
-      owner: owner,
-      authority: source.authority ? shapeAuthorityMetadata(source.authority) : handoff ? handoff.authority : null,
-      blockers: codeList(source.blockers),
-      warnings: codeList(source.warnings)
-    };
-  }
-
   kernel.OWNER_HANDOFF_OWNER_KINDS = OWNER_KINDS.slice();
   kernel.OWNER_HANDOFF_STATUSES = HANDOFF_STATUSES.slice();
   kernel.normalizeOwnerKind = normalizeOwnerKind;
@@ -512,7 +494,6 @@
   kernel.validateAuthorityMetadata = validateAuthorityMetadata;
   kernel.shapeOwnerHandoff = shapeOwnerHandoff;
   kernel.validateOwnerHandoff = validateOwnerHandoff;
-  kernel.shapeOwnerHandoffResult = shapeOwnerHandoffResult;
   kernel.__ownerHandoffInstalled = true;
   kernel.__ownerHandoffVersion = VERSION;
 })(typeof globalThis !== 'undefined' ? globalThis : window);

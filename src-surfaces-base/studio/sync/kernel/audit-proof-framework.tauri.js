@@ -4,7 +4,7 @@
  *
  * Safety invariants:
  *   - Shapes and validates caller-supplied audit records, proof records,
- *     audit histories, proof summaries, and metadata only.
+ *     and metadata only.
  *   - No proof execution, audit execution, storage reads/writes, workflow
  *     execution, publication, relay, WebDAV, polling, timers, network, domain
  *     mutation, or mobile behavior.
@@ -20,10 +20,6 @@
  *   H2O.Desktop.Sync.kernel.validateAuditMetadata(input, policy?)
  *   H2O.Desktop.Sync.kernel.shapeProofMetadata(input)
  *   H2O.Desktop.Sync.kernel.validateProofMetadata(input, policy?)
- *   H2O.Desktop.Sync.kernel.shapeAuditHistory(input)
- *   H2O.Desktop.Sync.kernel.validateAuditHistory(input, policy?)
- *   H2O.Desktop.Sync.kernel.shapeProofSummary(input)
- *   H2O.Desktop.Sync.kernel.shapeAuditProofResult(input)
  */
 (function (global) {
   'use strict';
@@ -51,9 +47,6 @@
   var PROOF_SCHEMA = 'h2o.desktop.sync.kernel.proof-record.v1';
   var AUDIT_METADATA_SCHEMA = 'h2o.desktop.sync.kernel.audit-metadata.v1';
   var PROOF_METADATA_SCHEMA = 'h2o.desktop.sync.kernel.proof-metadata.v1';
-  var AUDIT_HISTORY_SCHEMA = 'h2o.desktop.sync.kernel.audit-history.v1';
-  var PROOF_SUMMARY_SCHEMA = 'h2o.desktop.sync.kernel.proof-summary.v1';
-  var RESULT_SHAPE_SCHEMA = 'h2o.desktop.sync.kernel.audit-proof-result.v1';
   var SHA256_RE = /^[0-9a-f]{64}$/;
   var STATE_HASH_RE = /^([0-9a-f]{8}|[0-9a-f]{64})$/;
 
@@ -324,49 +317,6 @@
     };
   }
 
-  function shapeAuditHistory(input) {
-    var source = safeObject(input);
-    var rows = asArray(source.audits || source.history || source.rows || input);
-    return {
-      schema: AUDIT_HISTORY_SCHEMA,
-      domain: cleanString(source.domain),
-      subjectType: cleanString(source.subjectType),
-      subjectId: lowerHash(source.subjectId),
-      audits: rows.map(function (row, index) {
-        var audit = shapeAuditRecord(row);
-        if (audit.sequence == null) audit.sequence = index + 1;
-        return audit;
-      }),
-      metadata: shapeAuditMetadata(source.metadata || source)
-    };
-  }
-
-  function shapeProofSummary(input) {
-    var source = safeObject(input);
-    var proofs = asArray(source.proofs || source.rows || source.history || input).map(shapeProofRecord);
-    var counts = {
-      total: proofs.length,
-      passed: 0,
-      failed: 0,
-      blocked: 0,
-      skipped: 0,
-      inconclusive: 0,
-      unknown: 0
-    };
-    proofs.forEach(function (proof) {
-      if (Object.prototype.hasOwnProperty.call(counts, proof.proofStatus)) counts[proof.proofStatus] += 1;
-      else counts.unknown += 1;
-    });
-    return {
-      schema: PROOF_SUMMARY_SCHEMA,
-      ok: counts.failed === 0 && counts.blocked === 0 && counts.unknown === 0,
-      counts: counts,
-      proofs: proofs,
-      blockers: codeList(source.blockers),
-      warnings: codeList(source.warnings)
-    };
-  }
-
   function result(blockers, warnings, audit, proof, extra) {
     var out = {
       schema: RESULT_SCHEMA,
@@ -489,52 +439,6 @@
     return result(blockers, warnings, null, proof);
   }
 
-  function validateAuditHistory(input, policy) {
-    var options = normalizePolicy(policy);
-    var history = shapeAuditHistory(input);
-    var blockers = [];
-    var warnings = [];
-    var seen = {};
-    var previousSequence = null;
-
-    history.audits.forEach(function (audit) {
-      var validation = validateAuditRecord(audit, options);
-      codeList(validation.blockers).forEach(function (code) { addCode(blockers, code); });
-      codeList(validation.warnings).forEach(function (code) { addCode(warnings, code); });
-      var key = audit.auditId || audit.eventDigest || audit.dedupeKey;
-      if (key) {
-        if (seen[key]) addCode(blockers, 'audit-history-duplicate-record');
-        seen[key] = true;
-      }
-      if (previousSequence != null && audit.sequence != null && audit.sequence <= previousSequence) {
-        addCode(blockers, 'audit-history-sequence-regression');
-      }
-      previousSequence = audit.sequence;
-    });
-    if (!history.audits.length) addCode(warnings, 'audit-history-empty');
-    scanPrivacy(history, options, blockers, warnings);
-
-    return result(blockers, warnings, null, null, {
-      auditHistory: history,
-      auditCount: history.audits.length
-    });
-  }
-
-  function shapeAuditProofResult(input) {
-    var source = safeObject(input);
-    return {
-      schema: RESULT_SHAPE_SCHEMA,
-      ok: source.ok === true,
-      valid: source.valid !== false && source.ok === true,
-      audit: source.audit ? shapeAuditRecord(source.audit) : null,
-      proof: source.proof ? shapeProofRecord(source.proof) : null,
-      auditHistory: source.auditHistory ? shapeAuditHistory(source.auditHistory) : null,
-      proofSummary: source.proofSummary ? shapeProofSummary(source.proofSummary) : null,
-      blockers: codeList(source.blockers),
-      warnings: codeList(source.warnings)
-    };
-  }
-
   kernel.AUDIT_PROOF_SUPPORTED_DOMAINS = SUPPORTED_DOMAINS.slice();
   kernel.shapeAuditRecord = shapeAuditRecord;
   kernel.validateAuditRecord = validateAuditRecord;
@@ -544,10 +448,6 @@
   kernel.validateAuditMetadata = validateAuditMetadata;
   kernel.shapeProofMetadata = shapeProofMetadata;
   kernel.validateProofMetadata = validateProofMetadata;
-  kernel.shapeAuditHistory = shapeAuditHistory;
-  kernel.validateAuditHistory = validateAuditHistory;
-  kernel.shapeProofSummary = shapeProofSummary;
-  kernel.shapeAuditProofResult = shapeAuditProofResult;
   kernel.__auditProofFrameworkInstalled = true;
   kernel.__auditProofFrameworkVersion = VERSION;
 })(typeof globalThis !== 'undefined' ? globalThis : window);

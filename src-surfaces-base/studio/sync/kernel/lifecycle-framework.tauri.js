@@ -4,7 +4,7 @@
  *
  * Safety invariants:
  *   - Shapes and validates caller-supplied lifecycle state records,
- *     transition records, transition histories, metadata, and policies only.
+ *     transition records, metadata, and policies only.
  *   - No storage reads/writes, transition execution, workflow execution,
  *     domain policy ownership, relay, WebDAV, polling, timers, network,
  *     domain mutation, or mobile behavior.
@@ -16,11 +16,8 @@
  *   H2O.Desktop.Sync.kernel.validateLifecycleState(input, policy?)
  *   H2O.Desktop.Sync.kernel.shapeLifecycleTransition(input)
  *   H2O.Desktop.Sync.kernel.validateLifecycleTransition(input, policy?)
- *   H2O.Desktop.Sync.kernel.shapeLifecycleHistory(input)
- *   H2O.Desktop.Sync.kernel.validateLifecycleHistory(input, policy?)
  *   H2O.Desktop.Sync.kernel.shapeLifecycleMetadata(input)
  *   H2O.Desktop.Sync.kernel.validateLifecycleMetadata(input, policy?)
- *   H2O.Desktop.Sync.kernel.shapeLifecycleResult(input)
  */
 (function (global) {
   'use strict';
@@ -46,9 +43,7 @@
   var RESULT_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-validation.v1';
   var STATE_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-state.v1';
   var TRANSITION_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-transition.v1';
-  var HISTORY_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-history.v1';
   var METADATA_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-metadata.v1';
-  var RESULT_SHAPE_SCHEMA = 'h2o.desktop.sync.kernel.lifecycle-result.v1';
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
   var SUPPORTED_DOMAINS = [
@@ -293,24 +288,6 @@
     };
   }
 
-  function shapeLifecycleHistory(input) {
-    var source = safeObject(input);
-    var rows = asArray(source.transitions || source.history || source.rows || input);
-    return {
-      schema: HISTORY_SCHEMA,
-      lifecycleId: cleanString(source.lifecycleId),
-      domain: cleanString(source.domain),
-      subjectType: cleanString(source.subjectType),
-      subjectId: lowerHash(source.subjectId),
-      transitions: rows.map(function (row, index) {
-        var transition = shapeLifecycleTransition(row);
-        if (transition.sequence == null) transition.sequence = index + 1;
-        return transition;
-      }),
-      metadata: shapeLifecycleMetadata(source.metadata || source)
-    };
-  }
-
   function result(blockers, warnings, state, transition, extra) {
     var out = {
       schema: RESULT_SCHEMA,
@@ -450,62 +427,13 @@
     return result(blockers, warnings, null, transition);
   }
 
-  function validateLifecycleHistory(input, policy) {
-    var options = normalizePolicy(policy);
-    var history = shapeLifecycleHistory(input);
-    var blockers = [];
-    var warnings = [];
-    var previousToState = '';
-    var previousSequence = null;
-
-    history.transitions.forEach(function (transition, index) {
-      var validation = validateLifecycleTransition(transition, options);
-      codeList(validation.blockers).forEach(function (code) { addCode(blockers, code); });
-      codeList(validation.warnings).forEach(function (code) { addCode(warnings, code); });
-      if (index > 0 && previousToState && transition.fromState && transition.fromState !== previousToState) {
-        addCode(blockers, 'lifecycle-history-discontinuous');
-      }
-      if (previousSequence != null && transition.sequence != null && transition.sequence <= previousSequence) {
-        addCode(blockers, 'lifecycle-history-sequence-regression');
-      }
-      previousToState = transition.toState;
-      previousSequence = transition.sequence;
-    });
-
-    if (!history.transitions.length) addCode(warnings, 'lifecycle-history-empty');
-    scanPrivacy(history, options, blockers, warnings);
-
-    return result(blockers, warnings, null, null, {
-      history: history,
-      transitionCount: history.transitions.length
-    });
-  }
-
-  function shapeLifecycleResult(input) {
-    var source = safeObject(input);
-    return {
-      schema: RESULT_SHAPE_SCHEMA,
-      ok: source.ok === true,
-      valid: source.valid !== false && source.ok === true,
-      state: source.state ? shapeLifecycleState(source.state) : null,
-      transition: source.transition ? shapeLifecycleTransition(source.transition) : null,
-      history: source.history ? shapeLifecycleHistory(source.history) : null,
-      metadata: source.metadata ? shapeLifecycleMetadata(source.metadata) : null,
-      blockers: codeList(source.blockers),
-      warnings: codeList(source.warnings)
-    };
-  }
-
   kernel.LIFECYCLE_SUPPORTED_DOMAINS = SUPPORTED_DOMAINS.slice();
   kernel.shapeLifecycleState = shapeLifecycleState;
   kernel.validateLifecycleState = validateLifecycleState;
   kernel.shapeLifecycleTransition = shapeLifecycleTransition;
   kernel.validateLifecycleTransition = validateLifecycleTransition;
-  kernel.shapeLifecycleHistory = shapeLifecycleHistory;
-  kernel.validateLifecycleHistory = validateLifecycleHistory;
   kernel.shapeLifecycleMetadata = shapeLifecycleMetadata;
   kernel.validateLifecycleMetadata = validateLifecycleMetadata;
-  kernel.shapeLifecycleResult = shapeLifecycleResult;
   kernel.__lifecycleFrameworkInstalled = true;
   kernel.__lifecycleFrameworkVersion = VERSION;
 })(typeof globalThis !== 'undefined' ? globalThis : window);
