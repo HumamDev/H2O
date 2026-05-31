@@ -3230,13 +3230,18 @@
             catch (_) { /* keep catalogue tooltip */ }
           }
           /* Phase 6c — Text Color + Highlight swatches: CSS hides the visible
-           * label (font-size:0) so we surface aria-label + a persistent title
-           * to keep the accessible name and give a hover tooltip ("Red",
-           * "Blue", ...). Catalogue / handlers / labels are unchanged. */
+           * label (font-size:0) so we surface aria-label + a persistent title.
+           * Phase 6e-1a clarifies highlight brush labels because the active
+           * ring marks the next brush color, not selected-text formatting. */
           const isSwatchAction = typeof action.id === 'string' && (
             (action.id.indexOf('text-color-') === 0 && action.id !== 'text-color-none') ||
             action.id.indexOf('highlight-brush-') === 0
           );
+          const isHighlightBrushAction = typeof action.id === 'string' &&
+            action.id.indexOf('highlight-brush-') === 0;
+          const swatchAccessibleLabel = isHighlightBrushAction
+            ? ('Highlight brush: ' + action.label)
+            : action.label;
           const attrs = {
             type: 'button',
             class: 'wbRibbonAction',
@@ -3244,7 +3249,7 @@
             'aria-disabled': enabled ? 'false' : 'true',
           };
           if (isSwatchAction) {
-            attrs['aria-label'] = action.label;
+            attrs['aria-label'] = swatchAccessibleLabel;
             /* Phase 6e-1 — Active state for Highlight brush only. Text
              * Color active state is deferred to 6e-2; mixed / inline
              * state to 6e-3. We mark the brush whose suffix matches
@@ -3252,7 +3257,7 @@
              * that wraps H2O.Studio.store.highlights). Absence of
              * the attribute means "not pressed" — matches the
              * .wbSidebarNativeSwatch[aria-pressed="true"] idiom. */
-            if (action.id.indexOf('highlight-brush-') === 0) {
+            if (isHighlightBrushAction) {
               try {
                 const ih = getIHighlighter();
                 const cur = (ih && typeof ih.getCurrentColor === 'function')
@@ -3268,9 +3273,9 @@
             /* Drop the "Coming soon" placeholder tooltip when the action is
              * wired — except for Phase 6c swatches, where the label IS the
              * tooltip. */
-            attrs.title = isSwatchAction ? action.label : '';
+            attrs.title = isSwatchAction ? swatchAccessibleLabel : '';
           } else {
-            attrs.title = disabledTooltip;
+            attrs.title = isHighlightBrushAction ? swatchAccessibleLabel : disabledTooltip;
             attrs.disabled = 'disabled';
           }
           const btn = el('button', attrs, action.label);
