@@ -770,6 +770,11 @@
        no Native/F5 execution, apply, publication, relay/outbox, watermark,
        or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-restore-apply-event-receipt.tauri.js"></script>
+  <!-- F14.4.9: Desktop/Tauri snapshot convergence bookkeeping.
+       Append-only redacted linkage ledger for proposal -> handoff -> receipt
+       chains. Bookkeeping only: no Native/F5 execution, apply, publication,
+       relay/outbox, watermark, or consumed-op writes. -->
+  <script src="./sync/snapshot/snapshot-convergence-bookkeeping.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

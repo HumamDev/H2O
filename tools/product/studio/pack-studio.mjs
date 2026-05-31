@@ -294,6 +294,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No Native/F5 execution, apply, publication, relay/outbox, watermark, or
   // consumed-op writes.
   "sync/snapshot/snapshot-restore-apply-event-receipt.tauri.js",
+  // F14.4.9: Desktop/Tauri snapshot convergence bookkeeping.
+  // Append-only redacted linkage ledger for proposal -> handoff -> receipt
+  // chains. No Native/F5 execution, apply, publication, relay/outbox,
+  // watermark, or consumed-op writes.
+  "sync/snapshot/snapshot-convergence-bookkeeping.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -812,6 +817,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-archive-apply-event-receipt.tauri.js",
   "sync/snapshot/snapshot-tombstone-apply-event-receipt.tauri.js",
   "sync/snapshot/snapshot-restore-apply-event-receipt.tauri.js",
+  "sync/snapshot/snapshot-convergence-bookkeeping.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
