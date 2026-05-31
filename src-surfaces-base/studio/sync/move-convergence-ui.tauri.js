@@ -27,6 +27,8 @@
     try {
       if (typeof global.__TAURI_INTERNALS__ !== 'undefined') return true;
       if (typeof global.__TAURI__ !== 'undefined') return true;
+      if (global.H2O && global.H2O.Studio && global.H2O.Studio.platform &&
+          global.H2O.Studio.platform.env && global.H2O.Studio.platform.env.isTauri === true) return true;
     } catch (_) { /* ignore */ }
     return false;
   }
@@ -644,6 +646,12 @@
     document.body.appendChild(button);
   }
 
+  function removeLauncher() {
+    if (typeof document === 'undefined') return;
+    var button = document.getElementById(LAUNCHER_ID);
+    if (button) button.remove();
+  }
+
   function bootLauncher() {
     if (typeof document === 'undefined') return;
     if (document.readyState === 'loading') {
@@ -655,6 +663,8 @@
 
   H2O.Desktop.Sync.openMoveConvergencePanel = openMoveConvergencePanel;
   H2O.Desktop.Sync.refreshMoveConvergencePanel = refreshMoveConvergencePanel;
+  H2O.Desktop.Sync.installMoveConvergenceLauncher = installLauncher;
+  H2O.Desktop.Sync.removeMoveConvergenceLauncher = removeLauncher;
   H2O.Desktop.Sync.__moveConvergenceUiInstalled = true;
   H2O.Desktop.Sync.__moveConvergenceUiVersion = VERSION;
 

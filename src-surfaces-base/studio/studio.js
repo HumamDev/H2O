@@ -6039,6 +6039,7 @@ async function renderRoute(opts = {}){
   try {
   const route = parseHash();
   __ribbonRoute = route;
+  try { settingsApplyConvergenceAccess(); } catch (_) { /* evaluation mode must never break routing */ }
   // Hide the migration / settings panels by default on every route change;
   // their respective renderers un-hide as needed. This avoids adding cleanup
   // calls inside every other render path.
@@ -6323,6 +6324,197 @@ const SETTINGS_EMBEDDED_TOOL_PANEL_IDS = Object.freeze([
   "h2o-binding-convergence-panel",
 ]);
 
+const SETTINGS_EVALUATION_STORAGE_KEY = "h2o:studio:settings-migration-evaluation:v1";
+const SETTINGS_EVALUATION_LAYOUTS = Object.freeze({
+  auto: "Auto",
+  legacy: "Legacy",
+  new: "New",
+});
+const SETTINGS_EVALUATION_CONVERGENCE_ACCESS = Object.freeze({
+  floating: "Floating",
+  settings: "Settings",
+  both: "Both",
+});
+const SETTINGS_EVALUATION_DEFAULTS = Object.freeze({
+  settingsLayout: "new",
+  convergenceAccess: "settings",
+});
+
+function settingsEvaluationNormalize(value, allowed, fallback){
+  const key = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(allowed, key) ? key : fallback;
+}
+
+function settingsEvaluationRead(){
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(SETTINGS_EVALUATION_STORAGE_KEY) || "null"); }
+  catch (_) { raw = null; }
+  return {
+    settingsLayout: settingsEvaluationNormalize(
+      raw && raw.settingsLayout,
+      SETTINGS_EVALUATION_LAYOUTS,
+      SETTINGS_EVALUATION_DEFAULTS.settingsLayout
+    ),
+    convergenceAccess: settingsEvaluationNormalize(
+      raw && raw.convergenceAccess,
+      SETTINGS_EVALUATION_CONVERGENCE_ACCESS,
+      SETTINGS_EVALUATION_DEFAULTS.convergenceAccess
+    ),
+  };
+}
+
+function settingsEvaluationWrite(patch = {}){
+  const current = settingsEvaluationRead();
+  const next = {
+    settingsLayout: settingsEvaluationNormalize(
+      patch.settingsLayout || current.settingsLayout,
+      SETTINGS_EVALUATION_LAYOUTS,
+      SETTINGS_EVALUATION_DEFAULTS.settingsLayout
+    ),
+    convergenceAccess: settingsEvaluationNormalize(
+      patch.convergenceAccess || current.convergenceAccess,
+      SETTINGS_EVALUATION_CONVERGENCE_ACCESS,
+      SETTINGS_EVALUATION_DEFAULTS.convergenceAccess
+    ),
+  };
+  try { localStorage.setItem(SETTINGS_EVALUATION_STORAGE_KEY, JSON.stringify(next)); }
+  catch (_) { /* ignore local persistence failures */ }
+  return next;
+}
+
+function settingsEvaluationResolvedLayout(){
+  const layout = settingsEvaluationRead().settingsLayout;
+  return layout === "auto" ? "new" : layout;
+}
+
+function settingsEvaluationUseNewSettings(){
+  return settingsEvaluationResolvedLayout() !== "legacy";
+}
+
+function settingsEvaluationConvergenceAccess(){
+  return settingsEvaluationRead().convergenceAccess;
+}
+
+function settingsEvaluationHostedConvergenceVisible(){
+  return settingsEvaluationConvergenceAccess() !== "floating";
+}
+
+function settingsEvaluationFloatingConvergenceVisible(){
+  const access = settingsEvaluationConvergenceAccess();
+  return access === "floating" || access === "both";
+}
+
+function settingsEvaluationSelectHtml(field, current, options){
+  return `
+    <select data-settings-eval-field="${esc(field)}"
+            style="min-width:128px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-size:12px">
+      ${Object.keys(options).map((key) => `<option value="${esc(key)}" ${key === current ? "selected" : ""}>${esc(options[key])}</option>`).join("")}
+    </select>
+  `;
+}
+
+function settingsEvaluationPanelHtml(){
+  const state = settingsEvaluationRead();
+  const resolved = settingsEvaluationResolvedLayout();
+  return `
+    <section class="wbSettingsCard" data-settings-evaluation-panel="1"
+             style="display:flex;flex-direction:column;gap:10px;margin:0 0 16px;padding:14px 16px;border:1px solid rgba(96,165,250,.24);border-radius:12px;background:rgba(96,165,250,.055)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.62;font-weight:700">Settings Evaluation</div>
+          <div style="font-weight:650">Temporary migration comparison</div>
+          <div style="opacity:.72;font-size:12px;line-height:1.45">Developer-only controls. No sync, convergence, parity, apply, or data behavior is changed.</div>
+        </div>
+        <div style="font-size:12px;opacity:.72">Auto resolves to <strong>${esc(SETTINGS_EVALUATION_LAYOUTS[resolved])}</strong></div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          <span style="opacity:.72">Settings Layout</span>
+          ${settingsEvaluationSelectHtml("settingsLayout", state.settingsLayout, SETTINGS_EVALUATION_LAYOUTS)}
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          <span style="opacity:.72">Convergence Access</span>
+          ${settingsEvaluationSelectHtml("convergenceAccess", state.convergenceAccess, SETTINGS_EVALUATION_CONVERGENCE_ACCESS)}
+        </label>
+      </div>
+    </section>
+  `;
+}
+
+function settingsBindEvaluationControls(panel){
+  if (!panel || panel.dataset.settingsEvaluationBound === "1") return;
+  panel.dataset.settingsEvaluationBound = "1";
+  panel.addEventListener("change", (event) => {
+    const target = event.target;
+    const field = target?.getAttribute?.("data-settings-eval-field");
+    if (!field || !panel.contains(target)) return;
+    if (field !== "settingsLayout" && field !== "convergenceAccess") return;
+    settingsEvaluationWrite({ [field]: target.value });
+    settingsApplyConvergenceAccess();
+    try {
+      delete panel.dataset.settingsRendered;
+      delete panel.dataset.settingsRenderedKey;
+    } catch (_) { /* ignore */ }
+    renderRoute().catch(console.error);
+  }, true);
+  panel.addEventListener("click", (event) => {
+    const target = event.target?.closest?.("[data-settings-eval-set-convergence]");
+    if (!target || !panel.contains(target)) return;
+    event.preventDefault();
+    const value = target.getAttribute("data-settings-eval-set-convergence");
+    settingsEvaluationWrite({ convergenceAccess: value });
+    settingsApplyConvergenceAccess();
+    try {
+      delete panel.dataset.settingsRendered;
+      delete panel.dataset.settingsRenderedKey;
+    } catch (_) { /* ignore */ }
+    renderRoute().catch(console.error);
+  }, true);
+}
+
+function settingsConvergenceLauncherSpecs(){
+  const sync = W.H2O?.Desktop?.Sync || {};
+  return [
+    { id: "h2o-convergence-review-launcher", install: sync.installConvergenceReviewLauncher, remove: sync.removeConvergenceReviewLauncher },
+    { id: "h2o-convergence-action-launcher", install: sync.installConvergenceActionLauncher, remove: sync.removeConvergenceActionLauncher },
+    { id: "h2o-rename-convergence-launcher", install: sync.installRenameConvergenceLauncher, remove: sync.removeRenameConvergenceLauncher },
+    { id: "h2o-move-convergence-launcher", install: sync.installMoveConvergenceLauncher, remove: sync.removeMoveConvergenceLauncher },
+    { id: "h2o-delete-convergence-launcher", install: sync.installDeleteConvergenceLauncher, remove: sync.removeDeleteConvergenceLauncher },
+    { id: "h2o-binding-convergence-launcher", install: sync.installBindingConvergenceLauncher, remove: sync.removeBindingConvergenceLauncher },
+  ];
+}
+
+function settingsRemoveFloatingConvergenceLaunchers(){
+  for (const spec of settingsConvergenceLauncherSpecs()) {
+    try {
+      if (typeof spec.remove === "function") spec.remove();
+      else document.getElementById(spec.id)?.remove?.();
+    } catch (_) {
+      try { document.getElementById(spec.id)?.remove?.(); } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function settingsInstallFloatingConvergenceLaunchers(){
+  if (!STUDIO_isTauri()) {
+    settingsRemoveFloatingConvergenceLaunchers();
+    return;
+  }
+  for (const spec of settingsConvergenceLauncherSpecs()) {
+    if (typeof spec.install !== "function") continue;
+    try { spec.install(); } catch (_) { /* launcher install must not break route rendering */ }
+  }
+}
+
+function settingsApplyConvergenceAccess(){
+  if (settingsEvaluationFloatingConvergenceVisible()) settingsInstallFloatingConvergenceLaunchers();
+  else settingsRemoveFloatingConvergenceLaunchers();
+}
+
+function settingsEvaluationShellPrefixHtml(){
+  return `<div class="wbSettingsEvaluationShellTop">${settingsEvaluationPanelHtml()}</div>`;
+}
+
 function settingsReleaseEmbeddedToolPanels(){
   const settingsPanel = document.getElementById("viewSettingsPanel");
   if (!settingsPanel || typeof document === "undefined" || !document.body) return;
@@ -6350,6 +6542,7 @@ function settingsNavLinkHtml(label, hash, active){
 function settingsShellRailHtml(activeSection){
   const active = String(activeSection || "account").toLowerCase();
   return Object.keys(SETTINGS_TOP_LEVEL_ROUTES).map((key) => {
+    if (key === "convergence" && !settingsEvaluationHostedConvergenceVisible()) return "";
     const item = SETTINGS_TOP_LEVEL_ROUTES[key];
     return settingsNavLinkHtml(item.label, item.hash, key === active);
   }).join("");
@@ -6596,6 +6789,7 @@ function renderSettingsToolShell(panel, section, subsection){
   const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
   const statusHtml = syncActive && subsection === "status" ? settingsLegacySyncStatusHtml(cardStyle, btnStyle) : "";
   panel.innerHTML = `
+    ${settingsEvaluationShellPrefixHtml()}
     <div class="wbSettingsShell">
       <nav class="wbSettingsShellRail" aria-label="Settings sections">
         ${settingsShellRailHtml(section)}
@@ -6618,6 +6812,7 @@ function renderSettingsToolShell(panel, section, subsection){
       </section>
     </div>
   `;
+  settingsBindEvaluationControls(panel);
 }
 
 function settingsFocusManualSyncSection(subsection){
@@ -6729,6 +6924,7 @@ function renderSettingsSectionShell(panel, section){
   const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
   const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
   panel.innerHTML = `
+    ${settingsEvaluationShellPrefixHtml()}
     <div class="wbSettingsShell">
       <nav class="wbSettingsShellRail" aria-label="Settings sections">
         ${settingsShellRailHtml(key)}
@@ -6748,6 +6944,7 @@ function renderSettingsSectionShell(panel, section){
       </section>
     </div>
   `;
+  settingsBindEvaluationControls(panel);
   if (key === "diagnostics" || key === "about") refreshSettingsDiagnostics(panel);
 }
 
@@ -6774,6 +6971,7 @@ function settingsWrapFolderParityRoute(panel, parityNode){
     </div>
   `;
   panel.innerHTML = `
+    ${settingsEvaluationShellPrefixHtml()}
     <div class="wbSettingsShell">
       <nav class="wbSettingsShellRail" aria-label="Settings sections">
         ${settingsShellRailHtml("diagnostics")}
@@ -6797,6 +6995,7 @@ function settingsWrapFolderParityRoute(panel, parityNode){
   `;
   const host = panel.querySelector("#wbSettingsFolderParityHost");
   if (host && parityNode) host.appendChild(parityNode);
+  settingsBindEvaluationControls(panel);
   panel.dataset.settingsRendered = "1";
   panel.dataset.settingsRenderedKey = "diagnostics/folder-parity";
   delete panel.dataset.syncControlsBound;
@@ -6808,23 +7007,67 @@ function settingsWrapFolderParityRoute(panel, parityNode){
   });
 }
 
+function renderSettingsHostedConvergenceHidden(panel, route){
+  const subsection = settingsNormalizeSubroute("convergence", route && route.subsection);
+  const spec = settingsToolSpec("convergence", subsection);
+  const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
+  panel.dataset.settingsRendered = "1";
+  panel.dataset.settingsRenderedKey = "convergence-hidden/" + subsection;
+  delete panel.dataset.syncControlsBound;
+  panel.innerHTML = `
+    ${settingsEvaluationShellPrefixHtml()}
+    <div class="wbSettingsShell">
+      <nav class="wbSettingsShellRail" aria-label="Settings sections">
+        ${settingsShellRailHtml("convergence")}
+      </nav>
+      <section class="wbSettingsShellMain" aria-label="${esc(spec.title)} hidden">
+        <div class="wbSettingsShellHeader">
+          <div>
+            <div class="wbSettingsShellEyebrow">Convergence access</div>
+            <h2 class="wbSettingsShellTitle">${esc(spec.title)}</h2>
+            <p class="wbSettingsShellCopy">Settings-hosted convergence is hidden while Convergence Access is set to Floating. Floating launchers remain the active convergence entry points.</p>
+          </div>
+        </div>
+        <div class="wbSettingsCard" style="display:flex;flex-direction:column;gap:10px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)">
+          <div style="font-weight:600">Settings-hosted convergence hidden</div>
+          <div style="opacity:.72;font-size:12px;line-height:1.45">Switch Convergence Access to Settings or Both to show the Settings-hosted convergence panels again. No convergence behavior is changed by this evaluation mode.</div>
+          <button type="button" data-settings-eval-set-convergence="both" style="${btnStyle};width:max-content">Show both access modes</button>
+        </div>
+      </section>
+    </div>
+  `;
+  settingsBindEvaluationControls(panel);
+}
+
 async function renderSettingsRoute(route = { section: "account", subsection: "" }){
   settingsHideOtherPanels();
   const settingsSection = String(route && route.section || "account").toLowerCase();
-  const isHostedToolRoute = settingsSection === "sync" || settingsSection === "convergence";
+  const isSyncToolRoute = settingsSection === "sync";
+  const isConvergenceToolRoute = settingsSection === "convergence";
   const isFolderParityRoute = settingsSection === "diagnostics"
     && String(route && route.subsection || "").toLowerCase() === "folder-parity";
   setRouteMeta("Settings", "Studio Settings", "Studio configuration · data & migration · storage diagnostics");
   const panel = settingsOverlayEnsure();
   if (!panel) return;
   panel.hidden = false;
-  if (isHostedToolRoute) {
+  settingsApplyConvergenceAccess();
+  if (isConvergenceToolRoute) {
+    if (!settingsEvaluationHostedConvergenceVisible()) {
+      renderSettingsHostedConvergenceHidden(panel, route);
+      return;
+    }
     await renderSettingsToolRoute(panel, route);
     return;
   }
-  if (!isFolderParityRoute) {
-    await renderSettingsTopLevelRoute(panel, route);
-    return;
+  if (settingsEvaluationUseNewSettings()) {
+    if (isSyncToolRoute) {
+      await renderSettingsToolRoute(panel, route);
+      return;
+    }
+    if (!isFolderParityRoute) {
+      await renderSettingsTopLevelRoute(panel, route);
+      return;
+    }
   }
   settingsFolderParityEnsureTabBinding(panel);
 
@@ -7340,7 +7583,11 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
     </div>
   `;
 
-  if (isFolderParityRoute) {
+  const evaluationHtml = settingsEvaluationPanelHtml();
+  if (evaluationHtml) panel.insertAdjacentHTML("afterbegin", evaluationHtml);
+  settingsBindEvaluationControls(panel);
+
+  if (isFolderParityRoute && settingsEvaluationUseNewSettings()) {
     settingsWrapFolderParityRoute(panel, panel.querySelector("#wbSettingsFolderParityBox"));
     return;
   }
