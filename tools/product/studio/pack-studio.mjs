@@ -226,6 +226,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // handoff execution, publication, relay/outbox, apply, applyEvent,
   // watermark, or consumed-op writes.
   "sync/chat/chat-native-handoff-preview.tauri.js",
+  // F14.3.6b: Desktop/Tauri chat applyEvent receipt builder. Builds a
+  // redacted applyEvent receipt + audit metadata from a generated chat
+  // archive/rename proposal, ready Native handoff preview, and successful
+  // operation result. Receipt only: no Native execution, apply, handoff
+  // execution, publication, relay/outbox, storage mutation, watermark, or
+  // consumed-op writes.
+  "sync/chat/chat-apply-event-receipt.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -728,6 +735,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
   "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
   "sync/chat/chat-native-handoff-preview.tauri.js",
+  "sync/chat/chat-apply-event-receipt.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
