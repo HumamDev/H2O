@@ -711,6 +711,12 @@
        No restore, apply, publication, relay/outbox, Native execution,
        watermark, or consumed-op writes. -->
   <script src="./sync/snapshot/snapshot-diagnostics.tauri.js"></script>
+  <!-- F14.4.3: Desktop/Tauri snapshot convergence preflight.
+       Composes the snapshot canonicalizer, diagnostics, and kernel checks to
+       determine archive/tombstone/restore proposal eligibility. Read-only:
+       no proposal, restore, apply, publication, relay/outbox, Native
+       execution, watermark, or consumed-op writes. -->
+  <script src="./sync/snapshot/snapshot-convergence-preflight.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

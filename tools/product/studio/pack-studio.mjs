@@ -249,6 +249,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // identity, owner, mirror, tombstone, forbidden-field, retention,
   // content-integrity, and lifecycle probes. No restore/apply/publication.
   "sync/snapshot/snapshot-diagnostics.tauri.js",
+  // F14.4.3: Desktop/Tauri snapshot convergence preflight. Read-only
+  // archive/tombstone/restore proposal-eligibility gate. No proposal,
+  // restore, apply, publication, relay, Native execution, or ledger writes.
+  "sync/snapshot/snapshot-convergence-preflight.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -757,6 +761,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-convergence-ui.tauri.js",
   "sync/snapshot/snapshot-canonicalizer.tauri.js",
   "sync/snapshot/snapshot-diagnostics.tauri.js",
+  "sync/snapshot/snapshot-convergence-preflight.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
