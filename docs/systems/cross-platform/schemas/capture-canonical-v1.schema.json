@@ -1,0 +1,531 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://h2o.local/schemas/capture-canonical-v1.schema.json",
+  "description": "Static schema definitions for F14.5.1 CaptureEvent and CaptureArtifact. This file is a review contract only and introduces no runtime behavior.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/CaptureEvent"
+    },
+    {
+      "$ref": "#/$defs/CaptureArtifact"
+    }
+  ],
+  "$defs": {
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "IsoUtc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+    },
+    "NonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "UuidOrUlid": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "PlatformId": {
+      "type": "string",
+      "enum": [
+        "desktop-studio",
+        "chrome-studio",
+        "native-extension",
+        "mobile"
+      ]
+    },
+    "SurfaceKind": {
+      "type": "string",
+      "enum": [
+        "desktop-tauri",
+        "browser-studio",
+        "browser-runtime",
+        "mobile"
+      ]
+    },
+    "CaptureProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platformId",
+        "surfaceKind",
+        "producerPeerIdHash",
+        "installIdHash",
+        "sequence"
+      ],
+      "properties": {
+        "platformId": {
+          "$ref": "#/$defs/PlatformId"
+        },
+        "surfaceKind": {
+          "$ref": "#/$defs/SurfaceKind"
+        },
+        "producerPeerIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "installIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "sequence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NonNegativeInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "CaptureOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownerWorkspaceIdHash"
+      ],
+      "properties": {
+        "ownerWorkspaceIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "ownerAccountIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "ownerPeerIdHash": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CaptureSourceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceKind",
+        "origin",
+        "sourceSubjectHash"
+      ],
+      "properties": {
+        "sourceKind": {
+          "type": "string",
+          "enum": [
+            "chatgpt-live",
+            "claude-live",
+            "chatgpt-import",
+            "manual-redacted",
+            "native-mirror",
+            "studio-bundle-import"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "live",
+            "import",
+            "manual",
+            "mirror"
+          ]
+        },
+        "observationSource": {
+          "type": "string",
+          "enum": [
+            "page-localStorage",
+            "native-mirror",
+            "extension-message",
+            "desktop-import",
+            "mobile-import",
+            "manual-entry"
+          ]
+        },
+        "sourceSubjectHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "captureSessionIdHash": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CaptureSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subjectType",
+        "artifactIdHash",
+        "artifactRevisionHash"
+      ],
+      "properties": {
+        "subjectType": {
+          "const": "capture.artifact"
+        },
+        "artifactIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "artifactRevisionHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "chatIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "snapshotIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "turnIdHash": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CaptureArtifactIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceSubjectHash"
+      ],
+      "properties": {
+        "sourceSubjectHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "chatIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "snapshotIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "turnIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "sourceItemIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "captureSessionIdHash": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CaptureArtifactSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "redactionClass",
+        "evidenceDigest"
+      ],
+      "properties": {
+        "redactionClass": {
+          "type": "string",
+          "enum": [
+            "redacted",
+            "metadata-only"
+          ]
+        },
+        "evidenceDigest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "lengthBucket": {
+          "type": "string",
+          "enum": [
+            "empty",
+            "short",
+            "medium",
+            "long",
+            "very-long",
+            "unknown"
+          ]
+        },
+        "itemCount": {
+          "$ref": "#/$defs/NonNegativeInteger"
+        },
+        "turnCount": {
+          "$ref": "#/$defs/NonNegativeInteger"
+        },
+        "attachmentCount": {
+          "$ref": "#/$defs/NonNegativeInteger"
+        },
+        "statusBucket": {
+          "type": "string",
+          "enum": [
+            "new",
+            "reviewed",
+            "archived",
+            "converted",
+            "dismissed",
+            "other"
+          ]
+        },
+        "kindBucket": {
+          "type": "string",
+          "enum": [
+            "captureSnippetKind",
+            "attachmentMetadataKind",
+            "aggregateDigestKind",
+            "otherKind"
+          ]
+        }
+      }
+    },
+    "CaptureReplayKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lineageId",
+        "dedupeKey",
+        "payloadHash",
+        "eventDigest",
+        "sourceWatermark"
+      ],
+      "properties": {
+        "lineageId": {
+          "$ref": "#/$defs/UuidOrUlid"
+        },
+        "dedupeKey": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "payloadHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "eventDigest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "sourceWatermark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "CaptureAuditKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auditKey",
+        "custodyChainHash",
+        "validationResultHash",
+        "denylistScanHash"
+      ],
+      "properties": {
+        "auditKey": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "custodyChainHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "validationResultHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "denylistScanHash": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CaptureValidationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "policyVersion",
+        "denylistVersion",
+        "blockers",
+        "warnings"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "partial",
+            "blocked",
+            "quarantined"
+          ]
+        },
+        "policyVersion": {
+          "const": "f14.5.1"
+        },
+        "denylistVersion": {
+          "const": "capture-denylist-v1"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ValidationCode"
+          },
+          "uniqueItems": true
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ValidationCode"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "ValidationCode": {
+      "type": "string",
+      "enum": [
+        "capture-schema-unknown-field",
+        "capture-schema-missing-required-field",
+        "capture-schema-invalid-enum",
+        "capture-schema-invalid-hash",
+        "capture-schema-invalid-timestamp",
+        "capture-schema-invalid-counter",
+        "capture-denylist-key",
+        "capture-denylist-raw-identity",
+        "capture-denylist-raw-content",
+        "capture-owner-mismatch",
+        "capture-replay-duplicate"
+      ]
+    },
+    "CaptureEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schemaVersion",
+        "eventId",
+        "eventKind",
+        "eventAtIso",
+        "producer",
+        "owner",
+        "source",
+        "subject",
+        "replay",
+        "audit",
+        "validation"
+      ],
+      "properties": {
+        "schema": {
+          "const": "h2o.capture.event.v1"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "eventId": {
+          "$ref": "#/$defs/UuidOrUlid"
+        },
+        "eventKind": {
+          "type": "string",
+          "enum": [
+            "observed",
+            "normalized",
+            "artifact-linked",
+            "validation-blocked",
+            "quarantined",
+            "superseded"
+          ]
+        },
+        "eventAtIso": {
+          "$ref": "#/$defs/IsoUtc"
+        },
+        "producer": {
+          "$ref": "#/$defs/CaptureProducer"
+        },
+        "owner": {
+          "$ref": "#/$defs/CaptureOwner"
+        },
+        "source": {
+          "$ref": "#/$defs/CaptureSourceSummary"
+        },
+        "subject": {
+          "$ref": "#/$defs/CaptureSubject"
+        },
+        "replay": {
+          "$ref": "#/$defs/CaptureReplayKeys"
+        },
+        "audit": {
+          "$ref": "#/$defs/CaptureAuditKeys"
+        },
+        "validation": {
+          "$ref": "#/$defs/CaptureValidationSummary"
+        }
+      }
+    },
+    "CaptureArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schemaVersion",
+        "artifactIdHash",
+        "artifactRevisionHash",
+        "artifactKind",
+        "artifactState",
+        "capturedAtIso",
+        "updatedAtIso",
+        "owner",
+        "source",
+        "identity",
+        "summary",
+        "replay",
+        "audit",
+        "validation"
+      ],
+      "properties": {
+        "schema": {
+          "const": "h2o.capture.artifact.v1"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "artifactIdHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "artifactRevisionHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "artifactKind": {
+          "type": "string",
+          "enum": [
+            "chat-snapshot-digest",
+            "turn-selection-digest",
+            "attachment-metadata-digest",
+            "capture-store-digest",
+            "manual-redacted-evidence"
+          ]
+        },
+        "artifactState": {
+          "type": "string",
+          "enum": [
+            "observed",
+            "captured",
+            "blocked",
+            "quarantined",
+            "superseded"
+          ]
+        },
+        "capturedAtIso": {
+          "$ref": "#/$defs/IsoUtc"
+        },
+        "updatedAtIso": {
+          "$ref": "#/$defs/IsoUtc"
+        },
+        "owner": {
+          "$ref": "#/$defs/CaptureOwner"
+        },
+        "source": {
+          "$ref": "#/$defs/CaptureSourceSummary"
+        },
+        "identity": {
+          "$ref": "#/$defs/CaptureArtifactIdentity"
+        },
+        "summary": {
+          "$ref": "#/$defs/CaptureArtifactSummary"
+        },
+        "replay": {
+          "$ref": "#/$defs/CaptureReplayKeys"
+        },
+        "audit": {
+          "$ref": "#/$defs/CaptureAuditKeys"
+        },
+        "validation": {
+          "$ref": "#/$defs/CaptureValidationSummary"
+        }
+      }
+    }
+  }
+}
