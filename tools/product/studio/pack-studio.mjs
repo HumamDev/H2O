@@ -212,6 +212,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // mirror/watermark/consumed-op writes. Raw chatId / title /
   // accountId never appear in any output field.
   "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
+  // F14.3.5: Desktop/Tauri chat rename proposal candidate generator.
+  // Single-purpose: rename only. Reuses F14.3.3 preflight + F14.2.x
+  // kernel helpers and appends only a generated proposal candidate row.
+  // Emits titleHash only; no raw title/chatId/accountId, publication,
+  // relay/outbox, apply, Native interaction, watermark, or consumed-op
+  // writes.
+  "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -712,6 +719,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
   "sync/chat/chat-archive-proposal-candidate-generator.tauri.js",
+  "sync/chat/chat-rename-proposal-candidate-generator.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
