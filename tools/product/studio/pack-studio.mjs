@@ -509,6 +509,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // phases. No relay dispatch, Native execution, F5 execution, apply, timer,
   // or polling behavior.
   "sync/execute/execute-settlement-writer.tauri.js",
+  // F15.8.c: Desktop/Tauri library execute settlement writer extension.
+  // Routes library.catalog/library.binding execute envelopes to consumed-op,
+  // watermark, F15.7 bookkeeping mirror, optional publication terminal, and
+  // optional journal marker. No Native call, F5 closure, relay/outbox, cache
+  // refresh, SQLite trigger, store shim, or Labels/Categories/Tags UI work.
+  "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   // F14.6.9: Desktop/Tauri execute resume-on-boot coordinator. Re-reads
   // interrupted Execute journal rows and invokes existing preflight, broker,
   // or settlement primitives according to phase. No new adapter, dispatch
@@ -1156,6 +1162,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-native-broker.tauri.js",
   "sync/execute/execute-f5-broker.tauri.js",
   "sync/execute/execute-settlement-writer.tauri.js",
+  "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/execute/adapters/chat-execute-adapter.tauri.js",
   "sync/execute/execute-capture-materialization.tauri.js",

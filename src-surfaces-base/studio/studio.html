@@ -1021,6 +1021,14 @@
        journal phases. No relay dispatch, Native execution, F5 execution,
        apply, timer, or polling behavior. -->
   <script src="./sync/execute/execute-settlement-writer.tauri.js"></script>
+  <!-- F15.8.c: Desktop/Tauri library execute settlement writer extension.
+       Routes library.catalog/library.binding execute envelopes to a domain
+       settlement chain: consumed-op, watermark, F15.7 bookkeeping mirror,
+       optional publication terminal, optional journal marker. No Native call,
+       F5 closure, relay/outbox, cache refresh, SQLite trigger, store shim, or
+       Labels/Categories/Tags UI work. SQLite writer identity is stubbed until
+       F15.8.f. -->
+  <script src="./sync/execute/execute-settlement-writer-library-extension.tauri.js"></script>
   <!-- F14.6.9: Desktop/Tauri execute resume-on-boot coordinator.
        Re-reads interrupted Execute journal rows and invokes existing
        preflight, broker, or settlement primitives according to phase. No new
