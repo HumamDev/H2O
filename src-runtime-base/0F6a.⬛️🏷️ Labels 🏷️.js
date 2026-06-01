@@ -52,6 +52,108 @@
   const D = document;
   const H2O = (W.H2O = W.H2O || {});
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * Plumbing only. Reads H2O.flags with default true (no behavior
+   * change). The label CRUD API (renameLabel, deleteLabel, createLabel)
+   * is NEVER gated — it remains the R4.5.3 MV3 fallback. Only the
+   * sidebar UI is a future-slice gate candidate.
+   * See docs/systems/library/r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F6a'] = function () {
+        return {
+          moduleId: '0F6a',
+          phase: 'R4.6.0-plumbing',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: ['LabelsSidebar'],
+          unconditionalSurfaces: [
+            'renameLabel',   /* R4.5.3 MV3 fallback — never gated */
+            'deleteLabel',   /* R4.5.3 MV3 fallback — never gated */
+            'createLabel',   /* R4.5.3 MV3 fallback — never gated */
+          ],
+          /* 0F6a tags its labels SECTION root with the data-cgxui value
+           * `lbsc-root` (constant UI_LABELS_ROOT at line 269, set on
+           * the section element at line 1789). The R4.6.2 gate uses
+           * this real selector. The per-turn `lbsc-chip-color` chip
+           * (turn-level label color UI) carries a DIFFERENT cgxui
+           * value and stays visible. The CRUD APIs renameLabel /
+           * deleteLabel / createLabel are NEVER affected — Studio's
+           * R4.5.3 MV3 fallback continues to call them regardless of
+           * flag state. */
+          gateImplementation: 'css-known-selector',
+          gateSelector: '[data-cgxui="lbsc-root"]',
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
+  /* ── R4.6.2 — CSS gate (real selector for labels section root) ──────
+   * Hides ONLY the labels sidebar SECTION root (data-cgxui="lbsc-root").
+   * The per-turn chip-color UI (data-cgxui="lbsc-chip-color") is in a
+   * DIFFERENT DOM subtree and is unaffected — turn-level label chips
+   * continue to render on chat titles. The CRUD APIs (renameLabel,
+   * deleteLabel, createLabel) live on H2O.Labels and are never gated. */
+  function installR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const STYLE_ID = 'h2o-r46-org-gate-0F6a';
+      if (D.getElementById(STYLE_ID)) return;
+      const style = D.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent =
+        'body[data-h2o-r46-hide-org="1"] [data-cgxui="lbsc-root"]'
+      + '{display:none !important;}';
+      (D.head || D.documentElement).appendChild(style);
+    } catch (_) { /* swallow */ }
+  }
+  (function bootR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      if (D.readyState !== 'loading') installR46OrgCssGate();
+      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
+    } catch (_) { /* swallow */ }
+  })();
+
   /*
    * v1.0.2 boot hardening:
    * Do not exit forever when 0F1a Library Core has not registered yet.

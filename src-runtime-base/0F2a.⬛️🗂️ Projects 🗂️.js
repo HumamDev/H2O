@@ -42,6 +42,102 @@
   const core = H2O.LibraryCore;
   if (!core) return;
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * Plumbing only. Reads H2O.flags with default true (no behavior
+   * change). Projects fetch/cache/reconcile/interception is NEVER
+   * gated — only the sidebar UI is. See r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F2a'] = function () {
+        return {
+          moduleId: '0F2a',
+          phase: 'R4.6.0-plumbing',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: ['ProjectsSidebar'],
+          unconditionalSurfaces: ['fetchInterception', 'projectsCache', 'projectsReconcile'],
+          /* 0F2a injects H2O-tagged project rows into ChatGPT's own
+           * chat-history nav. The H2O-added rows carry the
+           * `.ho-project-row` class (constant UI_PROJECT_TITLE_ROW_CLASS
+           * at line 168). R4.6.2 replaces the R4.6.1 placeholder with
+           * this real class selector. Hiding `.ho-project-row`
+           * removes ONLY the H2O-added rows from view; ChatGPT's own
+           * projects nav (a/href*="/g/" links) stays untouched, and
+           * fetchInterception / projectsCache / projectsReconcile
+           * continue to fire unconditionally. */
+          gateImplementation: 'css-known-selector',
+          gateSelector: '.ho-project-row',
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
+  /* ── R4.6.2 — CSS gate (real selector for H2O-added project rows) ───
+   * Hides ONLY the H2O-added `.ho-project-row` elements that 0F2a
+   * injects into ChatGPT's chat-history nav. ChatGPT's own projects
+   * nav DOM is NOT affected (different selectors). fetchInterception
+   * / projectsCache / projectsReconcile run unconditionally — Native
+   * projects DATA flow stays alive even when the rows are hidden. */
+  function installR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const STYLE_ID = 'h2o-r46-org-gate-0F2a';
+      if (D.getElementById(STYLE_ID)) return;
+      const style = D.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent =
+        'body[data-h2o-r46-hide-org="1"] .ho-project-row'
+      + '{display:none !important;}';
+      (D.head || D.documentElement).appendChild(style);
+    } catch (_) { /* swallow */ }
+  }
+  (function bootR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      if (D.readyState !== 'loading') installR46OrgCssGate();
+      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
+    } catch (_) { /* swallow */ }
+  })();
+
   const MOD = (H2O.Projects = H2O.Projects || {});
   MOD.meta = MOD.meta || {
     owner: '0F2a.projects',
@@ -2212,6 +2308,17 @@
   }
 
   function OBS_hookProjectsNativeFetchCaptureOnce() {
+    let captureEnabled = false;
+    try {
+      captureEnabled = W.localStorage?.getItem('h2oProjectsNativeFetchCaptureOn') === '1'
+        && W.localStorage?.getItem('h2oProjectsNativeFetchCaptureOff') !== '1';
+    } catch {
+      captureEnabled = false;
+    }
+    if (!captureEnabled) {
+      try { log?.('projectsNativeFetchCapture:disabled-by-default'); } catch {}
+      return;
+    }
     if (STATE.projectsNativeFetchCaptureHooked) return;
     if (typeof W.fetch !== 'function') return;
     if (W.fetch.__h2oProjectsNativeFetchCapture) {

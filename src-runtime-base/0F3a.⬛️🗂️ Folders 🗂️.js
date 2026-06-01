@@ -19,6 +19,115 @@
   const W = window;
   const D = document;
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * 0F3a is special: it owns BOTH the folders sidebar list UI (gated
+   * candidate) AND the Add-to-Library / Save-to-Folder chat-row menu
+   * injection (CAPTURE — unconditional) AND STORE_validateFolderCreate
+   * (Native folder-create code path that R4.5.1.a's S0Z1g MV3 fallback
+   * depends on — unconditional). R4.6.0 installs the flag-reader
+   * helpers but does NOT gate any internal function here. Future
+   * slices may gate the folders-sidebar-list render path; the capture
+   * menu injection + STORE_validateFolderCreate stay unconditional
+   * forever. See docs/systems/library/r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F3a'] = function () {
+        return {
+          moduleId: '0F3a',
+          phase: 'R4.6.0-plumbing',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: ['FoldersSidebarList'],
+          unconditionalSurfaces: [
+            'ENGINE_injectAddToLibrary',    /* CAPTURE — never gated */
+            'ENGINE_injectAddToFolder',     /* CAPTURE — never gated */
+            'STORE_validateFolderCreate',   /* MV3 fallback — never gated */
+          ],
+          /* 0F3a folder rows in the sidebar carry the data-cgxui values
+           * `flsc-folder-row` (constants UI_FSECTION_FOLDER_ROW at line
+           * 214) and `flsc-folder-more` (UI_FSECTION_FOLDER_MORE at
+           * line 216). The R4.6.2 gate targets these directly. CRUCIAL:
+           * the selector does NOT match `flsc-add-to-folder` or
+           * `flsc-add-to-library` (the capture menu items) — those use
+           * distinct cgxui values and remain visible regardless of
+           * flag state. STORE_validateFolderCreate (the Native folder-
+           * create code path that S0Z1g's MV3 fallback depends on)
+           * stays callable. */
+          gateImplementation: 'css-known-selector',
+          gateSelector: '[data-cgxui="flsc-folder-row"], [data-cgxui="flsc-folder-more"]',
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
+  /* ── R4.6.2 — CSS gate (real selectors for folder rows + more btn) ──
+   * Hides folder rows and the per-folder "more" button only. The
+   * capture menu items (flsc-add-to-folder, flsc-add-to-library)
+   * carry DIFFERENT cgxui values and are NOT matched by this rule —
+   * Add-to-Library and Save-to-Folder continue to appear in the chat-
+   * row "..." menu regardless of flag state. STORE_validateFolderCreate
+   * is callable via S0Z1g's MV3 fallback regardless of flag state. */
+  function installR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const STYLE_ID = 'h2o-r46-org-gate-0F3a';
+      if (D.getElementById(STYLE_ID)) return;
+      const style = D.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent =
+        'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-folder-row"],'
+      + 'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-folder-more"]'
+      + '{display:none !important;}';
+      (D.head || D.documentElement).appendChild(style);
+    } catch (_) { /* swallow */ }
+  }
+  (function bootR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      if (D.readyState !== 'loading') installR46OrgCssGate();
+      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
+    } catch (_) { /* swallow */ }
+  })();
+
   // ✅ IDENTITY (chosen deterministically for this file; do NOT change unless you migrate UI/storage contracts)
   // Title basis: "Folders Section" → TOK=FS, CID=FSECTION, SkID=flsc
   const TOK  = 'FS';             // "Folders Section"
@@ -6405,8 +6514,10 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       () => W.removeEventListener('hashchange', onHashChange, true)
     );
 
-    const originalPushState = W.history?.pushState;
-    const originalReplaceState = W.history?.replaceState;
+    let allowHistoryPatch = false;
+    try { allowHistoryPatch = W.localStorage?.getItem?.('h2oAllowHistoryPatch') === '1'; } catch {}
+    const originalPushState = allowHistoryPatch ? W.history?.pushState : null;
+    const originalReplaceState = allowHistoryPatch ? W.history?.replaceState : null;
     if (typeof originalPushState === 'function' && typeof originalReplaceState === 'function') {
       const wrappedPushState = function (...args) {
         const result = originalPushState.apply(this, args);

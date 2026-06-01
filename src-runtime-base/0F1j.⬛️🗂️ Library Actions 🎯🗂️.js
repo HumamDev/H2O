@@ -21,6 +21,69 @@
   const H2O = (W.H2O = W.H2O || {});
   H2O.Library = H2O.Library || {};
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * 0F1j is the CAPTURE business-logic module (addToLibrary,
+   * saveToFolder, openLinkedChat). Its functions are NEVER gated by
+   * any deprecation flag. This block exposes a diagnose entry so the
+   * R4.6 validator can confirm the module participates in the
+   * deprecation namespace WITH gatedSurfaces:[] — i.e., nothing here
+   * is a deprecation candidate. See r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F1j'] = function () {
+        return {
+          moduleId: '0F1j',
+          phase: 'R4.6.0-plumbing',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: [],   /* CAPTURE — never a deprecation candidate */
+          unconditionalSurfaces: [
+            'addToLibrary',
+            'saveToFolder',
+            'openLinkedChat',
+          ],
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
   const VERSION = '1.0.0';
   const SURFACE = 'native';
   const TAG = '[H2O.LibraryActions]';

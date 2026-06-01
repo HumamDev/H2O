@@ -41,6 +41,103 @@
   const core = H2O.LibraryCore;
   if (!core) return;
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * Plumbing only. Reads H2O.flags with default true (no behavior
+   * change). The category CRUD API (renameCategory, deleteCategory,
+   * createCategory) is NEVER gated — it remains the R4.5.2 MV3
+   * fallback. Only the sidebar UI is a future-slice gate candidate.
+   * See docs/systems/library/r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F4a'] = function () {
+        return {
+          moduleId: '0F4a',
+          phase: 'R4.6.0-plumbing',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: ['CategoriesSidebar'],
+          unconditionalSurfaces: [
+            'renameCategory',   /* R4.5.2 MV3 fallback — never gated */
+            'deleteCategory',   /* R4.5.2 MV3 fallback — never gated */
+            'createCategory',   /* R4.5.2 MV3 fallback — never gated */
+          ],
+          gateImplementation: 'css-known-selector',
+          gateSelector: '[data-cgxui="flsc-categories-root"]',
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
+  /* ── R4.6.1 — CSS gate for the categories sidebar section root ──────
+   * Hides the categories sidebar SECTION only when the operator opts
+   * out via H2O.flags.set('library.nativeOrganizationUi', false).
+   * The selector targets the canonical section-root data-cgxui value
+   * `flsc-categories-root` (used by this module to identify its
+   * sidebar root). The CRUD APIs (renameCategory, deleteCategory,
+   * createCategory) live on H2O.archiveBoot and are NEVER affected by
+   * this gate — Studio's R4.5.2 MV3 fallback continues to call them
+   * regardless of flag state. Default-ON state = body attribute
+   * ABSENT = CSS rule does not fire = pre-R4.6 behavior. */
+  function installR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const STYLE_ID = 'h2o-r46-org-gate-0F4a';
+      if (D.getElementById(STYLE_ID)) return;
+      const style = D.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent =
+        'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-categories-root"]'
+      + '{display:none !important;}';
+      (D.head || D.documentElement).appendChild(style);
+    } catch (_) { /* swallow */ }
+  }
+  (function bootR46OrgCssGate() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      if (D.readyState !== 'loading') installR46OrgCssGate();
+      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
+    } catch (_) { /* swallow */ }
+  })();
+
   const MOD = (H2O.Categories = H2O.Categories || {});
   MOD.meta = MOD.meta || {
     owner: '0F4a.categories',

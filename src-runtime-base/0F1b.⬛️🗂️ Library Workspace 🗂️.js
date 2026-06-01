@@ -44,6 +44,188 @@
   const D = document;
   const H2O = (W.H2O = W.H2O || {});
 
+  /* ── R4.6.0 — Native Library UI deprecation flag plumbing ───────────
+   * R4.5 made Desktop Studio the canonical Library organization surface.
+   * R4.6 begins gradual deprecation of the Native ChatGPT Library UI.
+   * R4.6.0 (this slice) is PLUMBING ONLY — flags default to values that
+   * preserve pre-R4.6 behavior. No user-visible change yet.
+   *
+   * INVARIANT: capture / save / link / tag-extraction paths and the MV3
+   * fallback APIs are NEVER gated by these flags. See docs/systems/
+   * library/r4.6-native-deprecation-plan.md.
+   */
+  const H2O_R46_FLAG_WORKSPACE_UI    = 'library.nativeWorkspaceUi';
+  const H2O_R46_FLAG_ORGANIZATION_UI = 'library.nativeOrganizationUi';
+  const H2O_R46_FLAG_CAPTURE_ONLY    = 'library.nativeCaptureOnlyMode';
+  function isNativeWorkspaceUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_WORKSPACE_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeOrganizationUiEnabled() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return flags.get(H2O_R46_FLAG_ORGANIZATION_UI, true) !== false;
+      }
+    } catch (_) { /* swallow */ }
+    return true;
+  }
+  function isNativeCaptureOnlyMode() {
+    try {
+      const flags = W.H2O && W.H2O.flags;
+      if (flags && typeof flags.get === 'function') {
+        return !!flags.get(H2O_R46_FLAG_CAPTURE_ONLY, false);
+      }
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+  (function registerR46Diagnose() {
+    try {
+      W.H2O = W.H2O || {};
+      W.H2O.deprecation = W.H2O.deprecation || {};
+      W.H2O.deprecation.native = W.H2O.deprecation.native || {};
+      W.H2O.deprecation.native['0F1b'] = function () {
+        return {
+          moduleId: '0F1b',
+          phase: 'R4.6.1-banner+gates',
+          flags: {
+            'library.nativeWorkspaceUi':     isNativeWorkspaceUiEnabled(),
+            'library.nativeOrganizationUi':  isNativeOrganizationUiEnabled(),
+            'library.nativeCaptureOnlyMode': isNativeCaptureOnlyMode(),
+          },
+          gatedSurfaces: ['LibraryButton', 'WorkspacePage'],
+          unconditionalSurfaces: [],
+        };
+      };
+    } catch (_) { /* swallow */ }
+  })();
+
+  /* ── R4.6.1 — Body-attribute mechanism for org-section CSS gates ────
+   * 0F1b is the central coordinator: it sets/clears body data
+   * attributes based on flag state. Each sibling Native module
+   * (0F2a/0F3a/0F4a/0F6a) installs its own scoped <style> rule that
+   * uses these body attributes as triggers. Default-ON state =
+   * attributes ABSENT = no CSS rule fires = pre-R4.6 behavior. */
+  function applyR46BodyAttrs() {
+    try {
+      if (!D || !D.body) return;
+      const hideOrg = !isNativeOrganizationUiEnabled();
+      const hideWorkspace = !isNativeWorkspaceUiEnabled();
+      if (hideOrg)       D.body.setAttribute('data-h2o-r46-hide-org', '1');
+      else               D.body.removeAttribute('data-h2o-r46-hide-org');
+      if (hideWorkspace) D.body.setAttribute('data-h2o-r46-hide-workspace', '1');
+      else               D.body.removeAttribute('data-h2o-r46-hide-workspace');
+    } catch (_) { /* swallow */ }
+  }
+  /* CSS gate for Library button + workspace page. Uses the canonical
+   * SkID-scoped data-cgxui values (UI_LIBRARY_TOP_BUTTON / RAIL_BUTTON /
+   * PAGE). Each value is constructed as `${SkID}-<role>` at line 268+
+   * inside the boot scope (SkID = 'lwsc' per line 250), so the
+   * attribute-suffix selectors `[data-cgxui$="lwsc-top-library-button"]`
+   * etc. match exactly the workspace's own injected DOM. */
+  function installR46WorkspaceCssGate() {
+    try {
+      if (!D) return;
+      if (D.getElementById('h2o-r46-workspace-css')) return;
+      const style = D.createElement('style');
+      style.id = 'h2o-r46-workspace-css';
+      style.textContent =
+        'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-top-library-button"],'
+      + 'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-rail-library-button"],'
+      + 'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-page"]'
+      + '{display:none !important;}';
+      (D.head || D.documentElement).appendChild(style);
+    } catch (_) { /* swallow */ }
+  }
+  /* Start the body-attribute poll early. The interval is short enough
+   * that DevTools flag flips feel responsive (~1 s) and cheap enough
+   * to leave running indefinitely (single attribute compare + maybe
+   * one set/remove call per tick). */
+  function startR46PollLoop() {
+    try {
+      applyR46BodyAttrs();
+      installR46WorkspaceCssGate();
+      W.setInterval(function () { applyR46BodyAttrs(); }, 1000);
+    } catch (_) { /* swallow */ }
+  }
+  if (D && D.readyState !== 'loading') startR46PollLoop();
+  else if (D && D.addEventListener)     D.addEventListener('DOMContentLoaded', startR46PollLoop, { once: true });
+
+  /* ── R4.6.1 — Deprecation banner ────────────────────────────────────
+   * Rendered IN PLACE OF the workspace page when
+   * library.nativeWorkspaceUi === false AND the user has navigated to
+   * /library. Two affordances:
+   *   - "Open Desktop Studio"  → broadcast a request that the Studio
+   *     Launcher extension responds to (best-effort; if the launcher
+   *     isn't installed, the click is a no-op + console warning).
+   *   - "Restore Native Library UI (temporary)" → set the flag back
+   *     to true and reload, giving the operator immediate escape.
+   * The banner uses inert visual styling so it doesn't fight the
+   * native dark theme. */
+  function buildR46DeprecationBanner() {
+    try {
+      if (!D) return null;
+      const root = D.createElement('div');
+      root.setAttribute('data-h2o-r46-banner', '1');
+      root.style.cssText = 'max-width:520px;margin:48px auto;padding:24px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(255,255,255,.04);color:rgba(255,255,255,.92);font:500 14px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+      const h = D.createElement('h2');
+      h.textContent = 'Library has moved to Desktop Studio';
+      h.style.cssText = 'margin:0 0 12px 0;font:700 18px/1.3 ui-sans-serif,system-ui;color:rgba(255,255,255,1);';
+      const p = D.createElement('p');
+      p.textContent = 'Folders, categories, labels, and tag management now live in Desktop Studio. The Native Library workspace here is hidden under a feature flag and will be retired in a future release.';
+      p.style.cssText = 'margin:0 0 16px 0;color:rgba(255,255,255,.78);';
+      const row = D.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+      const openBtn = D.createElement('button');
+      openBtn.type = 'button';
+      openBtn.setAttribute('data-h2o-r46-banner-action', 'open-studio');
+      openBtn.textContent = 'Open Desktop Studio';
+      openBtn.style.cssText = 'padding:8px 14px;border:1px solid rgba(125,211,252,.45);border-radius:8px;background:rgba(59,130,246,.18);color:rgba(191,219,254,.95);font:500 13px/1 ui-sans-serif,system-ui;cursor:pointer;';
+      openBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        try {
+          /* Best-effort: the Studio Launcher extension listens for this
+           * message; if it's not installed, this is a no-op. */
+          if (W.chrome && W.chrome.runtime && typeof W.chrome.runtime.sendMessage === 'function') {
+            W.chrome.runtime.sendMessage({ type: 'h2o.studio.open', source: 'r46-banner' });
+          } else {
+            try { console.warn('[H2O.R4.6.1] Studio Launcher unavailable — open Studio Desktop manually.'); } catch (_) {}
+          }
+        } catch (e) {
+          try { console.warn('[H2O.R4.6.1] open-studio click failed', e); } catch (_) {}
+        }
+      });
+      const restoreBtn = D.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.setAttribute('data-h2o-r46-banner-action', 'restore-native');
+      restoreBtn.textContent = 'Restore Native Library UI (temporary)';
+      restoreBtn.style.cssText = 'padding:8px 14px;border:1px solid rgba(255,255,255,.18);border-radius:8px;background:rgba(255,255,255,.04);color:rgba(255,255,255,.85);font:500 13px/1 ui-sans-serif,system-ui;cursor:pointer;';
+      restoreBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        try {
+          if (W.H2O && W.H2O.flags && typeof W.H2O.flags.set === 'function') {
+            W.H2O.flags.set('library.nativeWorkspaceUi', true);
+            W.H2O.flags.set('library.nativeOrganizationUi', true);
+            try { W.location.reload(); } catch (_) { /* swallow */ }
+          }
+        } catch (e) {
+          try { console.warn('[H2O.R4.6.1] restore-native click failed', e); } catch (_) {}
+        }
+      });
+      row.appendChild(openBtn);
+      row.appendChild(restoreBtn);
+      root.appendChild(h);
+      root.appendChild(p);
+      root.appendChild(row);
+      return root;
+    } catch (_) { return null; }
+  }
+
   const BOOT_LOCK = '__h2oLibraryWorkspaceBooted_v1_0_0';
   const BOOT_TIMER_SET = '__h2oLibraryWorkspaceBootTimers_v1_0_0';
   const BOOT_MAX_ATTEMPTS = 180;
@@ -3099,6 +3281,32 @@ ${PAGE} [${ATTR_CGXUI_STATE}="quick-action"][data-primary="true"]{ background:rg
     }
 
     function mountPage(page) {
+      /* R4.6.0 — gate Native workspace mount when the operator opts out
+       * of the Native Library UI. Default-true preserves pre-R4.6
+       * behavior; flipping
+       *   H2O.flags.set('library.nativeWorkspaceUi', false)
+       * causes the workspace page to skip mounting entirely. Capture
+       * / extraction paths are unaffected — they live outside this
+       * function.
+       *
+       * R4.6.1 — when the workspace mount is gated, replace the page
+       * contents with the deprecation banner instead of leaving the
+       * shell empty. The banner offers an "Open Desktop Studio" CTA
+       * and an "Restore Native Library UI" escape hatch. */
+      if (!isNativeWorkspaceUiEnabled()) {
+        try {
+          if (page && page.innerHTML !== undefined) {
+            const banner = buildR46DeprecationBanner();
+            if (banner) {
+              page.innerHTML = '';
+              page.appendChild(banner);
+              const svc = getPageHostService();
+              try { if (svc?.UI_mountInShellPage?.(libraryEnv(), page)) return true; } catch (_) {}
+            }
+          }
+        } catch (_) { /* swallow — banner is best-effort */ }
+        return false;
+      }
       const svc = getPageHostService();
       try {
         if (svc?.UI_mountInShellPage?.(libraryEnv(), page)) return true;
