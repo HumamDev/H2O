@@ -515,6 +515,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // optional journal marker. No Native call, F5 closure, relay/outbox, cache
   // refresh, SQLite trigger, store shim, or Labels/Categories/Tags UI work.
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
+  // F15.8.d: Desktop/Tauri chats.category_id cache refresh bridge.
+  // Settlement-callable bridge for successful library.binding chat-category
+  // applies. Resolves hashed chat/category subjects to local row ids and
+  // performs exactly one materialized cache UPDATE through the supplied SQLite
+  // context. No binding/catalog mutation, publication, relay/outbox,
+  // Native/F5 call, apply, watermark write, consumed-op write, trigger, store
+  // shim, bulk migration, or UI.
+  "sync/execute/library-category-cache-refresh.tauri.js",
   // F14.6.9: Desktop/Tauri execute resume-on-boot coordinator. Re-reads
   // interrupted Execute journal rows and invokes existing preflight, broker,
   // or settlement primitives according to phase. No new adapter, dispatch
@@ -1163,6 +1171,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-f5-broker.tauri.js",
   "sync/execute/execute-settlement-writer.tauri.js",
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
+  "sync/execute/library-category-cache-refresh.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/execute/adapters/chat-execute-adapter.tauri.js",
   "sync/execute/execute-capture-materialization.tauri.js",

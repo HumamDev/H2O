@@ -1029,6 +1029,15 @@
        Labels/Categories/Tags UI work. SQLite writer identity is stubbed until
        F15.8.f. -->
   <script src="./sync/execute/execute-settlement-writer-library-extension.tauri.js"></script>
+  <!-- F15.8.d: Desktop/Tauri chats.category_id cache refresh bridge.
+       Settlement-callable bridge for successful library.binding
+       chat-category applies. Resolves hashed chat/category subjects to local
+       row ids and performs exactly one materialized cache UPDATE through the
+       supplied SQLite context. No binding/catalog mutation, publication,
+       relay/outbox, Native/F5 call, apply, watermark write, consumed-op
+       write, trigger, store shim, bulk migration, or UI. SQLite writer
+       identity remains stubbed until F15.8.f. -->
+  <script src="./sync/execute/library-category-cache-refresh.tauri.js"></script>
   <!-- F14.6.9: Desktop/Tauri execute resume-on-boot coordinator.
        Re-reads interrupted Execute journal rows and invokes existing
        preflight, broker, or settlement primitives according to phase. No new
