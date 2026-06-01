@@ -269,6 +269,25 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // watermark advance, no consumed-op write, no F5 queue ingest, no
   // Labels/Categories/Tags mutation, no chats.category_id cache.
   "sync/library/library-catalog-bookkeeping.tauri.js",
+  // F15.7.b: Desktop/Tauri library binding bookkeeping. Append-only
+  // Studio-local audit ledger for F15.6.b binding receipts (bind /
+  // unbind across the four binding kinds). Idempotent by rowId.
+  // Native-only — per F15.0.0 §6.1 the binding lane has no F5 path;
+  // any f5* footprint on the input receipt is rejected with
+  // library-binding-bookkeeping-lane-invariant-violation. For
+  // chat-category bindings, row.chatsCategoryIdRefreshPending=true
+  // declaratively mirrors the receipt's chats-category-id-refresh-
+  // pending warning so the materialized cache dependency is explicit
+  // in the audit trail; bookkeeping itself never writes the
+  // chats.category_id cache (settlement-writer's exclusive job per
+  // F15.0.2 §2.2). Eight standard sideEffectSummary flags stay false;
+  // ninth lane-scoped flag bookkeepingLedgerWritten flips true only on
+  // a new append. Stores at chrome.storage.local key
+  // h2o:sync:library-binding-bookkeeping:v1. No Native execution, no
+  // apply, no publication, no relay/outbox, no watermark advance, no
+  // consumed-op write, no F5 path, no Labels/Categories/Tags mutation,
+  // no chats.category_id cache write.
+  "sync/library/library-binding-bookkeeping.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -1066,6 +1085,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-catalog-apply-event-receipt.tauri.js",
   "sync/library/library-binding-apply-event-receipt.tauri.js",
   "sync/library/library-catalog-bookkeeping.tauri.js",
+  "sync/library/library-binding-bookkeeping.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
