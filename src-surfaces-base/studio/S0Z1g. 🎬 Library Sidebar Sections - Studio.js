@@ -2183,6 +2183,29 @@
     const current = String(item.name || '').trim();
     const next = String(W.prompt?.(`Rename ${kind === 'categories' ? 'category' : kind === 'labels' ? 'label' : 'item'}`, current) || '').trim();
     if (!next || next === current) return false;
+    // R4.5.2 — Desktop routes category rename through OrganizationModals →
+    // H2O.Studio.actions.categories.rename. `next` is already collected
+    // above, so we pass it through and the modal won't re-prompt. MV3
+    // falls through to the existing archiveBoot / ChatList ladder.
+    if (kind === 'categories') {
+      try {
+        var modalsCR = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+        if (modalsCR && typeof modalsCR.openCategoryEditor === 'function') {
+          modalsCR.openCategoryEditor({ categoryId: item.id, mode: 'rename', name: next })
+            .then((res) => {
+              if (res && res.ok) {
+                emitLibraryAppearanceChanged({ action: 'rename-category', categoryId: item.id });
+              }
+              // actions.categories.rename already dispatched the canonical
+              // refresh event; renderAllSections is still useful for the
+              // sidebar's local row state.
+              renderAllSections();
+            })
+            .catch((e) => err('openCategoryEditor.rename', e));
+          return true;
+        }
+      } catch (e) { err('openCategoryEditor.rename.guard', e); }
+    }
     if (kind === 'categories' && typeof H2O.archiveBoot?.renameCategory === 'function') {
       H2O.archiveBoot.renameCategory(item.id, next);
       emitLibraryAppearanceChanged({ action: 'rename-category', categoryId: item.id });
@@ -2213,6 +2236,26 @@
   function deleteMenuItem(item) {
     const kind = normalizeMenuKind(item.kind || item.section);
     const name = String(item.name || item.id || 'item');
+    // R4.5.2 — Desktop routes category delete through OrganizationModals,
+    // which runs its OWN enriched window.confirm (category name + bound
+    // chat count from LibraryIndex.facets().byCategory). We skip the
+    // S0Z1g basic confirm entirely on Desktop to avoid double-prompting.
+    if (kind === 'categories') {
+      try {
+        var modalsCD = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+        if (modalsCD && typeof modalsCD.openCategoryEditor === 'function') {
+          modalsCD.openCategoryEditor({ categoryId: item.id, mode: 'delete' })
+            .then((res) => {
+              if (res && res.ok) {
+                emitLibraryAppearanceChanged({ action: 'delete-category', categoryId: item.id });
+                renderAllSections();
+              }
+            })
+            .catch((e) => err('openCategoryEditor.delete', e));
+          return true;
+        }
+      } catch (e) { err('openCategoryEditor.delete.guard', e); }
+    }
     const ok = W.confirm?.(`Delete ${kind === 'categories' ? 'category' : kind === 'labels' ? 'label' : 'item'} "${name}"?`);
     if (!ok) return false;
     if (kind === 'categories' && typeof H2O.archiveBoot?.deleteCategory === 'function') {
@@ -2929,7 +2972,80 @@
       return id ? { id, name, count: facetCount, color: appearance.color, iconKey: appearance.icon, iconSvg: iconSvg(appearance.icon) } : null;
     }).filter(Boolean);
     renderSectionList(host, 'categories', items, { emptyText: 'No categories yet' });
+    // R4.5.2 — ensure the Desktop category-create button is mounted in
+    // the categories section header. Tauri-gated through the helper —
+    // returns null on MV3, leaving the section unchanged.
+    try { ensureCategoryCreateButton(); } catch (e) { err('ensureCategoryCreateButton', e); }
     step('renderCategories', String(items.length));
+  }
+
+  // R4.5.2 — small "+" button in the Categories section header that opens
+  // openCategoryEditor({mode:'create'}). Mirrors ensureFolderCreateButton
+  // visually but gates on Tauri presence rather than the canonical-folder-
+  // create gate (Desktop categories don't need chrome.runtime).
+  function ensureCategoryCreateButton() {
+    const sec = D.querySelector('.wbSidebarSection--categories');
+    const label = sec?.querySelector?.('.wbSideLabel');
+    if (!sec || !label) return null;
+    const isTauri = !!(W.__TAURI_INTERNALS__ || W.__TAURI__);
+    const modalsAvail = !!(W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals
+                           && typeof W.H2O.Studio.OrganizationModals.openCategoryEditor === 'function');
+    let button = sec.querySelector('[data-h2o-category-create-button="1"]');
+    if (!isTauri || !modalsAvail) {
+      // Off-Desktop or modals not yet loaded: leave the section unchanged.
+      try { button?.remove?.(); } catch {}
+      return null;
+    }
+    if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
+    if (!button) {
+      try {
+        sec.style.position = 'relative';
+        label.style.paddingRight = '40px';
+      } catch {}
+      button = el('button', {
+        class: 'wbSidebarCategoryCreateButton',
+        type: 'button',
+        title: 'Create category',
+        'aria-label': 'Create category',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'data-h2o-category-create-button': '1',
+        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+      });
+      button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
+      button.querySelectorAll('svg').forEach((svg) => {
+        svg.style.width = '13px';
+        svg.style.height = '13px';
+      });
+      button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      function openCategoryCreate() {
+        try {
+          var modals = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+          if (modals && typeof modals.openCategoryEditor === 'function') {
+            modals.openCategoryEditor({ mode: 'create', anchorEl: button })
+              .then((res) => { if (res && res.ok) renderAllSections(); })
+              .catch((e) => { try { err('openCategoryEditor.create', e); } catch (_) { /* swallow */ } });
+          }
+        } catch (e) { try { err('openCategoryEditor.create.guard', e); } catch (_) {} }
+      }
+      button.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        openCategoryCreate();
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openCategoryCreate();
+      });
+      sec.insertBefore(button, label.nextSibling);
+    }
+    try {
+      sec.style.position = 'relative';
+      label.style.paddingRight = '40px';
+    } catch {}
+    return button;
   }
 
   function renderProjects() {

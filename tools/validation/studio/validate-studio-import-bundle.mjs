@@ -665,6 +665,13 @@ async function main() {
   // (modal never dispatches refresh itself — only actions.folders does).
   await runOrganizationModalsTests();
 
+  // ── (15) Category Organization Modals (R4.5.2) ──────────────────────
+  // Extends the modal layer to categories: openCategoryEditor with 3
+  // modes (no color — categories have no color column). Delete confirm
+  // is enriched with category name + bound-chat count via the
+  // LibraryIndex.facets().byCategory facet (best-effort).
+  await runCategoryOrganizationModalsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -3441,9 +3448,11 @@ async function runOrganizationModalsTests() {
       assert.equal(typeof modals[fn], 'function', `${fn} should be a function`);
     }
   });
-  check('diagnose() reports R4.5.1.a phase + folder modes + no-DOM markers', () => {
+  check('diagnose() reports R4.5.x phase + folder modes + no-DOM markers', () => {
     const d = modals.diagnose();
-    assert.equal(d.phase, 'R4.5.1.a-folders-modal');
+    // Phase string bumps with each R4.5.x slice that extends the module.
+    // Accept any 'R4.5.<x>-...' string so future slices don't break this.
+    assert.match(d.phase, /^R4\.5\.[0-9].*-modal$/);
     assert.equal(d.installed, true);
     assert.equal(d.actionsAvailable, true);
     // Coerce sandbox-Array to host-Array before deepEqual (vm.createContext
@@ -3741,6 +3750,410 @@ async function runOrganizationModalsTests() {
     assert.equal(r.ok, true);
     const evts = refreshEvents(local);
     assert.equal(evts.length, 1, 'expected exactly 1 refresh dispatched (via actions.folders), got ' + evts.length);
+  });
+}
+
+// ── Category Organization Modals test runner (R4.5.2) ─────────────────
+async function runCategoryOrganizationModalsTests() {
+  console.log('');
+  console.log('── Category Organization Modals (R4.5.2) ───────────────────');
+
+  const S0F1M_REL  = 'src-surfaces-base/studio/S0F1m. 🎬 Library Organization Modals - Studio.js';
+  const S0F1M_PATH = path.join(REPO_ROOT, S0F1M_REL);
+
+  // Categories actions mock — mirrors S0F4b API shape: create / rename /
+  // remove / assignChat / clearChat / diagnose. Dispatches the canonical
+  // refresh event on each successful mutation with reason
+  // 'categories-actions:<op>'. The store-categories mock supports
+  // get(categoryId) for loadCategoryName.
+  function makeActionsCategoriesMock(eventTarget) {
+    const categories = new Map();
+    const calls = [];
+    let seq = 0;
+    function refresh(reason) {
+      try {
+        eventTarget.dispatchEvent({
+          type: 'evt:h2o:library-index:refresh-request',
+          detail: { reason: 'categories-actions:' + reason },
+        });
+      } catch (_) { /* swallow */ }
+    }
+    function record(op, args, result) { calls.push({ op, args, result }); return result; }
+    return {
+      __installed: true,
+      _categories: categories,
+      _calls: calls,
+      async create(input) {
+        const name = String((input && input.name) || '').trim();
+        if (!name) return record('create', [input], { ok: false, action: 'create', status: 'name-required' });
+        seq += 1;
+        const id = 'cat_modal_' + seq;
+        const row = { categoryId: id, name };
+        categories.set(id, row);
+        refresh('create');
+        return record('create', [input], { ok: true, action: 'create', status: 'ok', categoryId: id, name, row });
+      },
+      async rename(categoryIdInput, newNameInput) {
+        const categoryId = String(categoryIdInput == null ? '' : categoryIdInput).trim();
+        const newName    = String(newNameInput == null ? '' : newNameInput).trim();
+        if (!categoryId) return record('rename', [categoryIdInput, newNameInput], { ok: false, action: 'rename', status: 'category-id-required' });
+        if (!newName)    return record('rename', [categoryIdInput, newNameInput], { ok: false, action: 'rename', status: 'name-required', categoryId });
+        if (!categories.has(categoryId)) return record('rename', [categoryIdInput, newNameInput], { ok: false, action: 'rename', status: 'not-found', categoryId });
+        const cur = categories.get(categoryId);
+        cur.name = newName;
+        categories.set(categoryId, cur);
+        refresh('rename');
+        return record('rename', [categoryIdInput, newNameInput], { ok: true, action: 'rename', status: 'ok', categoryId, name: newName, row: { ...cur } });
+      },
+      async remove(categoryIdInput) {
+        const categoryId = String(categoryIdInput == null ? '' : categoryIdInput).trim();
+        if (!categoryId) return record('remove', [categoryIdInput], { ok: false, action: 'remove', status: 'category-id-required' });
+        if (!categories.has(categoryId)) return record('remove', [categoryIdInput], { ok: false, action: 'remove', status: 'not-found', categoryId });
+        categories.delete(categoryId);
+        refresh('remove');
+        return record('remove', [categoryIdInput], { ok: true, action: 'remove', status: 'ok', categoryId });
+      },
+      'delete'(categoryId) { return this.remove(categoryId); },
+      async assignChat(chatIdInput, categoryIdInput) {
+        return record('assignChat', [chatIdInput, categoryIdInput],
+          { ok: true, action: 'assignChat', status: 'ok', chatId: chatIdInput, categoryId: categoryIdInput });
+      },
+      async clearChat(chatIdInput) {
+        return record('clearChat', [chatIdInput],
+          { ok: true, action: 'clearChat', status: 'ok', chatId: chatIdInput });
+      },
+      diagnose() { return { installed: true, phase: 'R4.5.2-categories-mock' }; },
+    };
+  }
+
+  function makeStoreCategoriesMock(actions) {
+    return {
+      async get(categoryId) {
+        const id = String(categoryId == null ? '' : categoryId).trim();
+        return id && actions._categories.has(id) ? { ...actions._categories.get(id) } : null;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox(opts) {
+    opts = opts || {};
+    const eventTarget = makeEventTarget();
+    const actions = makeActionsCategoriesMock(eventTarget);
+    const store = makeStoreCategoriesMock(actions);
+    const promptStub = {
+      queue: opts.promptQueue ? opts.promptQueue.slice() : [],
+      calls: [],
+      shift() { return this.queue.length > 0 ? this.queue.shift() : null; },
+    };
+    const confirmStub = {
+      defaultAnswer: opts.confirmAnswer === false ? false : true,
+      queue: opts.confirmQueue ? opts.confirmQueue.slice() : [],
+      calls: [],
+    };
+    // Optional LibraryIndex mock so loadCategoryBoundCount can enrich
+    // the confirm message in the delete-with-count test.
+    const libraryIndexMock = opts.byCategory ? {
+      facets() { return { byCategory: opts.byCategory }; },
+    } : null;
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: {
+        Studio: {
+          actions: { categories: actions },
+          store: { categories: store },
+          LibraryIndex: libraryIndexMock,
+        },
+      },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      prompt(message, defaultValue) {
+        promptStub.calls.push({ message, defaultValue });
+        return promptStub.shift();
+      },
+      confirm(message) {
+        confirmStub.calls.push({ message });
+        return confirmStub.queue.length > 0 ? confirmStub.queue.shift() : confirmStub.defaultAnswer;
+      },
+      _eventTarget: eventTarget,
+      _actions: actions,
+      _store: store,
+      _prompt: promptStub,
+      _confirm: confirmStub,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F1M_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F1M_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 15.1 — module exposes openCategoryEditor + bumped version ─────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F1m loads with category actions registered');
+    console.log('  ✓ S0F1m loads with category actions registered');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F1m loads (R4.5.2)', err: msg });
+    console.log(`  ✗ S0F1m loads (R4.5.2)\n      ${msg}`);
+    return;
+  }
+  const modals = sandbox.H2O?.Studio?.OrganizationModals;
+  check('openCategoryEditor exists + version bumped to 0.2.0', () => {
+    assert.equal(typeof modals.openCategoryEditor, 'function');
+    assert.equal(modals.__version, '0.2.0');
+  });
+  check('diagnose() reports R4.5.2 phase + targets.categories sub-object', () => {
+    const d = modals.diagnose();
+    assert.equal(d.phase, 'R4.5.2-folders+categories-modal');
+    assert.ok(d.targets);
+    assert.ok(d.targets.folders);
+    assert.ok(d.targets.categories);
+    assert.equal(d.targets.categories.actionsAvailable, true);
+    const catModes = Array.from(d.targets.categories.supportedModes).slice().sort();
+    assert.deepEqual(catModes, ['create', 'delete', 'rename']);
+  });
+
+  // ── 15.2 — unsupported mode ──────────────────────────────────────────
+  await checkAsync('openCategoryEditor({mode: "color"}) → unsupported-mode (no color for categories)', async () => {
+    const r = await modals.openCategoryEditor({ mode: 'color', categoryId: 'cat_x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+    assert.equal(r.target, 'categories');
+  });
+  await checkAsync('openCategoryEditor() with no mode → unsupported-mode', async () => {
+    const r = await modals.openCategoryEditor({});
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+  });
+
+  // ── 15.3 — create mode ───────────────────────────────────────────────
+  await checkAsync('create with name → ok + actions.create called + refresh', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'create', name: 'Receipts' });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.target, 'categories');
+    assert.ok(r.categoryId && r.categoryId.startsWith('cat_modal_'));
+    assert.equal(r.name, 'Receipts');
+    const createCalls = local._actions._calls.filter(c => c.op === 'create');
+    assert.equal(createCalls.length, 1);
+    assert.equal(createCalls[0].args[0].name, 'Receipts');
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /categories-actions:create/);
+  });
+  await checkAsync('create with prompt returns "Inbox" → calls actions.create("Inbox")', async () => {
+    const local = buildSandbox({ promptQueue: ['Inbox'] });
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'create' });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Inbox');
+    assert.equal(local._prompt.calls.length, 1);
+    assert.match(local._prompt.calls[0].message, /New category name/);
+  });
+  await checkAsync('create with prompt cancelled (null) → cancelled, no actions call', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'create' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'create').length, 0);
+  });
+  await checkAsync('create with no name + skipPrompts=true → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'create', skipPrompts: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+
+  // ── 15.4 — rename mode ───────────────────────────────────────────────
+  await checkAsync('rename with categoryId + name → ok + actions.rename called + refresh', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Old' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'rename', categoryId: created.categoryId, name: 'New',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'New');
+    assert.equal(local._actions._calls[0].op, 'rename');
+    assert.equal(local._actions._calls[0].args[1], 'New');
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /categories-actions:rename/);
+  });
+  await checkAsync('rename without categoryId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'rename', name: 'X' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+  await checkAsync('rename with prompt returns "Updated" → prompt enriched with current name', async () => {
+    const local = buildSandbox({ promptQueue: ['Updated'] });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'StartName' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'rename', categoryId: created.categoryId,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Updated');
+    assert.match(local._prompt.calls[0].message, /Rename category/);
+    assert.match(local._prompt.calls[0].message, /StartName/);
+  });
+  await checkAsync('rename prompt cancelled → cancelled, no actions call', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'KeepMe' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'rename', categoryId: created.categoryId,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'rename').length, 0);
+  });
+
+  // ── 15.5 — delete mode ───────────────────────────────────────────────
+  await checkAsync('delete with confirm=true → calls actions.remove + refresh', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Drop' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(local._confirm.calls.length, 1);
+    assert.ok(local._actions._calls.find(c => c.op === 'remove'));
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /categories-actions:remove/);
+  });
+  await checkAsync('delete with confirm=false → cancelled, no actions.remove', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Stay' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'remove').length, 0);
+  });
+  await checkAsync('delete with skipConfirm=true → no confirm prompt, calls actions.remove', async () => {
+    const local = buildSandbox({ confirmAnswer: false });  // would say no
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Force' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId, skipConfirm: true,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(local._confirm.calls.length, 0);
+    assert.ok(local._actions._calls.find(c => c.op === 'remove'));
+  });
+  await checkAsync('delete confirm message includes category name', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Verbose' });
+    await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId,
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Verbose/);
+    assert.match(msg, /Delete category/i);
+  });
+  await checkAsync('delete confirm message reflects bound-chat count from LibraryIndex.facets()', async () => {
+    // Seed byCategory facet with a 5-chat bucket for a category we create.
+    const local = buildSandbox({
+      confirmAnswer: true,
+      byCategory: { cat_modal_1: ['c1', 'c2', 'c3', 'c4', 'c5'] },
+    });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Bucket' });
+    assert.equal(created.categoryId, 'cat_modal_1');  // sanity: seq starts at 1 per sandbox
+    await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId,
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Bucket/);
+    assert.match(msg, /clear the category from 5 chats/);
+  });
+  await checkAsync('delete confirm shows "No chats" copy when bound count is 0', async () => {
+    const local = buildSandbox({
+      confirmAnswer: true,
+      byCategory: { cat_modal_1: [] },
+    });
+    const created = await local.H2O.Studio.actions.categories.create({ name: 'Empty' });
+    await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'delete', categoryId: created.categoryId,
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /No chats are assigned/);
+  });
+  await checkAsync('delete without categoryId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({ mode: 'delete' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+
+  // ── 15.6 — diagnose counters reflect category opens ─────────────────
+  check('diagnose().lastMode reflects most recent category open', () => {
+    const d = modals.diagnose();
+    // The diagnose call sees the most recent recordOpen. Since the
+    // last operation in this runner was an openCategoryEditor invocation,
+    // lastMode should start with 'category:'.
+    assert.ok(d.lastMode.indexOf('category:') === 0 || d.lastMode === '',
+      'lastMode should be a category:* entry; got ' + d.lastMode);
+  });
+
+  // ── 15.7 — single source for refresh ─────────────────────────────────
+  await checkAsync('modal does NOT dispatch its own refresh — only actions.categories does', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openCategoryEditor({
+      mode: 'create', name: 'Solo',
+    });
+    assert.equal(r.ok, true);
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1,
+      'expected exactly 1 refresh dispatched (via actions.categories), got ' + evts.length);
+    assert.match(String(evts[0].detail.reason), /categories-actions:/);
   });
 }
 

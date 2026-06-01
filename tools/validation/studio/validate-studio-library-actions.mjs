@@ -831,6 +831,156 @@ check('R4.5.1.a: S0F1m never imports / dereferences chrome.* runtime APIs', () =
   assert.equal(/\bchrome\.tabs\b/.test(s0f1mSrc), false);
 });
 
+// ── 13. R4.5.2 — Categories UI in S0F1m + S0Z1g re-wiring ──────────────
+// Extends R4.5.1.a's modal layer with openCategoryEditor + 3 category
+// modes (create/rename/delete; no color since categories have no color
+// column). Re-wires S0Z1g's existing per-row category rename/delete
+// handlers + adds a new category-create button mirroring the folder
+// pattern. PRESERVES the MV3 archiveBoot / ChatList fallback ladder.
+
+check('R4.5.2: S0F1m PHASE bumped to indicate category support', () => {
+  assert.match(s0f1mSrc, /PHASE\s*=\s*'R4\.5\.2-folders\+categories-modal'/);
+});
+
+check('R4.5.2: S0F1m exposes openCategoryEditor + bumped version', () => {
+  assert.match(s0f1mSrc, /openCategoryEditor:\s*openCategoryEditor/);
+  assert.match(s0f1mSrc, /async function openCategoryEditor/);
+  assert.match(s0f1mSrc, /__version:\s*'0\.2\.0'/);
+});
+
+check('R4.5.2: S0F1m supports category modes create/rename/delete (no color)', () => {
+  assert.match(s0f1mSrc, /SUPPORTED_CATEGORY_MODES\s*=\s*\['create',\s*'rename',\s*'delete'\]/);
+  assert.match(s0f1mSrc, /async function handleCategoryCreate/);
+  assert.match(s0f1mSrc, /async function handleCategoryRename/);
+  assert.match(s0f1mSrc, /async function handleCategoryDelete/);
+  // Defensive: no color handler should exist for categories.
+  assert.equal(/handleCategoryColor/.test(s0f1mSrc), false,
+    'categories have no color column; handleCategoryColor must not exist');
+});
+
+check('R4.5.2: S0F1m calls H2O.Studio.actions.categories.* (not Native, not store)', () => {
+  // Reference the actions.categories namespace via the getCategoryActions
+  // helper.
+  assert.match(s0f1mSrc, /H2O\.Studio && H2O\.Studio\.actions && H2O\.Studio\.actions\.categories/);
+  // Each handler invokes the corresponding actions method via the
+  // captured `actions` local — verify the method names appear.
+  // Note: the helpers grab `actions = getCategoryActions()` then call
+  // `actions.create / actions.rename`; assert these call-sites exist
+  // inside the category handlers specifically.
+  const catCreateMatch = s0f1mSrc.match(/async function handleCategoryCreate[\s\S]*?^  \}/m);
+  const catRenameMatch = s0f1mSrc.match(/async function handleCategoryRename[\s\S]*?^  \}/m);
+  const catDeleteMatch = s0f1mSrc.match(/async function handleCategoryDelete[\s\S]*?^  \}/m);
+  assert.ok(catCreateMatch && /actions\.create\s*\(/.test(catCreateMatch[0]),
+    'handleCategoryCreate must call actions.create');
+  assert.ok(catRenameMatch && /actions\.rename\s*\(/.test(catRenameMatch[0]),
+    'handleCategoryRename must call actions.rename');
+  assert.ok(catDeleteMatch && /removeFn\s*\(/.test(catDeleteMatch[0]),
+    'handleCategoryDelete must call removeFn (actions.remove or actions.delete)');
+});
+
+check('R4.5.2: S0F1m does NOT call Native category mutation APIs', () => {
+  // Strip JS comments first — the docstring legitimately names the
+  // Native MV3 fallback methods to describe the boundary.
+  const stripped = s0f1mSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1')
+    .replace(/H2O\.Studio\.actions\.categories/g, '<<ACTIONS>>')
+    .replace(/H2O\.Studio\.store\.categories/g, '<<STORE>>');
+  assert.equal(/H2O\.archiveBoot\.(renameCategory|deleteCategory|createCategory)/.test(stripped), false,
+    'S0F1m must not call H2O.archiveBoot.* category mutations');
+  assert.equal(/H2O\.categories\.(create|rename|update|remove|delete|patch)/.test(stripped), false,
+    'S0F1m must not call Native H2O.categories.* mutations');
+});
+
+check('R4.5.2: S0F1m enriches delete confirm with category name + bound count', () => {
+  assert.match(s0f1mSrc, /async function loadCategoryName/);
+  assert.match(s0f1mSrc, /async function loadCategoryBoundCount/);
+  // Pluralization branches.
+  assert.match(s0f1mSrc, /clear the category from 1 chat/);
+  assert.match(s0f1mSrc, /clear the category from '\s*\+\s*count\s*\+\s*' chats/);
+  // No-binding empty-state copy.
+  assert.match(s0f1mSrc, /No chats are assigned to this category/);
+});
+
+check('R4.5.2: diagnose() reports per-target capability flags', () => {
+  // The returned object now has a `targets` sub-object with folders +
+  // categories entries (each carrying actionsAvailable + supportedModes).
+  assert.match(s0f1mSrc, /targets:\s*\{/);
+  assert.match(s0f1mSrc, /folders:\s*\{[\s\S]*?actionsAvailable:\s*!!getActions\(\)/);
+  assert.match(s0f1mSrc, /categories:\s*\{[\s\S]*?actionsAvailable:\s*!!getCategoryActions\(\)/);
+});
+
+check('R4.5.2: S0Z1g categories rename handler routes through OrganizationModals on Desktop', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  // Find the promptRenameItem function body.
+  const promptRenameMatch = s0z1g.match(/function promptRenameItem\(item\)[\s\S]*?^  \}/m);
+  assert.ok(promptRenameMatch, 'promptRenameItem function not found');
+  const body = promptRenameMatch[0];
+  // Desktop branch references OrganizationModals.openCategoryEditor with mode:'rename'.
+  assert.match(body, /OrganizationModals/);
+  assert.match(body, /openCategoryEditor\(\{\s*categoryId:\s*item\.id,\s*mode:\s*'rename'/);
+  // MV3 fallback ladder is preserved (archiveBoot + ChatList service).
+  assert.match(body, /H2O\.archiveBoot\?\.renameCategory/);
+  assert.match(body, /getChatListSvc\(\)\?\.renameCategory/);
+});
+
+check('R4.5.2: S0Z1g categories delete handler routes through OrganizationModals on Desktop', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  const deleteMenuMatch = s0z1g.match(/function deleteMenuItem\(item\)[\s\S]*?^  \}/m);
+  assert.ok(deleteMenuMatch, 'deleteMenuItem function not found');
+  const body = deleteMenuMatch[0];
+  // Desktop branch references OrganizationModals.openCategoryEditor with mode:'delete'.
+  // Must appear BEFORE the W.confirm to avoid double-prompting.
+  const desktopIdx = body.indexOf("openCategoryEditor({ categoryId: item.id, mode: 'delete' })");
+  const confirmIdx = body.indexOf('W.confirm?.');
+  assert.ok(desktopIdx > 0, 'Desktop categories branch missing from deleteMenuItem');
+  assert.ok(confirmIdx > desktopIdx,
+    'Desktop categories branch must appear BEFORE W.confirm to avoid double-prompting');
+  // MV3 ladder preserved.
+  assert.match(body, /H2O\.archiveBoot\?\.deleteCategory/);
+  assert.match(body, /getChatListSvc\(\)\?\.deleteCategory/);
+});
+
+check('R4.5.2: S0Z1g exposes ensureCategoryCreateButton + wires it into renderCategories', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  // Function exists.
+  assert.match(s0z1g, /function ensureCategoryCreateButton/);
+  // Tauri-gated (not via canRequestCanonicalFolderCreate; via Tauri-only check).
+  const fnBodyMatch = s0z1g.match(/function ensureCategoryCreateButton[\s\S]*?return button;\s*\}/);
+  assert.ok(fnBodyMatch);
+  assert.match(fnBodyMatch[0], /__TAURI_INTERNALS__/);
+  assert.match(fnBodyMatch[0], /OrganizationModals[\s\S]*?openCategoryEditor/);
+  // renderCategories invokes it.
+  const renderCatMatch = s0z1g.match(/async function renderCategories[\s\S]*?step\('renderCategories'/);
+  assert.ok(renderCatMatch && /ensureCategoryCreateButton\(\)/.test(renderCatMatch[0]),
+    'renderCategories must call ensureCategoryCreateButton');
+  // The button has its own data attribute distinct from folder-create button.
+  assert.match(s0z1g, /data-h2o-category-create-button="1"/);
+});
+
+check('R4.5.2: openCategoryEditor still respects single-source refresh (no dispatchEvent in S0F1m)', () => {
+  // S0F1m must still have zero dispatchEvent calls after R4.5.2 — the
+  // refresh comes from actions.categories.* exclusively, just like
+  // actions.folders.* in R4.5.1.a.
+  assert.equal(/dispatchEvent\s*\(/.test(s0f1mSrc), false,
+    'S0F1m must not dispatchEvent — single-source refresh via actions.*');
+});
+
+check('R4.5.2 NOTE: setSnapshotCategory refactor deferred', () => {
+  // This assertion documents the deferral as part of the validator
+  // record — when the refactor lands, we'll replace this with positive
+  // delegation assertions mirroring R4.4 regression checks.
+  // For now we just verify desktopSetSnapshotCategory still exists with
+  // its current store.categories-direct implementation (i.e. the function
+  // continues to work; we haven't broken it by accident).
+  const s0f1b = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0F1b. 🎬 Library Workspace - Studio.js'), 'utf8');
+  assert.match(s0f1b, /async function desktopSetSnapshotCategory/);
+  assert.match(s0f1b, /store\.assignChat\(category, cid\)/);
+  assert.match(s0f1b, /store\.clearChat\(cid\)/);
+  // The function still emits the canonical category-changed event.
+  assert.match(s0f1b, /emitUpdated\('category-changed'/);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

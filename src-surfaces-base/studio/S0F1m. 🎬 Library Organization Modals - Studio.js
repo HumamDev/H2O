@@ -1,13 +1,16 @@
-/* H2O Studio — Library Organization Modals (R4.5.1.a — Folders only)
+/* H2O Studio — Library Organization Modals (R4.5.1.a / R4.5.2)
  *
- * Desktop-first user-facing entry point for catalog CRUD. R4.5.1.a is
- * the first slice of R4.5 and covers FOLDERS ONLY — categories, labels,
- * tags get their own editors in R4.5.2 / R4.5.3.
+ * Desktop-first user-facing entry point for catalog CRUD. Grows one
+ * target at a time:
+ *   - R4.5.1.a — folders     (DONE)
+ *   - R4.5.2   — categories  (THIS SLICE)
+ *   - R4.5.3   — labels + tags
  *
  * Public API: H2O.Studio.OrganizationModals = {
  *   __installed: true,
- *   __version: '0.1.0',
- *   openFolderEditor(options): Promise<result>,
+ *   __version: '0.2.0',
+ *   openFolderEditor(options):   Promise<result>,
+ *   openCategoryEditor(options): Promise<result>,    // R4.5.2
  *   close(): void,
  *   diagnose(): object,
  * }
@@ -17,6 +20,15 @@
  *   - 'rename'  → rename an existing folder
  *   - 'color'   → update the folder color / iconColor
  *   - 'delete'  → remove a folder (with window.confirm guard)
+ *
+ * openCategoryEditor modes:
+ *   - 'create'  → create a new category
+ *   - 'rename'  → rename an existing category
+ *   - 'delete'  → remove a category (with window.confirm guard; the
+ *                 confirm message includes the category name and the
+ *                 number of chats currently assigned to it, best-effort
+ *                 via LibraryIndex.facets().byCategory)
+ *   No 'color' mode — categories have no color column in V1.
  *
  * options shape:
  *   {
@@ -65,14 +77,23 @@
  * not register anything; H2O.Studio.OrganizationModals stays undefined.
  *
  * ── PRESERVED EXISTING BEHAVIOR ───────────────────────────────────────
- * Does NOT modify any S0F1b / S0F1d / S0Z1g render path. Only S0Z1g's
- * folder-create button gets a Desktop-conditional re-wiring that calls
- * openFolderEditor BEFORE the existing MV3 openFolderCreatePanel; on
- * MV3 the existing canonical-folder-create path is unchanged.
+ * R4.5.1.a (folders): S0Z1g's folder-create button gets a Desktop-
+ *   conditional re-wiring that calls openFolderEditor BEFORE the
+ *   existing MV3 openFolderCreatePanel; on MV3 the existing canonical-
+ *   folder-create path is unchanged.
+ * R4.5.2 (categories): S0Z1g's per-row promptRenameItem / deleteMenuItem
+ *   get a Desktop-conditional branch (for `kind === 'categories'`) that
+ *   routes through openCategoryEditor BEFORE the existing
+ *   H2O.archiveBoot.renameCategory / getChatListSvc().renameCategory /
+ *   H2O.archiveBoot.deleteCategory / getChatListSvc().deleteCategory
+ *   fallback ladder. On MV3 the existing ladder runs unchanged.
+ *   A new categories-section create button (ensureCategoryCreateButton)
+ *   is added with no MV3 fallback (gracefully absent off-Desktop).
  *
  * Boundary:
  *   - No DOM access to ChatGPT (no chatgpt.com observers; pure Studio).
- *   - No Native folder API calls (no H2O.folders.create / .rename / etc.).
+ *   - No Native folder/category APIs (no H2O.folders.* / H2O.archiveBoot.*
+ *     mutation methods invoked from the Desktop branch).
  *   - No direct SQLite / no plugin:sql invocation.
  *
  * Contract: src-surfaces-base/studio/STUDIO_STORAGE_CONTRACT.md
@@ -96,9 +117,13 @@
   if (H2O.Studio.OrganizationModals && H2O.Studio.OrganizationModals.__installed) return;
 
   /* ── Constants ────────────────────────────────────────────────────── */
-  var PHASE         = 'R4.5.1.a-folders-modal';
+  /* PHASE bumps with each R4.5.x slice that extends this module so
+   * diagnose() identifies which UI capabilities are live. */
+  var PHASE         = 'R4.5.2-folders+categories-modal';
   var MAX_ERRORS    = 20;
   var SUPPORTED_MODES = ['create', 'rename', 'color', 'delete'];
+  /* Categories have no color attribute — color editing is folder-only. */
+  var SUPPORTED_CATEGORY_MODES = ['create', 'rename', 'delete'];
 
   /* ── State (in-memory only) ──────────────────────────────────────── */
   var state = {
@@ -360,6 +385,163 @@
     }
   }
 
+  /* ── Category helpers (R4.5.2) ────────────────────────────────────── */
+
+  function getCategoryActions() {
+    try {
+      return (H2O.Studio && H2O.Studio.actions && H2O.Studio.actions.categories) || null;
+    } catch (_) { return null; }
+  }
+
+  /* Best-effort look-up of the category name via the categories store.
+   * Pattern mirrors loadFolderName — fails gracefully. */
+  async function loadCategoryName(categoryId) {
+    try {
+      var store = (H2O.Studio && H2O.Studio.store && H2O.Studio.store.categories) || null;
+      if (store && typeof store.get === 'function') {
+        var row = await store.get(categoryId);
+        if (row && (row.name || row.label)) return String(row.name || row.label);
+      }
+    } catch (e) { pushError('loadCategoryName', e); }
+    return '';
+  }
+
+  /* Categories bind via chats.category_id (no separate binding table).
+   * Best-effort count via the LibraryIndex facets; null when unavailable. */
+  async function loadCategoryBoundCount(categoryId) {
+    try {
+      var idx = (H2O.Studio && H2O.Studio.LibraryIndex) || (global.H2O && global.H2O.LibraryIndex) || null;
+      if (idx && typeof idx.facets === 'function') {
+        var facets = idx.facets();
+        var byCat = facets && facets.byCategory;
+        if (byCat && Array.isArray(byCat[categoryId])) return byCat[categoryId].length;
+      }
+    } catch (e) { pushError('loadCategoryBoundCount', e); }
+    return null;
+  }
+
+  /* ── Category mode handlers ───────────────────────────────────────── */
+
+  async function handleCategoryCreate(opts) {
+    var actions = getCategoryActions();
+    if (!actions || typeof actions.create !== 'function') {
+      return baseResult('create', 'actions-unavailable', {
+        target: 'categories',
+        reason: 'H2O.Studio.actions.categories.create unavailable',
+      });
+    }
+    var name = cleanString(opts.name);
+    if (!name) {
+      if (opts.skipPrompts) {
+        return baseResult('create', 'input-required', { target: 'categories', reason: 'name is required' });
+      }
+      var typed = safePrompt('New category name:', '');
+      name = cleanString(typed);
+      if (!name) {
+        return baseResult('create', 'cancelled', { target: 'categories', reason: 'user cancelled or empty name' });
+      }
+    }
+    var payload = { name: name };
+    if (opts.source) payload.source = cleanString(opts.source);
+    if (opts.meta)   payload.meta   = opts.meta;
+    try {
+      var res = await actions.create(payload);
+      return baseResult('create', (res && res.status) || (res && res.ok ? 'ok' : 'error'), {
+        ok: !!(res && res.ok),
+        target: 'categories',
+        categoryId: res && res.categoryId,
+        name: res && res.name,
+        result: res,
+      });
+    } catch (e) {
+      pushError('category:create', e);
+      return baseResult('create', 'error', { target: 'categories', reason: String((e && e.message) || e) });
+    }
+  }
+
+  async function handleCategoryRename(opts) {
+    var actions = getCategoryActions();
+    if (!actions || typeof actions.rename !== 'function') {
+      return baseResult('rename', 'actions-unavailable', {
+        target: 'categories',
+        reason: 'H2O.Studio.actions.categories.rename unavailable',
+      });
+    }
+    var categoryId = cleanString(opts.categoryId);
+    if (!categoryId) {
+      return baseResult('rename', 'input-required', { target: 'categories', reason: 'categoryId is required' });
+    }
+    var newName = cleanString(opts.name);
+    if (!newName) {
+      if (opts.skipPrompts) {
+        return baseResult('rename', 'input-required', { target: 'categories', categoryId: categoryId, reason: 'name is required' });
+      }
+      var current = await loadCategoryName(categoryId);
+      var typed = safePrompt('Rename category' + (current ? ' "' + current + '"' : '') + ':', current);
+      newName = cleanString(typed);
+      if (!newName) {
+        return baseResult('rename', 'cancelled', { target: 'categories', categoryId: categoryId, reason: 'user cancelled or empty name' });
+      }
+    }
+    try {
+      var res = await actions.rename(categoryId, newName);
+      return baseResult('rename', (res && res.status) || (res && res.ok ? 'ok' : 'error'), {
+        ok: !!(res && res.ok),
+        target: 'categories',
+        categoryId: categoryId,
+        name: res && res.name,
+        result: res,
+      });
+    } catch (e) {
+      pushError('category:rename', e);
+      return baseResult('rename', 'error', { target: 'categories', categoryId: categoryId, reason: String((e && e.message) || e) });
+    }
+  }
+
+  async function handleCategoryDelete(opts) {
+    var actions = getCategoryActions();
+    var removeFn = actions && (actions.remove || actions['delete']);
+    if (!actions || typeof removeFn !== 'function') {
+      return baseResult('delete', 'actions-unavailable', {
+        target: 'categories',
+        reason: 'H2O.Studio.actions.categories.remove unavailable',
+      });
+    }
+    var categoryId = cleanString(opts.categoryId);
+    if (!categoryId) {
+      return baseResult('delete', 'input-required', { target: 'categories', reason: 'categoryId is required' });
+    }
+    var confirmed = !!opts.skipConfirm;
+    if (!confirmed) {
+      var name  = await loadCategoryName(categoryId);
+      var count = await loadCategoryBoundCount(categoryId);
+      var msg = 'Delete category';
+      if (name) msg += ' "' + name + '"';
+      msg += '?';
+      if (typeof count === 'number') {
+        if (count === 0)      msg += '\n\nNo chats are assigned to this category.';
+        else if (count === 1) msg += '\n\nThis will clear the category from 1 chat.';
+        else                  msg += '\n\nThis will clear the category from ' + count + ' chats.';
+      }
+      confirmed = safeConfirm(msg);
+      if (!confirmed) {
+        return baseResult('delete', 'cancelled', { target: 'categories', categoryId: categoryId, reason: 'user cancelled' });
+      }
+    }
+    try {
+      var res = await removeFn(categoryId);
+      return baseResult('delete', (res && res.status) || (res && res.ok ? 'ok' : 'error'), {
+        ok: !!(res && res.ok),
+        target: 'categories',
+        categoryId: categoryId,
+        result: res,
+      });
+    } catch (e) {
+      pushError('category:delete', e);
+      return baseResult('delete', 'error', { target: 'categories', categoryId: categoryId, reason: String((e && e.message) || e) });
+    }
+  }
+
   /* ── Public: openFolderEditor ─────────────────────────────────────── */
   async function openFolderEditor(options) {
     var opts = (options && typeof options === 'object') ? options : {};
@@ -389,6 +571,38 @@
     return result;
   }
 
+  /* ── Public: openCategoryEditor (R4.5.2) ──────────────────────────── */
+  /* Categories share the prompt+confirm V1 UI strategy with folders.
+   * No color mode — categories have no color column in V1; appearance
+   * comes from chats.category_id + display prefs handled elsewhere. */
+  async function openCategoryEditor(options) {
+    var opts = (options && typeof options === 'object') ? options : {};
+    var mode = cleanString(opts.mode);
+    if (SUPPORTED_CATEGORY_MODES.indexOf(mode) === -1) {
+      var bad = baseResult(mode || 'unknown', 'unsupported-mode', {
+        target: 'categories',
+        reason: 'mode must be one of: ' + SUPPORTED_CATEGORY_MODES.join(', '),
+        supportedModes: SUPPORTED_CATEGORY_MODES.slice(),
+      });
+      recordOpen('category:' + mode, bad.status, opts.categoryId);
+      return bad;
+    }
+    state.activeMode = 'category:' + mode;
+    var result;
+    try {
+      if      (mode === 'create') result = await handleCategoryCreate(opts);
+      else if (mode === 'rename') result = await handleCategoryRename(opts);
+      else if (mode === 'delete') result = await handleCategoryDelete(opts);
+      else result = baseResult(mode, 'unsupported-mode', { target: 'categories', reason: 'unreachable' });
+    } catch (e) {
+      pushError('openCategoryEditor:' + mode, e);
+      result = baseResult(mode, 'error', { target: 'categories', reason: String((e && e.message) || e) });
+    }
+    state.activeMode = null;
+    recordOpen('category:' + mode, result.status, result.categoryId || opts.categoryId);
+    return result;
+  }
+
   /* ── Public: close ────────────────────────────────────────────────── */
   /* V1 UI is browser prompt/confirm — modal nature is inherent and there
    * is no DOM-mounted panel to dismiss. close() is therefore a no-op
@@ -411,6 +625,18 @@
       lastFolderId: state.lastFolderId,
       activeMode: state.activeMode,
       supportedModes: SUPPORTED_MODES.slice(),
+      /* R4.5.2 — per-target capability flags so callers can verify which
+       * UI surfaces are wired before invoking them. */
+      targets: {
+        folders: {
+          actionsAvailable: !!getActions(),
+          supportedModes: SUPPORTED_MODES.slice(),
+        },
+        categories: {
+          actionsAvailable: !!getCategoryActions(),
+          supportedModes: SUPPORTED_CATEGORY_MODES.slice(),
+        },
+      },
       actionsAvailable: !!getActions(),
       uiStrategy: 'prompt+confirm-v1',
       domAccess: false,
@@ -422,9 +648,10 @@
   /* ── Public API ───────────────────────────────────────────────────── */
   H2O.Studio.OrganizationModals = {
     __installed: true,
-    __version: '0.1.0',
-    openFolderEditor: openFolderEditor,
-    close: close,
-    diagnose: diagnose,
+    __version: '0.2.0',
+    openFolderEditor:   openFolderEditor,
+    openCategoryEditor: openCategoryEditor,
+    close:              close,
+    diagnose:           diagnose,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
