@@ -868,6 +868,11 @@
        proposal/handoff/receipt evidence into Execute envelopes only. No
        broker, dispatch, Native call, settlement, publication, or UI. -->
   <script src="./sync/execute/adapters/chat-execute-adapter.tauri.js"></script>
+  <!-- F14.6.11: Desktop/Tauri Capture materialization writer.
+       Materializes canonical Capture fresh/recovery bundles through existing
+       local storage only. No relay, Native dispatch, F5, publication,
+       consumed-op, watermark, settlement, or UI. -->
+  <script src="./sync/execute/execute-capture-materialization.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
