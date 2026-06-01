@@ -1070,6 +1070,30 @@
        no consumed-op write, no Labels/Categories/Tags mutation, no
        chats.category_id cache write. -->
   <script src="./sync/execute/adapters/library-catalog-execute-adapter.tauri.js"></script>
+  <!-- F15.8.b: Desktop/Tauri Library binding execute adapter. Metadata-
+       only adapter that consumes a F15.7.b binding bookkeeping row + its
+       source F15.6.b receipt and shapes a F14.6.2 proposal-receipt
+       execute envelope ready for the F14.6 execute lane (preflight gate
+       → native broker → settlement writer). Native-only — per F15.0.0
+       §6.1 the binding lane has no F5 path; any f5* footprint on the
+       input receipt or bookkeeping row is rejected with
+       `library-binding-execute-lane-invariant-violation`. 8 flavors
+       (2 operations × 4 binding kinds): bind/unbind × chat-label /
+       chat-tag / chat-category / tag-category. For chat-category
+       bindings, the envelope's settlementShapes carry a declarative
+       `requiresCategoryCacheRefresh: true` + `categoryCacheAction:
+       'set' | 'clear'` so the F15.8.d cache refresh bridge can
+       dispatch the synchronous chats.category_id materialized cache
+       refresh via the F15.8.c settlement writer extension. The adapter
+       itself NEVER writes the cache (F15.0.2 §2.2). The kernel
+       adapter registry (F14.6.2 DOMAINS = ['chat','snapshot','capture'])
+       currently rejects the 'library.binding' domain; the adapter
+       falls back to local metadata storage and warns. No Native
+       execution, no broker dispatch, no F5 path, no publication ledger
+       write, no relay/outbox, no watermark advance, no consumed-op
+       write, no Labels/Categories/Tags mutation, no chats.category_id
+       cache write. -->
+  <script src="./sync/execute/adapters/library-binding-execute-adapter.tauri.js"></script>
   <!-- F14.6.16: Desktop/Tauri Execute Lane UI.
        Read-only Settings-hosted operator visibility panel for journal,
        publication, broker, settlement, adapter, readiness, and proof

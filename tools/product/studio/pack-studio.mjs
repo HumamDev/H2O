@@ -554,6 +554,24 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // no consumed-op write, no Labels/Categories/Tags mutation, no
   // chats.category_id cache write.
   "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
+  // F15.8.b: Desktop/Tauri Library binding execute adapter. Metadata-only
+  // adapter consuming a F15.7.b binding bookkeeping row + its source
+  // F15.6.b receipt and shaping a F14.6.2 proposal-receipt execute
+  // envelope ready for the F14.6 execute lane. Native-only — per F15.0.0
+  // §6.1 the binding lane has no F5 path; any f5* footprint on input is
+  // rejected. 8 flavors (2 operations × 4 binding kinds). For
+  // chat-category bindings, the envelope's settlementShapes carry a
+  // declarative requiresCategoryCacheRefresh: true +
+  // categoryCacheAction: 'set'|'clear' so the F15.8.d cache refresh
+  // bridge can dispatch the synchronous chats.category_id materialized
+  // cache refresh via the F15.8.c settlement writer extension. The
+  // adapter itself NEVER writes the cache. F14.6.2 DOMAINS does not yet
+  // include 'library.binding'; the adapter falls back to local metadata
+  // storage and warns. No Native execution, no broker dispatch, no F5
+  // path, no publication ledger write, no relay/outbox, no watermark
+  // advance, no consumed-op write, no Labels/Categories/Tags mutation,
+  // no chats.category_id cache write.
+  "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
   // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
   // operator visibility panel. No dispatch, Native, F5, relay, settlement,
   // publication, watermark, consumed-operation, or domain mutation controls.
@@ -1145,6 +1163,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/snapshot-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
   "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
+  "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
