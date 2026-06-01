@@ -1,191 +1,122 @@
-# Native Library UI — Retired Features
+# Native Library UI - Retired Features
 
-This directory archives the source code for the Native ChatGPT Library
-organization UI as it is physically removed across the R4.7.x slices.
+**Final status (R4.7.7): COMPLETE.**
 
-R4.7.1 (this slice) creates the scaffolding. Code moves happen in
-R4.7.2 and R4.7.3.
+All deprecated Native ChatGPT Library UI surfaces have been physically
+retired into this directory. Runtime capture, data, extraction, and
+Studio replacement paths remain active in their original modules.
 
-## Retirement reason
+## Completed R4.7 Slices
 
-The Native ChatGPT Library organization UI (workspace page, sidebar
-sections for folders / categories / labels / projects, and the
-deprecation banner that announced the move) was replaced by Desktop
-Studio across R4.5.x. After R4.6.0–R4.6.4 introduced flag-based gating
-and a default flip that hid the Native UI by default, a soak window
-proved zero regressions in capture / save / tag extraction / Chrome →
-Desktop mirror. R4.7 physically removes the now-dormant UI code.
+| Slice | Commit | Scope |
+|---|---|---|
+| R4.7.1 | `7a2980ad74a70643b2ae42d4b1557a7d7a74ed52` | Scaffolding for `retired-features/native-library-ui/` |
+| R4.7.2 | `a4a525120fc12e577fd9a8917c452932551fdcdf` | Retired Native Categories sidebar UI |
+| R4.7.3 | `5b9db0d734bc3beb77b617088a58d1592bf0f2be` | Retired Native Labels sidebar UI |
+| R4.7.4 | `5e32bfb1164102b442ac1f4a3be69e52ca67c671` | Retired Native Projects sidebar UI |
+| R4.7.5 | `1ee9021cee94fdb20836eaeee33f5ae867e3b896` | Retired Native Library Workspace UI and all of 0F1d Library Insights |
+| R4.7.6 | `4627f2f81cc45acb5180e21ab80b8be77b8a69e1` | Retired Native Folders sidebar UI |
+| R4.7.7 | _release-gate documentation + validator consolidation_ | Final release gate; no runtime code movement |
 
-## Replacement Studio modules
+## Retired Modules
 
-| Native surface (retiring) | Replacement (Desktop / Chrome Studio) |
+| Native module | Retired surface | Archive |
+|---|---|---|
+| 0F1b Library Workspace | Native Library button, workspace route/page, banner, layout/rendering UI | `0F1b-library-workspace/library-workspace-ui.js` |
+| 0F1d Library Insights | Entire Native Explorer + Analytics renderer | `0F1d-library-insights/0F1d-original.js` |
+| 0F2a Projects | Native projects sidebar row UI | `0F2a-projects-ui/projects-sidebar-rows.js` |
+| 0F3a Folders | Native folders sidebar rows, more button, sidebar active sync, sidebar injection | `0F3a-folders-ui/folders-sidebar-list.js` |
+| 0F4a Categories | Native categories sidebar section/list UI | `0F4a-categories-ui/categories-sidebar.js` |
+| 0F6a Labels | Native labels sidebar section/list UI | `0F6a-labels-ui/labels-sidebar.js` |
+
+Each module archive folder has:
+
+- `README.md`
+- `extracted-from-<module>.md`
+- One archived `.js` implementation file
+
+Final documented inventory: 6 module folders, 18 module-level archive
+artifacts, 3 top-level files, and 3 notes files.
+
+## Final Replacement Mapping
+
+| Retired Native UI | Replacement |
 |---|---|
-| Native Library workspace page (0F1b) | Desktop Studio `/library/dashboard`, `/library/explorer`, `/library/recents`, `/library/saved`, `/library/folders`, `/library/folder/<id>` routes — rendered by studio.js + S0F1d Library Insights |
-| Native Library sidebar button (0F1b) | Desktop Studio top-level navigation entry |
-| Native Explorer + Analytics tabs (0F1d) | Desktop Studio's `S0F1d. Library Insights - Studio.js` |
-| Native folders sidebar/list UI (0F3a) | `S0F3b. Folders Actions` + `S0F1m. Library Organization Modals` (openFolderEditor) + `S0F1n. Library Batch Toolbar` + `S0Z1g. Library Sidebar Sections` |
-| Native categories sidebar/list UI (0F4a) | `S0F4b. Categories Actions` + `S0F1m` (openCategoryEditor) + `S0F1n` + `S0Z1g` |
-| Native labels sidebar/list UI (0F6a) | `S0F6b. Labels Actions` + `S0F1m` (openLabelEditor) + `S0F1n` + `S0Z1g` |
-| Native tag CATALOG organization UI | `S0F5b. Tags Actions` + `S0F1m` (openTagEditor) + `S0F1n` |
-| Native projects sidebar UI (0F2a) | Desktop Studio sidebar Projects section rendered by S0Z1g |
-| **Native turn-level tag EXTRACTION (0F5a)** | **NOT RETIRED — extraction remains in Native 0F5a forever. Hard invariant from R4.3.** |
+| 0F1b Native Library workspace/page/button/banner | Desktop Studio Library routes and navigation |
+| 0F1d Native Explorer + Analytics | `S0F1d` Studio Library Insights |
+| 0F2a Native projects sidebar UI | `S0Z1g` Studio sidebar Projects section |
+| 0F3a Native folders sidebar UI | `S0F3b` + `S0F1m` + `S0F1n` + `S0Z1g` |
+| 0F4a Native categories sidebar UI | `S0F4b` + `S0F1m` + `S0F1n` + `S0Z1g` |
+| 0F6a Native labels sidebar UI | `S0F6b` + `S0F1m` + `S0F1n` + `S0Z1g` |
 
-## R4.7 slice plan + retirement schedule
+Tag extraction is not a retired UI surface. Native 0F5a remains the
+canonical turn-level tag extraction owner.
 
-| Phase | Modules retired | Status | Commit |
-|---|---|---|---|
-| R4.7.1 — Scaffolding | (none — this directory created; no code moved) | **THIS SLICE** | _pending_ |
-| R4.7.2 — Medium-risk | 0F1b workspace + banner, 0F1d Insights, 0F2a projects sidebar, 0F4a categories sidebar, 0F6a labels sidebar | pending | _tbd_ |
-| R4.7.3 — Highest-risk + release gate | 0F3a folders sidebar (capture menu + STORE_validateFolderCreate stay) | pending | _tbd_ |
+## Safety invariants / Kept-active invariants
 
-(R4.7.1 originally planned to also retire 0F4a categories. The user
-spec for R4.7.1 narrowed this to scaffolding only; 0F4a is now
-retired in R4.7.2 alongside the other medium-risk surfaces.)
+The following were never retired:
 
-## Safety invariants (NEVER violated by any R4.7 slice)
+- 0F1j capture actions: `addToLibrary`, `saveToFolder`,
+  `openLinkedChat`.
+- 0F3a chat-row menu injection:
+  `ENGINE_injectAddToLibrary` and `ENGINE_injectAddToFolder`.
+- 0F3a folder create/data/store paths:
+  `STORE_validateFolderCreate`, `STORE_readData`, `STORE_writeData`,
+  folder CRUD/store functions, binding APIs, and metadata operation
+  fallback APIs.
+- 0F4a category APIs and archiveBoot call sites.
+- 0F6a label CRUD APIs.
+- 0F5a tag extraction, byte-exact at `273099` bytes.
+- 0D3*/3X* capture modules.
+- Desktop Studio organization UI.
+- 0F1k flags and diagnostics.
 
-The following are repeated here for visibility and re-asserted by the
-native deprecation validator (`tools/validation/native/
-validate-native-library-deprecation.mjs`) at every R4.7 commit:
+## Native Restore Flags
 
-1. **0F5a Tags extraction is never modified.** File size remains
-   byte-exact `273099` bytes. The MutationObserver / conversation-turn
-   observation patterns stay intact.
-2. **0D3* Transcript Archive modules never modified.** Capture and
-   save infrastructure stays whole.
-3. **3X* Capture modules never modified.**
-4. **0F1j capture business logic untouched.** `addToLibrary`,
-   `saveToFolder`, `openLinkedChat` function bodies contain no
-   deprecation-flag references.
-5. **0F3a capture menu injection unconditional.**
-   `ENGINE_injectAddToLibrary` and `ENGINE_injectAddToFolder` remain in
-   0F3a (NOT moved to retired-features/). Their data-cgxui values
-   `flsc-add-to-library` and `flsc-add-to-folder` continue to appear
-   in chat-row "..." menus regardless of any deprecation flag.
-6. **0F3a Native folder-create code path unconditional.**
-   `STORE_validateFolderCreate` stays in 0F3a; Studio's MV3 fallback
-   via S0Z1g openFolderCreatePanel continues to work.
-7. **0F4a categories CRUD unconditional.**
-   `H2O.archiveBoot.renameCategory` / `deleteCategory` /
-   `createCategory` call sites remain in 0F4a (the actual function
-   definitions live in 0D3a archiveBoot, also untouched).
-8. **0F6a labels CRUD unconditional.** `function renameLabel`,
-   `deleteLabel`, `createLabel` definitions remain in 0F6a.
-9. **0F2a projects DATA layer unconditional.**
-   `findProjectsH2`, `findProjectsSection`, `PROJECTS_record
-   NativeSidebarPayload`, fetch interception hooks remain in 0F2a.
-   Only the sidebar UI rendering (`.ho-project-row` injection) moves
-   to retired-features/.
-10. **Studio R4.5 modules never modified** by R4.7. The R4.5
-    `validate-studio-*` validators remain at their R4.6.4 counts
-    (107 / 135 / 277).
-11. **9A1b chat list decorator + 9A1c chat meta enricher untouched**
-    (cosmetic; not Library UI).
-12. **0F1k Library Canonical Services + NATIVE_FLAG_DEFAULTS retained.**
-    `H2O.flags.diagnose()` continues to report the deprecation flag
-    defaults. After R4.7, setting `library.nativeWorkspaceUi` or
-    `library.nativeOrganizationUi` back to `true` no longer restores
-    the UI (no code to enable). Documented in
-    `notes/rollback-procedures.md`.
+The R4.6 flags still exist for diagnostics:
 
-## Rollback strategy
+- `library.nativeWorkspaceUi`
+- `library.nativeOrganizationUi`
+- `library.nativeCaptureOnlyMode`
 
-Three levels of rollback are supported:
+After R4.7, setting Native UI restore flags is a no-op for retired UI.
+The flags may still be written and diagnosed, but the retired
+workspace/sidebar UI code is no longer present in the runtime modules.
+Use rollback if Native UI must be restored.
 
-### 1. Per-file rollback (no git access required)
+## Rollback Strategy
 
-Every retired code path has a `extracted-from-<module>.md` file in its
-sub-folder recording the exact line ranges that moved and the original
-Native module's path. To restore:
+Rollback remains explicit and bounded:
 
-1. Open the relevant `extracted-from-*.md`.
-2. Copy the corresponding `.js` file content from
-   `retired-features/native-library-ui/<module>-ui/`.
-3. Paste back into the original Native module at the recorded line
-   range.
-4. Re-run `npm run dev:rebuild && npm run dev:all` to rebuild the
-   userscripts + extension.
+1. Per-file rollback: use each module's `extracted-from-*.md` record
+   and archived `.js` file to restore a specific retired block into
+   the original Native source module.
+2. Per-slice rollback: `git revert <R4.7.N commit hash>` for the
+   relevant retirement slice.
+3. Full R4.7 rollback: revert the R4.7 retirement commits in reverse
+   order if every retired Native UI surface must be restored.
 
-### 2. Per-slice git revert
+After any rollback, rerun the native validator, the three Studio
+validators, and the runtime import graph scan.
 
-```bash
-git revert <R4.7.N commit hash>
-```
+## Validator Matrix
 
-This restores every code path that the named slice retired. Slices
-are intentionally bounded so per-slice revert doesn't drag in
-unrelated changes.
+The final release gate is documented in:
 
-### 3. Whole-R4.7 emergency revert
+`docs/systems/library/r4.7-native-library-ui-retirement-gate.md`
 
-```bash
-git revert <R4.7.1 commit>..<R4.7.3 commit>
-```
+The required validator matrix is:
 
-Brings back every retired UI surface across all R4.7 phases in one
-operation.
+- `node tools/validation/native/validate-native-library-deprecation.mjs`
+- `node tools/validation/studio/validate-studio-library-organization-ui.mjs`
+- `node tools/validation/studio/validate-studio-library-actions.mjs`
+- `node tools/validation/studio/validate-studio-import-bundle.mjs`
+- `node tools/validation/cross-platform/scans/scan-runtime-import-graph.mjs`
 
-### Post-R4.7 escape hatch via flag — NO LONGER FUNCTIONAL
+Expected final counts:
 
-After R4.7.2 + R4.7.3 land, the R4.6.1 banner button "Restore Native
-Library UI (temporary)" and the DevTools commands
-```js
-H2O.flags.set('library.nativeWorkspaceUi',    true);
-H2O.flags.set('library.nativeOrganizationUi', true);
-location.reload();
-```
-continue to **write** to localStorage but no longer **enable** the UI
-because the workspace + sidebar UI code is gone from the userscripts.
-Operators who need the Native UI back must use rollback path (1), (2),
-or (3).
-
-This is a deliberate design decision: R4.7 is the point of no return
-for the operator-level escape hatch. The flag system (0F1k
-NATIVE_FLAG_DEFAULTS + ensureFlags) is preserved for diagnostic
-continuity (`H2O.flags.diagnose()` still works) but the flags are
-advisory post-R4.7.
-
-## Directory layout
-
-```
-retired-features/native-library-ui/
-├── README.md                         (this file)
-├── original-path-map.md              cross-module move log (populated by R4.7.2/R4.7.3)
-├── migration-map.md                  Native surface → Studio replacement table
-├── notes/
-│   ├── r4.7-investigation.md         frozen R4.7 plan
-│   ├── r4.6-soak-summary.md          R4.6.4 soak telemetry summary
-│   └── rollback-procedures.md        detailed restore recipes
-├── 0F1b-library-workspace/
-│   └── README.md                     (skeleton until R4.7.2 populates with code files)
-├── 0F1d-library-insights/
-│   └── README.md
-├── 0F2a-projects-ui/
-│   └── README.md
-├── 0F3a-folders-ui/
-│   └── README.md
-├── 0F4a-categories-ui/
-│   └── README.md
-└── 0F6a-labels-ui/
-    └── README.md
-```
-
-## Validator
-
-Inventory checks live in
-`tools/validation/native/validate-native-library-deprecation.mjs`,
-Section N (R4.7.1 onward). The validator asserts:
-
-- This directory exists with the documented top-level files
-- Every module sub-folder exists with its README.md
-- `notes/` exists with its 3 expected files
-- Top-level files (README.md, original-path-map.md, migration-map.md)
-  are present and reference the R4.7 phase plan
-
-Section N is purely a scaffolding check at R4.7.1. R4.7.2 / R4.7.3
-will extend Section N with additional assertions for the moved code
-files + the corresponding shrinkage in the original Native modules.
-
-R4.7.1 must NOT modify any runtime behavior. The pre-R4.7 validator
-counts (native 176 / studio 107 / 135 / 277 / graph clean) remain
-the baseline; Section N adds new inventory assertions on top.
+- Native validator: greater than `223`, with `0` failures.
+- Studio organization: `107 / 0`.
+- Studio library-actions: `135 / 0`.
+- Studio import-bundle: `277 / 0`.
+- Import graph: clean.

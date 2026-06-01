@@ -198,6 +198,52 @@ These remain live and were not retired:
 0F5a Tags extraction, 0D3/3X capture files, 0F1j Library Actions,
 Studio files, and generated build outputs are not in R4.7.6 scope.
 
+## R4.7.7 Final Completion Gate
+
+R4.7.7 closes the Native Library UI retirement release gate. It adds
+documentation and validator consolidation only; no runtime code moves
+or source module movement are in scope.
+
+### R4.7 commit ledger
+
+| Slice | Commit | Scope |
+|---|---|---|
+| R4.7.1 | `7a2980ad74a70643b2ae42d4b1557a7d7a74ed52` | Scaffolding for the retired Native Library UI archive |
+| R4.7.2 | `a4a525120fc12e577fd9a8917c452932551fdcdf` | Categories sidebar UI |
+| R4.7.3 | `5b9db0d734bc3beb77b617088a58d1592bf0f2be` | Labels sidebar UI |
+| R4.7.4 | `5e32bfb1164102b442ac1f4a3be69e52ca67c671` | Projects sidebar UI |
+| R4.7.5 | `1ee9021cee94fdb20836eaeee33f5ae867e3b896` | Library Workspace UI and 0F1d Library Insights |
+| R4.7.6 | `4627f2f81cc45acb5180e21ab80b8be77b8a69e1` | Folders sidebar UI |
+| R4.7.7 | _pending commit_ | Final release-gate documentation and validator consolidation |
+
+### Final inventory count
+
+- 6 retired module folders.
+- 6 module README files.
+- 6 extracted-from files.
+- 6 archived JavaScript implementation files.
+- 3 top-level archive files: `README.md`, `migration-map.md`,
+  `original-path-map.md`.
+- 3 notes files under `notes/`.
+
+The 6 archived implementation files are:
+
+- `0F1b-library-workspace/library-workspace-ui.js`
+- `0F1d-library-insights/0F1d-original.js`
+- `0F2a-projects-ui/projects-sidebar-rows.js`
+- `0F3a-folders-ui/folders-sidebar-list.js`
+- `0F4a-categories-ui/categories-sidebar.js`
+- `0F6a-labels-ui/labels-sidebar.js`
+
+### Final release-gate document
+
+See
+`docs/systems/library/r4.7-native-library-ui-retirement-gate.md`.
+
+The final document records the retired inventory, kept-active
+invariants, rollback procedure, validator matrix, known non-goals,
+and smoke checklist.
+
 ## Re-verification
 
 Whenever a row is added to this table, the corresponding move must

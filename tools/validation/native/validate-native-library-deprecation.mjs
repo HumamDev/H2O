@@ -2319,6 +2319,217 @@ check('S.invariants: prior retirements and hard boundaries remain intact after R
 });
 
 /* ════════════════════════════════════════════════════════════════════════
+ * Section T — R4.7.7 final Native Library UI retirement release gate
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section T — R4.7.7 Final Native Library UI retirement release gate');
+
+const T_RELEASE_DOC = 'docs/systems/library/r4.7-native-library-ui-retirement-gate.md';
+const T_ARCHIVES = [
+  {
+    id: '0F1b',
+    dir: '0F1b-library-workspace',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F1b.md',
+    archive: 'library-workspace-ui.js',
+  },
+  {
+    id: '0F1d',
+    dir: '0F1d-library-insights',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F1d.md',
+    archive: '0F1d-original.js',
+  },
+  {
+    id: '0F2a',
+    dir: '0F2a-projects-ui',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F2a.md',
+    archive: 'projects-sidebar-rows.js',
+  },
+  {
+    id: '0F3a',
+    dir: '0F3a-folders-ui',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F3a.md',
+    archive: 'folders-sidebar-list.js',
+  },
+  {
+    id: '0F4a',
+    dir: '0F4a-categories-ui',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F4a.md',
+    archive: 'categories-sidebar.js',
+  },
+  {
+    id: '0F6a',
+    dir: '0F6a-labels-ui',
+    readme: 'README.md',
+    extracted: 'extracted-from-0F6a.md',
+    archive: 'labels-sidebar.js',
+  },
+];
+
+const T_R47_COMMITS = [
+  '7a2980ad74a70643b2ae42d4b1557a7d7a74ed52',
+  'a4a525120fc12e577fd9a8917c452932551fdcdf',
+  '5b9db0d734bc3beb77b617088a58d1592bf0f2be',
+  '5e32bfb1164102b442ac1f4a3be69e52ca67c671',
+  '1ee9021cee94fdb20836eaeee33f5ae867e3b896',
+  '4627f2f81cc45acb5180e21ab80b8be77b8a69e1',
+];
+
+check('T.archive: all retired module archives exist with README + extracted doc', () => {
+  for (const item of T_ARCHIVES) {
+    const base = `${R47_ROOT}/${item.dir}`;
+    assert.ok(fs.existsSync(abs(`${base}/${item.readme}`)), `${item.dir}/${item.readme} missing`);
+    assert.ok(fs.existsSync(abs(`${base}/${item.extracted}`)), `${item.dir}/${item.extracted} missing`);
+    assert.ok(fs.existsSync(abs(`${base}/${item.archive}`)), `${item.dir}/${item.archive} missing`);
+    assert.ok(fs.statSync(abs(`${base}/${item.archive}`)).size > 1000,
+      `${item.dir}/${item.archive} suspiciously small`);
+  }
+});
+
+check('T.archive: final inventory count is 6 module folders and 18 module-level artifacts', () => {
+  assert.equal(T_ARCHIVES.length, 6);
+  let artifactCount = 0;
+  for (const item of T_ARCHIVES) {
+    const files = [item.readme, item.extracted, item.archive];
+    for (const file of files) {
+      assert.ok(fs.existsSync(abs(`${R47_ROOT}/${item.dir}/${file}`)));
+      artifactCount += 1;
+    }
+  }
+  assert.equal(artifactCount, 18);
+});
+
+check('T.source: original live modules no longer contain active retired UI render paths', () => {
+  assert.equal(/^\s*function mountPage\b/m.test(SRC['0F1b']), false,
+    '0F1b still defines mountPage');
+  assert.equal(/^\s*function renderExplorer\b/m.test(SRC['0F1d']), false,
+    '0F1d still defines renderExplorer');
+  assert.equal(/^\s*function renderAnalytics\b/m.test(SRC['0F1d']), false,
+    '0F1d still defines renderAnalytics');
+  assert.equal(/^\s*function UI_installProjectTitleContainerStyle\b/m.test(SRC['0F2a']), false,
+    '0F2a still defines project row CSS installer');
+  assert.equal(/^\s*function UI_markProjectTitleRows\b/m.test(SRC['0F2a']), false,
+    '0F2a still defines project row marker');
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_ROW\)/.test(SRC['0F3a']), false,
+    '0F3a still actively sets flsc-folder-row');
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_MORE\)/.test(SRC['0F3a']), false,
+    '0F3a still actively sets flsc-folder-more');
+  assert.equal(/^\s*function prepareCategoriesSection\b/m.test(SRC['0F4a']), false,
+    '0F4a still defines prepareCategoriesSection');
+  assert.equal(/^\s*function buildCategoriesSection\s*\([^)]*\)\s*\{(?!\s*return null\s*;)/m.test(SRC['0F4a']), false,
+    '0F4a buildCategoriesSection is not a no-op stub');
+  assert.equal(/^\s*function openLabelActionsPop\b/m.test(SRC['0F6a']), false,
+    '0F6a still defines openLabelActionsPop');
+  assert.equal(/^\s*function prepareLabelsSection\b/m.test(SRC['0F6a']), false,
+    '0F6a still defines prepareLabelsSection');
+});
+
+check('T.source: required kept-active APIs remain in original live modules', () => {
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
+
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F3a'], /function STORE_validateFolderCreate\b/);
+  assert.match(SRC['0F3a'], /function STORE_readData\b/);
+  assert.match(SRC['0F3a'], /function STORE_writeData\b/);
+  assert.match(SRC['0F3a'], /function STORE_createFolder\b/);
+  assert.match(SRC['0F3a'], /function API_setBinding\b/);
+  assert.match(SRC['0F3a'], /function API_applyMetadataOperation\b/);
+
+  assert.match(SRC['0F4a'], /H2O\.archiveBoot\??\.?renameCategory/);
+  assert.match(SRC['0F4a'], /H2O\.archiveBoot\??\.?deleteCategory/);
+  assert.match(SRC['0F4a'], /H2O\.archiveBoot\??\.?createCategory/);
+
+  assert.match(SRC['0F6a'], /^\s*function createLabel\s*\(/m);
+  assert.match(SRC['0F6a'], /^\s*function renameLabel\s*\(/m);
+  assert.match(SRC['0F6a'], /^\s*function deleteLabel\s*\(/m);
+});
+
+check('T.invariants: 0F5a remains byte-exact 273099', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    '0F5a size changed after final R4.7 gate: ' + stat.size);
+});
+
+check('T.invariants: 0D3*/3X* capture files contain no R4.7 retirement markers', () => {
+  const runtimeDir = abs('src-runtime-base');
+  const captureFiles = fs.readdirSync(runtimeDir)
+    .filter((name) => /^(?:0D3|3X)/.test(name))
+    .filter((name) => name.endsWith('.js'));
+  assert.ok(captureFiles.length >= 6, 'expected 0D3/3X capture files to exist');
+  for (const name of captureFiles) {
+    const src = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+    assert.equal(/R4\.7|retired-features\/native-library-ui|native-library-ui/.test(src), false,
+      name + ' should not contain R4.7 retirement markers');
+  }
+});
+
+check('T.doc: retired-features README states final completed status + no-op restore flags', () => {
+  const doc = fs.readFileSync(abs(`${R47_ROOT}/README.md`), 'utf8');
+  assert.match(doc, /Final status \(R4\.7\.7\): COMPLETE/);
+  assert.match(doc, /0F1b Library Workspace/);
+  assert.match(doc, /0F1d Library Insights/);
+  assert.match(doc, /0F2a Projects/);
+  assert.match(doc, /0F3a Folders/);
+  assert.match(doc, /0F4a Categories/);
+  assert.match(doc, /0F6a Labels/);
+  assert.match(doc, /library\.nativeWorkspaceUi/);
+  assert.match(doc, /library\.nativeOrganizationUi/);
+  assert.match(doc, /no-op for retired UI/);
+  assert.match(doc, /Rollback Strategy/);
+});
+
+check('T.doc: R4.7 release-gate doc exists with validator matrix and rollback procedure', () => {
+  assert.ok(fs.existsSync(abs(T_RELEASE_DOC)), T_RELEASE_DOC + ' not found');
+  const doc = fs.readFileSync(abs(T_RELEASE_DOC), 'utf8');
+  assert.match(doc, /R4\.7 Native Library UI Retirement Gate/);
+  assert.match(doc, /Final Retirement Summary/);
+  assert.match(doc, /Retired-Features Inventory/);
+  assert.match(doc, /Kept-Active Invariants/);
+  assert.match(doc, /Rollback Procedure/);
+  assert.match(doc, /Final Validator Matrix/);
+  assert.match(doc, /Known Non-Goals/);
+  assert.match(doc, /Final Smoke Checklist/);
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /273099/);
+  assert.match(doc, /0D3\*\/3X\*/);
+});
+
+check('T.doc: final docs list all committed R4.7 hashes', () => {
+  const readme = fs.readFileSync(abs(`${R47_ROOT}/README.md`), 'utf8');
+  const gateDoc = fs.readFileSync(abs(T_RELEASE_DOC), 'utf8');
+  const pathMap = fs.readFileSync(abs(`${R47_ROOT}/original-path-map.md`), 'utf8');
+  for (const hash of T_R47_COMMITS) {
+    assert.ok(readme.includes(hash), `retired README missing ${hash}`);
+    assert.ok(gateDoc.includes(hash), `release-gate doc missing ${hash}`);
+    assert.ok(pathMap.includes(hash), `original-path-map missing ${hash}`);
+  }
+});
+
+check('T.doc: original-path-map final completion section records inventory count', () => {
+  const doc = fs.readFileSync(abs(`${R47_ROOT}/original-path-map.md`), 'utf8');
+  assert.match(doc, /R4\.7\.7 Final Completion Gate/);
+  assert.match(doc, /6 retired module folders/);
+  assert.match(doc, /6 module README files/);
+  assert.match(doc, /6 extracted-from files/);
+  assert.match(doc, /6 archived JavaScript implementation files/);
+  assert.match(doc, /r4\.7-native-library-ui-retirement-gate\.md/);
+});
+
+check('T.docs: final archive docs preserve replacement mapping references', () => {
+  const readme = fs.readFileSync(abs(`${R47_ROOT}/README.md`), 'utf8');
+  for (const token of ['S0F1d', 'S0F3b', 'S0F4b', 'S0F6b', 'S0F1m', 'S0F1n', 'S0Z1g']) {
+    assert.match(readme, new RegExp(token), `retired README missing ${token}`);
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
  * Output
  * ═══════════════════════════════════════════════════════════════════════ */
 
