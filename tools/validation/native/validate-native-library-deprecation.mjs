@@ -811,6 +811,209 @@ check('M.documentation-references: 0F1k declares R4.6.4 in its comment', () => {
 });
 
 /* ════════════════════════════════════════════════════════════════════════
+ * Section N — R4.7.1 retired-features inventory (scaffolding only)
+ *
+ * R4.7.1 creates the directory tree + documentation. No code is moved
+ * in this slice — Section N asserts ONLY that the scaffolding files
+ * exist with the documented top-level files + 6 module sub-folders
+ * + 3 notes files. Code-move assertions (Section O size shrinkage,
+ * Section P invariant re-verification post-move) land in R4.7.2 +
+ * R4.7.3.
+ *
+ * The retired folder name is FROZEN as `retired-features/native-library-ui/`.
+ * Do NOT use: archive/, reference/, backup/, old/, src-runtime-base/retired/
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section N — R4.7.1 retired-features scaffolding');
+
+const R47_ROOT = 'retired-features/native-library-ui';
+
+check('N.root: retired-features/native-library-ui/ directory exists', () => {
+  assert.ok(fs.existsSync(abs(R47_ROOT)), `${R47_ROOT} not found`);
+  const stat = fs.statSync(abs(R47_ROOT));
+  assert.ok(stat.isDirectory(), `${R47_ROOT} must be a directory`);
+});
+
+check('N.root: forbidden alternate folder names are NOT used', () => {
+  /* The R4.7 plan explicitly forbids these alternates. If any of
+   * these exists at the repo root, the project has drifted from the
+   * documented architecture. */
+  const forbidden = [
+    'archive',
+    'reference',
+    'backup',
+    'old',
+    'src-runtime-base/retired',
+  ];
+  for (const f of forbidden) {
+    assert.equal(fs.existsSync(abs(f)), false,
+      `forbidden alternate folder ${f} must not exist — use ${R47_ROOT} instead`);
+  }
+});
+
+check('N.top-level: README.md, original-path-map.md, migration-map.md present', () => {
+  for (const f of ['README.md', 'original-path-map.md', 'migration-map.md']) {
+    assert.ok(fs.existsSync(abs(`${R47_ROOT}/${f}`)),
+      `${R47_ROOT}/${f} not found`);
+  }
+});
+
+check('N.top-README: documents retirement reason + replacement + rollback + invariants', () => {
+  const readme = fs.readFileSync(abs(`${R47_ROOT}/README.md`), 'utf8');
+  /* Retirement reason mentions Desktop Studio replacement. */
+  assert.match(readme, /Desktop Studio/i);
+  /* Replacement table includes the four catalog targets. */
+  assert.match(readme, /folder/i);
+  assert.match(readme, /categor/i);
+  assert.match(readme, /label/i);
+  assert.match(readme, /tag/i);
+  /* Safety invariants enumerated. */
+  assert.match(readme, /[Ss]afety invariants/);
+  /* 0F5a invariant explicitly stated. */
+  assert.match(readme, /0F5a/);
+  assert.match(readme, /273099/);
+  /* Capture invariants explicitly stated. */
+  assert.match(readme, /ENGINE_injectAddToLibrary/);
+  assert.match(readme, /ENGINE_injectAddToFolder/);
+  assert.match(readme, /STORE_validateFolderCreate/);
+  /* Rollback strategy documented. */
+  assert.match(readme, /[Rr]ollback/);
+  assert.match(readme, /git revert/);
+});
+
+check('N.original-path-map: present with the move-log format', () => {
+  const map = fs.readFileSync(abs(`${R47_ROOT}/original-path-map.md`), 'utf8');
+  /* Records the format for moves. */
+  assert.match(map, /[Ss]ource file/);
+  assert.match(map, /[Dd]estination/);
+  assert.match(map, /R4\.7/);
+  /* R4.7.1 explicitly notes "no code moves yet". */
+  assert.match(map, /scaffolding/i);
+});
+
+check('N.migration-map: maps Native surfaces to Studio replacements', () => {
+  const map = fs.readFileSync(abs(`${R47_ROOT}/migration-map.md`), 'utf8');
+  /* Studio replacement modules referenced. */
+  assert.match(map, /S0F3b/);
+  assert.match(map, /S0F4b/);
+  assert.match(map, /S0F5b/);
+  assert.match(map, /S0F6b/);
+  assert.match(map, /S0F1m/);
+  assert.match(map, /S0F1n/);
+  assert.match(map, /S0Z1g/);
+  /* The hard invariant: 0F5a extraction stays. */
+  assert.match(map, /0F5a/);
+  assert.match(map, /NOT (RETIRED|REPLACED)/i);
+});
+
+check('N.notes: notes/ directory has r4.7-investigation, r4.6-soak-summary, rollback-procedures', () => {
+  for (const f of ['r4.7-investigation.md', 'r4.6-soak-summary.md', 'rollback-procedures.md']) {
+    assert.ok(fs.existsSync(abs(`${R47_ROOT}/notes/${f}`)),
+      `${R47_ROOT}/notes/${f} not found`);
+  }
+});
+
+check('N.notes: r4.7-investigation.md freezes the plan + lists module dispositions', () => {
+  const doc = fs.readFileSync(abs(`${R47_ROOT}/notes/r4.7-investigation.md`), 'utf8');
+  /* Lists module inventory. */
+  for (const mod of ['0F1b', '0F2a', '0F3a', '0F4a', '0F6a', '0F1j', '0F5a']) {
+    assert.ok(doc.indexOf(mod) >= 0, `r4.7-investigation.md missing module ${mod}`);
+  }
+  /* Lists the slice plan. */
+  assert.match(doc, /R4\.7\.1/);
+  assert.match(doc, /R4\.7\.2/);
+  assert.match(doc, /R4\.7\.3/);
+  /* Hard invariants section. */
+  assert.match(doc, /[Hh]ard invariants/);
+});
+
+check('N.notes: r4.6-soak-summary.md records R4.6.x commits + pre-R4.7 validator counts', () => {
+  const doc = fs.readFileSync(abs(`${R47_ROOT}/notes/r4.6-soak-summary.md`), 'utf8');
+  /* R4.6 commit hashes (truncated). */
+  assert.match(doc, /4dcab8d/);
+  assert.match(doc, /fa70892/);
+  assert.match(doc, /ee144af/);
+  /* Pre-R4.7 baseline validator counts (these are the values at R4.6.4). */
+  assert.match(doc, /176/);
+  assert.match(doc, /107/);
+  assert.match(doc, /135/);
+  assert.match(doc, /277/);
+});
+
+check('N.notes: rollback-procedures.md documents 3 levels + post-R4.7 escape-hatch retirement', () => {
+  const doc = fs.readFileSync(abs(`${R47_ROOT}/notes/rollback-procedures.md`), 'utf8');
+  /* 3 rollback levels. */
+  assert.match(doc, /Level 1/i);
+  assert.match(doc, /Level 2/i);
+  assert.match(doc, /Level 3/i);
+  /* Per-file restore. */
+  assert.match(doc, /Per-file/i);
+  /* Git revert. */
+  assert.match(doc, /git revert/);
+  /* Post-R4.7 escape-hatch becomes inert. */
+  assert.match(doc, /NO LONGER FUNCTIONAL/i);
+  /* Hard invariants never affected by rollback. */
+  assert.match(doc, /[Hh]ard invariants/);
+});
+
+const R47_MODULE_DIRS = [
+  '0F1b-library-workspace',
+  '0F1d-library-insights',
+  '0F2a-projects-ui',
+  '0F3a-folders-ui',
+  '0F4a-categories-ui',
+  '0F6a-labels-ui',
+];
+
+for (const dir of R47_MODULE_DIRS) {
+  check(`N.module-folder: ${dir}/ exists with README.md`, () => {
+    assert.ok(fs.existsSync(abs(`${R47_ROOT}/${dir}`)),
+      `${R47_ROOT}/${dir} not found`);
+    assert.ok(fs.statSync(abs(`${R47_ROOT}/${dir}`)).isDirectory(),
+      `${R47_ROOT}/${dir} must be a directory`);
+    assert.ok(fs.existsSync(abs(`${R47_ROOT}/${dir}/README.md`)),
+      `${R47_ROOT}/${dir}/README.md not found`);
+  });
+  check(`N.module-README: ${dir}/README.md documents retirement + replacement + rollback`, () => {
+    const doc = fs.readFileSync(abs(`${R47_ROOT}/${dir}/README.md`), 'utf8');
+    /* "What was here pre-R4.7" section. */
+    assert.match(doc, /pre-R4\.7/i);
+    /* "What R4.7.x will retire" section. */
+    assert.match(doc, /[Rr]etire/);
+    /* "What STAYS" section (the kept surfaces). */
+    assert.match(doc, /STAYS/);
+    /* Replacement reference. */
+    assert.match(doc, /[Rr]eplacement/);
+    /* Rollback procedure. */
+    assert.match(doc, /[Rr]ollback/);
+    assert.match(doc, /git revert/);
+  });
+}
+
+check('N.r47.1-no-code-moves: NO .js files in retired-features/native-library-ui/ subfolders yet', () => {
+  /* R4.7.1 is scaffolding only. JS files (the actual moved code)
+   * arrive in R4.7.2 + R4.7.3. Section N at R4.7.1 asserts the
+   * subfolders are bare except for the README.md. */
+  for (const dir of R47_MODULE_DIRS) {
+    const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
+    const jsFiles = entries.filter(f => f.endsWith('.js'));
+    assert.equal(jsFiles.length, 0,
+      `${R47_ROOT}/${dir} should contain no .js files at R4.7.1 (scaffolding only); found: ${jsFiles.join(', ')}`);
+  }
+});
+
+check('N.r47.1-no-runtime-impact: no Native module was touched by R4.7.1', () => {
+  /* R4.7.1 is documentation + validator only. Re-assert that the
+   * critical hard invariants from earlier sections still hold —
+   * because the validator runs across the whole tree, any drift
+   * caused by accidentally touching a Native module surfaces here.
+   * The byte-exact 0F5a check is the canary. */
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    `0F5a size changed during R4.7.1: ${stat.size} vs baseline 273099 — scaffolding slice must not modify Native modules`);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
  * Output
  * ═══════════════════════════════════════════════════════════════════════ */
 
