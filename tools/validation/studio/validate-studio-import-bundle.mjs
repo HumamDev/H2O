@@ -672,6 +672,21 @@ async function main() {
   // LibraryIndex.facets().byCategory facet (best-effort).
   await runCategoryOrganizationModalsTests();
 
+  // ── (16) Label Organization Modals (R4.5.3) ─────────────────────────
+  // Extends the modal layer to labels: openLabelEditor with all 4 modes
+  // (create/rename/color/delete — labels carry a color column). Delete
+  // confirm is enriched with label name + bound-chat count via
+  // LibraryIndex.facets().byLabel.
+  await runLabelOrganizationModalsTests();
+
+  // ── (17) Tag Organization Modals (R4.5.3 — HARD BOUNDARY) ───────────
+  // Extends the modal layer to tags: openTagEditor with 3 modes
+  // (create/rename/delete; NO color, NO extraction). Hard boundary
+  // enforced at runtime: extraction/derive/scan modes all reject as
+  // unsupported-mode; diagnose() reports tagExtraction:false. Turn-level
+  // extraction continues to flow from Native 0F5a — Studio is catalog-only.
+  await runTagOrganizationModalsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -3935,13 +3950,15 @@ async function runCategoryOrganizationModalsTests() {
     return;
   }
   const modals = sandbox.H2O?.Studio?.OrganizationModals;
-  check('openCategoryEditor exists + version bumped to 0.2.0', () => {
+  check('openCategoryEditor exists + version >= 0.2.0', () => {
     assert.equal(typeof modals.openCategoryEditor, 'function');
-    assert.equal(modals.__version, '0.2.0');
+    // Version is 0.2.0 (R4.5.2) or higher; future slices bump it further.
+    assert.match(modals.__version, /^(?:0\.[2-9]\d*\.\d+|0\.\d{2,}\.\d+|[1-9]\d*\.\d+\.\d+)$/);
   });
-  check('diagnose() reports R4.5.2 phase + targets.categories sub-object', () => {
+  check('diagnose() reports R4.5.x phase (with categories) + targets.categories sub-object', () => {
     const d = modals.diagnose();
-    assert.equal(d.phase, 'R4.5.2-folders+categories-modal');
+    // Accept any R4.5.x phase string that includes 'categories' (R4.5.2+).
+    assert.match(d.phase, /^R4\.5\.[2-9](?:\.[a-z])?-[^-]*categories[^']*-modal$/);
     assert.ok(d.targets);
     assert.ok(d.targets.folders);
     assert.ok(d.targets.categories);
@@ -4154,6 +4171,627 @@ async function runCategoryOrganizationModalsTests() {
     assert.equal(evts.length, 1,
       'expected exactly 1 refresh dispatched (via actions.categories), got ' + evts.length);
     assert.match(String(evts[0].detail.reason), /categories-actions:/);
+  });
+}
+
+// ── Label Organization Modals test runner (R4.5.3) ────────────────────
+async function runLabelOrganizationModalsTests() {
+  console.log('');
+  console.log('── Label Organization Modals (R4.5.3) ──────────────────────');
+
+  const S0F1M_REL  = 'src-surfaces-base/studio/S0F1m. 🎬 Library Organization Modals - Studio.js';
+  const S0F1M_PATH = path.join(REPO_ROOT, S0F1M_REL);
+
+  function makeActionsLabelsMock(eventTarget) {
+    const labels = new Map();
+    const calls = [];
+    let seq = 0;
+    function refresh(reason) {
+      try {
+        eventTarget.dispatchEvent({
+          type: 'evt:h2o:library-index:refresh-request',
+          detail: { reason: 'labels-actions:' + reason },
+        });
+      } catch (_) { /* swallow */ }
+    }
+    function record(op, args, result) { calls.push({ op, args, result }); return result; }
+    return {
+      __installed: true,
+      _labels: labels,
+      _calls: calls,
+      async create(input) {
+        const name = String((input && input.name) || '').trim();
+        if (!name) return record('create', [input], { ok: false, action: 'create', status: 'name-required' });
+        seq += 1;
+        const id = 'lbl_modal_' + seq;
+        const row = { labelId: id, name, color: String((input && input.color) || '') };
+        labels.set(id, row);
+        refresh('create');
+        return record('create', [input], { ok: true, action: 'create', status: 'ok', labelId: id, name, color: row.color, row });
+      },
+      async rename(labelIdInput, newNameInput) {
+        const labelId = String(labelIdInput == null ? '' : labelIdInput).trim();
+        const newName = String(newNameInput == null ? '' : newNameInput).trim();
+        if (!labelId) return record('rename', [labelIdInput, newNameInput], { ok: false, action: 'rename', status: 'label-id-required' });
+        if (!newName) return record('rename', [labelIdInput, newNameInput], { ok: false, action: 'rename', status: 'name-required', labelId });
+        if (!labels.has(labelId)) return record('rename', [labelIdInput, newNameInput], { ok: false, action: 'rename', status: 'not-found', labelId });
+        const cur = labels.get(labelId);
+        cur.name = newName;
+        labels.set(labelId, cur);
+        refresh('rename');
+        return record('rename', [labelIdInput, newNameInput], { ok: true, action: 'rename', status: 'ok', labelId, name: newName, row: { ...cur } });
+      },
+      async update(labelIdInput, patchInput) {
+        const labelId = String(labelIdInput == null ? '' : labelIdInput).trim();
+        if (!labelId) return record('update', [labelIdInput, patchInput], { ok: false, action: 'update', status: 'label-id-required' });
+        if (!patchInput || typeof patchInput !== 'object') return record('update', [labelIdInput, patchInput], { ok: false, action: 'update', status: 'patch-required', labelId });
+        if (!labels.has(labelId)) return record('update', [labelIdInput, patchInput], { ok: false, action: 'update', status: 'not-found', labelId });
+        const cur = labels.get(labelId);
+        for (const k of Object.keys(patchInput)) cur[k] = patchInput[k];
+        labels.set(labelId, cur);
+        refresh('update');
+        return record('update', [labelIdInput, patchInput], { ok: true, action: 'update', status: 'ok', labelId, row: { ...cur }, appliedFields: Object.keys(patchInput) });
+      },
+      async remove(labelIdInput) {
+        const labelId = String(labelIdInput == null ? '' : labelIdInput).trim();
+        if (!labelId) return record('remove', [labelIdInput], { ok: false, action: 'remove', status: 'label-id-required' });
+        if (!labels.has(labelId)) return record('remove', [labelIdInput], { ok: false, action: 'remove', status: 'not-found', labelId });
+        labels.delete(labelId);
+        refresh('remove');
+        return record('remove', [labelIdInput], { ok: true, action: 'remove', status: 'ok', labelId });
+      },
+      'delete'(labelId) { return this.remove(labelId); },
+      diagnose() { return { installed: true, phase: 'R4.5.3-labels-mock' }; },
+    };
+  }
+
+  function makeStoreLabelsMock(actions) {
+    return {
+      async get(labelId) {
+        const id = String(labelId == null ? '' : labelId).trim();
+        return id && actions._labels.has(id) ? { ...actions._labels.get(id) } : null;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox(opts) {
+    opts = opts || {};
+    const eventTarget = makeEventTarget();
+    const actions = makeActionsLabelsMock(eventTarget);
+    const store = makeStoreLabelsMock(actions);
+    const promptStub = { queue: opts.promptQueue ? opts.promptQueue.slice() : [], calls: [], shift() { return this.queue.length > 0 ? this.queue.shift() : null; } };
+    const confirmStub = { defaultAnswer: opts.confirmAnswer === false ? false : true, queue: opts.confirmQueue ? opts.confirmQueue.slice() : [], calls: [] };
+    const libraryIndexMock = opts.byLabel ? { facets() { return { byLabel: opts.byLabel }; } } : null;
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { actions: { labels: actions }, store: { labels: store }, LibraryIndex: libraryIndexMock } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      prompt(message, defaultValue) { promptStub.calls.push({ message, defaultValue }); return promptStub.shift(); },
+      confirm(message) { confirmStub.calls.push({ message }); return confirmStub.queue.length > 0 ? confirmStub.queue.shift() : confirmStub.defaultAnswer; },
+      _eventTarget: eventTarget, _actions: actions, _store: store, _prompt: promptStub, _confirm: confirmStub,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F1M_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F1M_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 16.1 — module + API shape ───────────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F1m loads with label actions registered');
+    console.log('  ✓ S0F1m loads with label actions registered');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F1m loads (R4.5.3 labels)', err: msg });
+    console.log(`  ✗ S0F1m loads (R4.5.3 labels)\n      ${msg}`);
+    return;
+  }
+  const modals = sandbox.H2O?.Studio?.OrganizationModals;
+  check('openLabelEditor + version 0.3.0', () => {
+    assert.equal(typeof modals.openLabelEditor, 'function');
+    assert.equal(modals.__version, '0.3.0');
+  });
+  check('diagnose() reports R4.5.3 phase + targets.labels (4 modes incl. color)', () => {
+    const d = modals.diagnose();
+    assert.match(d.phase, /^R4\.5\.[3-9].*labels.*-modal$/);
+    assert.ok(d.targets);
+    assert.ok(d.targets.labels);
+    assert.equal(d.targets.labels.actionsAvailable, true);
+    const labelModes = Array.from(d.targets.labels.supportedModes).slice().sort();
+    assert.deepEqual(labelModes, ['color', 'create', 'delete', 'rename']);
+  });
+
+  // ── 16.2 — unsupported mode ─────────────────────────────────────────
+  await checkAsync('openLabelEditor({mode: "extract"}) → unsupported-mode', async () => {
+    const r = await modals.openLabelEditor({ mode: 'extract', labelId: 'lbl_x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+    assert.equal(r.target, 'labels');
+  });
+
+  // ── 16.3 — create mode ──────────────────────────────────────────────
+  await checkAsync('create with name → ok + actions.create + refresh', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'create', name: 'Critical' });
+    assert.equal(r.ok, true);
+    assert.equal(r.target, 'labels');
+    assert.ok(r.labelId && r.labelId.startsWith('lbl_modal_'));
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:create/);
+  });
+  await checkAsync('create with prompt returns "Important" → actions.create("Important")', async () => {
+    const local = buildSandbox({ promptQueue: ['Important'] });
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'create' });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Important');
+    assert.match(local._prompt.calls[0].message, /New label name/);
+  });
+  await checkAsync('create with prompt cancelled → cancelled, no actions call', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'create' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+  });
+  await checkAsync('create accepts color passthrough', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'create', name: 'Hot', color: '#ff3300' });
+    assert.equal(r.ok, true);
+    const payload = local._actions._calls[0].args[0];
+    assert.equal(payload.color, '#ff3300');
+  });
+
+  // ── 16.4 — rename mode ──────────────────────────────────────────────
+  await checkAsync('rename with labelId + name → ok + refresh', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Old' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'rename', labelId: created.labelId, name: 'New' });
+    assert.equal(r.ok, true);
+    assert.equal(local._actions._calls[0].op, 'rename');
+    assert.equal(local._actions._calls[0].args[1], 'New');
+    const evts = refreshEvents(local);
+    assert.match(String(evts[0].detail.reason), /labels-actions:rename/);
+  });
+  await checkAsync('rename without labelId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'rename', name: 'X' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+  await checkAsync('rename prompt enriched with current name', async () => {
+    const local = buildSandbox({ promptQueue: ['Updated'] });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'StartName' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'rename', labelId: created.labelId });
+    assert.equal(r.ok, true);
+    assert.match(local._prompt.calls[0].message, /Rename label/);
+    assert.match(local._prompt.calls[0].message, /StartName/);
+  });
+
+  // ── 16.5 — color mode ───────────────────────────────────────────────
+  await checkAsync('color with labelId + color → calls actions.update({color})', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Tint' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'color', labelId: created.labelId, color: '#abcdef' });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, '#abcdef');
+    const updateCall = local._actions._calls.find(c => c.op === 'update');
+    assert.ok(updateCall);
+    assert.equal(updateCall.args[1].color, '#abcdef');
+    const evts = refreshEvents(local);
+    assert.match(String(evts[0].detail.reason), /labels-actions:update/);
+  });
+  await checkAsync('color with prompt returns "#fff" → calls actions.update', async () => {
+    const local = buildSandbox({ promptQueue: ['#fff'] });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Hue' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'color', labelId: created.labelId });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, '#fff');
+  });
+  await checkAsync('color prompt cancelled → cancelled', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'NoChange' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'color', labelId: created.labelId });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+  });
+
+  // ── 16.6 — delete mode ──────────────────────────────────────────────
+  await checkAsync('delete confirm=true → calls actions.remove + refresh', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Drop' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'delete', labelId: created.labelId });
+    assert.equal(r.ok, true);
+    assert.ok(local._actions._calls.find(c => c.op === 'remove'));
+    const evts = refreshEvents(local);
+    assert.match(String(evts[0].detail.reason), /labels-actions:remove/);
+  });
+  await checkAsync('delete confirm=false → cancelled', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Stay' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'delete', labelId: created.labelId });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'remove').length, 0);
+  });
+  await checkAsync('delete with skipConfirm=true → no confirm prompt', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Force' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'delete', labelId: created.labelId, skipConfirm: true });
+    assert.equal(r.ok, true);
+    assert.equal(local._confirm.calls.length, 0);
+  });
+  await checkAsync('delete confirm message includes label name + bound count from byLabel facet', async () => {
+    const local = buildSandbox({ confirmAnswer: true, byLabel: { lbl_modal_1: ['c1', 'c2', 'c3'] } });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Triple' });
+    assert.equal(created.labelId, 'lbl_modal_1');
+    await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'delete', labelId: created.labelId });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Triple/);
+    assert.match(msg, /unbind the label from 3 chats/);
+  });
+  await checkAsync('delete confirm "No chats currently use this label" when count is 0', async () => {
+    const local = buildSandbox({ confirmAnswer: true, byLabel: { lbl_modal_1: [] } });
+    const created = await local.H2O.Studio.actions.labels.create({ name: 'Empty' });
+    await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'delete', labelId: created.labelId });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /No chats currently use this label/);
+  });
+
+  // ── 16.7 — single source for refresh ─────────────────────────────────
+  await checkAsync('label modal does NOT dispatch its own refresh — only actions.labels does', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openLabelEditor({ mode: 'create', name: 'Solo' });
+    assert.equal(r.ok, true);
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:/);
+  });
+}
+
+// ── Tag Organization Modals test runner (R4.5.3) ──────────────────────
+async function runTagOrganizationModalsTests() {
+  console.log('');
+  console.log('── Tag Organization Modals (R4.5.3) ────────────────────────');
+  console.log('  (HARD BOUNDARY: turn-level extraction stays in Native 0F5a)');
+
+  const S0F1M_REL  = 'src-surfaces-base/studio/S0F1m. 🎬 Library Organization Modals - Studio.js';
+  const S0F1M_PATH = path.join(REPO_ROOT, S0F1M_REL);
+
+  function makeActionsTagsMock(eventTarget) {
+    const tags = new Map();
+    const calls = [];
+    let seq = 0;
+    function refresh(reason) {
+      try {
+        eventTarget.dispatchEvent({
+          type: 'evt:h2o:library-index:refresh-request',
+          detail: { reason: 'tags-actions:' + reason },
+        });
+      } catch (_) { /* swallow */ }
+    }
+    function record(op, args, result) { calls.push({ op, args, result }); return result; }
+    return {
+      __installed: true,
+      _tags: tags,
+      _calls: calls,
+      async create(input) {
+        const name = String((input && input.name) || '').trim();
+        if (!name) return record('create', [input], { ok: false, action: 'create', status: 'name-required' });
+        seq += 1;
+        const id = 'tag_modal_' + seq;
+        const row = { tagId: id, name };
+        tags.set(id, row);
+        refresh('create');
+        return record('create', [input], { ok: true, action: 'create', status: 'ok', tagId: id, name, row });
+      },
+      async rename(tagIdInput, newNameInput) {
+        const tagId = String(tagIdInput == null ? '' : tagIdInput).trim();
+        const newName = String(newNameInput == null ? '' : newNameInput).trim();
+        if (!tagId) return record('rename', [tagIdInput, newNameInput], { ok: false, action: 'rename', status: 'tag-id-required' });
+        if (!newName) return record('rename', [tagIdInput, newNameInput], { ok: false, action: 'rename', status: 'name-required', tagId });
+        if (!tags.has(tagId)) return record('rename', [tagIdInput, newNameInput], { ok: false, action: 'rename', status: 'not-found', tagId });
+        const cur = tags.get(tagId);
+        cur.name = newName;
+        tags.set(tagId, cur);
+        refresh('rename');
+        return record('rename', [tagIdInput, newNameInput], { ok: true, action: 'rename', status: 'ok', tagId, name: newName, row: { ...cur } });
+      },
+      async remove(tagIdInput) {
+        const tagId = String(tagIdInput == null ? '' : tagIdInput).trim();
+        if (!tagId) return record('remove', [tagIdInput], { ok: false, action: 'remove', status: 'tag-id-required' });
+        if (!tags.has(tagId)) return record('remove', [tagIdInput], { ok: false, action: 'remove', status: 'not-found', tagId });
+        tags.delete(tagId);
+        refresh('remove');
+        return record('remove', [tagIdInput], { ok: true, action: 'remove', status: 'ok', tagId });
+      },
+      'delete'(tagId) { return this.remove(tagId); },
+      diagnose() { return { installed: true, phase: 'R4.5.3-tags-mock' }; },
+    };
+  }
+
+  function makeStoreTagsMock(actions) {
+    return {
+      async get(tagId) {
+        const id = String(tagId == null ? '' : tagId).trim();
+        return id && actions._tags.has(id) ? { ...actions._tags.get(id) } : null;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox(opts) {
+    opts = opts || {};
+    const eventTarget = makeEventTarget();
+    const actions = makeActionsTagsMock(eventTarget);
+    const store = makeStoreTagsMock(actions);
+    const promptStub = { queue: opts.promptQueue ? opts.promptQueue.slice() : [], calls: [], shift() { return this.queue.length > 0 ? this.queue.shift() : null; } };
+    const confirmStub = { defaultAnswer: opts.confirmAnswer === false ? false : true, queue: opts.confirmQueue ? opts.confirmQueue.slice() : [], calls: [] };
+    const libraryIndexMock = opts.byTag ? { facets() { return { byTag: opts.byTag }; } } : null;
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { actions: { tags: actions }, store: { tags: store }, LibraryIndex: libraryIndexMock } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      prompt(message, defaultValue) { promptStub.calls.push({ message, defaultValue }); return promptStub.shift(); },
+      confirm(message) { confirmStub.calls.push({ message }); return confirmStub.queue.length > 0 ? confirmStub.queue.shift() : confirmStub.defaultAnswer; },
+      _eventTarget: eventTarget, _actions: actions, _store: store, _prompt: promptStub, _confirm: confirmStub,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F1M_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F1M_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F1m loads with tag actions registered');
+    console.log('  ✓ S0F1m loads with tag actions registered');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F1m loads (R4.5.3 tags)', err: msg });
+    console.log(`  ✗ S0F1m loads (R4.5.3 tags)\n      ${msg}`);
+    return;
+  }
+  const modals = sandbox.H2O?.Studio?.OrganizationModals;
+  check('openTagEditor exists; tag targets present', () => {
+    assert.equal(typeof modals.openTagEditor, 'function');
+    const d = modals.diagnose();
+    assert.ok(d.targets.tags);
+    assert.equal(d.targets.tags.actionsAvailable, true);
+    const tagModes = Array.from(d.targets.tags.supportedModes).slice().sort();
+    assert.deepEqual(tagModes, ['create', 'delete', 'rename']);
+  });
+
+  // HARD BOUNDARY assertions (runtime side)
+  check('R4.5.3 BOUNDARY: diagnose reports tagExtraction:false AND targets.tags.extraction:false', () => {
+    const d = modals.diagnose();
+    assert.equal(d.tagExtraction, false);
+    assert.equal(d.targets.tags.extraction, false);
+    assert.equal(d.targets.tags.observesChatGptDom, false);
+    assert.equal(d.domAccess, false);
+    assert.equal(d.observesChatGptDom, false);
+  });
+
+  // ── 17.1 — unsupported modes (incl. forbidden extraction) ────────────
+  await checkAsync('openTagEditor({mode: "color"}) → unsupported-mode (tags have no color)', async () => {
+    const r = await modals.openTagEditor({ mode: 'color', tagId: 'tag_x', color: '#fff' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+    assert.equal(r.target, 'tags');
+  });
+  await checkAsync('openTagEditor({mode: "extract"}) → unsupported-mode (BOUNDARY)', async () => {
+    const r = await modals.openTagEditor({ mode: 'extract', tagId: 'tag_x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+  });
+  await checkAsync('openTagEditor({mode: "derive"}) → unsupported-mode (BOUNDARY)', async () => {
+    const r = await modals.openTagEditor({ mode: 'derive', tagId: 'tag_x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+  });
+  await checkAsync('openTagEditor({mode: "scan"}) → unsupported-mode (BOUNDARY)', async () => {
+    const r = await modals.openTagEditor({ mode: 'scan', tagId: 'tag_x' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+  });
+
+  // ── 17.2 — create mode ──────────────────────────────────────────────
+  await checkAsync('create with name → ok + actions.create + refresh', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'create', name: 'urgent' });
+    assert.equal(r.ok, true);
+    assert.equal(r.target, 'tags');
+    assert.ok(r.tagId && r.tagId.startsWith('tag_modal_'));
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:create/);
+  });
+  await checkAsync('create with prompt returns "todo" → actions.create("todo")', async () => {
+    const local = buildSandbox({ promptQueue: ['todo'] });
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'create' });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'todo');
+    assert.match(local._prompt.calls[0].message, /New tag name/);
+  });
+  await checkAsync('create with prompt cancelled → cancelled', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'create' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+  });
+
+  // ── 17.3 — rename mode ──────────────────────────────────────────────
+  await checkAsync('rename with tagId + name → ok + refresh', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Old' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'rename', tagId: created.tagId, name: 'New' });
+    assert.equal(r.ok, true);
+    assert.equal(local._actions._calls[0].op, 'rename');
+    assert.equal(local._actions._calls[0].args[1], 'New');
+    const evts = refreshEvents(local);
+    assert.match(String(evts[0].detail.reason), /tags-actions:rename/);
+  });
+  await checkAsync('rename without tagId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'rename', name: 'X' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+  await checkAsync('rename prompt enriched with current name', async () => {
+    const local = buildSandbox({ promptQueue: ['Updated'] });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'TagOriginal' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'rename', tagId: created.tagId });
+    assert.equal(r.ok, true);
+    assert.match(local._prompt.calls[0].message, /Rename tag/);
+    assert.match(local._prompt.calls[0].message, /TagOriginal/);
+  });
+
+  // ── 17.4 — delete mode ──────────────────────────────────────────────
+  await checkAsync('delete confirm=true → calls actions.remove + refresh', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Drop' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'delete', tagId: created.tagId });
+    assert.equal(r.ok, true);
+    assert.ok(local._actions._calls.find(c => c.op === 'remove'));
+    const evts = refreshEvents(local);
+    assert.match(String(evts[0].detail.reason), /tags-actions:remove/);
+  });
+  await checkAsync('delete confirm=false → cancelled', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Stay' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'delete', tagId: created.tagId });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+  });
+  await checkAsync('delete confirm message includes tag name + bound count from byTag facet', async () => {
+    const local = buildSandbox({ confirmAnswer: true, byTag: { tag_modal_1: ['c1', 'c2'] } });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Pair' });
+    assert.equal(created.tagId, 'tag_modal_1');
+    await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'delete', tagId: created.tagId });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Pair/);
+    assert.match(msg, /unbind the tag from 2 chats/);
+  });
+  await checkAsync('delete confirm "No chats currently use this tag" when count is 0', async () => {
+    const local = buildSandbox({ confirmAnswer: true, byTag: { tag_modal_1: [] } });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Empty' });
+    await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'delete', tagId: created.tagId });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /No chats currently use this tag/);
+  });
+  await checkAsync('delete with skipConfirm=true → no confirm prompt', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.tags.create({ name: 'Force' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'delete', tagId: created.tagId, skipConfirm: true });
+    assert.equal(r.ok, true);
+    assert.equal(local._confirm.calls.length, 0);
+  });
+
+  // ── 17.5 — single source for refresh ─────────────────────────────────
+  await checkAsync('tag modal does NOT dispatch its own refresh — only actions.tags does', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openTagEditor({ mode: 'create', name: 'Solo' });
+    assert.equal(r.ok, true);
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:/);
   });
 }
 

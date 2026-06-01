@@ -2220,6 +2220,26 @@
       }).catch((e) => err('renameCategory', e));
       return true;
     }
+    // R4.5.3 — Desktop routes label rename through OrganizationModals →
+    // H2O.Studio.actions.labels.rename. `next` is already collected so
+    // no re-prompt happens. MV3 falls through to the existing
+    // H2O.Labels.renameLabel ladder UNCHANGED.
+    if (kind === 'labels') {
+      try {
+        var modalsLR = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+        if (modalsLR && typeof modalsLR.openLabelEditor === 'function') {
+          modalsLR.openLabelEditor({ labelId: item.id, mode: 'rename', name: next })
+            .then((res) => {
+              if (res && res.ok) {
+                emitLibraryAppearanceChanged({ action: 'rename-label', labelId: item.id });
+              }
+              renderAllSections();
+            })
+            .catch((e) => err('openLabelEditor.rename', e));
+          return true;
+        }
+      } catch (e) { err('openLabelEditor.rename.guard', e); }
+    }
     if (kind === 'labels' && typeof H2O.Labels?.renameLabel === 'function') {
       H2O.Labels.renameLabel(item.type || 'custom', item.id, next);
       emitLibraryAppearanceChanged({ action: 'rename-label', labelId: item.id });
@@ -2255,6 +2275,26 @@
           return true;
         }
       } catch (e) { err('openCategoryEditor.delete.guard', e); }
+    }
+    // R4.5.3 — Desktop routes label delete through OrganizationModals,
+    // which runs its OWN enriched window.confirm (label name + bound
+    // chat count from LibraryIndex.facets().byLabel). We skip the
+    // S0Z1g basic confirm to avoid double-prompting.
+    if (kind === 'labels') {
+      try {
+        var modalsLD = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+        if (modalsLD && typeof modalsLD.openLabelEditor === 'function') {
+          modalsLD.openLabelEditor({ labelId: item.id, mode: 'delete' })
+            .then((res) => {
+              if (res && res.ok) {
+                emitLibraryAppearanceChanged({ action: 'delete-label', labelId: item.id });
+                renderAllSections();
+              }
+            })
+            .catch((e) => err('openLabelEditor.delete', e));
+          return true;
+        }
+      } catch (e) { err('openLabelEditor.delete.guard', e); }
     }
     const ok = W.confirm?.(`Delete ${kind === 'categories' ? 'category' : kind === 'labels' ? 'label' : 'item'} "${name}"?`);
     if (!ok) return false;
@@ -2950,6 +2990,15 @@
       return id ? { id, name, count: facetCount, color, iconKey: 'label', iconSvg: SIDEBAR_ICON_SVGS.label } : null;
     }).filter(Boolean);
     renderSectionList(host, 'labels', items, { emptyText: 'No labels yet' });
+    // R4.5.3 — mount the Desktop label-create button. Tauri-gated; no-op on MV3.
+    try { ensureLabelCreateButton(); } catch (e) { err('ensureLabelCreateButton', e); }
+    // R4.5.3 — defensive: also call the tag-create-button helper.
+    // It targets `.wbSidebarSection--tags`, which doesn't exist in
+    // S0Z1g today (no renderTags). The helper bails on missing
+    // section, so this is a no-op until a future slice adds the
+    // tags sidebar section. Wiring the call here means the button
+    // will auto-mount the moment a tags section appears.
+    try { ensureTagCreateButton(); } catch (e) { err('ensureTagCreateButton', e); }
     step('renderLabels', String(items.length));
   }
 
@@ -3038,6 +3087,147 @@
         ev.preventDefault();
         ev.stopPropagation();
         openCategoryCreate();
+      });
+      sec.insertBefore(button, label.nextSibling);
+    }
+    try {
+      sec.style.position = 'relative';
+      label.style.paddingRight = '40px';
+    } catch {}
+    return button;
+  }
+
+  // R4.5.3 — small "+" button in the Labels section header that opens
+  // openLabelEditor({mode:'create'}). Same shape as
+  // ensureCategoryCreateButton: Tauri+modals gated, no MV3 fallback.
+  function ensureLabelCreateButton() {
+    const sec = D.querySelector('.wbSidebarSection--labels');
+    const label = sec?.querySelector?.('.wbSideLabel');
+    if (!sec || !label) return null;
+    const isTauri = !!(W.__TAURI_INTERNALS__ || W.__TAURI__);
+    const modalsAvail = !!(W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals
+                           && typeof W.H2O.Studio.OrganizationModals.openLabelEditor === 'function');
+    let button = sec.querySelector('[data-h2o-label-create-button="1"]');
+    if (!isTauri || !modalsAvail) {
+      try { button?.remove?.(); } catch {}
+      return null;
+    }
+    if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
+    if (!button) {
+      try {
+        sec.style.position = 'relative';
+        label.style.paddingRight = '40px';
+      } catch {}
+      button = el('button', {
+        class: 'wbSidebarLabelCreateButton',
+        type: 'button',
+        title: 'Create label',
+        'aria-label': 'Create label',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'data-h2o-label-create-button': '1',
+        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+      });
+      button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
+      button.querySelectorAll('svg').forEach((svg) => {
+        svg.style.width = '13px';
+        svg.style.height = '13px';
+      });
+      button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      function openLabelCreate() {
+        try {
+          var modals = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+          if (modals && typeof modals.openLabelEditor === 'function') {
+            modals.openLabelEditor({ mode: 'create', anchorEl: button })
+              .then((res) => { if (res && res.ok) renderAllSections(); })
+              .catch((e) => { try { err('openLabelEditor.create', e); } catch (_) { /* swallow */ } });
+          }
+        } catch (e) { try { err('openLabelEditor.create.guard', e); } catch (_) {} }
+      }
+      button.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        openLabelCreate();
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openLabelCreate();
+      });
+      sec.insertBefore(button, label.nextSibling);
+    }
+    try {
+      sec.style.position = 'relative';
+      label.style.paddingRight = '40px';
+    } catch {}
+    return button;
+  }
+
+  // R4.5.3 — small "+" button in the Tags section header that opens
+  // openTagEditor({mode:'create'}). Tags have NO existing sidebar
+  // section in S0Z1g today (no renderTags); this helper bails
+  // gracefully when `.wbSidebarSection--tags` is absent. The moment a
+  // future slice adds the tags sidebar section, this button will
+  // auto-mount on the next renderAllSections() pass.
+  //
+  // HARD BOUNDARY: the create handler calls openTagEditor for CATALOG
+  // creation only. NO turn-level tag extraction is triggered here —
+  // extraction continues to flow from Native 0F5a.
+  function ensureTagCreateButton() {
+    const sec = D.querySelector('.wbSidebarSection--tags');
+    const label = sec?.querySelector?.('.wbSideLabel');
+    if (!sec || !label) return null;   // tags section not yet present
+    const isTauri = !!(W.__TAURI_INTERNALS__ || W.__TAURI__);
+    const modalsAvail = !!(W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals
+                           && typeof W.H2O.Studio.OrganizationModals.openTagEditor === 'function');
+    let button = sec.querySelector('[data-h2o-tag-create-button="1"]');
+    if (!isTauri || !modalsAvail) {
+      try { button?.remove?.(); } catch {}
+      return null;
+    }
+    if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
+    if (!button) {
+      try {
+        sec.style.position = 'relative';
+        label.style.paddingRight = '40px';
+      } catch {}
+      button = el('button', {
+        class: 'wbSidebarTagCreateButton',
+        type: 'button',
+        title: 'Create tag',
+        'aria-label': 'Create tag',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'data-h2o-tag-create-button': '1',
+        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+      });
+      button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
+      button.querySelectorAll('svg').forEach((svg) => {
+        svg.style.width = '13px';
+        svg.style.height = '13px';
+      });
+      button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      function openTagCreate() {
+        try {
+          var modals = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+          if (modals && typeof modals.openTagEditor === 'function') {
+            modals.openTagEditor({ mode: 'create', anchorEl: button })
+              .then((res) => { if (res && res.ok) renderAllSections(); })
+              .catch((e) => { try { err('openTagEditor.create', e); } catch (_) { /* swallow */ } });
+          }
+        } catch (e) { try { err('openTagEditor.create.guard', e); } catch (_) {} }
+      }
+      button.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        openTagCreate();
+      });
+      button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openTagCreate();
       });
       sec.insertBefore(button, label.nextSibling);
     }

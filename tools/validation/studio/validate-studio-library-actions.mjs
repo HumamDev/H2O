@@ -839,13 +839,17 @@ check('R4.5.1.a: S0F1m never imports / dereferences chrome.* runtime APIs', () =
 // pattern. PRESERVES the MV3 archiveBoot / ChatList fallback ladder.
 
 check('R4.5.2: S0F1m PHASE bumped to indicate category support', () => {
-  assert.match(s0f1mSrc, /PHASE\s*=\s*'R4\.5\.2-folders\+categories-modal'/);
+  // Accept R4.5.2 phase string OR any later R4.5.x phase that includes
+  // 'categories' in the slug — future-proof against R4.5.3+ bumps.
+  assert.match(s0f1mSrc, /PHASE\s*=\s*'R4\.5\.[2-9](?:\.[a-z])?-[^']*categories[^']*-modal'/);
 });
 
-check('R4.5.2: S0F1m exposes openCategoryEditor + bumped version', () => {
+check('R4.5.2: S0F1m exposes openCategoryEditor + version >= 0.2.0', () => {
   assert.match(s0f1mSrc, /openCategoryEditor:\s*openCategoryEditor/);
   assert.match(s0f1mSrc, /async function openCategoryEditor/);
-  assert.match(s0f1mSrc, /__version:\s*'0\.2\.0'/);
+  // Version is now 0.2.0 or higher (R4.5.3 bumps to 0.3.0). Accept any
+  // 0.x where x >= 2, or any 1.x+.
+  assert.match(s0f1mSrc, /__version:\s*'(?:0\.[2-9]\d*\.\d+|0\.\d{2,}\.\d+|[1-9]\d*\.\d+\.\d+)'/);
 });
 
 check('R4.5.2: S0F1m supports category modes create/rename/delete (no color)', () => {
@@ -979,6 +983,204 @@ check('R4.5.2 NOTE: setSnapshotCategory refactor deferred', () => {
   assert.match(s0f1b, /store\.clearChat\(cid\)/);
   // The function still emits the canonical category-changed event.
   assert.match(s0f1b, /emitUpdated\('category-changed'/);
+});
+
+// ── 14. R4.5.3 — Labels + Tags UI in S0F1m + S0Z1g re-wiring ───────────
+// Extends R4.5.2's modal layer with openLabelEditor (4 modes — labels
+// carry a color column) and openTagEditor (3 modes — no color, no
+// extraction). Re-wires S0Z1g's existing labels rename/delete handlers
+// + adds two new create buttons (labels: mounts when labels section
+// renders; tags: defensive — bails on missing tags section). PRESERVES
+// the MV3 H2O.Labels.* fallback ladder.
+//
+// HARD BOUNDARY: turn-level tag extraction stays in Native 0F5a.
+// Studio MUST NOT contain any extraction code, DOM scanning, or
+// ChatGPT-side observers. Multiple assertions below enforce this.
+
+check('R4.5.3: S0F1m PHASE bumped to indicate label + tag support', () => {
+  assert.match(s0f1mSrc, /PHASE\s*=\s*'R4\.5\.3-folders\+categories\+labels\+tags-modal'/);
+});
+
+check('R4.5.3: S0F1m exposes openLabelEditor + openTagEditor + bumped version', () => {
+  assert.match(s0f1mSrc, /openLabelEditor:\s*openLabelEditor/);
+  assert.match(s0f1mSrc, /openTagEditor:\s*openTagEditor/);
+  assert.match(s0f1mSrc, /async function openLabelEditor/);
+  assert.match(s0f1mSrc, /async function openTagEditor/);
+  assert.match(s0f1mSrc, /__version:\s*'0\.3\.0'/);
+});
+
+check('R4.5.3: S0F1m supports label modes create/rename/color/delete', () => {
+  assert.match(s0f1mSrc, /SUPPORTED_LABEL_MODES\s*=\s*\['create',\s*'rename',\s*'color',\s*'delete'\]/);
+  assert.match(s0f1mSrc, /async function handleLabelCreate/);
+  assert.match(s0f1mSrc, /async function handleLabelRename/);
+  assert.match(s0f1mSrc, /async function handleLabelColor/);
+  assert.match(s0f1mSrc, /async function handleLabelDelete/);
+});
+
+check('R4.5.3: S0F1m supports tag modes create/rename/delete (no color, no extraction)', () => {
+  assert.match(s0f1mSrc, /SUPPORTED_TAG_MODES\s*=\s*\['create',\s*'rename',\s*'delete'\]/);
+  assert.match(s0f1mSrc, /async function handleTagCreate/);
+  assert.match(s0f1mSrc, /async function handleTagRename/);
+  assert.match(s0f1mSrc, /async function handleTagDelete/);
+  // Defensive: no handlers for color, extract, derive, scan modes for tags.
+  assert.equal(/handleTagColor/.test(s0f1mSrc), false, 'tags have no color column; handleTagColor must not exist');
+  assert.equal(/handleTagExtract/.test(s0f1mSrc), false, 'extraction stays in Native 0F5a; handleTagExtract must not exist');
+  assert.equal(/handleTagDerive/.test(s0f1mSrc), false,  'extraction stays in Native 0F5a; handleTagDerive must not exist');
+  assert.equal(/handleTagScan/.test(s0f1mSrc), false,    'extraction stays in Native 0F5a; handleTagScan must not exist');
+});
+
+check('R4.5.3: S0F1m calls H2O.Studio.actions.labels.* (not Native, not store)', () => {
+  assert.match(s0f1mSrc, /H2O\.Studio && H2O\.Studio\.actions && H2O\.Studio\.actions\.labels/);
+  const labCreateMatch = s0f1mSrc.match(/async function handleLabelCreate[\s\S]*?^  \}/m);
+  const labRenameMatch = s0f1mSrc.match(/async function handleLabelRename[\s\S]*?^  \}/m);
+  const labColorMatch  = s0f1mSrc.match(/async function handleLabelColor[\s\S]*?^  \}/m);
+  const labDeleteMatch = s0f1mSrc.match(/async function handleLabelDelete[\s\S]*?^  \}/m);
+  assert.ok(labCreateMatch && /actions\.create\s*\(/.test(labCreateMatch[0]),
+    'handleLabelCreate must call actions.create');
+  assert.ok(labRenameMatch && /actions\.rename\s*\(/.test(labRenameMatch[0]),
+    'handleLabelRename must call actions.rename');
+  assert.ok(labColorMatch && /actions\.update\s*\(/.test(labColorMatch[0]),
+    'handleLabelColor must call actions.update');
+  assert.ok(labDeleteMatch && /removeFn\s*\(/.test(labDeleteMatch[0]),
+    'handleLabelDelete must call removeFn (actions.remove or actions.delete)');
+});
+
+check('R4.5.3: S0F1m calls H2O.Studio.actions.tags.* (not Native, not store)', () => {
+  assert.match(s0f1mSrc, /H2O\.Studio && H2O\.Studio\.actions && H2O\.Studio\.actions\.tags/);
+  const tagCreateMatch = s0f1mSrc.match(/async function handleTagCreate[\s\S]*?^  \}/m);
+  const tagRenameMatch = s0f1mSrc.match(/async function handleTagRename[\s\S]*?^  \}/m);
+  const tagDeleteMatch = s0f1mSrc.match(/async function handleTagDelete[\s\S]*?^  \}/m);
+  assert.ok(tagCreateMatch && /actions\.create\s*\(/.test(tagCreateMatch[0]),
+    'handleTagCreate must call actions.create');
+  assert.ok(tagRenameMatch && /actions\.rename\s*\(/.test(tagRenameMatch[0]),
+    'handleTagRename must call actions.rename');
+  assert.ok(tagDeleteMatch && /removeFn\s*\(/.test(tagDeleteMatch[0]),
+    'handleTagDelete must call removeFn (actions.remove or actions.delete)');
+});
+
+check('R4.5.3: S0F1m does NOT call Native label/tag mutation APIs', () => {
+  // Strip JS comments first — the docstring legitimately names the
+  // Native MV3 fallback methods to describe the boundary.
+  const stripped = s0f1mSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1')
+    .replace(/H2O\.Studio\.actions\.(labels|tags)/g, '<<ACTIONS>>')
+    .replace(/H2O\.Studio\.store\.(labels|tags)/g, '<<STORE>>');
+  assert.equal(/H2O\.Labels\.(renameLabel|deleteLabel|createLabel)/.test(stripped), false,
+    'S0F1m must not call H2O.Labels.* mutation methods');
+  assert.equal(/H2O\.Tags\.(renameTag|deleteTag|createTag|extractTag|deriveTag)/.test(stripped), false,
+    'S0F1m must not call H2O.Tags.* mutation/extraction methods');
+});
+
+check('R4.5.3 HARD BOUNDARY: S0F1m has no DOM scanning / no tag extraction', () => {
+  // Same source-comment-stripped scan as R4.3 (S0F5b) applied to S0F1m.
+  // The tag editor must not reach into ChatGPT structure.
+  const stripped = s0f1mSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  for (const forbidden of [
+    'MutationObserver',
+    'document.querySelector',
+    'document.querySelectorAll',
+    "querySelector('article",
+    'data-testid="conversation-turn"',
+    'chatgpt.com',
+    'extractTagsFromTurn',
+    'deriveTags',
+    'scanTurn',
+  ]) {
+    assert.equal(stripped.indexOf(forbidden), -1,
+      `S0F1m must not reference ${forbidden} (turn-level extraction stays Native)`);
+  }
+  // diagnose() reports the boundary explicitly.
+  assert.match(s0f1mSrc, /tagExtraction:\s*false/);
+  // Per-target tag flags also assert the boundary.
+  assert.match(s0f1mSrc, /extraction:\s*false/);
+  assert.match(s0f1mSrc, /observesChatGptDom:\s*false/);
+});
+
+check('R4.5.3: S0F1m enriches delete confirm with label/tag name + bound count', () => {
+  assert.match(s0f1mSrc, /async function loadLabelName/);
+  assert.match(s0f1mSrc, /async function loadLabelBoundCount/);
+  assert.match(s0f1mSrc, /async function loadTagName/);
+  assert.match(s0f1mSrc, /async function loadTagBoundCount/);
+  // Labels enrich strings.
+  assert.match(s0f1mSrc, /unbind the label from 1 chat/);
+  assert.match(s0f1mSrc, /unbind the label from '\s*\+\s*count\s*\+\s*' chats/);
+  // Tags enrich strings.
+  assert.match(s0f1mSrc, /unbind the tag from 1 chat/);
+  assert.match(s0f1mSrc, /unbind the tag from '\s*\+\s*count\s*\+\s*' chats/);
+});
+
+check('R4.5.3: diagnose() reports per-target capability flags for labels + tags', () => {
+  assert.match(s0f1mSrc, /labels:\s*\{[\s\S]*?actionsAvailable:\s*!!getLabelActions\(\)/);
+  assert.match(s0f1mSrc, /tags:\s*\{[\s\S]*?actionsAvailable:\s*!!getTagActions\(\)/);
+});
+
+check('R4.5.3: S0Z1g labels rename handler routes through OrganizationModals on Desktop', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  const promptRenameMatch = s0z1g.match(/function promptRenameItem\(item\)[\s\S]*?^  \}/m);
+  assert.ok(promptRenameMatch, 'promptRenameItem function not found');
+  const body = promptRenameMatch[0];
+  // Desktop branch references OrganizationModals.openLabelEditor with mode:'rename'.
+  assert.match(body, /openLabelEditor\(\{\s*labelId:\s*item\.id,\s*mode:\s*'rename'/);
+  // MV3 fallback ladder is preserved.
+  assert.match(body, /H2O\.Labels\?\.renameLabel/);
+});
+
+check('R4.5.3: S0Z1g labels delete handler routes through OrganizationModals on Desktop', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  const deleteMenuMatch = s0z1g.match(/function deleteMenuItem\(item\)[\s\S]*?^  \}/m);
+  assert.ok(deleteMenuMatch, 'deleteMenuItem function not found');
+  const body = deleteMenuMatch[0];
+  // Desktop branch references openLabelEditor with mode:'delete'.
+  // Must appear BEFORE the W.confirm to avoid double-prompting.
+  const desktopIdx = body.indexOf("openLabelEditor({ labelId: item.id, mode: 'delete' })");
+  const confirmIdx = body.indexOf('W.confirm?.');
+  assert.ok(desktopIdx > 0, 'Desktop labels branch missing from deleteMenuItem');
+  assert.ok(confirmIdx > desktopIdx,
+    'Desktop labels branch must appear BEFORE W.confirm to avoid double-prompting');
+  // MV3 fallback preserved.
+  assert.match(body, /H2O\.Labels\?\.deleteLabel/);
+});
+
+check('R4.5.3: S0Z1g exposes ensureLabelCreateButton + wires it into renderLabels', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  assert.match(s0z1g, /function ensureLabelCreateButton/);
+  const fnBodyMatch = s0z1g.match(/function ensureLabelCreateButton[\s\S]*?return button;\s*\}/);
+  assert.ok(fnBodyMatch);
+  assert.match(fnBodyMatch[0], /__TAURI_INTERNALS__/);
+  assert.match(fnBodyMatch[0], /OrganizationModals[\s\S]*?openLabelEditor/);
+  // renderLabels invokes it.
+  const renderLabelsMatch = s0z1g.match(/async function renderLabels[\s\S]*?step\('renderLabels'/);
+  assert.ok(renderLabelsMatch && /ensureLabelCreateButton\(\)/.test(renderLabelsMatch[0]),
+    'renderLabels must call ensureLabelCreateButton');
+  // Distinct data attribute from folder/category buttons.
+  assert.match(s0z1g, /data-h2o-label-create-button="1"/);
+});
+
+check('R4.5.3: S0Z1g exposes ensureTagCreateButton (defensive — no-op on missing tags section)', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  assert.match(s0z1g, /function ensureTagCreateButton/);
+  const fnBodyMatch = s0z1g.match(/function ensureTagCreateButton[\s\S]*?return button;\s*\}/);
+  assert.ok(fnBodyMatch);
+  // Targets the (yet-unmounted) tags section.
+  assert.match(fnBodyMatch[0], /wbSidebarSection--tags/);
+  assert.match(fnBodyMatch[0], /__TAURI_INTERNALS__/);
+  assert.match(fnBodyMatch[0], /OrganizationModals[\s\S]*?openTagEditor/);
+  // Distinct data attribute.
+  assert.match(s0z1g, /data-h2o-tag-create-button="1"/);
+  // Wired into the render path (renderLabels calls both ensure helpers
+  // — this is a temporary host until a renderTags slice lands).
+  const renderLabelsMatch = s0z1g.match(/async function renderLabels[\s\S]*?step\('renderLabels'/);
+  assert.ok(renderLabelsMatch && /ensureTagCreateButton\(\)/.test(renderLabelsMatch[0]),
+    'renderLabels must also call ensureTagCreateButton (defensive)');
+});
+
+check('R4.5.3: openLabelEditor + openTagEditor still respect single-source refresh', () => {
+  // S0F1m must still have zero dispatchEvent calls after R4.5.3.
+  assert.equal(/dispatchEvent\s*\(/.test(s0f1mSrc), false,
+    'S0F1m must not dispatchEvent — single-source refresh via actions.*');
 });
 
 // ── Output ──────────────────────────────────────────────────────────────
