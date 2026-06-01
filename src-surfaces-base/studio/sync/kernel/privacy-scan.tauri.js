@@ -35,7 +35,7 @@
   var kernel = H2O.Desktop.Sync.kernel;
   if (kernel.__privacyScanInstalled) return;
 
-  var VERSION = '0.3.0-f14.5.8';
+  var VERSION = '0.4.0-f14.5.5.3-snapshot-policy';
   var RESULT_SCHEMA = 'h2o.desktop.sync.kernel.privacy-scan.v1';
 
   var REDACTED = 'redacted';
@@ -170,6 +170,55 @@
     'itemId',
     'messageId',
     'msgId'
+  ];
+
+  // F14.5.5.3 follow-up — close the snapshot.conversation privacy gap
+  // exposed during F14.5.5.4 regression. Registers an explicit
+  // snapshot.conversation domain policy so the kernel scanner blocks
+  // snapshot-sensitive fields under the real kernel, not only under
+  // proof-harness mocks. Mirrors the chat.metadata/capture.artifact
+  // two-tier shape: ALWAYS list (content-shape) + REDACTED list
+  // (identity-shape applied when redactionClass is REDACTED or unset).
+  var SNAPSHOT_CONVERSATION_ALWAYS_FORBIDDEN_FIELDS = [
+    // raw conversation content
+    'content', 'body', 'text',
+    'messages', 'message_array', 'conversation', 'transcript',
+    'turns', 'turn_array',
+    'turnContent', 'turnText', 'turnJson', 'turnHtml',
+    'rawMarkdown', 'rawHtml', 'html', 'markdown',
+    // attachments / media
+    'attachments', 'files', 'file_ids', 'image_urls', 'audio_urls',
+    // model output internals
+    'citations', 'references', 'sources',
+    'toolUseBlocks', 'codeBlocks',
+    'streamingMetadata', 'deltaStream',
+    'embeddingVector', 'embedding',
+    // model identifiers
+    'model', 'model_slug', 'modelSlug', 'model_version', 'modelVersion',
+    // network / share / instruction surface
+    'url', 'path', 'share_url', 'share_token',
+    'system_prompt', 'instructions', 'custom_instructions', 'seed_prompt',
+    'tool_calls', 'function_calls', 'plugins',
+    'participants',
+    // device / session / network identity
+    'cookies', 'session_token', 'sessionToken',
+    'user_agent', 'userAgent',
+    'ip', 'IP', 'ipAddress', 'ip_address'
+  ];
+  var SNAPSHOT_CONVERSATION_REDACTED_FORBIDDEN_FIELDS = [
+    // raw titles
+    'title', 'name',
+    'rawTitle', 'chatTitle', 'snapshotTitle', 'proposedTitle',
+    // raw identifiers (must be sha256-hashed before egress)
+    'rawId', 'snapshotId', 'snapshot_id',
+    'chatId', 'chat_id',
+    'accountId', 'account_id', 'rawAccountId',
+    'userId', 'user_id', 'rawUserId',
+    'messageId', 'message_id', 'rawMessageId',
+    // raw payload + uncoarsened metadata
+    'rawSnapshot', 'snapshotPayload',
+    'rawCapturedAt', 'exactCapturedAt',
+    'exactTurnCount', 'byteSize', 'exactSize'
   ];
 
   function isObject(value) {
@@ -404,6 +453,19 @@
         subjectType: 'capture.artifact',
         forbiddenList: uniqueStringList(captureForbidden),
         foreverNoFields: uniqueStringList(baseForeverNo.concat(CAPTURE_ALWAYS_FORBIDDEN_FIELDS)),
+        allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+      };
+    }
+    if (tag === 'snapshot' || tag === 'snapshot.conversation') {
+      var snapshotForbidden = baseForeverNo.concat(SNAPSHOT_CONVERSATION_ALWAYS_FORBIDDEN_FIELDS);
+      if (redactionClass === REDACTED || !redactionClass) {
+        snapshotForbidden = snapshotForbidden.concat(SNAPSHOT_CONVERSATION_REDACTED_FORBIDDEN_FIELDS);
+      }
+      return {
+        supported: true,
+        subjectType: 'snapshot.conversation',
+        forbiddenList: uniqueStringList(snapshotForbidden),
+        foreverNoFields: uniqueStringList(baseForeverNo.concat(SNAPSHOT_CONVERSATION_ALWAYS_FORBIDDEN_FIELDS)),
         allowTokenFields: [TOKEN_FIELD_EXCEPTION]
       };
     }
