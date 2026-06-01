@@ -448,9 +448,13 @@ const PER_MODULE_GATES = [
    * R4.7.3 — 0F6a's per-module gate retired alongside the labels
    * sidebar UI; moved into retired-features/native-library-ui/
    * 0F6a-labels-ui/labels-sidebar.js Block 1. Section P
-   * re-verifies the absence. The two remaining modules retain
-   * their gates until R4.7.4 retires their UI. */
-  ['0F2a', 'css-known-selector', '.ho-project-row',                                                   'NATIVE PROJECTS SECTION'],
+   * re-verifies the absence.
+   *
+   * R4.7.4 — 0F2a's per-module gate retired alongside the projects
+   * sidebar row UI; moved into retired-features/native-library-ui/
+   * 0F2a-projects-ui/projects-sidebar-rows.js Block 1. Section Q
+   * re-verifies the absence. The remaining 0F3a module retains its
+   * gate until R4.7.5 retires its UI. */
   ['0F3a', 'css-known-selector', '[data-cgxui="flsc-folder-row"], [data-cgxui="flsc-folder-more"]',   'NATIVE FOLDERS SECTION'],
 ];
 for (const [mod, impl, selector, label] of PER_MODULE_GATES) {
@@ -510,14 +514,13 @@ check('K.no-placeholders: no placeholder selectors remain in any Native module',
   }
 });
 
-check('K.0F2a: projects gate uses real .ho-project-row class selector', () => {
-  /* Selector value declared in diagnose. */
-  assert.match(SRC['0F2a'], /gateSelector:\s*'\.ho-project-row'/);
-  /* R4.6.3 — selector lives in R46_ORG_SELECTORS, consumed by sync function. */
-  assert.match(SRC['0F2a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\.ho-project-row'\s*\]/);
-  /* The class is constant UI_PROJECT_TITLE_ROW_CLASS at line 168. */
-  assert.match(SRC['0F2a'], /UI_PROJECT_TITLE_ROW_CLASS\s*=\s*'ho-project-row'/);
-});
+/* R4.7.4 — The K.0F2a "projects gate uses .ho-project-row" check
+ * was removed because the gate itself is retired alongside the
+ * projects sidebar UI. The UI_PROJECT_TITLE_ROW_CLASS constant
+ * still exists in 0F2a (it's metadata kept for diagnose-block
+ * reference; no live consumer). The diagnose block still
+ * publishes the selector string for historical inspection.
+ * Section Q (R4.7.4) verifies the gate retirement independently. */
 
 check('K.0F3a: folders gate uses real flsc-folder-row + flsc-folder-more selectors', () => {
   assert.match(SRC['0F3a'], /gateSelector:\s*'\[data-cgxui="flsc-folder-row"\],\s*\[data-cgxui="flsc-folder-more"\]'/);
@@ -562,10 +565,14 @@ const PER_ELEMENT_GATED_MODULES = [
    * into retired-features/native-library-ui/0F6a-labels-ui/
    * labels-sidebar.js Block 1. Section P verifies the absence.
    *
-   * The remaining 3 modules retain their per-element gates until
-   * R4.7.4 retires their UI. */
+   * R4.7.4 — 0F2a removed for the same reason; its gate moved
+   * into retired-features/native-library-ui/0F2a-projects-ui/
+   * projects-sidebar-rows.js Block 1. Section Q verifies the
+   * absence.
+   *
+   * The remaining 2 modules retain their per-element gates until
+   * R4.7.5 retires their UI. */
   ['0F1b', 'syncR46WorkspaceElements', 'workspace-ui'],
-  ['0F2a', 'syncR46OrgElements',       'org-ui'],
   ['0F3a', 'syncR46OrgElements',       'org-ui'],
 ];
 
@@ -646,8 +653,11 @@ check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-
    * removal independently.
    *
    * R4.7.3 — 0F6a removed for the same reason. Section P verifies
+   * the removal.
+   *
+   * R4.7.4 — 0F2a removed for the same reason. Section Q verifies
    * the removal. */
-  for (const mod of ['0F2a', '0F3a']) {
+  for (const mod of ['0F3a']) {
     /* The shared per-element rule must be present. */
     assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
   }
@@ -1050,23 +1060,24 @@ for (const dir of R47_MODULE_DIRS) {
   });
 }
 
-check('N.r47.x-staged-code-moves: only R4.7.2/R4.7.3-retired subfolders may contain .js', () => {
-  /* R4.7.1 was scaffolding only. R4.7.2 retires 0F4a categories
-   * sidebar UI (adds categories-sidebar.js under 0F4a-categories-ui/).
-   * R4.7.3 retires 0F6a labels sidebar UI (adds labels-sidebar.js
-   * under 0F6a-labels-ui/). R4.7.4 will retire the remaining 4
-   * module subfolders. Until then, those 4 subfolders must remain
-   * bare except for their README.md. */
+check('N.r47.x-staged-code-moves: only R4.7.2/R4.7.3/R4.7.4-retired subfolders may contain .js', () => {
+  /* R4.7.1 was scaffolding only. R4.7.2 retired 0F4a categories
+   * sidebar UI (categories-sidebar.js). R4.7.3 retired 0F6a labels
+   * sidebar UI (labels-sidebar.js). R4.7.4 retires 0F2a projects
+   * sidebar row UI (projects-sidebar-rows.js). R4.7.5 will retire
+   * the remaining 3 module subfolders. Until then, those 3
+   * subfolders must remain bare except for their README.md. */
   const R47_RETIRED_JS_DIRS = new Set([
     '0F4a-categories-ui',  /* R4.7.2 */
     '0F6a-labels-ui',      /* R4.7.3 */
+    '0F2a-projects-ui',    /* R4.7.4 */
   ]);
   for (const dir of R47_MODULE_DIRS) {
     const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
     const jsFiles = entries.filter(f => f.endsWith('.js'));
     if (R47_RETIRED_JS_DIRS.has(dir)) {
       /* Allowed — verified by Section O (R4.7.2) / Section P
-       * (R4.7.3) checks. */
+       * (R4.7.3) / Section Q (R4.7.4) checks. */
       continue;
     }
     assert.equal(jsFiles.length, 0,
@@ -1626,6 +1637,258 @@ check('P.invariants: 0F4a R4.7.2 invariants still hold (cross-slice canary)', ()
   const src = SRC['0F4a'];
   assert.match(src, /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
   assert.match(src, /function buildCategoriesSection\s*\([^)]*\)\s*\{\s*return null/);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section Q — R4.7.4 Native Projects Sidebar Row UI physically retired
+ *
+ * R4.7.4 retires the 0F2a projects SIDEBAR row UI surgically. This
+ * section asserts:
+ *
+ *   1. The retired-features archive file exists with the 4
+ *      declared blocks (Block 1 R4.6.3 gate,
+ *      Block 2 UI_installProjectTitleContainerStyle,
+ *      Block 3 UI_markProjectTitleRows,
+ *      Block 4 UI_applyProjectsNativeControls stub).
+ *   2. 0F2a no longer DEFINES R46_ORG_SELECTORS,
+ *      syncR46OrgElements, installR46OrgCssGate,
+ *      UI_installProjectTitleContainerStyle, or
+ *      UI_markProjectTitleRows.
+ *   3. 0F2a still DEFINES `function UI_applyProjectsNativeControls`
+ *      as a no-op stub.
+ *   4. 0F2a still DEFINES the projects DATA layer entrypoints
+ *      (fetch / cache / reconcile / harvest / observers).
+ *   5. The data-layer entrypoints are NOT gated by any
+ *      library.native* flag helper.
+ *   6. 0F2a's file size shrank measurably vs the pre-R4.7.4
+ *      baseline.
+ *   7. The per-module documentation (README.md +
+ *      extracted-from-0F2a.md) records the move + replacement.
+ *   8. The top-level original-path-map.md was updated with the
+ *      R4.7.4 entries.
+ *   9. 0F5a remains byte-exact 273099. Capture files untouched.
+ *  10. Studio replacement (S0Z1g) is referenced in the
+ *      0F2a-projects-ui README.
+ *  11. R4.7.2 + R4.7.3 invariants still hold (cross-slice canaries).
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section Q — R4.7.4 Projects sidebar row UI physically retired');
+
+const Q_ARCHIVE_PATH = `${R47_ROOT}/0F2a-projects-ui/projects-sidebar-rows.js`;
+const Q_EXTRACTED_DOC = `${R47_ROOT}/0F2a-projects-ui/extracted-from-0F2a.md`;
+const Q_README = `${R47_ROOT}/0F2a-projects-ui/README.md`;
+const Q_PATH_MAP = `${R47_ROOT}/original-path-map.md`;
+
+check('Q.archive: projects-sidebar-rows.js exists and is non-empty', () => {
+  assert.ok(fs.existsSync(abs(Q_ARCHIVE_PATH)),
+    `${Q_ARCHIVE_PATH} not found`);
+  const stat = fs.statSync(abs(Q_ARCHIVE_PATH));
+  assert.ok(stat.size > 6000,
+    `${Q_ARCHIVE_PATH} suspiciously small (${stat.size} bytes); expected the 4-block archive`);
+});
+
+check('Q.archive: projects-sidebar-rows.js declares all 4 blocks', () => {
+  const src = fs.readFileSync(abs(Q_ARCHIVE_PATH), 'utf8');
+  assert.match(src, /Block 1 of 4 — R4\.6\.3 per-element org gate/);
+  assert.match(src, /Block 2 of 4 — UI_installProjectTitleContainerStyle/);
+  assert.match(src, /Block 3 of 4 — UI_markProjectTitleRows/);
+  assert.match(src, /Block 4 of 4 — UI_applyProjectsNativeControls/);
+});
+
+check('Q.source: 0F2a contains R4.7.4 breadcrumbs at each removal site', () => {
+  const src = SRC['0F2a'];
+  /* Block 1 breadcrumb (R4.6.3 per-element gate). */
+  assert.match(src, /R4\.7\.4 — R4\.6\.3 per-element org gate retired/);
+  /* Block 2 + 3 + 4 breadcrumb (combined, since they're contiguous in
+   * the source at the bottom). */
+  assert.match(src, /R4\.7\.4 — UI_installProjectTitleContainerStyle/);
+  assert.match(src, /UI_applyProjectsNativeControls body retired/);
+  /* Each breadcrumb cites the archive file. */
+  const breadcrumbCount = (src.match(/retired-features\/native-library-ui\/0F2a-projects-ui\/projects-sidebar-rows\.js/g) || []).length;
+  assert.ok(breadcrumbCount >= 2,
+    `0F2a should cite projects-sidebar-rows.js at least 2× (top + bottom); found ${breadcrumbCount}`);
+});
+
+check('Q.source: 0F2a no longer defines fully-retired sidebar surfaces', () => {
+  const src = SRC['0F2a'];
+  assert.equal(/^\s*const R46_ORG_SELECTORS\s*=/m.test(src), false,
+    '0F2a still declares R46_ORG_SELECTORS — should have been moved (R4.6.3 gate retired)');
+  assert.equal(/^\s*function syncR46OrgElements\b/m.test(src), false,
+    '0F2a still defines syncR46OrgElements — R4.6.3 gate should have been moved');
+  assert.equal(/^\s*function installR46OrgCssGate\b/m.test(src), false,
+    '0F2a still defines installR46OrgCssGate — R4.6.3 gate should have been moved');
+  assert.equal(/^\s*function UI_installProjectTitleContainerStyle\b/m.test(src), false,
+    '0F2a still defines UI_installProjectTitleContainerStyle — should have been moved');
+  assert.equal(/^\s*function UI_markProjectTitleRows\b/m.test(src), false,
+    '0F2a still defines UI_markProjectTitleRows — should have been moved');
+});
+
+check('Q.source: 0F2a UI_applyProjectsNativeControls is now a no-op stub', () => {
+  const src = SRC['0F2a'];
+  /* The function name stays for MOD API forwarding, but its body
+   * must be a no-op. */
+  const m = src.match(/function UI_applyProjectsNativeControls\s*\([^)]*\)\s*\{([\s\S]{0,200})\}/);
+  assert.ok(m, 'UI_applyProjectsNativeControls function declaration not found');
+  const body = m[1];
+  /* Body must NOT contain the original sidebar interception code. */
+  assert.equal(/UI_markProjectTitleRows\s*\(/.test(body), false,
+    'UI_applyProjectsNativeControls body still calls UI_markProjectTitleRows — body not fully removed');
+  assert.equal(/__h2oProjectsMoreBound/.test(body), false,
+    'UI_applyProjectsNativeControls body still references __h2oProjectsMoreBound — body not fully removed');
+  assert.equal(/projectsSection\.addEventListener/.test(body), false,
+    'UI_applyProjectsNativeControls body still attaches click listener — body not fully removed');
+  /* The R4.7.4 no-op marker should be present. */
+  assert.match(body, /no-op \(R4\.7\.4\)/);
+});
+
+check('Q.source: 0F2a still defines projects data-layer entrypoints', () => {
+  const src = SRC['0F2a'];
+  /* Fetch interception */
+  assert.match(src, /function OBS_hookProjectsNativeFetchCaptureOnce\b/,
+    '0F2a missing OBS_hookProjectsNativeFetchCaptureOnce — fetch interception required');
+  assert.match(src, /async function PROJECTS_fetchAllProjects\b/,
+    '0F2a missing PROJECTS_fetchAllProjects — projects fetch required');
+  assert.match(src, /async function PROJECTS_fetchNativePage\b/,
+    '0F2a missing PROJECTS_fetchNativePage — native-page fetch required');
+  /* Cache + store */
+  assert.match(src, /function PROJECTS_readStore\b/,
+    '0F2a missing PROJECTS_readStore — projects cache required');
+  assert.match(src, /function PROJECTS_writeStore\b/,
+    '0F2a missing PROJECTS_writeStore — projects cache required');
+  /* Reconcile */
+  assert.match(src, /function PROJECTS_reconcileStoreSnapshot\b/,
+    '0F2a missing PROJECTS_reconcileStoreSnapshot — projects reconcile required');
+  assert.match(src, /function PROJECTS_reconcileDropdownRows\b/,
+    '0F2a missing PROJECTS_reconcileDropdownRows — dropdown reconcile required');
+  /* Harvest */
+  assert.match(src, /async function PROJECTS_autoharvestNativeDropdown\b/,
+    '0F2a missing PROJECTS_autoharvestNativeDropdown — harvest required');
+  /* More-button helpers + document-level override (the behavioral
+   * meaning of the retired UI_applyProjectsNativeControls more-row
+   * interception). */
+  assert.match(src, /function PROJECTS_eventTargetsMoreRow\b/);
+  assert.match(src, /function PROJECTS_suppressNativeMoreEvent\b/);
+  assert.match(src, /function PROJECTS_openMorePageFromEvent\b/);
+  assert.match(src, /function OBS_hookProjectsMorePageOverrideOnce\b/,
+    '0F2a missing OBS_hookProjectsMorePageOverrideOnce — document-level more override required');
+  /* Canonical store observer */
+  assert.match(src, /function OBS_hookProjectsCanonicalStoreOnce\b/,
+    '0F2a missing OBS_hookProjectsCanonicalStoreOnce — store observer required');
+});
+
+check('Q.source: 0F2a data-layer entrypoints are NOT gated by deprecation flags', () => {
+  /* Re-verify Section E's invariant scoped to R4.7.4's touched
+   * neighborhood. */
+  const DATA_LAYER = [
+    'OBS_hookProjectsNativeFetchCaptureOnce',
+    'OBS_hookProjectsMorePageOverrideOnce',
+    'OBS_hookProjectsCanonicalStoreOnce',
+    'PROJECTS_fetchAllProjects',
+    'PROJECTS_readStore',
+    'PROJECTS_writeStore',
+    'PROJECTS_reconcileStoreSnapshot',
+  ];
+  for (const fn of DATA_LAYER) {
+    const body = functionBody(SRC['0F2a'], fn);
+    if (!body) continue;
+    assert.equal(/isNativeWorkspaceUiEnabled\s*\(/.test(body), false,
+      `${fn} must not gate on workspace UI flag`);
+    assert.equal(/isNativeOrganizationUiEnabled\s*\(/.test(body), false,
+      `${fn} must not gate on organization UI flag`);
+    assert.equal(/isNativeCaptureOnlyMode\s*\(/.test(body), false,
+      `${fn} must not gate on capture-only flag`);
+  }
+});
+
+check('Q.size: 0F2a shrank measurably vs pre-R4.7.4', () => {
+  /* Pre-R4.7.4 baseline (post-R4.6.4): 2531 lines. After R4.7.4
+   * we observed 2356 lines (~175 fewer). Anything appreciably
+   * above 2500 lines means a removal failed. */
+  const lines = SRC['0F2a'].split(/\n/).length;
+  assert.ok(lines < 2500,
+    `0F2a line count ${lines} suggests R4.7.4 removals didn't actually apply (expected < 2500)`);
+  assert.ok(lines > 1800,
+    `0F2a line count ${lines} suspiciously small — over-aggressive deletion?`);
+});
+
+check('Q.doc: extracted-from-0F2a.md exists and records line ranges + commit placeholder', () => {
+  assert.ok(fs.existsSync(abs(Q_EXTRACTED_DOC)),
+    `${Q_EXTRACTED_DOC} not found`);
+  const doc = fs.readFileSync(abs(Q_EXTRACTED_DOC), 'utf8');
+  assert.match(doc, /R4\.7\.4/);
+  assert.match(doc, /[Ee]xtracted from 0F2a/);
+  /* All 3 moved block ranges + 1 stub range. */
+  assert.match(doc, /112[–-]166/);
+  assert.match(doc, /2145[–-]2237/);
+  assert.match(doc, /2239[–-]2249/);
+  assert.match(doc, /2251[–-]2295/);
+  /* Stub disposition. */
+  assert.match(doc, /UI_applyProjectsNativeControls/);
+  assert.match(doc, /[Ss]tub/);
+  /* Commit placeholder. */
+  assert.match(doc, /commit hash/i);
+  /* Boundary invariants. */
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /273099/);
+  /* Rollback. */
+  assert.match(doc, /[Rr]ollback/);
+});
+
+check('Q.doc: 0F2a-projects-ui README reports R4.7.4 RETIRED status', () => {
+  const doc = fs.readFileSync(abs(Q_README), 'utf8');
+  /* No longer scaffolding. */
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false,
+    '0F2a-projects-ui README still says "scaffolding only" — should reflect R4.7.4 retirement');
+  /* Reports RETIRED status. */
+  assert.match(doc, /RETIRED/);
+  /* References the 4 blocks. */
+  assert.match(doc, /Block 1/);
+  assert.match(doc, /Block 2/);
+  assert.match(doc, /Block 3/);
+  assert.match(doc, /Block 4/);
+  /* Studio replacement: S0Z1g. */
+  assert.match(doc, /S0Z1g/);
+});
+
+check('Q.doc: original-path-map.md records R4.7.4 moves', () => {
+  const doc = fs.readFileSync(abs(Q_PATH_MAP), 'utf8');
+  /* Concrete entries cite 0F2a + the archive file. */
+  assert.match(doc, /0F2a\b/);
+  assert.match(doc, /[Pp]rojects/);
+  assert.match(doc, /projects-sidebar-rows\.js/);
+  /* All moved block line ranges. */
+  assert.match(doc, /112[–-]166/);
+  assert.match(doc, /2145[–-]2237/);
+  assert.match(doc, /2239[–-]2249/);
+  /* Slice tag. */
+  assert.match(doc, /R4\.7\.4/);
+});
+
+check('Q.invariants: capture path untouched (re-verify post-R4.7.4)', () => {
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
+});
+
+check('Q.invariants: 0F5a byte-exact (re-verify post-R4.7.4)', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    `0F5a size changed during R4.7.4: ${stat.size} vs baseline 273099 — Tag extraction must not be touched`);
+});
+
+check('Q.invariants: R4.7.2 + R4.7.3 invariants still hold (cross-slice canary)', () => {
+  /* R4.7.2 — 0F4a stub */
+  assert.match(SRC['0F4a'], /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F4a'], /function buildCategoriesSection\s*\([^)]*\)\s*\{\s*return null/);
+  /* R4.7.3 — 0F6a stubs */
+  assert.match(SRC['0F6a'], /R4\.7\.3 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F6a'], /function buildLabelsSection\s*\([^)]*\)\s*\{\s*return null/);
+  /* R4.7.3 CRUD still defined */
+  assert.match(SRC['0F6a'], /^\s*function createLabel\s*\(/m);
+  assert.match(SRC['0F6a'], /^\s*function renameLabel\s*\(/m);
+  assert.match(SRC['0F6a'], /^\s*function deleteLabel\s*\(/m);
 });
 
 /* ════════════════════════════════════════════════════════════════════════

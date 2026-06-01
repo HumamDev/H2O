@@ -6,8 +6,9 @@ piece of code moved from `src-runtime-base/0F*` into
 `retired-features/native-library-ui/`.
 
 R4.7.1 was scaffolding only. R4.7.2 moved the Native Categories
-sidebar UI. R4.7.3 (this entry's labels slice) moves the Native
-Labels sidebar UI. R4.7.4 will move folders / projects / workspace.
+sidebar UI. R4.7.3 moved the Native Labels sidebar UI. R4.7.4 (this
+entry's projects slice) moves the Native Projects sidebar row UI.
+R4.7.5 will move folders / workspace.
 
 ## Format
 
@@ -84,6 +85,51 @@ bodies; their original bodies are preserved in
   `openLabelViewer`, `openAssignModal`, etc.) — R4.7.4 scope.
 
 These calls are protected by the deprecation validator's Section P
+audit-trail assertion.
+
+### R4.7.4 moves (Projects sidebar row UI)
+
+| Source file | Source lines (pre-R4.7.4) | Destination file | R4.7 slice | Commit |
+|---|---|---|---|---|
+| `src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js` | 112–166 (R4.6.3 per-element org gate — `R46_ORG_SELECTORS`, `syncR46OrgElements`, `installR46OrgCssGate`, boot IIFE) | `0F2a-projects-ui/projects-sidebar-rows.js` Block 1 | R4.7.4 | _<commit hash; populated post-commit>_ |
+| `src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js` | 2145–2237 (`UI_installProjectTitleContainerStyle` — `.ho-project-row` decoration CSS injector) | `0F2a-projects-ui/projects-sidebar-rows.js` Block 2 | R4.7.4 | _<commit hash>_ |
+| `src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js` | 2239–2249 (`UI_markProjectTitleRows` — adds `.ho-project-row` class to native project anchors) | `0F2a-projects-ui/projects-sidebar-rows.js` Block 3 | R4.7.4 | _<commit hash>_ |
+
+### R4.7.4 stub (kept in 0F2a as no-op for external callers)
+
+| Source lines (pre-R4.7.4) | Function | External caller(s) requiring the stub |
+|---|---|---|
+| 2251–2295 | `UI_applyProjectsNativeControls` | `MOD.applyNativeControls` API; `PROJECTS_boot`; `OBS_hookProjectsCanonicalStoreOnce` mutation handler |
+
+The behaviorally meaningful piece of the original
+`UI_applyProjectsNativeControls` — the more-button event
+interception that supports the projects data-harvest path — is
+INDEPENDENTLY installed by `OBS_hookProjectsMorePageOverrideOnce`
+via document-level listeners (still active in 0F2a).
+
+### Pending / kept in 0F2a (NOT moved in R4.7.4)
+
+The ENTIRE projects DATA layer stays in 0F2a:
+
+- Fetch interception (`OBS_hookProjectsNativeFetchCaptureOnce`,
+  `PROJECTS_fetchAllProjects`, etc.)
+- Cache + store (`PROJECTS_readStore`, `PROJECTS_writeStore`,
+  `PROJECTS_normalizeStore`, etc.)
+- Reconcile (`PROJECTS_reconcileStoreSnapshot`,
+  `PROJECTS_reconcileDropdownRows`, `PROJECTS_loadRows`, etc.)
+- Harvest (`PROJECTS_autoharvestNativeDropdown`,
+  `PROJECTS_dispatchNativeMoreEvent`, etc.)
+- More-button event helpers (`PROJECTS_eventTargetsMoreRow`,
+  `PROJECTS_suppressNativeMoreEvent`,
+  `PROJECTS_openMorePageFromEvent`)
+- Document-level more-button override
+  (`OBS_hookProjectsMorePageOverrideOnce`)
+- Canonical-store mutation observer
+  (`OBS_hookProjectsCanonicalStoreOnce`)
+- Workspace viewer + page UI (`UI_openProjectsViewer`,
+  `UI_appendInShellProjectRow`, etc.) — R4.7.5 scope
+
+These calls are protected by the deprecation validator's Section Q
 audit-trail assertion.
 
 ## Re-verification

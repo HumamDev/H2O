@@ -109,61 +109,13 @@
     } catch (_) { /* swallow */ }
   })();
 
-  /* ── R4.6.3 — Per-element gate (cascade-proof, see 0F4a for pattern) ─
-   * fetchInterception / projectsCache / projectsReconcile remain
-   * unconditional — Native projects DATA flow continues regardless
-   * of gate state. */
-  const R46_ORG_SELECTORS = ['.ho-project-row'];
-  function syncR46OrgElements() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      const hide = !isNativeOrganizationUiEnabled();
-      for (const sel of R46_ORG_SELECTORS) {
-        D.querySelectorAll(sel).forEach((el) => {
-          if (!el || el.nodeType !== 1) return;
-          if (hide) {
-            el.setAttribute('data-h2o-r46-hidden', 'org-ui');
-            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
-          } else if (el.getAttribute('data-h2o-r46-hidden') === 'org-ui') {
-            el.removeAttribute('data-h2o-r46-hidden');
-            try { el.style.removeProperty('display'); } catch (_) {}
-          }
-        });
-      }
-    } catch (_) { /* swallow */ }
-  }
-  function installR46OrgCssGate() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
-      if (!D.getElementById(SHARED_STYLE_ID)) {
-        const style = D.createElement('style');
-        style.id = SHARED_STYLE_ID;
-        style.textContent =
-          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
-        + '{display:none !important;}';
-        (D.head || D.documentElement).appendChild(style);
-      }
-      syncR46OrgElements();
-      if (typeof W.setInterval === 'function') {
-        W.setInterval(syncR46OrgElements, 1000);
-      }
-      if (typeof W.MutationObserver === 'function' && D.body) {
-        const obs = new W.MutationObserver(function () { syncR46OrgElements(); });
-        obs.observe(D.body, { childList: true, subtree: true });
-      }
-    } catch (_) { /* swallow */ }
-  }
-  (function bootR46OrgCssGate() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      if (D.readyState !== 'loading') installR46OrgCssGate();
-      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
-    } catch (_) { /* swallow */ }
-  })();
+  /* R4.7.4 — R4.6.3 per-element org gate retired alongside the
+   * projects sidebar row decoration. Code moved to:
+   *   retired-features/native-library-ui/0F2a-projects-ui/projects-sidebar-rows.js
+   * (Block 1). The gate is no longer needed because the UI it gated
+   * (the `.ho-project-row` class on native anchors) is itself
+   * retired. Projects fetch / cache / reconcile / harvest stay
+   * unconditional — they live below and are never gated. */
 
   const MOD = (H2O.Projects = H2O.Projects || {});
   MOD.meta = MOD.meta || {
@@ -2142,157 +2094,30 @@
     return false;
   }
 
-  function UI_installProjectTitleContainerStyle() {
-    if (D.getElementById(UI_PROJECT_TITLE_STYLE_ID)) return;
-    const style = D.createElement('style');
-    style.id = UI_PROJECT_TITLE_STYLE_ID;
-    style.textContent = `
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS} {
-  width: calc(100% - 3px) !important;
-  box-sizing: border-box !important;
-  padding: 8px 12px !important;
-  margin-top: 4px !important;
-  margin-bottom: 4px !important;
-  margin-left: 3px !important;
-  margin-right: 0 !important;
-  transform: translateX(2px) !important;
-  position: relative !important;
-  border-radius: 10px !important;
-  background: rgba(0,0,0,0.18) !important;
-  background-color: rgba(0,0,0,0.18) !important;
-  z-index: 0 !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.07),
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 3px 10px rgba(0,0,0,0.32) !important;
-  transition: background .15s ease, box-shadow .15s ease;
-}
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}::before {
-  content: "" !important;
-  position: absolute !important;
-  inset: 0 !important;
-  border-radius: inherit !important;
-  pointer-events: none !important;
-  background: linear-gradient(
-    to bottom,
-    rgba(255,255,255,0.045),
-    rgba(255,255,255,0.012) 40%,
-    rgba(0,0,0,0) 100%
-  ) !important;
-  opacity: 0.75 !important;
-}
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}:hover {
-  background: rgba(0,0,0,0.12) !important;
-  background-color: rgba(0,0,0,0.12) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.11),
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 5px 14px rgba(0,0,0,0.42) !important;
-}
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}[aria-current="page"],
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}.active,
-:where(nav, aside) .${UI_PROJECT_TITLE_ROW_CLASS}[data-active] {
-  border-radius: 12px !important;
-  background: rgba(0,0,0,0.12) !important;
-  background-color: rgba(0,0,0,0.12) !important;
-  box-shadow:
-    inset 0 0 0 1.5px rgba(255,255,255,0.22),
-    0 0 0 1px rgba(0,0,0,0.65),
-    0 6px 16px rgba(0,0,0,0.44) !important;
-}
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > .sticky,
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"] {
-  isolation: isolate !important;
-  background: var(--sidebar-surface-primary, var(--bg-primary, #202123)) !important;
-  background-color: var(--sidebar-surface-primary, var(--bg-primary, #202123)) !important;
-}
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > .sticky:first-child {
-  z-index: 120 !important;
-}
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"] {
-  z-index: 110 !important;
-}
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) > [class*="sidebar-section-first-margin-top"]::after {
-  content: "" !important;
-  position: absolute !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: -14px !important;
-  height: 14px !important;
-  pointer-events: none !important;
-  background: linear-gradient(
-    to bottom,
-    var(--sidebar-surface-primary, var(--bg-primary, #202123)) 0%,
-    color-mix(in srgb, var(--sidebar-surface-primary, #202123) 72%, transparent) 58%,
-    transparent 100%
-  ) !important;
-  z-index: 1 !important;
-}
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) a.ho-has-colorbtn-side,
-:where(nav[aria-label="Chat history"], #stage-slideover-sidebar nav) .${UI_PROJECT_TITLE_ROW_CLASS} {
-  z-index: 0 !important;
-}
-`;
-    (D.head || D.documentElement).appendChild(style);
-  }
 
-  function UI_markProjectTitleRows(projectsSection = DOM_findProjectsSection(DOM_findProjectsH2())) {
-    UI_installProjectTitleContainerStyle();
-    if (!(projectsSection instanceof HTMLElement)) return 0;
-    projectsSection.querySelectorAll(`.${UI_PROJECT_TITLE_ROW_CLASS}`).forEach((row) => {
-      if (!row.matches?.('a[href*="/g/"][href$="/project"]')) row.classList.remove(UI_PROJECT_TITLE_ROW_CLASS);
-    });
-    const rows = [...projectsSection.querySelectorAll('a.__menu-item[href*="/g/"][href$="/project"],a[data-sidebar-item="true"][href*="/g/"][href$="/project"]')]
-      .filter((row) => !DOM_isH2OOwnedNode(row));
-    rows.forEach((row) => row.classList.add(UI_PROJECT_TITLE_ROW_CLASS));
-    return rows.length;
-  }
-
-  function UI_applyProjectsNativeControls(projectsSection = DOM_findProjectsSection(DOM_findProjectsH2())) {
-    UI_markProjectTitleRows(projectsSection);
-    if (!projectsSection) return;
-
-    const moreRow = DOM_getProjectsMoreRow(projectsSection);
-    if (moreRow && !moreRow.__h2oProjectsMoreBound) {
-      const openProjectsPage = (e) => {
-        if (STATE.projectsNativeHarvesting) return;
-        if (getProjectMoreOpenMode() !== CFG_MORE_OPEN_MODE_PAGE) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
-        owner.openViewer(null).catch((error) => err('projectsMorePage', error));
-      };
-      const stopNativeProjectsMore = (e) => {
-        if (STATE.projectsNativeHarvesting) return;
-        if (getProjectMoreOpenMode() !== CFG_MORE_OPEN_MODE_PAGE) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
-      };
-      moreRow.addEventListener('pointerdown', stopNativeProjectsMore, true);
-      moreRow.addEventListener('mousedown', stopNativeProjectsMore, true);
-      moreRow.addEventListener('mouseup', stopNativeProjectsMore, true);
-      moreRow.addEventListener('click', openProjectsPage, true);
-      moreRow.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') openProjectsPage(e);
-      }, true);
-      moreRow.__h2oProjectsMoreBound = true;
-    }
-
-    if (projectsSection.__h2oProjectInlineBound) return;
-    projectsSection.addEventListener('click', (e) => {
-      if (getProjectInlinePreviewOnOpen()) return;
-      const toggle = e.target?.closest?.('button[aria-label="Show chats"],button[aria-label="Hide chats"]');
-      if (!toggle || !projectsSection.contains(toggle)) return;
-      const row = toggle.closest('a.__menu-item[href*="/g/"][href$="/project"]');
-      if (!row) return;
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation?.();
-      W.setTimeout(() => row.click(), 0);
-    }, true);
-    projectsSection.__h2oProjectInlineBound = true;
-  }
+  /* R4.7.4 — UI_installProjectTitleContainerStyle (decoration CSS
+   * injector) + UI_markProjectTitleRows (row-class injector) were
+   * fully removed alongside UI_applyProjectsNativeControls. Code
+   * moved to:
+   *   retired-features/native-library-ui/0F2a-projects-ui/projects-sidebar-rows.js
+   * (Blocks 2 + 3). The `.ho-project-row` class + its decoration
+   * CSS were the entire visible footprint of the Native projects
+   * sidebar customization. The UI_PROJECT_TITLE_STYLE_ID and
+   * UI_PROJECT_TITLE_ROW_CLASS constants stay declared above (so
+   * the diagnose-block metadata still resolves), but nothing live
+   * consumes them.
+   *
+   * UI_applyProjectsNativeControls body retired alongside the
+   * projects sidebar UI. Code moved to projects-sidebar-rows.js
+   * (Block 4). The function is kept as a no-op stub because the
+   * MOD API (`H2O.Projects.applyNativeControls`) forwards to it
+   * and PROJECTS_boot + OBS_hookProjectsCanonicalStoreOnce call it
+   * on boot and on every native sidebar mutation. The behaviorally
+   * meaningful piece — the more-button event interception that
+   * supports the projects data-harvest path — is independently
+   * installed by OBS_hookProjectsMorePageOverrideOnce via the
+   * document-level listeners (still active in 0F2a). */
+  function UI_applyProjectsNativeControls(_projectsSection) { /* no-op (R4.7.4) */ }
 
   function PROJECTS_eventTargetsMoreRow(e) {
     if (STATE.projectsNativeHarvesting) return null;

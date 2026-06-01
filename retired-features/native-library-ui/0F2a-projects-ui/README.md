@@ -1,6 +1,10 @@
 # 0F2a Projects UI — Retirement Record
 
-**Status (R4.7.1): scaffolding only — no code moved yet. UI retires in R4.7.2.**
+**Status (R4.7.4): RETIRED.** Native projects sidebar row UI moved
+to `projects-sidebar-rows.js`. See `extracted-from-0F2a.md` for
+exact line ranges + commit hash. 0F2a went from 2531 lines
+(post-R4.6.4) to 2356 lines. Note: R4.7.4 is the projects slice
+(R4.7.2 = categories, R4.7.3 = labels).
 
 ## What was here pre-R4.7
 
@@ -24,36 +28,76 @@ DATA layer AND the projects sidebar UI:
 - R4.6.3 per-element sync (`R46_ORG_SELECTORS`, `syncR46OrgElements`,
   `installR46OrgCssGate`) — defunct once the UI it gates is gone
 
-## What R4.7.2 will retire (planned)
+## What R4.7.4 retired (done)
 
-From `src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js`, move into this
-folder:
+From `src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js`, the following
+moved into this folder's `projects-sidebar-rows.js` as four
+archival blocks (see `extracted-from-0F2a.md` for exact line
+ranges):
 
-- `projects-sidebar-rows.js` — `UI_PROJECT_TITLE_ROW_CLASS`,
-  `UI_installProjectTitleContainerStyle`, and the class-add/remove
-  logic at line 2211 area
-- `r46-per-element-sync.js` — the R4.6.3 sync function block (boot
-  wrapper + `R46_ORG_SELECTORS` + `syncR46OrgElements` +
-  `installR46OrgCssGate`)
+- **Block 1** — R4.6.3 per-element org gate (`R46_ORG_SELECTORS`,
+  `syncR46OrgElements`, `installR46OrgCssGate`, boot IIFE)
+- **Block 2** — `UI_installProjectTitleContainerStyle` (the
+  `.ho-project-row` decoration CSS injector — padding, shadows,
+  hover/active/scroll-cover gradients)
+- **Block 3** — `UI_markProjectTitleRows` (adds the
+  `.ho-project-row` class to native project anchors)
+- **Block 4** — `UI_applyProjectsNativeControls` (sidebar UI
+  orchestrator; KEPT in 0F2a as a no-op stub because MOD API +
+  boot + canonical-store observer call it)
 
-`extracted-from-0F2a.md` (added by R4.7.2) records exact line ranges
-+ commit hash.
+Blocks 1, 2, 3 are fully removed. Block 4 is preserved as a no-op
+stub so the MOD API and boot/observer callers continue to resolve.
 
-## What STAYS in 0F2a post-R4.7
+**The behaviorally meaningful piece of Block 4** — the
+more-button event interception used by the projects data-harvest
+path — is INDEPENDENTLY installed by
+`OBS_hookProjectsMorePageOverrideOnce` via document-level
+listeners (still active in 0F2a). The retirement intentionally
+drops the row decoration without disrupting harvest plumbing.
 
-ALL of the data layer:
+## What STAYS in 0F2a post-R4.7.4
 
-- `findProjectsH2`, `findProjectsSection`, `getProjectsMoreRow`
-- `PROJECTS_recordNativeSidebarPayload`, `PROJECTS_nativeSidebarHeaders`
-- Projects cache + reconcile + viewer helpers
-- `nativeSidebarEnv`
-- The R4.6.0 flag-reader helpers
-  (`isNativeWorkspaceUiEnabled`, etc.)
-- The `H2O.deprecation.native['0F2a']` diagnose registration
+ALL of the projects DATA layer + workspace viewer (R4.7.5 scope):
 
-The diagnose entry will be updated to reflect the post-R4.7 state
-(empty `gatedSurfaces` since the UI is gone; `unconditionalSurfaces`
-remains as the data layer).
+- **Projects fetch interception**: `OBS_hookProjectsNativeFetchCaptureOnce`,
+  `PROJECTS_fetchAllProjects`, `PROJECTS_fetchNativePage`, etc.
+- **Projects cache + store**: `PROJECTS_readStore`,
+  `PROJECTS_writeStore`, `PROJECTS_emitChanged`,
+  `PROJECTS_normalizeStore`, etc.
+- **Projects reconcile**: `PROJECTS_reconcileStoreSnapshot`,
+  `PROJECTS_reconcileDropdownRows`, `PROJECTS_applyRowsToStore`,
+  `PROJECTS_loadRows`, etc.
+- **Projects harvest**: `PROJECTS_autoharvestNativeDropdown`,
+  `PROJECTS_dispatchNativeMoreEvent`,
+  `PROJECTS_closeNativeDropdown`,
+  `PROJECTS_waitForNativeDropdownHarvest`
+- **More-button event helpers**: `PROJECTS_eventTargetsMoreRow`,
+  `PROJECTS_suppressNativeMoreEvent`,
+  `PROJECTS_openMorePageFromEvent`
+- **Document-level more-button override**:
+  `OBS_hookProjectsMorePageOverrideOnce`
+- **Canonical-store mutation observer**:
+  `OBS_hookProjectsCanonicalStoreOnce`
+- **Row + anchor utilities**: `DOM_findProjectsH2`,
+  `DOM_findProjectsSection`, `DOM_getProjectsMoreRow`,
+  `DOM_getNativeProjectRows`,
+  `DOM_collectNativeProjectAnchors`, etc.
+- **Row normalization + API parsing**: `PROJECTS_normalizeRow`,
+  `PROJECTS_normalizeApiItem`, `PROJECTS_normalizeApiColor`,
+  `PROJECTS_iconHtmlFromApi`, `PROJECTS_iconHtmlFromParts`, etc.
+- **Workspace viewer + page UI (R4.7.5 scope)**:
+  `UI_openProjectsViewer`, `UI_appendInShellProjectRow`,
+  `UI_handleProjectsManualRefresh`,
+  `UI_setProjectsRefreshButtonState`,
+  `UI_wireProjectsPageScrollGuard`, `UI_projectIconHtml`
+- **Constants**: `UI_PROJECT_TITLE_STYLE_ID`,
+  `UI_PROJECT_TITLE_ROW_CLASS = 'ho-project-row'` (legacy
+  reference for diagnose-block metadata; no live consumer)
+- **`function UI_applyProjectsNativeControls`** — no-op stub for
+  MOD API + boot/observer callers
+- **R4.6.0 flag-reader helpers**
+- **`H2O.deprecation.native['0F2a']` diagnose registration**
 
 ## Replacement
 
@@ -75,9 +119,11 @@ remains as the data layer).
 
 ## Rollback procedure
 
-`git revert <R4.7.2 commit hash>` restores the projects sidebar UI
+`git revert <R4.7.4 commit hash>` restores the projects sidebar UI
 (`.ho-project-row` class injection + CSS).
 
-Per-file rollback: copy `projects-sidebar-rows.js` contents back into
-0F2a at the recorded line ranges (see `extracted-from-0F2a.md`),
-then run `npm run dev:rebuild && npm run dev:all`.
+Per-file rollback: paste Blocks 1, 2, 3 from
+`projects-sidebar-rows.js` back into 0F2a at the recorded line
+ranges (see `extracted-from-0F2a.md`), replace the Block 4 stub
+with its original body, remove the breadcrumb comments, then run
+`npm run dev:rebuild && npm run dev:all`.
