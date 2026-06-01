@@ -858,6 +858,11 @@
        journal phases. No relay dispatch, Native execution, F5 execution,
        apply, timer, or polling behavior. -->
   <script src="./sync/execute/execute-settlement-writer.tauri.js"></script>
+  <!-- F14.6.9: Desktop/Tauri execute resume-on-boot coordinator.
+       Re-reads interrupted Execute journal rows and invokes existing
+       preflight, broker, or settlement primitives according to phase. No new
+       adapter, dispatch type, UI, timer, or polling behavior. -->
+  <script src="./sync/execute/execute-resume-on-boot.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

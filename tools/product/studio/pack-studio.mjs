@@ -380,6 +380,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // phases. No relay dispatch, Native execution, F5 execution, apply, timer,
   // or polling behavior.
   "sync/execute/execute-settlement-writer.tauri.js",
+  // F14.6.9: Desktop/Tauri execute resume-on-boot coordinator. Re-reads
+  // interrupted Execute journal rows and invokes existing preflight, broker,
+  // or settlement primitives according to phase. No new adapter, dispatch
+  // type, UI, timer, or polling behavior.
+  "sync/execute/execute-resume-on-boot.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -912,6 +917,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-native-broker.tauri.js",
   "sync/execute/execute-f5-broker.tauri.js",
   "sync/execute/execute-settlement-writer.tauri.js",
+  "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
