@@ -413,6 +413,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // materialization, dispatch, settlement, publication, Native, F5, Snapshot
   // mutation, or UI.
   "sync/execute/adapters/snapshot-execute-adapter.tauri.js",
+  // F14.6.15: Desktop/Tauri Snapshot tombstone execute adapter. Registers
+  // the Snapshot tombstone proposal-receipt adapter and shapes redacted
+  // tombstone/F5 review evidence into Execute envelopes only. No relay
+  // dispatch, Native dispatch, F5 close/execution, publication, settlement,
+  // Snapshot mutation, or UI.
+  "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -966,6 +972,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-capture-materialization.tauri.js",
   "sync/execute/adapters/capture-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-execute-adapter.tauri.js",
+  "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/focus-import.tauri.js",

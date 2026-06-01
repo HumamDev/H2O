@@ -894,6 +894,12 @@
        explicitly deferred. No materialization, dispatch, settlement,
        publication, Native, F5, Snapshot mutation, or UI. -->
   <script src="./sync/execute/adapters/snapshot-execute-adapter.tauri.js"></script>
+  <!-- F14.6.15: Desktop/Tauri Snapshot tombstone execute adapter.
+       Registers the Snapshot tombstone proposal-receipt adapter and shapes
+       redacted tombstone/F5 review evidence into Execute envelopes only. No
+       relay dispatch, Native dispatch, F5 close/execution, publication,
+       settlement, Snapshot mutation, or UI. -->
+  <script src="./sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
