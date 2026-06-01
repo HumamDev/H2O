@@ -356,6 +356,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // dispatch, Native execution, F5 execution, apply, watermark write,
   // consumed-op write, timer, or polling behavior.
   "sync/execute/execute-publication-lifecycle.tauri.js",
+  // F14.6.5: Desktop/Tauri execute relay broker. Stages relay-required
+  // execute envelopes into relay outbox after execute preflight and
+  // publication lifecycle checks. No relay upload, Native execution, F5
+  // execution, apply, watermark write, consumed-op write, final settlement,
+  // timer, or polling behavior.
+  "sync/execute/execute-relay-broker.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -884,6 +890,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-envelope.tauri.js",
   "sync/execute/execute-preflight-gate.tauri.js",
   "sync/execute/execute-publication-lifecycle.tauri.js",
+  "sync/execute/execute-relay-broker.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
