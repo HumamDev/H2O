@@ -863,6 +863,11 @@
        preflight, broker, or settlement primitives according to phase. No new
        adapter, dispatch type, UI, timer, or polling behavior. -->
   <script src="./sync/execute/execute-resume-on-boot.tauri.js"></script>
+  <!-- F14.6.10: Desktop/Tauri Chat execute adapter.
+       Registers the Chat proposal-receipt adapter and shapes redacted Chat
+       proposal/handoff/receipt evidence into Execute envelopes only. No
+       broker, dispatch, Native call, settlement, publication, or UI. -->
+  <script src="./sync/execute/adapters/chat-execute-adapter.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

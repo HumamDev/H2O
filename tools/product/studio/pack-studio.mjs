@@ -385,6 +385,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // or settlement primitives according to phase. No new adapter, dispatch
   // type, UI, timer, or polling behavior.
   "sync/execute/execute-resume-on-boot.tauri.js",
+  // F14.6.10: Desktop/Tauri Chat execute adapter. Registers the Chat
+  // proposal-receipt adapter and shapes redacted Chat proposal/handoff/receipt
+  // evidence into Execute envelopes only. No broker, dispatch, Native call,
+  // settlement, publication, or UI.
+  "sync/execute/adapters/chat-execute-adapter.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -918,6 +923,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-f5-broker.tauri.js",
   "sync/execute/execute-settlement-writer.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
+  "sync/execute/adapters/chat-execute-adapter.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
