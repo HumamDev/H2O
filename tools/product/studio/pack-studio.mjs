@@ -339,6 +339,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // execution, F5 execution, apply, watermark writes, consumed-op writes,
   // timers, or polling.
   "sync/execute/execute-journal.tauri.js",
+  // F14.6.2: Desktop/Tauri execute envelope and adapter contract. Shapes
+  // proposal-receipt and canonical-preview execute envelopes and keeps an
+  // in-memory metadata-only adapter registry. No broker, dispatch,
+  // publication, relay/outbox, Native/F5 execution, apply, watermark,
+  // consumed-op, storage write, timer, or polling behavior.
+  "sync/execute/execute-envelope.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -864,6 +870,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/capture/capture-fresh-runtime.tauri.js",
   "sync/capture/capture-recovery-runtime.tauri.js",
   "sync/execute/execute-journal.tauri.js",
+  "sync/execute/execute-envelope.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

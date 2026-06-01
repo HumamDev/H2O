@@ -816,6 +816,12 @@
        No dispatch, publication, relay/outbox, Native execution, F5 execution,
        apply, watermark writes, consumed-op writes, timers, or polling. -->
   <script src="./sync/execute/execute-journal.tauri.js"></script>
+  <!-- F14.6.2: Desktop/Tauri execute envelope and adapter contract.
+       Shapes proposal-receipt and canonical-preview execute envelopes and
+       keeps an in-memory metadata-only adapter registry. No broker, dispatch,
+       publication, relay/outbox, Native/F5 execution, apply, watermark,
+       consumed-op, storage write, timer, or polling behavior. -->
+  <script src="./sync/execute/execute-envelope.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
