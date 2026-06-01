@@ -829,6 +829,11 @@
        apply, watermark write, consumed-op write, storage write, timer, or
        polling behavior. -->
   <script src="./sync/execute/execute-preflight-gate.tauri.js"></script>
+  <!-- F14.6.4: Desktop/Tauri execute publication lifecycle.
+       Append-only publication lifecycle rows after execute preflight. No relay
+       enqueue/dispatch, Native execution, F5 execution, apply, watermark write,
+       consumed-op write, timer, or polling behavior. -->
+  <script src="./sync/execute/execute-publication-lifecycle.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher

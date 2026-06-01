@@ -351,6 +351,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // publication, relay/outbox, Native/F5 execution, apply, watermark write,
   // consumed-op write, storage write, timer, or polling behavior.
   "sync/execute/execute-preflight-gate.tauri.js",
+  // F14.6.4: Desktop/Tauri execute publication lifecycle. Append-only
+  // publication lifecycle rows after execute preflight. No relay enqueue/
+  // dispatch, Native execution, F5 execution, apply, watermark write,
+  // consumed-op write, timer, or polling behavior.
+  "sync/execute/execute-publication-lifecycle.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -878,6 +883,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-journal.tauri.js",
   "sync/execute/execute-envelope.tauri.js",
   "sync/execute/execute-preflight-gate.tauri.js",
+  "sync/execute/execute-publication-lifecycle.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
