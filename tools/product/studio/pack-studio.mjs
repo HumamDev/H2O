@@ -419,6 +419,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // dispatch, Native dispatch, F5 close/execution, publication, settlement,
   // Snapshot mutation, or UI.
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
+  // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
+  // operator visibility panel. No dispatch, Native, F5, relay, settlement,
+  // publication, watermark, consumed-operation, or domain mutation controls.
+  "sync/execute/execute-lane-ui.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -973,6 +977,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/capture-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
+  "sync/execute/execute-lane-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/focus-import.tauri.js",

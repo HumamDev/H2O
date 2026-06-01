@@ -900,6 +900,12 @@
        relay dispatch, Native dispatch, F5 close/execution, publication,
        settlement, Snapshot mutation, or UI. -->
   <script src="./sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js"></script>
+  <!-- F14.6.16: Desktop/Tauri Execute Lane UI.
+       Read-only Settings-hosted operator visibility panel for journal,
+       publication, broker, settlement, adapter, readiness, and proof
+       summaries. No dispatch, Native, F5, relay, settlement, publication,
+       watermark, consumed-operation, or domain mutation controls. -->
+  <script src="./sync/execute/execute-lane-ui.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
