@@ -8,6 +8,7 @@
  *     polling, timers, apply, convergence, or mobile behavior.
  *   - F14.3.8 adds a domain forbidden-field wrapper for chat metadata.
  *   - F14.5.8 adds the capture fresh domain forbidden policy.
+ *   - F15.1.0 adds library catalog and binding domain policies.
  *
  * Public API:
  *   H2O.Desktop.Sync.kernel.scanPrivacy(value, policy?)
@@ -35,7 +36,7 @@
   var kernel = H2O.Desktop.Sync.kernel;
   if (kernel.__privacyScanInstalled) return;
 
-  var VERSION = '0.4.0-f14.5.5.3-snapshot-policy';
+  var VERSION = '0.5.0-f15.1.0-library-policy';
   var RESULT_SCHEMA = 'h2o.desktop.sync.kernel.privacy-scan.v1';
 
   var REDACTED = 'redacted';
@@ -219,6 +220,69 @@
     'rawSnapshot', 'snapshotPayload',
     'rawCapturedAt', 'exactCapturedAt',
     'exactTurnCount', 'byteSize', 'exactSize'
+  ];
+
+  var LIBRARY_CATALOG_ALWAYS_FORBIDDEN_FIELDS = [
+    'description',
+    'rawDescription',
+    'notes',
+    'rawNotes',
+    'operatorNotes',
+    'customMetadata',
+    'rawMetadata',
+    'content',
+    'body',
+    'text',
+    'attachments',
+    'files'
+  ];
+  var LIBRARY_CATALOG_REDACTED_FORBIDDEN_FIELDS = [
+    'name',
+    'rawName',
+    'displayName',
+    'label',
+    'title',
+    'color',
+    'rawColor',
+    'rawId',
+    'labelId',
+    'tagId',
+    'categoryId',
+    'folderId',
+    'accountId',
+    'rawAccountId',
+    'userId',
+    'rawUserId'
+  ];
+
+  var LIBRARY_BINDING_ALWAYS_FORBIDDEN_FIELDS = [
+    'rawPayload',
+    'bindingPayload',
+    'content',
+    'body',
+    'text',
+    'messages',
+    'turns',
+    'notes',
+    'rawNotes'
+  ];
+  var LIBRARY_BINDING_REDACTED_FORBIDDEN_FIELDS = [
+    'name',
+    'rawName',
+    'rawLeftId',
+    'rawRightId',
+    'chatId',
+    'chat_id',
+    'labelId',
+    'tagId',
+    'categoryId',
+    'folderId',
+    'accountId',
+    'rawAccountId',
+    'userId',
+    'title',
+    'chatTitle',
+    'rawTitle'
   ];
 
   function isObject(value) {
@@ -466,6 +530,32 @@
         subjectType: 'snapshot.conversation',
         forbiddenList: uniqueStringList(snapshotForbidden),
         foreverNoFields: uniqueStringList(baseForeverNo.concat(SNAPSHOT_CONVERSATION_ALWAYS_FORBIDDEN_FIELDS)),
+        allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+      };
+    }
+    if (tag === 'library.catalog') {
+      var libraryCatalogForbidden = baseForeverNo.concat(LIBRARY_CATALOG_ALWAYS_FORBIDDEN_FIELDS);
+      if (redactionClass === REDACTED || !redactionClass) {
+        libraryCatalogForbidden = libraryCatalogForbidden.concat(LIBRARY_CATALOG_REDACTED_FORBIDDEN_FIELDS);
+      }
+      return {
+        supported: true,
+        subjectType: 'library.catalog',
+        forbiddenList: uniqueStringList(libraryCatalogForbidden),
+        foreverNoFields: uniqueStringList(baseForeverNo.concat(LIBRARY_CATALOG_ALWAYS_FORBIDDEN_FIELDS)),
+        allowTokenFields: [TOKEN_FIELD_EXCEPTION]
+      };
+    }
+    if (tag === 'library.binding') {
+      var libraryBindingForbidden = baseForeverNo.concat(LIBRARY_BINDING_ALWAYS_FORBIDDEN_FIELDS);
+      if (redactionClass === REDACTED || !redactionClass) {
+        libraryBindingForbidden = libraryBindingForbidden.concat(LIBRARY_BINDING_REDACTED_FORBIDDEN_FIELDS);
+      }
+      return {
+        supported: true,
+        subjectType: 'library.binding',
+        forbiddenList: uniqueStringList(libraryBindingForbidden),
+        foreverNoFields: uniqueStringList(baseForeverNo.concat(LIBRARY_BINDING_ALWAYS_FORBIDDEN_FIELDS)),
         allowTokenFields: [TOKEN_FIELD_EXCEPTION]
       };
     }
