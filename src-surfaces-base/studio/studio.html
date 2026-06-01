@@ -677,6 +677,13 @@
        relay/outbox, apply, Native/F5 execution, watermark, or consumed-op
        writes. -->
   <script src="./sync/library/library-binding-proposal-candidate-generator.tauri.js"></script>
+  <!-- F15.5.a: Desktop/Tauri side-effect-free library catalog handoff
+       preview. Composes F15.4 catalog proposal candidate + F15.3 preflight
+       and shapes a kernel-validated Native or F5 owner handoff request
+       (F5 for tombstone only). No Native execution, no F5 queue ingest
+       (deferred to F15.6 receipts per F14.5.5.2 pattern), no apply, no
+       publication, no relay/outbox, no watermark/consumed-op writes. -->
+  <script src="./sync/library/library-catalog-handoff-preview.tauri.js"></script>
   <!-- F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer.
        Pure function over one chat record (Native mirror / Library Index /
        Registry Core projection) -> the F14.3.0 canonical chat snapshot.
