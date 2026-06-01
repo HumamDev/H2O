@@ -326,6 +326,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // data only. No Native execution, no F5 work outside the queue ledger, no
   // apply, no publication/relay/outbox, no watermark/consumed-op writes, no UI.
   "sync/snapshot/snapshot-f5-review-queue-proof.tauri.js",
+  // F14.5.5.3: Desktop/Tauri snapshot F5 review operator UI panel.
+  // Read+decide-only panel for snapshot tombstone reviews. Renders
+  // privacy-safe redacted rows from the F14.5.5.1 queue; exposes
+  // approve-seal / approve-restore decisions only on pending rows under
+  // approval-token + actor-peer guard. No Native execution, no F5 work
+  // outside the queue ledger, no apply, no publication/relay/outbox, no
+  // watermark writes, no consumed-op writes, no own timer.
+  "sync/snapshot/snapshot-f5-review-panel.tauri.js",
   // F14.6.13: Desktop/Tauri snapshot execute readiness check.
   // Read-only proof that Snapshot proposal, handoff, receipt, bookkeeping,
   // proof/UI, and F5 review queue surfaces expose future Snapshot execute
@@ -976,6 +984,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
   "sync/snapshot/snapshot-f5-review-queue-proof.tauri.js",
+  "sync/snapshot/snapshot-f5-review-panel.tauri.js",
   "sync/snapshot/snapshot-execute-readiness.tauri.js",
   "sync/capture/capture-fresh-runtime.tauri.js",
   "sync/capture/capture-recovery-runtime.tauri.js",
