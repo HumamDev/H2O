@@ -1,9 +1,21 @@
-/* H2O Desktop Sync - F14.4.8b snapshot tombstone applyEvent receipt builder
+/* H2O Desktop Sync - F14.5.5.2 snapshot tombstone applyEvent receipt builder
  *
  * Receipt-only builder for successful hypothetical F5-owned snapshot
  * tombstone operations. This module never executes Native/F5, applies,
  * publishes, enqueues relay outbox rows, advances watermarks, records consumed
  * operations, or mutates storage.
+ *
+ * F14.5.5.2 wire-through: after a successful receipt is assembled, the
+ * receipt's existing `f5Handoff` envelope (verbatim, no reshape) is forwarded
+ * to H2O.Desktop.Sync.ingestF5Review (the F14.5.5.1 queue). On ingest success
+ * the receipt result carries `f5ReviewIngested: true` + `f5ReviewId`. On
+ * ingest blockers (e.g. `f5-review-open-duplicate`) the blockers surface as
+ * receipt WARNINGS — the receipt itself stays successful. On queue
+ * unavailability (`__snapshotF5ReviewQueueInstalled` not set) a single
+ * warning `f5-review-queue-unavailable` is added. The receipt's
+ * `sideEffectSummary` semantics are unchanged: queue ingest is queue-internal
+ * append-only bookkeeping, not an apply / publication / watermark /
+ * consumed-op side effect.
  */
 (function (global) {
   'use strict';
@@ -24,7 +36,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__snapshotTombstoneApplyEventInstalled) return;
 
-  var VERSION = '0.1.0-f14.4.8b';
+  var VERSION = '0.2.0-f14.5.5.2';
   var RESULT_SCHEMA = 'h2o.desktop.sync.snapshot-tombstone-apply-event-receipt.v1';
   var ENVELOPE_SCHEMA = 'h2o.crossPlatform.envelope.v1';
   var F5_EVIDENCE_PREVIEW_SCHEMA = 'h2o.desktop.sync.snapshot-tombstone-f5-evidence-preview.v1';
@@ -803,9 +815,72 @@
       proposedF5Record: null,
       proposedConsumedOperation: null,
       proposedWatermarkTarget: null,
+      f5ReviewIngested: false,
+      f5ReviewId: null,
       blockers: codeList(blockers),
       warnings: codeList(warnings)
     };
+  }
+
+  // F14.5.5.2 — wire-through from the receipt's f5Handoff to the F14.5.5.1
+  // F5 review queue. Best-effort: any failure surfaces as a warning and the
+  // receipt itself remains successful. Never reshapes the f5Handoff envelope.
+  async function ingestIntoF5ReviewQueue(parts, warnings) {
+    var sync = (H2O && H2O.Desktop && H2O.Desktop.Sync) || {};
+    if (!sync.__snapshotF5ReviewQueueInstalled
+        || typeof sync.ingestF5Review !== 'function') {
+      addCode(warnings, 'f5-review-queue-unavailable');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    if (!isObject(parts.f5Handoff)) {
+      addCode(warnings, 'f5-review-queue-handoff-envelope-missing');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    if (!isSha256Hex(parts.originAccountIdHash)) {
+      addCode(warnings, 'f5-review-queue-originAccountIdHash-missing');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    if (!isObject(parts.actorPeer)
+        || !isSha256Hex(safeObject(parts.actorPeer).syncPeerIdHash)) {
+      addCode(warnings, 'f5-review-queue-actorPeer-invalid');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    if (!isSha256Hex(parts.snapshotBookkeepingPointer)) {
+      addCode(warnings, 'f5-review-queue-snapshotBookkeepingPointer-invalid');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    var ingest;
+    try {
+      ingest = await sync.ingestF5Review({
+        f5Handoff: parts.f5Handoff,
+        originAccountIdHash: parts.originAccountIdHash,
+        actorPeer: parts.actorPeer,
+        snapshotBookkeepingPointer: parts.snapshotBookkeepingPointer,
+        observedAtIso: parts.observedAtIso,
+        retentionStartedAtIso: parts.observedAtIso
+      });
+    } catch (_) {
+      addCode(warnings, 'f5-review-ingest-threw');
+      return { f5ReviewIngested: false, f5ReviewId: null };
+    }
+    if (ingest && ingest.ok === true && cleanString(ingest.reviewId)) {
+      return { f5ReviewIngested: true, f5ReviewId: cleanString(ingest.reviewId) };
+    }
+    // Ingest blocked (e.g. f5-review-open-duplicate from a race-on-resubmit,
+    // privacy violation, malformed envelope, etc.). Surface as warnings;
+    // the receipt itself remains successful per F14.5.5.2 contract.
+    var prefix = 'f5-review-ingest-blocked:';
+    codeList(ingest && ingest.blockers).forEach(function (code) {
+      addCode(warnings, prefix + code);
+    });
+    codeList(ingest && ingest.warnings).forEach(function (code) {
+      addCode(warnings, 'f5-review-ingest-warning:' + code);
+    });
+    if (!codeList(ingest && ingest.blockers).length
+        && !codeList(ingest && ingest.warnings).length) {
+      addCode(warnings, 'f5-review-ingest-unknown-failure');
+    }
+    return { f5ReviewIngested: false, f5ReviewId: null };
   }
 
   async function buildSnapshotTombstoneApplyEventReceipt(input) {
@@ -977,6 +1052,24 @@
     scanPrivacy(watermarkPreview, blockers, warnings);
     if (blockers.length) return failure(blockers, warnings);
 
+    // F14.5.5.2 — forward the receipt's f5Handoff envelope (verbatim) to
+    // the F5 review queue. The receipt itself is already successful at this
+    // point; the wire-through is best-effort and only contributes warnings.
+    var f5HandoffEnvelope = safeObject(safeObject(args.handoffPreview).handoffRequest).f5Handoff;
+    var originAccountIdHash = cleanLower(
+      args.originAccountIdHash
+        || args.localAccountIdHash
+        || safeObject(envelope.payload).originAccountIdHash
+        || safeObject(envelope.payload).localAccountIdHash
+    );
+    var ingestOutcome = await ingestIntoF5ReviewQueue({
+      f5Handoff: f5HandoffEnvelope,
+      originAccountIdHash: originAccountIdHash,
+      actorPeer: actorPeer,
+      snapshotBookkeepingPointer: eventDigest,
+      observedAtIso: appliedAt
+    }, warnings);
+
     return {
       schema: RESULT_SCHEMA,
       version: VERSION,
@@ -990,6 +1083,8 @@
       proposedF5Record: f5Evidence,
       proposedConsumedOperation: consumedPreview,
       proposedWatermarkTarget: watermarkPreview,
+      f5ReviewIngested: ingestOutcome.f5ReviewIngested,
+      f5ReviewId: ingestOutcome.f5ReviewId,
       blockers: [],
       warnings: codeList(warnings)
     };
