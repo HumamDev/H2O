@@ -5,6 +5,12 @@ Status: Active
 Purpose:
 Define durable rules for Library labels, tags, categories, and their cross-links.
 
+Sync architecture / convergence design:
+See `../cross-platform/f15.0.0-labels-categories-tags-canonical-object-model.md`
+for the F15 canonical object model, lifecycle, privacy policy, and execute-lane
+integration plan. This doc remains the product-feature behavior source of truth;
+the F15.0.0 doc is the sync-architecture source of truth.
+
 ## Ownership
 - Labels owns label catalog and chat-label assignments.
 - Tags owns tag catalog, tag pool creation, suggestion pool state, tag usage metadata, and tag popups.
