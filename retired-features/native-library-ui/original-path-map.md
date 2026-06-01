@@ -5,9 +5,9 @@ location, line range, retirement commit, and destination for every
 piece of code moved from `src-runtime-base/0F*` into
 `retired-features/native-library-ui/`.
 
-R4.7.1 was scaffolding only. R4.7.2 (this entry's first batch) moves
-the Native Categories sidebar UI. R4.7.3 will move folders / labels /
-projects / workspace.
+R4.7.1 was scaffolding only. R4.7.2 moved the Native Categories
+sidebar UI. R4.7.3 (this entry's labels slice) moves the Native
+Labels sidebar UI. R4.7.4 will move folders / projects / workspace.
 
 ## Format
 
@@ -44,6 +44,46 @@ The category CRUD entrypoints — `H2O.archiveBoot.renameCategory`,
   lines 141, 144, 147.
 
 These calls are protected by the deprecation validator's Section O
+audit-trail assertion.
+
+### R4.7.3 moves (Labels sidebar UI)
+
+| Source file | Source lines (pre-R4.7.3) | Destination file | R4.7 slice | Commit |
+|---|---|---|---|---|
+| `src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js` | 128–183 (R4.6.3 per-element org gate — `R46_ORG_SELECTORS`, `syncR46OrgElements`, `installR46OrgCssGate`, boot IIFE) | `0F6a-labels-ui/labels-sidebar.js` Block 1 | R4.7.3 | _<commit hash; populated post-commit>_ |
+| `src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js` | 1483–1544 (`openLabelActionsPop` — sidebar row context-menu popup with rename/delete UI) | `0F6a-labels-ui/labels-sidebar.js` Block 2 | R4.7.3 | _<commit hash>_ |
+| `src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js` | 1799–1807 (`makeFallbackSidebarHeader`) | `0F6a-labels-ui/labels-sidebar.js` Block 3 | R4.7.3 | _<commit hash>_ |
+| `src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js` | 1809–1849 (`prepareLabelsSection` — sets `data-cgxui="lbsc-root"`) | `0F6a-labels-ui/labels-sidebar.js` Block 4 | R4.7.3 | _<commit hash>_ |
+
+### R4.7.3 stubs (kept in 0F6a as no-ops for external callers)
+
+The following functions remain DEFINED in 0F6a but with no-op
+bodies; their original bodies are preserved in
+`labels-sidebar.js` Blocks 5 and 6:
+
+| Source lines (pre-R4.7.3) | Function | External caller(s) requiring the stub |
+|---|---|---|
+| 1851–2000 | `buildLabelsSection` | `MOD.buildSection` API |
+| 2002–2010 | `activePageLabelKey` | (kept for symmetry) |
+| 2012–2039 | `syncLabelSidebarActiveState` | Workspace viewer (R4.7.4 scope) |
+| 2041–2050 | `scheduleLabelSidebarActiveSync` | (kept for symmetry) |
+| 2052–2066 | `rerenderLabelsSection` | CRUD: `createLabel`/`renameLabel`/`deleteLabel`/`afterLabelMutation`/`setTypeVisible`/show-counts toggle |
+| 2068–2101 | `ensureSidebarObserver` | (kept for symmetry) |
+| 2103–2112 | `scheduleEnsure` | MOD API + boot late-init |
+| 2114–2202 | `ensureInjected` | MOD API + boot late-init + `scheduleEnsure` |
+
+### Pending / kept in 0F6a (NOT moved in R4.7.3)
+
+- `function createLabel`, `function renameLabel`, `function deleteLabel`
+  (line 889 / 914 / 933 post-R4.7.3) — STAY for Studio MV3
+  fallback. Studio's S0Z1g calls `H2O.Labels.renameLabel(...)` etc.
+- Per-turn `lbsc-chip-color` chip UI (line 2055 post-R4.7.3 inside
+  `openAssignModal`) + supporting CSS — turn-level UI; different
+  DOM subtree from `lbsc-root`.
+- Workspace viewer + modal UI (`mountPage`, `openLabelsViewer`,
+  `openLabelViewer`, `openAssignModal`, etc.) — R4.7.4 scope.
+
+These calls are protected by the deprecation validator's Section P
 audit-trail assertion.
 
 ## Re-verification

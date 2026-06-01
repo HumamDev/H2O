@@ -443,9 +443,13 @@ const PER_MODULE_GATES = [
    * syncR46OrgElements, installR46OrgCssGate) physically moved
    * into retired-features/native-library-ui/0F4a-categories-ui/
    * categories-sidebar.js Block 1. Section O re-verifies that the
-   * gate is gone from 0F4a. The other three modules retain their
-   * gates until R4.7.3 retires their UI. */
-  ['0F6a', 'css-known-selector', '[data-cgxui="lbsc-root"]',                                         'NATIVE LABELS SECTION'],
+   * gate is gone from 0F4a.
+   *
+   * R4.7.3 — 0F6a's per-module gate retired alongside the labels
+   * sidebar UI; moved into retired-features/native-library-ui/
+   * 0F6a-labels-ui/labels-sidebar.js Block 1. Section P
+   * re-verifies the absence. The two remaining modules retain
+   * their gates until R4.7.4 retires their UI. */
   ['0F2a', 'css-known-selector', '.ho-project-row',                                                   'NATIVE PROJECTS SECTION'],
   ['0F3a', 'css-known-selector', '[data-cgxui="flsc-folder-row"], [data-cgxui="flsc-folder-more"]',   'NATIVE FOLDERS SECTION'],
 ];
@@ -524,13 +528,13 @@ check('K.0F3a: folders gate uses real flsc-folder-row + flsc-folder-more selecto
   assert.match(SRC['0F3a'], /UI_FSECTION_FOLDER_MORE\s*=\s*`\$\{SkID\}-folder-more`/);
 });
 
-check('K.0F6a: labels gate uses real lbsc-root selector', () => {
-  assert.match(SRC['0F6a'], /gateSelector:\s*'\[data-cgxui="lbsc-root"\]'/);
-  /* R4.6.3 — selector lives in R46_ORG_SELECTORS. */
-  assert.match(SRC['0F6a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\[data-cgxui="lbsc-root"\]'\s*\]/);
-  /* The constant is UI_LABELS_ROOT. */
-  assert.match(SRC['0F6a'], /UI_LABELS_ROOT\s*=\s*`\$\{SkID\}-root`/);
-});
+/* R4.7.3 — The K.0F6a "labels gate uses lbsc-root" check was
+ * removed because the gate itself is retired alongside the labels
+ * sidebar UI. The UI_LABELS_ROOT constant still exists in 0F6a
+ * (it's referenced by workspace viewer + chip-color UI which stay
+ * until R4.7.4). The diagnose block still publishes the selector
+ * string for historical inspection. Section P (R4.7.3) verifies
+ * the gate retirement independently. */
 
 /* ════════════════════════════════════════════════════════════════════════
  * Section L — R4.6.3 cascade-proof gate enforcement
@@ -552,12 +556,17 @@ const PER_ELEMENT_GATED_MODULES = [
    * physically retired into retired-features/native-library-ui/
    * 0F4a-categories-ui/categories-sidebar.js Block 1. Section O
    * verifies the absence of those functions from 0F4a's live
-   * source. The remaining 4 modules retain their per-element
-   * gates until their R4.7.3 retirements. */
+   * source.
+   *
+   * R4.7.3 — 0F6a removed for the same reason; its gate moved
+   * into retired-features/native-library-ui/0F6a-labels-ui/
+   * labels-sidebar.js Block 1. Section P verifies the absence.
+   *
+   * The remaining 3 modules retain their per-element gates until
+   * R4.7.4 retires their UI. */
   ['0F1b', 'syncR46WorkspaceElements', 'workspace-ui'],
   ['0F2a', 'syncR46OrgElements',       'org-ui'],
   ['0F3a', 'syncR46OrgElements',       'org-ui'],
-  ['0F6a', 'syncR46OrgElements',       'org-ui'],
 ];
 
 for (const [mod, syncFn, hiddenValue] of PER_ELEMENT_GATED_MODULES) {
@@ -634,8 +643,11 @@ check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-
    *
    * R4.7.2 — 0F4a removed from the loop because the gate moved
    * with the UI into retired-features. Section O verifies the
-   * removal independently. */
-  for (const mod of ['0F2a', '0F3a', '0F6a']) {
+   * removal independently.
+   *
+   * R4.7.3 — 0F6a removed for the same reason. Section P verifies
+   * the removal. */
+  for (const mod of ['0F2a', '0F3a']) {
     /* The shared per-element rule must be present. */
     assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
   }
@@ -699,6 +711,10 @@ check('K.studio-not-hidden: NO module includes Studio-side wbSidebarSection--* i
 });
 
 check('K.all-real: every gate declares gateImplementation = css-known-selector', () => {
+  /* 0F4a (R4.7.2) and 0F6a (R4.7.3) still publish
+   * `gateImplementation: 'css-known-selector'` in their diagnose
+   * blocks (the metadata persists for historical inspection even
+   * after the gate code itself was retired). */
   for (const mod of ['0F2a', '0F3a', '0F4a', '0F6a']) {
     assert.match(SRC[mod], /gateImplementation:\s*'css-known-selector'/,
       `${mod} must declare gateImplementation as css-known-selector after R4.6.2`);
@@ -1034,18 +1050,23 @@ for (const dir of R47_MODULE_DIRS) {
   });
 }
 
-check('N.r47.x-staged-code-moves: only R4.7.2-retired subfolders may contain .js', () => {
+check('N.r47.x-staged-code-moves: only R4.7.2/R4.7.3-retired subfolders may contain .js', () => {
   /* R4.7.1 was scaffolding only. R4.7.2 retires 0F4a categories
    * sidebar UI (adds categories-sidebar.js under 0F4a-categories-ui/).
-   * R4.7.3 will retire the remaining 5 module subfolders. Until then,
-   * those 5 subfolders must remain bare except for their README.md. */
-  const R47_2_ALLOWED_JS = new Set(['0F4a-categories-ui']);
+   * R4.7.3 retires 0F6a labels sidebar UI (adds labels-sidebar.js
+   * under 0F6a-labels-ui/). R4.7.4 will retire the remaining 4
+   * module subfolders. Until then, those 4 subfolders must remain
+   * bare except for their README.md. */
+  const R47_RETIRED_JS_DIRS = new Set([
+    '0F4a-categories-ui',  /* R4.7.2 */
+    '0F6a-labels-ui',      /* R4.7.3 */
+  ]);
   for (const dir of R47_MODULE_DIRS) {
     const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
     const jsFiles = entries.filter(f => f.endsWith('.js'));
-    if (R47_2_ALLOWED_JS.has(dir)) {
-      /* Allowed (and required in R4.7.2 for 0F4a) — verified by
-       * Section O checks below. */
+    if (R47_RETIRED_JS_DIRS.has(dir)) {
+      /* Allowed — verified by Section O (R4.7.2) / Section P
+       * (R4.7.3) checks. */
       continue;
     }
     assert.equal(jsFiles.length, 0,
@@ -1339,6 +1360,272 @@ check('O.invariants: archiveBoot CRUD definitions untouched in 0D3a (canonical a
     '0F4a must not define a top-level deleteCategory function — it forwards to H2O.archiveBoot');
   assert.equal(/^\s*function createCategory\s*\(/m.test(src), false,
     '0F4a must not define a top-level createCategory function — it forwards to H2O.archiveBoot');
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section P — R4.7.3 Native Labels Sidebar UI physically retired
+ *
+ * R4.7.3 retires the 0F6a labels SIDEBAR UI surgically. This
+ * section asserts:
+ *
+ *   1. The retired-features archive file exists with the 6
+ *      declared blocks (Block 1 R4.6.3 gate, Block 2
+ *      openLabelActionsPop, Block 3 makeFallbackSidebarHeader,
+ *      Block 4 prepareLabelsSection, Block 5 buildLabelsSection,
+ *      Block 6 sidebar lifecycle stubs).
+ *   2. 0F6a no longer DEFINES any of the four fully-retired
+ *      surfaces (R46_ORG_SELECTORS, syncR46OrgElements,
+ *      installR46OrgCssGate, openLabelActionsPop,
+ *      makeFallbackSidebarHeader, prepareLabelsSection).
+ *   3. 0F6a still DEFINES `function buildLabelsSection` (no-op
+ *      stub — body is a single `return null;` followed by `}`).
+ *   4. 0F6a still DEFINES the seven sidebar-lifecycle no-op stubs
+ *      (activePageLabelKey, syncLabelSidebarActiveState,
+ *      scheduleLabelSidebarActiveSync, rerenderLabelsSection,
+ *      ensureSidebarObserver, scheduleEnsure, ensureInjected).
+ *   5. 0F6a still DEFINES the three label CRUD entrypoints
+ *      (function createLabel, function renameLabel,
+ *      function deleteLabel) — Studio MV3 fallback dependency.
+ *   6. The CRUD definitions are NOT gated by any library.native*
+ *      flag helper.
+ *   7. The per-turn `lbsc-chip-color` UI (both the JS setProperty
+ *      call site and the CSS) remains present in 0F6a.
+ *   8. 0F6a's file size shrank measurably vs the pre-R4.7.3
+ *      baseline.
+ *   9. The per-module documentation (README.md +
+ *      extracted-from-0F6a.md) records the move + replacement.
+ *  10. The top-level original-path-map.md was updated with the
+ *      R4.7.3 entries.
+ *  11. 0F5a remains byte-exact 273099. Capture files untouched.
+ *  12. Studio replacement modules (S0Z1g, S0F1m, S0F1n, S0F6b)
+ *      are referenced in the 0F6a-labels-ui README.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section P — R4.7.3 Labels sidebar UI physically retired');
+
+const P_ARCHIVE_PATH = `${R47_ROOT}/0F6a-labels-ui/labels-sidebar.js`;
+const P_EXTRACTED_DOC = `${R47_ROOT}/0F6a-labels-ui/extracted-from-0F6a.md`;
+const P_README = `${R47_ROOT}/0F6a-labels-ui/README.md`;
+const P_PATH_MAP = `${R47_ROOT}/original-path-map.md`;
+
+check('P.archive: labels-sidebar.js exists and is non-empty', () => {
+  assert.ok(fs.existsSync(abs(P_ARCHIVE_PATH)),
+    `${P_ARCHIVE_PATH} not found`);
+  const stat = fs.statSync(abs(P_ARCHIVE_PATH));
+  assert.ok(stat.size > 8000,
+    `${P_ARCHIVE_PATH} suspiciously small (${stat.size} bytes); expected the 6-block archive`);
+});
+
+check('P.archive: labels-sidebar.js declares all 6 blocks', () => {
+  const src = fs.readFileSync(abs(P_ARCHIVE_PATH), 'utf8');
+  assert.match(src, /Block 1 of 6 — R4\.6\.3 per-element org gate/);
+  assert.match(src, /Block 2 of 6 — openLabelActionsPop/);
+  assert.match(src, /Block 3 of 6 — makeFallbackSidebarHeader/);
+  assert.match(src, /Block 4 of 6 — prepareLabelsSection/);
+  assert.match(src, /Block 5 of 6 — buildLabelsSection/);
+  assert.match(src, /Block 6 of 6 — Sidebar lifecycle/);
+});
+
+check('P.source: 0F6a contains R4.7.3 breadcrumbs at each removal site', () => {
+  const src = SRC['0F6a'];
+  /* Block 1 breadcrumb (R4.6.3 per-element gate). */
+  assert.match(src, /R4\.7\.3 — R4\.6\.3 per-element org gate retired/);
+  /* Block 2 breadcrumb (openLabelActionsPop). */
+  assert.match(src, /R4\.7\.3 — openLabelActionsPop retired/);
+  /* Block 3 + Block 4 breadcrumb (combined). */
+  assert.match(src, /R4\.7\.3 — makeFallbackSidebarHeader \+ prepareLabelsSection/);
+  /* Block 5 breadcrumb (buildLabelsSection). */
+  assert.match(src, /R4\.7\.3 — buildLabelsSection retired/);
+  /* Block 6 breadcrumb (sidebar lifecycle stubs). */
+  assert.match(src, /R4\.7\.3 — Sidebar lifecycle functions retired/);
+  /* Each breadcrumb cites the archive file. */
+  const breadcrumbCount = (src.match(/retired-features\/native-library-ui\/0F6a-labels-ui\/labels-sidebar\.js/g) || []).length;
+  assert.ok(breadcrumbCount >= 4,
+    `0F6a should cite labels-sidebar.js at least 4× (one per breadcrumb block); found ${breadcrumbCount}`);
+});
+
+check('P.source: 0F6a no longer defines fully-retired sidebar surfaces', () => {
+  const src = SRC['0F6a'];
+  assert.equal(/^\s*const R46_ORG_SELECTORS\s*=/m.test(src), false,
+    '0F6a still declares R46_ORG_SELECTORS — should have been moved (R4.6.3 gate retired)');
+  assert.equal(/^\s*function syncR46OrgElements\b/m.test(src), false,
+    '0F6a still defines syncR46OrgElements — R4.6.3 gate should have been moved');
+  assert.equal(/^\s*function installR46OrgCssGate\b/m.test(src), false,
+    '0F6a still defines installR46OrgCssGate — R4.6.3 gate should have been moved');
+  assert.equal(/^\s*function openLabelActionsPop\b/m.test(src), false,
+    '0F6a still defines openLabelActionsPop — sidebar row context menu should have been moved');
+  assert.equal(/^\s*function makeFallbackSidebarHeader\b/m.test(src), false,
+    '0F6a still defines makeFallbackSidebarHeader — should have been moved');
+  assert.equal(/^\s*function prepareLabelsSection\b/m.test(src), false,
+    '0F6a still defines prepareLabelsSection — should have been moved');
+});
+
+check('P.source: 0F6a buildLabelsSection is now a no-op stub', () => {
+  const src = SRC['0F6a'];
+  const m = src.match(/function buildLabelsSection\s*\([^)]*\)\s*\{([\s\S]{0,200})\}/);
+  assert.ok(m, 'buildLabelsSection function declaration not found');
+  const body = m[1];
+  assert.match(body, /return null\s*;/);
+  /* Body must NOT contain the sidebar render internals that lived
+   * in the original function. */
+  assert.equal(/'Manage labels'/.test(body), false,
+    'buildLabelsSection body still contains the "Manage labels" label — body not fully removed');
+  assert.equal(/'Label current chat'/.test(body), false,
+    'buildLabelsSection body still contains the "Label current chat" label — body not fully removed');
+  assert.equal(/recordLabelsShellSeen\s*\(/.test(body), false,
+    'buildLabelsSection body still calls recordLabelsShellSeen — body not fully removed');
+});
+
+check('P.source: 0F6a still defines the 7 sidebar-lifecycle no-op stubs', () => {
+  const src = SRC['0F6a'];
+  /* Each function must still exist (MOD API + CRUD + workspace
+   * callers depend on the names resolving). */
+  assert.match(src, /function activePageLabelKey\s*\(/);
+  assert.match(src, /function syncLabelSidebarActiveState\s*\(/);
+  assert.match(src, /function scheduleLabelSidebarActiveSync\s*\(/);
+  assert.match(src, /function rerenderLabelsSection\s*\(/);
+  assert.match(src, /function ensureSidebarObserver\s*\(/);
+  assert.match(src, /function scheduleEnsure\s*\(/);
+  assert.match(src, /function ensureInjected\s*\(/);
+  /* And each is now a no-op (the original bodies are 9..89 lines
+   * long; the stubs are single-line). The R4.7.3 stub comment
+   * must be near the function definitions. */
+  assert.match(src, /no-op \(R4\.7\.3\)/);
+});
+
+check('P.source: 0F6a still defines label CRUD entrypoints', () => {
+  const src = SRC['0F6a'];
+  /* These are the Studio MV3 fallback dependency. */
+  assert.match(src, /^\s*function createLabel\s*\(/m,
+    '0F6a missing function createLabel — Studio MV3 fallback requires it');
+  assert.match(src, /^\s*function renameLabel\s*\(/m,
+    '0F6a missing function renameLabel — Studio MV3 fallback requires it');
+  assert.match(src, /^\s*function deleteLabel\s*\(/m,
+    '0F6a missing function deleteLabel — Studio MV3 fallback requires it');
+});
+
+check('P.source: 0F6a CRUD bodies are NOT gated by deprecation flags', () => {
+  /* Re-verify Section E's invariant scoped to R4.7.3's touched
+   * neighborhood: no library.native* flag helper appears inside
+   * any of the three CRUD function bodies. */
+  for (const fn of ['createLabel', 'renameLabel', 'deleteLabel']) {
+    const body = functionBody(SRC['0F6a'], fn);
+    assert.ok(body, `${fn} body not found in 0F6a`);
+    assert.equal(/isNativeWorkspaceUiEnabled\s*\(/.test(body), false,
+      `${fn} must not gate on workspace UI flag`);
+    assert.equal(/isNativeOrganizationUiEnabled\s*\(/.test(body), false,
+      `${fn} must not gate on organization UI flag`);
+    assert.equal(/isNativeCaptureOnlyMode\s*\(/.test(body), false,
+      `${fn} must not gate on capture-only flag`);
+    assert.equal(/library\.native(Workspace|Organization|Capture)/.test(body), false,
+      `${fn} must not reference any library.native* flag literal`);
+  }
+});
+
+check('P.source: 0F6a preserves the per-turn lbsc-chip-color UI', () => {
+  const src = SRC['0F6a'];
+  /* JS side: the chip-color CSS variable is set on a chip element
+   * (in openAssignModal). */
+  assert.match(src, /--lbsc-chip-color/,
+    '0F6a missing --lbsc-chip-color reference — turn-level chip UI must stay');
+  /* Both a setProperty call site and CSS rule(s) should appear. */
+  const hits = (src.match(/--lbsc-chip-color/g) || []).length;
+  assert.ok(hits >= 2,
+    `0F6a should reference --lbsc-chip-color at least 2× (setProperty + CSS); found ${hits}`);
+});
+
+check('P.size: 0F6a shrank measurably vs pre-R4.7.3', () => {
+  /* Pre-R4.7.3 baseline (post-R4.6.4): 3188 lines. After R4.7.3
+   * we observed 2728 lines (~460 fewer). Anything appreciably
+   * above 3100 lines means a removal failed. We also enforce a
+   * hard floor against accidental wholesale deletion. */
+  const lines = SRC['0F6a'].split(/\n/).length;
+  assert.ok(lines < 3100,
+    `0F6a line count ${lines} suggests R4.7.3 removals didn't actually apply (expected < 3100)`);
+  assert.ok(lines > 2200,
+    `0F6a line count ${lines} suspiciously small — over-aggressive deletion?`);
+});
+
+check('P.doc: extracted-from-0F6a.md exists and records line ranges + commit placeholder', () => {
+  assert.ok(fs.existsSync(abs(P_EXTRACTED_DOC)),
+    `${P_EXTRACTED_DOC} not found`);
+  const doc = fs.readFileSync(abs(P_EXTRACTED_DOC), 'utf8');
+  assert.match(doc, /R4\.7\.3/);
+  assert.match(doc, /[Ee]xtracted from 0F6a/);
+  /* All 4 moved block ranges. */
+  assert.match(doc, /128[–-]183/);
+  assert.match(doc, /1483[–-]1544/);
+  assert.match(doc, /1799[–-]1807/);
+  assert.match(doc, /1809[–-]1849/);
+  /* Stub disposition. */
+  assert.match(doc, /buildLabelsSection/);
+  assert.match(doc, /[Ss]tub/);
+  /* Commit placeholder. */
+  assert.match(doc, /commit hash/i);
+  /* Boundary invariants. */
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /273099/);
+  /* Rollback. */
+  assert.match(doc, /[Rr]ollback/);
+});
+
+check('P.doc: 0F6a-labels-ui README reports R4.7.3 RETIRED status', () => {
+  const doc = fs.readFileSync(abs(P_README), 'utf8');
+  /* No longer scaffolding. */
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false,
+    '0F6a-labels-ui README still says "scaffolding only" — should reflect R4.7.3 retirement');
+  /* Reports RETIRED status. */
+  assert.match(doc, /RETIRED/);
+  /* References the 6 blocks. */
+  assert.match(doc, /Block 1/);
+  assert.match(doc, /Block 2/);
+  assert.match(doc, /Block 3/);
+  assert.match(doc, /Block 4/);
+  assert.match(doc, /Block 5/);
+  assert.match(doc, /Block 6/);
+  /* Studio replacement stack: S0Z1g + S0F1m + S0F1n + S0F6b. */
+  assert.match(doc, /S0Z1g/);
+  assert.match(doc, /S0F1m/);
+  assert.match(doc, /S0F1n/);
+  assert.match(doc, /S0F6b/);
+});
+
+check('P.doc: original-path-map.md records R4.7.3 moves', () => {
+  const doc = fs.readFileSync(abs(P_PATH_MAP), 'utf8');
+  /* Concrete entries cite 0F6a + the archive file. */
+  assert.match(doc, /0F6a\b/);
+  assert.match(doc, /[Ll]abels/);
+  assert.match(doc, /labels-sidebar\.js/);
+  /* All 4 moved block line ranges. */
+  assert.match(doc, /128[–-]183/);
+  assert.match(doc, /1483[–-]1544/);
+  assert.match(doc, /1799[–-]1807/);
+  assert.match(doc, /1809[–-]1849/);
+  /* Slice tag. */
+  assert.match(doc, /R4\.7\.3/);
+});
+
+check('P.invariants: capture path untouched (re-verify post-R4.7.3)', () => {
+  /* Sentinel: capture entrypoints in 0F3a + 0F1j unchanged. */
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
+});
+
+check('P.invariants: 0F5a byte-exact (re-verify post-R4.7.3)', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    `0F5a size changed during R4.7.3: ${stat.size} vs baseline 273099 — Tag extraction must not be touched`);
+});
+
+check('P.invariants: 0F4a R4.7.2 invariants still hold (cross-slice canary)', () => {
+  /* Confirms that R4.7.3 didn't accidentally undo R4.7.2's
+   * retirements in 0F4a. */
+  const src = SRC['0F4a'];
+  assert.match(src, /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
+  assert.match(src, /function buildCategoriesSection\s*\([^)]*\)\s*\{\s*return null/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
