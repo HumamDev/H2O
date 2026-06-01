@@ -348,9 +348,11 @@ check('G.doc: archive folder plan is explicitly DEFERRED', () => {
  * owns the body-attribute updater that drives per-module CSS gates.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-console.log('Section H — R4.6.1 banner + body-attribute mechanism');
-check('H.0F1b: declares applyR46BodyAttrs() body-attribute updater', () => {
+console.log('Section H — R4.6.1+R4.6.3 banner + attribute mechanism');
+check('H.0F1b: declares applyR46BodyAttrs() with html+body mirror (R4.6.3)', () => {
   assert.match(SRC['0F1b'], /function applyR46BodyAttrs\s*\(\s*\)/);
+  /* R4.6.3 — must iterate BOTH body and documentElement. */
+  assert.match(SRC['0F1b'], /\[D\.body,\s*D\.documentElement\]/);
   /* Sets the org-hide attribute when flag is off (true means hide). */
   assert.match(SRC['0F1b'], /'data-h2o-r46-hide-org'/);
   /* Sets the workspace-hide attribute when flag is off. */
@@ -366,9 +368,11 @@ check('H.0F1b: installs workspace CSS gate with library button + page selectors'
   /* Hide rule itself. */
   assert.match(SRC['0F1b'], /display:none\s*!important/);
 });
-check('H.0F1b: setInterval poll loop picks up flag flips', () => {
+check('H.0F1b: poll loop runs applyR46BodyAttrs + syncR46WorkspaceElements (R4.6.3)', () => {
   assert.match(SRC['0F1b'], /function startR46PollLoop/);
-  assert.match(SRC['0F1b'], /W\.setInterval\(\s*function\s*\(\s*\)\s*\{\s*applyR46BodyAttrs\(\s*\)\s*;\s*\}\s*,\s*1000\s*\)/);
+  /* R4.6.3 — poll now ALSO calls syncR46WorkspaceElements to keep
+   * per-element gating up to date alongside the body attributes. */
+  assert.match(SRC['0F1b'], /W\.setInterval\(\s*function\s*\(\s*\)\s*\{[\s\S]*?applyR46BodyAttrs\(\s*\)[\s\S]*?syncR46WorkspaceElements\(\s*\)[\s\S]*?\}\s*,\s*1000\s*\)/);
 });
 check('H.0F1b: deprecation banner builder exists', () => {
   assert.match(SRC['0F1b'], /function buildR46DeprecationBanner\s*\(\s*\)/);
@@ -443,20 +447,25 @@ for (const [mod, impl, selector, label] of PER_MODULE_GATES) {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(SRC[mod], new RegExp(`gateSelector:\\s*'${escaped}'`));
   });
-  check(`I.${mod}: ${label} — CSS rule is scoped to body[data-h2o-r46-hide-org="1"]`, () => {
-    /* The injected style.textContent string includes the body attribute trigger. */
-    assert.match(SRC[mod], /body\[data-h2o-r46-hide-org="1"\]/);
-    /* And contains display:none !important. */
+  check(`I.${mod}: ${label} — installs the SHARED [data-h2o-r46-hidden] CSS rule (R4.6.3)`, () => {
+    /* R4.6.3 — every module installs the same shared rule keyed by
+     * the per-element data-h2o-r46-hidden attribute. The shared
+     * style id is 'h2o-r46-hidden-attr-css'. */
+    assert.match(SRC[mod], /h2o-r46-hidden-attr-css/);
+    /* CSS rule body: targets the per-element attribute. */
+    assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
+    /* Hide rule itself. */
     assert.match(SRC[mod], /display:none\s*!important/);
   });
 }
 
 /* The categories gate (0F4a) is the user-emphasized "Native categories
  * section is gated" assertion. Verify the selector is precisely the
- * canonical root. */
+ * canonical root, and that the sync function uses it. */
 check('I.0F4a: categories gate uses the KNOWN flsc-categories-root selector', () => {
   assert.match(SRC['0F4a'], /\[data-cgxui="flsc-categories-root"\]/);
-  assert.match(SRC['0F4a'], /body\[data-h2o-r46-hide-org="1"\] \[data-cgxui="flsc-categories-root"\]/);
+  /* R4.6.3 — the selector lives in R46_ORG_SELECTORS, consumed by syncR46OrgElements. */
+  assert.match(SRC['0F4a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\[data-cgxui="flsc-categories-root"\]'/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -482,16 +491,16 @@ check('K.no-placeholders: no placeholder selectors remain in any Native module',
 check('K.0F2a: projects gate uses real .ho-project-row class selector', () => {
   /* Selector value declared in diagnose. */
   assert.match(SRC['0F2a'], /gateSelector:\s*'\.ho-project-row'/);
-  /* CSS rule string. */
-  assert.match(SRC['0F2a'], /body\[data-h2o-r46-hide-org="1"\] \.ho-project-row/);
+  /* R4.6.3 — selector lives in R46_ORG_SELECTORS, consumed by sync function. */
+  assert.match(SRC['0F2a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\.ho-project-row'\s*\]/);
   /* The class is constant UI_PROJECT_TITLE_ROW_CLASS at line 168. */
   assert.match(SRC['0F2a'], /UI_PROJECT_TITLE_ROW_CLASS\s*=\s*'ho-project-row'/);
 });
 
 check('K.0F3a: folders gate uses real flsc-folder-row + flsc-folder-more selectors', () => {
   assert.match(SRC['0F3a'], /gateSelector:\s*'\[data-cgxui="flsc-folder-row"\],\s*\[data-cgxui="flsc-folder-more"\]'/);
-  assert.match(SRC['0F3a'], /body\[data-h2o-r46-hide-org="1"\] \[data-cgxui="flsc-folder-row"\]/);
-  assert.match(SRC['0F3a'], /body\[data-h2o-r46-hide-org="1"\] \[data-cgxui="flsc-folder-more"\]/);
+  /* R4.6.3 — both selectors live in R46_ORG_SELECTORS. */
+  assert.match(SRC['0F3a'], /R46_ORG_SELECTORS\s*=\s*\[[\s\S]*?'\[data-cgxui="flsc-folder-row"\]'[\s\S]*?'\[data-cgxui="flsc-folder-more"\]'/);
   /* The constants are UI_FSECTION_FOLDER_ROW / FOLDER_MORE. */
   assert.match(SRC['0F3a'], /UI_FSECTION_FOLDER_ROW\s*=\s*`\$\{SkID\}-folder-row`/);
   assert.match(SRC['0F3a'], /UI_FSECTION_FOLDER_MORE\s*=\s*`\$\{SkID\}-folder-more`/);
@@ -499,9 +508,118 @@ check('K.0F3a: folders gate uses real flsc-folder-row + flsc-folder-more selecto
 
 check('K.0F6a: labels gate uses real lbsc-root selector', () => {
   assert.match(SRC['0F6a'], /gateSelector:\s*'\[data-cgxui="lbsc-root"\]'/);
-  assert.match(SRC['0F6a'], /body\[data-h2o-r46-hide-org="1"\] \[data-cgxui="lbsc-root"\]/);
+  /* R4.6.3 — selector lives in R46_ORG_SELECTORS. */
+  assert.match(SRC['0F6a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\[data-cgxui="lbsc-root"\]'\s*\]/);
   /* The constant is UI_LABELS_ROOT. */
   assert.match(SRC['0F6a'], /UI_LABELS_ROOT\s*=\s*`\$\{SkID\}-root`/);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section L — R4.6.3 cascade-proof gate enforcement
+ * After soak testing revealed that the body[data-h2o-r46-hide-org="1"]
+ * cascade-based gate was unreliable (host framework strips body
+ * attributes during re-renders), R4.6.3 introduced per-element marking
+ * with inline `style.setProperty('display','none','important')`. These
+ * assertions ensure the regression cannot recur — each gated module
+ * MUST use the new pattern with all its essential parts.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section L — R4.6.3 cascade-proof per-element gate');
+
+const PER_ELEMENT_GATED_MODULES = [
+  /* moduleId, sync fn name, hidden marker value */
+  ['0F1b', 'syncR46WorkspaceElements', 'workspace-ui'],
+  ['0F2a', 'syncR46OrgElements',       'org-ui'],
+  ['0F3a', 'syncR46OrgElements',       'org-ui'],
+  ['0F4a', 'syncR46OrgElements',       'org-ui'],
+  ['0F6a', 'syncR46OrgElements',       'org-ui'],
+];
+
+for (const [mod, syncFn, hiddenValue] of PER_ELEMENT_GATED_MODULES) {
+  check(`L.${mod}: declares ${syncFn}() per-element sync function`, () => {
+    assert.match(SRC[mod], new RegExp(`function ${syncFn}\\s*\\(\\s*\\)`));
+  });
+  check(`L.${mod}: sync marks elements with data-h2o-r46-hidden="${hiddenValue}"`, () => {
+    /* The body of the sync function contains both the attribute-set
+     * line AND the inline-style-set line. */
+    const body = SRC[mod].match(new RegExp(`function ${syncFn}\\s*\\(\\s*\\)[\\s\\S]*?^\\s{2}\\}`, 'm'));
+    assert.ok(body, `${syncFn} body not found in ${mod}`);
+    assert.match(body[0], new RegExp(`setAttribute\\('data-h2o-r46-hidden',\\s*'${hiddenValue}'\\)`));
+  });
+  check(`L.${mod}: sync uses style.setProperty('display','none','important') — cascade-proof inline !important`, () => {
+    /* This is the CRITICAL R4.6.3 assertion. The Web's CSSOM
+     * setProperty(name, value, priority='important') sets an inline
+     * style WITH the !important flag, which beats CSS rules AND
+     * non-important inline styles (e.g. 0F3a's folderMore button's
+     * `style.cssText` with display:inline-flex). Without this
+     * priority arg, the gate would silently lose to the existing
+     * inline style. */
+    const body = SRC[mod].match(new RegExp(`function ${syncFn}\\s*\\(\\s*\\)[\\s\\S]*?^\\s{2}\\}`, 'm'));
+    assert.ok(body);
+    assert.match(body[0], /style\.setProperty\(\s*'display',\s*'none',\s*'important'\s*\)/,
+      `${mod}.${syncFn} must use setProperty('display','none','important') to beat inline styles`);
+  });
+  check(`L.${mod}: sync removes BOTH the attribute AND inline display when un-hiding`, () => {
+    const body = SRC[mod].match(new RegExp(`function ${syncFn}\\s*\\(\\s*\\)[\\s\\S]*?^\\s{2}\\}`, 'm'));
+    assert.ok(body);
+    assert.match(body[0], /removeAttribute\('data-h2o-r46-hidden'\)/);
+    assert.match(body[0], /style\.removeProperty\(\s*'display'\s*\)/,
+      `${mod}.${syncFn} must restore display by removing the inline style property`);
+  });
+  check(`L.${mod}: installs the SHARED [data-h2o-r46-hidden] CSS rule (idempotent across modules)`, () => {
+    /* The shared style element uses id 'h2o-r46-hidden-attr-css'. The
+     * textContent is assembled via string concatenation across lines,
+     * so check each component separately rather than as one regex. */
+    assert.match(SRC[mod], /h2o-r46-hidden-attr-css/);
+    /* Both selectors appear (string-concat order may differ; verify both substrings present). */
+    assert.ok(SRC[mod].indexOf('[data-h2o-r46-hidden="org-ui"]') >= 0,
+      `${mod} must reference the [data-h2o-r46-hidden="org-ui"] selector`);
+    assert.ok(SRC[mod].indexOf('[data-h2o-r46-hidden="workspace-ui"]') >= 0,
+      `${mod} must reference the [data-h2o-r46-hidden="workspace-ui"] selector`);
+    /* And the hide rule itself. */
+    assert.match(SRC[mod], /display:none\s*!important/);
+  });
+  check(`L.${mod}: ${syncFn} is invoked via setInterval (directly or via wrapper)`, () => {
+    /* For 0F1b, the sync is called from within startR46PollLoop's
+     * setInterval-wrapped anonymous function alongside applyR46BodyAttrs:
+     *   W.setInterval(function () { applyR46BodyAttrs(); syncR46WorkspaceElements(); }, 1000);
+     * For sibling modules, direct: setInterval(syncR46OrgElements, 1000).
+     * Check that any setInterval(...) call is "close to" the sync fn
+     * reference in source — within 400 chars covers either layout. */
+    const intervals = [...SRC[mod].matchAll(/setInterval\(/g)];
+    let found = false;
+    for (const m of intervals) {
+      const window = SRC[mod].slice(m.index, m.index + 400);
+      if (window.indexOf(syncFn) >= 0) { found = true; break; }
+    }
+    assert.ok(found, `${mod} must call ${syncFn} within a setInterval block`);
+  });
+  check(`L.${mod}: wires MutationObserver to apply gate on newly-rendered nodes`, () => {
+    assert.match(SRC[mod], /MutationObserver/);
+    assert.match(SRC[mod], new RegExp(`obs\\.observe\\([\\s\\S]*?childList:\\s*true[\\s\\S]*?subtree:\\s*true`));
+  });
+}
+
+check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-r46-hide-*] descendant CSS', () => {
+  /* The R4.6.2 pattern `body[data-h2o-r46-hide-org="1"] <selector>
+   * { display:none !important }` was fragile. Each module's CSS
+   * gate MUST either include the per-element shared rule
+   * `[data-h2o-r46-hidden="org-ui"]` OR the workspace selector group.
+   * Pure-body-descendant patterns are a regression. */
+  for (const mod of ['0F2a', '0F3a', '0F4a', '0F6a']) {
+    /* The shared per-element rule must be present. */
+    assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
+  }
+});
+
+check('L.regression-applyR46BodyAttrs-mirrors-documentElement: html element gets the attributes too', () => {
+  /* R4.6.3 — applyR46BodyAttrs iterates BOTH document.body and
+   * document.documentElement. Both targets receive the data-h2o-r46-
+   * hide-{org,workspace} attribute, so even if a host framework
+   * strips body attrs, the html element keeps them. */
+  const body = SRC['0F1b'].match(/function applyR46BodyAttrs\s*\(\s*\)\s*\{[\s\S]*?^\s{2}\}/m);
+  assert.ok(body);
+  assert.match(body[0], /\[D\.body,\s*D\.documentElement\]/);
 });
 
 check('K.capture-not-hidden: NO module includes capture-menu cgxui values in its hide rule', () => {

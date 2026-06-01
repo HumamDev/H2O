@@ -105,28 +105,66 @@
     } catch (_) { /* swallow */ }
   })();
 
-  /* ── R4.6.1 — CSS gate for the categories sidebar section root ──────
-   * Hides the categories sidebar SECTION only when the operator opts
-   * out via H2O.flags.set('library.nativeOrganizationUi', false).
-   * The selector targets the canonical section-root data-cgxui value
-   * `flsc-categories-root` (used by this module to identify its
-   * sidebar root). The CRUD APIs (renameCategory, deleteCategory,
-   * createCategory) live on H2O.archiveBoot and are NEVER affected by
-   * this gate — Studio's R4.5.2 MV3 fallback continues to call them
-   * regardless of flag state. Default-ON state = body attribute
-   * ABSENT = CSS rule does not fire = pre-R4.6 behavior. */
+  /* ── R4.6.3 — Per-element gate (cascade-proof) ──────────────────────
+   * R4.6.2 used body[data-h2o-r46-hide-org="1"] descendant CSS rule.
+   * Runtime soak revealed the body attribute is not consistently
+   * maintained (likely stripped by host framework re-renders), so the
+   * cascade-based gate silently failed. R4.6.3 replaces this with
+   * per-element marking:
+   *   1. Inject a SHARED CSS rule `[data-h2o-r46-hidden="org-ui"]
+   *      { display:none !important; }` (idempotent across all R4.6
+   *      modules — first one wins, others bail via id check).
+   *   2. Sync matched elements every 1s + on MutationObserver: when
+   *      flag is off, set data-h2o-r46-hidden="org-ui" AND inline
+   *      style.setProperty('display','none','important'). The inline
+   *      !important flag beats ANY competing CSS or inline style,
+   *      cascade-proof.
+   *   3. When flag is on, remove both markers so the element returns
+   *      to its natural display.
+   *
+   * The CRUD APIs (renameCategory, deleteCategory, createCategory) are
+   * NEVER affected — H2O.archiveBoot's functions are untouched. */
+  const R46_ORG_SELECTORS = ['[data-cgxui="flsc-categories-root"]'];
+  function syncR46OrgElements() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const hide = !isNativeOrganizationUiEnabled();
+      for (const sel of R46_ORG_SELECTORS) {
+        D.querySelectorAll(sel).forEach((el) => {
+          if (!el || el.nodeType !== 1) return;
+          if (hide) {
+            el.setAttribute('data-h2o-r46-hidden', 'org-ui');
+            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
+          } else if (el.getAttribute('data-h2o-r46-hidden') === 'org-ui') {
+            el.removeAttribute('data-h2o-r46-hidden');
+            try { el.style.removeProperty('display'); } catch (_) {}
+          }
+        });
+      }
+    } catch (_) { /* swallow */ }
+  }
   function installR46OrgCssGate() {
     try {
       const D = W.document;
       if (!D) return;
-      const STYLE_ID = 'h2o-r46-org-gate-0F4a';
-      if (D.getElementById(STYLE_ID)) return;
-      const style = D.createElement('style');
-      style.id = STYLE_ID;
-      style.textContent =
-        'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-categories-root"]'
-      + '{display:none !important;}';
-      (D.head || D.documentElement).appendChild(style);
+      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
+      if (!D.getElementById(SHARED_STYLE_ID)) {
+        const style = D.createElement('style');
+        style.id = SHARED_STYLE_ID;
+        style.textContent =
+          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
+        + '{display:none !important;}';
+        (D.head || D.documentElement).appendChild(style);
+      }
+      syncR46OrgElements();
+      if (typeof W.setInterval === 'function') {
+        W.setInterval(syncR46OrgElements, 1000);
+      }
+      if (typeof W.MutationObserver === 'function' && D.body) {
+        const obs = new W.MutationObserver(function () { syncR46OrgElements(); });
+        obs.observe(D.body, { childList: true, subtree: true });
+      }
     } catch (_) { /* swallow */ }
   }
   (function bootR46OrgCssGate() {

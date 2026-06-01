@@ -97,26 +97,58 @@
     } catch (_) { /* swallow */ }
   })();
 
-  /* ── R4.6.2 — CSS gate (real selectors for folder rows + more btn) ──
-   * Hides folder rows and the per-folder "more" button only. The
-   * capture menu items (flsc-add-to-folder, flsc-add-to-library)
-   * carry DIFFERENT cgxui values and are NOT matched by this rule —
-   * Add-to-Library and Save-to-Folder continue to appear in the chat-
-   * row "..." menu regardless of flag state. STORE_validateFolderCreate
-   * is callable via S0Z1g's MV3 fallback regardless of flag state. */
+  /* ── R4.6.3 — Per-element gate (cascade-proof, see 0F4a for pattern) ─
+   * Per-folder "more" button has inline style.cssText including
+   * `display:inline-flex` which survived R4.6.2's CSS rule. R4.6.3
+   * uses el.style.setProperty('display','none','important') — the
+   * inline !important flag set via CSSOM beats ANY other source
+   * (cascade, inline non-!important, etc.). ENGINE_injectAddToLibrary
+   * + ENGINE_injectAddToFolder use different cgxui values
+   * (flsc-add-to-folder, flsc-add-to-library) and are NEVER affected. */
+  const R46_ORG_SELECTORS = [
+    '[data-cgxui="flsc-folder-row"]',
+    '[data-cgxui="flsc-folder-more"]',
+  ];
+  function syncR46OrgElements() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const hide = !isNativeOrganizationUiEnabled();
+      for (const sel of R46_ORG_SELECTORS) {
+        D.querySelectorAll(sel).forEach((el) => {
+          if (!el || el.nodeType !== 1) return;
+          if (hide) {
+            el.setAttribute('data-h2o-r46-hidden', 'org-ui');
+            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
+          } else if (el.getAttribute('data-h2o-r46-hidden') === 'org-ui') {
+            el.removeAttribute('data-h2o-r46-hidden');
+            try { el.style.removeProperty('display'); } catch (_) {}
+          }
+        });
+      }
+    } catch (_) { /* swallow */ }
+  }
   function installR46OrgCssGate() {
     try {
       const D = W.document;
       if (!D) return;
-      const STYLE_ID = 'h2o-r46-org-gate-0F3a';
-      if (D.getElementById(STYLE_ID)) return;
-      const style = D.createElement('style');
-      style.id = STYLE_ID;
-      style.textContent =
-        'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-folder-row"],'
-      + 'body[data-h2o-r46-hide-org="1"] [data-cgxui="flsc-folder-more"]'
-      + '{display:none !important;}';
-      (D.head || D.documentElement).appendChild(style);
+      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
+      if (!D.getElementById(SHARED_STYLE_ID)) {
+        const style = D.createElement('style');
+        style.id = SHARED_STYLE_ID;
+        style.textContent =
+          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
+        + '{display:none !important;}';
+        (D.head || D.documentElement).appendChild(style);
+      }
+      syncR46OrgElements();
+      if (typeof W.setInterval === 'function') {
+        W.setInterval(syncR46OrgElements, 1000);
+      }
+      if (typeof W.MutationObserver === 'function' && D.body) {
+        const obs = new W.MutationObserver(function () { syncR46OrgElements(); });
+        obs.observe(D.body, { childList: true, subtree: true });
+      }
     } catch (_) { /* swallow */ }
   }
   (function bootR46OrgCssGate() {

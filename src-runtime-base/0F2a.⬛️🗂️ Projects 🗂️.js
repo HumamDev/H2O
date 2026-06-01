@@ -109,24 +109,51 @@
     } catch (_) { /* swallow */ }
   })();
 
-  /* ── R4.6.2 — CSS gate (real selector for H2O-added project rows) ───
-   * Hides ONLY the H2O-added `.ho-project-row` elements that 0F2a
-   * injects into ChatGPT's chat-history nav. ChatGPT's own projects
-   * nav DOM is NOT affected (different selectors). fetchInterception
-   * / projectsCache / projectsReconcile run unconditionally — Native
-   * projects DATA flow stays alive even when the rows are hidden. */
+  /* ── R4.6.3 — Per-element gate (cascade-proof, see 0F4a for pattern) ─
+   * fetchInterception / projectsCache / projectsReconcile remain
+   * unconditional — Native projects DATA flow continues regardless
+   * of gate state. */
+  const R46_ORG_SELECTORS = ['.ho-project-row'];
+  function syncR46OrgElements() {
+    try {
+      const D = W.document;
+      if (!D) return;
+      const hide = !isNativeOrganizationUiEnabled();
+      for (const sel of R46_ORG_SELECTORS) {
+        D.querySelectorAll(sel).forEach((el) => {
+          if (!el || el.nodeType !== 1) return;
+          if (hide) {
+            el.setAttribute('data-h2o-r46-hidden', 'org-ui');
+            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
+          } else if (el.getAttribute('data-h2o-r46-hidden') === 'org-ui') {
+            el.removeAttribute('data-h2o-r46-hidden');
+            try { el.style.removeProperty('display'); } catch (_) {}
+          }
+        });
+      }
+    } catch (_) { /* swallow */ }
+  }
   function installR46OrgCssGate() {
     try {
       const D = W.document;
       if (!D) return;
-      const STYLE_ID = 'h2o-r46-org-gate-0F2a';
-      if (D.getElementById(STYLE_ID)) return;
-      const style = D.createElement('style');
-      style.id = STYLE_ID;
-      style.textContent =
-        'body[data-h2o-r46-hide-org="1"] .ho-project-row'
-      + '{display:none !important;}';
-      (D.head || D.documentElement).appendChild(style);
+      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
+      if (!D.getElementById(SHARED_STYLE_ID)) {
+        const style = D.createElement('style');
+        style.id = SHARED_STYLE_ID;
+        style.textContent =
+          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
+        + '{display:none !important;}';
+        (D.head || D.documentElement).appendChild(style);
+      }
+      syncR46OrgElements();
+      if (typeof W.setInterval === 'function') {
+        W.setInterval(syncR46OrgElements, 1000);
+      }
+      if (typeof W.MutationObserver === 'function' && D.body) {
+        const obs = new W.MutationObserver(function () { syncR46OrgElements(); });
+        obs.observe(D.body, { childList: true, subtree: true });
+      }
     } catch (_) { /* swallow */ }
   }
   (function bootR46OrgCssGate() {

@@ -113,44 +113,83 @@
    * attributes ABSENT = no CSS rule fires = pre-R4.6 behavior. */
   function applyR46BodyAttrs() {
     try {
-      if (!D || !D.body) return;
+      if (!D) return;
       const hideOrg = !isNativeOrganizationUiEnabled();
       const hideWorkspace = !isNativeWorkspaceUiEnabled();
-      if (hideOrg)       D.body.setAttribute('data-h2o-r46-hide-org', '1');
-      else               D.body.removeAttribute('data-h2o-r46-hide-org');
-      if (hideWorkspace) D.body.setAttribute('data-h2o-r46-hide-workspace', '1');
-      else               D.body.removeAttribute('data-h2o-r46-hide-workspace');
+      /* R4.6.3 — mirror to BOTH document.body AND document.documentElement.
+       * Soak testing showed the host framework sometimes strips
+       * custom data-* attributes from body during re-renders. The
+       * html element is more stable. Either target keeps the cascade
+       * working. The per-element gate (syncR46*Elements below) is
+       * the primary defense; these attributes are belt-and-suspenders. */
+      const targets = [D.body, D.documentElement];
+      for (const t of targets) {
+        if (!t) continue;
+        if (hideOrg)       t.setAttribute('data-h2o-r46-hide-org', '1');
+        else               t.removeAttribute('data-h2o-r46-hide-org');
+        if (hideWorkspace) t.setAttribute('data-h2o-r46-hide-workspace', '1');
+        else               t.removeAttribute('data-h2o-r46-hide-workspace');
+      }
     } catch (_) { /* swallow */ }
   }
-  /* CSS gate for Library button + workspace page. Uses the canonical
-   * SkID-scoped data-cgxui values (UI_LIBRARY_TOP_BUTTON / RAIL_BUTTON /
-   * PAGE). Each value is constructed as `${SkID}-<role>` at line 268+
-   * inside the boot scope (SkID = 'lwsc' per line 250), so the
-   * attribute-suffix selectors `[data-cgxui$="lwsc-top-library-button"]`
-   * etc. match exactly the workspace's own injected DOM. */
+  /* R4.6.3 — Per-element gate for Library button + workspace page.
+   * Targets the canonical SkID-scoped data-cgxui values (suffix match
+   * since the workspace SkID is private to 0F1b's boot scope). Same
+   * cascade-proof pattern as the org-section modules: SHARED CSS rule
+   * + setProperty inline !important + setInterval + MutationObserver. */
+  const R46_WORKSPACE_SELECTORS = [
+    '[data-cgxui$="-top-library-button"]',
+    '[data-cgxui$="-rail-library-button"]',
+    '[data-cgxui$="-page"]',
+  ];
+  function syncR46WorkspaceElements() {
+    try {
+      if (!D) return;
+      const hide = !isNativeWorkspaceUiEnabled();
+      for (const sel of R46_WORKSPACE_SELECTORS) {
+        D.querySelectorAll(sel).forEach((el) => {
+          if (!el || el.nodeType !== 1) return;
+          if (hide) {
+            el.setAttribute('data-h2o-r46-hidden', 'workspace-ui');
+            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
+          } else if (el.getAttribute('data-h2o-r46-hidden') === 'workspace-ui') {
+            el.removeAttribute('data-h2o-r46-hidden');
+            try { el.style.removeProperty('display'); } catch (_) {}
+          }
+        });
+      }
+    } catch (_) { /* swallow */ }
+  }
   function installR46WorkspaceCssGate() {
     try {
       if (!D) return;
-      if (D.getElementById('h2o-r46-workspace-css')) return;
-      const style = D.createElement('style');
-      style.id = 'h2o-r46-workspace-css';
-      style.textContent =
-        'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-top-library-button"],'
-      + 'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-rail-library-button"],'
-      + 'body[data-h2o-r46-hide-workspace="1"] [data-cgxui$="-page"]'
-      + '{display:none !important;}';
-      (D.head || D.documentElement).appendChild(style);
+      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
+      if (!D.getElementById(SHARED_STYLE_ID)) {
+        const style = D.createElement('style');
+        style.id = SHARED_STYLE_ID;
+        style.textContent =
+          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
+        + '{display:none !important;}';
+        (D.head || D.documentElement).appendChild(style);
+      }
+      syncR46WorkspaceElements();
+      if (typeof W.MutationObserver === 'function' && D.body) {
+        const obs = new W.MutationObserver(function () { syncR46WorkspaceElements(); });
+        obs.observe(D.body, { childList: true, subtree: true });
+      }
     } catch (_) { /* swallow */ }
   }
-  /* Start the body-attribute poll early. The interval is short enough
-   * that DevTools flag flips feel responsive (~1 s) and cheap enough
-   * to leave running indefinitely (single attribute compare + maybe
-   * one set/remove call per tick). */
+  /* Start the poll loop early. The interval is short enough that
+   * DevTools flag flips feel responsive (~1 s) and cheap enough to
+   * leave running indefinitely. */
   function startR46PollLoop() {
     try {
       applyR46BodyAttrs();
       installR46WorkspaceCssGate();
-      W.setInterval(function () { applyR46BodyAttrs(); }, 1000);
+      W.setInterval(function () {
+        applyR46BodyAttrs();
+        syncR46WorkspaceElements();
+      }, 1000);
     } catch (_) { /* swallow */ }
   }
   if (D && D.readyState !== 'loading') startR46PollLoop();
