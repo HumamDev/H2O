@@ -345,6 +345,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // publication, relay/outbox, Native/F5 execution, apply, watermark,
   // consumed-op, storage write, timer, or polling behavior.
   "sync/execute/execute-envelope.tauri.js",
+  // F14.6.3: Desktop/Tauri execute preflight gate. Read-only gate over
+  // execute envelopes, journal dedupe, replay composer, watermark validation,
+  // F5 review lookup when required, and privacy scan. No broker, dispatch,
+  // publication, relay/outbox, Native/F5 execution, apply, watermark write,
+  // consumed-op write, storage write, timer, or polling behavior.
+  "sync/execute/execute-preflight-gate.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -871,6 +877,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/capture/capture-recovery-runtime.tauri.js",
   "sync/execute/execute-journal.tauri.js",
   "sync/execute/execute-envelope.tauri.js",
+  "sync/execute/execute-preflight-gate.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",

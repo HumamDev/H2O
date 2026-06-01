@@ -822,6 +822,13 @@
        publication, relay/outbox, Native/F5 execution, apply, watermark,
        consumed-op, storage write, timer, or polling behavior. -->
   <script src="./sync/execute/execute-envelope.tauri.js"></script>
+  <!-- F14.6.3: Desktop/Tauri execute preflight gate.
+       Read-only gate over execute envelopes, journal dedupe, replay composer,
+       watermark validation, F5 review lookup when required, and privacy scan.
+       No broker, dispatch, publication, relay/outbox, Native/F5 execution,
+       apply, watermark write, consumed-op write, storage write, timer, or
+       polling behavior. -->
+  <script src="./sync/execute/execute-preflight-gate.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
