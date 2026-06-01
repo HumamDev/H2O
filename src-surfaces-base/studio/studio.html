@@ -876,6 +876,11 @@
        local storage only. No relay, Native dispatch, F5, publication,
        consumed-op, watermark, settlement, or UI. -->
   <script src="./sync/execute/execute-capture-materialization.tauri.js"></script>
+  <!-- F14.6.12: Desktop/Tauri Capture execute adapter.
+       Registers the Capture canonical-preview adapter and shapes Capture
+       materialization write previews into Execute envelopes only. No
+       materialization, dispatch, settlement, publication, Native, F5, or UI. -->
+  <script src="./sync/execute/adapters/capture-execute-adapter.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
