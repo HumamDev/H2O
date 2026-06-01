@@ -6,7 +6,11 @@ piece of code moved from `src-runtime-base/0F*` into
 `retired-features/native-library-ui/`.
 
 R4.7.1 was scaffolding only. R4.7.2 moved the Native Categories
-sidebar UI. R4.7.3 moved the Native Labels sidebar UI. R4.7.4 moved the Native Projects sidebar row UI. R4.7.5 moves the Native Library Workspace UI and retires 0F1d Library Insights. Folders are not in R4.7.5 scope.
+sidebar UI. R4.7.3 moved the Native Labels sidebar UI. R4.7.4
+moved the Native Projects sidebar row UI. R4.7.5 moved the Native
+Library Workspace UI and retired 0F1d Library Insights. R4.7.6
+moved the Native Folders sidebar UI only; 0F3a capture/store logic
+stays live.
 
 ## Format
 
@@ -156,6 +160,43 @@ audit-trail assertion.
 - 0D3 and 3X capture files are untouched.
 - 0F1k flags remain queryable.
 - Studio files and generated build outputs are untouched.
+
+### R4.7.6 moves (Folders sidebar UI)
+
+| Source file | Source lines (pre-R4.7.6) | Destination file | R4.7 slice | Commit |
+|---|---|---|---|---|
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 108-162 (R4.6.3 per-element org gate — `R46_ORG_SELECTORS`, `syncR46OrgElements`, `installR46OrgCssGate`, boot IIFE) | `0F3a-folders-ui/folders-sidebar-list.js` Block 1 | R4.7.6 | _<commit hash; populated post-commit>_ |
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 1114-1116, 1188-1222, 1903-1913 (`flsc-folder-row` / `flsc-folder-more` sidebar CSS selector usage and active-row styling) | `0F3a-folders-ui/folders-sidebar-list.js` Block 2 | R4.7.6 | _<commit hash>_ |
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 3145-3256 (`UI_openFolderActionsPop` archival reference for sidebar more-button context menu) | `0F3a-folders-ui/folders-sidebar-list.js` Block 3 | R4.7.6 | _<commit hash>_ |
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 4713-5067 (`UI_buildFoldersSection` sidebar row/list render path) | `0F3a-folders-ui/folders-sidebar-list.js` Block 4 | R4.7.6 | _<commit hash>_ |
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 6242-6266 (`CORE_FS_syncFolderSidebarActiveState` active-row sync path) | `0F3a-folders-ui/folders-sidebar-list.js` Block 5 | R4.7.6 | _<commit hash>_ |
+| `src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js` | 6626-6757 (`CORE_FS_ensureInjected` sidebar injection lifecycle) | `0F3a-folders-ui/folders-sidebar-list.js` Block 6 | R4.7.6 | _<commit hash>_ |
+
+### R4.7.6 stubs / kept live in 0F3a
+
+The following functions remain DEFINED in 0F3a as no-op compatibility
+stubs; their original bodies are preserved in `folders-sidebar-list.js`:
+
+| Source lines (pre-R4.7.6) | Function | External caller(s) requiring the stub |
+|---|---|---|
+| 4713-5067 | `UI_buildFoldersSection` | Historical internal sidebar API |
+| 6242-6266 | `CORE_FS_syncFolderSidebarActiveState` | Timer/listener compatibility |
+| 6626-6757 | `CORE_FS_ensureInjected` | `H2O.folders.ensureInjected` public API |
+
+These remain live and were not retired:
+
+- `ENGINE_injectAddToLibrary`
+- `ENGINE_injectAddToFolder`
+- `STORE_validateFolderCreate`
+- Folder data/store/cache functions
+- Folder binding APIs
+- Metadata operation APIs
+- `H2O.folders` public API and LibraryCore owner/service/route registration
+- Capture menu cgxui values `flsc-add-to-library` and
+  `flsc-add-to-folder`
+
+0F5a Tags extraction, 0D3/3X capture files, 0F1j Library Actions,
+Studio files, and generated build outputs are not in R4.7.6 scope.
 
 ## Re-verification
 

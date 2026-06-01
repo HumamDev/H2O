@@ -5,7 +5,7 @@
 // modules:
 //   0F1b — Library Workspace (gated: LibraryButton, WorkspacePage)
 //   0F2a — Projects (gated: ProjectsSidebar; unconditional: fetch interception)
-//   0F3a — Folders (gated: FoldersSidebarList; unconditional: capture menu + openFolderCreatePanel)
+//   0F3a — Folders (retired: FoldersSidebarList; unconditional: capture menu + folder store/create APIs)
 //   0F4a — Categories (gated: CategoriesSidebar; unconditional: rename/delete/createCategory)
 //   0F6a — Labels (gated: LabelsSidebar; unconditional: rename/delete/createLabel)
 //   0F1j — Library Actions (NEVER gated — pure capture business logic)
@@ -122,10 +122,9 @@ console.log('Section C — Deprecation diagnose namespace');
 for (const mod of GATED_MODULES) {
   check(`C.${mod}: registers H2O.deprecation.native['${mod}']`, () => {
     assert.match(SRC[mod], new RegExp(`H2O\\.deprecation\\.native\\['${mod}'\\]\\s*=\\s*function`));
-    /* Accept R4.6.0-plumbing OR any later R4.6.x phase string. 0F1b
-     * bumps to 'R4.6.1-banner+gates'; sibling modules stay at
-     * 'R4.6.0-plumbing'. Both are valid R4.6.x states. */
-    assert.match(SRC[mod], /phase:\s*'R4\.(?:6\.[0-9].*?|7\.5-retired)'/);
+    /* Accept R4.6.0-plumbing OR any later R4.6.x phase string.
+     * R4.7.x retired modules publish their retired phase string. */
+    assert.match(SRC[mod], /phase:\s*'R4\.(?:6\.[0-9].*?|7\.[56]-retired)'/);
     assert.match(SRC[mod], /gatedSurfaces:/);
     assert.match(SRC[mod], /unconditionalSurfaces:/);
   });
@@ -147,14 +146,20 @@ check('C.0F2a: gates ProjectsSidebar; KEEPS fetchInterception unconditional', ()
   assert.match(m[0], /gatedSurfaces:\s*\['ProjectsSidebar'\]/);
   assert.match(m[0], /'fetchInterception'/);
 });
-check('C.0F3a: gates FoldersSidebarList; KEEPS capture menu + Native folder-create unconditional', () => {
+check('C.0F3a: reports FoldersSidebarList retired; KEEPS capture menu + Native folder-create unconditional', () => {
   const m = SRC['0F3a'].match(/H2O\.deprecation\.native\['0F3a'\][\s\S]*?\}\s*;\s*\}/);
   assert.ok(m);
-  assert.match(m[0], /gatedSurfaces:\s*\['FoldersSidebarList'\]/);
+  assert.match(m[0], /phase:\s*'R4\.7\.6-retired'/);
+  assert.match(m[0], /gatedSurfaces:\s*\[\]/);
+  assert.match(m[0], /retiredSurfaces:[\s\S]*'FoldersSidebarList'/);
+  assert.match(m[0], /retiredSurfaces:[\s\S]*'FoldersSidebarRows'/);
+  assert.match(m[0], /retiredSurfaces:[\s\S]*'FoldersSidebarMoreButton'/);
   assert.match(m[0], /'ENGINE_injectAddToLibrary'/);
   assert.match(m[0], /'ENGINE_injectAddToFolder'/);
   /* Native folder-create code path that S0Z1g's MV3 fallback depends on. */
   assert.match(m[0], /'STORE_validateFolderCreate'/);
+  assert.match(m[0], /retiredGateSelector:\s*'\[data-cgxui="flsc-folder-row"\],\s*\[data-cgxui="flsc-folder-more"\]'/);
+  assert.match(m[0], /0F3a-folders-ui\/folders-sidebar-list\.js/);
 });
 check('C.0F4a: gates CategoriesSidebar; KEEPS rename/delete/createCategory unconditional', () => {
   const m = SRC['0F4a'].match(/H2O\.deprecation\.native\['0F4a'\][\s\S]*?\}\s*;\s*\}/);
@@ -425,9 +430,12 @@ const PER_MODULE_GATES = [
    * R4.7.4 — 0F2a's per-module gate retired alongside the projects
    * sidebar row UI; moved into retired-features/native-library-ui/
    * 0F2a-projects-ui/projects-sidebar-rows.js Block 1. Section Q
-   * re-verifies the absence. The remaining 0F3a module retains its
-   * gate until R4.7.5 retires its UI. */
-  ['0F3a', 'css-known-selector', '[data-cgxui="flsc-folder-row"], [data-cgxui="flsc-folder-more"]',   'NATIVE FOLDERS SECTION'],
+   * re-verifies the absence.
+   *
+   * R4.7.6 — 0F3a's per-module gate retired alongside the folders
+   * sidebar UI; moved into retired-features/native-library-ui/
+   * 0F3a-folders-ui/folders-sidebar-list.js Block 1. Section S
+   * re-verifies the absence. */
 ];
 for (const [mod, impl, selector, label] of PER_MODULE_GATES) {
   check(`I.${mod}: ${label} — installR46OrgCssGate() function exists`, () => {
@@ -494,11 +502,10 @@ check('K.no-placeholders: no placeholder selectors remain in any Native module',
  * publishes the selector string for historical inspection.
  * Section Q (R4.7.4) verifies the gate retirement independently. */
 
-check('K.0F3a: folders gate uses real flsc-folder-row + flsc-folder-more selectors', () => {
-  assert.match(SRC['0F3a'], /gateSelector:\s*'\[data-cgxui="flsc-folder-row"\],\s*\[data-cgxui="flsc-folder-more"\]'/);
-  /* R4.6.3 — both selectors live in R46_ORG_SELECTORS. */
-  assert.match(SRC['0F3a'], /R46_ORG_SELECTORS\s*=\s*\[[\s\S]*?'\[data-cgxui="flsc-folder-row"\]'[\s\S]*?'\[data-cgxui="flsc-folder-more"\]'/);
-  /* The constants are UI_FSECTION_FOLDER_ROW / FOLDER_MORE. */
+check('K.0F3a: folders retired gate still reports historical flsc-folder-row + flsc-folder-more selectors', () => {
+  assert.match(SRC['0F3a'], /retiredGateSelector:\s*'\[data-cgxui="flsc-folder-row"\],\s*\[data-cgxui="flsc-folder-more"\]'/);
+  assert.equal(/^\s*const R46_ORG_SELECTORS\s*=/m.test(SRC['0F3a']), false,
+    '0F3a should not keep live R46_ORG_SELECTORS after R4.7.6');
   assert.match(SRC['0F3a'], /UI_FSECTION_FOLDER_ROW\s*=\s*`\$\{SkID\}-folder-row`/);
   assert.match(SRC['0F3a'], /UI_FSECTION_FOLDER_MORE\s*=\s*`\$\{SkID\}-folder-more`/);
 });
@@ -542,9 +549,9 @@ const PER_ELEMENT_GATED_MODULES = [
    * projects-sidebar-rows.js Block 1. Section Q verifies the
    * absence.
    *
-   * The remaining 2 modules retain their per-element gates until
-   * R4.7.5 retires their UI. */
-  ['0F3a', 'syncR46OrgElements',       'org-ui'],
+   * R4.7.6 — 0F3a removed for the same reason; its gate moved into
+   * retired-features/native-library-ui/0F3a-folders-ui/
+   * folders-sidebar-list.js Block 1. Section S verifies the absence. */
 ];
 
 for (const [mod, syncFn, hiddenValue] of PER_ELEMENT_GATED_MODULES) {
@@ -627,11 +634,12 @@ check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-
    * the removal.
    *
    * R4.7.4 — 0F2a removed for the same reason. Section Q verifies
+   * the removal.
+   *
+   * R4.7.6 — 0F3a removed for the same reason. Section S verifies
    * the removal. */
-  for (const mod of ['0F3a']) {
-    /* The shared per-element rule must be present. */
-    assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
-  }
+  assert.equal(/body\[data-h2o-r46-hide-org="1"\]/.test(STRIPPED['0F3a']), false,
+    '0F3a must not retain body-descendant org gate CSS after R4.7.6');
 });
 
 check('L.R4.7.5: 0F1b no longer owns body/html workspace attributes', () => {
@@ -692,11 +700,13 @@ check('K.all-real: every gate declares gateImplementation = css-known-selector',
   /* 0F4a (R4.7.2) and 0F6a (R4.7.3) still publish
    * `gateImplementation: 'css-known-selector'` in their diagnose
    * blocks (the metadata persists for historical inspection even
-   * after the gate code itself was retired). */
-  for (const mod of ['0F2a', '0F3a', '0F4a', '0F6a']) {
+   * after the gate code itself was retired). 0F3a publishes
+   * `retiredGateImplementation` after R4.7.6. */
+  for (const mod of ['0F2a', '0F4a', '0F6a']) {
     assert.match(SRC[mod], /gateImplementation:\s*'css-known-selector'/,
       `${mod} must declare gateImplementation as css-known-selector after R4.6.2`);
   }
+  assert.match(SRC['0F3a'], /retiredGateImplementation:\s*'css-known-selector'/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -1038,20 +1048,22 @@ check('N.r47.x-staged-code-moves: only retired R4.7.x subfolders may contain .js
    * sidebar UI. R4.7.3 retired 0F6a labels sidebar UI. R4.7.4
    * retired 0F2a projects sidebar row UI. R4.7.5 retires 0F1b
    * Native Workspace UI and the entire 0F1d Native Insights UI.
-   * 0F3a remains out of scope and must stay README-only. */
+   * R4.7.6 retires 0F3a folders sidebar UI only. */
   const R47_RETIRED_JS_DIRS = new Set([
     '0F4a-categories-ui',     /* R4.7.2 */
     '0F6a-labels-ui',         /* R4.7.3 */
     '0F2a-projects-ui',       /* R4.7.4 */
     '0F1b-library-workspace', /* R4.7.5 */
     '0F1d-library-insights',  /* R4.7.5 */
+    '0F3a-folders-ui',        /* R4.7.6 */
   ]);
   for (const dir of R47_MODULE_DIRS) {
     const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
     const jsFiles = entries.filter(f => f.endsWith('.js'));
     if (R47_RETIRED_JS_DIRS.has(dir)) {
-      /* Allowed — verified by Section O (R4.7.2) / Section P
-       * (R4.7.3) / Section Q (R4.7.4) checks. */
+      /* Allowed — verified by Section O (R4.7.2), Section P
+       * (R4.7.3), Section Q (R4.7.4), Section R (R4.7.5),
+       * and Section S (R4.7.6). */
       continue;
     }
     assert.equal(jsFiles.length, 0,
@@ -2031,19 +2043,20 @@ check('R.doc: 0F1d README reports R4.7.5 RETIRED status + replacement', () => {
 
 check('R.doc: original-path-map.md records R4.7.5 moves', () => {
   const doc = fs.readFileSync(abs(R_PATH_MAP), 'utf8');
-  assert.match(doc, /R4\.7\.5 moves the Native Library Workspace UI/);
+  assert.match(doc, /R4\.7\.5 mov(?:es|ed) the Native\s+Library Workspace UI/);
   assert.match(doc, /library-workspace-ui\.js/);
   assert.match(doc, /0F1d-original\.js/);
-  assert.match(doc, /Folders are not in R4\.7\.5 scope/);
+  assert.match(doc, /0F3a Folders is untouched/);
   assert.match(doc, /956-2468/);
   assert.match(doc, /1-1445/);
 });
 
-check('R.invariants: 0F3a Folders untouched by R4.7.5', () => {
+check('R.invariants: 0F3a capture/store stayed live after R4.7.5', () => {
   assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
   assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
-  assert.match(SRC['0F3a'], /function installR46OrgCssGate\b/);
-  assert.match(SRC['0F3a'], /function syncR46OrgElements\b/);
+  assert.match(SRC['0F3a'], /function STORE_validateFolderCreate\b/);
+  assert.match(SRC['0F3a'], /function STORE_readData\b/);
+  assert.match(SRC['0F3a'], /function STORE_writeData\b/);
 });
 
 check('R.invariants: 0F5a byte-exact after R4.7.5', () => {
@@ -2070,6 +2083,239 @@ check('R.invariants: R4.7.2/R4.7.3/R4.7.4 retirements remain intact', () => {
   assert.match(SRC['0F6a'], /R4\.7\.3 — R4\.6\.3 per-element org gate retired/);
   assert.match(SRC['0F2a'], /R4\.7\.4 — R4\.6\.3 per-element org gate retired/);
   assert.match(SRC['0F2a'], /function UI_applyProjectsNativeControls\s*\([^)]*\)\s*\{\s*\/\* no-op \(R4\.7\.4\) \*\//);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section S — R4.7.6 Native Folders Sidebar UI physically retired
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section S — R4.7.6 Folders sidebar UI physically retired');
+
+const S_ARCHIVE_PATH = R47_ROOT + '/0F3a-folders-ui/folders-sidebar-list.js';
+const S_EXTRACTED_DOC = R47_ROOT + '/0F3a-folders-ui/extracted-from-0F3a.md';
+const S_README = R47_ROOT + '/0F3a-folders-ui/README.md';
+const S_PATH_MAP = R47_ROOT + '/original-path-map.md';
+
+check('S.archive: folders-sidebar-list.js exists and declares all 6 blocks', () => {
+  assert.ok(fs.existsSync(abs(S_ARCHIVE_PATH)), S_ARCHIVE_PATH + ' not found');
+  const src = fs.readFileSync(abs(S_ARCHIVE_PATH), 'utf8');
+  assert.match(src, /Block 1 of 6 — R4\.6\.3 per-element org gate/);
+  assert.match(src, /Block 2 of 6 — CSS for flsc-folder-row \/ flsc-folder-more/);
+  assert.match(src, /Block 3 of 6 — UI_openFolderActionsPop/);
+  assert.match(src, /Block 4 of 6 — UI_buildFoldersSection/);
+  assert.match(src, /Block 5 of 6 — CORE_FS_syncFolderSidebarActiveState/);
+  assert.match(src, /Block 6 of 6 — CORE_FS_ensureInjected/);
+  assert.ok(src.split(/\n/).length > 600, '0F3a archive should preserve the moved sidebar implementation');
+});
+
+check('S.source: 0F3a contains R4.7.6 breadcrumbs at removal sites', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /R4\.7\.6 — R4\.6\.3 per-element folder sidebar gate retired/);
+  assert.match(src, /R4\.7\.6 — Folder sidebar row\/more CSS retired/);
+  assert.match(src, /R4\.7\.6 — Folders sidebar row\/list render path retired/);
+  assert.match(src, /R4\.7\.6 — Folder sidebar active-row sync retired/);
+  assert.match(src, /R4\.7\.6 — Folder sidebar injection lifecycle retired/);
+  const breadcrumbCount = (src.match(/retired-features\/native-library-ui\/0F3a-folders-ui\/folders-sidebar-list\.js/g) || []).length;
+  assert.ok(breadcrumbCount >= 4,
+    '0F3a should cite folders-sidebar-list.js at least 4x; found ' + breadcrumbCount);
+});
+
+check('S.source: 0F3a no longer defines the live R4.6.3 folders gate', () => {
+  const src = SRC['0F3a'];
+  assert.equal(/^\s*const R46_ORG_SELECTORS\s*=/m.test(src), false);
+  assert.equal(/^\s*function syncR46OrgElements\b/m.test(src), false);
+  assert.equal(/^\s*function installR46OrgCssGate\b/m.test(src), false);
+  assert.equal(/\(function bootR46OrgCssGate\(\)/.test(src), false);
+});
+
+check('S.source: 0F3a no longer contains active flsc-folder-row / flsc-folder-more sidebar render path', () => {
+  const src = SRC['0F3a'];
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_ROW\)/.test(src), false,
+    '0F3a still actively sets flsc-folder-row on sidebar rows');
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_MORE\)/.test(src), false,
+    '0F3a still actively sets flsc-folder-more on sidebar buttons');
+  assert.equal(/UI_makeNativeLikeMoreButton\('Folder actions',\s*UI_FSECTION_FOLDER_MORE\)/.test(src), false,
+    '0F3a still creates sidebar folder more buttons with flsc-folder-more');
+  assert.equal(/querySelectorAll\(UTIL_selScoped\(UI_FSECTION_FOLDER_ROW\)\)/.test(src), false,
+    '0F3a still scans retired folder sidebar rows for active-state sync');
+  assert.equal(/const FROW\s*=\s*UTIL_selScoped\(UI_FSECTION_FOLDER_ROW\)/.test(STRIPPED['0F3a']), false,
+    '0F3a still has live folder-row CSS selector wiring');
+  assert.equal(/const FMORE\s*=\s*UTIL_selScoped\(UI_FSECTION_FOLDER_MORE\)/.test(STRIPPED['0F3a']), false,
+    '0F3a still has live folder-more CSS selector wiring');
+});
+
+check('S.source: folder sidebar compatibility stubs are no-op and non-rendering', () => {
+  const buildBody = functionBody(SRC['0F3a'], 'UI_buildFoldersSection');
+  assert.ok(buildBody, 'UI_buildFoldersSection stub missing');
+  assert.match(buildBody, /return null\s*;/);
+  assert.equal(/STORE_createFolder\s*\(/.test(buildBody), false,
+    'UI_buildFoldersSection stub must not create folders');
+  assert.equal(/UI_openFolderActionsPop\s*\(/.test(buildBody), false,
+    'UI_buildFoldersSection stub must not open sidebar context menus');
+  assert.equal(/createElement\s*\(/.test(buildBody), false,
+    'UI_buildFoldersSection stub must not create DOM');
+
+  const syncBody = functionBody(SRC['0F3a'], 'CORE_FS_syncFolderSidebarActiveState');
+  assert.ok(syncBody, 'CORE_FS_syncFolderSidebarActiveState stub missing');
+  assert.match(syncBody, /return false\s*;/);
+  assert.equal(/querySelectorAll/.test(syncBody), false,
+    'CORE_FS_syncFolderSidebarActiveState stub must not query sidebar rows');
+
+  const ensureBody = functionBody(SRC['0F3a'], 'CORE_FS_ensureInjected');
+  assert.ok(ensureBody, 'CORE_FS_ensureInjected stub missing');
+  assert.match(ensureBody, /folders-sidebar-retired/);
+  assert.match(ensureBody, /return false\s*;/);
+  assert.equal(/UI_buildFoldersSection\s*\(/.test(ensureBody), false,
+    'CORE_FS_ensureInjected stub must not rebuild the retired folders section');
+  assert.equal(/insertAdjacentElement|appendChild|prepend/.test(ensureBody), false,
+    'CORE_FS_ensureInjected stub must not inject sidebar DOM');
+});
+
+check('S.source: 0F3a still defines capture menu injection and folder-create validation', () => {
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F3a'], /function STORE_validateFolderCreate\b/);
+  const addBody = functionBody(SRC['0F3a'], 'ENGINE_injectAddToLibrary');
+  const folderBody = functionBody(SRC['0F3a'], 'ENGINE_injectAddToFolder');
+  const validateBody = functionBody(SRC['0F3a'], 'STORE_validateFolderCreate');
+  assert.ok(addBody && folderBody && validateBody);
+  assert.match(addBody, /setAttribute\(ATTR_CGXUI,\s*`\$\{SkID\}-add-to-library`\)/);
+  assert.match(folderBody, /setAttribute\(ATTR_CGXUI,\s*`\$\{SkID\}-add-to-folder`\)/);
+  for (const [name, body] of [
+    ['ENGINE_injectAddToLibrary', addBody],
+    ['ENGINE_injectAddToFolder', folderBody],
+    ['STORE_validateFolderCreate', validateBody],
+  ]) {
+    assert.equal(/isNativeWorkspaceUiEnabled\s*\(/.test(body), false, name + ' must not gate on workspace UI');
+    assert.equal(/isNativeOrganizationUiEnabled\s*\(/.test(body), false, name + ' must not gate on organization UI');
+    assert.equal(/isNativeCaptureOnlyMode\s*\(/.test(body), false, name + ' must not gate on capture-only mode');
+    assert.equal(/library\.native(Workspace|Organization|Capture)/.test(body), false,
+      name + ' must not reference any library.native* flag');
+  }
+});
+
+check('S.source: 0F3a folder data/store/binding logic remains active', () => {
+  const src = SRC['0F3a'];
+  for (const symbol of [
+    'STORE_readData',
+    'STORE_writeData',
+    'STORE_createFolder',
+    'STORE_renameFolder',
+    'STORE_setFolderIconColor',
+    'STORE_listFolderItems',
+    'API_getBinding',
+    'API_setBinding',
+    'API_saveAndBindToFolder',
+    'API_previewMetadataOperation',
+    'API_applyMetadataOperation',
+  ]) {
+    assert.match(src, new RegExp('function ' + symbol + '\\b'), '0F3a missing ' + symbol);
+  }
+  const createBody = functionBody(src, 'STORE_createFolder');
+  assert.ok(createBody, 'STORE_createFolder body missing');
+  assert.match(src, /const validation = STORE_validateFolderCreate\(data,\s*name,\s*opts\)/,
+    'STORE_createFolder must continue to use STORE_validateFolderCreate');
+  assert.match(src, /STORE_writeData\(data\)/,
+    'STORE_createFolder must continue to persist through STORE_writeData');
+});
+
+check('S.source: 0F3a public folder APIs and Studio/MV3 fallback registration remain', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /previewMetadataOperation:\s*API_previewMetadataOperation/);
+  assert.match(src, /applyMetadataOperation:\s*API_applyMetadataOperation/);
+  assert.match(src, /H2O\.LibraryCore\?\.registerOwner\?\.\('folders'/);
+  assert.match(src, /H2O\.LibraryCore\?\.registerService\?\.\('folders'/);
+  assert.match(src, /H2O\.LibraryCore\?\.registerRoute\?\.\('folder'/);
+  assert.match(src, /H2O\.folders\.previewMetadataOperation/);
+  assert.match(src, /H2O\.folders\.applyMetadataOperation/);
+});
+
+check('S.source: Add-to-Library and Save-to-Folder cgxui values stay present and not retired', () => {
+  const stripped = STRIPPED['0F3a'];
+  assert.match(stripped, /\$\{SkID\}-add-to-library/);
+  assert.match(stripped, /\$\{SkID\}-add-to-folder/);
+  const diagnose = SRC['0F3a'].match(/H2O\.deprecation\.native\['0F3a'\][\s\S]*?\}\s*;\s*\}/);
+  assert.ok(diagnose, '0F3a diagnose block missing');
+  const retired = diagnose[0].match(/retiredSurfaces:\s*\[([\s\S]*?)\]/);
+  assert.ok(retired, '0F3a retiredSurfaces array missing');
+  assert.equal(/flsc-add-to-library/.test(retired[1]), false,
+    'flsc-add-to-library must not be listed as retired');
+  assert.equal(/flsc-add-to-folder/.test(retired[1]), false,
+    'flsc-add-to-folder must not be listed as retired');
+});
+
+check('S.invariants: 0F5a remains byte-exact after R4.7.6', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    '0F5a size changed during R4.7.6: ' + stat.size + ' vs baseline 273099');
+});
+
+check('S.invariants: 0D3*/3X* capture files contain no R4.7.6 retirement markers', () => {
+  const runtimeDir = abs('src-runtime-base');
+  const captureFiles = fs.readdirSync(runtimeDir)
+    .filter((name) => /^(?:0D3|3X)/.test(name))
+    .filter((name) => name.endsWith('.js'));
+  assert.ok(captureFiles.length >= 6, 'expected 0D3/3X capture files to exist');
+  for (const name of captureFiles) {
+    const src = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+    assert.equal(/R4\.7\.6|0F3a-folders-ui|folders-sidebar-list\.js/.test(src), false,
+      name + ' should not contain R4.7.6 folder-sidebar retirement markers');
+  }
+});
+
+check('S.doc: 0F3a extracted doc records moved regions and boundaries', () => {
+  assert.ok(fs.existsSync(abs(S_EXTRACTED_DOC)), S_EXTRACTED_DOC + ' not found');
+  const doc = fs.readFileSync(abs(S_EXTRACTED_DOC), 'utf8');
+  assert.match(doc, /R4\.7\.6/);
+  for (const range of ['108-162', '1114-1116', '1188-1222', '1903-1913', '3145-3256', '4713-5067', '6242-6266', '6626-6757']) {
+    assert.ok(doc.includes(range), '0F3a extracted doc missing range ' + range);
+  }
+  assert.match(doc, /ENGINE_injectAddToLibrary/);
+  assert.match(doc, /ENGINE_injectAddToFolder/);
+  assert.match(doc, /STORE_validateFolderCreate/);
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /273099/);
+  assert.match(doc, /0D3\*\/3X\*/);
+});
+
+check('S.doc: 0F3a README reports R4.7.6 RETIRED status + replacements', () => {
+  assert.ok(fs.existsSync(abs(S_README)), S_README + ' not found');
+  const doc = fs.readFileSync(abs(S_README), 'utf8');
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false);
+  assert.match(doc, /R4\.7\.6/);
+  assert.match(doc, /RETIRED/);
+  assert.match(doc, /S0F3b/);
+  assert.match(doc, /S0F1m/);
+  assert.match(doc, /S0F1n/);
+  assert.match(doc, /S0Z1g/);
+  assert.match(doc, /ENGINE_injectAddToLibrary/);
+  assert.match(doc, /ENGINE_injectAddToFolder/);
+  assert.match(doc, /STORE_validateFolderCreate/);
+});
+
+check('S.doc: original-path-map.md records R4.7.6 folders moves', () => {
+  const doc = fs.readFileSync(abs(S_PATH_MAP), 'utf8');
+  assert.match(doc, /R4\.7\.6/);
+  assert.match(doc, /0F3a\b/);
+  assert.match(doc, /Folders sidebar UI/);
+  assert.match(doc, /folders-sidebar-list\.js/);
+  for (const range of ['108-162', '4713-5067', '6242-6266', '6626-6757']) {
+    assert.ok(doc.includes(range), 'original-path-map missing 0F3a range ' + range);
+  }
+  assert.match(doc, /ENGINE_injectAddToLibrary/);
+  assert.match(doc, /ENGINE_injectAddToFolder/);
+  assert.match(doc, /STORE_validateFolderCreate/);
+});
+
+check('S.invariants: prior retirements and hard boundaries remain intact after R4.7.6', () => {
+  assert.match(SRC['0F4a'], /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F6a'], /R4\.7\.3 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F2a'], /R4\.7\.4 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F1b'], /R4\.7\.5 — Native Library Workspace UI retired/);
+  assert.match(SRC['0F1d'], /R4\.7\.5 — 0F1d Library Insights retired in full/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
