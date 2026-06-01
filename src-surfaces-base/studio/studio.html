@@ -1053,6 +1053,23 @@
        relay dispatch, Native dispatch, F5 close/execution, publication,
        settlement, Snapshot mutation, or UI. -->
   <script src="./sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js"></script>
+  <!-- F15.8.a: Desktop/Tauri Library catalog execute adapter. Metadata-
+       only adapter that consumes a F15.7.a catalog bookkeeping row + its
+       source F15.6.a receipt and shapes a F14.6.2 proposal-receipt
+       execute envelope ready for the F14.6 execute lane (preflight gate
+       → native broker / f5 broker → settlement writer). For tombstone
+       operation, enforces an F5 post-decision state gate
+       (approved-seal | approved-restore | auto-expired) before shaping
+       an actionable envelope; the adapter NEVER closes a review (F15.8.e
+       closure bridge does that). The kernel adapter registry
+       (F14.6.2 DOMAINS = ['chat','snapshot','capture']) currently
+       rejects the 'library.catalog' domain; the adapter falls back to
+       local metadata storage and surfaces a clear warning. No Native
+       execution, no broker dispatch, no F5 queue mutation, no
+       publication ledger write, no relay/outbox, no watermark advance,
+       no consumed-op write, no Labels/Categories/Tags mutation, no
+       chats.category_id cache write. -->
+  <script src="./sync/execute/adapters/library-catalog-execute-adapter.tauri.js"></script>
   <!-- F14.6.16: Desktop/Tauri Execute Lane UI.
        Read-only Settings-hosted operator visibility panel for journal,
        publication, broker, settlement, adapter, readiness, and proof

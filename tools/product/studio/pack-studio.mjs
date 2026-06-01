@@ -541,6 +541,19 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // dispatch, Native dispatch, F5 close/execution, publication, settlement,
   // Snapshot mutation, or UI.
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
+  // F15.8.a: Desktop/Tauri Library catalog execute adapter. Metadata-only
+  // adapter consuming a F15.7.a catalog bookkeeping row + its source
+  // F15.6.a receipt and shaping a F14.6.2 proposal-receipt execute
+  // envelope ready for the F14.6 execute lane. For tombstone, enforces an
+  // F5 post-decision state gate (approved-seal | approved-restore |
+  // auto-expired); the adapter NEVER closes a review (F15.8.e bridge
+  // does that). F14.6.2 DOMAINS does not yet include 'library.catalog';
+  // the adapter falls back to local metadata storage and warns. No
+  // Native execution, no broker dispatch, no F5 queue mutation, no
+  // publication ledger write, no relay/outbox, no watermark advance,
+  // no consumed-op write, no Labels/Categories/Tags mutation, no
+  // chats.category_id cache write.
+  "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
   // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
   // operator visibility panel. No dispatch, Native, F5, relay, settlement,
   // publication, watermark, consumed-operation, or domain mutation controls.
@@ -1131,6 +1144,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/capture-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-execute-adapter.tauri.js",
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
+  "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
