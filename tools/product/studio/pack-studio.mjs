@@ -864,6 +864,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no
   // Native folder APIs.
   "S0F1m. 🎬 Library Organization Modals - Studio.js",
+  // R4.5.4 — Desktop-first multi-select batch toolbar. Tauri-gated;
+  // silent no-op on MV3. Composes H2O.LibraryActions.* (setFolder /
+  // setCategory / addLabel / addTag) into batch operations over N
+  // selected chats via Promise.all. Refresh strategy: rely on S0F1c
+  // in-flight guard to collapse per-action dispatches + emit one final
+  // refresh with reason 'batch-toolbar:<op>:<count>'. No SQLite, no
+  // Native APIs, no ChatGPT DOM observation.
+  "S0F1n. 🎬 Library Batch Toolbar - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
@@ -1137,6 +1145,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F1i. 🎬 Cross-Platform Envelope Preview - Studio.js",
   "S0F1k. 🎬 Library Canonical Services - Studio.js",
   "S0F1m. 🎬 Library Organization Modals - Studio.js",
+  "S0F1n. 🎬 Library Batch Toolbar - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",

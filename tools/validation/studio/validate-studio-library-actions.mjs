@@ -1183,6 +1183,208 @@ check('R4.5.3: openLabelEditor + openTagEditor still respect single-source refre
     'S0F1m must not dispatchEvent — single-source refresh via actions.*');
 });
 
+// ── 15. R4.5.4 — Library Batch Toolbar (S0F1n) structural checks ───────
+// New module. Composes single-item H2O.LibraryActions.* into batch
+// operations over N selected chats via Promise.all. Provides multi-
+// select API + sticky toolbar UI + Cmd/Ctrl/Shift-click delegation on
+// Explorer chat rows. Refresh strategy: rely on S0F1c in-flight guard
+// to collapse per-action dispatches + emit ONE final batch-toolbar
+// refresh after Promise.all settles.
+
+const S0F1N_REL = 'src-surfaces-base/studio/S0F1n. 🎬 Library Batch Toolbar - Studio.js';
+const S0F1N_PATH = path.join(REPO_ROOT, S0F1N_REL);
+
+check('R4.5.4: S0F1n file exists', () => {
+  assert.ok(fs.existsSync(S0F1N_PATH), `${S0F1N_REL} not found`);
+});
+
+const s0f1nSrc = fs.existsSync(S0F1N_PATH) ? fs.readFileSync(S0F1N_PATH, 'utf8') : '';
+
+check('R4.5.4: S0F1n is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f1nSrc, /__TAURI_INTERNALS__/);
+  assert.match(s0f1nSrc, /__TAURI__/);
+  assert.match(s0f1nSrc, /if\s*\(\s*!\s*detectTauri\s*\(\s*\)\s*\)\s*return/);
+});
+
+check('R4.5.4: S0F1n registers H2O.Studio.BatchToolbar', () => {
+  assert.match(s0f1nSrc, /H2O\.Studio\.BatchToolbar\s*=/);
+});
+
+check('R4.5.4: S0F1n exposes selection API (add/remove/clear/has/size/all)', () => {
+  // selection methods must be on the public surface.
+  assert.match(s0f1nSrc, /selection:\s*\{[\s\S]*?add:\s*selectionAdd/);
+  assert.match(s0f1nSrc, /remove:\s*selectionRemove/);
+  assert.match(s0f1nSrc, /clear:\s*selectionClear/);
+  assert.match(s0f1nSrc, /has:\s*selectionHas/);
+  assert.match(s0f1nSrc, /size:\s*selectionSize/);
+  assert.match(s0f1nSrc, /all:\s*selectionAll/);
+});
+
+check('R4.5.4: S0F1n exposes enable/disable/isEnabled/diagnose', () => {
+  assert.match(s0f1nSrc, /enable:\s*enable/);
+  assert.match(s0f1nSrc, /disable:\s*disable/);
+  assert.match(s0f1nSrc, /isEnabled:\s*isEnabled/);
+  assert.match(s0f1nSrc, /diagnose:\s*diagnose/);
+  assert.match(s0f1nSrc, /function enable\(\)/);
+  assert.match(s0f1nSrc, /function disable\(\)/);
+  assert.match(s0f1nSrc, /function isEnabled\(\)/);
+  assert.match(s0f1nSrc, /function diagnose\(\)/);
+});
+
+check('R4.5.4: S0F1n uses H2O.LibraryActions.* (not actions.* direct, not store)', () => {
+  // The toolbar composes the public facade — not the internal actions
+  // modules. This keeps platform routing centralized in S0F1j.
+  assert.match(s0f1nSrc, /global\.H2O && global\.H2O\.LibraryActions/);
+  // handleAction must dispatch through the facade method by name.
+  assert.match(s0f1nSrc, /actions\[fnName\]\s*\(\s*target,\s*optionsBase\s*\)/);
+  // Verify the four batch ops point to LibraryActions methods.
+  assert.match(s0f1nSrc, /fnName\s*=\s*'setFolder'/);
+  assert.match(s0f1nSrc, /fnName\s*=\s*'setCategory'/);
+  assert.match(s0f1nSrc, /fnName\s*=\s*'addLabel'/);
+  assert.match(s0f1nSrc, /fnName\s*=\s*'addTag'/);
+});
+
+check('R4.5.4: S0F1n does NOT call actions.* / store.* directly, no SQLite', () => {
+  // Strip JS comments first.
+  const stripped = s0f1nSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  // No direct entity-actions calls — must go through LibraryActions.
+  assert.equal(/H2O\.Studio\.actions\.(folders|categories|labels|tags)\./.test(stripped), false,
+    'S0F1n must route through H2O.LibraryActions facade, not actions.* directly');
+  // No direct entity-store calls.
+  assert.equal(/H2O\.Studio\.store\.(chats|folders|categories|labels|tags)\./.test(stripped), false,
+    'S0F1n must not touch H2O.Studio.store.* directly');
+  // No SQLite invocation.
+  assert.equal(/plugin:sql/.test(stripped), false);
+  // No chrome.* APIs.
+  assert.equal(/\bchrome\.runtime\b/.test(stripped), false);
+  assert.equal(/\bchrome\.storage\b/.test(stripped), false);
+});
+
+check('R4.5.4: S0F1n does NOT call Native H2O.* mutation APIs', () => {
+  const stripped = s0f1nSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  assert.equal(/H2O\.folders\.(create|rename|update|remove|delete|patch)/.test(stripped), false);
+  assert.equal(/H2O\.archiveBoot\.(renameCategory|deleteCategory|createCategory)/.test(stripped), false);
+  assert.equal(/H2O\.Labels\.(renameLabel|deleteLabel|createLabel)/.test(stripped), false);
+  assert.equal(/H2O\.Tags\.(renameTag|deleteTag|createTag|extractTag|deriveTag)/.test(stripped), false);
+});
+
+check('R4.5.4: S0F1n has no ChatGPT DOM observation (boundary preserved)', () => {
+  // The MutationObserver in this module observes the Studio body for
+  // newly-rendered .wbChatRow elements (Studio-internal). It does NOT
+  // observe chatgpt.com structure. Source-comment-stripped scan asserts
+  // no extraction-related patterns appear.
+  const stripped = s0f1nSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  for (const forbidden of [
+    "querySelector('article",
+    'data-testid="conversation-turn"',
+    'chatgpt.com',
+    'extractTagsFromTurn',
+    'deriveTags',
+    'scanTurn',
+  ]) {
+    assert.equal(stripped.indexOf(forbidden), -1,
+      `S0F1n must not reference ${forbidden} (boundary)`);
+  }
+  // diagnose() reports the boundary explicitly.
+  assert.match(s0f1nSrc, /domAccess:\s*false/);
+  assert.match(s0f1nSrc, /observesChatGptDom:\s*false/);
+  assert.match(s0f1nSrc, /tagExtraction:\s*false/);
+});
+
+check('R4.5.4: S0F1n uses the canonical refresh event (no new event names)', () => {
+  // The module dispatches the canonical refresh-request event. Verify
+  // no novel refresh event names are introduced.
+  assert.match(s0f1nSrc, /'evt:h2o:library-index:refresh-request'/);
+  // Reason follows the documented batch-toolbar:<op>:<count> shape.
+  assert.match(s0f1nSrc, /'batch-toolbar:'\s*\+/);
+  // No invented event names.
+  const stripped = s0f1nSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  assert.equal(/'evt:h2o:batch-toolbar:/.test(stripped), false,
+    'S0F1n must not invent novel batch-toolbar event names');
+});
+
+check('R4.5.4: S0F1n uses Promise.all to fan out + dispatches ONE final refresh', () => {
+  // Fan-out pattern.
+  assert.match(s0f1nSrc, /Promise\.all\(\s*ids\.map\(/);
+  // Final dispatch after settle.
+  assert.match(s0f1nSrc, /dispatchBatchRefresh\(\s*op\s*\+\s*':'\s*\+\s*ids\.length\s*\)/);
+});
+
+check('R4.5.4: S0F1n implements modifier-aware click delegation (Cmd/Ctrl/Shift)', () => {
+  assert.match(s0f1nSrc, /function handleRowClick/);
+  assert.match(s0f1nSrc, /ev\.shiftKey/);
+  assert.match(s0f1nSrc, /ev\.metaKey\s*\|\|\s*ev\.ctrlKey/);
+  // Plain click stays default (no selection mutation) — verify the
+  // unmodified branch only updates lastAnchor.
+  assert.match(s0f1nSrc, /state\.lastAnchor\s*=\s*chatId/);
+  // Range select.
+  assert.match(s0f1nSrc, /function selectionRange/);
+});
+
+check('R4.5.4: S0F1n installs checkbox column via MutationObserver', () => {
+  assert.match(s0f1nSrc, /function startCheckboxObserver/);
+  assert.match(s0f1nSrc, /function injectCheckboxForRow/);
+  assert.match(s0f1nSrc, /MutationObserver/);
+  // Targets the Studio-internal chat row selector, not chatgpt.com.
+  assert.match(s0f1nSrc, /'\.wbChatRow\[data-chatId\]'/);
+});
+
+check('R4.5.4: S0F1n studio.html + pack-studio.mjs registration parity', () => {
+  const html = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/studio.html'), 'utf8');
+  assert.match(html, /<script src="\.\/S0F1n\. 🎬 Library Batch Toolbar - Studio\.js"><\/script>/);
+  // Loads after S0F1m.
+  const idxM = html.indexOf('S0F1m. 🎬 Library Organization Modals');
+  const idxN = html.indexOf('S0F1n. 🎬 Library Batch Toolbar');
+  assert.ok(idxM > 0 && idxN > 0 && idxN > idxM,
+    `expected S0F1n after S0F1m; got idxM=${idxM} idxN=${idxN}`);
+  // Pack-studio parity.
+  const pkg = fs.readFileSync(path.join(REPO_ROOT, 'tools/product/studio/pack-studio.mjs'), 'utf8');
+  const occurrences = (pkg.match(/S0F1n\. 🎬 Library Batch Toolbar - Studio\.js/g) || []).length;
+  assert.equal(occurrences, 2,
+    `expected S0F1n in both SOURCE_FILES + OUT_FILES (2); got ${occurrences}`);
+});
+
+check('R4.5.4: S0F1n diagnose() reports phase + refresh strategy + boundary flags', () => {
+  assert.match(s0f1nSrc, /phase:\s*PHASE/);
+  assert.match(s0f1nSrc, /PHASE\s*=\s*'R4\.5\.4-batch-toolbar'/);
+  assert.match(s0f1nSrc, /refreshStrategy:\s*'natural-collapse-via-S0F1c-in-flight-guard \+ one-final-batch-toolbar-refresh'/);
+  assert.match(s0f1nSrc, /libraryActionsAvailable:\s*!!getLibraryActions\(\)/);
+});
+
+// ── R4.5.4 adversarial-review fixes — source-level locks ──────────────
+// The adversarial review surfaced two real medium-severity findings.
+// Both are now fixed in S0F1n; these assertions lock the source-level
+// pattern so future refactors can't reintroduce the bug.
+
+check('R4.5.4 REVIEW FIX #1: handleAction guards against concurrent batch ops', () => {
+  // opInProgress flag exists in state.
+  assert.match(s0f1nSrc, /opInProgress:\s*false/);
+  // handleAction checks the flag before starting fan-out (after the
+  // 'clear' early-return) and returns status 'op-in-progress'.
+  assert.match(s0f1nSrc, /if\s*\(\s*state\.opInProgress\s*\)/);
+  assert.match(s0f1nSrc, /status:\s*'op-in-progress'/);
+  // Guard is set + cleared via try/finally around the fan-out.
+  assert.match(s0f1nSrc, /state\.opInProgress\s*=\s*true/);
+  assert.match(s0f1nSrc, /finally\s*\{[\s\S]*?state\.opInProgress\s*=\s*false/);
+  // Diagnose exposes the flag.
+  assert.match(s0f1nSrc, /opInProgress:\s*state\.opInProgress/);
+});
+
+check('R4.5.4 REVIEW FIX #2: selectionRemove clears lastAnchor when removing the anchor', () => {
+  // selectionRemove contains the lastAnchor-clear check on removed id.
+  const removeMatch = s0f1nSrc.match(/function selectionRemove[\s\S]*?return true;\s*\}/);
+  assert.ok(removeMatch, 'selectionRemove function not found');
+  assert.match(removeMatch[0], /if\s*\(\s*state\.lastAnchor\s*===\s*chatId\s*\)\s*state\.lastAnchor\s*=\s*''/);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

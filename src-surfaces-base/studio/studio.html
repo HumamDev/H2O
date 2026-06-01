@@ -1444,6 +1444,14 @@
        through openFolderEditor; MV3 falls through to the existing canonical-
        folder-create panel. -->
   <script src="./S0F1m. 🎬 Library Organization Modals - Studio.js"></script>
+  <!-- R4.5.4 — Desktop-first multi-select batch toolbar. Tauri-gated;
+       silent no-op on MV3. Composes H2O.LibraryActions.* into batch
+       operations over N selected chats via Promise.all. Refresh
+       strategy: rely on S0F1c in-flight guard to collapse intermediate
+       dispatches + emit one final refresh with reason
+       'batch-toolbar:<op>:<count>'. No SQLite, no Native APIs, no
+       ChatGPT DOM observation (Studio-internal .wbChatRow only). -->
+  <script src="./S0F1n. 🎬 Library Batch Toolbar - Studio.js"></script>
   <!-- Studio Command Bar: ⌘K palette exposing Library Maintenance commands. -->
   <script src="./S0X1a. 🎬 Command Bar - Studio.js"></script>
   <!-- Library Commands plugin: registers Workspace / Index / Sync / Registry /
