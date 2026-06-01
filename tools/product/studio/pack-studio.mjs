@@ -255,6 +255,20 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // ingest, no apply, no publication, no relay/outbox, no watermark
   // advance, no consumed-op write, no chats.category_id cache.
   "sync/library/library-binding-apply-event-receipt.tauri.js",
+  // F15.7.a: Desktop/Tauri library catalog bookkeeping. Append-only
+  // Studio-local audit ledger for F15.6.a catalog receipts. Idempotent
+  // by rowId (sha256 over subjectId + applyEventDigest + dedupeKey +
+  // receiptDigest + actorPeer.syncPeerIdHash); duplicate calls return
+  // recorded:false, alreadyPresent:true with no storage write. For
+  // tombstone rows, mirrors f5ReviewIngested / f5ReviewId verbatim from
+  // the receipt — bookkeeping does NOT re-invoke ingestF5Review. Eight
+  // standard sideEffectSummary flags stay false; ninth lane-scoped flag
+  // bookkeepingLedgerWritten flips true only on a new append. Stores at
+  // chrome.storage.local key h2o:sync:library-catalog-bookkeeping:v1.
+  // No Native execution, no apply, no publication, no relay/outbox, no
+  // watermark advance, no consumed-op write, no F5 queue ingest, no
+  // Labels/Categories/Tags mutation, no chats.category_id cache.
+  "sync/library/library-catalog-bookkeeping.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -1051,6 +1065,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-binding-handoff-preview.tauri.js",
   "sync/library/library-catalog-apply-event-receipt.tauri.js",
   "sync/library/library-binding-apply-event-receipt.tauri.js",
+  "sync/library/library-catalog-bookkeeping.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",

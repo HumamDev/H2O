@@ -720,6 +720,21 @@
        advance, no consumed-op write, no Labels/Categories/Tags mutation,
        no chats.category_id cache write. -->
   <script src="./sync/library/library-binding-apply-event-receipt.tauri.js"></script>
+  <!-- F15.7.a: Desktop/Tauri library catalog bookkeeping. Append-only
+       Studio-local audit ledger for F15.6.a catalog receipts. Idempotent
+       by rowId (sha256 over subjectId + applyEventDigest + dedupeKey +
+       receiptDigest + actorPeer.syncPeerIdHash); duplicate calls return
+       `recorded:false, alreadyPresent:true` with no storage write. For
+       tombstone rows, mirrors f5ReviewIngested / f5ReviewId verbatim
+       from the receipt — bookkeeping does NOT re-invoke ingestF5Review
+       (that ran at F15.6.a receipt time). Eight standard cross-platform
+       sideEffectSummary flags stay false; ninth lane-scoped flag
+       `bookkeepingLedgerWritten` flips true only on a new append. Stores
+       at chrome.storage.local key `h2o:sync:library-catalog-bookkeeping:v1`.
+       No Native execution, no apply, no publication, no relay/outbox,
+       no watermark advance, no consumed-op write, no F5 queue ingest,
+       no Labels/Categories/Tags mutation, no chats.category_id cache. -->
+  <script src="./sync/library/library-catalog-bookkeeping.tauri.js"></script>
   <!-- F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer.
        Pure function over one chat record (Native mirror / Library Index /
        Registry Core projection) -> the F14.3.0 canonical chat snapshot.
