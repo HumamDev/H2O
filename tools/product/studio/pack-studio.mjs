@@ -210,6 +210,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // storage, publication, relay/outbox, apply, Native/F5, watermark, or
   // consumed-op writes.
   "sync/library/library-catalog-proposal-candidate-generator.tauri.js",
+  // F15.4.b: Desktop/Tauri side-effect-free library binding proposal
+  // candidate generator. Emits redacted proposal/candidate objects only; no
+  // storage, publication, relay/outbox, apply, Native/F5, watermark, or
+  // consumed-op writes.
+  "sync/library/library-binding-proposal-candidate-generator.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -1001,6 +1006,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-catalog-preflight.tauri.js",
   "sync/library/library-binding-preflight.tauri.js",
   "sync/library/library-catalog-proposal-candidate-generator.tauri.js",
+  "sync/library/library-binding-proposal-candidate-generator.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
