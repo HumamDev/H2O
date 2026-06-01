@@ -1340,6 +1340,14 @@
   <script src="./S0F2a. 🎬 Projects - Studio.js"></script>
   <script src="./S0F3a. 🎬 Folders - Studio.js"></script>
   <script src="./S0F4a. 🎬 Categories - Studio.js"></script>
+  <!-- R4.1 — Desktop-first categories WRITE API. Tauri-only; registers
+       H2O.Studio.actions.categories.{create, rename, remove, assignChat,
+       clearChat}. Each mutation writes through H2O.Studio.store.categories
+       (SQLite) and dispatches evt:h2o:library-index:refresh-request so the
+       LibraryIndex re-reads from the entity store. No schema change, no
+       migration. MV3 path is a silent no-op; S0F1j's setCategory routes
+       to native-context-required there. -->
+  <script src="./S0F4b. 🎬 Categories Actions - Studio.js"></script>
   <script src="./S0F5a. 🎬 Tags - Studio.js"></script>
   <script src="./S0F6a. 🎬 Labels - Studio.js"></script>
   <!-- Workspace: canonical model facade for studio.js. -->

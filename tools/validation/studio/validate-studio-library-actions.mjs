@@ -170,6 +170,101 @@ check('S0X1b registers commands that map to S0F1j-exposed methods', () => {
   assert.match(s0f1jSrc, /openLinkedChat/);
 });
 
+// ── 8. R4.1 — S0F4b Categories Actions module structural checks ────────
+
+const S0F4B_REL = 'src-surfaces-base/studio/S0F4b. 🎬 Categories Actions - Studio.js';
+const S0F4B_BASENAME = 'S0F4b. 🎬 Categories Actions - Studio.js';
+
+check('R4.1: S0F4b file exists', () => {
+  assert.ok(fs.existsSync(abs(S0F4B_REL)), `${S0F4B_REL} missing`);
+});
+
+const s0f4bSrc = fs.existsSync(abs(S0F4B_REL)) ? read(S0F4B_REL) : '';
+
+check('R4.1: S0F4b is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f4bSrc, /if\s*\(\s*!detectTauri\s*\(\s*\)\s*\)\s*return/,
+    'S0F4b must bail when not Tauri');
+});
+
+check('R4.1: S0F4b registers H2O.Studio.actions.categories', () => {
+  assert.match(s0f4bSrc, /H2O\.Studio\.actions\.categories\s*=/,
+    'must assign H2O.Studio.actions.categories');
+});
+
+check('R4.1: S0F4b exposes all 5 required methods + diagnose', () => {
+  for (const fn of ['create', 'rename', 'remove', 'assignChat', 'clearChat', 'diagnose']) {
+    assert.match(s0f4bSrc, new RegExp(`\\b${fn}:\\s*${fn}\\b`),
+      `S0F4b must expose ${fn} in its API object`);
+  }
+  // 'delete' is exposed as an alias to remove via quoted key
+  assert.match(s0f4bSrc, /['"]delete['"]:\s*remove/,
+    `S0F4b should expose 'delete' as an alias for remove`);
+});
+
+check('R4.1: S0F4b dispatches the canonical LibraryIndex refresh event', () => {
+  assert.match(s0f4bSrc, /evt:h2o:library-index:refresh-request/,
+    'must dispatch the canonical refresh event after mutations');
+});
+
+check('R4.1: S0F4b uses H2O.Studio.store.categories (no new storage layer)', () => {
+  assert.match(s0f4bSrc, /H2O\.Studio\.store\.categories/,
+    'must call store.categories for writes');
+  assert.doesNotMatch(s0f4bSrc, /plugin:sql\|execute/,
+    'must NOT touch plugin:sql directly — only via store API');
+});
+
+check('R4.1: studio.html includes <script src="./S0F4b..."> after S0F4a', () => {
+  const html = read(STUDIO_HTML_REL);
+  assert.match(html, /<script src="\.\/S0F4b\. 🎬 Categories Actions - Studio\.js"><\/script>/,
+    'studio.html must include S0F4b script tag');
+  // Verify S0F4b loads AFTER S0F4a (so the read facade is in place first;
+  // also ensures actions namespace is established before downstream code uses it).
+  const s0f4a = html.indexOf('S0F4a. 🎬 Categories - Studio.js');
+  const s0f4b = html.indexOf('S0F4b. 🎬 Categories Actions - Studio.js');
+  assert.ok(s0f4a > 0 && s0f4b > 0, 'both S0F4a and S0F4b refs must exist in studio.html');
+  assert.ok(s0f4a < s0f4b, 'S0F4b must load after S0F4a');
+  // Note: S0F1j.setCategory dereferences H2O.Studio.actions.categories
+  // at CALL time (inside an async function), not at module-load time,
+  // so S0F4b is free to load before or after S0F1j. Both refs must
+  // simply be present in studio.html (asserted above). This matches the
+  // existing read facade pattern (S0F2a..S0F6a all load after S0F1j).
+});
+
+check('R4.1: pack-studio.mjs has S0F4b in BOTH SOURCE_FILES and OUT_FILES', () => {
+  assert.ok(SOURCE_FILES.includes(S0F4B_BASENAME), 'S0F4b missing from SOURCE_FILES');
+  assert.ok(OUT_FILES.includes(S0F4B_BASENAME), 'S0F4b missing from OUT_FILES');
+});
+
+check('R4.1: pack-studio.mjs has S0F4b at MATCHING index in both lists', () => {
+  const srcIdx = SOURCE_FILES.indexOf(S0F4B_BASENAME);
+  const outIdx = OUT_FILES.indexOf(S0F4B_BASENAME);
+  assert.equal(srcIdx, outIdx,
+    `source/out index mismatch: source[${srcIdx}], out[${outIdx}]`);
+});
+
+check('R4.1: S0F1j exposes setCategory method', () => {
+  assert.match(s0f1jSrc, /\bsetCategory\b/,
+    'S0F1j must declare setCategory');
+  assert.match(s0f1jSrc, /async function setCategory\s*\(/,
+    'setCategory must be an async function');
+});
+
+check('R4.1: S0F1j routes setCategory through H2O.Studio.actions.categories on Desktop', () => {
+  // Must reference actions.categories.assignChat or .clearChat in the body.
+  assert.match(s0f1jSrc, /actions\.categories\.(assignChat|clearChat)/,
+    'setCategory must call actions.categories.{assignChat|clearChat}');
+});
+
+check('R4.1: S0F1j preserves native-context-required path on MV3 for setCategory', () => {
+  // Look for 'native-context-required' status in the setCategory body region.
+  // We're not regexing the function body exactly; we just confirm the
+  // string appears (it already does for addToLibrary/saveToFolder, plus
+  // setCategory adds another reference in its MV3 branch).
+  const occurrences = (s0f1jSrc.match(/native-context-required/g) || []).length;
+  assert.ok(occurrences >= 3,
+    `expected at least 3 'native-context-required' references (addToLibrary, saveToFolder, setCategory); got ${occurrences}`);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

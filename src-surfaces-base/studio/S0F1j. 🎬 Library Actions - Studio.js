@@ -33,6 +33,7 @@
       addCalls: 0,
       saveCalls: 0,
       openCalls: 0,
+      setCategoryCalls: 0,
       unsupportedCalls: 0,
       opened: 0,
       errors: 0,
@@ -40,6 +41,7 @@
     lastAdd: null,
     lastSave: null,
     lastOpen: null,
+    lastSetCategory: null,
     errors: [],
     core: {
       usedFor: {
@@ -327,6 +329,100 @@
     }
   }
 
+  /* R4.1 — Tauri detection used only by setCategory routing.
+   * Local helper (same pattern as the .tauri.js modules) to avoid
+   * importing the platform adapter for a one-line check. */
+  function LA_isTauri() {
+    try {
+      if (typeof globalThis.__TAURI_INTERNALS__ !== 'undefined') return true;
+      if (typeof globalThis.__TAURI__ !== 'undefined') return true;
+    } catch (_) { /* swallow */ }
+    return false;
+  }
+
+  /* R4.1 — setCategory(target, options).
+   *
+   * The first action in the R4 series where Studio becomes a canonical
+   * writer rather than a native-context-required facade. On Desktop,
+   * routes through H2O.Studio.actions.categories.{assignChat, clearChat}
+   * which write to SQLite via store.categories and dispatch the
+   * canonical LibraryIndex refresh request event. On MV3 / web, returns
+   * native-context-required exactly like addToLibrary/saveToFolder so
+   * the existing Chrome workflow is unchanged.
+   *
+   * options.categoryId — empty string or absent means "clear assignment"
+   *   (delegates to actions.categories.clearChat). Non-empty means
+   *   assign (delegates to actions.categories.assignChat). The action
+   *   module verifies the category exists; result.status surfaces the
+   *   specific reason if not. */
+  async function setCategory(target = {}, options = {}) {
+    diag.counts.setCategoryCalls += 1;
+    const source = firstString(options.source, 'studio:set-category');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const categoryId = trimString(options.categoryId);
+
+      /* MV3 / web — preserve native-context-required pattern. */
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('setCategory', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write category state on MV3 in R4.1; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId,
+          categoryId,
+          supportedInStudio: false,
+        });
+        diag.lastSetCategory = out;
+        return normalizeResultForDiag('setCategory', out);
+      }
+
+      /* Desktop path: route to actions.categories.* */
+      const actions = H2O.Studio?.actions?.categories;
+      if (!actions || (typeof actions.assignChat !== 'function' || typeof actions.clearChat !== 'function')) {
+        const out = baseResult('setCategory', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.categories not loaded — verify S0F4b is in the bundle',
+          chatId,
+          categoryId,
+        });
+        diag.lastSetCategory = out;
+        return normalizeResultForDiag('setCategory', out);
+      }
+      if (!chatId) {
+        const out = baseResult('setCategory', 'chat-id-required', { ok: false, chatId, categoryId });
+        diag.lastSetCategory = out;
+        return normalizeResultForDiag('setCategory', out);
+      }
+
+      const actionResult = categoryId
+        ? await actions.assignChat(chatId, categoryId)
+        : await actions.clearChat(chatId);
+      const status = actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error');
+      const out = baseResult('setCategory', status, {
+        ok: !!(actionResult && actionResult.ok),
+        chatId,
+        categoryId,
+        targetSource: targetInfo.source,
+        actionResult,
+        source,
+        supportedInStudio: true,
+      });
+      diag.lastSetCategory = out;
+      return normalizeResultForDiag('setCategory', out);
+    } catch (e) {
+      pushError('setCategory', e);
+      const out = baseResult('setCategory', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastSetCategory = out;
+      return normalizeResultForDiag('setCategory', out);
+    }
+  }
+
   function resolveOpenPlan(target = {}, options = {}) {
     const windowTarget = firstString(options.target, options.windowTarget, '_blank');
     const targetInfo = normalizeTarget(target, { ...options, source: firstString(options.source, 'studio:open-linked-chat') });
@@ -414,10 +510,17 @@
         openLinkedChat: true,
         addToLibrary: false,
         saveToFolder: false,
+        /* R4.1 — setCategory is platform-conditional: true on Desktop
+         * when actions.categories is loaded; native-context-required
+         * on MV3. Reflect that here rather than a static bool. */
+        setCategory: LA_isTauri() && !!H2O.Studio?.actions?.categories,
       },
       unsupportedActions: {
         addToLibrary: 'native-context-required',
         saveToFolder: 'native-context-required',
+        ...(LA_isTauri() && H2O.Studio?.actions?.categories
+          ? {}
+          : { setCategory: LA_isTauri() ? 'actions-unavailable' : 'native-context-required' }),
       },
       dependencies: {
         core: !!actionsCore(),
@@ -438,6 +541,7 @@
     version: VERSION,
     addToLibrary,
     saveToFolder,
+    setCategory,
     openLinkedChat,
     diagnose,
   };

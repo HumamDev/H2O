@@ -627,6 +627,12 @@ async function main() {
   // trigger calls H2O.Studio.sync.scanFolderOnce + LibraryIndex.refresh.
   await runDesktopFocusImportTests();
 
+  // ── (10) Desktop Categories Write Parity (R4.1) ─────────────────────
+  // Verifies that H2O.Studio.actions.categories writes to SQLite via
+  // store.categories, dispatches the canonical LibraryIndex refresh
+  // event, and handles validation/error paths cleanly.
+  await runDesktopCategoriesActionsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -1563,6 +1569,324 @@ async function runDesktopFocusImportTests() {
     assert.ok(!focusSet2 || focusSet2.size === 0, 'focus listener should be removed after disable');
     const visSet2 = env._docEvents._listeners.get('visibilitychange');
     assert.ok(!visSet2 || visSet2.size === 0, 'visibilitychange listener should be removed after disable');
+  });
+}
+
+// ── Desktop Categories Actions test runner (R4.1) ─────────────────────
+async function runDesktopCategoriesActionsTests() {
+  console.log('');
+  console.log('── Desktop Categories Write Parity (R4.1) ──────────────────');
+
+  const S0F4B_REL  = 'src-surfaces-base/studio/S0F4b. 🎬 Categories Actions - Studio.js';
+  const S0F4B_PATH = path.join(REPO_ROOT, S0F4B_REL);
+
+  // Minimal store.categories mock — Map-backed, mirroring the public
+  // surface of categories.tauri.js that S0F4b actually calls:
+  // get / create / patch / remove / assignChat / clearChat.
+  function makeCategoriesStoreMock() {
+    const cats = new Map();    // categoryId -> row
+    const chatCat = new Map(); // chatId -> categoryId
+    let seq = 0;
+    return {
+      _cats: cats,
+      _chatCat: chatCat,
+      async get(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        return id && cats.has(id) ? { ...cats.get(id) } : null;
+      },
+      async create(patch) {
+        seq += 1;
+        const id = `cat_test_${seq}`;
+        const row = {
+          categoryId: id,
+          name: String((patch && patch.name) || ''),
+          parentId: String((patch && patch.parentId) || ''),
+          source: String((patch && patch.source) || ''),
+          meta: (patch && patch.meta && typeof patch.meta === 'object') ? { ...patch.meta } : {},
+        };
+        cats.set(id, row);
+        return { ...row };
+      },
+      async patch(idInput, partial) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !cats.has(id)) return null;
+        const cur = cats.get(id);
+        const next = { ...cur, ...(partial || {}) };
+        cats.set(id, next);
+        return { ...next };
+      },
+      async remove(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !cats.has(id)) return false;
+        // Bulk-clear chats.category_id (matching the real store behavior).
+        for (const [chatId, catId] of chatCat) {
+          if (catId === id) chatCat.delete(chatId);
+        }
+        cats.delete(id);
+        return true;
+      },
+      async assignChat(categoryIdInput, chatIdInput) {
+        const cid = String(categoryIdInput == null ? '' : categoryIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!cid || !ch || !cats.has(cid)) return false;
+        chatCat.set(ch, cid);
+        return true;
+      },
+      async clearChat(chatIdInput) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch || !chatCat.has(ch)) return false;
+        chatCat.delete(ch);
+        return true;
+      },
+    };
+  }
+
+  // EventTarget shim so dispatchRefresh() can be observed.
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox() {
+    const eventTarget = makeEventTarget();
+    const store = makeCategoriesStoreMock();
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { store: { categories: store } } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      _eventTarget: eventTarget,
+      _store: store,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F4B_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F4B_REL });
+    return sandbox;
+  }
+
+  // ── 10.1 — module loads + API shape ─────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F4b loads in Desktop sandbox + registers actions.categories');
+    console.log('  ✓ S0F4b loads in Desktop sandbox + registers actions.categories');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F4b loads', err: msg });
+    console.log(`  ✗ S0F4b loads in Desktop sandbox\n      ${msg}`);
+    return;
+  }
+  const actions = sandbox.H2O?.Studio?.actions?.categories;
+  check('actions.categories namespace + 7 expected methods', () => {
+    assert.ok(actions, 'actions.categories not registered');
+    assert.equal(actions.__installed, true);
+    for (const fn of ['create', 'rename', 'remove', 'delete', 'assignChat', 'clearChat', 'diagnose']) {
+      assert.equal(typeof actions[fn], 'function', `${fn} should be a function`);
+    }
+  });
+  check('diagnose() reports R4.1 phase + storeAvailable=true', () => {
+    const d = actions.diagnose();
+    assert.equal(d.phase, 'R4.1-categories');
+    assert.equal(d.installed, true);
+    assert.equal(d.storeAvailable, true);
+    assert.equal(d.refreshEvent, 'evt:h2o:library-index:refresh-request');
+  });
+
+  // ── 10.2 — create ──────────────────────────────────────────────────
+  let createdId = '';
+  await checkAsync('create({name}) → ok, returns categoryId, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: 'TestCategory', meta: { foo: 'bar' } });
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.ok(r.categoryId && r.categoryId.startsWith('cat_test_'),
+      'expected categoryId to be generated');
+    assert.equal(r.name, 'TestCategory');
+    createdId = r.categoryId;
+    // Refresh event dispatched
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 1, 'expected 1 refresh event');
+    assert.match(String(evts[0].detail.reason), /categories-actions:create/);
+    // Row actually in the store
+    assert.ok(sandbox._store._cats.has(createdId));
+  });
+  await checkAsync('create with empty name → name-required, no dispatch', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: '' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+    assert.equal(sandbox._eventTarget._dispatchedEvents.length, 0,
+      'no refresh event should fire on validation failure');
+  });
+
+  // ── 10.3 — rename ──────────────────────────────────────────────────
+  await checkAsync('rename(id, newName) → ok, row updated, refresh dispatched', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.rename(createdId, 'RenamedCategory');
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.equal(r.name, 'RenamedCategory');
+    assert.equal(sandbox._store._cats.get(createdId).name, 'RenamedCategory');
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /categories-actions:rename/);
+  });
+  await checkAsync('rename non-existent → not-found', async () => {
+    const r = await actions.rename('cat_does_not_exist', 'Nope');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+  await checkAsync('rename with empty newName → name-required', async () => {
+    const r = await actions.rename(createdId, '');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+  });
+
+  // ── 10.4 — assignChat ──────────────────────────────────────────────
+  await checkAsync('assignChat(chatId, categoryId) → ok, store updated, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.assignChat('c_test1', createdId);
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.equal(sandbox._store._chatCat.get('c_test1'), createdId);
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /categories-actions:assignChat/);
+  });
+  await checkAsync('assignChat to non-existent category → category-not-found', async () => {
+    const r = await actions.assignChat('c_test1', 'cat_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'category-not-found');
+  });
+  await checkAsync('assignChat missing chatId → chat-id-required', async () => {
+    const r = await actions.assignChat('', createdId);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'chat-id-required');
+  });
+
+  // ── 10.5 — clearChat ───────────────────────────────────────────────
+  await checkAsync('clearChat(chatId) → ok, wasAssigned=true, refresh dispatched', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.clearChat('c_test1');
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.equal(r.wasAssigned, true);
+    assert.equal(sandbox._store._chatCat.has('c_test1'), false);
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 1);
+  });
+  await checkAsync('clearChat on chat without category → ok, wasAssigned=false, NO refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.clearChat('c_never_assigned');
+    assert.equal(r.ok, true);
+    assert.equal(r.wasAssigned, false);
+    // No-op writes don't fire refresh — keep the event bus quiet.
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 0,
+      'clearChat on unassigned chat should NOT fire refresh (no state changed)');
+  });
+
+  // ── 10.6 — remove (with cascade) ──────────────────────────────────
+  await checkAsync('remove(id) clears assigned chats too, then deletes', async () => {
+    // First assign a few chats to a fresh category, then remove it.
+    const created = await actions.create({ name: 'ToDelete' });
+    await actions.assignChat('chat_a', created.categoryId);
+    await actions.assignChat('chat_b', created.categoryId);
+    assert.equal(sandbox._store._chatCat.size, 2);
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove(created.categoryId);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(sandbox._store._cats.has(created.categoryId), false,
+      'category row should be deleted');
+    assert.equal(sandbox._store._chatCat.has('chat_a'), false,
+      'chat_a should be unassigned');
+    assert.equal(sandbox._store._chatCat.has('chat_b'), false,
+      'chat_b should be unassigned');
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 1, 'refresh should fire on successful delete');
+  });
+  await checkAsync('remove non-existent → not-found, no refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove('cat_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+    const evts = sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+    assert.equal(evts.length, 0);
+  });
+
+  // ── 10.7 — delete alias points to remove ──────────────────────────
+  check('actions.categories.delete is the same function as remove', () => {
+    assert.equal(actions['delete'], actions.remove,
+      'delete should be an alias of remove');
+  });
+
+  // ── 10.8 — LibraryIndex refresh visibility (round-trip) ───────────
+  // Wire a listener for the refresh event; verify create/rename/assign/
+  // clear/remove all surface visibly through it. This proves the
+  // dispatchRefresh path matches what S0F1c.refreshFromStores listens
+  // for; the actual reason strings are the contract.
+  await checkAsync('end-to-end: 5 mutations → 5 refresh events with matching reasons', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const reasons = [];
+    sandbox.addEventListener('evt:h2o:library-index:refresh-request', (e) => {
+      reasons.push((e && e.detail && e.detail.reason) || '');
+    });
+    const c = await actions.create({ name: 'E2E' });
+    await actions.rename(c.categoryId, 'E2E-renamed');
+    await actions.assignChat('chat_e2e', c.categoryId);
+    await actions.clearChat('chat_e2e');
+    await actions.remove(c.categoryId);
+    assert.equal(reasons.length, 5, 'expected 5 refresh events; got ' + reasons.length);
+    assert.match(reasons[0], /create/);
+    assert.match(reasons[1], /rename/);
+    assert.match(reasons[2], /assignChat/);
+    assert.match(reasons[3], /clearChat/);
+    assert.match(reasons[4], /remove/);
+  });
+
+  // ── 10.9 — diagnose counters reflect the run ──────────────────────
+  check('diagnose() counters reflect all writes since boot', () => {
+    const d = actions.diagnose();
+    // We did at least: create*3, rename*2 (1 ok + 1 not-found), assignChat*3 (1 ok + 2 errors),
+    // clearChat*2, remove*3 (2 ok + 1 not-found). That's 13+ writes.
+    assert.ok(d.writesSinceBoot >= 13,
+      'expected writesSinceBoot >= 13; got ' + d.writesSinceBoot);
+    assert.ok(d.lastWriteAt > 0);
+    assert.equal(typeof d.lastWriteAction, 'string');
   });
 }
 
