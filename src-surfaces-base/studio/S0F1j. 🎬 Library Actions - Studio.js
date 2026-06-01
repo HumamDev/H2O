@@ -37,6 +37,9 @@
       setLabelsCalls: 0,
       addLabelCalls: 0,
       removeLabelCalls: 0,
+      setTagsCalls: 0,
+      addTagCalls: 0,
+      removeTagCalls: 0,
       unsupportedCalls: 0,
       opened: 0,
       errors: 0,
@@ -48,6 +51,9 @@
     lastSetLabels: null,
     lastAddLabel: null,
     lastRemoveLabel: null,
+    lastSetTags: null,
+    lastAddTag: null,
+    lastRemoveTag: null,
     errors: [],
     core: {
       usedFor: {
@@ -655,6 +661,235 @@
     }
   }
 
+  /* R4.3 — Tags facade methods. Same Desktop/MV3 routing pattern as
+   * setLabels / addLabel / removeLabel from R4.2; routes through
+   * H2O.Studio.actions.tags.* which wraps store.tags with
+   * refresh-event dispatch. Three methods:
+   *
+   *   setTags(target, {tagIds})        — full replacement (drops all
+   *                                      existing, inserts the new set;
+   *                                      empty array clears all tags)
+   *   addTag(target, {tagId})          — idempotent single-tag add
+   *                                      (no-op if already bound)
+   *   removeTag(target, {tagId})       — single-tag remove (returns
+   *                                      wasBound flag for diagnostics)
+   *
+   * Boundary: this facade routes ONLY explicit user-chosen tag IDs;
+   * Native 0F5a's turn-level tag EXTRACTION continues to derive tags
+   * from chatgpt.com DOM and is NOT invoked from here. The Studio
+   * actions module S0F5b deliberately has no DOM surface.
+   *
+   * MV3 path returns native-context-required to preserve the existing
+   * Chrome workflow. */
+  async function setTags(target = {}, options = {}) {
+    diag.counts.setTagsCalls += 1;
+    const source = firstString(options.source, 'studio:set-tags');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const tagIds = Array.isArray(options.tagIds) ? options.tagIds : null;
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('setTags', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write tags on MV3 in R4.3; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId,
+          tagIds,
+          supportedInStudio: false,
+        });
+        diag.lastSetTags = out;
+        return normalizeResultForDiag('setTags', out);
+      }
+
+      const actions = H2O.Studio?.actions?.tags;
+      if (!actions || typeof actions.replaceForChat !== 'function') {
+        const out = baseResult('setTags', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.tags not loaded — verify S0F5b is in the bundle',
+          chatId,
+          tagIds,
+        });
+        diag.lastSetTags = out;
+        return normalizeResultForDiag('setTags', out);
+      }
+      if (!chatId) {
+        const out = baseResult('setTags', 'chat-id-required', { ok: false, chatId });
+        diag.lastSetTags = out;
+        return normalizeResultForDiag('setTags', out);
+      }
+      if (tagIds === null) {
+        const out = baseResult('setTags', 'tags-array-required', {
+          ok: false, chatId,
+          reason: 'options.tagIds must be an array (pass [] to clear)',
+        });
+        diag.lastSetTags = out;
+        return normalizeResultForDiag('setTags', out);
+      }
+
+      const actionResult = await actions.replaceForChat(chatId, tagIds);
+      const out = baseResult('setTags',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId,
+          tagIds: (actionResult && actionResult.tagIds) || [],
+          count: (actionResult && actionResult.count) || 0,
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastSetTags = out;
+      return normalizeResultForDiag('setTags', out);
+    } catch (e) {
+      pushError('setTags', e);
+      const out = baseResult('setTags', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastSetTags = out;
+      return normalizeResultForDiag('setTags', out);
+    }
+  }
+
+  async function addTag(target = {}, options = {}) {
+    diag.counts.addTagCalls += 1;
+    const source = firstString(options.source, 'studio:add-tag');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const tagId = trimString(options.tagId);
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('addTag', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write tags on MV3 in R4.3; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId, tagId,
+          supportedInStudio: false,
+        });
+        diag.lastAddTag = out;
+        return normalizeResultForDiag('addTag', out);
+      }
+
+      const actions = H2O.Studio?.actions?.tags;
+      if (!actions || typeof actions.bindChat !== 'function') {
+        const out = baseResult('addTag', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.tags not loaded — verify S0F5b is in the bundle',
+          chatId, tagId,
+        });
+        diag.lastAddTag = out;
+        return normalizeResultForDiag('addTag', out);
+      }
+      if (!chatId) {
+        const out = baseResult('addTag', 'chat-id-required', { ok: false, chatId, tagId });
+        diag.lastAddTag = out;
+        return normalizeResultForDiag('addTag', out);
+      }
+      if (!tagId) {
+        const out = baseResult('addTag', 'tag-id-required', { ok: false, chatId, tagId });
+        diag.lastAddTag = out;
+        return normalizeResultForDiag('addTag', out);
+      }
+
+      const actionResult = await actions.bindChat(chatId, tagId);
+      const out = baseResult('addTag',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId, tagId,
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastAddTag = out;
+      return normalizeResultForDiag('addTag', out);
+    } catch (e) {
+      pushError('addTag', e);
+      const out = baseResult('addTag', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastAddTag = out;
+      return normalizeResultForDiag('addTag', out);
+    }
+  }
+
+  async function removeTag(target = {}, options = {}) {
+    diag.counts.removeTagCalls += 1;
+    const source = firstString(options.source, 'studio:remove-tag');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const tagId = trimString(options.tagId);
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('removeTag', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write tags on MV3 in R4.3; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId, tagId,
+          supportedInStudio: false,
+        });
+        diag.lastRemoveTag = out;
+        return normalizeResultForDiag('removeTag', out);
+      }
+
+      const actions = H2O.Studio?.actions?.tags;
+      if (!actions || typeof actions.unbindChat !== 'function') {
+        const out = baseResult('removeTag', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.tags not loaded — verify S0F5b is in the bundle',
+          chatId, tagId,
+        });
+        diag.lastRemoveTag = out;
+        return normalizeResultForDiag('removeTag', out);
+      }
+      if (!chatId) {
+        const out = baseResult('removeTag', 'chat-id-required', { ok: false, chatId, tagId });
+        diag.lastRemoveTag = out;
+        return normalizeResultForDiag('removeTag', out);
+      }
+      if (!tagId) {
+        const out = baseResult('removeTag', 'tag-id-required', { ok: false, chatId, tagId });
+        diag.lastRemoveTag = out;
+        return normalizeResultForDiag('removeTag', out);
+      }
+
+      const actionResult = await actions.unbindChat(chatId, tagId);
+      const out = baseResult('removeTag',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId, tagId,
+          wasBound: !!(actionResult && actionResult.wasBound),
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastRemoveTag = out;
+      return normalizeResultForDiag('removeTag', out);
+    } catch (e) {
+      pushError('removeTag', e);
+      const out = baseResult('removeTag', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastRemoveTag = out;
+      return normalizeResultForDiag('removeTag', out);
+    }
+  }
+
   function resolveOpenPlan(target = {}, options = {}) {
     const windowTarget = firstString(options.target, options.windowTarget, '_blank');
     const targetInfo = normalizeTarget(target, { ...options, source: firstString(options.source, 'studio:open-linked-chat') });
@@ -751,6 +986,12 @@
         setLabels:   LA_isTauri() && !!H2O.Studio?.actions?.labels,
         addLabel:    LA_isTauri() && !!H2O.Studio?.actions?.labels,
         removeLabel: LA_isTauri() && !!H2O.Studio?.actions?.labels,
+        /* R4.3 — tags facade methods; same platform-conditional
+         * pattern. Note this is CATALOG/BINDING management only;
+         * turn-level extraction still lives in Native 0F5a. */
+        setTags:     LA_isTauri() && !!H2O.Studio?.actions?.tags,
+        addTag:      LA_isTauri() && !!H2O.Studio?.actions?.tags,
+        removeTag:   LA_isTauri() && !!H2O.Studio?.actions?.tags,
       },
       unsupportedActions: {
         addToLibrary: 'native-context-required',
@@ -764,6 +1005,13 @@
               setLabels:   LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
               addLabel:    LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
               removeLabel: LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+            }),
+        ...(LA_isTauri() && H2O.Studio?.actions?.tags
+          ? {}
+          : {
+              setTags:   LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+              addTag:    LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+              removeTag: LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
             }),
       },
       dependencies: {
@@ -789,6 +1037,9 @@
     setLabels,
     addLabel,
     removeLabel,
+    setTags,
+    addTag,
+    removeTag,
     openLinkedChat,
     diagnose,
   };

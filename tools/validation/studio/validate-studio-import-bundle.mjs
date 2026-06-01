@@ -642,6 +642,14 @@ async function main() {
   // cascade on remove.
   await runDesktopLabelsActionsTests();
 
+  // ── (12) Desktop Tags Write Parity (R4.3) ───────────────────────────
+  // Mirrors Group 11 (Labels) with two structural differences:
+  // (a) tags carry autoDerived (boolean) instead of color (string);
+  // (b) the actions module enforces NO DOM access / NO turn-level
+  // extraction — turn-derived tags continue to flow from Native 0F5a.
+  // Tests cover full CRUD + bindings + the no-extraction boundary.
+  await runDesktopTagsActionsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -2341,6 +2349,472 @@ async function runDesktopLabelsActionsTests() {
     // update*3 (1 ok + 1 no-supported-fields + 1 not-found), bindChat*4,
     // unbindChat*2, replaceForChat*4, remove*2. listForChat doesn't count
     // (it's a read). ≥ ~20 writes.
+    assert.ok(d.writesSinceBoot >= 20,
+      'expected writesSinceBoot >= 20; got ' + d.writesSinceBoot);
+    assert.ok(d.lastWriteAt > 0);
+  });
+}
+
+// ── Desktop Tags Actions test runner (R4.3) ───────────────────────────
+async function runDesktopTagsActionsTests() {
+  console.log('');
+  console.log('── Desktop Tags Write Parity (R4.3) ────────────────────────');
+
+  const S0F5B_REL  = 'src-surfaces-base/studio/S0F5b. 🎬 Tags Actions - Studio.js';
+  const S0F5B_PATH = path.join(REPO_ROOT, S0F5B_REL);
+
+  // Mock store.tags — Map for catalog, Set for bindings, mirroring the
+  // tags.tauri.js public surface. Tags row carries `autoDerived` (the
+  // store handles boolean ↔ INTEGER 0/1 mapping; the JS layer sees
+  // bool). NO `updated_at` field on tags.
+  function makeTagsStoreMock() {
+    const tags = new Map();    // tagId -> row
+    const bindings = new Set(); // "chatId::tagId"
+    let seq = 0;
+    function bindKey(chatId, tagId) { return String(chatId) + '::' + String(tagId); }
+    return {
+      _tags: tags,
+      _bindings: bindings,
+      _bindKey: bindKey,
+      async get(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        return id && tags.has(id) ? { ...tags.get(id) } : null;
+      },
+      async create(patch) {
+        seq += 1;
+        const id = `tag_test_${seq}`;
+        const row = {
+          tagId: id,
+          name: String((patch && patch.name) || ''),
+          autoDerived: !!(patch && patch.autoDerived),
+          meta: (patch && patch.meta && typeof patch.meta === 'object') ? { ...patch.meta } : {},
+        };
+        tags.set(id, row);
+        return { ...row };
+      },
+      async patch(idInput, partial) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !tags.has(id)) return null;
+        const cur = tags.get(id);
+        const next = { ...cur };
+        if (partial && typeof partial === 'object') {
+          for (const k of Object.keys(partial)) {
+            if (k === 'meta' && partial.meta && typeof partial.meta === 'object') {
+              next.meta = { ...(cur.meta || {}), ...partial.meta };
+            } else if (k === 'autoDerived') {
+              next.autoDerived = !!partial.autoDerived;
+            } else {
+              next[k] = partial[k];
+            }
+          }
+        }
+        tags.set(id, next);
+        return { ...next };
+      },
+      async remove(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !tags.has(id)) return false;
+        // Cascade: drop all bindings referencing this tagId first.
+        for (const key of bindings) {
+          if (key.endsWith('::' + id)) bindings.delete(key);
+        }
+        tags.delete(id);
+        return true;
+      },
+      async bindChat(tagIdInput, chatIdInput /*, opts */) {
+        const tag = String(tagIdInput == null ? '' : tagIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!tag || !ch) return false;
+        bindings.add(bindKey(ch, tag));
+        return true;
+      },
+      async unbindChat(tagIdInput, chatIdInput) {
+        const tag = String(tagIdInput == null ? '' : tagIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!tag || !ch) return false;
+        const key = bindKey(ch, tag);
+        if (!bindings.has(key)) return false;
+        bindings.delete(key);
+        return true;
+      },
+      async replaceForChat(chatIdInput, tagIdsInput /*, opts */) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch) return false;
+        const arr = Array.isArray(tagIdsInput) ? tagIdsInput : [];
+        for (const key of bindings) {
+          if (key.startsWith(ch + '::')) bindings.delete(key);
+        }
+        const seen = new Set();
+        for (const tag of arr) {
+          const v = String(tag == null ? '' : tag).trim();
+          if (v && !seen.has(v)) {
+            seen.add(v);
+            bindings.add(bindKey(ch, v));
+          }
+        }
+        return true;
+      },
+      async listForChat(chatIdInput) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch) return [];
+        const out = [];
+        for (const key of bindings) {
+          if (!key.startsWith(ch + '::')) continue;
+          const tagId = key.slice(ch.length + 2);
+          const row = tags.get(tagId);
+          if (row) out.push({ ...row });
+        }
+        return out;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox() {
+    const eventTarget = makeEventTarget();
+    const store = makeTagsStoreMock();
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { store: { tags: store } } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      _eventTarget: eventTarget,
+      _store: store,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F5B_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F5B_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 12.1 — module loads + API shape ─────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F5b loads in Desktop sandbox + registers actions.tags');
+    console.log('  ✓ S0F5b loads in Desktop sandbox + registers actions.tags');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F5b loads', err: msg });
+    console.log(`  ✗ S0F5b loads in Desktop sandbox\n      ${msg}`);
+    return;
+  }
+  const actions = sandbox.H2O?.Studio?.actions?.tags;
+  check('actions.tags namespace + 10 expected methods', () => {
+    assert.ok(actions, 'actions.tags not registered');
+    assert.equal(actions.__installed, true);
+    for (const fn of ['create', 'rename', 'update', 'remove', 'delete',
+                      'bindChat', 'unbindChat', 'replaceForChat',
+                      'listForChat', 'diagnose']) {
+      assert.equal(typeof actions[fn], 'function', `${fn} should be a function`);
+    }
+  });
+  check('diagnose() reports R4.3 phase + storeAvailable=true + NO DOM markers', () => {
+    const d = actions.diagnose();
+    assert.equal(d.phase, 'R4.3-tags');
+    assert.equal(d.installed, true);
+    assert.equal(d.storeAvailable, true);
+    assert.equal(d.refreshEvent, 'evt:h2o:library-index:refresh-request');
+    // R4.3 boundary markers — surface at runtime, not just structural.
+    assert.equal(d.domAccess, false, 'diagnose.domAccess must be false');
+    assert.equal(d.observesChatGptDom, false, 'diagnose.observesChatGptDom must be false');
+    assert.equal(d.tagExtraction, false, 'diagnose.tagExtraction must be false');
+  });
+
+  // ── 12.2 — create ──────────────────────────────────────────────────
+  let tagA = '';
+  let tagB = '';
+  let tagC = '';
+  await checkAsync('create({name}) → ok, autoDerived defaults to false, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: 'project-x' });
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.ok(r.tagId && r.tagId.startsWith('tag_test_'),
+      'expected tagId to be generated');
+    assert.equal(r.name, 'project-x');
+    assert.equal(r.autoDerived, false, 'autoDerived must default to false');
+    tagA = r.tagId;
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:create/);
+  });
+  await checkAsync('create({name, autoDerived: true}) preserves explicit autoDerived', async () => {
+    const r = await actions.create({ name: 'auto-derived-tag', autoDerived: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.autoDerived, true);
+    assert.equal(sandbox._store._tags.get(r.tagId).autoDerived, true);
+  });
+  await checkAsync('create with empty name → name-required, no dispatch', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: '' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+    assert.equal(sandbox._eventTarget._dispatchedEvents.length, 0);
+  });
+  await checkAsync('create two more tags for binding tests', async () => {
+    const b = await actions.create({ name: 'inbox' });
+    const c = await actions.create({ name: 'archive' });
+    assert.equal(b.ok, true);
+    assert.equal(c.ok, true);
+    tagB = b.tagId;
+    tagC = c.tagId;
+  });
+
+  // ── 12.3 — rename ──────────────────────────────────────────────────
+  await checkAsync('rename(id, newName) → ok, row updated, refresh dispatched', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.rename(tagA, 'project-y');
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.name, 'project-y');
+    assert.equal(sandbox._store._tags.get(tagA).name, 'project-y');
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:rename/);
+  });
+  await checkAsync('rename non-existent → not-found', async () => {
+    const r = await actions.rename('tag_phantom', 'nope');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+  await checkAsync('rename with empty newName → name-required', async () => {
+    const r = await actions.rename(tagA, '');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+  });
+
+  // ── 12.4 — update (autoDerived + meta) ─────────────────────────────
+  await checkAsync('update({autoDerived: true, meta}) merges patch, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.update(tagA, { autoDerived: true, meta: { weight: 0.85 } });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.ok(Array.isArray(r.appliedFields));
+    assert.ok(r.appliedFields.includes('autoDerived'));
+    assert.ok(r.appliedFields.includes('meta'));
+    const row = sandbox._store._tags.get(tagA);
+    assert.equal(row.autoDerived, true);
+    assert.equal(row.meta.weight, 0.85);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:update/);
+  });
+  await checkAsync('update with no supported fields → no-supported-fields', async () => {
+    const r = await actions.update(tagA, { junk: 'value' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'no-supported-fields');
+  });
+  await checkAsync('update({autoDerived: false}) flips boolean cleanly', async () => {
+    const r = await actions.update(tagA, { autoDerived: false });
+    assert.equal(r.ok, true);
+    assert.equal(sandbox._store._tags.get(tagA).autoDerived, false);
+  });
+  await checkAsync('update non-existent → not-found', async () => {
+    const r = await actions.update('tag_phantom', { autoDerived: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+
+  // ── 12.5 — bindChat ────────────────────────────────────────────────
+  await checkAsync('bindChat(chatId, tagId) → ok, store updated, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.bindChat('chat1', tagA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat1', tagA)));
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:bindChat/);
+  });
+  await checkAsync('bindChat is idempotent — re-bind same pair adds no row', async () => {
+    const sizeBefore = sandbox._store._bindings.size;
+    const r1 = await actions.bindChat('chat1', tagA);
+    const r2 = await actions.bindChat('chat1', tagA);
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true);
+    assert.equal(sandbox._store._bindings.size, sizeBefore);
+  });
+  await checkAsync('bindChat to non-existent tag → tag-not-found', async () => {
+    const r = await actions.bindChat('chat1', 'tag_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'tag-not-found');
+  });
+  await checkAsync('bindChat missing chatId → chat-id-required', async () => {
+    const r = await actions.bindChat('', tagA);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'chat-id-required');
+  });
+
+  // ── 12.6 — unbindChat ──────────────────────────────────────────────
+  await checkAsync('unbindChat(chatId, tagId) → ok, wasBound=true, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1', tagA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.wasBound, true);
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat1', tagA)), false);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:unbindChat/);
+  });
+  await checkAsync('unbindChat on unbound pair → ok, wasBound=false, NO refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1', tagA);
+    assert.equal(r.ok, true);
+    assert.equal(r.wasBound, false);
+    assert.equal(refreshEvents(sandbox).length, 0,
+      'unbinding a non-existent pair should NOT fire refresh');
+  });
+
+  // ── 12.7 — replaceForChat ──────────────────────────────────────────
+  await checkAsync('replaceForChat(chatId, [a, b]) → ok, both bound, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.replaceForChat('chat2', [tagA, tagB]);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.count, 2);
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', tagA)));
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', tagB)));
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /tags-actions:replaceForChat/);
+  });
+  await checkAsync('replaceForChat drops old tags not in new set', async () => {
+    const r = await actions.replaceForChat('chat2', [tagB, tagC]);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2);
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', tagA)), false);
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', tagB)));
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', tagC)));
+  });
+  await checkAsync('replaceForChat([]) clears all tags for the chat', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.replaceForChat('chat2', []);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 0);
+    let remaining = 0;
+    for (const key of sandbox._store._bindings) {
+      if (key.startsWith('chat2::')) remaining += 1;
+    }
+    assert.equal(remaining, 0, 'all chat2 bindings should be cleared');
+  });
+  await checkAsync('replaceForChat with non-array → tags-array-required', async () => {
+    const r = await actions.replaceForChat('chat2', 'not-an-array');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'tags-array-required');
+  });
+  await checkAsync('replaceForChat dedupes duplicate tagIds in input', async () => {
+    const r = await actions.replaceForChat('chat3', [tagA, tagA, tagB, tagA]);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2, 'expected 2 unique tags after dedup');
+    let chat3Count = 0;
+    for (const key of sandbox._store._bindings) {
+      if (key.startsWith('chat3::')) chat3Count += 1;
+    }
+    assert.equal(chat3Count, 2);
+  });
+
+  // ── 12.8 — listForChat ─────────────────────────────────────────────
+  await checkAsync('listForChat returns full tag rows for the chat', async () => {
+    const r = await actions.listForChat('chat3');
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2);
+    assert.ok(Array.isArray(r.tags));
+    const ids = r.tags.map(t => t.tagId).sort();
+    assert.deepEqual(ids, [tagA, tagB].sort());
+  });
+  await checkAsync('listForChat on unknown chat → empty array', async () => {
+    const r = await actions.listForChat('chat_never_existed');
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 0);
+    assert.deepEqual(r.tags, []);
+  });
+
+  // ── 12.9 — remove cascades bindings ────────────────────────────────
+  await checkAsync('remove(tagId) deletes bindings + tag row', async () => {
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat3', tagA)),
+      'precondition: chat3 has tagA');
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove(tagA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(sandbox._store._tags.has(tagA), false, 'tag row deleted');
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat3', tagA)), false,
+      'chat3 binding to tagA cascade-cleared');
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+  });
+  await checkAsync('remove non-existent → not-found, no refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove('tag_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+    assert.equal(refreshEvents(sandbox).length, 0);
+  });
+
+  // ── 12.10 — delete alias ───────────────────────────────────────────
+  check('actions.tags.delete is the same function as remove', () => {
+    assert.equal(actions['delete'], actions.remove);
+  });
+
+  // ── 12.11 — boundary: no DOM APIs are exposed at runtime ───────────
+  // The structural validator already scans the source for forbidden
+  // patterns. Here we additionally confirm the runtime registration
+  // doesn't accidentally expose any DOM-bound helper.
+  check('actions.tags exposes ONLY catalog/binding methods (no extract*/scan*)', () => {
+    const exposedFns = Object.keys(actions).filter(k => typeof actions[k] === 'function');
+    const allowedFns = new Set([
+      'create', 'rename', 'update', 'remove', 'delete',
+      'bindChat', 'unbindChat', 'replaceForChat', 'listForChat',
+      'diagnose',
+    ]);
+    for (const fn of exposedFns) {
+      assert.ok(allowedFns.has(fn),
+        `unexpected method '${fn}' on actions.tags — extraction belongs in Native 0F5a, not here`);
+    }
+  });
+
+  // ── 12.12 — diagnose counters reflect the run ──────────────────────
+  check('diagnose().writesSinceBoot reflects all mutations attempted', () => {
+    const d = actions.diagnose();
+    // We did at least: create*4, rename*3, update*4, bindChat*4,
+    // unbindChat*2, replaceForChat*4, remove*2 → 23+ writes.
     assert.ok(d.writesSinceBoot >= 20,
       'expected writesSinceBoot >= 20; got ' + d.writesSinceBoot);
     assert.ok(d.lastWriteAt > 0);

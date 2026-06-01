@@ -1361,6 +1361,18 @@
        to native-context-required there. -->
   <script src="./S0F4b. 🎬 Categories Actions - Studio.js"></script>
   <script src="./S0F5a. 🎬 Tags - Studio.js"></script>
+  <!-- R4.3 — Desktop-first tags WRITE API. Tauri-only; registers
+       H2O.Studio.actions.tags.{create, rename, update, remove,
+       bindChat, unbindChat, replaceForChat, listForChat}. Catalog +
+       binding mutations only — turn-level DOM-derived tag EXTRACTION
+       continues to live in Native 0F5a per the migration plan
+       capability matrix. Writes through H2O.Studio.store.tags
+       (SQLite) and dispatches evt:h2o:library-index:refresh-request.
+       Many-to-many via tag_bindings; cascade-delete on remove via the
+       existing store contract. No schema change, no migration, no
+       DOM access. MV3 path is a silent no-op; S0F1j's
+       setTags/addTag/removeTag route to native-context-required there. -->
+  <script src="./S0F5b. 🎬 Tags Actions - Studio.js"></script>
   <script src="./S0F6a. 🎬 Labels - Studio.js"></script>
   <!-- R4.2 — Desktop-first labels WRITE API. Tauri-only; registers
        H2O.Studio.actions.labels.{create, rename, update, remove,

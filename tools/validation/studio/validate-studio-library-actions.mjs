@@ -366,6 +366,150 @@ check('R4.2: S0F1j preserves native-context-required path on MV3 for labels faca
     `expected at least 6 'native-context-required' references after R4.2; got ${occurrences}`);
 });
 
+// ── 10. R4.3 — S0F5b Tags Actions module structural checks ─────────────
+
+const S0F5B_REL = 'src-surfaces-base/studio/S0F5b. 🎬 Tags Actions - Studio.js';
+const S0F5B_BASENAME = 'S0F5b. 🎬 Tags Actions - Studio.js';
+
+check('R4.3: S0F5b file exists', () => {
+  assert.ok(fs.existsSync(abs(S0F5B_REL)), `${S0F5B_REL} missing`);
+});
+
+const s0f5bSrc = fs.existsSync(abs(S0F5B_REL)) ? read(S0F5B_REL) : '';
+
+check('R4.3: S0F5b is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f5bSrc, /if\s*\(\s*!detectTauri\s*\(\s*\)\s*\)\s*return/,
+    'S0F5b must bail when not Tauri');
+});
+
+check('R4.3: S0F5b registers H2O.Studio.actions.tags', () => {
+  assert.match(s0f5bSrc, /H2O\.Studio\.actions\.tags\s*=/,
+    'must assign H2O.Studio.actions.tags');
+});
+
+check('R4.3: S0F5b exposes all 9 required methods + diagnose', () => {
+  for (const fn of ['create', 'rename', 'update', 'remove', 'bindChat',
+                    'unbindChat', 'replaceForChat', 'listForChat', 'diagnose']) {
+    assert.match(s0f5bSrc, new RegExp(`\\b${fn}:\\s*${fn}\\b`),
+      `S0F5b must expose ${fn} in its API object`);
+  }
+  // 'delete' alias
+  assert.match(s0f5bSrc, /['"]delete['"]:\s*remove/,
+    `S0F5b should expose 'delete' as an alias for remove`);
+});
+
+check('R4.3: S0F5b dispatches the canonical LibraryIndex refresh event', () => {
+  assert.match(s0f5bSrc, /evt:h2o:library-index:refresh-request/,
+    'must dispatch the canonical refresh event after mutations');
+  assert.match(s0f5bSrc, /tags-actions:/,
+    'refresh reasons must use the tags-actions: prefix');
+});
+
+check('R4.3: S0F5b uses H2O.Studio.store.tags (no new storage layer)', () => {
+  assert.match(s0f5bSrc, /H2O\.Studio\.store\.tags/,
+    'must call store.tags for writes');
+  assert.doesNotMatch(s0f5bSrc, /plugin:sql\|execute/,
+    'must NOT touch plugin:sql directly — only via store API');
+});
+
+check('R4.3 BOUNDARY: S0F5b has NO DOM / tag-extraction surface', () => {
+  // The whole point of R4.3 is that turn-level extraction stays Native.
+  // Verify this module has zero chatgpt.com DOM access and zero
+  // observer / scrape primitives IN CODE (comments that describe the
+  // prohibition are fine — they document the boundary). Strip line
+  // and block comments before scanning so the "no MutationObserver"
+  // header docstring doesn't trip the check.
+  const stripComments = (src) => {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')   // /* ... */ blocks
+      .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1'); // // line (avoid http://)
+  };
+  const codeOnly = stripComments(s0f5bSrc);
+  const forbidden = [
+    'document.querySelector',
+    'document.querySelectorAll',
+    'document.getElementById',
+    'MutationObserver',
+    'IntersectionObserver',
+    'chatgpt.com',
+    'data-testid',
+    'data-message-id',
+    'data-message-author-role',
+    'innerText',
+    'innerHTML',
+    'parseTurns',
+    'extractTags',
+    'deriveTagCandidates',
+  ];
+  for (const needle of forbidden) {
+    assert.doesNotMatch(codeOnly, new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `S0F5b code must NOT contain '${needle}' — turn-level extraction stays Native (0F5a)`);
+  }
+});
+
+check('R4.3 BOUNDARY: S0F5b diagnose() explicitly marks no DOM / extraction', () => {
+  // diagnose() should return clear boundary markers so runtime callers
+  // and future audits can confirm the boundary is held.
+  assert.match(s0f5bSrc, /domAccess:\s*false/,
+    'diagnose() must explicitly report domAccess: false');
+  assert.match(s0f5bSrc, /observesChatGptDom:\s*false/,
+    'diagnose() must explicitly report observesChatGptDom: false');
+  assert.match(s0f5bSrc, /tagExtraction:\s*false/,
+    'diagnose() must explicitly report tagExtraction: false');
+});
+
+check('R4.3: studio.html includes <script src="./S0F5b..."> after S0F5a', () => {
+  const html = read(STUDIO_HTML_REL);
+  assert.match(html, /<script src="\.\/S0F5b\. 🎬 Tags Actions - Studio\.js"><\/script>/,
+    'studio.html must include S0F5b script tag');
+  const s0f5a = html.indexOf('S0F5a. 🎬 Tags - Studio.js');
+  const s0f5b = html.indexOf('S0F5b. 🎬 Tags Actions - Studio.js');
+  assert.ok(s0f5a > 0 && s0f5b > 0, 'both S0F5a and S0F5b refs must exist in studio.html');
+  assert.ok(s0f5a < s0f5b, 'S0F5b must load after S0F5a (read facade first)');
+});
+
+check('R4.3: pack-studio.mjs has S0F5b in BOTH SOURCE_FILES and OUT_FILES', () => {
+  assert.ok(SOURCE_FILES.includes(S0F5B_BASENAME), 'S0F5b missing from SOURCE_FILES');
+  assert.ok(OUT_FILES.includes(S0F5B_BASENAME), 'S0F5b missing from OUT_FILES');
+});
+
+check('R4.3: pack-studio.mjs has S0F5b at MATCHING index in both lists', () => {
+  const srcIdx = SOURCE_FILES.indexOf(S0F5B_BASENAME);
+  const outIdx = OUT_FILES.indexOf(S0F5B_BASENAME);
+  assert.equal(srcIdx, outIdx,
+    `source/out index mismatch: source[${srcIdx}], out[${outIdx}]`);
+});
+
+check('R4.3: S0F1j exposes setTags / addTag / removeTag methods', () => {
+  for (const fn of ['setTags', 'addTag', 'removeTag']) {
+    assert.match(s0f1jSrc, new RegExp(`async function ${fn}\\s*\\(`),
+      `S0F1j must declare async function ${fn}`);
+  }
+});
+
+check('R4.3: S0F1j routes tags facade through H2O.Studio.actions.tags on Desktop', () => {
+  assert.match(s0f1jSrc, /H2O\.Studio\?\.actions\?\.tags/,
+    'tags facade must dereference H2O.Studio?.actions?.tags');
+  // The three store-side methods we wrap must be called somewhere in S0F1j.
+  // Note: labels facade also uses these method names, so the global count
+  // is what matters — replaceForChat/bindChat/unbindChat each have 2
+  // call-sites now (labels and tags).
+  for (const method of ['replaceForChat', 'bindChat', 'unbindChat']) {
+    const occurrences = (s0f1jSrc.match(new RegExp(`actions\\.${method}\\s*\\(`, 'g')) || []).length;
+    assert.ok(occurrences >= 2,
+      `expected at least 2 actions.${method}() call-sites after R4.3 (labels + tags); got ${occurrences}`);
+  }
+});
+
+check('R4.3: S0F1j preserves native-context-required path on MV3 for tags facade', () => {
+  // After R4.3 there are 9 expected 'native-context-required' references:
+  // addToLibrary, saveToFolder, setCategory (R4.1), setLabels, addLabel,
+  // removeLabel (R4.2), setTags, addTag, removeTag (R4.3). Require >= 9.
+  const occurrences = (s0f1jSrc.match(/native-context-required/g) || []).length;
+  assert.ok(occurrences >= 9,
+    `expected at least 9 'native-context-required' references after R4.3; got ${occurrences}`);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');
