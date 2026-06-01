@@ -798,6 +798,17 @@
        apply, no publication/relay/outbox, no watermark writes, no
        consumed-op writes, no own timer. -->
   <script src="./sync/snapshot/snapshot-f5-review-queue.tauri.js"></script>
+  <!-- F14.5.5.4: Desktop/Tauri snapshot F5 review queue proof harness.
+       Persistent runtime proof for the F14.5.5.1 queue and the F14.5.5.2
+       receipt wire-through. Exercises 10 contract cases (ingest → pending,
+       duplicate-open block, approve-seal, approve-restore, auto-expiry,
+       close-sealed, close-restored, terminal-row block, privacy violation,
+       list APIs). Storage-safe: snapshots and restores the queue ledger
+       around proof execution so repeated runs do not pollute real F5 state.
+       Synthetic privacy-safe data only. No Native execution, no F5 work
+       outside the queue ledger, no apply, no publication/relay/outbox, no
+       watermark writes, no consumed-op writes, no UI. -->
+  <script src="./sync/snapshot/snapshot-f5-review-queue-proof.tauri.js"></script>
   <!-- F14.6.13: Desktop/Tauri snapshot execute readiness check.
        Read-only proof that Snapshot proposal, handoff, receipt,
        bookkeeping, proof/UI, and F5 review queue surfaces expose the

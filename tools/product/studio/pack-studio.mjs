@@ -319,6 +319,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // work outside the ledger, no apply, no publication/relay/outbox,
   // no watermark writes, no consumed-op writes, no own timer.
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
+  // F14.5.5.4: Desktop/Tauri snapshot F5 review queue proof harness.
+  // Persistent runtime proof for the F14.5.5.1 queue + F14.5.5.2 receipt
+  // wire-through. Exercises 10 contract cases. Storage-safe: snapshots and
+  // restores the queue ledger around proof execution. Synthetic privacy-safe
+  // data only. No Native execution, no F5 work outside the queue ledger, no
+  // apply, no publication/relay/outbox, no watermark/consumed-op writes, no UI.
+  "sync/snapshot/snapshot-f5-review-queue-proof.tauri.js",
   // F14.6.13: Desktop/Tauri snapshot execute readiness check.
   // Read-only proof that Snapshot proposal, handoff, receipt, bookkeeping,
   // proof/UI, and F5 review queue surfaces expose future Snapshot execute
@@ -963,6 +970,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
+  "sync/snapshot/snapshot-f5-review-queue-proof.tauri.js",
   "sync/snapshot/snapshot-execute-readiness.tauri.js",
   "sync/capture/capture-fresh-runtime.tauri.js",
   "sync/capture/capture-recovery-runtime.tauri.js",
