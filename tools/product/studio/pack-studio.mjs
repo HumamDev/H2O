@@ -334,6 +334,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // apply, no cross-install transfer, no watermark/consumed-op write. Lost
   // subject lifecycle is untouched.
   "sync/capture/capture-recovery-runtime.tauri.js",
+  // F14.6.1: Desktop/Tauri execute journal primitive. Append-only Execute
+  // Lane journal rows only. No dispatch, publication, relay/outbox, Native
+  // execution, F5 execution, apply, watermark writes, consumed-op writes,
+  // timers, or polling.
+  "sync/execute/execute-journal.tauri.js",
   // Desktop-only: manual folder sync (M2d-1a). Wraps the M2b ingestion
   // importer with file-system scan + fingerprint dedupe + sync ledger.
   // No watcher yet — that lands in M2d-1b.
@@ -856,6 +861,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
+  "sync/capture/capture-fresh-runtime.tauri.js",
+  "sync/capture/capture-recovery-runtime.tauri.js",
+  "sync/execute/execute-journal.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
   "sync/folder-import.mv3.js",
