@@ -193,6 +193,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // canonical objects or raw rows via F15.1.a and emits relatedSubjects only
   // from supplied context. No store reads/writes or side effects.
   "sync/library/library-catalog-diagnostics.tauri.js",
+  // F15.2.b: Desktop/Tauri read-only library binding diagnostics. Diagnoses
+  // canonical objects or raw rows via F15.1.b and evaluates supplied context
+  // only. No store reads/writes or side effects.
+  "sync/library/library-binding-diagnostics.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -980,6 +984,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-catalog-canonicalizer.tauri.js",
   "sync/library/library-binding-canonicalizer.tauri.js",
   "sync/library/library-catalog-diagnostics.tauri.js",
+  "sync/library/library-binding-diagnostics.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",

@@ -644,6 +644,13 @@
        publication, relay/outbox, apply, Native/F5 execution, watermark,
        or consumed-op writes. -->
   <script src="./sync/library/library-catalog-diagnostics.tauri.js"></script>
+  <!-- F15.2.b: Desktop/Tauri read-only library binding diagnostics.
+       Diagnoses library.binding canonical objects or raw rows via the
+       F15.1.b canonicalizer, and evaluates supplied catalog/chat/sibling
+       context only. No store reads/writes, mutation, publication,
+       relay/outbox, apply, Native/F5 execution, watermark, or consumed-op
+       writes. -->
+  <script src="./sync/library/library-binding-diagnostics.tauri.js"></script>
   <!-- F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer.
        Pure function over one chat record (Native mirror / Library Index /
        Registry Core projection) -> the F14.3.0 canonical chat snapshot.
