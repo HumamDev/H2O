@@ -3928,6 +3928,36 @@
     }
   }
 
+  /* R4.6.4 — Native Library UI Deprecation: default flag flip.
+   *
+   * The R4.6 deprecation is now the default behavior. Operators who
+   * have not explicitly set the flags get the deprecated state: the
+   * Native ChatGPT Library workspace + sidebar organization sections
+   * are hidden; the deprecation banner appears in their place.
+   *
+   * Resolution order in get(name, fallback):
+   *   1. localStorage value (operator-set, persists across reloads)
+   *   2. NATIVE_FLAG_DEFAULTS (R4.6.4 hardcoded post-flip values)
+   *   3. caller-supplied fallback (legacy in-source default)
+   *
+   * Restore (escape hatch — UNCHANGED behavior):
+   *   H2O.flags.set('library.nativeWorkspaceUi', true)
+   *   H2O.flags.set('library.nativeOrganizationUi', true)
+   *   location.reload()
+   * Both flags get persisted to localStorage and step 1 returns the
+   * operator-overridden values. The R4.6.1 banner button does this
+   * exactly.
+   *
+   * NOT in this slice: code removal, retired-features/ archive,
+   * Studio R4.5 changes, capture path changes, 0F5a tag extraction
+   * changes. All hard invariants from R4.6.0–R4.6.3 still hold.
+   */
+  const NATIVE_FLAG_DEFAULTS = Object.freeze({
+    'library.nativeWorkspaceUi':     false,   /* R4.6.4 flip: Native workspace + Library button hidden by default */
+    'library.nativeOrganizationUi':  false,   /* R4.6.4 flip: Native sidebar org sections hidden by default */
+    'library.nativeCaptureOnlyMode': true,    /* R4.6.4 flip: operator-facing composed marker; Native is now capture-only */
+  });
+
   function ensureFlags() {
     if (H2O.flags && typeof H2O.flags.get === 'function') return H2O.flags;
     flagState.values = readFlagsFromStorage();
@@ -3936,7 +3966,16 @@
       get(name, fallback = undefined) {
         const k = String(name || '');
         if (!k) return fallback;
-        return Object.prototype.hasOwnProperty.call(flagState.values, k) ? flagState.values[k] : fallback;
+        /* (1) operator-set value wins (persisted to localStorage). */
+        if (Object.prototype.hasOwnProperty.call(flagState.values, k)) {
+          return flagState.values[k];
+        }
+        /* (2) R4.6.4 post-flip defaults for the deprecation flags. */
+        if (Object.prototype.hasOwnProperty.call(NATIVE_FLAG_DEFAULTS, k)) {
+          return NATIVE_FLAG_DEFAULTS[k];
+        }
+        /* (3) caller-supplied fallback (legacy in-source default). */
+        return fallback;
       },
       set(name, value) {
         const k = String(name || '');
@@ -3951,6 +3990,9 @@
           key: FLAGS_STORAGE_KEY,
           keys: Object.keys(flagState.values),
           values: { ...flagState.values },
+          /* R4.6.4 — surface the post-flip defaults so operators can
+           * see which flags will return what when not in storage. */
+          nativeFlagDefaults: { ...NATIVE_FLAG_DEFAULTS },
           lastErr: flagState.lastErr,
         };
       },

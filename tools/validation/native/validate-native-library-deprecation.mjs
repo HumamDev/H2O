@@ -49,6 +49,9 @@ const FILES = {
   '0F6a': 'src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js',
   '0F1j': 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   '0F5a': 'src-runtime-base/0F5a.⬛️🗂️ Tags 🗂️.js',
+  /* R4.6.4 — Canonical flag registry. Houses the NATIVE_FLAG_DEFAULTS
+   * table that pins the post-flip default values. */
+  '0F1k': 'src-runtime-base/0F1k.⬛️🗂️ Library Canonical Services 🪪🗂️.js',
 };
 const SRC = {};
 const STRIPPED = {};
@@ -728,6 +731,83 @@ check('J.0F1j: capture business logic functions still NOT preceded by deprecatio
 check('J.0F5a: tag extraction module STILL unchanged after R4.6.1', () => {
   const stat = fs.statSync(abs(FILES['0F5a']));
   assert.equal(stat.size, 273099, '0F5a size must remain at R4.5 baseline 273099');
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section M — R4.6.4 default flag flip (irrevocable user-visible step)
+ * Native Library organization UI is now hidden by default. Operators who
+ * haven't explicitly set the flags get the deprecated state. The
+ * NATIVE_FLAG_DEFAULTS table in 0F1k pins the new defaults. The escape
+ * hatch (operator-set via DevTools or banner button) still works because
+ * localStorage values win over the defaults.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section M — R4.6.4 default flag flip');
+
+check('M.0F1k: NATIVE_FLAG_DEFAULTS literal declares the post-flip values', () => {
+  assert.match(SRC['0F1k'], /const NATIVE_FLAG_DEFAULTS\s*=\s*Object\.freeze\(\{/);
+  assert.match(SRC['0F1k'], /'library\.nativeWorkspaceUi':\s*false/);
+  assert.match(SRC['0F1k'], /'library\.nativeOrganizationUi':\s*false/);
+  assert.match(SRC['0F1k'], /'library\.nativeCaptureOnlyMode':\s*true/);
+});
+
+check('M.0F1k: ensureFlags() get() consults defaults after storage miss, before fallback', () => {
+  const getBody = SRC['0F1k'].match(/get\(name,\s*fallback[\s\S]*?\},\s*set/);
+  assert.ok(getBody, 'get() function body not found');
+  assert.match(getBody[0], /hasOwnProperty\.call\(flagState\.values,\s*k\)/);
+  assert.match(getBody[0], /hasOwnProperty\.call\(NATIVE_FLAG_DEFAULTS,\s*k\)/);
+  assert.match(getBody[0], /return NATIVE_FLAG_DEFAULTS\[k\]/);
+  assert.match(getBody[0], /return fallback/);
+});
+
+check('M.0F1k: set() still writes to localStorage (restore escape hatch intact)', () => {
+  assert.match(SRC['0F1k'], /set\(name,\s*value\)\s*\{[\s\S]*?flagState\.values\[k\]\s*=\s*value;[\s\S]*?writeFlagsToStorage\(flagState\.values\)/);
+});
+
+check('M.0F1k: diagnose() exposes nativeFlagDefaults (operator visibility)', () => {
+  assert.match(SRC['0F1k'], /nativeFlagDefaults:\s*\{\s*\.\.\.NATIVE_FLAG_DEFAULTS\s*\}/);
+});
+
+check('M.banner-restore-handler-unchanged: 0F1b banner still calls set(true) + reload', () => {
+  assert.match(SRC['0F1b'], /flags\.set\('library\.nativeWorkspaceUi',\s*true\)/);
+  assert.match(SRC['0F1b'], /flags\.set\('library\.nativeOrganizationUi',\s*true\)/);
+  assert.match(SRC['0F1b'], /location\.reload\(\)/);
+});
+
+check('M.capture-untouched-by-flip: capture functions are not gated by R4.6.4', () => {
+  for (const fn of ['addToLibrary', 'saveToFolder', 'openLinkedChat']) {
+    const body = functionBody(SRC['0F1j'], fn);
+    assert.ok(body, `${fn} not found`);
+    assert.equal(/library\.native(Workspace|Organization|Capture)/.test(body), false,
+      `${fn} body must not reference any library.native* flag after R4.6.4`);
+  }
+});
+
+check('M.0F5a-untouched: extraction module size unchanged after R4.6.4', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    `0F5a size changed: ${stat.size} vs baseline 273099 — R4.6.4 must not modify Native tag extraction`);
+});
+
+check('M.category-API-ungated-after-flip: archiveBoot.{rename,delete,create}Category call sites preserved', () => {
+  const stripped = STRIPPED['0F4a'];
+  for (const fn of ['renameCategory', 'deleteCategory', 'createCategory']) {
+    assert.match(stripped, new RegExp(`H2O\\.archiveBoot\\??\\.?${fn}`),
+      `${fn} call site must still exist in 0F4a`);
+  }
+});
+
+check('M.label-API-ungated-after-flip: H2O.Labels.{rename,delete,create}Label functions preserved', () => {
+  for (const fn of ['renameLabel', 'deleteLabel', 'createLabel']) {
+    const body = functionBody(SRC['0F6a'], fn);
+    assert.ok(body, `${fn} not found`);
+    assert.equal(/isNativeWorkspaceUiEnabled\(|isNativeOrganizationUiEnabled\(|isNativeCaptureOnlyMode\(/.test(body), false,
+      `${fn} body must not reference any deprecation-flag helper after R4.6.4`);
+  }
+});
+
+check('M.documentation-references: 0F1k declares R4.6.4 in its comment', () => {
+  assert.match(SRC['0F1k'], /R4\.6\.4/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
