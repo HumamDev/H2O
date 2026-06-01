@@ -201,6 +201,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // diagnostics with operation, lifecycle, sibling, account, replay,
   // watermark, consumed-op, and F5 eligibility preview gates. No side effects.
   "sync/library/library-catalog-preflight.tauri.js",
+  // F15.3.b: Desktop/Tauri read-only library binding preflight. Composes
+  // diagnostics with bind/unbind endpoint, uniqueness, account, replay,
+  // watermark, consumed-op, and category-cache observation gates.
+  "sync/library/library-binding-preflight.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -990,6 +994,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-catalog-diagnostics.tauri.js",
   "sync/library/library-binding-diagnostics.tauri.js",
   "sync/library/library-catalog-preflight.tauri.js",
+  "sync/library/library-binding-preflight.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
