@@ -25,7 +25,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__snapshotProofInstalled) return;
 
-  var VERSION = '0.1.0-f14.4.10';
+  var VERSION = '0.1.0-f14.5.5.5';
   var RESULT_SCHEMA = 'h2o.desktop.sync.snapshot-convergence-proof.v1';
   var ENVELOPE_SCHEMA = 'h2o.crossPlatform.envelope.v1';
   var ROW_SCHEMA = 'h2o.desktop.sync.convergence-proposal-candidate-row.v1';
@@ -724,6 +724,194 @@
     };
   }
 
+  // ─── F14.5.5.5 — F5 review queue integration lane ───────────────────
+  // Verifies the end-to-end path that F14.5.5.2 introduced:
+  //   tombstone proposal → tombstone receipt → ingestF5Review →
+  //   pending review row → snapshot in retained-window state.
+  //
+  // Storage discipline: snapshot the queue ledger, clear it, run the lane,
+  // and restore the original ledger value in a finally block. Repeated proof
+  // runs cannot pollute real F5 review state.
+  var F5_QUEUE_LEDGER_KEY = 'h2o:sync:snapshot-f5-review-queue:v1';
+  var F5_QUEUE_LEDGER_SCHEMA = 'h2o.desktop.sync.snapshot-f5-review-queue-ledger.v1';
+  function f5QueueStorageRef() {
+    try {
+      var c = global.chrome;
+      if (c && c.storage && c.storage.local
+          && typeof c.storage.local.get === 'function'
+          && typeof c.storage.local.set === 'function') return c.storage.local;
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+  function snapshotF5QueueLedger() {
+    return new Promise(function (resolve) {
+      var s = f5QueueStorageRef();
+      if (!s) { resolve(null); return; }
+      try {
+        s.get([F5_QUEUE_LEDGER_KEY], function (items) {
+          resolve(items && Object.prototype.hasOwnProperty.call(items, F5_QUEUE_LEDGER_KEY)
+            ? items[F5_QUEUE_LEDGER_KEY] : null);
+        });
+      } catch (_) { resolve(null); }
+    });
+  }
+  function setF5QueueLedger(value) {
+    return new Promise(function (resolve, reject) {
+      var s = f5QueueStorageRef();
+      if (!s) { reject(new Error('storage-unavailable')); return; }
+      try {
+        var payload = {};
+        payload[F5_QUEUE_LEDGER_KEY] = value;
+        s.set(payload, function () { resolve(); });
+      } catch (e) { reject(e); }
+    });
+  }
+  async function clearF5QueueLedger() {
+    return setF5QueueLedger({
+      schema: F5_QUEUE_LEDGER_SCHEMA,
+      createdAtIso: PROOF_ISO,
+      events: []
+    });
+  }
+  async function restoreF5QueueLedger(snapshotValue) {
+    if (snapshotValue === null || snapshotValue === undefined) {
+      return clearF5QueueLedger();
+    }
+    return setF5QueueLedger(snapshotValue);
+  }
+
+  async function runF5QueueIntegrationLane(peer, owner) {
+    var blockers = [];
+    var warnings = [];
+    var sync = H2O.Desktop.Sync;
+    var queueAvailable = !!(sync.__snapshotF5ReviewQueueInstalled
+      && typeof sync.ingestF5Review === 'function'
+      && typeof sync.getF5ReviewById === 'function');
+    if (!queueAvailable) addCode(blockers, 'f5-review-queue-not-installed');
+
+    var fixture = await buildProposalFixture(
+      'f5-queue-integration', OP_TOMBSTONE_PROPOSED, 'archived', 'tombstoned', peer);
+    var handoff = null;
+    var receipt = null;
+    var queueRow = null;
+    var ledgerSnapshot = await snapshotF5QueueLedger();
+
+    try {
+      if (queueAvailable) {
+        try { await clearF5QueueLedger(); }
+        catch (_) { addCode(warnings, 'f5-queue-ledger-clear-failed'); }
+      }
+
+      handoff = await sync.previewSnapshotF5TombstoneHandoff({
+        candidate: fixture,
+        ownerDeclaration: owner,
+        ownerStatus: 'available'
+      });
+      codeList(handoff && handoff.warnings).forEach(function (code) { addCode(warnings, code); });
+      if (!handoff || handoff.ok !== true || handoff.handoffReady !== true) {
+        codeList(handoff && handoff.blockers).forEach(function (code) { addCode(blockers, code); });
+        addCode(blockers, 'f5-integration-handoff-not-ready');
+      }
+
+      var f5Evidence = activeTombstone(fixture.subjectId, fixture.baseHash, peer);
+      var originAccountIdHash = await sha256Hex('snapshot-proof:f5-integration:originAccountIdHash');
+      receipt = await sync.buildSnapshotTombstoneApplyEventReceipt({
+        proposalCandidate: fixture,
+        handoffPreview: handoff,
+        operationResult: operationResultFor(fixture, peer, {
+          tombstoned: true,
+          f5Evidence: f5Evidence
+        }),
+        originAccountIdHash: originAccountIdHash
+      });
+      codeList(receipt && receipt.warnings).forEach(function (code) { addCode(warnings, code); });
+      if (!receipt || receipt.ok !== true || !receipt.applyEvent || !receipt.f5Evidence) {
+        codeList(receipt && receipt.blockers).forEach(function (code) { addCode(blockers, code); });
+        addCode(blockers, 'f5-integration-receipt-not-generated');
+      }
+
+      // F14.5.5.5 — assert the wire-through actually ingested into the queue.
+      if (receipt && receipt.ok === true) {
+        if (receipt.f5ReviewIngested !== true) {
+          addCode(blockers, 'f5-integration-receipt-f5ReviewIngested-not-true');
+        }
+        if (!isSha256Hex(receipt.f5ReviewId)) {
+          addCode(blockers, 'f5-integration-receipt-f5ReviewId-not-sha256');
+        }
+        if (queueAvailable && isSha256Hex(receipt.f5ReviewId)) {
+          queueRow = await sync.getF5ReviewById(receipt.f5ReviewId);
+          if (!queueRow || queueRow.status !== 'found') {
+            addCode(blockers, 'f5-integration-queue-row-not-found');
+          }
+          if (queueRow && queueRow.currentState !== 'pending') {
+            addCode(blockers, 'f5-integration-queue-row-not-pending');
+          }
+          // Retained-state mapping per queue contract: a `pending` review row
+          // corresponds to a snapshot in the `retained` retention-window state.
+          // The lifecycleState mapping happens inside the queue's event emit;
+          // we assert structurally via the row's currentState here.
+          if (queueRow && queueRow.currentState !== 'pending') {
+            addCode(blockers, 'f5-integration-snapshot-not-in-retained');
+          }
+          // Privacy: no raw chatId / title / accountId / content / turns
+          // anywhere in the egress row blob.
+          var rowBlob = JSON.stringify({
+            rows: queueRow && queueRow.rows,
+            reviewRow: queueRow && queueRow.metadata && queueRow.metadata.reviewRow
+          });
+          if (rowBlob.indexOf('"chatId"') !== -1) addCode(blockers, 'f5-integration-raw-chatId-leak');
+          if (rowBlob.indexOf('"title"') !== -1) addCode(blockers, 'f5-integration-raw-title-leak');
+          if (rowBlob.indexOf('"accountId"') !== -1) addCode(blockers, 'f5-integration-raw-accountId-leak');
+          if (rowBlob.indexOf('"content"') !== -1) addCode(blockers, 'f5-integration-raw-content-leak');
+          if (rowBlob.indexOf('"turns"') !== -1) addCode(blockers, 'f5-integration-raw-turns-leak');
+        }
+      }
+
+      scanPrivacy({ fixture: fixture, handoff: handoff, receipt: receipt, queueRow: queueRow },
+        blockers, warnings);
+    } finally {
+      if (queueAvailable) {
+        try { await restoreF5QueueLedger(ledgerSnapshot); }
+        catch (_) { addCode(warnings, 'f5-queue-ledger-restore-failed'); }
+      }
+    }
+
+    // Build a bookkeeping preview so the orchestrator's lineageSummary check
+    // (which is called over every lane) finds matching lineageId on the lane
+    // shape. The F5 integration lane never writes to the bookkeeping ledger;
+    // this is a preview-only shape used by the cross-lane lineage assertion.
+    var bookkeeping = buildBookkeepingPreview(fixture, handoff || {}, receipt || {});
+    validateLaneLineage(fixture, handoff || {}, receipt || {}, bookkeeping, blockers);
+
+    return {
+      fixture: fixture,
+      handoff: handoff,
+      receipt: receipt,
+      bookkeeping: bookkeeping,
+      queueRow: queueRow,
+      summary: {
+        ok: blockers.length === 0,
+        lane: 'f5QueueIntegrationLane',
+        operation: fixture.operationName,
+        proposalGenerated: !!fixture.proposalCandidate,
+        handoffReady: !!(handoff && handoff.handoffReady === true),
+        applyEventGenerated: !!(receipt && receipt.ok === true && receipt.applyEvent),
+        bookkeepingPreviewed: !!bookkeeping,
+        f5ReviewIngested: !!(receipt && receipt.f5ReviewIngested === true),
+        f5ReviewId: cleanString(receipt && receipt.f5ReviewId),
+        queueRowFound: !!(queueRow && queueRow.status === 'found'),
+        queueRowCurrentState: cleanString(queueRow && queueRow.currentState),
+        snapshotInRetained: !!(queueRow && queueRow.currentState === 'pending'),
+        subjectId: fixture.subjectId,
+        lineageId: fixture.lineageId,
+        proposalEventDigest: fixture.eventDigest,
+        applyEventDigest: cleanString(safeObject(receipt && receipt.applyEvent).eventDigest),
+        blockers: codeList(blockers),
+        warnings: codeList(warnings)
+      }
+    };
+  }
+
   function dependencyChecks() {
     var required = [
       'previewSnapshotNativeArchiveHandoff',
@@ -1057,11 +1245,13 @@
     var tombstone = await runTombstoneLane(peer, f5Declaration);
     var restoreArchive = await runRestoreArchiveLane(peer, nativeDeclaration);
     var restoreTombstone = await runRestoreTombstoneLane(peer, nativeDeclaration);
+    var f5QueueIntegration = await runF5QueueIntegrationLane(peer, f5Declaration);
     var lanes = {
       archive: archive,
       tombstone: tombstone,
       restoreArchive: restoreArchive,
-      restoreTombstone: restoreTombstone
+      restoreTombstone: restoreTombstone,
+      f5QueueIntegration: f5QueueIntegration
     };
     var negative = await negativeCases(lanes, peer, nativeDeclaration);
     var negativeBooleans = {
@@ -1089,6 +1279,7 @@
       tombstoneLane: tombstone.summary,
       restoreArchiveLane: restoreArchive.summary,
       restoreTombstoneLane: restoreTombstone.summary,
+      f5QueueIntegrationLane: f5QueueIntegration.summary,
       lineage: lineage,
       sideEffects: sideEffects,
       negativeCases: negative,
@@ -1104,6 +1295,7 @@
       tombstone.summary,
       restoreArchive.summary,
       restoreTombstone.summary,
+      f5QueueIntegration.summary,
       lineage,
       privacy
     ].forEach(function (item) {
@@ -1120,6 +1312,7 @@
       tombstone.summary.ok === true &&
       restoreArchive.summary.ok === true &&
       restoreTombstone.summary.ok === true &&
+      f5QueueIntegration.summary.ok === true &&
       allValuesTrue(negativeBooleans) &&
       lineage.ok === true &&
       sideEffects.ok === true &&
@@ -1133,6 +1326,7 @@
       tombstoneLane: tombstone.summary,
       restoreArchiveLane: restoreArchive.summary,
       restoreTombstoneLane: restoreTombstone.summary,
+      f5QueueIntegrationLane: f5QueueIntegration.summary,
       privacy: privacy,
       lineage: lineage,
       sideEffects: sideEffects,
@@ -1144,7 +1338,8 @@
           archive.summary.ok,
           tombstone.summary.ok,
           restoreArchive.summary.ok,
-          restoreTombstone.summary.ok
+          restoreTombstone.summary.ok,
+          f5QueueIntegration.summary.ok
         ].filter(Boolean).length,
         negativeGateCount: Object.keys(negativeBooleans).filter(function (key) { return negativeBooleans[key] === true; }).length,
         expectedNegativeGateCount: Object.keys(negativeBooleans).length,
