@@ -657,6 +657,14 @@ async function main() {
   // also cover the previousFolderId reporting and getForChat helper.
   await runDesktopFoldersActionsTests();
 
+  // ── (14) Library Organization Modals (R4.5.1.a — Folders only) ──────
+  // Validates the first Desktop-first UI surface: the thin async modal
+  // layer that wraps H2O.Studio.actions.folders.* with prompt/confirm
+  // UI. Covers all 4 modes (create / rename / color / delete) in both
+  // programmatic and prompt-driven shapes, plus refresh single-source
+  // (modal never dispatches refresh itself — only actions.folders does).
+  await runOrganizationModalsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -3239,6 +3247,500 @@ async function runDesktopFoldersActionsTests() {
     assert.ok(d.writesSinceBoot >= 18,
       'expected writesSinceBoot >= 18; got ' + d.writesSinceBoot);
     assert.ok(d.lastWriteAt > 0);
+  });
+}
+
+// ── Library Organization Modals test runner (R4.5.1.a — folders only) ─
+async function runOrganizationModalsTests() {
+  console.log('');
+  console.log('── Library Organization Modals (R4.5.1.a — Folders) ────────');
+
+  const S0F1M_REL  = 'src-surfaces-base/studio/S0F1m. 🎬 Library Organization Modals - Studio.js';
+  const S0F1M_PATH = path.join(REPO_ROOT, S0F1M_REL);
+
+  // The modal layer is a thin async wrapper around H2O.Studio.actions.folders.*
+  // Tests use a fully-mocked actions.folders that records calls and
+  // dispatches the canonical refresh event on every successful write —
+  // exactly mirroring S0F3b's behavior. The store mock is only there for
+  // delete-confirm enrichment (folder name).
+  function makeActionsFoldersMock(eventTarget) {
+    const folders = new Map();        // folderId -> row
+    const calls = [];                 // [{op, args, result}]
+    let seq = 0;
+    function refresh(reason) {
+      try {
+        eventTarget.dispatchEvent({
+          type: 'evt:h2o:library-index:refresh-request',
+          detail: { reason: 'folders-actions:' + reason },
+        });
+      } catch (_) { /* swallow */ }
+    }
+    function record(op, args, result) { calls.push({ op, args, result }); return result; }
+    return {
+      __installed: true,
+      _folders: folders,
+      _calls: calls,
+      async create(input) {
+        const name = String((input && input.name) || '').trim();
+        if (!name) return record('create', [input], { ok: false, action: 'create', status: 'name-required' });
+        seq += 1;
+        const id = 'fld_modal_' + seq;
+        const row = {
+          folderId: id, name,
+          color: String((input && input.color) || ''),
+          iconColor: String((input && input.iconColor) || ''),
+          parentId: String((input && input.parentId) || ''),
+        };
+        folders.set(id, row);
+        refresh('create');
+        return record('create', [input], { ok: true, action: 'create', status: 'ok', folderId: id, name, color: row.color, row });
+      },
+      async rename(folderIdInput, newNameInput) {
+        const folderId = String(folderIdInput == null ? '' : folderIdInput).trim();
+        const newName  = String(newNameInput == null ? '' : newNameInput).trim();
+        if (!folderId) return record('rename', [folderIdInput, newNameInput], { ok: false, action: 'rename', status: 'folder-id-required' });
+        if (!newName)  return record('rename', [folderIdInput, newNameInput], { ok: false, action: 'rename', status: 'name-required', folderId });
+        if (!folders.has(folderId)) return record('rename', [folderIdInput, newNameInput], { ok: false, action: 'rename', status: 'not-found', folderId });
+        const cur = folders.get(folderId);
+        cur.name = newName;
+        folders.set(folderId, cur);
+        refresh('rename');
+        return record('rename', [folderIdInput, newNameInput], { ok: true, action: 'rename', status: 'ok', folderId, name: newName, row: { ...cur } });
+      },
+      async update(folderIdInput, patchInput) {
+        const folderId = String(folderIdInput == null ? '' : folderIdInput).trim();
+        if (!folderId) return record('update', [folderIdInput, patchInput], { ok: false, action: 'update', status: 'folder-id-required' });
+        if (!patchInput || typeof patchInput !== 'object') return record('update', [folderIdInput, patchInput], { ok: false, action: 'update', status: 'patch-required', folderId });
+        if (!folders.has(folderId)) return record('update', [folderIdInput, patchInput], { ok: false, action: 'update', status: 'not-found', folderId });
+        const cur = folders.get(folderId);
+        for (const k of Object.keys(patchInput)) cur[k] = patchInput[k];
+        folders.set(folderId, cur);
+        refresh('update');
+        return record('update', [folderIdInput, patchInput], { ok: true, action: 'update', status: 'ok', folderId, row: { ...cur }, appliedFields: Object.keys(patchInput) });
+      },
+      async remove(folderIdInput) {
+        const folderId = String(folderIdInput == null ? '' : folderIdInput).trim();
+        if (!folderId) return record('remove', [folderIdInput], { ok: false, action: 'remove', status: 'folder-id-required' });
+        if (!folders.has(folderId)) return record('remove', [folderIdInput], { ok: false, action: 'remove', status: 'not-found', folderId });
+        folders.delete(folderId);
+        refresh('remove');
+        return record('remove', [folderIdInput], { ok: true, action: 'remove', status: 'ok', folderId });
+      },
+      'delete'(folderId) { return this.remove(folderId); },
+      async listChats(folderIdInput) {
+        const folderId = String(folderIdInput == null ? '' : folderIdInput).trim();
+        const count = (folderId === 'fld_with_chats') ? 7 : 0;
+        return record('listChats', [folderIdInput], { ok: true, action: 'listChats', status: 'ok', folderId, chats: [], count });
+      },
+      diagnose() { return { installed: true, phase: 'R4.4-folders-mock' }; },
+    };
+  }
+
+  function makeStoreFoldersMock(actions) {
+    return {
+      async get(folderId) {
+        const id = String(folderId == null ? '' : folderId).trim();
+        return id && actions._folders.has(id) ? { ...actions._folders.get(id) } : null;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox(opts) {
+    opts = opts || {};
+    const eventTarget = makeEventTarget();
+    const actions = makeActionsFoldersMock(eventTarget);
+    const store = makeStoreFoldersMock(actions);
+    const promptStub = {
+      queue: opts.promptQueue ? opts.promptQueue.slice() : [],
+      calls: [],
+      shift() { return this.queue.length > 0 ? this.queue.shift() : null; },
+    };
+    const confirmStub = {
+      defaultAnswer: opts.confirmAnswer === false ? false : true,
+      queue: opts.confirmQueue ? opts.confirmQueue.slice() : [],
+      calls: [],
+    };
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { actions: { folders: actions }, store: { folders: store } } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      prompt(message, defaultValue) {
+        promptStub.calls.push({ message, defaultValue });
+        return promptStub.shift();
+      },
+      confirm(message) {
+        confirmStub.calls.push({ message });
+        return confirmStub.queue.length > 0 ? confirmStub.queue.shift() : confirmStub.defaultAnswer;
+      },
+      _eventTarget: eventTarget,
+      _actions: actions,
+      _store: store,
+      _prompt: promptStub,
+      _confirm: confirmStub,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F1M_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F1M_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 14.1 — module loads + API shape ──────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F1m loads in Desktop sandbox + registers OrganizationModals');
+    console.log('  ✓ S0F1m loads in Desktop sandbox + registers OrganizationModals');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F1m loads', err: msg });
+    console.log(`  ✗ S0F1m loads in Desktop sandbox\n      ${msg}`);
+    return;
+  }
+  const modals = sandbox.H2O?.Studio?.OrganizationModals;
+  check('OrganizationModals namespace + 3 expected methods', () => {
+    assert.ok(modals, 'OrganizationModals not registered');
+    assert.equal(modals.__installed, true);
+    for (const fn of ['openFolderEditor', 'close', 'diagnose']) {
+      assert.equal(typeof modals[fn], 'function', `${fn} should be a function`);
+    }
+  });
+  check('diagnose() reports R4.5.1.a phase + folder modes + no-DOM markers', () => {
+    const d = modals.diagnose();
+    assert.equal(d.phase, 'R4.5.1.a-folders-modal');
+    assert.equal(d.installed, true);
+    assert.equal(d.actionsAvailable, true);
+    // Coerce sandbox-Array to host-Array before deepEqual (vm.createContext
+    // gives the inner context its own Array prototype; deepEqual is strict
+    // about prototype identity in modern Node).
+    const modesSorted = Array.from(d.supportedModes).slice().sort();
+    assert.deepEqual(modesSorted, ['color', 'create', 'delete', 'rename']);
+    assert.equal(d.domAccess, false);
+    assert.equal(d.observesChatGptDom, false);
+    assert.equal(d.uiStrategy, 'prompt+confirm-v1');
+  });
+
+  // ── 14.2 — unsupported mode ──────────────────────────────────────────
+  await checkAsync('openFolderEditor({mode: "noop"}) → unsupported-mode', async () => {
+    const r = await modals.openFolderEditor({ mode: 'noop' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+    assert.ok(Array.isArray(r.supportedModes));
+  });
+  await checkAsync('openFolderEditor() with no mode → unsupported-mode', async () => {
+    const r = await modals.openFolderEditor({});
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'unsupported-mode');
+  });
+
+  // ── 14.3 — create mode ───────────────────────────────────────────────
+  await checkAsync('create with name provided programmatically → ok + actions.create called', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    sandbox._actions._calls.length = 0;
+    const r = await modals.openFolderEditor({ mode: 'create', name: 'Receipts' });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.mode, 'create');
+    assert.ok(r.folderId && r.folderId.startsWith('fld_modal_'));
+    assert.equal(r.name, 'Receipts');
+    const created = sandbox._actions._calls.filter(c => c.op === 'create');
+    assert.equal(created.length, 1);
+    assert.equal(created[0].args[0].name, 'Receipts');
+    // Refresh dispatched via actions.folders.create — NOT by the modal itself.
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:create/);
+  });
+  await checkAsync('create with no name + skipPrompts=true → input-required, no actions call', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'create', skipPrompts: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+    assert.equal(local._actions._calls.filter(c => c.op === 'create').length, 0);
+  });
+  await checkAsync('create with no name + prompt returns "Inbox" → calls actions.create("Inbox")', async () => {
+    const local = buildSandbox({ promptQueue: ['Inbox'] });
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'create' });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Inbox');
+    assert.equal(local._prompt.calls.length, 1);
+    assert.equal(local._actions._calls[0].args[0].name, 'Inbox');
+  });
+  await checkAsync('create with prompt cancelled (null) → cancelled, no actions call', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'create' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'create').length, 0);
+  });
+  await checkAsync('create accepts color + iconColor passthrough', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'create', name: 'Tax', color: '#ff8800', iconColor: '#ff8800',
+    });
+    assert.equal(r.ok, true);
+    const payload = local._actions._calls[0].args[0];
+    assert.equal(payload.color, '#ff8800');
+    assert.equal(payload.iconColor, '#ff8800');
+  });
+
+  // ── 14.4 — rename mode ───────────────────────────────────────────────
+  await checkAsync('rename with folderId + name → ok + actions.rename called + refresh', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Old' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'rename', folderId: created.folderId, name: 'New',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.name, 'New');
+    assert.equal(local._actions._calls[0].op, 'rename');
+    assert.equal(local._actions._calls[0].args[1], 'New');
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:rename/);
+  });
+  await checkAsync('rename without folderId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'rename', name: 'X' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+  await checkAsync('rename without name + prompt returns "Updated" → calls actions.rename with "Updated"', async () => {
+    const local = buildSandbox({ promptQueue: ['Updated'] });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'StartName' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'rename', folderId: created.folderId,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Updated');
+    assert.equal(local._prompt.calls.length, 1);
+    // Rename prompt enriches with current folder name when available.
+    assert.match(local._prompt.calls[0].message, /StartName/);
+    assert.equal(local._actions._calls[0].args[1], 'Updated');
+  });
+  await checkAsync('rename prompt cancelled → cancelled, no actions call', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'KeepMe' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'rename', folderId: created.folderId,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'rename').length, 0);
+  });
+
+  // ── 14.5 — color mode ────────────────────────────────────────────────
+  await checkAsync('color with folderId + color → calls actions.update with color + iconColor patch', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Tint' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'color', folderId: created.folderId, color: '#abcdef',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, '#abcdef');
+    assert.equal(r.iconColor, '#abcdef'); // defaults to color when iconColor absent
+    const updateCall = local._actions._calls.find(c => c.op === 'update');
+    assert.ok(updateCall);
+    assert.equal(updateCall.args[1].color, '#abcdef');
+    assert.equal(updateCall.args[1].iconColor, '#abcdef');
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:update/);
+  });
+  await checkAsync('color with explicit iconColor uses it instead of color', async () => {
+    const local = buildSandbox();
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'TwoTone' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'color', folderId: created.folderId, color: '#111111', iconColor: '#222222',
+    });
+    assert.equal(r.ok, true);
+    const updateCall = local._actions._calls.find(c => c.op === 'update');
+    assert.equal(updateCall.args[1].color, '#111111');
+    assert.equal(updateCall.args[1].iconColor, '#222222');
+  });
+  await checkAsync('color without color + prompt returns "#fff" → calls actions.update with patch', async () => {
+    const local = buildSandbox({ promptQueue: ['#fff'] });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Hue' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'color', folderId: created.folderId,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, '#fff');
+    assert.equal(local._prompt.calls.length, 1);
+  });
+  await checkAsync('color prompt cancelled → cancelled', async () => {
+    const local = buildSandbox({ promptQueue: [null] });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'NoChange' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'color', folderId: created.folderId,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._actions._calls.filter(c => c.op === 'update').length, 0);
+  });
+  await checkAsync('color without folderId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'color', color: '#000' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+
+  // ── 14.6 — delete mode ───────────────────────────────────────────────
+  await checkAsync('delete with confirm=true → calls actions.remove + refresh', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Drop' });
+    local._eventTarget._dispatchedEvents.length = 0;
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: created.folderId,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(local._confirm.calls.length, 1);
+    const removeCall = local._actions._calls.find(c => c.op === 'remove');
+    assert.ok(removeCall);
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:remove/);
+  });
+  await checkAsync('delete with confirm=false → cancelled, no actions.remove call', async () => {
+    const local = buildSandbox({ confirmAnswer: false });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Stay' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: created.folderId,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'cancelled');
+    assert.equal(local._confirm.calls.length, 1);
+    assert.equal(local._actions._calls.filter(c => c.op === 'remove').length, 0);
+  });
+  await checkAsync('delete with skipConfirm=true → no confirm prompt, calls actions.remove', async () => {
+    const local = buildSandbox({ confirmAnswer: false }); // would say no
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Force' });
+    local._actions._calls.length = 0;
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: created.folderId, skipConfirm: true,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(local._confirm.calls.length, 0); // skipped entirely
+    assert.ok(local._actions._calls.find(c => c.op === 'remove'));
+  });
+  await checkAsync('delete confirm message includes folder name', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Verbose' });
+    await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: created.folderId,
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Verbose/);
+    assert.match(msg, /Delete folder/i);
+  });
+  await checkAsync('delete confirm message reflects bound-chat count', async () => {
+    // listChats(folderId='fld_with_chats') returns count=7 per the mock.
+    const local = buildSandbox({ confirmAnswer: true });
+    // Seed the row directly into the actions._folders map so loadFolderName works.
+    local._actions._folders.set('fld_with_chats', { folderId: 'fld_with_chats', name: 'Busy' });
+    await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: 'fld_with_chats',
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /Busy/);
+    assert.match(msg, /unbind 7 chats/);
+  });
+  await checkAsync('delete confirm message shows "No chats" when bound count is 0', async () => {
+    const local = buildSandbox({ confirmAnswer: true });
+    const created = await local.H2O.Studio.actions.folders.create({ name: 'Empty' });
+    await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'delete', folderId: created.folderId,
+    });
+    const msg = local._confirm.calls[0].message;
+    assert.match(msg, /No chats/);
+  });
+  await checkAsync('delete without folderId → input-required', async () => {
+    const local = buildSandbox();
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({ mode: 'delete' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'input-required');
+  });
+
+  // ── 14.7 — diagnose counters reflect the run ─────────────────────────
+  check('diagnose().opensSinceBoot increments across openFolderEditor calls', () => {
+    const d = modals.diagnose();
+    // Group's first sandbox saw 1 unsupported + 1 no-mode + 1 create-ok = 3 opens
+    assert.ok(d.opensSinceBoot >= 3,
+      'expected opensSinceBoot >= 3; got ' + d.opensSinceBoot);
+    assert.ok(d.lastOpenAt > 0);
+    assert.ok(d.lastMode === 'create' || d.lastMode === 'rename' ||
+              d.lastMode === 'color'  || d.lastMode === 'delete' ||
+              d.lastMode === 'unknown' || d.lastMode === 'noop' || d.lastMode === '');
+  });
+
+  // ── 14.8 — close() resets activeMode ────────────────────────────────
+  check('close() is callable and resets activeMode to null', () => {
+    modals.close();
+    const d = modals.diagnose();
+    assert.equal(d.activeMode, null);
+  });
+
+  // ── 14.9 — single source for refresh (no duplicate dispatches) ───────
+  await checkAsync('modal does NOT dispatch its own refresh — only actions.folders does', async () => {
+    const local = buildSandbox();
+    local._eventTarget._dispatchedEvents.length = 0;
+    // One successful create — exactly one refresh event expected.
+    const r = await local.H2O.Studio.OrganizationModals.openFolderEditor({
+      mode: 'create', name: 'Solo',
+    });
+    assert.equal(r.ok, true);
+    const evts = refreshEvents(local);
+    assert.equal(evts.length, 1, 'expected exactly 1 refresh dispatched (via actions.folders), got ' + evts.length);
   });
 }
 

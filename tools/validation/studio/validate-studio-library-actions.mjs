@@ -662,6 +662,175 @@ check('R4.4: S0F1j preserves native-context-required path on MV3 for setFolder',
     `expected at least 10 'native-context-required' references after R4.4; got ${occurrences}`);
 });
 
+// ── 12. R4.5.1.a — S0F1m Library Organization Modals structural checks ──
+// First Desktop-first UI slice. Covers FOLDERS ONLY in this slice;
+// categories / labels / tags come in R4.5.2 / R4.5.3.
+
+const S0F1M_REL = 'src-surfaces-base/studio/S0F1m. 🎬 Library Organization Modals - Studio.js';
+const S0F1M_PATH = path.join(REPO_ROOT, S0F1M_REL);
+
+check('R4.5.1.a: S0F1m file exists', () => {
+  assert.ok(fs.existsSync(S0F1M_PATH), `${S0F1M_REL} not found`);
+});
+
+const s0f1mSrc = fs.existsSync(S0F1M_PATH) ? fs.readFileSync(S0F1M_PATH, 'utf8') : '';
+
+check('R4.5.1.a: S0F1m is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f1mSrc, /__TAURI_INTERNALS__/);
+  assert.match(s0f1mSrc, /__TAURI__/);
+  assert.match(s0f1mSrc, /if\s*\(\s*!\s*detectTauri\s*\(\s*\)\s*\)\s*return/);
+});
+
+check('R4.5.1.a: S0F1m registers H2O.Studio.OrganizationModals', () => {
+  assert.match(s0f1mSrc, /H2O\.Studio\.OrganizationModals\s*=/);
+});
+
+check('R4.5.1.a: S0F1m exposes openFolderEditor, close, diagnose', () => {
+  // Public surface on the registration object.
+  assert.match(s0f1mSrc, /openFolderEditor:\s*openFolderEditor/);
+  assert.match(s0f1mSrc, /close:\s*close/);
+  assert.match(s0f1mSrc, /diagnose:\s*diagnose/);
+  // Method-of-record declarations.
+  assert.match(s0f1mSrc, /async function openFolderEditor/);
+  assert.match(s0f1mSrc, /function close\(\)/);
+  assert.match(s0f1mSrc, /function diagnose\(\)/);
+});
+
+check('R4.5.1.a: S0F1m supports all 4 folder modes (create/rename/color/delete)', () => {
+  assert.match(s0f1mSrc, /SUPPORTED_MODES\s*=\s*\['create',\s*'rename',\s*'color',\s*'delete'\]/);
+  assert.match(s0f1mSrc, /async function handleCreate/);
+  assert.match(s0f1mSrc, /async function handleRename/);
+  assert.match(s0f1mSrc, /async function handleColor/);
+  assert.match(s0f1mSrc, /async function handleDelete/);
+});
+
+check('R4.5.1.a: S0F1m calls H2O.Studio.actions.folders.* (not Native, not store)', () => {
+  // Must reference the actions.folders namespace via the getActions helper.
+  assert.match(s0f1mSrc, /H2O\.Studio && H2O\.Studio\.actions && H2O\.Studio\.actions\.folders/);
+  // Each handler invokes the corresponding actions method.
+  assert.match(s0f1mSrc, /actions\.create\s*\(/);
+  assert.match(s0f1mSrc, /actions\.rename\s*\(/);
+  assert.match(s0f1mSrc, /actions\.update\s*\(/);
+  // remove is referenced via `removeFn` indirection to support the
+  // `delete` alias as well; the dereference itself proves the dep.
+  assert.match(s0f1mSrc, /actions\.remove\s*\|\|\s*actions\['delete'\]/);
+});
+
+check('R4.5.1.a: S0F1m does NOT call Native folder APIs (no H2O.folders.create/.rename/.update/.delete)', () => {
+  // The Native read facade is H2O.folders (S0F3a). Modal must never
+  // call its mutation methods — only H2O.Studio.actions.folders.*.
+  // Allow ONLY H2O.Studio.actions.folders.* references — strip those
+  // first, then assert no remaining Native call patterns.
+  const stripped = s0f1mSrc
+    .replace(/H2O\.Studio\.actions\.folders/g, '<<ACTIONS>>')
+    .replace(/H2O\.Studio\.store\.folders/g, '<<STORE>>');
+  assert.equal(/H2O\.folders\.(create|rename|update|remove|delete|patch)\s*\(/.test(stripped), false,
+    'S0F1m must not call Native H2O.folders.* mutation methods');
+});
+
+check('R4.5.1.a: S0F1m does NOT do direct plugin:sql / chrome.* writes', () => {
+  // Strip JS comments first — the docstring legitimately names
+  // forbidden APIs to describe the boundary.
+  const stripped = s0f1mSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  assert.equal(/plugin:sql/.test(stripped), false,
+    'S0F1m must not invoke plugin:sql directly — go through actions.folders.*');
+  assert.equal(/chrome\.runtime\./.test(stripped), false,
+    'S0F1m must not call chrome.runtime.* — Desktop-only module');
+  assert.equal(/chrome\.storage\./.test(stripped), false,
+    'S0F1m must not call chrome.storage.* — Desktop-only module');
+});
+
+check('R4.5.1.a: S0F1m does NOT dispatch its own refresh event (single-source via actions.folders)', () => {
+  // Modal must let actions.folders.* dispatch the canonical refresh
+  // event so we never get duplicate refreshes. Confirm no
+  // dispatchEvent call exists in S0F1m.
+  assert.equal(/dispatchEvent\s*\(/.test(s0f1mSrc), false,
+    'S0F1m must rely on actions.folders.* to dispatch the canonical refresh event');
+  // It is allowed to NAME the event in comments; the source still
+  // mentions the canonical event for documentation.
+  assert.match(s0f1mSrc, /evt:h2o:library-index:refresh-request/);
+});
+
+check('R4.5.1.a: S0F1m has no DOM-access / no ChatGPT observation boundary', () => {
+  // Mirror of R4.3 Tags boundary check — Studio organization UI must
+  // never reach into chatgpt.com structure. Strip comments first so a
+  // descriptive prose mention of MutationObserver doesn't false-trip.
+  const stripped = s0f1mSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+  for (const forbidden of [
+    'MutationObserver',
+    'document.querySelector',
+    'document.querySelectorAll',
+    "querySelector('article",
+    'data-testid="conversation-turn"',
+    'chatgpt.com',
+  ]) {
+    assert.equal(stripped.indexOf(forbidden), -1,
+      `S0F1m must not reference ${forbidden}`);
+  }
+  // diagnose() reports no-DOM markers
+  assert.match(s0f1mSrc, /domAccess:\s*false/);
+  assert.match(s0f1mSrc, /observesChatGptDom:\s*false/);
+});
+
+check('R4.5.1.a: S0F1m uses window.prompt / window.confirm via safe wrappers', () => {
+  assert.match(s0f1mSrc, /function safePrompt/);
+  assert.match(s0f1mSrc, /function safeConfirm/);
+  assert.match(s0f1mSrc, /typeof global\.prompt\s*===\s*'function'/);
+  assert.match(s0f1mSrc, /typeof global\.confirm\s*===\s*'function'/);
+});
+
+check('R4.5.1.a: S0F1m enriches delete confirm with folder name + bound count', () => {
+  assert.match(s0f1mSrc, /async function loadBoundCount/);
+  assert.match(s0f1mSrc, /async function loadFolderName/);
+  assert.match(s0f1mSrc, /unbind\s+1\s+chat/);
+  assert.match(s0f1mSrc, /unbind '\s*\+\s*count\s*\+\s*' chats/);
+});
+
+check('R4.5.1.a: studio.html includes <script src="./S0F1m..."> after S0F1k', () => {
+  const html = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/studio.html'), 'utf8');
+  assert.match(html, /<script src="\.\/S0F1m\. 🎬 Library Organization Modals - Studio\.js"><\/script>/);
+  const idxK = html.indexOf('S0F1k. 🎬 Library Canonical Services');
+  const idxM = html.indexOf('S0F1m. 🎬 Library Organization Modals');
+  assert.ok(idxK > 0 && idxM > 0 && idxM > idxK,
+    `expected S0F1m to load after S0F1k; got idxK=${idxK} idxM=${idxM}`);
+});
+
+check('R4.5.1.a: pack-studio.mjs has S0F1m in BOTH SOURCE_FILES and OUT_FILES', () => {
+  const pkg = fs.readFileSync(path.join(REPO_ROOT, 'tools/product/studio/pack-studio.mjs'), 'utf8');
+  const occurrences = (pkg.match(/S0F1m\. 🎬 Library Organization Modals - Studio\.js/g) || []).length;
+  assert.equal(occurrences, 2,
+    `expected S0F1m to appear in both SOURCE_FILES and OUT_FILES (2 occurrences); got ${occurrences}`);
+});
+
+check('R4.5.1.a: S0Z1g folder-create button re-wires through OrganizationModals on Desktop', () => {
+  const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
+  // Re-wiring helper exists.
+  assert.match(s0z1g, /tryOpenOrganizationModalsCreate/);
+  // It dereferences H2O.Studio.OrganizationModals.
+  assert.match(s0z1g, /H2O\.Studio\.OrganizationModals/);
+  // It calls openFolderEditor with create mode.
+  assert.match(s0z1g, /openFolderEditor\(\s*\{\s*mode:\s*'create'/);
+  // MV3 fallback is preserved — openFolderCreatePanel still called.
+  assert.match(s0z1g, /openFolderCreatePanel\(button\)/);
+  // Both click AND keydown handlers branch through the helper.
+  const clickBranch = s0z1g.match(/button\.addEventListener\('click'[\s\S]*?openFolderCreatePanel\(button\)[\s\S]*?\}\)/);
+  const keyBranch   = s0z1g.match(/button\.addEventListener\('keydown'[\s\S]*?openFolderCreatePanel\(button\)[\s\S]*?\}\)/);
+  assert.ok(clickBranch && /tryOpenOrganizationModalsCreate/.test(clickBranch[0]),
+    'click handler should branch through tryOpenOrganizationModalsCreate');
+  assert.ok(keyBranch && /tryOpenOrganizationModalsCreate/.test(keyBranch[0]),
+    'keydown handler should branch through tryOpenOrganizationModalsCreate');
+});
+
+check('R4.5.1.a: S0F1m never imports / dereferences chrome.* runtime APIs', () => {
+  assert.equal(/\bchrome\.runtime\b/.test(s0f1mSrc), false);
+  assert.equal(/\bchrome\.storage\b/.test(s0f1mSrc), false);
+  assert.equal(/\bchrome\.tabs\b/.test(s0f1mSrc), false);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

@@ -3060,15 +3060,33 @@
         svg.style.height = '13px';
       });
       button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      // R4.5.1.a — Desktop routes folder creation through
+      // H2O.Studio.OrganizationModals.openFolderEditor → actions.folders.create.
+      // The OrganizationModals module is Tauri-gated and only registers on
+      // Desktop, so on MV3 the dereference fails and we fall through to the
+      // existing canonical-folder-create panel (preserved verbatim).
+      function tryOpenOrganizationModalsCreate() {
+        try {
+          var modals = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
+          if (modals && typeof modals.openFolderEditor === 'function') {
+            modals.openFolderEditor({ mode: 'create', anchorEl: button })
+              .catch((e) => { try { err('openFolderEditor.create', e); } catch (_) { /* swallow */ } });
+            return true;
+          }
+        } catch (_) { /* fall through */ }
+        return false;
+      }
       button.addEventListener('keydown', (ev) => {
         ev.stopPropagation();
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         ev.preventDefault();
+        if (tryOpenOrganizationModalsCreate()) return;
         openFolderCreatePanel(button);
       });
       button.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+        if (tryOpenOrganizationModalsCreate()) return;
         openFolderCreatePanel(button);
       });
       sec.insertBefore(button, label.nextSibling);

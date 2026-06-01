@@ -851,6 +851,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Phase 1 — canonical services + H2O.flags. Loads after every feature owner
   // so canonical aliases resolve to real impls on the first registration pass.
   "S0F1k. 🎬 Library Canonical Services - Studio.js",
+  // R4.5.1.a — Desktop-first folder organization modals (folders only in this
+  // slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
+  // silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no
+  // Native folder APIs.
+  "S0F1m. 🎬 Library Organization Modals - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
@@ -1122,6 +1127,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "S0F1h. 🎬 Library Sync - Studio.js",
   "S0F1i. 🎬 Cross-Platform Envelope Preview - Studio.js",
   "S0F1k. 🎬 Library Canonical Services - Studio.js",
+  "S0F1m. 🎬 Library Organization Modals - Studio.js",
   "S0X1a. 🎬 Command Bar - Studio.js",
   "S0X1b. 🎬 Library Commands (Command Bar 🔌 Plugin) - Studio.js",
   "S0Z1f. 🎬 Library Sidebar Tab - Studio.js",
