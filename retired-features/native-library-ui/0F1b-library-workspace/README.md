@@ -1,6 +1,6 @@
 # 0F1b Library Workspace — Retirement Record
 
-**Status (R4.7.1): scaffolding only — no code moved yet. Code retires in R4.7.2.**
+**Status (R4.7.5): RETIRED — Native Library Workspace UI moved out of live runtime.**
 
 ## What was here pre-R4.7
 
@@ -10,75 +10,76 @@
   `UI_LIBRARY_TOP_BUTTON`, `UI_LIBRARY_RAIL_BUTTON`)
 - The `/library` route registration + Dashboard workspace page mount
   via `mountPage`, `renderWorkspaceBody`, and `UI_LIBRARY_PAGE`
-- R4.6.1 deprecation banner (`buildR46DeprecationBanner`,
-  `R46_BANNER_*` styles)
+- Read-only Native Library workspace rendering over 0F1c Library Index
+- Native sidebar layout/prepaint helpers for the Library workspace entry
+- R4.6.1 deprecation banner (`buildR46DeprecationBanner`)
 - R4.6.3 body-attribute updater + workspace CSS gate
   (`applyR46BodyAttrs`, `installR46WorkspaceCssGate`,
   `syncR46WorkspaceElements`)
-- The 1-second setInterval poll loop
+- Insights delegation into 0F1d Explorer + Analytics renderers
 
-## What R4.7.2 will retire (planned)
+## What R4.7.5 retired
 
-From `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js`,
-move into this folder:
+The original implementation is archived as:
 
-- `workspace-page.js` — `mountPage`, `renderWorkspaceBody`,
-  page-host construction (lines ~3100-3600 area pre-R4.7)
-- `library-button.js` — top-button + rail-button installers
-  (`UI_LIBRARY_TOP_BUTTON`, `UI_LIBRARY_RAIL_BUTTON` builders)
-- `deprecation-banner.js` — R4.6.1 banner builder
-  (`buildR46DeprecationBanner`)
-- `body-attr-and-css-gate.js` — R4.6.3 workspace gate
-  (`applyR46BodyAttrs`, `installR46WorkspaceCssGate`,
-  `syncR46WorkspaceElements`, plus the 1s setInterval poll)
+- `library-workspace-ui.js` — full pre-R4.7.5 0F1b source with block headers
 
-`extracted-from-0F1b.md` (added by R4.7.2) will record the exact
-line ranges + commit hash.
+Moved blocks:
 
-## What STAYS in 0F1b post-R4.7
+- Block 1 — R4.6.3 workspace body-attribute + CSS gate
+- Block 2 — R4.6.1 deprecation banner
+- Block 3 — Library sidebar button + prepaint/layout UI
+- Block 4 — Workspace CSS renderer
+- Block 5 — `/library` route, native navigation guard, page host, and workspace renderers
+- Block 6 — Workspace read-model fallback, route/event bindings, public UI API, and boot wiring
 
-- The R4.6.0 flag-reader helpers
-  (`isNativeWorkspaceUiEnabled`, `isNativeOrganizationUiEnabled`,
-  `isNativeCaptureOnlyMode`)
-- The `H2O.deprecation.native['0F1b']` diagnose registration
-- The IIFE skeleton + module identifiers (TOK / SkID / CID etc.)
+The live 0F1b file now keeps only diagnostics plus no-op compatibility
+methods on `H2O.LibraryWorkspace` so callers that probe the namespace do
+not fail. It does not register the Native `/library` page/route and does
+not inject Library buttons, page DOM, workspace CSS, or the deprecation
+banner.
 
-These remain so `H2O.flags.diagnose()` and
-`H2O.deprecation.native['0F1b']()` continue to be queryable after
-R4.7. The deprecation flags themselves become advisory (no UI to
-control) — documented in `../notes/rollback-procedures.md`.
+## What STAYS post-R4.7.5
+
+- The R4.6 flag-reader helpers remain queryable:
+  `isNativeWorkspaceUiEnabled`, `isNativeOrganizationUiEnabled`,
+  `isNativeCaptureOnlyMode`
+- `H2O.deprecation.native['0F1b']` remains queryable and reports
+  `R4.7.5-retired`
+- `H2O.LibraryWorkspace` remains as a retired/no-op compatibility API
+  with `selfCheck()`, `refresh()`, and legacy method names
+- 0F1k flags system remains untouched
+- Capture/save/link modules remain untouched
+- 0F5a tag extraction remains untouched
+- 0D3 and 3X capture files remain untouched
+- 0F3a Folders remains untouched
 
 ## Replacement
 
 | Native surface | Replacement |
 |---|---|
 | Native Library sidebar button | Desktop Studio top-level navigation |
-| `/library` route + Dashboard | Desktop Studio `#/library/dashboard\|explorer\|recents\|saved\|folders\|folder/<id>` |
-| R4.6.1 deprecation banner | Removed (banner exists only to announce the deprecation; no UI to wrap) |
-| Body-attribute + workspace CSS gate | Removed (no UI to gate) |
+| `/library` route + Dashboard | Desktop Studio Library Dashboard |
+| Native Explorer / Analytics delegation | Desktop Studio `S0F1d. 🎬 Library Insights - Studio.js` |
+| Native sidebar layout/prepaint UI | Desktop Studio `S0Z1g` Library sidebar organization UI |
+| R4.6.1 deprecation banner | Removed; Native workspace UI is no longer restorable in-place |
+| Body-attribute + workspace CSS gate | Removed; no 0F1b UI remains to gate |
 
-## Safety invariants for this retirement
+## Safety Invariants
 
-- **NO change to capture path.** 0F1b never owned capture; this
-  retirement cannot regress capture.
-- **NO change to 0F1j Library Actions** (`addToLibrary`,
-  `saveToFolder`, `openLinkedChat`).
-- **NO change to 0F5a tag extraction.**
-- **NO change to 0F1k flag system.** `NATIVE_FLAG_DEFAULTS` table
-  and `ensureFlags()` stay; flags remain queryable via
-  `H2O.flags.diagnose()`.
-- **Studio R4.5 modules untouched.** Desktop Studio Library is the
-  replacement; this retirement does not modify Studio code.
+- **NO change to 0F3a Folders.** Folder data and UI retirement are out of scope.
+- **NO change to 0F5a tag extraction.** The byte-exact 273099-byte canary remains protected by the validator.
+- **NO change to capture path.** 0F1j, 0F3a capture menu injection, and 0D3/3X capture files remain untouched.
+- **NO change to Studio files or generated build outputs.** Desktop Studio is the replacement, not part of this edit.
+- **0F1k flags remain.** Flags are still diagnosable even though the retired Native UI no longer responds to them.
 
-## Rollback procedure
+## Rollback Procedure
 
-See `../notes/rollback-procedures.md`. The shortest path:
+See `../notes/rollback-procedures.md`. The normal rollback is:
 
 ```bash
-git revert <R4.7.2 commit hash>
+git revert <R4.7.5 commit hash>
 ```
 
-This restores `0F1b.⬛️🗂️ Library Workspace 🗂️.js` to its R4.6.4
-state (workspace + button + banner code present; default-hidden by
-the R4.6.4 flag flip; restorable per-operator via
-`H2O.flags.set('library.nativeWorkspaceUi', true) + reload`).
+For manual investigation, compare the live stub with
+`library-workspace-ui.js`, which preserves the full original source.

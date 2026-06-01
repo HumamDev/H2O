@@ -6,9 +6,7 @@ piece of code moved from `src-runtime-base/0F*` into
 `retired-features/native-library-ui/`.
 
 R4.7.1 was scaffolding only. R4.7.2 moved the Native Categories
-sidebar UI. R4.7.3 moved the Native Labels sidebar UI. R4.7.4 (this
-entry's projects slice) moves the Native Projects sidebar row UI.
-R4.7.5 will move folders / workspace.
+sidebar UI. R4.7.3 moved the Native Labels sidebar UI. R4.7.4 moved the Native Projects sidebar row UI. R4.7.5 moves the Native Library Workspace UI and retires 0F1d Library Insights. Folders are not in R4.7.5 scope.
 
 ## Format
 
@@ -131,6 +129,33 @@ The ENTIRE projects DATA layer stays in 0F2a:
 
 These calls are protected by the deprecation validator's Section Q
 audit-trail assertion.
+
+### R4.7.5 moves (Library Workspace UI + Library Insights)
+
+| Source file | Source lines (pre-R4.7.5) | Destination file | R4.7 slice | Commit |
+|---|---|---|---|---|
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 108-196 (R4.6.3 workspace body-attribute + CSS gate) | `0F1b-library-workspace/library-workspace-ui.js` Block 1 | R4.7.5 | _<commit hash; populated post-commit>_ |
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 198-265 (R4.6.1 deprecation banner) | `0F1b-library-workspace/library-workspace-ui.js` Block 2 | R4.7.5 | _<commit hash>_ |
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 956-2468 (Library sidebar button + prepaint/layout UI) | `0F1b-library-workspace/library-workspace-ui.js` Block 3 | R4.7.5 | _<commit hash>_ |
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 2469-2784 (Workspace CSS renderer) | `0F1b-library-workspace/library-workspace-ui.js` Block 4 | R4.7.5 | _<commit hash>_ |
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 2800-3658 (`/library` route, native navigation guard, page host, workspace renderers) | `0F1b-library-workspace/library-workspace-ui.js` Block 5 | R4.7.5 | _<commit hash>_ |
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | 3666-4881 (read-model fallback, route/event bindings, public UI API, boot wiring) | `0F1b-library-workspace/library-workspace-ui.js` Block 6 | R4.7.5 | _<commit hash>_ |
+| `src-runtime-base/0F1d.⬛️🗂️ Library Insights 📊🗂️.js` | 1-1445 (entire Explorer + Analytics renderer) | `0F1d-library-insights/0F1d-original.js` Block 1 | R4.7.5 | _<commit hash>_ |
+
+### R4.7.5 stubs (kept live as no-op compatibility APIs)
+
+| Source file | Live compatibility API | Notes |
+|---|---|---|
+| `src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js` | `H2O.LibraryWorkspace` | Diagnostics + no-op legacy method names only; no Native route/page/sidebar UI registration |
+| `src-runtime-base/0F1d.⬛️🗂️ Library Insights 📊🗂️.js` | `H2O.LibraryInsights` | Diagnostics + no-op `refresh`; no `renderExplorer` or `renderAnalytics` |
+
+### Pending / kept out of R4.7.5 scope
+
+- 0F3a Folders is untouched.
+- 0F5a Tags extraction is untouched.
+- 0D3 and 3X capture files are untouched.
+- 0F1k flags remain queryable.
+- Studio files and generated build outputs are untouched.
 
 ## Re-verification
 

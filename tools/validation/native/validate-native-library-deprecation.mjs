@@ -43,6 +43,7 @@ function check(label, fn) {
 
 const FILES = {
   '0F1b': 'src-runtime-base/0F1b.⬛️🗂️ Library Workspace 🗂️.js',
+  '0F1d': 'src-runtime-base/0F1d.⬛️🗂️ Library Insights 📊🗂️.js',
   '0F2a': 'src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js',
   '0F3a': 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   '0F4a': 'src-runtime-base/0F4a.⬛️🗂️ Categories 🗂️.js',
@@ -124,17 +125,21 @@ for (const mod of GATED_MODULES) {
     /* Accept R4.6.0-plumbing OR any later R4.6.x phase string. 0F1b
      * bumps to 'R4.6.1-banner+gates'; sibling modules stay at
      * 'R4.6.0-plumbing'. Both are valid R4.6.x states. */
-    assert.match(SRC[mod], /phase:\s*'R4\.6\.[0-9].*?'/);
+    assert.match(SRC[mod], /phase:\s*'R4\.(?:6\.[0-9].*?|7\.5-retired)'/);
     assert.match(SRC[mod], /gatedSurfaces:/);
     assert.match(SRC[mod], /unconditionalSurfaces:/);
   });
 }
 
 /* Module-specific gated/unconditional declarations. */
-check('C.0F1b: gates LibraryButton + WorkspacePage', () => {
+check('C.0F1b: reports LibraryButton + WorkspacePage as retired, not gated', () => {
   const m = SRC['0F1b'].match(/H2O\.deprecation\.native\['0F1b'\][\s\S]*?\}\s*;\s*\}/);
   assert.ok(m, '0F1b diagnose block not found');
-  assert.match(m[0], /gatedSurfaces:\s*\['LibraryButton',\s*'WorkspacePage'\]/);
+  assert.match(m[0], /phase:\s*'R4\.7\.5-retired'/);
+  assert.match(m[0], /gatedSurfaces:\s*\[\]/);
+  assert.match(m[0], /retiredSurfaces:[\s\S]*'LibraryButton'/);
+  assert.match(m[0], /retiredSurfaces:[\s\S]*'WorkspacePage'/);
+  assert.match(m[0], /retired-features\/native-library-ui\/0F1b-library-workspace\/library-workspace-ui\.js/);
 });
 check('C.0F2a: gates ProjectsSidebar; KEEPS fetchInterception unconditional', () => {
   const m = SRC['0F2a'].match(/H2O\.deprecation\.native\['0F2a'\][\s\S]*?\}\s*;\s*\}/);
@@ -183,24 +188,25 @@ check('C.0F1j: declares gatedSurfaces:[] — CAPTURE never gated', () => {
  * Default-true means the gate passes; no behavior change.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-console.log('Section D — 0F1b code-level gate at mountPage');
-check('D.0F1b: mountPage starts with isNativeWorkspaceUiEnabled() guard', () => {
-  /* Strip comments first — the R4.6.0/R4.6.1 docstring between the
-   * function opening and the gate would otherwise exceed any
-   * reasonable character limit on the regex. */
-  const stripped = STRIPPED['0F1b'];
-  const m = stripped.match(/function mountPage\(page\)\s*\{\s*if\s*\(\s*!isNativeWorkspaceUiEnabled\(\s*\)\s*\)/);
-  assert.ok(m, 'mountPage gate at top of function not found (after stripping comments)');
+console.log('Section D — 0F1b workspace page retired');
+check('D.0F1b: mountPage definition is removed from live source', () => {
+  assert.equal(/^\s*function mountPage\b/m.test(SRC['0F1b']), false,
+    '0F1b still defines mountPage — Native workspace page should be retired');
 });
-check('D.0F1b: mountPage gate uses default-true semantics (returns false on flag off)', () => {
-  /* On flag-off, mountPage returns false (skip mount); default is true
-   * so the gate is a no-op in default state. After R4.6.1 the gated
-   * branch first attempts to render the banner via
-   * buildR46DeprecationBanner, then returns false if that fails. */
-  const m = SRC['0F1b'].match(/function mountPage\(page\)\s*\{[\s\S]*?return\s+false;/);
-  assert.ok(m);
-  /* R4.6.1 — banner attempt before returning false. */
-  assert.match(m[0], /buildR46DeprecationBanner/);
+check('D.0F1b: live source keeps openWorkspace as a retired compatibility API', () => {
+  assert.match(SRC['0F1b'], /openWorkspace\(opts = \{\}\)[\s\S]*retiredResult\('openWorkspace'/);
+  assert.match(SRC['0F1b'], /R4\.7\.5-native-workspace-ui-retired/);
+});
+check('D.0F1b: no Library Core page or route registration remains', () => {
+  assert.equal(/registerPage\?\.\('library'/.test(SRC['0F1b']), false,
+    '0F1b must not register the Native Library page after R4.7.5');
+  assert.equal(/registerRoute\?\.\(/.test(SRC['0F1b']), false,
+    '0F1b must not register Native Library routes after R4.7.5');
+});
+check('D.0F1b: archived source preserves the old mountPage implementation', () => {
+  const archive = fs.readFileSync(abs('retired-features/native-library-ui/0F1b-library-workspace/library-workspace-ui.js'), 'utf8');
+  assert.match(archive, /Block 5 of 6/);
+  assert.match(archive, /function mountPage\(page\)/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -362,68 +368,34 @@ check('G.doc: archive folder plan is explicitly DEFERRED', () => {
  * owns the body-attribute updater that drives per-module CSS gates.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-console.log('Section H — R4.6.1+R4.6.3 banner + attribute mechanism');
-check('H.0F1b: declares applyR46BodyAttrs() with html+body mirror (R4.6.3)', () => {
-  assert.match(SRC['0F1b'], /function applyR46BodyAttrs\s*\(\s*\)/);
-  /* R4.6.3 — must iterate BOTH body and documentElement. */
-  assert.match(SRC['0F1b'], /\[D\.body,\s*D\.documentElement\]/);
-  /* Sets the org-hide attribute when flag is off (true means hide). */
-  assert.match(SRC['0F1b'], /'data-h2o-r46-hide-org'/);
-  /* Sets the workspace-hide attribute when flag is off. */
-  assert.match(SRC['0F1b'], /'data-h2o-r46-hide-workspace'/);
+console.log('Section H — R4.7.5 0F1b banner + workspace gate retired');
+check('H.0F1b: live source no longer declares applyR46BodyAttrs()', () => {
+  assert.equal(/function applyR46BodyAttrs\b/.test(SRC['0F1b']), false,
+    '0F1b still declares applyR46BodyAttrs — workspace gate should be archived');
 });
-check('H.0F1b: installs workspace CSS gate with library button + page selectors', () => {
-  assert.match(SRC['0F1b'], /function installR46WorkspaceCssGate\s*\(\s*\)/);
-  /* Library button suffix selectors. */
-  assert.match(SRC['0F1b'], /\[data-cgxui\$=\"-top-library-button\"\]/);
-  assert.match(SRC['0F1b'], /\[data-cgxui\$=\"-rail-library-button\"\]/);
-  /* Workspace page suffix selector. */
-  assert.match(SRC['0F1b'], /\[data-cgxui\$=\"-page\"\]/);
-  /* Hide rule itself. */
-  assert.match(SRC['0F1b'], /display:none\s*!important/);
+check('H.0F1b: live source no longer declares workspace CSS gate functions', () => {
+  assert.equal(/function syncR46WorkspaceElements\b/.test(SRC['0F1b']), false);
+  assert.equal(/function installR46WorkspaceCssGate\b/.test(SRC['0F1b']), false);
+  assert.equal(/function startR46PollLoop\b/.test(SRC['0F1b']), false);
 });
-check('H.0F1b: poll loop runs applyR46BodyAttrs + syncR46WorkspaceElements (R4.6.3)', () => {
-  assert.match(SRC['0F1b'], /function startR46PollLoop/);
-  /* R4.6.3 — poll now ALSO calls syncR46WorkspaceElements to keep
-   * per-element gating up to date alongside the body attributes. */
-  assert.match(SRC['0F1b'], /W\.setInterval\(\s*function\s*\(\s*\)\s*\{[\s\S]*?applyR46BodyAttrs\(\s*\)[\s\S]*?syncR46WorkspaceElements\(\s*\)[\s\S]*?\}\s*,\s*1000\s*\)/);
+check('H.0F1b: live source no longer declares deprecation banner builder', () => {
+  assert.equal(/function buildR46DeprecationBanner\b/.test(SRC['0F1b']), false,
+    '0F1b still declares buildR46DeprecationBanner — banner should be archived');
+  assert.equal(/Library has moved to Desktop Studio/.test(STRIPPED['0F1b']), false,
+    '0F1b live code still contains user-visible banner copy');
 });
-check('H.0F1b: deprecation banner builder exists', () => {
-  assert.match(SRC['0F1b'], /function buildR46DeprecationBanner\s*\(\s*\)/);
-  /* The banner heading literal — proves it's a USER-VISIBLE banner. */
-  assert.match(SRC['0F1b'], /Library has moved to Desktop Studio/);
-  /* Two CTA buttons by data attribute. */
-  assert.match(SRC['0F1b'], /'data-h2o-r46-banner-action',\s*'open-studio'/);
-  assert.match(SRC['0F1b'], /'data-h2o-r46-banner-action',\s*'restore-native'/);
+check('H.archive: 0F1b archive preserves gate + banner blocks', () => {
+  const archive = fs.readFileSync(abs('retired-features/native-library-ui/0F1b-library-workspace/library-workspace-ui.js'), 'utf8');
+  assert.match(archive, /Block 1 of 6 — R4\.6\.3 workspace body-attribute \+ CSS gate/);
+  assert.match(archive, /function applyR46BodyAttrs\b/);
+  assert.match(archive, /function syncR46WorkspaceElements\b/);
+  assert.match(archive, /function installR46WorkspaceCssGate\b/);
+  assert.match(archive, /Block 2 of 6 — R4\.6\.1 deprecation banner/);
+  assert.match(archive, /function buildR46DeprecationBanner\b/);
+  assert.match(archive, /Library has moved to Desktop Studio/);
 });
-check('H.0F1b: Open Studio CTA broadcasts via chrome.runtime.sendMessage', () => {
-  /* Locate the openBtn block by its action attribute. */
-  const idx = SRC['0F1b'].indexOf("'open-studio'");
-  assert.ok(idx > 0);
-  /* Within ~30 lines of the open-studio attribute, chrome.runtime.sendMessage
-   * must be called with type 'h2o.studio.open'. */
-  const window = SRC['0F1b'].slice(idx, idx + 2500);
-  assert.match(window, /chrome\.runtime\.sendMessage/);
-  assert.match(window, /'h2o\.studio\.open'/);
-});
-check('H.0F1b: Restore Native CTA sets flags back to true + reload', () => {
-  const idx = SRC['0F1b'].indexOf("'restore-native'");
-  assert.ok(idx > 0);
-  const window = SRC['0F1b'].slice(idx, idx + 2500);
-  /* Sets both flags back to true. */
-  assert.match(window, /flags\.set\('library\.nativeWorkspaceUi',\s*true\)/);
-  assert.match(window, /flags\.set\('library\.nativeOrganizationUi',\s*true\)/);
-  /* Reloads the page so the new flag state takes effect. */
-  assert.match(window, /location\.reload/);
-});
-check('H.0F1b: mountPage gated path tries to render the banner before returning false', () => {
-  /* The gated branch of mountPage now calls buildR46DeprecationBanner. */
-  const gate = SRC['0F1b'].match(/if\s*\(!isNativeWorkspaceUiEnabled\(\)\)\s*\{[\s\S]*?return false;\s*\}/);
-  assert.ok(gate, 'mountPage gated block not found');
-  assert.match(gate[0], /buildR46DeprecationBanner/);
-});
-check('H.0F1b: diagnose phase bumped to R4.6.1', () => {
-  assert.match(SRC['0F1b'], /phase:\s*'R4\.6\.1-banner\+gates'/);
+check('H.0F1b: live diagnose phase is R4.7.5-retired', () => {
+  assert.match(SRC['0F1b'], /phase:\s*'R4\.7\.5-retired'/);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -572,7 +544,6 @@ const PER_ELEMENT_GATED_MODULES = [
    *
    * The remaining 2 modules retain their per-element gates until
    * R4.7.5 retires their UI. */
-  ['0F1b', 'syncR46WorkspaceElements', 'workspace-ui'],
   ['0F3a', 'syncR46OrgElements',       'org-ui'],
 ];
 
@@ -663,14 +634,11 @@ check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-
   }
 });
 
-check('L.regression-applyR46BodyAttrs-mirrors-documentElement: html element gets the attributes too', () => {
-  /* R4.6.3 — applyR46BodyAttrs iterates BOTH document.body and
-   * document.documentElement. Both targets receive the data-h2o-r46-
-   * hide-{org,workspace} attribute, so even if a host framework
-   * strips body attrs, the html element keeps them. */
-  const body = SRC['0F1b'].match(/function applyR46BodyAttrs\s*\(\s*\)\s*\{[\s\S]*?^\s{2}\}/m);
-  assert.ok(body);
-  assert.match(body[0], /\[D\.body,\s*D\.documentElement\]/);
+check('L.R4.7.5: 0F1b no longer owns body/html workspace attributes', () => {
+  assert.equal(/function applyR46BodyAttrs\b/.test(SRC['0F1b']), false,
+    '0F1b live source should no longer mutate body/html attributes for retired workspace UI');
+  assert.equal(/data-h2o-r46-hide-workspace/.test(STRIPPED['0F1b']), false,
+    '0F1b live code should not contain workspace hide attribute logic after R4.7.5');
 });
 
 check('K.capture-not-hidden: NO module includes capture-menu cgxui values in its hide rule', () => {
@@ -838,10 +806,15 @@ check('M.0F1k: diagnose() exposes nativeFlagDefaults (operator visibility)', () 
   assert.match(SRC['0F1k'], /nativeFlagDefaults:\s*\{\s*\.\.\.NATIVE_FLAG_DEFAULTS\s*\}/);
 });
 
-check('M.banner-restore-handler-unchanged: 0F1b banner still calls set(true) + reload', () => {
-  assert.match(SRC['0F1b'], /flags\.set\('library\.nativeWorkspaceUi',\s*true\)/);
-  assert.match(SRC['0F1b'], /flags\.set\('library\.nativeOrganizationUi',\s*true\)/);
-  assert.match(SRC['0F1b'], /location\.reload\(\)/);
+check('M.R4.7.5: 0F1b banner restore handler is archived, not live', () => {
+  assert.equal(/flags\.set\('library\.nativeWorkspaceUi',\s*true\)/.test(STRIPPED['0F1b']), false,
+    '0F1b live source still contains restore-native flag writes');
+  assert.equal(/location\.reload\(\)/.test(STRIPPED['0F1b']), false,
+    '0F1b live source still contains restore-native reload');
+  const archive = fs.readFileSync(abs('retired-features/native-library-ui/0F1b-library-workspace/library-workspace-ui.js'), 'utf8');
+  assert.match(archive, /flags\.set\('library\.nativeWorkspaceUi',\s*true\)/);
+  assert.match(archive, /flags\.set\('library\.nativeOrganizationUi',\s*true\)/);
+  assert.match(archive, /location\.reload\(\)/);
 });
 
 check('M.capture-untouched-by-flip: capture functions are not gated by R4.6.4', () => {
@@ -1060,17 +1033,18 @@ for (const dir of R47_MODULE_DIRS) {
   });
 }
 
-check('N.r47.x-staged-code-moves: only R4.7.2/R4.7.3/R4.7.4-retired subfolders may contain .js', () => {
+check('N.r47.x-staged-code-moves: only retired R4.7.x subfolders may contain .js', () => {
   /* R4.7.1 was scaffolding only. R4.7.2 retired 0F4a categories
-   * sidebar UI (categories-sidebar.js). R4.7.3 retired 0F6a labels
-   * sidebar UI (labels-sidebar.js). R4.7.4 retires 0F2a projects
-   * sidebar row UI (projects-sidebar-rows.js). R4.7.5 will retire
-   * the remaining 3 module subfolders. Until then, those 3
-   * subfolders must remain bare except for their README.md. */
+   * sidebar UI. R4.7.3 retired 0F6a labels sidebar UI. R4.7.4
+   * retired 0F2a projects sidebar row UI. R4.7.5 retires 0F1b
+   * Native Workspace UI and the entire 0F1d Native Insights UI.
+   * 0F3a remains out of scope and must stay README-only. */
   const R47_RETIRED_JS_DIRS = new Set([
-    '0F4a-categories-ui',  /* R4.7.2 */
-    '0F6a-labels-ui',      /* R4.7.3 */
-    '0F2a-projects-ui',    /* R4.7.4 */
+    '0F4a-categories-ui',     /* R4.7.2 */
+    '0F6a-labels-ui',         /* R4.7.3 */
+    '0F2a-projects-ui',       /* R4.7.4 */
+    '0F1b-library-workspace', /* R4.7.5 */
+    '0F1d-library-insights',  /* R4.7.5 */
   ]);
   for (const dir of R47_MODULE_DIRS) {
     const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
@@ -1889,6 +1863,213 @@ check('Q.invariants: R4.7.2 + R4.7.3 invariants still hold (cross-slice canary)'
   assert.match(SRC['0F6a'], /^\s*function createLabel\s*\(/m);
   assert.match(SRC['0F6a'], /^\s*function renameLabel\s*\(/m);
   assert.match(SRC['0F6a'], /^\s*function deleteLabel\s*\(/m);
+});
+
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section R — R4.7.5 Native Library Workspace UI + Insights retired
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section R — R4.7.5 Workspace UI + Insights retired');
+
+const R_1B_ARCHIVE = R47_ROOT + '/0F1b-library-workspace/library-workspace-ui.js';
+const R_1B_EXTRACTED = R47_ROOT + '/0F1b-library-workspace/extracted-from-0F1b.md';
+const R_1B_README = R47_ROOT + '/0F1b-library-workspace/README.md';
+const R_1D_ARCHIVE = R47_ROOT + '/0F1d-library-insights/0F1d-original.js';
+const R_1D_EXTRACTED = R47_ROOT + '/0F1d-library-insights/extracted-from-0F1d.md';
+const R_1D_README = R47_ROOT + '/0F1d-library-insights/README.md';
+const R_PATH_MAP = R47_ROOT + '/original-path-map.md';
+
+check('R.archive: 0F1b library-workspace-ui.js exists and preserves full original source', () => {
+  assert.ok(fs.existsSync(abs(R_1B_ARCHIVE)), R_1B_ARCHIVE + ' not found');
+  const src = fs.readFileSync(abs(R_1B_ARCHIVE), 'utf8');
+  assert.match(src, /Block 1 of 6/);
+  assert.match(src, /Block 6 of 6/);
+  assert.match(src, /function mountPage\(page\)/);
+  assert.match(src, /function renderWorkspaceBody\b/);
+  assert.match(src, /function ensureTopLibraryButton\b/);
+  assert.match(src, /function ensureRailLibraryButton\b/);
+  assert.ok(src.split(/\n/).length > 4800, '0F1b archive should preserve the full original implementation');
+});
+
+check('R.archive: 0F1d-original.js exists and preserves full original renderer', () => {
+  assert.ok(fs.existsSync(abs(R_1D_ARCHIVE)), R_1D_ARCHIVE + ' not found');
+  const src = fs.readFileSync(abs(R_1D_ARCHIVE), 'utf8');
+  assert.match(src, /Block 1 of 1 — Entire 0F1d Explorer \+ Analytics/);
+  assert.match(src, /function renderExplorer\b/);
+  assert.match(src, /function renderAnalytics\b/);
+  assert.match(src, /function ensureStyle\b/);
+  assert.ok(src.split(/\n/).length > 1400, '0F1d archive should preserve the full original implementation');
+});
+
+check('R.source: 0F1b live source is a compact retired stub', () => {
+  const lines = SRC['0F1b'].split(/\n/).length;
+  assert.ok(lines < 350, '0F1b live line count ' + lines + ' expected compact stub after R4.7.5');
+  assert.match(SRC['0F1b'], /R4\.7\.5 — Native Library Workspace UI retired/);
+  assert.match(SRC['0F1b'], /retired-features\/native-library-ui\/0F1b-library-workspace\/library-workspace-ui\.js/);
+});
+
+check('R.source: 0F1b no longer defines retired UI renderers', () => {
+  const src = SRC['0F1b'];
+  for (const symbol of [
+    'buildR46DeprecationBanner',
+    'applyR46BodyAttrs',
+    'syncR46WorkspaceElements',
+    'installR46WorkspaceCssGate',
+    'ensureTopLibraryButton',
+    'ensureRailLibraryButton',
+    'mountPage',
+    'makeWorkspacePage',
+    'renderWorkspaceBody',
+    'renderDashboard',
+    'renderOverview',
+    'renderOrganize',
+    'renderInsightsTab',
+  ]) {
+    assert.equal(new RegExp('^\\s*function ' + symbol + '\\b', 'm').test(src), false,
+      '0F1b still defines retired UI function ' + symbol);
+  }
+});
+
+check('R.source: 0F1b keeps diagnostic helpers and deprecation namespace', () => {
+  assert.match(SRC['0F1b'], /function isNativeWorkspaceUiEnabled\s*\(\s*\)/);
+  assert.match(SRC['0F1b'], /function isNativeOrganizationUiEnabled\s*\(\s*\)/);
+  assert.match(SRC['0F1b'], /function isNativeCaptureOnlyMode\s*\(\s*\)/);
+  assert.match(SRC['0F1b'], /H2O\.deprecation\.native\['0F1b'\]/);
+  assert.match(SRC['0F1b'], /function selfCheck\s*\(\s*\)/);
+});
+
+check('R.source: 0F1b compatibility API is no-op retired, not UI-injecting', () => {
+  assert.match(SRC['0F1b'], /const owner = \{/);
+  assert.match(SRC['0F1b'], /openWorkspace\(opts = \{\}\)[\s\S]*retiredResult\('openWorkspace'/);
+  assert.match(SRC['0F1b'], /ensureTopLibraryButton\(reason = 'api'\)[\s\S]*retiredResult\('ensureTopLibraryButton'/);
+  assert.match(SRC['0F1b'], /ensureRailLibraryButton\(reason = 'api'\)[\s\S]*retiredResult\('ensureRailLibraryButton'/);
+  assert.equal(/D\.createElement\(/.test(STRIPPED['0F1b']), false,
+    '0F1b live stub should not create DOM elements');
+});
+
+check('R.source: 0F1b registers owner/service only, not page/route', () => {
+  assert.match(SRC['0F1b'], /registerOwner\?\.\('library-workspace'/);
+  assert.match(SRC['0F1b'], /registerService\?\.\('library-workspace'/);
+  assert.equal(/registerPage\?\.\(/.test(SRC['0F1b']), false);
+  assert.equal(/registerRoute\?\.\(/.test(SRC['0F1b']), false);
+});
+
+check('R.source: 0F1d live source is a compact retired stub', () => {
+  const lines = SRC['0F1d'].split(/\n/).length;
+  assert.ok(lines < 180, '0F1d live line count ' + lines + ' expected compact stub after R4.7.5');
+  assert.match(SRC['0F1d'], /R4\.7\.5 — 0F1d Library Insights retired in full/);
+  assert.match(SRC['0F1d'], /retired-features\/native-library-ui\/0F1d-library-insights\/0F1d-original\.js/);
+});
+
+check('R.source: 0F1d no longer exposes Explorer or Analytics render APIs', () => {
+  assert.equal(/renderExplorer\s*\(/.test(STRIPPED['0F1d']), false,
+    '0F1d live source still references renderExplorer');
+  assert.equal(/renderAnalytics\s*\(/.test(STRIPPED['0F1d']), false,
+    '0F1d live source still references renderAnalytics');
+  assert.equal(/function ensureStyle\b/.test(SRC['0F1d']), false,
+    '0F1d live source still defines ensureStyle');
+  assert.equal(/D\.createElement\(/.test(STRIPPED['0F1d']), false,
+    '0F1d live stub should not create DOM elements');
+});
+
+check('R.source: 0F1d keeps diagnostics + no-op refresh only', () => {
+  assert.match(SRC['0F1d'], /H2O\.LibraryInsightsBootDiag/);
+  assert.match(SRC['0F1d'], /MOD\.refresh = refresh/);
+  assert.match(SRC['0F1d'], /MOD\.selfCheck = selfCheck/);
+  assert.match(SRC['0F1d'], /registeredOwner/);
+  assert.match(SRC['0F1d'], /registeredService/);
+});
+
+check('R.doc: 0F1b extracted doc records R4.7.5 ranges and boundaries', () => {
+  assert.ok(fs.existsSync(abs(R_1B_EXTRACTED)), R_1B_EXTRACTED + ' not found');
+  const doc = fs.readFileSync(abs(R_1B_EXTRACTED), 'utf8');
+  assert.match(doc, /R4\.7\.5/);
+  for (const range of ['108-196', '198-265', '956-2468', '2469-2784', '2800-3658', '3666-4881']) {
+    assert.ok(doc.includes(range), '0F1b extracted doc missing range ' + range);
+  }
+  assert.match(doc, /0F3a Folders/);
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /0D3\/3X|0D3 and 3X/);
+  assert.match(doc, /Studio files/);
+});
+
+check('R.doc: 0F1d extracted doc records entire-file move', () => {
+  assert.ok(fs.existsSync(abs(R_1D_EXTRACTED)), R_1D_EXTRACTED + ' not found');
+  const doc = fs.readFileSync(abs(R_1D_EXTRACTED), 'utf8');
+  assert.match(doc, /R4\.7\.5/);
+  assert.match(doc, /1-1445/);
+  assert.match(doc, /Entire Explorer \+ Analytics/);
+  assert.match(doc, /renderExplorer/);
+  assert.match(doc, /renderAnalytics/);
+  assert.match(doc, /0F1c Library Index/);
+});
+
+check('R.doc: 0F1b README reports R4.7.5 RETIRED status + replacements', () => {
+  assert.ok(fs.existsSync(abs(R_1B_README)), R_1B_README + ' not found');
+  const doc = fs.readFileSync(abs(R_1B_README), 'utf8');
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false);
+  assert.match(doc, /R4\.7\.5/);
+  assert.match(doc, /RETIRED/);
+  assert.match(doc, /Desktop Studio/);
+  assert.match(doc, /S0F1d/);
+  assert.match(doc, /S0Z1g/);
+  assert.match(doc, /0F3a Folders/);
+  assert.match(doc, /0F5a/);
+});
+
+check('R.doc: 0F1d README reports R4.7.5 RETIRED status + replacement', () => {
+  assert.ok(fs.existsSync(abs(R_1D_README)), R_1D_README + ' not found');
+  const doc = fs.readFileSync(abs(R_1D_README), 'utf8');
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false);
+  assert.match(doc, /R4\.7\.5/);
+  assert.match(doc, /RETIRED/);
+  assert.match(doc, /S0F1d/);
+  assert.match(doc, /0F1c Library Index/);
+  assert.match(doc, /0F3a Folders/);
+});
+
+check('R.doc: original-path-map.md records R4.7.5 moves', () => {
+  const doc = fs.readFileSync(abs(R_PATH_MAP), 'utf8');
+  assert.match(doc, /R4\.7\.5 moves the Native Library Workspace UI/);
+  assert.match(doc, /library-workspace-ui\.js/);
+  assert.match(doc, /0F1d-original\.js/);
+  assert.match(doc, /Folders are not in R4\.7\.5 scope/);
+  assert.match(doc, /956-2468/);
+  assert.match(doc, /1-1445/);
+});
+
+check('R.invariants: 0F3a Folders untouched by R4.7.5', () => {
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F3a'], /function installR46OrgCssGate\b/);
+  assert.match(SRC['0F3a'], /function syncR46OrgElements\b/);
+});
+
+check('R.invariants: 0F5a byte-exact after R4.7.5', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    '0F5a size changed during R4.7.5: ' + stat.size + ' vs baseline 273099');
+});
+
+check('R.invariants: capture business logic still present after R4.7.5', () => {
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
+});
+
+check('R.invariants: 0F2a projects data layer still active after R4.7.5', () => {
+  assert.match(SRC['0F2a'], /function OBS_hookProjectsNativeFetchCaptureOnce\b/);
+  assert.match(SRC['0F2a'], /async function PROJECTS_fetchAllProjects\b/);
+  assert.match(SRC['0F2a'], /function PROJECTS_reconcileStoreSnapshot\b/);
+  assert.match(SRC['0F2a'], /function OBS_hookProjectsMorePageOverrideOnce\b/);
+});
+
+check('R.invariants: R4.7.2/R4.7.3/R4.7.4 retirements remain intact', () => {
+  assert.match(SRC['0F4a'], /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F6a'], /R4\.7\.3 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F2a'], /R4\.7\.4 — R4\.6\.3 per-element org gate retired/);
+  assert.match(SRC['0F2a'], /function UI_applyProjectsNativeControls\s*\([^)]*\)\s*\{\s*\/\* no-op \(R4\.7\.4\) \*\//);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
