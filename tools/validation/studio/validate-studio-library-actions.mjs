@@ -265,6 +265,107 @@ check('R4.1: S0F1j preserves native-context-required path on MV3 for setCategory
     `expected at least 3 'native-context-required' references (addToLibrary, saveToFolder, setCategory); got ${occurrences}`);
 });
 
+// ── 9. R4.2 — S0F6b Labels Actions module structural checks ────────────
+
+const S0F6B_REL = 'src-surfaces-base/studio/S0F6b. 🎬 Labels Actions - Studio.js';
+const S0F6B_BASENAME = 'S0F6b. 🎬 Labels Actions - Studio.js';
+
+check('R4.2: S0F6b file exists', () => {
+  assert.ok(fs.existsSync(abs(S0F6B_REL)), `${S0F6B_REL} missing`);
+});
+
+const s0f6bSrc = fs.existsSync(abs(S0F6B_REL)) ? read(S0F6B_REL) : '';
+
+check('R4.2: S0F6b is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f6bSrc, /if\s*\(\s*!detectTauri\s*\(\s*\)\s*\)\s*return/,
+    'S0F6b must bail when not Tauri');
+});
+
+check('R4.2: S0F6b registers H2O.Studio.actions.labels', () => {
+  assert.match(s0f6bSrc, /H2O\.Studio\.actions\.labels\s*=/,
+    'must assign H2O.Studio.actions.labels');
+});
+
+check('R4.2: S0F6b exposes all 9 required methods + diagnose', () => {
+  for (const fn of ['create', 'rename', 'update', 'remove', 'bindChat',
+                    'unbindChat', 'replaceForChat', 'listForChat', 'diagnose']) {
+    assert.match(s0f6bSrc, new RegExp(`\\b${fn}:\\s*${fn}\\b`),
+      `S0F6b must expose ${fn} in its API object`);
+  }
+  // 'delete' is exposed as an alias to remove via quoted key
+  assert.match(s0f6bSrc, /['"]delete['"]:\s*remove/,
+    `S0F6b should expose 'delete' as an alias for remove`);
+});
+
+check('R4.2: S0F6b dispatches the canonical LibraryIndex refresh event', () => {
+  assert.match(s0f6bSrc, /evt:h2o:library-index:refresh-request/,
+    'must dispatch the canonical refresh event after mutations');
+  // Must use the labels-actions: reason prefix (per R4.1 / R4.2 convention)
+  assert.match(s0f6bSrc, /labels-actions:/,
+    'refresh reasons must use the labels-actions: prefix');
+});
+
+check('R4.2: S0F6b uses H2O.Studio.store.labels (no new storage layer)', () => {
+  assert.match(s0f6bSrc, /H2O\.Studio\.store\.labels/,
+    'must call store.labels for writes');
+  assert.doesNotMatch(s0f6bSrc, /plugin:sql\|execute/,
+    'must NOT touch plugin:sql directly — only via store API');
+});
+
+check('R4.2: studio.html includes <script src="./S0F6b..."> after S0F6a', () => {
+  const html = read(STUDIO_HTML_REL);
+  assert.match(html, /<script src="\.\/S0F6b\. 🎬 Labels Actions - Studio\.js"><\/script>/,
+    'studio.html must include S0F6b script tag');
+  const s0f6a = html.indexOf('S0F6a. 🎬 Labels - Studio.js');
+  const s0f6b = html.indexOf('S0F6b. 🎬 Labels Actions - Studio.js');
+  assert.ok(s0f6a > 0 && s0f6b > 0, 'both S0F6a and S0F6b refs must exist in studio.html');
+  assert.ok(s0f6a < s0f6b, 'S0F6b must load after S0F6a (read facade first)');
+});
+
+check('R4.2: pack-studio.mjs has S0F6b in BOTH SOURCE_FILES and OUT_FILES', () => {
+  assert.ok(SOURCE_FILES.includes(S0F6B_BASENAME), 'S0F6b missing from SOURCE_FILES');
+  assert.ok(OUT_FILES.includes(S0F6B_BASENAME), 'S0F6b missing from OUT_FILES');
+});
+
+check('R4.2: pack-studio.mjs has S0F6b at MATCHING index in both lists', () => {
+  const srcIdx = SOURCE_FILES.indexOf(S0F6B_BASENAME);
+  const outIdx = OUT_FILES.indexOf(S0F6B_BASENAME);
+  assert.equal(srcIdx, outIdx,
+    `source/out index mismatch: source[${srcIdx}], out[${outIdx}]`);
+});
+
+check('R4.2: S0F1j exposes setLabels / addLabel / removeLabel methods', () => {
+  for (const fn of ['setLabels', 'addLabel', 'removeLabel']) {
+    assert.match(s0f1jSrc, new RegExp(`async function ${fn}\\s*\\(`),
+      `S0F1j must declare async function ${fn}`);
+  }
+});
+
+check('R4.2: S0F1j routes labels facade through H2O.Studio.actions.labels on Desktop', () => {
+  // Each labels facade method (setLabels, addLabel, removeLabel)
+  // dereferences `H2O.Studio?.actions?.labels` into a local `actions`
+  // const and then calls actions.{replaceForChat|bindChat|unbindChat}.
+  // Verify BOTH halves of the contract:
+  assert.match(s0f1jSrc, /H2O\.Studio\?\.actions\?\.labels/,
+    'labels facade must dereference H2O.Studio?.actions?.labels');
+  // Each of the three store-side methods we wrap must be called somewhere
+  // in S0F1j's body (the labels facade is the only caller).
+  for (const method of ['replaceForChat', 'bindChat', 'unbindChat']) {
+    assert.match(s0f1jSrc, new RegExp(`actions\\.${method}\\s*\\(`),
+      `labels facade must call actions.${method}(...)`);
+  }
+});
+
+check('R4.2: S0F1j preserves native-context-required path on MV3 for labels facade', () => {
+  // After R4.2 there are 6 expected 'native-context-required' references:
+  // addToLibrary, saveToFolder, setCategory (R4.1), setLabels, addLabel,
+  // removeLabel (R4.2). Each method has one MV3-branch reference plus
+  // possibly other status emissions, so we require >= 6.
+  const occurrences = (s0f1jSrc.match(/native-context-required/g) || []).length;
+  assert.ok(occurrences >= 6,
+    `expected at least 6 'native-context-required' references after R4.2; got ${occurrences}`);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

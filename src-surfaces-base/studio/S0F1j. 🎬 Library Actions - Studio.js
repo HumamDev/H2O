@@ -34,6 +34,9 @@
       saveCalls: 0,
       openCalls: 0,
       setCategoryCalls: 0,
+      setLabelsCalls: 0,
+      addLabelCalls: 0,
+      removeLabelCalls: 0,
       unsupportedCalls: 0,
       opened: 0,
       errors: 0,
@@ -42,6 +45,9 @@
     lastSave: null,
     lastOpen: null,
     lastSetCategory: null,
+    lastSetLabels: null,
+    lastAddLabel: null,
+    lastRemoveLabel: null,
     errors: [],
     core: {
       usedFor: {
@@ -423,6 +429,232 @@
     }
   }
 
+  /* R4.2 — Labels facade methods. Same Desktop/MV3 routing pattern as
+   * setCategory; routes through H2O.Studio.actions.labels.* which
+   * wraps store.labels with refresh-event dispatch. Three methods:
+   *
+   *   setLabels(target, {labelIds})    — full replacement (drops all
+   *                                       existing, inserts the new set;
+   *                                       empty array clears all labels)
+   *   addLabel(target, {labelId})      — idempotent single-label add
+   *                                       (no-op if already bound)
+   *   removeLabel(target, {labelId})   — single-label remove (returns
+   *                                       wasBound flag for diagnostics)
+   *
+   * All three return native-context-required on MV3 to preserve the
+   * existing Chrome workflow. None of the three depend on a chats row
+   * existing first — label_bindings has no FK to chats so orphan
+   * bindings (chats not yet imported) are tolerated and resolve once
+   * the chat arrives via R3 import. */
+  async function setLabels(target = {}, options = {}) {
+    diag.counts.setLabelsCalls += 1;
+    const source = firstString(options.source, 'studio:set-labels');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const labelIds = Array.isArray(options.labelIds) ? options.labelIds : null;
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('setLabels', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write labels on MV3 in R4.2; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId,
+          labelIds,
+          supportedInStudio: false,
+        });
+        diag.lastSetLabels = out;
+        return normalizeResultForDiag('setLabels', out);
+      }
+
+      const actions = H2O.Studio?.actions?.labels;
+      if (!actions || typeof actions.replaceForChat !== 'function') {
+        const out = baseResult('setLabels', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.labels not loaded — verify S0F6b is in the bundle',
+          chatId,
+          labelIds,
+        });
+        diag.lastSetLabels = out;
+        return normalizeResultForDiag('setLabels', out);
+      }
+      if (!chatId) {
+        const out = baseResult('setLabels', 'chat-id-required', { ok: false, chatId });
+        diag.lastSetLabels = out;
+        return normalizeResultForDiag('setLabels', out);
+      }
+      if (labelIds === null) {
+        const out = baseResult('setLabels', 'labels-array-required', {
+          ok: false, chatId,
+          reason: 'options.labelIds must be an array (pass [] to clear)',
+        });
+        diag.lastSetLabels = out;
+        return normalizeResultForDiag('setLabels', out);
+      }
+
+      const actionResult = await actions.replaceForChat(chatId, labelIds);
+      const out = baseResult('setLabels',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId,
+          labelIds: (actionResult && actionResult.labelIds) || [],
+          count: (actionResult && actionResult.count) || 0,
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastSetLabels = out;
+      return normalizeResultForDiag('setLabels', out);
+    } catch (e) {
+      pushError('setLabels', e);
+      const out = baseResult('setLabels', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastSetLabels = out;
+      return normalizeResultForDiag('setLabels', out);
+    }
+  }
+
+  async function addLabel(target = {}, options = {}) {
+    diag.counts.addLabelCalls += 1;
+    const source = firstString(options.source, 'studio:add-label');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const labelId = trimString(options.labelId);
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('addLabel', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write labels on MV3 in R4.2; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId, labelId,
+          supportedInStudio: false,
+        });
+        diag.lastAddLabel = out;
+        return normalizeResultForDiag('addLabel', out);
+      }
+
+      const actions = H2O.Studio?.actions?.labels;
+      if (!actions || typeof actions.bindChat !== 'function') {
+        const out = baseResult('addLabel', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.labels not loaded — verify S0F6b is in the bundle',
+          chatId, labelId,
+        });
+        diag.lastAddLabel = out;
+        return normalizeResultForDiag('addLabel', out);
+      }
+      if (!chatId) {
+        const out = baseResult('addLabel', 'chat-id-required', { ok: false, chatId, labelId });
+        diag.lastAddLabel = out;
+        return normalizeResultForDiag('addLabel', out);
+      }
+      if (!labelId) {
+        const out = baseResult('addLabel', 'label-id-required', { ok: false, chatId, labelId });
+        diag.lastAddLabel = out;
+        return normalizeResultForDiag('addLabel', out);
+      }
+
+      const actionResult = await actions.bindChat(chatId, labelId);
+      const out = baseResult('addLabel',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId, labelId,
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastAddLabel = out;
+      return normalizeResultForDiag('addLabel', out);
+    } catch (e) {
+      pushError('addLabel', e);
+      const out = baseResult('addLabel', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastAddLabel = out;
+      return normalizeResultForDiag('addLabel', out);
+    }
+  }
+
+  async function removeLabel(target = {}, options = {}) {
+    diag.counts.removeLabelCalls += 1;
+    const source = firstString(options.source, 'studio:remove-label');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const labelId = trimString(options.labelId);
+
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('removeLabel', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write labels on MV3 in R4.2; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId, labelId,
+          supportedInStudio: false,
+        });
+        diag.lastRemoveLabel = out;
+        return normalizeResultForDiag('removeLabel', out);
+      }
+
+      const actions = H2O.Studio?.actions?.labels;
+      if (!actions || typeof actions.unbindChat !== 'function') {
+        const out = baseResult('removeLabel', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.labels not loaded — verify S0F6b is in the bundle',
+          chatId, labelId,
+        });
+        diag.lastRemoveLabel = out;
+        return normalizeResultForDiag('removeLabel', out);
+      }
+      if (!chatId) {
+        const out = baseResult('removeLabel', 'chat-id-required', { ok: false, chatId, labelId });
+        diag.lastRemoveLabel = out;
+        return normalizeResultForDiag('removeLabel', out);
+      }
+      if (!labelId) {
+        const out = baseResult('removeLabel', 'label-id-required', { ok: false, chatId, labelId });
+        diag.lastRemoveLabel = out;
+        return normalizeResultForDiag('removeLabel', out);
+      }
+
+      const actionResult = await actions.unbindChat(chatId, labelId);
+      const out = baseResult('removeLabel',
+        actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error'),
+        {
+          ok: !!(actionResult && actionResult.ok),
+          chatId, labelId,
+          wasBound: !!(actionResult && actionResult.wasBound),
+          targetSource: targetInfo.source,
+          actionResult,
+          source,
+          supportedInStudio: true,
+        });
+      diag.lastRemoveLabel = out;
+      return normalizeResultForDiag('removeLabel', out);
+    } catch (e) {
+      pushError('removeLabel', e);
+      const out = baseResult('removeLabel', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastRemoveLabel = out;
+      return normalizeResultForDiag('removeLabel', out);
+    }
+  }
+
   function resolveOpenPlan(target = {}, options = {}) {
     const windowTarget = firstString(options.target, options.windowTarget, '_blank');
     const targetInfo = normalizeTarget(target, { ...options, source: firstString(options.source, 'studio:open-linked-chat') });
@@ -514,6 +746,11 @@
          * when actions.categories is loaded; native-context-required
          * on MV3. Reflect that here rather than a static bool. */
         setCategory: LA_isTauri() && !!H2O.Studio?.actions?.categories,
+        /* R4.2 — labels facade methods; same platform-conditional
+         * pattern (Desktop + actions.labels loaded ⇒ true). */
+        setLabels:   LA_isTauri() && !!H2O.Studio?.actions?.labels,
+        addLabel:    LA_isTauri() && !!H2O.Studio?.actions?.labels,
+        removeLabel: LA_isTauri() && !!H2O.Studio?.actions?.labels,
       },
       unsupportedActions: {
         addToLibrary: 'native-context-required',
@@ -521,6 +758,13 @@
         ...(LA_isTauri() && H2O.Studio?.actions?.categories
           ? {}
           : { setCategory: LA_isTauri() ? 'actions-unavailable' : 'native-context-required' }),
+        ...(LA_isTauri() && H2O.Studio?.actions?.labels
+          ? {}
+          : {
+              setLabels:   LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+              addLabel:    LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+              removeLabel: LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
+            }),
       },
       dependencies: {
         core: !!actionsCore(),
@@ -542,6 +786,9 @@
     addToLibrary,
     saveToFolder,
     setCategory,
+    setLabels,
+    addLabel,
+    removeLabel,
     openLinkedChat,
     diagnose,
   };

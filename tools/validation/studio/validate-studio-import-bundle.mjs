@@ -633,6 +633,15 @@ async function main() {
   // event, and handles validation/error paths cleanly.
   await runDesktopCategoriesActionsTests();
 
+  // ── (11) Desktop Labels Write Parity (R4.2) ─────────────────────────
+  // Verifies that H2O.Studio.actions.labels writes catalogs AND
+  // many-to-many bindings via store.labels, dispatches refresh, and
+  // handles replaceForChat / bindChat / unbindChat / listForChat
+  // semantics correctly. Mirrors Group 10 (Categories) plus binding-
+  // specific assertions: idempotent binds, replace-with-empty clears,
+  // cascade on remove.
+  await runDesktopLabelsActionsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -1887,6 +1896,454 @@ async function runDesktopCategoriesActionsTests() {
       'expected writesSinceBoot >= 13; got ' + d.writesSinceBoot);
     assert.ok(d.lastWriteAt > 0);
     assert.equal(typeof d.lastWriteAction, 'string');
+  });
+}
+
+// ── Desktop Labels Actions test runner (R4.2) ─────────────────────────
+async function runDesktopLabelsActionsTests() {
+  console.log('');
+  console.log('── Desktop Labels Write Parity (R4.2) ──────────────────────');
+
+  const S0F6B_REL  = 'src-surfaces-base/studio/S0F6b. 🎬 Labels Actions - Studio.js';
+  const S0F6B_PATH = path.join(REPO_ROOT, S0F6B_REL);
+
+  // Mock store.labels — Map for catalog, Set for bindings, mirroring
+  // the labels.tauri.js public surface: get / create / patch / remove /
+  // bindChat / unbindChat / replaceForChat / listForChat.
+  // label_bindings has composite PK (chat_id, label_id), modeled as a
+  // Set of "chatId::labelId" strings.
+  function makeLabelsStoreMock() {
+    const labels = new Map();   // labelId -> row
+    const bindings = new Set(); // "chatId::labelId"
+    let seq = 0;
+    function bindKey(chatId, labelId) { return String(chatId) + '::' + String(labelId); }
+    return {
+      _labels: labels,
+      _bindings: bindings,
+      _bindKey: bindKey,
+      async get(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        return id && labels.has(id) ? { ...labels.get(id) } : null;
+      },
+      async create(patch) {
+        seq += 1;
+        const id = `lbl_test_${seq}`;
+        const row = {
+          labelId: id,
+          name: String((patch && patch.name) || ''),
+          color: String((patch && patch.color) || ''),
+          source: String((patch && patch.source) || ''),
+          meta: (patch && patch.meta && typeof patch.meta === 'object') ? { ...patch.meta } : {},
+        };
+        labels.set(id, row);
+        return { ...row };
+      },
+      async patch(idInput, partial) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !labels.has(id)) return null;
+        const cur = labels.get(id);
+        const next = { ...cur };
+        if (partial && typeof partial === 'object') {
+          for (const k of Object.keys(partial)) {
+            if (k === 'meta' && partial.meta && typeof partial.meta === 'object') {
+              next.meta = { ...(cur.meta || {}), ...partial.meta };
+            } else {
+              next[k] = partial[k];
+            }
+          }
+        }
+        labels.set(id, next);
+        return { ...next };
+      },
+      async remove(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !labels.has(id)) return false;
+        // Cascade: drop all bindings referencing this labelId first.
+        for (const key of bindings) {
+          if (key.endsWith('::' + id)) bindings.delete(key);
+        }
+        labels.delete(id);
+        return true;
+      },
+      // store.bindChat signature is (labelId, chatId, opts)
+      async bindChat(labelIdInput, chatIdInput /*, opts */) {
+        const lbl = String(labelIdInput == null ? '' : labelIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!lbl || !ch) return false;
+        // INSERT OR IGNORE — idempotent. We add to the Set (which is
+        // already deduped) and return true regardless.
+        bindings.add(bindKey(ch, lbl));
+        return true;
+      },
+      async unbindChat(labelIdInput, chatIdInput) {
+        const lbl = String(labelIdInput == null ? '' : labelIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!lbl || !ch) return false;
+        const key = bindKey(ch, lbl);
+        if (!bindings.has(key)) return false;
+        bindings.delete(key);
+        return true;
+      },
+      // store.replaceForChat signature is (chatId, labelIds, opts)
+      async replaceForChat(chatIdInput, labelIdsInput /*, opts */) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch) return false;
+        const arr = Array.isArray(labelIdsInput) ? labelIdsInput : [];
+        // Drop all existing bindings for this chat
+        for (const key of bindings) {
+          if (key.startsWith(ch + '::')) bindings.delete(key);
+        }
+        // Dedup input and insert
+        const seen = new Set();
+        for (const lbl of arr) {
+          const v = String(lbl == null ? '' : lbl).trim();
+          if (v && !seen.has(v)) {
+            seen.add(v);
+            bindings.add(bindKey(ch, v));
+          }
+        }
+        return true;
+      },
+      async listForChat(chatIdInput) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch) return [];
+        const out = [];
+        for (const key of bindings) {
+          if (!key.startsWith(ch + '::')) continue;
+          const lblId = key.slice(ch.length + 2);
+          const row = labels.get(lblId);
+          if (row) out.push({ ...row });
+        }
+        return out;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox() {
+    const eventTarget = makeEventTarget();
+    const store = makeLabelsStoreMock();
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { store: { labels: store } } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      _eventTarget: eventTarget,
+      _store: store,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F6B_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F6B_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 11.1 — module loads + API shape ─────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F6b loads in Desktop sandbox + registers actions.labels');
+    console.log('  ✓ S0F6b loads in Desktop sandbox + registers actions.labels');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F6b loads', err: msg });
+    console.log(`  ✗ S0F6b loads in Desktop sandbox\n      ${msg}`);
+    return;
+  }
+  const actions = sandbox.H2O?.Studio?.actions?.labels;
+  check('actions.labels namespace + 10 expected methods', () => {
+    assert.ok(actions, 'actions.labels not registered');
+    assert.equal(actions.__installed, true);
+    for (const fn of ['create', 'rename', 'update', 'remove', 'delete',
+                      'bindChat', 'unbindChat', 'replaceForChat',
+                      'listForChat', 'diagnose']) {
+      assert.equal(typeof actions[fn], 'function', `${fn} should be a function`);
+    }
+  });
+  check('diagnose() reports R4.2 phase + storeAvailable=true', () => {
+    const d = actions.diagnose();
+    assert.equal(d.phase, 'R4.2-labels');
+    assert.equal(d.installed, true);
+    assert.equal(d.storeAvailable, true);
+    assert.equal(d.refreshEvent, 'evt:h2o:library-index:refresh-request');
+  });
+
+  // ── 11.2 — create ──────────────────────────────────────────────────
+  let lblA = '';
+  let lblB = '';
+  let lblC = '';
+  await checkAsync('create({name, color}) → ok, returns labelId, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: 'Important', color: '#ff0000', meta: { sort: 1 } });
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.ok(r.labelId && r.labelId.startsWith('lbl_test_'),
+      'expected labelId to be generated');
+    assert.equal(r.name, 'Important');
+    assert.equal(r.color, '#ff0000');
+    lblA = r.labelId;
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:create/);
+  });
+  await checkAsync('create with empty name → name-required, no dispatch', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: '' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+    assert.equal(sandbox._eventTarget._dispatchedEvents.length, 0);
+  });
+  await checkAsync('create two more labels for binding tests', async () => {
+    const b = await actions.create({ name: 'Inbox' });
+    const c = await actions.create({ name: 'Archive' });
+    assert.equal(b.ok, true);
+    assert.equal(c.ok, true);
+    lblB = b.labelId;
+    lblC = c.labelId;
+  });
+
+  // ── 11.3 — rename ──────────────────────────────────────────────────
+  await checkAsync('rename(id, newName) → ok, row updated, refresh dispatched', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.rename(lblA, 'Critical');
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.name, 'Critical');
+    assert.equal(sandbox._store._labels.get(lblA).name, 'Critical');
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:rename/);
+  });
+  await checkAsync('rename non-existent → not-found', async () => {
+    const r = await actions.rename('lbl_phantom', 'Nope');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+  await checkAsync('rename with empty newName → name-required', async () => {
+    const r = await actions.rename(lblA, '');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+  });
+
+  // ── 11.4 — update (color + meta) ───────────────────────────────────
+  await checkAsync('update({color, meta}) merges patch, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.update(lblA, { color: '#0000ff', meta: { sort: 99 } });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.ok(Array.isArray(r.appliedFields));
+    assert.ok(r.appliedFields.includes('color'));
+    assert.ok(r.appliedFields.includes('meta'));
+    const row = sandbox._store._labels.get(lblA);
+    assert.equal(row.color, '#0000ff');
+    assert.equal(row.meta.sort, 99);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:update/);
+  });
+  await checkAsync('update with no supported fields → no-supported-fields', async () => {
+    const r = await actions.update(lblA, { junk: 'value' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'no-supported-fields');
+  });
+  await checkAsync('update non-existent → not-found', async () => {
+    const r = await actions.update('lbl_phantom', { color: '#fff' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+
+  // ── 11.5 — bindChat ────────────────────────────────────────────────
+  await checkAsync('bindChat(chatId, labelId) → ok, store updated, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.bindChat('chat1', lblA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat1', lblA)));
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:bindChat/);
+  });
+  await checkAsync('bindChat is idempotent — re-bind same pair adds no row', async () => {
+    const sizeBefore = sandbox._store._bindings.size;
+    const r1 = await actions.bindChat('chat1', lblA);
+    const r2 = await actions.bindChat('chat1', lblA);
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true);
+    // Set dedups by key — no new rows
+    assert.equal(sandbox._store._bindings.size, sizeBefore);
+  });
+  await checkAsync('bindChat to non-existent label → label-not-found', async () => {
+    const r = await actions.bindChat('chat1', 'lbl_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'label-not-found');
+  });
+  await checkAsync('bindChat missing chatId → chat-id-required', async () => {
+    const r = await actions.bindChat('', lblA);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'chat-id-required');
+  });
+
+  // ── 11.6 — unbindChat ──────────────────────────────────────────────
+  await checkAsync('unbindChat(chatId, labelId) → ok, wasBound=true, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1', lblA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.wasBound, true);
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat1', lblA)), false);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:unbindChat/);
+  });
+  await checkAsync('unbindChat on unbound pair → ok, wasBound=false, NO refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1', lblA);
+    assert.equal(r.ok, true);
+    assert.equal(r.wasBound, false);
+    assert.equal(refreshEvents(sandbox).length, 0,
+      'unbinding a non-existent pair should NOT fire refresh');
+  });
+
+  // ── 11.7 — replaceForChat ──────────────────────────────────────────
+  await checkAsync('replaceForChat(chatId, [a, b]) → ok, both bound, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.replaceForChat('chat2', [lblA, lblB]);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.count, 2);
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', lblA)));
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', lblB)));
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /labels-actions:replaceForChat/);
+  });
+  await checkAsync('replaceForChat drops old labels not in new set', async () => {
+    // chat2 currently has [lblA, lblB]. Replace with [lblB, lblC] → lblA should be gone.
+    const r = await actions.replaceForChat('chat2', [lblB, lblC]);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2);
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', lblA)), false);
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', lblB)));
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat2', lblC)));
+  });
+  await checkAsync('replaceForChat([]) clears all labels for the chat', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.replaceForChat('chat2', []);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 0);
+    // No bindings remain for chat2
+    let remaining = 0;
+    for (const key of sandbox._store._bindings) {
+      if (key.startsWith('chat2::')) remaining += 1;
+    }
+    assert.equal(remaining, 0, 'all chat2 bindings should be cleared');
+  });
+  await checkAsync('replaceForChat with non-array → labels-array-required', async () => {
+    const r = await actions.replaceForChat('chat2', 'not-an-array');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'labels-array-required');
+  });
+  await checkAsync('replaceForChat dedupes duplicate labelIds in input', async () => {
+    const r = await actions.replaceForChat('chat3', [lblA, lblA, lblB, lblA]);
+    assert.equal(r.ok, true);
+    // Store-side dedups; result.count reflects post-dedup
+    assert.equal(r.count, 2, 'expected 2 unique labels after dedup');
+    let chat3Count = 0;
+    for (const key of sandbox._store._bindings) {
+      if (key.startsWith('chat3::')) chat3Count += 1;
+    }
+    assert.equal(chat3Count, 2);
+  });
+
+  // ── 11.8 — listForChat ─────────────────────────────────────────────
+  await checkAsync('listForChat returns full label rows for the chat', async () => {
+    // chat3 currently has [lblA, lblB]
+    const r = await actions.listForChat('chat3');
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2);
+    assert.ok(Array.isArray(r.labels));
+    const ids = r.labels.map(l => l.labelId).sort();
+    assert.deepEqual(ids, [lblA, lblB].sort());
+  });
+  await checkAsync('listForChat on unknown chat → empty array', async () => {
+    const r = await actions.listForChat('chat_never_existed');
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 0);
+    assert.deepEqual(r.labels, []);
+  });
+
+  // ── 11.9 — remove cascades bindings ────────────────────────────────
+  await checkAsync('remove(labelId) deletes bindings + label row', async () => {
+    // lblA is currently bound to chat3 (via replaceForChat above).
+    assert.ok(sandbox._store._bindings.has(sandbox._store._bindKey('chat3', lblA)),
+      'precondition: chat3 has lblA');
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove(lblA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(sandbox._store._labels.has(lblA), false, 'label row deleted');
+    assert.equal(sandbox._store._bindings.has(sandbox._store._bindKey('chat3', lblA)), false,
+      'chat3 binding to lblA cascade-cleared');
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+  });
+  await checkAsync('remove non-existent → not-found, no refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove('lbl_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+    assert.equal(refreshEvents(sandbox).length, 0);
+  });
+
+  // ── 11.10 — delete alias ───────────────────────────────────────────
+  check('actions.labels.delete is the same function as remove', () => {
+    assert.equal(actions['delete'], actions.remove);
+  });
+
+  // ── 11.11 — diagnose counters reflect the run ──────────────────────
+  check('diagnose().writesSinceBoot reflects all mutations attempted', () => {
+    const d = actions.diagnose();
+    // We did at least: create*3, rename*3 (1 ok + 1 not-found + 1 empty),
+    // update*3 (1 ok + 1 no-supported-fields + 1 not-found), bindChat*4,
+    // unbindChat*2, replaceForChat*4, remove*2. listForChat doesn't count
+    // (it's a read). ≥ ~20 writes.
+    assert.ok(d.writesSinceBoot >= 20,
+      'expected writesSinceBoot >= 20; got ' + d.writesSinceBoot);
+    assert.ok(d.lastWriteAt > 0);
   });
 }
 
