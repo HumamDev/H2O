@@ -523,6 +523,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Native/F5 call, apply, watermark write, consumed-op write, trigger, store
   // shim, bulk migration, or UI.
   "sync/execute/library-category-cache-refresh.tauri.js",
+  // F15.8.e: Desktop/Tauri library catalog F5 closure bridge. Settlement-
+  // callable bridge for library.catalog tombstone execute envelopes after
+  // F15.6.a has ingested the F5 review and the review has a post-decision
+  // state. Closes existing F5 rows and shapes Native evidence for
+  // sealed/auto-expired tombstones without calling Native. No decision
+  // recording, catalog mutation, SQLite/cache write, publication, relay/
+  // outbox, watermark write, consumed-op write, store shim, bulk migration,
+  // or UI.
+  "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
   // F14.6.9: Desktop/Tauri execute resume-on-boot coordinator. Re-reads
   // interrupted Execute journal rows and invokes existing preflight, broker,
   // or settlement primitives according to phase. No new adapter, dispatch
@@ -1172,6 +1181,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-settlement-writer.tauri.js",
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   "sync/execute/library-category-cache-refresh.tauri.js",
+  "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/execute/adapters/chat-execute-adapter.tauri.js",
   "sync/execute/execute-capture-materialization.tauri.js",
