@@ -242,6 +242,19 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No Native execution, no apply, no publication, no relay/outbox, no
   // watermark advance, no consumed-op write, no chats.category_id cache.
   "sync/library/library-catalog-apply-event-receipt.tauri.js",
+  // F15.6.b: Desktop/Tauri library binding apply-event receipt. Builds
+  // applyEvent + receipt + auditMetadata + watermarkPreview +
+  // consumedOperationPreview from the F15.5.b binding handoff preview for
+  // bind/unbind. Native-only — per F15.0.0 §6.1 the binding lane has no
+  // F5 path. All eight sideEffectSummary flags stay false on every
+  // success path. For chat-category bindings, the receipt emits a
+  // `chats-category-id-refresh-pending` info warning to make the
+  // materialized cache dependency explicit; the receipt itself never
+  // writes the chats.category_id cache (that is execute-settlement-
+  // writer's exclusive job per F15.0.2 §2.2). No Native execution, no F5
+  // ingest, no apply, no publication, no relay/outbox, no watermark
+  // advance, no consumed-op write, no chats.category_id cache.
+  "sync/library/library-binding-apply-event-receipt.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -1037,6 +1050,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-catalog-handoff-preview.tauri.js",
   "sync/library/library-binding-handoff-preview.tauri.js",
   "sync/library/library-catalog-apply-event-receipt.tauri.js",
+  "sync/library/library-binding-apply-event-receipt.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
