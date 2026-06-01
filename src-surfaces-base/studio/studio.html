@@ -798,6 +798,13 @@
        apply, no publication/relay/outbox, no watermark writes, no
        consumed-op writes, no own timer. -->
   <script src="./sync/snapshot/snapshot-f5-review-queue.tauri.js"></script>
+  <!-- F14.6.13: Desktop/Tauri snapshot execute readiness check.
+       Read-only proof that Snapshot proposal, handoff, receipt,
+       bookkeeping, proof/UI, and F5 review queue surfaces expose the
+       shapes required by the future Snapshot execute adapter. No adapter,
+       dispatch, Native/F5 execution, publication, settlement, watermark,
+       consumed-op, storage, or UI mutation. -->
+  <script src="./sync/snapshot/snapshot-execute-readiness.tauri.js"></script>
   <!-- F14.5.8: Desktop/Tauri capture fresh runtime.
        Builds fresh canonical CaptureArtifact/CaptureEvent objects plus
        owner-handoff, replay, audit, consumed-operation, and watermark preview

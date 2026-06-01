@@ -319,6 +319,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // work outside the ledger, no apply, no publication/relay/outbox,
   // no watermark writes, no consumed-op writes, no own timer.
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
+  // F14.6.13: Desktop/Tauri snapshot execute readiness check.
+  // Read-only proof that Snapshot proposal, handoff, receipt, bookkeeping,
+  // proof/UI, and F5 review queue surfaces expose future Snapshot execute
+  // adapter shapes. No adapter, dispatch, Native/F5 execution, publication,
+  // settlement, watermark, consumed-op, storage, or UI mutation.
+  "sync/snapshot/snapshot-execute-readiness.tauri.js",
   // F14.5.8: Desktop/Tauri capture fresh runtime. Builds fresh canonical
   // CaptureArtifact/CaptureEvent objects plus owner-handoff, replay, audit,
   // consumed-operation, and watermark preview shapes. Fresh mode only: no
@@ -937,6 +943,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/snapshot/snapshot-convergence-proof.tauri.js",
   "sync/snapshot/snapshot-convergence-ui.tauri.js",
   "sync/snapshot/snapshot-f5-review-queue.tauri.js",
+  "sync/snapshot/snapshot-execute-readiness.tauri.js",
   "sync/capture/capture-fresh-runtime.tauri.js",
   "sync/capture/capture-recovery-runtime.tauri.js",
   "sync/execute/execute-journal.tauri.js",
