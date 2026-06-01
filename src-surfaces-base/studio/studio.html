@@ -665,6 +665,12 @@
        publication, relay/outbox, apply, Native/F5 execution, watermark, or
        consumed-op writes. -->
   <script src="./sync/library/library-binding-preflight.tauri.js"></script>
+  <!-- F15.4.a: Desktop/Tauri side-effect-free library catalog proposal
+       candidate generator. Composes F15.3.a preflight and emits redacted
+       proposal/candidate objects only. No storage writes, publication,
+       relay/outbox, apply, Native/F5 execution, watermark, or consumed-op
+       writes. -->
+  <script src="./sync/library/library-catalog-proposal-candidate-generator.tauri.js"></script>
   <!-- F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer.
        Pure function over one chat record (Native mirror / Library Index /
        Registry Core projection) -> the F14.3.0 canonical chat snapshot.
