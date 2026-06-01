@@ -862,7 +862,21 @@
    * atomically). folderId empty/null → unbind via listForChat + unbindChat
    * for every current folder (typically 0 or 1 per V1 chat). Returns a
    * result shape compatible with MV3's setFolderBinding so studio.js's
-   * picker handler doesn't need to branch. */
+   * picker handler doesn't need to branch.
+   *
+   * R4.4: SQLite-write delegation now goes through
+   *   H2O.Studio.actions.folders.bindChat / unbindChat
+   * when that module is loaded (S0F3b). Behavior PRESERVED — same
+   * return shape, same `folder-binding-changed` event dispatch via
+   * emitUpdated, same bustCaches, same explicit getIndex().refresh(),
+   * same recordWrite('folderBinding', ...) diagnostic, same failure
+   * codes. The actions module fires its own canonical refresh-request
+   * event too; both go through S0F1c's single-flight runRefresh so
+   * coalescing is automatic.
+   *
+   * If actions.folders is NOT loaded (defensive: bundle missing S0F3b
+   * for any reason), this function transparently falls back to the
+   * direct store.folders.* calls — preserving the pre-R4.4 contract. */
   async function desktopSetFolderBinding(chatId, folderId, opts) {
     const cid = String(chatId || '').trim();
     const folder = String(folderId || '').trim();
@@ -877,12 +891,28 @@
       recordWrite('folderBinding', { ...result });
       return result;
     }
+    /* R4.4: prefer the actions module when loaded; gracefully fall
+     * back to the legacy direct-store path otherwise. */
+    const actions = (W.H2O && W.H2O.Studio && W.H2O.Studio.actions && W.H2O.Studio.actions.folders) || null;
     try {
       let folderName = '';
       if (folder) {
-        const bindOk = await store.bindChat(folder, cid, { assignedAt: Date.now() });
+        let bindOk = false;
+        let actionResult = null;
+        if (actions && typeof actions.bindChat === 'function') {
+          actionResult = await actions.bindChat(cid, folder);
+          bindOk = !!(actionResult && actionResult.ok);
+        } else {
+          /* Legacy fallback: direct store call (pre-R4.4 behavior). */
+          bindOk = await store.bindChat(folder, cid, { assignedAt: Date.now() });
+        }
         if (!bindOk) {
-          const result = folderWriteFailure('desktop-bind-failed', cid, folder, 'bindChat returned false');
+          /* Surface action-side failure codes if available — gives
+           * callers a richer diagnostic than the legacy boolean. */
+          const reason = (actionResult && actionResult.status === 'folder-not-found')
+            ? 'folder not found in store'
+            : 'bindChat returned false';
+          const result = folderWriteFailure('desktop-bind-failed', cid, folder, reason);
           recordWrite('folderBinding', { ...result });
           return result;
         }
@@ -895,12 +925,20 @@
          * folder_bindings.PRIMARY KEY (chat_id) means listForChat returns
          * at most one row, but loop defensively in case the caller has
          * relaxed that. */
-        const bound = (typeof store.listForChat === 'function') ? await store.listForChat(cid) : [];
-        for (const f of (Array.isArray(bound) ? bound : [])) {
-          const fid = f && f.folderId;
-          if (fid && typeof store.unbindChat === 'function') {
-            try { await store.unbindChat(fid, cid); }
-            catch (e) { err('desktopSetFolderBinding.unbind', e); }
+        if (actions && typeof actions.unbindChat === 'function') {
+          /* actions.unbindChat already does the listForChat + loop;
+           * it's a no-op if the chat had no folder. */
+          try { await actions.unbindChat(cid); }
+          catch (e) { err('desktopSetFolderBinding.unbind.actions', e); }
+        } else {
+          /* Legacy fallback. */
+          const bound = (typeof store.listForChat === 'function') ? await store.listForChat(cid) : [];
+          for (const f of (Array.isArray(bound) ? bound : [])) {
+            const fid = f && f.folderId;
+            if (fid && typeof store.unbindChat === 'function') {
+              try { await store.unbindChat(fid, cid); }
+              catch (e) { err('desktopSetFolderBinding.unbind', e); }
+            }
           }
         }
       }

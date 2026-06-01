@@ -1351,6 +1351,20 @@
   <!-- Feature owner facades (read-only/read-write via chat-list service). -->
   <script src="./S0F2a. 🎬 Projects - Studio.js"></script>
   <script src="./S0F3a. 🎬 Folders - Studio.js"></script>
+  <!-- R4.4 — Desktop-first folders WRITE API. Tauri-only; registers
+       H2O.Studio.actions.folders.{create, rename, update, remove,
+       bindChat, unbindChat, getForChat, listChats}. Single-folder-
+       per-chat semantics (folder_bindings PRIMARY KEY chat_id);
+       bindChat uses INSERT OR REPLACE so rebinding atomically moves
+       a chat between folders. Writes through H2O.Studio.store.folders
+       (SQLite) and dispatches evt:h2o:library-index:refresh-request.
+       Cascade-delete on remove via the existing store contract. No
+       schema change, no migration. S0F1b.desktopSetFolderBinding is
+       refactored to delegate into this module while preserving its
+       return shape, its `folder-binding-changed` event, bustCaches,
+       and recordWrite calls. MV3 path is a silent no-op; S0F1j's
+       setFolder routes to native-context-required there. -->
+  <script src="./S0F3b. 🎬 Folders Actions - Studio.js"></script>
   <script src="./S0F4a. 🎬 Categories - Studio.js"></script>
   <!-- R4.1 — Desktop-first categories WRITE API. Tauri-only; registers
        H2O.Studio.actions.categories.{create, rename, remove, assignChat,

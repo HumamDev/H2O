@@ -510,6 +510,158 @@ check('R4.3: S0F1j preserves native-context-required path on MV3 for tags facade
     `expected at least 9 'native-context-required' references after R4.3; got ${occurrences}`);
 });
 
+// ── 11. R4.4 — S0F3b Folders Actions module structural checks ──────────
+
+const S0F3B_REL = 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js';
+const S0F3B_BASENAME = 'S0F3b. 🎬 Folders Actions - Studio.js';
+const S0F1B_REL = 'src-surfaces-base/studio/S0F1b. 🎬 Library Workspace - Studio.js';
+
+check('R4.4: S0F3b file exists', () => {
+  assert.ok(fs.existsSync(abs(S0F3B_REL)), `${S0F3B_REL} missing`);
+});
+
+const s0f3bSrc = fs.existsSync(abs(S0F3B_REL)) ? read(S0F3B_REL) : '';
+const s0f1bSrc = fs.existsSync(abs(S0F1B_REL)) ? read(S0F1B_REL) : '';
+
+check('R4.4: S0F3b is Tauri-gated (bails on MV3)', () => {
+  assert.match(s0f3bSrc, /if\s*\(\s*!detectTauri\s*\(\s*\)\s*\)\s*return/,
+    'S0F3b must bail when not Tauri');
+});
+
+check('R4.4: S0F3b registers H2O.Studio.actions.folders', () => {
+  assert.match(s0f3bSrc, /H2O\.Studio\.actions\.folders\s*=/,
+    'must assign H2O.Studio.actions.folders');
+});
+
+check('R4.4: S0F3b exposes all 9 required methods + diagnose', () => {
+  for (const fn of ['create', 'rename', 'update', 'remove', 'bindChat',
+                    'unbindChat', 'getForChat', 'listChats', 'diagnose']) {
+    assert.match(s0f3bSrc, new RegExp(`\\b${fn}:\\s*${fn}\\b`),
+      `S0F3b must expose ${fn} in its API object`);
+  }
+  assert.match(s0f3bSrc, /['"]delete['"]:\s*remove/,
+    `S0F3b should expose 'delete' as an alias for remove`);
+});
+
+check('R4.4: S0F3b dispatches the canonical LibraryIndex refresh event', () => {
+  assert.match(s0f3bSrc, /evt:h2o:library-index:refresh-request/,
+    'must dispatch the canonical refresh event after mutations');
+  assert.match(s0f3bSrc, /folders-actions:/,
+    'refresh reasons must use the folders-actions: prefix');
+});
+
+check('R4.4: S0F3b uses H2O.Studio.store.folders (no new storage layer)', () => {
+  assert.match(s0f3bSrc, /H2O\.Studio\.store\.folders/,
+    'must call store.folders for writes');
+  assert.doesNotMatch(s0f3bSrc, /plugin:sql\|execute/,
+    'must NOT touch plugin:sql directly — only via store API');
+});
+
+check('R4.4: studio.html includes <script src="./S0F3b..."> after S0F3a', () => {
+  const html = read(STUDIO_HTML_REL);
+  assert.match(html, /<script src="\.\/S0F3b\. 🎬 Folders Actions - Studio\.js"><\/script>/,
+    'studio.html must include S0F3b script tag');
+  const s0f3a = html.indexOf('S0F3a. 🎬 Folders - Studio.js');
+  const s0f3b = html.indexOf('S0F3b. 🎬 Folders Actions - Studio.js');
+  assert.ok(s0f3a > 0 && s0f3b > 0, 'both S0F3a and S0F3b refs must exist in studio.html');
+  assert.ok(s0f3a < s0f3b, 'S0F3b must load after S0F3a (read facade first)');
+});
+
+check('R4.4: pack-studio.mjs has S0F3b in BOTH SOURCE_FILES and OUT_FILES', () => {
+  assert.ok(SOURCE_FILES.includes(S0F3B_BASENAME), 'S0F3b missing from SOURCE_FILES');
+  assert.ok(OUT_FILES.includes(S0F3B_BASENAME), 'S0F3b missing from OUT_FILES');
+});
+
+check('R4.4: pack-studio.mjs has S0F3b at MATCHING index in both lists', () => {
+  const srcIdx = SOURCE_FILES.indexOf(S0F3B_BASENAME);
+  const outIdx = OUT_FILES.indexOf(S0F3B_BASENAME);
+  assert.equal(srcIdx, outIdx,
+    `source/out index mismatch: source[${srcIdx}], out[${outIdx}]`);
+});
+
+check('R4.4 REGRESSION: S0F1b.desktopSetFolderBinding delegates through actions.folders', () => {
+  // The refactor must route the SQLite bind/unbind through the actions
+  // module when present. Verify both call-sites: bind path (folder
+  // truthy) and unbind path (folder empty).
+  assert.match(s0f1bSrc, /W\.H2O.*\.actions.*\.folders/,
+    'S0F1b must reference W.H2O.Studio.actions.folders');
+  assert.match(s0f1bSrc, /actions\.bindChat\s*\(\s*cid,\s*folder\s*\)/,
+    'S0F1b must call actions.bindChat(cid, folder) — chat-first signature');
+  assert.match(s0f1bSrc, /actions\.unbindChat\s*\(\s*cid\s*\)/,
+    'S0F1b must call actions.unbindChat(cid) — single-folder-per-chat');
+});
+
+check('R4.4 REGRESSION: S0F1b preserves folder-binding-changed event dispatch', () => {
+  // The downstream consumers (sidebar, insights) listen for this event.
+  // The refactor must NOT remove the emitUpdated call. We also check it
+  // appears INSIDE desktopSetFolderBinding's success path — not just
+  // anywhere in the file.
+  const fnStart = s0f1bSrc.indexOf('async function desktopSetFolderBinding');
+  assert.ok(fnStart > 0, 'desktopSetFolderBinding must exist');
+  const fnEnd = s0f1bSrc.indexOf('async function setFolderBinding', fnStart);
+  assert.ok(fnEnd > fnStart, 'setFolderBinding wrapper must follow desktopSetFolderBinding');
+  const fnBody = s0f1bSrc.slice(fnStart, fnEnd);
+  assert.match(fnBody, /emitUpdated\s*\(\s*['"]folder-binding-changed['"]/,
+    'desktopSetFolderBinding body must still emit folder-binding-changed');
+});
+
+check('R4.4 REGRESSION: S0F1b preserves bustCaches + getIndex().refresh + recordWrite', () => {
+  // The three downstream side-effects that pre-R4.4 consumers depend on.
+  const fnStart = s0f1bSrc.indexOf('async function desktopSetFolderBinding');
+  const fnEnd = s0f1bSrc.indexOf('async function setFolderBinding', fnStart);
+  const fnBody = s0f1bSrc.slice(fnStart, fnEnd);
+  assert.match(fnBody, /bustCaches\s*\(\s*['"]desktop-setFolderBinding['"]\s*\)/,
+    'desktopSetFolderBinding must still call bustCaches');
+  assert.match(fnBody, /getIndex\(\)\?\.refresh\s*\(\s*['"]desktop-setFolderBinding['"]/,
+    'desktopSetFolderBinding must still call getIndex()?.refresh(...)');
+  assert.match(fnBody, /recordWrite\s*\(\s*['"]folderBinding['"]/,
+    'desktopSetFolderBinding must still call recordWrite');
+});
+
+check('R4.4 REGRESSION: S0F1b legacy fallback path is preserved', () => {
+  // If actions.folders isn't loaded (defensive), the function must
+  // still fall back to direct store.folders.bindChat / unbindChat
+  // so pre-R4.4 behavior is preserved even with a missing S0F3b.
+  const fnStart = s0f1bSrc.indexOf('async function desktopSetFolderBinding');
+  const fnEnd = s0f1bSrc.indexOf('async function setFolderBinding', fnStart);
+  const fnBody = s0f1bSrc.slice(fnStart, fnEnd);
+  assert.match(fnBody, /store\.bindChat\s*\(\s*folder,\s*cid/,
+    'desktopSetFolderBinding must keep legacy store.bindChat(folder, cid) fallback');
+  assert.match(fnBody, /store\.unbindChat\s*\(\s*fid,\s*cid\s*\)/,
+    'desktopSetFolderBinding must keep legacy store.unbindChat(fid, cid) fallback');
+});
+
+check('R4.4: S0F1j exposes setFolder method', () => {
+  assert.match(s0f1jSrc, /async function setFolder\s*\(/,
+    'S0F1j must declare async function setFolder');
+});
+
+check('R4.4: S0F1j routes setFolder through H2O.Studio.actions.folders on Desktop', () => {
+  assert.match(s0f1jSrc, /H2O\.Studio\?\.actions\?\.folders/,
+    'setFolder must dereference H2O.Studio?.actions?.folders');
+  // setFolder calls bindChat for non-empty folderId and unbindChat for empty.
+  // Both method names also appear in labels/tags facades, so we just check
+  // that the folders-specific call-sites exist in the setFolder body region.
+  const fnStart = s0f1jSrc.indexOf('async function setFolder');
+  assert.ok(fnStart > 0);
+  const fnEnd = s0f1jSrc.indexOf('function resolveOpenPlan', fnStart);
+  const fnBody = s0f1jSrc.slice(fnStart, fnEnd);
+  assert.match(fnBody, /actions\.bindChat\s*\(\s*chatId,\s*folderId/,
+    'setFolder must call actions.bindChat(chatId, folderId) when folderId is set');
+  assert.match(fnBody, /actions\.unbindChat\s*\(\s*chatId\s*\)/,
+    'setFolder must call actions.unbindChat(chatId) when folderId is empty');
+});
+
+check('R4.4: S0F1j preserves native-context-required path on MV3 for setFolder', () => {
+  // After R4.4 there are 10 expected 'native-context-required'
+  // references: addToLibrary, saveToFolder, setCategory (R4.1),
+  // setLabels, addLabel, removeLabel (R4.2), setTags, addTag,
+  // removeTag (R4.3), setFolder (R4.4).
+  const occurrences = (s0f1jSrc.match(/native-context-required/g) || []).length;
+  assert.ok(occurrences >= 10,
+    `expected at least 10 'native-context-required' references after R4.4; got ${occurrences}`);
+});
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 console.log('\n── Studio Library Actions consumer validator ──────────────');

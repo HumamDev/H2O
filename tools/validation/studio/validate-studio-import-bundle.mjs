@@ -650,6 +650,13 @@ async function main() {
   // Tests cover full CRUD + bindings + the no-extraction boundary.
   await runDesktopTagsActionsTests();
 
+  // ── (13) Desktop Folders Write Parity (R4.4) ────────────────────────
+  // Differs from Labels/Tags in cardinality: single-folder-per-chat,
+  // so bindChat is INSERT-OR-REPLACE (rebinding atomically moves the
+  // chat to a new folder) and unbindChat takes only chatId. Tests
+  // also cover the previousFolderId reporting and getForChat helper.
+  await runDesktopFoldersActionsTests();
+
   summarize();
   if (FAIL.length > 0) process.exit(1);
 }
@@ -2817,6 +2824,420 @@ async function runDesktopTagsActionsTests() {
     // unbindChat*2, replaceForChat*4, remove*2 → 23+ writes.
     assert.ok(d.writesSinceBoot >= 20,
       'expected writesSinceBoot >= 20; got ' + d.writesSinceBoot);
+    assert.ok(d.lastWriteAt > 0);
+  });
+}
+
+// ── Desktop Folders Actions test runner (R4.4) ────────────────────────
+async function runDesktopFoldersActionsTests() {
+  console.log('');
+  console.log('── Desktop Folders Write Parity (R4.4) ─────────────────────');
+
+  const S0F3B_REL  = 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js';
+  const S0F3B_PATH = path.join(REPO_ROOT, S0F3B_REL);
+
+  // Mock store.folders — Map for catalog, Map for single-folder-per-chat
+  // bindings (chatId → folderId). Mirrors folders.tauri.js public
+  // surface: get / create / patch / remove / bindChat / unbindChat /
+  // listChats / listForChat. INSERT OR REPLACE semantics — rebinding
+  // chat A to folder X when it was in folder Y atomically moves it.
+  function makeFoldersStoreMock() {
+    const folders = new Map();   // folderId -> row
+    const chatFolder = new Map(); // chatId -> folderId (single-folder-per-chat)
+    let seq = 0;
+    return {
+      _folders: folders,
+      _chatFolder: chatFolder,
+      async get(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        return id && folders.has(id) ? { ...folders.get(id) } : null;
+      },
+      async create(patch) {
+        seq += 1;
+        const id = `fld_test_${seq}`;
+        const row = {
+          folderId: id,
+          name: String((patch && patch.name) || ''),
+          parentId: String((patch && patch.parentId) || ''),
+          color: String((patch && patch.color) || ''),
+          iconColor: String((patch && patch.iconColor) || ''),
+          source: String((patch && patch.source) || ''),
+          meta: (patch && patch.meta && typeof patch.meta === 'object') ? { ...patch.meta } : {},
+        };
+        folders.set(id, row);
+        return { ...row };
+      },
+      async patch(idInput, partial) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !folders.has(id)) return null;
+        const cur = folders.get(id);
+        const next = { ...cur };
+        if (partial && typeof partial === 'object') {
+          for (const k of Object.keys(partial)) {
+            if (k === 'meta' && partial.meta && typeof partial.meta === 'object') {
+              next.meta = { ...(cur.meta || {}), ...partial.meta };
+            } else {
+              next[k] = partial[k];
+            }
+          }
+        }
+        folders.set(id, next);
+        return { ...next };
+      },
+      async remove(idInput) {
+        const id = String(idInput == null ? '' : idInput).trim();
+        if (!id || !folders.has(id)) return false;
+        // Cascade: drop bindings referencing this folderId.
+        for (const [chatId, folderId] of chatFolder) {
+          if (folderId === id) chatFolder.delete(chatId);
+        }
+        folders.delete(id);
+        return true;
+      },
+      // store.bindChat signature: (folderId, chatId, opts)
+      // INSERT OR REPLACE on chat_id PK — atomic move semantics.
+      async bindChat(folderIdInput, chatIdInput /*, opts */) {
+        const fld = String(folderIdInput == null ? '' : folderIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!fld || !ch) return false;
+        chatFolder.set(ch, fld);
+        return true;
+      },
+      async unbindChat(folderIdInput, chatIdInput) {
+        const fld = String(folderIdInput == null ? '' : folderIdInput).trim();
+        const ch  = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!fld || !ch) return false;
+        if (chatFolder.get(ch) !== fld) return false;
+        chatFolder.delete(ch);
+        return true;
+      },
+      async listForChat(chatIdInput) {
+        const ch = String(chatIdInput == null ? '' : chatIdInput).trim();
+        if (!ch) return [];
+        const fid = chatFolder.get(ch);
+        if (!fid) return [];
+        const row = folders.get(fid);
+        return row ? [{ ...row }] : [];
+      },
+      async listChats(folderIdInput) {
+        const fid = String(folderIdInput == null ? '' : folderIdInput).trim();
+        if (!fid) return [];
+        const out = [];
+        for (const [chatId, folderId] of chatFolder) {
+          if (folderId === fid) out.push({ chatId, folderId });
+        }
+        return out;
+      },
+    };
+  }
+
+  function makeEventTarget() {
+    const listeners = new Map();
+    return {
+      _listeners: listeners,
+      _dispatchedEvents: [],
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) {
+        const set = listeners.get(type);
+        if (set) set.delete(fn);
+      },
+      dispatchEvent(event) {
+        this._dispatchedEvents.push({ type: event && event.type, detail: event && event.detail });
+        const set = listeners.get(event && event.type);
+        if (!set) return true;
+        for (const fn of set) { try { fn(event); } catch (_) { /* swallow */ } }
+        return true;
+      },
+    };
+  }
+
+  function buildSandbox() {
+    const eventTarget = makeEventTarget();
+    const store = makeFoldersStoreMock();
+    const sandbox = {
+      __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
+      H2O: { Studio: { store: { folders: store } } },
+      Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
+      Map, Set, WeakMap, WeakSet, Symbol, RegExp,
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      _eventTarget: eventTarget,
+      _store: store,
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const src = fs.readFileSync(S0F3B_PATH, 'utf8');
+    vm.runInContext(src, sandbox, { filename: S0F3B_REL });
+    return sandbox;
+  }
+
+  function refreshEvents(sandbox) {
+    return sandbox._eventTarget._dispatchedEvents
+      .filter(e => e.type === 'evt:h2o:library-index:refresh-request');
+  }
+
+  // ── 13.1 — module loads + API shape ─────────────────────────────────
+  let sandbox;
+  try {
+    sandbox = buildSandbox();
+    PASS.push('S0F3b loads in Desktop sandbox + registers actions.folders');
+    console.log('  ✓ S0F3b loads in Desktop sandbox + registers actions.folders');
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    FAIL.push({ label: 'S0F3b loads', err: msg });
+    console.log(`  ✗ S0F3b loads in Desktop sandbox\n      ${msg}`);
+    return;
+  }
+  const actions = sandbox.H2O?.Studio?.actions?.folders;
+  check('actions.folders namespace + 10 expected methods', () => {
+    assert.ok(actions, 'actions.folders not registered');
+    assert.equal(actions.__installed, true);
+    for (const fn of ['create', 'rename', 'update', 'remove', 'delete',
+                      'bindChat', 'unbindChat', 'getForChat', 'listChats',
+                      'diagnose']) {
+      assert.equal(typeof actions[fn], 'function', `${fn} should be a function`);
+    }
+  });
+  check('diagnose() reports R4.4 phase + single-folder-per-chat cardinality', () => {
+    const d = actions.diagnose();
+    assert.equal(d.phase, 'R4.4-folders');
+    assert.equal(d.installed, true);
+    assert.equal(d.storeAvailable, true);
+    assert.equal(d.refreshEvent, 'evt:h2o:library-index:refresh-request');
+    assert.equal(d.cardinality, 'single-folder-per-chat');
+  });
+
+  // ── 13.2 — create ──────────────────────────────────────────────────
+  let folderA = '';
+  let folderB = '';
+  let folderC = '';
+  await checkAsync('create({name, color, iconColor}) → ok, returns folderId, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: 'Projects', color: '#ff0000', iconColor: '#ff0000' });
+    assert.equal(r.ok, true, 'errors: ' + JSON.stringify(r));
+    assert.equal(r.status, 'ok');
+    assert.ok(r.folderId && r.folderId.startsWith('fld_test_'));
+    assert.equal(r.name, 'Projects');
+    folderA = r.folderId;
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:create/);
+  });
+  await checkAsync('create with empty name → name-required, no dispatch', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.create({ name: '' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+    assert.equal(sandbox._eventTarget._dispatchedEvents.length, 0);
+  });
+  await checkAsync('create two more folders for binding tests', async () => {
+    const b = await actions.create({ name: 'Inbox' });
+    const c = await actions.create({ name: 'Archive' });
+    assert.equal(b.ok, true);
+    assert.equal(c.ok, true);
+    folderB = b.folderId;
+    folderC = c.folderId;
+  });
+
+  // ── 13.3 — rename ──────────────────────────────────────────────────
+  await checkAsync('rename(id, newName) → ok, row updated, refresh dispatched', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.rename(folderA, 'Important Projects');
+    assert.equal(r.ok, true);
+    assert.equal(r.name, 'Important Projects');
+    assert.equal(sandbox._store._folders.get(folderA).name, 'Important Projects');
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:rename/);
+  });
+  await checkAsync('rename non-existent → not-found', async () => {
+    const r = await actions.rename('fld_phantom', 'Nope');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+  await checkAsync('rename with empty newName → name-required', async () => {
+    const r = await actions.rename(folderA, '');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'name-required');
+  });
+
+  // ── 13.4 — update (color/iconColor/parentId/meta) ──────────────────
+  await checkAsync('update({color, iconColor, meta}) merges patch, dispatches refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.update(folderA, {
+      color: '#0000ff', iconColor: '#0000ff', meta: { sort: 99 },
+    });
+    assert.equal(r.ok, true);
+    assert.ok(Array.isArray(r.appliedFields));
+    assert.ok(r.appliedFields.includes('color'));
+    assert.ok(r.appliedFields.includes('iconColor'));
+    assert.ok(r.appliedFields.includes('meta'));
+    const row = sandbox._store._folders.get(folderA);
+    assert.equal(row.color, '#0000ff');
+    assert.equal(row.iconColor, '#0000ff');
+    assert.equal(row.meta.sort, 99);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:update/);
+  });
+  await checkAsync('update with no supported fields → no-supported-fields', async () => {
+    const r = await actions.update(folderA, { junk: 'value' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'no-supported-fields');
+  });
+  await checkAsync('update non-existent → not-found', async () => {
+    const r = await actions.update('fld_phantom', { color: '#fff' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+  });
+
+  // ── 13.5 — bindChat ────────────────────────────────────────────────
+  await checkAsync('bindChat(chatId, folderId) → ok, store updated, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.bindChat('chat1', folderA);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.previousFolderId, '');
+    assert.equal(r.replaced, false);
+    assert.equal(sandbox._store._chatFolder.get('chat1'), folderA);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+    assert.match(String(evts[0].detail.reason), /folders-actions:bindChat/);
+  });
+  await checkAsync('binding another folder REPLACES previous folder for chat', async () => {
+    // chat1 is currently in folderA. Rebind to folderB.
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.bindChat('chat1', folderB);
+    assert.equal(r.ok, true);
+    assert.equal(r.previousFolderId, folderA,
+      'previousFolderId must reflect the prior binding');
+    assert.equal(r.replaced, true);
+    assert.equal(sandbox._store._chatFolder.get('chat1'), folderB,
+      'chat1 should now be in folderB (single-folder-per-chat)');
+    // The folder_bindings table has exactly one row for chat1 — verify
+    // the count by manually scanning the mock.
+    let chat1Bindings = 0;
+    for (const [chatId] of sandbox._store._chatFolder) {
+      if (chatId === 'chat1') chat1Bindings += 1;
+    }
+    assert.equal(chat1Bindings, 1,
+      'chat1 must have exactly one folder binding (single-folder-per-chat invariant)');
+  });
+  await checkAsync('bindChat to non-existent folder → folder-not-found', async () => {
+    const r = await actions.bindChat('chat1', 'fld_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'folder-not-found');
+  });
+  await checkAsync('bindChat missing chatId → chat-id-required', async () => {
+    const r = await actions.bindChat('', folderA);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'chat-id-required');
+  });
+  await checkAsync('bindChat empty folderId → folder-id-required (use unbindChat to clear)', async () => {
+    const r = await actions.bindChat('chat1', '');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'folder-id-required');
+  });
+
+  // ── 13.6 — unbindChat ──────────────────────────────────────────────
+  await checkAsync('unbindChat(chatId) → ok, wasBound=true, previousFolderId set, refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1');
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 'ok');
+    assert.equal(r.wasBound, true);
+    assert.equal(r.previousFolderId, folderB);
+    assert.equal(sandbox._store._chatFolder.has('chat1'), false);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+  });
+  await checkAsync('unbindChat on unbound chat → ok, wasBound=false, NO refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.unbindChat('chat1');
+    assert.equal(r.ok, true);
+    assert.equal(r.wasBound, false);
+    assert.equal(r.previousFolderId, '');
+    assert.equal(refreshEvents(sandbox).length, 0);
+  });
+  await checkAsync('unbindChat missing chatId → chat-id-required', async () => {
+    const r = await actions.unbindChat('');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'chat-id-required');
+  });
+
+  // ── 13.7 — getForChat ──────────────────────────────────────────────
+  await checkAsync('getForChat returns the single folder row for the chat', async () => {
+    await actions.bindChat('chat42', folderA);
+    const r = await actions.getForChat('chat42');
+    assert.equal(r.ok, true);
+    assert.equal(r.folderId, folderA);
+    assert.ok(r.folder && r.folder.folderId === folderA);
+  });
+  await checkAsync('getForChat on unbound chat → ok, folder=null, folderId=""', async () => {
+    const r = await actions.getForChat('chat_unbound');
+    assert.equal(r.ok, true);
+    assert.equal(r.folder, null);
+    assert.equal(r.folderId, '');
+  });
+
+  // ── 13.8 — listChats ───────────────────────────────────────────────
+  await checkAsync('listChats(folderId) returns chats bound to that folder', async () => {
+    await actions.bindChat('chat_a', folderC);
+    await actions.bindChat('chat_b', folderC);
+    const r = await actions.listChats(folderC);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 2);
+    const ids = r.chats.map(c => c.chatId).sort();
+    assert.deepEqual(ids, ['chat_a', 'chat_b']);
+  });
+  await checkAsync('listChats on empty folder → empty array', async () => {
+    const empty = await actions.create({ name: 'Empty' });
+    const r = await actions.listChats(empty.folderId);
+    assert.equal(r.ok, true);
+    assert.equal(r.count, 0);
+    assert.deepEqual(r.chats, []);
+  });
+
+  // ── 13.9 — remove cascades bindings ────────────────────────────────
+  await checkAsync('remove(folderId) deletes bindings + folder row', async () => {
+    // folderC currently has chat_a + chat_b
+    assert.equal(sandbox._store._chatFolder.get('chat_a'), folderC);
+    assert.equal(sandbox._store._chatFolder.get('chat_b'), folderC);
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove(folderC);
+    assert.equal(r.ok, true);
+    assert.equal(sandbox._store._folders.has(folderC), false);
+    assert.equal(sandbox._store._chatFolder.has('chat_a'), false);
+    assert.equal(sandbox._store._chatFolder.has('chat_b'), false);
+    const evts = refreshEvents(sandbox);
+    assert.equal(evts.length, 1);
+  });
+  await checkAsync('remove non-existent → not-found, no refresh', async () => {
+    sandbox._eventTarget._dispatchedEvents.length = 0;
+    const r = await actions.remove('fld_phantom');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'not-found');
+    assert.equal(refreshEvents(sandbox).length, 0);
+  });
+
+  // ── 13.10 — delete alias ───────────────────────────────────────────
+  check('actions.folders.delete is the same function as remove', () => {
+    assert.equal(actions['delete'], actions.remove);
+  });
+
+  // ── 13.11 — diagnose counters reflect the run ──────────────────────
+  check('diagnose().writesSinceBoot reflects all mutations attempted', () => {
+    const d = actions.diagnose();
+    assert.ok(d.writesSinceBoot >= 18,
+      'expected writesSinceBoot >= 18; got ' + d.writesSinceBoot);
     assert.ok(d.lastWriteAt > 0);
   });
 }

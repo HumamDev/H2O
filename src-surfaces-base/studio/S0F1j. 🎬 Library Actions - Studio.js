@@ -40,6 +40,7 @@
       setTagsCalls: 0,
       addTagCalls: 0,
       removeTagCalls: 0,
+      setFolderCalls: 0,
       unsupportedCalls: 0,
       opened: 0,
       errors: 0,
@@ -54,6 +55,7 @@
     lastSetTags: null,
     lastAddTag: null,
     lastRemoveTag: null,
+    lastSetFolder: null,
     errors: [],
     core: {
       usedFor: {
@@ -890,6 +892,85 @@
     }
   }
 
+  /* R4.4 — Folders facade method. Single setter (folderId: '' clears)
+   * because folders are 1:1 per chat (folder_bindings PRIMARY KEY is
+   * chat_id alone, not composite).
+   *
+   * Important interop note: setFolder is the NEW Studio-internal entry
+   * point that R4.4 introduces, but the existing
+   * S0F1b.desktopSetFolderBinding remains the PRIMARY caller of
+   * actions.folders today (refactored in R4.4 to delegate there).
+   * setFolder is exposed on LibraryActions for symmetry with R4.1
+   * setCategory / R4.2 setLabels / R4.3 setTags. Studio UI code may
+   * call either; they end up at the same SQLite write path. */
+  async function setFolder(target = {}, options = {}) {
+    diag.counts.setFolderCalls += 1;
+    const source = firstString(options.source, 'studio:set-folder');
+    const desktop = LA_isTauri();
+    try {
+      const targetInfo = normalizeTarget(target, { ...options, source });
+      const chatId = trimString(targetInfo.normalized?.chatId || targetInfo.target?.chatId);
+      const folderId = trimString(options.folderId);
+
+      /* MV3 / web — preserve native-context-required pattern. */
+      if (!desktop) {
+        diag.counts.unsupportedCalls += 1;
+        const out = baseResult('setFolder', 'native-context-required', {
+          ok: false,
+          reason: 'Studio facade does not write folder state on MV3 in R4.4; use Native UI on chatgpt.com.',
+          targetSource: targetInfo.source,
+          chatId,
+          folderId,
+          supportedInStudio: false,
+        });
+        diag.lastSetFolder = out;
+        return normalizeResultForDiag('setFolder', out);
+      }
+
+      /* Desktop path: route to actions.folders.{bindChat | unbindChat}. */
+      const actions = H2O.Studio?.actions?.folders;
+      if (!actions || (typeof actions.bindChat !== 'function' || typeof actions.unbindChat !== 'function')) {
+        const out = baseResult('setFolder', 'actions-unavailable', {
+          ok: false,
+          reason: 'H2O.Studio.actions.folders not loaded — verify S0F3b is in the bundle',
+          chatId,
+          folderId,
+        });
+        diag.lastSetFolder = out;
+        return normalizeResultForDiag('setFolder', out);
+      }
+      if (!chatId) {
+        const out = baseResult('setFolder', 'chat-id-required', { ok: false, chatId, folderId });
+        diag.lastSetFolder = out;
+        return normalizeResultForDiag('setFolder', out);
+      }
+
+      const actionResult = folderId
+        ? await actions.bindChat(chatId, folderId)
+        : await actions.unbindChat(chatId);
+      const status = actionResult && actionResult.status ? actionResult.status : (actionResult && actionResult.ok ? 'ok' : 'error');
+      const out = baseResult('setFolder', status, {
+        ok: !!(actionResult && actionResult.ok),
+        chatId,
+        folderId,
+        targetSource: targetInfo.source,
+        actionResult,
+        source,
+        supportedInStudio: true,
+      });
+      diag.lastSetFolder = out;
+      return normalizeResultForDiag('setFolder', out);
+    } catch (e) {
+      pushError('setFolder', e);
+      const out = baseResult('setFolder', 'library-actions-error', {
+        ok: false,
+        reason: String(e?.message || e || 'unknown'),
+      });
+      diag.lastSetFolder = out;
+      return normalizeResultForDiag('setFolder', out);
+    }
+  }
+
   function resolveOpenPlan(target = {}, options = {}) {
     const windowTarget = firstString(options.target, options.windowTarget, '_blank');
     const targetInfo = normalizeTarget(target, { ...options, source: firstString(options.source, 'studio:open-linked-chat') });
@@ -992,6 +1073,12 @@
         setTags:     LA_isTauri() && !!H2O.Studio?.actions?.tags,
         addTag:      LA_isTauri() && !!H2O.Studio?.actions?.tags,
         removeTag:   LA_isTauri() && !!H2O.Studio?.actions?.tags,
+        /* R4.4 — folders facade method (single setter; folderId: ''
+         * means clear). S0F1b.desktopSetFolderBinding remains the
+         * primary path used by the Studio UI; setFolder is the new
+         * symmetric entry point for callers that prefer the actions
+         * facade. */
+        setFolder:   LA_isTauri() && !!H2O.Studio?.actions?.folders,
       },
       unsupportedActions: {
         addToLibrary: 'native-context-required',
@@ -1013,6 +1100,9 @@
               addTag:    LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
               removeTag: LA_isTauri() ? 'actions-unavailable' : 'native-context-required',
             }),
+        ...(LA_isTauri() && H2O.Studio?.actions?.folders
+          ? {}
+          : { setFolder: LA_isTauri() ? 'actions-unavailable' : 'native-context-required' }),
       },
       dependencies: {
         core: !!actionsCore(),
@@ -1040,6 +1130,7 @@
     setTags,
     addTag,
     removeTag,
+    setFolder,
     openLinkedChat,
     diagnose,
   };
