@@ -131,10 +131,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Chrome/MV3-only: IndexedDB-backed tombstone review queue scaffold
   // (F5F.4c.1). API parity with Desktop scaffold, excluding ingestion/apply.
   "store/tombstone-reviews.mv3.js",
-  // Desktop-only: full-bundle ingestion (M2b-1). dryRunImportBundle is
-  // read-only; importBundle write side ships as stub returning
-  // not-implemented (M2b-2 pending). Routed through callArchive's
-  // Desktop branch in studio.js.
+  // Desktop-only: full-bundle ingestion (M2b-1 dry-run + M2b-2/M2c-3
+  // merge-mode write side). dryRunImportBundle is read-only;
+  // importBundle is merge-only (overwrite rejected, append-only,
+  // pre-checks each entity via .get(id) before writing). Routed through
+  // callArchive's Desktop branch in studio.js.
   "ingestion/import-bundle.tauri.js",
   // Desktop-only: full-bundle export. Reads SQLite-backed public store
   // adapters and emits Chrome-compatible h2o.studio.fullBundle.v2.
@@ -402,9 +403,23 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: opt-in latest-bundle auto-export (R2A-2). Extends
   // H2O.Studio.sync with debounced manual-export scheduling.
   "sync/auto-export.tauri.js",
+  // Desktop-only: opt-in focus/visibility-triggered import (R3 Phase 2).
+  // When the Studio window gains focus or becomes visible, runs
+  // scanFolderOnce() through the existing folder-sync + importBundle
+  // merge-only path. Behind feature flag sync.desktopImportOnFocus (OFF
+  // by default). 30s minimum interval, 800ms debounce. No polling, no
+  // watcher, no bidirectional sync, no schema change.
+  "sync/focus-import.tauri.js",
   // Chrome/MV3-only: manual sync-folder import (R2B). Reads latest.json from
   // a user-picked directory handle and calls the existing merge importer.
   "sync/folder-import.mv3.js",
+  // Chrome/MV3-only: opt-in sync-folder export (R3 Phase 1). Writes
+  // chrome-latest.json (staged via chrome-latest.json.tmp) from a
+  // user-gesture extension page, behind feature flag sync.chromeAutoImport
+  // (OFF in prod by default). Service worker produces the bundle via
+  // exportFullBundle; extension page does the file write. No latest.json
+  // write, no bidirectional sync, no polling, no background daemon.
+  "sync/auto-import.mv3.js",
   // F10.3: Chrome/MV3-only bundle-envelope preview bridge. Operator-triggered
   // diagnostic only; reads the existing sync-folder latest.json (read-only)
   // and presents it as a redacted cross-platform `bundle` envelope per
@@ -932,7 +947,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-capture-materialization.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",
+  "sync/focus-import.tauri.js",
   "sync/folder-import.mv3.js",
+  "sync/auto-import.mv3.js",
   "sync/bundle-envelope-preview.mv3.js",
   "sync/capture-evidence-preview.mv3.js",
   "sync/folder-sync-canonical.js",

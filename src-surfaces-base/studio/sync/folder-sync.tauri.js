@@ -61,10 +61,16 @@
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
   /* Filename glob patterns. The first matches MV3 exporter output
    * (h2o-studio-full-bundle__<extIdFirst8>__<isoTimestamp>.json); the
-   * second leaves room for a future short-format file. */
+   * second leaves room for a future short-format file; the third
+   * matches the Chrome auto-import.mv3.js opt-in export
+   * (chrome-latest.json) sanctioned by R2D Gate R3. Routes through the
+   * same importBundle merge-only path — no new merge mode, no schema
+   * change. The .tmp staging variant (chrome-latest.json.tmp) is
+   * filtered out by IGNORE_SUFFIXES below. */
   var FILENAME_PATTERNS = [
     /^h2o-studio-full-bundle.*\.json$/i,
     /^h2o-studio-sync.*\.json$/i,
+    /^chrome-latest\.json$/i,
   ];
   /* Browser partial-download suffixes to ignore until the rename completes. */
   var IGNORE_SUFFIXES = ['.crdownload', '.partial', '.download', '.tmp'];

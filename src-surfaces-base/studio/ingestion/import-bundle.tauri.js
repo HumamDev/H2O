@@ -1,16 +1,24 @@
 /* H2O Studio Ingestion — Full Bundle Importer (Desktop / Tauri)
  *
- * M2b-1 — Desktop-only DRY-RUN importer for the existing Studio full
- * bundle JSON format (schema "h2o.studio.fullBundle.v2"). Tolerates v1.
+ * M2b-1 / M2b-2 / M2c-3 — Desktop-only dry-run + merge-mode importer for
+ * the existing Studio full bundle JSON format
+ * (schema "h2o.studio.fullBundle.v2"). Tolerates v1.
  *
- * V1 scope (M2b-1): READ-ONLY. Parses the bundle, counts incoming
+ * Dry-run side (M2b-1): READ-ONLY. Parses the bundle, counts incoming
  * entities, compares against the SQLite stores + the chrome.storage.local
  * polyfill, and returns a dry-run plan whose top-level shape matches the
  * MV3 dryRunImportFullBundle handler so the existing #/migrate/import UI
  * works on Desktop without changes.
  *
- * Write side (importBundle) is a STUB that returns a clear "not
- * implemented" error — actual writes land in M2b-2 (next stage).
+ * Write side (M2b-2 + M2c-3): MERGE-ONLY. importBundle walks the bundle in
+ * safe dependency order (catalogs first, then chats, then snapshots, then
+ * folder/label/tag bindings, then opaque KV blobs) and persists through
+ * the existing H2O.Studio.store.* SQLite-backed adapters. Each entity is
+ * pre-checked via .get(id) and skipped if it already exists, so re-running
+ * the same bundle on the same DB writes zero rows. Overwrite mode is
+ * rejected at the top of importBundle — Desktop V1 stays append-only.
+ * importFolderStateOnly is a lighter Phase-A entry point that runs only
+ * importFolders + importFolderBindings against a folder-state payload.
  *
  * Desktop-only: gates on Tauri detection at load. On MV3 / web this file
  * is a silent no-op and registers nothing; the existing MV3 dry-run /
@@ -27,7 +35,7 @@
  *   }
  *
  * Allow/deny policy is mirrored from the MV3 handler so dry-run counts
- * match what the actual import (M2b-2) will do.
+ * match what the actual import does.
  *
  * Contracts:
  *   surfaces/studio/store/*.tauri.js (read via public APIs only)

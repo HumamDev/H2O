@@ -133,6 +133,92 @@ Explicitly not allowed at this gate:
 - Cross-device conflict resolution is deferred.
 - A full product UI for sync setup/status is deferred.
 
+## R3 — Chrome to Desktop Export Gate
+
+This gate (R3) extends the existing Desktop to Chrome R2D path with a strictly one-way Chrome to Desktop export channel. R3 narrowly scopes exactly one prohibition from the original R2D Guardrails — "Chrome must not write to the sync folder" — replacing it with "Chrome must not write `latest.json`; Chrome may write only `chrome-latest.json` and `chrome-latest.json.tmp` from a user-gesture extension page." All other R2D prohibitions remain in force. The Desktop side is unchanged at the writer level and gains only a recognition rule for a new filename on the read path through the existing `importBundle` merge-only flow. No schema change, no wire-format change, no bidirectional resolver, no polling, no background daemon, and no Native UI change is introduced or implied by this gate. This amendment is policy and design only; no runtime code is being landed here.
+
+- Scope: Chrome to Desktop export of a `h2o.studio.fullBundle.v2` payload via the existing sync folder, user-gesture initiated from the Studio Launcher extension page, merge-imported by Desktop folder-sync.
+- Out of scope: bidirectional conflict resolution, background daemon writes, polling, schema or wire-format change, Native UI change, cloud, WebDAV, or mobile sync.
+- Contract surface for any later implementation is already proof-pinned by `validate-studio-import-bundle.mjs` (23/23) and `validate-studio-library-actions.mjs`; this gate does not move those pins.
+
+### 1. Filename scheme
+
+- Desktop owns `latest.json`. Desktop continues writing `latest.json` exactly as today; nothing about Desktop's writer changes.
+- Chrome owns `chrome-latest.json`. Chrome writes the full-bundle payload to `chrome-latest.json` in the same user-selected sync folder.
+- Chrome stages writes through a sibling temp file `chrome-latest.json.tmp` and finalizes with a rename to `chrome-latest.json`, mirroring Desktop's existing temp-then-rename atomic-write discipline.
+- Two distinct filenames give a no-collision guarantee at the filesystem level: no code path on either side ever opens the other side's file for write, so there is no shared writer, no last-writer-wins race, and no cross-process lock is required.
+- Desktop never writes `chrome-latest.json` or `chrome-latest.json.tmp`. Chrome never writes `latest.json` or any temp variant of it.
+- The sync folder therefore holds at most two bundle files under this gate: Desktop-owned `latest.json` and Chrome-owned `chrome-latest.json` (plus transient `chrome-latest.json.tmp` during a Chrome write).
+- Filename alone is sufficient to attribute origin; the bundle itself remains an unchanged `h2o.studio.fullBundle.v2` payload.
+
+### 2. Conflict policy
+
+- No shared writer. Desktop is the sole writer of `latest.json`. Chrome is the sole writer of `chrome-latest.json` and `chrome-latest.json.tmp`. This is enforced by the filename scheme in section 1 and by code-review policy, not by a runtime resolver.
+- Desktop must never overwrite `chrome-latest.json`. Chrome must never overwrite `latest.json`.
+- Desktop merge-imports `chrome-latest.json` through the existing folder-sync `importBundle` merge-only path. No new merge logic, no new dedup pass, no new conflict-resolution code, and no new merge mode is introduced.
+- Duplicate records are handled by the existing `importBundle` contract:
+    - Chats, categories, labels, and snapshots use skip-if-exists semantics; a chat already present on Desktop that also appears in `chrome-latest.json` is left as-is on Desktop.
+    - Folders use merge-upsert semantics by design.
+- These dedup and merge points are proof-pinned by `validate-studio-import-bundle.mjs` at 23/23 and gate any future implementation. Any change to `importBundle` merge semantics is out of scope for R3 and would require its own gate.
+- There is still no bidirectional conflict resolver. The export direction is merge-only into Desktop; Desktop's own state is the source of truth for `latest.json`, and Chrome's contribution is additive via `chrome-latest.json`.
+
+### 3. Trigger model
+
+- Allowed now:
+    - Manual export button surfaced on the Studio Launcher extension page, initiated by an explicit user gesture (button click). The button is rendered in an opt-in section alongside the existing auto-sync controls, never above them and never auto-enabled.
+    - Optional event-triggered export from the same extension page, but only after explicit user opt-in. Implementation of the event-triggered variant MAY be deferred to a later phase without re-opening this gate.
+- Not allowed in this gate:
+    - Background-only service-worker folder writes.
+    - Hidden auto-write at install, startup, focus, or any non-user-gesture event.
+    - Polling of any kind on either side.
+    - Bidirectional sync, including any Chrome write that depends on reading `latest.json` first.
+    - Any Chrome write to `latest.json`. Chrome writes `chrome-latest.json` only.
+
+### 4. Permission flow
+
+- The directory handle for the sync folder is selected from a Window context (the Studio Launcher extension page), never from the MV3 service worker.
+- The extension page requests, and re-requests on each session as required, `readwrite` permission on the user-selected sync folder with an active user gesture. If the user does not grant `readwrite`, the write is aborted, no temp file is left behind, and a user-visible error is surfaced on the extension page; no fallback write is attempted.
+- The MV3 service worker cannot call `showDirectoryPicker` or `createWritable` directly and must not attempt to. It has no path to the file system in this gate.
+- The MV3 service worker MAY produce the `h2o.studio.fullBundle.v2` payload (mirroring the existing producer responsibility) but MUST hand the payload to the extension page for the actual file write.
+- The producer-to-writer contract is a `chrome.runtime` message between the service worker (producer) and the extension page (writer): the service worker sends the prepared bundle, the extension page resolves the directory handle, verifies `readwrite`, writes `chrome-latest.json.tmp`, and renames to `chrome-latest.json`. The extension page is the sole holder of the writable handle. The wire format is unchanged — the same `h2o.studio.fullBundle.v2` already proven by R2D's import direction.
+- The Chrome-side API surface introduced by this gate mirrors the existing autoExport shape: `H2O.Studio.sync.autoImport.*` on the Chrome side parallels the Desktop-facing `autoExport.*` surface, with `autoImport.exportNow()` as the manual entry point invoked by the Studio Launcher button and `autoImport.isEnabled()` / `autoImport.enable()` reserved for the opt-in event-triggered path.
+
+### 5. Desktop import path
+
+- Desktop folder-sync recognizes `chrome-latest.json` as a Chrome-origin bundle alongside the existing `latest.json` recognition.
+- Import is routed through the existing `importBundle` merge-only path. No new importer, no new schema branch, no new merge mode, and no new dedup pass is added.
+- No archive DB schema change. No wire-format change.
+- The Chrome-origin source is inferred from the filename (`chrome-latest.json`), with bundle metadata already carried in `h2o.studio.fullBundle.v2` available as a secondary signal; no new metadata field is required.
+- A manual `scanNow` from Desktop is acceptable as the first user-triggered import path under this gate. No watcher and no polling is required for R3; if a watcher is added later it is a separate gate.
+- Desktop never writes to `chrome-latest.json` during or after import. The file remains Chrome-owned.
+- The Desktop to Chrome path via `latest.json` is unchanged; importing `chrome-latest.json` is additive and does not alter how `latest.json` is produced or consumed.
+
+### 6. Rollback
+
+- A feature flag gates the Chrome folder write path. When the flag is off:
+    - The Studio Launcher extension page does not expose the manual export button (or it is rendered disabled with a clear off-state).
+    - The extension page does not request `readwrite` on the sync folder for export purposes.
+    - Chrome performs no write of `chrome-latest.json` or `chrome-latest.json.tmp` under any code path.
+    - The MV3 service worker still does not write to the sync folder; that prohibition never depended on the flag.
+- Fallback workflow when the flag is off:
+    - User exports a bundle via the existing `#/migrate/export` flow in Studio (manual download).
+    - User moves the downloaded file into the sync folder by hand, naming it as the existing manual workflow already documents.
+    - Desktop folder-sync picks it up on the next manual `scanNow` through the same `importBundle` merge-only path.
+- The existing Desktop to Chrome R2D path (Desktop writes `latest.json`, Chrome imports `latest.json`) is unchanged whether the flag is on or off, and is unaffected by any regression in the Chrome write path. R2D continues to ship independently; disabling R3 cannot regress R2D.
+- Rollback requires no data migration; `chrome-latest.json` on disk is inert once writes stop, and any already-imported records on Desktop remain valid under the existing schema.
+
+### 7. Validation requirements for later implementation
+
+When the runtime implementation lands in a subsequent gate, it must satisfy all of the following before the feature flag is turned on in a release:
+
+- The export payload is a valid `h2o.studio.fullBundle.v2` bundle, byte-identical in shape to the bundle Desktop already produces. No new wire format.
+- The write uses temp-then-rename: write to `chrome-latest.json.tmp`, then rename to `chrome-latest.json`, matching Desktop's atomic-write discipline so Desktop never observes a partially written file.
+- A Desktop import dry-run against the produced `chrome-latest.json` succeeds end-to-end through the existing `importBundle` merge-only path, with no schema errors, no schema migration required, and no unexpected upserts.
+- `validate-studio-import-bundle.mjs` passes at 23/23, confirming the skip-if-exists and merge-upsert contract points are unchanged against bundles produced by Chrome.
+- `validate-studio-library-actions.mjs` passes against the post-import Desktop state, confirming Library-level action semantics are unchanged.
+- The runtime import graph remains clean: no new cross-context imports from the MV3 service worker into Window-only File System Access APIs, no new cross-surface imports between the MV3 service worker and the extension page beyond the `chrome.runtime` message contract described in section 4, and no new Desktop-side reads of Chrome extension storage.
+- No prohibition listed in the original R2D Guardrails section is violated other than the narrowly scoped lift of "Chrome must not write to the sync folder," which is replaced by "Chrome must not write `latest.json`; Chrome may write only `chrome-latest.json` and `chrome-latest.json.tmp` from a user-gesture extension page."
+
 ## Risks
 
 - The File System Access directory handle can lose permission and require

@@ -545,12 +545,15 @@
        (F5F.4c.1). Registers the same H2O.Studio.store.tombstoneReviews API on
        Chrome only, without sync ingestion, delete apply, or Library mutation. -->
   <script src="./store/tombstone-reviews.mv3.js"></script>
-  <!-- Desktop-only: full-bundle ingestion (M2b-1). Self-bails on MV3 / web.
-       Registers H2O.Studio.ingestion with dryRunImportBundle (read-only) +
-       importBundle stub. Routes through callArchive's Desktop branch for
-       dryRunImportFullBundle / importFullBundle so the existing
-       #/migrate/import UI works unchanged. Must load after store/*.tauri.js
-       since dry-run reads via the store public APIs. -->
+  <!-- Desktop-only: full-bundle ingestion (M2b-1 dry-run + M2b-2/M2c-3
+       merge-mode write side). Self-bails on MV3 / web. Registers
+       H2O.Studio.ingestion with dryRunImportBundle (read-only),
+       importBundle (merge-only; overwrite rejected), and
+       importFolderStateOnly (folder-state-only fast path). Routes through
+       callArchive's Desktop branch for dryRunImportFullBundle /
+       importFullBundle so the existing #/migrate/import UI works
+       unchanged. Must load after store/*.tauri.js since both dry-run and
+       merge writes flow through the store public APIs. -->
   <script src="./ingestion/import-bundle.tauri.js"></script>
   <!-- Desktop-only: full-bundle export. Reads SQLite-backed public store
        adapters and emits Chrome-compatible h2o.studio.fullBundle.v2
@@ -882,10 +885,29 @@
        default; when enabled, debounces SQLite store changes into the existing
        exportLatestSyncBundle writer. No Chrome auto-import. -->
   <script src="./sync/auto-export.tauri.js"></script>
+  <!-- Desktop/Tauri-only: opt-in focus/visibility-triggered import (R3 phase 2).
+       Listens to window focus + document visibilitychange and runs
+       H2O.Studio.sync.scanFolderOnce() through the existing folder-sync +
+       importBundle merge-only path. Behind feature flag
+       `sync.desktopImportOnFocus` (OFF by default). 30s minimum interval,
+       800ms debounce. No polling, no watcher, no bidirectional sync.
+       Must load AFTER folder-sync.tauri.js so scanFolderOnce is available. -->
+  <script src="./sync/focus-import.tauri.js"></script>
   <!-- Chrome/MV3-only: manual sync-folder import (R2B). Lets Studio Launcher
        connect a read-only folder handle and manually import latest.json via the
        existing full-bundle merge importer. No polling or folder writes. -->
   <script src="./sync/folder-import.mv3.js"></script>
+  <!-- Chrome/MV3-only: opt-in sync-folder export (R2D Gate R3 phase 1).
+       Registers H2O.Studio.sync.autoImport.{exportNow, isEnabled, enable,
+       disable, status, diagnose}. Reuses the directory handle persisted by
+       folder-import.mv3.js (so must load AFTER it). Writes only
+       chrome-latest.json (staged via chrome-latest.json.tmp), never
+       latest.json. Behind feature flag `sync.chromeAutoImport` (OFF by
+       default). User-gesture extension-page write only — the MV3 service
+       worker produces the fullBundle.v2 payload, this module performs the
+       file write. No background daemon, no polling, no bidirectional sync,
+       no schema or wire-format change. -->
+  <script src="./sync/auto-import.mv3.js"></script>
   <!-- F10.3: Chrome/MV3-only operator-triggered diagnostic that reads the
        existing sync-folder latest.json and presents it as a redacted
        cross-platform `bundle` envelope per F10.2.0. Preview/evidence only —
