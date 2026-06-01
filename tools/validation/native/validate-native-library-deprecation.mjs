@@ -243,9 +243,16 @@ const PROTECTED = [
   ['0F3a', 'function-def', 'ENGINE_injectAddToLibrary', 'capture: Add-to-Library menu injection'],
   ['0F3a', 'function-def', 'ENGINE_injectAddToFolder',  'capture: Save-to-Folder menu injection'],
   ['0F3a', 'function-def', 'STORE_validateFolderCreate','MV3 fallback: Native folder-create code path'],
-  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?renameCategory', 'MV3 fallback: archiveBoot.renameCategory call site'],
-  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?deleteCategory', 'MV3 fallback: archiveBoot.deleteCategory call site'],
-  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?createCategory', 'MV3 fallback: archiveBoot.createCategory call site'],
+  /* Call-site regexes use `\s*(?:\?\.)?\(` to match ONLY real call
+   * expressions (`fn(...)` or `fn?.(...)`). This avoids the post-
+   * R4.7.2 false positive where the diagnose block's
+   * unconditionalSurfaces array first surfaces the symbol name as a
+   * string literal followed by a comma — which would otherwise lead
+   * the surrounding-window heuristic to nearby `isNative*Enabled()`
+   * metadata calls and mis-classify them as a gate. */
+  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?renameCategory\\s*(?:\\?\\.)?\\(', 'MV3 fallback: archiveBoot.renameCategory call site'],
+  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?deleteCategory\\s*(?:\\?\\.)?\\(', 'MV3 fallback: archiveBoot.deleteCategory call site'],
+  ['0F4a', 'call-site',    'H2O\\.archiveBoot\\??\\.?createCategory\\s*(?:\\?\\.)?\\(', 'MV3 fallback: archiveBoot.createCategory call site'],
   ['0F6a', 'function-def', 'renameLabel',               'MV3 fallback: renameLabel'],
   ['0F6a', 'function-def', 'deleteLabel',               'MV3 fallback: deleteLabel'],
   ['0F6a', 'function-def', 'createLabel',               'MV3 fallback: createLabel'],
@@ -274,22 +281,26 @@ for (const [mod, kind, target, label] of PROTECTED) {
       assert.match(SRC[mod], re, `expected ${label} call site in ${mod}`);
     });
     check(`E.${mod}: ${label} call site is NOT inside a flag-gated block`, () => {
-      /* Find the line containing the call expression. Walk up to the
-       * containing `if (...)` or `function` block opener within 30
-       * lines; assert that opener does NOT reference a deprecation
-       * flag literal. */
+      /* Find EVERY line containing the call expression. For each
+       * hit, walk back 30 lines and assert no `if (...isNative*
+       * Enabled(...)...)` wrapper appears. (We look for the if-block
+       * pattern specifically; the post-R4.7.2 diagnose block reads
+       * the same flags into metadata without wrapping anything in
+       * an `if`, so it does not constitute a gate.) */
       const lines = SRC[mod].split('\n');
       const re = new RegExp(target);
-      let firstHit = -1;
+      const hits = [];
       for (let i = 0; i < lines.length; i++) {
-        if (re.test(lines[i])) { firstHit = i; break; }
+        if (re.test(lines[i])) hits.push(i);
       }
-      if (firstHit < 0) return;
-      const window = lines.slice(Math.max(0, firstHit - 30), firstHit + 1).join('\n');
-      assert.equal(/isNativeWorkspaceUiEnabled|isNativeOrganizationUiEnabled|isNativeCaptureOnlyMode/.test(window), false,
-        `${label} appears within 30 lines of a deprecation-flag helper — call site may be gated`);
-      assert.equal(/if\s*\([^)]*library\.native(Workspace|Organization|Capture)/.test(window), false,
-        `${label} call site appears inside an if-block gated by a library.native* flag`);
+      if (hits.length === 0) return;
+      for (const hit of hits) {
+        const window = lines.slice(Math.max(0, hit - 30), hit + 1).join('\n');
+        assert.equal(/if\s*\([^)]*isNative(Workspace|Organization|Capture)\w*Enabled/.test(window), false,
+          `${label} call site at line ${hit + 1} appears inside an if-block gated by a library.native* flag helper`);
+        assert.equal(/if\s*\([^)]*library\.native(Workspace|Organization|Capture)/.test(window), false,
+          `${label} call site at line ${hit + 1} appears inside an if-block gated by a library.native* flag literal`);
+      }
     });
   }
 }
@@ -427,8 +438,13 @@ check('H.0F1b: diagnose phase bumped to R4.6.1', () => {
 
 console.log('Section I — Per-module CSS gates (R4.6.1 + R4.6.2)');
 const PER_MODULE_GATES = [
-  /* All four sections use REAL selectors after R4.6.2. */
-  ['0F4a', 'css-known-selector', '[data-cgxui="flsc-categories-root"]',                              'NATIVE CATEGORIES SECTION'],
+  /* R4.7.2 — 0F4a's per-module gate retired alongside the
+   * categories sidebar UI; the gate (R46_ORG_SELECTORS,
+   * syncR46OrgElements, installR46OrgCssGate) physically moved
+   * into retired-features/native-library-ui/0F4a-categories-ui/
+   * categories-sidebar.js Block 1. Section O re-verifies that the
+   * gate is gone from 0F4a. The other three modules retain their
+   * gates until R4.7.3 retires their UI. */
   ['0F6a', 'css-known-selector', '[data-cgxui="lbsc-root"]',                                         'NATIVE LABELS SECTION'],
   ['0F2a', 'css-known-selector', '.ho-project-row',                                                   'NATIVE PROJECTS SECTION'],
   ['0F3a', 'css-known-selector', '[data-cgxui="flsc-folder-row"], [data-cgxui="flsc-folder-more"]',   'NATIVE FOLDERS SECTION'],
@@ -462,14 +478,13 @@ for (const [mod, impl, selector, label] of PER_MODULE_GATES) {
   });
 }
 
-/* The categories gate (0F4a) is the user-emphasized "Native categories
- * section is gated" assertion. Verify the selector is precisely the
- * canonical root, and that the sync function uses it. */
-check('I.0F4a: categories gate uses the KNOWN flsc-categories-root selector', () => {
-  assert.match(SRC['0F4a'], /\[data-cgxui="flsc-categories-root"\]/);
-  /* R4.6.3 — the selector lives in R46_ORG_SELECTORS, consumed by syncR46OrgElements. */
-  assert.match(SRC['0F4a'], /R46_ORG_SELECTORS\s*=\s*\[\s*'\[data-cgxui="flsc-categories-root"\]'/);
-});
+/* R4.7.2 — The I.0F4a "categories gate uses flsc-categories-root"
+ * check was removed because the gate itself is retired. The
+ * UI_FSECTION_CATEGORIES_ROOT constant still exists in 0F4a
+ * (other modules may inspect it), and Section O verifies that
+ * 0F4a no longer DEFINES R46_ORG_SELECTORS / syncR46OrgElements /
+ * installR46OrgCssGate. The diagnose block still publishes the
+ * selector string for historical inspection. */
 
 /* ════════════════════════════════════════════════════════════════════════
  * Section K — R4.6.2 specific assertions
@@ -530,11 +545,18 @@ check('K.0F6a: labels gate uses real lbsc-root selector', () => {
 console.log('Section L — R4.6.3 cascade-proof per-element gate');
 
 const PER_ELEMENT_GATED_MODULES = [
-  /* moduleId, sync fn name, hidden marker value */
+  /* moduleId, sync fn name, hidden marker value
+   *
+   * R4.7.2 — 0F4a was removed from this list because its
+   * syncR46OrgElements + installR46OrgCssGate + boot wrapper
+   * physically retired into retired-features/native-library-ui/
+   * 0F4a-categories-ui/categories-sidebar.js Block 1. Section O
+   * verifies the absence of those functions from 0F4a's live
+   * source. The remaining 4 modules retain their per-element
+   * gates until their R4.7.3 retirements. */
   ['0F1b', 'syncR46WorkspaceElements', 'workspace-ui'],
   ['0F2a', 'syncR46OrgElements',       'org-ui'],
   ['0F3a', 'syncR46OrgElements',       'org-ui'],
-  ['0F4a', 'syncR46OrgElements',       'org-ui'],
   ['0F6a', 'syncR46OrgElements',       'org-ui'],
 ];
 
@@ -608,8 +630,12 @@ check('L.regression-no-body-only-gate: no module relies solely on body[data-h2o-
    * { display:none !important }` was fragile. Each module's CSS
    * gate MUST either include the per-element shared rule
    * `[data-h2o-r46-hidden="org-ui"]` OR the workspace selector group.
-   * Pure-body-descendant patterns are a regression. */
-  for (const mod of ['0F2a', '0F3a', '0F4a', '0F6a']) {
+   * Pure-body-descendant patterns are a regression.
+   *
+   * R4.7.2 — 0F4a removed from the loop because the gate moved
+   * with the UI into retired-features. Section O verifies the
+   * removal independently. */
+  for (const mod of ['0F2a', '0F3a', '0F6a']) {
     /* The shared per-element rule must be present. */
     assert.match(SRC[mod], /\[data-h2o-r46-hidden="org-ui"\]/);
   }
@@ -688,20 +714,38 @@ check('K.all-real: every gate declares gateImplementation = css-known-selector',
 console.log('Section J — R4.6.1 invariant re-verification');
 check('J.0F4a: category CRUD call sites still NOT preceded by deprecation gate', () => {
   /* Strip comments first so docstring references to the CRUD names
-   * don't false-trigger. Then scan for ACTUAL call expressions. */
+   * don't false-trigger. Then scan for ACTUAL call expressions
+   * (matching the symbol followed by `(` or `?.(`) — this skips the
+   * R4.7.2 diagnose block where the symbol appears as a bare string
+   * literal in the unconditionalSurfaces array.
+   *
+   * The post-R4.7.2 diagnose block ALSO populates a metadata object
+   * via `'library.nativeWorkspaceUi': isNativeWorkspaceUiEnabled()`
+   * which is a flag READ, not a gate. To distinguish a real gate
+   * from a metadata read, we look for the wrapping pattern
+   * `if (...isNative*Enabled(...)...) { ... call ... }`. The
+   * diagnose block uses no such wrapper.
+   *
+   * We additionally check EVERY call site (not just the first), so
+   * even if a newly-introduced metadata block sits ahead of the
+   * historical call site, the historical site itself is verified
+   * independently. */
   const stripped = STRIPPED['0F4a'];
   const lines = stripped.split('\n');
   for (const fn of ['renameCategory', 'deleteCategory', 'createCategory']) {
-    let hit = -1;
+    const callPat = new RegExp(`H2O\\.archiveBoot\\??\\.?${fn}\\s*(?:\\?\\.)?\\(`);
+    const hits = [];
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].indexOf(`H2O.archiveBoot`) >= 0 && lines[i].indexOf(fn) >= 0) {
-        hit = i; break;
-      }
+      if (callPat.test(lines[i])) hits.push(i);
     }
-    if (hit < 0) continue;
-    const window = lines.slice(Math.max(0, hit - 30), hit + 1).join('\n');
-    assert.equal(/isNativeWorkspaceUiEnabled\(|isNativeOrganizationUiEnabled\(|isNativeCaptureOnlyMode\(/.test(window), false,
-      `${fn} call site appears within 30 lines of a deprecation-flag helper — must remain unconditional`);
+    if (hits.length === 0) continue;
+    for (const hit of hits) {
+      const window = lines.slice(Math.max(0, hit - 30), hit + 1).join('\n');
+      assert.equal(/if\s*\([^)]*isNative(Workspace|Organization|Capture)\w*Enabled/.test(window), false,
+        `${fn} call site at line ${hit + 1} appears inside an if-block gated by a library.native* flag helper`);
+      assert.equal(/if\s*\([^)]*library\.native(Workspace|Organization|Capture)/.test(window), false,
+        `${fn} call site at line ${hit + 1} appears inside an if-block gated by a library.native* flag literal`);
+    }
   }
 });
 check('J.0F6a: label CRUD function definitions still NOT preceded by deprecation gate', () => {
@@ -990,27 +1034,311 @@ for (const dir of R47_MODULE_DIRS) {
   });
 }
 
-check('N.r47.1-no-code-moves: NO .js files in retired-features/native-library-ui/ subfolders yet', () => {
-  /* R4.7.1 is scaffolding only. JS files (the actual moved code)
-   * arrive in R4.7.2 + R4.7.3. Section N at R4.7.1 asserts the
-   * subfolders are bare except for the README.md. */
+check('N.r47.x-staged-code-moves: only R4.7.2-retired subfolders may contain .js', () => {
+  /* R4.7.1 was scaffolding only. R4.7.2 retires 0F4a categories
+   * sidebar UI (adds categories-sidebar.js under 0F4a-categories-ui/).
+   * R4.7.3 will retire the remaining 5 module subfolders. Until then,
+   * those 5 subfolders must remain bare except for their README.md. */
+  const R47_2_ALLOWED_JS = new Set(['0F4a-categories-ui']);
   for (const dir of R47_MODULE_DIRS) {
     const entries = fs.readdirSync(abs(`${R47_ROOT}/${dir}`));
     const jsFiles = entries.filter(f => f.endsWith('.js'));
+    if (R47_2_ALLOWED_JS.has(dir)) {
+      /* Allowed (and required in R4.7.2 for 0F4a) — verified by
+       * Section O checks below. */
+      continue;
+    }
     assert.equal(jsFiles.length, 0,
-      `${R47_ROOT}/${dir} should contain no .js files at R4.7.1 (scaffolding only); found: ${jsFiles.join(', ')}`);
+      `${R47_ROOT}/${dir} should contain no .js files until its R4.7 slice retires it; found: ${jsFiles.join(', ')}`);
   }
 });
 
-check('N.r47.1-no-runtime-impact: no Native module was touched by R4.7.1', () => {
-  /* R4.7.1 is documentation + validator only. Re-assert that the
-   * critical hard invariants from earlier sections still hold —
-   * because the validator runs across the whole tree, any drift
-   * caused by accidentally touching a Native module surfaces here.
-   * The byte-exact 0F5a check is the canary. */
+check('N.r47.1-no-runtime-impact: 0F5a invariant survives every R4.7 slice', () => {
+  /* The byte-exact 0F5a check is the canary: any R4.7 slice that
+   * accidentally touches Native tag extraction surfaces here. */
   const stat = fs.statSync(abs(FILES['0F5a']));
   assert.equal(stat.size, 273099,
-    `0F5a size changed during R4.7.1: ${stat.size} vs baseline 273099 — scaffolding slice must not modify Native modules`);
+    `0F5a size changed: ${stat.size} vs baseline 273099 — R4.7 slices must not modify Native extraction`);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section O — R4.7.2 Native Categories Sidebar UI physically retired
+ *
+ * R4.7.2 retires the 0F4a categories SIDEBAR UI surgically. This
+ * section asserts:
+ *
+ *   1. The retired-features archive file exists with the 5 declared
+ *      blocks (Block 1 R4.6.3 gate, Block 2 openCategoryAppearanceEditor
+ *      archival reference, Block 3 makeFallbackSidebarHeader,
+ *      Block 4 prepareCategoriesSection, Block 5 buildCategoriesSection).
+ *   2. 0F4a no longer contains the live sidebar render path
+ *      (Block 3 / Block 4 / Block 5 internals are gone from 0F4a).
+ *   3. 0F4a still contains the H2O.archiveBoot category CRUD
+ *      entrypoints — both via direct call sites (in
+ *      openCategoryAppearanceEditor + acceptCategoryCandidate, which
+ *      stay) and via the new H2O.Categories.archiveBootApi shim.
+ *   4. 0F4a contains breadcrumb comments pointing to
+ *      categories-sidebar.js at the removal sites.
+ *   5. 0F4a's file size shrank vs the pre-R4.7.2 baseline.
+ *   6. The per-module documentation (README.md +
+ *      extracted-from-0F4a.md) records the move + replacement.
+ *   7. The top-level original-path-map.md was updated from
+ *      "scaffolding only" to record concrete moves.
+ *   8. 0F5a remains byte-exact 273099. Capture files untouched.
+ *   9. Studio replacement modules (S0Z1g, S0F1m, S0F1n, S0F4b) are
+ *      referenced in the 0F4a-categories-ui README.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section O — R4.7.2 Categories sidebar UI physically retired');
+
+const O_ARCHIVE_PATH = `${R47_ROOT}/0F4a-categories-ui/categories-sidebar.js`;
+const O_EXTRACTED_DOC = `${R47_ROOT}/0F4a-categories-ui/extracted-from-0F4a.md`;
+const O_README = `${R47_ROOT}/0F4a-categories-ui/README.md`;
+const O_PATH_MAP = `${R47_ROOT}/original-path-map.md`;
+
+check('O.archive: categories-sidebar.js exists and is non-empty', () => {
+  assert.ok(fs.existsSync(abs(O_ARCHIVE_PATH)),
+    `${O_ARCHIVE_PATH} not found`);
+  const stat = fs.statSync(abs(O_ARCHIVE_PATH));
+  assert.ok(stat.size > 5000,
+    `${O_ARCHIVE_PATH} suspiciously small (${stat.size} bytes); expected the 5-block archive`);
+});
+
+check('O.archive: categories-sidebar.js declares all 5 blocks', () => {
+  const src = fs.readFileSync(abs(O_ARCHIVE_PATH), 'utf8');
+  assert.match(src, /Block 1 of 5 — R4\.6\.3 per-element org gate/);
+  assert.match(src, /Block 2 of 5 — openCategoryAppearanceEditor/);
+  assert.match(src, /Block 3 of 5 — makeFallbackSidebarHeader/);
+  assert.match(src, /Block 4 of 5 — prepareCategoriesSection/);
+  assert.match(src, /Block 5 of 5 — buildCategoriesSection/);
+});
+
+check('O.archive: Block 2 documents that openCategoryAppearanceEditor was KEPT in 0F4a', () => {
+  /* The function is reproduced archivally because the sidebar row
+   * (a now-retired consumer) called it, but workspace-viewer callers
+   * remain — so the live function definition stays in 0F4a until
+   * R4.7.3. The archive header must declare that this block is
+   * NOT removed from source. */
+  const src = fs.readFileSync(abs(O_ARCHIVE_PATH), 'utf8');
+  /* Find Block 2's header span and ensure it carries the keep-in-source
+   * caveat. */
+  const block2 = src.split(/Block 2 of 5/)[1] || '';
+  const block2Header = block2.split(/Block 3 of 5/)[0] || '';
+  assert.match(block2Header, /KEPT IN 0F4a/);
+  assert.match(block2Header, /(workspace|MOD)/i);
+});
+
+check('O.source: 0F4a contains R4.7.2 breadcrumbs at each removal site', () => {
+  const src = SRC['0F4a'];
+  /* Block 1 breadcrumb (R4.6.3 per-element gate). */
+  assert.match(src, /R4\.7\.2 — R4\.6\.3 per-element org gate retired/);
+  /* Block 3 + Block 4 breadcrumb (combined; they were contiguous). */
+  assert.match(src, /R4\.7\.2 — makeFallbackSidebarHeader \+ prepareCategoriesSection/);
+  /* Block 5 breadcrumb (buildCategoriesSection). */
+  assert.match(src, /R4\.7\.2 — buildCategoriesSection retired/);
+  /* Each breadcrumb cites the archive file. */
+  const breadcrumbCount = (src.match(/retired-features\/native-library-ui\/0F4a-categories-ui\/categories-sidebar\.js/g) || []).length;
+  assert.ok(breadcrumbCount >= 3,
+    `0F4a should cite categories-sidebar.js at least 3× (one per moved block); found ${breadcrumbCount}`);
+});
+
+check('O.source: 0F4a buildCategoriesSection is now a no-op stub', () => {
+  const src = SRC['0F4a'];
+  /* The function name stays for MOD API forwarding, but its body
+   * must be a no-op early return. */
+  const m = src.match(/function buildCategoriesSection\s*\([^)]*\)\s*\{([\s\S]{0,200})\}/);
+  assert.ok(m, 'buildCategoriesSection function declaration not found');
+  const body = m[1];
+  /* Body must contain an early `return null`. */
+  assert.match(body, /return null\s*;/);
+  /* Body must NOT contain the sidebar render internals that lived in
+   * the original function. */
+  assert.equal(/makeActionRow\s*\(/.test(body), false,
+    'buildCategoriesSection body still contains makeActionRow — function body not fully removed');
+  assert.equal(/'New category'/.test(body), false,
+    'buildCategoriesSection body still contains the "New category" label — function body not fully removed');
+  assert.equal(/'\bflsc-categories-root\b'/.test(body), false,
+    'buildCategoriesSection body still references flsc-categories-root literal — body not fully removed');
+});
+
+check('O.source: 0F4a no longer contains live sidebar render path', () => {
+  const src = SRC['0F4a'];
+  /* prepareCategoriesSection function must be gone (was Block 4). */
+  assert.equal(/function prepareCategoriesSection\b/.test(src), false,
+    '0F4a still defines prepareCategoriesSection — should have been moved');
+  /* makeFallbackSidebarHeader must be gone (was Block 3). */
+  assert.equal(/function makeFallbackSidebarHeader\b/.test(src), false,
+    '0F4a still defines makeFallbackSidebarHeader — should have been moved');
+  /* The R4.6.3 gate sync function must be gone (was Block 1). */
+  assert.equal(/function syncR46OrgElements\b/.test(src), false,
+    '0F4a still defines syncR46OrgElements — R4.6.3 gate should have been moved');
+  assert.equal(/function installR46OrgCssGate\b/.test(src), false,
+    '0F4a still defines installR46OrgCssGate — R4.6.3 gate should have been moved');
+});
+
+check('O.source: 0F4a still preserves H2O.archiveBoot category CRUD entrypoints', () => {
+  /* The MV3-fallback audit trail. The literal substrings MUST still
+   * appear in 0F4a — either via the openCategoryAppearanceEditor +
+   * acceptCategoryCandidate call sites (which stay) or via the new
+   * H2O.Categories.archiveBootApi compat shim, or both. */
+  const src = SRC['0F4a'];
+  assert.match(src, /H2O\.archiveBoot\??\.?renameCategory/,
+    '0F4a missing renameCategory audit trail');
+  assert.match(src, /H2O\.archiveBoot\??\.?deleteCategory/,
+    '0F4a missing deleteCategory audit trail');
+  assert.match(src, /H2O\.archiveBoot\??\.?createCategory/,
+    '0F4a missing createCategory audit trail');
+});
+
+check('O.source: 0F4a defines the H2O.Categories.archiveBootApi compat shim', () => {
+  const src = SRC['0F4a'];
+  assert.match(src, /H2O\.Categories\.archiveBootApi\s*=/,
+    'archiveBootApi shim not found in 0F4a');
+  /* Each of the three wrappers present in the shim. */
+  const shimSpan = src.split(/archiveBootApi\s*=\s*H2O\.Categories\.archiveBootApi\s*\|\|\s*\{/)[1];
+  assert.ok(shimSpan, 'archiveBootApi shim has unexpected shape');
+  const shim = shimSpan.split(/^\s*\};/m)[0];
+  assert.match(shim, /renameCategory:\s*function/);
+  assert.match(shim, /deleteCategory:\s*function/);
+  assert.match(shim, /createCategory:\s*function/);
+});
+
+check('O.source: 0F4a openCategoryAppearanceEditor remains (R4.7.3 retires it)', () => {
+  /* This function holds the rename + delete UI handlers. It stays
+   * for workspace viewer callers + MOD API exposure. R4.7.3 will
+   * move it. */
+  const src = SRC['0F4a'];
+  assert.match(src, /function openCategoryAppearanceEditor\b/,
+    '0F4a must still define openCategoryAppearanceEditor (kept for workspace viewer + MOD API; retires in R4.7.3)');
+  /* And the inline rename/delete handlers inside it still call
+   * archiveBoot directly (which is the primary audit trail). */
+  assert.match(src, /H2O\.archiveBoot\.renameCategory\(group\.id/);
+  assert.match(src, /H2O\.archiveBoot\.deleteCategory\(group\.id\)/);
+});
+
+check('O.source: 0F4a acceptCategoryCandidate retains createCategory call site', () => {
+  /* This is a secondary audit trail: the candidate-pool acceptance
+   * flow still mints fresh categories. */
+  const src = SRC['0F4a'];
+  assert.match(src, /H2O\.archiveBoot\.createCategory\(/,
+    '0F4a must still contain a direct H2O.archiveBoot.createCategory call site');
+});
+
+check('O.size: 0F4a shrank measurably vs pre-R4.7.2', () => {
+  /* Pre-R4.7.2 baseline (post-R4.6.4): roughly 3564 lines. After
+   * R4.7.2 we observed 3303 lines. Anything appreciably above
+   * baseline means a removal failed. We allow some headroom for
+   * the breadcrumb + compat shim additions. */
+  const lines = SRC['0F4a'].split(/\n/).length;
+  assert.ok(lines < 3500,
+    `0F4a line count ${lines} suggests R4.7.2 removals didn't actually apply (expected < 3500)`);
+  /* And it should be at least somewhat smaller than 3500 — a hard
+   * floor protects against accidental wholesale deletion. */
+  assert.ok(lines > 2800,
+    `0F4a line count ${lines} suspiciously small — over-aggressive deletion?`);
+});
+
+check('O.doc: extracted-from-0F4a.md exists and records line ranges + commit placeholder', () => {
+  assert.ok(fs.existsSync(abs(O_EXTRACTED_DOC)),
+    `${O_EXTRACTED_DOC} not found`);
+  const doc = fs.readFileSync(abs(O_EXTRACTED_DOC), 'utf8');
+  /* Title + retirement framing. */
+  assert.match(doc, /R4\.7\.2/);
+  assert.match(doc, /[Ee]xtracted from 0F4a/);
+  /* Records all 4 moved block ranges + retains Block 2. */
+  assert.match(doc, /108[–-]177/);
+  assert.match(doc, /1779[–-]1787/);
+  assert.match(doc, /1789[–-]1832/);
+  assert.match(doc, /1834[–-]2045/);
+  /* Block 2 disposition. */
+  assert.match(doc, /openCategoryAppearanceEditor/);
+  /* Commit hash placeholder. */
+  assert.match(doc, /commit hash/i);
+  /* Boundary invariants. */
+  assert.match(doc, /0F5a/);
+  assert.match(doc, /273099/);
+  /* Rollback. */
+  assert.match(doc, /[Rr]ollback/);
+});
+
+check('O.doc: 0F4a-categories-ui README reports R4.7.2 RETIRED status', () => {
+  const doc = fs.readFileSync(abs(O_README), 'utf8');
+  /* No longer scaffolding. */
+  assert.equal(/scaffolding only — no code moved/i.test(doc), false,
+    '0F4a-categories-ui README still says "scaffolding only" — should reflect R4.7.2 retirement');
+  /* Reports RETIRED status. */
+  assert.match(doc, /RETIRED/);
+  /* References the 4 moved blocks. */
+  assert.match(doc, /Block 1/);
+  assert.match(doc, /Block 3/);
+  assert.match(doc, /Block 4/);
+  assert.match(doc, /Block 5/);
+  /* Studio replacement stack: S0Z1g + S0F1m + S0F1n + S0F4b. */
+  assert.match(doc, /S0Z1g/);
+  assert.match(doc, /S0F1m/);
+  assert.match(doc, /S0F1n/);
+  assert.match(doc, /S0F4b/);
+  /* archiveBootApi shim referenced. */
+  assert.match(doc, /archiveBootApi/);
+});
+
+check('O.doc: original-path-map.md records R4.7.2 moves (no longer scaffolding-only)', () => {
+  const doc = fs.readFileSync(abs(O_PATH_MAP), 'utf8');
+  /* No longer empty. */
+  assert.equal(/_\(empty — R4\.7\.1 scaffolding/i.test(doc), false,
+    'original-path-map.md still shows scaffolding-only — should record R4.7.2 moves');
+  /* Concrete entries cite 0F4a (in some form) and the archive file. */
+  assert.match(doc, /0F4a\b/);
+  assert.match(doc, /[Cc]ategories/);
+  assert.match(doc, /categories-sidebar\.js/);
+  /* All 4 moved block line ranges referenced. */
+  assert.match(doc, /108[–-]177/);
+  assert.match(doc, /1779[–-]1787/);
+  assert.match(doc, /1789[–-]1832/);
+  assert.match(doc, /1834[–-]2045/);
+  /* Slice tag. */
+  assert.match(doc, /R4\.7\.2/);
+});
+
+check('O.invariants: capture path untouched (re-verify post-R4.7.2)', () => {
+  /* Sentinel: capture entrypoints in 0F3a + 0F1j unchanged. The
+   * full Section E check already covers exhaustive detail; this is
+   * a fast re-canary scoped to R4.7.2's actually-modified file
+   * neighborhood. 0F1j declares its capture entrypoints with
+   * `async function NAME` (not as object properties), so the
+   * regexes mirror that shape. */
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToLibrary\b/);
+  assert.match(SRC['0F3a'], /function ENGINE_injectAddToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+addToLibrary\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+saveToFolder\b/);
+  assert.match(SRC['0F1j'], /(?:async\s+)?function\s+openLinkedChat\b/);
+});
+
+check('O.invariants: 0F5a byte-exact (re-verify post-R4.7.2)', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    `0F5a size changed during R4.7.2: ${stat.size} vs baseline 273099 — Tag extraction must not be touched`);
+});
+
+check('O.invariants: archiveBoot CRUD definitions untouched in 0D3a (canonical archive)', () => {
+  /* The R4.7.2 retirement only moved UI; the archiveBoot
+   * implementations remain in 0D3a. We don't ship 0D3a in SRC[],
+   * but the diagnose registry asserted in Section C demonstrated
+   * the API names. This check confirms 0F4a still depends on
+   * `H2O.archiveBoot.*` (it does not re-implement them) — already
+   * proved above; here we just guard against a counter-pattern
+   * (don't allow 0F4a to define its own renameCategory/etc. as a
+   * standalone top-level function, since that would shadow the
+   * canonical archive implementation). */
+  const src = SRC['0F4a'];
+  /* Permitted: archiveBootApi shim's `renameCategory: function (...)` (inside an object literal). */
+  /* Forbidden: top-level `function renameCategory(` declaration. */
+  assert.equal(/^\s*function renameCategory\s*\(/m.test(src), false,
+    '0F4a must not define a top-level renameCategory function — it forwards to H2O.archiveBoot');
+  assert.equal(/^\s*function deleteCategory\s*\(/m.test(src), false,
+    '0F4a must not define a top-level deleteCategory function — it forwards to H2O.archiveBoot');
+  assert.equal(/^\s*function createCategory\s*\(/m.test(src), false,
+    '0F4a must not define a top-level createCategory function — it forwards to H2O.archiveBoot');
 });
 
 /* ════════════════════════════════════════════════════════════════════════

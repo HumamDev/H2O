@@ -1,6 +1,9 @@
 # 0F4a Categories UI — Retirement Record
 
-**Status (R4.7.1): scaffolding only — no code moved yet. UI retires in R4.7.2.**
+**Status (R4.7.2): RETIRED.** Native categories sidebar UI moved to
+`categories-sidebar.js`. See `extracted-from-0F4a.md` for exact
+line ranges + commit hash. 0F4a went from ~3564 lines (post-R4.6.4)
+to 3303 lines.
 
 ## What was here pre-R4.7
 
@@ -35,29 +38,56 @@ surgically while preserving the catalog API call sites.
 - R4.6.3 per-element sync (`R46_ORG_SELECTORS`,
   `syncR46OrgElements`, `installR46OrgCssGate`)
 
-## What R4.7.2 will retire (planned)
+## What R4.7.2 retired (done)
 
-From `src-runtime-base/0F4a.⬛️🗂️ Categories 🗂️.js`, move into this
-folder:
+From `src-runtime-base/0F4a.⬛️🗂️ Categories 🗂️.js`, the following
+moved into this folder's `categories-sidebar.js`:
 
-- `categories-sidebar.js` — section root mount, render functions,
-  category-row renderer, "New category" action row, context-menu
-  wiring
-- `r46-per-element-sync.js` — R4.6.3 sync block
+- **Block 1** — R4.6.3 per-element org gate (`R46_ORG_SELECTORS`,
+  `syncR46OrgElements`, `installR46OrgCssGate`, boot IIFE)
+- **Block 3** — `makeFallbackSidebarHeader` (the fallback header
+  builder used when ChatGPT's section template was unavailable)
+- **Block 4** — `prepareCategoriesSection` (sets `data-cgxui` to
+  `flsc-categories-root` and constructs the section shell)
+- **Block 5** — `buildCategoriesSection` (the main sidebar render
+  function — section header, per-category rows, "New category"
+  action row, and row context-menu wiring)
 
-`extracted-from-0F4a.md` (added by R4.7.2) records exact line ranges
-+ commit hash. Critically, it lists which lines STAYED (the
-archiveBoot.* call sites) and why.
+**Block 2 — `openCategoryAppearanceEditor`** is reproduced in the
+archive file as a reference but was NOT removed from 0F4a in
+R4.7.2. The function has additional callers in the workspace
+viewer (R4.7.3 scope) and in the `MOD` API surface. It moves with
+the workspace viewer in R4.7.3.
 
-## What STAYS in 0F4a post-R4.7
+`buildCategoriesSection` is kept in 0F4a as a no-op stub
+(`return null`) so that `MOD.buildSection` continues to resolve;
+removing the symbol entirely would silently break legacy callers.
+
+The R4.6.3 per-element gate is no longer needed at runtime now
+that the UI it gated is physically gone — but Block 1's archive
+preserves the gate logic for reference.
+
+`extracted-from-0F4a.md` records exact line ranges + commit hash,
+which call sites stayed, and the rationale.
+
+## What STAYS in 0F4a post-R4.7.2
 
 - Module IIFE skeleton
 - `const MOD = (H2O.Categories = H2O.Categories || {})` and any
   catalog data-layer exports
 - Category event listeners for cross-module sync
+- `function openCategoryAppearanceEditor` (kept for workspace
+  viewer + MOD API consumers; retires in R4.7.3)
+- `function buildCategoriesSection` (kept as a no-op stub for MOD
+  API)
 - All `H2O.archiveBoot.{rename,delete,create}Category` invocations
-  (these may need to be relocated WITHIN 0F4a if they were inside
-  the retired renderer; preserved either way)
+  via:
+  - Direct calls in `openCategoryAppearanceEditor` (lines
+    1525–1526 / 1540–1541 post-R4.7.2)
+  - Direct calls in `acceptCategoryCandidate` (lines 2495 / 2502)
+  - The new `H2O.Categories.archiveBootApi` audit-trail shim
+    (lines 141–148)
+- Category candidate pool + acceptance flow
 - R4.6.0 flag-reader helpers
 - `H2O.deprecation.native['0F4a']` diagnose registration
 
@@ -68,6 +98,8 @@ archiveBoot.* call sites) and why.
 | Categories sidebar section root | Desktop Studio's S0Z1g categories section |
 | Category rename/delete UI (sidebar row context menu) | S0F1m's `openCategoryEditor({mode: 'rename' \| 'delete'})` |
 | Category-create UI ("New category" action row) | S0F1m's `openCategoryEditor({mode: 'create'})` |
+| Multi-select batch operations on categories | S0F1n Library Batch Toolbar |
+| Category business actions (set/clear) from Library | S0F4b Categories Actions |
 | `H2O.archiveBoot.*` category CRUD call sites | **STAY in 0F4a** — Studio MV3 fallback via S0Z1g re-wiring depends on these |
 
 ## Safety invariants for this retirement

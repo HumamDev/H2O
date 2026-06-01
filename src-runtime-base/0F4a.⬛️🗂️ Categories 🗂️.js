@@ -105,76 +105,48 @@
     } catch (_) { /* swallow */ }
   })();
 
-  /* ── R4.6.3 — Per-element gate (cascade-proof) ──────────────────────
-   * R4.6.2 used body[data-h2o-r46-hide-org="1"] descendant CSS rule.
-   * Runtime soak revealed the body attribute is not consistently
-   * maintained (likely stripped by host framework re-renders), so the
-   * cascade-based gate silently failed. R4.6.3 replaces this with
-   * per-element marking:
-   *   1. Inject a SHARED CSS rule `[data-h2o-r46-hidden="org-ui"]
-   *      { display:none !important; }` (idempotent across all R4.6
-   *      modules — first one wins, others bail via id check).
-   *   2. Sync matched elements every 1s + on MutationObserver: when
-   *      flag is off, set data-h2o-r46-hidden="org-ui" AND inline
-   *      style.setProperty('display','none','important'). The inline
-   *      !important flag beats ANY competing CSS or inline style,
-   *      cascade-proof.
-   *   3. When flag is on, remove both markers so the element returns
-   *      to its natural display.
+  /* R4.7.2 — R4.6.3 per-element org gate retired alongside the
+   * categories sidebar UI. Code moved to:
+   *   retired-features/native-library-ui/0F4a-categories-ui/categories-sidebar.js
+   * (Block 1). The gate is no longer needed because the UI it gated
+   * is itself retired. R4.7.2 also retired the archiveBoot CRUD call
+   * sites that lived inside the sidebar handlers; thin compatibility
+   * shims preserving the API integration trace live below in the
+   * "R4.7.2 archiveBoot API audit trail" block. */
+
+  /* ── R4.7.2 — archiveBoot CRUD audit trail ──────────────────────────
+   * The Native categories sidebar UI (retired in this slice) called
+   * H2O.archiveBoot.renameCategory, deleteCategory, and createCategory
+   * from inside the row context-menu and the "New category" action
+   * row. Those call sites moved out of 0F4a alongside the sidebar UI.
    *
-   * The CRUD APIs (renameCategory, deleteCategory, createCategory) are
-   * NEVER affected — H2O.archiveBoot's functions are untouched. */
-  const R46_ORG_SELECTORS = ['[data-cgxui="flsc-categories-root"]'];
-  function syncR46OrgElements() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      const hide = !isNativeOrganizationUiEnabled();
-      for (const sel of R46_ORG_SELECTORS) {
-        D.querySelectorAll(sel).forEach((el) => {
-          if (!el || el.nodeType !== 1) return;
-          if (hide) {
-            el.setAttribute('data-h2o-r46-hidden', 'org-ui');
-            try { el.style.setProperty('display', 'none', 'important'); } catch (_) {}
-          } else if (el.getAttribute('data-h2o-r46-hidden') === 'org-ui') {
-            el.removeAttribute('data-h2o-r46-hidden');
-            try { el.style.removeProperty('display'); } catch (_) {}
-          }
-        });
-      }
-    } catch (_) { /* swallow */ }
-  }
-  function installR46OrgCssGate() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      const SHARED_STYLE_ID = 'h2o-r46-hidden-attr-css';
-      if (!D.getElementById(SHARED_STYLE_ID)) {
-        const style = D.createElement('style');
-        style.id = SHARED_STYLE_ID;
-        style.textContent =
-          '[data-h2o-r46-hidden="org-ui"],[data-h2o-r46-hidden="workspace-ui"]'
-        + '{display:none !important;}';
-        (D.head || D.documentElement).appendChild(style);
-      }
-      syncR46OrgElements();
-      if (typeof W.setInterval === 'function') {
-        W.setInterval(syncR46OrgElements, 1000);
-      }
-      if (typeof W.MutationObserver === 'function' && D.body) {
-        const obs = new W.MutationObserver(function () { syncR46OrgElements(); });
-        obs.observe(D.body, { childList: true, subtree: true });
-      }
-    } catch (_) { /* swallow */ }
-  }
-  (function bootR46OrgCssGate() {
-    try {
-      const D = W.document;
-      if (!D) return;
-      if (D.readyState !== 'loading') installR46OrgCssGate();
-      else D.addEventListener('DOMContentLoaded', installR46OrgCssGate, { once: true });
-    } catch (_) { /* swallow */ }
-  })();
+   * The thin pass-through wrappers below preserve the call expressions
+   * in 0F4a's source for two reasons:
+   *   1. Audit / discoverability — operators grepping 0F4a for
+   *      "renameCategory" / "deleteCategory" / "createCategory" still
+   *      find the integration points.
+   *   2. Studio MV3 fallback — S0Z1g re-wires Studio's per-row rename
+   *      / delete handlers to call H2O.archiveBoot.<method> DIRECTLY
+   *      via the global. These wrappers are NOT in the fallback's
+   *      call path (it goes through the global, not 0F4a), but they
+   *      document the integration for future readers.
+   *
+   * The actual archiveBoot.* functions live in 0D3a Transcript Archive
+   * Engine — that's the canonical owner. These wrappers just forward
+   * to it. They're available as H2O.Categories.archiveBootApi.* for
+   * programmatic access if needed; not invoked at boot. */
+  H2O.Categories = H2O.Categories || {};
+  H2O.Categories.archiveBootApi = H2O.Categories.archiveBootApi || {
+    renameCategory: function (categoryId, newName) {
+      return H2O.archiveBoot?.renameCategory?.(categoryId, newName);
+    },
+    deleteCategory: function (categoryId) {
+      return H2O.archiveBoot?.deleteCategory?.(categoryId);
+    },
+    createCategory: function (name, opts) {
+      return H2O.archiveBoot?.createCategory?.(name, opts);
+    },
+  };
 
   const MOD = (H2O.Categories = H2O.Categories || {});
   MOD.meta = MOD.meta || {
@@ -1471,6 +1443,16 @@
     return section;
   }
 
+  /* R4.7.2 — openCategoryAppearanceEditor is KEPT in 0F4a because the
+   * workspace category-viewer popups (`openCategoryViewer` /
+   * `openCategoryPanel`) at lines ~1538 / ~1570 call it as their
+   * "edit appearance" affordance. Those viewers are themselves
+   * workspace-page UI and are scheduled for retirement alongside
+   * 0F1b in R4.7.3. The function is duplicated in
+   *   retired-features/native-library-ui/0F4a-categories-ui/categories-sidebar.js
+   * (Block 2) as an archive reference — that's where the categories
+   * sidebar's row context-menu invoked it from. The 0F4a copy below
+   * remains the live definition that the workspace viewers use. */
   function openCategoryAppearanceEditor(anchorEl, group, afterChange = null) {
     if (!anchorEl || !group) return null;
     const compat = getCompat();
@@ -1776,272 +1758,29 @@
   }
 
 
-  function makeFallbackSidebarHeader(labelText) {
-    const btn = W.document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'text-token-text-tertiary flex w-full items-center justify-start gap-0.5 px-4 py-1.5';
-    btn.innerHTML = '<h2 class="__menu-label" data-no-spacing="true"></h2>';
-    const label = btn.querySelector('h2.__menu-label');
-    if (label) label.textContent = labelText;
-    return btn;
-  }
+  /* R4.7.2 — makeFallbackSidebarHeader + prepareCategoriesSection
+   * retired alongside the categories sidebar UI. Code moved to:
+   *   retired-features/native-library-ui/0F4a-categories-ui/categories-sidebar.js
+   * (Blocks 3 + 4). These were the helpers that built the
+   * categories sidebar SECTION element (`data-cgxui="flsc-categories-
+   * root"` boundary marker) and its header. */
 
-  function prepareCategoriesSection(projectsSection, existingSection = null) {
-    const doc = W.document;
-    const projectsHeaderBtn =
-      projectsSection?.querySelector?.(':scope > button') ||
-      projectsSection?.querySelector?.('button') ||
-      null;
-
-    const section = existingSection instanceof HTMLElement ? existingSection : doc.createElement('div');
-    if (projectsSection?.className) section.className = projectsSection.className;
-    else if (!section.className) section.className = 'group/sidebar-expando-section mb-[var(--sidebar-collapsed-section-margin-bottom)]';
-    section.style.display = '';
-    section.setAttribute('data-cgxui', UI_FSECTION_CATEGORIES_ROOT);
-    section.setAttribute(ATTR_CGXUI_OWNER, OWNER_SKID);
-
-    let headerBtn = section.querySelector(':scope > button');
-    if (projectsHeaderBtn instanceof HTMLElement) {
-      const cloned = projectsHeaderBtn.cloneNode(true);
-      cloned.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
-      cloned.removeAttribute('aria-controls');
-      if (headerBtn instanceof HTMLElement) headerBtn.replaceWith(cloned);
-      else section.insertBefore(cloned, section.firstChild || null);
-      headerBtn = cloned;
-    } else if (!(headerBtn instanceof HTMLElement)) {
-      headerBtn = makeFallbackSidebarHeader('Categories');
-      section.insertBefore(headerBtn, section.firstChild || null);
-    }
-
-    headerBtn.removeAttribute('data-h2o-sidebar-shell-inert');
-    const label = headerBtn.querySelector('h2.__menu-label') || headerBtn.querySelector('h2') || null;
-    if (label) label.textContent = 'Categories';
-
-    let listWrap = section.querySelector(':scope > [data-cgxui-state="section-list"]') ||
-      section.querySelector(':scope > [data-h2o-sidebar-shell-list="1"]') ||
-      null;
-    if (!(listWrap instanceof HTMLElement)) {
-      listWrap = doc.createElement('div');
-      listWrap.setAttribute(ATTR_CGXUI_STATE, 'section-list');
-      section.appendChild(listWrap);
-    }
-    listWrap.removeAttribute('data-h2o-sidebar-shell-list');
-    listWrap.setAttribute(ATTR_CGXUI_STATE, 'section-list');
-    if (headerBtn.nextElementSibling !== listWrap) section.insertBefore(listWrap, headerBtn.nextElementSibling || null);
-    return { section, headerBtn, listWrap };
-  }
-
+  /* R4.7.2 — buildCategoriesSection retired alongside the categories
+   * sidebar UI. Code moved to:
+   *   retired-features/native-library-ui/0F4a-categories-ui/categories-sidebar.js
+   * (Block 5). This was the main sidebar renderer — it built the
+   * section header + per-category rows + "New category" action row +
+   * row context-menu wiring. The H2O.archiveBoot.createCategory call
+   * site that lived inside the "New category" action row is now
+   * reachable via H2O.Categories.archiveBootApi.createCategory (audit
+   * trail). The categories sidebar UI is now provided by Desktop
+   * Studio's S0Z1g + S0F1m + S0F1n + S0F4b stack (per R4.5.x).
+   *
+   * A no-op stub remains because MOD.buildSection (line ~3312 area)
+   * forwards to this function. Returning null preserves the legacy
+   * call shape without mounting any DOM. */
   function buildCategoriesSection(projectsSection, existingSection = null, reason = 'build') {
-    const compat = getCompat();
-    if (!compat) return null;
-
-    const doc = W.document;
-    const prepared = prepareCategoriesSection(projectsSection, existingSection);
-    if (!prepared) return null;
-    const { section, headerBtn, listWrap } = prepared;
-    section.setAttribute('data-h2o-sidebar-shell-last-seen-by', 'categories');
-    section.setAttribute('data-h2o-sidebar-shell-last-reason', String(reason || 'build').slice(0, 80));
-
-    const tplDiv = doc.querySelector('nav div.__menu-item') || doc.querySelector('div.__menu-item') || null;
-    const tplA = doc.querySelector('nav a.__menu-item[href]') || doc.querySelector('a.__menu-item[href]') || null;
-    const fallbackRowClass = (tplDiv?.className || tplA?.className || 'group __menu-item hoverable');
-
-    const makeActionRow = (text, iconSvg, onClick, opts = {}) => {
-      const row = compat.makeRowShell?.(tplDiv, tplA, fallbackRowClass, 'div');
-      compat.setRowText?.(row, text);
-      compat.injectIcon?.(row, iconSvg, { color: opts.color });
-      return compat.wireAsButton?.(row, onClick) || row;
-    };
-    const makeCategoryRow = (group, onOpen, opts = {}) => {
-      const row = compat.makeRowShell?.(tplDiv, tplA, fallbackRowClass, 'a');
-      compat.setRowText?.(row, group?.name || 'Category');
-      const appearance = opts.appearance || getCategoryAppearance(group);
-      compat.injectIcon?.(row, categoryIconSvgForAppearance(appearance), { color: appearance.color });
-      compat.wireAsButton?.(row, onOpen);
-      if (typeof opts.onToggle === 'function') {
-        compat.makeIconToggle?.(row, opts.isOpen ? 'Hide chats' : 'Show chats', opts.onToggle, !!opts.isOpen);
-      }
-      return row;
-    };
-    const makeCategoryMoreRow = (text, onClick, opts = {}) => {
-      const row = compat.makeRowShell?.(tplDiv, tplA, fallbackRowClass, 'div');
-      compat.setRowText?.(row, text);
-      if (opts.indent) row.classList.add('ps-9');
-      else compat.injectIcon?.(row, compat.moreIconSvg || '');
-      return compat.wireAsButton?.(row, onClick) || row;
-    };
-    const makeSubChatRow = (href, text) => {
-      const a = compat.makeRowShell?.(tplDiv, tplA, fallbackRowClass, 'a');
-      a.setAttribute('href', href);
-      a.setAttribute('role', 'link');
-      a.classList.add('ps-9');
-      compat.removeSurfaceChatLeadingIcon?.(a);
-      const clean = compat.cleanSurfaceChatTitle ? compat.cleanSurfaceChatTitle(text) : text;
-      compat.setRowText?.(a, clean);
-      return a;
-    };
-
-    const readExpandedPref = () => {
-      const ui = compat.readUi?.() || {};
-      return ui.categoriesExpandedTouched === true ? !!ui.categoriesExpanded : true;
-    };
-
-    let expanded = readExpandedPref();
-    let renderToken = 0;
-    const applyExpandedToDOM = () => {
-      headerBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      listWrap.style.display = expanded ? '' : 'none';
-      compat.syncSectionHeaderArrow?.(headerBtn, expanded);
-    };
-    const setExpanded = (v) => {
-      expanded = !!v;
-      const ui = compat.readUi?.() || {};
-      ui.categoriesExpanded = expanded;
-      ui.categoriesExpandedTouched = true;
-      compat.writeUi?.(ui);
-      applyExpandedToDOM();
-    };
-    headerBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); setExpanded(!expanded); };
-
-    const render = async () => {
-      const token = ++renderToken;
-      const ui = compat.readUi?.() || {};
-      listWrap.replaceChildren();
-      listWrap.appendChild(makeActionRow('New category', compat.addIconSvg || '', async () => {
-        const name = await compat.openNameModal?.({
-          title: 'Create category',
-          placeholder: 'Category name',
-          initialValue: '',
-          confirmText: 'Create category',
-        });
-        if (!name) return;
-        if (typeof H2O.archiveBoot?.createCategory !== 'function') {
-          W.alert?.('Category creation is not available yet.');
-          return;
-        }
-        const created = H2O.archiveBoot.createCategory(name);
-        const nextUi = compat.readUi?.() || {};
-        nextUi.categoriesExpanded = true;
-        nextUi.categoriesExpandedTouched = true;
-        if (created?.id) nextUi.categoryPreviewFocusId = String(created.id || '');
-        compat.writeUi?.(nextUi);
-        expanded = true;
-        render();
-        refreshActivePageForAppearance('category', created?.id || '').catch((e2) => err('category-create:refresh-page', e2));
-      }));
-
-      let groups = [];
-      try { groups = await owner.loadGroups(); } catch (e) { err('renderCategories', e); groups = []; }
-      if (token !== renderToken) return;
-      if (!groups.length) {
-        applyExpandedToDOM();
-        return;
-      }
-      const currentChatHref = doc.querySelector('a[aria-current="page"][href*="/c/"]')?.getAttribute('href') || '';
-      const currentChatId = compat.parseChatIdFromHref ? compat.parseChatIdFromHref(currentChatHref) : '';
-      let activeCategoryMarked = false;
-      const previewLimit = Number(compat.categoryPreviewLimit || 5) || 5;
-      const chatPreviewLimit = Number(compat.categoryChatPreviewLimit || 5) || 5;
-      const previewFocusId = String(ui.categoryPreviewFocusId || '').trim();
-      let previewGroups = groups.slice(0, previewLimit);
-      if (previewFocusId && groups.length > previewLimit && !previewGroups.some((group) => group?.id === previewFocusId)) {
-        const focusGroup = groups.find((group) => String(group?.id || '') === previewFocusId);
-        if (focusGroup) previewGroups = [...groups.slice(0, Math.max(0, previewLimit - 1)), focusGroup];
-      }
-
-      previewGroups.forEach((group) => {
-        const inlinePreviewEnabled = ui.categoryInlinePreviewOnOpen !== false;
-        const isOpen = inlinePreviewEnabled && !!ui.openCategories?.[group.id];
-        const appearance = getCategoryAppearance(group, ui);
-        const grp = doc.createElement('div');
-        grp.setAttribute('data-cgxui-state', 'category-group');
-        grp.style.display = 'contents';
-        const toggleCategory = () => {
-          const u = compat.readUi?.() || {};
-          u.openCategories = (u.openCategories && typeof u.openCategories === 'object') ? u.openCategories : {};
-          u.openCategories[group.id] = !u.openCategories[group.id];
-          compat.writeUi?.(u);
-          render();
-        };
-        const row = makeCategoryRow(group, () => owner.openByMode(group), {
-          appearance,
-          isOpen,
-          onToggle: inlinePreviewEnabled ? toggleCategory : null,
-        });
-        row.setAttribute('data-cgxui', compat.categoryRowToken || 'flsc-category-row');
-        row.setAttribute(ATTR_CGXUI_OWNER, OWNER_SKID);
-        row.setAttribute('data-cgxui-category-id', group.id);
-        const isActiveCategory = !!currentChatId && group.rows.some((item) => item.chatId === currentChatId);
-        if (isActiveCategory && !activeCategoryMarked) {
-          row.setAttribute('aria-current', 'true');
-          activeCategoryMarked = true;
-        }
-        const trunc = row.querySelector?.('.truncate,[class*="truncate"]');
-        if (trunc && ui.showCategoryCounts !== false) {
-          const span = doc.createElement('span');
-          span.style.opacity = '.6';
-          span.style.marginLeft = '8px';
-          span.style.fontSize = '12px';
-          span.textContent = `(${group.rows.length})`;
-          trunc.parentElement?.appendChild(span);
-        }
-        const more = compat.makeNativeLikeMoreButton?.('Category appearance', compat.categoryMoreToken || 'flsc-category-more') || doc.createElement('button');
-        if (!more.hasAttribute('type')) more.type = 'button';
-        if (!more.hasAttribute('aria-label')) more.setAttribute('aria-label', 'Category appearance');
-        if (!more.hasAttribute('title')) more.title = 'Category appearance';
-        if (!more.hasAttribute('data-cgxui')) more.setAttribute('data-cgxui', compat.categoryMoreToken || 'flsc-category-more');
-        if (!more.innerHTML) more.innerHTML = compat.moreIconSvg || '⋯';
-        more.setAttribute(ATTR_CGXUI_OWNER, OWNER_SKID);
-        more.onclick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          openCategoryAppearanceEditor(more, group, render);
-        };
-        row.appendChild(more);
-        grp.appendChild(row);
-
-        if (isOpen) {
-          const previewRows = Array.isArray(group.rows) ? group.rows.slice(0, chatPreviewLimit) : [];
-          previewRows.forEach((item) => grp.appendChild(makeSubChatRow(item.href, item.title)));
-          if ((group.rows?.length || 0) > chatPreviewLimit) {
-            const moreRow = makeCategoryMoreRow('Show more', () => owner.openByMode(group), { indent: true });
-            moreRow.setAttribute('data-cgxui-state', 'category-show-more');
-            grp.appendChild(moreRow);
-          }
-        }
-        listWrap.appendChild(grp);
-      });
-
-      if (groups.length > previewLimit) {
-        const moreRow = makeCategoryMoreRow('More', () => {});
-        moreRow.setAttribute('data-cgxui-state', 'categories-more');
-        moreRow.setAttribute('aria-label', 'More categories');
-        moreRow.onclick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (typeof compat.openCategoriesMoreByMode === 'function') compat.openCategoriesMoreByMode(moreRow, groups);
-          else owner.openCategoriesByMode(groups);
-        };
-        moreRow.onkeydown = (e) => {
-          if (e.key !== 'Enter' && e.key !== ' ') return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (typeof compat.openCategoriesMoreByMode === 'function') compat.openCategoriesMoreByMode(moreRow, groups);
-          else owner.openCategoriesByMode(groups);
-        };
-        listWrap.appendChild(moreRow);
-      }
-      applyExpandedToDOM();
-    };
-
-    section.appendChild(headerBtn);
-    section.appendChild(listWrap);
-    section._cgxuiRender = render;
-    section.setAttribute('data-h2o-sidebar-shell', 'hydrated');
-    section.setAttribute('data-cgxui-mode', 'hydrated');
-    render();
-    applyExpandedToDOM();
-    return section;
+    return null;
   }
 
   /* ──────────────────────────────────────────────────────────────────────────
