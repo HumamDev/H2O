@@ -9,8 +9,8 @@
  *   - Performs exactly one cache UPDATE through the supplied SQLite context.
  *   - Does not create bindings, mutate catalog state, publish, relay/outbox,
  *     call Native/F5, apply, write watermarks, or write consumed operations.
- *   - SQLite writer identity is a stub until F15.8.f; this module reports
- *     sqliteSentinelUsed:false and warns accordingly.
+ *   - SQLite writer identity is enforced by F15.8.f's Rust-backed
+ *     h2o_writer_identity() sentinel.
  */
 (function (global) {
   'use strict';
@@ -111,7 +111,7 @@
     return bytesToHex(new Uint8Array(buffer));
   }
 
-  function sideEffectSummary(refreshed, storageWritten) {
+  function sideEffectSummary(refreshed, storageWritten, sqliteSentinelUsed) {
     return {
       publicationTouched: false,
       relayTouched: false,
@@ -122,7 +122,7 @@
       consumedOperationWritten: false,
       applyExecuted: false,
       chatsCategoryIdCacheRefreshed: refreshed === true,
-      sqliteSentinelUsed: false,
+      sqliteSentinelUsed: sqliteSentinelUsed === true,
       storageWritten: storageWritten === true,
       storeShimRouted: false
     };
@@ -145,10 +145,10 @@
       resolvedCategoryRowIdHash: cleanLower(o.resolvedCategoryRowIdHash),
       rowsAffected: Number(o.rowsAffected) || 0,
       cacheRevisionAdvanced: refreshed && o.cacheRevisionAdvanced === true,
-      sqliteSentinelUsed: false,
+      sqliteSentinelUsed: o.sqliteSentinelUsed === true,
       blockers: blockers,
       warnings: codeList(o.warnings),
-      sideEffectSummary: sideEffectSummary(refreshed, refreshed && o.storageWritten === true),
+      sideEffectSummary: sideEffectSummary(refreshed, refreshed && o.storageWritten === true, o.sqliteSentinelUsed === true),
       observedAtIso: cleanString(o.observedAtIso) || nowIsoSeconds()
     };
   }
@@ -185,7 +185,10 @@
   }
 
   async function withWriterIdentity(identity, fn) {
-    return await fn(identity);
+    if (typeof H2O.Desktop.Sync.withSQLiteWriterIdentity === 'function') {
+      return await H2O.Desktop.Sync.withSQLiteWriterIdentity(identity, fn);
+    }
+    return await fn({ identity: identity });
   }
 
   function extractActorPeer(input) {
@@ -412,7 +415,7 @@
   async function refreshChatCategoryCache(input) {
     var args = safeObject(input);
     var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
-    var warnings = ['sqlite-writer-identity-sentinel-stubbed'];
+    var warnings = [];
     var blockers = [];
     var context = extractContext(args);
     var action = cleanString(context.categoryCacheAction);
@@ -514,7 +517,18 @@
       : [observedAtIso, chatRowId];
     var sqlResult = null;
     try {
-      sqlResult = await withWriterIdentity(WRITER_IDENTITY, async function () {
+      sqlResult = await withWriterIdentity(WRITER_IDENTITY, async function (writerContext) {
+        if (!args.sqliteContext && writerContext && typeof writerContext.execute === 'function') {
+          var authorized = await writerContext.execute(query, values, {
+            reason: 'f15-chat-category-cache-refresh'
+          });
+          return {
+            result: authorized,
+            rowsAffected: readRowsAffected(authorized, args.sqliteContext),
+            executed: authorized && authorized.ok === true,
+            sqliteSentinelUsed: authorized && authorized.sqliteSentinelUsed === true
+          };
+        }
         return await executeSql(args.sqliteContext, query, values);
       });
     } catch (_) {
@@ -539,6 +553,7 @@
         rowsAffected: rowsAffected,
         blockers: blockers,
         warnings: warnings,
+        sqliteSentinelUsed: sqlResult && sqlResult.sqliteSentinelUsed === true,
         observedAtIso: observedAtIso
       })
       : buildResult({
@@ -553,6 +568,7 @@
         rowsAffected: rowsAffected,
         cacheRevisionAdvanced: true,
         storageWritten: true,
+        sqliteSentinelUsed: sqlResult && sqlResult.sqliteSentinelUsed === true,
         blockers: [],
         warnings: warnings,
         observedAtIso: observedAtIso

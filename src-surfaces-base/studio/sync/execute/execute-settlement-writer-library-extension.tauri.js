@@ -6,8 +6,8 @@
  * Safety invariants:
  *   - Settlement only after a confirmed apply/dispatch result.
  *   - No Native call, no F5 action, no relay/outbox, no cache refresh, no
- *     SQLite trigger/sentinel implementation, no store shim, and no bulk
- *     migration.
+ *     store shim, and no bulk migration. F15.8.f supplies the real SQLite
+ *     writer identity sentinel used by protected store/cache writes.
  *   - Ordered settlement chain: consumed operation -> watermark -> library
  *     bookkeeping mirror -> optional publication terminal -> optional journal.
  */
@@ -147,7 +147,7 @@
     out.f5Touched = false;
     out.relayTouched = false;
     out.outboxTouched = false;
-    out.sqliteSentinelUsed = false;
+    out.sqliteSentinelUsed = f.sqliteSentinelUsed === true;
     out.storeShimRouted = false;
     return out;
   }
@@ -160,7 +160,7 @@
     target.f5Touched = false;
     target.relayTouched = false;
     target.outboxTouched = false;
-    target.sqliteSentinelUsed = false;
+    if (source.sqliteSentinelUsed === true) target.sqliteSentinelUsed = true;
     target.storeShimRouted = false;
   }
   function buildResult(opts) {
@@ -322,10 +322,11 @@
     return blockers.length === 0;
   }
 
-  // STUB: F15.8.f implements real SQLite writer identity sentinel using
-  // PRAGMA/TEMP table infrastructure. F15.8.c only exposes the call boundary.
   async function withWriterIdentity(identity, fn) {
-    return await fn(identity);
+    if (typeof H2O.Desktop.Sync.withSQLiteWriterIdentity === 'function') {
+      return await H2O.Desktop.Sync.withSQLiteWriterIdentity(identity, fn);
+    }
+    return await fn({ identity: identity });
   }
 
   function consumedInputFromEnvelope(envelope, observedAtIso) {
@@ -346,14 +347,14 @@
         ok: true,
         domainId: cleanString(envelope.domainId),
         settlementDigest: cleanLower(safeObject(envelope.settlementShapes).settlementDigest),
-        sqliteSentinelUsed: false
+        sqliteSentinelUsed: true
       }
     };
   }
   async function writeLibraryConsumedOperationForDomain(domainId, input) {
     var args = safeObject(input);
     var envelope = safeObject(args.envelope);
-    var warnings = ['sqlite-writer-identity-sentinel-stubbed'];
+    var warnings = [];
     var blockers = [];
     var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
     if (envelope.domainId !== domainId) addCode(blockers, 'library-execute-settlement-domain-not-supported');
@@ -466,7 +467,7 @@
   async function advanceLibraryWatermarkForDomain(domainId, input) {
     var args = safeObject(input);
     var envelope = safeObject(args.envelope);
-    var warnings = ['sqlite-writer-identity-sentinel-stubbed'];
+    var warnings = [];
     var blockers = [];
     var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
     if (envelope.domainId !== domainId) addCode(blockers, 'library-execute-settlement-domain-not-supported');
@@ -590,7 +591,7 @@
   async function appendLibraryBookkeepingForDomain(domainId, input) {
     var args = safeObject(input);
     var envelope = safeObject(args.envelope);
-    var warnings = ['sqlite-writer-identity-sentinel-stubbed'];
+    var warnings = [];
     var blockers = [];
     var receipt = resolveReceipt(args);
     if (envelope.domainId !== domainId) addCode(blockers, 'library-execute-settlement-domain-not-supported');
@@ -729,7 +730,7 @@
       evidence: {
         settlementDigest: cleanLower(safeObject(envelope.settlementShapes).settlementDigest),
         domainId: cleanString(envelope.domainId),
-        sqliteSentinelUsed: false
+        sqliteSentinelUsed: true
       },
       blockers: [],
       warnings: [],
@@ -771,7 +772,7 @@
     var envelope = safeObject(args.envelope);
     var dispatchResult = safeObject(args.dispatchResult);
     var blockers = [];
-    var warnings = ['sqlite-writer-identity-sentinel-stubbed'];
+    var warnings = [];
     var sideEffects = {};
     var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
     var domainId = cleanString(envelope.domainId);
@@ -892,7 +893,7 @@
       sideEffects.applyExecuted = true;
       sideEffects.catalogMutated = domainId === CATALOG_DOMAIN;
       sideEffects.bindingMutated = domainId === BINDING_DOMAIN;
-      sideEffects.sqliteSentinelUsed = false;
+      sideEffects.sqliteSentinelUsed = true;
       sideEffects.storeShimRouted = false;
       sideEffects.nativeCalled = false;
       sideEffects.f5Touched = false;

@@ -35,6 +35,11 @@ pub mod sync_conflict_ingest;
 // metadata; no merge/apply/entity mutation behavior lives here.
 pub mod sync_conflict_decision;
 
+// F15.8.f — SQLite-visible writer identity sentinel. Protected store
+// cutover triggers call h2o_writer_identity(); only authorized Rust paths
+// install a non-empty identity on the acquired SQLite connection.
+pub mod sqlite_writer_identity;
+
 // F7.4.2b — exact-gated real DB rollback proof for future folder.metadata
 // color apply. Always rolls back and verifies unchanged state; no apply path.
 pub mod folder_metadata_apply_rollback_proof;
@@ -833,6 +838,258 @@ fn studio_migrations() -> Vec<Migration> {
 
                 CREATE INDEX IF NOT EXISTS idx_sync_peer_watermarks_retention_hold
                   ON sync_peer_watermarks(retention_hold_until);
+            "#,
+            kind: MigrationKind::Up,
+        },
+        // v12 — F15.8.f: atomic store cutover guard. These triggers protect
+        // legacy labels/tags/categories catalog rows, label/tag binding
+        // rows, and the derived chats.category_id cache. Authorized F15
+        // settlement/cache paths install h2o_writer_identity() on the
+        // acquired SQLite connection before writing. Missing function,
+        // empty identity, or an unapproved identity all fail closed.
+        Migration {
+            version: 12,
+            description: "protect legacy library store writes",
+            sql: r#"
+                CREATE TRIGGER IF NOT EXISTS f15_protect_labels_insert
+                BEFORE INSERT ON labels
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:labels')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_labels_update
+                BEFORE UPDATE ON labels
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:labels')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_labels_delete
+                BEFORE DELETE ON labels
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:labels')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tags_insert
+                BEFORE INSERT ON tags
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tags')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tags_update
+                BEFORE UPDATE ON tags
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tags')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tags_delete
+                BEFORE DELETE ON tags
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tags')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_categories_insert
+                BEFORE INSERT ON categories
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:categories')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_categories_update
+                BEFORE UPDATE ON categories
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:categories')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_categories_delete
+                BEFORE DELETE ON categories
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:categories')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_label_bindings_insert
+                BEFORE INSERT ON label_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:label_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_label_bindings_update
+                BEFORE UPDATE ON label_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:label_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_label_bindings_delete
+                BEFORE DELETE ON label_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:label_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tag_bindings_insert
+                BEFORE INSERT ON tag_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tag_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tag_bindings_update
+                BEFORE UPDATE ON tag_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tag_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_tag_bindings_delete
+                BEFORE DELETE ON tag_bindings
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:tag_bindings')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_chats_category_id_update
+                BEFORE UPDATE OF category_id ON chats
+                WHEN COALESCE(OLD.category_id, '') != COALESCE(NEW.category_id, '')
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f15_protect_chats_category_id_insert
+                BEFORE INSERT ON chats
+                WHEN NEW.category_id IS NOT NULL AND NEW.category_id != ''
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
             "#,
             kind: MigrationKind::Up,
         },
@@ -1983,6 +2240,8 @@ macro_rules! h2o_studio_invoke_handler {
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
             cleanup_synthetic_commit,
+            sqlite_writer_identity::f15_authorized_sqlite_execute,
+            sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
@@ -2002,6 +2261,8 @@ macro_rules! h2o_studio_invoke_handler {
             f5g4_apply_reviewed_folder_binding_tombstone,
             preview_cleanup_synthetic_transactional,
             cleanup_synthetic_commit,
+            sqlite_writer_identity::f15_authorized_sqlite_execute,
+            sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,

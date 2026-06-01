@@ -509,11 +509,15 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // phases. No relay dispatch, Native execution, F5 execution, apply, timer,
   // or polling behavior.
   "sync/execute/execute-settlement-writer.tauri.js",
+  // F15.8.f: Desktop/Tauri SQLite writer identity sentinel facade. Thin JS
+  // wrapper around the Rust-backed h2o_writer_identity() protected-write
+  // path. No store mutation by itself.
+  "sync/sqlite-writer-identity-sentinel.tauri.js",
   // F15.8.c: Desktop/Tauri library execute settlement writer extension.
   // Routes library.catalog/library.binding execute envelopes to consumed-op,
   // watermark, F15.7 bookkeeping mirror, optional publication terminal, and
   // optional journal marker. No Native call, F5 closure, relay/outbox, cache
-  // refresh, SQLite trigger, store shim, or Labels/Categories/Tags UI work.
+  // refresh, store shim, or Labels/Categories/Tags UI work.
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   // F15.8.d: Desktop/Tauri chats.category_id cache refresh bridge.
   // Settlement-callable bridge for successful library.binding chat-category
@@ -532,6 +536,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // outbox, watermark write, consumed-op write, store shim, bulk migration,
   // or UI.
   "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
+  // F15.8.f: Desktop/Tauri legacy library store cutover shims. Wraps
+  // labels/tags/categories/chats write APIs and routes protected writes
+  // through the Rust-backed SQLite writer identity sentinel.
+  "sync/library/library-store-cutover-shims.tauri.js",
   // F14.6.9: Desktop/Tauri execute resume-on-boot coordinator. Re-reads
   // interrupted Execute journal rows and invokes existing preflight, broker,
   // or settlement primitives according to phase. No new adapter, dispatch
@@ -1179,9 +1187,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-native-broker.tauri.js",
   "sync/execute/execute-f5-broker.tauri.js",
   "sync/execute/execute-settlement-writer.tauri.js",
+  "sync/sqlite-writer-identity-sentinel.tauri.js",
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   "sync/execute/library-category-cache-refresh.tauri.js",
   "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
+  "sync/library/library-store-cutover-shims.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/execute/adapters/chat-execute-adapter.tauri.js",
   "sync/execute/execute-capture-materialization.tauri.js",
