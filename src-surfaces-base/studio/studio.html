@@ -888,6 +888,12 @@
        materialization write previews into Execute envelopes only. No
        materialization, dispatch, settlement, publication, Native, F5, or UI. -->
   <script src="./sync/execute/adapters/capture-execute-adapter.tauri.js"></script>
+  <!-- F14.6.14: Desktop/Tauri Snapshot execute adapter.
+       Registers the Snapshot proposal-receipt adapter and shapes redacted
+       archive/restore receipts into Execute envelopes only. Tombstone/F5 is
+       explicitly deferred. No materialization, dispatch, settlement,
+       publication, Native, F5, Snapshot mutation, or UI. -->
+  <script src="./sync/execute/adapters/snapshot-execute-adapter.tauri.js"></script>
   <!-- Desktop-only: manual folder sync (M2d-1a). Self-bails on MV3 / web.
        Registers H2O.Studio.sync with manual scanFolderOnce + importFromFile
        APIs that wrap the existing M2b-1/2 ingestion importer. No watcher
