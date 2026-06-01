@@ -230,6 +230,18 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // cache write, no apply, no publication, no relay/outbox, no
   // watermark/consumed-op writes.
   "sync/library/library-binding-handoff-preview.tauri.js",
+  // F15.6.a: Desktop/Tauri library catalog apply-event receipt. Builds
+  // applyEvent + receipt + auditMetadata + watermarkPreview +
+  // consumedOperationPreview from the F15.5.a handoff preview. Six
+  // Native operations stay preview-only with all sideEffectSummary flags
+  // false. The seventh — tombstone — IS the F5 review queue ingress point
+  // (mirrors F14.5.5.2 snapshot tombstone wire-through verbatim): calls
+  // ingestF5Review with the handoff preview's F5 envelope; on success
+  // sideEffectSummary.f5Touched flips true; on unavailable / duplicate /
+  // throw / blocked the receipt stays ok:true and surfaces a warning.
+  // No Native execution, no apply, no publication, no relay/outbox, no
+  // watermark advance, no consumed-op write, no chats.category_id cache.
+  "sync/library/library-catalog-apply-event-receipt.tauri.js",
   // F14.3.1: Desktop/Tauri read-only chat metadata canonicalizer. Pure
   // function over one chat record (Native mirror / Library Index /
   // Registry Core projection) -> the F14.3.0 canonical chat snapshot.
@@ -1024,6 +1036,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-binding-proposal-candidate-generator.tauri.js",
   "sync/library/library-catalog-handoff-preview.tauri.js",
   "sync/library/library-binding-handoff-preview.tauri.js",
+  "sync/library/library-catalog-apply-event-receipt.tauri.js",
   "sync/chat/chat-canonicalizer.tauri.js",
   "sync/chat/chat-diagnostics.tauri.js",
   "sync/chat/chat-convergence-preflight.tauri.js",
