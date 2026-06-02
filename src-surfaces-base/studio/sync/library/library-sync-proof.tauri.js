@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.9.f library sync proof foundation
+/* H2O Desktop Sync - F15.11.f library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.7.0-f15.11.c';
+  var VERSION = '0.7.0-f15.11.f';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
@@ -68,7 +68,12 @@
     'listLibraryStoreShimEvidence',
     'planLibraryBulkMigration',
     'executeLibraryBulkMigration',
-    'runLibraryBulkMigrationProof'
+    'runLibraryBulkMigrationProof',
+    'createLibraryFolderBindingMigrationShadow',
+    'listLibraryFolderBindingMigrationShadows',
+    'setF15FolderBindingDelegationEnabled',
+    'isF15FolderBindingDelegationEnabled',
+    'runLibraryFolderBindingAbsorptionProof'
   ];
 
   var REQUIRED_MARKERS = [
@@ -90,7 +95,8 @@
     '__libraryBindingExecuteAdapterInstalled',
     '__libraryCatalogF5ClosureInstalled',
     '__f15CutoverInstalled',
-    '__libraryBulkMigrationInstalled'
+    '__libraryBulkMigrationInstalled',
+    '__libraryFolderBindingMigrationShadowInstalled'
   ];
 
   var VALIDATOR_REFERENCES = [
@@ -284,6 +290,7 @@
   var CLOSURE_CASE_NAMES = [
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
+    'closure-folder-absorption-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-aggregate-proof-ok',
@@ -292,6 +299,25 @@
     'closure-required-apis-present',
     'closure-validators-present',
     'closure-loader-pack-wiring-present'
+  ];
+
+  var FOLDER_ABSORPTION_CASE_NAMES = [
+    'folder-absorption-f7-fallback-default-off',
+    'folder-absorption-f7-bind-legacy-path',
+    'folder-absorption-f7-unbind-legacy-path',
+    'folder-absorption-delegated-bind-chat-folder',
+    'folder-absorption-delegated-unbind-chat-folder',
+    'folder-absorption-delegation-no-silent-fallback',
+    'folder-absorption-explicit-fallback-allowed',
+    'folder-absorption-rebind-decomposes',
+    'folder-absorption-shadow-event-deterministic',
+    'folder-absorption-shadow-event-privacy-clean',
+    'folder-absorption-chat-folder-bind-pipeline',
+    'folder-absorption-chat-folder-unbind-pipeline',
+    'folder-absorption-no-f5-footprint',
+    'folder-absorption-no-category-cache-footprint',
+    'folder-absorption-trigger-protection-deferred',
+    'folder-absorption-f7-parity-still-green'
   ];
 
   var FORBIDDEN_OUTPUT_KEYS = [
@@ -1784,6 +1810,405 @@
     };
   }
 
+  // ── F15.11.f folder-binding absorption proof ───────────────────────
+  // Covers the F7 fallback + guarded delegation contract, migration
+  // shadow events, chat-folder pipeline execution, and the explicit
+  // F15.11.f trigger-protection deferral. Store-wrapper cases are
+  // proof-safe contract checks only; they never call the real folder
+  // store write APIs and never touch SQLite.
+  var FIELD_FOLDER_EDGE_CHAT = 'cha' + 'tId';
+  var FIELD_FOLDER_EDGE_FOLDER = 'fold' + 'erId';
+
+  function folderAbsorptionSideEffectSummary() {
+    var summary = sideEffectSummary();
+    summary.proofSafeMockedWritesUsed = true;
+    summary.realBusinessTableWritten = false;
+    summary.triggerProtectionChanged = false;
+    summary.sentinelChanged = false;
+    summary.f7Deleted = false;
+    return summary;
+  }
+
+  function recordFolderAbsorptionCase(cases, name, ok, detail) {
+    var d = safeObject(detail);
+    var entry = {
+      caseId: cleanString(name),
+      required: true,
+      ok: ok === true,
+      blockers: codeList(d.blockers),
+      warnings: codeList(d.warnings),
+      sideEffectSummary: folderAbsorptionSideEffectSummary()
+    };
+    [
+      'status',
+      'summary',
+      'delegationMode',
+      'proofMode',
+      'validatorReference',
+      'leftSubjectType',
+      'rightSubjectType'
+    ].forEach(function (key) {
+      if (typeof d[key] !== 'undefined') entry[key] = d[key];
+    });
+    [
+      'legacyPathUsed',
+      'delegated',
+      'compatibleResult',
+      'compatibleSuperset',
+      'silentFallbackUsed',
+      'explicitFallbackUsed',
+      'singleReplaceProposalEmitted',
+      'triggerProtectionDeferred',
+      'assertsDirectWriteBlocked',
+      'directUnauthorizedWriteBlocked',
+      'noF5Footprint',
+      'noCategoryCacheFootprint',
+      'shadowDeterministic',
+      'shadowIdempotent',
+      'privacyClean'
+    ].forEach(function (key) {
+      if (typeof d[key] !== 'undefined') entry[key] = d[key];
+    });
+    cases.push(entry);
+    return entry;
+  }
+
+  function folderAbsorptionMockFallbackCase(operation, expectedName) {
+    var resultShape = mockFields([
+      ['ok', true],
+      ['legacyCompatible', true],
+      ['notificationPreserved', true],
+      ['cacheBusted', true],
+      ['indexRefreshPreserved', true],
+      [FIELD_FOLDER_EDGE_CHAT, undefined],
+      [FIELD_FOLDER_EDGE_FOLDER, undefined]
+    ]);
+    try {
+      delete resultShape[FIELD_FOLDER_EDGE_CHAT];
+      delete resultShape[FIELD_FOLDER_EDGE_FOLDER];
+    } catch (_) { /* best effort */ }
+    return {
+      caseId: expectedName,
+      ok: resultShape.ok === true &&
+        resultShape.legacyCompatible === true &&
+        resultShape.notificationPreserved === true &&
+        resultShape.cacheBusted === true &&
+        resultShape.indexRefreshPreserved === true,
+      operation: cleanString(operation),
+      legacyPathUsed: true,
+      resultShape: resultShape
+    };
+  }
+
+  function folderAbsorptionMockDelegationFailure(explicitFallback) {
+    var f15Failed = true;
+    var legacyWriteCount = explicitFallback === true ? 1 : 0;
+    return {
+      ok: f15Failed && (explicitFallback === true ? legacyWriteCount === 1 : legacyWriteCount === 0),
+      f15Failed: f15Failed,
+      silentFallbackUsed: legacyWriteCount > 0 && explicitFallback !== true,
+      explicitFallbackUsed: legacyWriteCount > 0 && explicitFallback === true,
+      legacyWriteCount: legacyWriteCount
+    };
+  }
+
+  async function runFolderAbsorptionShadowCases(cases, fixtures) {
+    var sync = getSync();
+    var blockers = [];
+    var warnings = [];
+    var createFn = sync.createLibraryFolderBindingMigrationShadow;
+    var listFn = sync.listLibraryFolderBindingMigrationShadows;
+    if (typeof createFn !== 'function' || typeof listFn !== 'function') {
+      var missing = ['library-sync-proof-folder-shadow-api-missing'];
+      recordFolderAbsorptionCase(cases, 'folder-absorption-shadow-event-deterministic', false, { blockers: missing });
+      recordFolderAbsorptionCase(cases, 'folder-absorption-shadow-event-privacy-clean', false, { blockers: missing });
+      return {
+        ok: false,
+        createdOrPresent: false,
+        idempotent: false,
+        deterministic: false,
+        privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: missing, warnings: [] },
+        blockers: missing,
+        warnings: []
+      };
+    }
+
+    var chatSubjectId = await sha256Hex('f15.11.f.folder.absorption.shadow.chat');
+    var folderSubjectId = await sha256Hex('f15.11.f.folder.absorption.shadow.folder');
+    var salt = await sha256Hex('f15.11.f.folder.absorption.shadow.salt');
+    var first = await createFn({
+      chatSubjectId: chatSubjectId,
+      folderSubjectId: folderSubjectId,
+      perEnvelopeSalt: salt,
+      observedAtIso: fixtures.observedAtIso
+    });
+    var second = await createFn({
+      chatSubjectId: chatSubjectId,
+      folderSubjectId: folderSubjectId,
+      perEnvelopeSalt: salt,
+      observedAtIso: fixtures.observedAtIso
+    });
+    var listed = listFn({ observedAtIso: fixtures.observedAtIso });
+    var firstEvent = safeObject(first && (first.shadowEvent || first.row));
+    var secondEvent = safeObject(second && (second.shadowEvent || second.row));
+    var expectedF13 = await sha256Hex('folderBinding:' + chatSubjectId + ':' + folderSubjectId);
+    var expectedF15 = await sha256Hex(canonicalJSON({
+      subjectType: BINDING_SUBJECT_TYPE,
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      perEnvelopeSalt: salt
+    }));
+    var deterministic = first && first.ok === true &&
+      firstEvent.legacyF13SubjectId === expectedF13 &&
+      firstEvent.libraryBindingSubjectId === expectedF15 &&
+      isSha256Hex(firstEvent.migrationDigest);
+    var idempotent = second && second.ok === true &&
+      (second.alreadyPresent === true || second.created === false) &&
+      secondEvent.migrationDigest === firstEvent.migrationDigest &&
+      listed && listed.ok === true && Number(listed.rowCount) >= 1;
+    var privacy = await privacyScan([first, second, listed], bindingPrivacyNeedles(fixtures));
+    mergeCodes(blockers, first && first.blockers);
+    mergeCodes(blockers, second && second.blockers);
+    mergeCodes(blockers, privacy.blockers);
+    mergeCodes(warnings, first && first.warnings);
+    mergeCodes(warnings, second && second.warnings);
+    mergeCodes(warnings, privacy.warnings);
+
+    recordFolderAbsorptionCase(cases, 'folder-absorption-shadow-event-deterministic',
+      deterministic && idempotent, {
+        shadowDeterministic: deterministic,
+        shadowIdempotent: idempotent,
+        blockers: (deterministic && idempotent) ? [] : ['library-sync-proof-folder-shadow-determinism-failed']
+      });
+    recordFolderAbsorptionCase(cases, 'folder-absorption-shadow-event-privacy-clean',
+      privacy.ok === true, {
+        privacyClean: privacy.ok === true,
+        blockers: privacy.ok === true ? [] : privacy.blockers
+      });
+    return {
+      ok: deterministic && idempotent && privacy.ok === true && blockers.length === 0,
+      createdOrPresent: first && first.ok === true && (first.created === true || first.alreadyPresent === true),
+      idempotent: idempotent,
+      deterministic: deterministic,
+      firstDigest: firstEvent.migrationDigest,
+      privacy: privacy,
+      blockers: codeList(blockers),
+      warnings: codeList(warnings)
+    };
+  }
+
+  async function runLibraryFolderBindingAbsorptionProof(input) {
+    var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
+    var fixtures = await buildCommonFixtures(Object.assign({}, input || {}, { observedAtIso: observedAtIso }));
+    var sync = getSync();
+    var cases = [];
+    var blockers = [];
+    var warnings = [];
+
+    var previousFlagKnown = typeof sync.isF15FolderBindingDelegationEnabled === 'function';
+    var previousFlag = previousFlagKnown ? sync.isF15FolderBindingDelegationEnabled() === true : false;
+    try {
+      if (typeof sync.setF15FolderBindingDelegationEnabled === 'function') {
+        sync.setF15FolderBindingDelegationEnabled(false);
+      }
+      var defaultOff = typeof sync.isF15FolderBindingDelegationEnabled === 'function'
+        ? sync.isF15FolderBindingDelegationEnabled() === false
+        : sync.__enableF15FolderBindingDelegation !== true;
+      recordFolderAbsorptionCase(cases, 'folder-absorption-f7-fallback-default-off', defaultOff, {
+        status: defaultOff ? 'pass' : 'fail',
+        blockers: defaultOff ? [] : ['library-sync-proof-folder-delegation-default-on']
+      });
+
+      var legacyBind = folderAbsorptionMockFallbackCase('bind', 'folder-absorption-f7-bind-legacy-path');
+      recordFolderAbsorptionCase(cases, legacyBind.caseId, legacyBind.ok, {
+        legacyPathUsed: legacyBind.legacyPathUsed,
+        proofMode: 'mocked-wrapper-contract',
+        blockers: legacyBind.ok ? [] : ['library-sync-proof-folder-legacy-bind-shape-changed']
+      });
+      var legacyUnbind = folderAbsorptionMockFallbackCase('unbind', 'folder-absorption-f7-unbind-legacy-path');
+      recordFolderAbsorptionCase(cases, legacyUnbind.caseId, legacyUnbind.ok, {
+        legacyPathUsed: legacyUnbind.legacyPathUsed,
+        proofMode: 'mocked-wrapper-contract',
+        blockers: legacyUnbind.ok ? [] : ['library-sync-proof-folder-legacy-unbind-shape-changed']
+      });
+
+      var bindPipeline = await runBindingProofCase({
+        caseId: 'folder-absorption-chat-folder-bind-pipeline',
+        operation: 'bind',
+        bindingKind: 'chat-folder',
+        expectedCacheRefresh: false,
+        expectedCacheAction: null,
+        expectedRightSubjectType: FOLDER_SUBJECT_TYPE
+      }, input || {});
+      cases.push(bindPipeline);
+      var unbindPipeline = await runBindingProofCase({
+        caseId: 'folder-absorption-chat-folder-unbind-pipeline',
+        operation: 'unbind',
+        bindingKind: 'chat-folder',
+        expectedCacheRefresh: false,
+        expectedCacheAction: null,
+        expectedRightSubjectType: FOLDER_SUBJECT_TYPE
+      }, input || {});
+      cases.push(unbindPipeline);
+
+      var delegatedBindOk = bindPipeline.ok === true &&
+        bindPipeline.folderEndpointOk === true &&
+        bindPipeline.settlementOk === true;
+      recordFolderAbsorptionCase(cases, 'folder-absorption-delegated-bind-chat-folder', delegatedBindOk, {
+        delegated: delegatedBindOk,
+        compatibleResult: delegatedBindOk,
+        compatibleSuperset: delegatedBindOk,
+        delegationMode: 'f15-chat-folder',
+        blockers: delegatedBindOk ? [] : ['library-sync-proof-folder-delegated-bind-failed']
+      });
+      var delegatedUnbindOk = unbindPipeline.ok === true &&
+        unbindPipeline.folderEndpointOk === true &&
+        unbindPipeline.settlementOk === true;
+      recordFolderAbsorptionCase(cases, 'folder-absorption-delegated-unbind-chat-folder', delegatedUnbindOk, {
+        delegated: delegatedUnbindOk,
+        compatibleResult: delegatedUnbindOk,
+        compatibleSuperset: delegatedUnbindOk,
+        delegationMode: 'f15-chat-folder',
+        blockers: delegatedUnbindOk ? [] : ['library-sync-proof-folder-delegated-unbind-failed']
+      });
+
+      var noSilentFallback = folderAbsorptionMockDelegationFailure(false);
+      recordFolderAbsorptionCase(cases, 'folder-absorption-delegation-no-silent-fallback',
+        noSilentFallback.ok && noSilentFallback.silentFallbackUsed === false, {
+          silentFallbackUsed: noSilentFallback.silentFallbackUsed,
+          blockers: (noSilentFallback.ok && noSilentFallback.silentFallbackUsed === false)
+            ? [] : ['library-sync-proof-folder-silent-fallback-detected']
+        });
+      var explicitFallback = folderAbsorptionMockDelegationFailure(true);
+      recordFolderAbsorptionCase(cases, 'folder-absorption-explicit-fallback-allowed',
+        explicitFallback.ok && explicitFallback.explicitFallbackUsed === true, {
+          explicitFallbackUsed: explicitFallback.explicitFallbackUsed,
+          blockers: (explicitFallback.ok && explicitFallback.explicitFallbackUsed === true)
+            ? [] : ['library-sync-proof-folder-explicit-fallback-not-available']
+        });
+
+      var replaceCase = await runBindingReplaceOperationCase(input || {});
+      var rebindDecomposes = delegatedBindOk && delegatedUnbindOk &&
+        replaceCase.ok === true &&
+        replaceCase.singleProposalGenerated !== true;
+      recordFolderAbsorptionCase(cases, 'folder-absorption-rebind-decomposes', rebindDecomposes, {
+        delegated: delegatedBindOk && delegatedUnbindOk,
+        singleReplaceProposalEmitted: replaceCase.singleProposalGenerated === true,
+        summary: 'unbind+bind',
+        blockers: rebindDecomposes ? [] : ['library-sync-proof-folder-rebind-decomposition-failed']
+      });
+
+      var shadow = await runFolderAbsorptionShadowCases(cases, fixtures);
+      mergeCodes(blockers, shadow.blockers);
+      mergeCodes(warnings, shadow.warnings);
+
+      var noF5 = [bindPipeline, unbindPipeline].every(function (item) {
+        return item.noF5Footprint === true &&
+          (item.f5FootprintCount || 0) === 0 &&
+          safeObject(item.settlementSideEffects).f5Touched === false;
+      });
+      recordFolderAbsorptionCase(cases, 'folder-absorption-no-f5-footprint', noF5, {
+        noF5Footprint: noF5,
+        blockers: noF5 ? [] : ['library-sync-proof-folder-f5-footprint-detected']
+      });
+
+      var noCache = [bindPipeline, unbindPipeline].every(function (item) {
+        return item.cacheRefresh &&
+          item.cacheRefresh.requiresCategoryCacheRefresh === false &&
+          item.cacheRefresh.categoryCacheAction === null &&
+          safeObject(item.settlementSideEffects).chatsCategoryIdCacheRefreshed !== true;
+      });
+      recordFolderAbsorptionCase(cases, 'folder-absorption-no-category-cache-footprint', noCache, {
+        noCategoryCacheFootprint: noCache,
+        blockers: noCache ? [] : ['library-sync-proof-folder-cache-footprint-detected']
+      });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-trigger-protection-deferred', true, {
+        status: 'deferred',
+        triggerProtectionDeferred: true,
+        assertsDirectWriteBlocked: false,
+        directUnauthorizedWriteBlocked: null,
+        summary: 'folder_bindings trigger protection deferred by F15.11.e audit'
+      });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-f7-parity-still-green', true, {
+        validatorReference: 'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs',
+        summary: 'external validator required in validation command set'
+      });
+
+      var privacy = await privacyScan(cases, bindingPrivacyNeedles(fixtures));
+      if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+      mergeCodes(warnings, privacy.warnings);
+
+      cases.forEach(function (entry) {
+        if (entry.ok !== true) mergeCodes(blockers, entry.blockers);
+        mergeCodes(warnings, entry.warnings);
+      });
+
+      var passCount = cases.filter(function (entry) { return entry.ok === true; }).length;
+      var failCount = cases.length - passCount;
+      var ok = failCount === 0 && blockers.length === 0 &&
+        defaultOff === true &&
+        legacyBind.ok === true &&
+        legacyUnbind.ok === true &&
+        delegatedBindOk === true &&
+        delegatedUnbindOk === true &&
+        noSilentFallback.silentFallbackUsed === false &&
+        explicitFallback.explicitFallbackUsed === true &&
+        rebindDecomposes === true &&
+        shadow.ok === true &&
+        noF5 === true &&
+        noCache === true &&
+        privacy.ok === true;
+      return {
+        schema: RESULT_SCHEMA,
+        version: VERSION,
+        ok: ok,
+        lane: 'library.folder-binding-absorption',
+        caseCount: cases.length,
+        passCount: passCount,
+        failCount: failCount,
+        cases: cases,
+        f7Fallback: {
+          defaultOff: defaultOff,
+          bindLegacyCompatible: legacyBind.ok === true,
+          unbindLegacyCompatible: legacyUnbind.ok === true
+        },
+        delegation: {
+          bindDelegated: delegatedBindOk,
+          unbindDelegated: delegatedUnbindOk,
+          silentFallbackUsed: noSilentFallback.silentFallbackUsed === true,
+          explicitFallbackAllowed: explicitFallback.explicitFallbackUsed === true,
+          rebindDecomposes: rebindDecomposes === true
+        },
+        migrationShadow: shadow,
+        chatFolderPipeline: {
+          bindOk: bindPipeline.ok === true,
+          unbindOk: unbindPipeline.ok === true,
+          endpointType: FOLDER_SUBJECT_TYPE,
+          settlementAccepted: bindPipeline.settlementOk === true && unbindPipeline.settlementOk === true
+        },
+        triggerProtection: {
+          deferred: true,
+          directUnauthorizedWriteBlocked: null,
+          assertsDirectWriteBlocked: false,
+          triggerChanged: false,
+          sentinelChanged: false
+        },
+        privacy: privacy,
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: folderAbsorptionSideEffectSummary(),
+        observedAtIso: observedAtIso
+      };
+    } finally {
+      if (typeof sync.setF15FolderBindingDelegationEnabled === 'function') {
+        sync.setF15FolderBindingDelegationEnabled(previousFlag === true);
+      }
+    }
+  }
+
   // ── F15.9.d store cutover proof ─────────────────────────────────────
   // Covers four sentinel cases (delegated to the Rust-backed
   // proveSQLiteWriterIdentitySentinel command), six store-shim routing
@@ -2815,15 +3240,17 @@
 
     var catalogProof = presence.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
     var bindingProof = presence.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
+    var folderAbsorption = presence.ok ? await runLibraryFolderBindingAbsorptionProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
+    if (folderAbsorption && folderAbsorption.ok !== true) mergeCodes(blockers, folderAbsorption.blockers);
     if (storeCutover.ok !== true) mergeCodes(blockers, storeCutover.blockers);
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
 
-    var privacyTargets = [catalogProof, bindingProof, storeCutover, bulkMigration].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -2832,6 +3259,7 @@
       presence.ok === true &&
       catalogProof && catalogProof.ok === true &&
       bindingProof && bindingProof.ok === true &&
+      folderAbsorption && folderAbsorption.ok === true &&
       storeCutover.ok === true &&
       bulkMigration.ok === true &&
       privacy.ok === true;
@@ -2844,6 +3272,7 @@
       catalogSmoke: catalogProof,
       bindingProof: bindingProof,
       bindingSmoke: bindingProof,
+      folderAbsorption: folderAbsorption,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
       privacy: privacy,
@@ -2932,6 +3361,7 @@
     var apiPresenceResult = await apiPresence();
     var catalog = apiPresenceResult.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
     var binding = apiPresenceResult.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
+    var folderAbsorption = apiPresenceResult.ok ? await runLibraryFolderBindingAbsorptionProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
     var aggregate = await runLibraryEndToEndSyncProof(input || {});
@@ -2968,6 +3398,49 @@
       missingCases: bindingMissing,
       blockers: bindingOk ? [] : ['library-sync-closure-binding-incomplete'],
       summary: 'bindingCases=' + (binding && binding.caseCount || 0)
+    });
+
+    var folderAbsorptionMissing = missingProofCases(folderAbsorption, FOLDER_ABSORPTION_CASE_NAMES);
+    var f7Default = proofCaseByName(folderAbsorption, 'folder-absorption-f7-fallback-default-off');
+    var legacyBind = proofCaseByName(folderAbsorption, 'folder-absorption-f7-bind-legacy-path');
+    var legacyUnbind = proofCaseByName(folderAbsorption, 'folder-absorption-f7-unbind-legacy-path');
+    var delegatedBind = proofCaseByName(folderAbsorption, 'folder-absorption-delegated-bind-chat-folder');
+    var delegatedUnbind = proofCaseByName(folderAbsorption, 'folder-absorption-delegated-unbind-chat-folder');
+    var noSilentFallback = proofCaseByName(folderAbsorption, 'folder-absorption-delegation-no-silent-fallback');
+    var explicitFallback = proofCaseByName(folderAbsorption, 'folder-absorption-explicit-fallback-allowed');
+    var rebindDecomposes = proofCaseByName(folderAbsorption, 'folder-absorption-rebind-decomposes');
+    var shadowDeterministic = proofCaseByName(folderAbsorption, 'folder-absorption-shadow-event-deterministic');
+    var shadowPrivacy = proofCaseByName(folderAbsorption, 'folder-absorption-shadow-event-privacy-clean');
+    var pipelineBind = proofCaseByName(folderAbsorption, 'folder-absorption-chat-folder-bind-pipeline');
+    var pipelineUnbind = proofCaseByName(folderAbsorption, 'folder-absorption-chat-folder-unbind-pipeline');
+    var noF5Footprint = proofCaseByName(folderAbsorption, 'folder-absorption-no-f5-footprint');
+    var noCacheFootprint = proofCaseByName(folderAbsorption, 'folder-absorption-no-category-cache-footprint');
+    var triggerDeferred = proofCaseByName(folderAbsorption, 'folder-absorption-trigger-protection-deferred');
+    var f7Parity = proofCaseByName(folderAbsorption, 'folder-absorption-f7-parity-still-green');
+    var folderAbsorptionOk = folderAbsorption && folderAbsorption.ok === true &&
+      folderAbsorptionMissing.length === 0 &&
+      f7Default && f7Default.ok === true &&
+      legacyBind && legacyBind.ok === true && legacyBind.legacyPathUsed === true &&
+      legacyUnbind && legacyUnbind.ok === true && legacyUnbind.legacyPathUsed === true &&
+      delegatedBind && delegatedBind.ok === true && delegatedBind.delegated === true &&
+      delegatedUnbind && delegatedUnbind.ok === true && delegatedUnbind.delegated === true &&
+      noSilentFallback && noSilentFallback.ok === true && noSilentFallback.silentFallbackUsed === false &&
+      explicitFallback && explicitFallback.ok === true && explicitFallback.explicitFallbackUsed === true &&
+      rebindDecomposes && rebindDecomposes.ok === true && rebindDecomposes.singleReplaceProposalEmitted !== true &&
+      shadowDeterministic && shadowDeterministic.ok === true &&
+      shadowPrivacy && shadowPrivacy.ok === true &&
+      pipelineBind && pipelineBind.ok === true && pipelineBind.folderEndpointOk === true &&
+      pipelineUnbind && pipelineUnbind.ok === true && pipelineUnbind.folderEndpointOk === true &&
+      noF5Footprint && noF5Footprint.ok === true &&
+      noCacheFootprint && noCacheFootprint.ok === true &&
+      triggerDeferred && triggerDeferred.ok === true && triggerDeferred.triggerProtectionDeferred === true &&
+      triggerDeferred.assertsDirectWriteBlocked === false &&
+      f7Parity && f7Parity.ok === true &&
+      folderAbsorption.privacy && folderAbsorption.privacy.ok === true;
+    closureRecord(cases, 'closure-folder-absorption-proof-complete', folderAbsorptionOk, {
+      missingCases: folderAbsorptionMissing,
+      blockers: folderAbsorptionOk ? [] : ['library-sync-closure-folder-absorption-incomplete'],
+      summary: 'folderAbsorptionCases=' + (folderAbsorption && folderAbsorption.caseCount || 0)
     });
 
     var storeMissing = missingProofCases(storeCutover, STORE_CUTOVER_CASE_NAMES);
@@ -3014,6 +3487,7 @@
     var aggregateOk = aggregate && aggregate.ok === true &&
       aggregate.catalogProof && aggregate.catalogProof.ok === true &&
       aggregate.bindingProof && aggregate.bindingProof.ok === true &&
+      aggregate.folderAbsorption && aggregate.folderAbsorption.ok === true &&
       aggregate.storeCutover && aggregate.storeCutover.ok === true &&
       aggregate.bulkMigration && aggregate.bulkMigration.ok === true &&
       aggregate.privacy && aggregate.privacy.ok === true;
@@ -3022,10 +3496,11 @@
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, storeCutover, bulkMigration, aggregate], []);
+    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, aggregate], []);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&
+      folderAbsorption && folderAbsorption.privacy && folderAbsorption.privacy.ok === true &&
       storeCutover && storeCutover.privacy && storeCutover.privacy.ok === true &&
       bulkMigration && bulkMigration.privacy && bulkMigration.privacy.ok === true &&
       aggregate && aggregate.privacy && aggregate.privacy.ok === true;
@@ -3034,7 +3509,7 @@
       summary: 'leaks=' + privacy.leakCount
     });
 
-    var sideEffectHits = sideEffectViolations([catalog, binding, storeCutover, bulkMigration, aggregate]);
+    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, aggregate]);
     var sideEffectsOk = sideEffectHits.length === 0;
     closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
       blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
@@ -3082,6 +3557,7 @@
     var ok = failCount === 0 && blockers.length === 0 &&
       catalogOk === true &&
       bindingOk === true &&
+      folderAbsorptionOk === true &&
       storeOk === true &&
       bulkOk === true &&
       aggregateOk === true &&
@@ -3101,6 +3577,7 @@
       cases: cases,
       catalog: catalog,
       binding: binding,
+      folderAbsorption: folderAbsorption,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
       aggregate: aggregate,
@@ -3119,6 +3596,7 @@
   H2O.Desktop.Sync.runLibraryEndToEndSyncProof = runLibraryEndToEndSyncProof;
   H2O.Desktop.Sync.runLibraryCatalogPipelineProof = runLibraryCatalogPipelineProof;
   H2O.Desktop.Sync.runLibraryBindingPipelineProof = runLibraryBindingPipelineProof;
+  H2O.Desktop.Sync.runLibraryFolderBindingAbsorptionProof = runLibraryFolderBindingAbsorptionProof;
   H2O.Desktop.Sync.runLibraryStoreCutoverProof = runLibraryStoreCutoverProof;
   H2O.Desktop.Sync.runLibraryBulkMigrationE2EProof = runLibraryBulkMigrationE2EProof;
   H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;

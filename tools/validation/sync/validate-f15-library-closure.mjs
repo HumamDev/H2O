@@ -51,12 +51,13 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.7.0-f15.11.c'",
+    "var VERSION = '0.7.0-f15.11.f'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     'runLibrarySyncClosureProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
+    'closure-folder-absorption-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-aggregate-proof-ok',
@@ -67,6 +68,7 @@ if (failures.length === 0) {
     'closure-loader-pack-wiring-present',
     'CATALOG_REQUIRED_CASE_NAMES',
     'BINDING_REQUIRED_CASE_NAMES',
+    'FOLDER_ABSORPTION_CASE_NAMES',
     'STORE_CUTOVER_CASE_NAMES',
     'BULK_MIGRATION_CASE_NAMES',
     'VALIDATOR_REFERENCES',
@@ -120,6 +122,26 @@ if (failures.length === 0) {
     'binding-no-f5-footprint',
     'binding-replace-operation-not-supported',
     'binding-privacy-leak-scan',
+    'folder-absorption-f7-fallback-default-off',
+    'folder-absorption-f7-bind-legacy-path',
+    'folder-absorption-f7-unbind-legacy-path',
+    'folder-absorption-delegated-bind-chat-folder',
+    'folder-absorption-delegated-unbind-chat-folder',
+    'folder-absorption-delegation-no-silent-fallback',
+    'folder-absorption-explicit-fallback-allowed',
+    'folder-absorption-rebind-decomposes',
+    'folder-absorption-shadow-event-deterministic',
+    'folder-absorption-shadow-event-privacy-clean',
+    'folder-absorption-chat-folder-bind-pipeline',
+    'folder-absorption-chat-folder-unbind-pipeline',
+    'folder-absorption-no-f5-footprint',
+    'folder-absorption-no-category-cache-footprint',
+    'folder-absorption-trigger-protection-deferred',
+    'folder-absorption-f7-parity-still-green',
+    'runLibraryFolderBindingAbsorptionProof',
+    'folderAbsorption',
+    'triggerProtectionDeferred',
+    'proofSafeMockedWritesUsed',
     'cutover-direct-sql-blocked',
     'cutover-authorized-settlement-write-passes',
     'cutover-identity-clears-after-scope',
@@ -157,7 +179,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '0.7.0-f15.11.c'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '0.7.0-f15.11.f'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'validate-f15-library-closure.mjs', 'sync validator closure validator reference');
 
