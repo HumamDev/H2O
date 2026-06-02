@@ -1,9 +1,9 @@
-/* H2O Desktop Sync - F15.9.a library sync proof foundation
+/* H2O Desktop Sync - F15.9.b library sync proof foundation
  *
- * Runtime smoke proof for the F15 library sync lane. This module exercises
- * the existing catalog and binding primitives with synthetic, device-local
- * fixtures, scans the redacted artifacts for raw-data leaks, and returns
- * summary evidence only.
+ * Runtime proof for the F15 library sync lane. This module exercises the
+ * existing catalog primitives across the full F15 catalog operation set,
+ * keeps the binding lane at F15.9.a smoke coverage, scans the redacted
+ * artifacts for raw-data leaks, and returns summary evidence only.
  *
  * Safety invariants:
  *   - Proof harness only.
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.1.0-f15.9.a';
+  var VERSION = '0.2.0-f15.9.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
@@ -49,6 +49,7 @@
     'buildLibraryCatalogApplyEventReceipt',
     'recordLibraryCatalogBookkeeping',
     'shapeLibraryCatalogExecuteEnvelope',
+    'closeLibraryCatalogTombstoneViaF5',
     'canonicalizeLibraryBinding',
     'diagnoseLibraryBinding',
     'preflightLibraryBinding',
@@ -78,8 +79,95 @@
     '__libraryBindingBookkeepingInstalled',
     '__libraryCatalogExecuteAdapterInstalled',
     '__libraryBindingExecuteAdapterInstalled',
+    '__libraryCatalogF5ClosureInstalled',
     '__f15CutoverInstalled',
     '__libraryBulkMigrationInstalled'
+  ];
+
+  var CATALOG_CASE_DEFINITIONS = [
+    {
+      caseId: 'catalog-create-full-pipeline',
+      operation: 'create',
+      currentLifecycleState: 'absent',
+      targetLifecycleState: 'active',
+      targetNameKey: 'catalogCreateNameValue',
+      targetColorKey: 'catalogCreateColorValue'
+    },
+    {
+      caseId: 'catalog-rename-full-pipeline',
+      operation: 'rename',
+      currentLifecycleState: 'active',
+      targetLifecycleState: 'active',
+      baseNameKey: 'catalogRenameBaseNameValue',
+      targetNameKey: 'catalogRenameTargetNameValue',
+      targetColorKey: 'catalogStableColorValue'
+    },
+    {
+      caseId: 'catalog-recolor-full-pipeline',
+      operation: 'recolor',
+      currentLifecycleState: 'active',
+      targetLifecycleState: 'active',
+      targetNameKey: 'catalogStableNameValue',
+      baseColorKey: 'catalogRecolorBaseColorValue',
+      targetColorKey: 'catalogRecolorTargetColorValue'
+    },
+    {
+      caseId: 'catalog-archive-full-pipeline',
+      operation: 'archive',
+      currentLifecycleState: 'active',
+      targetLifecycleState: 'archived',
+      targetNameKey: 'catalogArchiveNameValue',
+      targetColorKey: 'catalogStableColorValue'
+    },
+    {
+      caseId: 'catalog-restore-from-archived-full-pipeline',
+      operation: 'restore-from-archived',
+      currentLifecycleState: 'archived',
+      targetLifecycleState: 'active',
+      targetNameKey: 'catalogRestoreArchivedNameValue',
+      targetColorKey: 'catalogStableColorValue'
+    },
+    {
+      caseId: 'catalog-tombstone-approve-seal-full-pipeline',
+      operation: 'tombstone',
+      currentLifecycleState: 'active',
+      targetLifecycleState: 'retained',
+      targetNameKey: 'catalogTombstoneSealNameValue',
+      targetColorKey: 'catalogStableColorValue',
+      f5DecisionState: 'approved-seal',
+      expectedClosureState: 'closed-sealed',
+      expectedNativeApplyRequired: true,
+      proveDuplicateF5Ingest: true
+    },
+    {
+      caseId: 'catalog-tombstone-approve-restore-full-pipeline',
+      operation: 'tombstone',
+      currentLifecycleState: 'archived',
+      targetLifecycleState: 'retained',
+      targetNameKey: 'catalogTombstoneRestoreNameValue',
+      targetColorKey: 'catalogStableColorValue',
+      f5DecisionState: 'approved-restore',
+      expectedClosureState: 'closed-restored',
+      expectedNativeApplyRequired: false
+    },
+    {
+      caseId: 'catalog-restore-from-retained-full-pipeline',
+      operation: 'restore-from-retained',
+      currentLifecycleState: 'retained',
+      targetLifecycleState: 'active',
+      targetNameKey: 'catalogRestoreRetainedNameValue',
+      targetColorKey: 'catalogStableColorValue'
+    },
+    {
+      caseId: 'catalog-tombstone-pending-f5-blocks-execute',
+      operation: 'tombstone',
+      currentLifecycleState: 'active',
+      targetLifecycleState: 'retained',
+      targetNameKey: 'catalogPendingTombstoneNameValue',
+      targetColorKey: 'catalogStableColorValue',
+      f5DecisionState: 'pending-review',
+      expectExecuteBlocker: 'library-catalog-execute-tombstone-f5-state-not-post-decision'
+    }
   ];
 
   var FORBIDDEN_OUTPUT_KEYS = [
@@ -375,14 +463,34 @@
     var chatSubjectId = await sha256Hex('chat.metadata:f15.9.a.proof.chat');
     var raw = {
       catalogRawNameValue: 'F15 Proof Label Raw Name',
+      catalogCreateNameValue: 'F15 Proof Create Catalog',
+      catalogRenameBaseNameValue: 'F15 Proof Rename Before',
+      catalogRenameTargetNameValue: 'F15 Proof Rename After',
+      catalogStableNameValue: 'F15 Proof Stable Catalog',
+      catalogArchiveNameValue: 'F15 Proof Archive Catalog',
+      catalogRestoreArchivedNameValue: 'F15 Proof Restore Archived Catalog',
+      catalogTombstoneSealNameValue: 'F15 Proof Tombstone Seal Catalog',
+      catalogTombstoneRestoreNameValue: 'F15 Proof Tombstone Restore Catalog',
+      catalogRestoreRetainedNameValue: 'F15 Proof Restore Retained Catalog',
+      catalogPendingTombstoneNameValue: 'F15 Proof Pending Tombstone Catalog',
       catalogRawColorValue: '#15A9AA',
+      catalogCreateColorValue: '#159A00',
+      catalogStableColorValue: '#1666AA',
+      catalogRecolorBaseColorValue: '#2200AA',
+      catalogRecolorTargetColorValue: '#22AA00',
       catalogRawIdValue: 'f15-proof-catalog-raw-id',
+      catalogCategoryRawIdValue: 'f15-proof-category-raw-id',
+      catalogTagRawIdValue: 'f15-proof-tag-raw-id',
       chatRawIdValue: 'f15-proof-chat-raw-id',
       categoryRawIdValue: 'f15-proof-category-id',
+      rawAccountIdNeedle: 'f15-proof-raw-account-id',
       bundlePathNeedle: '/tmp/f15-proof-library.bundle',
       bundleFileNeedle: 'f15-proof-library.bundle',
       titleValue: 'F15 Proof Raw Title',
       contentValue: 'F15 Proof Raw Content',
+      bodyValue: 'F15 Proof Raw Body',
+      messageValue: 'F15 Proof Raw Message',
+      urlValue: 'https://example.invalid/f15-proof',
       tokenValue: 'f15-proof-token'
     };
     return {
@@ -401,25 +509,40 @@
     };
   }
 
-  function catalogDeviceLocalInput(fixtures) {
+  function catalogRawIdFor(fixtures, catalogKind) {
+    var kind = cleanString(catalogKind) || 'label';
+    if (kind === 'category') return fixtures.raw.catalogCategoryRawIdValue;
+    if (kind === 'tag') return fixtures.raw.catalogTagRawIdValue;
+    return fixtures.raw.catalogRawIdValue;
+  }
+  function catalogDeviceLocalInput(fixtures, options) {
+    var opts = safeObject(options);
+    var catalogKind = cleanString(opts.catalogKind) || 'label';
     var row = {
-      catalogKind: 'label',
-      lifecycleState: 'active',
-      perEnvelopeSalt: 'f15.9.a.catalog.salt',
+      catalogKind: catalogKind,
+      lifecycleState: cleanString(opts.lifecycleState) || 'active',
+      perEnvelopeSalt: cleanString(opts.perEnvelopeSalt) || 'f15.9.b.catalog.salt',
       originAccountIdHash: fixtures.originAccountIdHash,
       sourceTag: 'desktop',
       observedAtIso: fixtures.observedAtIso
     };
-    row.labelId = fixtures.raw.catalogRawIdValue;
-    row.name = fixtures.raw.catalogRawNameValue;
-    row.color = fixtures.raw.catalogRawColorValue;
+    if (catalogKind === 'category') row.categoryId = cleanString(opts.rawId) || catalogRawIdFor(fixtures, catalogKind);
+    else if (catalogKind === 'tag') row.tagId = cleanString(opts.rawId) || catalogRawIdFor(fixtures, catalogKind);
+    else row.labelId = cleanString(opts.rawId) || catalogRawIdFor(fixtures, catalogKind);
+    row.name = cleanString(opts.catalogNameValue) || fixtures.raw.catalogRawNameValue;
+    if (opts.catalogColorValue !== null) row.color = cleanString(opts.catalogColorValue) || fixtures.raw.catalogRawColorValue;
     return row;
   }
-  function catalogContext(fixtures, canonical, operation) {
+  function catalogContext(fixtures, canonical, operation, options) {
+    var opts = safeObject(options);
     return {
       operation: operation,
       canonicalCatalog: canonical,
-      currentLifecycleState: operation === 'create' ? 'absent' : canonical.lifecycleState,
+      currentLifecycleState: operation === 'create'
+        ? 'absent'
+        : (cleanString(opts.currentLifecycleState) || canonical.lifecycleState),
+      baseHash: cleanLower(opts.baseHash) || undefined,
+      expectedCurrentRevisionHash: cleanLower(opts.baseHash) || undefined,
       localAccountIdHash: fixtures.originAccountIdHash,
       actorPeer: fixtures.actorPeer,
       existingCatalogSiblings: [],
@@ -511,20 +634,143 @@
     }
   }
 
-  async function runLibraryCatalogPipelineProof(input) {
+  function rawValue(fixtures, key, fallback) {
+    var value = cleanString(fixtures.raw && fixtures.raw[key]);
+    return value || cleanString(fallback);
+  }
+  function catalogInputForCase(fixtures, def, flavor) {
+    var isBase = flavor === 'base';
+    var rawName = rawValue(
+      fixtures,
+      isBase ? (def.baseNameKey || def.targetNameKey) : def.targetNameKey,
+      fixtures.raw.catalogRawNameValue
+    );
+    var rawColor = rawValue(
+      fixtures,
+      isBase ? (def.baseColorKey || def.targetColorKey) : def.targetColorKey,
+      fixtures.raw.catalogRawColorValue
+    );
+    var currentState = cleanString(def.currentLifecycleState);
+    var lifecycle = currentState === 'absent'
+      ? (cleanString(def.targetLifecycleState) || 'active')
+      : currentState;
+    return catalogDeviceLocalInput(fixtures, {
+      catalogKind: def.catalogKind || 'label',
+      lifecycleState: lifecycle,
+      perEnvelopeSalt: 'f15.9.b.catalog.salt.' + cleanString(def.caseId),
+      catalogNameValue: rawName,
+      catalogColorValue: rawColor
+    });
+  }
+  function catalogPrivacyNeedles(fixtures) {
+    var raw = safeObject(fixtures.raw);
+    return Object.keys(raw).map(function (key) { return raw[key]; });
+  }
+  async function buildCatalogCaseReviewId(def) {
+    return await sha256Hex('f15.9.b.library.catalog.f5.review:' + cleanString(def.caseId));
+  }
+  function f5ReviewForCase(reviewId, state, fixtures) {
+    return {
+      reviewId: cleanLower(reviewId),
+      currentState: cleanString(state),
+      reviewStatusVersion: 1,
+      row: {
+        reviewId: cleanLower(reviewId),
+        currentState: cleanString(state),
+        reviewStatusVersion: 1,
+        actorPeer: fixtures.actorPeer
+      }
+    };
+  }
+  function closeF5ReviewForCase(targetState) {
+    return async function () {
+      return {
+        ok: true,
+        status: 'closed',
+        currentState: cleanString(targetState),
+        reviewStatusVersion: 2,
+        metadata: { closureKind: cleanString(targetState) },
+        blockers: [],
+        warnings: []
+      };
+    };
+  }
+  async function withMockF5ReviewQueue(reviewId, fn) {
+    var sync = getSync();
+    var hadMarker = Object.prototype.hasOwnProperty.call(sync, '__snapshotF5ReviewQueueInstalled');
+    var oldMarker = sync.__snapshotF5ReviewQueueInstalled;
+    var hadIngest = Object.prototype.hasOwnProperty.call(sync, 'ingestF5Review');
+    var oldIngest = sync.ingestF5Review;
+    var ingestCount = 0;
+    sync.__snapshotF5ReviewQueueInstalled = true;
+    sync.ingestF5Review = async function () {
+      ingestCount += 1;
+      return {
+        ok: true,
+        reviewId: cleanLower(reviewId),
+        blockers: [],
+        warnings: ingestCount > 1 ? ['f5-review-duplicate-idempotent'] : []
+      };
+    };
+    try {
+      return await fn({
+        duplicateIngested: function () { return ingestCount > 1; }
+      });
+    } finally {
+      if (hadMarker) sync.__snapshotF5ReviewQueueInstalled = oldMarker;
+      else {
+        try { delete sync.__snapshotF5ReviewQueueInstalled; } catch (_) { sync.__snapshotF5ReviewQueueInstalled = undefined; }
+      }
+      if (hadIngest) sync.ingestF5Review = oldIngest;
+      else {
+        try { delete sync.ingestF5Review; } catch (_) { sync.ingestF5Review = undefined; }
+      }
+    }
+  }
+  function stepsFromParts(parts) {
+    var out = {};
+    Object.keys(parts).forEach(function (key) {
+      out[key] = safeObject(parts[key]).ok === true;
+    });
+    return out;
+  }
+  function allRequiredStepsPassed(parts, names) {
+    for (var i = 0; i < names.length; i++) {
+      if (safeObject(parts[names[i]]).ok !== true) return false;
+    }
+    return true;
+  }
+  async function runCatalogProofCase(def, input) {
+    var fixtures = await buildCommonFixtures(input || {});
     var blockers = [];
     var warnings = [];
-    var fixtures = await buildCommonFixtures(input || {});
-    var artifacts = [];
     var parts = {};
+    var artifacts = [];
+    var duplicateF5Ingest = null;
+    var f5ReviewId = '';
+    var closure = null;
 
     try {
-      var canonical = await getSync().canonicalizeLibraryCatalog(catalogDeviceLocalInput(fixtures));
+      var canonical = await getSync().canonicalizeLibraryCatalog(catalogInputForCase(fixtures, def, 'target'));
       parts.canonicalize = summarizeResult(canonical);
       if (!stepOk(canonical)) addCode(blockers, 'library-sync-proof-catalog-canonicalize-failed');
       var catalog = safeObject(canonical.canonical);
 
-      var context = catalogContext(fixtures, catalog, 'create');
+      var baseHash = ZERO_HASH;
+      if (def.operation !== 'create') {
+        var baseCanonical = await getSync().canonicalizeLibraryCatalog(catalogInputForCase(fixtures, def, 'base'));
+        if (!stepOk(baseCanonical) || !isSha256Hex(safeObject(baseCanonical.canonical).revisionHash)) {
+          addCode(blockers, 'library-sync-proof-catalog-base-canonicalize-failed');
+        } else {
+          baseHash = safeObject(baseCanonical.canonical).revisionHash;
+        }
+        artifacts.push(baseCanonical);
+      }
+
+      var context = catalogContext(fixtures, catalog, def.operation, {
+        currentLifecycleState: def.currentLifecycleState,
+        baseHash: baseHash
+      });
       var diagnostics = await getSync().diagnoseLibraryCatalog(context);
       parts.diagnose = summarizeResult(diagnostics);
       if (!stepOk(diagnostics)) addCode(blockers, 'library-sync-proof-catalog-diagnostics-failed');
@@ -540,7 +786,7 @@
       if (!stepOk(proposal) || proposal.generated !== true) addCode(blockers, 'library-sync-proof-catalog-proposal-failed');
 
       var handoff = await getSync().previewLibraryCatalogHandoff({
-        operation: 'create',
+        operation: def.operation,
         proposalCandidate: proposal,
         candidate: proposal.candidate,
         preflight: proposal.preflight || preflight,
@@ -552,13 +798,43 @@
       parts.handoff = summarizeResult(handoff);
       if (!stepOk(handoff) || handoff.handoffReady !== true) addCode(blockers, 'library-sync-proof-catalog-handoff-failed');
 
-      var receipt = await getSync().buildLibraryCatalogApplyEventReceipt({
-        operation: 'create',
-        handoffPreview: handoff,
-        observedAtIso: fixtures.observedAtIso
-      });
+      var receipt;
+      if (def.operation === 'tombstone') {
+        f5ReviewId = await buildCatalogCaseReviewId(def);
+        receipt = await withMockF5ReviewQueue(f5ReviewId, async function (mockState) {
+          var built = await getSync().buildLibraryCatalogApplyEventReceipt({
+            operation: def.operation,
+            handoffPreview: handoff,
+            observedAtIso: fixtures.observedAtIso
+          });
+          if (def.proveDuplicateF5Ingest === true) {
+            duplicateF5Ingest = await getSync().ingestF5Review({
+              f5Handoff: safeObject(safeObject(handoff.handoffRequest).f5Handoff),
+              originAccountIdHash: fixtures.originAccountIdHash,
+              actorPeer: fixtures.actorPeer,
+              observedAtIso: fixtures.observedAtIso
+            });
+            if (!mockState.duplicateIngested() || !duplicateF5Ingest ||
+                duplicateF5Ingest.ok !== true ||
+                codeList(duplicateF5Ingest.warnings).indexOf('f5-review-duplicate-idempotent') === -1) {
+              addCode(blockers, 'library-sync-proof-catalog-duplicate-f5-ingest-failed');
+            }
+          }
+          return built;
+        });
+      } else {
+        receipt = await getSync().buildLibraryCatalogApplyEventReceipt({
+          operation: def.operation,
+          handoffPreview: handoff,
+          observedAtIso: fixtures.observedAtIso
+        });
+      }
       parts.receipt = summarizeResult(receipt);
       if (!stepOk(receipt)) addCode(blockers, 'library-sync-proof-catalog-receipt-failed');
+      if (def.operation === 'tombstone' &&
+          (receipt.f5ReviewIngested !== true || receipt.f5ReviewId !== f5ReviewId)) {
+        addCode(blockers, 'library-sync-proof-catalog-f5-ingest-failed');
+      }
 
       var bookkeeping = await withMemoryChromeStorage(function () {
         return getSync().recordLibraryCatalogBookkeeping({
@@ -570,60 +846,167 @@
       parts.bookkeeping = summarizeResult(bookkeeping);
       if (!stepOk(bookkeeping) || !isObject(bookkeeping.row)) addCode(blockers, 'library-sync-proof-catalog-bookkeeping-failed');
 
+      var f5Review = def.operation === 'tombstone'
+        ? f5ReviewForCase(f5ReviewId || receipt.f5ReviewId, def.f5DecisionState, fixtures)
+        : null;
       var execute = await getSync().shapeLibraryCatalogExecuteEnvelope({
         bookkeepingResult: bookkeeping,
         receipt: receipt,
+        f5Review: f5Review,
         observedAtIso: fixtures.observedAtIso
       });
       parts.executeEnvelope = summarizeResult(execute);
-      if (!stepOk(execute) || !isObject(execute.envelope)) addCode(blockers, 'library-sync-proof-catalog-execute-envelope-failed');
+      var executeBlockedAsExpected = !!def.expectExecuteBlocker &&
+        execute && execute.ok === false &&
+        codeList(execute.blockers).indexOf(def.expectExecuteBlocker) !== -1;
+      if (def.expectExecuteBlocker) {
+        if (!executeBlockedAsExpected) addCode(blockers, 'library-sync-proof-catalog-pending-f5-block-missing');
+      } else if (!stepOk(execute) || !isObject(execute.envelope)) {
+        addCode(blockers, 'library-sync-proof-catalog-execute-envelope-failed');
+      }
 
-      artifacts = [canonical, diagnostics, preflight, proposal, handoff, receipt, bookkeeping, execute];
-      mergeCodes(warnings, parts.bookkeeping.warnings);
-      mergeCodes(warnings, parts.executeEnvelope.warnings);
-      var privacy = await privacyScan(artifacts, [
-        fixtures.raw.catalogRawNameValue,
-        fixtures.raw.catalogRawColorValue,
-        fixtures.raw.catalogRawIdValue,
-        fixtures.raw.chatRawIdValue,
-        fixtures.raw.categoryRawIdValue,
-        fixtures.raw.bundlePathNeedle,
-        fixtures.raw.bundleFileNeedle,
-        fixtures.raw.titleValue,
-        fixtures.raw.contentValue,
-        fixtures.raw.tokenValue
-      ]);
+      var closureSummary = null;
+      if (!def.expectExecuteBlocker && def.operation === 'tombstone') {
+        closure = await getSync().closeLibraryCatalogTombstoneViaF5({
+          envelope: execute.envelope,
+          f5Review: f5Review,
+          actorPeer: fixtures.actorPeer,
+          closeF5Review: closeF5ReviewForCase(def.expectedClosureState),
+          observedAtIso: fixtures.observedAtIso
+        });
+        parts.f5Closure = summarizeResult(closure);
+        var nativeApplyRequired = closure && closure.nativeApplyRequired === true;
+        if (!stepOk(closure) ||
+            closure.f5TargetState !== def.expectedClosureState ||
+            nativeApplyRequired !== (def.expectedNativeApplyRequired === true)) {
+          addCode(blockers, 'library-sync-proof-catalog-f5-closure-failed');
+        }
+        closureSummary = {
+          ok: closure && closure.ok === true,
+          closed: closure && closure.closed === true,
+          decisionState: cleanString(def.f5DecisionState),
+          targetState: closure && closure.f5TargetState,
+          nativeApplyRequired: nativeApplyRequired
+        };
+      }
+
+      artifacts = artifacts.concat([
+        canonical, diagnostics, preflight, proposal, handoff, receipt,
+        bookkeeping, execute, closure, duplicateF5Ingest
+      ].filter(Boolean));
+      Object.keys(parts).forEach(function (key) {
+        mergeCodes(warnings, parts[key].warnings);
+      });
+      var privacy = await privacyScan(artifacts, catalogPrivacyNeedles(fixtures));
       if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
       mergeCodes(warnings, privacy.warnings);
 
+      var requiredSteps = ['canonicalize', 'diagnose', 'preflight', 'proposal', 'handoff', 'receipt', 'bookkeeping'];
+      var caseOk = blockers.length === 0 &&
+        allRequiredStepsPassed(parts, requiredSteps) &&
+        (def.expectExecuteBlocker ? executeBlockedAsExpected : parts.executeEnvelope.ok === true) &&
+        (!parts.f5Closure || parts.f5Closure.ok === true) &&
+        privacy.ok === true;
       var artifactDigest = await digestOf({
+        caseId: def.caseId,
+        operation: def.operation,
         subjectId: proposal.subjectId,
         lineageId: proposal.lineageId,
         dedupeKey: proposal.dedupeKey,
-        executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest
+        executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest,
+        closureEvidenceDigest: closure && closure.closureEvidenceDigest
       });
-      return summarizePipeline('library.catalog', parts, {
-        operation: 'create',
+
+      return {
+        caseId: def.caseId,
+        required: true,
+        ok: caseOk,
+        operation: def.operation,
+        currentLifecycleState: def.currentLifecycleState,
+        targetLifecycleState: def.targetLifecycleState,
+        steps: stepsFromParts(parts),
+        executeBlockedAsExpected: executeBlockedAsExpected,
+        pendingF5BlockerObserved: executeBlockedAsExpected,
         subjectId: proposal.subjectId || catalog.subjectId,
         lineageId: proposal.lineageId,
         dedupeKey: proposal.dedupeKey,
         operationId: proposal.operationId,
+        baseHash: proposal.baseHash || baseHash,
+        targetHash: proposal.targetHash,
         executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest,
         artifactDigest: artifactDigest,
+        f5: def.operation === 'tombstone' ? {
+          reviewIdPresent: isSha256Hex(f5ReviewId || receipt.f5ReviewId),
+          reviewIngested: receipt.f5ReviewIngested === true,
+          decisionState: cleanString(def.f5DecisionState),
+          duplicateIngestIdempotent: duplicateF5Ingest ? duplicateF5Ingest.ok === true : null,
+          closure: closureSummary
+        } : null,
         privacy: privacy,
-        inMemoryBookkeepingWritten: bookkeeping && bookkeeping.sideEffectSummary &&
-          bookkeeping.sideEffectSummary.bookkeepingLedgerWritten === true,
-        blockers: blockers,
-        warnings: codeList(warnings)
-      });
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
     } catch (e) {
-      addCode(blockers, 'library-sync-proof-catalog-threw');
-      return summarizePipeline('library.catalog', parts, {
-        operation: 'create',
-        blockers: blockers,
-        warnings: warnings.concat(cleanString(e && e.message) ? ['library-sync-proof-catalog-error'] : [])
-      });
+      addCode(blockers, 'library-sync-proof-catalog-case-threw');
+      return {
+        caseId: cleanString(def.caseId),
+        required: true,
+        ok: false,
+        operation: cleanString(def.operation),
+        steps: stepsFromParts(parts),
+        executeBlockedAsExpected: false,
+        pendingF5BlockerObserved: false,
+        f5: null,
+        privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: ['library-sync-proof-catalog-case-threw'], warnings: [] },
+        blockers: codeList(blockers),
+        warnings: codeList(warnings.concat(cleanString(e && e.message) ? ['library-sync-proof-catalog-case-error'] : [])),
+        sideEffectSummary: sideEffectSummary()
+      };
     }
+  }
+
+  async function runLibraryCatalogPipelineProof(input) {
+    var cases = [];
+    var blockers = [];
+    var warnings = [];
+    for (var i = 0; i < CATALOG_CASE_DEFINITIONS.length; i++) {
+      var proofCase = await runCatalogProofCase(CATALOG_CASE_DEFINITIONS[i], input || {});
+      cases.push(proofCase);
+      if (proofCase.ok !== true) mergeCodes(blockers, proofCase.blockers);
+      mergeCodes(warnings, proofCase.warnings);
+    }
+    var privacy = await privacyScan(cases, catalogPrivacyNeedles(await buildCommonFixtures(input || {})));
+    var privacyCase = {
+      caseId: 'catalog-privacy-leak-scan',
+      required: true,
+      ok: privacy.ok === true,
+      operation: 'privacy-scan',
+      steps: { privacyScan: privacy.ok === true },
+      privacy: privacy,
+      blockers: codeList(privacy.blockers),
+      warnings: codeList(privacy.warnings),
+      sideEffectSummary: sideEffectSummary()
+    };
+    cases.push(privacyCase);
+    if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+    mergeCodes(warnings, privacy.warnings);
+    var passCount = cases.filter(function (item) { return item.ok === true; }).length;
+    var failCount = cases.length - passCount;
+    return {
+      schema: RESULT_SCHEMA,
+      version: VERSION,
+      ok: failCount === 0 && blockers.length === 0 && privacy.ok === true,
+      caseCount: cases.length,
+      passCount: passCount,
+      failCount: failCount,
+      cases: cases,
+      warnings: codeList(warnings),
+      blockers: codeList(blockers),
+      privacy: privacy,
+      sideEffectSummary: sideEffectSummary(),
+      observedAtIso: cleanString(input && input.observedAtIso) || nowIsoSeconds()
+    };
   }
 
   async function runLibraryBindingPipelineProof(input) {
@@ -825,24 +1208,24 @@
     mergeCodes(blockers, presence.blockers);
     mergeCodes(warnings, presence.warnings);
 
-    var catalogSmoke = presence.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
+    var catalogProof = presence.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
     var bindingSmoke = presence.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
 
-    if (catalogSmoke && catalogSmoke.ok !== true) mergeCodes(blockers, catalogSmoke.blockers);
+    if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingSmoke && bindingSmoke.ok !== true) mergeCodes(blockers, bindingSmoke.blockers);
     if (storeCutover.ok !== true) mergeCodes(blockers, storeCutover.blockers);
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
 
-    var privacyTargets = [catalogSmoke, bindingSmoke, storeCutover, bulkMigration].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingSmoke, storeCutover, bulkMigration].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
 
     var ok = blockers.length === 0 &&
       presence.ok === true &&
-      catalogSmoke && catalogSmoke.ok === true &&
+      catalogProof && catalogProof.ok === true &&
       bindingSmoke && bindingSmoke.ok === true &&
       storeCutover.ok === true &&
       bulkMigration.ok === true &&
@@ -852,7 +1235,8 @@
       schema: RESULT_SCHEMA,
       version: VERSION,
       ok: ok,
-      catalogSmoke: catalogSmoke,
+      catalogProof: catalogProof,
+      catalogSmoke: catalogProof,
       bindingSmoke: bindingSmoke,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
