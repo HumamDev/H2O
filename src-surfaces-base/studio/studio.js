@@ -6514,6 +6514,7 @@ const SETTINGS_CONVERGENCE_SUBROUTES = Object.freeze({
   delete: { label: "Delete", hash: "#/settings/convergence/delete" },
   binding: { label: "Binding", hash: "#/settings/convergence/binding" },
   snapshot: { label: "Snapshot", hash: "#/settings/convergence/snapshot" },
+  "library-sync": { label: "Library Sync", hash: "#/settings/convergence/library-sync" },
   execute: { label: "Execute", hash: "#/settings/convergence/execute" },
 });
 
@@ -6536,6 +6537,7 @@ const SETTINGS_EMBEDDED_TOOL_PANEL_IDS = Object.freeze([
   "h2o-delete-convergence-panel",
   "h2o-binding-convergence-panel",
   "h2o-snapshot-convergence-panel",
+  "h2o-library-sync-operator-panel",
   "h2o-execute-lane-panel",
 ]);
 
@@ -6575,6 +6577,7 @@ const SETTINGS_EVALUATION_PARITY_ROUTES = Object.freeze([
   ["Floating Delete Convergence", "#/settings/convergence/delete"],
   ["Floating Binding Convergence", "#/settings/convergence/binding"],
   ["Snapshot Convergence", "#/settings/convergence/snapshot"],
+  ["Library Sync Proof Status", "#/settings/convergence/library-sync"],
   ["Execute Lane", "#/settings/convergence/execute"],
 ]);
 
@@ -7049,6 +7052,12 @@ function settingsToolSpec(section, subsection){
       description: "Read-only snapshot convergence evidence panel hosted inside Settings.",
       panelId: "h2o-snapshot-convergence-panel",
       open: () => W.H2O?.Desktop?.Sync?.openSnapshotConvergencePanel?.({ settingsHosted: true }),
+    },
+    "library-sync": {
+      title: "Library Sync",
+      description: "Read-only Library Sync proof and status panel hosted inside Settings.",
+      panelId: "h2o-library-sync-operator-panel",
+      open: () => W.H2O?.Desktop?.Sync?.openLibrarySyncOperatorPanel?.({ settingsHosted: true }),
     },
     execute: {
       title: "Execute Lane",

@@ -615,6 +615,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // evidence only; no business-table write, publication, relay/outbox,
   // Native/F5 execution, apply, watermark write, or consumed-op write.
   "sync/library/library-sync-proof.tauri.js",
+  // F15.10.a: Desktop/Tauri Library Sync operator status UI. Read-only
+  // Settings-hosted proof/status panel. Proof APIs run only from explicit
+  // operator actions. No proposal actions, execute dispatch, Native/F5
+  // decisions, SQL/store writes, publication, relay/outbox, watermark, or
+  // consumed-op writes.
+  "sync/library/library-sync-operator-ui.tauri.js",
   // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
   // operator visibility panel. No dispatch, Native, F5, relay, settlement,
   // publication, watermark, consumed-operation, or domain mutation controls.
