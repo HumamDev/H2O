@@ -609,6 +609,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // advance, no consumed-op write, no Labels/Categories/Tags mutation,
   // no chats.category_id cache write.
   "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
+  // F15.9.a: Desktop/Tauri library sync proof foundation. Smoke proof
+  // harness for catalog create and binding chat-label bind lanes, plus
+  // store-cutover and bulk-migration proof delegates. Redacted summary
+  // evidence only; no business-table write, publication, relay/outbox,
+  // Native/F5 execution, apply, watermark write, or consumed-op write.
+  "sync/library/library-sync-proof.tauri.js",
   // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
   // operator visibility panel. No dispatch, Native, F5, relay, settlement,
   // publication, watermark, consumed-operation, or domain mutation controls.
@@ -1207,6 +1213,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/snapshot-tombstone-execute-adapter.tauri.js",
   "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
   "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
+  "sync/library/library-sync-proof.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",

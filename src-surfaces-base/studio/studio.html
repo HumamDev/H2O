@@ -1133,6 +1133,14 @@
        write, no Labels/Categories/Tags mutation, no chats.category_id
        cache write. -->
   <script src="./sync/execute/adapters/library-binding-execute-adapter.tauri.js"></script>
+  <!-- F15.9.a: Desktop/Tauri library sync proof foundation.
+       Smoke proof harness for the catalog create and binding chat-label bind
+       lanes. Composes existing F15.1-F15.8 APIs with synthetic fixtures,
+       delegates store-cutover and bulk-migration proofs, and returns redacted
+       summary evidence only. No business-table writes, publication,
+       relay/outbox, Native/F5 execution, apply, watermark write, or
+       consumed-operation write. -->
+  <script src="./sync/library/library-sync-proof.tauri.js"></script>
   <!-- F14.6.16: Desktop/Tauri Execute Lane UI.
        Read-only Settings-hosted operator visibility panel for journal,
        publication, broker, settlement, adapter, readiness, and proof
