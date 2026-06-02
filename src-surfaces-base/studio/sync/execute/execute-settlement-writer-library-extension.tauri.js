@@ -30,7 +30,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryExecuteSettlementInstalled) return;
 
-  var VERSION = '0.1.0-f15.8.settlement';
+  var VERSION = '0.2.0-f15.11.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-execute-settlement.v1';
   var ENVELOPE_SCHEMA = 'h2o.desktop.sync.execute-envelope.v1';
   var CATALOG_DOMAIN = 'library.catalog';
@@ -38,7 +38,10 @@
   var CATALOG_RECEIPT_SCHEMA = 'h2o.desktop.sync.library-catalog-apply-event-receipt.v1';
   var BINDING_RECEIPT_SCHEMA = 'h2o.desktop.sync.library-binding-apply-event-receipt.v1';
   var CATALOG_ADAPTER_VERSION = '0.1.0-f15.8.catalog';
-  var BINDING_ADAPTER_VERSION = '0.1.0-f15.8.binding';
+  var BINDING_ADAPTER_VERSION_PREFIXES = ['0.1.0-f15.8.binding', '0.2.0-f15.11.c'];
+  var CHAT_FOLDER_KIND = 'chat-folder';
+  var CHAT_SUBJECT_TYPE = 'chat.metadata';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var SHA256_RE = /^[0-9a-f]{64}$/;
   var SIDE_EFFECT_KEYS = [
     'consumedOperationWritten',
@@ -53,6 +56,7 @@
     'executeJournalTouched',
     'catalogMutated',
     'bindingMutated',
+    'chatsCategoryIdCacheRefreshed',
     'libraryBookkeepingMirrored',
     'sqliteSentinelUsed',
     'storeShimRouted'
@@ -147,6 +151,7 @@
     out.f5Touched = false;
     out.relayTouched = false;
     out.outboxTouched = false;
+    out.chatsCategoryIdCacheRefreshed = f.chatsCategoryIdCacheRefreshed === true;
     out.sqliteSentinelUsed = f.sqliteSentinelUsed === true;
     out.storeShimRouted = false;
     return out;
@@ -160,6 +165,7 @@
     target.f5Touched = false;
     target.relayTouched = false;
     target.outboxTouched = false;
+    if (source.chatsCategoryIdCacheRefreshed === true) target.chatsCategoryIdCacheRefreshed = true;
     if (source.sqliteSentinelUsed === true) target.sqliteSentinelUsed = true;
     target.storeShimRouted = false;
   }
@@ -286,8 +292,18 @@
     if (e.domainId !== CATALOG_DOMAIN && e.domainId !== BINDING_DOMAIN) {
       addCode(blockers, 'library-execute-settlement-domain-not-supported');
     }
-    var expectedVersion = e.domainId === CATALOG_DOMAIN ? CATALOG_ADAPTER_VERSION : BINDING_ADAPTER_VERSION;
-    if (cleanString(e.version) !== expectedVersion) addCode(blockers, 'library-execute-settlement-envelope-invalid');
+    if (e.domainId === CATALOG_DOMAIN) {
+      if (cleanString(e.version) !== CATALOG_ADAPTER_VERSION) addCode(blockers, 'library-execute-settlement-envelope-invalid');
+    } else if (e.domainId === BINDING_DOMAIN) {
+      var acceptedBindingVersion = false;
+      for (var i = 0; i < BINDING_ADAPTER_VERSION_PREFIXES.length; i++) {
+        if (cleanString(e.version).indexOf(BINDING_ADAPTER_VERSION_PREFIXES[i]) === 0) {
+          acceptedBindingVersion = true;
+          break;
+        }
+      }
+      if (!acceptedBindingVersion) addCode(blockers, 'library-execute-settlement-envelope-invalid');
+    }
     if (e.envelopeKind !== 'proposal-receipt') addCode(blockers, 'library-execute-settlement-envelope-invalid');
     if (!isSha256Hex(e.receiptDigest)) addCode(blockers, 'library-execute-settlement-receipt-digest-invalid');
     if (!isSha256Hex(e.eventDigest)) addCode(blockers, 'library-execute-settlement-event-digest-invalid');
@@ -312,6 +328,18 @@
     }
     if (e.domainId === BINDING_DOMAIN && cleanString(payloadReceipt.schema) !== 'h2o.desktop.sync.library-binding-execute-proposal-receipt.v1') {
       addCode(blockers, 'library-execute-settlement-envelope-invalid');
+    }
+    if (e.domainId === BINDING_DOMAIN && cleanString(settlement.bindingKind) === CHAT_FOLDER_KIND) {
+      if (cleanString(settlement.leftSubjectType) !== CHAT_SUBJECT_TYPE ||
+          cleanString(settlement.rightSubjectType) !== FOLDER_SUBJECT_TYPE) {
+        addCode(blockers, 'library-execute-settlement-settlement-shapes-invalid');
+      }
+      if (settlement.requiresCategoryCacheRefresh === true || cleanString(settlement.categoryCacheAction)) {
+        addCode(blockers, 'library-execute-settlement-settlement-shapes-invalid');
+      }
+      if (safeObject(e.dispatchProfile).requiresF5 === true) {
+        addCode(blockers, 'library-execute-settlement-envelope-invalid');
+      }
     }
     if (!isSha256Hex(revisionHashFor(e))) addCode(blockers, 'library-execute-settlement-settlement-shapes-invalid');
     scanPrivacy(e.domainId, {

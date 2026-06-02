@@ -51,7 +51,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.6.0-f15.9.f'",
+    "var VERSION = '0.7.0-f15.11.c'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     'runLibrarySyncClosureProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
@@ -111,7 +111,12 @@ if (failures.length === 0) {
     'binding-unbind-chat-category-full-pipeline',
     'binding-bind-tag-category-full-pipeline',
     'binding-unbind-tag-category-full-pipeline',
+    'binding-bind-chat-folder-full-pipeline',
+    'binding-unbind-chat-folder-full-pipeline',
     'binding-chat-category-cache-refresh-metadata',
+    'binding-chat-folder-no-cache-refresh',
+    'binding-chat-folder-no-f5-footprint',
+    'binding-chat-folder-endpoint-folder-metadata',
     'binding-no-f5-footprint',
     'binding-replace-operation-not-supported',
     'binding-privacy-leak-scan',
@@ -139,6 +144,7 @@ if (failures.length === 0) {
     'generateLibraryBindingProposalCandidate',
     'shapeLibraryCatalogExecuteEnvelope',
     'shapeLibraryBindingExecuteEnvelope',
+    'settleLibraryExecuteEnvelope',
     'proveSQLiteWriterIdentitySentinel',
     'executeAuthorizedSqlite',
     'installLibraryStoreCutoverShims',
@@ -151,7 +157,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '0.6.0-f15.9.f'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '0.7.0-f15.11.c'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'validate-f15-library-closure.mjs', 'sync validator closure validator reference');
 

@@ -244,6 +244,9 @@ const bindingProposal = 'src-surfaces-base/studio/sync/library/library-binding-p
 const bindingHandoff = 'src-surfaces-base/studio/sync/library/library-binding-handoff-preview.tauri.js';
 const bindingReceipt = 'src-surfaces-base/studio/sync/library/library-binding-apply-event-receipt.tauri.js';
 const bindingBookkeeping = 'src-surfaces-base/studio/sync/library/library-binding-bookkeeping.tauri.js';
+const bindingExecuteAdapter = 'src-surfaces-base/studio/sync/execute/adapters/library-binding-execute-adapter.tauri.js';
+const settlementExtension = 'src-surfaces-base/studio/sync/execute/execute-settlement-writer-library-extension.tauri.js';
+const librarySyncProof = 'src-surfaces-base/studio/sync/library/library-sync-proof.tauri.js';
 const validator = 'tools/validation/sync/validate-f15-folder-binding-absorption.mjs';
 const html = 'src-surfaces-base/studio/studio.html';
 const pack = 'tools/product/studio/pack-studio.mjs';
@@ -259,6 +262,9 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
   bindingHandoff,
   bindingReceipt,
   bindingBookkeeping,
+  bindingExecuteAdapter,
+  settlementExtension,
+  librarySyncProof,
   validator,
   html,
   pack,
@@ -404,6 +410,33 @@ if (failures.length === 0) {
   assertContains(bindingBookkeeping, "'chat-folder'", 'bookkeeping allowed chat-folder kind');
   assertContains(bindingBookkeeping, 'EXPECTED_RECEIPT_VERSION_PREFIXES', 'bookkeeping multi-version receipt support');
   assertContains(bindingBookkeeping, "bindingKind === CHAT_CATEGORY_KIND", 'bookkeeping cache refresh stays chat-category only');
+
+  assertContains(bindingExecuteAdapter, "var VERSION = '0.2.0-f15.11.c'", 'execute adapter F15.11.c version');
+  assertContains(bindingExecuteAdapter, "var CHAT_FOLDER_KIND = 'chat-folder'", 'execute adapter chat-folder constant');
+  assertContains(bindingExecuteAdapter, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'execute adapter folder endpoint type');
+  assertContains(bindingExecuteAdapter, "h2o_library_binding_' + operation + '_' + kindToken + '_apply", 'execute adapter native command derivation');
+  assertContains(bindingExecuteAdapter, "'chat-folder'", 'execute adapter allows chat-folder kind');
+  assertContains(bindingExecuteAdapter, 'requiresCategoryCacheRefresh: false', 'execute adapter non-category cache disabled');
+  assertContains(bindingExecuteAdapter, 'categoryCacheAction: null', 'execute adapter non-category cache action null');
+  assertContains(bindingExecuteAdapter, 'EXPECTED_RECEIPT_VERSION_PREFIXES', 'execute adapter multi-version receipt support');
+
+  assertContains(settlementExtension, "var VERSION = '0.2.0-f15.11.c'", 'settlement F15.11.c version');
+  assertContains(settlementExtension, 'BINDING_ADAPTER_VERSION_PREFIXES', 'settlement accepts binding adapter versions');
+  assertContains(settlementExtension, "'0.2.0-f15.11.c'", 'settlement accepts F15.11.c binding adapter');
+  assertContains(settlementExtension, "var CHAT_FOLDER_KIND = 'chat-folder'", 'settlement chat-folder constant');
+  assertContains(settlementExtension, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'settlement folder endpoint type');
+  assertContains(settlementExtension, 'settlement.requiresCategoryCacheRefresh === true', 'settlement blocks chat-folder cache refresh');
+  assertContains(settlementExtension, 'safeObject(e.dispatchProfile).requiresF5 === true', 'settlement blocks chat-folder F5 requirement');
+  assertContains(settlementExtension, 'chatsCategoryIdCacheRefreshed', 'settlement exposes cache refresh side-effect flag');
+
+  assertContains(librarySyncProof, "var VERSION = '0.7.0-f15.11.c'", 'library sync proof F15.11.c version');
+  assertContains(librarySyncProof, 'settleLibraryExecuteEnvelope', 'library sync proof exercises settlement');
+  assertContains(librarySyncProof, 'binding-bind-chat-folder-full-pipeline', 'chat-folder bind proof case');
+  assertContains(librarySyncProof, 'binding-unbind-chat-folder-full-pipeline', 'chat-folder unbind proof case');
+  assertContains(librarySyncProof, 'binding-chat-folder-no-cache-refresh', 'chat-folder no cache proof case');
+  assertContains(librarySyncProof, 'binding-chat-folder-no-f5-footprint', 'chat-folder no F5 proof case');
+  assertContains(librarySyncProof, 'binding-chat-folder-endpoint-folder-metadata', 'chat-folder folder endpoint proof case');
+  assertContains(librarySyncProof, 'FOLDER_SUBJECT_TYPE', 'library sync proof folder endpoint type');
 }
 
 let proof = null;

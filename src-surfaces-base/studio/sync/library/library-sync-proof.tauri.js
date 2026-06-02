@@ -32,12 +32,13 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.6.0-f15.9.f';
+  var VERSION = '0.7.0-f15.11.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var ZERO_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
@@ -59,6 +60,7 @@
     'buildLibraryBindingApplyEventReceipt',
     'recordLibraryBindingBookkeeping',
     'shapeLibraryBindingExecuteEnvelope',
+    'settleLibraryExecuteEnvelope',
     'proveSQLiteWriterIdentitySentinel',
     'executeAuthorizedSqlite',
     'installLibraryStoreCutoverShims',
@@ -248,12 +250,31 @@
       bindingKind: 'tag-category',
       expectedCacheRefresh: false,
       expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-bind-chat-folder-full-pipeline',
+      operation: 'bind',
+      bindingKind: 'chat-folder',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null,
+      expectedRightSubjectType: FOLDER_SUBJECT_TYPE
+    },
+    {
+      caseId: 'binding-unbind-chat-folder-full-pipeline',
+      operation: 'unbind',
+      bindingKind: 'chat-folder',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null,
+      expectedRightSubjectType: FOLDER_SUBJECT_TYPE
     }
   ];
   var BINDING_REQUIRED_CASE_NAMES = BINDING_CASE_DEFINITIONS.map(function (def) {
     return def.caseId;
   }).concat([
     'binding-chat-category-cache-refresh-metadata',
+    'binding-chat-folder-no-cache-refresh',
+    'binding-chat-folder-no-f5-footprint',
+    'binding-chat-folder-endpoint-folder-metadata',
     'binding-no-f5-footprint',
     'binding-duplicate-binding-blocks-proposal',
     'binding-replace-operation-not-supported',
@@ -680,6 +701,9 @@
       if (bindingKind === 'tag-category') {
         leftSubjectType = CATALOG_SUBJECT_TYPE;
         rightSubjectType = CATALOG_SUBJECT_TYPE;
+      } else if (bindingKind === 'chat-folder') {
+        leftSubjectType = CHAT_SUBJECT_TYPE;
+        rightSubjectType = FOLDER_SUBJECT_TYPE;
       } else {
         leftSubjectType = CHAT_SUBJECT_TYPE;
         rightSubjectType = CATALOG_SUBJECT_TYPE;
@@ -773,6 +797,9 @@
       rightSubjectId = safeObject(rightCatalog.canonical).subjectId;
       leftSubjectType = CATALOG_SUBJECT_TYPE;
       rightSubjectType = CATALOG_SUBJECT_TYPE;
+    } else if (bindingKind === 'chat-folder') {
+      rightSubjectId = await sha256Hex('folder.metadata:f15.11.c.proof.folder:' + cleanString(def.caseId));
+      rightSubjectType = FOLDER_SUBJECT_TYPE;
     } else {
       rightCatalog = await canonicalCatalogForBinding(fixtures, catalogKindForBindingSide(bindingKind, 'right'), def.caseId, 'right');
       relatedCatalogs = [safeObject(rightCatalog.canonical)];
@@ -1342,6 +1369,19 @@
       parts.executeEnvelope = summarizeResult(execute);
       if (!stepOk(execute) || !isObject(execute.envelope)) addCode(blockers, 'library-sync-proof-binding-execute-envelope-failed');
 
+      var settlement = await withMemoryChromeStorage(function () {
+        return getSync().settleLibraryExecuteEnvelope({
+          envelope: execute.envelope,
+          receipt: receipt,
+          dispatchResult: fixtures.dispatch,
+          __consumedRows: [],
+          __watermarkRows: [],
+          observedAtIso: fixtures.observedAtIso
+        });
+      });
+      parts.settlement = summarizeResult(settlement);
+      if (!stepOk(settlement) || settlement.settled !== true) addCode(blockers, 'library-sync-proof-binding-settlement-failed');
+
       var cache = bindingCacheSummary(execute);
       var cacheMetadataOk = cache.requiresCategoryCacheRefresh === (def.expectedCacheRefresh === true) &&
         (cache.categoryCacheAction || null) === (def.expectedCacheAction || null);
@@ -1357,7 +1397,22 @@
           (!bookkeeping.row || bookkeeping.row.chatsCategoryIdRefreshPending !== true);
       if (!refreshWarningOk) addCode(blockers, 'library-sync-proof-binding-refresh-warning-failed');
 
-      artifacts = artifacts.concat([canonical, diagnostics, preflight, proposal, handoff, receipt, bookkeeping, execute]);
+      var folderEndpointOk = def.bindingKind !== 'chat-folder' ||
+        (execute && execute.envelope &&
+          safeObject(execute.envelope.settlementShapes).leftSubjectType === CHAT_SUBJECT_TYPE &&
+          safeObject(execute.envelope.settlementShapes).rightSubjectType === FOLDER_SUBJECT_TYPE &&
+          safeObject(safeObject(execute.envelope.payloadShapes).proposalReceipt).rightSubjectType === FOLDER_SUBJECT_TYPE);
+      if (!folderEndpointOk) addCode(blockers, 'library-sync-proof-binding-chat-folder-endpoint-invalid');
+
+      var settlementSideEffects = safeObject(settlement && settlement.sideEffectSummary);
+      var chatFolderSettlementOk = def.bindingKind !== 'chat-folder' ||
+        (settlementSideEffects.bindingMutated === true &&
+          settlementSideEffects.f5Touched === false &&
+          settlementSideEffects.nativeCalled === false &&
+          settlementSideEffects.chatsCategoryIdCacheRefreshed !== true);
+      if (!chatFolderSettlementOk) addCode(blockers, 'library-sync-proof-binding-chat-folder-settlement-failed');
+
+      artifacts = artifacts.concat([canonical, diagnostics, preflight, proposal, handoff, receipt, bookkeeping, execute, settlement]);
       Object.keys(parts).forEach(function (key) {
         mergeCodes(warnings, parts[key].warnings);
       });
@@ -1374,11 +1429,13 @@
         dedupeKey: proposal.dedupeKey,
         executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest
       });
-      var requiredSteps = ['canonicalize', 'diagnose', 'preflight', 'proposal', 'handoff', 'receipt', 'bookkeeping', 'executeEnvelope'];
+      var requiredSteps = ['canonicalize', 'diagnose', 'preflight', 'proposal', 'handoff', 'receipt', 'bookkeeping', 'executeEnvelope', 'settlement'];
       var caseOk = blockers.length === 0 &&
         allRequiredStepsPassed(parts, requiredSteps) &&
         cacheMetadataOk === true &&
         refreshWarningOk === true &&
+        folderEndpointOk === true &&
+        chatFolderSettlementOk === true &&
         f5Hits.length === 0 &&
         privacy.ok === true;
       return {
@@ -1394,10 +1451,14 @@
         dedupeKey: proposal.dedupeKey,
         operationId: proposal.operationId,
         executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest,
+        settlementDigest: settlement && settlement.settlementDigest,
         artifactDigest: artifactDigest,
         cacheRefresh: cache,
         cacheMetadataOk: cacheMetadataOk,
         refreshWarningOk: refreshWarningOk,
+        folderEndpointOk: folderEndpointOk,
+        settlementOk: settlement && settlement.settled === true,
+        settlementSideEffects: settlementSideEffects,
         noF5Footprint: f5Hits.length === 0,
         f5FootprintCount: f5Hits.length,
         privacy: privacy,
@@ -1420,6 +1481,9 @@
         cacheRefresh: { requiresCategoryCacheRefresh: false, categoryCacheAction: null },
         cacheMetadataOk: false,
         refreshWarningOk: false,
+        folderEndpointOk: false,
+        settlementOk: false,
+        settlementSideEffects: {},
         noF5Footprint: true,
         f5FootprintCount: 0,
         privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: ['library-sync-proof-binding-threw'], warnings: [] },
@@ -1607,6 +1671,58 @@
       sideEffectSummary: sideEffectSummary()
     };
     cases.push(cacheCase);
+
+    var chatFolderCases = cases.filter(function (item) {
+      return item.bindingKind === 'chat-folder';
+    });
+    var chatFolderNoCacheOk = chatFolderCases.length === 2 && chatFolderCases.every(function (item) {
+      return item.cacheRefresh &&
+        item.cacheRefresh.requiresCategoryCacheRefresh === false &&
+        item.cacheRefresh.categoryCacheAction === null &&
+        item.settlementSideEffects &&
+        item.settlementSideEffects.chatsCategoryIdCacheRefreshed !== true;
+    });
+    cases.push({
+      caseId: 'binding-chat-folder-no-cache-refresh',
+      required: true,
+      ok: chatFolderNoCacheOk === true,
+      lane: 'library.binding',
+      operation: 'chat-folder-cache-proof',
+      blockers: chatFolderNoCacheOk ? [] : ['library-sync-proof-binding-cache-metadata-failed'],
+      warnings: [],
+      sideEffectSummary: sideEffectSummary()
+    });
+
+    var chatFolderNoF5Ok = chatFolderCases.length === 2 && chatFolderCases.every(function (item) {
+      return item.noF5Footprint === true && (item.f5FootprintCount || 0) === 0 &&
+        item.settlementSideEffects && item.settlementSideEffects.f5Touched === false;
+    });
+    cases.push({
+      caseId: 'binding-chat-folder-no-f5-footprint',
+      required: true,
+      ok: chatFolderNoF5Ok === true,
+      lane: 'library.binding',
+      operation: 'chat-folder-f5-proof',
+      blockers: chatFolderNoF5Ok ? [] : ['library-sync-proof-binding-f5-footprint-detected'],
+      warnings: [],
+      sideEffectSummary: sideEffectSummary()
+    });
+
+    var chatFolderEndpointOk = chatFolderCases.length === 2 && chatFolderCases.every(function (item) {
+      return item.folderEndpointOk === true;
+    });
+    cases.push({
+      caseId: 'binding-chat-folder-endpoint-folder-metadata',
+      required: true,
+      ok: chatFolderEndpointOk === true,
+      lane: 'library.binding',
+      operation: 'chat-folder-endpoint-proof',
+      leftSubjectType: CHAT_SUBJECT_TYPE,
+      rightSubjectType: FOLDER_SUBJECT_TYPE,
+      blockers: chatFolderEndpointOk ? [] : ['library-sync-proof-binding-chat-folder-endpoint-invalid'],
+      warnings: [],
+      sideEffectSummary: sideEffectSummary()
+    });
 
     var noF5Ok = cases.every(function (item) {
       return item.noF5Footprint !== false && (item.f5FootprintCount || 0) === 0;

@@ -8,7 +8,7 @@
  * Per F15.0.0 §6.1 the library.binding lane has only Native owners. This
  * module's lane invariants ENFORCE that:
  *   - operation ∈ {bind, unbind}
- *   - canonicalBinding.bindingKind ∈ {chat-label, chat-tag, chat-category, tag-category}
+ *   - canonicalBinding.bindingKind ∈ {chat-label, chat-tag, chat-category, tag-category, chat-folder}
  *   - ownerKind === 'native'
  *   - targetBroker === 'native'
  *   - receipt.sideEffectSummary.f5Touched === false
@@ -78,7 +78,7 @@
   if (H2O.Desktop.Sync.__libraryBindingExecuteAdapterInstalled) return;
 
   // ── Constants ───────────────────────────────────────────────────────
-  var VERSION = '0.1.0-f15.8.binding';
+  var VERSION = '0.2.0-f15.11.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-execute-adapter.v1';
   var ENVELOPE_SCHEMA = 'h2o.desktop.sync.execute-envelope.v1';
   var ADAPTER_ID = 'library-binding-execute-adapter';
@@ -87,11 +87,14 @@
   var PRIVACY_DOMAIN_TAG = 'library.binding';
   var ENVELOPE_KIND = 'proposal-receipt';
   var EXPECTED_RECEIPT_SCHEMA = 'h2o.desktop.sync.library-binding-apply-event-receipt.v1';
-  var EXPECTED_RECEIPT_VERSION_PREFIX = '0.1.0-f15.6.binding';
+  var EXPECTED_RECEIPT_VERSION_PREFIXES = ['0.1.0-f15.6.binding', '0.2.0-f15.11.b'];
   var EXPECTED_BOOKKEEPING_ROW_SCHEMA = 'h2o.desktop.sync.library-binding-bookkeeping-row.v1';
   var CHAT_CATEGORY_KIND = 'chat-category';
+  var CHAT_FOLDER_KIND = 'chat-folder';
+  var CHAT_SUBJECT_TYPE = 'chat.metadata';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var ALLOWED_OPERATIONS = ['bind', 'unbind'];
-  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category'];
+  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category', CHAT_FOLDER_KIND];
   var OWNER_KIND_NATIVE = 'native';
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
@@ -103,7 +106,8 @@
     'name', 'rawName',
     'rawLeftId', 'rawRightId',
     'chatId', 'chat_id',
-    'labelId', 'tagId', 'categoryId', 'folderId',
+    'labelId', 'tagId', 'categoryId', 'folderId', 'folder_id',
+    'folderName', 'folderColor',
     'accountId', 'account_id', 'rawAccountId',
     'userId', 'user_id', 'rawUserId',
     'title', 'chatTitle', 'rawTitle',
@@ -286,7 +290,14 @@
       return null;
     }
     var version = cleanString(receipt.version);
-    if (version.indexOf(EXPECTED_RECEIPT_VERSION_PREFIX) !== 0) {
+    var acceptedVersion = false;
+    for (var i = 0; i < EXPECTED_RECEIPT_VERSION_PREFIXES.length; i++) {
+      if (version.indexOf(EXPECTED_RECEIPT_VERSION_PREFIXES[i]) === 0) {
+        acceptedVersion = true;
+        break;
+      }
+    }
+    if (!acceptedVersion) {
       addCode(blockers, 'library-binding-execute-receipt-schema-invalid');
       return null;
     }
@@ -392,14 +403,24 @@
       addCode(warnings, 'f5-footprint-detected:row.' + rowF5);
       return null;
     }
-    // bindingKind must be one of the four allowed kinds. Try multiple
+    // bindingKind must be one of the allowed kinds. Try multiple
     // sources: canonicalBinding (receipt) → row → applyEvent payload.
-    var bindingKind = cleanString(safeObject(receipt.canonicalBinding).bindingKind)
+    var canonical = safeObject(receipt.canonicalBinding);
+    var payload = safeObject(safeObject(receipt.applyEvent).payload);
+    var bindingKind = cleanString(canonical.bindingKind)
       || cleanString(row.bindingKind)
-      || cleanString(safeObject(safeObject(receipt.applyEvent).payload).bindingKind);
+      || cleanString(payload.bindingKind);
     if (ALLOWED_BINDING_KINDS.indexOf(bindingKind) === -1) {
       addCode(blockers, 'library-binding-execute-lane-invariant-violation');
       return null;
+    }
+    if (bindingKind === CHAT_FOLDER_KIND) {
+      var leftSubjectType = cleanString(canonical.leftSubjectType) || cleanString(row.leftSubjectType) || cleanString(payload.leftSubjectType);
+      var rightSubjectType = cleanString(canonical.rightSubjectType) || cleanString(row.rightSubjectType) || cleanString(payload.rightSubjectType);
+      if (leftSubjectType !== CHAT_SUBJECT_TYPE || rightSubjectType !== FOLDER_SUBJECT_TYPE) {
+        addCode(blockers, 'library-binding-execute-lane-invariant-violation');
+        return null;
+      }
     }
     return { operation: operation, bindingKind: bindingKind };
   }
