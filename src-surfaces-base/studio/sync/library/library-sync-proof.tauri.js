@@ -1,9 +1,9 @@
-/* H2O Desktop Sync - F15.9.b library sync proof foundation
+/* H2O Desktop Sync - F15.9.c library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
- * keeps the binding lane at F15.9.a smoke coverage, scans the redacted
- * artifacts for raw-data leaks, and returns summary evidence only.
+ * exercises the full F15 binding operation set, scans the redacted artifacts
+ * for raw-data leaks, and returns summary evidence only.
  *
  * Safety invariants:
  *   - Proof harness only.
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.2.0-f15.9.b';
+  var VERSION = '0.3.0-f15.9.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
@@ -167,6 +167,67 @@
       targetColorKey: 'catalogStableColorValue',
       f5DecisionState: 'pending-review',
       expectExecuteBlocker: 'library-catalog-execute-tombstone-f5-state-not-post-decision'
+    }
+  ];
+
+  var BINDING_CASE_DEFINITIONS = [
+    {
+      caseId: 'binding-bind-chat-label-full-pipeline',
+      operation: 'bind',
+      bindingKind: 'chat-label',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-unbind-chat-label-full-pipeline',
+      operation: 'unbind',
+      bindingKind: 'chat-label',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-bind-chat-tag-full-pipeline',
+      operation: 'bind',
+      bindingKind: 'chat-tag',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-unbind-chat-tag-full-pipeline',
+      operation: 'unbind',
+      bindingKind: 'chat-tag',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-bind-chat-category-full-pipeline',
+      operation: 'bind',
+      bindingKind: 'chat-category',
+      expectedCacheRefresh: true,
+      expectedCacheAction: 'set',
+      expectRefreshWarning: true
+    },
+    {
+      caseId: 'binding-unbind-chat-category-full-pipeline',
+      operation: 'unbind',
+      bindingKind: 'chat-category',
+      expectedCacheRefresh: true,
+      expectedCacheAction: 'clear',
+      expectRefreshWarning: true
+    },
+    {
+      caseId: 'binding-bind-tag-category-full-pipeline',
+      operation: 'bind',
+      bindingKind: 'tag-category',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
+    },
+    {
+      caseId: 'binding-unbind-tag-category-full-pipeline',
+      operation: 'unbind',
+      bindingKind: 'tag-category',
+      expectedCacheRefresh: false,
+      expectedCacheAction: null
     }
   ];
 
@@ -481,6 +542,13 @@
       catalogRawIdValue: 'f15-proof-catalog-raw-id',
       catalogCategoryRawIdValue: 'f15-proof-category-raw-id',
       catalogTagRawIdValue: 'f15-proof-tag-raw-id',
+      bindingLabelRawIdValue: 'f15-proof-binding-label-id',
+      bindingTagRawIdValue: 'f15-proof-binding-tag-id',
+      bindingCategoryRawIdValue: 'f15-proof-binding-category-id',
+      bindingFolderRawIdValue: 'f15-proof-binding-folder-id',
+      bindingEndpointRawIdValue: 'f15-proof-binding-endpoint-id',
+      bindingReplaceOperationNeedle: 'replaceForChat',
+      bindingReplaceCategoryNeedle: 'replace-category',
       chatRawIdValue: 'f15-proof-chat-raw-id',
       categoryRawIdValue: 'f15-proof-category-id',
       rawAccountIdNeedle: 'f15-proof-raw-account-id',
@@ -554,15 +622,31 @@
       observedAtIso: fixtures.observedAtIso
     };
   }
-  async function bindingDeviceLocalInput(fixtures, catalog) {
+  function bindingDeviceLocalInput(fixtures, options) {
+    var opts = safeObject(options);
+    var bindingKind = cleanString(opts.bindingKind) || 'chat-label';
+    var bindingState = cleanString(opts.bindingState) || 'bound';
+    var leftSubjectId = cleanLower(opts.leftSubjectId);
+    var rightSubjectId = cleanLower(opts.rightSubjectId);
+    var leftSubjectType = cleanString(opts.leftSubjectType);
+    var rightSubjectType = cleanString(opts.rightSubjectType);
+    if (!leftSubjectType || !rightSubjectType) {
+      if (bindingKind === 'tag-category') {
+        leftSubjectType = CATALOG_SUBJECT_TYPE;
+        rightSubjectType = CATALOG_SUBJECT_TYPE;
+      } else {
+        leftSubjectType = CHAT_SUBJECT_TYPE;
+        rightSubjectType = CATALOG_SUBJECT_TYPE;
+      }
+    }
     return {
-      bindingKind: 'chat-label',
-      bindingState: 'bound',
-      perEnvelopeSalt: 'f15.9.a.binding.salt',
-      leftSubjectType: CHAT_SUBJECT_TYPE,
-      rightSubjectType: CATALOG_SUBJECT_TYPE,
-      leftSubjectId: fixtures.chatSubjectId,
-      rightSubjectId: catalog.subjectId,
+      bindingKind: bindingKind,
+      bindingState: bindingState,
+      perEnvelopeSalt: cleanString(opts.perEnvelopeSalt) || 'f15.9.c.binding.salt',
+      leftSubjectType: leftSubjectType,
+      rightSubjectType: rightSubjectType,
+      leftSubjectId: leftSubjectId,
+      rightSubjectId: rightSubjectId,
       originAccountIdHash: fixtures.originAccountIdHash,
       sourceTag: 'desktop',
       observedAtIso: fixtures.observedAtIso
@@ -577,15 +661,19 @@
       redactionClass: 'redacted'
     };
   }
-  function bindingContext(fixtures, binding, catalog, operation) {
+  function bindingContext(fixtures, binding, relatedCatalogs, operation) {
+    var catalogs = asArray(relatedCatalogs).filter(Boolean);
+    var relatedChats = binding && binding.leftSubjectType === CHAT_SUBJECT_TYPE
+      ? [chatContext(fixtures)]
+      : [];
     return {
       operation: operation,
       diagnosticIntent: operation,
       canonicalBinding: binding,
       localAccountIdHash: fixtures.originAccountIdHash,
       actorPeer: fixtures.actorPeer,
-      relatedCatalogs: [catalog],
-      relatedChats: [chatContext(fixtures)],
+      relatedCatalogs: catalogs,
+      relatedChats: relatedChats,
       siblingBindings: [],
       sourceMirror: { fresh: true, status: 'fresh' },
       replayContext: { replaySafe: true, ok: true },
@@ -594,6 +682,69 @@
       materializedCacheObservation: { status: 'fresh' },
       requireContext: true,
       observedAtIso: fixtures.observedAtIso
+    };
+  }
+
+  function catalogKindForBindingSide(bindingKind, side) {
+    if (bindingKind === 'chat-label') return 'label';
+    if (bindingKind === 'chat-tag') return 'tag';
+    if (bindingKind === 'chat-category') return 'category';
+    if (bindingKind === 'tag-category') return side === 'left' ? 'tag' : 'category';
+    return 'label';
+  }
+  function rawIdForBindingCatalog(fixtures, catalogKind) {
+    if (catalogKind === 'category') return fixtures.raw.bindingCategoryRawIdValue;
+    if (catalogKind === 'tag') return fixtures.raw.bindingTagRawIdValue;
+    return fixtures.raw.bindingLabelRawIdValue;
+  }
+  async function canonicalCatalogForBinding(fixtures, catalogKind, caseId, slot) {
+    var nameKey = 'binding.' + cleanString(caseId) + '.' + cleanString(slot) + '.' + cleanString(catalogKind);
+    var result = await getSync().canonicalizeLibraryCatalog(catalogDeviceLocalInput(fixtures, {
+      catalogKind: catalogKind,
+      lifecycleState: 'active',
+      rawId: rawIdForBindingCatalog(fixtures, catalogKind) + '.' + cleanString(caseId) + '.' + cleanString(slot),
+      perEnvelopeSalt: 'f15.9.c.binding.catalog.salt.' + cleanString(caseId) + '.' + cleanString(slot),
+      catalogNameValue: 'F15 Proof Binding Catalog ' + nameKey,
+      catalogColorValue: fixtures.raw.catalogStableColorValue
+    }));
+    return result;
+  }
+  async function buildBindingEndpoints(fixtures, def) {
+    var bindingKind = cleanString(def.bindingKind);
+    var leftCatalog = null;
+    var rightCatalog = null;
+    var relatedCatalogs = [];
+    var leftSubjectId = fixtures.chatSubjectId;
+    var rightSubjectId = '';
+    var leftSubjectType = CHAT_SUBJECT_TYPE;
+    var rightSubjectType = CATALOG_SUBJECT_TYPE;
+
+    if (bindingKind === 'tag-category') {
+      leftCatalog = await canonicalCatalogForBinding(fixtures, catalogKindForBindingSide(bindingKind, 'left'), def.caseId, 'left');
+      rightCatalog = await canonicalCatalogForBinding(fixtures, catalogKindForBindingSide(bindingKind, 'right'), def.caseId, 'right');
+      relatedCatalogs = [safeObject(leftCatalog.canonical), safeObject(rightCatalog.canonical)];
+      leftSubjectId = safeObject(leftCatalog.canonical).subjectId;
+      rightSubjectId = safeObject(rightCatalog.canonical).subjectId;
+      leftSubjectType = CATALOG_SUBJECT_TYPE;
+      rightSubjectType = CATALOG_SUBJECT_TYPE;
+    } else {
+      rightCatalog = await canonicalCatalogForBinding(fixtures, catalogKindForBindingSide(bindingKind, 'right'), def.caseId, 'right');
+      relatedCatalogs = [safeObject(rightCatalog.canonical)];
+      rightSubjectId = safeObject(rightCatalog.canonical).subjectId;
+    }
+
+    return {
+      catalogResults: [leftCatalog, rightCatalog].filter(Boolean),
+      relatedCatalogs: relatedCatalogs,
+      bindingInput: bindingDeviceLocalInput(fixtures, {
+        bindingKind: bindingKind,
+        bindingState: 'bound',
+        leftSubjectId: leftSubjectId,
+        rightSubjectId: rightSubjectId,
+        leftSubjectType: leftSubjectType,
+        rightSubjectType: rightSubjectType,
+        perEnvelopeSalt: 'f15.9.c.binding.salt.' + cleanString(def.caseId)
+      })
     };
   }
 
@@ -1009,7 +1160,72 @@
     };
   }
 
-  async function runLibraryBindingPipelineProof(input) {
+  function bindingPrivacyNeedles(fixtures) {
+    var raw = safeObject(fixtures.raw);
+    return [
+      raw.bindingLabelRawIdValue,
+      raw.bindingTagRawIdValue,
+      raw.bindingCategoryRawIdValue,
+      raw.bindingFolderRawIdValue,
+      raw.bindingEndpointRawIdValue,
+      raw.chatRawIdValue,
+      raw.categoryRawIdValue,
+      raw.catalogRawNameValue,
+      raw.catalogRawColorValue,
+      raw.catalogRawIdValue,
+      raw.rawAccountIdNeedle,
+      raw.bundlePathNeedle,
+      raw.bundleFileNeedle,
+      raw.titleValue,
+      raw.contentValue,
+      raw.bodyValue,
+      raw.messageValue,
+      raw.urlValue,
+      raw.tokenValue
+    ];
+  }
+  function bindingF5Footprint(value) {
+    var hits = [];
+    function visit(node, path) {
+      if (Array.isArray(node)) {
+        for (var i = 0; i < node.length; i++) visit(node[i], path + '[' + i + ']');
+        return;
+      }
+      if (!isObject(node)) return;
+      Object.keys(node).forEach(function (key) {
+        var nextPath = path ? path + '.' + key : key;
+        var lower = key.toLowerCase();
+        var val = node[key];
+        if ((lower === 'f5reviewid' ||
+             lower === 'f5reviewingested' ||
+             lower === 'f5handoff' ||
+             lower === 'tombstonef5touched') &&
+            val !== null && typeof val !== 'undefined' && val !== false && val !== '') {
+          hits.push(nextPath);
+        }
+        if (lower === 'f5touched' && val === true) hits.push(nextPath);
+        visit(val, nextPath);
+      });
+    }
+    visit(value, '');
+    return hits;
+  }
+  function bindingCacheSummary(execute) {
+    var settlement = safeObject(safeObject(execute && execute.envelope).settlementShapes);
+    return {
+      requiresCategoryCacheRefresh: settlement.requiresCategoryCacheRefresh === true,
+      categoryCacheAction: settlement.categoryCacheAction || null
+    };
+  }
+  function bindingDuplicateSibling(binding) {
+    var duplicate = Object.assign({}, safeObject(binding));
+    duplicate.subjectId = ZERO_HASH.replace(/0$/, '1');
+    duplicate.revisionHash = safeObject(binding).revisionHash;
+    duplicate.bindingState = 'bound';
+    duplicate.subjectType = BINDING_SUBJECT_TYPE;
+    return duplicate;
+  }
+  async function runBindingProofCase(def, input) {
     var blockers = [];
     var warnings = [];
     var fixtures = await buildCommonFixtures(input || {});
@@ -1017,16 +1233,16 @@
     var parts = {};
 
     try {
-      var catalogCanonical = await getSync().canonicalizeLibraryCatalog(catalogDeviceLocalInput(fixtures));
-      var catalog = safeObject(catalogCanonical.canonical);
-      var bindingInput = await bindingDeviceLocalInput(fixtures, catalog);
+      var endpointSet = await buildBindingEndpoints(fixtures, def);
+      artifacts = artifacts.concat(endpointSet.catalogResults);
+      var bindingInput = endpointSet.bindingInput;
 
       var canonical = await getSync().canonicalizeLibraryBinding(bindingInput);
       parts.canonicalize = summarizeResult(canonical);
       if (!stepOk(canonical)) addCode(blockers, 'library-sync-proof-binding-canonicalize-failed');
       var binding = safeObject(canonical.canonical);
 
-      var context = bindingContext(fixtures, binding, catalog, 'bind');
+      var context = bindingContext(fixtures, binding, endpointSet.relatedCatalogs, def.operation);
       var diagnostics = await getSync().diagnoseLibraryBinding(context);
       parts.diagnose = summarizeResult(diagnostics);
       if (!stepOk(diagnostics)) addCode(blockers, 'library-sync-proof-binding-diagnostics-failed');
@@ -1042,7 +1258,7 @@
       if (!stepOk(proposal) || proposal.generated !== true) addCode(blockers, 'library-sync-proof-binding-proposal-failed');
 
       var handoff = await getSync().previewLibraryBindingHandoff({
-        operation: 'bind',
+        operation: def.operation,
         proposalCandidate: proposal,
         candidate: proposal.candidate,
         preflight: proposal.preflight || preflight,
@@ -1055,7 +1271,7 @@
       if (!stepOk(handoff) || handoff.handoffReady !== true) addCode(blockers, 'library-sync-proof-binding-handoff-failed');
 
       var receipt = await getSync().buildLibraryBindingApplyEventReceipt({
-        operation: 'bind',
+        operation: def.operation,
         handoffPreview: handoff,
         observedAtIso: fixtures.observedAtIso
       });
@@ -1080,54 +1296,330 @@
       parts.executeEnvelope = summarizeResult(execute);
       if (!stepOk(execute) || !isObject(execute.envelope)) addCode(blockers, 'library-sync-proof-binding-execute-envelope-failed');
 
-      artifacts = [canonical, diagnostics, preflight, proposal, handoff, receipt, bookkeeping, execute];
-      mergeCodes(warnings, parts.bookkeeping.warnings);
-      mergeCodes(warnings, parts.executeEnvelope.warnings);
-      var privacy = await privacyScan(artifacts, [
-        fixtures.raw.catalogRawNameValue,
-        fixtures.raw.catalogRawColorValue,
-        fixtures.raw.catalogRawIdValue,
-        fixtures.raw.chatRawIdValue,
-        fixtures.raw.categoryRawIdValue,
-        fixtures.raw.bundlePathNeedle,
-        fixtures.raw.bundleFileNeedle,
-        fixtures.raw.titleValue,
-        fixtures.raw.contentValue,
-        fixtures.raw.tokenValue
-      ]);
+      var cache = bindingCacheSummary(execute);
+      var cacheMetadataOk = cache.requiresCategoryCacheRefresh === (def.expectedCacheRefresh === true) &&
+        (cache.categoryCacheAction || null) === (def.expectedCacheAction || null);
+      if (!cacheMetadataOk) addCode(blockers, 'library-sync-proof-binding-cache-metadata-failed');
+
+      var receiptWarnings = codeList(receipt.warnings);
+      var rowWarnings = codeList(bookkeeping && bookkeeping.row && bookkeeping.row.warnings);
+      var refreshWarningOk = def.expectRefreshWarning === true
+        ? receiptWarnings.indexOf('chats-category-id-refresh-pending') !== -1 &&
+          rowWarnings.indexOf('chats-category-id-refresh-pending') !== -1 &&
+          bookkeeping.row && bookkeeping.row.chatsCategoryIdRefreshPending === true
+        : receiptWarnings.indexOf('chats-category-id-refresh-pending') === -1 &&
+          (!bookkeeping.row || bookkeeping.row.chatsCategoryIdRefreshPending !== true);
+      if (!refreshWarningOk) addCode(blockers, 'library-sync-proof-binding-refresh-warning-failed');
+
+      artifacts = artifacts.concat([canonical, diagnostics, preflight, proposal, handoff, receipt, bookkeeping, execute]);
+      Object.keys(parts).forEach(function (key) {
+        mergeCodes(warnings, parts[key].warnings);
+      });
+      var f5Hits = bindingF5Footprint(artifacts);
+      if (f5Hits.length) addCode(blockers, 'library-sync-proof-binding-f5-footprint-detected');
+      var privacy = await privacyScan(artifacts, bindingPrivacyNeedles(fixtures));
       if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
       mergeCodes(warnings, privacy.warnings);
 
       var artifactDigest = await digestOf({
+        caseId: def.caseId,
         subjectId: proposal.subjectId,
         lineageId: proposal.lineageId,
         dedupeKey: proposal.dedupeKey,
         executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest
       });
-      return summarizePipeline('library.binding', parts, {
-        operation: 'bind',
-        bindingKind: 'chat-label',
+      var requiredSteps = ['canonicalize', 'diagnose', 'preflight', 'proposal', 'handoff', 'receipt', 'bookkeeping', 'executeEnvelope'];
+      var caseOk = blockers.length === 0 &&
+        allRequiredStepsPassed(parts, requiredSteps) &&
+        cacheMetadataOk === true &&
+        refreshWarningOk === true &&
+        f5Hits.length === 0 &&
+        privacy.ok === true;
+      return {
+        caseId: def.caseId,
+        required: true,
+        ok: caseOk,
+        lane: 'library.binding',
+        operation: def.operation,
+        bindingKind: def.bindingKind,
+        steps: stepsFromParts(parts),
         subjectId: proposal.subjectId || binding.subjectId,
         lineageId: proposal.lineageId,
         dedupeKey: proposal.dedupeKey,
         operationId: proposal.operationId,
         executeEnvelopeDigest: execute.envelope && execute.envelope.eventDigest,
         artifactDigest: artifactDigest,
+        cacheRefresh: cache,
+        cacheMetadataOk: cacheMetadataOk,
+        refreshWarningOk: refreshWarningOk,
+        noF5Footprint: f5Hits.length === 0,
+        f5FootprintCount: f5Hits.length,
         privacy: privacy,
         inMemoryBookkeepingWritten: bookkeeping && bookkeeping.sideEffectSummary &&
           bookkeeping.sideEffectSummary.bookkeepingLedgerWritten === true,
-        blockers: blockers,
-        warnings: codeList(warnings)
-      });
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
     } catch (e) {
       addCode(blockers, 'library-sync-proof-binding-threw');
-      return summarizePipeline('library.binding', parts, {
+      return {
+        caseId: cleanString(def.caseId),
+        required: true,
+        ok: false,
+        lane: 'library.binding',
+        operation: cleanString(def.operation),
+        bindingKind: cleanString(def.bindingKind),
+        steps: stepsFromParts(parts),
+        cacheRefresh: { requiresCategoryCacheRefresh: false, categoryCacheAction: null },
+        cacheMetadataOk: false,
+        refreshWarningOk: false,
+        noF5Footprint: true,
+        f5FootprintCount: 0,
+        privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: ['library-sync-proof-binding-threw'], warnings: [] },
+        blockers: codeList(blockers),
+        warnings: codeList(warnings.concat(cleanString(e && e.message) ? ['library-sync-proof-binding-error'] : [])),
+        sideEffectSummary: sideEffectSummary()
+      };
+    }
+  }
+
+  async function runBindingDuplicateBlockCase(input) {
+    var fixtures = await buildCommonFixtures(input || {});
+    var blockers = [];
+    var warnings = [];
+    var parts = {};
+    try {
+      var def = {
+        caseId: 'binding-duplicate-binding-blocks-proposal',
+        operation: 'bind',
+        bindingKind: 'chat-label'
+      };
+      var endpointSet = await buildBindingEndpoints(fixtures, def);
+      var canonical = await getSync().canonicalizeLibraryBinding(endpointSet.bindingInput);
+      parts.canonicalize = summarizeResult(canonical);
+      var binding = safeObject(canonical.canonical);
+      var duplicate = bindingDuplicateSibling(binding);
+      var context = bindingContext(fixtures, binding, endpointSet.relatedCatalogs, 'bind');
+      context.siblingBindings = [duplicate];
+      var diagnostics = await getSync().diagnoseLibraryBinding(context);
+      parts.diagnose = summarizeResult(diagnostics);
+      var preflight = await getSync().preflightLibraryBinding(Object.assign({}, context, { diagnosticsResult: diagnostics }));
+      parts.preflight = summarizeResult(preflight);
+      var proposal = await getSync().generateLibraryBindingProposalCandidate(Object.assign({}, context, {
+        diagnosticsResult: diagnostics
+      }));
+      parts.proposal = summarizeResult(proposal);
+      var preflightBlocked = preflight && preflight.ok === false &&
+        codeList(preflight.blockers).indexOf('chat-label-already-bound') !== -1;
+      var proposalBlocked = proposal && proposal.ok === false &&
+        (codeList(proposal.blockers).indexOf('chat-label-already-bound') !== -1 ||
+         codeList(proposal.blockers).indexOf('library-binding-preflight-not-ok') !== -1);
+      if (!preflightBlocked) addCode(blockers, 'library-sync-proof-binding-duplicate-preflight-not-blocked');
+      if (!proposalBlocked) addCode(blockers, 'library-sync-proof-binding-duplicate-proposal-not-blocked');
+      var privacy = await privacyScan([canonical, diagnostics, preflight, proposal], bindingPrivacyNeedles(fixtures));
+      if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+      mergeCodes(warnings, privacy.warnings);
+      return {
+        caseId: 'binding-duplicate-binding-blocks-proposal',
+        required: true,
+        ok: blockers.length === 0 && preflightBlocked === true && proposalBlocked === true && privacy.ok === true,
+        lane: 'library.binding',
         operation: 'bind',
         bindingKind: 'chat-label',
-        blockers: blockers,
-        warnings: warnings.concat(cleanString(e && e.message) ? ['library-sync-proof-binding-error'] : [])
-      });
+        steps: stepsFromParts(parts),
+        preflightBlocked: preflightBlocked,
+        proposalBlocked: proposalBlocked,
+        expectedBlocker: 'chat-label-already-bound',
+        privacy: privacy,
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
+    } catch (_) {
+      addCode(blockers, 'library-sync-proof-binding-duplicate-case-threw');
+      return {
+        caseId: 'binding-duplicate-binding-blocks-proposal',
+        required: true,
+        ok: false,
+        lane: 'library.binding',
+        operation: 'bind',
+        bindingKind: 'chat-label',
+        steps: stepsFromParts(parts),
+        preflightBlocked: false,
+        proposalBlocked: false,
+        privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: ['library-sync-proof-binding-duplicate-case-threw'], warnings: [] },
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
     }
+  }
+
+  async function runBindingReplaceOperationCase(input) {
+    var fixtures = await buildCommonFixtures(input || {});
+    var blockers = [];
+    var warnings = [];
+    try {
+      var proposal = await getSync().generateLibraryBindingProposalCandidate({
+        operation: 'replaceForChat',
+        observedAtIso: fixtures.observedAtIso
+      });
+      var replaceBlocked = proposal && proposal.ok === false &&
+        codeList(proposal.blockers).indexOf('library-binding-replace-operation-not-supported') !== -1;
+      if (!replaceBlocked) addCode(blockers, 'library-sync-proof-binding-replace-operation-not-blocked');
+      var privacy = await privacyScan([proposal], bindingPrivacyNeedles(fixtures));
+      if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+      mergeCodes(warnings, privacy.warnings);
+      return {
+        caseId: 'binding-replace-operation-not-supported',
+        required: true,
+        ok: blockers.length === 0 && replaceBlocked === true && privacy.ok === true,
+        lane: 'library.binding',
+        operation: 'replace-operation',
+        proposalBlocked: replaceBlocked,
+        expectedBlocker: 'library-binding-replace-operation-not-supported',
+        singleProposalGenerated: proposal && proposal.generated === true,
+        privacy: privacy,
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
+    } catch (_) {
+      addCode(blockers, 'library-sync-proof-binding-replace-case-threw');
+      return {
+        caseId: 'binding-replace-operation-not-supported',
+        required: true,
+        ok: false,
+        lane: 'library.binding',
+        operation: 'replace-operation',
+        proposalBlocked: false,
+        singleProposalGenerated: false,
+        privacy: { ok: false, checkedTargets: 0, leakCount: 0, blockers: ['library-sync-proof-binding-replace-case-threw'], warnings: [] },
+        blockers: codeList(blockers),
+        warnings: codeList(warnings),
+        sideEffectSummary: sideEffectSummary()
+      };
+    }
+  }
+
+  async function runLibraryBindingPipelineProof(input) {
+    var cases = [];
+    var blockers = [];
+    var warnings = [];
+    for (var i = 0; i < BINDING_CASE_DEFINITIONS.length; i++) {
+      var proofCase = await runBindingProofCase(BINDING_CASE_DEFINITIONS[i], input || {});
+      cases.push(proofCase);
+      if (proofCase.ok !== true) mergeCodes(blockers, proofCase.blockers);
+      mergeCodes(warnings, proofCase.warnings);
+    }
+
+    var cacheCases = cases.filter(function (item) {
+      return item.bindingKind === 'chat-category';
+    });
+    var cacheMetadataOk = cacheCases.length === 2 && cacheCases.every(function (item) {
+      if (item.operation === 'bind') {
+        return item.cacheRefresh &&
+          item.cacheRefresh.requiresCategoryCacheRefresh === true &&
+          item.cacheRefresh.categoryCacheAction === 'set' &&
+          item.refreshWarningOk === true;
+      }
+      if (item.operation === 'unbind') {
+        return item.cacheRefresh &&
+          item.cacheRefresh.requiresCategoryCacheRefresh === true &&
+          item.cacheRefresh.categoryCacheAction === 'clear' &&
+          item.refreshWarningOk === true;
+      }
+      return false;
+    });
+    var nonCacheMetadataOk = cases.filter(function (item) {
+      return item.bindingKind !== 'chat-category';
+    }).every(function (item) {
+      return item.cacheRefresh &&
+        item.cacheRefresh.requiresCategoryCacheRefresh === false &&
+        item.cacheRefresh.categoryCacheAction === null;
+    });
+    var cacheCase = {
+      caseId: 'binding-chat-category-cache-refresh-metadata',
+      required: true,
+      ok: cacheMetadataOk === true && nonCacheMetadataOk === true,
+      lane: 'library.binding',
+      operation: 'cache-metadata-proof',
+      chatCategorySet: cacheCases.some(function (item) {
+        return item.operation === 'bind' &&
+          item.cacheRefresh &&
+          item.cacheRefresh.categoryCacheAction === 'set';
+      }),
+      chatCategoryClear: cacheCases.some(function (item) {
+        return item.operation === 'unbind' &&
+          item.cacheRefresh &&
+          item.cacheRefresh.categoryCacheAction === 'clear';
+      }),
+      nonChatCategoryNoRefresh: nonCacheMetadataOk === true,
+      blockers: cacheMetadataOk && nonCacheMetadataOk ? [] : ['library-sync-proof-binding-cache-metadata-failed'],
+      warnings: [],
+      sideEffectSummary: sideEffectSummary()
+    };
+    cases.push(cacheCase);
+
+    var noF5Ok = cases.every(function (item) {
+      return item.noF5Footprint !== false && (item.f5FootprintCount || 0) === 0;
+    });
+    var noF5Case = {
+      caseId: 'binding-no-f5-footprint',
+      required: true,
+      ok: noF5Ok === true,
+      lane: 'library.binding',
+      operation: 'lane-invariant-proof',
+      noF5Footprint: noF5Ok === true,
+      blockers: noF5Ok ? [] : ['library-sync-proof-binding-f5-footprint-detected'],
+      warnings: [],
+      sideEffectSummary: sideEffectSummary()
+    };
+    cases.push(noF5Case);
+
+    var duplicateCase = await runBindingDuplicateBlockCase(input || {});
+    cases.push(duplicateCase);
+
+    var replaceCase = await runBindingReplaceOperationCase(input || {});
+    cases.push(replaceCase);
+
+    var fixtures = await buildCommonFixtures(input || {});
+    var privacy = await privacyScan(cases, bindingPrivacyNeedles(fixtures));
+    var privacyCase = {
+      caseId: 'binding-privacy-leak-scan',
+      required: true,
+      ok: privacy.ok === true,
+      lane: 'library.binding',
+      operation: 'privacy-scan',
+      steps: { privacyScan: privacy.ok === true },
+      privacy: privacy,
+      blockers: codeList(privacy.blockers),
+      warnings: codeList(privacy.warnings),
+      sideEffectSummary: sideEffectSummary()
+    };
+    cases.push(privacyCase);
+
+    cases.forEach(function (proofCase) {
+      if (proofCase.ok !== true) mergeCodes(blockers, proofCase.blockers);
+      mergeCodes(warnings, proofCase.warnings);
+    });
+    var passCount = cases.filter(function (item) { return item.ok === true; }).length;
+    var failCount = cases.length - passCount;
+    return {
+      schema: RESULT_SCHEMA,
+      version: VERSION,
+      ok: failCount === 0 && blockers.length === 0 && privacy.ok === true,
+      caseCount: cases.length,
+      passCount: passCount,
+      failCount: failCount,
+      cases: cases,
+      warnings: codeList(warnings),
+      blockers: codeList(blockers),
+      privacy: privacy,
+      sideEffectSummary: sideEffectSummary(),
+      observedAtIso: cleanString(input && input.observedAtIso) || nowIsoSeconds()
+    };
   }
 
   async function runLibraryStoreCutoverProof() {
@@ -1209,16 +1701,16 @@
     mergeCodes(warnings, presence.warnings);
 
     var catalogProof = presence.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
-    var bindingSmoke = presence.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
+    var bindingProof = presence.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
-    if (bindingSmoke && bindingSmoke.ok !== true) mergeCodes(blockers, bindingSmoke.blockers);
+    if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
     if (storeCutover.ok !== true) mergeCodes(blockers, storeCutover.blockers);
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
 
-    var privacyTargets = [catalogProof, bindingSmoke, storeCutover, bulkMigration].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, storeCutover, bulkMigration].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -1226,7 +1718,7 @@
     var ok = blockers.length === 0 &&
       presence.ok === true &&
       catalogProof && catalogProof.ok === true &&
-      bindingSmoke && bindingSmoke.ok === true &&
+      bindingProof && bindingProof.ok === true &&
       storeCutover.ok === true &&
       bulkMigration.ok === true &&
       privacy.ok === true;
@@ -1237,7 +1729,8 @@
       ok: ok,
       catalogProof: catalogProof,
       catalogSmoke: catalogProof,
-      bindingSmoke: bindingSmoke,
+      bindingProof: bindingProof,
+      bindingSmoke: bindingProof,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
       privacy: privacy,
