@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.10.b library sync operator status UI
+/* H2O Desktop Sync - F15.10.c library sync operator status UI
  *
  * Settings-hosted, read-only operator panel for F15 Library Sync proof status.
  *
@@ -30,7 +30,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncOperatorUiInstalled) return;
 
-  var VERSION = '0.2.0-f15.10.b';
+  var VERSION = '0.3.0-f15.10.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-operator-ui-result.v1';
   var PANEL_ID = 'h2o-library-sync-operator-panel';
   var STYLE_ID = 'h2o-library-sync-operator-style';
@@ -79,6 +79,44 @@
     { caseId: 'binding-replace-operation-not-supported', label: 'Binding replace operation block' },
     { caseId: 'binding-privacy-leak-scan', label: 'Binding privacy leak scan' }
   ];
+  var F5_TOMBSTONE_CASES = [
+    { caseId: 'catalog-tombstone-approve-seal-full-pipeline', label: 'Catalog tombstone seal-path proof' },
+    { caseId: 'catalog-tombstone-approve-restore-full-pipeline', label: 'Catalog tombstone restore-path proof' },
+    { caseId: 'catalog-tombstone-pending-f5-blocks-execute', label: 'Catalog tombstone pending-review gate' }
+  ];
+  var BULK_MIGRATION_CASES = [
+    { caseId: 'bulk-migration-chunked-mode-runs', label: 'Chunked mode proof' },
+    { caseId: 'bulk-migration-100-plus-bindings', label: 'Large binding batch proof' },
+    { caseId: 'bulk-migration-repeat-import-idempotent', label: 'Repeat import idempotency' },
+    { caseId: 'bulk-migration-duplicate-label-binding-skipped', label: 'Duplicate label-edge skip' },
+    { caseId: 'bulk-migration-duplicate-tag-binding-skipped', label: 'Duplicate tag-edge skip' },
+    { caseId: 'bulk-migration-partial-failure-reports-partial', label: 'Partial failure reporting' },
+    { caseId: 'bulk-migration-bulk-identity-required', label: 'Bulk identity requirement' },
+    { caseId: 'bulk-migration-shim-fallback-disabled-by-default', label: 'Shim fallback disabled by default' },
+    { caseId: 'bulk-migration-phase-order-catalogs-before-bindings', label: 'Catalog-before-binding phase order' },
+    { caseId: 'bulk-migration-chat-category-cache-after-chat', label: 'Chat-category cache phase order' },
+    { caseId: 'bulk-migration-no-raw-leak', label: 'Bulk privacy leak scan' }
+  ];
+  var STORE_CUTOVER_CASES = [
+    { caseId: 'cutover-direct-sql-blocked', label: 'Protected write block proof' },
+    { caseId: 'cutover-authorized-settlement-write-passes', label: 'Settlement identity proof' },
+    { caseId: 'cutover-identity-clears-after-scope', label: 'Identity clearing proof' },
+    { caseId: 'cutover-debug-emergency-not-silently-enabled', label: 'Debug/emergency guard proof' },
+    { caseId: 'shim-label-create-routes-through-f15', label: 'Label catalog shim route' },
+    { caseId: 'shim-label-remove-pending-review', label: 'Label removal pending-review route' },
+    { caseId: 'shim-tag-bind-routes-through-f15', label: 'Tag binding shim route' },
+    { caseId: 'shim-category-assign-routes-chat-category-binding', label: 'Category assignment route' },
+    { caseId: 'shim-category-clear-routes-chat-category-unbind', label: 'Category clear route' },
+    { caseId: 'shim-chats-patch-category-reroutes-or-blocks-direct-write', label: 'Chat category patch route' },
+    { caseId: 'read-api-compatibility-smoke', label: 'Read API compatibility' },
+    { caseId: 'saveNow-subscribe-settlement-order-smoke', label: 'Save/subscribe settlement order' }
+  ];
+  var CACHE_REFRESH_CASES = [
+    { caseId: 'binding-bind-chat-category-full-pipeline', label: 'Chat-category set metadata' },
+    { caseId: 'binding-unbind-chat-category-full-pipeline', label: 'Chat-category clear metadata' },
+    { caseId: 'binding-chat-category-cache-refresh-metadata', label: 'Cache refresh metadata proof' },
+    { caseId: 'bulk-migration-chat-category-cache-after-chat', label: 'Bulk chat-category cache phase proof', sourceKind: 'bulkMigration' }
+  ];
   var FORBIDDEN_BUTTON_LABELS = [
     'apply',
     'execute now',
@@ -89,6 +127,13 @@
     'direct sql',
     'approve seal',
     'approve restore',
+    'close review',
+    'repair',
+    'bypass',
+    'migrate now',
+    'import now',
+    'cache edit',
+    'cache repair',
     'create',
     'rename',
     'recolor',
@@ -317,6 +362,55 @@
       sourceProof: null
     };
   }
+  function proofSourceCandidates(kind) {
+    if (kind === 'catalogF5') return caseSourceCandidates('catalog');
+    if (kind === 'bindingCache') return caseSourceCandidates('binding');
+    if (kind === 'storeCutover') {
+      return [
+        { source: 'closure.storeCutover', proof: safeObject(state.lastClosure && state.lastClosure.storeCutover) },
+        { source: 'closure.aggregate.storeCutover', proof: safeObject(state.lastClosure && state.lastClosure.aggregate && state.lastClosure.aggregate.storeCutover) },
+        { source: 'e2e.storeCutover', proof: safeObject(state.lastE2E && state.lastE2E.storeCutover) }
+      ];
+    }
+    if (kind === 'bulkMigration') {
+      return [
+        { source: 'closure.bulkMigration', proof: safeObject(state.lastClosure && state.lastClosure.bulkMigration) },
+        { source: 'closure.aggregate.bulkMigration', proof: safeObject(state.lastClosure && state.lastClosure.aggregate && state.lastClosure.aggregate.bulkMigration) },
+        { source: 'e2e.bulkMigration', proof: safeObject(state.lastE2E && state.lastE2E.bulkMigration) }
+      ];
+    }
+    return [];
+  }
+  function findProofCase(kind, caseId) {
+    var candidates = proofSourceCandidates(kind);
+    for (var i = 0; i < candidates.length; i += 1) {
+      var rows = asArray(candidates[i].proof && candidates[i].proof.cases);
+      for (var j = 0; j < rows.length; j += 1) {
+        if (caseIdOf(rows[j]) === caseId) {
+          return {
+            source: candidates[i].source,
+            caseRow: rows[j],
+            sourceProof: candidates[i].proof
+          };
+        }
+      }
+    }
+    return {
+      source: latestProof() ? 'latest-proof' : 'not-run',
+      caseRow: null,
+      sourceProof: null
+    };
+  }
+  function firstProofSource(kind) {
+    var candidates = proofSourceCandidates(kind);
+    for (var i = 0; i < candidates.length; i += 1) {
+      var proof = safeObject(candidates[i].proof);
+      if (proof.ok != null || asArray(proof.cases).length || Object.keys(proof).length) {
+        return { source: candidates[i].source, proof: proof };
+      }
+    }
+    return { source: latestProof() ? 'latest-proof' : 'not-run', proof: {} };
+  }
   function laneCaseStatus(found) {
     var row = safeObject(found && found.caseRow);
     if (!found || !found.caseRow) return {
@@ -375,6 +469,144 @@
       '<div class="h2oLibSyncLaneRows">' + definitions.map(function (definition) {
         return renderLaneCaseRow(lane, definition);
       }).join('') + '</div>';
+  }
+  function optionalBoolText(value) {
+    if (value === true) return 'yes';
+    if (value === false) return 'no';
+    return 'not run';
+  }
+  function optionalMatchText(value, expected) {
+    var text = cleanString(value);
+    if (!text) return 'not run';
+    return optionalBoolText(text === expected);
+  }
+  function optionalAllText(values) {
+    var list = asArray(values);
+    if (!list.some(function (value) { return value === true || value === false; })) return 'not run';
+    return optionalBoolText(list.every(function (value) { return value === true; }));
+  }
+  function optionalCacheActionText(summaryValue, refresh, action) {
+    if (summaryValue === true || summaryValue === false) return optionalBoolText(summaryValue);
+    var cacheAction = cleanString(safeObject(refresh).categoryCacheAction);
+    if (!cacheAction) return 'not run';
+    return optionalBoolText(cacheAction === action);
+  }
+  function renderProofCaseRow(kind, definition) {
+    var sourceKind = cleanString(definition.sourceKind) || kind;
+    var found = findProofCase(sourceKind, definition.caseId);
+    var row = safeObject(found.caseRow);
+    var status = laneCaseStatus(found);
+    var blockers = codeList(row.blockers);
+    var warnings = codeList(row.warnings);
+    var summary = cleanString(row.summary);
+    var details = [
+      '<span>source <code>' + escapeHtml(found.source) + '</code></span>',
+      '<span>case <code>' + escapeHtml(definition.caseId) + '</code></span>',
+      '<span>blockers ' + escapeHtml(String(blockers.length)) + '</span>',
+      '<span>warnings ' + escapeHtml(String(warnings.length)) + '</span>'
+    ].join(' · ');
+    return '<details class="h2oLibSyncLaneRow h2oLibSyncLaneRow-' + escapeHtml(status.key) + '">' +
+      '<summary><span class="h2oLibSyncLaneTitle">' + escapeHtml(definition.label) + '</span>' +
+      '<span class="h2oLibSyncLaneStatus">' + escapeHtml(status.label) + '</span></summary>' +
+      '<p class="h2oLibSyncNote">' + details + '</p>' +
+      '<p class="h2oLibSyncNote">status mapping: ' + escapeHtml(status.uiStatus) + '</p>' +
+      (summary ? '<p class="h2oLibSyncNote">summary: ' + escapeHtml(shortHash(summary)) + '</p>' : '') +
+      (blockers.length ? '<p class="h2oLibSyncNote">blockers: ' + blockers.slice(0, 8).map(function (code) {
+        return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+      }).join(', ') + '</p>' : '') +
+      (warnings.length ? '<p class="h2oLibSyncNote">warnings: ' + warnings.slice(0, 8).map(function (code) {
+        return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+      }).join(', ') + '</p>' : '') +
+      '</details>';
+  }
+  function renderProofCaseRows(kind, definitions) {
+    var proofAvailable = !!latestProof();
+    return '<p class="h2oLibSyncNote">' + escapeHtml(proofAvailable
+      ? 'Rows are read-only evidence from the latest in-memory proof result.'
+      : 'No proof has run in this session; operational rows remain not run until an explicit proof action completes.') + '</p>' +
+      '<div class="h2oLibSyncLaneRows">' + definitions.map(function (definition) {
+        return renderProofCaseRow(kind, definition);
+      }).join('') + '</div>';
+  }
+  function renderF5TombstoneStatus() {
+    var seal = safeObject(findProofCase('catalogF5', 'catalog-tombstone-approve-seal-full-pipeline').caseRow);
+    var restore = safeObject(findProofCase('catalogF5', 'catalog-tombstone-approve-restore-full-pipeline').caseRow);
+    var pending = safeObject(findProofCase('catalogF5', 'catalog-tombstone-pending-f5-blocks-execute').caseRow);
+    var sealClosure = safeObject(safeObject(seal.f5).closure);
+    var restoreClosure = safeObject(safeObject(restore.f5).closure);
+    return '<div class="h2oLibSyncGrid">' +
+      metric('seal path proof', seal.ok === true ? 'pass' : (seal.ok === false ? 'fail' : 'not run')) +
+      metric('restore path proof', restore.ok === true ? 'pass' : (restore.ok === false ? 'fail' : 'not run')) +
+      metric('pending review gate', pending.ok === true ? 'pass' : (pending.ok === false ? 'fail' : 'not run')) +
+      metric('pending blocker observed', optionalBoolText(pending.pendingF5BlockerObserved)) +
+      metric('closed sealed evidence', optionalMatchText(sealClosure.targetState, 'closed-sealed')) +
+      metric('closed restored evidence', optionalMatchText(restoreClosure.targetState, 'closed-restored')) +
+      metric('seal native apply required', optionalBoolText(sealClosure.nativeApplyRequired)) +
+      metric('restore native apply required', optionalBoolText(restoreClosure.nativeApplyRequired)) +
+      '</div>' +
+      renderProofCaseRows('catalogF5', F5_TOMBSTONE_CASES);
+  }
+  function renderBulkMigrationStatus() {
+    var source = firstProofSource('bulkMigration');
+    var proof = safeObject(source.proof);
+    var chunked = safeObject(proof.chunkedMode);
+    var idempotency = safeObject(proof.idempotency);
+    var partial = safeObject(proof.partialFailure);
+    var sentinel = safeObject(proof.sentinel);
+    var phase = safeObject(proof.phaseOrdering);
+    var privacy = safeObject(proof.privacy);
+    return '<p class="h2oLibSyncNote">source <code>' + escapeHtml(source.source) + '</code></p>' +
+      '<div class="h2oLibSyncGrid">' +
+      metric('chunked mode', optionalBoolText(chunked.ok)) +
+      metric('chunk count', chunked.chunkCount == null ? 'not run' : String(chunked.chunkCount)) +
+      metric('max chunk respected', optionalBoolText(chunked.maxChunkRespected)) +
+      metric('repeat import idempotent', optionalBoolText(idempotency.repeatImportSkipped)) +
+      metric('duplicate label skipped', optionalBoolText(idempotency.duplicateLabelSkipped)) +
+      metric('duplicate tag skipped', optionalBoolText(idempotency.duplicateTagSkipped)) +
+      metric('partial status', cleanString(partial.status) || 'not run') +
+      metric('partial failure reported', optionalBoolText(partial.failedChunkReported)) +
+      metric('bulk identity required', optionalBoolText(sentinel.bulkIdentityUsed)) +
+      metric('shim fallback disabled', optionalBoolText(sentinel.shimFallbackBlocked)) +
+      metric('phase ordering', optionalBoolText(phase.catalogsBeforeBindings)) +
+      metric('privacy clean', optionalBoolText(privacy.ok)) +
+      '</div>' +
+      renderProofCaseRows('bulkMigration', BULK_MIGRATION_CASES);
+  }
+  function renderStoreCutoverStatus() {
+    var source = firstProofSource('storeCutover');
+    var proof = safeObject(source.proof);
+    var sentinel = safeObject(proof.sentinel);
+    var shims = safeObject(proof.storeShims);
+    var readCompatibility = safeObject(proof.readCompatibility);
+    var saveSubscribe = safeObject(proof.saveSubscribe);
+    return '<p class="h2oLibSyncNote">source <code>' + escapeHtml(source.source) + '</code></p>' +
+      '<div class="h2oLibSyncGrid">' +
+      metric('direct SQL blocked', optionalBoolText(sentinel.unauthorizedBeforeBlocked)) +
+      metric('settlement write passes', optionalBoolText(sentinel.authorizedWritePassed)) +
+      metric('identity clears', optionalBoolText(sentinel.unauthorizedAfterClearBlocked)) +
+      metric('debug/emergency guarded', optionalAllText([sentinel.debugBypassNotSilent, sentinel.emergencyRepairNotSilent])) +
+      metric('shim route attempted', optionalBoolText(shims.attempted)) +
+      metric('read APIs compatible', optionalAllText([readCompatibility.labelsReadable, readCompatibility.tagsReadable, readCompatibility.categoriesReadable, readCompatibility.chatsReadable])) +
+      metric('saveNow reachable', optionalBoolText(saveSubscribe.saveNowReachable)) +
+      metric('subscribe reachable', optionalBoolText(saveSubscribe.subscribeReachable)) +
+      '</div>' +
+      renderProofCaseRows('storeCutover', STORE_CUTOVER_CASES);
+  }
+  function renderCacheRefreshStatus() {
+    var cacheCase = safeObject(findProofCase('bindingCache', 'binding-chat-category-cache-refresh-metadata').caseRow);
+    var bindCase = safeObject(findProofCase('bindingCache', 'binding-bind-chat-category-full-pipeline').caseRow);
+    var unbindCase = safeObject(findProofCase('bindingCache', 'binding-unbind-chat-category-full-pipeline').caseRow);
+    var bindRefresh = safeObject(bindCase.cacheRefresh);
+    var unbindRefresh = safeObject(unbindCase.cacheRefresh);
+    return '<div class="h2oLibSyncGrid">' +
+      metric('cache set proof', optionalCacheActionText(cacheCase.chatCategorySet, bindRefresh, 'set')) +
+      metric('cache clear proof', optionalCacheActionText(cacheCase.chatCategoryClear, unbindRefresh, 'clear')) +
+      metric('cache metadata proof', cacheCase.ok === true ? 'pass' : (cacheCase.ok === false ? 'fail' : 'not run')) +
+      metric('non-chat refresh blocked', optionalBoolText(cacheCase.nonChatCategoryNoRefresh)) +
+      metric('read-your-own-write status', hasCacheDrift() ? 'warning' : (latestProof() ? 'no drift observed' : 'not run')) +
+      metric('cache drift warning', optionalBoolText(hasCacheDrift())) +
+      '</div>' +
+      renderProofCaseRows('bindingCache', CACHE_REFRESH_CASES);
   }
   function privacySummary() {
     var closurePrivacy = safeObject(state.lastClosure && state.lastClosure.privacy);
@@ -630,7 +862,7 @@
     var message = state.message ? '<p class="h2oLibSyncNote">' + escapeHtml(state.message) + '</p>' : '';
     panel.innerHTML =
       '<div class="h2oLibSyncHeader">' +
-      '<div><p class="h2oLibSyncKicker">F15.10.b · read-only</p>' +
+      '<div><p class="h2oLibSyncKicker">F15.10.c · read-only</p>' +
       '<h2 class="h2oLibSyncTitle">Library Sync Operator Status</h2>' +
       '<p class="h2oLibSyncNote">Settings-hosted proof/status panel for F15 Library Sync. Proofs run only from explicit operator actions. No mutation controls are exposed.</p>' +
       message + '</div>' +
@@ -651,6 +883,10 @@
         '</div>') +
       section('Catalog Lane Details', renderLaneDetails('catalog', CATALOG_LANE_CASES)) +
       section('Binding Lane Details', renderLaneDetails('binding', BINDING_LANE_CASES)) +
+      section('F5 Catalog Tombstones', renderF5TombstoneStatus()) +
+      section('Bulk Migration', renderBulkMigrationStatus()) +
+      section('Store Cutover', renderStoreCutoverStatus()) +
+      section('Cache Refresh', renderCacheRefreshStatus()) +
       section('Privacy', renderPrivacy()) +
       section('Side Effects', renderSideEffects()) +
       section('Blockers / Warnings', renderBlockersWarnings()) +
