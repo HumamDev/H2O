@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.10.c library sync operator status UI
+/* H2O Desktop Sync - F15.10.d library sync operator status UI
  *
  * Settings-hosted, read-only operator panel for F15 Library Sync proof status.
  *
@@ -30,7 +30,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncOperatorUiInstalled) return;
 
-  var VERSION = '0.3.0-f15.10.c';
+  var VERSION = '0.4.0-f15.10.d';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-operator-ui-result.v1';
   var PANEL_ID = 'h2o-library-sync-operator-panel';
   var STYLE_ID = 'h2o-library-sync-operator-style';
@@ -246,6 +246,15 @@
     if (proofAgeMs() > STALE_AFTER_MS) return { stale: true, label: 'Proof stale' };
     return { stale: false, label: 'Fresh' };
   }
+  function staleProofBadge() {
+    var stale = staleStatus();
+    return {
+      label: stale.label,
+      stale: stale.stale === true,
+      lastRunAtIso: state.lastRunAtIso || '',
+      proofAgeMs: Number.isFinite(proofAgeMs()) ? Math.max(0, proofAgeMs()) : null
+    };
+  }
   function hasCodeMatching(proof, pattern) {
     var re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern), 'i');
     var stack = [proof];
@@ -363,6 +372,8 @@
     };
   }
   function proofSourceCandidates(kind) {
+    if (kind === 'catalog') return caseSourceCandidates('catalog');
+    if (kind === 'binding') return caseSourceCandidates('binding');
     if (kind === 'catalogF5') return caseSourceCandidates('catalog');
     if (kind === 'bindingCache') return caseSourceCandidates('binding');
     if (kind === 'storeCutover') {
@@ -415,8 +426,8 @@
     var row = safeObject(found && found.caseRow);
     if (!found || !found.caseRow) return {
       key: 'not-run',
-      label: latestProof() ? 'not run' : 'not run',
-      uiStatus: 'proof stale / not run'
+      label: 'not run',
+      uiStatus: latestProof() ? 'proof stale' : 'not run'
     };
     var blockers = codeList(row.blockers);
     var warnings = codeList(row.warnings);
@@ -427,12 +438,12 @@
     };
     if (row.ok === true) return {
       key: 'pass',
-      label: 'pass',
+      label: 'healthy',
       uiStatus: 'healthy'
     };
     return {
       key: 'fail',
-      label: 'fail',
+      label: 'proof failed',
       uiStatus: 'proof failed'
     };
   }
@@ -608,6 +619,105 @@
       '</div>' +
       renderProofCaseRows('bindingCache', CACHE_REFRESH_CASES);
   }
+  function rollupStatus(hasData, ok, blockers, warnings, domain) {
+    if (!hasData) return latestProof() ? 'proof stale' : 'not run';
+    if (codeList(blockers).length) return 'blocked';
+    if (domain === 'bulk migration' && hasPartialMigration()) return 'partial migration';
+    if (domain === 'F5' && hasPendingReview()) return 'pending review';
+    if (domain === 'cache' && hasCacheDrift()) return 'cache drift detected';
+    if (ok === false) return 'proof failed';
+    if (codeList(warnings).length) return 'warning';
+    if (ok === true) return 'healthy';
+    return latestProof() ? 'proof stale' : 'not run';
+  }
+  function proofCounts(proof) {
+    var p = safeObject(proof);
+    var cases = asArray(p.cases);
+    var count = Number(p.caseCount || cases.length || 0);
+    return {
+      caseCount: count,
+      passCount: Number(p.passCount || cases.filter(function (entry) { return safeObject(entry).ok === true; }).length || 0),
+      failCount: Number(p.failCount || cases.filter(function (entry) { return safeObject(entry).ok === false; }).length || 0)
+    };
+  }
+  function proofCountSummary() {
+    return {
+      closure: Object.assign({ ok: state.lastClosure ? safeObject(state.lastClosure).ok === true : null }, proofCounts(state.lastClosure)),
+      endToEnd: Object.assign({ ok: state.lastE2E ? safeObject(state.lastE2E).ok === true : null }, proofCounts(state.lastE2E)),
+      catalog: laneSummary('catalog'),
+      binding: laneSummary('binding'),
+      storeCutover: laneSummary('storeCutover'),
+      bulkMigration: laneSummary('bulkMigration')
+    };
+  }
+  function rollupFromProofSource(domain, kind) {
+    var source = firstProofSource(kind);
+    var proof = safeObject(source.proof);
+    var counts = proofCounts(proof);
+    var blockers = codeList(proof.blockers);
+    var warnings = codeList(proof.warnings);
+    var hasData = proof.ok != null || counts.caseCount > 0;
+    return {
+      domain: domain,
+      status: rollupStatus(hasData, proof.ok === true, blockers, warnings, domain),
+      source: source.source,
+      caseCount: counts.caseCount,
+      passCount: counts.passCount,
+      failCount: counts.failCount,
+      blockerCount: blockers.length,
+      warningCount: warnings.length,
+      blockers: blockers,
+      warnings: warnings
+    };
+  }
+  function rollupFromDefinitions(domain, kind, definitions) {
+    var blockers = [];
+    var warnings = [];
+    var foundRows = [];
+    asArray(definitions).forEach(function (definition) {
+      var found = findProofCase(cleanString(definition.sourceKind) || kind, definition.caseId);
+      if (found.caseRow) foundRows.push(found.caseRow);
+      mergeCodes(blockers, found.caseRow && found.caseRow.blockers);
+      mergeCodes(warnings, found.caseRow && found.caseRow.warnings);
+    });
+    var failCount = foundRows.filter(function (row) { return safeObject(row).ok === false; }).length;
+    var passCount = foundRows.filter(function (row) { return safeObject(row).ok === true; }).length;
+    return {
+      domain: domain,
+      status: rollupStatus(foundRows.length > 0, failCount === 0 && foundRows.length > 0, blockers, warnings, domain),
+      source: kind,
+      caseCount: definitions.length,
+      passCount: passCount,
+      failCount: failCount,
+      blockerCount: blockers.length,
+      warningCount: warnings.length,
+      blockers: blockers,
+      warnings: warnings
+    };
+  }
+  function diagnosticsRollups() {
+    var privacy = privacySummary();
+    return [
+      rollupFromProofSource('catalog', 'catalog'),
+      rollupFromProofSource('binding', 'binding'),
+      rollupFromProofSource('store cutover', 'storeCutover'),
+      rollupFromProofSource('bulk migration', 'bulkMigration'),
+      rollupFromDefinitions('F5', 'catalogF5', F5_TOMBSTONE_CASES),
+      rollupFromDefinitions('cache', 'bindingCache', CACHE_REFRESH_CASES),
+      {
+        domain: 'privacy',
+        status: rollupStatus(!!latestProof(), privacy.ok === true, privacy.blockers, privacy.warnings, 'privacy'),
+        source: 'privacySummary',
+        caseCount: Number(privacy.leakCount || 0),
+        passCount: privacy.ok === true ? 1 : 0,
+        failCount: privacy.ok === true ? 0 : 1,
+        blockerCount: privacy.blockers.length,
+        warningCount: privacy.warnings.length,
+        blockers: privacy.blockers,
+        warnings: privacy.warnings
+      }
+    ];
+  }
   function privacySummary() {
     var closurePrivacy = safeObject(state.lastClosure && state.lastClosure.privacy);
     var e2ePrivacy = safeObject(state.lastE2E && state.lastE2E.privacy);
@@ -711,17 +821,22 @@
     return '[redacted]';
   }
   function buildReport() {
+    var codes = collectBlockersWarnings();
     var payload = {
       schema: RESULT_SCHEMA,
       version: VERSION,
       generatedAtIso: nowIsoSeconds(),
       lastRunAtIso: state.lastRunAtIso,
       lastProofKind: state.lastProofKind,
+      staleProofBadge: staleProofBadge(),
       status: statusState(),
-      closure: state.lastClosure,
-      endToEnd: state.lastE2E,
+      proofCounts: proofCountSummary(),
+      diagnosticsRollups: diagnosticsRollups(),
       privacy: privacySummary(),
-      sideEffectSummary: sideEffectSummary()
+      sideEffectSummary: sideEffectSummary(),
+      blockers: codes.blockers,
+      warnings: codes.warnings,
+      redacted: true
     };
     return sanitizeForReport(payload, '');
   }
@@ -746,22 +861,66 @@
   }
   function renderSummaryCard(title, summary) {
     var s = safeObject(summary);
+    var hasData = Number(s.caseCount || 0) > 0 || s.ok === true || codeList(s.blockers).length || codeList(s.warnings).length;
+    var label = hasData ? (s.ok ? 'healthy' : 'proof failed') : 'not run';
+    if (hasData && !s.ok && !Number(s.failCount || 0) && codeList(s.warnings).length) label = 'warning';
     return '<div class="h2oLibSyncCard">' +
       '<div class="h2oLibSyncCardTitle">' + escapeHtml(title) + '</div>' +
-      '<div class="h2oLibSyncCardStatus ' + (s.ok ? 'isOk' : 'isWarn') + '">' + escapeHtml(s.ok ? 'ok' : 'not ok') + '</div>' +
+      '<div class="h2oLibSyncCardStatus ' + (s.ok ? 'isOk' : 'isWarn') + '">' + escapeHtml(label) + '</div>' +
       '<p class="h2oLibSyncNote">cases ' + escapeHtml(String(s.passCount || 0)) + '/' + escapeHtml(String(s.caseCount || 0)) +
       ' · failures ' + escapeHtml(String(s.failCount || 0)) + '</p>' +
+      '</div>';
+  }
+  function renderStaleProofBadge() {
+    var badge = staleProofBadge();
+    var lastRun = badge.lastRunAtIso || 'never';
+    var age = badge.proofAgeMs == null ? 'n/a' : String(Math.floor(badge.proofAgeMs / 1000)) + 's';
+    return '<span class="h2oLibSyncPill h2oLibSyncPill-' + (badge.stale ? 'proof-stale' : 'healthy') + '">' +
+      escapeHtml(badge.label) + '</span>' +
+      '<span class="h2oLibSyncMuted">last run ' + escapeHtml(lastRun) + '</span>' +
+      '<span class="h2oLibSyncMuted">age ' + escapeHtml(age) + '</span>';
+  }
+  function renderDiagnosticsRollups() {
+    var rollups = diagnosticsRollups();
+    return '<div class="h2oLibSyncRollups">' + rollups.map(function (rollup) {
+      var blockers = codeList(rollup.blockers);
+      var warnings = codeList(rollup.warnings);
+      return '<details class="h2oLibSyncRollup" ' + (blockers.length || warnings.length ? 'open' : '') + '>' +
+        '<summary><span class="h2oLibSyncLaneTitle">' + escapeHtml(rollup.domain) + '</span>' +
+        '<span class="h2oLibSyncLaneStatus">' + escapeHtml(rollup.status) + '</span></summary>' +
+        '<p class="h2oLibSyncNote">source <code>' + escapeHtml(rollup.source) + '</code> · cases ' +
+        escapeHtml(String(rollup.passCount || 0)) + '/' + escapeHtml(String(rollup.caseCount || 0)) +
+        ' · blockers ' + escapeHtml(String(rollup.blockerCount || 0)) +
+        ' · warnings ' + escapeHtml(String(rollup.warningCount || 0)) + '</p>' +
+        (blockers.length ? '<p class="h2oLibSyncNote">blockers: ' + blockers.slice(0, 6).map(function (code) {
+          return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+        }).join(', ') + '</p>' : '') +
+        (warnings.length ? '<p class="h2oLibSyncNote">warnings: ' + warnings.slice(0, 6).map(function (code) {
+          return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+        }).join(', ') + '</p>' : '') +
+        '</details>';
+    }).join('') + '</div>';
+  }
+  function renderRelatedStatusReferences() {
+    var sync = H2O.Desktop.Sync || {};
+    var executeAvailable = typeof sync.openExecuteLanePanel === 'function';
+    var f5PanelAvailable = typeof sync.openSnapshotF5ReviewPanel === 'function';
+    return '<p class="h2oLibSyncNote">Passive references only. These links do not run proof, execute, or change review state.</p>' +
+      '<div class="h2oLibSyncRefGrid">' +
+      '<a class="h2oLibSyncLink" href="#/settings/convergence/execute">Execute Lane status</a>' +
+      '<span class="h2oLibSyncRefText">Execute panel API: ' + escapeHtml(optionalBoolText(executeAvailable)) + '</span>' +
+      '<span class="h2oLibSyncRefText">Snapshot F5 queue API: ' + escapeHtml(optionalBoolText(f5PanelAvailable)) + '</span>' +
+      '<span class="h2oLibSyncRefText">F5 queue route: not registered in this Settings section</span>' +
       '</div>';
   }
   function renderProofStatus() {
     var closure = safeObject(state.lastClosure);
     var e2e = safeObject(state.lastE2E);
     var status = statusState();
-    var stale = staleStatus();
     return '<div class="h2oLibSyncStatusLine">' +
       '<span class="h2oLibSyncPill h2oLibSyncPill-' + escapeHtml(status.key.replace(/\s+/g, '-')) + '">' + escapeHtml(status.label) + '</span>' +
       '<span>' + escapeHtml(status.reason) + '</span>' +
-      '<span class="h2oLibSyncMuted">' + escapeHtml(stale.label) + '</span>' +
+      renderStaleProofBadge() +
       '</div>' +
       '<div class="h2oLibSyncGrid">' +
       metric('closure proof', state.lastClosure ? boolText(closure.ok) : 'not run') +
@@ -849,8 +1008,14 @@
       '.h2oLibSyncLaneRow-warning .h2oLibSyncLaneStatus,.h2oLibSyncLaneRow-not-run .h2oLibSyncLaneStatus{color:#fde68a;background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.3)}',
       '.h2oLibSyncLaneRow-fail .h2oLibSyncLaneStatus{color:#fca5a5;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.3)}',
       '.h2oLibSyncLaneRow code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#cbd5e1}',
-      '@media(max-width:900px){.h2oLibSyncGrid,.h2oLibSyncGridWide,.h2oLibSyncCards,.h2oLibSyncLaneRows{grid-template-columns:repeat(2,minmax(0,1fr))}#' + PANEL_ID + '{right:10px;top:54px;width:calc(100vw - 20px)}}',
-      '@media(max-width:640px){.h2oLibSyncLaneRows{grid-template-columns:1fr}}'
+      '.h2oLibSyncRollups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px}',
+      '.h2oLibSyncRollup{border:1px solid rgba(148,163,184,.2);border-radius:12px;background:rgba(15,23,42,.28);padding:8px 9px}',
+      '.h2oLibSyncRollup summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:800}',
+      '.h2oLibSyncRefGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}',
+      '.h2oLibSyncLink,.h2oLibSyncRefText{border:1px solid rgba(148,163,184,.2);border-radius:12px;background:rgba(15,23,42,.28);padding:8px 9px;color:#cbd5e1;text-decoration:none}',
+      '.h2oLibSyncLink:hover{text-decoration:underline}',
+      '@media(max-width:900px){.h2oLibSyncGrid,.h2oLibSyncGridWide,.h2oLibSyncCards,.h2oLibSyncLaneRows,.h2oLibSyncRollups,.h2oLibSyncRefGrid{grid-template-columns:repeat(2,minmax(0,1fr))}#' + PANEL_ID + '{right:10px;top:54px;width:calc(100vw - 20px)}}',
+      '@media(max-width:640px){.h2oLibSyncLaneRows,.h2oLibSyncRollups,.h2oLibSyncRefGrid{grid-template-columns:1fr}}'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -862,7 +1027,7 @@
     var message = state.message ? '<p class="h2oLibSyncNote">' + escapeHtml(state.message) + '</p>' : '';
     panel.innerHTML =
       '<div class="h2oLibSyncHeader">' +
-      '<div><p class="h2oLibSyncKicker">F15.10.c · read-only</p>' +
+      '<div><p class="h2oLibSyncKicker">F15.10.d · read-only</p>' +
       '<h2 class="h2oLibSyncTitle">Library Sync Operator Status</h2>' +
       '<p class="h2oLibSyncNote">Settings-hosted proof/status panel for F15 Library Sync. Proofs run only from explicit operator actions. No mutation controls are exposed.</p>' +
       message + '</div>' +
@@ -871,10 +1036,11 @@
       '<button class="h2oLibSyncBtn" id="h2o-library-sync-run-closure" type="button" ' + (state.busy ? 'disabled' : '') + '>Run Closure Proof</button>' +
       '<button class="h2oLibSyncBtn" id="h2o-library-sync-run-e2e" type="button" ' + (state.busy ? 'disabled' : '') + '>Run End-to-End Proof</button>' +
       '<button class="h2oLibSyncBtn" id="h2o-library-sync-copy-report" type="button" ' + (state.busy ? 'disabled' : '') + '>Copy Report</button>' +
-      '<button class="h2oLibSyncBtn h2oLibSyncClose" id="h2o-library-sync-close" type="button" aria-label="Close">x</button>' +
+      '<button class="h2oLibSyncBtn h2oLibSyncClose" id="h2o-library-sync-close" type="button" aria-label="close">close</button>' +
       '</div></div>' +
       '<div class="h2oLibSyncBody">' +
       section('Proof Status', renderProofStatus()) +
+      section('Diagnostics Rollup', renderDiagnosticsRollups()) +
       section('Summary Cards', '<div class="h2oLibSyncCards">' +
         renderSummaryCard('Catalog Lane', laneSummary('catalog')) +
         renderSummaryCard('Binding Lane', laneSummary('binding')) +
@@ -890,6 +1056,7 @@
       section('Privacy', renderPrivacy()) +
       section('Side Effects', renderSideEffects()) +
       section('Blockers / Warnings', renderBlockersWarnings()) +
+      section('Related Status References', renderRelatedStatusReferences()) +
       section('Report', renderReport()) +
       (!api.ok ? section('API Presence', codeBlock('Missing APIs', api.missing)) : '') +
       '<p class="h2oLibSyncNote">Status: ' + escapeHtml(status.key) + ' · ' + escapeHtml(status.reason) + '</p>' +

@@ -48,7 +48,7 @@ const studio = 'src-surfaces-base/studio/studio.js';
 
 if (failures.length === 0) {
   [
-    "var VERSION = '0.3.0-f15.10.c'",
+    "var VERSION = '0.4.0-f15.10.d'",
     'openLibrarySyncOperatorPanel',
     'refreshLibrarySyncOperatorPanel',
     'copyLibrarySyncProofReport',
@@ -60,10 +60,16 @@ if (failures.length === 0) {
     'runLibrarySyncClosureProof',
     'runLibraryEndToEndSyncProof',
     'Not run this session',
+    'Proof stale',
+    'staleProofBadge',
+    'renderStaleProofBadge',
+    'lastRunAtIso',
+    'proofAgeMs',
     'Run Closure Proof',
     'Run End-to-End Proof',
     'Copy Report',
     'Refresh',
+    '>close</button>',
     'publicationTouched',
     'relayTouched',
     'outboxTouched',
@@ -77,6 +83,15 @@ if (failures.length === 0) {
     'sanitizeForReport',
     'shortHash',
     'safeReportKey',
+    'proofCountSummary',
+    'diagnosticsRollups',
+    'renderDiagnosticsRollups',
+    'rollupStatus',
+    'Diagnostics Rollup',
+    'Related Status References',
+    'redacted: true',
+    'Execute Lane status',
+    'Snapshot F5 queue API',
     'forbiddenButtonLabelCheck'
   ].forEach((needle) => assertContains(ui, needle));
 
@@ -172,6 +187,13 @@ if (failures.length === 0) {
   const uiText = read(ui);
   const buttonLabels = [...uiText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)]
     .map((match) => match[1].trim().toLowerCase());
+  const allowedButtonLabels = [
+    'refresh',
+    'run closure proof',
+    'run end-to-end proof',
+    'copy report',
+    'close'
+  ];
   const forbiddenButtonLabels = [
     'apply',
     'execute now',
@@ -195,6 +217,11 @@ if (failures.length === 0) {
     'bind',
     'unbind'
   ];
+  for (const label of buttonLabels) {
+    if (!allowedButtonLabels.includes(label)) {
+      failures.push(`${ui}: unexpected action button label ${label}`);
+    }
+  }
   for (const label of buttonLabels) {
     if (forbiddenButtonLabels.includes(label)) {
       failures.push(`${ui}: forbidden action button label ${label}`);
