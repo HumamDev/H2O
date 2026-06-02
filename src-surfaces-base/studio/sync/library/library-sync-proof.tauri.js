@@ -223,10 +223,13 @@
   function summarizePipeline(label, parts, extras) {
     var blockers = [];
     var warnings = [];
+    var extra = safeObject(extras);
     Object.keys(parts).forEach(function (key) {
       mergeCodes(blockers, parts[key] && parts[key].blockers);
       mergeCodes(warnings, parts[key] && parts[key].warnings);
     });
+    mergeCodes(blockers, extra.blockers);
+    mergeCodes(warnings, extra.warnings);
     var stepStatus = {};
     Object.keys(parts).forEach(function (key) {
       var part = safeObject(parts[key]);
@@ -234,14 +237,14 @@
     });
     var ok = Object.keys(stepStatus).every(function (key) { return stepStatus[key] === true; }) &&
       blockers.length === 0;
-    return Object.assign({
+    return Object.assign({}, extra, {
       ok: ok,
       lane: label,
       steps: stepStatus,
-      blockers: blockers,
-      warnings: warnings,
+      blockers: codeList(blockers),
+      warnings: codeList(warnings),
       sideEffectSummary: sideEffectSummary()
-    }, safeObject(extras));
+    });
   }
 
   async function apiPresence() {
