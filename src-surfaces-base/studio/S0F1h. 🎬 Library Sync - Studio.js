@@ -740,6 +740,29 @@
     step('folder-metadata.results', String(results.length));
   }
 
+  function triggerChromeAutoImport(reason = '') {
+    try {
+      const autoImport = H2O.Studio?.sync?.autoImport;
+      const eventName = 'evt:h2o:sync:chrome-auto-import:trigger';
+      const detail = { reason: String(reason || 'native-broadcast'), t: Date.now(), source: 'studio-library-sync' };
+      if (autoImport && typeof autoImport.trigger === 'function') {
+        autoImport.trigger({ eventName, reason: detail.reason, detail });
+        state.lastAutoImportTriggerAt = detail.t;
+        state.lastAutoImportTriggerReason = detail.reason;
+        state.lastAutoImportTriggerPath = 'direct-api';
+        return true;
+      }
+      try { W.dispatchEvent(new CustomEvent(eventName, { detail })); } catch {}
+      state.lastAutoImportTriggerAt = detail.t;
+      state.lastAutoImportTriggerReason = detail.reason;
+      state.lastAutoImportTriggerPath = 'window-event';
+      return true;
+    } catch (e) {
+      err('auto-import.trigger', e);
+      return false;
+    }
+  }
+
   function rememberNativeBroadcast(payload, reason = '') {
     try {
       const p = normalizeNativeBroadcastPayload(payload);
@@ -873,7 +896,9 @@
         const owners = [];
         if (idx?.refresh) {
           owners.push('library-index');
-          idx.refresh('cross-surface-sync').catch(() => {});
+          idx.refresh('cross-surface-sync')
+            .then(() => { triggerChromeAutoImport('library-index-refreshed:native-broadcast'); })
+            .catch(() => { triggerChromeAutoImport('library-index-refresh-error:native-broadcast'); });
         }
         // Workspace caches will bust naturally via the index-updated subscription.
         if (ws?._bustCaches) {
@@ -881,6 +906,7 @@
           ws._bustCaches('cross-surface-sync');
         }
         state.lastRefreshOwners = owners;
+        if (!owners.includes('library-index')) triggerChromeAutoImport('cross-surface-sync:no-library-index');
       } catch (e) { err('refresh.bust', e); }
     }, COALESCE_MS);
   }

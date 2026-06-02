@@ -479,6 +479,29 @@
     } catch (e) { pushError('setEventTriggerFlag', e); }
   }
 
+  function reconcileEventTriggerBinding(reason) {
+    var enabled = eventTriggerFlagEnabled();
+    state.enabled = enabled;
+    if (enabled && !state.listenersBound) {
+      bindEventListeners();
+      if (state.listenersBound) state.lastEventTriggerReconcileReason = String(reason || 'reconcile');
+    } else if (!enabled && state.listenersBound) {
+      unbindEventListeners();
+      state.lastEventTriggerReconcileReason = String(reason || 'reconcile');
+    }
+    return enabled;
+  }
+
+  function scheduleBootReconcile() {
+    [0, 100, 500, 1500, 5000].forEach(function (delay) {
+      try {
+        global.setTimeout(function () {
+          reconcileEventTriggerBinding('boot-reconcile:' + delay);
+        }, delay);
+      } catch (e) { pushError('boot-reconcile', e); }
+    });
+  }
+
   async function loadPersistedState() {
     try {
       var row = await readKv(SETTINGS_KEY);
@@ -495,15 +518,13 @@
      * trigger time inside onTriggerEvent, not here, so flipping the
      * master flag at runtime takes effect on the next event without a
      * reload. */
-    state.enabled = eventTriggerFlagEnabled();
-    if (state.enabled) bindEventListeners();
+    reconcileEventTriggerBinding('loadPersistedState');
   }
 
-  function isEnabled() { return eventTriggerFlagEnabled(); }
+  function isEnabled() { return reconcileEventTriggerBinding('isEnabled'); }
   async function enable()  {
     setEventTriggerFlag(true);
-    state.enabled = true;
-    bindEventListeners();
+    reconcileEventTriggerBinding('enable');
     return isEnabled();
   }
   async function disable() {
@@ -540,6 +561,21 @@
     }, EVENT_TRIGGER_DEBOUNCE_MS);
   }
 
+  function trigger(options) {
+    var opts = (options && typeof options === 'object') ? options : {};
+    var name = String(opts.eventName || opts.reason || 'evt:h2o:sync:chrome-auto-import:trigger');
+    reconcileEventTriggerBinding('trigger:' + name);
+    onTriggerEvent(name);
+    return {
+      ok: true,
+      eventName: name,
+      eventTriggerEnabled: eventTriggerFlagEnabled(),
+      eventTriggerListenersBound: state.listenersBound,
+      eventTriggerCount: state.eventTriggerCount,
+      lastEventAt: state.lastEventAt,
+    };
+  }
+
   function bindEventListeners() {
     if (state.listenersBound) return;
     if (typeof global.addEventListener !== 'function') {
@@ -573,6 +609,7 @@
 
   /* ── status / diagnose ───────────────────────────────────────────── */
   async function status() {
+    reconcileEventTriggerBinding('status');
     var handleRow = null;
     try { handleRow = await loadStoredHandleRow(); }
     catch (e) { pushError('status.loadHandle', e); }
@@ -589,6 +626,7 @@
       eventTriggerCount: state.eventTriggerCount,
       lastEventAt: state.lastEventAt,
       lastEventName: state.lastEventName,
+      lastEventTriggerReconcileReason: state.lastEventTriggerReconcileReason || '',
       folderConnected: !!(handleRow && handleRow.handle),
       folderName: folderName,
       lastExportAt: state.lastExportAt,
@@ -628,6 +666,7 @@
     isEnabled: isEnabled,
     enable: enable,
     disable: disable,
+    trigger: trigger,
     status: status,
     diagnose: diagnose,
   };
@@ -636,4 +675,5 @@
   /* Best-effort hydration of persisted state. Never blocks API readiness;
    * if this fails the API still works (state.enabled stays false). */
   loadPersistedState().catch(function (e) { pushError('boot.loadPersistedState', e); });
+  scheduleBootReconcile();
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -543,21 +543,22 @@
     const chatId = ensureString(rec.chatId).trim();
     if (!chatId) return null;
     const st = (rec.state && typeof rec.state === 'object') ? rec.state : null;
-    if (!st || !st.isLinked || st.isSaved || st.isDeleted) return null;
+    if (!st || !st.isLinked || st.isDeleted) return null;
+    const isSaved = !!st.isSaved;
     const href = ensureString(rec.href || rec.normalizedHref).trim();
     return normalizeRowStudio({
       chatId,
       title: ensureString(rec.title).trim(),
       projectId: ensureString(rec.project?.projectId),
       folderId: ensureString(rec.organization?.folderId),
-      view: 'linked',
+      view: isSaved ? 'saved' : 'linked',
       tags: [],
       labels: [],
       updatedAt: ensureString(rec.updatedAt || rec.lastSeenAt || rec.firstSeenAt),
       capturedAt: '',
       state: {
         isLinked: true,
-        isSaved: false,
+        isSaved,
         isPinned: !!st.isPinned,
         isArchived: !!st.isArchived,
         isImported: !!st.isImported,

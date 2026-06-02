@@ -472,15 +472,16 @@
     } catch (e) { err('bind.bridge', e); return false; }
   }
 
-  // Project a compact linked-only snapshot from H2O.ChatRegistry into the
+  // Project a compact linked/saved snapshot from H2O.ChatRegistry into the
   // broadcast payload. Native page-world cannot reach chrome.storage and
   // Studio (chrome-extension origin) cannot reach chatgpt.com's localStorage
   // — so the broadcast key (which already crosses the boundary via the
   // bridge) is the only viable transport for record-level state.
   //
-  // Strict filter: only records that are explicitly linked AND not saved
-  // AND have a parsable chatId are included. Saved records flow into Studio
-  // through the archive bridge; including them here would duplicate.
+  // Filter: records that are explicitly linked and have a parsable chatId are
+  // included. Save-to-Folder stamps records as both saved and linked before
+  // the archive/import bridge can prove Studio visibility, so excluding saved
+  // records here drops the exact row Studio needs to show the assignment.
   // Size-capped to LINKED_SNAPSHOT_MAX so a runaway registry can't bloat
   // chrome.storage (Chrome's per-key quota is 8 KiB by default and we
   // share the key with the existing reasons array).
@@ -504,7 +505,6 @@
       for (const rec of records) {
         if (!rec || !rec.chatId || !rec.state) continue;
         if (!rec.state.isLinked) continue;
-        if (rec.state.isSaved) continue;
         eligible++;
         if (out.length < LINKED_SNAPSHOT_MAX) {
           out.push({
@@ -519,9 +519,15 @@
             firstSeenAt: rec.firstSeenAt || '',
             lastSeenAt: rec.lastSeenAt || '',
             project: rec.project ? { projectId: rec.project.projectId || '', projectName: rec.project.projectName || '' } : null,
+            organization: rec.organization ? {
+              folderId: rec.organization.folderId || '',
+              categoryId: rec.organization.categoryId || '',
+              tagIds: Array.isArray(rec.organization.tagIds) ? rec.organization.tagIds.slice(0, 64) : [],
+              labelIds: Array.isArray(rec.organization.labelIds) ? rec.organization.labelIds.slice(0, 64) : [],
+            } : null,
             state: {
               isLinked: true,
-              isSaved: false,
+              isSaved: !!rec.state.isSaved,
               isImported: !!rec.state.isImported,
             },
           });
@@ -689,12 +695,16 @@
       let bindingCapped = false;
       for (const folder of folders) {
         const parityFolder = parityById.get(folder.id);
+        const chatIds = Array.isArray(parityFolder?.chatIds)
+          ? parityFolder.chatIds.map((value) => String(value || '').trim()).filter(Boolean)
+          : [];
         const bindingKeys = Array.isArray(parityFolder?.bindingKeys)
           ? parityFolder.bindingKeys.map((value) => String(value || '').trim()).filter(Boolean)
           : [];
-        eligibleBindingCount += bindingKeys.length;
+        const exportValues = chatIds.length ? chatIds : bindingKeys;
+        eligibleBindingCount += exportValues.length;
         const values = [];
-        for (const value of bindingKeys) {
+        for (const value of exportValues) {
           if (values.length >= FOLDER_BINDINGS_PER_FOLDER_MAX) { bindingCapped = true; break; }
           if (bindingCount >= FOLDER_BINDING_MAX) { bindingCapped = true; break; }
           if (!values.includes(value)) {

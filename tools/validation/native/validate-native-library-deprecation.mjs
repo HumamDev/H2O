@@ -48,6 +48,7 @@ const FILES = {
   '0F3a': 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   '0F4a': 'src-runtime-base/0F4a.⬛️🗂️ Categories 🗂️.js',
   '0F6a': 'src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js',
+  '0F1h': 'src-runtime-base/0F1h.⬛️🗂️ Library Sync 🛰🗂️.js',
   '0F1j': 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   '0F5a': 'src-runtime-base/0F5a.⬛️🗂️ Tags 🗂️.js',
   /* R4.6.4 — Canonical flag registry. Houses the NATIVE_FLAG_DEFAULTS
@@ -2526,6 +2527,194 @@ check('T.docs: final archive docs preserve replacement mapping references', () =
   const readme = fs.readFileSync(abs(`${R47_ROOT}/README.md`), 'utf8');
   for (const token of ['S0F1d', 'S0F3b', 'S0F4b', 'S0F6b', 'S0F1m', 'S0F1n', 'S0Z1g']) {
     assert.match(readme, new RegExp(token), `retired README missing ${token}`);
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Section U — Post-R4.7 Native Save-to-Folder active sync path
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('Section U — Native Save-to-Folder active sync path');
+
+check('U.0F3a: Save-to-Folder menu uses saveAndBind path, not retired sidebar UI', () => {
+  const body = functionBody(SRC['0F3a'], 'UI_openAssignMenu');
+  assert.ok(body, 'UI_openAssignMenu body missing');
+  assert.match(body, /API_saveAndBindToFolder\(\{/,
+    'Save-to-Folder menu must call API_saveAndBindToFolder');
+  assert.match(body, /source:\s*'save-to-folder-menu'/,
+    'Save-to-Folder menu should stamp source save-to-folder-menu');
+  assert.equal(/UI_buildFoldersSection\s*\(/.test(body), false,
+    'Save-to-Folder menu must not restore retired folders sidebar section');
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_ROW\)/.test(body), false,
+    'Save-to-Folder menu must not create retired flsc-folder-row sidebar rows');
+  assert.equal(/setAttribute\(ATTR_CGXUI,\s*UI_FSECTION_FOLDER_MORE\)/.test(body), false,
+    'Save-to-Folder menu must not create retired flsc-folder-more buttons');
+});
+
+check('U.0F3a: Create Folder button exists at top of Save-to-Folder menu', () => {
+  const body = functionBody(SRC['0F3a'], 'UI_openAssignMenu');
+  assert.ok(body, 'UI_openAssignMenu body missing');
+  const createIndex = body.indexOf("data-h2o-folder-menu-action', 'create-folder'");
+  const listIndex = body.indexOf('d.folders.forEach');
+  assert.ok(createIndex >= 0, 'Create Folder button marker missing');
+  assert.ok(listIndex >= 0, 'folder list loop missing');
+  assert.ok(createIndex < listIndex, 'Create Folder button must be before existing folder rows');
+  assert.match(body, /W\.prompt\('Create folder'/,
+    'Create Folder button must prompt for folder name');
+  assert.match(body, /STORE_createFolder\(name,[\s\S]*source:\s*'save-to-folder-menu-create'/,
+    'Create Folder button must create through active Native folder store');
+  assert.match(body, /UI_openAssignMenu\(x,\s*y,\s*fullHref\)/,
+    'Create Folder button must immediately reopen the same menu with fresh folders');
+});
+
+check('U.0F3a: Save-to-Folder menu action flushes Chrome-to-Studio folder sync', () => {
+  const body = functionBody(SRC['0F3a'], 'UI_openAssignMenu');
+  assert.ok(body, 'UI_openAssignMenu body missing');
+  assert.match(body, /EVENT_flushLibraryFolderSync\('save-to-folder-menu-create'\)/,
+    'Create Folder must flush native folder-state sync');
+  assert.match(body, /EVENT_flushLibraryFolderSync\(inFolder \? 'save-to-folder-menu-clear' : 'save-to-folder-menu-bind'\)/,
+    'Save-to-Folder menu bind/clear must flush native folder-state sync');
+});
+
+check('U.0F3a: Save-to-Folder menu resolves current chat URL fallback before binding', () => {
+  const body = functionBody(SRC['0F3a'], 'UI_openAssignMenu');
+  assert.ok(body, 'UI_openAssignMenu body missing');
+  assert.match(body, /const targetHref = API_resolveSaveToFolderTarget\(fullHref\)/,
+    'Save-to-Folder menu must resolve a robust target before rendering rows');
+  assert.match(body, /API_getBinding\(targetHref\)/,
+    'Save-to-Folder menu must check current membership by resolved target');
+  assert.match(body, /API_setBinding\(targetHref,\s*''/,
+    'Save-to-Folder clear path must bind by resolved target');
+  assert.match(body, /API_saveAndBindToFolder\(\{[\s\S]*href:\s*targetHref/,
+    'Save-to-Folder assign path must save/bind by resolved target');
+  assert.match(SRC['0F3a'], /function API_resolveSaveToFolderTarget\(chatIdOrHref = ''\)[\s\S]*W\.location\?\.pathname[\s\S]*DOM_parseChatIdFromHref\(path\)/,
+    'target resolver must fall back to current /c/<chatId> pathname');
+});
+
+check('U.0F3a: API_setBinding writes canonical folder state and sync-visible ChatRegistry metadata', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /function API_setBinding\(chatIdOrHref,\s*folderId,\s*opts = \{\}\)[\s\S]*STORE_writeData\(STORE_normalizeData\(nextState\)\)/,
+    'core binding path must persist normalized folder state');
+  assert.match(src, /function API_setBinding\(chatIdOrHref,\s*folderId,\s*opts = \{\}\)[\s\S]*STORE_writeData\(d\)/,
+    'fallback binding path must persist folder state');
+  assert.match(src, /function API_setBinding\(chatIdOrHref,\s*folderId,\s*opts = \{\}\)[\s\S]*API_stampFolderBindingInRegistry\(key,\s*effective,\s*opts\)/,
+    'API_setBinding must stamp ChatRegistry after folder state write');
+  assert.match(src, /function API_setBinding\(chatIdOrHref,\s*folderId,\s*opts = \{\}\)[\s\S]*EVENT_emitFoldersChanged\(/,
+    'API_setBinding must emit folders-changed for LibraryIndex refresh');
+  assert.match(src, /function API_setBinding\(chatIdOrHref,\s*folderId,\s*opts = \{\}\)[\s\S]*EVENT_flushLibraryFolderSync\(fid \? 'folder-binding-set' : 'folder-binding-clear'\)/,
+    'API_setBinding must explicitly flush native folder-state sync after write');
+  assert.match(src, /const canBindFromRegistry = opts\?\.allowRegistryRecord === true && !!API_getRegistryRecordForBindingKey\(key\)/,
+    'API_setBinding must allow the save path to bind an existing menu-selected ChatRegistry row');
+});
+
+check('U.0F3a: folder sync flush targets active 0F1h public APIs', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /function EVENT_flushLibraryFolderSync\(reason = 'folders-changed'\)/,
+    'folder sync flush helper missing');
+  assert.match(src, /H2O\.Library\?\.Sync[\s\S]*H2O\.LibrarySync[\s\S]*getService\?\.\('library-sync'\)/,
+    'folder sync flush must search canonical, legacy, and LibraryCore sync APIs');
+  assert.match(src, /sync\.flushFolderState\(syncReason\)/,
+    'folder sync flush must prefer flushFolderState');
+  assert.match(src, /sync\.pingStudio\(syncReason\)/,
+    'folder sync flush must fall back to pingStudio');
+  assert.match(src, /sync\.broadcast\(syncReason,\s*\{\s*folderState:\s*true\s*\}\)/,
+    'folder sync flush must fall back to broadcast');
+});
+
+check('U.0F3a: ChatRegistry folder stamp carries organization.folderId', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /function API_stampFolderBindingInRegistry\(key,\s*effective,\s*opts = \{\}\)[\s\S]*organization:\s*\{\s*folderId:\s*folderIdValue\s*\}/,
+    'ChatRegistry stamp must write organization.folderId');
+  assert.match(src, /function API_stampFolderBindingInRegistry\(key,\s*effective,\s*opts = \{\}\)[\s\S]*reg\.upsertRecord\(patch,\s*\{\s*source\s*\}\)/,
+    'ChatRegistry stamp must use canonical upsertRecord');
+});
+
+check('U.0F3a: saveAndBindToFolder stamps organization.folderId for canonical readers', () => {
+  const src = SRC['0F3a'];
+  assert.match(src, /API_normalizeChatBindingKey\(API_resolveSaveToFolderTarget\(chatId \|\| href\)\)/,
+    'saveAndBindToFolder must normalize the selected target with current URL fallback');
+  assert.match(src, /async function API_saveAndBindToFolder\(\{[\s\S]*?\} = \{\}\)[\s\S]*API_captureCurrentChatForFolder\(cid,\s*\{\s*source\s*\}\)/,
+    'saveAndBindToFolder must still capture before binding');
+  assert.match(src, /const captureAllowsBinding = !!\(captured\?\.ok \|\| \(captured\?\.capture && captured\.capture\.ok !== false\)\)/,
+    'saveAndBindToFolder must not stop before binding when capture exists but repair proof is weaker');
+  assert.match(src, /const registryAllowsBinding = !!API_getRegistryRecordForBindingKey\(key\)/,
+    'saveAndBindToFolder must allow an existing selected ChatRegistry record to proceed to binding');
+  assert.match(src, /async function API_saveAndBindToFolder\(\{[\s\S]*?\} = \{\}\)[\s\S]*API_setBinding\(cid,\s*fid,[\s\S]*reason:\s*'after-capture'/,
+    'saveAndBindToFolder must bind through API_setBinding after capture');
+  assert.match(src, /allowRegistryRecord:\s*true/,
+    'saveAndBindToFolder must allow API_setBinding to bind the selected ChatRegistry row');
+  assert.match(src, /async function API_saveAndBindToFolder\(\{[\s\S]*?\} = \{\}\)[\s\S]*organization:\s*\{\s*folderId:\s*String\(binding\.folderId\s*\|\|\s*fid\)\s*\}/,
+    'saveAndBindToFolder provenance stamp must include organization.folderId');
+});
+
+check('U.0F1h: Native broadcast exports saved Save-to-Folder registry rows', () => {
+  const body = functionBody(SRC['0F1h'], 'snapshotLinkedRecords');
+  assert.ok(body, 'snapshotLinkedRecords body missing');
+  assert.equal(/if\s*\(\s*rec\.state\.isSaved\s*\)\s*continue/.test(body), false,
+    'Native broadcast must not filter out saved Save-to-Folder records');
+  assert.match(body, /if \(!rec\.state\.isLinked\) continue/,
+    'Native broadcast must still require linked records');
+  assert.match(body, /organization:\s*rec\.organization \? \{/,
+    'Native broadcast must include organization metadata');
+  assert.match(body, /folderId:\s*rec\.organization\.folderId \|\| ''/,
+    'Native broadcast must include organization.folderId');
+  assert.match(body, /isSaved:\s*!!rec\.state\.isSaved/,
+    'Native broadcast must preserve saved state for Studio saved-row projection');
+});
+
+check('U.0F1h: folder-state export emits chat IDs for Studio/Desktop folder bindings', () => {
+  const body = functionBody(SRC['0F1h'], 'snapshotFolderState');
+  assert.ok(body, 'snapshotFolderState body missing');
+  assert.match(body, /parityFolder\?\.chatIds/,
+    'folder-state export must read diagnostic chatIds');
+  assert.match(body, /const exportValues = chatIds\.length \? chatIds : bindingKeys/,
+    'folder-state export must prefer chatIds over raw href bindingKeys');
+  assert.match(body, /for \(const value of exportValues\)/,
+    'folder-state export must write preferred chatIds into folder items');
+});
+
+check('U.StudioIndexCore: saved linked Native projections are not dropped', () => {
+  const rels = [
+    'shared/library/library-index-core.js',
+    'src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js',
+    'src-surfaces-base/studio/S0F0d. 🎬 Library Index Core - Studio.js',
+  ];
+  for (const rel of rels) {
+    const src = read(rel);
+    const body = functionBody(src, 'normalizeLinkedOnlyProjection');
+    assert.ok(body, `${rel}: normalizeLinkedOnlyProjection body missing`);
+    assert.equal(/st\.isSaved\s*\|\|/.test(body), false,
+      `${rel}: saved linked Native projections must not be rejected`);
+    assert.match(body, /const isSaved = !!st\.isSaved/,
+      `${rel}: saved state must be preserved`);
+    assert.match(body, /view:\s*isSaved \? 'saved' : 'linked'/,
+      `${rel}: saved linked Native projections must become saved rows`);
+    assert.match(body, /isSaved,/,
+      `${rel}: normalized row state must carry isSaved`);
+  }
+});
+
+check('U.0F1j: LibraryActions saveToFolder registry patch carries organization.folderId', () => {
+  const body = functionBody(SRC['0F1j'], 'buildSaveRegistryPatchWithCore');
+  assert.ok(body, 'buildSaveRegistryPatchWithCore body missing');
+  assert.match(body, /const fid = trimString\(args\.folderId\)/);
+  assert.match(body, /organization:\s*\{\s*folderId:\s*fid\s*\}/,
+    '0F1j saveToFolder registry patch must include organization.folderId');
+});
+
+check('U.invariants: 0F5a and 0D3*/3X* remain untouched by Save-to-Folder fix', () => {
+  const stat = fs.statSync(abs(FILES['0F5a']));
+  assert.equal(stat.size, 273099,
+    '0F5a size changed after Save-to-Folder fix: ' + stat.size);
+  const runtimeDir = abs('src-runtime-base');
+  const captureFiles = fs.readdirSync(runtimeDir)
+    .filter((name) => /^(?:0D3|3X)/.test(name))
+    .filter((name) => name.endsWith('.js'));
+  assert.ok(captureFiles.length >= 6, 'expected 0D3/3X capture files to exist');
+  for (const name of captureFiles) {
+    const src = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+    assert.equal(/save-to-folder-menu-create|API_stampFolderBindingInRegistry/.test(src), false,
+      name + ' should not contain Save-to-Folder fix markers');
   }
 });
 

@@ -335,6 +335,7 @@
       chatId: ident.chatId,
       href: ident.href,
       normalizedHref: ident.normalizedHref,
+      organization: { folderId: fid },
       state: { isSaved: true, isLinked: true },
       linkedFrom: 'save-to-folder',
       linkSourceHref: ident.href,

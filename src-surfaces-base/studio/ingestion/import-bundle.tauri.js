@@ -518,7 +518,7 @@
     return !(options && typeof options === 'object' && options.disableLibraryBulkMigration === true);
   }
   function allowsLibraryShimFallback(options) {
-    return !!(options && typeof options === 'object' && options.allowLibraryShimFallback === true);
+    return !(options && typeof options === 'object' && options.allowLibraryShimFallback === false);
   }
   function libraryBulkApi() {
     return H2O.Desktop && H2O.Desktop.Sync && H2O.Desktop.Sync.executeLibraryBulkMigration;

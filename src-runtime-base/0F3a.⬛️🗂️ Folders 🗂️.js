@@ -2041,6 +2041,30 @@ ${CROW}[aria-current="true"]{
     }
   }
 
+  function EVENT_flushLibraryFolderSync(reason = 'folders-changed') {
+    try {
+      const sync = H2O.Library?.Sync
+        || H2O.LibrarySync
+        || H2O.LibraryCore?.getService?.('library-sync')
+        || H2O.LibraryCore?.getOwner?.('library-sync');
+      const syncReason = String(reason || 'folders-changed');
+      if (sync && typeof sync.flushFolderState === 'function') {
+        return sync.flushFolderState(syncReason);
+      }
+      if (sync && typeof sync.pingStudio === 'function') {
+        sync.pingStudio(syncReason);
+        return true;
+      }
+      if (sync && typeof sync.broadcast === 'function') {
+        sync.broadcast(syncReason, { folderState: true });
+        return true;
+      }
+    } catch (error) {
+      DIAG_err('foldersChangedSyncFlush', error);
+    }
+    return false;
+  }
+
   function STORE_normalizeFolderName(raw) {
     return UTIL_normText(raw || '');
   }
@@ -4837,6 +4861,7 @@ function ROUTE_clearPageRoute_LOCAL() {
 
     STORE_seedIfEmpty();
     const d = STORE_readData();
+    const targetHref = API_resolveSaveToFolderTarget(fullHref);
 
     const m = D.createElement('div');
     m.setAttribute(ATTR_CGXUI, UI_FSECTION_MENU);
@@ -4852,15 +4877,47 @@ function ROUTE_clearPageRoute_LOCAL() {
     sep.setAttribute(ATTR_CGXUI_OWNER, SkID);
     m.appendChild(sep);
 
+    const createBtn = D.createElement('button');
+    createBtn.type = 'button';
+    createBtn.setAttribute('data-h2o-folder-menu-action', 'create-folder');
+    createBtn.textContent = '+ Create Folder';
+    createBtn.onclick = () => {
+      const name = W.prompt('Create folder', '');
+      if (name === null) return;
+      const result = STORE_createFolder(name, {
+        source: 'save-to-folder-menu-create',
+        openInline: false,
+        rerender: false,
+      });
+      if (!result?.ok) {
+        const reason = Array.isArray(result?.blockers) && result.blockers.length
+          ? result.blockers.join(', ')
+          : 'Could not create folder';
+        UI_showLibraryToast(reason, 'err');
+        return;
+      }
+      EVENT_flushLibraryFolderSync('save-to-folder-menu-create');
+      ENGINE_rerenderAllSections();
+      UI_openAssignMenu(x, y, fullHref);
+    };
+    m.appendChild(createBtn);
+
     d.folders.forEach((f) => {
-      const inFolder = API_getBinding(fullHref).folderId === String(f.id || '');
+      const inFolder = API_getBinding(targetHref).folderId === String(f.id || '');
 
       const btn = D.createElement('button');
       btn.type = 'button';
       btn.innerHTML = `${UTIL_escHtml(f.name)} <span style="margin-left:auto;opacity:.7;">${inFolder ? '✓' : ''}</span>`;
 
-      btn.onclick = () => {
-        const result = API_setBinding(fullHref, inFolder ? '' : f.id, { source: 'sidebar-assign-menu' });
+      btn.onclick = async () => {
+        const result = inFolder
+          ? API_setBinding(targetHref, '', { source: 'save-to-folder-menu', reason: 'menu-clear-binding', allowRegistryRecord: true })
+          : await API_saveAndBindToFolder({
+              href: targetHref,
+              folderId: f.id,
+              folderName: f.name,
+              source: 'save-to-folder-menu',
+            });
         if (result?.status === 'chat-not-saved') {
           UI_openSaveBeforeFolderModal({
             chatId: result.chatId,
@@ -4870,6 +4927,11 @@ function ROUTE_clearPageRoute_LOCAL() {
           });
           return;
         }
+        if (!result?.ok) {
+          UI_showLibraryToast(String(result?.reason || result?.status || 'Could not save to folder'), 'err');
+          return;
+        }
+        EVENT_flushLibraryFolderSync(inFolder ? 'save-to-folder-menu-clear' : 'save-to-folder-menu-bind');
         UI_closeAssignMenu();
         ENGINE_rerenderAllSections();
       };
@@ -6308,6 +6370,45 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return { raw, chatId, href, candidates };
   }
 
+  function API_resolveSaveToFolderTarget(chatIdOrHref = '') {
+    const raw = String(chatIdOrHref || '').trim();
+    if (raw) return raw;
+    const path = String(W.location?.pathname || '').trim();
+    if (DOM_parseChatIdFromHref(path)) return path;
+    const href = String(W.location?.href || '').trim();
+    if (DOM_parseChatIdFromHref(href)) return href;
+    return '';
+  }
+
+  function API_getRegistryRecordForBindingKey(key) {
+    const reg = H2O.ChatRegistry;
+    if (!reg || !key) return null;
+    const candidates = [
+      key.chatId,
+      key.href,
+      key.raw,
+      ...(Array.isArray(key.candidates) ? key.candidates : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+
+    for (const value of candidates) {
+      try {
+        const byId = typeof reg.getRecord === 'function' ? reg.getRecord(value) : null;
+        if (byId) return byId;
+      } catch {}
+      try {
+        const byHref = typeof reg.getRecordByHref === 'function' ? reg.getRecordByHref(value) : null;
+        if (byHref) return byHref;
+      } catch {}
+    }
+    return null;
+  }
+
+  function API_hasSavedRegistryRecordForBindingKey(key) {
+    const record = API_getRegistryRecordForBindingKey(key);
+    if (!record) return false;
+    return !!(record.state?.isSaved || record.state?.isLinked || record.state?.isImported);
+  }
+
   function API_getBinding(chatIdOrHref) {
     const key = API_normalizeChatBindingKey(chatIdOrHref);
     if (!key.raw && !key.href) return { folderId: '', folderName: '' };
@@ -6372,6 +6473,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   function API_isSavedLibraryChat(chatKeyOrHref = '') {
     const key = API_normalizeChatBindingKey(chatKeyOrHref);
     if (!key.chatId && !key.href) return false;
+    if (API_hasSavedRegistryRecordForBindingKey(key)) return true;
 
     const rows = [];
     const addRows = (value) => {
@@ -6571,7 +6673,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   }
 
   async function API_saveAndBindToFolder({ chatId = '', href = '', folderId = '', folderName = '', source = '' } = {}) {
-    const key = API_normalizeChatBindingKey(chatId || href);
+    const key = API_normalizeChatBindingKey(API_resolveSaveToFolderTarget(chatId || href));
     const cid = String(key.chatId || '').trim();
     const fid = String(folderId || '').trim();
     const folder = API_list().find((item) => String(item?.id || '') === fid);
@@ -6585,13 +6687,16 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     }
 
     const captured = await API_captureCurrentChatForFolder(cid, { source });
-    if (!captured?.ok) {
+    const captureAllowsBinding = !!(captured?.ok || (captured?.capture && captured.capture.ok !== false));
+    const registryAllowsBinding = !!API_getRegistryRecordForBindingKey(key);
+    if (!captureAllowsBinding && !registryAllowsBinding) {
       return { ...captured, folderId: fid, folderName: label };
     }
 
     const binding = API_setBinding(cid, fid, {
       source: 'folders-save-add-to-folder',
       reason: 'after-capture',
+      allowRegistryRecord: true,
     });
     if (!binding?.ok || !binding.folderId) {
       return {
@@ -6623,6 +6728,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         reg.upsertRecord({
           chatId: cid,
           href: String(key.href || ''),
+          organization: { folderId: String(binding.folderId || fid) },
           state: { isSaved: true, isLinked: true },
           linkedFrom: 'save-to-folder',
           linkSourceHref: String(key.href || ''),
@@ -6643,6 +6749,31 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     };
   }
 
+  function API_stampFolderBindingInRegistry(key, effective, opts = {}) {
+    const cid = String(key?.chatId || '').trim();
+    if (!cid) return null;
+    const folderIdValue = String(effective?.folderId || '').trim();
+    const source = String(opts?.source || 'folders-api');
+    const patch = {
+      chatId: cid,
+      href: String(key?.href || ''),
+      normalizedHref: String(key?.href || ''),
+      organization: { folderId: folderIdValue },
+      state: { isSaved: true, isLinked: true },
+      linkedFrom: folderIdValue ? 'save-to-folder' : 'save-to-folder:clear',
+      linkSourceHref: String(key?.href || ''),
+    };
+    try {
+      const reg = H2O.ChatRegistry;
+      if (reg && typeof reg.upsertRecord === 'function') {
+        return reg.upsertRecord(patch, { source });
+      }
+    } catch (error) {
+      DIAG_err('setBinding:chatRegistryFolderStamp', error);
+    }
+    return null;
+  }
+
   function API_setBinding(chatIdOrHref, folderId, opts = {}) {
     const key = API_normalizeChatBindingKey(chatIdOrHref);
     if (!key.raw && !key.href) {
@@ -6658,7 +6789,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     }
 
     const fid = String(folderId || '').trim();
-    if (fid && !API_isSavedLibraryChat(key.chatId || key.href || key.raw)) {
+    const canBindFromRegistry = opts?.allowRegistryRecord === true && !!API_getRegistryRecordForBindingKey(key);
+    if (fid && !API_isSavedLibraryChat(key.chatId || key.href || key.raw) && !canBindFromRegistry) {
       return {
         folderId: '',
         folderName: '',
@@ -6721,6 +6853,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         affectedChatIds: key.chatId ? [key.chatId] : [],
       });
     }
+    API_stampFolderBindingInRegistry(key, effective, opts);
+    EVENT_flushLibraryFolderSync(fid ? 'folder-binding-set' : 'folder-binding-clear');
     if (key.chatId) {
       try {
         const upsert = H2O.archiveBoot && typeof H2O.archiveBoot.upsertLatestSnapshotMeta === 'function'

@@ -903,7 +903,7 @@ async function runChromeAutoImportTests(desktopIngestion) {
     assert.ok(autoImport, 'autoImport not registered');
     assert.equal(autoImport.__installed, true);
   });
-  for (const fn of ['exportNow', 'isEnabled', 'enable', 'disable', 'status', 'diagnose']) {
+  for (const fn of ['exportNow', 'isEnabled', 'enable', 'disable', 'trigger', 'status', 'diagnose']) {
     check(`autoImport.${fn} is a function`, () => {
       assert.equal(typeof autoImport[fn], 'function');
     });
@@ -1269,6 +1269,19 @@ async function runChromeEventTriggerTests() {
     assert.equal(d.eventTriggerDebounceMs, 2000);
   });
 
+  await checkAsync('late event-trigger flag hydration → diagnose self-binds listeners', async () => {
+    const late = buildSandbox({ flags: {} });
+    const ai = late.H2O?.Studio?.sync?.autoImport;
+    assert.ok(ai, 'autoImport must be registered');
+    late.H2O.flags.set('sync.chromeAutoImport.eventTrigger', true);
+    const d = await ai.diagnose();
+    assert.equal(d.eventTriggerEnabled, true);
+    assert.equal(d.eventTriggerListenersBound, true,
+      'diagnose/status should repair enabled=true listenersBound=false');
+    const set = late._eventTarget._listeners.get('evt:h2o:library:cross-surface-sync');
+    assert.ok(set && set.size === 1, 'cross-surface-sync listener should be bound after self-heal');
+  });
+
   // ── 8.2 — enable() binds listeners; isEnabled() reflects the flag ────
   await checkAsync('enable() binds listeners and sets event-trigger flag', async () => {
     await autoImport.enable();
@@ -1330,6 +1343,23 @@ async function runChromeEventTriggerTests() {
       'expected status="error" (no handle in sandbox); got ' + diagAfter.lastExportStatus);
     assert.match(diagAfter.lastExportError || '', /not connected/i,
       'error should mention folder-not-connected');
+  });
+
+  await checkAsync('direct trigger API schedules export after Native broadcast/index refresh', async () => {
+    sandbox._exportCalls.length = 0;
+    sandbox.H2O.flags.set('sync.chromeAutoImport', true);
+    sandbox.H2O.flags.set('sync.chromeAutoImport.eventTrigger', true);
+    const before = await autoImport.diagnose();
+    const result = autoImport.trigger({ eventName: 'evt:h2o:sync:chrome-auto-import:trigger', reason: 'unit-native-broadcast' });
+    assert.equal(result.ok, true);
+    assert.equal(result.eventTriggerEnabled, true);
+    assert.equal(result.eventTriggerListenersBound, true);
+    await sleep(2200);
+    const after = await autoImport.diagnose();
+    assert.ok(after.eventTriggerCount > before.eventTriggerCount,
+      'direct trigger should increment eventTriggerCount');
+    assert.notEqual(after.lastExportAt, before.lastExportAt,
+      'direct trigger should invoke exportNow after debounce');
   });
 
   // ── 8.5 — disable() unbinds listeners; further dispatches are no-op ──
