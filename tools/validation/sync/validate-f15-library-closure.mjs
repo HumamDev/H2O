@@ -51,15 +51,19 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.7.0-f15.11.f'",
+    "var VERSION = '0.8.0-f15.12.b'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
+    "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     'runLibrarySyncClosureProof',
+    'runLibraryConflictProof',
+    'H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
     'closure-folder-absorption-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
+    'closure-conflict-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -72,6 +76,7 @@ if (failures.length === 0) {
     'STORE_CUTOVER_CASE_NAMES',
     'BULK_MIGRATION_CASE_NAMES',
     'VALIDATOR_REFERENCES',
+    'validate-f15-library-conflict-contract.mjs',
     'validate-f15-cutover.mjs',
     'validate-f15-bulk-migration.mjs',
     'validate-f15-library-sync-proof.mjs',
@@ -156,7 +161,47 @@ if (failures.length === 0) {
     'bulk-migration-partial-failure-reports-partial',
     'bulk-migration-bulk-identity-required',
     'bulk-migration-phase-order-catalogs-before-bindings',
-    'bulk-migration-no-raw-leak'
+    'bulk-migration-no-raw-leak',
+    'CONFLICT_REQUIRED_CASE_NAMES',
+    'conflict-catalog-create-same-name-first-wins',
+    'conflict-catalog-rename-stale-base-blocks',
+    'conflict-catalog-recolor-stale-base-blocks',
+    'conflict-catalog-archive-vs-rename-stale-loser-blocks',
+    'conflict-catalog-tombstone-vs-restore-f5-authority',
+    'conflict-catalog-tombstone-blocks-new-bind',
+    'conflict-catalog-f5-seal-vs-restore-conflict',
+    'conflict-binding-duplicate-chat-label',
+    'conflict-binding-duplicate-chat-tag',
+    'conflict-binding-duplicate-tag-category',
+    'conflict-binding-bind-vs-unbind-stale-loser',
+    'conflict-binding-chat-category-replacement-race-partial',
+    'conflict-binding-chat-folder-replacement-race-partial',
+    'conflict-binding-f7-f15-identity-bridge-warning',
+    'conflict-cache-drift-warning-only',
+    'conflict-cache-never-source-of-truth',
+    'conflict-cache-read-your-own-write-local-only',
+    'conflict-bulk-same-bundle-idempotent',
+    'conflict-bulk-import-during-edit-partial',
+    'conflict-bulk-partial-retry-no-duplicates',
+    'conflict-f5-duplicate-review-idempotent',
+    'conflict-f5-auto-expiry-vs-restore',
+    'conflict-f5-conflicting-terminal-closure-blocks',
+    'conflict-folder-f7-f15-identity-shadow-deterministic',
+    'conflict-folder-fallback-flag-off-compatible',
+    'conflict-folder-delegated-chat-folder-uses-folder-metadata',
+    'conflict-folder-trigger-protection-still-deferred',
+    'conflict-privacy-leak-scan',
+    'library-catalog-cross-install-stale-base',
+    'library-catalog-cross-install-name-collision',
+    'library-catalog-cross-install-lifecycle-conflict',
+    'library-catalog-f5-review-conflict',
+    'library-binding-cross-install-stale-base',
+    'library-binding-cross-install-duplicate-edge',
+    'library-binding-cross-install-state-conflict',
+    'library-binding-f7-f15-identity-conflict',
+    'library-bulk-cross-install-partial-conflict',
+    'library-conflict-refresh-required',
+    'library-cache-cross-install-drift'
   ]);
 
   assertAll(proof, [
@@ -179,8 +224,10 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '0.7.0-f15.11.f'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '0.8.0-f15.12.b'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
+  assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
+  assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');
   assertContains(syncValidator, 'validate-f15-library-closure.mjs', 'sync validator closure validator reference');
 
   const proofText = read(proof);

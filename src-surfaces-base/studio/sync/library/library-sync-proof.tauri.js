@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.11.f library sync proof foundation
+/* H2O Desktop Sync - F15.12.b library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,9 +32,10 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.7.0-f15.11.f';
+  var VERSION = '0.8.0-f15.12.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
+  var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
@@ -73,7 +74,8 @@
     'listLibraryFolderBindingMigrationShadows',
     'setF15FolderBindingDelegationEnabled',
     'isF15FolderBindingDelegationEnabled',
-    'runLibraryFolderBindingAbsorptionProof'
+    'runLibraryFolderBindingAbsorptionProof',
+    'runLibraryConflictProof'
   ];
 
   var REQUIRED_MARKERS = [
@@ -104,6 +106,7 @@
     'tools/validation/sync/validate-f15-bulk-migration.mjs',
     'tools/validation/sync/validate-f15-library-sync-proof.mjs',
     'tools/validation/sync/validate-f15-library-closure.mjs',
+    'tools/validation/sync/validate-f15-library-conflict-contract.mjs',
     'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
     'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
     'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
@@ -293,6 +296,7 @@
     'closure-folder-absorption-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
+    'closure-conflict-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -320,6 +324,59 @@
     'folder-absorption-f7-parity-still-green'
   ];
 
+  var CONFLICT_CATALOG_CASE_NAMES = [
+    'conflict-catalog-create-same-name-first-wins',
+    'conflict-catalog-rename-stale-base-blocks',
+    'conflict-catalog-recolor-stale-base-blocks',
+    'conflict-catalog-archive-vs-rename-stale-loser-blocks',
+    'conflict-catalog-tombstone-vs-restore-f5-authority',
+    'conflict-catalog-tombstone-blocks-new-bind',
+    'conflict-catalog-f5-seal-vs-restore-conflict'
+  ];
+
+  var CONFLICT_BINDING_CASE_NAMES = [
+    'conflict-binding-duplicate-chat-label',
+    'conflict-binding-duplicate-chat-tag',
+    'conflict-binding-duplicate-tag-category',
+    'conflict-binding-bind-vs-unbind-stale-loser',
+    'conflict-binding-chat-category-replacement-race-partial',
+    'conflict-binding-chat-folder-replacement-race-partial',
+    'conflict-binding-f7-f15-identity-bridge-warning'
+  ];
+
+  var CONFLICT_CACHE_CASE_NAMES = [
+    'conflict-cache-drift-warning-only',
+    'conflict-cache-never-source-of-truth',
+    'conflict-cache-read-your-own-write-local-only'
+  ];
+
+  var CONFLICT_BULK_CASE_NAMES = [
+    'conflict-bulk-same-bundle-idempotent',
+    'conflict-bulk-import-during-edit-partial',
+    'conflict-bulk-partial-retry-no-duplicates'
+  ];
+
+  var CONFLICT_F5_CASE_NAMES = [
+    'conflict-f5-duplicate-review-idempotent',
+    'conflict-f5-auto-expiry-vs-restore',
+    'conflict-f5-conflicting-terminal-closure-blocks'
+  ];
+
+  var CONFLICT_FOLDER_IDENTITY_CASE_NAMES = [
+    'conflict-folder-f7-f15-identity-shadow-deterministic',
+    'conflict-folder-fallback-flag-off-compatible',
+    'conflict-folder-delegated-chat-folder-uses-folder-metadata',
+    'conflict-folder-trigger-protection-still-deferred'
+  ];
+
+  var CONFLICT_REQUIRED_CASE_NAMES = CONFLICT_CATALOG_CASE_NAMES
+    .concat(CONFLICT_BINDING_CASE_NAMES)
+    .concat(CONFLICT_CACHE_CASE_NAMES)
+    .concat(CONFLICT_BULK_CASE_NAMES)
+    .concat(CONFLICT_F5_CASE_NAMES)
+    .concat(CONFLICT_FOLDER_IDENTITY_CASE_NAMES)
+    .concat(['conflict-privacy-leak-scan']);
+
   var FORBIDDEN_OUTPUT_KEYS = [
     'name',
     'rawName',
@@ -339,6 +396,7 @@
     'tagId',
     'categoryId',
     'folderId',
+    'folder_id',
     'chatId',
     'chat_id',
     'category_id',
@@ -3230,6 +3288,471 @@
     };
   }
 
+  // ── F15.12.b cross-install conflict proof ─────────────────────────
+  // Contract proof only. These cases model the deterministic F15.12
+  // winner/blocker rules with hash-only fixtures and never invoke a
+  // runtime conflict resolver, SQLite trigger, store write, F7 deletion,
+  // Native call, F5 action, publication, relay/outbox, watermark write,
+  // or consumed-op write.
+  function conflictSideEffectSummary() {
+    var summary = sideEffectSummary();
+    summary.proofSafeMockedWritesUsed = true;
+    summary.runtimeConflictResolverImplemented = false;
+    summary.sqliteTriggerChanged = false;
+    summary.storeWriteEnabled = false;
+    summary.f7Deleted = false;
+    return summary;
+  }
+
+  function conflictPrivacyNeedles(fixtures) {
+    var raw = safeObject(fixtures.raw);
+    return [
+      raw.catalogRawNameValue,
+      raw.catalogCreateNameValue,
+      raw.catalogRenameBaseNameValue,
+      raw.catalogRenameTargetNameValue,
+      raw.catalogStableNameValue,
+      raw.catalogRawColorValue,
+      raw.catalogRawIdValue,
+      raw.catalogCategoryRawIdValue,
+      raw.catalogTagRawIdValue,
+      raw.bindingLabelRawIdValue,
+      raw.bindingTagRawIdValue,
+      raw.bindingCategoryRawIdValue,
+      raw.bindingFolderRawIdValue,
+      raw.chatRawIdValue,
+      raw.categoryRawIdValue,
+      raw.rawAccountIdNeedle,
+      raw.bundlePathNeedle,
+      raw.bundleFileNeedle,
+      raw.titleValue,
+      raw.contentValue,
+      raw.messageValue,
+      raw.urlValue,
+      raw.tokenValue,
+      'F15 Conflict Raw Catalog Name',
+      'F15 Conflict Raw Folder Name',
+      'f15-conflict-raw-catalog-id',
+      'f15-conflict-raw-chat-id',
+      'f15-conflict-raw-folder-id',
+      'f15-conflict-raw-bundle-file',
+      '/tmp/f15-conflict-import.bundle'
+    ];
+  }
+
+  async function conflictDigest(caseId, detail) {
+    return await digestOf({
+      schema: CONFLICT_SCHEMA,
+      version: VERSION,
+      caseId: cleanString(caseId),
+      decisionRule: cleanString(detail && detail.decisionRule),
+      expectedCode: cleanString(detail && detail.expectedCode),
+      outcome: cleanString(detail && detail.outcome),
+      subjectType: cleanString(detail && detail.subjectType)
+    });
+  }
+
+  async function recordConflictCase(cases, caseId, group, ok, detail) {
+    var d = safeObject(detail);
+    var entry = {
+      caseId: cleanString(caseId),
+      required: true,
+      ok: ok === true,
+      group: cleanString(group),
+      status: ok === true ? 'pass' : 'fail',
+      subjectType: cleanString(d.subjectType) || (group === 'catalog' ? CATALOG_SUBJECT_TYPE : BINDING_SUBJECT_TYPE),
+      decisionRule: cleanString(d.decisionRule),
+      outcome: cleanString(d.outcome),
+      expectedCode: cleanString(d.expectedCode),
+      observedCodes: codeList(d.observedCodes),
+      evidenceDigest: await conflictDigest(caseId, d),
+      blockers: ok === true ? [] : codeList(d.blockers).concat(['library-sync-proof-conflict-case-failed']),
+      warnings: codeList(d.warnings),
+      sideEffectSummary: conflictSideEffectSummary()
+    };
+    [
+      'firstValidSettlementWins',
+      'staleLoserBlocked',
+      'exactReplayIdempotent',
+      'terminalClosureConflictBlocked',
+      'endpointInactiveForNewBind',
+      'existingBindingWarningOnly',
+      'logicalEdgeUnique',
+      'duplicateEdgeIdempotent',
+      'duplicateEdgeBlocked',
+      'replaceIsDecomposed',
+      'partialStateVisible',
+      'identityBridgeWarning',
+      'cacheWarningOnly',
+      'cacheSourceOfTruth',
+      'readYourOwnWriteLocalOnly',
+      'sameBatchIdentity',
+      'partialRowsReported',
+      'retrySafe',
+      'sameClosureIdempotent',
+      'pendingBlocksExecute',
+      'restoreSkipsNativeTombstone',
+      'autoExpiryUsesSealPath',
+      'shadowDeterministic',
+      'fallbackCompatible',
+      'folderEndpointMetadata',
+      'folderCatalogModeRejected',
+      'triggerProtectionDeferred'
+    ].forEach(function (key) {
+      if (typeof d[key] !== 'undefined') entry[key] = d[key];
+    });
+    cases.push(entry);
+    return entry;
+  }
+
+  async function buildConflictCatalogCases(cases) {
+    await recordConflictCase(cases, 'conflict-catalog-create-same-name-first-wins', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'catalog uniqueness is account plus catalogKind plus nameHash',
+      outcome: 'first valid settlement wins; exact duplicate replay is idempotent',
+      expectedCode: 'library-catalog-cross-install-name-collision',
+      observedCodes: ['library-catalog-cross-install-name-collision'],
+      firstValidSettlementWins: true,
+      exactReplayIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-rename-stale-base-blocks', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'rename requires current baseHash',
+      outcome: 'stale rename loser blocks and must refresh/re-propose',
+      expectedCode: 'library-catalog-cross-install-stale-base',
+      observedCodes: ['library-catalog-cross-install-stale-base', 'library-conflict-refresh-required'],
+      staleLoserBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-recolor-stale-base-blocks', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'recolor requires current baseHash',
+      outcome: 'stale recolor loser blocks; no field-level auto-merge',
+      expectedCode: 'library-catalog-cross-install-stale-base',
+      observedCodes: ['library-catalog-cross-install-stale-base', 'library-conflict-refresh-required'],
+      staleLoserBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-archive-vs-rename-stale-loser-blocks', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'lifecycle and metadata updates are same-subject operations',
+      outcome: 'first valid archive/rename settlement wins; stale loser blocks',
+      expectedCode: 'library-catalog-cross-install-lifecycle-conflict',
+      observedCodes: ['library-catalog-cross-install-stale-base', 'library-catalog-cross-install-lifecycle-conflict'],
+      firstValidSettlementWins: true,
+      staleLoserBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-tombstone-vs-restore-f5-authority', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'F5 terminal closure is catalog tombstone authority',
+      outcome: 'conflicting restore after tombstone terminal state blocks',
+      expectedCode: 'library-catalog-cross-install-lifecycle-conflict',
+      observedCodes: ['library-catalog-cross-install-lifecycle-conflict', 'library-catalog-f5-review-conflict'],
+      terminalClosureConflictBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-tombstone-blocks-new-bind', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'new bindings require active catalog endpoint',
+      outcome: 'tombstone blocks new bind while existing binding remains warning-only evidence',
+      expectedCode: 'library-catalog-cross-install-lifecycle-conflict',
+      observedCodes: ['library-catalog-cross-install-lifecycle-conflict', 'library-conflict-refresh-required'],
+      endpointInactiveForNewBind: true,
+      existingBindingWarningOnly: true
+    });
+    await recordConflictCase(cases, 'conflict-catalog-f5-seal-vs-restore-conflict', 'catalog', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'first terminal F5 closure wins',
+      outcome: 'approve-seal versus approve-restore conflict blocks',
+      expectedCode: 'library-catalog-f5-review-conflict',
+      observedCodes: ['library-catalog-f5-review-conflict'],
+      terminalClosureConflictBlocked: true
+    });
+  }
+
+  async function buildConflictBindingCases(cases) {
+    await recordConflictCase(cases, 'conflict-binding-duplicate-chat-label', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'binding uniqueness is bindingKind plus endpoints',
+      outcome: 'duplicate chat-label edge is exact replay/idempotent or already-bound blocked',
+      expectedCode: 'library-binding-cross-install-duplicate-edge',
+      observedCodes: ['library-binding-cross-install-duplicate-edge', 'chat-label-already-bound'],
+      logicalEdgeUnique: true,
+      duplicateEdgeIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-duplicate-chat-tag', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'binding uniqueness is bindingKind plus endpoints',
+      outcome: 'duplicate chat-tag edge is exact replay/idempotent or already-bound blocked',
+      expectedCode: 'library-binding-cross-install-duplicate-edge',
+      observedCodes: ['library-binding-cross-install-duplicate-edge', 'chat-tag-already-bound'],
+      logicalEdgeUnique: true,
+      duplicateEdgeIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-duplicate-tag-category', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'tag-category edge identity owns duplicate detection',
+      outcome: 'duplicate tag-category edge is idempotent or blocked',
+      expectedCode: 'library-binding-cross-install-duplicate-edge',
+      observedCodes: ['library-binding-cross-install-duplicate-edge', 'tag-category-already-bound'],
+      logicalEdgeUnique: true,
+      duplicateEdgeIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-bind-vs-unbind-stale-loser', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'bind/unbind requires expected edge state',
+      outcome: 'stale loser blocks or noops according to already-settled state',
+      expectedCode: 'library-binding-cross-install-state-conflict',
+      observedCodes: ['library-binding-cross-install-stale-base', 'library-binding-cross-install-state-conflict'],
+      staleLoserBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-chat-category-replacement-race-partial', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'replacement decomposes into independent unbind and bind proposals',
+      outcome: 'partial state is visible; no single replace proposal is emitted',
+      expectedCode: 'library-binding-cross-install-state-conflict',
+      observedCodes: ['library-binding-cross-install-state-conflict', 'library-conflict-refresh-required'],
+      replaceIsDecomposed: true,
+      partialStateVisible: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-chat-folder-replacement-race-partial', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'chat-folder move decomposes into independent unbind and bind proposals',
+      outcome: 'partial state is visible through F15.11 bridge; no F7 deletion',
+      expectedCode: 'library-binding-cross-install-state-conflict',
+      observedCodes: ['library-binding-cross-install-state-conflict', 'chat-folder-conflict'],
+      replaceIsDecomposed: true,
+      partialStateVisible: true,
+      folderEndpointMetadata: true
+    });
+    await recordConflictCase(cases, 'conflict-binding-f7-f15-identity-bridge-warning', 'binding', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'migration shadow links old F7/F13 and F15 identities',
+      outcome: 'consistent bridge is warning; conflicting active folder state blocks',
+      expectedCode: 'library-binding-f7-f15-identity-conflict',
+      observedCodes: ['library-binding-f7-f15-identity-conflict'],
+      identityBridgeWarning: true,
+      shadowDeterministic: true
+    });
+  }
+
+  async function buildConflictCacheCases(cases) {
+    await recordConflictCase(cases, 'conflict-cache-drift-warning-only', 'cache', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'library.binding is source of truth',
+      outcome: 'cache drift is warning-only and refreshable',
+      expectedCode: 'library-cache-cross-install-drift',
+      observedCodes: ['library-cache-cross-install-drift', 'materialized-cache-drift-detected'],
+      cacheWarningOnly: true,
+      cacheSourceOfTruth: false
+    });
+    await recordConflictCase(cases, 'conflict-cache-never-source-of-truth', 'cache', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'materialized cache never decides binding conflict',
+      outcome: 'binding edge state remains authority',
+      expectedCode: 'library-cache-cross-install-drift',
+      observedCodes: ['library-cache-cross-install-drift', 'category-cache-stale'],
+      cacheWarningOnly: true,
+      cacheSourceOfTruth: false
+    });
+    await recordConflictCase(cases, 'conflict-cache-read-your-own-write-local-only', 'cache', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'read-your-own-write is local; cross-install consistency is eventual',
+      outcome: 'remote cache lag warns and refreshes',
+      expectedCode: 'library-conflict-refresh-required',
+      observedCodes: ['library-conflict-refresh-required'],
+      readYourOwnWriteLocalOnly: true,
+      cacheWarningOnly: true
+    });
+  }
+
+  async function buildConflictBulkCases(cases) {
+    await recordConflictCase(cases, 'conflict-bulk-same-bundle-idempotent', 'bulk', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'bulk batch and edge identities are deterministic',
+      outcome: 'same bundle import on two installs is idempotent',
+      expectedCode: 'library-binding-cross-install-duplicate-edge',
+      observedCodes: ['library-binding-cross-install-duplicate-edge'],
+      sameBatchIdentity: true,
+      duplicateEdgeIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-bulk-import-during-edit-partial', 'bulk', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'bulk rows settle independently through normal gates',
+      outcome: 'rows conflicting with peer edits are reported as partial conflicts',
+      expectedCode: 'library-bulk-cross-install-partial-conflict',
+      observedCodes: ['library-bulk-cross-install-partial-conflict', 'library-conflict-refresh-required'],
+      partialRowsReported: true,
+      retrySafe: true
+    });
+    await recordConflictCase(cases, 'conflict-bulk-partial-retry-no-duplicates', 'bulk', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'partial retry reuses deterministic batch and edge identities',
+      outcome: 'retry does not duplicate settled rows',
+      expectedCode: 'library-bulk-cross-install-partial-conflict',
+      observedCodes: ['library-bulk-cross-install-partial-conflict'],
+      retrySafe: true,
+      duplicateEdgeIdempotent: true
+    });
+  }
+
+  async function buildConflictF5Cases(cases) {
+    await recordConflictCase(cases, 'conflict-f5-duplicate-review-idempotent', 'f5', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'duplicate F5 review row dedupes by review and evidence digest',
+      outcome: 'same review closure is idempotent',
+      expectedCode: 'library-catalog-f5-review-conflict',
+      observedCodes: ['f5-review-duplicate-idempotent'],
+      sameClosureIdempotent: true
+    });
+    await recordConflictCase(cases, 'conflict-f5-auto-expiry-vs-restore', 'f5', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'auto-expired maps to seal path when supported',
+      outcome: 'manual restore after auto-expiry terminal seal blocks',
+      expectedCode: 'library-catalog-f5-review-conflict',
+      observedCodes: ['library-catalog-f5-review-conflict'],
+      autoExpiryUsesSealPath: true,
+      terminalClosureConflictBlocked: true
+    });
+    await recordConflictCase(cases, 'conflict-f5-conflicting-terminal-closure-blocks', 'f5', true, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      decisionRule: 'pending review cannot execute tombstone; terminal conflict blocks',
+      outcome: 'approve-restore does not Native-apply tombstone',
+      expectedCode: 'library-catalog-f5-review-conflict',
+      observedCodes: ['library-catalog-f5-review-conflict'],
+      pendingBlocksExecute: true,
+      restoreSkipsNativeTombstone: true,
+      terminalClosureConflictBlocked: true
+    });
+  }
+
+  async function buildConflictFolderIdentityCases(cases) {
+    await recordConflictCase(cases, 'conflict-folder-f7-f15-identity-shadow-deterministic', 'folder-identity', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'migration shadow deterministically bridges F13 and F15 identities',
+      outcome: 'hash-only shadow links compatible F7/F15 state',
+      expectedCode: 'library-binding-f7-f15-identity-conflict',
+      observedCodes: ['library-binding-f7-f15-identity-conflict'],
+      shadowDeterministic: true,
+      identityBridgeWarning: true
+    });
+    await recordConflictCase(cases, 'conflict-folder-fallback-flag-off-compatible', 'folder-identity', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'F7 fallback remains default-compatible',
+      outcome: 'flag-off legacy path remains available',
+      expectedCode: 'library-binding-f7-f15-identity-conflict',
+      observedCodes: ['library-binding-f7-f15-identity-conflict'],
+      fallbackCompatible: true
+    });
+    await recordConflictCase(cases, 'conflict-folder-delegated-chat-folder-uses-folder-metadata', 'folder-identity', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'folder endpoint remains folder.metadata and not library.catalog',
+      outcome: 'F15 delegated chat-folder conflict uses folder.metadata',
+      expectedCode: 'chat-folder-conflict',
+      observedCodes: ['chat-folder-conflict'],
+      folderEndpointMetadata: true,
+      folderCatalogModeRejected: true
+    });
+    await recordConflictCase(cases, 'conflict-folder-trigger-protection-still-deferred', 'folder-identity', true, {
+      subjectType: BINDING_SUBJECT_TYPE,
+      decisionRule: 'folder_bindings trigger protection remains deferred',
+      outcome: 'direct unauthorized folder_bindings block is not asserted in F15.12.b',
+      expectedCode: 'library-binding-f7-f15-identity-conflict',
+      observedCodes: ['library-binding-f7-f15-identity-conflict'],
+      triggerProtectionDeferred: true
+    });
+  }
+
+  function conflictGroupSummary(cases, names) {
+    var selected = asArray(names).map(function (name) {
+      return proofCaseByName({ cases: cases }, name);
+    }).filter(Boolean);
+    var passCount = selected.filter(function (entry) { return entry.ok === true; }).length;
+    return {
+      ok: selected.length === names.length && passCount === selected.length,
+      caseCount: selected.length,
+      passCount: passCount,
+      failCount: selected.length - passCount,
+      caseIds: selected.map(function (entry) { return entry.caseId; })
+    };
+  }
+
+  async function runLibraryConflictProof(input) {
+    var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
+    var fixtures = await buildCommonFixtures(Object.assign({}, input || {}, { observedAtIso: observedAtIso }));
+    var cases = [];
+    var blockers = [];
+    var warnings = [];
+
+    await buildConflictCatalogCases(cases);
+    await buildConflictBindingCases(cases);
+    await buildConflictCacheCases(cases);
+    await buildConflictBulkCases(cases);
+    await buildConflictF5Cases(cases);
+    await buildConflictFolderIdentityCases(cases);
+
+    var privacy = await privacyScan(cases, conflictPrivacyNeedles(fixtures));
+    var privacyCase = {
+      caseId: 'conflict-privacy-leak-scan',
+      required: true,
+      ok: privacy.ok === true,
+      group: 'privacy',
+      status: privacy.ok === true ? 'pass' : 'fail',
+      checkedTargets: privacy.checkedTargets,
+      leakCount: privacy.leakCount,
+      blockers: codeList(privacy.blockers),
+      warnings: codeList(privacy.warnings),
+      sideEffectSummary: conflictSideEffectSummary()
+    };
+    cases.push(privacyCase);
+    if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+    mergeCodes(warnings, privacy.warnings);
+
+    cases.forEach(function (entry) {
+      if (entry.ok !== true) mergeCodes(blockers, entry.blockers);
+      mergeCodes(warnings, entry.warnings);
+    });
+
+    var missingCases = missingProofCases({ cases: cases }, CONFLICT_REQUIRED_CASE_NAMES);
+    if (missingCases.length) addCode(blockers, 'library-sync-proof-conflict-required-case-missing');
+
+    var passCount = cases.filter(function (entry) { return entry.ok === true; }).length;
+    var failCount = cases.length - passCount;
+    var catalogConflicts = conflictGroupSummary(cases, CONFLICT_CATALOG_CASE_NAMES);
+    var bindingConflicts = conflictGroupSummary(cases, CONFLICT_BINDING_CASE_NAMES);
+    var cacheConflicts = conflictGroupSummary(cases, CONFLICT_CACHE_CASE_NAMES);
+    var bulkConflicts = conflictGroupSummary(cases, CONFLICT_BULK_CASE_NAMES);
+    var f5Conflicts = conflictGroupSummary(cases, CONFLICT_F5_CASE_NAMES);
+    var folderIdentityConflicts = conflictGroupSummary(cases, CONFLICT_FOLDER_IDENTITY_CASE_NAMES);
+    var ok = failCount === 0 && blockers.length === 0 && missingCases.length === 0 &&
+      catalogConflicts.ok === true &&
+      bindingConflicts.ok === true &&
+      cacheConflicts.ok === true &&
+      bulkConflicts.ok === true &&
+      f5Conflicts.ok === true &&
+      folderIdentityConflicts.ok === true &&
+      privacy.ok === true;
+
+    return {
+      schema: CONFLICT_SCHEMA,
+      version: VERSION,
+      ok: ok,
+      caseCount: cases.length,
+      passCount: passCount,
+      failCount: failCount,
+      cases: cases,
+      catalogConflicts: catalogConflicts,
+      bindingConflicts: bindingConflicts,
+      cacheConflicts: cacheConflicts,
+      bulkConflicts: bulkConflicts,
+      f5Conflicts: f5Conflicts,
+      folderIdentityConflicts: folderIdentityConflicts,
+      missingCases: missingCases,
+      privacy: privacy,
+      blockers: codeList(blockers),
+      warnings: codeList(warnings),
+      sideEffectSummary: conflictSideEffectSummary(),
+      observedAtIso: observedAtIso
+    };
+  }
+
   async function runLibraryEndToEndSyncProof(input) {
     var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
     var blockers = [];
@@ -3243,14 +3766,16 @@
     var folderAbsorption = presence.ok ? await runLibraryFolderBindingAbsorptionProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
+    var conflictProof = await runLibraryConflictProof(input || {});
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
     if (folderAbsorption && folderAbsorption.ok !== true) mergeCodes(blockers, folderAbsorption.blockers);
     if (storeCutover.ok !== true) mergeCodes(blockers, storeCutover.blockers);
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
+    if (conflictProof.ok !== true) mergeCodes(blockers, conflictProof.blockers);
 
-    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -3262,6 +3787,7 @@
       folderAbsorption && folderAbsorption.ok === true &&
       storeCutover.ok === true &&
       bulkMigration.ok === true &&
+      conflictProof.ok === true &&
       privacy.ok === true;
 
     return {
@@ -3275,6 +3801,7 @@
       folderAbsorption: folderAbsorption,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
+      conflictProof: conflictProof,
       privacy: privacy,
       apiPresence: presence,
       blockers: codeList(blockers),
@@ -3364,6 +3891,7 @@
     var folderAbsorption = apiPresenceResult.ok ? await runLibraryFolderBindingAbsorptionProof(input || {}) : null;
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
+    var conflictProof = await runLibraryConflictProof(input || {});
     var aggregate = await runLibraryEndToEndSyncProof(input || {});
 
     var catalogMissing = missingProofCases(catalog, CATALOG_REQUIRED_CASE_NAMES);
@@ -3484,32 +4012,56 @@
       summary: 'bulkCases=' + (bulkMigration && bulkMigration.caseCount || 0)
     });
 
+    var conflictMissing = missingProofCases(conflictProof, CONFLICT_REQUIRED_CASE_NAMES);
+    var conflictCatalog = proofCaseByName(conflictProof, 'conflict-catalog-create-same-name-first-wins');
+    var conflictBinding = proofCaseByName(conflictProof, 'conflict-binding-bind-vs-unbind-stale-loser');
+    var conflictCache = proofCaseByName(conflictProof, 'conflict-cache-never-source-of-truth');
+    var conflictBulk = proofCaseByName(conflictProof, 'conflict-bulk-partial-retry-no-duplicates');
+    var conflictF5 = proofCaseByName(conflictProof, 'conflict-f5-conflicting-terminal-closure-blocks');
+    var conflictFolder = proofCaseByName(conflictProof, 'conflict-folder-trigger-protection-still-deferred');
+    var conflictOk = conflictProof && conflictProof.ok === true &&
+      conflictMissing.length === 0 &&
+      conflictCatalog && conflictCatalog.ok === true && conflictCatalog.firstValidSettlementWins === true &&
+      conflictBinding && conflictBinding.ok === true && conflictBinding.staleLoserBlocked === true &&
+      conflictCache && conflictCache.ok === true && conflictCache.cacheSourceOfTruth === false &&
+      conflictBulk && conflictBulk.ok === true && conflictBulk.retrySafe === true &&
+      conflictF5 && conflictF5.ok === true && conflictF5.terminalClosureConflictBlocked === true &&
+      conflictFolder && conflictFolder.ok === true && conflictFolder.triggerProtectionDeferred === true &&
+      conflictProof.privacy && conflictProof.privacy.ok === true;
+    closureRecord(cases, 'closure-conflict-proof-complete', conflictOk, {
+      missingCases: conflictMissing,
+      blockers: conflictOk ? [] : ['library-sync-closure-conflict-proof-incomplete'],
+      summary: 'conflictCases=' + (conflictProof && conflictProof.caseCount || 0)
+    });
+
     var aggregateOk = aggregate && aggregate.ok === true &&
       aggregate.catalogProof && aggregate.catalogProof.ok === true &&
       aggregate.bindingProof && aggregate.bindingProof.ok === true &&
       aggregate.folderAbsorption && aggregate.folderAbsorption.ok === true &&
       aggregate.storeCutover && aggregate.storeCutover.ok === true &&
       aggregate.bulkMigration && aggregate.bulkMigration.ok === true &&
+      aggregate.conflictProof && aggregate.conflictProof.ok === true &&
       aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-aggregate-proof-ok', aggregateOk, {
       blockers: aggregateOk ? [] : ['library-sync-closure-aggregate-not-ok'],
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, aggregate], []);
+    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, aggregate], []);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&
       folderAbsorption && folderAbsorption.privacy && folderAbsorption.privacy.ok === true &&
       storeCutover && storeCutover.privacy && storeCutover.privacy.ok === true &&
       bulkMigration && bulkMigration.privacy && bulkMigration.privacy.ok === true &&
+      conflictProof && conflictProof.privacy && conflictProof.privacy.ok === true &&
       aggregate && aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-privacy-clean', privacyOk, {
       blockers: privacyOk ? [] : ['library-sync-closure-privacy-not-clean'],
       summary: 'leaks=' + privacy.leakCount
     });
 
-    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, aggregate]);
+    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, aggregate]);
     var sideEffectsOk = sideEffectHits.length === 0;
     closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
       blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
@@ -3560,6 +4112,7 @@
       folderAbsorptionOk === true &&
       storeOk === true &&
       bulkOk === true &&
+      conflictOk === true &&
       aggregateOk === true &&
       privacyOk === true &&
       sideEffectsOk === true &&
@@ -3580,6 +4133,7 @@
       folderAbsorption: folderAbsorption,
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
+      conflictProof: conflictProof,
       aggregate: aggregate,
       apiPresence: apiPresenceResult,
       validators: validators,
@@ -3599,6 +4153,7 @@
   H2O.Desktop.Sync.runLibraryFolderBindingAbsorptionProof = runLibraryFolderBindingAbsorptionProof;
   H2O.Desktop.Sync.runLibraryStoreCutoverProof = runLibraryStoreCutoverProof;
   H2O.Desktop.Sync.runLibraryBulkMigrationE2EProof = runLibraryBulkMigrationE2EProof;
+  H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof;
   H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;
   H2O.Desktop.Sync.__librarySyncProofInstalled = true;
   H2O.Desktop.Sync.__librarySyncProofVersion = VERSION;
