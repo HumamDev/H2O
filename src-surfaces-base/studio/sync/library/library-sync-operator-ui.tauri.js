@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.10.a library sync operator status UI
+/* H2O Desktop Sync - F15.10.b library sync operator status UI
  *
  * Settings-hosted, read-only operator panel for F15 Library Sync proof status.
  *
@@ -30,7 +30,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncOperatorUiInstalled) return;
 
-  var VERSION = '0.1.0-f15.10.a';
+  var VERSION = '0.2.0-f15.10.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-operator-ui-result.v1';
   var PANEL_ID = 'h2o-library-sync-operator-panel';
   var STYLE_ID = 'h2o-library-sync-operator-style';
@@ -52,6 +52,32 @@
     'runLibraryBindingPipelineProof',
     'runLibraryStoreCutoverProof',
     'runLibraryBulkMigrationE2EProof'
+  ];
+  var CATALOG_LANE_CASES = [
+    { caseId: 'catalog-create-full-pipeline', label: 'Catalog creation lane' },
+    { caseId: 'catalog-rename-full-pipeline', label: 'Catalog name-change lane' },
+    { caseId: 'catalog-recolor-full-pipeline', label: 'Catalog color-change lane' },
+    { caseId: 'catalog-archive-full-pipeline', label: 'Catalog archive' },
+    { caseId: 'catalog-restore-from-archived-full-pipeline', label: 'Catalog restore from archived' },
+    { caseId: 'catalog-tombstone-approve-seal-full-pipeline', label: 'Catalog tombstone seal path' },
+    { caseId: 'catalog-tombstone-approve-restore-full-pipeline', label: 'Catalog tombstone restore path' },
+    { caseId: 'catalog-restore-from-retained-full-pipeline', label: 'Catalog restore from retained' },
+    { caseId: 'catalog-tombstone-pending-f5-blocks-execute', label: 'Catalog tombstone pending F5 block' },
+    { caseId: 'catalog-privacy-leak-scan', label: 'Catalog privacy leak scan' }
+  ];
+  var BINDING_LANE_CASES = [
+    { caseId: 'binding-bind-chat-label-full-pipeline', label: 'Chat-label link lane' },
+    { caseId: 'binding-unbind-chat-label-full-pipeline', label: 'Chat-label unlink lane' },
+    { caseId: 'binding-bind-chat-tag-full-pipeline', label: 'Chat-tag link lane' },
+    { caseId: 'binding-unbind-chat-tag-full-pipeline', label: 'Chat-tag unlink lane' },
+    { caseId: 'binding-bind-chat-category-full-pipeline', label: 'Chat-category link lane' },
+    { caseId: 'binding-unbind-chat-category-full-pipeline', label: 'Chat-category unlink lane' },
+    { caseId: 'binding-bind-tag-category-full-pipeline', label: 'Tag-category link lane' },
+    { caseId: 'binding-unbind-tag-category-full-pipeline', label: 'Tag-category unlink lane' },
+    { caseId: 'binding-chat-category-cache-refresh-metadata', label: 'Binding chat-category cache refresh metadata' },
+    { caseId: 'binding-no-f5-footprint', label: 'Binding no F5 footprint' },
+    { caseId: 'binding-replace-operation-not-supported', label: 'Binding replace operation block' },
+    { caseId: 'binding-privacy-leak-scan', label: 'Binding privacy leak scan' }
   ];
   var FORBIDDEN_BUTTON_LABELS = [
     'apply',
@@ -251,6 +277,104 @@
       blockers: codeList(source.blockers),
       warnings: codeList(source.warnings)
     };
+  }
+  function caseIdOf(entry) {
+    return cleanString(entry && (entry.caseId || entry.name));
+  }
+  function caseSourceCandidates(lane) {
+    if (lane === 'catalog') {
+      return [
+        { source: 'closure.catalog', proof: safeObject(state.lastClosure && state.lastClosure.catalog) },
+        { source: 'closure.aggregate.catalogProof', proof: safeObject(state.lastClosure && state.lastClosure.aggregate && state.lastClosure.aggregate.catalogProof) },
+        { source: 'e2e.catalogProof', proof: safeObject(state.lastE2E && state.lastE2E.catalogProof) },
+        { source: 'e2e.catalog', proof: safeObject(state.lastE2E && state.lastE2E.catalog) }
+      ];
+    }
+    return [
+      { source: 'closure.binding', proof: safeObject(state.lastClosure && state.lastClosure.binding) },
+      { source: 'closure.aggregate.bindingProof', proof: safeObject(state.lastClosure && state.lastClosure.aggregate && state.lastClosure.aggregate.bindingProof) },
+      { source: 'e2e.bindingProof', proof: safeObject(state.lastE2E && state.lastE2E.bindingProof) },
+      { source: 'e2e.binding', proof: safeObject(state.lastE2E && state.lastE2E.binding) }
+    ];
+  }
+  function findLaneCase(lane, caseId) {
+    var candidates = caseSourceCandidates(lane);
+    for (var i = 0; i < candidates.length; i += 1) {
+      var rows = asArray(candidates[i].proof && candidates[i].proof.cases);
+      for (var j = 0; j < rows.length; j += 1) {
+        if (caseIdOf(rows[j]) === caseId) {
+          return {
+            source: candidates[i].source,
+            caseRow: rows[j],
+            sourceProof: candidates[i].proof
+          };
+        }
+      }
+    }
+    return {
+      source: latestProof() ? 'latest-proof' : 'not-run',
+      caseRow: null,
+      sourceProof: null
+    };
+  }
+  function laneCaseStatus(found) {
+    var row = safeObject(found && found.caseRow);
+    if (!found || !found.caseRow) return {
+      key: 'not-run',
+      label: latestProof() ? 'not run' : 'not run',
+      uiStatus: 'proof stale / not run'
+    };
+    var blockers = codeList(row.blockers);
+    var warnings = codeList(row.warnings);
+    if (row.ok === true && warnings.length) return {
+      key: 'warning',
+      label: 'warning',
+      uiStatus: 'warning'
+    };
+    if (row.ok === true) return {
+      key: 'pass',
+      label: 'pass',
+      uiStatus: 'healthy'
+    };
+    return {
+      key: 'fail',
+      label: 'fail',
+      uiStatus: 'proof failed'
+    };
+  }
+  function renderLaneCaseRow(lane, definition) {
+    var found = findLaneCase(lane, definition.caseId);
+    var row = safeObject(found.caseRow);
+    var status = laneCaseStatus(found);
+    var blockers = codeList(row.blockers);
+    var warnings = codeList(row.warnings);
+    var details = [
+      '<span>source <code>' + escapeHtml(found.source) + '</code></span>',
+      '<span>case <code>' + escapeHtml(definition.caseId) + '</code></span>',
+      '<span>blockers ' + escapeHtml(String(blockers.length)) + '</span>',
+      '<span>warnings ' + escapeHtml(String(warnings.length)) + '</span>'
+    ].join(' · ');
+    return '<details class="h2oLibSyncLaneRow h2oLibSyncLaneRow-' + escapeHtml(status.key) + '">' +
+      '<summary><span class="h2oLibSyncLaneTitle">' + escapeHtml(definition.label) + '</span>' +
+      '<span class="h2oLibSyncLaneStatus">' + escapeHtml(status.label) + '</span></summary>' +
+      '<p class="h2oLibSyncNote">' + details + '</p>' +
+      '<p class="h2oLibSyncNote">status mapping: ' + escapeHtml(status.uiStatus) + '</p>' +
+      (blockers.length ? '<p class="h2oLibSyncNote">blockers: ' + blockers.slice(0, 8).map(function (code) {
+        return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+      }).join(', ') + '</p>' : '') +
+      (warnings.length ? '<p class="h2oLibSyncNote">warnings: ' + warnings.slice(0, 8).map(function (code) {
+        return '<code>' + escapeHtml(shortHash(code)) + '</code>';
+      }).join(', ') + '</p>' : '') +
+      '</details>';
+  }
+  function renderLaneDetails(lane, definitions) {
+    var proofAvailable = !!latestProof();
+    return '<p class="h2oLibSyncNote">' + escapeHtml(proofAvailable
+      ? 'Rows reflect the latest in-memory closure or end-to-end proof result.'
+      : 'No proof has run in this session; rows remain not run until an explicit proof action completes.') + '</p>' +
+      '<div class="h2oLibSyncLaneRows">' + definitions.map(function (definition) {
+        return renderLaneCaseRow(lane, definition);
+      }).join('') + '</div>';
   }
   function privacySummary() {
     var closurePrivacy = safeObject(state.lastClosure && state.lastClosure.privacy);
@@ -484,7 +608,17 @@
       '.h2oLibSyncDetails summary{cursor:pointer;font-weight:750}',
       '.h2oLibSyncDetails ul{margin:8px 0 0;padding-left:18px;display:grid;gap:4px}',
       '.h2oLibSyncDetails code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#cbd5e1}',
-      '@media(max-width:900px){.h2oLibSyncGrid,.h2oLibSyncGridWide,.h2oLibSyncCards{grid-template-columns:repeat(2,minmax(0,1fr))}#' + PANEL_ID + '{right:10px;top:54px;width:calc(100vw - 20px)}}'
+      '.h2oLibSyncLaneRows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}',
+      '.h2oLibSyncLaneRow{border:1px solid rgba(148,163,184,.2);border-radius:13px;background:rgba(15,23,42,.34);padding:9px 10px}',
+      '.h2oLibSyncLaneRow summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:800}',
+      '.h2oLibSyncLaneTitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.h2oLibSyncLaneStatus{border-radius:999px;padding:3px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:rgba(148,163,184,.14);border:1px solid rgba(148,163,184,.24)}',
+      '.h2oLibSyncLaneRow-pass .h2oLibSyncLaneStatus{color:#86efac;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.3)}',
+      '.h2oLibSyncLaneRow-warning .h2oLibSyncLaneStatus,.h2oLibSyncLaneRow-not-run .h2oLibSyncLaneStatus{color:#fde68a;background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.3)}',
+      '.h2oLibSyncLaneRow-fail .h2oLibSyncLaneStatus{color:#fca5a5;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.3)}',
+      '.h2oLibSyncLaneRow code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#cbd5e1}',
+      '@media(max-width:900px){.h2oLibSyncGrid,.h2oLibSyncGridWide,.h2oLibSyncCards,.h2oLibSyncLaneRows{grid-template-columns:repeat(2,minmax(0,1fr))}#' + PANEL_ID + '{right:10px;top:54px;width:calc(100vw - 20px)}}',
+      '@media(max-width:640px){.h2oLibSyncLaneRows{grid-template-columns:1fr}}'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -496,7 +630,7 @@
     var message = state.message ? '<p class="h2oLibSyncNote">' + escapeHtml(state.message) + '</p>' : '';
     panel.innerHTML =
       '<div class="h2oLibSyncHeader">' +
-      '<div><p class="h2oLibSyncKicker">F15.10.a · read-only</p>' +
+      '<div><p class="h2oLibSyncKicker">F15.10.b · read-only</p>' +
       '<h2 class="h2oLibSyncTitle">Library Sync Operator Status</h2>' +
       '<p class="h2oLibSyncNote">Settings-hosted proof/status panel for F15 Library Sync. Proofs run only from explicit operator actions. No mutation controls are exposed.</p>' +
       message + '</div>' +
@@ -515,6 +649,8 @@
         renderSummaryCard('Store Cutover', laneSummary('storeCutover')) +
         renderSummaryCard('Bulk Migration', laneSummary('bulkMigration')) +
         '</div>') +
+      section('Catalog Lane Details', renderLaneDetails('catalog', CATALOG_LANE_CASES)) +
+      section('Binding Lane Details', renderLaneDetails('binding', BINDING_LANE_CASES)) +
       section('Privacy', renderPrivacy()) +
       section('Side Effects', renderSideEffects()) +
       section('Blockers / Warnings', renderBlockersWarnings()) +

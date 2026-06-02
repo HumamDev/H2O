@@ -48,7 +48,7 @@ const studio = 'src-surfaces-base/studio/studio.js';
 
 if (failures.length === 0) {
   [
-    "var VERSION = '0.1.0-f15.10.a'",
+    "var VERSION = '0.2.0-f15.10.b'",
     'openLibrarySyncOperatorPanel',
     'refreshLibrarySyncOperatorPanel',
     'copyLibrarySyncProofReport',
@@ -78,6 +78,39 @@ if (failures.length === 0) {
     'shortHash',
     'safeReportKey',
     'forbiddenButtonLabelCheck'
+  ].forEach((needle) => assertContains(ui, needle));
+
+  [
+    'CATALOG_LANE_CASES',
+    'BINDING_LANE_CASES',
+    'renderLaneDetails',
+    'renderLaneCaseRow',
+    'findLaneCase',
+    'laneCaseStatus',
+    'Catalog Lane Details',
+    'Binding Lane Details',
+    'catalog-create-full-pipeline',
+    'catalog-rename-full-pipeline',
+    'catalog-recolor-full-pipeline',
+    'catalog-archive-full-pipeline',
+    'catalog-restore-from-archived-full-pipeline',
+    'catalog-tombstone-approve-seal-full-pipeline',
+    'catalog-tombstone-approve-restore-full-pipeline',
+    'catalog-restore-from-retained-full-pipeline',
+    'catalog-tombstone-pending-f5-blocks-execute',
+    'catalog-privacy-leak-scan',
+    'binding-bind-chat-label-full-pipeline',
+    'binding-unbind-chat-label-full-pipeline',
+    'binding-bind-chat-tag-full-pipeline',
+    'binding-unbind-chat-tag-full-pipeline',
+    'binding-bind-chat-category-full-pipeline',
+    'binding-unbind-chat-category-full-pipeline',
+    'binding-bind-tag-category-full-pipeline',
+    'binding-unbind-tag-category-full-pipeline',
+    'binding-chat-category-cache-refresh-metadata',
+    'binding-no-f5-footprint',
+    'binding-replace-operation-not-supported',
+    'binding-privacy-leak-scan'
   ].forEach((needle) => assertContains(ui, needle));
 
   [
