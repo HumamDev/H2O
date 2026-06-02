@@ -32,24 +32,42 @@ const html = 'src-surfaces-base/studio/studio.html';
 const pack = 'tools/product/studio/pack-studio.mjs';
 const cutoverValidator = 'tools/validation/sync/validate-f15-cutover.mjs';
 const bulkValidator = 'tools/validation/sync/validate-f15-bulk-migration.mjs';
+const closureValidator = 'tools/validation/sync/validate-f15-library-closure.mjs';
 
 [
   proof,
   html,
   pack,
   cutoverValidator,
-  bulkValidator
+  bulkValidator,
+  closureValidator
 ].forEach(assertExists);
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.5.0-f15.9.e'",
+    "var VERSION = '0.6.0-f15.9.f'",
+    "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1'",
     'runLibraryEndToEndSyncProof',
     'runLibraryCatalogPipelineProof',
     'runLibraryBindingPipelineProof',
     'runLibraryStoreCutoverProof',
     'runLibraryBulkMigrationE2EProof',
+    'runLibrarySyncClosureProof',
+    'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
+    'CLOSURE_CASE_NAMES',
+    'closure-catalog-proof-complete',
+    'closure-binding-proof-complete',
+    'closure-store-cutover-proof-complete',
+    'closure-bulk-migration-proof-complete',
+    'closure-aggregate-proof-ok',
+    'closure-privacy-clean',
+    'closure-side-effects-safe',
+    'closure-required-apis-present',
+    'closure-validators-present',
+    'closure-loader-pack-wiring-present',
+    'VALIDATOR_REFERENCES',
+    'validate-f15-library-closure.mjs',
     // F15.9.d store cutover proof — case names, sub-proof references,
     // and supporting helpers must all appear in the proof module.
     'STORE_CUTOVER_CASE_NAMES',
@@ -202,6 +220,12 @@ if (failures.length === 0) {
     'recordLibraryBindingBookkeeping',
     'shapeLibraryBindingExecuteEnvelope',
     'proveSQLiteWriterIdentitySentinel',
+    'executeAuthorizedSqlite',
+    'installLibraryStoreCutoverShims',
+    'waitForLibraryStoreShimSettlement',
+    'listLibraryStoreShimEvidence',
+    'planLibraryBulkMigration',
+    'executeLibraryBulkMigration',
     'runLibraryBulkMigrationProof',
     'catalogDeviceLocalInput',
     'bindingDeviceLocalInput',

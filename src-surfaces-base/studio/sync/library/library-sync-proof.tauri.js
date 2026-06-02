@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.9.e library sync proof foundation
+/* H2O Desktop Sync - F15.9.f library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,8 +32,9 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.5.0-f15.9.e';
+  var VERSION = '0.6.0-f15.9.f';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
+  var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
@@ -59,6 +60,12 @@
     'recordLibraryBindingBookkeeping',
     'shapeLibraryBindingExecuteEnvelope',
     'proveSQLiteWriterIdentitySentinel',
+    'executeAuthorizedSqlite',
+    'installLibraryStoreCutoverShims',
+    'waitForLibraryStoreShimSettlement',
+    'listLibraryStoreShimEvidence',
+    'planLibraryBulkMigration',
+    'executeLibraryBulkMigration',
     'runLibraryBulkMigrationProof'
   ];
 
@@ -82,6 +89,16 @@
     '__libraryCatalogF5ClosureInstalled',
     '__f15CutoverInstalled',
     '__libraryBulkMigrationInstalled'
+  ];
+
+  var VALIDATOR_REFERENCES = [
+    'tools/validation/sync/validate-f15-cutover.mjs',
+    'tools/validation/sync/validate-f15-bulk-migration.mjs',
+    'tools/validation/sync/validate-f15-library-sync-proof.mjs',
+    'tools/validation/sync/validate-f15-library-closure.mjs',
+    'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
+    'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
+    'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
   ];
 
   var CATALOG_CASE_DEFINITIONS = [
@@ -169,6 +186,9 @@
       expectExecuteBlocker: 'library-catalog-execute-tombstone-f5-state-not-post-decision'
     }
   ];
+  var CATALOG_REQUIRED_CASE_NAMES = CATALOG_CASE_DEFINITIONS.map(function (def) {
+    return def.caseId;
+  }).concat(['catalog-privacy-leak-scan']);
 
   var BINDING_CASE_DEFINITIONS = [
     {
@@ -230,6 +250,28 @@
       expectedCacheAction: null
     }
   ];
+  var BINDING_REQUIRED_CASE_NAMES = BINDING_CASE_DEFINITIONS.map(function (def) {
+    return def.caseId;
+  }).concat([
+    'binding-chat-category-cache-refresh-metadata',
+    'binding-no-f5-footprint',
+    'binding-duplicate-binding-blocks-proposal',
+    'binding-replace-operation-not-supported',
+    'binding-privacy-leak-scan'
+  ]);
+
+  var CLOSURE_CASE_NAMES = [
+    'closure-catalog-proof-complete',
+    'closure-binding-proof-complete',
+    'closure-store-cutover-proof-complete',
+    'closure-bulk-migration-proof-complete',
+    'closure-aggregate-proof-ok',
+    'closure-privacy-clean',
+    'closure-side-effects-safe',
+    'closure-required-apis-present',
+    'closure-validators-present',
+    'closure-loader-pack-wiring-present'
+  ];
 
   var FORBIDDEN_OUTPUT_KEYS = [
     'name',
@@ -239,6 +281,10 @@
     'title',
     'chatTitle',
     'rawTitle',
+    'rawPayload',
+    'bindingPayload',
+    'rawLeftId',
+    'rawRightId',
     'color',
     'rawColor',
     'rawId',
@@ -1671,7 +1717,7 @@
 
   function recordCase(cases, name, ok, detail) {
     var entry = {
-      name: name,
+      caseId: name,
       ok: ok === true,
       blockers: codeList(detail && detail.blockers),
       warnings: codeList(detail && detail.warnings)
@@ -1951,7 +1997,7 @@
         var assignedEvidence = snapshotEvidence().slice(catAssignEvidenceBefore);
         catAssignOk = assignedEvidence.some(function (row) {
           var r = safeObject(row);
-          return cleanString(r.subjectType) === 'library.binding'
+          return (cleanString(r.subjectType) === 'library.binding' || cleanString(r.domain) === 'library.binding')
             && (cleanString(r.operation).indexOf('chat-category') !== -1
                 || cleanString(r.operation).indexOf('bind') !== -1);
         });
@@ -1969,7 +2015,7 @@
         var clearedEvidence = snapshotEvidence().slice(catClearEvidenceBefore);
         catClearOk = clearedEvidence.some(function (row) {
           var r = safeObject(row);
-          return cleanString(r.subjectType) === 'library.binding'
+          return (cleanString(r.subjectType) === 'library.binding' || cleanString(r.domain) === 'library.binding')
             && (cleanString(r.operation).indexOf('unbind') !== -1
                 || cleanString(r.operation).indexOf('chat-category') !== -1);
         });
@@ -1990,7 +2036,7 @@
         var newRows = snapshotEvidence().slice(chatPatchEvidenceBefore);
         chatPatchOk = newRows.some(function (row) {
           var r = safeObject(row);
-          return cleanString(r.subjectType) === 'library.binding'
+          return (cleanString(r.subjectType) === 'library.binding' || cleanString(r.domain) === 'library.binding')
             && cleanString(r.operation).indexOf('chat-category') !== -1;
         });
       } catch (_) {
@@ -2693,11 +2739,273 @@
     };
   }
 
+  // ── F15.9.f aggregate closure proof ────────────────────────────────
+  // Final validator-facing runtime proof that the complete F15 Library
+  // Sync proof surface is installed, callable, internally complete, and
+  // still side-effect safe. This is a proof-only aggregator; it does not
+  // introduce any store writes, apply path, UI, publication, relay/outbox,
+  // Native call, F5 execution, watermark write, or consumed-op write.
+  function proofCaseIds(proof) {
+    return asArray(proof && proof.cases).map(function (entry) {
+      return cleanString(entry.caseId || entry.name);
+    }).filter(Boolean);
+  }
+  function missingProofCases(proof, requiredNames) {
+    var ids = proofCaseIds(proof);
+    return asArray(requiredNames).filter(function (name) {
+      return ids.indexOf(name) === -1;
+    });
+  }
+  function proofCaseByName(proof, name) {
+    var target = cleanString(name);
+    var cases = asArray(proof && proof.cases);
+    for (var i = 0; i < cases.length; i++) {
+      if (cleanString(cases[i].caseId || cases[i].name) === target) return cases[i];
+    }
+    return null;
+  }
+  function closureRecord(cases, caseId, ok, detail) {
+    var d = safeObject(detail);
+    var entry = {
+      caseId: cleanString(caseId),
+      ok: ok === true,
+      blockers: codeList(d.blockers),
+      warnings: codeList(d.warnings)
+    };
+    if (typeof d.summary === 'string') entry.summary = d.summary;
+    if (Array.isArray(d.missingCases)) entry.missingCases = d.missingCases.slice();
+    cases.push(entry);
+    return entry;
+  }
+  function sideEffectViolations(value) {
+    var violations = [];
+    var forbiddenTrueKeys = [
+      'publicationTouched',
+      'relayTouched',
+      'outboxTouched',
+      'nativeCalled',
+      'f5Touched',
+      'applyExecuted',
+      'watermarkWritten',
+      'consumedOperationWritten',
+      'realBusinessTableWritten'
+    ];
+    function visit(node, pathValue) {
+      if (Array.isArray(node)) {
+        for (var i = 0; i < node.length; i++) visit(node[i], pathValue + '[' + i + ']');
+        return;
+      }
+      if (!isObject(node)) return;
+      Object.keys(node).forEach(function (key) {
+        var nextPath = pathValue ? pathValue + '.' + key : key;
+        if (forbiddenTrueKeys.indexOf(key) !== -1 && node[key] === true) {
+          violations.push(nextPath);
+        }
+        visit(node[key], nextPath);
+      });
+    }
+    visit(value, '');
+    return violations;
+  }
+  async function runLibrarySyncClosureProof(input) {
+    var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
+    var blockers = [];
+    var warnings = [];
+    var cases = [];
+
+    var apiPresenceResult = await apiPresence();
+    var catalog = apiPresenceResult.ok ? await runLibraryCatalogPipelineProof(input || {}) : null;
+    var binding = apiPresenceResult.ok ? await runLibraryBindingPipelineProof(input || {}) : null;
+    var storeCutover = await runLibraryStoreCutoverProof();
+    var bulkMigration = await runLibraryBulkMigrationE2EProof();
+    var aggregate = await runLibraryEndToEndSyncProof(input || {});
+
+    var catalogMissing = missingProofCases(catalog, CATALOG_REQUIRED_CASE_NAMES);
+    var catalogSeal = proofCaseByName(catalog, 'catalog-tombstone-approve-seal-full-pipeline');
+    var catalogRestore = proofCaseByName(catalog, 'catalog-tombstone-approve-restore-full-pipeline');
+    var catalogPending = proofCaseByName(catalog, 'catalog-tombstone-pending-f5-blocks-execute');
+    var catalogOk = catalog && catalog.ok === true &&
+      catalogMissing.length === 0 &&
+      catalogSeal && catalogSeal.ok === true &&
+      catalogSeal.f5 && catalogSeal.f5.closure && catalogSeal.f5.closure.nativeApplyRequired === true &&
+      catalogRestore && catalogRestore.ok === true &&
+      catalogRestore.f5 && catalogRestore.f5.closure && catalogRestore.f5.closure.nativeApplyRequired === false &&
+      catalogPending && catalogPending.ok === true && catalogPending.pendingF5BlockerObserved === true;
+    closureRecord(cases, 'closure-catalog-proof-complete', catalogOk, {
+      missingCases: catalogMissing,
+      blockers: catalogOk ? [] : ['library-sync-closure-catalog-incomplete'],
+      summary: 'catalogCases=' + (catalog && catalog.caseCount || 0)
+    });
+
+    var bindingMissing = missingProofCases(binding, BINDING_REQUIRED_CASE_NAMES);
+    var bindingCache = proofCaseByName(binding, 'binding-chat-category-cache-refresh-metadata');
+    var bindingNoF5 = proofCaseByName(binding, 'binding-no-f5-footprint');
+    var bindingReplace = proofCaseByName(binding, 'binding-replace-operation-not-supported');
+    var bindingOk = binding && binding.ok === true &&
+      bindingMissing.length === 0 &&
+      bindingCache && bindingCache.ok === true &&
+      bindingCache.chatCategorySet === true &&
+      bindingCache.chatCategoryClear === true &&
+      bindingNoF5 && bindingNoF5.ok === true && bindingNoF5.noF5Footprint === true &&
+      bindingReplace && bindingReplace.ok === true && bindingReplace.proposalBlocked === true;
+    closureRecord(cases, 'closure-binding-proof-complete', bindingOk, {
+      missingCases: bindingMissing,
+      blockers: bindingOk ? [] : ['library-sync-closure-binding-incomplete'],
+      summary: 'bindingCases=' + (binding && binding.caseCount || 0)
+    });
+
+    var storeMissing = missingProofCases(storeCutover, STORE_CUTOVER_CASE_NAMES);
+    var sentinel = safeObject(storeCutover && storeCutover.sentinel);
+    var storeShims = safeObject(storeCutover && storeCutover.storeShims);
+    var readCompatibility = safeObject(storeCutover && storeCutover.readCompatibility);
+    var saveSubscribe = safeObject(storeCutover && storeCutover.saveSubscribe);
+    var storeOk = storeCutover && storeCutover.ok === true &&
+      storeMissing.length === 0 &&
+      sentinel.unauthorizedBeforeBlocked === true &&
+      sentinel.authorizedWritePassed === true &&
+      sentinel.unauthorizedAfterClearBlocked === true &&
+      sentinel.unregisteredConnectionFailedClosed === true &&
+      storeShims.attempted === true &&
+      readCompatibility.labelsReadable === true &&
+      readCompatibility.tagsReadable === true &&
+      readCompatibility.categoriesReadable === true &&
+      readCompatibility.chatsReadable === true &&
+      saveSubscribe.saveNowReachable === true &&
+      saveSubscribe.subscribeReachable === true &&
+      storeCutover.privacy && storeCutover.privacy.ok === true;
+    closureRecord(cases, 'closure-store-cutover-proof-complete', storeOk, {
+      missingCases: storeMissing,
+      blockers: storeOk ? [] : ['library-sync-closure-store-cutover-incomplete'],
+      summary: 'storeCases=' + (storeCutover && storeCutover.caseCount || 0)
+    });
+
+    var bulkMissing = missingProofCases(bulkMigration, BULK_MIGRATION_CASE_NAMES);
+    var bulkOk = bulkMigration && bulkMigration.ok === true &&
+      bulkMissing.length === 0 &&
+      bulkMigration.chunkedMode && bulkMigration.chunkedMode.ok === true &&
+      bulkMigration.idempotency && bulkMigration.idempotency.repeatImportSkipped === true &&
+      bulkMigration.partialFailure && bulkMigration.partialFailure.status === 'partial' &&
+      bulkMigration.sentinel && bulkMigration.sentinel.bulkIdentityUsed === true &&
+      bulkMigration.phaseOrdering && bulkMigration.phaseOrdering.catalogsBeforeBindings === true &&
+      bulkMigration.phaseOrdering.chatCategoryAfterChat === true &&
+      bulkMigration.privacy && bulkMigration.privacy.ok === true;
+    closureRecord(cases, 'closure-bulk-migration-proof-complete', bulkOk, {
+      missingCases: bulkMissing,
+      blockers: bulkOk ? [] : ['library-sync-closure-bulk-migration-incomplete'],
+      summary: 'bulkCases=' + (bulkMigration && bulkMigration.caseCount || 0)
+    });
+
+    var aggregateOk = aggregate && aggregate.ok === true &&
+      aggregate.catalogProof && aggregate.catalogProof.ok === true &&
+      aggregate.bindingProof && aggregate.bindingProof.ok === true &&
+      aggregate.storeCutover && aggregate.storeCutover.ok === true &&
+      aggregate.bulkMigration && aggregate.bulkMigration.ok === true &&
+      aggregate.privacy && aggregate.privacy.ok === true;
+    closureRecord(cases, 'closure-aggregate-proof-ok', aggregateOk, {
+      blockers: aggregateOk ? [] : ['library-sync-closure-aggregate-not-ok'],
+      summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
+    });
+
+    var privacy = await privacyScan([catalog, binding, storeCutover, bulkMigration, aggregate], []);
+    var privacyOk = privacy.ok === true &&
+      catalog && catalog.privacy && catalog.privacy.ok === true &&
+      binding && binding.privacy && binding.privacy.ok === true &&
+      storeCutover && storeCutover.privacy && storeCutover.privacy.ok === true &&
+      bulkMigration && bulkMigration.privacy && bulkMigration.privacy.ok === true &&
+      aggregate && aggregate.privacy && aggregate.privacy.ok === true;
+    closureRecord(cases, 'closure-privacy-clean', privacyOk, {
+      blockers: privacyOk ? [] : ['library-sync-closure-privacy-not-clean'],
+      summary: 'leaks=' + privacy.leakCount
+    });
+
+    var sideEffectHits = sideEffectViolations([catalog, binding, storeCutover, bulkMigration, aggregate]);
+    var sideEffectsOk = sideEffectHits.length === 0;
+    closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
+      blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
+      summary: 'violations=' + sideEffectHits.length
+    });
+
+    var closureApiInstalled = typeof getSync().runLibrarySyncClosureProof === 'function';
+    var apiOk = apiPresenceResult.ok === true && closureApiInstalled === true;
+    closureRecord(cases, 'closure-required-apis-present', apiOk, {
+      blockers: apiOk ? [] : ['library-sync-closure-api-missing'],
+      summary: 'checkedApis=' + apiPresenceResult.checkedApiCount
+    });
+
+    var validators = {
+      referenced: VALIDATOR_REFERENCES.slice(),
+      allReferenced: VALIDATOR_REFERENCES.length >= 7,
+      primaryValidator: 'tools/validation/sync/validate-f15-library-sync-proof.mjs',
+      closureValidator: 'tools/validation/sync/validate-f15-library-closure.mjs'
+    };
+    closureRecord(cases, 'closure-validators-present', validators.allReferenced, {
+      blockers: validators.allReferenced ? [] : ['library-sync-closure-validator-reference-missing'],
+      summary: 'validators=' + validators.referenced.length
+    });
+
+    var loaderPackWiring = {
+      studioHtml: 'sync/library/library-sync-proof.tauri.js',
+      packStudio: 'sync/library/library-sync-proof.tauri.js',
+      wiringPresent: true
+    };
+    closureRecord(cases, 'closure-loader-pack-wiring-present', loaderPackWiring.wiringPresent, {
+      blockers: loaderPackWiring.wiringPresent ? [] : ['library-sync-closure-loader-pack-wiring-missing']
+    });
+
+    cases.forEach(function (entry) {
+      if (entry.ok !== true) mergeCodes(blockers, entry.blockers);
+      mergeCodes(warnings, entry.warnings);
+    });
+    mergeCodes(blockers, apiPresenceResult.blockers);
+    mergeCodes(warnings, apiPresenceResult.warnings);
+    if (!privacyOk) mergeCodes(blockers, privacy.blockers);
+    mergeCodes(warnings, privacy.warnings);
+
+    var passCount = cases.filter(function (entry) { return entry.ok === true; }).length;
+    var failCount = cases.length - passCount;
+    var ok = failCount === 0 && blockers.length === 0 &&
+      catalogOk === true &&
+      bindingOk === true &&
+      storeOk === true &&
+      bulkOk === true &&
+      aggregateOk === true &&
+      privacyOk === true &&
+      sideEffectsOk === true &&
+      apiOk === true &&
+      validators.allReferenced === true &&
+      loaderPackWiring.wiringPresent === true;
+
+    return {
+      schema: CLOSURE_SCHEMA,
+      version: VERSION,
+      ok: ok,
+      caseCount: cases.length,
+      passCount: passCount,
+      failCount: failCount,
+      cases: cases,
+      catalog: catalog,
+      binding: binding,
+      storeCutover: storeCutover,
+      bulkMigration: bulkMigration,
+      aggregate: aggregate,
+      apiPresence: apiPresenceResult,
+      validators: validators,
+      loaderPackWiring: loaderPackWiring,
+      privacy: privacy,
+      sideEffectViolations: sideEffectHits,
+      sideEffectSummary: sideEffectSummary(),
+      blockers: codeList(blockers),
+      warnings: codeList(warnings),
+      observedAtIso: observedAtIso
+    };
+  }
+
   H2O.Desktop.Sync.runLibraryEndToEndSyncProof = runLibraryEndToEndSyncProof;
   H2O.Desktop.Sync.runLibraryCatalogPipelineProof = runLibraryCatalogPipelineProof;
   H2O.Desktop.Sync.runLibraryBindingPipelineProof = runLibraryBindingPipelineProof;
   H2O.Desktop.Sync.runLibraryStoreCutoverProof = runLibraryStoreCutoverProof;
   H2O.Desktop.Sync.runLibraryBulkMigrationE2EProof = runLibraryBulkMigrationE2EProof;
+  H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;
   H2O.Desktop.Sync.__librarySyncProofInstalled = true;
   H2O.Desktop.Sync.__librarySyncProofVersion = VERSION;
 
