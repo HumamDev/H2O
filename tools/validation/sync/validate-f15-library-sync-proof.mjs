@@ -43,7 +43,7 @@ const bulkValidator = 'tools/validation/sync/validate-f15-bulk-migration.mjs';
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.4.0-f15.9.d'",
+    "var VERSION = '0.5.0-f15.9.e'",
     "var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1'",
     'runLibraryEndToEndSyncProof',
     'runLibraryCatalogPipelineProof',
@@ -97,6 +97,45 @@ if (failures.length === 0) {
     'saveNowReachable',
     'subscribeReachable',
     'waitForPendingAvailable',
+    // F15.9.e bulk migration E2E proof — case names, sub-proof
+    // structure, and supporting helpers must all appear.
+    'BULK_MIGRATION_CASE_NAMES',
+    'bulk-migration-chunked-mode-runs',
+    'bulk-migration-100-plus-bindings',
+    'bulk-migration-repeat-import-idempotent',
+    'bulk-migration-duplicate-label-binding-skipped',
+    'bulk-migration-duplicate-tag-binding-skipped',
+    'bulk-migration-partial-failure-reports-partial',
+    'bulk-migration-bulk-identity-required',
+    'bulk-migration-shim-fallback-disabled-by-default',
+    'bulk-migration-phase-order-catalogs-before-bindings',
+    'bulk-migration-chat-category-cache-after-chat',
+    'bulk-migration-no-raw-leak',
+    // Bulk migration helpers + sub-result blocks
+    'runBulkMigrationE2ECases',
+    'executeLibraryBulkMigration',
+    'makeStatefulBulkExecutor',
+    'makeFailingBulkExecutor',
+    'projectBulkForScan',
+    'bulkChunks',
+    'bulkItemSummaries',
+    'bulkRowsAffected',
+    'maxChunkRespected',
+    'noShimTimeoutPath',
+    'repeatImportSkipped',
+    'sameBatchIdentity',
+    'duplicateLabelSkipped',
+    'duplicateTagSkipped',
+    'failedChunkReported',
+    'notSilent',
+    'bulkIdentityUsed',
+    'disabledBlocks',
+    'shimFallbackBlocked',
+    'catalogsBeforeBindings',
+    'chatCategoryAfterChat',
+    'bulkMigrationIdentityUsed',
+    'injectedExecutorWritesUsed',
+    'f15.bulk-migration',
     'H2O.Desktop.Sync.runLibraryEndToEndSyncProof = runLibraryEndToEndSyncProof',
     'H2O.Desktop.Sync.runLibraryCatalogPipelineProof = runLibraryCatalogPipelineProof',
     'H2O.Desktop.Sync.runLibraryBindingPipelineProof = runLibraryBindingPipelineProof',
@@ -224,7 +263,20 @@ if (failures.length === 0) {
     'path:',
     'url:',
     'token:',
-    'tokens:'
+    'tokens:',
+    // F15.9.e bulk-migration-specific raw-field needles. The bulk
+    // migration bundle carries filenames / paths / titles that must
+    // never be echoed into the proof output.
+    'bundlePath:',
+    'bundleFile:',
+    'bundleFilename:',
+    'bundleFileName:',
+    'bundleName:',
+    'bundleTitle:',
+    'importPath:',
+    'importFilename:',
+    'importFileName:',
+    'sourcePath:'
   ]) {
     if (proofText.includes(forbidden)) {
       failures.push(`${proof}: forbidden returned-field literal ${forbidden}`);
