@@ -1141,6 +1141,14 @@
        relay/outbox, Native/F5 execution, apply, watermark write, or
        consumed-operation write. -->
   <script src="./sync/library/library-sync-proof.tauri.js"></script>
+  <!-- F16.1.a: Desktop/Tauri library runtime conflict gate foundation.
+       Read-only evaluator for library.catalog/library.binding/cache/bulk/F5
+       conflict states. Provides callable conflict decisions for later
+       preflight early-warning and settlement fail-closed integration, but
+       F16.1.a does not wire into those paths and never mutates storage,
+       SQLite, Native/F5, publication, relay/outbox, watermark, or
+       consumed-op state. -->
+  <script src="./sync/library/library-conflict-runtime.tauri.js"></script>
   <!-- F15.10.a: Desktop/Tauri Library Sync operator status UI.
        Read-only Settings-hosted proof/status panel for F15 Library Sync.
        Runs closure and end-to-end proofs only from explicit operator actions;

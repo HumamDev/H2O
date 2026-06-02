@@ -615,6 +615,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // evidence only; no business-table write, publication, relay/outbox,
   // Native/F5 execution, apply, watermark write, or consumed-op write.
   "sync/library/library-sync-proof.tauri.js",
+  // F16.1.a: Desktop/Tauri library runtime conflict gate foundation.
+  // Read-only evaluator for catalog/binding/cache/bulk/F5 conflict
+  // decisions. Provides callable gate output for later preflight and
+  // settlement integration, but this module itself does not mutate.
+  "sync/library/library-conflict-runtime.tauri.js",
   // F15.10.a: Desktop/Tauri Library Sync operator status UI. Read-only
   // Settings-hosted proof/status panel. Proof APIs run only from explicit
   // operator actions. No proposal actions, execute dispatch, Native/F5
@@ -1232,6 +1237,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/library-catalog-execute-adapter.tauri.js",
   "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
   "sync/library/library-sync-proof.tauri.js",
+  "sync/library/library-conflict-runtime.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
   "sync/library/library-folder-binding-migration-shadow.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
