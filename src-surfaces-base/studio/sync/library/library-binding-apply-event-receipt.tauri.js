@@ -73,7 +73,7 @@
   if (H2O.Desktop.Sync.__libraryBindingApplyEventReceiptInstalled) return;
 
   // ── Constants ───────────────────────────────────────────────────────
-  var VERSION = '0.1.0-f15.6.binding';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-apply-event-receipt.v1';
   var APPLY_EVENT_SCHEMA = 'h2o.desktop.sync.library-binding-apply-event.v1';
   var RECEIPT_SCHEMA = 'h2o.desktop.sync.library-binding-receipt.v1';

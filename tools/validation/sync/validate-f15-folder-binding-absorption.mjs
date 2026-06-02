@@ -237,6 +237,13 @@ async function runRuntimeProof(moduleFile) {
 
 const doc = 'docs/systems/cross-platform/f15.11-folder-binding-absorption-plan.md';
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-folder-binding-bridge-diagnostic.tauri.js';
+const bindingCanonicalizer = 'src-surfaces-base/studio/sync/library/library-binding-canonicalizer.tauri.js';
+const bindingDiagnostics = 'src-surfaces-base/studio/sync/library/library-binding-diagnostics.tauri.js';
+const bindingPreflight = 'src-surfaces-base/studio/sync/library/library-binding-preflight.tauri.js';
+const bindingProposal = 'src-surfaces-base/studio/sync/library/library-binding-proposal-candidate-generator.tauri.js';
+const bindingHandoff = 'src-surfaces-base/studio/sync/library/library-binding-handoff-preview.tauri.js';
+const bindingReceipt = 'src-surfaces-base/studio/sync/library/library-binding-apply-event-receipt.tauri.js';
+const bindingBookkeeping = 'src-surfaces-base/studio/sync/library/library-binding-bookkeeping.tauri.js';
 const validator = 'tools/validation/sync/validate-f15-folder-binding-absorption.mjs';
 const html = 'src-surfaces-base/studio/studio.html';
 const pack = 'tools/product/studio/pack-studio.mjs';
@@ -245,6 +252,13 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 [
   doc,
   moduleFile,
+  bindingCanonicalizer,
+  bindingDiagnostics,
+  bindingPreflight,
+  bindingProposal,
+  bindingHandoff,
+  bindingReceipt,
+  bindingBookkeeping,
   validator,
   html,
   pack,
@@ -358,6 +372,38 @@ if (failures.length === 0) {
   assertContains(validator, 'missing folder subject should block');
   assertContains(validator, 'malformed hash should block');
   assertContains(validator, 'privacy leak scan should fail on raw field');
+
+  assertContains(bindingCanonicalizer, "var VERSION = '0.2.0-f15.11.b'", 'canonicalizer F15.11.b version');
+  assertContains(bindingCanonicalizer, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'canonicalizer folder endpoint type');
+  assertContains(bindingCanonicalizer, "bindingKind === 'chat-folder'", 'canonicalizer chat-folder branch');
+  assertContains(bindingCanonicalizer, "['rightSubjectId'], ['folderSubjectId']", 'canonicalizer folder subject alias');
+  assert(!read(bindingCanonicalizer).includes("var DEFERRED_BINDING_KINDS = ['chat-folder']"),
+    `${bindingCanonicalizer}: chat-folder must not remain deferred`);
+
+  assertContains(bindingDiagnostics, "var VERSION = '0.2.0-f15.11.b'", 'diagnostics F15.11.b version');
+  assertContains(bindingDiagnostics, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'diagnostics folder endpoint type');
+  assertContains(bindingDiagnostics, "return { left: CHAT_SUBJECT_TYPE, right: FOLDER_SUBJECT_TYPE }", 'diagnostics chat-folder endpoint type');
+  assertContains(bindingDiagnostics, "return 'chat-folder-conflict'", 'diagnostics chat-folder conflict');
+
+  assertContains(bindingPreflight, "var VERSION = '0.2.0-f15.11.b'", 'preflight F15.11.b version');
+  assertContains(bindingPreflight, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'preflight folder endpoint type');
+  assertContains(bindingPreflight, "'chat-folder-conflict'", 'preflight chat-folder conflict');
+  assertContains(bindingPreflight, 'canonicalBinding.rightSubjectType === FOLDER_SUBJECT_TYPE', 'preflight folder endpoint type gate');
+  assertContains(bindingPreflight, "source.siblingBindings && source.operation === 'bind'", 'preflight sibling conflict gate stays bind-only');
+  assert(!read(bindingPreflight).includes("return (binding && binding.bindingKind === 'chat-folder')"),
+    `${bindingPreflight}: chat-folder must not force deferred preflight`);
+
+  for (const [file, label] of [
+    [bindingProposal, 'proposal'],
+    [bindingHandoff, 'handoff'],
+    [bindingReceipt, 'receipt'],
+    [bindingBookkeeping, 'bookkeeping']
+  ]) {
+    assertContains(file, "var VERSION = '0.2.0-f15.11.b'", `${label} F15.11.b version`);
+  }
+  assertContains(bindingBookkeeping, "'chat-folder'", 'bookkeeping allowed chat-folder kind');
+  assertContains(bindingBookkeeping, 'EXPECTED_RECEIPT_VERSION_PREFIXES', 'bookkeeping multi-version receipt support');
+  assertContains(bindingBookkeeping, "bindingKind === CHAT_CATEGORY_KIND", 'bookkeeping cache refresh stays chat-category only');
 }
 
 let proof = null;

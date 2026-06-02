@@ -36,13 +36,14 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryBindingDiagnosticsInstalled) return;
 
-  var VERSION = '0.1.0-f15.2.b';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-diagnostics.v1';
   var SUBJECT_TYPE = 'library.binding';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var SHA256_RE = /^[0-9a-f]{64}$/;
-  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category'];
+  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category', 'chat-folder'];
   var ALLOWED_BINDING_STATES = ['bound', 'unbound'];
   var ORPHAN_CODES = {
     archived: { code: 'binding-orphaned-catalog-archived', severity: 'info' },
@@ -467,6 +468,9 @@
     if (bindingKind === 'chat-label' || bindingKind === 'chat-tag' || bindingKind === 'chat-category') {
       return { left: CHAT_SUBJECT_TYPE, right: CATALOG_SUBJECT_TYPE };
     }
+    if (bindingKind === 'chat-folder') {
+      return { left: CHAT_SUBJECT_TYPE, right: FOLDER_SUBJECT_TYPE };
+    }
     if (bindingKind === 'tag-category') {
       return { left: CATALOG_SUBJECT_TYPE, right: CATALOG_SUBJECT_TYPE };
     }
@@ -481,9 +485,6 @@
     }
 
     var bindingKindValid = !!(binding && ALLOWED_BINDING_KINDS.indexOf(binding.bindingKind) !== -1);
-    if (binding && binding.bindingKind === 'chat-folder') {
-      addBlocker(blockers, 'binding-kind-deferred');
-    }
     var expected = expectedEndpointTypes(binding && binding.bindingKind);
     var endpointTypeConsistent = !!(bindingKindValid &&
       binding.leftSubjectType === expected.left &&
@@ -619,6 +620,9 @@
     if (current.bindingState !== 'bound' || sibling.bindingState !== 'bound') return '';
     if (current.bindingKind === 'chat-category' && current.leftSubjectId === sibling.leftSubjectId) {
       return 'chat-category-conflict';
+    }
+    if (current.bindingKind === 'chat-folder' && current.leftSubjectId === sibling.leftSubjectId) {
+      return 'chat-folder-conflict';
     }
     if (current.bindingKind === 'chat-label' && sameEndpointBinding(current, sibling)) {
       return 'chat-label-already-bound';

@@ -38,15 +38,15 @@
 
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-canonicalizer-result.v1';
   var CANONICAL_SCHEMA = 'h2o.library.binding.v1';
-  var VERSION = '0.1.0-f15.1.b';
+  var VERSION = '0.2.0-f15.11.b';
   var OBJECT_TYPE = 'libraryBinding';
   var SUBJECT_TYPE = 'library.binding';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
   var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category', 'chat-folder'];
-  var DEFERRED_BINDING_KINDS = ['chat-folder'];
   var ALLOWED_BINDING_STATES = ['bound', 'unbound'];
   var ALLOWED_SOURCE_TAGS = ['desktop', 'mv3-import', 'bundle-import', 'auto-suggested'];
   var RAW_ENDPOINT_FIELD_NAMES = [
@@ -271,6 +271,9 @@
     if (bindingKind === 'chat-label' || bindingKind === 'chat-tag' || bindingKind === 'chat-category') {
       return { left: CHAT_SUBJECT_TYPE, right: CATALOG_SUBJECT_TYPE };
     }
+    if (bindingKind === 'chat-folder') {
+      return { left: CHAT_SUBJECT_TYPE, right: FOLDER_SUBJECT_TYPE };
+    }
     if (bindingKind === 'tag-category') {
       return { left: CATALOG_SUBJECT_TYPE, right: CATALOG_SUBJECT_TYPE };
     }
@@ -294,6 +297,12 @@
       return {
         left: firstString(input, [['leftSubjectId'], ['chatSubjectId']]),
         right: firstString(input, [['rightSubjectId'], ['categorySubjectId']])
+      };
+    }
+    if (bindingKind === 'chat-folder') {
+      return {
+        left: firstString(input, [['leftSubjectId'], ['chatSubjectId']]),
+        right: firstString(input, [['rightSubjectId'], ['folderSubjectId']])
       };
     }
     if (bindingKind === 'tag-category') {
@@ -401,9 +410,6 @@
     var bindingKind = normalizeBindingKind(input);
     if (!bindingKind) {
       return quarantine('invalid-binding-kind', observedAtIso, [], warnings);
-    }
-    if (DEFERRED_BINDING_KINDS.indexOf(bindingKind) !== -1) {
-      return quarantine('binding-kind-deferred', observedAtIso, [], warnings);
     }
 
     var bindingState = normalizeBindingState(input);

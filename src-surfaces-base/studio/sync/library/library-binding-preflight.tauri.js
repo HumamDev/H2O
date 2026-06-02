@@ -33,16 +33,18 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryBindingPreflightInstalled) return;
 
-  var VERSION = '0.1.0-f15.3.b';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-preflight.v1';
   var SUBJECT_TYPE = 'library.binding';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
+  var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var SHA256_RE = /^[0-9a-f]{64}$/;
   var ALLOWED_OPERATIONS = ['bind', 'unbind'];
-  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category'];
+  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category', 'chat-folder'];
   var DUPLICATE_CODES = [
     'chat-category-conflict',
+    'chat-folder-conflict',
     'chat-label-already-bound',
     'chat-tag-already-bound',
     'tag-category-already-bound'
@@ -288,7 +290,7 @@
     if (source.observedAtIso) diagnosticInput.observedAtIso = source.observedAtIso;
     if (source.relatedCatalogs) diagnosticInput.relatedCatalogs = source.relatedCatalogs;
     if (source.relatedChats) diagnosticInput.relatedChats = source.relatedChats;
-    if (source.siblingBindings) diagnosticInput.siblingBindings = source.siblingBindings;
+    if (source.siblingBindings && source.operation === 'bind') diagnosticInput.siblingBindings = source.siblingBindings;
     if (source.materializedCacheObservation) diagnosticInput.materializedCacheObservation = source.materializedCacheObservation;
     if (source.operation) diagnosticInput.diagnosticIntent = source.operation;
 
@@ -446,6 +448,9 @@
     if (current.bindingState !== 'bound' || sibling.bindingState !== 'bound') return '';
     if (current.bindingKind === 'chat-category' && current.leftSubjectId === sibling.leftSubjectId) {
       return 'chat-category-conflict';
+    }
+    if (current.bindingKind === 'chat-folder' && current.leftSubjectId === sibling.leftSubjectId) {
+      return 'chat-folder-conflict';
     }
     if (current.bindingKind === 'chat-label' && sameEndpointBinding(current, sibling)) {
       return 'chat-label-already-bound';
@@ -626,8 +631,7 @@
   }
 
   function diagnosticsHasDeferredKind(diagnosticsResult, binding) {
-    return (binding && binding.bindingKind === 'chat-folder') ||
-      hasCode(diagnosticsResult && diagnosticsResult.blockers, 'binding-kind-deferred') ||
+    return hasCode(diagnosticsResult && diagnosticsResult.blockers, 'binding-kind-deferred') ||
       hasCode(diagnosticsResult && diagnosticsResult.diagnostics && diagnosticsResult.diagnostics.entries, 'binding-kind-deferred');
   }
 
@@ -723,7 +727,8 @@
 
       preflight.endpointTypesValid = diagnostics.endpointTypeConsistent === true ||
         (canonicalBinding.leftSubjectType === CHAT_SUBJECT_TYPE && canonicalBinding.rightSubjectType === CATALOG_SUBJECT_TYPE) ||
-        (canonicalBinding.leftSubjectType === CATALOG_SUBJECT_TYPE && canonicalBinding.rightSubjectType === CATALOG_SUBJECT_TYPE);
+        (canonicalBinding.leftSubjectType === CATALOG_SUBJECT_TYPE && canonicalBinding.rightSubjectType === CATALOG_SUBJECT_TYPE) ||
+        (canonicalBinding.leftSubjectType === CHAT_SUBJECT_TYPE && canonicalBinding.rightSubjectType === FOLDER_SUBJECT_TYPE);
       if (!preflight.endpointTypesValid) addBlocker(blockers, 'library-binding-diagnostics-failed');
 
       inspectCatalogEndpoints(canonicalBinding, input, operation, preflight, blockers, warnings);

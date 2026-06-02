@@ -2,8 +2,8 @@
  *
  * Append-only Studio-local audit ledger for F15.6.b library binding
  * apply-event receipts. Ingests a fully-formed binding receipt envelope
- * (bind or unbind across the four binding kinds: chat-label, chat-tag,
- * chat-category, tag-category), assembles a deterministic ledger row,
+ * (bind or unbind across the five binding kinds: chat-label, chat-tag,
+ * chat-category, tag-category, chat-folder), assembles a deterministic ledger row,
  * and appends it to a chrome.storage.local key with idempotent-by-rowId
  * semantics.
  *
@@ -88,7 +88,7 @@
   if (H2O.Desktop.Sync.__libraryBindingBookkeepingInstalled) return;
 
   // ── Constants ───────────────────────────────────────────────────────
-  var VERSION = '0.1.0-f15.7.binding';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-bookkeeping.v1';
   var LEDGER_SCHEMA = 'h2o.desktop.sync.library-binding-bookkeeping-ledger.v1';
   var ROW_SCHEMA = 'h2o.desktop.sync.library-binding-bookkeeping-row.v1';
@@ -97,10 +97,10 @@
   var SUBJECT_TYPE = 'library.binding';
   var PRIVACY_DOMAIN_TAG = 'library.binding';
   var EXPECTED_RECEIPT_SCHEMA = 'h2o.desktop.sync.library-binding-apply-event-receipt.v1';
-  var EXPECTED_RECEIPT_VERSION_PREFIX = '0.1.0-f15.6.binding';
+  var EXPECTED_RECEIPT_VERSION_PREFIXES = ['0.1.0-f15.6.binding', '0.2.0-f15.11.b'];
   var OWNER_KIND_NATIVE = 'native';
   var ALLOWED_OPERATIONS = ['bind', 'unbind'];
-  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category'];
+  var ALLOWED_BINDING_KINDS = ['chat-label', 'chat-tag', 'chat-category', 'tag-category', 'chat-folder'];
   var CHAT_CATEGORY_KIND = 'chat-category';
   var CHATS_CATEGORY_REFRESH_PENDING_WARNING = 'chats-category-id-refresh-pending';
   var MAX_RELATED_SUBJECTS = 50;
@@ -393,7 +393,14 @@
       return null;
     }
     var version = cleanString(receipt.version);
-    if (version.indexOf(EXPECTED_RECEIPT_VERSION_PREFIX) !== 0) {
+    var acceptedVersion = false;
+    for (var i = 0; i < EXPECTED_RECEIPT_VERSION_PREFIXES.length; i++) {
+      if (version.indexOf(EXPECTED_RECEIPT_VERSION_PREFIXES[i]) === 0) {
+        acceptedVersion = true;
+        break;
+      }
+    }
+    if (!acceptedVersion) {
       addCode(blockers, 'library-binding-bookkeeping-receipt-version-unsupported');
       return null;
     }
@@ -441,6 +448,16 @@
   function validateLaneInvariants(receipt, blockers, warnings) {
     var operation = cleanString(receipt.operation);
     if (ALLOWED_OPERATIONS.indexOf(operation) === -1) {
+      addCode(blockers, 'library-binding-bookkeeping-lane-invariant-violation');
+      return false;
+    }
+    var canonical = safeObject(receipt.canonicalBinding);
+    var payload = safeObject(safeObject(receipt.applyEvent).payload);
+    var target = safeObject(receipt.expectedTargetState);
+    var bindingKind = cleanString(canonical.bindingKind) ||
+      cleanString(payload.bindingKind) ||
+      cleanString(target.bindingKind);
+    if (ALLOWED_BINDING_KINDS.indexOf(bindingKind) === -1) {
       addCode(blockers, 'library-binding-bookkeeping-lane-invariant-violation');
       return false;
     }

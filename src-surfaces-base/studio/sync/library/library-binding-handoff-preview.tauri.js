@@ -56,7 +56,7 @@
   if (H2O.Desktop.Sync.__libraryBindingHandoffPreviewInstalled) return;
 
   // ── Constants ───────────────────────────────────────────────────────
-  var VERSION = '0.1.0-f15.5.binding';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-handoff-preview.v1';
   var NATIVE_HANDOFF_REQUEST_SCHEMA = 'h2o.desktop.sync.library-binding-native-handoff-request.v1';
   var SUBJECT_TYPE = 'library.binding';

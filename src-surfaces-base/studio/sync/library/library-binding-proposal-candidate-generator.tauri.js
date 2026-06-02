@@ -35,7 +35,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryBindingProposalInstalled) return;
 
-  var VERSION = '0.1.0-f15.4.binding';
+  var VERSION = '0.2.0-f15.11.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-proposal-candidate-generator.v1';
   var PROPOSAL_SCHEMA = 'h2o.desktop.sync.library-binding-proposal.v1';
   var CANDIDATE_SCHEMA = 'h2o.desktop.sync.library-binding-proposal-candidate.v1';
