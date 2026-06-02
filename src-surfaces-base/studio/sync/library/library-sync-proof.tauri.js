@@ -410,7 +410,7 @@
       sourceTag: 'desktop',
       observedAtIso: fixtures.observedAtIso
     };
-    row.rawId = fixtures.raw.catalogRawIdValue;
+    row.labelId = fixtures.raw.catalogRawIdValue;
     row.name = fixtures.raw.catalogRawNameValue;
     row.color = fixtures.raw.catalogRawColorValue;
     return row;
