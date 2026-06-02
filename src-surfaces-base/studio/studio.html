@@ -1049,6 +1049,12 @@
        relay/outbox, watermark write, consumed-op write, store shim, bulk
        migration, or UI. -->
   <script src="./sync/execute/library-catalog-f5-closure-bridge.tauri.js"></script>
+  <!-- F15.8.g: Desktop/Tauri library bulk migration path.
+       Dedicated bundle-import path for labels/tags/categories and their
+       chat bindings. Uses the Rust-backed f15.bulk-migration writer identity
+       and returns redacted batch summaries only. No publication, relay/outbox,
+       Native/F5 call, watermark write, consumed-op write, or UI. -->
+  <script src="./sync/library/library-bulk-migration.tauri.js"></script>
   <!-- F15.8.f: Desktop/Tauri legacy library store cutover shims.
        Wraps labels/tags/categories/chats write APIs and routes protected
        writes through the Rust-backed SQLite writer identity sentinel. Reads

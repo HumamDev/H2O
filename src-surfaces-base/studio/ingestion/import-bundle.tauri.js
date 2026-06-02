@@ -514,6 +514,154 @@
       deniedByPolicy: { chromeStorageLocal: 0, libraryKv: 0 } };
   }
 
+  function wantsLibraryBulkMigration(options) {
+    return !(options && typeof options === 'object' && options.disableLibraryBulkMigration === true);
+  }
+  function allowsLibraryShimFallback(options) {
+    return !!(options && typeof options === 'object' && options.allowLibraryShimFallback === true);
+  }
+  function libraryBulkApi() {
+    return H2O.Desktop && H2O.Desktop.Sync && H2O.Desktop.Sync.executeLibraryBulkMigration;
+  }
+  function importBatchIdFor(bundle, options) {
+    var opts = (options && typeof options === 'object') ? options : {};
+    return cleanString(opts.importBatchId || bundle.exportId || bundle.bundleId || bundle.sourceSyncPeerId || '');
+  }
+  function collectAutoTagCandidates(bundle) {
+    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
+      ? bundle.chatArchive.chats : [];
+    var byId = Object.create(null);
+    chats.forEach(function (chat) {
+      var org = chat && chat.chatIndex && chat.chatIndex.organization;
+      if (org && Array.isArray(org.tags)) {
+        org.tags.forEach(function (tag) {
+          var id = cleanString(tag && tag.id);
+          var name = cleanString(tag && (tag.name || tag.label));
+          if (id && name && !byId[id]) byId[id] = name;
+        });
+      }
+      if (Array.isArray(chat && chat.tags)) {
+        chat.tags.forEach(function (tag) {
+          var id = cleanString(tag && tag.id);
+          var name = cleanString(tag && (tag.name || tag.label));
+          if (id && name && !byId[id]) byId[id] = name;
+        });
+      }
+    });
+    return Object.keys(byId).map(function (id) {
+      return { tagId: id, name: byId[id], autoDerived: false, meta: { importedFrom: 'h2o.studio.fullBundle.v2' } };
+    });
+  }
+
+  async function importLibraryCatalogsBulk(bundle, stores, result, options) {
+    if (!wantsLibraryBulkMigration(options)) return false;
+    var executeBulk = libraryBulkApi();
+    if (typeof executeBulk !== 'function') {
+      if (allowsLibraryShimFallback(options)) return false;
+      result.errors.push({ kind: 'library-bulk-migration', phase: 'catalogs', error: 'library bulk migration unavailable; shim fallback disabled' });
+      return true;
+    }
+
+    var cats = (bundle.chatArchive && bundle.chatArchive.catalogs
+                && Array.isArray(bundle.chatArchive.catalogs.categories))
+      ? bundle.chatArchive.catalogs.categories : [];
+    var lbls = (bundle.chatArchive && bundle.chatArchive.catalogs
+                && Array.isArray(bundle.chatArchive.catalogs.labels))
+      ? bundle.chatArchive.catalogs.labels : [];
+    var autoTags = collectAutoTagCandidates(bundle);
+    var categories = [];
+    var labels = [];
+    var tags = [];
+    var categoryIds = [];
+    var labelIds = [];
+
+    for (var ci = 0; ci < cats.length; ci += 1) {
+      var catRow = cats[ci];
+      var catId = cleanString(catRow && (catRow.id || catRow.categoryId));
+      if (!catId) { result.warnings.push({ kind: 'category', warn: 'missing id at index ' + ci }); continue; }
+      try {
+        var existingCat = stores.categories && typeof stores.categories.get === 'function' ? await stores.categories.get(catId) : null;
+        if (existingCat) { result.skipped.categories += 1; continue; }
+        categories.push({
+          categoryId: catId,
+          name: catRow.name || catId,
+          parentId: catRow.parentId || catRow.parent_id || '',
+          source: catRow.source || 'imported',
+          meta: safeMeta(catRow.meta)
+        });
+        categoryIds.push(catId);
+      } catch (e) {
+        result.errors.push({ kind: 'category.get', id: catId, error: String(e && e.message || e) });
+      }
+    }
+
+    for (var li = 0; li < lbls.length; li += 1) {
+      var lblRow = lbls[li];
+      var labelId = cleanString(lblRow && (lblRow.id || lblRow.labelId));
+      if (!labelId) { result.warnings.push({ kind: 'label', warn: 'missing id at index ' + li }); continue; }
+      try {
+        var existingLabel = stores.labels && typeof stores.labels.get === 'function' ? await stores.labels.get(labelId) : null;
+        if (existingLabel) { result.skipped.labels += 1; continue; }
+        labels.push({
+          labelId: labelId,
+          name: lblRow.name || labelId,
+          color: lblRow.color || '',
+          source: lblRow.source || 'imported',
+          meta: safeMeta(lblRow.meta)
+        });
+        labelIds.push(labelId);
+      } catch (e2) {
+        result.errors.push({ kind: 'label.get', id: labelId, error: String(e2 && e2.message || e2) });
+      }
+    }
+
+    for (var ti = 0; ti < autoTags.length; ti += 1) {
+      var tag = autoTags[ti];
+      try {
+        var existingTag = stores.tags && typeof stores.tags.get === 'function' ? await stores.tags.get(tag.tagId) : null;
+        if (!existingTag) tags.push(tag);
+      } catch (e3) {
+        result.errors.push({ kind: 'tag.get', tagId: tag.tagId, error: String(e3 && e3.message || e3) });
+      }
+    }
+
+    if (!categories.length && !labels.length && !tags.length) return true;
+    var bulk = await executeBulk({
+      phase: 'catalogs',
+      importBatchId: importBatchIdFor(bundle, options),
+      categories: categories,
+      labels: labels,
+      tags: tags,
+      maxChunkSize: (options && options.maxLibraryBulkChunkSize) || 100
+    });
+    result.libraryBulkMigration = result.libraryBulkMigration || [];
+    result.libraryBulkMigration.push({
+      phase: 'catalogs',
+      ok: bulk && bulk.ok === true,
+      status: bulk && bulk.status,
+      counts: bulk && bulk.counts,
+      blockers: bulk && bulk.blockers,
+      warnings: bulk && bulk.warnings
+    });
+    if (!bulk || bulk.ok !== true) {
+      result.errors.push({ kind: 'library-bulk-migration', phase: 'catalogs', error: 'bulk catalog migration failed' });
+      return true;
+    }
+    result.written.categories += categories.length;
+    result.written.labels += labels.length;
+    result.written.tagsAutoCreated += tags.length;
+    categoryIds.slice(0, Math.max(0, 10 - result.sample.writtenCategoryIds.length)).forEach(function (id) {
+      result.sample.writtenCategoryIds.push(id);
+    });
+    labelIds.slice(0, Math.max(0, 10 - result.sample.writtenLabelIds.length)).forEach(function (id) {
+      result.sample.writtenLabelIds.push(id);
+    });
+    if (stores.categories && typeof stores.categories.reload === 'function') { try { await stores.categories.reload(); } catch (_) { /* ignore */ } }
+    if (stores.labels && typeof stores.labels.reload === 'function') { try { await stores.labels.reload(); } catch (_) { /* ignore */ } }
+    if (stores.tags && typeof stores.tags.reload === 'function') { try { await stores.tags.reload(); } catch (_) { /* ignore */ } }
+    return true;
+  }
+
   async function importCategories(bundle, stores, result) {
     var cats = (bundle.chatArchive && bundle.chatArchive.catalogs
                 && Array.isArray(bundle.chatArchive.catalogs.categories))
@@ -627,7 +775,7 @@
    * importSnapshots / importFolderBindings know whether the binding target
    * exists. 'skipped' means the chat row was already present — bindings to
    * it are still valid. */
-  async function importChats(bundle, stores, result, chatStateIndex) {
+  async function importChats(bundle, stores, result, chatStateIndex, suppressCategoryId) {
     var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
       ? bundle.chatArchive.chats : [];
     var chatStore = stores.chats;
@@ -653,6 +801,9 @@
         var snapshots = Array.isArray(chat.snapshots) ? chat.snapshots.slice() : [];
         snapshots.sort(function (a, b) { return isoToEpochMs(b && b.createdAt) - isoToEpochMs(a && a.createdAt); });
         var patch = deriveChatPatchFromBundle(chat, snapshots);
+        if (suppressCategoryId === true) {
+          delete patch.categoryId;
+        }
         await chatStore.upsert(patch);
         result.written.chats += 1;
         chatStateIndex[chatId] = 'imported';
@@ -1011,6 +1162,174 @@
     }
   }
 
+  async function importLibraryBindingsBulk(bundle, stores, result, chatStateIndex, options) {
+    if (!wantsLibraryBulkMigration(options)) return false;
+    var executeBulk = libraryBulkApi();
+    if (typeof executeBulk !== 'function') {
+      if (allowsLibraryShimFallback(options)) return false;
+      result.errors.push({ kind: 'library-bulk-migration', phase: 'bindings', error: 'library bulk migration unavailable; shim fallback disabled' });
+      return true;
+    }
+    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
+      ? bundle.chatArchive.chats : [];
+    var chatStore = stores.chats;
+    var lblStore = stores.labels;
+    var tagStore = stores.tags;
+    var catStore = stores.categories;
+    var chatCategories = [];
+    var labelBindings = [];
+    var tagBindings = [];
+    var labelSamples = [];
+    var tagSamples = [];
+
+    async function chatExists(chatId, warningKind) {
+      if (chatStateIndex[chatId] === 'imported' || chatStateIndex[chatId] === 'skipped') return true;
+      try {
+        return !!(chatStore && typeof chatStore.get === 'function' ? await chatStore.get(chatId) : null);
+      } catch (_) {
+        result.warnings.push({ kind: warningKind, chatId: chatId });
+        return false;
+      }
+    }
+
+    for (var ci = 0; ci < chats.length; ci += 1) {
+      var chat = chats[ci];
+      var chatId = cleanString(chat && chat.chatId);
+      if (!chatId) continue;
+      var org = chat && chat.chatIndex && chat.chatIndex.organization;
+      var categoryId = cleanString(org && org.categoryId);
+      if (categoryId) {
+        try {
+          var category = catStore && typeof catStore.get === 'function' ? await catStore.get(categoryId) : null;
+          var chatRow = chatStore && typeof chatStore.get === 'function' ? await chatStore.get(chatId) : null;
+          if (!category) result.warnings.push({ kind: 'orphan-category-id', chatId: chatId, categoryId: categoryId });
+          else if (!chatRow) result.warnings.push({ kind: 'orphan-category-binding', chatId: chatId, categoryId: categoryId });
+          else if (cleanString(chatRow.categoryId) !== categoryId) chatCategories.push({ chatId: chatId, categoryId: categoryId, assignedAt: Date.now() });
+        } catch (e) {
+          result.errors.push({ kind: 'category-binding', chatId: chatId, categoryId: categoryId, error: String(e && e.message || e) });
+        }
+      }
+    }
+
+    var labelEntry = null;
+    var kvEntries = Array.isArray(bundle.libraryKv) ? bundle.libraryKv : [];
+    for (var ei = 0; ei < kvEntries.length; ei += 1) {
+      if (kvEntries[ei] && kvEntries[ei].key === 'h2o:prm:cgx:library:labels:bindings:v1') {
+        labelEntry = kvEntries[ei];
+        break;
+      }
+    }
+    if (labelEntry) {
+      var labelMap = parseLabelBindingsMap(labelEntry.value);
+      if (!labelMap) result.warnings.push({ kind: 'label-bindings-shape-unrecognized', key: labelEntry.key });
+      else {
+        var labelChatIds = Object.keys(labelMap);
+        for (var lci = 0; lci < labelChatIds.length; lci += 1) {
+          var labelChatId = cleanString(labelChatIds[lci]);
+          if (!labelChatId || !(await chatExists(labelChatId, 'orphan-label-binding'))) continue;
+          var existingLabels = Object.create(null);
+          try {
+            var rows = lblStore && typeof lblStore.listForChat === 'function' ? await lblStore.listForChat(labelChatId) : [];
+            (rows || []).forEach(function (row) { if (row && row.labelId) existingLabels[row.labelId] = true; });
+          } catch (e2) {
+            result.errors.push({ kind: 'label.listForChat', chatId: labelChatId, error: String((e2 && e2.message) || e2) });
+            continue;
+          }
+          var labelIds = Array.isArray(labelMap[labelChatId]) ? labelMap[labelChatId] : [];
+          for (var li = 0; li < labelIds.length; li += 1) {
+            var labelId = cleanString(labelIds[li]);
+            if (!labelId || existingLabels[labelId]) {
+              if (labelId && existingLabels[labelId]) result.skipped.labelBindings += 1;
+              continue;
+            }
+            try {
+              var label = lblStore && typeof lblStore.get === 'function' ? await lblStore.get(labelId) : null;
+              if (!label) { result.warnings.push({ kind: 'orphan-label-id', chatId: labelChatId, labelId: labelId }); continue; }
+              labelBindings.push({ chatId: labelChatId, labelId: labelId, assignedAt: Date.now() });
+              existingLabels[labelId] = true;
+              labelSamples.push(labelChatId + ':' + labelId);
+            } catch (e3) {
+              result.errors.push({ kind: 'label.get', labelId: labelId, error: String((e3 && e3.message) || e3) });
+            }
+          }
+        }
+      }
+    }
+
+    for (var cti = 0; cti < chats.length; cti += 1) {
+      var tagChat = chats[cti];
+      var tagChatId = cleanString(tagChat && tagChat.chatId);
+      if (!tagChatId) continue;
+      var tagOrg = tagChat && tagChat.chatIndex && tagChat.chatIndex.organization;
+      if (!tagOrg) continue;
+      var tagIds = [];
+      if (Array.isArray(tagOrg.tagIds)) {
+        tagOrg.tagIds.forEach(function (tagId) { var s = cleanString(tagId); if (s && tagIds.indexOf(s) === -1) tagIds.push(s); });
+      }
+      if (Array.isArray(tagOrg.tags)) {
+        tagOrg.tags.forEach(function (tag) { var s = cleanString(tag && tag.id); if (s && tagIds.indexOf(s) === -1) tagIds.push(s); });
+      }
+      if (!tagIds.length || !(await chatExists(tagChatId, 'orphan-tag-binding'))) continue;
+      var existingTags = Object.create(null);
+      try {
+        var tagRows = tagStore && typeof tagStore.listForChat === 'function' ? await tagStore.listForChat(tagChatId) : [];
+        (tagRows || []).forEach(function (row) { if (row && row.tagId) existingTags[row.tagId] = true; });
+      } catch (e4) {
+        result.errors.push({ kind: 'tag.listForChat', chatId: tagChatId, error: String((e4 && e4.message) || e4) });
+        continue;
+      }
+      for (var ti = 0; ti < tagIds.length; ti += 1) {
+        var tagId = tagIds[ti];
+        if (existingTags[tagId]) { result.skipped.tagBindings += 1; continue; }
+        try {
+          var tagRow = tagStore && typeof tagStore.get === 'function' ? await tagStore.get(tagId) : null;
+          if (!tagRow) { result.warnings.push({ kind: 'orphan-tag-id', chatId: tagChatId, tagId: tagId }); continue; }
+          tagBindings.push({ chatId: tagChatId, tagId: tagId, assignedAt: Date.now() });
+          existingTags[tagId] = true;
+          tagSamples.push(tagChatId + ':' + tagId);
+        } catch (e5) {
+          result.errors.push({ kind: 'tag.get', tagId: tagId, error: String((e5 && e5.message) || e5) });
+        }
+      }
+    }
+
+    if (!chatCategories.length && !labelBindings.length && !tagBindings.length) return true;
+    var bulk = await executeBulk({
+      phase: 'bindings',
+      importBatchId: importBatchIdFor(bundle, options),
+      chatCategories: chatCategories,
+      labelBindings: labelBindings,
+      tagBindings: tagBindings,
+      maxChunkSize: (options && options.maxLibraryBulkChunkSize) || 100
+    });
+    result.libraryBulkMigration = result.libraryBulkMigration || [];
+    result.libraryBulkMigration.push({
+      phase: 'bindings',
+      ok: bulk && bulk.ok === true,
+      status: bulk && bulk.status,
+      counts: bulk && bulk.counts,
+      blockers: bulk && bulk.blockers,
+      warnings: bulk && bulk.warnings
+    });
+    if (!bulk || bulk.ok !== true) {
+      result.errors.push({ kind: 'library-bulk-migration', phase: 'bindings', error: 'bulk binding migration failed' });
+      return true;
+    }
+    result.written.labelBindings += labelBindings.length;
+    result.written.tagBindings += tagBindings.length;
+    labelSamples.slice(0, Math.max(0, 10 - result.sample.writtenLabelBindings.length)).forEach(function (sample) {
+      result.sample.writtenLabelBindings.push(sample);
+    });
+    tagSamples.slice(0, Math.max(0, 10 - result.sample.writtenTagBindings.length)).forEach(function (sample) {
+      result.sample.writtenTagBindings.push(sample);
+    });
+    if (stores.chats && typeof stores.chats.reload === 'function') { try { await stores.chats.reload(); } catch (_) { /* ignore */ } }
+    if (stores.labels && typeof stores.labels.reload === 'function') { try { await stores.labels.reload(); } catch (_) { /* ignore */ } }
+    if (stores.tags && typeof stores.tags.reload === 'function') { try { await stores.tags.reload(); } catch (_) { /* ignore */ } }
+    if (stores.categories && typeof stores.categories.reload === 'function') { try { await stores.categories.reload(); } catch (_) { /* ignore */ } }
+    return true;
+  }
+
   async function importChromeStorageBlobs(bundle, result) {
     var csl = (bundle.chromeStorageLocal && typeof bundle.chromeStorageLocal === 'object')
       ? bundle.chromeStorageLocal : {};
@@ -1221,10 +1540,13 @@
       /* Order matters: catalogs first (no FK deps), then chats (chats may
        * reference categoryId), then snapshots (need their chat row), then
        * folder bindings (need both folder and chat), then opaque kv blobs. */
-      await importCategories(bundle, stores, result);
-      await importLabels(bundle, stores, result);
+      var libraryCatalogsHandled = await importLibraryCatalogsBulk(bundle, stores, result, options);
+      if (!libraryCatalogsHandled) {
+        await importCategories(bundle, stores, result);
+        await importLabels(bundle, stores, result);
+      }
       await importFolders(bundle, stores, result);
-      await importChats(bundle, stores, result, chatStateIndex);
+      await importChats(bundle, stores, result, chatStateIndex, libraryCatalogsHandled && wantsLibraryBulkMigration(options));
       await importSnapshots(bundle, stores, result, chatStateIndex);
       await importFolderBindings(bundle, stores, result, chatStateIndex);
       /* M2c-3: per-chat label/tag bindings. Label bindings come from a
@@ -1232,8 +1554,11 @@
        * chatIndex.organization.tagIds (MV3 has no separate tag-bindings
        * KV). Both need chats + their parent catalogs to already be
        * written, hence this slot after importFolderBindings. */
-      await importLabelBindings(bundle, stores, result, chatStateIndex);
-      await importTagBindings(bundle, stores, result, chatStateIndex);
+      var libraryBindingsHandled = await importLibraryBindingsBulk(bundle, stores, result, chatStateIndex, options);
+      if (!libraryBindingsHandled) {
+        await importLabelBindings(bundle, stores, result, chatStateIndex);
+        await importTagBindings(bundle, stores, result, chatStateIndex);
+      }
       await importChromeStorageBlobs(bundle, result);
       await importLibraryKvBlobs(bundle, result);
     } catch (e) {

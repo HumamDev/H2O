@@ -536,6 +536,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // outbox, watermark write, consumed-op write, store shim, bulk migration,
   // or UI.
   "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
+  // F15.8.g: Desktop/Tauri library bulk migration path. Dedicated
+  // bundle-import path for labels/tags/categories and their chat bindings.
+  // Uses the Rust-backed f15.bulk-migration writer identity and returns
+  // redacted batch summaries only. No publication, relay/outbox, Native/F5
+  // call, watermark write, consumed-op write, or UI.
+  "sync/library/library-bulk-migration.tauri.js",
   // F15.8.f: Desktop/Tauri legacy library store cutover shims. Wraps
   // labels/tags/categories/chats write APIs and routes protected writes
   // through the Rust-backed SQLite writer identity sentinel.
@@ -1191,6 +1197,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/execute-settlement-writer-library-extension.tauri.js",
   "sync/execute/library-category-cache-refresh.tauri.js",
   "sync/execute/library-catalog-f5-closure-bridge.tauri.js",
+  "sync/library/library-bulk-migration.tauri.js",
   "sync/library/library-store-cutover-shims.tauri.js",
   "sync/execute/execute-resume-on-boot.tauri.js",
   "sync/execute/adapters/chat-execute-adapter.tauri.js",
