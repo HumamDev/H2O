@@ -627,6 +627,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // no wrapper delegation, chat-folder enablement, F7 behavior change,
   // folder store write, SQLite write, execute/settlement change, or UI.
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
+  // F15.11.d: Desktop/Tauri folder-binding migration shadow events.
+  // Hash-only in-memory shadow records linking legacy F7/F13 identity to
+  // F15 library.binding chat-folder identity, plus the default-off guarded
+  // F7 delegation flag. No folder store write, SQLite write, execute /
+  // settlement, Native/F5 action, publication, relay/outbox, or UI.
+  "sync/library/library-folder-binding-migration-shadow.tauri.js",
   // F14.6.16: Desktop/Tauri Execute Lane UI. Read-only Settings-hosted
   // operator visibility panel. No dispatch, Native, F5, relay, settlement,
   // publication, watermark, consumed-operation, or domain mutation controls.
@@ -1227,6 +1233,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
   "sync/library/library-sync-proof.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
+  "sync/library/library-folder-binding-migration-shadow.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
   "sync/folder-sync.tauri.js",
   "sync/auto-export.tauri.js",

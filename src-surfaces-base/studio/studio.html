@@ -1153,6 +1153,13 @@
        no wrapper delegation, chat-folder enablement, F7 behavior change,
        folder store write, SQLite write, execute/settlement change, or UI. -->
   <script src="./sync/library/library-folder-binding-bridge-diagnostic.tauri.js"></script>
+  <!-- F15.11.d: Desktop/Tauri folder-binding migration shadow events.
+       Creates hash-only, in-memory shadow records linking legacy F7/F13
+       folder-binding identities to the F15 library.binding chat-folder
+       identity model. Also exposes the default-off guarded F7 delegation
+       flag. No folder store write, SQLite write, execute/settlement,
+       Native/F5 action, publication, relay/outbox, or UI. -->
+  <script src="./sync/library/library-folder-binding-migration-shadow.tauri.js"></script>
   <!-- F14.6.16: Desktop/Tauri Execute Lane UI.
        Read-only Settings-hosted operator visibility panel for journal,
        publication, broker, settlement, adapter, readiness, and proof

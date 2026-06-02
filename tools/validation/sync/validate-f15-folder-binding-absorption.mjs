@@ -235,8 +235,87 @@ async function runRuntimeProof(moduleFile) {
   };
 }
 
+async function runShadowRuntimeProof(moduleFile) {
+  const text = read(moduleFile);
+  const context = buildContext();
+  vm.runInContext(text, context, { filename: moduleFile });
+  const sync = context.H2O.Desktop.Sync;
+  assert(sync.__libraryFolderBindingMigrationShadowInstalled === true, 'shadow installed marker missing at runtime');
+  assert(sync.__libraryFolderBindingMigrationShadowVersion === '0.1.0-f15.11.d', 'shadow version marker mismatch at runtime');
+  assert(sync.__enableF15FolderBindingDelegation === false, 'delegation flag must default off');
+  assert(typeof sync.createLibraryFolderBindingMigrationShadow === 'function', 'shadow create API missing');
+  assert(typeof sync.listLibraryFolderBindingMigrationShadows === 'function', 'shadow list API missing');
+  assert(typeof sync.setF15FolderBindingDelegationEnabled === 'function', 'delegation setter API missing');
+  assert(typeof sync.isF15FolderBindingDelegationEnabled === 'function', 'delegation getter API missing');
+
+  const chatA = makeHash('shadow-chat-a');
+  const folderA = makeHash('shadow-folder-a');
+  const salt = makeHash('shadow-salt');
+  const created = await sync.createLibraryFolderBindingMigrationShadow({
+    chatSubjectId: chatA,
+    folderSubjectId: folderA,
+    perEnvelopeSalt: salt,
+    observedAtIso: '2026-06-02T00:00:00Z'
+  });
+  assert(created.ok === true, 'shadow create should pass');
+  assert(created.created === true, 'shadow create should report created');
+  assert(created.sideEffectSummary && Object.values(created.sideEffectSummary).every((value) => value === false), 'shadow sideEffectSummary must be all false');
+
+  const expectedF13 = sha256Hex(`folderBinding:${chatA}:${folderA}`);
+  const expectedF15 = sha256Hex(canonicalJSON({
+    subjectType: 'library.binding',
+    bindingKind: 'chat-folder',
+    leftSubjectId: chatA,
+    rightSubjectId: folderA,
+    perEnvelopeSalt: salt
+  }));
+  assert(created.shadowEvent.legacyF13SubjectId === expectedF13, 'shadow F13 identity mismatch');
+  assert(created.shadowEvent.libraryBindingSubjectId === expectedF15, 'shadow F15 identity mismatch');
+
+  const duplicate = await sync.createLibraryFolderBindingMigrationShadow({
+    chatSubjectId: chatA,
+    folderSubjectId: folderA,
+    perEnvelopeSalt: salt,
+    observedAtIso: '2026-06-02T00:00:00Z'
+  });
+  assert(duplicate.ok === true, 'duplicate shadow should remain ok');
+  assert(duplicate.alreadyPresent === true, 'duplicate shadow should be idempotent');
+  assert(duplicate.row.migrationDigest === created.shadowEvent.migrationDigest, 'duplicate shadow digest should match');
+
+  const listed = sync.listLibraryFolderBindingMigrationShadows({});
+  assert(listed.ok === true, 'shadow list should pass');
+  assert(listed.rowCount === 1, 'shadow ledger should contain one unique row');
+
+  const privacy = await sync.createLibraryFolderBindingMigrationShadow({
+    chatSubjectId: chatA,
+    folderSubjectId: folderA,
+    perEnvelopeSalt: salt,
+    folderId: 'raw-folder'
+  });
+  assert(privacy.ok === false, 'shadow raw privacy field should block');
+  assert(privacy.privacy && privacy.privacy.ok === false, 'shadow privacy result should fail on raw field');
+
+  sync.setF15FolderBindingDelegationEnabled(true);
+  assert(sync.isF15FolderBindingDelegationEnabled() === true, 'delegation setter should enable flag');
+  sync.setF15FolderBindingDelegationEnabled(false);
+  assert(sync.isF15FolderBindingDelegationEnabled() === false, 'delegation setter should disable flag');
+
+  return {
+    createOk: created.ok,
+    duplicateIdempotent: duplicate.alreadyPresent === true,
+    listCount: listed.rowCount,
+    privacyBlocked: privacy.ok === false,
+    deterministicF13: created.shadowEvent.legacyF13SubjectId === expectedF13,
+    deterministicF15: created.shadowEvent.libraryBindingSubjectId === expectedF15,
+    sideEffectsSafe: Object.values(created.sideEffectSummary).every((value) => value === false),
+    delegationDefaultsOff: sync.isF15FolderBindingDelegationEnabled() === false
+  };
+}
+
 const doc = 'docs/systems/cross-platform/f15.11-folder-binding-absorption-plan.md';
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-folder-binding-bridge-diagnostic.tauri.js';
+const shadowModule = 'src-surfaces-base/studio/sync/library/library-folder-binding-migration-shadow.tauri.js';
+const folderStore = 'src-surfaces-base/studio/store/folders.tauri.js';
 const bindingCanonicalizer = 'src-surfaces-base/studio/sync/library/library-binding-canonicalizer.tauri.js';
 const bindingDiagnostics = 'src-surfaces-base/studio/sync/library/library-binding-diagnostics.tauri.js';
 const bindingPreflight = 'src-surfaces-base/studio/sync/library/library-binding-preflight.tauri.js';
@@ -255,6 +334,8 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 [
   doc,
   moduleFile,
+  shadowModule,
+  folderStore,
   bindingCanonicalizer,
   bindingDiagnostics,
   bindingPreflight,
@@ -353,9 +434,89 @@ if (failures.length === 0) {
   ].forEach((needle) => assertContains(moduleFile, needle, `guarded forbidden field ${needle}`));
 
   assertContains(html, 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js');
+  assertContains(html, 'sync/library/library-folder-binding-migration-shadow.tauri.js');
   assertContains(pack, 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js');
+  assertContains(pack, 'sync/library/library-folder-binding-migration-shadow.tauri.js');
   assertOrder(html, 'sync/library/library-sync-operator-ui.tauri.js', 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js');
+  assertOrder(html, 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js', 'sync/library/library-folder-binding-migration-shadow.tauri.js');
   assertOrder(pack, 'sync/library/library-sync-operator-ui.tauri.js', 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js');
+  assertOrder(pack, 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js', 'sync/library/library-folder-binding-migration-shadow.tauri.js');
+
+  [
+    "var VERSION = '0.1.0-f15.11.d'",
+    "var SHADOW_SCHEMA = 'h2o.desktop.sync.library-folder-binding-migration-shadow.v1'",
+    "var BINDING_KIND = 'chat-folder'",
+    'createLibraryFolderBindingMigrationShadow',
+    'listLibraryFolderBindingMigrationShadows',
+    'setF15FolderBindingDelegationEnabled',
+    'isF15FolderBindingDelegationEnabled',
+    '__enableF15FolderBindingDelegation = false',
+    'legacyF10SubjectId',
+    'legacyF13SubjectId',
+    'libraryBindingSubjectId',
+    'migrationDigest',
+    'folderBinding:',
+    'F10/F7-preview',
+    'publicationTouched: false',
+    'relayTouched: false',
+    'outboxTouched: false',
+    'nativeCalled: false',
+    'f5Touched: false',
+    'applyExecuted: false',
+    'watermarkWritten: false',
+    'consumedOperationWritten: false',
+    'storageWritten: false'
+  ].forEach((needle) => assertContains(shadowModule, needle));
+
+  [
+    'rawChatId',
+    'rawFolderId',
+    'chatId',
+    'chat_id',
+    'folderId',
+    'folder_id',
+    'folderName',
+    'rawColor',
+    'path',
+    'url',
+    'content',
+    'token',
+    'category_id',
+    'chats.category_id'
+  ].forEach((needle) => assertContains(shadowModule, needle, `shadow guarded forbidden field ${needle}`));
+
+  [
+    'f15FolderBindingDelegationEnabled',
+    'explicitF7FallbackAllowed',
+    'delegateF15FolderBindingWrite',
+    'runF15FolderBindingDelegationPipeline',
+    'buildF15FolderBindingDelegationInput',
+    'createLibraryFolderBindingMigrationShadow',
+    'generateLibraryBindingProposalCandidate',
+    'previewLibraryBindingHandoff',
+    'buildLibraryBindingApplyEventReceipt',
+    'recordLibraryBindingBookkeeping',
+    'shapeLibraryBindingExecuteEnvelope',
+    'settleLibraryExecuteEnvelope',
+    "bindingKind: 'chat-folder'",
+    "leftSubjectType: 'chat.metadata'",
+    "rightSubjectType: 'folder.metadata'",
+    "sourceTag: 'f7-folder-binding-compat'",
+    "operation === 'bind'",
+    "delegateF15FolderBindingWrite('unbind'",
+    "if (!f15FolderBindingDelegationEnabled(opts))",
+    'bindChatLegacy',
+    'unbindChatLegacy',
+    'f15AllowF7Fallback',
+    'allowF7Fallback',
+    'f15Delegated: true',
+    "notifySubscribers({ source: 'local', op: 'bindChat'",
+    "notifySubscribers({ source: 'local', op: 'unbindChat'",
+    '__lastF15FolderBindingDelegationResult'
+  ].forEach((needle) => assertContains(folderStore, needle));
+
+  assert(!read(folderStore).includes('setF15FolderBindingDelegationEnabled(true)'),
+    `${folderStore}: delegation must not be enabled by default`);
 
   const moduleText = read(moduleFile);
   const forbiddenWriteCalls = [
@@ -441,7 +602,10 @@ if (failures.length === 0) {
 
 let proof = null;
 if (failures.length === 0) {
-  proof = await runRuntimeProof(moduleFile);
+  proof = {
+    bridgeDiagnostic: await runRuntimeProof(moduleFile),
+    migrationShadow: await runShadowRuntimeProof(shadowModule)
+  };
 }
 
 if (failures.length) {

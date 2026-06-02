@@ -387,6 +387,263 @@
     return 'fold_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
   }
 
+  function getSync() {
+    return (H2O && H2O.Desktop && H2O.Desktop.Sync) || null;
+  }
+
+  function f15FolderBindingDelegationEnabled(opts) {
+    if (opts && opts.useF15FolderBindingDelegation === true) return true;
+    var sync = getSync();
+    if (!sync) return false;
+    if (typeof sync.isF15FolderBindingDelegationEnabled === 'function') {
+      try { return sync.isF15FolderBindingDelegationEnabled() === true; }
+      catch (_) { /* fall through */ }
+    }
+    return sync.__enableF15FolderBindingDelegation === true;
+  }
+
+  function explicitF7FallbackAllowed(opts) {
+    return !!(opts && (opts.f15AllowF7Fallback === true || opts.allowF7Fallback === true));
+  }
+
+  function isSha256Hex(value) {
+    return /^[0-9a-f]{64}$/.test(String(value || '').trim().toLowerCase());
+  }
+
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!value || typeof value !== 'object') return value;
+    var out = {};
+    Object.keys(value).sort().forEach(function (key) {
+      if (typeof value[key] !== 'undefined') out[key] = canonicalize(value[key]);
+    });
+    return out;
+  }
+
+  function canonicalJSON(value) {
+    var sync = getSync();
+    var kernel = sync && sync.kernel;
+    if (kernel && typeof kernel.canonicalJSON === 'function') {
+      try { return kernel.canonicalJSON(value); } catch (_) { /* fall through */ }
+    }
+    return JSON.stringify(canonicalize(value));
+  }
+
+  function bytesToHex(bytes) {
+    var out = '';
+    for (var i = 0; i < bytes.length; i++) {
+      var part = bytes[i].toString(16);
+      out += part.length === 1 ? '0' + part : part;
+    }
+    return out;
+  }
+
+  async function sha256Hex(value) {
+    var sync = getSync();
+    var kernel = sync && sync.kernel;
+    if (kernel && typeof kernel.sha256Hex === 'function') {
+      try {
+        var digest = await kernel.sha256Hex(value);
+        if (isSha256Hex(digest)) return String(digest).trim().toLowerCase();
+      } catch (_) { /* fall through */ }
+    }
+    if (!global.crypto || !global.crypto.subtle || typeof global.crypto.subtle.digest !== 'function') return '';
+    var text = typeof value === 'string' ? value : canonicalJSON(value);
+    var data = new global.TextEncoder().encode(text);
+    var buffer = await global.crypto.subtle.digest('SHA-256', data);
+    return bytesToHex(new Uint8Array(buffer));
+  }
+
+  function nowIsoSeconds() {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  async function hashLegacyEndpoint(subjectType, rawId) {
+    return sha256Hex(canonicalJSON({
+      subjectType: subjectType,
+      legacyEndpoint: String(rawId || '').trim()
+    }));
+  }
+
+  async function resolveDelegationActorPeer(opts) {
+    var peer = opts && opts.actorPeer;
+    if (peer && isSha256Hex(peer.physicalDeviceIdHash) &&
+        isSha256Hex(peer.installIdHash) &&
+        isSha256Hex(peer.syncPeerIdHash)) {
+      return {
+        physicalDeviceIdHash: String(peer.physicalDeviceIdHash).trim().toLowerCase(),
+        installIdHash: String(peer.installIdHash).trim().toLowerCase(),
+        syncPeerIdHash: String(peer.syncPeerIdHash).trim().toLowerCase()
+      };
+    }
+    return {
+      physicalDeviceIdHash: await sha256Hex('f15.folder-binding-delegation.device'),
+      installIdHash: await sha256Hex('f15.folder-binding-delegation.install'),
+      syncPeerIdHash: await sha256Hex('f15.folder-binding-delegation.peer')
+    };
+  }
+
+  async function buildF15FolderBindingDelegationInput(operation, folderId, chatId, opts) {
+    opts = opts || {};
+    var chatSubjectId = isSha256Hex(opts.chatSubjectId)
+      ? String(opts.chatSubjectId).trim().toLowerCase()
+      : await hashLegacyEndpoint('chat.metadata', chatId);
+    var folderSubjectId = isSha256Hex(opts.folderSubjectId)
+      ? String(opts.folderSubjectId).trim().toLowerCase()
+      : await hashLegacyEndpoint('folder.metadata', folderId);
+    var originAccountIdHash = isSha256Hex(opts.originAccountIdHash)
+      ? String(opts.originAccountIdHash).trim().toLowerCase()
+      : await sha256Hex('f15.folder-binding-delegation.local-account');
+    var perEnvelopeSalt = isSha256Hex(opts.perEnvelopeSalt)
+      ? String(opts.perEnvelopeSalt).trim().toLowerCase()
+      : await sha256Hex(canonicalJSON({
+        saltKind: 'f15.folder-binding-delegation',
+        operation: operation,
+        chatSubjectId: chatSubjectId,
+        folderSubjectId: folderSubjectId
+      }));
+    var observedAtIso = (opts.observedAtIso && !Number.isNaN(Date.parse(opts.observedAtIso)))
+      ? new Date(opts.observedAtIso).toISOString().replace(/\.\d{3}Z$/, 'Z')
+      : nowIsoSeconds();
+    var actorPeer = await resolveDelegationActorPeer(opts);
+    return {
+      operation: operation,
+      bindingKind: 'chat-folder',
+      bindingState: operation === 'unbind' ? 'unbound' : 'bound',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      originAccountIdHash: originAccountIdHash,
+      localAccountIdHash: originAccountIdHash,
+      perEnvelopeSalt: perEnvelopeSalt,
+      actorPeer: actorPeer,
+      ownerStatus: 'reachable',
+      sourceTag: 'f7-folder-binding-compat',
+      relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatSubjectId }],
+      siblingBindings: Array.isArray(opts.siblingBindings) ? opts.siblingBindings : [],
+      sourceMirror: { ok: true, fresh: true, mirrorFresh: true },
+      replayContext: { ok: true, replaySafe: true },
+      watermarkState: { ok: true, watermarkSafe: true },
+      consumedOperationState: { ok: true, consumedSafe: true },
+      observedAtIso: observedAtIso
+    };
+  }
+
+  function requiredF15FolderBindingApis(sync) {
+    return [
+      'createLibraryFolderBindingMigrationShadow',
+      'generateLibraryBindingProposalCandidate',
+      'previewLibraryBindingHandoff',
+      'buildLibraryBindingApplyEventReceipt',
+      'recordLibraryBindingBookkeeping',
+      'shapeLibraryBindingExecuteEnvelope',
+      'settleLibraryExecuteEnvelope'
+    ].filter(function (name) { return !sync || typeof sync[name] !== 'function'; });
+  }
+
+  async function runF15FolderBindingDelegationPipeline(operation, folderId, chatId, opts) {
+    var sync = getSync();
+    var missing = requiredF15FolderBindingApis(sync);
+    if (missing.length > 0) {
+      return { ok: false, blockers: ['f15-folder-binding-delegation-api-missing'], missingApis: missing };
+    }
+    var input = await buildF15FolderBindingDelegationInput(operation, folderId, chatId, opts);
+    var shadow = await sync.createLibraryFolderBindingMigrationShadow({
+      chatSubjectId: input.leftSubjectId,
+      folderSubjectId: input.rightSubjectId,
+      perEnvelopeSalt: input.perEnvelopeSalt,
+      observedAtIso: input.observedAtIso
+    });
+    if (!shadow || shadow.ok !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-shadow-failed'], shadow: shadow };
+    }
+    var proposal = await sync.generateLibraryBindingProposalCandidate(input);
+    if (!proposal || proposal.ok !== true || proposal.generated !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-proposal-failed'], shadow: shadow, proposal: proposal };
+    }
+    var handoff = await sync.previewLibraryBindingHandoff({
+      proposalCandidate: proposal,
+      preflight: proposal.preflight,
+      operation: operation,
+      actorPeer: input.actorPeer,
+      originAccountIdHash: input.originAccountIdHash,
+      ownerStatus: 'reachable',
+      observedAtIso: input.observedAtIso
+    });
+    if (!handoff || handoff.ok !== true || handoff.handoffReady !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-handoff-failed'], shadow: shadow, proposal: proposal, handoff: handoff };
+    }
+    var receipt = await sync.buildLibraryBindingApplyEventReceipt({
+      handoffPreview: handoff,
+      operation: operation,
+      observedAtIso: input.observedAtIso
+    });
+    if (!receipt || receipt.ok !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-receipt-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt };
+    }
+    var bookkeeping = await sync.recordLibraryBindingBookkeeping({
+      receipt: receipt,
+      observedAtIso: input.observedAtIso
+    });
+    if (!bookkeeping || bookkeeping.ok !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-bookkeeping-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping };
+    }
+    var execute = await sync.shapeLibraryBindingExecuteEnvelope({
+      bookkeepingResult: bookkeeping,
+      receipt: receipt,
+      observedAtIso: input.observedAtIso
+    });
+    if (!execute || execute.ok !== true || !execute.envelope) {
+      return { ok: false, blockers: ['f15-folder-binding-execute-envelope-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping, execute: execute };
+    }
+    var settlement = await sync.settleLibraryExecuteEnvelope({
+      envelope: execute.envelope,
+      receipt: receipt,
+      dispatchResult: {
+        ok: true,
+        confirmed: true,
+        dispatchStatus: 'confirmed',
+        operationResultDigest: await sha256Hex(canonicalJSON({
+          operation: operation,
+          subjectId: execute.envelope.subjectId,
+          observedAtIso: input.observedAtIso
+        }))
+      },
+      observedAtIso: input.observedAtIso
+    });
+    if (!settlement || settlement.ok !== true || settlement.settled !== true) {
+      return { ok: false, blockers: ['f15-folder-binding-settlement-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping, execute: execute, settlement: settlement };
+    }
+    return {
+      ok: true,
+      operation: operation,
+      shadow: shadow,
+      proposal: proposal,
+      handoff: handoff,
+      receipt: receipt,
+      bookkeeping: bookkeeping,
+      execute: execute,
+      settlement: settlement,
+      sideEffectSummary: settlement.sideEffectSummary || {}
+    };
+  }
+
+  async function delegateF15FolderBindingWrite(operation, folderId, chatId, opts) {
+    opts = opts || {};
+    if (operation === 'bind' && opts.skipRebindDecompose !== true) {
+      var previousRows = await listForChat(chatId);
+      var previous = previousRows && previousRows[0];
+      var previousFolderId = previous && getFolderId(previous);
+      if (previousFolderId && previousFolderId !== folderId) {
+        var unbound = await delegateF15FolderBindingWrite('unbind', previousFolderId, chatId,
+          Object.assign({}, opts, { skipRebindDecompose: true }));
+        if (!unbound || unbound.ok !== true) return unbound;
+      }
+    }
+    return runF15FolderBindingDelegationPipeline(operation, folderId, chatId, opts);
+  }
+
   function patchToCols(patch) {
     var columns = Object.create(null);
     var mergeMeta = null;
@@ -554,7 +811,7 @@
   /* folder_bindings.PRIMARY KEY (chat_id) enforces one folder per chat in V1.
    * INSERT OR REPLACE handles the "move chat to a different folder" case
    * atomically — the prior binding (any folder) is replaced. */
-  function bindChat(folderIdInput, chatIdInput, opts) {
+  function bindChatLegacy(folderIdInput, chatIdInput, opts) {
     var folderId = getFolderId(folderIdInput);
     var chatId = String(chatIdInput || '').trim();
     if (!folderId) return Promise.reject(new Error('bindChat: folderId required'));
@@ -586,7 +843,7 @@
     }).catch(function (e) { recordError('bindChat', e); return false; });
   }
 
-  function unbindChat(folderIdInput, chatIdInput) {
+  function unbindChatLegacy(folderIdInput, chatIdInput) {
     var folderId = getFolderId(folderIdInput);
     var chatId = String(chatIdInput || '').trim();
     if (!folderId || !chatId) return Promise.resolve(false);
@@ -602,6 +859,69 @@
       }
       return false;
     }).catch(function (e) { recordError('unbindChat', e); return false; });
+  }
+
+  function bindChat(folderIdInput, chatIdInput, opts) {
+    var folderId = getFolderId(folderIdInput);
+    var chatId = String(chatIdInput || '').trim();
+    if (!folderId) return Promise.reject(new Error('bindChat: folderId required'));
+    if (!chatId) return Promise.reject(new Error('bindChat: chatId required'));
+    if (!f15FolderBindingDelegationEnabled(opts)) {
+      return bindChatLegacy(folderId, chatId, opts);
+    }
+    return delegateF15FolderBindingWrite('bind', folderId, chatId, opts).then(function (result) {
+      if (result && result.ok === true) {
+        recordWrite('bindChat.f15');
+        api.__lastF15FolderBindingDelegationResult = result;
+        notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
+        return true;
+      }
+      recordWarning('bindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
+      api.__lastF15FolderBindingDelegationResult = result || null;
+      if (explicitF7FallbackAllowed(opts)) {
+        recordWarning('bindChat explicit F7 fallback after F15 delegation failure');
+        return bindChatLegacy(folderId, chatId, opts);
+      }
+      return false;
+    }).catch(function (e) {
+      recordError('bindChat.f15', e);
+      if (explicitF7FallbackAllowed(opts)) {
+        recordWarning('bindChat explicit F7 fallback after F15 delegation exception');
+        return bindChatLegacy(folderId, chatId, opts);
+      }
+      return false;
+    });
+  }
+
+  function unbindChat(folderIdInput, chatIdInput, opts) {
+    var folderId = getFolderId(folderIdInput);
+    var chatId = String(chatIdInput || '').trim();
+    if (!folderId || !chatId) return Promise.resolve(false);
+    if (!f15FolderBindingDelegationEnabled(opts)) {
+      return unbindChatLegacy(folderId, chatId);
+    }
+    return delegateF15FolderBindingWrite('unbind', folderId, chatId, opts).then(function (result) {
+      if (result && result.ok === true) {
+        recordWrite('unbindChat.f15');
+        api.__lastF15FolderBindingDelegationResult = result;
+        notifySubscribers({ source: 'local', op: 'unbindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
+        return true;
+      }
+      recordWarning('unbindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
+      api.__lastF15FolderBindingDelegationResult = result || null;
+      if (explicitF7FallbackAllowed(opts)) {
+        recordWarning('unbindChat explicit F7 fallback after F15 delegation failure');
+        return unbindChatLegacy(folderId, chatId);
+      }
+      return false;
+    }).catch(function (e) {
+      recordError('unbindChat.f15', e);
+      if (explicitF7FallbackAllowed(opts)) {
+        recordWarning('unbindChat explicit F7 fallback after F15 delegation exception');
+        return unbindChatLegacy(folderId, chatId);
+      }
+      return false;
+    });
   }
 
   /* listChats(folderId): hydrate full chat rows via store.chats so the chat
