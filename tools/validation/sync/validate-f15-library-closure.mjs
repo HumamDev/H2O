@@ -33,6 +33,7 @@ const pack = 'tools/product/studio/pack-studio.mjs';
 const syncValidator = 'tools/validation/sync/validate-f15-library-sync-proof.mjs';
 const cutoverValidator = 'tools/validation/sync/validate-f15-cutover.mjs';
 const bulkValidator = 'tools/validation/sync/validate-f15-bulk-migration.mjs';
+const performanceValidator = 'tools/validation/sync/validate-f16-library-performance-stress.mjs';
 const repoScanValidator = 'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs';
 const envelopeValidator = 'tools/validation/cross-platform/validate-cross-platform-envelope.mjs';
 const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs';
@@ -44,6 +45,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
   syncValidator,
   cutoverValidator,
   bulkValidator,
+  performanceValidator,
   repoScanValidator,
   envelopeValidator,
   f7Validator
@@ -51,7 +53,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '1.0.0-f16.2.d'",
+    "var VERSION = '1.1.0-f16.3.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -59,9 +61,11 @@ if (failures.length === 0) {
     'runLibraryConflictProof',
     'runLibraryRuntimeConflictGateProof',
     'runLibraryMultiPeerSoakRuntimeProof',
+    'runLibraryPerformanceStressRuntimeProof',
     'H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof',
     'H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof',
     'H2O.Desktop.Sync.runLibraryMultiPeerSoakRuntimeProof = runLibraryMultiPeerSoakRuntimeProof',
+    'H2O.Desktop.Sync.runLibraryPerformanceStressRuntimeProof = runLibraryPerformanceStressRuntimeProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
@@ -71,6 +75,7 @@ if (failures.length === 0) {
     'closure-conflict-proof-complete',
     'closure-runtime-conflict-gate-proof-complete',
     'closure-multipeer-soak-proof-complete',
+    'closure-performance-stress-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -85,6 +90,7 @@ if (failures.length === 0) {
     'VALIDATOR_REFERENCES',
     'validate-f15-library-conflict-contract.mjs',
     'validate-f16-library-conflict-runtime.mjs',
+    'validate-f16-library-performance-stress.mjs',
     'validate-f15-cutover.mjs',
     'validate-f15-bulk-migration.mjs',
     'validate-f15-library-sync-proof.mjs',
@@ -98,6 +104,9 @@ if (failures.length === 0) {
     'missingProofCases',
     'loaderPackWiring',
     'realBusinessTableWritten',
+    'realBusinessTableWrites',
+    'realBookkeepingWrites',
+    'realSqlExecuted',
     'nativeCalled',
     'f5Touched',
     'publicationTouched',
@@ -213,6 +222,46 @@ if (failures.length === 0) {
   ]);
 
   assertAll(proof, [
+    'runLibraryPerformanceStressProof',
+    '__libraryPerformanceStressProofInstalled',
+    'performanceStress',
+    'performanceStressOk',
+    'h2o.desktop.sync.library-performance-stress.v1',
+    "performanceStress.tier === 'lightweight'",
+    'performanceStress.phaseCount === 7',
+    'performanceStress.passCount === 7',
+    'performanceStress.failCount === 0',
+    'performanceScale.chats === 1000',
+    'performanceScale.labels === 40',
+    'performanceScale.tags === 40',
+    'performanceScale.categories === 40',
+    'performanceScale.bindings === 1000',
+    'performanceScale.bulkRows === 500',
+    'performanceScale.cacheRefreshEdges === 250',
+    'performanceScale.replayEnvelopes === 500',
+    'performanceCorrectness.plantedAnomaliesChecked === true',
+    'performanceCorrectness.anomalyMisses === 0',
+    'performancePrivacy.ok === true',
+    'performanceSummary.heavyRequested === false',
+    'performanceSummary.heavyDefault === false',
+    'F16_STRESS_HEAVY=1',
+    'hardCeilingViolations',
+    'performanceSummary.residualGrowth',
+    'library-performance-stress-anomaly-miss',
+    'library-performance-stress-hard-ceiling-violation',
+    'library-performance-stress-residual-object-growth',
+    'library-performance-stress-privacy-leak',
+    'library-performance-stress-side-effect-flag-flip',
+    'catalog lookup / canonicalization-shaped pass',
+    'binding duplicate-check-shaped pass',
+    'runtime conflict gate pass',
+    'bulk classification pass',
+    'cache refresh shaping pass',
+    'replay defense-shaped pass',
+    'residual object growth / rerun leak-proxy check'
+  ]);
+
+  assertAll(proof, [
     'RUNTIME_CONFLICT_GATE_CASE_NAMES',
     'runtime-gate-apis-markers-present',
     'runtime-gate-catalog-preflight-calls-gate',
@@ -277,7 +326,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '1.0.0-f16.2.d'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '1.1.0-f16.3.d'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
   assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');

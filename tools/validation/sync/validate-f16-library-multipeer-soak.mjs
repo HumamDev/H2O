@@ -245,7 +245,7 @@ async function main() {
   assertContains(moduleFile, 'validateReplayCandidate');
   assertContains(moduleFile, 'validateWatermarkAdvance');
   assertContains(moduleFile, 'validateConsumedOperation');
-  assertContains(syncProofFile, "var VERSION = '1.0.0-f16.2.d'", 'sync proof F16.2.d version');
+  assertContains(syncProofFile, "var VERSION = '1.1.0-f16.3.d'", 'sync proof F16.3.d version');
   assertContains(syncProofFile, 'runLibraryMultiPeerSoakRuntimeProof', 'sync proof multipeer delegate');
   assertContains(syncProofFile, 'sync.runLibraryMultiPeerSoakProof', 'sync proof delegates to canonical soak API');
   assertContains(syncProofFile, 'multiPeerSoak', 'sync proof E2E summary section');

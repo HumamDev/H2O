@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F16.2.d library sync proof foundation
+/* H2O Desktop Sync - F16.3.d library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '1.0.0-f16.2.d';
+  var VERSION = '1.1.0-f16.3.d';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
@@ -81,7 +81,8 @@
     'evaluateLibraryRuntimeConflict',
     'evaluateLibraryCatalogRuntimeConflict',
     'evaluateLibraryBindingRuntimeConflict',
-    'classifyLibraryBulkRuntimeConflictRows'
+    'classifyLibraryBulkRuntimeConflictRows',
+    'runLibraryPerformanceStressProof'
   ];
 
   var REQUIRED_MARKERS = [
@@ -105,7 +106,8 @@
     '__f15CutoverInstalled',
     '__libraryBulkMigrationInstalled',
     '__libraryFolderBindingMigrationShadowInstalled',
-    '__libraryConflictRuntimeInstalled'
+    '__libraryConflictRuntimeInstalled',
+    '__libraryPerformanceStressProofInstalled'
   ];
 
   var VALIDATOR_REFERENCES = [
@@ -116,6 +118,7 @@
     'tools/validation/sync/validate-f15-library-conflict-contract.mjs',
     'tools/validation/sync/validate-f16-library-conflict-runtime.mjs',
     'tools/validation/sync/validate-f16-library-multipeer-soak.mjs',
+    'tools/validation/sync/validate-f16-library-performance-stress.mjs',
     'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
     'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
     'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
@@ -308,6 +311,7 @@
     'closure-conflict-proof-complete',
     'closure-runtime-conflict-gate-proof-complete',
     'closure-multipeer-soak-proof-complete',
+    'closure-performance-stress-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -4537,6 +4541,10 @@
       heavy: input && input.heavy === true,
       observedAtIso: observedAtIso
     }));
+    var performanceStress = await runLibraryPerformanceStressRuntimeProof(Object.assign({}, input || {}, {
+      heavy: false,
+      observedAtIso: observedAtIso
+    }));
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
@@ -4546,8 +4554,9 @@
     if (conflictProof.ok !== true) mergeCodes(blockers, conflictProof.blockers);
     if (runtimeConflictGate.ok !== true) mergeCodes(blockers, runtimeConflictGate.blockers);
     if (multiPeerSoak && multiPeerSoak.ok !== true) mergeCodes(warnings, multiPeerSoak.blockers);
+    if (performanceStress && performanceStress.ok !== true) mergeCodes(warnings, performanceStress.blockers);
 
-    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -4561,6 +4570,7 @@
       bulkMigration.ok === true &&
       conflictProof.ok === true &&
       runtimeConflictGate.ok === true &&
+      performanceStress && performanceStress.ok === true &&
       privacy.ok === true;
 
     return {
@@ -4577,6 +4587,7 @@
       conflictProof: conflictProof,
       runtimeConflictGate: runtimeConflictGate,
       multiPeerSoak: multiPeerSoak,
+      performanceStress: performanceStress,
       privacy: privacy,
       apiPresence: presence,
       blockers: codeList(blockers),
@@ -4641,6 +4652,91 @@
     };
   }
 
+  async function runLibraryPerformanceStressRuntimeProof(input) {
+    var args = safeObject(input);
+    var sync = getSync();
+    var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
+    if (typeof sync.runLibraryPerformanceStressProof !== 'function') {
+      return {
+        schema: 'h2o.desktop.sync.library-performance-stress.v1',
+        version: VERSION,
+        ok: false,
+        summaryOnly: true,
+        tier: 'lightweight',
+        scaleSummary: {},
+        phaseCount: 0,
+        passCount: 0,
+        failCount: 0,
+        correctnessSummary: { anomaliesPlanted: 0, anomaliesDetected: 0, anomalyMisses: 0 },
+        privacySummary: { ok: true, leakCount: 0 },
+        sideEffectSummary: {
+          realBusinessTableWrites: false,
+          realBookkeepingWrites: false,
+          nativeCalled: false,
+          f5Touched: false,
+          publicationTouched: false,
+          relayTouched: false,
+          outboxTouched: false,
+          realSqlExecuted: false,
+          watermarkWritten: false,
+          consumedOperationWritten: false
+        },
+        performanceSummary: {
+          heavyRequested: args.heavy === true,
+          heavyDefault: false,
+          heavyEnvFlag: 'F16_STRESS_HEAVY=1',
+          hardCeilingViolations: [],
+          budgetWarnings: [],
+          residualGrowth: 0,
+          seed: cleanString(args.seed) || ''
+        },
+        blockers: ['library-performance-stress-runtime-unavailable'],
+        warnings: [],
+        observedAtIso: observedAtIso
+      };
+    }
+    var proof = await sync.runLibraryPerformanceStressProof({
+      heavy: args.heavy === true,
+      tier: args.heavy === true ? 'heavy' : 'lightweight',
+      seed: cleanString(args.seed),
+      observedAtIso: observedAtIso
+    });
+    return {
+      schema: cleanString(proof && proof.schema) || 'h2o.desktop.sync.library-performance-stress.v1',
+      version: cleanString(proof && proof.version) || '',
+      ok: proof && proof.ok === true,
+      summaryOnly: true,
+      tier: cleanString(proof && proof.tier),
+      seed: cleanString(proof && proof.seed),
+      scaleSummary: safeObject(proof && proof.scaleSummary),
+      phaseCount: Number(proof && proof.phaseCount || 0),
+      passCount: Number(proof && proof.passCount || 0),
+      failCount: Number(proof && proof.failCount || 0),
+      phases: asArray(proof && proof.phases).map(function (phase) {
+        return {
+          name: cleanString(phase && phase.name),
+          ok: phase && phase.ok === true,
+          durationMs: Number(phase && phase.durationMs || 0),
+          opCount: Number(phase && phase.opCount || 0),
+          anomaliesPlanted: Number(phase && phase.anomaliesPlanted || 0),
+          anomaliesDetected: Number(phase && phase.anomaliesDetected || 0),
+          budgetExceeded: phase && phase.budgetExceeded === true,
+          hardCeilingViolated: phase && phase.hardCeilingViolated === true,
+          blockers: codeList(phase && phase.blockers),
+          warnings: codeList(phase && phase.warnings)
+        };
+      }),
+      performanceSummary: safeObject(proof && proof.performanceSummary),
+      correctnessSummary: safeObject(proof && proof.correctnessSummary),
+      privacySummary: safeObject(proof && proof.privacySummary),
+      sideEffectSummary: safeObject(proof && proof.sideEffectSummary),
+      realApiPresence: safeObject(proof && proof.realApiPresence),
+      blockers: codeList(proof && proof.blockers),
+      warnings: codeList(proof && proof.warnings),
+      observedAtIso: cleanString(proof && proof.observedAtIso) || observedAtIso
+    };
+  }
+
   // ── F15.9.f aggregate closure proof ────────────────────────────────
   // Final validator-facing runtime proof that the complete F15 Library
   // Sync proof surface is installed, callable, internally complete, and
@@ -4690,7 +4786,10 @@
       'applyExecuted',
       'watermarkWritten',
       'consumedOperationWritten',
-      'realBusinessTableWritten'
+      'realBusinessTableWritten',
+      'realBusinessTableWrites',
+      'realBookkeepingWrites',
+      'realSqlExecuted'
     ];
     function visit(node, pathValue) {
       if (Array.isArray(node)) {
@@ -4724,6 +4823,10 @@
     var conflictProof = await runLibraryConflictProof(input || {});
     var runtimeConflictGate = await runLibraryRuntimeConflictGateProof(input || {});
     var multiPeerSoak = await runLibraryMultiPeerSoakRuntimeProof(Object.assign({}, input || {}, {
+      heavy: false,
+      observedAtIso: observedAtIso
+    }));
+    var performanceStress = await runLibraryPerformanceStressRuntimeProof(Object.assign({}, input || {}, {
       heavy: false,
       observedAtIso: observedAtIso
     }));
@@ -4928,6 +5031,64 @@
       summary: 'multipeerScenarios=' + (multiPeerSoak && multiPeerSoak.scenarioCount || 0)
     });
 
+    var performanceScale = safeObject(performanceStress && performanceStress.scaleSummary);
+    var performanceSummary = safeObject(performanceStress && performanceStress.performanceSummary);
+    var performanceCorrectness = safeObject(performanceStress && performanceStress.correctnessSummary);
+    var performanceSideEffects = safeObject(performanceStress && performanceStress.sideEffectSummary);
+    var performancePrivacy = safeObject(performanceStress && performanceStress.privacySummary);
+    var performancePhaseNames = asArray(performanceStress && performanceStress.phases).map(function (phase) {
+      return cleanString(phase && phase.name);
+    });
+    var performanceStressOk = performanceStress && performanceStress.ok === true &&
+      performanceStress.schema === 'h2o.desktop.sync.library-performance-stress.v1' &&
+      cleanString(performanceStress.version) >= '0.2.0-f16.3.c' &&
+      performanceStress.tier === 'lightweight' &&
+      performanceScale.chats === 1000 &&
+      performanceScale.labels === 40 &&
+      performanceScale.tags === 40 &&
+      performanceScale.categories === 40 &&
+      performanceScale.bindings === 1000 &&
+      performanceScale.bulkRows === 500 &&
+      performanceScale.cacheRefreshEdges === 250 &&
+      performanceScale.replayEnvelopes === 500 &&
+      performanceStress.phaseCount === 7 &&
+      performanceStress.passCount === 7 &&
+      performanceStress.failCount === 0 &&
+      performanceCorrectness.plantedAnomaliesChecked === true &&
+      performanceCorrectness.anomalyMisses === 0 &&
+      performancePrivacy.ok === true &&
+      performanceSummary.heavyRequested === false &&
+      performanceSummary.heavyDefault === false &&
+      performanceSummary.heavyEnvFlag === 'F16_STRESS_HEAVY=1' &&
+      asArray(performanceSummary.hardCeilingViolations).length === 0 &&
+      Number(performanceSummary.residualGrowth || 0) === 0 &&
+      performanceSideEffects.realBusinessTableWrites === false &&
+      performanceSideEffects.realBookkeepingWrites === false &&
+      performanceSideEffects.nativeCalled === false &&
+      performanceSideEffects.f5Touched === false &&
+      performanceSideEffects.publicationTouched === false &&
+      performanceSideEffects.relayTouched === false &&
+      performanceSideEffects.outboxTouched === false &&
+      performanceSideEffects.realSqlExecuted === false &&
+      performanceSideEffects.watermarkWritten === false &&
+      performanceSideEffects.consumedOperationWritten === false &&
+      performancePhaseNames.indexOf('catalog lookup / canonicalization-shaped pass') !== -1 &&
+      performancePhaseNames.indexOf('binding duplicate-check-shaped pass') !== -1 &&
+      performancePhaseNames.indexOf('runtime conflict gate pass') !== -1 &&
+      performancePhaseNames.indexOf('bulk classification pass') !== -1 &&
+      performancePhaseNames.indexOf('cache refresh shaping pass') !== -1 &&
+      performancePhaseNames.indexOf('replay defense-shaped pass') !== -1 &&
+      performancePhaseNames.indexOf('residual object growth / rerun leak-proxy check') !== -1 &&
+      codeList(performanceStress.blockers).indexOf('library-performance-stress-anomaly-miss') === -1 &&
+      codeList(performanceStress.blockers).indexOf('library-performance-stress-hard-ceiling-violation') === -1 &&
+      codeList(performanceStress.blockers).indexOf('library-performance-stress-residual-object-growth') === -1 &&
+      codeList(performanceStress.blockers).indexOf('library-performance-stress-privacy-leak') === -1 &&
+      codeList(performanceStress.blockers).indexOf('library-performance-stress-side-effect-flag-flip') === -1;
+    closureRecord(cases, 'closure-performance-stress-proof-complete', performanceStressOk, {
+      blockers: performanceStressOk ? [] : ['library-sync-closure-performance-stress-incomplete'],
+      summary: 'performancePhases=' + (performanceStress && performanceStress.phaseCount || 0)
+    });
+
     var aggregateOk = aggregate && aggregate.ok === true &&
       aggregate.catalogProof && aggregate.catalogProof.ok === true &&
       aggregate.bindingProof && aggregate.bindingProof.ok === true &&
@@ -4937,16 +5098,21 @@
       aggregate.conflictProof && aggregate.conflictProof.ok === true &&
       aggregate.runtimeConflictGate && aggregate.runtimeConflictGate.ok === true &&
       aggregate.multiPeerSoak && aggregate.multiPeerSoak.ok === true &&
+      aggregate.performanceStress && aggregate.performanceStress.ok === true &&
       aggregate.multiPeerSoak.scenarioCount === 14 &&
       aggregate.multiPeerSoak.passCount === 14 &&
       aggregate.multiPeerSoak.failCount === 0 &&
+      aggregate.performanceStress.tier === 'lightweight' &&
+      aggregate.performanceStress.phaseCount === 7 &&
+      aggregate.performanceStress.passCount === 7 &&
+      aggregate.performanceStress.failCount === 0 &&
       aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-aggregate-proof-ok', aggregateOk, {
       blockers: aggregateOk ? [] : ['library-sync-closure-aggregate-not-ok'],
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, aggregate], []);
+    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress, aggregate], []);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&
@@ -4956,13 +5122,14 @@
       conflictProof && conflictProof.privacy && conflictProof.privacy.ok === true &&
       runtimeConflictGate && runtimeConflictGate.privacy && runtimeConflictGate.privacy.ok === true &&
       multiPeerSoak && multiPeerSoak.privacySummary && multiPeerSoak.privacySummary.ok === true &&
+      performanceStress && performanceStress.privacySummary && performanceStress.privacySummary.ok === true &&
       aggregate && aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-privacy-clean', privacyOk, {
       blockers: privacyOk ? [] : ['library-sync-closure-privacy-not-clean'],
       summary: 'leaks=' + privacy.leakCount
     });
 
-    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, aggregate]);
+    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress, aggregate]);
     var sideEffectsOk = sideEffectHits.length === 0;
     closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
       blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
@@ -5016,6 +5183,7 @@
       conflictOk === true &&
       runtimeGateOk === true &&
       multiPeerSoakOk === true &&
+      performanceStressOk === true &&
       aggregateOk === true &&
       privacyOk === true &&
       sideEffectsOk === true &&
@@ -5039,6 +5207,7 @@
       conflictProof: conflictProof,
       runtimeConflictGate: runtimeConflictGate,
       multiPeerSoak: multiPeerSoak,
+      performanceStress: performanceStress,
       aggregate: aggregate,
       apiPresence: apiPresenceResult,
       validators: validators,
@@ -5061,6 +5230,7 @@
   H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof;
   H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof;
   H2O.Desktop.Sync.runLibraryMultiPeerSoakRuntimeProof = runLibraryMultiPeerSoakRuntimeProof;
+  H2O.Desktop.Sync.runLibraryPerformanceStressRuntimeProof = runLibraryPerformanceStressRuntimeProof;
   H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;
   H2O.Desktop.Sync.__librarySyncProofInstalled = true;
   H2O.Desktop.Sync.__librarySyncProofVersion = VERSION;
