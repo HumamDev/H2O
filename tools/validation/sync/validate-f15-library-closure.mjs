@@ -51,7 +51,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.10.0-f16.2.c'",
+    "var VERSION = '1.0.0-f16.2.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -70,6 +70,7 @@ if (failures.length === 0) {
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
     'closure-runtime-conflict-gate-proof-complete',
+    'closure-multipeer-soak-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -276,7 +277,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '0.10.0-f16.2.c'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '1.0.0-f16.2.d'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
   assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');

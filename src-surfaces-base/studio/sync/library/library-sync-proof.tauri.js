@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F16.2.c library sync proof foundation
+/* H2O Desktop Sync - F16.2.d library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.10.0-f16.2.c';
+  var VERSION = '1.0.0-f16.2.d';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
@@ -307,6 +307,7 @@
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
     'closure-runtime-conflict-gate-proof-complete',
+    'closure-multipeer-soak-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -4722,6 +4723,10 @@
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
     var conflictProof = await runLibraryConflictProof(input || {});
     var runtimeConflictGate = await runLibraryRuntimeConflictGateProof(input || {});
+    var multiPeerSoak = await runLibraryMultiPeerSoakRuntimeProof(Object.assign({}, input || {}, {
+      heavy: false,
+      observedAtIso: observedAtIso
+    }));
     var aggregate = await runLibraryEndToEndSyncProof(input || {});
 
     var catalogMissing = missingProofCases(catalog, CATALOG_REQUIRED_CASE_NAMES);
@@ -4888,6 +4893,41 @@
       summary: 'runtimeConflictCases=' + (runtimeConflictGate && runtimeConflictGate.caseCount || 0)
     });
 
+    var multiPeerRuntimePresence = safeObject(safeObject(multiPeerSoak && multiPeerSoak.conflictSummary).runtimeApiPresence);
+    var multiPeerPerformance = safeObject(multiPeerSoak && multiPeerSoak.performanceSummary);
+    var multiPeerSideEffects = safeObject(multiPeerSoak && multiPeerSoak.sideEffectSummary);
+    var multiPeerPrivacy = safeObject(multiPeerSoak && multiPeerSoak.privacySummary);
+    var multiPeerReplayModes = asArray(safeObject(multiPeerSoak && multiPeerSoak.replaySummary).replayModes);
+    var multiPeerSoakOk = multiPeerSoak && multiPeerSoak.ok === true &&
+      multiPeerSoak.scenarioCount === 14 &&
+      multiPeerSoak.passCount === 14 &&
+      multiPeerSoak.failCount === 0 &&
+      multiPeerPrivacy.ok === true &&
+      multiPeerPerformance.heavyRequested === false &&
+      multiPeerPerformance.heavyDefault === false &&
+      multiPeerPerformance.no10kScaleStressDefault === true &&
+      multiPeerRuntimePresence.evaluateLibraryRuntimeConflict === true &&
+      multiPeerRuntimePresence.evaluateLibraryCatalogRuntimeConflict === true &&
+      multiPeerRuntimePresence.evaluateLibraryBindingRuntimeConflict === true &&
+      multiPeerRuntimePresence.classifyLibraryBulkRuntimeConflictRows === true &&
+      multiPeerReplayModes.indexOf('conflicting replay fail-closed before settlement mutation') !== -1 &&
+      multiPeerSideEffects.publicationTouched === false &&
+      multiPeerSideEffects.relayTouched === false &&
+      multiPeerSideEffects.outboxTouched === false &&
+      multiPeerSideEffects.nativeCalled === false &&
+      multiPeerSideEffects.f5Touched === false &&
+      multiPeerSideEffects.applyExecuted === false &&
+      multiPeerSideEffects.watermarkWritten === false &&
+      multiPeerSideEffects.consumedOperationWritten === false &&
+      multiPeerSideEffects.bookkeepingWritten === false &&
+      multiPeerSideEffects.cacheRefreshWritten === false &&
+      multiPeerSideEffects.journalWritten === false &&
+      multiPeerSideEffects.sqlExecutedForBlockedBulkRows === false;
+    closureRecord(cases, 'closure-multipeer-soak-proof-complete', multiPeerSoakOk, {
+      blockers: multiPeerSoakOk ? [] : ['library-sync-closure-multipeer-soak-incomplete'],
+      summary: 'multipeerScenarios=' + (multiPeerSoak && multiPeerSoak.scenarioCount || 0)
+    });
+
     var aggregateOk = aggregate && aggregate.ok === true &&
       aggregate.catalogProof && aggregate.catalogProof.ok === true &&
       aggregate.bindingProof && aggregate.bindingProof.ok === true &&
@@ -4896,13 +4936,17 @@
       aggregate.bulkMigration && aggregate.bulkMigration.ok === true &&
       aggregate.conflictProof && aggregate.conflictProof.ok === true &&
       aggregate.runtimeConflictGate && aggregate.runtimeConflictGate.ok === true &&
+      aggregate.multiPeerSoak && aggregate.multiPeerSoak.ok === true &&
+      aggregate.multiPeerSoak.scenarioCount === 14 &&
+      aggregate.multiPeerSoak.passCount === 14 &&
+      aggregate.multiPeerSoak.failCount === 0 &&
       aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-aggregate-proof-ok', aggregateOk, {
       blockers: aggregateOk ? [] : ['library-sync-closure-aggregate-not-ok'],
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, aggregate], []);
+    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, aggregate], []);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&
@@ -4911,13 +4955,14 @@
       bulkMigration && bulkMigration.privacy && bulkMigration.privacy.ok === true &&
       conflictProof && conflictProof.privacy && conflictProof.privacy.ok === true &&
       runtimeConflictGate && runtimeConflictGate.privacy && runtimeConflictGate.privacy.ok === true &&
+      multiPeerSoak && multiPeerSoak.privacySummary && multiPeerSoak.privacySummary.ok === true &&
       aggregate && aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-privacy-clean', privacyOk, {
       blockers: privacyOk ? [] : ['library-sync-closure-privacy-not-clean'],
       summary: 'leaks=' + privacy.leakCount
     });
 
-    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, aggregate]);
+    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, aggregate]);
     var sideEffectsOk = sideEffectHits.length === 0;
     closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
       blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
@@ -4970,6 +5015,7 @@
       bulkOk === true &&
       conflictOk === true &&
       runtimeGateOk === true &&
+      multiPeerSoakOk === true &&
       aggregateOk === true &&
       privacyOk === true &&
       sideEffectsOk === true &&
@@ -4992,6 +5038,7 @@
       bulkMigration: bulkMigration,
       conflictProof: conflictProof,
       runtimeConflictGate: runtimeConflictGate,
+      multiPeerSoak: multiPeerSoak,
       aggregate: aggregate,
       apiPresence: apiPresenceResult,
       validators: validators,

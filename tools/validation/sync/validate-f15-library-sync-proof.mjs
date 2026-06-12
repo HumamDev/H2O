@@ -45,7 +45,7 @@ const closureValidator = 'tools/validation/sync/validate-f15-library-closure.mjs
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.10.0-f16.2.c'",
+    "var VERSION = '1.0.0-f16.2.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -72,6 +72,7 @@ if (failures.length === 0) {
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
     'closure-runtime-conflict-gate-proof-complete',
+    'closure-multipeer-soak-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -263,6 +264,9 @@ if (failures.length === 0) {
     '__libraryConflictRuntimeInstalled',
     'runLibraryMultiPeerSoakProof',
     'multiPeerSoak',
+    'multiPeerSoak.scenarioCount === 14',
+    'multiPeerSoak.passCount === 14',
+    'multiPeerSoak.failCount === 0',
     'summaryOnly',
     'heavy: input && input.heavy === true',
     'heavyDefault: false',

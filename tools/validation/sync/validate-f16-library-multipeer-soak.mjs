@@ -245,16 +245,22 @@ async function main() {
   assertContains(moduleFile, 'validateReplayCandidate');
   assertContains(moduleFile, 'validateWatermarkAdvance');
   assertContains(moduleFile, 'validateConsumedOperation');
-  assertContains(syncProofFile, "var VERSION = '0.10.0-f16.2.c'", 'sync proof F16.2.c version');
+  assertContains(syncProofFile, "var VERSION = '1.0.0-f16.2.d'", 'sync proof F16.2.d version');
   assertContains(syncProofFile, 'runLibraryMultiPeerSoakRuntimeProof', 'sync proof multipeer delegate');
   assertContains(syncProofFile, 'sync.runLibraryMultiPeerSoakProof', 'sync proof delegates to canonical soak API');
   assertContains(syncProofFile, 'multiPeerSoak', 'sync proof E2E summary section');
   assertContains(syncProofFile, 'summaryOnly: true', 'summary-only soak integration');
   assertContains(syncProofFile, 'heavy: input && input.heavy === true', 'heavy soak remains input-gated');
   assertContains(syncProofFile, 'heavyDefault: false', 'heavy default remains false in delegate fallback');
+  assertContains(syncProofFile, 'closure-multipeer-soak-proof-complete', 'closure requires multipeer soak proof');
+  assertContains(syncProofFile, 'multiPeerSoak.scenarioCount === 14', 'closure requires 14 soak scenarios');
+  assertContains(syncProofFile, 'multiPeerSoak.passCount === 14', 'closure requires all soak scenarios pass');
+  assertContains(syncProofFile, 'multiPeerSoak.failCount === 0', 'closure requires zero soak failures');
+  assertContains(syncProofFile, 'multiPeerPerformance.heavyRequested === false', 'closure requires default lightweight soak');
+  assertContains(syncProofFile, 'multiPeerPerformance.heavyDefault === false', 'closure keeps heavy soak non-default');
   assertNotContains(syncProofFile, 'SCENARIO_IDS = [', 'scenario matrix duplicated in sync proof');
   assertNotContains(syncProofFile, 'multipeer-catalog-create-same-name', 'scenario details duplicated in sync proof');
-  assertNotContains(closureValidatorFile, 'closure-multipeer-soak-proof-complete', 'closure soak hardening before F16.2.d');
+  assertContains(closureValidatorFile, 'closure-multipeer-soak-proof-complete', 'closure validator requires multipeer soak');
 
   for (const field of [
     'peerIdHash',
