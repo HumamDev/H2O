@@ -10,6 +10,7 @@ const DB_URL: &str = "sqlite:studio-v1.db";
 const FUNCTION_NAME: &str = "h2o_writer_identity";
 const SETTLEMENT_IDENTITY: &str = "f15.execute-settlement-writer";
 const BULK_MIGRATION_IDENTITY: &str = "f15.bulk-migration";
+const FOLDER_LEGACY_FALLBACK_IDENTITY: &str = "f16.folder-legacy-fallback";
 const DEBUG_BYPASS_IDENTITY: &str = "f15.debug-bypass";
 const EMERGENCY_REPAIR_IDENTITY: &str = "f15.emergency-repair";
 const DEBUG_BYPASS_TOKEN: &str = "I_UNDERSTAND_F15_DEBUG_BYPASS";
@@ -31,6 +32,8 @@ pub struct F15AuthorizedSqlPayload {
     pub statements: Vec<F15AuthorizedSqlStatement>,
     #[serde(default)]
     pub bulk_migration_enabled: bool,
+    #[serde(default)]
+    pub folder_legacy_fallback_enabled: bool,
     #[serde(default)]
     pub debug_bypass_token: Option<String>,
     #[serde(default)]
@@ -157,6 +160,13 @@ fn validate_identity(payload: &F15AuthorizedSqlPayload) -> Result<Option<String>
                 Ok(Some("f15-bulk-migration-explicitly-enabled".to_string()))
             } else {
                 Err("sqlite-writer-identity-bulk-migration-not-enabled".to_string())
+            }
+        }
+        FOLDER_LEGACY_FALLBACK_IDENTITY => {
+            if payload.folder_legacy_fallback_enabled {
+                Ok(Some("f16-folder-legacy-fallback-explicitly-enabled".to_string()))
+            } else {
+                Err("sqlite-writer-identity-folder-legacy-fallback-not-enabled".to_string())
             }
         }
         DEBUG_BYPASS_IDENTITY => {
@@ -419,6 +429,7 @@ mod tests {
             identity: identity.to_string(),
             statements: Vec::new(),
             bulk_migration_enabled: false,
+            folder_legacy_fallback_enabled: false,
             debug_bypass_token: None,
             emergency_repair_token: None,
             reason: None,
@@ -449,6 +460,17 @@ mod tests {
         assert_eq!(
             validate_identity(&bulk).unwrap().as_deref(),
             Some("f15-bulk-migration-explicitly-enabled")
+        );
+
+        let mut folder_fallback = payload(FOLDER_LEGACY_FALLBACK_IDENTITY);
+        assert_eq!(
+            validate_identity(&folder_fallback).unwrap_err(),
+            "sqlite-writer-identity-folder-legacy-fallback-not-enabled"
+        );
+        folder_fallback.folder_legacy_fallback_enabled = true;
+        assert_eq!(
+            validate_identity(&folder_fallback).unwrap().as_deref(),
+            Some("f16-folder-legacy-fallback-explicitly-enabled")
         );
 
         let mut debug = payload(DEBUG_BYPASS_IDENTITY);

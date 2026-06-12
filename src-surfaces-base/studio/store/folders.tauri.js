@@ -65,6 +65,9 @@
   var F5D_FOLDER_BINDING_TOMBSTONES = true;
   var F5D_FOLDER_REMOVE_TOMBSTONES = true;
   var F5D_FOLDER_BINDING_RECORD_ID_FORMAT = 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}';
+  var F16_FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback';
+  var F16_FOLDER_LEGACY_FALLBACK_VERSION = '0.1.0-f16.4.b';
+  var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED = true;
 
   /* ── State ────────────────────────────────────────────────────────── */
   var state = {
@@ -129,6 +132,51 @@
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
     return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
+  }
+
+  function executeFolderBindingsLegacyFallback(query, values, reason) {
+    var sync = getSync();
+    var statement = { query: query, values: values || [] };
+    var operationReason = String(reason || 'folder-bindings-legacy-fallback').trim();
+    if (sync && typeof sync.executeAuthorizedSqlite === 'function') {
+      return sync.executeAuthorizedSqlite({
+        identity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
+        folderLegacyFallbackEnabled: true,
+        reason: 'f16.folder-legacy-fallback:' + operationReason,
+        statements: [statement],
+      }).then(function (result) {
+        api.__lastFolderBindingsLegacyFallbackIdentityResult = result || null;
+        if (result && result.ok === true && result.executed === true) return result;
+        recordWarning('F16.4 folder_bindings scoped fallback identity failed: ' +
+          JSON.stringify((result && result.blockers) || ['unknown']));
+        if (F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED) {
+          return sqlExecute(query, values).then(function (fallbackResult) {
+            api.__lastFolderBindingsLegacyFallbackIdentityResult = Object.assign({}, result || {}, {
+              ok: true,
+              executed: true,
+              identity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
+              triggerProtectionDeferredRawFallbackUsed: true,
+              reason: operationReason,
+            });
+            return fallbackResult;
+          });
+        }
+        return Promise.reject(new Error('folder_bindings scoped fallback identity failed'));
+      });
+    }
+    recordWarning('F16.4 folder_bindings scoped fallback identity facade unavailable; trigger protection deferred raw fallback used');
+    return sqlExecute(query, values).then(function (fallbackResult) {
+      api.__lastFolderBindingsLegacyFallbackIdentityResult = {
+        ok: true,
+        executed: true,
+        identity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
+        triggerProtectionDeferredRawFallbackUsed: true,
+        reason: operationReason,
+        blockers: ['sqlite-writer-identity-facade-unavailable'],
+        warnings: ['folder-bindings-trigger-protection-deferred'],
+      };
+      return fallbackResult;
+    });
   }
 
   /* tauri-plugin-sql v2 returns execute as JSON array [rowsAffected, lastInsertId]. */
@@ -789,7 +837,11 @@
     ]).then(function (pre) {
       var folder = pre[0];
       var bindingRead = pre[1] || { ok: false, bindings: [] };
-      return sqlExecute('DELETE FROM folder_bindings WHERE folder_id = ?', [id])
+      return executeFolderBindingsLegacyFallback(
+        'DELETE FROM folder_bindings WHERE folder_id = ?',
+        [id],
+        'store.folders.remove'
+      )
         .then(function () {
           return sqlExecute('DELETE FROM folders WHERE id = ?', [id]);
         })
@@ -819,9 +871,10 @@
     var assignedAt = (opts && typeof opts.assignedAt === 'number' && opts.assignedAt > 0)
       ? opts.assignedAt : Date.now();
     return readFolderBindingForChatSafely(chatId).then(function (previous) {
-      return sqlExecute(
+      return executeFolderBindingsLegacyFallback(
         'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
-        [chatId, folderId, assignedAt]
+        [chatId, folderId, assignedAt],
+        'store.folders.bindChat'
       ).then(function () {
         recordWrite('bindChat');
         notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId });
@@ -847,9 +900,10 @@
     var folderId = getFolderId(folderIdInput);
     var chatId = String(chatIdInput || '').trim();
     if (!folderId || !chatId) return Promise.resolve(false);
-    return sqlExecute(
+    return executeFolderBindingsLegacyFallback(
       'DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?',
-      [chatId, folderId]
+      [chatId, folderId],
+      'store.folders.unbindChat'
     ).then(function (result) {
       var ok = readRowsAffected(result) > 0;
       if (ok) {
@@ -1022,6 +1076,9 @@
   var api = {
     __installed: true,
     __version: '0.1.0',
+    __folderBindingsLegacyFallbackIdentity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
+    __folderBindingsLegacyFallbackIdentityVersion: F16_FOLDER_LEGACY_FALLBACK_VERSION,
+    __folderBindingsTriggerProtectionDeferred: F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED,
     init: init,
     dispose: dispose,
     isReady: isReady,

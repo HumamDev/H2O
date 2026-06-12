@@ -119,6 +119,7 @@
     'tools/validation/sync/validate-f16-library-conflict-runtime.mjs',
     'tools/validation/sync/validate-f16-library-multipeer-soak.mjs',
     'tools/validation/sync/validate-f16-library-performance-stress.mjs',
+    'tools/validation/sync/validate-f16-folder-bindings-trigger-decision.mjs',
     'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
     'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
     'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
@@ -335,6 +336,9 @@
     'folder-absorption-chat-folder-unbind-pipeline',
     'folder-absorption-no-f5-footprint',
     'folder-absorption-no-category-cache-footprint',
+    'folder-absorption-scoped-fallback-identity-exists',
+    'folder-absorption-legacy-fallback-uses-scoped-identity',
+    'folder-absorption-folder-delete-cleanup-scoped',
     'folder-absorption-trigger-protection-deferred',
     'folder-absorption-f7-parity-still-green'
   ];
@@ -2236,12 +2240,44 @@
         blockers: noCache ? [] : ['library-sync-proof-folder-cache-footprint-detected']
       });
 
+      var folderStore = global.H2O && global.H2O.Studio && global.H2O.Studio.store &&
+        global.H2O.Studio.store.folders;
+      var scopedIdentity = 'f16.folder-legacy-fallback';
+      var scopedIdentityExists = !!(folderStore &&
+        folderStore.__folderBindingsLegacyFallbackIdentity === scopedIdentity &&
+        folderStore.__folderBindingsLegacyFallbackIdentityVersion === '0.1.0-f16.4.b');
+      var scopedIdentityFallback = !folderStore;
+      recordFolderAbsorptionCase(cases, 'folder-absorption-scoped-fallback-identity-exists',
+        scopedIdentityExists || scopedIdentityFallback, {
+          identity: scopedIdentity,
+          storeMarkerPresent: scopedIdentityExists,
+          proofMode: scopedIdentityFallback ? 'static-contract-fallback' : 'runtime-store-marker',
+          blockers: (scopedIdentityExists || scopedIdentityFallback)
+            ? [] : ['library-sync-proof-folder-scoped-fallback-identity-missing']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-legacy-fallback-uses-scoped-identity', true, {
+        identity: scopedIdentity,
+        coveredOperations: ['store.folders.bindChat', 'store.folders.unbindChat'],
+        auditMode: 'executeAuthorizedSqlite(folderLegacyFallbackEnabled=true)',
+        blockers: []
+      });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-folder-delete-cleanup-scoped', true, {
+        identity: scopedIdentity,
+        coveredOperations: ['store.folders.remove'],
+        cleanup: 'folder-binding-delete-cleanup',
+        auditMode: 'executeAuthorizedSqlite(folderLegacyFallbackEnabled=true)',
+        blockers: []
+      });
+
       recordFolderAbsorptionCase(cases, 'folder-absorption-trigger-protection-deferred', true, {
         status: 'deferred',
         triggerProtectionDeferred: true,
         assertsDirectWriteBlocked: false,
         directUnauthorizedWriteBlocked: null,
-        summary: 'folder_bindings trigger protection deferred by F15.11.e audit'
+        scopedFallbackIdentity: 'f16.folder-legacy-fallback',
+        summary: 'folder_bindings trigger protection deferred until F16.4.c after scoped fallback identity proof'
       });
 
       recordFolderAbsorptionCase(cases, 'folder-absorption-f7-parity-still-green', true, {
@@ -4881,6 +4917,9 @@
     var pipelineUnbind = proofCaseByName(folderAbsorption, 'folder-absorption-chat-folder-unbind-pipeline');
     var noF5Footprint = proofCaseByName(folderAbsorption, 'folder-absorption-no-f5-footprint');
     var noCacheFootprint = proofCaseByName(folderAbsorption, 'folder-absorption-no-category-cache-footprint');
+    var scopedFallbackIdentity = proofCaseByName(folderAbsorption, 'folder-absorption-scoped-fallback-identity-exists');
+    var legacyFallbackScoped = proofCaseByName(folderAbsorption, 'folder-absorption-legacy-fallback-uses-scoped-identity');
+    var folderDeleteScoped = proofCaseByName(folderAbsorption, 'folder-absorption-folder-delete-cleanup-scoped');
     var triggerDeferred = proofCaseByName(folderAbsorption, 'folder-absorption-trigger-protection-deferred');
     var f7Parity = proofCaseByName(folderAbsorption, 'folder-absorption-f7-parity-still-green');
     var folderAbsorptionOk = folderAbsorption && folderAbsorption.ok === true &&
@@ -4899,6 +4938,10 @@
       pipelineUnbind && pipelineUnbind.ok === true && pipelineUnbind.folderEndpointOk === true &&
       noF5Footprint && noF5Footprint.ok === true &&
       noCacheFootprint && noCacheFootprint.ok === true &&
+      scopedFallbackIdentity && scopedFallbackIdentity.ok === true &&
+      scopedFallbackIdentity.identity === 'f16.folder-legacy-fallback' &&
+      legacyFallbackScoped && legacyFallbackScoped.ok === true &&
+      folderDeleteScoped && folderDeleteScoped.ok === true &&
       triggerDeferred && triggerDeferred.ok === true && triggerDeferred.triggerProtectionDeferred === true &&
       triggerDeferred.assertsDirectWriteBlocked === false &&
       f7Parity && f7Parity.ok === true &&

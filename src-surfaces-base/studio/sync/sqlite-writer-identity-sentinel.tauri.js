@@ -26,6 +26,7 @@
   var VERSION = '0.1.0-f15.8.f';
   var SETTLEMENT_IDENTITY = 'f15.execute-settlement-writer';
   var BULK_MIGRATION_IDENTITY = 'f15.bulk-migration';
+  var FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback';
   var DEBUG_BYPASS_IDENTITY = 'f15.debug-bypass';
   var EMERGENCY_REPAIR_IDENTITY = 'f15.emergency-repair';
 
@@ -88,6 +89,7 @@
           identity: cleanString(args.identity) || SETTLEMENT_IDENTITY,
           statements: statements,
           bulkMigrationEnabled: args.bulkMigrationEnabled === true,
+          folderLegacyFallbackEnabled: args.folderLegacyFallbackEnabled === true,
           debugBypassToken: cleanString(args.debugBypassToken) || null,
           emergencyRepairToken: cleanString(args.emergencyRepairToken) || null,
           reason: cleanString(args.reason) || null
@@ -162,7 +164,10 @@
   H2O.Desktop.Sync.__f15CutoverAllowedWriterIdentities = [
     SETTLEMENT_IDENTITY,
     BULK_MIGRATION_IDENTITY,
+    FOLDER_LEGACY_FALLBACK_IDENTITY,
     DEBUG_BYPASS_IDENTITY,
     EMERGENCY_REPAIR_IDENTITY
   ];
+  H2O.Desktop.Sync.__f16FolderLegacyFallbackWriterIdentity = FOLDER_LEGACY_FALLBACK_IDENTITY;
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionDeferred = true;
 })(typeof window !== 'undefined' ? window : globalThis);
