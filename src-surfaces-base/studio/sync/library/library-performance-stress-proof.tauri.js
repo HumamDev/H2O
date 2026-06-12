@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F16.3.b lightweight performance stress proof
+/* H2O Desktop Sync - F16.3.c performance stress proof
  *
  * Synthetic hash-only performance stress harness for Library Sync. Measures
  * bounded algorithmic behavior over deterministic fixtures while calling real
@@ -33,9 +33,10 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryPerformanceStressProofInstalled) return;
 
-  var VERSION = '0.1.0-f16.3.b';
+  var VERSION = '0.2.0-f16.3.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-performance-stress.v1';
-  var DEFAULT_SEED = 'f16.3.b-lightweight';
+  var DEFAULT_LIGHTWEIGHT_SEED = 'f16.3.c-lightweight';
+  var DEFAULT_HEAVY_SEED = 'f16.3.c-heavy';
   var DEFAULT_OBSERVED_AT_ISO = '2026-01-01T00:00:00Z';
   var HEAVY_ENV_FLAG = 'F16_STRESS_HEAVY=1';
   var LIGHTWEIGHT_SCALE = Object.freeze({
@@ -144,7 +145,7 @@
   }
 
   function hash(seed, label) {
-    return localHash('f16.3.b:' + cleanString(seed) + ':' + cleanString(label));
+    return localHash('f16.3.c:' + cleanString(seed) + ':' + cleanString(label));
   }
 
   function nowMs() {
@@ -584,44 +585,8 @@
     };
   }
 
-  async function runLibraryPerformanceStressProof(input) {
-    var args = safeObject(input);
-    var heavyRequested = detectHeavy(args);
-    var seed = cleanString(args.seed) || DEFAULT_SEED;
-    var observedAtIso = cleanString(args.observedAtIso) || DEFAULT_OBSERVED_AT_ISO;
-    if (heavyRequested) {
-      return {
-        schema: RESULT_SCHEMA,
-        version: VERSION,
-        ok: true,
-        tier: 'heavy-requested-placeholder',
-        seed: seed,
-        scaleSummary: Object.assign({ tier: 'heavy', heavyDefault: false, heavyEnvFlag: HEAVY_ENV_FLAG }, HEAVY_SCALE),
-        phaseCount: 0,
-        passCount: 0,
-        failCount: 0,
-        phases: [],
-        performanceSummary: {
-          totalDurationMs: 0,
-          maxPhaseDurationMs: 0,
-          seed: seed,
-          tier: 'heavy',
-          heavyRequested: true,
-          heavyDefault: false,
-          heavyDeferredTo: 'F16.3.c',
-          budgetWarnings: [],
-          hardCeilingViolations: []
-        },
-        correctnessSummary: { anomaliesPlanted: 0, anomaliesDetected: 0, anomalyMisses: 0 },
-        privacySummary: { ok: true, leakCount: 0, checkedNeedleCount: RAW_LEAK_NEEDLES.length },
-        sideEffectSummary: sideEffectSummary({ injectedExecutorUsed: false }),
-        blockers: [],
-        warnings: ['library-performance-stress-heavy-deferred-to-f16.3.c'],
-        observedAtIso: observedAtIso
-      };
-    }
-
-    var data = createStressDataSet(seed, 'lightweight', LIGHTWEIGHT_SCALE);
+  async function runStressTier(tier, seed, observedAtIso, scale, heavyRequested) {
+    var data = createStressDataSet(seed, tier, scale);
     var phases = [];
     phases.push(await phaseCatalogCanonicalization(data));
     phases.push(await phaseBindingDuplicateCheck(data));
@@ -641,8 +606,8 @@
     var anomaliesDetected = phases.reduce(function (sum, phase) { return sum + Number(phase.anomaliesDetected || 0); }, 0);
     var performance = summarizePhases(phases);
     performance.seed = seed;
-    performance.tier = 'lightweight';
-    performance.heavyRequested = false;
+    performance.tier = tier;
+    performance.heavyRequested = heavyRequested === true;
     performance.heavyDefault = false;
     performance.heavyEnvFlag = HEAVY_ENV_FLAG;
     performance.objectCounts = {
@@ -660,9 +625,9 @@
       schema: RESULT_SCHEMA,
       version: VERSION,
       ok: blockers.length === 0,
-      tier: 'lightweight',
+      tier: tier,
       seed: seed,
-      scaleSummary: Object.assign({ tier: 'lightweight', heavyDefault: false, heavyEnvFlag: HEAVY_ENV_FLAG }, LIGHTWEIGHT_SCALE),
+      scaleSummary: Object.assign({ tier: tier, heavyDefault: false, heavyEnvFlag: HEAVY_ENV_FLAG }, scale),
       phaseCount: phases.length,
       passCount: phases.filter(function (phase) { return phase.ok === true; }).length,
       failCount: phases.filter(function (phase) { return phase.ok !== true; }).length,
@@ -694,6 +659,15 @@
     }
     output.ok = output.ok && output.failCount === 0 && output.correctnessSummary.anomalyMisses === 0;
     return output;
+  }
+
+  async function runLibraryPerformanceStressProof(input) {
+    var args = safeObject(input);
+    var heavyRequested = detectHeavy(args);
+    var tier = heavyRequested ? 'heavy' : 'lightweight';
+    var seed = cleanString(args.seed) || (heavyRequested ? DEFAULT_HEAVY_SEED : DEFAULT_LIGHTWEIGHT_SEED);
+    var observedAtIso = cleanString(args.observedAtIso) || DEFAULT_OBSERVED_AT_ISO;
+    return runStressTier(tier, seed, observedAtIso, heavyRequested ? HEAVY_SCALE : LIGHTWEIGHT_SCALE, heavyRequested);
   }
 
   H2O.Desktop.Sync.runLibraryPerformanceStressProof = runLibraryPerformanceStressProof;

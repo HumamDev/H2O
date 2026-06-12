@@ -34,6 +34,11 @@ function assertContains(file, needle, label = needle) {
   assert(text.includes(needle), `${file}: missing ${label}`);
 }
 
+function assertNotContains(file, needle, label = needle) {
+  const text = read(file);
+  assert(!text.includes(needle), `${file}: unexpected ${label}`);
+}
+
 function assertOrder(file, before, after) {
   const text = read(file);
   const beforeIndex = text.indexOf(before);
@@ -61,7 +66,7 @@ function allRealSideEffectsFalse(result) {
   ].every((key) => summary[key] === false);
 }
 
-function buildContext() {
+function buildContext(env = {}) {
   let tick = 1000;
   const context = {
     console,
@@ -104,27 +109,27 @@ function buildContext() {
         }
       }
     },
-    process: { env: {} }
+    process: { env }
   };
   context.globalThis = context;
   return vm.createContext(context);
 }
 
-async function runVmProof() {
-  const context = buildContext();
+async function runVmProof(env = {}) {
+  const context = buildContext(env);
   vm.runInContext(read(conflictRuntimeFile), context, { filename: conflictRuntimeFile });
   vm.runInContext(read(moduleFile), context, { filename: moduleFile });
   const sync = context.H2O.Desktop.Sync;
   assert(sync.__libraryPerformanceStressProofInstalled === true, 'runtime installed marker missing');
-  assert(sync.__libraryPerformanceStressProofVersion === '0.1.0-f16.3.b', 'runtime version marker mismatch');
+  assert(sync.__libraryPerformanceStressProofVersion === '0.2.0-f16.3.c', 'runtime version marker mismatch');
   assert(typeof sync.runLibraryPerformanceStressProof === 'function', 'runtime proof API missing');
 
   const result = await sync.runLibraryPerformanceStressProof();
   assert(result.schema === 'h2o.desktop.sync.library-performance-stress.v1', 'proof schema mismatch');
-  assert(result.version === '0.1.0-f16.3.b', 'proof version mismatch');
+  assert(result.version === '0.2.0-f16.3.c', 'proof version mismatch');
   assert(result.ok === true, `lightweight proof did not pass: ${JSON.stringify(result.blockers || [])}`);
   assert(result.tier === 'lightweight', 'default tier must be lightweight');
-  assert(result.seed === 'f16.3.b-lightweight', 'default seed mismatch');
+  assert(result.seed === 'f16.3.c-lightweight', 'default seed mismatch');
   assert(result.scaleSummary?.chats === 1000, 'lightweight chats scale mismatch');
   assert(result.scaleSummary?.labels === 40, 'lightweight labels scale mismatch');
   assert(result.scaleSummary?.tags === 40, 'lightweight tags scale mismatch');
@@ -186,17 +191,36 @@ async function runVmProof() {
     assert(!outputText.includes(needle), `proof output leaked ${needle}`);
   }
 
-  const heavy = await sync.runLibraryPerformanceStressProof({ heavy: true, seed: 'f16.3.b-heavy-smoke' });
-  assert(heavy.schema === 'h2o.desktop.sync.library-performance-stress.v1', 'heavy placeholder schema mismatch');
-  assert(heavy.ok === true, 'heavy placeholder should be non-blocking in F16.3.b');
-  assert(heavy.tier === 'heavy-requested-placeholder', 'heavy request must return placeholder tier in F16.3.b');
-  assert(heavy.performanceSummary?.heavyRequested === true, 'heavy placeholder must record heavyRequested true');
-  assert(heavy.performanceSummary?.heavyDefault === false, 'heavy placeholder must keep heavyDefault false');
-  assert((heavy.warnings || []).includes('library-performance-stress-heavy-deferred-to-f16.3.c'), 'heavy placeholder warning missing');
-  assert(heavy.phaseCount === 0, 'heavy placeholder must not run heavy phases in F16.3.b');
-  assert(allRealSideEffectsFalse(heavy), 'heavy placeholder real side effects must all be false');
-
   return result;
+}
+
+async function runHeavyVmProof() {
+  const context = buildContext({ F16_STRESS_HEAVY: '1' });
+  vm.runInContext(read(conflictRuntimeFile), context, { filename: conflictRuntimeFile });
+  vm.runInContext(read(moduleFile), context, { filename: moduleFile });
+  const sync = context.H2O.Desktop.Sync;
+  const heavy = await sync.runLibraryPerformanceStressProof({ seed: 'f16.3.c-heavy-smoke' });
+  assert(heavy.schema === 'h2o.desktop.sync.library-performance-stress.v1', 'heavy proof schema mismatch');
+  assert(heavy.version === '0.2.0-f16.3.c', 'heavy proof version mismatch');
+  assert(heavy.ok === true, `heavy proof did not pass: ${JSON.stringify(heavy.blockers || [])}`);
+  assert(heavy.tier === 'heavy', 'heavy proof tier mismatch');
+  assert(heavy.seed === 'f16.3.c-heavy-smoke', 'heavy seed must be reported');
+  assert(heavy.scaleSummary?.chats === 10000, 'heavy chats scale mismatch');
+  assert(heavy.scaleSummary?.labels === 100, 'heavy labels scale mismatch');
+  assert(heavy.scaleSummary?.tags === 100, 'heavy tags scale mismatch');
+  assert(heavy.scaleSummary?.categories === 100, 'heavy categories scale mismatch');
+  assert(heavy.scaleSummary?.bindings === 10000, 'heavy bindings scale mismatch');
+  assert(heavy.scaleSummary?.bulkRows === 5000, 'heavy bulk rows scale mismatch');
+  assert(heavy.scaleSummary?.cacheRefreshEdges === 2500, 'heavy cache refresh scale mismatch');
+  assert(heavy.scaleSummary?.replayEnvelopes === 5000, 'heavy replay scale mismatch');
+  assert(heavy.phaseCount === 7, 'heavy phase count mismatch');
+  assert(heavy.passCount === 7, 'heavy phases must pass');
+  assert(heavy.failCount === 0, 'heavy proof must have zero failed phases');
+  assert(heavy.correctnessSummary?.plantedAnomaliesChecked === true, 'heavy planted anomalies must be checked');
+  assert(heavy.correctnessSummary?.anomalyMisses === 0, 'heavy proof must not miss planted anomalies');
+  assert(heavy.privacySummary?.ok === true, 'heavy privacy scan must pass');
+  assert(allRealSideEffectsFalse(heavy), 'heavy real side effects must all be false');
+  return heavy;
 }
 
 async function main() {
@@ -209,7 +233,7 @@ async function main() {
   assertContains(moduleFile, 'runLibraryPerformanceStressProof');
   assertContains(moduleFile, '__libraryPerformanceStressProofInstalled');
   assertContains(moduleFile, '__libraryPerformanceStressProofVersion = VERSION');
-  assertContains(moduleFile, "0.1.0-f16.3.b");
+  assertContains(moduleFile, "0.2.0-f16.3.c");
   assertContains(moduleFile, 'h2o.desktop.sync.library-performance-stress.v1');
 
   for (const scaleNeedle of [
@@ -228,11 +252,13 @@ async function main() {
     'bulkRows: 5000',
     'F16_STRESS_HEAVY=1',
     'heavyDefault: false',
-    'heavy-requested-placeholder',
-    'library-performance-stress-heavy-deferred-to-f16.3.c'
+    'DEFAULT_HEAVY_SEED',
+    'runStressTier'
   ]) {
     assertContains(moduleFile, scaleNeedle, `scale/heavy marker ${scaleNeedle}`);
   }
+  assertNotContains(moduleFile, 'heavy-requested-placeholder', 'F16.3.b heavy placeholder');
+  assertNotContains(moduleFile, 'library-performance-stress-heavy-deferred-to-f16.3.c', 'F16.3.b heavy deferred warning');
 
   for (const phaseName of [
     'catalog lookup / canonicalization-shaped pass',
@@ -335,6 +361,10 @@ async function main() {
   assertOrder(packFile, '"sync/library/library-multipeer-soak-proof.tauri.js"', '"sync/library/library-performance-stress-proof.tauri.js"');
 
   const result = await runVmProof();
+  let heavyResult = null;
+  if (process.env.F16_STRESS_HEAVY === '1') {
+    heavyResult = await runHeavyVmProof();
+  }
   if (failures.length) {
     console.error('F16 library performance stress validation failed');
     for (const failure of failures) console.error(`- ${failure}`);
@@ -348,6 +378,8 @@ async function main() {
     passCount: result.passCount,
     anomalyMisses: result.correctnessSummary?.anomalyMisses,
     heavyDefault: result.performanceSummary?.heavyDefault,
+    heavySmokeRan: !!heavyResult,
+    heavyPassCount: heavyResult?.passCount || 0,
     privacyOk: result.privacySummary?.ok,
     realSideEffectsSafe: allRealSideEffectsFalse(result)
   }, null, 2));
