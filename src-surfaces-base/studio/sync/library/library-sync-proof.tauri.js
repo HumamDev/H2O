@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F15.12.b library sync proof foundation
+/* H2O Desktop Sync - F16.1.d library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,10 +32,11 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.8.0-f15.12.b';
+  var VERSION = '0.9.0-f16.1.d';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
+  var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
   var BINDING_SUBJECT_TYPE = 'library.binding';
   var CHAT_SUBJECT_TYPE = 'chat.metadata';
@@ -75,7 +76,12 @@
     'setF15FolderBindingDelegationEnabled',
     'isF15FolderBindingDelegationEnabled',
     'runLibraryFolderBindingAbsorptionProof',
-    'runLibraryConflictProof'
+    'runLibraryConflictProof',
+    'runLibraryRuntimeConflictGateProof',
+    'evaluateLibraryRuntimeConflict',
+    'evaluateLibraryCatalogRuntimeConflict',
+    'evaluateLibraryBindingRuntimeConflict',
+    'classifyLibraryBulkRuntimeConflictRows'
   ];
 
   var REQUIRED_MARKERS = [
@@ -98,7 +104,8 @@
     '__libraryCatalogF5ClosureInstalled',
     '__f15CutoverInstalled',
     '__libraryBulkMigrationInstalled',
-    '__libraryFolderBindingMigrationShadowInstalled'
+    '__libraryFolderBindingMigrationShadowInstalled',
+    '__libraryConflictRuntimeInstalled'
   ];
 
   var VALIDATOR_REFERENCES = [
@@ -107,6 +114,7 @@
     'tools/validation/sync/validate-f15-library-sync-proof.mjs',
     'tools/validation/sync/validate-f15-library-closure.mjs',
     'tools/validation/sync/validate-f15-library-conflict-contract.mjs',
+    'tools/validation/sync/validate-f16-library-conflict-runtime.mjs',
     'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
     'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
     'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
@@ -297,6 +305,7 @@
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
+    'closure-runtime-conflict-gate-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -376,6 +385,45 @@
     .concat(CONFLICT_F5_CASE_NAMES)
     .concat(CONFLICT_FOLDER_IDENTITY_CASE_NAMES)
     .concat(['conflict-privacy-leak-scan']);
+
+  var RUNTIME_CONFLICT_GATE_CASE_NAMES = [
+    'runtime-gate-apis-markers-present',
+    'runtime-gate-catalog-preflight-calls-gate',
+    'runtime-gate-binding-preflight-calls-gate',
+    'runtime-gate-missing-gate-warns-default',
+    'runtime-gate-missing-gate-blocks-required',
+    'runtime-gate-missing-context-warns-default',
+    'runtime-gate-missing-context-blocks-strict',
+    'runtime-gate-cache-drift-warning-only',
+    'runtime-gate-settlement-mode-used',
+    'runtime-gate-settlement-requires-gate',
+    'runtime-gate-settlement-requires-context',
+    'runtime-gate-unavailable-blocks-before-mutation',
+    'runtime-gate-thrown-blocks-before-mutation',
+    'runtime-gate-blocker-prevents-consumed-op',
+    'runtime-gate-blocker-prevents-watermark',
+    'runtime-gate-blocker-prevents-all-side-effects',
+    'runtime-gate-warnings-only-continues',
+    'runtime-gate-catalog-duplicate-nameHash-blocks',
+    'runtime-gate-catalog-stale-baseHash-blocks',
+    'runtime-gate-catalog-lifecycle-conflict-blocks',
+    'runtime-gate-catalog-f5-terminal-conflict-blocks',
+    'runtime-gate-refresh-repropose-path',
+    'runtime-gate-binding-duplicate-edge-blocks',
+    'runtime-gate-binding-state-conflict-blocks',
+    'runtime-gate-binding-chat-category-one-active-blocks',
+    'runtime-gate-binding-chat-folder-one-active-blocks',
+    'runtime-gate-binding-f7-f15-active-conflict-blocks',
+    'runtime-gate-folder-metadata-endpoint-preserved',
+    'runtime-gate-bulk-classification-before-sql',
+    'runtime-gate-bulk-partial-conflicts-reported',
+    'runtime-gate-bulk-conflict-rows-skip-sql',
+    'runtime-gate-bulk-retry-safe-summary',
+    'runtime-gate-bulk-repeat-rows-idempotent',
+    'runtime-gate-bulk-no-raw-metadata-leak',
+    'runtime-gate-conflict-reports-redacted',
+    'runtime-gate-blocked-side-effects-false'
+  ];
 
   var FORBIDDEN_OUTPUT_KEYS = [
     'name',
@@ -3753,6 +3801,721 @@
     };
   }
 
+  function runtimeGateSideEffectsFalse(result) {
+    var summary = safeObject(result && result.sideEffectSummary);
+    var keys = [
+      'storageWritten',
+      'consumedOperationWritten',
+      'watermarkWritten',
+      'bookkeepingWritten',
+      'chatsCategoryIdCacheRefreshed',
+      'publicationTouched',
+      'relayTouched',
+      'outboxTouched',
+      'nativeCalled',
+      'f5Touched',
+      'applyExecuted',
+      'executeJournalTouched',
+      'catalogMutated',
+      'bindingMutated',
+      'libraryBookkeepingMirrored'
+    ];
+    for (var i = 0; i < keys.length; i += 1) {
+      if (summary[keys[i]] === true) return false;
+    }
+    return true;
+  }
+  async function runtimeHash(label) {
+    return await digestOf({ lane: 'library-runtime-conflict-gate-proof', label: cleanString(label) });
+  }
+  async function buildRuntimeSettlementEnvelope(domainId, operation, opts) {
+    var o = safeObject(opts);
+    var isBinding = domainId === BINDING_SUBJECT_TYPE;
+    var subjectId = o.subjectId || await runtimeHash(domainId + ':' + operation + ':subject');
+    var receiptDigest = await runtimeHash(domainId + ':' + operation + ':receipt');
+    var eventDigest = await runtimeHash(domainId + ':' + operation + ':event');
+    var baseHash = o.baseHash || await runtimeHash(domainId + ':' + operation + ':base');
+    var targetHash = o.targetHash || await runtimeHash(domainId + ':' + operation + ':target');
+    var leftSubjectId = o.leftSubjectId || await runtimeHash('runtime-gate-left-subject');
+    var rightSubjectId = o.rightSubjectId || await runtimeHash('runtime-gate-right-subject');
+    var bindingKind = cleanString(o.bindingKind) || 'chat-label';
+    var expectedCurrentState = isBinding ? {
+      subjectType: BINDING_SUBJECT_TYPE,
+      subjectId: subjectId,
+      bindingKind: bindingKind,
+      leftSubjectId: leftSubjectId,
+      rightSubjectId: rightSubjectId,
+      leftSubjectType: CHAT_SUBJECT_TYPE,
+      rightSubjectType: cleanString(o.rightSubjectType) || CATALOG_SUBJECT_TYPE,
+      bindingState: operation === 'bind' ? 'unbound' : 'bound',
+      revisionHash: baseHash
+    } : {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      subjectId: subjectId,
+      catalogKind: cleanString(o.catalogKind) || 'label',
+      nameHash: o.nameHash || await runtimeHash('runtime-gate-catalog-name'),
+      originAccountIdHash: o.originAccountIdHash || await runtimeHash('runtime-gate-account'),
+      lifecycleState: operation === 'create' ? 'absent' : 'active',
+      revisionHash: baseHash
+    };
+    var expectedTargetState = isBinding
+      ? Object.assign({}, expectedCurrentState, { bindingState: operation === 'unbind' ? 'unbound' : 'bound', revisionHash: targetHash })
+      : Object.assign({}, expectedCurrentState, {
+        lifecycleState: operation === 'archive' ? 'archived' : operation === 'tombstone' ? 'retained' : 'active',
+        revisionHash: targetHash
+      });
+    var settlementShapes = Object.assign({
+      revisionHash: targetHash,
+      postStateHash: targetHash,
+      settlementDigest: await runtimeHash(domainId + ':' + operation + ':settlement'),
+      receiptDigest: receiptDigest,
+      bookkeepingRowId: await runtimeHash(domainId + ':' + operation + ':bookkeeping'),
+      expectedCurrentState: expectedCurrentState,
+      expectedTargetState: expectedTargetState
+    }, isBinding ? {
+      bindingKind: bindingKind,
+      leftSubjectId: leftSubjectId,
+      rightSubjectId: rightSubjectId,
+      leftSubjectType: CHAT_SUBJECT_TYPE,
+      rightSubjectType: cleanString(o.rightSubjectType) || CATALOG_SUBJECT_TYPE,
+      requiresCategoryCacheRefresh: false,
+      categoryCacheAction: null
+    } : {});
+    var payloadReceipt = isBinding ? {
+      schema: 'h2o.desktop.sync.library-binding-execute-proposal-receipt.v1',
+      domainId: domainId,
+      operationKind: 'library-binding-' + operation + '-applied',
+      flavor: 'library-binding-' + operation + '-' + bindingKind,
+      receiptDigest: receiptDigest,
+      applyEventDigest: eventDigest,
+      canonicalSubjectId: subjectId,
+      canonicalRevisionHash: targetHash,
+      canonicalBindingKind: bindingKind,
+      leftSubjectId: leftSubjectId,
+      rightSubjectId: rightSubjectId,
+      leftSubjectType: CHAT_SUBJECT_TYPE,
+      rightSubjectType: cleanString(o.rightSubjectType) || CATALOG_SUBJECT_TYPE
+    } : {
+      schema: 'h2o.desktop.sync.library-catalog-execute-proposal-receipt.v1',
+      domainId: domainId,
+      operationKind: 'library-catalog-' + operation + '-applied',
+      flavor: 'library-catalog-' + operation,
+      receiptDigest: receiptDigest,
+      applyEventDigest: eventDigest,
+      canonicalSubjectId: subjectId,
+      canonicalRevisionHash: targetHash,
+      canonicalKindTag: expectedTargetState.catalogKind,
+      canonicalNameHash: expectedTargetState.nameHash
+    };
+    return {
+      schema: 'h2o.desktop.sync.execute-envelope.v1',
+      version: isBinding ? '0.2.0-f15.11.c' : '0.1.0-f15.8.catalog',
+      envelopeKind: 'proposal-receipt',
+      flavor: payloadReceipt.flavor,
+      domainId: domainId,
+      operationKind: payloadReceipt.operationKind,
+      subjectId: subjectId,
+      lineageId: await runtimeHash(domainId + ':' + operation + ':lineage'),
+      dedupeKey: await runtimeHash(domainId + ':' + operation + ':dedupe'),
+      eventDigest: eventDigest,
+      dispatchProfile: { requiresNative: isBinding, requiresF5: false, requiresRelay: false, nativeIdempotent: true },
+      payloadShapes: { proposalReceipt: payloadReceipt },
+      settlementShapes: settlementShapes,
+      receiptDigest: receiptDigest,
+      receiptKind: operation + '-applied',
+      bookkeepingRowId: settlementShapes.bookkeepingRowId,
+      originAccountIdHash: expectedTargetState.originAccountIdHash || await runtimeHash('runtime-gate-account'),
+      actorPeer: {
+        physicalDeviceIdHash: await runtimeHash('runtime-gate-peer-physical'),
+        installIdHash: await runtimeHash('runtime-gate-peer-install'),
+        syncPeerIdHash: await runtimeHash('runtime-gate-peer-sync'),
+        surfaceKind: 'desktop-tauri'
+      },
+      createdAtIso: cleanString(o.observedAtIso) || nowIsoSeconds(),
+      observedAtIso: cleanString(o.observedAtIso) || nowIsoSeconds()
+    };
+  }
+  function runtimeReceiptFor(domainId, envelope) {
+    return {
+      schema: domainId === BINDING_SUBJECT_TYPE
+        ? 'h2o.desktop.sync.library-binding-apply-event-receipt.v1'
+        : 'h2o.desktop.sync.library-catalog-apply-event-receipt.v1',
+      ok: true,
+      receiptDigest: envelope.receiptDigest,
+      applyEventDigest: envelope.eventDigest,
+      subjectId: envelope.subjectId,
+      lineageId: envelope.lineageId,
+      dedupeKey: envelope.dedupeKey,
+      originAccountIdHash: envelope.originAccountIdHash,
+      actorPeer: envelope.actorPeer,
+      receipt: { receiptKind: envelope.receiptKind },
+      applyEvent: { payload: {} },
+      auditMetadata: {}
+    };
+  }
+  async function runtimeSettlement(domainId, operation, opts) {
+    var o = safeObject(opts);
+    var envelope = await buildRuntimeSettlementEnvelope(domainId, operation, o);
+    var consumedRows = [];
+    var watermarkRows = [];
+    var bookkeepingCalls = 0;
+    var result = await getSync().settleLibraryExecuteEnvelope({
+      envelope: envelope,
+      receipt: runtimeReceiptFor(domainId, envelope),
+      dispatchResult: { ok: true, applied: true },
+      __consumedRows: consumedRows,
+      __watermarkRows: watermarkRows,
+      recordLibraryCatalogBookkeeping: async function () {
+        bookkeepingCalls += 1;
+        return { ok: true, row: { rowId: await runtimeHash('runtime-gate-catalog-bookkeeping') }, blockers: [], warnings: [] };
+      },
+      recordLibraryBindingBookkeeping: async function () {
+        bookkeepingCalls += 1;
+        return { ok: true, row: { rowId: await runtimeHash('runtime-gate-binding-bookkeeping') }, blockers: [], warnings: [] };
+      },
+      existingCatalogs: asArray(o.existingCatalogs),
+      existingBindings: asArray(o.existingBindings),
+      currentState: o.currentState,
+      expectedState: o.expectedState,
+      expectedTargetState: o.expectedTargetState,
+      cacheObservation: o.cacheObservation,
+      f5Review: o.f5Review,
+      bridgeContext: o.bridgeContext,
+      observedAtIso: cleanString(o.observedAtIso) || nowIsoSeconds()
+    });
+    return {
+      result: result,
+      consumedCount: consumedRows.length,
+      watermarkCount: watermarkRows.length,
+      bookkeepingCalls: bookkeepingCalls
+    };
+  }
+  function runtimeRecord(cases, caseId, ok, detail) {
+    var d = safeObject(detail);
+    var entry = {
+      caseId: cleanString(caseId),
+      required: true,
+      ok: ok === true,
+      blockers: codeList(d.blockers),
+      warnings: codeList(d.warnings),
+      sideEffectSummary: sideEffectSummary()
+    };
+    [
+      'mode',
+      'domain',
+      'runtimeChecked',
+      'blockedBeforeMutation',
+      'warningOnly',
+      'retrySafe',
+      'refreshRequired',
+      'folderEndpointOk',
+      'executorCalled',
+      'leakFree'
+    ].forEach(function (key) {
+      if (typeof d[key] !== 'undefined') entry[key] = d[key];
+    });
+    cases.push(entry);
+    return entry;
+  }
+  async function runLibraryRuntimeConflictGateProof(input) {
+    var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
+    var cases = [];
+    var blockers = [];
+    var warnings = [];
+    var sync = getSync();
+    var account = await runtimeHash('runtime-gate-account');
+    var nameHash = await runtimeHash('runtime-gate-name');
+    var catalogA = await runtimeHash('runtime-gate-catalog-a');
+    var catalogB = await runtimeHash('runtime-gate-catalog-b');
+    var chatA = await runtimeHash('runtime-gate-chat-a');
+    var labelA = await runtimeHash('runtime-gate-label-a');
+    var categoryA = await runtimeHash('runtime-gate-category-a');
+    var categoryB = await runtimeHash('runtime-gate-category-b');
+    var folderA = await runtimeHash('runtime-gate-folder-a');
+    var folderB = await runtimeHash('runtime-gate-folder-b');
+    var bindingA = await runtimeHash('runtime-gate-binding-a');
+
+    function add(caseId, ok, detail) {
+      var entry = runtimeRecord(cases, caseId, ok, detail);
+      if (entry.ok !== true) mergeCodes(blockers, entry.blockers.length ? entry.blockers : ['library-sync-proof-runtime-conflict-case-failed']);
+      mergeCodes(warnings, entry.warnings);
+      return entry;
+    }
+    function blockedNoMutation(settled) {
+      var s = safeObject(settled);
+      return safeObject(s.result).ok === false &&
+        s.consumedCount === 0 &&
+        s.watermarkCount === 0 &&
+        s.bookkeepingCalls === 0 &&
+        runtimeGateSideEffectsFalse(s.result);
+    }
+
+    var apisOk = typeof sync.evaluateLibraryRuntimeConflict === 'function' &&
+      typeof sync.evaluateLibraryCatalogRuntimeConflict === 'function' &&
+      typeof sync.evaluateLibraryBindingRuntimeConflict === 'function' &&
+      typeof sync.classifyLibraryBulkRuntimeConflictRows === 'function' &&
+      sync.__libraryConflictRuntimeInstalled === true &&
+      !!sync.__libraryConflictRuntimeVersion;
+    add('runtime-gate-apis-markers-present', apisOk, { blockers: apisOk ? [] : ['library-sync-proof-runtime-conflict-api-missing'] });
+
+    var cleanCatalogPreflight = await sync.preflightLibraryCatalog({
+      operation: 'rename',
+      canonicalCatalog: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-catalog-base')
+      },
+      currentLifecycleState: 'active',
+      expectedState: { lifecycleState: 'active', revisionHash: await runtimeHash('runtime-gate-catalog-base') },
+      expectedTargetState: { lifecycleState: 'active', revisionHash: await runtimeHash('runtime-gate-catalog-target') },
+      siblingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-catalog-preflight-calls-gate',
+      cleanCatalogPreflight && cleanCatalogPreflight.conflictRuntimeChecked === true && isObject(cleanCatalogPreflight.conflictRuntimeSummary),
+      { runtimeChecked: cleanCatalogPreflight && cleanCatalogPreflight.conflictRuntimeChecked === true,
+        blockers: codeList(cleanCatalogPreflight && cleanCatalogPreflight.blockers),
+        warnings: codeList(cleanCatalogPreflight && cleanCatalogPreflight.warnings) });
+
+    var cleanBindingPreflight = await sync.preflightLibraryBinding({
+      operation: 'unbind',
+      canonicalBinding: {
+        subjectType: BINDING_SUBJECT_TYPE,
+        subjectId: bindingA,
+        bindingKind: 'chat-label',
+        leftSubjectId: chatA,
+        rightSubjectId: labelA,
+        leftSubjectType: CHAT_SUBJECT_TYPE,
+        rightSubjectType: CATALOG_SUBJECT_TYPE,
+        bindingState: 'bound',
+        revisionHash: await runtimeHash('runtime-gate-binding-base')
+      },
+      relatedCatalogs: [{ subjectType: CATALOG_SUBJECT_TYPE, subjectId: labelA, lifecycleState: 'active' }],
+      relatedChats: [{ subjectType: CHAT_SUBJECT_TYPE, subjectId: chatA }],
+      expectedState: { bindingState: 'bound' },
+      currentState: { bindingState: 'bound' },
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-preflight-calls-gate',
+      cleanBindingPreflight && cleanBindingPreflight.conflictRuntimeChecked === true && isObject(cleanBindingPreflight.conflictRuntimeSummary),
+      { runtimeChecked: cleanBindingPreflight && cleanBindingPreflight.conflictRuntimeChecked === true,
+        blockers: codeList(cleanBindingPreflight && cleanBindingPreflight.blockers),
+        warnings: codeList(cleanBindingPreflight && cleanBindingPreflight.warnings) });
+
+    var savedCatalogGate = sync.evaluateLibraryCatalogRuntimeConflict;
+    sync.evaluateLibraryCatalogRuntimeConflict = null;
+    var missingGateDefault = await sync.preflightLibraryCatalog({
+      operation: 'archive',
+      canonicalCatalog: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-catalog-base')
+      },
+      currentLifecycleState: 'active',
+      observedAtIso: observedAtIso
+    });
+    var missingGateRequired = await sync.preflightLibraryCatalog({
+      operation: 'archive',
+      canonicalCatalog: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-catalog-base')
+      },
+      currentLifecycleState: 'active',
+      requireConflictGate: true,
+      observedAtIso: observedAtIso
+    });
+    sync.evaluateLibraryCatalogRuntimeConflict = savedCatalogGate;
+    add('runtime-gate-missing-gate-warns-default',
+      codeList(missingGateDefault && missingGateDefault.warnings).indexOf('library-conflict-runtime-unavailable') !== -1,
+      { warnings: codeList(missingGateDefault && missingGateDefault.warnings) });
+    add('runtime-gate-missing-gate-blocks-required',
+      missingGateRequired && missingGateRequired.ok === false &&
+        codeList(missingGateRequired.blockers).indexOf('library-conflict-runtime-required-unavailable') !== -1,
+      { blockers: codeList(missingGateRequired && missingGateRequired.blockers) });
+
+    var missingContextDefault = sync.evaluateLibraryCatalogRuntimeConflict({
+      domain: CATALOG_SUBJECT_TYPE,
+      mode: 'preflight',
+      operation: 'create',
+      candidate: { expectedTargetState: { subjectId: catalogA, catalogKind: 'label', nameHash: nameHash, originAccountIdHash: account } },
+      observedAtIso: observedAtIso
+    });
+    var missingContextStrict = await sync.preflightLibraryCatalog({
+      operation: 'create',
+      canonicalCatalog: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-catalog-target')
+      },
+      requireContext: true,
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-missing-context-warns-default',
+      codeList(missingContextDefault && missingContextDefault.warnings).indexOf('library-conflict-runtime-context-missing') !== -1,
+      { warnings: codeList(missingContextDefault && missingContextDefault.warnings) });
+    add('runtime-gate-missing-context-blocks-strict',
+      missingContextStrict && missingContextStrict.ok === false &&
+        codeList(missingContextStrict.blockers).indexOf('library-conflict-runtime-context-missing') !== -1,
+      { blockers: codeList(missingContextStrict && missingContextStrict.blockers) });
+
+    var cacheDrift = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'preflight',
+      operation: 'unbind',
+      candidate: { bindingKind: 'chat-label', leftSubjectId: chatA, rightSubjectId: labelA, bindingState: 'bound' },
+      currentState: { bindingState: 'bound' },
+      expectedState: { bindingState: 'bound' },
+      cacheObservation: { driftDetected: true },
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-cache-drift-warning-only',
+      cacheDrift && cacheDrift.ok === true &&
+        codeList(cacheDrift.warnings).indexOf('library-cache-cross-install-drift') !== -1,
+      { warningOnly: true, warnings: codeList(cacheDrift && cacheDrift.warnings) });
+
+    var cleanSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', {
+      expectedTargetState: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: await runtimeHash('runtime-gate-clean-name'),
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-clean-target')
+      },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-settlement-mode-used',
+      safeObject(cleanSettlement.result && cleanSettlement.result.conflictRuntime).mode === 'settlement',
+      { mode: safeObject(cleanSettlement.result && cleanSettlement.result.conflictRuntime).mode });
+    add('runtime-gate-settlement-requires-gate',
+      cleanSettlement.result && isObject(cleanSettlement.result.conflictRuntimeSummary),
+      { runtimeChecked: isObject(cleanSettlement.result && cleanSettlement.result.conflictRuntimeSummary) });
+
+    var contextMissingSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', { observedAtIso: observedAtIso });
+    add('runtime-gate-settlement-requires-context',
+      contextMissingSettlement.result && contextMissingSettlement.result.ok === false &&
+        codeList(contextMissingSettlement.result.blockers).indexOf('library-conflict-runtime-context-missing') !== -1,
+      { blockers: codeList(contextMissingSettlement.result && contextMissingSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(contextMissingSettlement) });
+
+    var savedDispatcher = sync.evaluateLibraryRuntimeConflict;
+    var savedCatalogConflict = sync.evaluateLibraryCatalogRuntimeConflict;
+    var savedBindingConflict = sync.evaluateLibraryBindingRuntimeConflict;
+    sync.evaluateLibraryRuntimeConflict = null;
+    sync.evaluateLibraryCatalogRuntimeConflict = null;
+    sync.evaluateLibraryBindingRuntimeConflict = null;
+    var unavailableSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', {
+      expectedTargetState: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: await runtimeHash('runtime-gate-unavailable-name'),
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-unavailable-target')
+      },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    sync.evaluateLibraryRuntimeConflict = savedDispatcher;
+    sync.evaluateLibraryCatalogRuntimeConflict = savedCatalogConflict;
+    sync.evaluateLibraryBindingRuntimeConflict = savedBindingConflict;
+    add('runtime-gate-unavailable-blocks-before-mutation',
+      codeList(unavailableSettlement.result && unavailableSettlement.result.blockers).indexOf('library-conflict-runtime-required-unavailable') !== -1 &&
+        blockedNoMutation(unavailableSettlement),
+      { blockers: codeList(unavailableSettlement.result && unavailableSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(unavailableSettlement) });
+
+    sync.evaluateLibraryCatalogRuntimeConflict = function () { throw new Error('runtime-conflict-proof-forced'); };
+    var thrownSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', {
+      expectedTargetState: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: await runtimeHash('runtime-gate-thrown-name'),
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-thrown-target')
+      },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    sync.evaluateLibraryCatalogRuntimeConflict = savedCatalogConflict;
+    add('runtime-gate-thrown-blocks-before-mutation',
+      codeList(thrownSettlement.result && thrownSettlement.result.blockers).indexOf('library-conflict-runtime-required-unavailable') !== -1 &&
+        blockedNoMutation(thrownSettlement),
+      { blockers: codeList(thrownSettlement.result && thrownSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(thrownSettlement) });
+
+    var duplicateCatalogSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', {
+      nameHash: nameHash,
+      expectedTargetState: {
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogB,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active',
+        revisionHash: await runtimeHash('runtime-gate-duplicate-target')
+      },
+      existingCatalogs: [{
+        subjectType: CATALOG_SUBJECT_TYPE,
+        subjectId: catalogA,
+        catalogKind: 'label',
+        nameHash: nameHash,
+        originAccountIdHash: account,
+        lifecycleState: 'active'
+      }],
+      observedAtIso: observedAtIso
+    });
+    var duplicateBlocks = codeList(duplicateCatalogSettlement.result && duplicateCatalogSettlement.result.blockers)
+      .indexOf('library-catalog-cross-install-name-collision') !== -1;
+    add('runtime-gate-blocker-prevents-consumed-op', duplicateBlocks && duplicateCatalogSettlement.consumedCount === 0,
+      { blockers: codeList(duplicateCatalogSettlement.result && duplicateCatalogSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(duplicateCatalogSettlement) });
+    add('runtime-gate-blocker-prevents-watermark', duplicateBlocks && duplicateCatalogSettlement.watermarkCount === 0,
+      { blockers: codeList(duplicateCatalogSettlement.result && duplicateCatalogSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(duplicateCatalogSettlement) });
+    add('runtime-gate-blocker-prevents-all-side-effects', duplicateBlocks && blockedNoMutation(duplicateCatalogSettlement),
+      { blockers: codeList(duplicateCatalogSettlement.result && duplicateCatalogSettlement.result.blockers),
+        blockedBeforeMutation: blockedNoMutation(duplicateCatalogSettlement) });
+    add('runtime-gate-catalog-duplicate-nameHash-blocks', duplicateBlocks,
+      { blockers: codeList(duplicateCatalogSettlement.result && duplicateCatalogSettlement.result.blockers) });
+
+    var warningsOnlySettlement = await runtimeSettlement(BINDING_SUBJECT_TYPE, 'unbind', {
+      expectedState: { bindingState: 'bound' },
+      currentState: { bindingState: 'bound' },
+      cacheObservation: { driftDetected: true },
+      existingBindings: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-warnings-only-continues',
+      warningsOnlySettlement.result && warningsOnlySettlement.result.ok === true &&
+        warningsOnlySettlement.consumedCount === 1 &&
+        codeList(warningsOnlySettlement.result.warnings).indexOf('library-cache-cross-install-drift') !== -1,
+      { warningOnly: true, warnings: codeList(warningsOnlySettlement.result && warningsOnlySettlement.result.warnings) });
+
+    var staleBase = sync.evaluateLibraryCatalogRuntimeConflict({
+      domain: CATALOG_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'rename',
+      candidate: { expectedTargetState: { subjectId: catalogA, catalogKind: 'label', nameHash: nameHash, originAccountIdHash: account } },
+      expectedState: { revisionHash: await runtimeHash('runtime-gate-old-base'), lifecycleState: 'active' },
+      currentState: { revisionHash: await runtimeHash('runtime-gate-new-base'), lifecycleState: 'active' },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-catalog-stale-baseHash-blocks',
+      codeList(staleBase.blockers).indexOf('library-catalog-cross-install-stale-base') !== -1,
+      { blockers: codeList(staleBase.blockers), refreshRequired: staleBase.refreshRequired === true });
+    add('runtime-gate-refresh-repropose-path',
+      staleBase.refreshRequired === true && codeList(staleBase.warnings).indexOf('library-conflict-refresh-required') !== -1,
+      { warnings: codeList(staleBase.warnings), refreshRequired: staleBase.refreshRequired === true });
+
+    var lifecycleConflict = sync.evaluateLibraryCatalogRuntimeConflict({
+      domain: CATALOG_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'archive',
+      expectedState: { lifecycleState: 'active' },
+      currentState: { lifecycleState: 'archived' },
+      expectedTargetState: { lifecycleState: 'archived' },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-catalog-lifecycle-conflict-blocks',
+      codeList(lifecycleConflict.blockers).indexOf('library-catalog-cross-install-lifecycle-conflict') !== -1,
+      { blockers: codeList(lifecycleConflict.blockers) });
+
+    var f5Conflict = sync.evaluateLibraryCatalogRuntimeConflict({
+      domain: CATALOG_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'tombstone',
+      expectedState: { lifecycleState: 'active' },
+      currentState: { lifecycleState: 'active' },
+      expectedTargetState: { lifecycleState: 'retained' },
+      f5Review: { currentTerminal: 'sealed', expectedTerminal: 'restored' },
+      existingCatalogs: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-catalog-f5-terminal-conflict-blocks',
+      codeList(f5Conflict.blockers).indexOf('library-catalog-f5-review-conflict') !== -1,
+      { blockers: codeList(f5Conflict.blockers) });
+
+    var duplicateEdge = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'bind',
+      candidate: { subjectId: bindingA, bindingKind: 'chat-label', leftSubjectId: chatA, rightSubjectId: labelA },
+      existingBindings: [{ subjectId: await runtimeHash('runtime-gate-other-binding'), bindingKind: 'chat-label', leftSubjectId: chatA, rightSubjectId: labelA, bindingState: 'bound' }],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-duplicate-edge-blocks',
+      codeList(duplicateEdge.blockers).indexOf('library-binding-cross-install-duplicate-edge') !== -1,
+      { blockers: codeList(duplicateEdge.blockers) });
+
+    var stateConflict = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'bind',
+      candidate: { bindingKind: 'chat-label', leftSubjectId: chatA, rightSubjectId: labelA },
+      expectedState: { bindingState: 'unbound' },
+      currentState: { bindingState: 'bound' },
+      existingBindings: [],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-state-conflict-blocks',
+      codeList(stateConflict.blockers).indexOf('library-binding-cross-install-state-conflict') !== -1,
+      { blockers: codeList(stateConflict.blockers) });
+
+    var categoryConflict = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'bind',
+      candidate: { bindingKind: 'chat-category', leftSubjectId: chatA, rightSubjectId: categoryB },
+      existingBindings: [{ bindingKind: 'chat-category', leftSubjectId: chatA, rightSubjectId: categoryA, bindingState: 'bound' }],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-chat-category-one-active-blocks',
+      codeList(categoryConflict.blockers).indexOf('library-binding-cross-install-state-conflict') !== -1,
+      { blockers: codeList(categoryConflict.blockers) });
+
+    var folderConflict = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'bind',
+      candidate: { bindingKind: 'chat-folder', leftSubjectId: chatA, rightSubjectId: folderB, leftSubjectType: CHAT_SUBJECT_TYPE, rightSubjectType: FOLDER_SUBJECT_TYPE },
+      existingBindings: [{ bindingKind: 'chat-folder', leftSubjectId: chatA, rightSubjectId: folderA, leftSubjectType: CHAT_SUBJECT_TYPE, rightSubjectType: FOLDER_SUBJECT_TYPE, bindingState: 'bound' }],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-chat-folder-one-active-blocks',
+      codeList(folderConflict.blockers).indexOf('library-binding-cross-install-state-conflict') !== -1,
+      { blockers: codeList(folderConflict.blockers), folderEndpointOk: JSON.stringify(folderConflict).indexOf(FOLDER_SUBJECT_TYPE) !== -1 });
+    add('runtime-gate-folder-metadata-endpoint-preserved',
+      JSON.stringify(folderConflict).indexOf(FOLDER_SUBJECT_TYPE) !== -1,
+      { folderEndpointOk: true });
+
+    var bridgeConflict = sync.evaluateLibraryBindingRuntimeConflict({
+      domain: BINDING_SUBJECT_TYPE,
+      mode: 'settlement',
+      operation: 'bind',
+      candidate: { bindingKind: 'chat-folder', leftSubjectId: chatA, rightSubjectId: folderB, leftSubjectType: CHAT_SUBJECT_TYPE, rightSubjectType: FOLDER_SUBJECT_TYPE },
+      existingBindings: [],
+      bridgeContext: { activeStateConflict: true },
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-binding-f7-f15-active-conflict-blocks',
+      codeList(bridgeConflict.blockers).indexOf('library-binding-f7-f15-identity-conflict') !== -1,
+      { blockers: codeList(bridgeConflict.blockers) });
+
+    var executorCalled = false;
+    var conflictBulkRow = {};
+    conflictBulkRow.chatId = 'runtime-gate-proof-chat';
+    conflictBulkRow.labelId = 'runtime-gate-proof-label';
+    var bulkPartial = await sync.executeLibraryBulkMigration({
+      phase: 'bindings',
+      importBatchId: 'runtime-gate-proof-batch',
+      labelBindings: [conflictBulkRow],
+      conflictRowIndexes: [0],
+      authorizedExecutor: async function () {
+        executorCalled = true;
+        return { ok: true, identity: 'f15.bulk-migration', rowsAffected: 1, sqliteSentinelUsed: true, blockers: [], warnings: [] };
+      }
+    });
+    var bulkHasPartial = bulkPartial && bulkPartial.status === 'partial' &&
+      codeList(bulkPartial.warnings).indexOf('library-bulk-cross-install-partial-conflict') !== -1;
+    add('runtime-gate-bulk-classification-before-sql', bulkHasPartial && executorCalled === false,
+      { executorCalled: executorCalled, warnings: codeList(bulkPartial && bulkPartial.warnings) });
+    add('runtime-gate-bulk-partial-conflicts-reported', bulkHasPartial,
+      { warnings: codeList(bulkPartial && bulkPartial.warnings) });
+    add('runtime-gate-bulk-conflict-rows-skip-sql', executorCalled === false,
+      { executorCalled: executorCalled });
+    add('runtime-gate-bulk-retry-safe-summary',
+      bulkPartial && bulkPartial.conflictRuntimeSummary && bulkPartial.conflictRuntimeSummary.retrySafe === true,
+      { retrySafe: bulkPartial && bulkPartial.conflictRuntimeSummary && bulkPartial.conflictRuntimeSummary.retrySafe === true });
+
+    var bulkDuplicate = sync.classifyLibraryBulkRuntimeConflictRows({
+      bulkRows: [{ domain: BINDING_SUBJECT_TYPE, status: 'duplicate', duplicate: true }],
+      observedAtIso: observedAtIso
+    });
+    add('runtime-gate-bulk-repeat-rows-idempotent',
+      bulkDuplicate && bulkDuplicate.retrySafe === true && safeObject(bulkDuplicate.proofSummary).idempotentCount === 1,
+      { retrySafe: bulkDuplicate && bulkDuplicate.retrySafe === true });
+
+    var privacy = await privacyScan([cases, bulkPartial, bulkDuplicate], [
+      'runtime-gate-proof-chat',
+      'runtime-gate-proof-label',
+      'runtime-gate-proof-batch',
+      'bundle-file-name',
+      '/tmp/runtime-gate.bundle'
+    ]);
+    add('runtime-gate-bulk-no-raw-metadata-leak', privacy.ok === true,
+      { leakFree: privacy.ok === true, blockers: codeList(privacy.blockers), warnings: codeList(privacy.warnings) });
+    add('runtime-gate-conflict-reports-redacted', privacy.ok === true,
+      { leakFree: privacy.ok === true, blockers: codeList(privacy.blockers), warnings: codeList(privacy.warnings) });
+    add('runtime-gate-blocked-side-effects-false',
+      blockedNoMutation(duplicateCatalogSettlement) && blockedNoMutation(unavailableSettlement) && blockedNoMutation(thrownSettlement),
+      { blockedBeforeMutation: true });
+
+    var missing = missingProofCases({ cases: cases }, RUNTIME_CONFLICT_GATE_CASE_NAMES);
+    if (missing.length) addCode(blockers, 'library-sync-proof-runtime-conflict-required-case-missing');
+    var passCount = cases.filter(function (entry) { return entry.ok === true; }).length;
+    var failCount = cases.length - passCount;
+    if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+    mergeCodes(warnings, privacy.warnings);
+    return {
+      schema: RUNTIME_CONFLICT_GATE_SCHEMA,
+      version: VERSION,
+      ok: failCount === 0 && blockers.length === 0 && missing.length === 0 && privacy.ok === true,
+      caseCount: cases.length,
+      passCount: passCount,
+      failCount: failCount,
+      cases: cases,
+      missingCases: missing,
+      preflight: {
+        catalogGateChecked: cleanCatalogPreflight && cleanCatalogPreflight.conflictRuntimeChecked === true,
+        bindingGateChecked: cleanBindingPreflight && cleanBindingPreflight.conflictRuntimeChecked === true,
+        missingGateWarnsDefault: codeList(missingGateDefault && missingGateDefault.warnings).indexOf('library-conflict-runtime-unavailable') !== -1,
+        missingGateBlocksRequired: missingGateRequired && missingGateRequired.ok === false
+      },
+      settlement: {
+        modeUsed: safeObject(cleanSettlement.result && cleanSettlement.result.conflictRuntime).mode === 'settlement',
+        unavailableBlocks: blockedNoMutation(unavailableSettlement),
+        thrownBlocks: blockedNoMutation(thrownSettlement),
+        warningsOnlyContinues: warningsOnlySettlement.result && warningsOnlySettlement.result.ok === true
+      },
+      bulk: {
+        partialConflictReported: bulkHasPartial,
+        executorCalled: executorCalled,
+        retrySafe: bulkPartial && bulkPartial.conflictRuntimeSummary && bulkPartial.conflictRuntimeSummary.retrySafe === true,
+        repeatedRowsIdempotent: bulkDuplicate && safeObject(bulkDuplicate.proofSummary).idempotentCount === 1
+      },
+      privacy: privacy,
+      blockers: codeList(blockers),
+      warnings: codeList(warnings),
+      sideEffectSummary: sideEffectSummary(),
+      observedAtIso: observedAtIso
+    };
+  }
+
   async function runLibraryEndToEndSyncProof(input) {
     var observedAtIso = cleanString(input && input.observedAtIso) || nowIsoSeconds();
     var blockers = [];
@@ -3767,6 +4530,7 @@
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
     var conflictProof = await runLibraryConflictProof(input || {});
+    var runtimeConflictGate = await runLibraryRuntimeConflictGateProof(input || {});
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
@@ -3774,8 +4538,9 @@
     if (storeCutover.ok !== true) mergeCodes(blockers, storeCutover.blockers);
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
     if (conflictProof.ok !== true) mergeCodes(blockers, conflictProof.blockers);
+    if (runtimeConflictGate.ok !== true) mergeCodes(blockers, runtimeConflictGate.blockers);
 
-    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -3788,6 +4553,7 @@
       storeCutover.ok === true &&
       bulkMigration.ok === true &&
       conflictProof.ok === true &&
+      runtimeConflictGate.ok === true &&
       privacy.ok === true;
 
     return {
@@ -3802,6 +4568,7 @@
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
       conflictProof: conflictProof,
+      runtimeConflictGate: runtimeConflictGate,
       privacy: privacy,
       apiPresence: presence,
       blockers: codeList(blockers),
@@ -3892,6 +4659,7 @@
     var storeCutover = await runLibraryStoreCutoverProof();
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
     var conflictProof = await runLibraryConflictProof(input || {});
+    var runtimeConflictGate = await runLibraryRuntimeConflictGateProof(input || {});
     var aggregate = await runLibraryEndToEndSyncProof(input || {});
 
     var catalogMissing = missingProofCases(catalog, CATALOG_REQUIRED_CASE_NAMES);
@@ -4034,6 +4802,30 @@
       summary: 'conflictCases=' + (conflictProof && conflictProof.caseCount || 0)
     });
 
+    var runtimeGateMissing = missingProofCases(runtimeConflictGate, RUNTIME_CONFLICT_GATE_CASE_NAMES);
+    var runtimePreflightCatalog = proofCaseByName(runtimeConflictGate, 'runtime-gate-catalog-preflight-calls-gate');
+    var runtimePreflightBinding = proofCaseByName(runtimeConflictGate, 'runtime-gate-binding-preflight-calls-gate');
+    var runtimeSettlementUnavailable = proofCaseByName(runtimeConflictGate, 'runtime-gate-unavailable-blocks-before-mutation');
+    var runtimeSettlementThrown = proofCaseByName(runtimeConflictGate, 'runtime-gate-thrown-blocks-before-mutation');
+    var runtimeSettlementSideEffects = proofCaseByName(runtimeConflictGate, 'runtime-gate-blocker-prevents-all-side-effects');
+    var runtimeBulk = proofCaseByName(runtimeConflictGate, 'runtime-gate-bulk-classification-before-sql');
+    var runtimePrivacy = proofCaseByName(runtimeConflictGate, 'runtime-gate-conflict-reports-redacted');
+    var runtimeGateOk = runtimeConflictGate && runtimeConflictGate.ok === true &&
+      runtimeGateMissing.length === 0 &&
+      runtimePreflightCatalog && runtimePreflightCatalog.ok === true &&
+      runtimePreflightBinding && runtimePreflightBinding.ok === true &&
+      runtimeSettlementUnavailable && runtimeSettlementUnavailable.ok === true &&
+      runtimeSettlementThrown && runtimeSettlementThrown.ok === true &&
+      runtimeSettlementSideEffects && runtimeSettlementSideEffects.ok === true &&
+      runtimeBulk && runtimeBulk.ok === true && runtimeBulk.executorCalled === false &&
+      runtimePrivacy && runtimePrivacy.ok === true &&
+      runtimeConflictGate.privacy && runtimeConflictGate.privacy.ok === true;
+    closureRecord(cases, 'closure-runtime-conflict-gate-proof-complete', runtimeGateOk, {
+      missingCases: runtimeGateMissing,
+      blockers: runtimeGateOk ? [] : ['library-sync-closure-runtime-conflict-gate-incomplete'],
+      summary: 'runtimeConflictCases=' + (runtimeConflictGate && runtimeConflictGate.caseCount || 0)
+    });
+
     var aggregateOk = aggregate && aggregate.ok === true &&
       aggregate.catalogProof && aggregate.catalogProof.ok === true &&
       aggregate.bindingProof && aggregate.bindingProof.ok === true &&
@@ -4041,13 +4833,14 @@
       aggregate.storeCutover && aggregate.storeCutover.ok === true &&
       aggregate.bulkMigration && aggregate.bulkMigration.ok === true &&
       aggregate.conflictProof && aggregate.conflictProof.ok === true &&
+      aggregate.runtimeConflictGate && aggregate.runtimeConflictGate.ok === true &&
       aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-aggregate-proof-ok', aggregateOk, {
       blockers: aggregateOk ? [] : ['library-sync-closure-aggregate-not-ok'],
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, aggregate], []);
+    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, aggregate], []);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&
@@ -4055,13 +4848,14 @@
       storeCutover && storeCutover.privacy && storeCutover.privacy.ok === true &&
       bulkMigration && bulkMigration.privacy && bulkMigration.privacy.ok === true &&
       conflictProof && conflictProof.privacy && conflictProof.privacy.ok === true &&
+      runtimeConflictGate && runtimeConflictGate.privacy && runtimeConflictGate.privacy.ok === true &&
       aggregate && aggregate.privacy && aggregate.privacy.ok === true;
     closureRecord(cases, 'closure-privacy-clean', privacyOk, {
       blockers: privacyOk ? [] : ['library-sync-closure-privacy-not-clean'],
       summary: 'leaks=' + privacy.leakCount
     });
 
-    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, aggregate]);
+    var sideEffectHits = sideEffectViolations([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, aggregate]);
     var sideEffectsOk = sideEffectHits.length === 0;
     closureRecord(cases, 'closure-side-effects-safe', sideEffectsOk, {
       blockers: sideEffectsOk ? [] : ['library-sync-closure-side-effect-violation'],
@@ -4113,6 +4907,7 @@
       storeOk === true &&
       bulkOk === true &&
       conflictOk === true &&
+      runtimeGateOk === true &&
       aggregateOk === true &&
       privacyOk === true &&
       sideEffectsOk === true &&
@@ -4134,6 +4929,7 @@
       storeCutover: storeCutover,
       bulkMigration: bulkMigration,
       conflictProof: conflictProof,
+      runtimeConflictGate: runtimeConflictGate,
       aggregate: aggregate,
       apiPresence: apiPresenceResult,
       validators: validators,
@@ -4154,6 +4950,7 @@
   H2O.Desktop.Sync.runLibraryStoreCutoverProof = runLibraryStoreCutoverProof;
   H2O.Desktop.Sync.runLibraryBulkMigrationE2EProof = runLibraryBulkMigrationE2EProof;
   H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof;
+  H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof;
   H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;
   H2O.Desktop.Sync.__librarySyncProofInstalled = true;
   H2O.Desktop.Sync.__librarySyncProofVersion = VERSION;

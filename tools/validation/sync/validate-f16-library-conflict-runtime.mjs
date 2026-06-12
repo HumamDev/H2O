@@ -980,8 +980,11 @@ const catalogPreflight = 'src-surfaces-base/studio/sync/library/library-catalog-
 const bindingPreflight = 'src-surfaces-base/studio/sync/library/library-binding-preflight.tauri.js';
 const settlement = 'src-surfaces-base/studio/sync/execute/execute-settlement-writer-library-extension.tauri.js';
 const bulkMigration = 'src-surfaces-base/studio/sync/library/library-bulk-migration.tauri.js';
+const syncProof = 'src-surfaces-base/studio/sync/library/library-sync-proof.tauri.js';
+const closureValidator = 'tools/validation/sync/validate-f15-library-closure.mjs';
+const syncProofValidator = 'tools/validation/sync/validate-f15-library-sync-proof.mjs';
 
-[moduleFile, validatorFile, html, pack, catalogPreflight, bindingPreflight, settlement, bulkMigration].forEach(assertExists);
+[moduleFile, validatorFile, html, pack, catalogPreflight, bindingPreflight, settlement, bulkMigration, syncProof, closureValidator, syncProofValidator].forEach(assertExists);
 
 if (failures.length === 0) {
   [
@@ -1113,6 +1116,25 @@ if (failures.length === 0) {
     'conflictRuntime',
     'conflictRuntimeSummary'
   ].forEach((needle) => assertContains(bulkMigration, needle, `bulk migration ${needle}`));
+  [
+    "var VERSION = '0.9.0-f16.1.d'",
+    "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
+    'RUNTIME_CONFLICT_GATE_CASE_NAMES',
+    'runLibraryRuntimeConflictGateProof',
+    'H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof',
+    'closure-runtime-conflict-gate-proof-complete',
+    'runtime-gate-settlement-mode-used',
+    'runtime-gate-unavailable-blocks-before-mutation',
+    'runtime-gate-thrown-blocks-before-mutation',
+    'runtime-gate-blocker-prevents-consumed-op',
+    'runtime-gate-blocker-prevents-watermark',
+    'runtime-gate-blocker-prevents-all-side-effects',
+    'runtime-gate-bulk-classification-before-sql',
+    'runtime-gate-conflict-reports-redacted',
+    'runtime-gate-blocked-side-effects-false'
+  ].forEach((needle) => assertContains(syncProof, needle, `sync proof ${needle}`));
+  assertContains(closureValidator, 'closure-runtime-conflict-gate-proof-complete', 'closure validator requires runtime conflict gate closure case');
+  assertContains(syncProofValidator, 'RUNTIME_CONFLICT_GATE_CASE_NAMES', 'sync proof validator requires runtime conflict gate cases');
 
   const proof = await runRuntimeProof(moduleFile);
   assert(proof.caseCount >= 13, 'runtime proof should cover required cases');

@@ -110,7 +110,7 @@ if (failures.length === 0) {
   contractCodes.forEach((code) => assertContains(doc, code, `contract code ${code}`));
 
   assertAll(proof, [
-    "var VERSION = '0.8.0-f15.12.b'",
+    "var VERSION = '0.9.0-f16.1.d'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     'CONFLICT_REQUIRED_CASE_NAMES',
     'runLibraryConflictProof',
@@ -143,21 +143,21 @@ if (failures.length === 0) {
   ]);
 
   assertAll(syncValidator, [
-    "var VERSION = '0.8.0-f15.12.b'",
+    "var VERSION = '0.9.0-f16.1.d'",
     'runLibraryConflictProof',
     'validate-f15-library-conflict-contract.mjs'
   ]);
   conflictCaseNames.forEach((name) => assertContains(syncValidator, name, `sync validator case ${name}`));
 
   assertAll(closureValidator, [
-    "var VERSION = '0.8.0-f15.12.b'",
+    "var VERSION = '0.9.0-f16.1.d'",
     'runLibraryConflictProof',
     'closure-conflict-proof-complete',
     'validate-f15-library-conflict-contract.mjs'
   ]);
   conflictCaseNames.forEach((name) => assertContains(closureValidator, name, `closure validator case ${name}`));
 
-  assertContains(folderValidator, "var VERSION = '0.8.0-f15.12.b'", 'folder validator proof version');
+  assertContains(folderValidator, "var VERSION = '0.9.0-f16.1.d'", 'folder validator proof version');
 
   const proofText = read(proof);
   const privacyNeedles = [

@@ -51,12 +51,15 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.8.0-f15.12.b'",
+    "var VERSION = '0.9.0-f16.1.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
+    "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
     'runLibrarySyncClosureProof',
     'runLibraryConflictProof',
+    'runLibraryRuntimeConflictGateProof',
     'H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof',
+    'H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
@@ -64,6 +67,7 @@ if (failures.length === 0) {
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
+    'closure-runtime-conflict-gate-proof-complete',
     'closure-aggregate-proof-ok',
     'closure-privacy-clean',
     'closure-side-effects-safe',
@@ -77,6 +81,7 @@ if (failures.length === 0) {
     'BULK_MIGRATION_CASE_NAMES',
     'VALIDATOR_REFERENCES',
     'validate-f15-library-conflict-contract.mjs',
+    'validate-f16-library-conflict-runtime.mjs',
     'validate-f15-cutover.mjs',
     'validate-f15-bulk-migration.mjs',
     'validate-f15-library-sync-proof.mjs',
@@ -205,6 +210,51 @@ if (failures.length === 0) {
   ]);
 
   assertAll(proof, [
+    'RUNTIME_CONFLICT_GATE_CASE_NAMES',
+    'runtime-gate-apis-markers-present',
+    'runtime-gate-catalog-preflight-calls-gate',
+    'runtime-gate-binding-preflight-calls-gate',
+    'runtime-gate-missing-gate-warns-default',
+    'runtime-gate-missing-gate-blocks-required',
+    'runtime-gate-missing-context-warns-default',
+    'runtime-gate-missing-context-blocks-strict',
+    'runtime-gate-cache-drift-warning-only',
+    'runtime-gate-settlement-mode-used',
+    'runtime-gate-settlement-requires-gate',
+    'runtime-gate-settlement-requires-context',
+    'runtime-gate-unavailable-blocks-before-mutation',
+    'runtime-gate-thrown-blocks-before-mutation',
+    'runtime-gate-blocker-prevents-consumed-op',
+    'runtime-gate-blocker-prevents-watermark',
+    'runtime-gate-blocker-prevents-all-side-effects',
+    'runtime-gate-warnings-only-continues',
+    'runtime-gate-catalog-duplicate-nameHash-blocks',
+    'runtime-gate-catalog-stale-baseHash-blocks',
+    'runtime-gate-catalog-lifecycle-conflict-blocks',
+    'runtime-gate-catalog-f5-terminal-conflict-blocks',
+    'runtime-gate-refresh-repropose-path',
+    'runtime-gate-binding-duplicate-edge-blocks',
+    'runtime-gate-binding-state-conflict-blocks',
+    'runtime-gate-binding-chat-category-one-active-blocks',
+    'runtime-gate-binding-chat-folder-one-active-blocks',
+    'runtime-gate-binding-f7-f15-active-conflict-blocks',
+    'runtime-gate-folder-metadata-endpoint-preserved',
+    'runtime-gate-bulk-classification-before-sql',
+    'runtime-gate-bulk-partial-conflicts-reported',
+    'runtime-gate-bulk-conflict-rows-skip-sql',
+    'runtime-gate-bulk-retry-safe-summary',
+    'runtime-gate-bulk-repeat-rows-idempotent',
+    'runtime-gate-bulk-no-raw-metadata-leak',
+    'runtime-gate-conflict-reports-redacted',
+    'runtime-gate-blocked-side-effects-false',
+    'evaluateLibraryRuntimeConflict',
+    'evaluateLibraryCatalogRuntimeConflict',
+    'evaluateLibraryBindingRuntimeConflict',
+    'classifyLibraryBulkRuntimeConflictRows',
+    '__libraryConflictRuntimeInstalled'
+  ]);
+
+  assertAll(proof, [
     'canonicalizeLibraryCatalog',
     'canonicalizeLibraryBinding',
     'generateLibraryCatalogProposalCandidate',
@@ -224,7 +274,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '0.8.0-f15.12.b'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '0.9.0-f16.1.d'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
   assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');

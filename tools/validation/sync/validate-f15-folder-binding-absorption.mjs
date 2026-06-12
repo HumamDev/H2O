@@ -590,7 +590,7 @@ if (failures.length === 0) {
   assertContains(settlementExtension, 'safeObject(e.dispatchProfile).requiresF5 === true', 'settlement blocks chat-folder F5 requirement');
   assertContains(settlementExtension, 'chatsCategoryIdCacheRefreshed', 'settlement exposes cache refresh side-effect flag');
 
-  assertContains(librarySyncProof, "var VERSION = '0.8.0-f15.12.b'", 'library sync proof F15.12.b version');
+  assertContains(librarySyncProof, "var VERSION = '0.9.0-f16.1.d'", 'library sync proof F16.1.d version');
   assertContains(librarySyncProof, 'settleLibraryExecuteEnvelope', 'library sync proof exercises settlement');
   assertContains(librarySyncProof, 'binding-bind-chat-folder-full-pipeline', 'chat-folder bind proof case');
   assertContains(librarySyncProof, 'binding-unbind-chat-folder-full-pipeline', 'chat-folder unbind proof case');
