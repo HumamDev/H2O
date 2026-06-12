@@ -620,6 +620,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // decisions. Provides callable gate output for later preflight and
   // settlement integration, but this module itself does not mutate.
   "sync/library/library-conflict-runtime.tauri.js",
+  // F16.2.b: Desktop/Tauri deterministic multi-peer soak proof. Pure
+  // in-memory offline/online replay harness for the Library Sync conflict
+  // gate. Calls the real F16.1 conflict APIs where available and reports
+  // hash-only scenario evidence; no storage, SQLite, Native/F5, publication,
+  // relay/outbox, apply, watermark, or consumed-op mutation.
+  "sync/library/library-multipeer-soak-proof.tauri.js",
   // F15.10.a: Desktop/Tauri Library Sync operator status UI. Read-only
   // Settings-hosted proof/status panel. Proof APIs run only from explicit
   // operator actions. No proposal actions, execute dispatch, Native/F5
@@ -1238,6 +1244,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/execute/adapters/library-binding-execute-adapter.tauri.js",
   "sync/library/library-sync-proof.tauri.js",
   "sync/library/library-conflict-runtime.tauri.js",
+  "sync/library/library-multipeer-soak-proof.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
   "sync/library/library-folder-binding-migration-shadow.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",

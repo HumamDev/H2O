@@ -1149,6 +1149,13 @@
        SQLite, Native/F5, publication, relay/outbox, watermark, or
        consumed-op state. -->
   <script src="./sync/library/library-conflict-runtime.tauri.js"></script>
+  <!-- F16.2.b: Desktop/Tauri deterministic multi-peer soak proof.
+       Pure in-memory offline/online replay harness for the Library Sync
+       conflict gate. Calls the real F16.1 runtime conflict APIs where
+       available and reports redacted, hash-only scenario evidence. No
+       storage, SQLite, Native/F5, publication, relay/outbox, apply,
+       watermark, or consumed-op mutation. -->
+  <script src="./sync/library/library-multipeer-soak-proof.tauri.js"></script>
   <!-- F15.10.a: Desktop/Tauri Library Sync operator status UI.
        Read-only Settings-hosted proof/status panel for F15 Library Sync.
        Runs closure and end-to-end proofs only from explicit operator actions;
