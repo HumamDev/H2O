@@ -67,7 +67,8 @@
   var F5D_FOLDER_BINDING_RECORD_ID_FORMAT = 'folderBinding:${encodeURIComponent(chatId)}:${encodeURIComponent(folderId)}';
   var F16_FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback';
   var F16_FOLDER_LEGACY_FALLBACK_VERSION = '0.1.0-f16.4.b';
-  var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED = true;
+  var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_GUARDED = true;
+  var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFAULT_ENABLED = false;
 
   /* ── State ────────────────────────────────────────────────────────── */
   var state = {
@@ -149,13 +150,13 @@
         if (result && result.ok === true && result.executed === true) return result;
         recordWarning('F16.4 folder_bindings scoped fallback identity failed: ' +
           JSON.stringify((result && result.blockers) || ['unknown']));
-        if (F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED) {
+        if (!folderBindingsTriggerProtectionActive()) {
           return sqlExecute(query, values).then(function (fallbackResult) {
             api.__lastFolderBindingsLegacyFallbackIdentityResult = Object.assign({}, result || {}, {
               ok: true,
               executed: true,
               identity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
-              triggerProtectionDeferredRawFallbackUsed: true,
+              triggerProtectionInactiveRawFallbackUsed: true,
               reason: operationReason,
             });
             return fallbackResult;
@@ -164,16 +165,16 @@
         return Promise.reject(new Error('folder_bindings scoped fallback identity failed'));
       });
     }
-    recordWarning('F16.4 folder_bindings scoped fallback identity facade unavailable; trigger protection deferred raw fallback used');
+    recordWarning('F16.4 folder_bindings scoped fallback identity facade unavailable; trigger protection inactive raw fallback used');
     return sqlExecute(query, values).then(function (fallbackResult) {
       api.__lastFolderBindingsLegacyFallbackIdentityResult = {
         ok: true,
         executed: true,
         identity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
-        triggerProtectionDeferredRawFallbackUsed: true,
+        triggerProtectionInactiveRawFallbackUsed: true,
         reason: operationReason,
         blockers: ['sqlite-writer-identity-facade-unavailable'],
-        warnings: ['folder-bindings-trigger-protection-deferred'],
+        warnings: ['folder-bindings-trigger-protection-inactive'],
       };
       return fallbackResult;
     });
@@ -452,6 +453,11 @@
 
   function explicitF7FallbackAllowed(opts) {
     return !!(opts && (opts.f15AllowF7Fallback === true || opts.allowF7Fallback === true));
+  }
+
+  function folderBindingsTriggerProtectionActive() {
+    var sync = getSync();
+    return !!(sync && sync.__f16FolderBindingsTriggerProtectionActive === true);
   }
 
   function isSha256Hex(value) {
@@ -1078,7 +1084,8 @@
     __version: '0.1.0',
     __folderBindingsLegacyFallbackIdentity: F16_FOLDER_LEGACY_FALLBACK_IDENTITY,
     __folderBindingsLegacyFallbackIdentityVersion: F16_FOLDER_LEGACY_FALLBACK_VERSION,
-    __folderBindingsTriggerProtectionDeferred: F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFERRED,
+    __folderBindingsTriggerProtectionGuarded: F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_GUARDED,
+    __folderBindingsTriggerProtectionDefaultEnabled: F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFAULT_ENABLED,
     init: init,
     dispose: dispose,
     isReady: isReady,

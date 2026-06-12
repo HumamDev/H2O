@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '1.1.0-f16.3.d';
+  var VERSION = '1.2.0-f16.4.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
@@ -64,6 +64,8 @@
     'shapeLibraryBindingExecuteEnvelope',
     'settleLibraryExecuteEnvelope',
     'proveSQLiteWriterIdentitySentinel',
+    'proveFolderBindingsTriggerProtection',
+    'configureFolderBindingsTriggerProtection',
     'executeAuthorizedSqlite',
     'installLibraryStoreCutoverShims',
     'waitForLibraryStoreShimSettlement',
@@ -107,7 +109,8 @@
     '__libraryBulkMigrationInstalled',
     '__libraryFolderBindingMigrationShadowInstalled',
     '__libraryConflictRuntimeInstalled',
-    '__libraryPerformanceStressProofInstalled'
+    '__libraryPerformanceStressProofInstalled',
+    '__f16FolderBindingsTriggerProtectionInstalled'
   ];
 
   var VALIDATOR_REFERENCES = [
@@ -339,7 +342,13 @@
     'folder-absorption-scoped-fallback-identity-exists',
     'folder-absorption-legacy-fallback-uses-scoped-identity',
     'folder-absorption-folder-delete-cleanup-scoped',
-    'folder-absorption-trigger-protection-deferred',
+    'folder-absorption-trigger-protection-guarded-optional',
+    'folder-absorption-unauthorized-folder-bindings-insert-blocked',
+    'folder-absorption-unauthorized-folder-bindings-update-blocked',
+    'folder-absorption-unauthorized-folder-bindings-delete-blocked',
+    'folder-absorption-authorized-folder-bindings-settlement-passes',
+    'folder-absorption-authorized-folder-bindings-fallback-passes',
+    'folder-absorption-trigger-protection-default-off-compatible',
     'folder-absorption-f7-parity-still-green'
   ];
 
@@ -385,7 +394,7 @@
     'conflict-folder-f7-f15-identity-shadow-deterministic',
     'conflict-folder-fallback-flag-off-compatible',
     'conflict-folder-delegated-chat-folder-uses-folder-metadata',
-    'conflict-folder-trigger-protection-still-deferred'
+    'conflict-folder-trigger-protection-guarded-optional'
   ];
 
   var CONFLICT_REQUIRED_CASE_NAMES = CONFLICT_CATALOG_CASE_NAMES
@@ -1974,7 +1983,8 @@
       'silentFallbackUsed',
       'explicitFallbackUsed',
       'singleReplaceProposalEmitted',
-      'triggerProtectionDeferred',
+      'triggerProtectionGuarded',
+      'triggerDefaultEnabled',
       'assertsDirectWriteBlocked',
       'directUnauthorizedWriteBlocked',
       'noF5Footprint',
@@ -2271,13 +2281,65 @@
         blockers: []
       });
 
-      recordFolderAbsorptionCase(cases, 'folder-absorption-trigger-protection-deferred', true, {
-        status: 'deferred',
-        triggerProtectionDeferred: true,
-        assertsDirectWriteBlocked: false,
-        directUnauthorizedWriteBlocked: null,
+      var triggerProof = typeof sync.proveFolderBindingsTriggerProtection === 'function'
+        ? await sync.proveFolderBindingsTriggerProtection()
+        : null;
+      var triggerProofOk = !!(triggerProof && triggerProof.ok === true);
+      recordFolderAbsorptionCase(cases, 'folder-absorption-trigger-protection-guarded-optional', triggerProofOk, {
+        status: 'guarded-optional',
+        triggerProtectionGuarded: !!(triggerProof && triggerProof.triggerGuarded === true),
+        triggerDefaultEnabled: !!(triggerProof && triggerProof.triggerDefaultEnabled === true),
         scopedFallbackIdentity: 'f16.folder-legacy-fallback',
-        summary: 'folder_bindings trigger protection deferred until F16.4.c after scoped fallback identity proof'
+        blockers: triggerProofOk ? [] : ['library-sync-proof-folder-trigger-proof-failed'],
+        warnings: codeList(triggerProof && triggerProof.warnings)
+      });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-unauthorized-folder-bindings-insert-blocked',
+        !!(triggerProof && triggerProof.unauthorizedInsertBlocked === true), {
+          directUnauthorizedWriteBlocked: !!(triggerProof && triggerProof.unauthorizedInsertBlocked === true),
+          blockers: (triggerProof && triggerProof.unauthorizedInsertBlocked === true)
+            ? [] : ['library-sync-proof-folder-trigger-insert-not-blocked']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-unauthorized-folder-bindings-update-blocked',
+        !!(triggerProof && triggerProof.unauthorizedUpdateBlocked === true), {
+          directUnauthorizedWriteBlocked: !!(triggerProof && triggerProof.unauthorizedUpdateBlocked === true),
+          blockers: (triggerProof && triggerProof.unauthorizedUpdateBlocked === true)
+            ? [] : ['library-sync-proof-folder-trigger-update-not-blocked']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-unauthorized-folder-bindings-delete-blocked',
+        !!(triggerProof && triggerProof.unauthorizedDeleteBlocked === true), {
+          directUnauthorizedWriteBlocked: !!(triggerProof && triggerProof.unauthorizedDeleteBlocked === true),
+          blockers: (triggerProof && triggerProof.unauthorizedDeleteBlocked === true)
+            ? [] : ['library-sync-proof-folder-trigger-delete-not-blocked']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-authorized-folder-bindings-settlement-passes',
+        !!(triggerProof && triggerProof.settlementIdentityWritePassed === true), {
+          identity: 'f15.execute-settlement-writer',
+          blockers: (triggerProof && triggerProof.settlementIdentityWritePassed === true)
+            ? [] : ['library-sync-proof-folder-trigger-settlement-blocked']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-authorized-folder-bindings-fallback-passes',
+        !!(triggerProof &&
+          triggerProof.legacyFallbackIdentityBindPassed === true &&
+          triggerProof.legacyFallbackIdentityUnbindPassed === true), {
+          identity: 'f16.folder-legacy-fallback',
+          fallbackBindPassed: !!(triggerProof && triggerProof.legacyFallbackIdentityBindPassed === true),
+          fallbackUnbindPassed: !!(triggerProof && triggerProof.legacyFallbackIdentityUnbindPassed === true),
+          blockers: (triggerProof &&
+            triggerProof.legacyFallbackIdentityBindPassed === true &&
+            triggerProof.legacyFallbackIdentityUnbindPassed === true)
+            ? [] : ['library-sync-proof-folder-trigger-fallback-blocked']
+        });
+
+      recordFolderAbsorptionCase(cases, 'folder-absorption-trigger-protection-default-off-compatible',
+        !!(triggerProof && triggerProof.triggerModeOffLegacyWritePassed === true), {
+          triggerModeOffLegacyWritePassed: !!(triggerProof && triggerProof.triggerModeOffLegacyWritePassed === true),
+          blockers: (triggerProof && triggerProof.triggerModeOffLegacyWritePassed === true)
+            ? [] : ['library-sync-proof-folder-trigger-default-off-incompatible']
       });
 
       recordFolderAbsorptionCase(cases, 'folder-absorption-f7-parity-still-green', true, {
@@ -2308,6 +2370,7 @@
         shadow.ok === true &&
         noF5 === true &&
         noCache === true &&
+        triggerProofOk === true &&
         privacy.ok === true;
       return {
         schema: RESULT_SCHEMA,
@@ -2338,11 +2401,15 @@
           settlementAccepted: bindPipeline.settlementOk === true && unbindPipeline.settlementOk === true
         },
         triggerProtection: {
-          deferred: true,
-          directUnauthorizedWriteBlocked: null,
-          assertsDirectWriteBlocked: false,
-          triggerChanged: false,
-          sentinelChanged: false
+          guarded: !!(triggerProof && triggerProof.triggerGuarded === true),
+          defaultEnabled: !!(triggerProof && triggerProof.triggerDefaultEnabled === true),
+          triggerModeOffLegacyWritePassed: !!(triggerProof && triggerProof.triggerModeOffLegacyWritePassed === true),
+          unauthorizedInsertBlocked: !!(triggerProof && triggerProof.unauthorizedInsertBlocked === true),
+          unauthorizedUpdateBlocked: !!(triggerProof && triggerProof.unauthorizedUpdateBlocked === true),
+          unauthorizedDeleteBlocked: !!(triggerProof && triggerProof.unauthorizedDeleteBlocked === true),
+          settlementIdentityWritePassed: !!(triggerProof && triggerProof.settlementIdentityWritePassed === true),
+          legacyFallbackIdentityBindPassed: !!(triggerProof && triggerProof.legacyFallbackIdentityBindPassed === true),
+          legacyFallbackIdentityUnbindPassed: !!(triggerProof && triggerProof.legacyFallbackIdentityUnbindPassed === true)
         },
         privacy: privacy,
         blockers: codeList(blockers),
@@ -3487,7 +3554,8 @@
       'fallbackCompatible',
       'folderEndpointMetadata',
       'folderCatalogModeRejected',
-      'triggerProtectionDeferred'
+      'triggerProtectionGuarded',
+      'triggerDefaultEnabled'
     ].forEach(function (key) {
       if (typeof d[key] !== 'undefined') entry[key] = d[key];
     });
@@ -3740,13 +3808,14 @@
       folderEndpointMetadata: true,
       folderCatalogModeRejected: true
     });
-    await recordConflictCase(cases, 'conflict-folder-trigger-protection-still-deferred', 'folder-identity', true, {
+    await recordConflictCase(cases, 'conflict-folder-trigger-protection-guarded-optional', 'folder-identity', true, {
       subjectType: BINDING_SUBJECT_TYPE,
-      decisionRule: 'folder_bindings trigger protection remains deferred',
-      outcome: 'direct unauthorized folder_bindings block is not asserted in F15.12.b',
+      decisionRule: 'folder_bindings trigger protection is guarded and default-off',
+      outcome: 'direct unauthorized folder_bindings writes block only after explicit guarded activation',
       expectedCode: 'library-binding-f7-f15-identity-conflict',
       observedCodes: ['library-binding-f7-f15-identity-conflict'],
-      triggerProtectionDeferred: true
+      triggerProtectionGuarded: true,
+      triggerDefaultEnabled: false
     });
   }
 
@@ -4920,7 +4989,13 @@
     var scopedFallbackIdentity = proofCaseByName(folderAbsorption, 'folder-absorption-scoped-fallback-identity-exists');
     var legacyFallbackScoped = proofCaseByName(folderAbsorption, 'folder-absorption-legacy-fallback-uses-scoped-identity');
     var folderDeleteScoped = proofCaseByName(folderAbsorption, 'folder-absorption-folder-delete-cleanup-scoped');
-    var triggerDeferred = proofCaseByName(folderAbsorption, 'folder-absorption-trigger-protection-deferred');
+    var triggerGuarded = proofCaseByName(folderAbsorption, 'folder-absorption-trigger-protection-guarded-optional');
+    var triggerInsertBlocked = proofCaseByName(folderAbsorption, 'folder-absorption-unauthorized-folder-bindings-insert-blocked');
+    var triggerUpdateBlocked = proofCaseByName(folderAbsorption, 'folder-absorption-unauthorized-folder-bindings-update-blocked');
+    var triggerDeleteBlocked = proofCaseByName(folderAbsorption, 'folder-absorption-unauthorized-folder-bindings-delete-blocked');
+    var triggerSettlementPasses = proofCaseByName(folderAbsorption, 'folder-absorption-authorized-folder-bindings-settlement-passes');
+    var triggerFallbackPasses = proofCaseByName(folderAbsorption, 'folder-absorption-authorized-folder-bindings-fallback-passes');
+    var triggerDefaultOff = proofCaseByName(folderAbsorption, 'folder-absorption-trigger-protection-default-off-compatible');
     var f7Parity = proofCaseByName(folderAbsorption, 'folder-absorption-f7-parity-still-green');
     var folderAbsorptionOk = folderAbsorption && folderAbsorption.ok === true &&
       folderAbsorptionMissing.length === 0 &&
@@ -4942,8 +5017,15 @@
       scopedFallbackIdentity.identity === 'f16.folder-legacy-fallback' &&
       legacyFallbackScoped && legacyFallbackScoped.ok === true &&
       folderDeleteScoped && folderDeleteScoped.ok === true &&
-      triggerDeferred && triggerDeferred.ok === true && triggerDeferred.triggerProtectionDeferred === true &&
-      triggerDeferred.assertsDirectWriteBlocked === false &&
+      triggerGuarded && triggerGuarded.ok === true &&
+      triggerGuarded.triggerProtectionGuarded === true &&
+      triggerGuarded.triggerDefaultEnabled === false &&
+      triggerInsertBlocked && triggerInsertBlocked.ok === true &&
+      triggerUpdateBlocked && triggerUpdateBlocked.ok === true &&
+      triggerDeleteBlocked && triggerDeleteBlocked.ok === true &&
+      triggerSettlementPasses && triggerSettlementPasses.ok === true &&
+      triggerFallbackPasses && triggerFallbackPasses.ok === true &&
+      triggerDefaultOff && triggerDefaultOff.ok === true &&
       f7Parity && f7Parity.ok === true &&
       folderAbsorption.privacy && folderAbsorption.privacy.ok === true;
     closureRecord(cases, 'closure-folder-absorption-proof-complete', folderAbsorptionOk, {
@@ -4999,7 +5081,7 @@
     var conflictCache = proofCaseByName(conflictProof, 'conflict-cache-never-source-of-truth');
     var conflictBulk = proofCaseByName(conflictProof, 'conflict-bulk-partial-retry-no-duplicates');
     var conflictF5 = proofCaseByName(conflictProof, 'conflict-f5-conflicting-terminal-closure-blocks');
-    var conflictFolder = proofCaseByName(conflictProof, 'conflict-folder-trigger-protection-still-deferred');
+    var conflictFolder = proofCaseByName(conflictProof, 'conflict-folder-trigger-protection-guarded-optional');
     var conflictOk = conflictProof && conflictProof.ok === true &&
       conflictMissing.length === 0 &&
       conflictCatalog && conflictCatalog.ok === true && conflictCatalog.firstValidSettlementWins === true &&
@@ -5007,7 +5089,9 @@
       conflictCache && conflictCache.ok === true && conflictCache.cacheSourceOfTruth === false &&
       conflictBulk && conflictBulk.ok === true && conflictBulk.retrySafe === true &&
       conflictF5 && conflictF5.ok === true && conflictF5.terminalClosureConflictBlocked === true &&
-      conflictFolder && conflictFolder.ok === true && conflictFolder.triggerProtectionDeferred === true &&
+      conflictFolder && conflictFolder.ok === true &&
+      conflictFolder.triggerProtectionGuarded === true &&
+      conflictFolder.triggerDefaultEnabled === false &&
       conflictProof.privacy && conflictProof.privacy.ok === true;
     closureRecord(cases, 'closure-conflict-proof-complete', conflictOk, {
       missingCases: conflictMissing,

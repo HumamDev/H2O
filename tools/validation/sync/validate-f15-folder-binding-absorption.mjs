@@ -590,7 +590,7 @@ if (failures.length === 0) {
   assertContains(settlementExtension, 'safeObject(e.dispatchProfile).requiresF5 === true', 'settlement blocks chat-folder F5 requirement');
   assertContains(settlementExtension, 'chatsCategoryIdCacheRefreshed', 'settlement exposes cache refresh side-effect flag');
 
-  assertContains(librarySyncProof, "var VERSION = '1.1.0-f16.3.d'", 'library sync proof F16.3.d version');
+  assertContains(librarySyncProof, "var VERSION = '1.2.0-f16.4.c'", 'library sync proof F16.4.c version');
   assertContains(librarySyncProof, 'settleLibraryExecuteEnvelope', 'library sync proof exercises settlement');
   assertContains(librarySyncProof, 'binding-bind-chat-folder-full-pipeline', 'chat-folder bind proof case');
   assertContains(librarySyncProof, 'binding-unbind-chat-folder-full-pipeline', 'chat-folder unbind proof case');
@@ -614,14 +614,23 @@ if (failures.length === 0) {
     'folder-absorption-chat-folder-unbind-pipeline',
     'folder-absorption-no-f5-footprint',
     'folder-absorption-no-category-cache-footprint',
-    'folder-absorption-trigger-protection-deferred',
+    'folder-absorption-scoped-fallback-identity-exists',
+    'folder-absorption-legacy-fallback-uses-scoped-identity',
+    'folder-absorption-folder-delete-cleanup-scoped',
+    'folder-absorption-trigger-protection-guarded-optional',
+    'folder-absorption-unauthorized-folder-bindings-insert-blocked',
+    'folder-absorption-unauthorized-folder-bindings-update-blocked',
+    'folder-absorption-unauthorized-folder-bindings-delete-blocked',
+    'folder-absorption-authorized-folder-bindings-settlement-passes',
+    'folder-absorption-authorized-folder-bindings-fallback-passes',
+    'folder-absorption-trigger-protection-default-off-compatible',
     'folder-absorption-f7-parity-still-green'
   ].forEach((caseName) => assertContains(librarySyncProof, caseName, `F15.11.f proof case ${caseName}`));
   assertContains(librarySyncProof, 'createLibraryFolderBindingMigrationShadow', 'folder absorption shadow create proof');
   assertContains(librarySyncProof, 'listLibraryFolderBindingMigrationShadows', 'folder absorption shadow list proof');
   assertContains(librarySyncProof, 'setF15FolderBindingDelegationEnabled', 'folder absorption delegation flag proof');
-  assertContains(librarySyncProof, 'triggerProtectionDeferred', 'folder trigger protection deferral proof');
-  assertContains(librarySyncProof, 'directUnauthorizedWriteBlocked', 'folder trigger deferral must not assert blocked SQL yet');
+  assertContains(librarySyncProof, 'triggerProtectionGuarded', 'folder trigger protection guarded proof');
+  assertContains(librarySyncProof, 'directUnauthorizedWriteBlocked', 'folder trigger proof must assert blocked SQL when guarded mode is active');
   assertContains(librarySyncProof, 'proofSafeMockedWritesUsed', 'folder absorption proof-safe mock write marker');
   assertContains(librarySyncProof, 'FOLDER_SUBJECT_TYPE', 'library sync proof folder endpoint type');
 }

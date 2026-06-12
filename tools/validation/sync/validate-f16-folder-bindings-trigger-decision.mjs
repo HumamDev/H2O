@@ -7,6 +7,7 @@ const root = process.cwd();
 const failures = [];
 
 const decisionDoc = 'docs/systems/cross-platform/f16.4-folder-bindings-trigger-decision.md';
+const tauriLib = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const rustIdentity = 'apps/studio/desktop/src-tauri/src/sqlite_writer_identity.rs';
 const sentinelFacade = 'src-surfaces-base/studio/sync/sqlite-writer-identity-sentinel.tauri.js';
 const folderStore = 'src-surfaces-base/studio/store/folders.tauri.js';
@@ -41,6 +42,7 @@ function assertNotContains(file, needle, label = needle) {
 
 [
   decisionDoc,
+  tauriLib,
   rustIdentity,
   sentinelFacade,
   folderStore,
@@ -67,11 +69,41 @@ if (failures.length === 0) {
   assertContains(rustIdentity, 'f16-folder-legacy-fallback-explicitly-enabled', 'Rust scoped identity audit warning');
   assertContains(rustIdentity, 'sqlite-writer-identity-folder-legacy-fallback-not-enabled', 'Rust scoped identity disabled blocker');
   assertContains(rustIdentity, 'folder_fallback.folder_legacy_fallback_enabled = true', 'Rust scoped identity test enablement');
+  assertContains(rustIdentity, 'FOLDER_BINDINGS_TRIGGER_TOKEN', 'Rust guarded trigger activation token');
+  assertContains(rustIdentity, 'f16_configure_folder_bindings_trigger_protection', 'Rust trigger configure command');
+  assertContains(rustIdentity, 'f16_prove_folder_bindings_trigger_protection', 'Rust trigger proof command');
+  assertContains(rustIdentity, 'f16_folder_bindings_trigger_guard', 'Rust trigger guard table');
+  assertContains(rustIdentity, 'f16_protect_folder_bindings_insert', 'Rust trigger insert proof/install');
+  assertContains(rustIdentity, 'f16_protect_folder_bindings_update', 'Rust trigger update proof/install');
+  assertContains(rustIdentity, 'f16_protect_folder_bindings_delete', 'Rust trigger delete proof/install');
+  assertContains(rustIdentity, 'unauthorized_insert_blocked', 'Rust unauthorized insert proof');
+  assertContains(rustIdentity, 'unauthorized_update_blocked', 'Rust unauthorized update proof');
+  assertContains(rustIdentity, 'unauthorized_delete_blocked', 'Rust unauthorized delete proof');
+  assertContains(rustIdentity, 'settlement_identity_write_passed', 'Rust settlement identity proof');
+  assertContains(rustIdentity, 'legacy_fallback_identity_bind_passed', 'Rust fallback bind proof');
+  assertContains(rustIdentity, 'legacy_fallback_identity_unbind_passed', 'Rust fallback unbind proof');
+
+  assertContains(tauriLib, 'version: 13', 'migration v13 guarded trigger install');
+  assertContains(tauriLib, 'install guarded folder bindings trigger protection', 'migration v13 description');
+  assertContains(tauriLib, 'f16_folder_bindings_trigger_guard', 'migration guard table');
+  assertContains(tauriLib, 'VALUES (1, 0, NULL', 'migration default-off guard row');
+  assertContains(tauriLib, 'f16_protect_folder_bindings_insert', 'migration guarded insert trigger');
+  assertContains(tauriLib, 'f16_protect_folder_bindings_update', 'migration guarded update trigger');
+  assertContains(tauriLib, 'f16_protect_folder_bindings_delete', 'migration guarded delete trigger');
+  assertContains(tauriLib, "'f15.execute-settlement-writer'", 'migration allows settlement identity');
+  assertContains(tauriLib, "'f16.folder-legacy-fallback'", 'migration allows fallback identity');
+  assertContains(tauriLib, 'f16_configure_folder_bindings_trigger_protection', 'Tauri configure command registered');
+  assertContains(tauriLib, 'f16_prove_folder_bindings_trigger_protection', 'Tauri proof command registered');
 
   assertContains(sentinelFacade, "var FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback'", 'facade scoped identity constant');
   assertContains(sentinelFacade, 'folderLegacyFallbackEnabled: args.folderLegacyFallbackEnabled === true', 'facade explicit enablement pass-through');
   assertContains(sentinelFacade, '__f16FolderLegacyFallbackWriterIdentity', 'facade scoped identity marker');
-  assertContains(sentinelFacade, '__f16FolderBindingsTriggerProtectionDeferred = true', 'facade trigger deferred marker');
+  assertContains(sentinelFacade, 'configureFolderBindingsTriggerProtection', 'facade trigger configure API');
+  assertContains(sentinelFacade, 'proveFolderBindingsTriggerProtection', 'facade trigger proof API');
+  assertContains(sentinelFacade, '__f16FolderBindingsTriggerProtectionInstalled = true', 'facade trigger installed marker');
+  assertContains(sentinelFacade, '__f16FolderBindingsTriggerProtectionGuarded = true', 'facade trigger guarded marker');
+  assertContains(sentinelFacade, '__f16FolderBindingsTriggerProtectionDefaultEnabled = false', 'facade trigger default-off marker');
+  assertContains(sentinelFacade, '__f16FolderBindingsTriggerProtectionActive = false', 'facade trigger active default false');
 
   assertContains(folderStore, "var F16_FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback'", 'store scoped identity constant');
   assertContains(folderStore, "var F16_FOLDER_LEGACY_FALLBACK_VERSION = '0.1.0-f16.4.b'", 'store scoped identity version');
@@ -83,7 +115,10 @@ if (failures.length === 0) {
   assertContains(folderStore, "'store.folders.remove'", 'store remove fallback reason');
   assertContains(folderStore, '__folderBindingsLegacyFallbackIdentity', 'store identity marker');
   assertContains(folderStore, '__folderBindingsLegacyFallbackIdentityVersion', 'store identity version marker');
-  assertContains(folderStore, '__folderBindingsTriggerProtectionDeferred', 'store trigger deferred marker');
+  assertContains(folderStore, '__folderBindingsTriggerProtectionGuarded', 'store trigger guarded marker');
+  assertContains(folderStore, '__folderBindingsTriggerProtectionDefaultEnabled', 'store trigger default-off marker');
+  assertContains(folderStore, 'folderBindingsTriggerProtectionActive', 'store active trigger guard check');
+  assertContains(folderStore, 'triggerProtectionInactiveRawFallbackUsed', 'store inactive compatibility fallback marker');
 
   const storeText = read(folderStore);
   const bindIndex = storeText.indexOf('INSERT OR REPLACE INTO folder_bindings');
@@ -105,14 +140,20 @@ if (failures.length === 0) {
   assertContains(syncProof, 'folder-absorption-scoped-fallback-identity-exists', 'proof scoped identity case');
   assertContains(syncProof, 'folder-absorption-legacy-fallback-uses-scoped-identity', 'proof legacy wrapper case');
   assertContains(syncProof, 'folder-absorption-folder-delete-cleanup-scoped', 'proof delete cleanup case');
-  assertContains(syncProof, "scopedFallbackIdentity: 'f16.folder-legacy-fallback'", 'proof trigger deferred identity summary');
-  assertContains(syncProof, 'folder-absorption-trigger-protection-deferred', 'proof trigger deferred case');
-  assertContains(syncProof, 'triggerProtectionDeferred === true', 'closure trigger deferred requirement');
+  assertContains(syncProof, "scopedFallbackIdentity: 'f16.folder-legacy-fallback'", 'proof trigger guarded identity summary');
+  assertContains(syncProof, 'folder-absorption-trigger-protection-guarded-optional', 'proof trigger guarded case');
+  assertContains(syncProof, 'folder-absorption-unauthorized-folder-bindings-insert-blocked', 'proof unauthorized insert blocked case');
+  assertContains(syncProof, 'folder-absorption-unauthorized-folder-bindings-update-blocked', 'proof unauthorized update blocked case');
+  assertContains(syncProof, 'folder-absorption-unauthorized-folder-bindings-delete-blocked', 'proof unauthorized delete blocked case');
+  assertContains(syncProof, 'folder-absorption-authorized-folder-bindings-settlement-passes', 'proof settlement identity case');
+  assertContains(syncProof, 'folder-absorption-authorized-folder-bindings-fallback-passes', 'proof fallback identity case');
+  assertContains(syncProof, 'folder-absorption-trigger-protection-default-off-compatible', 'proof default off compatibility case');
+  assertContains(syncProof, 'triggerProtectionGuarded === true', 'closure trigger guarded requirement');
+  assertContains(syncProof, 'triggerDefaultEnabled === false', 'closure trigger default-off requirement');
 
-  assertNotContains(rustIdentity, 'folder_bindings', 'Rust must not add folder_bindings triggers in F16.4.b');
   assertNotContains(sentinelFacade, 'CREATE TRIGGER', 'facade must not add triggers');
   assertNotContains(folderStore, 'CREATE TRIGGER', 'store must not add triggers');
-  assertNotContains(syncProof, 'directUnauthorizedWriteBlocked === true', 'proof must not assert direct folder_bindings trigger blocks yet');
+  assertNotContains(tauriLib, 'VALUES (1, 1', 'migration must not enable trigger guard by default');
 
   [
     'raw chat/folder IDs',

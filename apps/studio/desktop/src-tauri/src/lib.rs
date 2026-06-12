@@ -1093,6 +1093,65 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v13 — F16.4.c: optional guarded folder_bindings protection.
+        // This installs the guard table and triggers, but the guard is
+        // disabled by default. Protection activates only after an explicit
+        // F16 command flips f16_folder_bindings_trigger_guard.enabled to 1.
+        Migration {
+            version: 13,
+            description: "install guarded folder bindings trigger protection",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS f16_folder_bindings_trigger_guard (
+                  id         INTEGER PRIMARY KEY CHECK (id = 1),
+                  enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                  updated_at TEXT,
+                  reason     TEXT NOT NULL DEFAULT ''
+                );
+
+                INSERT OR IGNORE INTO f16_folder_bindings_trigger_guard(id, enabled, updated_at, reason)
+                VALUES (1, 0, NULL, 'f16.4.c-default-off');
+
+                CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_insert
+                BEFORE INSERT ON folder_bindings
+                WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f16.folder-legacy-fallback'
+                    )
+                    THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:insert')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_update
+                BEFORE UPDATE ON folder_bindings
+                WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f16.folder-legacy-fallback'
+                    )
+                    THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:update')
+                  END;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_delete
+                BEFORE DELETE ON folder_bindings
+                WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f16.folder-legacy-fallback'
+                    )
+                    THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:delete')
+                  END;
+                END;
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -2242,6 +2301,8 @@ macro_rules! h2o_studio_invoke_handler {
             cleanup_synthetic_commit,
             sqlite_writer_identity::f15_authorized_sqlite_execute,
             sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
+            sqlite_writer_identity::f16_configure_folder_bindings_trigger_protection,
+            sqlite_writer_identity::f16_prove_folder_bindings_trigger_protection,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
@@ -2263,6 +2324,8 @@ macro_rules! h2o_studio_invoke_handler {
             cleanup_synthetic_commit,
             sqlite_writer_identity::f15_authorized_sqlite_execute,
             sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
+            sqlite_writer_identity::f16_configure_folder_bindings_trigger_protection,
+            sqlite_writer_identity::f16_prove_folder_bindings_trigger_protection,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,

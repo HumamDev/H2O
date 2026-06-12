@@ -1117,7 +1117,7 @@ if (failures.length === 0) {
     'conflictRuntimeSummary'
   ].forEach((needle) => assertContains(bulkMigration, needle, `bulk migration ${needle}`));
   [
-    "var VERSION = '1.1.0-f16.3.d'",
+    "var VERSION = '1.2.0-f16.4.c'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
     'RUNTIME_CONFLICT_GATE_CASE_NAMES',
     'runLibraryRuntimeConflictGateProof',

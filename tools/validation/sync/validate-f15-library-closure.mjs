@@ -53,7 +53,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '1.1.0-f16.3.d'",
+    "var VERSION = '1.2.0-f16.4.c'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -158,11 +158,20 @@ if (failures.length === 0) {
     'folder-absorption-chat-folder-unbind-pipeline',
     'folder-absorption-no-f5-footprint',
     'folder-absorption-no-category-cache-footprint',
-    'folder-absorption-trigger-protection-deferred',
+    'folder-absorption-scoped-fallback-identity-exists',
+    'folder-absorption-legacy-fallback-uses-scoped-identity',
+    'folder-absorption-folder-delete-cleanup-scoped',
+    'folder-absorption-trigger-protection-guarded-optional',
+    'folder-absorption-unauthorized-folder-bindings-insert-blocked',
+    'folder-absorption-unauthorized-folder-bindings-update-blocked',
+    'folder-absorption-unauthorized-folder-bindings-delete-blocked',
+    'folder-absorption-authorized-folder-bindings-settlement-passes',
+    'folder-absorption-authorized-folder-bindings-fallback-passes',
+    'folder-absorption-trigger-protection-default-off-compatible',
     'folder-absorption-f7-parity-still-green',
     'runLibraryFolderBindingAbsorptionProof',
     'folderAbsorption',
-    'triggerProtectionDeferred',
+    'triggerProtectionGuarded',
     'proofSafeMockedWritesUsed',
     'cutover-direct-sql-blocked',
     'cutover-authorized-settlement-write-passes',
@@ -206,7 +215,7 @@ if (failures.length === 0) {
     'conflict-folder-f7-f15-identity-shadow-deterministic',
     'conflict-folder-fallback-flag-off-compatible',
     'conflict-folder-delegated-chat-folder-uses-folder-metadata',
-    'conflict-folder-trigger-protection-still-deferred',
+    'conflict-folder-trigger-protection-guarded-optional',
     'conflict-privacy-leak-scan',
     'library-catalog-cross-install-stale-base',
     'library-catalog-cross-install-name-collision',
@@ -326,7 +335,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '1.1.0-f16.3.d'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '1.2.0-f16.4.c'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
   assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');

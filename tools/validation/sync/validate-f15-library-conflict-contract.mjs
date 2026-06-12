@@ -68,7 +68,7 @@ const conflictCaseNames = [
   'conflict-folder-f7-f15-identity-shadow-deterministic',
   'conflict-folder-fallback-flag-off-compatible',
   'conflict-folder-delegated-chat-folder-uses-folder-metadata',
-  'conflict-folder-trigger-protection-still-deferred',
+  'conflict-folder-trigger-protection-guarded-optional',
   'conflict-privacy-leak-scan'
 ];
 
@@ -110,7 +110,7 @@ if (failures.length === 0) {
   contractCodes.forEach((code) => assertContains(doc, code, `contract code ${code}`));
 
   assertAll(proof, [
-    "var VERSION = '1.1.0-f16.3.d'",
+    "var VERSION = '1.2.0-f16.4.c'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     'CONFLICT_REQUIRED_CASE_NAMES',
     'runLibraryConflictProof',
@@ -128,7 +128,7 @@ if (failures.length === 0) {
     'sqliteTriggerChanged',
     'storeWriteEnabled',
     'f7Deleted',
-    'triggerProtectionDeferred'
+    'triggerProtectionGuarded'
   ]);
   conflictCaseNames.forEach((name) => assertContains(proof, name, `proof case ${name}`));
   contractCodes.forEach((code) => assertContains(proof, code, `proof code ${code}`));
@@ -139,25 +139,25 @@ if (failures.length === 0) {
     'binding-bind-chat-folder-full-pipeline',
     'bulk-migration-repeat-import-idempotent',
     'folder-absorption-f7-fallback-default-off',
-    'folder-absorption-trigger-protection-deferred'
+    'folder-absorption-trigger-protection-guarded-optional'
   ]);
 
   assertAll(syncValidator, [
-    "var VERSION = '1.1.0-f16.3.d'",
+    "var VERSION = '1.2.0-f16.4.c'",
     'runLibraryConflictProof',
     'validate-f15-library-conflict-contract.mjs'
   ]);
   conflictCaseNames.forEach((name) => assertContains(syncValidator, name, `sync validator case ${name}`));
 
   assertAll(closureValidator, [
-    "var VERSION = '1.1.0-f16.3.d'",
+    "var VERSION = '1.2.0-f16.4.c'",
     'runLibraryConflictProof',
     'closure-conflict-proof-complete',
     'validate-f15-library-conflict-contract.mjs'
   ]);
   conflictCaseNames.forEach((name) => assertContains(closureValidator, name, `closure validator case ${name}`));
 
-  assertContains(folderValidator, "var VERSION = '1.1.0-f16.3.d'", 'folder validator proof version');
+  assertContains(folderValidator, "var VERSION = '1.2.0-f16.4.c'", 'folder validator proof version');
 
   const proofText = read(proof);
   const privacyNeedles = [

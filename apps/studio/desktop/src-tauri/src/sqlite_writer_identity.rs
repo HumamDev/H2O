@@ -15,6 +15,7 @@ const DEBUG_BYPASS_IDENTITY: &str = "f15.debug-bypass";
 const EMERGENCY_REPAIR_IDENTITY: &str = "f15.emergency-repair";
 const DEBUG_BYPASS_TOKEN: &str = "I_UNDERSTAND_F15_DEBUG_BYPASS";
 const EMERGENCY_REPAIR_TOKEN: &str = "I_UNDERSTAND_F15_EMERGENCY_REPAIR";
+const FOLDER_BINDINGS_TRIGGER_TOKEN: &str = "I_UNDERSTAND_F16_FOLDER_BINDINGS_TRIGGER_PROTECTION";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +39,17 @@ pub struct F15AuthorizedSqlPayload {
     pub debug_bypass_token: Option<String>,
     #[serde(default)]
     pub emergency_repair_token: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct F16FolderBindingsTriggerPayload {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub activation_token: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -80,6 +92,35 @@ pub struct F15SentinelProofResult {
     pub authorized_write_passed: bool,
     pub unauthorized_after_clear_blocked: bool,
     pub unregistered_connection_failed_closed: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct F16FolderBindingsTriggerResult {
+    pub ok: bool,
+    pub enabled: bool,
+    pub trigger_guarded: bool,
+    pub trigger_installed: bool,
+    pub activation_explicit: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct F16FolderBindingsTriggerProofResult {
+    pub ok: bool,
+    pub trigger_mode_off_legacy_write_passed: bool,
+    pub unauthorized_insert_blocked: bool,
+    pub unauthorized_update_blocked: bool,
+    pub unauthorized_delete_blocked: bool,
+    pub settlement_identity_write_passed: bool,
+    pub legacy_fallback_identity_bind_passed: bool,
+    pub legacy_fallback_identity_unbind_passed: bool,
+    pub trigger_guarded: bool,
+    pub trigger_default_enabled: bool,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -231,6 +272,96 @@ async fn execute_control_sql(conn: &mut SqliteConnection, sql: &str, code: &str)
         .map_err(|e| format!("{code}:{e}"))
 }
 
+async fn install_folder_bindings_trigger_infrastructure(
+    conn: &mut SqliteConnection,
+) -> Result<(), String> {
+    let statements = [
+        r#"
+        CREATE TABLE IF NOT EXISTS f16_folder_bindings_trigger_guard (
+          id         INTEGER PRIMARY KEY CHECK (id = 1),
+          enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+          updated_at TEXT,
+          reason     TEXT NOT NULL DEFAULT ''
+        )
+        "#,
+        r#"
+        INSERT OR IGNORE INTO f16_folder_bindings_trigger_guard(id, enabled, updated_at, reason)
+        VALUES (1, 0, NULL, 'f16.4.c-default-off')
+        "#,
+        r#"
+        CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_insert
+        BEFORE INSERT ON folder_bindings
+        WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+        BEGIN
+          SELECT CASE
+            WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+              'f15.execute-settlement-writer',
+              'f16.folder-legacy-fallback'
+            )
+            THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:insert')
+          END;
+        END
+        "#,
+        r#"
+        CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_update
+        BEFORE UPDATE ON folder_bindings
+        WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+        BEGIN
+          SELECT CASE
+            WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+              'f15.execute-settlement-writer',
+              'f16.folder-legacy-fallback'
+            )
+            THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:update')
+          END;
+        END
+        "#,
+        r#"
+        CREATE TRIGGER IF NOT EXISTS f16_protect_folder_bindings_delete
+        BEFORE DELETE ON folder_bindings
+        WHEN (SELECT COALESCE(enabled, 0) FROM f16_folder_bindings_trigger_guard WHERE id = 1) = 1
+        BEGIN
+          SELECT CASE
+            WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+              'f15.execute-settlement-writer',
+              'f16.folder-legacy-fallback'
+            )
+            THEN RAISE(ABORT, 'f16-folder-bindings-write-protected:delete')
+          END;
+        END
+        "#,
+    ];
+    for statement in statements {
+        execute_control_sql(
+            conn,
+            statement,
+            "sqlite-folder-bindings-trigger-install-failed",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn set_folder_bindings_trigger_guard(
+    conn: &mut SqliteConnection,
+    enabled: bool,
+    reason: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        UPDATE f16_folder_bindings_trigger_guard
+        SET enabled = ?, updated_at = datetime('now'), reason = ?
+        WHERE id = 1
+        "#,
+    )
+    .bind(if enabled { 1_i64 } else { 0_i64 })
+    .bind(reason)
+    .execute(conn)
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("sqlite-folder-bindings-trigger-guard-update-failed:{e}"))
+}
+
 async fn acquire_studio_sqlite_pool(
     db_instances: &State<'_, DbInstances>,
 ) -> Result<sqlx::Pool<sqlx::Sqlite>, String> {
@@ -326,10 +457,127 @@ pub async fn f15_authorized_sqlite_execute(
     })
 }
 
+#[tauri::command]
+pub async fn f16_configure_folder_bindings_trigger_protection(
+    db_instances: State<'_, DbInstances>,
+    payload: F16FolderBindingsTriggerPayload,
+) -> Result<F16FolderBindingsTriggerResult, String> {
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+    let activation_explicit = payload.activation_token.as_deref() == Some(FOLDER_BINDINGS_TRIGGER_TOKEN);
+    if payload.enabled && !activation_explicit {
+        return Ok(F16FolderBindingsTriggerResult {
+            ok: false,
+            enabled: false,
+            trigger_guarded: true,
+            trigger_installed: false,
+            activation_explicit: false,
+            blockers: vec!["sqlite-folder-bindings-trigger-activation-token-required".to_string()],
+            warnings,
+        });
+    }
+
+    let pool = match acquire_studio_sqlite_pool(&db_instances).await {
+        Ok(pool) => pool,
+        Err(code) => {
+            blockers.push(code);
+            return Ok(F16FolderBindingsTriggerResult {
+                ok: false,
+                enabled: false,
+                trigger_guarded: true,
+                trigger_installed: false,
+                activation_explicit,
+                blockers,
+                warnings,
+            });
+        }
+    };
+    let mut conn = match pool.acquire().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            blockers.push(format!("sqlite-db-acquire-failed:{e}"));
+            return Ok(F16FolderBindingsTriggerResult {
+                ok: false,
+                enabled: false,
+                trigger_guarded: true,
+                trigger_installed: false,
+                activation_explicit,
+                blockers,
+                warnings,
+            });
+        }
+    };
+
+    if let Err(code) = install_folder_bindings_trigger_infrastructure(&mut *conn).await {
+        blockers.push(code);
+        return Ok(F16FolderBindingsTriggerResult {
+            ok: false,
+            enabled: false,
+            trigger_guarded: true,
+            trigger_installed: false,
+            activation_explicit,
+            blockers,
+            warnings,
+        });
+    }
+
+    let reason = payload
+        .reason
+        .as_deref()
+        .unwrap_or(if payload.enabled {
+            "f16.4.c-explicit-enable"
+        } else {
+            "f16.4.c-explicit-disable"
+        });
+    if let Err(code) = set_folder_bindings_trigger_guard(&mut *conn, payload.enabled, reason).await {
+        blockers.push(code);
+    }
+    if !payload.enabled {
+        warnings.push("sqlite-folder-bindings-trigger-installed-disabled".to_string());
+    }
+
+    Ok(F16FolderBindingsTriggerResult {
+        ok: blockers.is_empty(),
+        enabled: payload.enabled && blockers.is_empty(),
+        trigger_guarded: true,
+        trigger_installed: blockers.is_empty(),
+        activation_explicit,
+        blockers,
+        warnings,
+    })
+}
+
 async fn probe_insert(conn: &mut SqliteConnection, id: &str) -> bool {
     sqlx::query("INSERT INTO protected_test(id, value) VALUES (?, ?)")
         .bind(id)
         .bind("value")
+        .execute(conn)
+        .await
+        .is_ok()
+}
+
+async fn folder_binding_insert(conn: &mut SqliteConnection, chat_id: &str, folder_id: &str) -> bool {
+    sqlx::query("INSERT INTO folder_bindings(chat_id, folder_id, assigned_at) VALUES (?, ?, ?)")
+        .bind(chat_id)
+        .bind(folder_id)
+        .bind(1_i64)
+        .execute(conn)
+        .await
+        .is_ok()
+}
+
+async fn folder_binding_update(conn: &mut SqliteConnection, chat_id: &str, folder_id: &str) -> bool {
+    sqlx::query("UPDATE folder_bindings SET folder_id = ? WHERE chat_id = ?")
+        .bind(folder_id)
+        .bind(chat_id)
+        .execute(conn)
+        .await
+        .is_ok()
+}
+
+async fn folder_binding_delete(conn: &mut SqliteConnection, chat_id: &str) -> bool {
+    sqlx::query("DELETE FROM folder_bindings WHERE chat_id = ?")
+        .bind(chat_id)
         .execute(conn)
         .await
         .is_ok()
@@ -415,6 +663,92 @@ pub async fn f15_prove_sqlite_writer_identity_sentinel() -> Result<F15SentinelPr
         authorized_write_passed,
         unauthorized_after_clear_blocked,
         unregistered_connection_failed_closed,
+        blockers,
+        warnings,
+    })
+}
+
+#[tauri::command]
+pub async fn f16_prove_folder_bindings_trigger_protection() -> Result<F16FolderBindingsTriggerProofResult, String> {
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+    let mut conn = SqliteConnection::connect("sqlite::memory:")
+        .await
+        .map_err(|e| format!("sqlite-folder-bindings-trigger-proof-open-failed:{e}"))?;
+    sqlx::query(
+        r#"
+        CREATE TABLE folder_bindings (
+          chat_id     TEXT PRIMARY KEY,
+          folder_id   TEXT NOT NULL,
+          assigned_at INTEGER
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .map_err(|e| format!("sqlite-folder-bindings-trigger-proof-schema-failed:{e}"))?;
+    install_folder_bindings_trigger_infrastructure(&mut conn).await?;
+
+    install_writer_identity_function(&mut conn, "").await?;
+    let trigger_mode_off_legacy_write_passed =
+        folder_binding_insert(&mut conn, "proof-off", "folder-off").await;
+
+    set_folder_bindings_trigger_guard(&mut conn, true, "f16.4.c-proof").await?;
+    install_writer_identity_function(&mut conn, "").await?;
+    let unauthorized_insert_blocked =
+        !folder_binding_insert(&mut conn, "proof-unauthorized-insert", "folder-blocked").await;
+    let unauthorized_update_blocked =
+        !folder_binding_update(&mut conn, "proof-off", "folder-unauthorized-update").await;
+    let unauthorized_delete_blocked = !folder_binding_delete(&mut conn, "proof-off").await;
+
+    install_writer_identity_function(&mut conn, SETTLEMENT_IDENTITY).await?;
+    let settlement_identity_write_passed =
+        folder_binding_insert(&mut conn, "proof-settlement", "folder-settlement").await;
+
+    install_writer_identity_function(&mut conn, FOLDER_LEGACY_FALLBACK_IDENTITY).await?;
+    let legacy_fallback_identity_bind_passed =
+        folder_binding_insert(&mut conn, "proof-fallback", "folder-fallback").await;
+    let legacy_fallback_identity_unbind_passed =
+        folder_binding_delete(&mut conn, "proof-fallback").await;
+
+    install_writer_identity_function(&mut conn, "").await?;
+
+    if !trigger_mode_off_legacy_write_passed {
+        blockers.push("folder-bindings-trigger-proof-default-off-blocked-legacy".to_string());
+    }
+    if !unauthorized_insert_blocked {
+        blockers.push("folder-bindings-trigger-proof-unauthorized-insert-passed".to_string());
+    }
+    if !unauthorized_update_blocked {
+        blockers.push("folder-bindings-trigger-proof-unauthorized-update-passed".to_string());
+    }
+    if !unauthorized_delete_blocked {
+        blockers.push("folder-bindings-trigger-proof-unauthorized-delete-passed".to_string());
+    }
+    if !settlement_identity_write_passed {
+        blockers.push("folder-bindings-trigger-proof-settlement-blocked".to_string());
+    }
+    if !legacy_fallback_identity_bind_passed {
+        blockers.push("folder-bindings-trigger-proof-fallback-bind-blocked".to_string());
+    }
+    if !legacy_fallback_identity_unbind_passed {
+        blockers.push("folder-bindings-trigger-proof-fallback-unbind-blocked".to_string());
+    }
+    if blockers.is_empty() {
+        warnings.push("folder-bindings-trigger-proof-in-memory-only".to_string());
+    }
+
+    Ok(F16FolderBindingsTriggerProofResult {
+        ok: blockers.is_empty(),
+        trigger_mode_off_legacy_write_passed,
+        unauthorized_insert_blocked,
+        unauthorized_update_blocked,
+        unauthorized_delete_blocked,
+        settlement_identity_write_passed,
+        legacy_fallback_identity_bind_passed,
+        legacy_fallback_identity_unbind_passed,
+        trigger_guarded: true,
+        trigger_default_enabled: false,
         blockers,
         warnings,
     })

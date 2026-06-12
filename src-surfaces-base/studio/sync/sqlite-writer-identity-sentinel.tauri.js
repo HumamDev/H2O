@@ -23,7 +23,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__sqliteWriterIdentitySentinelInstalled) return;
 
-  var VERSION = '0.1.0-f15.8.f';
+  var VERSION = '0.2.0-f16.4.c';
   var SETTLEMENT_IDENTITY = 'f15.execute-settlement-writer';
   var BULK_MIGRATION_IDENTITY = 'f15.bulk-migration';
   var FOLDER_LEGACY_FALLBACK_IDENTITY = 'f16.folder-legacy-fallback';
@@ -153,10 +153,59 @@
     return await invoke('f15_prove_sqlite_writer_identity_sentinel', {});
   }
 
+  async function configureFolderBindingsTriggerProtection(input) {
+    var args = safeObject(input);
+    var invoke = getInvoke();
+    if (!invoke) {
+      return {
+        ok: false,
+        enabled: false,
+        triggerGuarded: true,
+        triggerInstalled: false,
+        blockers: ['sqlite-writer-identity-invoke-unavailable'],
+        warnings: []
+      };
+    }
+    try {
+      var result = await invoke('f16_configure_folder_bindings_trigger_protection', {
+        payload: {
+          enabled: args.enabled === true,
+          activationToken: cleanString(args.activationToken) || null,
+          reason: cleanString(args.reason) || null
+        }
+      });
+      H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionActive = !!(result && result.enabled === true);
+      return result;
+    } catch (err) {
+      return {
+        ok: false,
+        enabled: false,
+        triggerGuarded: true,
+        triggerInstalled: false,
+        blockers: ['sqlite-folder-bindings-trigger-configure-failed'],
+        warnings: [String(err && err.message || err)]
+      };
+    }
+  }
+
+  async function proveFolderBindingsTriggerProtection() {
+    var invoke = getInvoke();
+    if (!invoke) {
+      return {
+        ok: false,
+        blockers: ['sqlite-writer-identity-invoke-unavailable'],
+        warnings: []
+      };
+    }
+    return await invoke('f16_prove_folder_bindings_trigger_protection', {});
+  }
+
   H2O.Desktop.Sync.executeAuthorizedSqlite = executeAuthorizedSqlite;
   H2O.Desktop.Sync.executeSettlementSqlite = executeSettlementSqlite;
   H2O.Desktop.Sync.withSQLiteWriterIdentity = withSQLiteWriterIdentity;
   H2O.Desktop.Sync.proveSQLiteWriterIdentitySentinel = proveSQLiteWriterIdentitySentinel;
+  H2O.Desktop.Sync.configureFolderBindingsTriggerProtection = configureFolderBindingsTriggerProtection;
+  H2O.Desktop.Sync.proveFolderBindingsTriggerProtection = proveFolderBindingsTriggerProtection;
   H2O.Desktop.Sync.__sqliteWriterIdentitySentinelInstalled = true;
   H2O.Desktop.Sync.__sqliteWriterIdentitySentinelVersion = VERSION;
   H2O.Desktop.Sync.__f15CutoverInstalled = true;
@@ -169,5 +218,9 @@
     EMERGENCY_REPAIR_IDENTITY
   ];
   H2O.Desktop.Sync.__f16FolderLegacyFallbackWriterIdentity = FOLDER_LEGACY_FALLBACK_IDENTITY;
-  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionDeferred = true;
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionInstalled = true;
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionVersion = '0.1.0-f16.4.c';
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionGuarded = true;
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionDefaultEnabled = false;
+  H2O.Desktop.Sync.__f16FolderBindingsTriggerProtectionActive = false;
 })(typeof window !== 'undefined' ? window : globalThis);
