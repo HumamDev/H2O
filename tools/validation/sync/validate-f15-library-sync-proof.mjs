@@ -45,7 +45,7 @@ const closureValidator = 'tools/validation/sync/validate-f15-library-closure.mjs
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '1.2.0-f16.4.c'",
+    "var VERSION = '1.2.0-f16.4.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -70,6 +70,7 @@ if (failures.length === 0) {
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
     'closure-folder-absorption-proof-complete',
+    'closure-folder-bindings-trigger-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
@@ -386,6 +387,14 @@ if (failures.length === 0) {
     'folder-absorption-authorized-folder-bindings-fallback-passes',
     'folder-absorption-trigger-protection-default-off-compatible',
     'folder-absorption-f7-parity-still-green',
+    'library-sync-closure-folder-bindings-trigger-incomplete',
+    "allowedIdentities: ['f15.execute-settlement-writer', 'f16.folder-legacy-fallback']",
+    "triggerSettlementPasses.identity === 'f15.execute-settlement-writer'",
+    "triggerFallbackPasses.identity === 'f16.folder-legacy-fallback'",
+    'triggerInsertBlocked.directUnauthorizedWriteBlocked === true',
+    'triggerUpdateBlocked.directUnauthorizedWriteBlocked === true',
+    'triggerDeleteBlocked.directUnauthorizedWriteBlocked === true',
+    'triggerDefaultOff.triggerModeOffLegacyWritePassed === true',
     'createLibraryFolderBindingMigrationShadow',
     'listLibraryFolderBindingMigrationShadows',
     'setF15FolderBindingDelegationEnabled',

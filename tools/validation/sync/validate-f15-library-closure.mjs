@@ -53,7 +53,7 @@ const f7Validator = 'tools/validation/sync/validate-f7-folder-metadata-hash-pari
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '1.2.0-f16.4.c'",
+    "var VERSION = '1.2.0-f16.4.d'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -70,6 +70,7 @@ if (failures.length === 0) {
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
     'closure-folder-absorption-proof-complete',
+    'closure-folder-bindings-trigger-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
@@ -114,6 +115,19 @@ if (failures.length === 0) {
     'outboxTouched',
     'watermarkWritten',
     'consumedOperationWritten'
+  ]);
+
+  assertAll(proof, [
+    'library-sync-closure-folder-bindings-trigger-incomplete',
+    "allowedIdentities: ['f15.execute-settlement-writer', 'f16.folder-legacy-fallback']",
+    'triggerProtectionGuarded === true',
+    'triggerDefaultEnabled === false',
+    'triggerInsertBlocked.directUnauthorizedWriteBlocked === true',
+    'triggerUpdateBlocked.directUnauthorizedWriteBlocked === true',
+    'triggerDeleteBlocked.directUnauthorizedWriteBlocked === true',
+    "triggerSettlementPasses.identity === 'f15.execute-settlement-writer'",
+    "triggerFallbackPasses.identity === 'f16.folder-legacy-fallback'",
+    'triggerDefaultOff.triggerModeOffLegacyWritePassed === true'
   ]);
 
   assertAll(proof, [
@@ -335,7 +349,7 @@ if (failures.length === 0) {
 
   assertContains(html, 'sync/library/library-sync-proof.tauri.js');
   assertContains(pack, 'sync/library/library-sync-proof.tauri.js');
-  assertContains(syncValidator, "var VERSION = '1.2.0-f16.4.c'", 'sync validator version check');
+  assertContains(syncValidator, "var VERSION = '1.2.0-f16.4.d'", 'sync validator version check');
   assertContains(syncValidator, 'runLibrarySyncClosureProof', 'sync validator closure API check');
   assertContains(syncValidator, 'runLibraryConflictProof', 'sync validator conflict API check');
   assertContains(syncValidator, 'validate-f15-library-conflict-contract.mjs', 'sync validator conflict validator reference');

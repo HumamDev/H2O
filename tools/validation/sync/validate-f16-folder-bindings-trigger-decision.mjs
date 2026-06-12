@@ -138,6 +138,7 @@ if (failures.length === 0) {
   }
 
   assertContains(syncProof, 'folder-absorption-scoped-fallback-identity-exists', 'proof scoped identity case');
+  assertContains(syncProof, "var VERSION = '1.2.0-f16.4.d'", 'proof F16.4.d closure version');
   assertContains(syncProof, 'folder-absorption-legacy-fallback-uses-scoped-identity', 'proof legacy wrapper case');
   assertContains(syncProof, 'folder-absorption-folder-delete-cleanup-scoped', 'proof delete cleanup case');
   assertContains(syncProof, "scopedFallbackIdentity: 'f16.folder-legacy-fallback'", 'proof trigger guarded identity summary');
@@ -148,8 +149,17 @@ if (failures.length === 0) {
   assertContains(syncProof, 'folder-absorption-authorized-folder-bindings-settlement-passes', 'proof settlement identity case');
   assertContains(syncProof, 'folder-absorption-authorized-folder-bindings-fallback-passes', 'proof fallback identity case');
   assertContains(syncProof, 'folder-absorption-trigger-protection-default-off-compatible', 'proof default off compatibility case');
+  assertContains(syncProof, 'closure-folder-bindings-trigger-proof-complete', 'closure guarded trigger proof case');
+  assertContains(syncProof, 'library-sync-closure-folder-bindings-trigger-incomplete', 'closure guarded trigger blocker');
+  assertContains(syncProof, "allowedIdentities: ['f15.execute-settlement-writer', 'f16.folder-legacy-fallback']", 'closure allowed identity proof');
   assertContains(syncProof, 'triggerProtectionGuarded === true', 'closure trigger guarded requirement');
   assertContains(syncProof, 'triggerDefaultEnabled === false', 'closure trigger default-off requirement');
+  assertContains(syncProof, 'triggerInsertBlocked.directUnauthorizedWriteBlocked === true', 'closure unauthorized insert blocked requirement');
+  assertContains(syncProof, 'triggerUpdateBlocked.directUnauthorizedWriteBlocked === true', 'closure unauthorized update blocked requirement');
+  assertContains(syncProof, 'triggerDeleteBlocked.directUnauthorizedWriteBlocked === true', 'closure unauthorized delete blocked requirement');
+  assertContains(syncProof, "triggerSettlementPasses.identity === 'f15.execute-settlement-writer'", 'closure settlement identity requirement');
+  assertContains(syncProof, "triggerFallbackPasses.identity === 'f16.folder-legacy-fallback'", 'closure fallback identity requirement');
+  assertContains(syncProof, 'triggerDefaultOff.triggerModeOffLegacyWritePassed === true', 'closure default-off compatibility requirement');
 
   assertNotContains(sentinelFacade, 'CREATE TRIGGER', 'facade must not add triggers');
   assertNotContains(folderStore, 'CREATE TRIGGER', 'store must not add triggers');

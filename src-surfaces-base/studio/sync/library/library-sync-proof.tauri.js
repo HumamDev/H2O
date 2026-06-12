@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '1.2.0-f16.4.c';
+  var VERSION = '1.2.0-f16.4.d';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
@@ -310,6 +310,7 @@
     'closure-catalog-proof-complete',
     'closure-binding-proof-complete',
     'closure-folder-absorption-proof-complete',
+    'closure-folder-bindings-trigger-proof-complete',
     'closure-store-cutover-proof-complete',
     'closure-bulk-migration-proof-complete',
     'closure-conflict-proof-complete',
@@ -5034,6 +5035,44 @@
       summary: 'folderAbsorptionCases=' + (folderAbsorption && folderAbsorption.caseCount || 0)
     });
 
+    var folderBindingsTriggerOk =
+      scopedFallbackIdentity && scopedFallbackIdentity.ok === true &&
+      scopedFallbackIdentity.identity === 'f16.folder-legacy-fallback' &&
+      legacyFallbackScoped && legacyFallbackScoped.ok === true &&
+      folderDeleteScoped && folderDeleteScoped.ok === true &&
+      triggerGuarded && triggerGuarded.ok === true &&
+      triggerGuarded.triggerProtectionGuarded === true &&
+      triggerGuarded.triggerDefaultEnabled === false &&
+      triggerInsertBlocked && triggerInsertBlocked.ok === true &&
+      triggerInsertBlocked.directUnauthorizedWriteBlocked === true &&
+      triggerUpdateBlocked && triggerUpdateBlocked.ok === true &&
+      triggerUpdateBlocked.directUnauthorizedWriteBlocked === true &&
+      triggerDeleteBlocked && triggerDeleteBlocked.ok === true &&
+      triggerDeleteBlocked.directUnauthorizedWriteBlocked === true &&
+      triggerSettlementPasses && triggerSettlementPasses.ok === true &&
+      triggerSettlementPasses.identity === 'f15.execute-settlement-writer' &&
+      triggerFallbackPasses && triggerFallbackPasses.ok === true &&
+      triggerFallbackPasses.identity === 'f16.folder-legacy-fallback' &&
+      triggerFallbackPasses.fallbackBindPassed === true &&
+      triggerFallbackPasses.fallbackUnbindPassed === true &&
+      triggerDefaultOff && triggerDefaultOff.ok === true &&
+      triggerDefaultOff.triggerModeOffLegacyWritePassed === true &&
+      f7Default && f7Default.ok === true &&
+      delegatedBind && delegatedBind.ok === true &&
+      delegatedUnbind && delegatedUnbind.ok === true &&
+      f7Parity && f7Parity.ok === true;
+    closureRecord(cases, 'closure-folder-bindings-trigger-proof-complete', folderBindingsTriggerOk, {
+      allowedIdentities: ['f15.execute-settlement-writer', 'f16.folder-legacy-fallback'],
+      defaultSafe: !!(triggerGuarded && triggerGuarded.triggerDefaultEnabled === false),
+      unauthorizedInsertBlocked: !!(triggerInsertBlocked && triggerInsertBlocked.directUnauthorizedWriteBlocked === true),
+      unauthorizedUpdateBlocked: !!(triggerUpdateBlocked && triggerUpdateBlocked.directUnauthorizedWriteBlocked === true),
+      unauthorizedDeleteBlocked: !!(triggerDeleteBlocked && triggerDeleteBlocked.directUnauthorizedWriteBlocked === true),
+      fallbackCompatible: !!(f7Default && f7Default.ok === true),
+      delegatedCompatible: !!(delegatedBind && delegatedBind.ok === true && delegatedUnbind && delegatedUnbind.ok === true),
+      blockers: folderBindingsTriggerOk ? [] : ['library-sync-closure-folder-bindings-trigger-incomplete'],
+      summary: 'guarded folder_bindings triggers default-off with settlement and legacy fallback identities'
+    });
+
     var storeMissing = missingProofCases(storeCutover, STORE_CUTOVER_CASE_NAMES);
     var sentinel = safeObject(storeCutover && storeCutover.sentinel);
     var storeShims = safeObject(storeCutover && storeCutover.storeShims);
@@ -5305,6 +5344,7 @@
       catalogOk === true &&
       bindingOk === true &&
       folderAbsorptionOk === true &&
+      folderBindingsTriggerOk === true &&
       storeOk === true &&
       bulkOk === true &&
       conflictOk === true &&
