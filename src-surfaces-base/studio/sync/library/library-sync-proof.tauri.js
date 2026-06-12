@@ -1,4 +1,4 @@
-/* H2O Desktop Sync - F16.1.d library sync proof foundation
+/* H2O Desktop Sync - F16.2.c library sync proof foundation
  *
  * Runtime proof for the F15 library sync lane. This module exercises the
  * existing catalog primitives across the full F15 catalog operation set,
@@ -32,7 +32,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__librarySyncProofInstalled) return;
 
-  var VERSION = '0.9.0-f16.1.d';
+  var VERSION = '0.10.0-f16.2.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-sync-proof.v1';
   var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1';
   var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1';
@@ -115,6 +115,7 @@
     'tools/validation/sync/validate-f15-library-closure.mjs',
     'tools/validation/sync/validate-f15-library-conflict-contract.mjs',
     'tools/validation/sync/validate-f16-library-conflict-runtime.mjs',
+    'tools/validation/sync/validate-f16-library-multipeer-soak.mjs',
     'tools/validation/cross-platform/run-cross-platform-repo-scan.mjs',
     'tools/validation/cross-platform/validate-cross-platform-envelope.mjs',
     'tools/validation/sync/validate-f7-folder-metadata-hash-parity.mjs'
@@ -4531,6 +4532,10 @@
     var bulkMigration = await runLibraryBulkMigrationE2EProof();
     var conflictProof = await runLibraryConflictProof(input || {});
     var runtimeConflictGate = await runLibraryRuntimeConflictGateProof(input || {});
+    var multiPeerSoak = await runLibraryMultiPeerSoakRuntimeProof(Object.assign({}, input || {}, {
+      heavy: input && input.heavy === true,
+      observedAtIso: observedAtIso
+    }));
 
     if (catalogProof && catalogProof.ok !== true) mergeCodes(blockers, catalogProof.blockers);
     if (bindingProof && bindingProof.ok !== true) mergeCodes(blockers, bindingProof.blockers);
@@ -4539,8 +4544,9 @@
     if (bulkMigration.ok !== true) mergeCodes(blockers, bulkMigration.blockers);
     if (conflictProof.ok !== true) mergeCodes(blockers, conflictProof.blockers);
     if (runtimeConflictGate.ok !== true) mergeCodes(blockers, runtimeConflictGate.blockers);
+    if (multiPeerSoak && multiPeerSoak.ok !== true) mergeCodes(warnings, multiPeerSoak.blockers);
 
-    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate].filter(Boolean);
+    var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak].filter(Boolean);
     var privacy = await privacyScan(privacyTargets, []);
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
     mergeCodes(warnings, privacy.warnings);
@@ -4569,12 +4575,68 @@
       bulkMigration: bulkMigration,
       conflictProof: conflictProof,
       runtimeConflictGate: runtimeConflictGate,
+      multiPeerSoak: multiPeerSoak,
       privacy: privacy,
       apiPresence: presence,
       blockers: codeList(blockers),
       warnings: codeList(warnings),
       sideEffectSummary: sideEffectSummary(),
       observedAtIso: observedAtIso
+    };
+  }
+
+  async function runLibraryMultiPeerSoakRuntimeProof(input) {
+    var args = safeObject(input);
+    var sync = getSync();
+    var observedAtIso = cleanString(args.observedAtIso) || nowIsoSeconds();
+    if (typeof sync.runLibraryMultiPeerSoakProof !== 'function') {
+      return {
+        schema: 'h2o.desktop.sync.library-multipeer-soak.v1',
+        version: VERSION,
+        ok: false,
+        summaryOnly: true,
+        scenarioCount: 0,
+        passCount: 0,
+        failCount: 0,
+        conflictSummary: { runtimeApiPresence: {} },
+        replaySummary: { replayModes: [] },
+        privacySummary: { ok: true, leakCount: 0 },
+        sideEffectSummary: sideEffectSummary(),
+        performanceSummary: {
+          heavyRequested: args.heavy === true,
+          heavyDefault: false,
+          heavyEnvFlag: 'F16_SOAK_HEAVY=1',
+          seed: cleanString(args.seed) || ''
+        },
+        blockers: ['library-multipeer-soak-runtime-unavailable'],
+        warnings: [],
+        observedAtIso: observedAtIso
+      };
+    }
+    var proof = await sync.runLibraryMultiPeerSoakProof({
+      heavy: args.heavy === true,
+      seed: cleanString(args.seed),
+      observedAtIso: observedAtIso
+    });
+    return {
+      schema: cleanString(proof && proof.schema) || 'h2o.desktop.sync.library-multipeer-soak.v1',
+      version: cleanString(proof && proof.version) || '',
+      ok: proof && proof.ok === true,
+      summaryOnly: true,
+      scenarioCount: Number(proof && proof.scenarioCount || 0),
+      passCount: Number(proof && proof.passCount || 0),
+      failCount: Number(proof && proof.failCount || 0),
+      scenarioIds: asArray(proof && proof.scenarios).map(function (row) {
+        return cleanString(row && row.caseId);
+      }).filter(Boolean),
+      conflictSummary: safeObject(proof && proof.conflictSummary),
+      replaySummary: safeObject(proof && proof.replaySummary),
+      privacySummary: safeObject(proof && proof.privacySummary),
+      sideEffectSummary: safeObject(proof && proof.sideEffectSummary),
+      performanceSummary: safeObject(proof && proof.performanceSummary),
+      blockers: codeList(proof && proof.blockers),
+      warnings: codeList(proof && proof.warnings),
+      observedAtIso: cleanString(proof && proof.observedAtIso) || observedAtIso
     };
   }
 
@@ -4951,6 +5013,7 @@
   H2O.Desktop.Sync.runLibraryBulkMigrationE2EProof = runLibraryBulkMigrationE2EProof;
   H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof;
   H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof;
+  H2O.Desktop.Sync.runLibraryMultiPeerSoakRuntimeProof = runLibraryMultiPeerSoakRuntimeProof;
   H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof;
   H2O.Desktop.Sync.__librarySyncProofInstalled = true;
   H2O.Desktop.Sync.__librarySyncProofVersion = VERSION;

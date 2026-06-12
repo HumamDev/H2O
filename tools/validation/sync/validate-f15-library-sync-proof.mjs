@@ -45,7 +45,7 @@ const closureValidator = 'tools/validation/sync/validate-f15-library-closure.mjs
 
 if (failures.length === 0) {
   assertAll(proof, [
-    "var VERSION = '0.9.0-f16.1.d'",
+    "var VERSION = '0.10.0-f16.2.c'",
     "var CLOSURE_SCHEMA = 'h2o.desktop.sync.library-sync-closure-proof.v1'",
     "var CONFLICT_SCHEMA = 'h2o.desktop.sync.library-conflict-proof.v1'",
     "var RUNTIME_CONFLICT_GATE_SCHEMA = 'h2o.desktop.sync.library-runtime-conflict-gate-proof.v1'",
@@ -58,9 +58,11 @@ if (failures.length === 0) {
     'runLibraryBulkMigrationE2EProof',
     'runLibraryConflictProof',
     'runLibraryRuntimeConflictGateProof',
+    'runLibraryMultiPeerSoakRuntimeProof',
     'runLibrarySyncClosureProof',
     'H2O.Desktop.Sync.runLibraryConflictProof = runLibraryConflictProof',
     'H2O.Desktop.Sync.runLibraryRuntimeConflictGateProof = runLibraryRuntimeConflictGateProof',
+    'H2O.Desktop.Sync.runLibraryMultiPeerSoakRuntimeProof = runLibraryMultiPeerSoakRuntimeProof',
     'H2O.Desktop.Sync.runLibrarySyncClosureProof = runLibrarySyncClosureProof',
     'CLOSURE_CASE_NAMES',
     'closure-catalog-proof-complete',
@@ -80,6 +82,7 @@ if (failures.length === 0) {
     'validate-f15-library-closure.mjs',
     'validate-f15-library-conflict-contract.mjs',
     'validate-f16-library-conflict-runtime.mjs',
+    'validate-f16-library-multipeer-soak.mjs',
     // F15.9.d store cutover proof — case names, sub-proof references,
     // and supporting helpers must all appear in the proof module.
     'STORE_CUTOVER_CASE_NAMES',
@@ -258,6 +261,12 @@ if (failures.length === 0) {
     'evaluateLibraryBindingRuntimeConflict',
     'classifyLibraryBulkRuntimeConflictRows',
     '__libraryConflictRuntimeInstalled',
+    'runLibraryMultiPeerSoakProof',
+    'multiPeerSoak',
+    'summaryOnly',
+    'heavy: input && input.heavy === true',
+    'heavyDefault: false',
+    'F16_SOAK_HEAVY=1',
     'firstValidSettlementWins',
     'staleLoserBlocked',
     'exactReplayIdempotent',

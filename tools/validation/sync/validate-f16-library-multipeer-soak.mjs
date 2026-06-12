@@ -9,9 +9,11 @@ const failures = [];
 
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-multipeer-soak-proof.tauri.js';
 const conflictRuntimeFile = 'src-surfaces-base/studio/sync/library/library-conflict-runtime.tauri.js';
+const syncProofFile = 'src-surfaces-base/studio/sync/library/library-sync-proof.tauri.js';
 const htmlFile = 'src-surfaces-base/studio/studio.html';
 const packFile = 'tools/product/studio/pack-studio.mjs';
 const contractFile = 'docs/systems/cross-platform/f16.2-multipeer-offline-online-soak-contract.md';
+const closureValidatorFile = 'tools/validation/sync/validate-f15-library-closure.mjs';
 
 function read(file) {
   return fs.readFileSync(path.join(root, file), 'utf8');
@@ -32,6 +34,11 @@ function assertExists(file) {
 function assertContains(file, needle, label = needle) {
   const text = read(file);
   assert(text.includes(needle), `${file}: missing ${label}`);
+}
+
+function assertNotContains(file, needle, label = needle) {
+  const text = read(file);
+  assert(!text.includes(needle), `${file}: unexpected ${label}`);
 }
 
 function assertOrder(file, before, after) {
@@ -135,11 +142,14 @@ async function runVmProof() {
   const context = buildContext();
   vm.runInContext(read(conflictRuntimeFile), context, { filename: conflictRuntimeFile });
   vm.runInContext(read(moduleFile), context, { filename: moduleFile });
+  vm.runInContext(read(syncProofFile), context, { filename: syncProofFile });
   const sync = context.H2O.Desktop.Sync;
   assert(sync.__libraryMultiPeerSoakProofInstalled === true, 'runtime installed marker missing');
   assert(sync.__libraryMultiPeerSoakProofVersion === '0.1.0-f16.2.b', 'runtime version marker mismatch');
   assert(typeof sync.runLibraryMultiPeerSoakProof === 'function', 'runtime proof API missing');
+  assert(typeof sync.runLibraryMultiPeerSoakRuntimeProof === 'function', 'sync proof runtime delegate missing');
   const result = await sync.runLibraryMultiPeerSoakProof();
+  const summary = await sync.runLibraryMultiPeerSoakRuntimeProof();
   assert(result.schema === 'h2o.desktop.sync.library-multipeer-soak.v1', 'proof schema mismatch');
   assert(result.version === '0.1.0-f16.2.b', 'proof version mismatch');
   assert(result.ok === true, `proof did not pass: ${JSON.stringify(result.blockers || [])}`);
@@ -157,6 +167,12 @@ async function runVmProof() {
   assert(result.conflictSummary?.runtimeApiPresence?.evaluateLibraryCatalogRuntimeConflict === true, 'catalog runtime API not present in proof');
   assert(result.conflictSummary?.runtimeApiPresence?.evaluateLibraryBindingRuntimeConflict === true, 'binding runtime API not present in proof');
   assert(result.conflictSummary?.runtimeApiPresence?.classifyLibraryBulkRuntimeConflictRows === true, 'bulk runtime API not present in proof');
+  assert(summary.schema === 'h2o.desktop.sync.library-multipeer-soak.v1', 'delegate summary schema mismatch');
+  assert(summary.summaryOnly === true, 'delegate summary must be summary-only');
+  assert(summary.scenarioCount === 14, 'delegate summary must preserve scenario count');
+  assert(summary.passCount === 14, 'delegate summary must preserve pass count');
+  assert(summary.performanceSummary?.heavyRequested === false, 'delegate must keep heavy soak off by default');
+  assert(!Array.isArray(summary.scenarios), 'delegate summary must not inline full scenario details');
   for (const row of result.scenarios || []) {
     assert(row.ok === true, `${row.caseId}: scenario failed`);
     assert(row.privacySafe === true, `${row.caseId}: privacySafe false`);
@@ -209,8 +225,10 @@ async function main() {
   assertExists(contractFile);
   assertExists(moduleFile);
   assertExists(conflictRuntimeFile);
+  assertExists(syncProofFile);
   assertExists(htmlFile);
   assertExists(packFile);
+  assertExists(closureValidatorFile);
 
   assertContains(moduleFile, 'runLibraryMultiPeerSoakProof');
   assertContains(moduleFile, '__libraryMultiPeerSoakProofInstalled');
@@ -227,6 +245,16 @@ async function main() {
   assertContains(moduleFile, 'validateReplayCandidate');
   assertContains(moduleFile, 'validateWatermarkAdvance');
   assertContains(moduleFile, 'validateConsumedOperation');
+  assertContains(syncProofFile, "var VERSION = '0.10.0-f16.2.c'", 'sync proof F16.2.c version');
+  assertContains(syncProofFile, 'runLibraryMultiPeerSoakRuntimeProof', 'sync proof multipeer delegate');
+  assertContains(syncProofFile, 'sync.runLibraryMultiPeerSoakProof', 'sync proof delegates to canonical soak API');
+  assertContains(syncProofFile, 'multiPeerSoak', 'sync proof E2E summary section');
+  assertContains(syncProofFile, 'summaryOnly: true', 'summary-only soak integration');
+  assertContains(syncProofFile, 'heavy: input && input.heavy === true', 'heavy soak remains input-gated');
+  assertContains(syncProofFile, 'heavyDefault: false', 'heavy default remains false in delegate fallback');
+  assertNotContains(syncProofFile, 'SCENARIO_IDS = [', 'scenario matrix duplicated in sync proof');
+  assertNotContains(syncProofFile, 'multipeer-catalog-create-same-name', 'scenario details duplicated in sync proof');
+  assertNotContains(closureValidatorFile, 'closure-multipeer-soak-proof-complete', 'closure soak hardening before F16.2.d');
 
   for (const field of [
     'peerIdHash',
