@@ -33,7 +33,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryCatalogPreflightInstalled) return;
 
-  var VERSION = '0.1.0-f15.3.a';
+  var VERSION = '0.2.0-f16.1.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-catalog-preflight.v1';
   var SUBJECT_TYPE = 'library.catalog';
   var SHA256_RE = /^[0-9a-f]{64}$/;
@@ -189,6 +189,8 @@
       preflight: value.preflight || emptyPreflight(),
       canonicalCatalog: value.canonicalCatalog || null,
       diagnostics: value.diagnostics || {},
+      conflictRuntime: value.conflictRuntime || null,
+      conflictRuntimeSummary: value.conflictRuntimeSummary || null,
       blockers: blockers,
       warnings: warnings,
       relatedSubjects: asArray(value.relatedSubjects),
@@ -325,6 +327,121 @@
       if (isObject(entry.canonicalizerResult.canonical)) return entry.canonicalizerResult.canonical;
     }
     return null;
+  }
+
+  function safeCatalogState(catalog, lifecycleState) {
+    if (!isObject(catalog)) return null;
+    var state = {
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanString(catalog.subjectId),
+      catalogKind: cleanString(catalog.catalogKind),
+      nameHash: cleanString(catalog.nameHash),
+      colorHash: cleanString(catalog.colorHash),
+      originAccountIdHash: cleanString(catalog.originAccountIdHash),
+      lifecycleState: cleanString(lifecycleState) || cleanString(catalog.lifecycleState),
+      revisionHash: cleanString(catalog.revisionHash)
+    };
+    if (cleanString(catalog.sourceTagHash)) state.sourceTagHash = cleanString(catalog.sourceTagHash);
+    return state;
+  }
+
+  function safeCatalogList(entries) {
+    return asArray(entries).map(function (entry) {
+      return safeCatalogState(catalogFromEntry(entry));
+    }).filter(Boolean);
+  }
+
+  function mergeRuntimeCodes(target, codes, severity) {
+    var list = codeList(codes);
+    for (var i = 0; i < list.length; i++) {
+      if (severity === 'blocker') addBlocker(target, list[i]);
+      else addWarning(target, list[i], 'warning');
+    }
+  }
+
+  function summarizeConflictRuntime(result) {
+    if (!isObject(result)) return null;
+    return {
+      ok: result.ok === true,
+      conflictFree: result.conflictFree === true,
+      domain: cleanString(result.domain),
+      mode: cleanString(result.mode),
+      operation: cleanString(result.operation),
+      decisionCount: asArray(result.decisions).length,
+      blockerCount: codeList(result.blockers).length,
+      warningCount: codeList(result.warnings).length,
+      refreshRequired: result.refreshRequired === true,
+      retrySafe: result.retrySafe === true,
+      privacyOk: !result.privacy || result.privacy.ok !== false
+    };
+  }
+
+  function conflictRuntimeInput(input, operation, catalog, fromState, toState, observedAtIso) {
+    var source = isObject(input) ? input : {};
+    var current = safeCatalogState(catalog, fromState);
+    var target = safeCatalogState(catalog, toState);
+    var candidate = {
+      subjectType: SUBJECT_TYPE,
+      operation: operation,
+      expectedTargetState: target,
+      baseHash: cleanString(source.expectedBaseHash || source.baseHash)
+    };
+    var expectedState = safeCatalogState(catalog, cleanString(source.expectedLifecycleState) || fromState);
+    if (cleanString(source.expectedRevisionHash)) expectedState.revisionHash = cleanString(source.expectedRevisionHash);
+    if (cleanString(source.currentRevisionHash)) current.revisionHash = cleanString(source.currentRevisionHash);
+    var payload = {
+      domain: SUBJECT_TYPE,
+      mode: 'preflight',
+      operation: operation,
+      candidate: candidate,
+      currentState: isObject(source.currentState) ? source.currentState : current,
+      expectedState: isObject(source.expectedState) ? source.expectedState : expectedState,
+      expectedTargetState: isObject(source.expectedTargetState) ? source.expectedTargetState : target,
+      localState: isObject(source.localState) ? source.localState : null,
+      remoteState: isObject(source.remoteState) ? source.remoteState : null,
+      observedAtIso: observedAtIso
+    };
+    if (supplied(source, 'existingCatalogs') || supplied(source, 'existingCatalogSiblings') || supplied(source, 'existingSubjects')) {
+      payload.existingCatalogs = safeCatalogList(source.existingCatalogs || source.existingCatalogSiblings || source.existingSubjects);
+    }
+    if (isObject(source.f5Review)) payload.f5Review = source.f5Review;
+    return payload;
+  }
+
+  function applyConflictRuntime(input, operation, catalog, fromState, toState, observedAtIso, preflight, blockers, warnings) {
+    var sync = getSync();
+    preflight.conflictRuntimeChecked = false;
+    preflight.conflictRuntimeOk = null;
+    if (typeof sync.evaluateLibraryCatalogRuntimeConflict !== 'function') {
+      addWarning(warnings, 'library-conflict-runtime-unavailable', 'warning');
+      if (input && input.requireConflictGate === true) {
+        addBlocker(blockers, 'library-conflict-runtime-required-unavailable');
+      }
+      return null;
+    }
+    try {
+      var result = sync.evaluateLibraryCatalogRuntimeConflict(
+        conflictRuntimeInput(input, operation, catalog, fromState, toState, observedAtIso)
+      );
+      var summary = summarizeConflictRuntime(result);
+      preflight.conflictRuntimeChecked = true;
+      preflight.conflictRuntimeOk = !!(result && result.ok === true);
+      preflight.conflictRuntimeSummary = summary;
+      mergeRuntimeCodes(warnings, result && result.warnings, 'warning');
+      if ((input && input.requireContext === true) || (input && input.requireConflictGate === true)) {
+        if (codeList(result && result.warnings).indexOf('library-conflict-runtime-context-missing') !== -1) {
+          addBlocker(blockers, 'library-conflict-runtime-context-missing');
+        }
+      }
+      mergeRuntimeCodes(blockers, result && result.blockers, 'blocker');
+      return result || null;
+    } catch (_) {
+      addWarning(warnings, 'library-conflict-runtime-threw', 'warning');
+      if (input && input.requireConflictGate === true) {
+        addBlocker(blockers, 'library-conflict-runtime-required-unavailable');
+      }
+      return null;
+    }
   }
 
   function inspectSiblingNameUniqueness(operation, catalog, input, preflight, blockers, warnings) {
@@ -520,6 +637,7 @@
     var diagnostics = {};
     var canonicalCatalog = null;
     var relatedSubjects = [];
+    var conflictRuntime = null;
 
     if (!isObject(input)) {
       addBlocker(blockers, 'library-catalog-canonicalization-failed');
@@ -589,6 +707,17 @@
       inspectWatermark(input, preflight, blockers, warnings);
       inspectConsumedOperation(input, preflight, blockers, warnings);
       applyTombstoneF5Preview(operation, canonicalCatalog, preflight, observedAtIso);
+      conflictRuntime = applyConflictRuntime(
+        input,
+        operation,
+        canonicalCatalog,
+        fromState,
+        toState,
+        observedAtIso,
+        preflight,
+        blockers,
+        warnings
+      );
     }
 
     return assembleWithOutputScan({
@@ -596,6 +725,8 @@
       preflight: preflight,
       canonicalCatalog: canonicalCatalog,
       diagnostics: diagnostics,
+      conflictRuntime: conflictRuntime,
+      conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
       blockers: blockers,
       warnings: warnings,
       relatedSubjects: relatedSubjects,

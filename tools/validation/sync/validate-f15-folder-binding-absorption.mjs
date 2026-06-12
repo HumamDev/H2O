@@ -552,7 +552,7 @@ if (failures.length === 0) {
   assertContains(bindingDiagnostics, "return { left: CHAT_SUBJECT_TYPE, right: FOLDER_SUBJECT_TYPE }", 'diagnostics chat-folder endpoint type');
   assertContains(bindingDiagnostics, "return 'chat-folder-conflict'", 'diagnostics chat-folder conflict');
 
-  assertContains(bindingPreflight, "var VERSION = '0.2.0-f15.11.b'", 'preflight F15.11.b version');
+  assertContains(bindingPreflight, "var VERSION = '0.3.0-f16.1.b'", 'preflight F16.1.b version');
   assertContains(bindingPreflight, "var FOLDER_SUBJECT_TYPE = 'folder.metadata'", 'preflight folder endpoint type');
   assertContains(bindingPreflight, "'chat-folder-conflict'", 'preflight chat-folder conflict');
   assertContains(bindingPreflight, 'canonicalBinding.rightSubjectType === FOLDER_SUBJECT_TYPE', 'preflight folder endpoint type gate');

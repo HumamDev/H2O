@@ -33,7 +33,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryBindingPreflightInstalled) return;
 
-  var VERSION = '0.2.0-f15.11.b';
+  var VERSION = '0.3.0-f16.1.b';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-binding-preflight.v1';
   var SUBJECT_TYPE = 'library.binding';
   var CATALOG_SUBJECT_TYPE = 'library.catalog';
@@ -206,6 +206,8 @@
       preflight: value.preflight || emptyPreflight(),
       canonicalBinding: value.canonicalBinding || null,
       diagnostics: value.diagnostics || {},
+      conflictRuntime: value.conflictRuntime || null,
+      conflictRuntimeSummary: value.conflictRuntimeSummary || null,
       blockers: blockers,
       warnings: warnings,
       relatedSubjects: asArray(value.relatedSubjects),
@@ -356,6 +358,118 @@
       if (isObject(entry.canonicalizerResult.canonical)) return entry.canonicalizerResult.canonical;
     }
     return null;
+  }
+
+  function safeBindingState(binding, bindingState) {
+    if (!isObject(binding)) return null;
+    var state = {
+      subjectType: SUBJECT_TYPE,
+      subjectId: cleanString(binding.subjectId),
+      bindingKind: cleanString(binding.bindingKind),
+      leftSubjectId: cleanString(binding.leftSubjectId),
+      rightSubjectId: cleanString(binding.rightSubjectId),
+      leftSubjectType: cleanString(binding.leftSubjectType),
+      rightSubjectType: cleanString(binding.rightSubjectType),
+      originAccountIdHash: cleanString(binding.originAccountIdHash),
+      bindingState: cleanString(bindingState) || cleanString(binding.bindingState),
+      revisionHash: cleanString(binding.revisionHash)
+    };
+    if (cleanString(binding.sourceTagHash)) state.sourceTagHash = cleanString(binding.sourceTagHash);
+    return state;
+  }
+
+  function safeBindingList(entries) {
+    return asArray(entries).map(function (entry) {
+      return safeBindingState(bindingFromEntry(entry));
+    }).filter(Boolean);
+  }
+
+  function mergeRuntimeCodes(target, codes, severity) {
+    var list = codeList(codes);
+    for (var i = 0; i < list.length; i++) {
+      if (severity === 'blocker') addBlocker(target, list[i]);
+      else addWarning(target, list[i], 'warning');
+    }
+  }
+
+  function summarizeConflictRuntime(result) {
+    if (!isObject(result)) return null;
+    return {
+      ok: result.ok === true,
+      conflictFree: result.conflictFree === true,
+      domain: cleanString(result.domain),
+      mode: cleanString(result.mode),
+      operation: cleanString(result.operation),
+      decisionCount: asArray(result.decisions).length,
+      blockerCount: codeList(result.blockers).length,
+      warningCount: codeList(result.warnings).length,
+      refreshRequired: result.refreshRequired === true,
+      retrySafe: result.retrySafe === true,
+      privacyOk: !result.privacy || result.privacy.ok !== false
+    };
+  }
+
+  function conflictRuntimeInput(input, operation, binding, observedAtIso) {
+    var source = isObject(input) ? input : {};
+    var current = safeBindingState(binding, cleanString(source.currentBindingState) || cleanString(binding.bindingState));
+    var expected = safeBindingState(binding, cleanString(source.expectedBindingState) || cleanString(binding.bindingState));
+    if (cleanString(source.currentRevisionHash)) current.revisionHash = cleanString(source.currentRevisionHash);
+    if (cleanString(source.expectedRevisionHash)) expected.revisionHash = cleanString(source.expectedRevisionHash);
+    var payload = {
+      domain: SUBJECT_TYPE,
+      mode: 'preflight',
+      operation: operation,
+      bindingKind: cleanString(binding.bindingKind),
+      candidate: safeBindingState(binding),
+      currentState: isObject(source.currentState) ? source.currentState : current,
+      expectedState: isObject(source.expectedState) ? source.expectedState : expected,
+      localState: isObject(source.localState) ? source.localState : null,
+      remoteState: isObject(source.remoteState) ? source.remoteState : null,
+      observedAtIso: observedAtIso
+    };
+    if (supplied(source, 'existingBindings') || supplied(source, 'siblingBindings') || supplied(source, 'existingSubjects')) {
+      payload.existingBindings = safeBindingList(source.existingBindings || source.siblingBindings || source.existingSubjects);
+    }
+    if (isObject(source.cacheObservation)) payload.cacheObservation = source.cacheObservation;
+    else if (isObject(source.materializedCacheObservation)) payload.cacheObservation = source.materializedCacheObservation;
+    if (isObject(source.bridgeContext)) payload.bridgeContext = source.bridgeContext;
+    return payload;
+  }
+
+  function applyConflictRuntime(input, operation, binding, observedAtIso, preflight, blockers, warnings) {
+    var sync = getSync();
+    preflight.conflictRuntimeChecked = false;
+    preflight.conflictRuntimeOk = null;
+    if (typeof sync.evaluateLibraryBindingRuntimeConflict !== 'function') {
+      addWarning(warnings, 'library-conflict-runtime-unavailable', 'warning');
+      if (input && input.requireConflictGate === true) {
+        addBlocker(blockers, 'library-conflict-runtime-required-unavailable');
+      }
+      return null;
+    }
+    try {
+      var result = sync.evaluateLibraryBindingRuntimeConflict(
+        conflictRuntimeInput(input, operation, binding, observedAtIso)
+      );
+      var summary = summarizeConflictRuntime(result);
+      preflight.conflictRuntimeChecked = true;
+      preflight.conflictRuntimeOk = !!(result && result.ok === true);
+      preflight.conflictRuntimeSummary = summary;
+      mergeRuntimeCodes(warnings, result && result.warnings, 'warning');
+      if ((input && input.requireContext === true) || (input && input.requireConflictGate === true)) {
+        if (codeList(result && result.warnings).indexOf('library-conflict-runtime-context-missing') !== -1) {
+          addBlocker(blockers, 'library-conflict-runtime-context-missing');
+        }
+      }
+      mergeRuntimeCodes(blockers, result && result.blockers, 'blocker');
+      return result || null;
+    } catch (_) {
+      addWarning(warnings, 'library-conflict-runtime-threw', 'warning');
+      if (input && input.requireConflictGate === true) {
+        addBlocker(blockers, 'library-conflict-runtime-required-unavailable');
+      }
+      return null;
+    }
   }
 
   function catalogEndpointIds(binding) {
@@ -663,6 +777,7 @@
     var diagnostics = {};
     var canonicalBinding = null;
     var relatedSubjects = [];
+    var conflictRuntime = null;
 
     if (!isObject(input)) {
       addBlocker(blockers, 'library-binding-canonicalization-failed');
@@ -740,6 +855,15 @@
       inspectReplay(input, operation, preflight, blockers, warnings);
       inspectWatermark(input, preflight, blockers, warnings);
       inspectConsumedOperation(input, preflight, blockers, warnings);
+      conflictRuntime = applyConflictRuntime(
+        input,
+        operation,
+        canonicalBinding,
+        observedAtIso,
+        preflight,
+        blockers,
+        warnings
+      );
     }
 
     return assembleWithOutputScan({
@@ -747,6 +871,8 @@
       preflight: preflight,
       canonicalBinding: canonicalBinding,
       diagnostics: diagnostics,
+      conflictRuntime: conflictRuntime,
+      conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
       blockers: blockers,
       warnings: warnings,
       relatedSubjects: relatedSubjects,

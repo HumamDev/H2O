@@ -181,6 +181,39 @@ function buildContext() {
   return vm.createContext(context);
 }
 
+function installPreflightDiagnostics(context) {
+  const sync = context.H2O.Desktop.Sync;
+  sync.diagnoseLibraryCatalog = async function diagnoseLibraryCatalog(input) {
+    const canonicalCatalog = input.canonicalCatalog || input.canonical || input.row || input;
+    return {
+      ok: true,
+      canonicalCatalog,
+      diagnostics: {
+        canonicalizationOk: true,
+        privacyOk: true
+      },
+      blockers: [],
+      warnings: [],
+      relatedSubjects: []
+    };
+  };
+  sync.diagnoseLibraryBinding = async function diagnoseLibraryBinding(input) {
+    const canonicalBinding = input.canonicalBinding || input.canonical || input.row || input;
+    return {
+      ok: true,
+      canonicalBinding,
+      diagnostics: {
+        canonicalizationOk: true,
+        privacyOk: true,
+        endpointTypeConsistent: true
+      },
+      blockers: [],
+      warnings: [],
+      relatedSubjects: []
+    };
+  };
+}
+
 async function runRuntimeProof(moduleFile) {
   const context = buildContext();
   vm.runInContext(read(moduleFile), context, { filename: moduleFile });
@@ -397,6 +430,245 @@ async function runRuntimeProof(moduleFile) {
   };
 }
 
+async function runPreflightIntegrationProof(moduleFile, catalogPreflight, bindingPreflight) {
+  const context = buildContext();
+  vm.runInContext(read(moduleFile), context, { filename: moduleFile });
+  installPreflightDiagnostics(context);
+  vm.runInContext(read(catalogPreflight), context, { filename: catalogPreflight });
+  vm.runInContext(read(bindingPreflight), context, { filename: bindingPreflight });
+  const sync = context.H2O.Desktop.Sync;
+  assert(sync.__libraryCatalogPreflightVersion === '0.2.0-f16.1.b', 'catalog preflight version mismatch at runtime');
+  assert(sync.__libraryBindingPreflightVersion === '0.3.0-f16.1.b', 'binding preflight version mismatch at runtime');
+
+  const account = h('preflight-account');
+  const nameHash = h('preflight-name');
+  const catalogA = h('preflight-catalog-a');
+  const catalogB = h('preflight-catalog-b');
+  const baseA = h('preflight-base-a');
+  const baseB = h('preflight-base-b');
+  const chatA = h('preflight-chat-a');
+  const labelA = h('preflight-label-a');
+  const labelB = h('preflight-label-b');
+  const categoryA = h('preflight-category-a');
+  const categoryB = h('preflight-category-b');
+  const folderA = h('preflight-folder-a');
+  const folderB = h('preflight-folder-b');
+  const bindingA = h('preflight-binding-a');
+  const bindingB = h('preflight-binding-b');
+
+  const catalogBase = {
+    subjectType: 'library.catalog',
+    subjectId: catalogA,
+    catalogKind: 'label',
+    nameHash,
+    colorHash: h('preflight-color'),
+    originAccountIdHash: account,
+    lifecycleState: 'active',
+    revisionHash: baseA
+  };
+  const bindingBase = {
+    subjectType: 'library.binding',
+    subjectId: bindingA,
+    bindingKind: 'chat-label',
+    leftSubjectId: chatA,
+    rightSubjectId: labelA,
+    leftSubjectType: 'chat.metadata',
+    rightSubjectType: 'library.catalog',
+    originAccountIdHash: account,
+    bindingState: 'bound',
+    revisionHash: baseA
+  };
+  const common = {
+    localAccountIdHash: account,
+    sourceMirror: { fresh: true },
+    replayContext: { safe: true },
+    watermarkState: { safe: true },
+    consumedOperationState: { safe: true }
+  };
+  const cases = [];
+  function record(caseId, result, check) {
+    cases.push({ caseId, ok: check(result), result });
+  }
+
+  record('catalog preflight clean runtime pass', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'archive',
+    canonicalCatalog: catalogBase,
+    currentLifecycleState: 'active',
+    expectedTargetState: { lifecycleState: 'archived' },
+    currentRevisionHash: baseA,
+    expectedRevisionHash: baseA
+  })), (result) => result.ok === true &&
+    result.conflictRuntimeSummary?.ok === true &&
+    allSideEffectsFalse(result));
+
+  record('catalog duplicate nameHash blocks', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'create',
+    canonicalCatalog: Object.assign({}, catalogBase, { subjectId: catalogB }),
+    existingCatalogSiblings: [catalogBase]
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-catalog-cross-install-name-collision'));
+
+  record('catalog stale base blocks', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'rename',
+    canonicalCatalog: catalogBase,
+    currentLifecycleState: 'active',
+    currentRevisionHash: baseB,
+    expectedRevisionHash: baseA,
+    baseHash: baseA,
+    existingCatalogSiblings: []
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-catalog-cross-install-stale-base'));
+
+  record('catalog lifecycle conflict blocks', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'rename',
+    canonicalCatalog: Object.assign({}, catalogBase, { lifecycleState: 'archived' }),
+    currentLifecycleState: 'archived',
+    expectedState: { lifecycleState: 'active' },
+    expectedTargetState: { lifecycleState: 'active' },
+    existingCatalogSiblings: []
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-catalog-cross-install-lifecycle-conflict'));
+
+  record('catalog missing conflict context warns only', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'create',
+    canonicalCatalog: catalogBase
+  })), (result) => result.ok === true &&
+    hasCode(result, 'library-conflict-runtime-context-missing'));
+
+  record('catalog missing conflict context can block', await sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'create',
+    canonicalCatalog: catalogBase,
+    requireConflictGate: true
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-conflict-runtime-context-missing'));
+
+  record('binding preflight clean runtime pass', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'unbind',
+    canonicalBinding: bindingBase,
+    relatedCatalogs: [{ subjectType: 'library.catalog', subjectId: labelA, lifecycleState: 'active' }],
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    expectedState: { bindingState: 'bound' },
+    currentState: Object.assign({}, bindingBase, { bindingState: 'bound' })
+  })), (result) => result.ok === true &&
+    result.conflictRuntimeSummary?.ok === true &&
+    allSideEffectsFalse(result));
+
+  record('binding duplicate edge blocks', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'bind',
+    canonicalBinding: bindingBase,
+    relatedCatalogs: [{ subjectType: 'library.catalog', subjectId: labelA, lifecycleState: 'active' }],
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    siblingBindings: [Object.assign({}, bindingBase, { subjectId: bindingB, dedupeKey: h('other-dedupe') })]
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-binding-cross-install-duplicate-edge'));
+
+  record('binding bind/unbind state conflict blocks', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'bind',
+    canonicalBinding: bindingBase,
+    relatedCatalogs: [{ subjectType: 'library.catalog', subjectId: labelA, lifecycleState: 'active' }],
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    expectedState: { bindingState: 'unbound' },
+    currentState: { bindingState: 'bound' }
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-binding-cross-install-state-conflict'));
+
+  record('binding chat-category duplicate active edge blocks', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'bind',
+    canonicalBinding: {
+      subjectType: 'library.binding',
+      subjectId: h('chat-category-b'),
+      bindingKind: 'chat-category',
+      leftSubjectId: chatA,
+      rightSubjectId: categoryB,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'library.catalog',
+      originAccountIdHash: account,
+      bindingState: 'bound'
+    },
+    relatedCatalogs: [{ subjectType: 'library.catalog', subjectId: categoryB, lifecycleState: 'active' }],
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    siblingBindings: [{
+      subjectType: 'library.binding',
+      subjectId: h('chat-category-a'),
+      bindingKind: 'chat-category',
+      leftSubjectId: chatA,
+      rightSubjectId: categoryA,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'library.catalog',
+      bindingState: 'bound'
+    }]
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-binding-cross-install-state-conflict'));
+
+  record('binding chat-folder duplicate active edge blocks', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'bind',
+    canonicalBinding: {
+      subjectType: 'library.binding',
+      subjectId: h('chat-folder-b'),
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatA,
+      rightSubjectId: folderB,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      originAccountIdHash: account,
+      bindingState: 'bound'
+    },
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    siblingBindings: [{
+      subjectType: 'library.binding',
+      subjectId: h('chat-folder-a'),
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatA,
+      rightSubjectId: folderA,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      bindingState: 'bound'
+    }]
+  })), (result) => result.ok === false &&
+    hasCode(result, 'library-binding-cross-install-state-conflict') &&
+    JSON.stringify(result).includes('folder.metadata'));
+
+  record('cache drift remains warning only', await sync.preflightLibraryBinding(Object.assign({}, common, {
+    operation: 'unbind',
+    canonicalBinding: bindingBase,
+    relatedCatalogs: [{ subjectType: 'library.catalog', subjectId: labelA, lifecycleState: 'active' }],
+    relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatA }],
+    expectedState: { bindingState: 'bound' },
+    currentState: Object.assign({}, bindingBase, { bindingState: 'bound' }),
+    materializedCacheObservation: { driftDetected: true }
+  })), (result) => result.ok === true &&
+    hasCode(result, 'library-cache-cross-install-drift'));
+
+  cases.forEach((entry) => assert(entry.ok, `${entry.caseId}: preflight integration proof failed`));
+  cases.forEach((entry, index) => {
+    assert(allSideEffectsFalse(entry.result), `preflight case ${index}: sideEffectSummary must be all false`);
+    assert(entry.result.conflictRuntimeSummary, `preflight case ${index}: conflictRuntimeSummary missing`);
+  });
+
+  const unavailableContext = buildContext();
+  installPreflightDiagnostics(unavailableContext);
+  vm.runInContext(read(catalogPreflight), unavailableContext, { filename: catalogPreflight });
+  const unavailable = await unavailableContext.H2O.Desktop.Sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'archive',
+    canonicalCatalog: catalogBase,
+    currentLifecycleState: 'active'
+  }));
+  assert(unavailable.ok === true && hasCode(unavailable, 'library-conflict-runtime-unavailable'), 'unavailable conflict runtime should warn only');
+  const requiredUnavailable = await unavailableContext.H2O.Desktop.Sync.preflightLibraryCatalog(Object.assign({}, common, {
+    operation: 'archive',
+    canonicalCatalog: catalogBase,
+    currentLifecycleState: 'active',
+    requireConflictGate: true
+  }));
+  assert(requiredUnavailable.ok === false && hasCode(requiredUnavailable, 'library-conflict-runtime-required-unavailable'), 'required unavailable conflict runtime should block');
+
+  return {
+    caseCount: cases.length + 2,
+    passCount: cases.length + 2,
+    sideEffectsSafe: cases.every((entry) => allSideEffectsFalse(entry.result)) && allSideEffectsFalse(unavailable) && allSideEffectsFalse(requiredUnavailable)
+  };
+}
+
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-conflict-runtime.tauri.js';
 const validatorFile = 'tools/validation/sync/validate-f16-library-conflict-runtime.mjs';
 const html = 'src-surfaces-base/studio/studio.html';
@@ -496,14 +768,34 @@ if (failures.length === 0) {
   assertOrder(pack, 'sync/library/library-sync-proof.tauri.js', 'sync/library/library-conflict-runtime.tauri.js');
   assertOrder(pack, 'sync/library/library-conflict-runtime.tauri.js', 'sync/library/library-folder-binding-bridge-diagnostic.tauri.js');
 
-  assertNotContains(catalogPreflight, 'evaluateLibraryRuntimeConflict', 'F16.1.a must not integrate catalog preflight');
-  assertNotContains(bindingPreflight, 'evaluateLibraryRuntimeConflict', 'F16.1.a must not integrate binding preflight');
+  [
+    "var VERSION = '0.2.0-f16.1.b'",
+    'evaluateLibraryCatalogRuntimeConflict',
+    'library-conflict-runtime-unavailable',
+    'library-conflict-runtime-threw',
+    'library-conflict-runtime-required-unavailable',
+    'conflictRuntime',
+    'conflictRuntimeSummary'
+  ].forEach((needle) => assertContains(catalogPreflight, needle, `catalog preflight ${needle}`));
+  [
+    "var VERSION = '0.3.0-f16.1.b'",
+    'evaluateLibraryBindingRuntimeConflict',
+    'library-conflict-runtime-unavailable',
+    'library-conflict-runtime-threw',
+    'library-conflict-runtime-required-unavailable',
+    'conflictRuntime',
+    'conflictRuntimeSummary'
+  ].forEach((needle) => assertContains(bindingPreflight, needle, `binding preflight ${needle}`));
   assertNotContains(settlement, 'evaluateLibraryRuntimeConflict', 'F16.1.a must not integrate settlement');
 
   const proof = await runRuntimeProof(moduleFile);
   assert(proof.caseCount >= 13, 'runtime proof should cover required cases');
   assert(proof.passCount === proof.caseCount, 'runtime proof should pass all cases');
   assert(proof.sideEffectsSafe === true, 'runtime proof side effects should be safe');
+  const preflightProof = await runPreflightIntegrationProof(moduleFile, catalogPreflight, bindingPreflight);
+  assert(preflightProof.caseCount >= 14, 'preflight integration proof should cover required cases');
+  assert(preflightProof.passCount === preflightProof.caseCount, 'preflight integration proof should pass all cases');
+  assert(preflightProof.sideEffectsSafe === true, 'preflight integration side effects should be safe');
 }
 
 if (failures.length) {
