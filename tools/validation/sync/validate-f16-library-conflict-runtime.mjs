@@ -669,6 +669,309 @@ async function runPreflightIntegrationProof(moduleFile, catalogPreflight, bindin
   };
 }
 
+function buildSettlementEnvelope(domainId, operation, overrides = {}) {
+  const isBinding = domainId === 'library.binding';
+  const subjectId = overrides.subjectId || h(`${domainId}:${operation}:subject`);
+  const receiptDigest = overrides.receiptDigest || h(`${domainId}:${operation}:receipt`);
+  const eventDigest = overrides.eventDigest || h(`${domainId}:${operation}:event`);
+  const expectedCurrentState = overrides.expectedCurrentState || (isBinding
+    ? {
+        subjectType: 'library.binding',
+        subjectId,
+        bindingKind: overrides.bindingKind || 'chat-label',
+        leftSubjectId: overrides.leftSubjectId || h('settlement-chat'),
+        rightSubjectId: overrides.rightSubjectId || h('settlement-label'),
+        leftSubjectType: 'chat.metadata',
+        rightSubjectType: overrides.rightSubjectType || 'library.catalog',
+        bindingState: operation === 'bind' ? 'unbound' : 'bound',
+        revisionHash: overrides.baseHash || h(`${domainId}:${operation}:base`)
+      }
+    : {
+        subjectType: 'library.catalog',
+        subjectId,
+        catalogKind: overrides.catalogKind || 'label',
+        nameHash: overrides.nameHash || h(`${domainId}:${operation}:name`),
+        originAccountIdHash: overrides.account || h('settlement-account'),
+        lifecycleState: operation === 'create' ? 'absent' : 'active',
+        revisionHash: overrides.baseHash || h(`${domainId}:${operation}:base`)
+      });
+  const expectedTargetState = overrides.expectedTargetState || (isBinding
+    ? Object.assign({}, expectedCurrentState, { bindingState: operation === 'unbind' ? 'unbound' : 'bound', revisionHash: h(`${domainId}:${operation}:target`) })
+    : Object.assign({}, expectedCurrentState, { lifecycleState: operation === 'archive' ? 'archived' : operation === 'tombstone' ? 'retained' : 'active', revisionHash: h(`${domainId}:${operation}:target`) }));
+  const settlementShapes = Object.assign({
+    revisionHash: expectedTargetState.revisionHash || h(`${domainId}:${operation}:target`),
+    postStateHash: expectedTargetState.revisionHash || h(`${domainId}:${operation}:target`),
+    settlementDigest: h(`${domainId}:${operation}:settlement`),
+    receiptDigest,
+    bookkeepingRowId: h(`${domainId}:${operation}:bookkeeping`),
+    expectedCurrentState,
+    expectedTargetState
+  }, isBinding ? {
+    bindingKind: expectedTargetState.bindingKind || overrides.bindingKind || 'chat-label',
+    leftSubjectId: expectedTargetState.leftSubjectId || overrides.leftSubjectId || h('settlement-chat'),
+    rightSubjectId: expectedTargetState.rightSubjectId || overrides.rightSubjectId || h('settlement-label'),
+    leftSubjectType: expectedTargetState.leftSubjectType || 'chat.metadata',
+    rightSubjectType: expectedTargetState.rightSubjectType || overrides.rightSubjectType || 'library.catalog',
+    requiresCategoryCacheRefresh: false,
+    categoryCacheAction: null
+  } : {});
+  const payloadReceipt = isBinding
+    ? {
+        schema: 'h2o.desktop.sync.library-binding-execute-proposal-receipt.v1',
+        domainId,
+        operationKind: `library-binding-${operation}-applied`,
+        flavor: `library-binding-${operation}-${settlementShapes.bindingKind}`,
+        receiptDigest,
+        applyEventDigest: eventDigest,
+        canonicalSubjectId: subjectId,
+        canonicalRevisionHash: settlementShapes.revisionHash,
+        canonicalBindingKind: settlementShapes.bindingKind,
+        leftSubjectId: settlementShapes.leftSubjectId,
+        rightSubjectId: settlementShapes.rightSubjectId,
+        leftSubjectType: settlementShapes.leftSubjectType,
+        rightSubjectType: settlementShapes.rightSubjectType
+      }
+    : {
+        schema: 'h2o.desktop.sync.library-catalog-execute-proposal-receipt.v1',
+        domainId,
+        operationKind: `library-catalog-${operation}-applied`,
+        flavor: `library-catalog-${operation}`,
+        receiptDigest,
+        applyEventDigest: eventDigest,
+        canonicalSubjectId: subjectId,
+        canonicalRevisionHash: settlementShapes.revisionHash,
+        canonicalKindTag: expectedTargetState.catalogKind || 'label',
+        canonicalNameHash: expectedTargetState.nameHash || h(`${domainId}:${operation}:name`)
+      };
+  return {
+    schema: 'h2o.desktop.sync.execute-envelope.v1',
+    version: isBinding ? '0.2.0-f15.11.c' : '0.1.0-f15.8.catalog',
+    envelopeKind: 'proposal-receipt',
+    flavor: payloadReceipt.flavor,
+    domainId,
+    operationKind: payloadReceipt.operationKind,
+    subjectId,
+    lineageId: h(`${domainId}:${operation}:lineage`),
+    dedupeKey: h(`${domainId}:${operation}:dedupe`),
+    eventDigest,
+    dispatchProfile: { requiresNative: isBinding, requiresF5: false, requiresRelay: false, nativeIdempotent: true },
+    payloadShapes: { proposalReceipt: payloadReceipt },
+    settlementShapes,
+    receiptDigest,
+    receiptKind: `${operation}-applied`,
+    bookkeepingRowId: h(`${domainId}:${operation}:bookkeeping`),
+    originAccountIdHash: overrides.account || h('settlement-account'),
+    actorPeer: {
+      physicalDeviceIdHash: h('peer-physical'),
+      installIdHash: h('peer-install'),
+      syncPeerIdHash: h('peer-sync'),
+      surfaceKind: 'desktop-tauri'
+    },
+    createdAtIso: '2026-06-12T00:00:00Z',
+    observedAtIso: '2026-06-12T00:00:00Z'
+  };
+}
+
+function buildReceipt(domainId, envelope) {
+  return {
+    schema: domainId === 'library.binding'
+      ? 'h2o.desktop.sync.library-binding-apply-event-receipt.v1'
+      : 'h2o.desktop.sync.library-catalog-apply-event-receipt.v1',
+    ok: true,
+    receiptDigest: envelope.receiptDigest,
+    applyEventDigest: envelope.eventDigest,
+    subjectId: envelope.subjectId,
+    lineageId: envelope.lineageId,
+    dedupeKey: envelope.dedupeKey,
+    operation: envelope.operationKind,
+    originAccountIdHash: envelope.originAccountIdHash,
+    actorPeer: envelope.actorPeer,
+    receipt: { receiptKind: envelope.receiptKind },
+    applyEvent: { payload: {} },
+    auditMetadata: {}
+  };
+}
+
+async function runSettlementIntegrationProof(moduleFile, settlementFile, bulkFile) {
+  const context = buildContext();
+  vm.runInContext(read(moduleFile), context, { filename: moduleFile });
+  vm.runInContext(read(settlementFile), context, { filename: settlementFile });
+  vm.runInContext(read(bulkFile), context, { filename: bulkFile });
+  const sync = context.H2O.Desktop.Sync;
+  const cases = [];
+  async function settle(domainId, operation, options = {}) {
+    const envelope = buildSettlementEnvelope(domainId, operation, options);
+    const consumedRows = [];
+    const watermarkRows = [];
+    let bookkeepingCalls = 0;
+    const result = await sync.settleLibraryExecuteEnvelope({
+      envelope,
+      dispatchResult: { ok: true, applied: true },
+      receipt: buildReceipt(domainId, envelope),
+      __consumedRows: consumedRows,
+      __watermarkRows: watermarkRows,
+      recordLibraryCatalogBookkeeping: async () => {
+        bookkeepingCalls += 1;
+        return { ok: true, row: { rowId: h('catalog-bookkeeping-row') }, blockers: [], warnings: [] };
+      },
+      recordLibraryBindingBookkeeping: async () => {
+        bookkeepingCalls += 1;
+        return { ok: true, row: { rowId: h('binding-bookkeeping-row') }, blockers: [], warnings: [] };
+      },
+      existingCatalogs: options.existingCatalogs || [],
+      existingBindings: options.existingBindings || [],
+      currentState: options.currentState,
+      expectedState: options.expectedState,
+      expectedTargetState: options.expectedTargetState,
+      f5Review: options.f5Review,
+      cacheObservation: options.cacheObservation,
+      bridgeContext: options.bridgeContext
+    });
+    return { result, consumedRows, watermarkRows, bookkeepingCalls };
+  }
+  function record(caseId, settled, check) {
+    cases.push({ caseId, ok: check(settled), settled });
+  }
+  const cleanCatalog = await settle('library.catalog', 'create');
+  record('clean catalog settlement passes conflict gate', cleanCatalog, ({ result, consumedRows, watermarkRows, bookkeepingCalls }) =>
+    result.ok === true && result.settled === true && result.conflictRuntimeSummary?.ok === true &&
+    consumedRows.length === 1 && watermarkRows.length === 1 && bookkeepingCalls === 1);
+  const collisionName = h('collision-name');
+  const duplicateCatalog = await settle('library.catalog', 'create', {
+    nameHash: collisionName,
+    expectedTargetState: {
+      subjectType: 'library.catalog',
+      subjectId: h('new-catalog'),
+      catalogKind: 'label',
+      nameHash: collisionName,
+      originAccountIdHash: h('settlement-account'),
+      lifecycleState: 'active',
+      revisionHash: h('new-catalog-target')
+    },
+    existingCatalogs: [{
+      subjectType: 'library.catalog',
+      subjectId: h('existing-catalog'),
+      catalogKind: 'label',
+      nameHash: collisionName,
+      originAccountIdHash: h('settlement-account'),
+      lifecycleState: 'active'
+    }]
+  });
+  record('duplicate nameHash blocks before consumed-op/watermark', duplicateCatalog, ({ result, consumedRows, watermarkRows, bookkeepingCalls }) =>
+    result.ok === false && hasCode(result, 'library-catalog-cross-install-name-collision') &&
+    consumedRows.length === 0 && watermarkRows.length === 0 && bookkeepingCalls === 0 && allSideEffectsFalse(result));
+  const staleCatalog = await settle('library.catalog', 'rename', {
+    expectedState: { lifecycleState: 'active', revisionHash: h('old-base') },
+    currentState: { lifecycleState: 'active', revisionHash: h('new-base') }
+  });
+  record('stale base blocks before consumed-op/watermark', staleCatalog, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === false && hasCode(result, 'library-catalog-cross-install-stale-base') &&
+    consumedRows.length === 0 && watermarkRows.length === 0);
+  const f5Conflict = await settle('library.catalog', 'tombstone', {
+    currentState: { lifecycleState: 'active', revisionHash: h('f5-base') },
+    expectedState: { lifecycleState: 'active', revisionHash: h('f5-base') },
+    expectedTargetState: { lifecycleState: 'retained', revisionHash: h('f5-target') },
+    f5Review: { currentTerminal: 'sealed', expectedTerminal: 'restored' }
+  });
+  record('F5 terminal conflict blocks before consumed-op/watermark', f5Conflict, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === false && hasCode(result, 'library-catalog-f5-review-conflict') &&
+    consumedRows.length === 0 && watermarkRows.length === 0);
+  const cleanBinding = await settle('library.binding', 'bind', { existingBindings: [] });
+  record('clean binding settlement passes conflict gate', cleanBinding, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === true && result.settled === true && consumedRows.length === 1 && watermarkRows.length === 1);
+  const left = h('one-active-chat');
+  const right = h('new-folder');
+  const folderConflict = await settle('library.binding', 'bind', {
+    bindingKind: 'chat-folder',
+    leftSubjectId: left,
+    rightSubjectId: right,
+    rightSubjectType: 'folder.metadata',
+    existingBindings: [{
+      subjectType: 'library.binding',
+      subjectId: h('old-folder-binding'),
+      bindingKind: 'chat-folder',
+      leftSubjectId: left,
+      rightSubjectId: h('old-folder'),
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      bindingState: 'bound'
+    }]
+  });
+  record('chat-folder one-active conflict blocks before consumed-op/watermark', folderConflict, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === false && hasCode(result, 'library-binding-cross-install-state-conflict') &&
+    JSON.stringify(result).includes('folder.metadata') && consumedRows.length === 0 && watermarkRows.length === 0);
+  const bridgeConflict = await settle('library.binding', 'bind', {
+    bindingKind: 'chat-folder',
+    rightSubjectType: 'folder.metadata',
+    existingBindings: [],
+    bridgeContext: { activeStateConflict: true }
+  });
+  record('F7/F15 identity conflict blocks before consumed-op/watermark', bridgeConflict, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === false && hasCode(result, 'library-binding-f7-f15-identity-conflict') &&
+    consumedRows.length === 0 && watermarkRows.length === 0);
+  const warningsOnly = await settle('library.binding', 'unbind', {
+    expectedState: { bindingState: 'bound' },
+    currentState: { bindingState: 'bound' },
+    cacheObservation: { driftDetected: true }
+  });
+  record('warnings-only conflict runtime does not block', warningsOnly, ({ result, consumedRows, watermarkRows }) =>
+    result.ok === true && hasCode(result, 'library-cache-cross-install-drift') &&
+    consumedRows.length === 1 && watermarkRows.length === 1);
+
+  const unavailableContext = buildContext();
+  vm.runInContext(read(settlementFile), unavailableContext, { filename: settlementFile });
+  const unavailableEnvelope = buildSettlementEnvelope('library.catalog', 'create');
+  const unavailable = await unavailableContext.H2O.Desktop.Sync.settleLibraryExecuteEnvelope({
+    envelope: unavailableEnvelope,
+    dispatchResult: { ok: true, applied: true },
+    receipt: buildReceipt('library.catalog', unavailableEnvelope),
+    __consumedRows: [],
+    __watermarkRows: [],
+    existingCatalogs: []
+  });
+  assert(unavailable.ok === false && hasCode(unavailable, 'library-conflict-runtime-required-unavailable'),
+    'settlement unavailable conflict runtime should block');
+  const throwsContext = buildContext();
+  vm.runInContext(read(settlementFile), throwsContext, { filename: settlementFile });
+  throwsContext.H2O.Desktop.Sync.evaluateLibraryCatalogRuntimeConflict = () => { throw new Error('forced'); };
+  const throwsEnvelope = buildSettlementEnvelope('library.catalog', 'create');
+  const thrown = await throwsContext.H2O.Desktop.Sync.settleLibraryExecuteEnvelope({
+    envelope: throwsEnvelope,
+    dispatchResult: { ok: true, applied: true },
+    receipt: buildReceipt('library.catalog', throwsEnvelope),
+    __consumedRows: [],
+    __watermarkRows: [],
+    existingCatalogs: []
+  });
+  assert(thrown.ok === false && hasCode(thrown, 'library-conflict-runtime-required-unavailable'),
+    'settlement throwing conflict runtime should block');
+
+  let executorCalled = false;
+  const bulk = await sync.executeLibraryBulkMigration({
+    phase: 'bindings',
+    importBatchId: 'conflict-proof-batch',
+    labelBindings: [{ chatId: 'proof-chat-a', labelId: 'proof-label-a' }],
+    conflictRowIndexes: [0],
+    authorizedExecutor: async () => {
+      executorCalled = true;
+      return { ok: true, identity: 'f15.bulk-migration', rowsAffected: 1, sqliteSentinelUsed: true };
+    }
+  });
+  assert(bulk.status === 'partial' && hasCode(bulk, 'library-bulk-cross-install-partial-conflict'),
+    'bulk partial conflict should be reported');
+  assert(executorCalled === false, 'bulk partial conflict must not execute SQL');
+
+  cases.forEach((entry) => assert(entry.ok, `${entry.caseId}: settlement integration proof failed`));
+  return {
+    caseCount: cases.length + 3,
+    passCount: cases.length + 3,
+    sideEffectsSafe: cases.every((entry) => {
+      if (entry.settled.result.ok === false) return allSideEffectsFalse(entry.settled.result);
+      return true;
+    }) && allSideEffectsFalse(unavailable) && allSideEffectsFalse(thrown)
+  };
+}
+
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-conflict-runtime.tauri.js';
 const validatorFile = 'tools/validation/sync/validate-f16-library-conflict-runtime.mjs';
 const html = 'src-surfaces-base/studio/studio.html';
@@ -676,8 +979,9 @@ const pack = 'tools/product/studio/pack-studio.mjs';
 const catalogPreflight = 'src-surfaces-base/studio/sync/library/library-catalog-preflight.tauri.js';
 const bindingPreflight = 'src-surfaces-base/studio/sync/library/library-binding-preflight.tauri.js';
 const settlement = 'src-surfaces-base/studio/sync/execute/execute-settlement-writer-library-extension.tauri.js';
+const bulkMigration = 'src-surfaces-base/studio/sync/library/library-bulk-migration.tauri.js';
 
-[moduleFile, validatorFile, html, pack, catalogPreflight, bindingPreflight, settlement].forEach(assertExists);
+[moduleFile, validatorFile, html, pack, catalogPreflight, bindingPreflight, settlement, bulkMigration].forEach(assertExists);
 
 if (failures.length === 0) {
   [
@@ -786,7 +1090,29 @@ if (failures.length === 0) {
     'conflictRuntime',
     'conflictRuntimeSummary'
   ].forEach((needle) => assertContains(bindingPreflight, needle, `binding preflight ${needle}`));
-  assertNotContains(settlement, 'evaluateLibraryRuntimeConflict', 'F16.1.a must not integrate settlement');
+  [
+    "var VERSION = '0.3.0-f16.1.c'",
+    'evaluateSettlementConflict',
+    'settlementConflictInput',
+    'evaluateLibraryCatalogRuntimeConflict',
+    'evaluateLibraryBindingRuntimeConflict',
+    'evaluateLibraryRuntimeConflict',
+    'library-conflict-runtime-required-unavailable',
+    'library-conflict-runtime-context-missing',
+    'library-conflict-runtime-threw',
+    'conflictRuntime',
+    'conflictRuntimeSummary'
+  ].forEach((needle) => assertContains(settlement, needle, `settlement ${needle}`));
+  assertOrder(settlement, 'var conflictRuntime = await evaluateSettlementConflict(stepInput);', "return await withWriterIdentity('f15.execute-settlement-writer'");
+  assertOrder(settlement, 'var conflictRuntime = await evaluateSettlementConflict(stepInput);', 'writeLibraryCatalogConsumedOperation(stepInput)');
+  [
+    "var VERSION = '0.2.0-f16.1.c'",
+    'classifyLibraryBulkRuntimeConflictRows',
+    'classifyBulkRuntimeConflicts',
+    'library-bulk-cross-install-partial-conflict',
+    'conflictRuntime',
+    'conflictRuntimeSummary'
+  ].forEach((needle) => assertContains(bulkMigration, needle, `bulk migration ${needle}`));
 
   const proof = await runRuntimeProof(moduleFile);
   assert(proof.caseCount >= 13, 'runtime proof should cover required cases');
@@ -796,6 +1122,10 @@ if (failures.length === 0) {
   assert(preflightProof.caseCount >= 14, 'preflight integration proof should cover required cases');
   assert(preflightProof.passCount === preflightProof.caseCount, 'preflight integration proof should pass all cases');
   assert(preflightProof.sideEffectsSafe === true, 'preflight integration side effects should be safe');
+  const settlementProof = await runSettlementIntegrationProof(moduleFile, settlement, bulkMigration);
+  assert(settlementProof.caseCount >= 11, 'settlement integration proof should cover required cases');
+  assert(settlementProof.passCount === settlementProof.caseCount, 'settlement integration proof should pass all cases');
+  assert(settlementProof.sideEffectsSafe === true, 'settlement integration blocked side effects should be safe');
 }
 
 if (failures.length) {

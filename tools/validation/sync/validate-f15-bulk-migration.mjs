@@ -23,7 +23,7 @@ const pack = 'tools/product/studio/pack-studio.mjs';
 const sentinel = 'src-surfaces-base/studio/sync/sqlite-writer-identity-sentinel.tauri.js';
 
 assertAll(bulk, [
-  "var VERSION = '0.1.0-f15.8.g'",
+  "var VERSION = '0.2.0-f16.1.c'",
   "var RESULT_SCHEMA = 'h2o.desktop.sync.library-bulk-migration.v1'",
   "var SOURCE_TAG = 'bundle-import'",
   "var BULK_IDENTITY = 'f15.bulk-migration'",
@@ -31,6 +31,8 @@ assertAll(bulk, [
   'planLibraryBulkMigration',
   'executeLibraryBulkMigration',
   'runLibraryBulkMigrationProof',
+  'classifyLibraryBulkRuntimeConflictRows',
+  'library-bulk-cross-install-partial-conflict',
   'bulkMigrationEnabled: true',
   'identity: BULK_IDENTITY',
   'scanDomainForbiddenFields',

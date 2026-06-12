@@ -1,8 +1,9 @@
-/* H2O Desktop Sync - F15.8.g library bulk migration path
+/* H2O Desktop Sync - F16.1.c library bulk migration path
  *
  * Dedicated bundle-import bulk path for library catalog/binding compatibility
  * tables. This module uses the Rust-backed SQLite writer identity sentinel
- * with identity f15.bulk-migration. It does not publish, relay, call
+ * with identity f15.bulk-migration. F16.1.c adds read-only conflict row
+ * classification before chunk execution. It does not publish, relay, call
  * Native/F5, write watermarks, or write consumed operations.
  */
 (function (global) {
@@ -24,10 +25,11 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryBulkMigrationInstalled) return;
 
-  var VERSION = '0.1.0-f15.8.g';
+  var VERSION = '0.2.0-f16.1.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-bulk-migration.v1';
   var SOURCE_TAG = 'bundle-import';
   var BULK_IDENTITY = 'f15.bulk-migration';
+  var PARTIAL_CONFLICT_CODE = 'library-bulk-cross-install-partial-conflict';
   var DEFAULT_CHUNK_SIZE = 100;
   var SHA256_RE = /^[0-9a-f]{64}$/;
 
@@ -361,7 +363,101 @@
       status: status
     };
   }
-  function publicResult(plan, status, chunks, itemSummaries, blockers, warnings, executed) {
+  function summarizeConflictRuntime(result) {
+    var r = safeObject(result);
+    return {
+      ok: r.ok === true,
+      conflictFree: r.conflictFree === true,
+      decisionCount: asArray(r.decisions).length,
+      blockerCount: codeList(r.blockers).length,
+      warningCount: codeList(r.warnings).length,
+      refreshRequired: r.refreshRequired === true,
+      retrySafe: r.retrySafe === true,
+      rowCount: Number(safeObject(r.proofSummary).rowCount) || 0,
+      conflictCount: Number(safeObject(r.proofSummary).conflictCount) || 0,
+      idempotentCount: Number(safeObject(r.proofSummary).idempotentCount) || 0
+    };
+  }
+  function safeBulkConflictRow(row, index) {
+    var r = safeObject(row);
+    return {
+      rowIndex: Number.isFinite(Number(r.rowIndex)) ? Number(r.rowIndex) : index,
+      domain: cleanString(r.domain || r.subjectType || r.itemDomain),
+      subjectType: cleanString(r.subjectType || r.domain),
+      itemKind: cleanString(r.itemKind || r.bindingKind || r.catalogKind),
+      status: cleanString(r.status),
+      conflict: r.conflict === true,
+      blocked: r.blocked === true,
+      duplicate: r.duplicate === true,
+      exactReplay: r.exactReplay === true
+    };
+  }
+  function bulkConflictRows(args, itemSummaries) {
+    var suppliedRows = asArray(args.bulkConflictRows || args.conflictRows);
+    if (suppliedRows.length) return suppliedRows.map(safeBulkConflictRow);
+    var conflictIndexes = asArray(args.conflictRowIndexes).map(function (value) { return Number(value); });
+    return itemSummaries.map(function (item, index) {
+      var row = safeBulkConflictRow(item, index);
+      if (conflictIndexes.indexOf(index) !== -1) {
+        row.conflict = true;
+        row.status = 'conflict';
+      }
+      return row;
+    });
+  }
+  async function classifyBulkRuntimeConflicts(args, plan) {
+    var classifier = H2O.Desktop.Sync.classifyLibraryBulkRuntimeConflictRows;
+    if (typeof classifier !== 'function') {
+      return {
+        ok: true,
+        conflictFree: true,
+        blockers: [],
+        warnings: ['library-conflict-runtime-unavailable'],
+        decisions: [],
+        sideEffectSummary: sideEffectSummary(false)
+      };
+    }
+    try {
+      var result = await classifier({
+        domain: 'library.bulk',
+        mode: 'bulk',
+        operation: 'bundle-import',
+        bulkRows: bulkConflictRows(args, plan.itemSummaries),
+        observedAtIso: cleanString(args.observedAtIso) || nowIso()
+      });
+      return Object.assign({}, safeObject(result), {
+        blockers: codeList(result && result.blockers),
+        warnings: codeList(result && result.warnings)
+      });
+    } catch (_) {
+      return {
+        ok: true,
+        conflictFree: true,
+        blockers: [],
+        warnings: ['library-conflict-runtime-threw'],
+        decisions: [],
+        sideEffectSummary: sideEffectSummary(false)
+      };
+    }
+  }
+  function applyBulkConflictClassification(itemSummaries, conflictRuntime) {
+    var summaries = itemSummaries.map(function (item) { return Object.assign({}, item); });
+    asArray(conflictRuntime && conflictRuntime.decisions).forEach(function (decision) {
+      if (cleanString(decision.status) !== 'partial-conflict' && cleanString(decision.status) !== 'conflict') return;
+      var index = Number(decision.rowIndex);
+      if (!Number.isFinite(index) || !summaries[index]) return;
+      summaries[index].status = 'conflict';
+      summaries[index].conflict = true;
+    });
+    return summaries;
+  }
+  function hasPartialBulkConflict(conflictRuntime) {
+    return asArray(conflictRuntime && conflictRuntime.decisions).some(function (decision) {
+      return cleanString(decision.status) === 'partial-conflict' || cleanString(decision.status) === 'conflict';
+    });
+  }
+  function publicResult(plan, status, chunks, itemSummaries, blockers, warnings, executed, extra) {
+    var e = safeObject(extra);
     return {
       schema: RESULT_SCHEMA,
       version: VERSION,
@@ -375,6 +471,8 @@
       counts: countsFor(plan, chunks, status),
       chunks: chunks,
       itemSummaries: itemSummaries,
+      conflictRuntime: e.conflictRuntime || null,
+      conflictRuntimeSummary: e.conflictRuntimeSummary || null,
       blockers: codeList(blockers),
       warnings: codeList(warnings),
       sideEffectSummary: sideEffectSummary(executed)
@@ -399,17 +497,37 @@
     return result;
   }
   async function planLibraryBulkMigration(input) {
-    var plan = await buildPlan(input);
+    var args = safeObject(input);
+    var plan = await buildPlan(args);
+    var conflictRuntime = await classifyBulkRuntimeConflicts(args, plan);
     var chunks = plan.chunks.map(function (entries, index) {
       return chunkSummary(index, entries, 'planned', null, [], []);
     });
-    return scanResult(publicResult(plan, plan.entries.length ? 'planned' : 'noop', chunks, plan.itemSummaries, [], [], false));
+    var blockers = codeList(conflictRuntime && conflictRuntime.blockers);
+    var warnings = codeList(conflictRuntime && conflictRuntime.warnings);
+    var itemSummaries = applyBulkConflictClassification(plan.itemSummaries, conflictRuntime);
+    var status = blockers.length ? 'blocked' : hasPartialBulkConflict(conflictRuntime) ? 'partial' : plan.entries.length ? 'planned' : 'noop';
+    return scanResult(publicResult(plan, status, chunks, itemSummaries, blockers, warnings, false, {
+      conflictRuntime: conflictRuntime,
+      conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime)
+    }));
   }
   async function executeLibraryBulkMigration(input) {
     var args = safeObject(input);
     var plan = await buildPlan(args);
     if (!plan.entries.length) {
       return scanResult(publicResult(plan, 'noop', [], [], [], [], false));
+    }
+    var conflictRuntime = await classifyBulkRuntimeConflicts(args, plan);
+    var conflictBlockers = codeList(conflictRuntime && conflictRuntime.blockers);
+    var conflictWarnings = codeList(conflictRuntime && conflictRuntime.warnings);
+    if (conflictBlockers.length || hasPartialBulkConflict(conflictRuntime)) {
+      var conflictItems = applyBulkConflictClassification(plan.itemSummaries, conflictRuntime);
+      var status = conflictBlockers.length ? 'blocked' : 'partial';
+      return scanResult(publicResult(plan, status, [], conflictItems, conflictBlockers, conflictWarnings, false, {
+        conflictRuntime: conflictRuntime,
+        conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime)
+      }));
     }
     var execute = typeof args.authorizedExecutor === 'function'
       ? args.authorizedExecutor
@@ -440,14 +558,20 @@
         entries.forEach(function (entry) {
           if (typeof entry.summaryIndex === 'number') itemSummaries[entry.summaryIndex].status = 'failed';
         });
-        return scanResult(publicResult(plan, ci > 0 ? 'partial' : 'blocked', chunks, itemSummaries, blockers, warnings, ci > 0));
+        return scanResult(publicResult(plan, ci > 0 ? 'partial' : 'blocked', chunks, itemSummaries, blockers, warnings, ci > 0, {
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime)
+        }));
       }
       chunks.push(chunkSummary(ci, entries, 'executed', result, [], []));
       entries.forEach(function (entry) {
         if (typeof entry.summaryIndex === 'number') itemSummaries[entry.summaryIndex].status = 'executed';
       });
     }
-    return scanResult(publicResult(plan, 'complete', chunks, itemSummaries, [], warnings, true));
+    return scanResult(publicResult(plan, 'complete', chunks, itemSummaries, [], warnings.concat(conflictWarnings), true, {
+      conflictRuntime: conflictRuntime,
+      conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime)
+    }));
   }
   async function runLibraryBulkMigrationProof() {
     var longBindings = [];

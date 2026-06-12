@@ -1,10 +1,13 @@
-/* H2O Desktop Sync - F15.8.c library execute settlement writer extension
+/* H2O Desktop Sync - F16.1.c library execute settlement writer extension
  *
  * Library-domain extension for Execute Lane settlement. This module handles
  * library.catalog and library.binding envelopes shaped by F15.8.a / F15.8.b.
  *
  * Safety invariants:
  *   - Settlement only after a confirmed apply/dispatch result.
+ *   - The F16 runtime conflict gate runs fail-closed before any mutation-side
+ *     effects: consumed-op, watermark, bookkeeping, cache, publication, journal,
+ *     Native/F5, relay, or outbox.
  *   - No Native call, no F5 action, no relay/outbox, no cache refresh, no
  *     store shim, and no bulk migration. F15.8.f supplies the real SQLite
  *     writer identity sentinel used by protected store/cache writes.
@@ -30,7 +33,7 @@
   H2O.Desktop.Sync = H2O.Desktop.Sync || {};
   if (H2O.Desktop.Sync.__libraryExecuteSettlementInstalled) return;
 
-  var VERSION = '0.2.0-f15.11.c';
+  var VERSION = '0.3.0-f16.1.c';
   var RESULT_SCHEMA = 'h2o.desktop.sync.library-execute-settlement.v1';
   var ENVELOPE_SCHEMA = 'h2o.desktop.sync.execute-envelope.v1';
   var CATALOG_DOMAIN = 'library.catalog';
@@ -44,6 +47,7 @@
   var FOLDER_SUBJECT_TYPE = 'folder.metadata';
   var SHA256_RE = /^[0-9a-f]{64}$/;
   var SIDE_EFFECT_KEYS = [
+    'storageWritten',
     'consumedOperationWritten',
     'watermarkWritten',
     'bookkeepingWritten',
@@ -186,6 +190,8 @@
       bookkeepingResult: o.bookkeepingResult || null,
       publicationResult: o.publicationResult || null,
       journalResult: o.journalResult || null,
+      conflictRuntime: o.conflictRuntime || null,
+      conflictRuntimeSummary: o.conflictRuntimeSummary || null,
       settlementDigest: cleanLower(o.settlementDigest),
       blockers: blockers,
       warnings: warnings,
@@ -223,6 +229,170 @@
         safeObject(options.bookkeepingResult).receipt || safeObject(options.adapterResult).receipt || null,
       observedAtIso: cleanString(source.observedAtIso || options.observedAtIso) || nowIsoSeconds()
     });
+  }
+  function operationFromEnvelope(envelope) {
+    var e = safeObject(envelope);
+    var settlement = safeObject(e.settlementShapes);
+    var payloadReceipt = safeObject(safeObject(e.payloadShapes).proposalReceipt);
+    var candidates = [
+      settlement.operation,
+      settlement.operationName,
+      payloadReceipt.operation,
+      payloadReceipt.operationName,
+      payloadReceipt.flavor,
+      e.flavor,
+      e.operationKind
+    ];
+    for (var i = 0; i < candidates.length; i += 1) {
+      var text = cleanString(candidates[i]);
+      if (!text) continue;
+      if (text === 'create' || text === 'rename' || text === 'recolor' || text === 'archive' ||
+          text === 'restore-from-archived' || text === 'tombstone' ||
+          text === 'restore-from-retained' || text === 'bind' || text === 'unbind') return text;
+      if (text.indexOf('restore-from-archived') !== -1) return 'restore-from-archived';
+      if (text.indexOf('restore-from-retained') !== -1) return 'restore-from-retained';
+      if (text.indexOf('tombstone') !== -1) return 'tombstone';
+      if (text.indexOf('recolor') !== -1) return 'recolor';
+      if (text.indexOf('rename') !== -1) return 'rename';
+      if (text.indexOf('archive') !== -1) return 'archive';
+      if (text.indexOf('create') !== -1) return 'create';
+      if (text.indexOf('unbind') !== -1) return 'unbind';
+      if (text.indexOf('bind') !== -1) return 'bind';
+    }
+    return '';
+  }
+  function summarizeConflictRuntime(result) {
+    var r = safeObject(result);
+    return {
+      ok: r.ok === true,
+      conflictFree: r.conflictFree === true,
+      mode: cleanString(r.mode),
+      domain: cleanString(r.domain),
+      operation: cleanString(r.operation),
+      decisionCount: asArray(r.decisions).length,
+      blockerCount: codeList(r.blockers).length,
+      warningCount: codeList(r.warnings).length,
+      refreshRequired: r.refreshRequired === true,
+      retrySafe: r.retrySafe === true,
+      privacyOk: safeObject(r.privacy).ok === true
+    };
+  }
+  function candidateFromSettlement(envelope, args) {
+    var settlement = safeObject(envelope && envelope.settlementShapes);
+    var payloadReceipt = safeObject(safeObject(envelope && envelope.payloadShapes).proposalReceipt);
+    var receipt = resolveReceipt(args);
+    var operation = operationFromEnvelope(envelope);
+    var candidate = Object.assign({}, payloadReceipt, {
+      operation: operation,
+      operationKind: cleanString(envelope && envelope.operationKind),
+      subjectId: cleanLower(envelope && envelope.subjectId),
+      lineageId: cleanLower(envelope && envelope.lineageId),
+      dedupeKey: cleanLower(envelope && envelope.dedupeKey),
+      eventDigest: cleanLower(envelope && envelope.eventDigest),
+      baseHash: cleanLower(safeObject(settlement.expectedCurrentState).revisionHash || safeObject(settlement.expectedCurrentState).baseHash),
+      expectedCurrentState: isObject(settlement.expectedCurrentState) ? settlement.expectedCurrentState : null,
+      expectedTargetState: isObject(settlement.expectedTargetState) ? settlement.expectedTargetState : null
+    });
+    if (envelope && envelope.domainId === BINDING_DOMAIN) {
+      candidate.bindingKind = cleanString(settlement.bindingKind || payloadReceipt.canonicalBindingKind);
+      candidate.leftSubjectId = cleanLower(settlement.leftSubjectId || payloadReceipt.leftSubjectId);
+      candidate.rightSubjectId = cleanLower(settlement.rightSubjectId || payloadReceipt.rightSubjectId);
+      candidate.leftSubjectType = cleanString(settlement.leftSubjectType || payloadReceipt.leftSubjectType);
+      candidate.rightSubjectType = cleanString(settlement.rightSubjectType || payloadReceipt.rightSubjectType);
+      candidate.bindingState = operation === 'unbind' ? 'unbound' : 'bound';
+    }
+    if (envelope && envelope.domainId === CATALOG_DOMAIN) {
+      candidate.catalogKind = cleanString(payloadReceipt.canonicalKindTag);
+      candidate.nameHash = cleanLower(payloadReceipt.canonicalNameHash);
+      candidate.colorHash = cleanLower(payloadReceipt.canonicalColorHash);
+      candidate.originAccountIdHash = cleanLower(envelope.originAccountIdHash || (receipt && receipt.originAccountIdHash));
+    }
+    return candidate;
+  }
+  function runtimeStateFromSettlement(envelope, args, key) {
+    var source = safeObject(args[key]);
+    if (isObject(source)) return source;
+    var settlement = safeObject(envelope && envelope.settlementShapes);
+    var candidate = key === 'expectedTargetState' || key === 'targetState'
+      ? safeObject(settlement.expectedTargetState)
+      : safeObject(settlement.expectedCurrentState);
+    if (isObject(candidate)) return candidate;
+    return null;
+  }
+  function settlementConflictInput(args) {
+    var envelope = safeObject(args.envelope);
+    var settlement = safeObject(envelope.settlementShapes);
+    var candidate = candidateFromSettlement(envelope, args);
+    var input = {
+      domain: cleanString(envelope.domainId),
+      mode: 'settlement',
+      requireConflictGate: true,
+      requireContext: true,
+      operation: operationFromEnvelope(envelope),
+      candidate: candidate,
+      currentState: runtimeStateFromSettlement(envelope, args, 'currentState') || safeObject(args.localState),
+      expectedState: runtimeStateFromSettlement(envelope, args, 'expectedState'),
+      expectedTargetState: runtimeStateFromSettlement(envelope, args, 'expectedTargetState') || safeObject(args.targetState),
+      localState: safeObject(args.localState),
+      remoteState: safeObject(args.remoteState),
+      existingSubjects: asArray(args.existingSubjects),
+      existingBindings: asArray(args.existingBindings || args.siblingBindings),
+      existingCatalogs: asArray(args.existingCatalogs || args.siblingCatalogs),
+      f5Review: safeObject(args.f5Review || args.f5ReviewState),
+      cacheObservation: safeObject(args.cacheObservation || args.materializedCacheObservation),
+      bridgeContext: safeObject(args.bridgeContext || args.f7BridgeContext),
+      observedAtIso: cleanString(args.observedAtIso) || nowIsoSeconds()
+    };
+    if (envelope.domainId === BINDING_DOMAIN && cleanString(settlement.bindingKind)) {
+      input.bindingKind = cleanString(settlement.bindingKind);
+      input.leftSubjectId = cleanLower(settlement.leftSubjectId);
+      input.rightSubjectId = cleanLower(settlement.rightSubjectId);
+    }
+    return input;
+  }
+  async function evaluateSettlementConflict(args) {
+    var envelope = safeObject(args.envelope);
+    var domainId = cleanString(envelope.domainId);
+    var fn = domainId === CATALOG_DOMAIN
+      ? H2O.Desktop.Sync.evaluateLibraryCatalogRuntimeConflict
+      : domainId === BINDING_DOMAIN
+        ? H2O.Desktop.Sync.evaluateLibraryBindingRuntimeConflict
+        : null;
+    if (typeof fn !== 'function' && typeof H2O.Desktop.Sync.evaluateLibraryRuntimeConflict === 'function') {
+      fn = H2O.Desktop.Sync.evaluateLibraryRuntimeConflict;
+    }
+    if (typeof fn !== 'function') {
+      return {
+        ok: false,
+        conflictFree: false,
+        blockers: ['library-conflict-runtime-required-unavailable'],
+        warnings: ['library-conflict-runtime-unavailable'],
+        sideEffectSummary: defaultSideEffects()
+      };
+    }
+    try {
+      var result = await fn(settlementConflictInput(args));
+      var blockers = codeList(result && result.blockers);
+      var warnings = codeList(result && result.warnings);
+      if (warnings.indexOf('library-conflict-runtime-context-missing') !== -1) {
+        addCode(blockers, 'library-conflict-runtime-context-missing');
+      }
+      return Object.assign({}, safeObject(result), {
+        ok: blockers.length === 0 && result && result.ok === true,
+        conflictFree: blockers.length === 0 && result && result.conflictFree === true,
+        blockers: blockers,
+        warnings: warnings,
+        sideEffectSummary: defaultSideEffects()
+      });
+    } catch (_) {
+      return {
+        ok: false,
+        conflictFree: false,
+        blockers: ['library-conflict-runtime-required-unavailable'],
+        warnings: ['library-conflict-runtime-threw'],
+        sideEffectSummary: defaultSideEffects()
+      };
+    }
   }
   function dispatchIndicatesApplySuccess(dispatchResult) {
     var d = safeObject(dispatchResult);
@@ -821,12 +991,28 @@
       sideEffectSummary: sideEffects
     });
 
-    return await withWriterIdentity('f15.execute-settlement-writer', async function () {
-      var stepInput = Object.assign({}, args, {
+    var stepInput = Object.assign({}, args, {
+      envelope: envelope,
+      dispatchResult: dispatchResult,
+      observedAtIso: observedAtIso
+    });
+    var conflictRuntime = await evaluateSettlementConflict(stepInput);
+    mergeCodes(warnings, conflictRuntime && conflictRuntime.warnings);
+    var conflictBlockers = codeList(conflictRuntime && conflictRuntime.blockers);
+    if (conflictBlockers.length) {
+      return failure(conflictBlockers, warnings, {
+        domainId: domainId,
+        operationKind: operationKind,
         envelope: envelope,
-        dispatchResult: dispatchResult,
-        observedAtIso: observedAtIso
+        conflictRuntime: conflictRuntime,
+        conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
+        settlementDigest: settlementDigest,
+        observedAtIso: observedAtIso,
+        sideEffectSummary: sideEffects
       });
+    }
+
+    return await withWriterIdentity('f15.execute-settlement-writer', async function () {
       var consumed = domainId === CATALOG_DOMAIN
         ? await writeLibraryCatalogConsumedOperation(stepInput)
         : await writeLibraryBindingConsumedOperation(stepInput);
@@ -837,6 +1023,8 @@
           domainId: domainId,
           operationKind: operationKind,
           envelope: envelope,
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
           consumedOperationResult: consumed,
           settlementDigest: settlementDigest,
           observedAtIso: observedAtIso,
@@ -854,6 +1042,8 @@
           domainId: domainId,
           operationKind: operationKind,
           envelope: envelope,
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
           consumedOperationResult: consumed,
           watermarkResult: watermark,
           settlementDigest: settlementDigest,
@@ -872,6 +1062,8 @@
           domainId: domainId,
           operationKind: operationKind,
           envelope: envelope,
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
           consumedOperationResult: consumed,
           watermarkResult: watermark,
           bookkeepingResult: bookkeeping,
@@ -889,6 +1081,8 @@
           domainId: domainId,
           operationKind: operationKind,
           envelope: envelope,
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
           consumedOperationResult: consumed,
           watermarkResult: watermark,
           bookkeepingResult: bookkeeping,
@@ -907,6 +1101,8 @@
           domainId: domainId,
           operationKind: operationKind,
           envelope: envelope,
+          conflictRuntime: conflictRuntime,
+          conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
           consumedOperationResult: consumed,
           watermarkResult: watermark,
           bookkeepingResult: bookkeeping,
@@ -934,6 +1130,8 @@
         domainId: domainId,
         operationKind: operationKind,
         envelope: envelope,
+        conflictRuntime: conflictRuntime,
+        conflictRuntimeSummary: summarizeConflictRuntime(conflictRuntime),
         consumedOperationResult: consumed,
         watermarkResult: watermark,
         bookkeepingResult: bookkeeping,

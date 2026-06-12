@@ -581,7 +581,7 @@ if (failures.length === 0) {
   assertContains(bindingExecuteAdapter, 'categoryCacheAction: null', 'execute adapter non-category cache action null');
   assertContains(bindingExecuteAdapter, 'EXPECTED_RECEIPT_VERSION_PREFIXES', 'execute adapter multi-version receipt support');
 
-  assertContains(settlementExtension, "var VERSION = '0.2.0-f15.11.c'", 'settlement F15.11.c version');
+  assertContains(settlementExtension, "var VERSION = '0.3.0-f16.1.c'", 'settlement F16.1.c version');
   assertContains(settlementExtension, 'BINDING_ADAPTER_VERSION_PREFIXES', 'settlement accepts binding adapter versions');
   assertContains(settlementExtension, "'0.2.0-f15.11.c'", 'settlement accepts F15.11.c binding adapter');
   assertContains(settlementExtension, "var CHAT_FOLDER_KIND = 'chat-folder'", 'settlement chat-folder constant');
