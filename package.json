@@ -29,7 +29,8 @@
     "release:dry": "H2O_META_DIR=\"$PWD/../meta\" H2O_CHANGELOGS_DIR=\"$PWD/../changelogs\" node tools/release/release.mjs --dry-run",
     "ship": "npm run release && H2O_ARCHIVE_DIR=\"$PWD/../archive\" node tools/archive/archive-snapshot.mjs \"$PWD\"",
     "ship:dry": "npm run release:dry",
-    "gate:library": "node tools/validation/sync/run-f16-production-release-gate.mjs"
+    "gate:library": "node tools/validation/sync/run-f16-production-release-gate.mjs",
+    "audit:secrets": "node tools/validation/release/validate-f17-secret-config-audit.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
