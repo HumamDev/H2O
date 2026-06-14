@@ -671,15 +671,25 @@
     return total;
   }
 
+  function countMinimalLibraryRows(chats) {
+    var total = 0;
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      if (index.f19MinimalLibraryIndexRow === true && !(Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0)) total += 1;
+    });
+    return total;
+  }
+
   function countChatViews(chats) {
     var counts = { saved: 0, linked: 0, pinned: 0, archived: 0 };
     (Array.isArray(chats) ? chats : []).forEach(function (chat) {
       var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
       var view = String(index.view || index.kind || index.type || '').toLowerCase();
-      if (view === 'linked' || index.isLinked === true) counts.linked += 1;
+      if (view === 'linked' || index.isLinked === true || stateObj.isLinked === true) counts.linked += 1;
       else counts.saved += 1;
-      if (index.pinned === true || index.isPinned === true) counts.pinned += 1;
-      if (index.archived === true || index.isArchived === true) counts.archived += 1;
+      if (index.pinned === true || index.isPinned === true || stateObj.isPinned === true) counts.pinned += 1;
+      if (index.archived === true || index.isArchived === true || stateObj.isArchived === true) counts.archived += 1;
     });
     return counts;
   }
@@ -820,6 +830,7 @@
         pinnedCount: chatViewCounts.pinned,
         archivedCount: chatViewCounts.archived,
         snapshotCount: countSnapshots(chats),
+        minimalRowCount: countMinimalLibraryRows(chats),
         categoryCount: categories.length,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
@@ -834,6 +845,24 @@
     var written = r.written && typeof r.written === 'object' ? r.written : {};
     var skipped = r.skipped && typeof r.skipped === 'object' ? r.skipped : {};
     var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
+    var errorKinds = Object.create(null);
+    var minimalRowErrors = 0;
+    (Array.isArray(r.errors) ? r.errors : []).forEach(function (entry) {
+      var kind = String(entry && entry.kind || 'import-error');
+      var code = String(entry && entry.code || kind);
+      if (kind === 'chrome-minimal-row-import') minimalRowErrors += 1;
+      errorKinds[code] = Number(errorKinds[code] || 0) + 1;
+    });
+    var warningKinds = Object.create(null);
+    (Array.isArray(r.warnings) ? r.warnings : []).forEach(function (entry) {
+      var kind = String(entry && entry.kind || 'warning');
+      warningKinds[kind] = Number(warningKinds[kind] || 0) + 1;
+    });
+    function countsObjectToRows(obj) {
+      return Object.keys(obj).sort().map(function (code) {
+        return { code: code, count: Number(obj[code] || 0) };
+      });
+    }
     return {
       ok: r.ok !== false,
       mode: String(r.mode || 'merge'),
@@ -857,6 +886,9 @@
       },
       warningsCount: Array.isArray(r.warnings) ? r.warnings.length : 0,
       errorsCount: Array.isArray(r.errors) ? r.errors.length : 0,
+      errorKinds: countsObjectToRows(errorKinds),
+      warningKinds: countsObjectToRows(warningKinds),
+      minimalRowErrors: minimalRowErrors,
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {
           return {
@@ -994,9 +1026,11 @@
     var warnings = normalized.warnings.slice();
     var importSummary = redactedImportSummary(imported);
     if (!imported || imported.ok === false) {
+      var blockers = ['library-propagation-import-failed'];
+      if (importSummary.minimalRowErrors > 0) addUnique(blockers, 'chrome-minimal-row-import-unsupported');
       return propagationResult(false, {
         status: 'blocked',
-        blockers: ['library-propagation-import-failed'],
+        blockers: blockers,
         warnings: warnings,
         sourceSummary: normalized.sourceSummary,
         importSummary: importSummary

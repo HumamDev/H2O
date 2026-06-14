@@ -383,6 +383,23 @@
     } catch { return 0; }
   }
 
+  function isF19MinimalLibraryIndexChat(chat) {
+    var chatIndex = (chat && chat.chatIndex && typeof chat.chatIndex === 'object') ? chat.chatIndex : {};
+    return chatIndex.f19MinimalLibraryIndexRow === true && !(Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0);
+  }
+
+  function classifyImportError(e) {
+    var msg = String((e && e.message) || e || '').toLowerCase();
+    if (!msg) return 'import-error';
+    if (msg.indexOf('f15-store-write-protected:chats.category_id') !== -1) return 'category-cache-write-protected';
+    if (msg.indexOf('category') !== -1 && (msg.indexOf('constraint') !== -1 || msg.indexOf('trigger') !== -1)) return 'category-reference-rejected';
+    if (msg.indexOf('unique') !== -1 || msg.indexOf('constraint') !== -1) return 'sqlite-constraint';
+    if (msg.indexOf('not null') !== -1) return 'sqlite-not-null';
+    if (msg.indexOf('chatid required') !== -1 || msg.indexOf('chatid') !== -1) return 'chat-id-invalid';
+    if (msg.indexOf('tauri invoke') !== -1 || msg.indexOf('plugin:sql') !== -1) return 'sqlite-unavailable';
+    return 'import-error';
+  }
+
   /* Build SQLite turn rows from a bundle snapshot. Zips snapshot.messages[]
    * (text/role/order) with snapshot.meta.richTurns[] (outerHTML per turnIdx).
    * Returns shape matching store.snapshots.create({turns:[]}). */
@@ -457,6 +474,7 @@
     var href = chatIndex.href || ('https://chatgpt.com/c/' + chatId);
     var isSaved = hasSnapshots || !!indexState.isSaved;
     var isLinked = hasSnapshots || !!indexState.isLinked;
+    var isMinimalLibraryIndexRow = isF19MinimalLibraryIndexChat(chat);
 
     /* Preserve chatIndex fields that don't have dedicated columns. */
     var chatIndexMeta = {};
@@ -470,6 +488,7 @@
       chatId: chatId,
       title: title,
       href: href,
+      normalizedHref: chatIndex.normalizedHref || href,
       isSaved: isSaved,
       isLinked: isLinked,
       isPinned: !!indexState.isPinned,
@@ -485,9 +504,32 @@
       meta: {
         importedFrom: 'h2o.studio.fullBundle.v2',
         importedAt: Date.now(),
+        f19ChromeDesktopMinimalRow: isMinimalLibraryIndexRow,
         chatIndexMeta: chatIndexMeta,
       },
     };
+  }
+
+  function prepareMinimalLibraryIndexPatch(patch, chat, snapshotsSortedDesc, result) {
+    if (!isF19MinimalLibraryIndexChat(chat)) return patch;
+    var next = Object.assign({}, patch);
+    var meta = safeMeta(next.meta);
+    meta.f19ChromeDesktopMinimalRow = true;
+    meta.f19MinimalSnapshotCount = Array.isArray(snapshotsSortedDesc) ? snapshotsSortedDesc.length : 0;
+    next.meta = meta;
+    /* Minimal rows are row-state shells, not transcript imports. Avoid
+     * writing nullable snapshot/category cache columns that are not needed
+     * to materialize parity and that are protected by F15 settlement rules. */
+    if (!next.lastSnapshotId) delete next.lastSnapshotId;
+    if (!next.lastCapturedAt) delete next.lastCapturedAt;
+    if (!next.categoryId) {
+      delete next.categoryId;
+    } else {
+      meta.deferredCategoryId = next.categoryId;
+      delete next.categoryId;
+      result.warnings.push({ kind: 'chrome-minimal-row-category-deferred' });
+    }
+    return next;
   }
 
   function emptySample() {
@@ -808,6 +850,7 @@
         var snapshots = Array.isArray(chat.snapshots) ? chat.snapshots.slice() : [];
         snapshots.sort(function (a, b) { return isoToEpochMs(b && b.createdAt) - isoToEpochMs(a && a.createdAt); });
         var patch = deriveChatPatchFromBundle(chat, snapshots);
+        patch = prepareMinimalLibraryIndexPatch(patch, chat, snapshots, result);
         if (suppressCategoryId === true) {
           delete patch.categoryId;
         }
@@ -816,7 +859,12 @@
         chatStateIndex[chatId] = 'imported';
         if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
       } catch (e) {
-        result.errors.push({ kind: 'chat', id: chatId, error: String(e && e.message || e) });
+        result.errors.push({
+          kind: isF19MinimalLibraryIndexChat(chat) ? 'chrome-minimal-row-import' : 'chat',
+          code: classifyImportError(e),
+          id: chatId,
+          error: String(e && e.message || e)
+        });
       }
     }
   }

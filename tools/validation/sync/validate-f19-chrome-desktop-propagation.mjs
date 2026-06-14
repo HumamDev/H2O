@@ -100,6 +100,14 @@ function buildChromeBundle() {
             id: 'raw-chat-id-2',
             title: 'Private Linked Chat Title',
             view: 'linked',
+            state: {
+              isSaved: false,
+              isLinked: true,
+              isPinned: true,
+              isArchived: false,
+              isDeleted: false
+            },
+            f19MinimalLibraryIndexRow: true,
             organization: {}
           },
           snapshots: []
@@ -220,7 +228,8 @@ async function runVmProof() {
   assert(result.sourceSummary.chatCount === 2, 'source chat count mismatch');
   assert(result.sourceSummary.savedCount === 1, 'source saved count mismatch');
   assert(result.sourceSummary.linkedCount === 1, 'source linked count mismatch');
-  assert(result.sourceSummary.pinnedCount === 1, 'source pinned count mismatch');
+  assert(result.sourceSummary.pinnedCount === 2, 'source pinned count mismatch');
+  assert(result.sourceSummary.minimalRowCount === 1, 'source minimal row count mismatch');
   assert(result.supportedFields.includes('saved-chat-records'), 'saved chats not marked supported');
   assert(result.supportedFields.includes('linked-chat-records'), 'linked chats not marked supported');
   assert(result.supportedFields.includes('folder-metadata'), 'folder metadata not marked supported');
@@ -298,6 +307,8 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'fileFingerprintChecked: true', 'file idempotency marker');
   assertContains(importBundleFile, 'shouldSkipExistingFolderMetadata', 'folder overwrite helper');
   assertContains(importBundleFile, 'skipExistingFolderMetadata', 'folder overwrite option');
+  assertContains(importBundleFile, 'prepareMinimalLibraryIndexPatch', 'minimal row import helper');
+  assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
