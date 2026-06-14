@@ -820,16 +820,48 @@
     if (opts.catalogColorValue !== null) row.color = cleanString(opts.catalogColorValue) || fixtures.raw.catalogRawColorValue;
     return row;
   }
+  function catalogProofState(catalog, lifecycleState, revisionHash) {
+    var source = safeObject(catalog);
+    var state = cleanString(lifecycleState || source.lifecycleState) || 'active';
+    var out = Object.assign({}, source, {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      lifecycleState: state,
+      archived: state === 'archived',
+      tombstoned: state === 'tombstoned'
+    });
+    if (cleanLower(revisionHash)) out.revisionHash = cleanLower(revisionHash);
+    return out;
+  }
+  function absentCatalogProofState() {
+    return {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      lifecycleState: 'absent',
+      absent: true,
+      revisionHash: ZERO_HASH
+    };
+  }
   function catalogContext(fixtures, canonical, operation, options) {
     var opts = safeObject(options);
+    var targetLifecycleState = cleanString(opts.targetLifecycleState || canonical.lifecycleState) || 'active';
+    var currentLifecycleState = operation === 'create'
+      ? 'absent'
+      : (cleanString(opts.currentLifecycleState) || targetLifecycleState);
+    var currentCatalog = isObject(opts.currentCatalog) ? opts.currentCatalog : canonical;
+    var currentState = operation === 'create'
+      ? absentCatalogProofState()
+      : catalogProofState(currentCatalog, currentLifecycleState, opts.baseHash);
+    var targetState = catalogProofState(canonical, targetLifecycleState, canonical.revisionHash);
     return {
       operation: operation,
       canonicalCatalog: canonical,
-      currentLifecycleState: operation === 'create'
-        ? 'absent'
-        : (cleanString(opts.currentLifecycleState) || canonical.lifecycleState),
+      currentLifecycleState: currentLifecycleState,
+      expectedLifecycleState: currentLifecycleState,
+      targetLifecycleState: targetLifecycleState,
       baseHash: cleanLower(opts.baseHash) || undefined,
       expectedCurrentRevisionHash: cleanLower(opts.baseHash) || undefined,
+      currentState: currentState,
+      expectedState: currentState,
+      expectedTargetState: targetState,
       localAccountIdHash: fixtures.originAccountIdHash,
       actorPeer: fixtures.actorPeer,
       existingCatalogSiblings: [],
@@ -1135,19 +1167,23 @@
       var catalog = safeObject(canonical.canonical);
 
       var baseHash = ZERO_HASH;
+      var baseCatalog = null;
       if (def.operation !== 'create') {
         var baseCanonical = await getSync().canonicalizeLibraryCatalog(catalogInputForCase(fixtures, def, 'base'));
         if (!stepOk(baseCanonical) || !isSha256Hex(safeObject(baseCanonical.canonical).revisionHash)) {
           addCode(blockers, 'library-sync-proof-catalog-base-canonicalize-failed');
         } else {
-          baseHash = safeObject(baseCanonical.canonical).revisionHash;
+          baseCatalog = safeObject(baseCanonical.canonical);
+          baseHash = baseCatalog.revisionHash;
         }
         artifacts.push(baseCanonical);
       }
 
       var context = catalogContext(fixtures, catalog, def.operation, {
         currentLifecycleState: def.currentLifecycleState,
-        baseHash: baseHash
+        targetLifecycleState: def.targetLifecycleState,
+        baseHash: baseHash,
+        currentCatalog: baseCatalog
       });
       var diagnostics = await getSync().diagnoseLibraryCatalog(context);
       parts.diagnose = summarizeResult(diagnostics);
@@ -1552,6 +1588,17 @@
       parts.executeEnvelope = summarizeResult(execute);
       if (!stepOk(execute) || !isObject(execute.envelope)) addCode(blockers, 'library-sync-proof-binding-execute-envelope-failed');
 
+      var settlementShapes = safeObject(execute && execute.envelope && execute.envelope.settlementShapes);
+      var bindingSettlementBridgeContext = def.bindingKind === 'chat-folder'
+        ? {
+            bindingKind: 'chat-folder',
+            f15DelegationEnabled: true,
+            legacyFallbackActive: false,
+            identityMismatch: false,
+            activeStateConflict: false,
+            consistent: true
+          }
+        : {};
       var settlement = await withMemoryChromeStorage(function () {
         return getSync().settleLibraryExecuteEnvelope({
           envelope: execute.envelope,
@@ -1559,6 +1606,13 @@
           dispatchResult: fixtures.dispatch,
           __consumedRows: [],
           __watermarkRows: [],
+          currentState: settlementShapes.expectedCurrentState || proposal.expectedCurrentState,
+          expectedState: settlementShapes.expectedCurrentState || proposal.expectedCurrentState,
+          expectedTargetState: settlementShapes.expectedTargetState || proposal.expectedTargetState,
+          existingBindings: context.existingBindings || context.siblingBindings || [],
+          existingCatalogs: context.relatedCatalogs || [],
+          cacheObservation: context.materializedCacheObservation || { status: 'fresh' },
+          bridgeContext: bindingSettlementBridgeContext,
           observedAtIso: fixtures.observedAtIso
         });
       });
@@ -4229,6 +4283,8 @@
       colorHash: null,
       originAccountIdHash: account,
       lifecycleState: 'active',
+      archived: false,
+      tombstoned: false,
       revisionHash: catalogBaseRevision,
       sourceTag: 'desktop',
       sourceTagHash: sourceTagHash
@@ -4276,6 +4332,8 @@
       colorHash: null,
       originAccountIdHash: account,
       lifecycleState: 'active',
+      archived: false,
+      tombstoned: false,
       revisionHash: await runtimeHash('runtime-gate-binding-label-revision'),
       sourceTag: 'desktop',
       sourceTagHash: sourceTagHash
@@ -4734,8 +4792,20 @@
     if (performanceStress && performanceStress.ok !== true) mergeCodes(warnings, performanceStress.blockers);
 
     var privacyTargets = [catalogProof, bindingProof, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress].filter(Boolean);
-    var privacy = await privacyScan(privacyTargets, []);
+    var aggregateFixtures = await buildCommonFixtures(input || {});
+    var aggregateRawNeedles = catalogPrivacyNeedles(aggregateFixtures).concat(bindingPrivacyNeedles(aggregateFixtures));
+    var privacy = await rawValuePrivacyScan(privacyTargets, aggregateRawNeedles);
+    var sectionPrivacyOk = (!catalogProof || (catalogProof.privacy && catalogProof.privacy.ok === true)) &&
+      (!bindingProof || (bindingProof.privacy && bindingProof.privacy.ok === true)) &&
+      (!folderAbsorption || (folderAbsorption.privacy && folderAbsorption.privacy.ok === true)) &&
+      (!storeCutover || (storeCutover.privacy && storeCutover.privacy.ok === true)) &&
+      (!bulkMigration || (bulkMigration.privacy && bulkMigration.privacy.ok === true)) &&
+      (!conflictProof || (conflictProof.privacy && conflictProof.privacy.ok === true)) &&
+      (!runtimeConflictGate || (runtimeConflictGate.privacy && runtimeConflictGate.privacy.ok === true)) &&
+      (!multiPeerSoak || (multiPeerSoak.privacySummary && multiPeerSoak.privacySummary.ok === true)) &&
+      (!performanceStress || (performanceStress.privacySummary && performanceStress.privacySummary.ok === true));
     if (!privacy.ok) mergeCodes(blockers, privacy.blockers);
+    if (!sectionPrivacyOk) addCode(blockers, 'library-sync-proof-domain-privacy-failed');
     mergeCodes(warnings, privacy.warnings);
 
     var ok = blockers.length === 0 &&
@@ -4748,7 +4818,8 @@
       conflictProof.ok === true &&
       runtimeConflictGate.ok === true &&
       performanceStress && performanceStress.ok === true &&
-      privacy.ok === true;
+      privacy.ok === true &&
+      sectionPrivacyOk === true;
 
     return {
       schema: RESULT_SCHEMA,
@@ -4765,7 +4836,7 @@
       runtimeConflictGate: runtimeConflictGate,
       multiPeerSoak: multiPeerSoak,
       performanceStress: performanceStress,
-      privacy: privacy,
+      privacy: Object.assign({}, privacy, { sectionPrivacyOk: sectionPrivacyOk }),
       apiPresence: presence,
       blockers: codeList(blockers),
       warnings: codeList(warnings),
