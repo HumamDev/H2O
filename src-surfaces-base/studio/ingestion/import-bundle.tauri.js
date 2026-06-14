@@ -73,6 +73,7 @@
   ];
   var KV_ALLOW_PREFIX = 'h2o:prm:cgx:library:';
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var DB_URL = 'sqlite:studio-v1.db';
 
   function isAllowedStorageKey(key) {
     var k = String(key || '');
@@ -373,6 +374,36 @@
     });
   }
 
+  function getTauriInvoke() {
+    try {
+      var internals = global.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') return internals.invoke.bind(internals);
+    } catch (_) { /* ignore */ }
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return tauri.core.invoke.bind(tauri.core);
+      if (tauri && typeof tauri.invoke === 'function') return tauri.invoke.bind(tauri);
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function readRowsAffected(result) {
+    if (Array.isArray(result)) return Number(result[0]) || 0;
+    if (result && typeof result === 'object') {
+      if (result.rowsAffected != null) return Number(result.rowsAffected) || 0;
+      if (result.rows_affected != null) return Number(result.rows_affected) || 0;
+      if (result.affected != null) return Number(result.affected) || 0;
+    }
+    if (typeof result === 'number') return result;
+    return 0;
+  }
+
+  async function sqliteExecute(query, values) {
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable');
+    return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
+  }
+
   function isoToEpochMs(input) {
     if (input == null) return 0;
     if (typeof input === 'number' && isFinite(input) && input > 0) return input;
@@ -530,6 +561,70 @@
       result.warnings.push({ kind: 'chrome-minimal-row-category-deferred' });
     }
     return next;
+  }
+
+  function safeJson(value) {
+    try { return JSON.stringify(value == null ? {} : value); }
+    catch (_) { return '{}'; }
+  }
+
+  async function materializeMinimalLibraryIndexRow(chatStore, patch) {
+    var chatId = cleanString(patch && patch.chatId);
+    if (!chatId) throw new Error('minimal-row-materialize: chatId required');
+    var now = Date.now();
+    var meta = safeMeta(patch && patch.meta);
+    meta.f19ChromeDesktopMaterializedShell = true;
+    var columns = [
+      'id',
+      'title',
+      'created_at',
+      'updated_at',
+      'message_count',
+      'is_pinned',
+      'is_archived',
+      'is_deleted',
+      'is_saved',
+      'is_linked',
+      'href',
+      'normalized_href',
+      'snapshot_count',
+      'link_source_href',
+      'linked_from',
+      'linked_at',
+      'meta_json'
+    ];
+    var href = cleanString(patch && (patch.href || patch.normalizedHref)) || ('https://chatgpt.com/c/' + chatId);
+    var values = [
+      chatId,
+      cleanString(patch && patch.title) || chatId,
+      now,
+      now,
+      0,
+      patch && patch.isPinned ? 1 : 0,
+      patch && patch.isArchived ? 1 : 0,
+      patch && patch.isDeleted ? 1 : 0,
+      patch && patch.isSaved ? 1 : 0,
+      patch && patch.isLinked ? 1 : 0,
+      href,
+      cleanString(patch && patch.normalizedHref) || href,
+      0,
+      cleanString(patch && patch.linkSourceHref),
+      cleanString(patch && patch.linkedFrom),
+      Number((patch && patch.linkedAt) || 0) || 0,
+      safeJson(meta)
+    ];
+    var placeholders = columns.map(function () { return '?'; }).join(', ');
+    var result = await sqliteExecute(
+      'INSERT OR IGNORE INTO chats (' + columns.join(', ') + ') VALUES (' + placeholders + ')',
+      values
+    );
+    if (chatStore && typeof chatStore.reload === 'function') {
+      try { await chatStore.reload(); } catch (_) { /* ignore */ }
+    }
+    if (readRowsAffected(result) > 0) return { status: 'inserted' };
+    var existing = chatStore && typeof chatStore.get === 'function' ? await chatStore.get(chatId) : null;
+    if (existing) return { status: 'existing' };
+    throw new Error('minimal-row-materialize: insert ignored without existing row');
   }
 
   function emptySample() {
@@ -854,14 +949,36 @@
         if (suppressCategoryId === true) {
           delete patch.categoryId;
         }
-        await chatStore.upsert(patch);
-        result.written.chats += 1;
-        chatStateIndex[chatId] = 'imported';
-        if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+        try {
+          await chatStore.upsert(patch);
+          result.written.chats += 1;
+          chatStateIndex[chatId] = 'imported';
+          if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+        } catch (primaryError) {
+          if (!isF19MinimalLibraryIndexChat(chat)) throw primaryError;
+          try {
+            var materialized = await materializeMinimalLibraryIndexRow(chatStore, patch);
+            if (materialized.status === 'inserted') {
+              result.written.chats += 1;
+              chatStateIndex[chatId] = 'imported';
+              if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+              result.warnings.push({ kind: 'chrome-minimal-row-materialized-via-shell-insert' });
+            } else {
+              result.skipped.chats += 1;
+              chatStateIndex[chatId] = 'skipped';
+              if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+              result.warnings.push({ kind: 'chrome-minimal-row-materialize-existing' });
+            }
+          } catch (fallbackError) {
+            fallbackError.primaryImportError = primaryError;
+            throw fallbackError;
+          }
+        }
       } catch (e) {
         result.errors.push({
           kind: isF19MinimalLibraryIndexChat(chat) ? 'chrome-minimal-row-import' : 'chat',
           code: classifyImportError(e),
+          primaryCode: e && e.primaryImportError ? classifyImportError(e.primaryImportError) : '',
           id: chatId,
           error: String(e && e.message || e)
         });

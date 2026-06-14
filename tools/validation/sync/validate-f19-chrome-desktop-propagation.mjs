@@ -308,6 +308,8 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'shouldSkipExistingFolderMetadata', 'folder overwrite helper');
   assertContains(importBundleFile, 'skipExistingFolderMetadata', 'folder overwrite option');
   assertContains(importBundleFile, 'prepareMinimalLibraryIndexPatch', 'minimal row import helper');
+  assertContains(importBundleFile, 'materializeMinimalLibraryIndexRow', 'minimal row materializer');
+  assertContains(importBundleFile, 'f19ChromeDesktopMaterializedShell', 'minimal row shell marker');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
