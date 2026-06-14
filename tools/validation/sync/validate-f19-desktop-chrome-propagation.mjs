@@ -123,6 +123,7 @@ function buildDesktopBundle() {
 function buildContext() {
   const archiveCalls = [];
   const refreshReasons = [];
+  const registryRecords = new Map();
   const context = {
     console,
     TextEncoder,
@@ -203,12 +204,29 @@ function buildContext() {
     __refreshReasons: refreshReasons,
     dispatchEvent() {}
   };
+  context.H2O.ChatRegistry = {
+    ready: Promise.resolve(),
+    getRecord(chatId) {
+      return registryRecords.get(String(chatId || '')) || null;
+    },
+    upsertRecord(record) {
+      if (!record || !record.chatId) return null;
+      const next = JSON.parse(JSON.stringify(record));
+      registryRecords.set(String(record.chatId), next);
+      return next;
+    },
+    listRecords() {
+      return Array.from(registryRecords.values());
+    }
+  };
+  context.H2O.Library = { ChatRegistry: context.H2O.ChatRegistry };
+  context.__registryRecords = registryRecords;
   context.H2O.Studio.sync.libraryParity = {
     async captureSnapshot() {
       return {
         schema: 'h2o.studio.sync.library-parity-snapshot.v1',
         surface: 'chrome-studio',
-        counts: { total: 2, saved: 1, linked: 1 },
+        counts: { total: 2, saved: 1, linked: 1, pinned: 1, archived: 0, folders: 1, categories: 1 },
         fingerprints: { chats: 'hash-only-fixture' }
       };
     }
@@ -240,6 +258,14 @@ async function runVmProof() {
   assert(result.sourceSummary.savedCount === 1, 'source saved count mismatch');
   assert(result.sourceSummary.linkedCount === 1, 'source linked count mismatch');
   assert(result.sourceSummary.pinnedCount === 1, 'source pinned count mismatch');
+  assert(result.sourceSummary.shellRowCount === 1, 'source shell row count mismatch');
+  assert(result.sourceSummary.linkedOnlyCount === 1, 'source linked-only shell count mismatch');
+  assert(result.importSummary.shellRowsIncoming === 1, 'shell row incoming count mismatch');
+  assert(result.importSummary.shellRowsMaterialized === 1, 'shell row materialized count mismatch');
+  assert(result.importSummary.shellRowsFailed === 0, 'shell row failure count mismatch');
+  assert(result.convergence && result.convergence.ok === true, 'desktop-to-chrome convergence should be proven');
+  assert(Array.isArray(result.redactedErrorCategories), 'redacted error categories missing');
+  assert(result.redactedErrorCategories.length === 0, 'redacted error categories should be empty on success');
   assert(result.supportedFields.includes('saved-chat-records'), 'saved chats not marked supported');
   assert(result.supportedFields.includes('linked-chat-records'), 'linked chats not marked supported');
   assert(result.supportedFields.includes('folder-metadata'), 'folder metadata not marked supported');
@@ -261,6 +287,7 @@ async function runVmProof() {
   assert(result.sideEffects.desktopSqliteWritten === false, 'Desktop SQLite should not be written by Chrome import');
   assert(result.sideEffects.nativeCalled === false, 'Native should not be called by propagation proof');
   assert(result.parity.snapshotCaptured === true, 'parity snapshot should be captured');
+  assert(context.__registryRecords.has('desktop-chat-id-2'), 'Desktop shell row was not materialized into ChatRegistry');
 
   const importCall = context.__archiveCalls.find((entry) => entry.message.req.op === 'importFullBundle');
   assert(importCall, 'importFullBundle was not called');
@@ -318,6 +345,9 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'library-propagation-tombstones-deferred', 'tombstone deferred taxonomy');
   assertContains(folderImportFile, 'library-propagation-apply-events-deferred', 'apply events deferred taxonomy');
   assertContains(folderImportFile, 'chromeStorageMayWriteSupportedRows', 'Chrome side-effect marker');
+  assertContains(folderImportFile, 'desktop-shell-row-import-unsupported', 'Desktop shell row blocker');
+  assertContains(folderImportFile, 'desktop-to-chrome-convergence-not-proven', 'Desktop to Chrome convergence blocker');
+  assertContains(folderImportFile, 'redactedErrorCategories', 'redacted import error categories');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
   assertContains(contractFile, 'F19.2.c Minimal Desktop -> Chrome Scope', 'F19.2.c doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');

@@ -292,28 +292,37 @@
           const archiveIds = new Set(archiveRows.map((r) => r.chatId));
           const nativeRecords = await readNativeChatRegistryRecords();
           const nativeRecordsCount = Array.isArray(nativeRecords) ? nativeRecords.length : 0;
+          const projectedIds = new Set();
           let nativeLinkedRows = 0;
           let fallbackRecordsCount = 0;
           let fallbackLinkedRows = 0;
           for (const rec of nativeRecords) {
             if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
             const row = normalizeLinkedOnlyRegistryRow(rec);
-            if (row) { linkedRows.push(row); nativeLinkedRows++; }
+            if (row && !projectedIds.has(row.chatId)) {
+              linkedRows.push(row);
+              projectedIds.add(row.chatId);
+              nativeLinkedRows++;
+            }
           }
-          // Fallback: if native key is empty (e.g. fresh install pre-reload)
-          // try the Studio-side registry's listRecords-or-listAll. Filters
-          // are best-effort because the Studio shape doesn't carry state.
-          if (linkedRows.length === 0) {
-            const reg = getChatRegistry();
-            const list = reg && (typeof reg.listRecords === 'function'
-              ? await reg.listRecords({ includeDeleted: false })
-              : (typeof reg.listActive === 'function' ? await reg.listActive() : []));
-            const fallbackRecords = Array.isArray(list) ? list : [];
-            fallbackRecordsCount = fallbackRecords.length;
-            for (const rec of fallbackRecords) {
-              if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
-              const row = normalizeLinkedOnlyRegistryRow(rec);
-              if (row) { linkedRows.push(row); fallbackLinkedRows++; }
+          // Always merge Studio-side registry shell rows after native rows.
+          // Desktop -> Chrome propagation materializes zero-snapshot Desktop
+          // rows here; skipping this merge when the native key is non-empty
+          // makes latest.json imports falsely report success while the
+          // LibraryIndex remains unchanged. Archive rows still win by chatId.
+          const reg = getChatRegistry();
+          const list = reg && (typeof reg.listRecords === 'function'
+            ? await reg.listRecords({ includeDeleted: false })
+            : (typeof reg.listActive === 'function' ? await reg.listActive() : []));
+          const fallbackRecords = Array.isArray(list) ? list : [];
+          fallbackRecordsCount = fallbackRecords.length;
+          for (const rec of fallbackRecords) {
+            if (!rec || !rec.chatId || archiveIds.has(rec.chatId) || projectedIds.has(rec.chatId)) continue;
+            const row = normalizeLinkedOnlyRegistryRow(rec);
+            if (row) {
+              linkedRows.push(row);
+              projectedIds.add(row.chatId);
+              fallbackLinkedRows++;
             }
           }
           state.lastRefreshSources = {

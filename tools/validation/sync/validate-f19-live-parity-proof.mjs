@@ -276,6 +276,39 @@ function propagationResult(direction) {
       folderCount: 1,
       categoryCount: 1
     },
+    importSummary: direction === 'desktop-to-chrome' ? {
+      ok: true,
+      shellRowsIncoming: 1,
+      shellRowsMaterialized: 1,
+      shellRowsExisting: 0,
+      shellRowsSatisfied: 1,
+      shellRowsFailed: 0,
+      redactedErrorCategories: []
+    } : null,
+    convergence: direction === 'desktop-to-chrome' ? {
+      ok: true,
+      expected: {
+        total: 2,
+        saved: 1,
+        linked: 1,
+        pinned: 1,
+        archived: 0,
+        folders: 1,
+        categories: 1
+      },
+      observed: {
+        total: 2,
+        saved: 1,
+        linked: 1,
+        pinned: 1,
+        archived: 0,
+        folders: 1,
+        categories: 1
+      },
+      mismatchCount: 0,
+      mismatches: [],
+      blocker: ''
+    } : null,
     privacy: {
       redacted: true,
       rawIdsReturned: false,
@@ -445,6 +478,16 @@ function validatePropagationResult(result, direction) {
   assert(result.ok === true || result.status === 'already-imported', `${direction}: propagation must pass or be idempotent`);
   assert(Array.isArray(result.warnings), `${direction}: warnings must be array`);
   assert(result.hardening && typeof result.hardening === 'object', `${direction}: F19.4 hardening summary missing`);
+  if (direction === 'desktop-to-chrome') {
+    const blockers = Array.isArray(result.blockers) ? result.blockers : [];
+    assert(result.convergence && result.convergence.ok === true, `${direction}: convergence proof missing or not ok`);
+    assert(Number(result.convergence?.mismatchCount || 0) === 0, `${direction}: convergence mismatch count must be zero`);
+    assert(!blockers.includes('desktop-to-chrome-convergence-not-proven'), `${direction}: convergence blocker must not be present`);
+    assert(result.importSummary && typeof result.importSummary === 'object', `${direction}: import summary missing`);
+    assert(Number(result.importSummary.shellRowsFailed || 0) === 0, `${direction}: shell row failures must be zero`);
+    assert(Array.isArray(result.importSummary.redactedErrorCategories), `${direction}: redacted error categories missing`);
+    assert(!blockers.includes('desktop-shell-row-import-unsupported'), `${direction}: shell row unsupported blocker must not be present`);
+  }
   for (const code of requiredHardeningCodes) {
     assert(result.hardening?.taxonomy && Object.values(result.hardening.taxonomy).includes(code), `${direction}: hardening taxonomy missing ${code}`);
   }
@@ -550,6 +593,9 @@ function validateStaticFiles() {
   assertContains(closureContractFile, proofSchema, 'F19.5 closure proof schema');
   assertContains(closureContractFile, 'chrome-export-source-coverage-mismatch', 'F19.5 export coverage blocker');
   assertContains(closureContractFile, 'chromeExportCoverage', 'F19.5 export coverage proof field');
+  assertContains(closureContractFile, 'desktop-shell-row-import-unsupported', 'F19.5 Desktop shell row blocker');
+  assertContains(closureContractFile, 'desktop-to-chrome-convergence-not-proven', 'F19.5 Desktop to Chrome convergence blocker');
+  assertContains(closureContractFile, 'convergence.ok === true', 'F19.5 Desktop to Chrome convergence proof');
   assertContains(closureContractFile, 'Premium Sync v1 supported fields complete', 'F19.5 supported-fields closure phrase');
   assertContains(closureContractFile, 'Premium Sync complete', 'F19.5 full closure phrase');
   assertContains(closureContractFile, 'node tools/validation/sync/validate-f19-live-parity-proof.mjs --proof', 'F19.5 proof validation command');

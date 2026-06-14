@@ -560,12 +560,64 @@
       var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
       var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
       var view = cleanString(index.view || index.kind || index.type).toLowerCase();
-      if (view === 'linked' || index.isLinked === true || stateObj.isLinked === true) counts.linked += 1;
+      if (view === 'saved' || index.isSaved === true || stateObj.isSaved === true) counts.saved += 1;
+      else if (view === 'linked' || index.isLinked === true || stateObj.isLinked === true) counts.linked += 1;
       else counts.saved += 1;
       if (index.pinned === true || index.isPinned === true || stateObj.isPinned === true) counts.pinned += 1;
       if (index.archived === true || index.isArchived === true || stateObj.isArchived === true) counts.archived += 1;
     });
     return counts;
+  }
+
+  function chatSnapshots(chat) {
+    return Array.isArray(chat && chat.snapshots) ? chat.snapshots : [];
+  }
+
+  function chatIndexForRow(chat) {
+    return chat && chat.chatIndex && typeof chat.chatIndex === 'object' && !Array.isArray(chat.chatIndex)
+      ? chat.chatIndex
+      : {};
+  }
+
+  function chatIndexState(chat) {
+    var index = chatIndexForRow(chat);
+    return index.state && typeof index.state === 'object' && !Array.isArray(index.state)
+      ? index.state
+      : {};
+  }
+
+  function isDesktopShellLibraryRow(chat) {
+    var chatId = cleanString(chat && chat.chatId);
+    if (!chatId || chatSnapshots(chat).length > 0) return false;
+    var index = chatIndexForRow(chat);
+    var stateObj = chatIndexState(chat);
+    var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+    return index.f19MinimalLibraryIndexRow === true ||
+      index.f19ChromeDesktopMinimalRow === true ||
+      view === 'saved' ||
+      view === 'linked' ||
+      index.isSaved === true ||
+      index.isLinked === true ||
+      stateObj.isSaved === true ||
+      stateObj.isLinked === true ||
+      stateObj.isPinned === true ||
+      stateObj.isArchived === true;
+  }
+
+  function desktopShellRowSummary(chats) {
+    var summary = { shellRowCount: 0, linkedOnlyCount: 0, savedShellCount: 0 };
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      if (!isDesktopShellLibraryRow(chat)) return;
+      summary.shellRowCount += 1;
+      var index = chatIndexForRow(chat);
+      var stateObj = chatIndexState(chat);
+      var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+      var isSaved = view === 'saved' || index.isSaved === true || stateObj.isSaved === true;
+      var isLinked = view === 'linked' || index.isLinked === true || stateObj.isLinked === true;
+      if (isLinked && !isSaved) summary.linkedOnlyCount += 1;
+      if (isSaved) summary.savedShellCount += 1;
+    });
+    return summary;
   }
 
   function sanitizeChatForDesktopChrome(chat, warnings) {
@@ -660,6 +712,7 @@
       return sanitizeChatForDesktopChrome(chat, warnings);
     });
     var chatViewCounts = countChatViews(chats);
+    var shellSummary = desktopShellRowSummary(chats);
     var categories = cloneJson(sourceCategories) || [];
     var folderState = folderStateForDesktopChrome(bundle, warnings);
     var chromeStorageLocal = {};
@@ -702,6 +755,9 @@
         linkedCount: chatViewCounts.linked,
         pinnedCount: chatViewCounts.pinned,
         archivedCount: chatViewCounts.archived,
+        shellRowCount: shellSummary.shellRowCount,
+        linkedOnlyCount: shellSummary.linkedOnlyCount,
+        savedShellCount: shellSummary.savedShellCount,
         snapshotCount: countSnapshots(chats),
         categoryCount: categories.length,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
@@ -732,10 +788,141 @@
     };
   }
 
-  function redactedChromeImportSummary(importResult, dryRun) {
+  function redactedErrorCategoryList(categories) {
+    var counts = Object.create(null);
+    (Array.isArray(categories) ? categories : []).forEach(function (entry) {
+      var code = cleanString(entry && entry.code) || 'import-error';
+      counts[code] = Number(counts[code] || 0) + Number((entry && entry.count) || 1);
+    });
+    return Object.keys(counts).sort().map(function (code) {
+      return { code: code, count: counts[code] };
+    });
+  }
+
+  function addRedactedErrorCategory(categories, code) {
+    var normalized = cleanString(code) || 'import-error';
+    categories.push({ code: normalized, count: 1 });
+  }
+
+  function classifyDesktopShellImportError(error) {
+    var msg = String(error && (error.message || error) || '').toLowerCase();
+    if (msg.indexOf('registry') !== -1 && msg.indexOf('unavailable') !== -1) return 'desktop-shell-row-registry-unavailable';
+    if (msg.indexOf('chatid') !== -1 || msg.indexOf('chat id') !== -1) return 'desktop-shell-row-required-field-missing';
+    if (msg.indexOf('upsert') !== -1) return 'desktop-shell-row-materialize-failed';
+    return 'desktop-shell-row-materialize-failed';
+  }
+
+  function registryForDesktopShellRows() {
+    return H2O.ChatRegistry ||
+      (H2O.Library && H2O.Library.ChatRegistry) ||
+      null;
+  }
+
+  function desktopShellRecordFromChat(chat) {
+    var chatId = cleanString(chat && chat.chatId);
+    if (!chatId) return null;
+    var index = chatIndexForRow(chat);
+    var stateObj = chatIndexState(chat);
+    var org = index.organization && typeof index.organization === 'object' && !Array.isArray(index.organization)
+      ? index.organization
+      : {};
+    var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+    var saved = view === 'saved' || index.isSaved === true || stateObj.isSaved === true;
+    var linked = view === 'linked' || index.isLinked === true || stateObj.isLinked === true;
+    var href = cleanString(index.href || chat.href || chat.normalizedHref || index.linkSourceHref || chat.linkSourceHref)
+      || ('https://chatgpt.com/c/' + chatId);
+    var linkedAt = cleanString(index.linkedAt || chat.linkedAt);
+    var now = nowIso();
+    return {
+      chatId: chatId,
+      title: cleanString(index.title || chat.title || chatId),
+      href: href,
+      normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
+      updatedAt: cleanString(index.updatedAt || chat.updatedAt) || now,
+      lastSeenAt: cleanString(index.lastSeenAt || chat.lastSeenAt) || now,
+      source: {
+        first: 'desktop-sync-folder',
+        seenFrom: ['desktop-sync-folder']
+      },
+      organization: {
+        categoryId: cleanString(org.categoryId || org.category_id),
+        folderId: '',
+        tagIds: [],
+        labelIds: []
+      },
+      state: {
+        isSaved: !!saved,
+        isLinked: !!(linked || saved),
+        isPinned: index.pinned === true || index.isPinned === true || stateObj.isPinned === true,
+        isArchived: index.archived === true || index.isArchived === true || stateObj.isArchived === true,
+        isImported: true,
+        isDeleted: stateObj.isDeleted === true
+      },
+      linkedAt: linkedAt || now,
+      linkedFrom: cleanString(index.linkedFrom || chat.linkedFrom) || 'desktop-sync-folder',
+      linkSourceHref: cleanString(index.linkSourceHref || chat.linkSourceHref) || href,
+      quality: {
+        confidence: 'sync-shell',
+        inferredFields: ['desktop-shell-row']
+      }
+    };
+  }
+
+  async function materializeDesktopShellRows(bundle) {
+    var chats = bundle && bundle.chatArchive && Array.isArray(bundle.chatArchive.chats)
+      ? bundle.chatArchive.chats
+      : [];
+    var rows = chats.filter(isDesktopShellLibraryRow);
+    var result = {
+      attempted: rows.length > 0,
+      incoming: rows.length,
+      materialized: 0,
+      existing: 0,
+      failed: 0,
+      satisfied: 0,
+      redactedErrorCategories: []
+    };
+    if (rows.length === 0) return result;
+    var registry = registryForDesktopShellRows();
+    if (!registry || typeof registry.upsertRecord !== 'function') {
+      result.failed = rows.length;
+      addRedactedErrorCategory(result.redactedErrorCategories, 'desktop-shell-row-registry-unavailable');
+      return result;
+    }
+    try {
+      if (registry.ready && typeof registry.ready.then === 'function') await registry.ready;
+    } catch (_) { /* continue with in-memory API if available */ }
+    for (var i = 0; i < rows.length; i += 1) {
+      try {
+        var record = desktopShellRecordFromChat(rows[i]);
+        if (!record || !record.chatId) throw new Error('desktop shell row chatId missing');
+        var existed = null;
+        if (typeof registry.getRecord === 'function') {
+          try { existed = registry.getRecord(record.chatId); } catch (_) { existed = null; }
+        }
+        var written = registry.upsertRecord(record, {
+          source: 'desktop-sync-folder',
+          passive: true,
+          observedAt: nowIso()
+        });
+        if (!written) throw new Error('desktop shell row upsert failed');
+        if (existed) result.existing += 1;
+        else result.materialized += 1;
+      } catch (error) {
+        result.failed += 1;
+        addRedactedErrorCategory(result.redactedErrorCategories, classifyDesktopShellImportError(error));
+      }
+    }
+    result.satisfied = result.materialized + result.existing;
+    result.redactedErrorCategories = redactedErrorCategoryList(result.redactedErrorCategories);
+    return result;
+  }
+
+  function redactedChromeImportSummary(importResult, dryRun, shellRows) {
     var chats = safeObject(importResult && importResult.chats);
     var storage = safeObject(importResult && importResult.chromeStorageLocal);
     var kv = safeObject(importResult && importResult.libraryKv);
+    var shell = safeObject(shellRows);
     return {
       ok: importResult && importResult.schema === FULL_BUNDLE_SCHEMA,
       mode: cleanString(importResult && importResult.mode) || 'merge',
@@ -745,7 +932,57 @@
       chromeStorageWritten: numberOrZero(storage.written || storage.writtenCount || storage.imported),
       chromeStorageSkipped: numberOrZero(storage.skipped || storage.skippedCount),
       libraryKvWritten: numberOrZero(kv.written || kv.writtenCount || kv.imported),
-      libraryKvSkipped: numberOrZero(kv.skipped || kv.skippedCount)
+      libraryKvSkipped: numberOrZero(kv.skipped || kv.skippedCount),
+      shellRowsIncoming: numberOrZero(shell.incoming),
+      shellRowsMaterialized: numberOrZero(shell.materialized),
+      shellRowsExisting: numberOrZero(shell.existing),
+      shellRowsSatisfied: numberOrZero(shell.satisfied),
+      shellRowsFailed: numberOrZero(shell.failed),
+      redactedErrorCategories: redactedErrorCategoryList(shell.redactedErrorCategories)
+    };
+  }
+
+  function safeCounts(value) {
+    var counts = safeObject(value);
+    return {
+      total: numberOrZero(counts.total),
+      saved: numberOrZero(counts.saved),
+      linked: numberOrZero(counts.linked),
+      pinned: numberOrZero(counts.pinned),
+      archived: numberOrZero(counts.archived),
+      folders: numberOrZero(counts.folders),
+      categories: numberOrZero(counts.categories)
+    };
+  }
+
+  function evaluateDesktopChromeConvergence(sourceSummary, parity) {
+    var source = safeObject(sourceSummary);
+    var counts = safeCounts(parity && parity.counts);
+    var expected = {
+      total: numberOrZero(source.chatCount),
+      saved: numberOrZero(source.savedCount),
+      linked: numberOrZero(source.linkedCount),
+      pinned: numberOrZero(source.pinnedCount),
+      archived: numberOrZero(source.archivedCount),
+      folders: numberOrZero(source.folderCount),
+      categories: numberOrZero(source.categoryCount)
+    };
+    var mismatches = [];
+    Object.keys(expected).forEach(function (key) {
+      if (counts[key] !== expected[key]) {
+        mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
+      }
+    });
+    if (!parity || parity.snapshotCaptured !== true) {
+      mismatches.push({ field: 'paritySnapshot', expected: true, observed: false });
+    }
+    return {
+      ok: mismatches.length === 0,
+      expected: expected,
+      observed: counts,
+      mismatchCount: mismatches.length,
+      mismatches: mismatches,
+      blocker: mismatches.length ? 'desktop-to-chrome-convergence-not-proven' : ''
     };
   }
 
@@ -772,6 +1009,9 @@
       }),
       sourceSummary: f.sourceSummary || null,
       importSummary: f.importSummary || null,
+      convergence: f.convergence || null,
+      redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
+        (f.importSummary && f.importSummary.redactedErrorCategories)),
       parity: f.parity || {
         snapshotCaptured: false,
         paritySnapshotHash: '',
@@ -822,7 +1062,8 @@
         snapshotCaptured: !!(snapshot && snapshot.schema),
         paritySnapshotHash: await sha256Hex(JSON.stringify(snapshot || {})),
         parityDiagnosticReady: true,
-        surface: cleanString(snapshot && snapshot.surface)
+        surface: cleanString(snapshot && snapshot.surface),
+        counts: safeCounts(snapshot && snapshot.counts)
       };
     } catch (_) {
       return {
@@ -885,6 +1126,7 @@
         importSummary: { ok: false, dryRun: redactedDryRunSummary(dryRun) }
       });
     }
+    var shellRows = await materializeDesktopShellRows(normalized.bundle);
     await refreshLibraryIndex('desktop-chrome-propagation-import');
     try {
       global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
@@ -893,11 +1135,20 @@
     } catch (_) { /* ignore */ }
     var parity = await captureParityAfterImport();
     if (parity.warning) addUnique(warnings, parity.warning);
-    return propagationResult(true, {
+    var importSummary = redactedChromeImportSummary(importResult, dryRun, shellRows);
+    var blockers = [];
+    var redactedErrors = importSummary.redactedErrorCategories;
+    if (numberOrZero(importSummary.shellRowsFailed) > 0) addUnique(blockers, 'desktop-shell-row-import-unsupported');
+    var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity);
+    if (!convergence.ok) addUnique(blockers, convergence.blocker);
+    return propagationResult(blockers.length === 0, {
       status: 'imported',
+      blockers: blockers,
       warnings: warnings,
       sourceSummary: normalized.sourceSummary,
-      importSummary: redactedChromeImportSummary(importResult, dryRun),
+      importSummary: importSummary,
+      convergence: convergence,
+      redactedErrorCategories: redactedErrors,
       parity: parity,
       idempotency: {
         fileFingerprintChecked: opts.fileFingerprint ? true : false,
@@ -1534,55 +1785,71 @@
       }
       var signature = summarySignature(bundle);
       if (opts.autoSync && checksum && state.lastChecksum && state.lastChecksum === checksum) {
+        var alreadyNormalized = buildDesktopChromeSupportedBundle(bundle);
         var alreadyRowsAfter = await refreshLibraryIndex('sync-folder-auto-skip');
-        var alreadyPropagation = propagationResult(true, {
-          status: 'already-imported',
-          warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],
-          idempotency: {
-            fileFingerprintChecked: true,
-            alreadyImported: true,
-            hardeningCode: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
-            mergeOnly: true,
-            existingRowsSkipped: true,
-            protectedDomainFallbackDisabled: true
-          }
-        });
-        state.lastFileName = LATEST_FILE;
-        state.lastFileLastModified = numberOrZero(file.lastModified);
-        state.lastFileSize = numberOrZero(file.size);
-        state.lastSummarySignature = signature;
-        state.lastSyncStatus = 'auto-sync-latest-already-applied';
-        state.lastSyncError = '';
-        await persistState({
-          lastSyncStatus: state.lastSyncStatus,
-          lastSyncError: '',
-          lastChecksum: checksum,
-          lastSummarySignature: signature,
-          lastFileLastModified: state.lastFileLastModified,
-          lastFileSize: state.lastFileSize,
-        });
-        return {
-          ok: true,
-          phase: PHASE,
-          mode: MODE,
-          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
-          schema: bundle.schema,
-          exportedAt: cleanString(bundle.exportedAt),
-          checksum: checksum,
-          fileLastModified: state.lastFileLastModified,
-          fileSize: state.lastFileSize,
-          summarySignature: signature,
-          importedChats: 0,
-          importedSnapshots: 0,
-          skipped: 0,
-          rowsAfter: alreadyRowsAfter,
-          propagation: alreadyPropagation,
-          autoSync: true,
-          durationMs: Date.now() - startedAt,
-          backgroundAutoImport: false,
-          chromeWritesSyncFolder: false,
-          status: 'auto-sync-latest-already-applied',
-        };
+        var alreadyParity = await captureParityAfterImport();
+        var alreadyConvergence = alreadyNormalized.ok
+          ? evaluateDesktopChromeConvergence(alreadyNormalized.sourceSummary, alreadyParity)
+          : { ok: false, blocker: 'desktop-to-chrome-convergence-not-proven' };
+        if (alreadyConvergence.ok) {
+          var alreadyPropagation = propagationResult(true, {
+            status: 'already-imported',
+            sourceSummary: alreadyNormalized.sourceSummary,
+            parity: alreadyParity,
+            convergence: alreadyConvergence,
+            warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],
+            idempotency: {
+              fileFingerprintChecked: true,
+              alreadyImported: true,
+              hardeningCode: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
+              mergeOnly: true,
+              existingRowsSkipped: true,
+              protectedDomainFallbackDisabled: true
+            }
+          });
+          state.lastFileName = LATEST_FILE;
+          state.lastFileLastModified = numberOrZero(file.lastModified);
+          state.lastFileSize = numberOrZero(file.size);
+          state.lastSummarySignature = signature;
+          state.lastSyncStatus = 'auto-sync-latest-already-applied';
+          state.lastSyncError = '';
+          await persistState({
+            lastSyncStatus: state.lastSyncStatus,
+            lastSyncError: '',
+            lastChecksum: checksum,
+            lastSummarySignature: signature,
+            lastFileLastModified: state.lastFileLastModified,
+            lastFileSize: state.lastFileSize,
+          });
+          return {
+            ok: true,
+            phase: PHASE,
+            mode: MODE,
+            path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+            schema: bundle.schema,
+            exportedAt: cleanString(bundle.exportedAt),
+            checksum: checksum,
+            fileLastModified: state.lastFileLastModified,
+            fileSize: state.lastFileSize,
+            summarySignature: signature,
+            importedChats: 0,
+            importedSnapshots: 0,
+            skipped: 0,
+            rowsAfter: alreadyRowsAfter,
+            sourceSummary: alreadyPropagation.sourceSummary,
+            importSummary: alreadyPropagation.importSummary,
+            convergence: alreadyPropagation.convergence,
+            blockers: alreadyPropagation.blockers,
+            warnings: alreadyPropagation.warnings,
+            redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
+            propagation: alreadyPropagation,
+            autoSync: true,
+            durationMs: Date.now() - startedAt,
+            backgroundAutoImport: false,
+            chromeWritesSyncFolder: false,
+            status: 'auto-sync-latest-already-applied',
+          };
+        }
       }
 
       var transportBlockers = classifyIncomingDesktopTransport(bundle, checksum);
@@ -1725,6 +1992,12 @@
           chromeStorageLocal: numberOrZero(importSummary.chromeStorageSkipped),
           libraryKv: numberOrZero(importSummary.libraryKvSkipped),
         },
+        sourceSummary: propagation && propagation.sourceSummary,
+        importSummary: propagation && propagation.importSummary,
+        convergence: propagation && propagation.convergence,
+        blockers: propagation && propagation.blockers,
+        warnings: propagation && propagation.warnings,
+        redactedErrorCategories: propagation && propagation.redactedErrorCategories,
         rowsAfter: rowsAfter,
         dryRun: dryRunSummary,
         propagation: propagation,
