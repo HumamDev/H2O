@@ -74,6 +74,7 @@
   var KV_ALLOW_PREFIX = 'h2o:prm:cgx:library:';
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var DB_URL = 'sqlite:studio-v1.db';
+  var BULK_MIGRATION_IDENTITY = 'f15.bulk-migration';
 
   function isAllowedStorageKey(key) {
     var k = String(key || '');
@@ -404,6 +405,18 @@
     return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
   }
 
+  async function authorizedBulkMigrationExecute(query, values, reason) {
+    var sync = H2O.Desktop && H2O.Desktop.Sync;
+    var executeAuthorizedSqlite = sync && sync.executeAuthorizedSqlite;
+    if (typeof executeAuthorizedSqlite !== 'function') return null;
+    return await executeAuthorizedSqlite({
+      identity: BULK_MIGRATION_IDENTITY,
+      bulkMigrationEnabled: true,
+      reason: reason || 'f19.chrome-desktop-minimal-row',
+      statements: [{ query: query, values: values || [] }]
+    });
+  }
+
   function isoToEpochMs(input) {
     if (input == null) return 0;
     if (typeof input === 'number' && isFinite(input) && input > 0) return input;
@@ -423,12 +436,27 @@
     var msg = String((e && e.message) || e || '').toLowerCase();
     if (!msg) return 'import-error';
     if (msg.indexOf('f15-store-write-protected:chats.category_id') !== -1) return 'category-cache-write-protected';
+    if (msg.indexOf('no such function: h2o_writer_identity') !== -1) return 'minimal-row-sql-writer-identity-missing';
+    if (msg.indexOf('no such column') !== -1 || msg.indexOf('has no column named') !== -1) return 'minimal-row-sql-column-mismatch';
+    if (msg.indexOf('minimal-row-materialize: chatid required') !== -1) return 'minimal-row-required-field-missing';
+    if (msg.indexOf('minimal-row-materialize: insert ignored') !== -1) return 'minimal-row-invalid-state';
+    if (msg.indexOf('sqlite-authorized-query-failed') !== -1) return 'minimal-row-sql-execute-failed';
+    if (msg.indexOf('sqlite-authorized-execute-failed') !== -1) return 'minimal-row-sql-execute-failed';
+    if (msg.indexOf('sqlite-db-unavailable') !== -1 || msg.indexOf('sqlite-db-acquire-failed') !== -1) return 'minimal-row-store-unavailable';
     if (msg.indexOf('category') !== -1 && (msg.indexOf('constraint') !== -1 || msg.indexOf('trigger') !== -1)) return 'category-reference-rejected';
     if (msg.indexOf('unique') !== -1 || msg.indexOf('constraint') !== -1) return 'sqlite-constraint';
     if (msg.indexOf('not null') !== -1) return 'sqlite-not-null';
     if (msg.indexOf('chatid required') !== -1 || msg.indexOf('chatid') !== -1) return 'chat-id-invalid';
     if (msg.indexOf('tauri invoke') !== -1 || msg.indexOf('plugin:sql') !== -1) return 'sqlite-unavailable';
     return 'import-error';
+  }
+
+  function classifyMinimalRowError(e) {
+    var code = classifyImportError(e);
+    if (code !== 'import-error') return code;
+    var primary = e && e.primaryImportError ? classifyImportError(e.primaryImportError) : 'import-error';
+    if (primary !== 'import-error') return primary;
+    return 'minimal-row-sql-execute-failed';
   }
 
   /* Build SQLite turn rows from a bundle snapshot. Zips snapshot.messages[]
@@ -614,10 +642,13 @@
       safeJson(meta)
     ];
     var placeholders = columns.map(function () { return '?'; }).join(', ');
-    var result = await sqliteExecute(
-      'INSERT OR IGNORE INTO chats (' + columns.join(', ') + ') VALUES (' + placeholders + ')',
-      values
-    );
+    var query = 'INSERT OR IGNORE INTO chats (' + columns.join(', ') + ') VALUES (' + placeholders + ')';
+    var result = await authorizedBulkMigrationExecute(query, values, 'f19.chrome-desktop-minimal-row');
+    if (!result) result = await sqliteExecute(query, values);
+    if (result && result.ok === false) {
+      var blockers = Array.isArray(result.blockers) ? result.blockers.join(',') : 'authorized-sqlite-blocked';
+      throw new Error(blockers || 'authorized-sqlite-blocked');
+    }
     if (chatStore && typeof chatStore.reload === 'function') {
       try { await chatStore.reload(); } catch (_) { /* ignore */ }
     }
@@ -1002,7 +1033,7 @@
         if (minimalSummary) minimalSummary.failed += 1;
         result.errors.push({
           kind: isMinimalRow ? 'chrome-minimal-row-import' : 'chat',
-          code: classifyImportError(e),
+          code: isMinimalRow ? classifyMinimalRowError(e) : classifyImportError(e),
           primaryCode: e && e.primaryImportError ? classifyImportError(e.primaryImportError) : '',
           id: chatId,
           error: String(e && e.message || e)
