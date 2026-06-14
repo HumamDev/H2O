@@ -845,6 +845,7 @@
     var written = r.written && typeof r.written === 'object' ? r.written : {};
     var skipped = r.skipped && typeof r.skipped === 'object' ? r.skipped : {};
     var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
+    var chromeMinimalRows = r.chromeMinimalRows && typeof r.chromeMinimalRows === 'object' ? r.chromeMinimalRows : {};
     var errorKinds = Object.create(null);
     var minimalRowErrors = 0;
     var nonMinimalErrorCount = 0;
@@ -860,6 +861,7 @@
     var minimalRowsExisting = 0;
     (Array.isArray(r.warnings) ? r.warnings : []).forEach(function (entry) {
       var kind = String(entry && entry.kind || 'warning');
+      if (kind === 'chrome-minimal-row-materialized-via-store-upsert') minimalRowsMaterialized += 1;
       if (kind === 'chrome-minimal-row-materialized-via-shell-insert') minimalRowsMaterialized += 1;
       if (kind === 'chrome-minimal-row-materialize-existing') minimalRowsExisting += 1;
       warningKinds[kind] = Number(warningKinds[kind] || 0) + 1;
@@ -895,11 +897,15 @@
       errorKinds: countsObjectToRows(errorKinds),
       redactedErrorCategories: countsObjectToRows(errorKinds),
       warningKinds: countsObjectToRows(warningKinds),
-      minimalRowErrors: minimalRowErrors,
+      minimalRowErrors: Math.max(minimalRowErrors, Number(chromeMinimalRows.failed || 0)),
       nonMinimalErrorCount: nonMinimalErrorCount,
-      minimalRowsMaterialized: minimalRowsMaterialized,
-      minimalRowsExisting: minimalRowsExisting,
-      minimalRowsSatisfied: minimalRowsMaterialized + minimalRowsExisting,
+      minimalRowsTotal: Number(chromeMinimalRows.total || 0),
+      minimalRowsAttempted: Number(chromeMinimalRows.attempted || 0),
+      minimalRowsMaterialized: Math.max(minimalRowsMaterialized, Number(chromeMinimalRows.materialized || 0)),
+      minimalRowsExisting: Math.max(minimalRowsExisting, Number(chromeMinimalRows.existing || 0)),
+      minimalRowsFailed: Number(chromeMinimalRows.failed || 0),
+      minimalRowsSatisfied: Math.max(minimalRowsMaterialized, Number(chromeMinimalRows.materialized || 0)) +
+        Math.max(minimalRowsExisting, Number(chromeMinimalRows.existing || 0)),
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {
           return {
@@ -916,7 +922,11 @@
   function staleMinimalRowErrorsAreCovered(importSummary, sourceSummary) {
     var summary = importSummary && typeof importSummary === 'object' ? importSummary : {};
     var source = sourceSummary && typeof sourceSummary === 'object' ? sourceSummary : {};
-    var target = Number(source.minimalRowCount || 0);
+    var target = Number(source.minimalRowCount || 0) ||
+      Number(summary.minimalRowsAttempted || 0) ||
+      Number(summary.minimalRowsTotal || 0) ||
+      Number(summary.minimalRowErrors || 0);
+    if (Number(summary.minimalRowsFailed || 0) > 0) return false;
     return target > 0 &&
       Number(summary.minimalRowErrors || 0) > 0 &&
       Number(summary.nonMinimalErrorCount || 0) === 0 &&
@@ -969,6 +979,13 @@
         rawTitlesReturned: false,
         rawContentReturned: false
       },
+      redactedErrorCategories: f.importSummary && Array.isArray(f.importSummary.redactedErrorCategories)
+        ? f.importSummary.redactedErrorCategories.slice() : [],
+      minimalRowsMaterialized: Number(f.importSummary && f.importSummary.minimalRowsMaterialized || 0),
+      minimalRowsExisting: Number(f.importSummary && f.importSummary.minimalRowsExisting || 0),
+      minimalRowsSatisfied: Number(f.importSummary && f.importSummary.minimalRowsSatisfied || 0),
+      minimalRowsFailed: Number(f.importSummary && f.importSummary.minimalRowsFailed || 0),
+      minimalRowErrors: Number(f.importSummary && f.importSummary.minimalRowErrors || 0),
       sideEffects: {
         chromeStorageWritten: false,
         desktopSqliteMayWriteSupportedRows: ok === true && status !== 'already-imported',
@@ -1055,7 +1072,11 @@
     if (!imported || (imported.ok === false && !staleMinimalRowsCovered)) {
       var blockers = ['library-propagation-import-failed'];
       if (importSummary.minimalRowErrors > 0 &&
-          Number(importSummary.minimalRowsSatisfied || 0) < Number(normalized.sourceSummary && normalized.sourceSummary.minimalRowCount || 0)) {
+          (Number(importSummary.minimalRowsFailed || 0) > 0 ||
+            Number(importSummary.minimalRowsSatisfied || 0) < (Number(normalized.sourceSummary && normalized.sourceSummary.minimalRowCount || 0) ||
+              Number(importSummary.minimalRowsAttempted || 0) ||
+              Number(importSummary.minimalRowsTotal || 0) ||
+              Number(importSummary.minimalRowErrors || 0)))) {
         addUnique(blockers, 'chrome-minimal-row-import-unsupported');
       }
       return propagationResult(false, {

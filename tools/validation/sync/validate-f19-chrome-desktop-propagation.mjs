@@ -279,8 +279,9 @@ async function runVmProof() {
       destinationBackend: 'sqlite-fixture',
       written: { chats: 1, snapshots: 0, categories: 0, folders: 0 },
       skipped: { chats: 1, snapshots: 0, categories: 0, folders: 0 },
-      warnings: [{ kind: 'chrome-minimal-row-materialized-via-shell-insert' }],
+      warnings: [],
       errors: [{ kind: 'chrome-minimal-row-import', code: 'sqlite-unavailable' }],
+      chromeMinimalRows: { total: 1, attempted: 1, materialized: 1, existing: 0, failed: 0 },
       libraryBulkMigration: []
     };
   };
@@ -290,6 +291,12 @@ async function runVmProof() {
   assert(covered.warnings.includes('chrome-minimal-row-stale-error-covered'), 'covered minimal row warning missing');
   assert(covered.importSummary.staleMinimalRowErrorsCovered === true, 'covered minimal row summary marker missing');
   assert(covered.importSummary.redactedErrorCategories.some((entry) => entry.code === 'sqlite-unavailable' && entry.count === 1), 'redacted error categories missing');
+  assert(covered.redactedErrorCategories.some((entry) => entry.code === 'sqlite-unavailable' && entry.count === 1), 'top-level redacted error categories missing');
+  assert(covered.minimalRowsMaterialized === 1, 'top-level minimalRowsMaterialized mismatch');
+  assert(covered.minimalRowsExisting === 0, 'top-level minimalRowsExisting mismatch');
+  assert(covered.minimalRowsSatisfied === 1, 'top-level minimalRowsSatisfied mismatch');
+  assert(covered.minimalRowsFailed === 0, 'top-level minimalRowsFailed mismatch');
+  assert(covered.minimalRowErrors === 1, 'top-level minimalRowErrors mismatch');
 
   const publicResult = JSON.stringify(result);
   for (const forbidden of [
@@ -323,6 +330,7 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'skipExistingFolderMetadata: true', 'folder overwrite guard');
   assertContains(folderSyncFile, 'redactedErrorCategories', 'redacted import error categories');
   assertContains(folderSyncFile, 'staleMinimalRowErrorsAreCovered', 'covered stale minimal-row helper');
+  assertContains(folderSyncFile, 'minimalRowsSatisfied', 'minimal row satisfied summary');
   assertContains(folderSyncFile, 'library-propagation-labels-deferred', 'label deferred taxonomy');
   assertContains(folderSyncFile, 'library-propagation-chat-folder-bindings-deferred', 'folder binding deferred taxonomy');
   assertContains(folderSyncFile, 'fileFingerprintChecked: true', 'file idempotency marker');
@@ -330,6 +338,7 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'skipExistingFolderMetadata', 'folder overwrite option');
   assertContains(importBundleFile, 'prepareMinimalLibraryIndexPatch', 'minimal row import helper');
   assertContains(importBundleFile, 'materializeMinimalLibraryIndexRow', 'minimal row materializer');
+  assertContains(importBundleFile, 'chromeMinimalRows', 'minimal row importer summary');
   assertContains(importBundleFile, 'f19ChromeDesktopMaterializedShell', 'minimal row shell marker');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
