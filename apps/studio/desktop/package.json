@@ -8,7 +8,7 @@
     "prepare-dist": "node ./build-tools/prepare-dist.mjs",
     "tauri": "tauri",
     "tauri:dev": "npm run prepare-dist && tauri dev",
-    "tauri:build": "npm run prepare-dist && tauri build"
+    "tauri:build": "node ./build-tools/tauri-build.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
