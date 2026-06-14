@@ -13,6 +13,7 @@ const proofSchema = 'h2o.studio.sync.chrome-desktop-live-parity-proof.v1';
 const proofVersion = '0.1.0-f19.3';
 const paritySchema = 'h2o.studio.sync.chrome-desktop-library-parity.v1';
 const snapshotSchema = 'h2o.studio.sync.library-parity-snapshot.v1';
+const chromeExportCoverageSchema = 'h2o.studio.sync.chrome-export-coverage.v1';
 
 const contractFile = 'docs/systems/cross-platform/f19.3-live-chrome-desktop-parity-proof-contract.md';
 const closureContractFile = 'docs/systems/cross-platform/f19.5-premium-sync-closure-evidence.md';
@@ -22,6 +23,7 @@ const chromeDesktopPropagationValidator = 'tools/validation/sync/validate-f19-ch
 const desktopChromePropagationValidator = 'tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs';
 const parityValidator = 'tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs';
 const hardeningValidator = 'tools/validation/sync/validate-f19-sync-hardening.mjs';
+const chromeAutoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 
 const supportedFields = [
   'total',
@@ -92,6 +94,17 @@ const requiredHardeningCodes = [
   'unsupported-field-present',
   'source-metadata-missing',
   'parity-peer-snapshot-required'
+];
+
+const requiredChromeExportCoverageFields = [
+  'snapshotTotal',
+  'snapshotSaved',
+  'snapshotLinked',
+  'bundleChatCount',
+  'bundleSavedCount',
+  'bundleLinkedCount',
+  'missingRowCount',
+  'missingRowTypeCounts'
 ];
 
 const forbiddenNeedles = [
@@ -303,6 +316,43 @@ function propagationResult(direction) {
   };
 }
 
+function chromeExportCoverageFixture() {
+  return {
+    schema: chromeExportCoverageSchema,
+    ok: true,
+    sourcePolicy: 'library-index-supported-rows',
+    snapshotTotal: 2,
+    snapshotSaved: 1,
+    snapshotLinked: 1,
+    snapshotPinned: 1,
+    snapshotArchived: 0,
+    bundleOriginalChatCount: 1,
+    bundleChatCount: 2,
+    bundleSavedCount: 1,
+    bundleLinkedCount: 1,
+    bundlePinnedCount: 1,
+    bundleArchivedCount: 0,
+    missingRowCount: 1,
+    addedMinimalRowCount: 1,
+    unexportableRowCount: 0,
+    missingRowTypeCounts: {
+      linkedOnly: 1,
+      savedOnly: 0,
+      registryOnly: 1,
+      archiveBacked: 0,
+      pinned: 0
+    },
+    blockers: [],
+    warnings: ['chrome-export-source-coverage-minimal-rows-added'],
+    privacy: {
+      redacted: true,
+      rawIdsReturned: false,
+      rawTitlesReturned: false,
+      rawContentReturned: false
+    }
+  };
+}
+
 function makeProof(finalParity) {
   const partition = partitionMismatches(finalParity);
   return {
@@ -336,6 +386,7 @@ function makeProof(finalParity) {
       chromeToDesktop: propagationResult('chrome-to-desktop'),
       desktopToChrome: propagationResult('desktop-to-chrome')
     },
+    chromeExportCoverage: chromeExportCoverageFixture(),
     supportedFields,
     deferredFields,
     privacy: {
@@ -403,6 +454,24 @@ function validatePropagationResult(result, direction) {
   assert(result.privacy && result.privacy.rawContentReturned === false, `${direction}: propagation raw content flag unsafe`);
 }
 
+function validateChromeExportCoverage(coverage) {
+  assert(coverage && typeof coverage === 'object', 'chromeExportCoverage missing');
+  if (!coverage || typeof coverage !== 'object') return;
+  assert(coverage.schema === chromeExportCoverageSchema, 'chromeExportCoverage schema mismatch');
+  assert(coverage.ok === true, 'chromeExportCoverage must be ok');
+  for (const field of requiredChromeExportCoverageFields) {
+    assert(Object.prototype.hasOwnProperty.call(coverage, field), `chromeExportCoverage missing ${field}`);
+  }
+  assert(Number(coverage.snapshotTotal) === Number(coverage.bundleChatCount), 'chromeExportCoverage snapshotTotal must equal bundleChatCount');
+  assert(Number(coverage.unexportableRowCount || 0) === 0, 'chromeExportCoverage unexportable rows must be zero');
+  assert(Array.isArray(coverage.blockers), 'chromeExportCoverage blockers must be an array');
+  assert(!coverage.blockers.includes('chrome-export-source-coverage-mismatch'), 'chromeExportCoverage must not include coverage mismatch blocker');
+  assert(coverage.privacy?.redacted === true, 'chromeExportCoverage privacy redaction missing');
+  assert(coverage.privacy?.rawIdsReturned === false, 'chromeExportCoverage raw ID flag unsafe');
+  assert(coverage.privacy?.rawTitlesReturned === false, 'chromeExportCoverage raw title flag unsafe');
+  assert(coverage.privacy?.rawContentReturned === false, 'chromeExportCoverage raw content flag unsafe');
+}
+
 function scanForForbiddenNeedles(proof) {
   const text = JSON.stringify(proof);
   return forbiddenNeedles.filter((needle) => text.includes(needle));
@@ -426,6 +495,7 @@ function validateProofObject(proof, options = {}) {
   assert(typeof proof.parity?.deferredMismatchCount === 'number', 'deferred mismatch count missing');
   validatePropagationResult(proof.propagation?.chromeToDesktop, 'chrome-to-desktop');
   validatePropagationResult(proof.propagation?.desktopToChrome, 'desktop-to-chrome');
+  validateChromeExportCoverage(proof.chromeExportCoverage);
   const warnings = new Set([
     ...(proof.propagation?.chromeToDesktop?.warnings || []),
     ...(proof.propagation?.desktopToChrome?.warnings || [])
@@ -454,7 +524,8 @@ function validateStaticFiles() {
     parityValidator,
     chromeDesktopPropagationValidator,
     desktopChromePropagationValidator,
-    hardeningValidator
+    hardeningValidator,
+    chromeAutoImportFile
   ]) assertExists(file);
 
   if (failures.length) return;
@@ -469,6 +540,8 @@ function validateStaticFiles() {
   assertContains(contractFile, 'tombstones', 'deferred tombstones');
   assertContains(contractFile, 'sync apply events', 'deferred apply events');
   assertContains(closureContractFile, proofSchema, 'F19.5 closure proof schema');
+  assertContains(closureContractFile, 'chrome-export-source-coverage-mismatch', 'F19.5 export coverage blocker');
+  assertContains(closureContractFile, 'chromeExportCoverage', 'F19.5 export coverage proof field');
   assertContains(closureContractFile, 'Premium Sync v1 supported fields complete', 'F19.5 supported-fields closure phrase');
   assertContains(closureContractFile, 'Premium Sync complete', 'F19.5 full closure phrase');
   assertContains(closureContractFile, 'node tools/validation/sync/validate-f19-live-parity-proof.mjs --proof', 'F19.5 proof validation command');
@@ -479,6 +552,9 @@ function validateStaticFiles() {
   assertContains(parityModuleFile, 'captureSnapshot', 'captureSnapshot API');
   assertContains(parityModuleFile, 'runDiagnostic', 'runDiagnostic API');
   assertContains(parityModuleFile, 'cache-only-read-only', 'read-only marker');
+  assertContains(chromeAutoImportFile, chromeExportCoverageSchema, 'Chrome export coverage schema');
+  assertContains(chromeAutoImportFile, 'chrome-export-source-coverage-mismatch', 'Chrome export coverage mismatch blocker');
+  assertContains(chromeAutoImportFile, 'f19MinimalLibraryIndexRow', 'minimal LibraryIndex row marker');
 }
 
 const args = parseArgs();

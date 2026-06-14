@@ -83,6 +83,10 @@
   /* ── Constants — mirror folder-import.mv3.js storage location ─────── */
   var PHASE                = 'R3-phase1';
   var FULL_BUNDLE_SCHEMA   = 'h2o.studio.fullBundle.v2';
+  var EXPORT_COVERAGE_SCHEMA = 'h2o.studio.sync.chrome-export-coverage.v1';
+  var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
+  var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
+  var EXPORT_COVERAGE_MINIMAL_ROWS = 'chrome-export-source-coverage-minimal-rows-added';
   var CHROME_FILE          = 'chrome-latest.json';
   var CHROME_FILE_TMP      = 'chrome-latest.json.tmp';
   var MSG_ARCHIVE          = 'h2o-ext-archive:v1';
@@ -290,6 +294,280 @@
     return { ok: true };
   }
 
+  /* ── F19.5b export-source coverage ─────────────────────────────────
+   * The Chrome Studio parity diagnostic reads H2O.LibraryIndex.getAll().
+   * The legacy archive exporter reads transcript archive storage. F19.5
+   * cannot treat those as equivalent unless chrome-latest.json covers the
+   * same supported row set. We append minimal zero-snapshot records for
+   * LibraryIndex-only rows so Desktop can materialize saved/linked row
+   * parity without inventing transcript content. Public diagnostics are
+   * count-only/redacted; raw ids/titles stay only inside the user-owned
+   * transport bundle. */
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function boolValue(value) {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+
+  function rowView(row) {
+    return cleanString(row && (row.view || row.status || '')).toLowerCase();
+  }
+
+  function rowId(row) {
+    return cleanString(row && (row.chatId || row.id || row.externalId || row.conversationId));
+  }
+
+  function isSavedRow(row) {
+    var view = rowView(row);
+    return view === 'saved' || boolValue(row && (row.saved || row.isSaved));
+  }
+
+  function isLinkedRow(row) {
+    var view = rowView(row);
+    return view === 'linked' || boolValue(row && (row.linked || row.isLinked));
+  }
+
+  function isArchivedRow(row) {
+    var view = rowView(row);
+    return view === 'archived' || boolValue(row && (row.archived || row.isArchived));
+  }
+
+  function isPinnedRow(row) {
+    return boolValue(row && (row.pinned || row.isPinned));
+  }
+
+  function hasArchiveEvidence(row) {
+    return !!cleanString(row && row.snapshotId) || Number(row && row.snapshotCount) > 0;
+  }
+
+  function getLibraryIndexRows() {
+    try {
+      var idx = H2O.LibraryIndex || (H2O.Library && H2O.Library.Index) || null;
+      if (!idx || typeof idx.getAll !== 'function') return null;
+      var rows = idx.getAll();
+      return Array.isArray(rows) ? rows.slice() : [];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function ensureBundleChatArchive(bundle) {
+    if (!bundle.chatArchive || typeof bundle.chatArchive !== 'object' || Array.isArray(bundle.chatArchive)) {
+      bundle.chatArchive = { schema: 'h2o.chatArchive.bundle.v1', chats: [], catalogs: {} };
+    }
+    if (!Array.isArray(bundle.chatArchive.chats)) bundle.chatArchive.chats = [];
+    if (!bundle.chatArchive.catalogs || typeof bundle.chatArchive.catalogs !== 'object' || Array.isArray(bundle.chatArchive.catalogs)) {
+      bundle.chatArchive.catalogs = {};
+    }
+    return bundle.chatArchive;
+  }
+
+  function bundleChatId(chat) {
+    return cleanString(chat && (chat.chatId || (chat.chatIndex && (chat.chatIndex.chatId || chat.chatIndex.id))));
+  }
+
+  function countBundleViews(chats) {
+    var counts = { saved: 0, linked: 0, pinned: 0, archived: 0 };
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
+      var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+      var hasSnapshots = Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0;
+      if (view === 'linked' || stateObj.isLinked === true || index.isLinked === true) counts.linked += 1;
+      else if (hasSnapshots || view === 'saved' || stateObj.isSaved === true || index.isSaved === true) counts.saved += 1;
+      else counts.saved += 1;
+      if (stateObj.isPinned === true || index.pinned === true || index.isPinned === true) counts.pinned += 1;
+      if (stateObj.isArchived === true || index.archived === true || index.isArchived === true) counts.archived += 1;
+    });
+    return counts;
+  }
+
+  function countSnapshotRows(rows) {
+    var counts = { total: 0, saved: 0, linked: 0, pinned: 0, archived: 0 };
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      counts.total += 1;
+      if (isSavedRow(row)) counts.saved += 1;
+      if (isLinkedRow(row)) counts.linked += 1;
+      if (isPinnedRow(row)) counts.pinned += 1;
+      if (isArchivedRow(row)) counts.archived += 1;
+    });
+    return counts;
+  }
+
+  function makeMissingRowTypeCounts(rows) {
+    var out = {
+      linkedOnly: 0,
+      savedOnly: 0,
+      registryOnly: 0,
+      archiveBacked: 0,
+      pinned: 0
+    };
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var saved = isSavedRow(row);
+      var linked = isLinkedRow(row);
+      var archiveBacked = hasArchiveEvidence(row);
+      if (linked && !saved) out.linkedOnly += 1;
+      if (saved && !linked) out.savedOnly += 1;
+      if (!archiveBacked) out.registryOnly += 1;
+      if (archiveBacked) out.archiveBacked += 1;
+      if (isPinnedRow(row)) out.pinned += 1;
+    });
+    return out;
+  }
+
+  function buildMinimalChatFromLibraryRow(row) {
+    var id = rowId(row);
+    if (!id) return null;
+    var saved = isSavedRow(row);
+    var linked = isLinkedRow(row);
+    var archived = isArchivedRow(row);
+    var pinned = isPinnedRow(row);
+    var title = cleanString(row && (row.title || row.chatTitle || row.name)) || id;
+    var href = cleanString(row && (row.href || row.linkSourceHref || row.normalizedHref))
+      || ('https://chatgpt.com/c/' + id);
+    var view = linked && !saved ? 'linked' : (archived ? 'archived' : 'saved');
+    return {
+      chatId: id,
+      bootMode: linked && !saved ? 'linked' : 'saved',
+      chatIndex: {
+        id: id,
+        title: title,
+        href: href,
+        view: view,
+        state: {
+          isSaved: saved || !linked,
+          isLinked: linked,
+          isPinned: pinned,
+          isArchived: archived,
+          isDeleted: false
+        },
+        organization: {
+          categoryId: cleanString(row && row.categoryId)
+        },
+        linkSourceHref: cleanString(row && (row.linkSourceHref || row.normalizedHref || href)),
+        linkedFrom: cleanString(row && row.linkedFrom),
+        linkedAt: cleanString(row && row.linkedAt),
+        f19MinimalLibraryIndexRow: true
+      },
+      migrated: false,
+      snapshots: []
+    };
+  }
+
+  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows) {
+    var snapshotCounts = countSnapshotRows(snapshotRows);
+    var bundleCounts = countBundleViews(bundleChats);
+    var missingTypeCounts = makeMissingRowTypeCounts(missingRows);
+    var blockers = [];
+    var warnings = [];
+    if (addedRows.length > 0) warnings.push(EXPORT_COVERAGE_MINIMAL_ROWS);
+    if (unexportableRows.length > 0 || snapshotCounts.total !== bundleChats.length) {
+      blockers.push(EXPORT_COVERAGE_MISMATCH);
+    }
+    return {
+      schema: EXPORT_COVERAGE_SCHEMA,
+      ok: blockers.length === 0,
+      sourcePolicy: 'library-index-supported-rows',
+      snapshotTotal: snapshotCounts.total,
+      snapshotSaved: snapshotCounts.saved,
+      snapshotLinked: snapshotCounts.linked,
+      snapshotPinned: snapshotCounts.pinned,
+      snapshotArchived: snapshotCounts.archived,
+      bundleOriginalChatCount: originalChatCount,
+      bundleChatCount: bundleChats.length,
+      bundleSavedCount: bundleCounts.saved,
+      bundleLinkedCount: bundleCounts.linked,
+      bundlePinnedCount: bundleCounts.pinned,
+      bundleArchivedCount: bundleCounts.archived,
+      missingRowCount: missingRows.length,
+      addedMinimalRowCount: addedRows.length,
+      unexportableRowCount: unexportableRows.length,
+      missingRowTypeCounts: missingTypeCounts,
+      blockers: blockers,
+      warnings: warnings,
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      }
+    };
+  }
+
+  function alignBundleToLibraryIndex(bundle) {
+    var rows = getLibraryIndexRows();
+    if (!rows) {
+      return {
+        bundle: bundle,
+        coverage: {
+          schema: EXPORT_COVERAGE_SCHEMA,
+          ok: false,
+          sourcePolicy: 'library-index-supported-rows',
+          snapshotTotal: 0,
+          snapshotSaved: 0,
+          snapshotLinked: 0,
+          snapshotPinned: 0,
+          snapshotArchived: 0,
+          bundleOriginalChatCount: 0,
+          bundleChatCount: 0,
+          bundleSavedCount: 0,
+          bundleLinkedCount: 0,
+          bundlePinnedCount: 0,
+          bundleArchivedCount: 0,
+          missingRowCount: 0,
+          addedMinimalRowCount: 0,
+          unexportableRowCount: 0,
+          missingRowTypeCounts: makeMissingRowTypeCounts([]),
+          blockers: [EXPORT_COVERAGE_UNAVAILABLE],
+          warnings: [],
+          privacy: { redacted: true, rawIdsReturned: false, rawTitlesReturned: false, rawContentReturned: false }
+        }
+      };
+    }
+
+    var chatArchive = ensureBundleChatArchive(bundle);
+    var originalChatCount = chatArchive.chats.length;
+    var existingIds = Object.create(null);
+    chatArchive.chats.forEach(function (chat) {
+      var id = bundleChatId(chat);
+      if (id) existingIds[id] = true;
+    });
+
+    var missingRows = [];
+    var addedRows = [];
+    var unexportableRows = [];
+    rows.forEach(function (row) {
+      var id = rowId(row);
+      if (!id) {
+        unexportableRows.push(row);
+        return;
+      }
+      if (existingIds[id]) return;
+      missingRows.push(row);
+      var minimal = buildMinimalChatFromLibraryRow(row);
+      if (!minimal) {
+        unexportableRows.push(row);
+        return;
+      }
+      chatArchive.chats.push(minimal);
+      existingIds[id] = true;
+      addedRows.push(row);
+    });
+
+    chatArchive.chatCount = chatArchive.chats.length;
+    bundle.summary = bundle.summary && typeof bundle.summary === 'object' && !Array.isArray(bundle.summary)
+      ? bundle.summary : {};
+    bundle.diagnostics = bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
+      ? bundle.diagnostics : {};
+    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows);
+    bundle.summary.chatCount = chatArchive.chats.length;
+    bundle.summary.f19ChromeExportCoverageOk = coverage.ok === true;
+    bundle.diagnostics.chromeExportCoverage = coverage;
+    return { bundle: bundle, coverage: coverage };
+  }
+
   /* ── Atomic-ish file write: write to .tmp, rename to final ────────── */
   /* FileSystemFileHandle.move() handles the rename atomically when the
    * browser supports it (Chromium 110+). When unavailable, fall back to
@@ -371,6 +649,8 @@
     state.inFlight = true;
     var warnings = [];
     var errors = [];
+    var blockers = [];
+    var chromeExportCoverage = null;
     var bytes = 0;
     var atomicMethod = '';
 
@@ -388,14 +668,51 @@
       /* (4) Produce bundle via service worker. */
       var bundle = await callArchive('exportFullBundle', {});
 
-      /* (5) Schema validation. */
+      /* (5) Align export source with the live Chrome Studio LibraryIndex.
+       * F19.5 supported parity requires chrome-latest.json to cover the
+       * same visible Library rows that the parity snapshot counts. */
+      var aligned = alignBundleToLibraryIndex(bundle);
+      bundle = aligned.bundle || bundle;
+      chromeExportCoverage = aligned.coverage || null;
+      if (chromeExportCoverage) {
+        (chromeExportCoverage.warnings || []).forEach(function (code) {
+          if (warnings.indexOf(code) === -1) warnings.push(code);
+        });
+        (chromeExportCoverage.blockers || []).forEach(function (code) {
+          if (blockers.indexOf(code) === -1) blockers.push(code);
+        });
+      }
+      if (blockers.length > 0) {
+        var blocked = {
+          ok: false,
+          reason: reason,
+          startedAt: startedAt,
+          completedAt: nowIso(),
+          filename: '',
+          bytes: 0,
+          flagEnabled: true,
+          status: 'coverage-blocked',
+          error: blockers[0],
+          warnings: warnings,
+          blockers: blockers,
+          chromeExportCoverage: chromeExportCoverage,
+        };
+        state.lastExportAt = startedAt;
+        state.lastExportStatus = 'coverage-blocked';
+        state.lastExportFile = '';
+        state.lastExportBytes = 0;
+        state.lastExportError = blockers[0] || '';
+        return blocked;
+      }
+
+      /* (6) Schema validation. */
       var v = validateBundleShape(bundle);
       if (!v.ok) throw new Error('bundle validation failed: ' + v.error);
 
-      /* (6) Serialize. */
+      /* (7) Serialize. */
       var json = JSON.stringify(bundle);
 
-      /* (7) Atomic-ish write. */
+      /* (8) Atomic-ish write. */
       var writeResult = await writeBundleAtomic(dirHandle, json);
       bytes = writeResult.bytes;
       atomicMethod = writeResult.atomicMethod;
@@ -409,7 +726,9 @@
         bytes: bytes,
         atomicMethod: atomicMethod,
         flagEnabled: true,
+        blockers: blockers,
         warnings: warnings,
+        chromeExportCoverage: chromeExportCoverage,
       };
       state.lastExportAt = startedAt;
       state.lastExportStatus = 'ok';
