@@ -538,6 +538,33 @@
     return blockers;
   }
 
+  function normalizeConflictDecision(options) {
+    return cleanString(options && options.conflictDecision).toLowerCase();
+  }
+
+  function resolveOperatorApprovedTransportBlockers(blockers, options) {
+    var input = Array.isArray(blockers) ? blockers.slice() : [];
+    var decision = normalizeConflictDecision(options);
+    var approveMerge = decision === 'approve-merge';
+    var approved = [];
+    var remaining = [];
+    for (var i = 0; i < input.length; i += 1) {
+      var code = cleanString(input[i]);
+      if (approveMerge && code === 'library-propagation-simultaneous-update-conflict') {
+        approved.push(code);
+      } else if (code) {
+        remaining.push(code);
+      }
+    }
+    return {
+      blockers: remaining,
+      conflictDecision: decision,
+      conflictApproved: approved.length > 0,
+      approvedBlockers: approved,
+      warning: approved.length > 0 ? 'library-propagation-simultaneous-conflict-approved' : ''
+    };
+  }
+
   function hasAnyKeys(value, keys) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     for (var i = 0; i < keys.length; i += 1) {
@@ -998,6 +1025,15 @@
       direction: 'desktop-to-chrome',
       transport: 'latest.json',
       status: statusValue,
+      conflictDecision: cleanString(f.conflictDecision),
+      conflictApproved: f.conflictApproved === true,
+      conflictApproval: {
+        approved: f.conflictApproved === true,
+        decision: cleanString(f.conflictDecision),
+        approvedBlockers: Array.isArray(f.approvedConflictBlockers) ? f.approvedConflictBlockers.slice() : [],
+        staleTransportStillBlocks: true,
+        duplicateIdempotencyPreserved: true
+      },
       supportedFields: DESKTOP_CHROME_SUPPORTED_FIELDS.slice(),
       deferredFields: warnings.filter(function (code) {
         return code === DESKTOP_CHROME_DEFERRED_CODES.labels ||
@@ -1027,6 +1063,7 @@
         duplicateImportIdempotent: warnings.indexOf(F19_SYNC_HARDENING_CODES.duplicateImportIdempotent) !== -1,
         staleBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.transportStale) !== -1,
         simultaneousConflictBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict) !== -1,
+        simultaneousConflictApproved: f.conflictApproved === true,
         deferredFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.deferredFieldPresent) !== -1,
         unsupportedFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.unsupportedFieldPresent) !== -1,
         sourceMetadataChecked: warnings.indexOf(F19_SYNC_HARDENING_CODES.sourceMetadataMissing) !== -1
@@ -1086,6 +1123,7 @@
       });
     }
     var warnings = normalized.warnings.slice();
+    if (opts.conflictApproved === true) addUnique(warnings, 'library-propagation-simultaneous-conflict-approved');
     var dryRun;
     try {
       dryRun = await callArchive('dryRunImportFullBundle', { bundle: normalized.bundle });
@@ -1106,6 +1144,9 @@
         sourceSummary: normalized.sourceSummary,
         importSummary: { ok: true, mode: 'merge', dryRun: redactedDryRunSummary(dryRun), proofMode: opts.proofMode === true },
         parity: dryParity,
+        conflictDecision: normalizeConflictDecision(opts),
+        conflictApproved: opts.conflictApproved === true,
+        approvedConflictBlockers: Array.isArray(opts.approvedConflictBlockers) ? opts.approvedConflictBlockers : [],
         idempotency: {
           fileFingerprintChecked: opts.fileFingerprint ? true : false,
           mergeOnly: true,
@@ -1150,6 +1191,9 @@
       convergence: convergence,
       redactedErrorCategories: redactedErrors,
       parity: parity,
+      conflictDecision: normalizeConflictDecision(opts),
+      conflictApproved: opts.conflictApproved === true,
+      approvedConflictBlockers: Array.isArray(opts.approvedConflictBlockers) ? opts.approvedConflictBlockers : [],
       idempotency: {
         fileFingerprintChecked: opts.fileFingerprint ? true : false,
         mergeOnly: true,
@@ -1853,10 +1897,15 @@
       }
 
       var transportBlockers = classifyIncomingDesktopTransport(bundle, checksum);
+      var transportApproval = resolveOperatorApprovedTransportBlockers(transportBlockers, opts);
+      transportBlockers = transportApproval.blockers;
       if (transportBlockers.length > 0) {
         var blockedPropagation = propagationResult(false, {
           status: 'blocked',
           blockers: transportBlockers,
+          conflictDecision: transportApproval.conflictDecision,
+          conflictApproved: transportApproval.conflictApproved,
+          approvedConflictBlockers: transportApproval.approvedBlockers,
           sourceSummary: {
             schema: cleanString(bundle && bundle.schema),
             direction: 'desktop-to-chrome',
@@ -1897,6 +1946,15 @@
           fileLastModified: state.lastFileLastModified,
           fileSize: state.lastFileSize,
           summarySignature: signature,
+          sourceSummary: blockedPropagation.sourceSummary,
+          importSummary: blockedPropagation.importSummary,
+          convergence: blockedPropagation.convergence,
+          conflictDecision: blockedPropagation.conflictDecision,
+          conflictApproved: blockedPropagation.conflictApproved,
+          conflictApproval: blockedPropagation.conflictApproval,
+          blockers: blockedPropagation.blockers,
+          warnings: blockedPropagation.warnings,
+          redactedErrorCategories: blockedPropagation.redactedErrorCategories,
           propagation: blockedPropagation,
           durationMs: Date.now() - startedAt,
           autoSync: !!opts.autoSync,
@@ -1910,7 +1968,10 @@
         dryRunOnly: opts.dryRunOnly === true,
         fileFingerprint: checksum,
         reason: cleanString(opts.reason),
-        autoSync: !!opts.autoSync
+        autoSync: !!opts.autoSync,
+        conflictDecision: transportApproval.conflictDecision,
+        conflictApproved: transportApproval.conflictApproved,
+        approvedConflictBlockers: transportApproval.approvedBlockers
       });
       if (opts.dryRunOnly) {
         state.lastSyncStatus = 'sync-folder-dry-run-ok';
@@ -1995,6 +2056,9 @@
         sourceSummary: propagation && propagation.sourceSummary,
         importSummary: propagation && propagation.importSummary,
         convergence: propagation && propagation.convergence,
+        conflictDecision: propagation && propagation.conflictDecision,
+        conflictApproved: propagation && propagation.conflictApproved,
+        conflictApproval: propagation && propagation.conflictApproval,
         blockers: propagation && propagation.blockers,
         warnings: propagation && propagation.warnings,
         redactedErrorCategories: propagation && propagation.redactedErrorCategories,

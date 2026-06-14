@@ -289,6 +289,19 @@ async function runVmProof() {
   assert(result.parity.snapshotCaptured === true, 'parity snapshot should be captured');
   assert(context.__registryRecords.has('desktop-chat-id-2'), 'Desktop shell row was not materialized into ChatRegistry');
 
+  const approved = await api.importLatestBundle(buildDesktopBundle(), {
+    fileFingerprint: 'sha256:test-fixture-approval',
+    conflictDecision: 'approve-merge',
+    conflictApproved: true,
+    approvedConflictBlockers: ['library-propagation-simultaneous-update-conflict']
+  });
+  assert(approved.ok === true, 'operator-approved merge fixture should still pass');
+  assert(approved.conflictDecision === 'approve-merge', 'approved merge conflictDecision missing');
+  assert(approved.conflictApproved === true, 'approved merge conflictApproved missing');
+  assert(approved.conflictApproval?.staleTransportStillBlocks === true, 'approved merge must preserve stale blocking');
+  assert(approved.conflictApproval?.duplicateIdempotencyPreserved === true, 'approved merge must preserve duplicate idempotency');
+  assert(approved.warnings.includes('library-propagation-simultaneous-conflict-approved'), 'approved merge warning missing');
+
   const importCall = context.__archiveCalls.find((entry) => entry.message.req.op === 'importFullBundle');
   assert(importCall, 'importFullBundle was not called');
   const payload = importCall.message.req.payload;
@@ -347,6 +360,9 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'chromeStorageMayWriteSupportedRows', 'Chrome side-effect marker');
   assertContains(folderImportFile, 'desktop-shell-row-import-unsupported', 'Desktop shell row blocker');
   assertContains(folderImportFile, 'desktop-to-chrome-convergence-not-proven', 'Desktop to Chrome convergence blocker');
+  assertContains(folderImportFile, 'conflictDecision', 'operator conflict decision');
+  assertContains(folderImportFile, 'approve-merge', 'operator-approved merge decision');
+  assertContains(folderImportFile, 'library-propagation-simultaneous-conflict-approved', 'operator-approved merge warning');
   assertContains(folderImportFile, 'redactedErrorCategories', 'redacted import error categories');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
   assertContains(contractFile, 'F19.2.c Minimal Desktop -> Chrome Scope', 'F19.2.c doc section');

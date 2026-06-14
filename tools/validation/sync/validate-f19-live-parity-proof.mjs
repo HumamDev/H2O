@@ -259,6 +259,21 @@ function propagationResult(direction) {
     direction,
     transport: direction === 'chrome-to-desktop' ? 'chrome-latest.json' : 'latest.json',
     status: 'imported',
+    conflictDecision: direction === 'desktop-to-chrome' ? 'approve-merge' : '',
+    conflictApproved: direction === 'desktop-to-chrome',
+    conflictApproval: direction === 'desktop-to-chrome' ? {
+      approved: true,
+      decision: 'approve-merge',
+      approvedBlockers: ['library-propagation-simultaneous-update-conflict'],
+      staleTransportStillBlocks: true,
+      duplicateIdempotencyPreserved: true
+    } : {
+      approved: false,
+      decision: '',
+      approvedBlockers: [],
+      staleTransportStillBlocks: true,
+      duplicateIdempotencyPreserved: true
+    },
     supportedFields: [
       'saved-chat-records',
       'linked-chat-records',
@@ -495,6 +510,12 @@ function validatePropagationResult(result, direction) {
   assert(result.privacy && result.privacy.rawIdsReturned === false, `${direction}: propagation raw ID flag unsafe`);
   assert(result.privacy && result.privacy.rawTitlesReturned === false, `${direction}: propagation raw title flag unsafe`);
   assert(result.privacy && result.privacy.rawContentReturned === false, `${direction}: propagation raw content flag unsafe`);
+  if (result.conflictDecision || result.conflictApproved === true) {
+    assert(result.conflictDecision === 'approve-merge', `${direction}: approved conflict decision must be approve-merge`);
+    assert(result.conflictApproved === true, `${direction}: conflictApproved must be true when decision is present`);
+    assert(result.conflictApproval?.staleTransportStillBlocks === true, `${direction}: stale transport must still block`);
+    assert(result.conflictApproval?.duplicateIdempotencyPreserved === true, `${direction}: duplicate idempotency must be preserved`);
+  }
 }
 
 function validateChromeExportCoverage(coverage) {
@@ -596,6 +617,8 @@ function validateStaticFiles() {
   assertContains(closureContractFile, 'desktop-shell-row-import-unsupported', 'F19.5 Desktop shell row blocker');
   assertContains(closureContractFile, 'desktop-to-chrome-convergence-not-proven', 'F19.5 Desktop to Chrome convergence blocker');
   assertContains(closureContractFile, 'convergence.ok === true', 'F19.5 Desktop to Chrome convergence proof');
+  assertContains(closureContractFile, 'conflictDecision: "approve-merge"', 'F19.5 operator-approved merge command');
+  assertContains(closureContractFile, 'conflictApproved:true', 'F19.5 operator-approved merge evidence');
   assertContains(closureContractFile, 'Premium Sync v1 supported fields complete', 'F19.5 supported-fields closure phrase');
   assertContains(closureContractFile, 'Premium Sync complete', 'F19.5 full closure phrase');
   assertContains(closureContractFile, 'node tools/validation/sync/validate-f19-live-parity-proof.mjs --proof', 'F19.5 proof validation command');
