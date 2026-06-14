@@ -32,7 +32,8 @@
     "gate:library": "node tools/validation/sync/run-f16-production-release-gate.mjs",
     "audit:secrets": "node tools/validation/release/validate-f17-secret-config-audit.mjs",
     "validate:build": "node tools/validation/release/validate-f17-build-package.mjs",
-    "validate:migration": "node tools/validation/release/validate-f17-migration-rollback.mjs"
+    "validate:migration": "node tools/validation/release/validate-f17-migration-rollback.mjs",
+    "evidence:bundle": "node tools/release/build-f17-evidence-bundle.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
