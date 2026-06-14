@@ -463,6 +463,14 @@ function validateChromeExportCoverage(coverage) {
     assert(Object.prototype.hasOwnProperty.call(coverage, field), `chromeExportCoverage missing ${field}`);
   }
   assert(Number(coverage.snapshotTotal) === Number(coverage.bundleChatCount), 'chromeExportCoverage snapshotTotal must equal bundleChatCount');
+  assert(Number(coverage.snapshotSaved) === Number(coverage.bundleSavedCount), 'chromeExportCoverage snapshotSaved must equal bundleSavedCount');
+  assert(Number(coverage.snapshotLinked) === Number(coverage.bundleLinkedCount), 'chromeExportCoverage snapshotLinked must equal bundleLinkedCount');
+  if (Object.prototype.hasOwnProperty.call(coverage, 'snapshotPinned') && Object.prototype.hasOwnProperty.call(coverage, 'bundlePinnedCount')) {
+    assert(Number(coverage.snapshotPinned) === Number(coverage.bundlePinnedCount), 'chromeExportCoverage snapshotPinned must equal bundlePinnedCount');
+  }
+  if (Object.prototype.hasOwnProperty.call(coverage, 'snapshotArchived') && Object.prototype.hasOwnProperty.call(coverage, 'bundleArchivedCount')) {
+    assert(Number(coverage.snapshotArchived) === Number(coverage.bundleArchivedCount), 'chromeExportCoverage snapshotArchived must equal bundleArchivedCount');
+  }
   assert(Number(coverage.unexportableRowCount || 0) === 0, 'chromeExportCoverage unexportable rows must be zero');
   assert(Array.isArray(coverage.blockers), 'chromeExportCoverage blockers must be an array');
   assert(!coverage.blockers.includes('chrome-export-source-coverage-mismatch'), 'chromeExportCoverage must not include coverage mismatch blocker');

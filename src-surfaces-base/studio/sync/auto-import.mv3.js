@@ -319,6 +319,40 @@
     return cleanString(row && (row.chatId || row.id || row.externalId || row.conversationId));
   }
 
+  function addIdentityKey(keys, prefix, value) {
+    var cleaned = cleanString(value);
+    if (!cleaned) return;
+    keys[prefix + ':' + cleaned] = true;
+  }
+
+  function libraryRowIdentityKeys(row) {
+    var keys = Object.create(null);
+    addIdentityKey(keys, 'chat', row && row.chatId);
+    addIdentityKey(keys, 'chat', row && row.id);
+    addIdentityKey(keys, 'chat', row && row.externalId);
+    addIdentityKey(keys, 'chat', row && row.conversationId);
+    addIdentityKey(keys, 'snapshot', row && row.snapshotId);
+    addIdentityKey(keys, 'snapshot', row && row.lastSnapshotId);
+    return Object.keys(keys);
+  }
+
+  function bundleChatIdentityKeys(chat) {
+    var keys = Object.create(null);
+    var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+    addIdentityKey(keys, 'chat', chat && chat.chatId);
+    addIdentityKey(keys, 'chat', index.chatId);
+    addIdentityKey(keys, 'chat', index.id);
+    addIdentityKey(keys, 'chat', index.externalId);
+    addIdentityKey(keys, 'chat', index.conversationId);
+    addIdentityKey(keys, 'snapshot', index.snapshotId);
+    addIdentityKey(keys, 'snapshot', index.lastSnapshotId);
+    (Array.isArray(chat && chat.snapshots) ? chat.snapshots : []).forEach(function (snapshot) {
+      addIdentityKey(keys, 'chat', snapshot && snapshot.chatId);
+      addIdentityKey(keys, 'snapshot', snapshot && (snapshot.snapshotId || snapshot.id));
+    });
+    return Object.keys(keys);
+  }
+
   function isSavedRow(row) {
     var view = rowView(row);
     return view === 'saved' || boolValue(row && (row.saved || row.isSaved));
@@ -456,14 +490,42 @@
     };
   }
 
-  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows) {
+  function cloneJson(value) {
+    if (typeof value === 'undefined') return undefined;
+    try { return JSON.parse(JSON.stringify(value)); }
+    catch (_) { return null; }
+  }
+
+  function projectArchiveChatToLibraryRow(chat, row) {
+    var projected = cloneJson(chat) || {};
+    var minimal = buildMinimalChatFromLibraryRow(row);
+    if (!minimal) return null;
+    var existingIndex = projected.chatIndex && typeof projected.chatIndex === 'object' && !Array.isArray(projected.chatIndex)
+      ? projected.chatIndex : {};
+    projected.chatId = minimal.chatId;
+    projected.chatIndex = Object.assign({}, existingIndex, minimal.chatIndex, {
+      state: Object.assign({}, existingIndex.state || {}, minimal.chatIndex.state),
+      organization: Object.assign({}, existingIndex.organization || {}, minimal.chatIndex.organization),
+      f19LibraryIndexProjectedRow: true,
+      f19MinimalLibraryIndexRow: existingIndex.f19MinimalLibraryIndexRow === true || false
+    });
+    if (!Array.isArray(projected.snapshots)) projected.snapshots = [];
+    return projected;
+  }
+
+  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount) {
     var snapshotCounts = countSnapshotRows(snapshotRows);
     var bundleCounts = countBundleViews(bundleChats);
     var missingTypeCounts = makeMissingRowTypeCounts(missingRows);
     var blockers = [];
     var warnings = [];
     if (addedRows.length > 0) warnings.push(EXPORT_COVERAGE_MINIMAL_ROWS);
-    if (unexportableRows.length > 0 || snapshotCounts.total !== bundleChats.length) {
+    if (unexportableRows.length > 0
+        || snapshotCounts.total !== bundleChats.length
+        || snapshotCounts.saved !== bundleCounts.saved
+        || snapshotCounts.linked !== bundleCounts.linked
+        || snapshotCounts.pinned !== bundleCounts.pinned
+        || snapshotCounts.archived !== bundleCounts.archived) {
       blockers.push(EXPORT_COVERAGE_MISMATCH);
     }
     return {
@@ -483,6 +545,7 @@
       bundleArchivedCount: bundleCounts.archived,
       missingRowCount: missingRows.length,
       addedMinimalRowCount: addedRows.length,
+      droppedArchiveRowCount: Number(droppedArchiveRowCount) || 0,
       unexportableRowCount: unexportableRows.length,
       missingRowTypeCounts: missingTypeCounts,
       blockers: blockers,
@@ -528,40 +591,65 @@
     }
 
     var chatArchive = ensureBundleChatArchive(bundle);
-    var originalChatCount = chatArchive.chats.length;
-    var existingIds = Object.create(null);
-    chatArchive.chats.forEach(function (chat) {
-      var id = bundleChatId(chat);
-      if (id) existingIds[id] = true;
+    var archiveChats = chatArchive.chats.slice();
+    var originalChatCount = archiveChats.length;
+    var archiveByKey = Object.create(null);
+    archiveChats.forEach(function (chat, index) {
+      bundleChatIdentityKeys(chat).forEach(function (key) {
+        if (!archiveByKey[key]) archiveByKey[key] = { chat: chat, index: index };
+      });
     });
 
     var missingRows = [];
     var addedRows = [];
     var unexportableRows = [];
+    var usedArchiveIndexes = Object.create(null);
+    var projectedChats = [];
     rows.forEach(function (row) {
       var id = rowId(row);
       if (!id) {
         unexportableRows.push(row);
         return;
       }
-      if (existingIds[id]) return;
-      missingRows.push(row);
+      var matched = null;
+      var keys = libraryRowIdentityKeys(row);
+      for (var k = 0; k < keys.length; k += 1) {
+        var candidate = archiveByKey[keys[k]];
+        if (candidate && !usedArchiveIndexes[candidate.index]) {
+          matched = candidate;
+          break;
+        }
+      }
+      if (matched) {
+        var projected = projectArchiveChatToLibraryRow(matched.chat, row);
+        if (!projected) {
+          unexportableRows.push(row);
+          return;
+        }
+        projectedChats.push(projected);
+        usedArchiveIndexes[matched.index] = true;
+        return;
+      }
+
       var minimal = buildMinimalChatFromLibraryRow(row);
       if (!minimal) {
         unexportableRows.push(row);
         return;
       }
-      chatArchive.chats.push(minimal);
-      existingIds[id] = true;
+      missingRows.push(row);
+      projectedChats.push(minimal);
       addedRows.push(row);
     });
+
+    var droppedArchiveRowCount = archiveChats.length - Object.keys(usedArchiveIndexes).length;
+    chatArchive.chats = projectedChats;
 
     chatArchive.chatCount = chatArchive.chats.length;
     bundle.summary = bundle.summary && typeof bundle.summary === 'object' && !Array.isArray(bundle.summary)
       ? bundle.summary : {};
     bundle.diagnostics = bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
       ? bundle.diagnostics : {};
-    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows);
+    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount);
     bundle.summary.chatCount = chatArchive.chats.length;
     bundle.summary.f19ChromeExportCoverageOk = coverage.ok === true;
     bundle.diagnostics.chromeExportCoverage = coverage;
