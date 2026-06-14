@@ -254,6 +254,10 @@ function isExplicitTestSentinel(value) {
   return /should[_-]?not[_-]?be[_-]?stored/i.test(value);
 }
 
+function isScannerTaxonomyLiteral(value) {
+  return /^secret-audit-[a-z0-9-]+$/.test(value);
+}
+
 function isServiceRoleJwt(line, token) {
   if (!token) {
     return false;
@@ -345,7 +349,12 @@ function scanTextFile(filePath, text, allowlist, mode = 'source') {
     PATTERNS.GENERIC_SECRET_ASSIGNMENT.lastIndex = 0;
     for (const match of line.matchAll(PATTERNS.GENERIC_SECRET_ASSIGNMENT)) {
       const value = match[1] || '';
-      if (isEnvName(value) || isExplicitTestSentinel(value) || /Deno\.env\.get|process\.env|import\.meta\.env/.test(line)) {
+      if (
+        isEnvName(value)
+        || isExplicitTestSentinel(value)
+        || isScannerTaxonomyLiteral(value)
+        || /Deno\.env\.get|process\.env|import\.meta\.env/.test(line)
+      ) {
         continue;
       }
       addFinding(findings, finding({
