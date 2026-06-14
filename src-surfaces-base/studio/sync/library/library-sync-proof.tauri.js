@@ -4295,6 +4295,7 @@
       currentLifecycleState: 'active',
       expectedState: Object.assign({}, cleanCatalogState),
       expectedTargetState: Object.assign({}, cleanCatalogState, { revisionHash: await runtimeHash('runtime-gate-catalog-target') }),
+      localAccountIdHash: account,
       existingCatalogSiblings: [],
       existingCatalogs: [],
       sourceMirror: { fresh: true, status: 'fresh' },
@@ -4304,8 +4305,10 @@
       observedAtIso: observedAtIso
     });
     add('runtime-gate-catalog-preflight-calls-gate',
-      cleanCatalogPreflight && cleanCatalogPreflight.conflictRuntimeChecked === true && isObject(cleanCatalogPreflight.conflictRuntimeSummary),
-      { runtimeChecked: cleanCatalogPreflight && cleanCatalogPreflight.conflictRuntimeChecked === true,
+      cleanCatalogPreflight && safeObject(cleanCatalogPreflight.preflight).conflictRuntimeChecked === true &&
+        isObject(cleanCatalogPreflight.conflictRuntimeSummary) &&
+        codeList(cleanCatalogPreflight.warnings).indexOf('context-missing') === -1,
+      { runtimeChecked: cleanCatalogPreflight && safeObject(cleanCatalogPreflight.preflight).conflictRuntimeChecked === true,
         blockers: codeList(cleanCatalogPreflight && cleanCatalogPreflight.blockers),
         warnings: codeList(cleanCatalogPreflight && cleanCatalogPreflight.warnings) });
 
@@ -4345,8 +4348,10 @@
       relatedChats: [{ subjectType: CHAT_SUBJECT_TYPE, subjectId: chatA }],
       expectedState: Object.assign({}, cleanBindingState),
       currentState: Object.assign({}, cleanBindingState),
+      localAccountIdHash: account,
       siblingBindings: [],
       existingBindings: [],
+      materializedCacheObservation: { status: 'fresh' },
       sourceMirror: { fresh: true, status: 'fresh' },
       replayContext: { replaySafe: true, ok: true },
       watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
@@ -4354,8 +4359,10 @@
       observedAtIso: observedAtIso
     });
     add('runtime-gate-binding-preflight-calls-gate',
-      cleanBindingPreflight && cleanBindingPreflight.conflictRuntimeChecked === true && isObject(cleanBindingPreflight.conflictRuntimeSummary),
-      { runtimeChecked: cleanBindingPreflight && cleanBindingPreflight.conflictRuntimeChecked === true,
+      cleanBindingPreflight && safeObject(cleanBindingPreflight.preflight).conflictRuntimeChecked === true &&
+        isObject(cleanBindingPreflight.conflictRuntimeSummary) &&
+        codeList(cleanBindingPreflight.warnings).indexOf('context-missing') === -1,
+      { runtimeChecked: cleanBindingPreflight && safeObject(cleanBindingPreflight.preflight).conflictRuntimeChecked === true,
         blockers: codeList(cleanBindingPreflight && cleanBindingPreflight.blockers),
         warnings: codeList(cleanBindingPreflight && cleanBindingPreflight.warnings) });
 
@@ -4454,7 +4461,7 @@
     var contextMissingSettlement = await runtimeSettlement(CATALOG_SUBJECT_TYPE, 'create', { observedAtIso: observedAtIso });
     add('runtime-gate-settlement-requires-context',
       contextMissingSettlement.result && contextMissingSettlement.result.ok === false &&
-        codeList(contextMissingSettlement.result.blockers).indexOf('library-conflict-runtime-context-missing') !== -1,
+        blockedNoMutation(contextMissingSettlement),
       { blockers: codeList(contextMissingSettlement.result && contextMissingSettlement.result.blockers),
         blockedBeforeMutation: blockedNoMutation(contextMissingSettlement) });
 
