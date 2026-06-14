@@ -91,6 +91,21 @@
     unsupportedStorage: 'library-propagation-unsupported-storage-deferred',
     sourceMetadataMissing: 'library-propagation-source-metadata-missing'
   };
+  var F19_SYNC_HARDENING_CODES = {
+    syncFolderMissing: 'sync-folder-missing',
+    permissionDenied: 'permission-denied',
+    transportFileMissing: 'transport-file-missing',
+    transportFileMalformed: 'transport-file-malformed',
+    transportSchemaUnsupported: 'transport-schema-unsupported',
+    transportStale: 'transport-stale',
+    duplicateImportIdempotent: 'duplicate-import-idempotent',
+    localNewerConflict: 'local-newer-conflict',
+    simultaneousUpdateConflict: 'simultaneous-update-conflict',
+    deferredFieldPresent: 'deferred-field-present',
+    unsupportedFieldPresent: 'unsupported-field-present',
+    sourceMetadataMissing: 'source-metadata-missing',
+    parityPeerSnapshotRequired: 'parity-peer-snapshot-required'
+  };
   /* Browser partial-download suffixes to ignore until the rename completes. */
   var IGNORE_SUFFIXES = ['.crdownload', '.partial', '.download', '.tmp'];
 
@@ -555,6 +570,91 @@
     if (normalized && list.indexOf(normalized) === -1) list.push(normalized);
   }
 
+  function normalizeHardeningWarnings(warnings) {
+    var out = Array.isArray(warnings) ? warnings.slice() : [];
+    var legacyDeferred = [
+      CHROME_DESKTOP_DEFERRED_CODES.labels,
+      CHROME_DESKTOP_DEFERRED_CODES.tags,
+      CHROME_DESKTOP_DEFERRED_CODES.projects,
+      CHROME_DESKTOP_DEFERRED_CODES.folderBindings
+    ];
+    for (var i = 0; i < legacyDeferred.length; i += 1) {
+      if (out.indexOf(legacyDeferred[i]) !== -1) addUnique(out, F19_SYNC_HARDENING_CODES.deferredFieldPresent);
+    }
+    if (out.indexOf(CHROME_DESKTOP_DEFERRED_CODES.unsupportedStorage) !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.unsupportedFieldPresent);
+    }
+    if (out.indexOf(CHROME_DESKTOP_DEFERRED_CODES.sourceMetadataMissing) !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.sourceMetadataMissing);
+    }
+    return out;
+  }
+
+  function normalizeHardeningBlockers(blockers) {
+    var out = Array.isArray(blockers) ? blockers.slice() : [];
+    if (out.indexOf('library-propagation-folder-required') !== -1 ||
+        out.indexOf('library-propagation-path-required') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.syncFolderMissing);
+    }
+    if (out.indexOf('library-propagation-read-failed') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportFileMissing);
+    }
+    if (out.indexOf('library-propagation-json-parse-failed') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportFileMalformed);
+    }
+    if (out.indexOf('library-propagation-schema-invalid') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportSchemaUnsupported);
+    }
+    if (out.indexOf('library-propagation-transport-stale') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportStale);
+    }
+    if (out.indexOf('library-propagation-simultaneous-update-conflict') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict);
+    }
+    return out;
+  }
+
+  function parseTimeMs(value) {
+    var clean = String(value || '').trim();
+    if (!clean) return 0;
+    var ms = Date.parse(clean);
+    return isFinite(ms) ? ms : 0;
+  }
+
+  function latestPropagationLedgerEntry(ledger, mode) {
+    var entries = Array.isArray(ledger && ledger.entries) ? ledger.entries : [];
+    var latest = null;
+    var latestMs = 0;
+    for (var i = 0; i < entries.length; i += 1) {
+      var entry = entries[i];
+      if (!entry || String(entry.mode || '') !== mode) continue;
+      var ms = parseTimeMs(entry.bundleExportedAt || entry.importedAt || entry.detectedAt);
+      if (!latest || ms >= latestMs) {
+        latest = entry;
+        latestMs = ms;
+      }
+    }
+    return latest;
+  }
+
+  function classifyIncomingChromeTransport(bundle, ledger, fingerprint) {
+    var blockers = [];
+    var latest = latestPropagationLedgerEntry(ledger, 'f19-chrome-desktop');
+    if (!latest || !bundle || typeof bundle !== 'object') return blockers;
+    var incomingExportedAtMs = parseTimeMs(bundle.exportedAt);
+    var latestExportedAtMs = parseTimeMs(latest.bundleExportedAt);
+    var sameFingerprint = !!(fingerprint && latest.fingerprint && String(fingerprint) === String(latest.fingerprint));
+    if (incomingExportedAtMs && latestExportedAtMs && incomingExportedAtMs < latestExportedAtMs && !sameFingerprint) {
+      addUnique(blockers, 'library-propagation-transport-stale');
+    }
+    var previousExportId = String(bundle.previousExportId || '').trim();
+    var latestExportId = String(latest.exportId || '').trim();
+    if (previousExportId && latestExportId && previousExportId !== latestExportId && !sameFingerprint) {
+      addUnique(blockers, 'library-propagation-simultaneous-update-conflict');
+    }
+    return blockers;
+  }
+
   function hasAnyKeys(value, keys) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     for (var i = 0; i < keys.length; i += 1) {
@@ -772,8 +872,8 @@
 
   function propagationResult(ok, fields) {
     var f = fields && typeof fields === 'object' ? fields : {};
-    var blockers = Array.isArray(f.blockers) ? f.blockers.slice() : [];
-    var warnings = Array.isArray(f.warnings) ? f.warnings.slice() : [];
+    var blockers = normalizeHardeningBlockers(f.blockers);
+    var warnings = normalizeHardeningWarnings(f.warnings);
     var status = String(f.status || (ok ? 'imported' : 'blocked'));
     return {
       schema: PROPAGATION_SCHEMA,
@@ -800,6 +900,15 @@
         fileFingerprintChecked: false,
         mergeOnly: true,
         existingRowsSkipped: true
+      },
+      hardening: {
+        taxonomy: F19_SYNC_HARDENING_CODES,
+        duplicateImportIdempotent: warnings.indexOf(F19_SYNC_HARDENING_CODES.duplicateImportIdempotent) !== -1,
+        staleBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.transportStale) !== -1,
+        simultaneousConflictBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict) !== -1,
+        deferredFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.deferredFieldPresent) !== -1,
+        unsupportedFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.unsupportedFieldPresent) !== -1,
+        sourceMetadataChecked: warnings.indexOf(F19_SYNC_HARDENING_CODES.sourceMetadataMissing) !== -1
       },
       privacy: {
         redacted: true,
@@ -1100,9 +1209,11 @@
     if (existing) {
       return propagationResult(true, {
         status: 'already-imported',
+        warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],
         idempotency: {
           fileFingerprintChecked: true,
           alreadyImported: true,
+          hardeningCode: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
           mergeOnly: true,
           existingRowsSkipped: true,
           protectedDomainFallbackDisabled: true
@@ -1116,6 +1227,29 @@
       return propagationResult(false, {
         status: 'blocked',
         blockers: ['library-propagation-json-parse-failed']
+      });
+    }
+
+    var transportBlockers = classifyIncomingChromeTransport(bundle, ledger, fingerprint);
+    if (transportBlockers.length > 0) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: transportBlockers,
+        warnings: [],
+        sourceSummary: {
+          schema: String(bundle && bundle.schema || ''),
+          direction: 'chrome-to-desktop',
+          transport: CHROME_LATEST_FILE,
+          hasExportId: !!(bundle && bundle.exportId),
+          exportedAt: String(bundle && bundle.exportedAt || '')
+        },
+        idempotency: {
+          fileFingerprintChecked: true,
+          alreadyImported: false,
+          mergeOnly: true,
+          existingRowsSkipped: true,
+          protectedDomainFallbackDisabled: true
+        }
       });
     }
 
@@ -1140,6 +1274,9 @@
         mode: 'f19-chrome-desktop',
         routedVia: 'importChromeLatestBundle',
         bundleExportedAt: (bundle && typeof bundle.exportedAt === 'string') ? bundle.exportedAt : '',
+        exportId: (bundle && bundle.exportId) ? String(bundle.exportId) : '',
+        sequenceNumber: typeof (bundle && bundle.sequenceNumber) === 'number' ? bundle.sequenceNumber : null,
+        previousExportId: (bundle && bundle.previousExportId) ? String(bundle.previousExportId) : '',
         resultSummary: {
           ok: true,
           status: result.status,
@@ -1447,6 +1584,14 @@
         direction: 'chrome-to-desktop',
         supportedFields: CHROME_DESKTOP_SUPPORTED_FIELDS.slice(),
         deferredCodes: Object.assign({}, CHROME_DESKTOP_DEFERRED_CODES),
+        hardeningTaxonomy: Object.assign({}, F19_SYNC_HARDENING_CODES),
+        offlineRestartBehavior: {
+          chromeOffline: 'chrome-latest.json remains pending until Desktop imports it',
+          desktopOffline: 'Desktop ledger replays chrome-latest.json after restart',
+          repeatedImport: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
+          staleTransport: F19_SYNC_HARDENING_CODES.transportStale,
+          simultaneousUpdate: F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict
+        },
         guardedImportAvailable: !!(ingestion && typeof ingestion.importBundle === 'function')
       },
       state: {
@@ -1495,6 +1640,7 @@
     importChromeLatestFromFolder: importChromeLatestFromFolder,
     chromeDesktopPropagationSchema: PROPAGATION_SCHEMA,
     chromeDesktopPropagationVersion: F19_CHROME_DESKTOP_VERSION,
+    chromeDesktopHardeningTaxonomy: Object.assign({}, F19_SYNC_HARDENING_CODES),
     diagnose:        diagnose,
     /* M2d-1b polling watcher + Notify-mode API */
     startWatcher:         startWatcher,

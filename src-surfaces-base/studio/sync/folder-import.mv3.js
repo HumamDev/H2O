@@ -74,6 +74,21 @@
     unsupportedStorage: 'library-propagation-unsupported-storage-deferred',
     sourceMetadataMissing: 'library-propagation-source-metadata-missing'
   };
+  var F19_SYNC_HARDENING_CODES = {
+    syncFolderMissing: 'sync-folder-missing',
+    permissionDenied: 'permission-denied',
+    transportFileMissing: 'transport-file-missing',
+    transportFileMalformed: 'transport-file-malformed',
+    transportSchemaUnsupported: 'transport-schema-unsupported',
+    transportStale: 'transport-stale',
+    duplicateImportIdempotent: 'duplicate-import-idempotent',
+    localNewerConflict: 'local-newer-conflict',
+    simultaneousUpdateConflict: 'simultaneous-update-conflict',
+    deferredFieldPresent: 'deferred-field-present',
+    unsupportedFieldPresent: 'unsupported-field-present',
+    sourceMetadataMissing: 'source-metadata-missing',
+    parityPeerSnapshotRequired: 'parity-peer-snapshot-required'
+  };
 
   var state = {
     installedAt: Date.now(),
@@ -87,6 +102,7 @@
     lastFileLastModified: 0,
     lastFileSize: 0,
     lastAppliedExportId: '',
+    lastAppliedExportedAt: '',
     lastAppliedAt: '',
     lastChecksum: '',
     lastSummarySignature: '',
@@ -246,6 +262,7 @@
     state.connectedAt = cleanString(saved.connectedAt);
     state.folderName = cleanString(saved.folderName) || state.folderName;
     state.lastAppliedExportId = cleanString(saved.lastAppliedExportId);
+    state.lastAppliedExportedAt = cleanString(saved.lastAppliedExportedAt);
     state.lastAppliedAt = cleanString(saved.lastAppliedAt);
     state.lastChecksum = cleanString(saved.lastChecksum);
     state.lastSummarySignature = cleanString(saved.lastSummarySignature);
@@ -271,6 +288,7 @@
       folderName: state.folderName,
       connectedAt: state.connectedAt,
       lastAppliedExportId: state.lastAppliedExportId,
+      lastAppliedExportedAt: state.lastAppliedExportedAt,
       lastAppliedAt: state.lastAppliedAt,
       lastChecksum: state.lastChecksum,
       lastSummarySignature: state.lastSummarySignature,
@@ -435,6 +453,89 @@
   function addUnique(list, code) {
     var normalized = cleanString(code);
     if (normalized && list.indexOf(normalized) === -1) list.push(normalized);
+  }
+
+  function normalizeHardeningWarnings(warnings) {
+    var out = Array.isArray(warnings) ? warnings.slice() : [];
+    var legacyDeferred = [
+      DESKTOP_CHROME_DEFERRED_CODES.labels,
+      DESKTOP_CHROME_DEFERRED_CODES.tags,
+      DESKTOP_CHROME_DEFERRED_CODES.projects,
+      DESKTOP_CHROME_DEFERRED_CODES.folderBindings,
+      DESKTOP_CHROME_DEFERRED_CODES.tombstones,
+      DESKTOP_CHROME_DEFERRED_CODES.applyEvents
+    ];
+    for (var i = 0; i < legacyDeferred.length; i += 1) {
+      if (out.indexOf(legacyDeferred[i]) !== -1) addUnique(out, F19_SYNC_HARDENING_CODES.deferredFieldPresent);
+    }
+    if (out.indexOf(DESKTOP_CHROME_DEFERRED_CODES.unsupportedStorage) !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.unsupportedFieldPresent);
+    }
+    if (out.indexOf(DESKTOP_CHROME_DEFERRED_CODES.sourceMetadataMissing) !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.sourceMetadataMissing);
+    }
+    return out;
+  }
+
+  function normalizeHardeningBlockers(blockers) {
+    var out = Array.isArray(blockers) ? blockers.slice() : [];
+    if (out.indexOf('library-propagation-folder-required') !== -1 ||
+        out.indexOf('sync-folder-not-connected') !== -1 ||
+        out.indexOf('sync-folder-missing') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.syncFolderMissing);
+    }
+    if (out.indexOf('sync-folder-reconnect-required') !== -1 ||
+        out.indexOf('sync-folder-permission-denied') !== -1 ||
+        out.indexOf('permission-denied') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.permissionDenied);
+    }
+    if (out.indexOf('library-propagation-read-failed') !== -1 ||
+        out.indexOf('sync-folder-latest-missing') !== -1 ||
+        out.indexOf('transport-file-missing') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportFileMissing);
+    }
+    if (out.indexOf('library-propagation-json-parse-failed') !== -1 ||
+        out.indexOf('sync-folder-latest-malformed') !== -1 ||
+        out.indexOf('transport-file-malformed') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportFileMalformed);
+    }
+    if (out.indexOf('library-propagation-schema-invalid') !== -1 ||
+        out.indexOf('sync-folder-latest-schema-unsupported') !== -1 ||
+        out.indexOf('transport-schema-unsupported') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportSchemaUnsupported);
+    }
+    if (out.indexOf('library-propagation-transport-stale') !== -1 ||
+        out.indexOf('transport-stale') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.transportStale);
+    }
+    if (out.indexOf('library-propagation-simultaneous-update-conflict') !== -1 ||
+        out.indexOf('simultaneous-update-conflict') !== -1) {
+      addUnique(out, F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict);
+    }
+    return out;
+  }
+
+  function parseTimeMs(value) {
+    var clean = cleanString(value);
+    if (!clean) return 0;
+    var ms = Date.parse(clean);
+    return isFinite(ms) ? ms : 0;
+  }
+
+  function classifyIncomingDesktopTransport(bundle, checksum) {
+    var blockers = [];
+    if (!bundle || typeof bundle !== 'object') return blockers;
+    var incomingExportedAtMs = parseTimeMs(bundle.exportedAt);
+    var lastExportedAtMs = parseTimeMs(state.lastAppliedExportedAt);
+    var sameChecksum = !!(checksum && state.lastChecksum && checksum === state.lastChecksum);
+    if (incomingExportedAtMs && lastExportedAtMs && incomingExportedAtMs < lastExportedAtMs && !sameChecksum) {
+      addUnique(blockers, 'library-propagation-transport-stale');
+    }
+    var previousExportId = cleanString(bundle.previousExportId);
+    if (previousExportId && state.lastAppliedExportId && previousExportId !== state.lastAppliedExportId && !sameChecksum) {
+      addUnique(blockers, 'library-propagation-simultaneous-update-conflict');
+    }
+    return blockers;
   }
 
   function hasAnyKeys(value, keys) {
@@ -650,8 +751,8 @@
 
   function propagationResult(ok, fields) {
     var f = fields && typeof fields === 'object' ? fields : {};
-    var blockers = Array.isArray(f.blockers) ? f.blockers.slice() : [];
-    var warnings = Array.isArray(f.warnings) ? f.warnings.slice() : [];
+    var blockers = normalizeHardeningBlockers(f.blockers);
+    var warnings = normalizeHardeningWarnings(f.warnings);
     var statusValue = cleanString(f.status || (ok ? 'imported' : 'blocked'));
     return {
       schema: PROPAGATION_SCHEMA,
@@ -680,6 +781,15 @@
         fileFingerprintChecked: false,
         mergeOnly: true,
         existingRowsSkipped: true
+      },
+      hardening: {
+        taxonomy: F19_SYNC_HARDENING_CODES,
+        duplicateImportIdempotent: warnings.indexOf(F19_SYNC_HARDENING_CODES.duplicateImportIdempotent) !== -1,
+        staleBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.transportStale) !== -1,
+        simultaneousConflictBlocked: blockers.indexOf(F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict) !== -1,
+        deferredFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.deferredFieldPresent) !== -1,
+        unsupportedFieldsExplicit: warnings.indexOf(F19_SYNC_HARDENING_CODES.unsupportedFieldPresent) !== -1,
+        sourceMetadataChecked: warnings.indexOf(F19_SYNC_HARDENING_CODES.sourceMetadataMissing) !== -1
       },
       privacy: {
         redacted: true,
@@ -1209,6 +1319,7 @@
        * via persistState(), and restored on boot via loadState(). diagnose()
        * wraps status() with Object.assign, so it automatically picks this up. */
       lastAppliedExportId: state.lastAppliedExportId,
+      lastAppliedExportedAt: state.lastAppliedExportedAt,
       lastAppliedAt: state.lastAppliedAt,
       lastChecksum: state.lastChecksum,
       lastSyncStatus: state.lastSyncStatus,
@@ -1311,11 +1422,16 @@
     try {
     await loadStoredHandle();
     if (!state.handle) {
+      state.lastSyncStatus = 'sync-folder-not-connected';
+      state.lastSyncError = '';
+      await persistState({ lastSyncStatus: state.lastSyncStatus, lastSyncError: '' });
       return {
         ok: false,
         phase: PHASE,
         mode: MODE,
         path: LATEST_FILE,
+        blockers: [F19_SYNC_HARDENING_CODES.syncFolderMissing],
+        hardeningCode: F19_SYNC_HARDENING_CODES.syncFolderMissing,
         status: 'sync-folder-not-connected',
       };
     }
@@ -1333,12 +1449,31 @@
         permission: permission,
         path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
         error: state.lastSyncError,
+        blockers: [F19_SYNC_HARDENING_CODES.permissionDenied],
+        hardeningCode: F19_SYNC_HARDENING_CODES.permissionDenied,
         status: 'sync-folder-reconnect-required',
       };
     }
 
     try {
-      var fileHandle = await state.handle.getFileHandle(LATEST_FILE, { create: false });
+      var fileHandle;
+      try {
+        fileHandle = await state.handle.getFileHandle(LATEST_FILE, { create: false });
+      } catch (missingError) {
+        state.lastSyncStatus = 'sync-folder-latest-missing';
+        state.lastSyncError = String(missingError && (missingError.message || missingError));
+        await persistState({ lastSyncStatus: state.lastSyncStatus, lastSyncError: state.lastSyncError });
+        return {
+          ok: false,
+          phase: PHASE,
+          mode: MODE,
+          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+          error: state.lastSyncError,
+          blockers: [F19_SYNC_HARDENING_CODES.transportFileMissing],
+          hardeningCode: F19_SYNC_HARDENING_CODES.transportFileMissing,
+          status: 'sync-folder-latest-missing',
+        };
+      }
       var file = await fileHandle.getFile();
       var text = await file.text();
       var checksumHex = await sha256Hex(text);
@@ -1347,17 +1482,66 @@
       try {
         bundle = JSON.parse(text);
       } catch (parseError) {
-        throw new Error('latest.json parse failed: ' + String(parseError && (parseError.message || parseError)));
+        state.lastSyncStatus = 'sync-folder-latest-malformed';
+        state.lastSyncError = 'latest.json parse failed: ' + String(parseError && (parseError.message || parseError));
+        await persistState({
+          lastSyncStatus: state.lastSyncStatus,
+          lastSyncError: state.lastSyncError,
+          lastChecksum: checksum,
+          lastFileLastModified: numberOrZero(file.lastModified),
+          lastFileSize: numberOrZero(file.size),
+        });
+        return {
+          ok: false,
+          phase: PHASE,
+          mode: MODE,
+          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+          error: state.lastSyncError,
+          checksum: checksum,
+          fileLastModified: numberOrZero(file.lastModified),
+          fileSize: numberOrZero(file.size),
+          blockers: [F19_SYNC_HARDENING_CODES.transportFileMalformed],
+          hardeningCode: F19_SYNC_HARDENING_CODES.transportFileMalformed,
+          status: 'sync-folder-latest-malformed',
+        };
       }
-      validateBundle(bundle);
+      try {
+        validateBundle(bundle);
+      } catch (schemaError) {
+        state.lastSyncStatus = 'sync-folder-latest-schema-unsupported';
+        state.lastSyncError = String(schemaError && (schemaError.message || schemaError));
+        await persistState({
+          lastSyncStatus: state.lastSyncStatus,
+          lastSyncError: state.lastSyncError,
+          lastChecksum: checksum,
+          lastFileLastModified: numberOrZero(file.lastModified),
+          lastFileSize: numberOrZero(file.size),
+        });
+        return {
+          ok: false,
+          phase: PHASE,
+          mode: MODE,
+          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+          error: state.lastSyncError,
+          schema: cleanString(bundle && bundle.schema),
+          checksum: checksum,
+          fileLastModified: numberOrZero(file.lastModified),
+          fileSize: numberOrZero(file.size),
+          blockers: [F19_SYNC_HARDENING_CODES.transportSchemaUnsupported],
+          hardeningCode: F19_SYNC_HARDENING_CODES.transportSchemaUnsupported,
+          status: 'sync-folder-latest-schema-unsupported',
+        };
+      }
       var signature = summarySignature(bundle);
       if (opts.autoSync && checksum && state.lastChecksum && state.lastChecksum === checksum) {
         var alreadyRowsAfter = await refreshLibraryIndex('sync-folder-auto-skip');
         var alreadyPropagation = propagationResult(true, {
           status: 'already-imported',
+          warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],
           idempotency: {
             fileFingerprintChecked: true,
             alreadyImported: true,
+            hardeningCode: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
             mergeOnly: true,
             existingRowsSkipped: true,
             protectedDomainFallbackDisabled: true
@@ -1398,6 +1582,60 @@
           backgroundAutoImport: false,
           chromeWritesSyncFolder: false,
           status: 'auto-sync-latest-already-applied',
+        };
+      }
+
+      var transportBlockers = classifyIncomingDesktopTransport(bundle, checksum);
+      if (transportBlockers.length > 0) {
+        var blockedPropagation = propagationResult(false, {
+          status: 'blocked',
+          blockers: transportBlockers,
+          sourceSummary: {
+            schema: cleanString(bundle && bundle.schema),
+            direction: 'desktop-to-chrome',
+            transport: LATEST_FILE,
+            hasExportId: !!(bundle && bundle.exportId),
+            exportedAt: cleanString(bundle && bundle.exportedAt)
+          },
+          idempotency: {
+            fileFingerprintChecked: true,
+            alreadyImported: false,
+            mergeOnly: true,
+            existingRowsSkipped: true,
+            protectedDomainFallbackDisabled: true
+          }
+        });
+        state.lastFileName = LATEST_FILE;
+        state.lastFileLastModified = numberOrZero(file.lastModified);
+        state.lastFileSize = numberOrZero(file.size);
+        state.lastSummarySignature = signature;
+        state.lastSyncStatus = 'sync-folder-import-blocked';
+        state.lastSyncError = cleanString(blockedPropagation.blockers.join(','));
+        state.lastSyncResult = blockedPropagation;
+        await persistState({
+          lastSyncStatus: state.lastSyncStatus,
+          lastSyncError: state.lastSyncError,
+          lastFileLastModified: state.lastFileLastModified,
+          lastFileSize: state.lastFileSize,
+          lastSummarySignature: state.lastSummarySignature,
+        });
+        return {
+          ok: false,
+          phase: PHASE,
+          mode: MODE,
+          path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+          schema: bundle.schema,
+          exportedAt: cleanString(bundle.exportedAt),
+          checksum: checksum,
+          fileLastModified: state.lastFileLastModified,
+          fileSize: state.lastFileSize,
+          summarySignature: signature,
+          propagation: blockedPropagation,
+          durationMs: Date.now() - startedAt,
+          autoSync: !!opts.autoSync,
+          backgroundAutoImport: false,
+          chromeWritesSyncFolder: false,
+          status: state.lastSyncStatus,
         };
       }
 
@@ -1448,6 +1686,7 @@
       state.lastFileLastModified = numberOrZero(file.lastModified);
       state.lastFileSize = numberOrZero(file.size);
       state.lastAppliedExportId = cleanString(bundle.exportId || '');
+      state.lastAppliedExportedAt = cleanString(bundle.exportedAt || '');
       state.lastAppliedAt = nowIso();
       state.lastChecksum = checksum || cleanString(bundle.checksum);
       state.lastSummarySignature = signature;
@@ -1456,6 +1695,7 @@
       state.lastSyncResult = propagation;
       await persistState({
         lastAppliedExportId: state.lastAppliedExportId,
+        lastAppliedExportedAt: state.lastAppliedExportedAt,
         lastAppliedAt: state.lastAppliedAt,
         lastChecksum: state.lastChecksum,
         lastSummarySignature: signature,
@@ -1541,6 +1781,15 @@
         direction: 'desktop-to-chrome',
         supportedFields: DESKTOP_CHROME_SUPPORTED_FIELDS.slice(),
         deferredCodes: Object.assign({}, DESKTOP_CHROME_DEFERRED_CODES),
+        hardeningTaxonomy: Object.assign({}, F19_SYNC_HARDENING_CODES),
+        offlineRestartBehavior: {
+          desktopOffline: 'latest.json remains pending until Chrome imports it',
+          chromeOffline: 'Chrome imports latest.json after restart or focus when permission remains granted',
+          repeatedImport: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
+          staleTransport: F19_SYNC_HARDENING_CODES.transportStale,
+          simultaneousUpdate: F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict,
+          missingPermission: F19_SYNC_HARDENING_CODES.permissionDenied
+        },
         guardedImportAvailable: true
       },
       automaticPolling: false,
@@ -1566,6 +1815,7 @@
     importLatestBundle: importLatestBundle,
     desktopChromePropagationSchema: PROPAGATION_SCHEMA,
     desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,
+    desktopChromeHardeningTaxonomy: Object.assign({}, F19_SYNC_HARDENING_CODES),
     enableAutoSync: enableAutoSync,
     disableAutoSync: disableAutoSync,
     isAutoSyncEnabled: isAutoSyncEnabled,
