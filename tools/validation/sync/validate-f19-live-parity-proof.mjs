@@ -15,10 +15,13 @@ const paritySchema = 'h2o.studio.sync.chrome-desktop-library-parity.v1';
 const snapshotSchema = 'h2o.studio.sync.library-parity-snapshot.v1';
 
 const contractFile = 'docs/systems/cross-platform/f19.3-live-chrome-desktop-parity-proof-contract.md';
+const closureContractFile = 'docs/systems/cross-platform/f19.5-premium-sync-closure-evidence.md';
+const hardeningContractFile = 'docs/systems/cross-platform/f19.4-chrome-desktop-sync-hardening-contract.md';
 const parityModuleFile = 'src-surfaces-base/studio/sync/library/library-chrome-desktop-parity-diagnostic.js';
 const chromeDesktopPropagationValidator = 'tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs';
 const desktopChromePropagationValidator = 'tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs';
 const parityValidator = 'tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs';
+const hardeningValidator = 'tools/validation/sync/validate-f19-sync-hardening.mjs';
 
 const supportedFields = [
   'total',
@@ -73,6 +76,22 @@ const requiredDeferredWarnings = [
   'library-propagation-tombstones-deferred',
   'library-propagation-apply-events-deferred',
   'library-propagation-unsupported-storage-deferred'
+];
+
+const requiredHardeningCodes = [
+  'sync-folder-missing',
+  'permission-denied',
+  'transport-file-missing',
+  'transport-file-malformed',
+  'transport-schema-unsupported',
+  'transport-stale',
+  'duplicate-import-idempotent',
+  'local-newer-conflict',
+  'simultaneous-update-conflict',
+  'deferred-field-present',
+  'unsupported-field-present',
+  'source-metadata-missing',
+  'parity-peer-snapshot-required'
 ];
 
 const forbiddenNeedles = [
@@ -250,6 +269,29 @@ function propagationResult(direction) {
       rawTitlesReturned: false,
       rawContentReturned: false
     },
+    hardening: {
+      taxonomy: {
+        syncFolderMissing: 'sync-folder-missing',
+        permissionDenied: 'permission-denied',
+        transportFileMissing: 'transport-file-missing',
+        transportFileMalformed: 'transport-file-malformed',
+        transportSchemaUnsupported: 'transport-schema-unsupported',
+        transportStale: 'transport-stale',
+        duplicateImportIdempotent: 'duplicate-import-idempotent',
+        localNewerConflict: 'local-newer-conflict',
+        simultaneousUpdateConflict: 'simultaneous-update-conflict',
+        deferredFieldPresent: 'deferred-field-present',
+        unsupportedFieldPresent: 'unsupported-field-present',
+        sourceMetadataMissing: 'source-metadata-missing',
+        parityPeerSnapshotRequired: 'parity-peer-snapshot-required'
+      },
+      duplicateImportIdempotent: false,
+      staleBlocked: false,
+      simultaneousConflictBlocked: false,
+      deferredFieldsExplicit: true,
+      unsupportedFieldsExplicit: warnings.includes('library-propagation-unsupported-storage-deferred'),
+      sourceMetadataChecked: false
+    },
     sideEffects: {
       chromeStorageWritten: false,
       desktopSqliteWritten: false,
@@ -351,6 +393,10 @@ function validatePropagationResult(result, direction) {
   assert(result.direction === direction, `${direction}: direction mismatch`);
   assert(result.ok === true || result.status === 'already-imported', `${direction}: propagation must pass or be idempotent`);
   assert(Array.isArray(result.warnings), `${direction}: warnings must be array`);
+  assert(result.hardening && typeof result.hardening === 'object', `${direction}: F19.4 hardening summary missing`);
+  for (const code of requiredHardeningCodes) {
+    assert(result.hardening?.taxonomy && Object.values(result.hardening.taxonomy).includes(code), `${direction}: hardening taxonomy missing ${code}`);
+  }
   assert(result.privacy && result.privacy.redacted === true, `${direction}: propagation privacy redaction missing`);
   assert(result.privacy && result.privacy.rawIdsReturned === false, `${direction}: propagation raw ID flag unsafe`);
   assert(result.privacy && result.privacy.rawTitlesReturned === false, `${direction}: propagation raw title flag unsafe`);
@@ -402,10 +448,13 @@ function validateProofObject(proof, options = {}) {
 function validateStaticFiles() {
   for (const file of [
     contractFile,
+    closureContractFile,
+    hardeningContractFile,
     parityModuleFile,
     parityValidator,
     chromeDesktopPropagationValidator,
-    desktopChromePropagationValidator
+    desktopChromePropagationValidator,
+    hardeningValidator
   ]) assertExists(file);
 
   if (failures.length) return;
@@ -419,6 +468,14 @@ function validateStaticFiles() {
   assertContains(contractFile, 'chat-folder bindings', 'deferred chat-folder bindings');
   assertContains(contractFile, 'tombstones', 'deferred tombstones');
   assertContains(contractFile, 'sync apply events', 'deferred apply events');
+  assertContains(closureContractFile, proofSchema, 'F19.5 closure proof schema');
+  assertContains(closureContractFile, 'Premium Sync v1 supported fields complete', 'F19.5 supported-fields closure phrase');
+  assertContains(closureContractFile, 'Premium Sync complete', 'F19.5 full closure phrase');
+  assertContains(closureContractFile, 'node tools/validation/sync/validate-f19-live-parity-proof.mjs --proof', 'F19.5 proof validation command');
+  assertContains(hardeningContractFile, 'transport-stale', 'F19.4 stale taxonomy');
+  assertContains(hardeningContractFile, 'permission-denied', 'F19.4 permission taxonomy');
+  assertContains(hardeningValidator, 'h2o.studio.sync.chrome-desktop-hardening-validation.v1', 'F19.4 validator schema');
+  for (const code of requiredHardeningCodes) assertContains(hardeningContractFile, code, `F19.4 taxonomy ${code}`);
   assertContains(parityModuleFile, 'captureSnapshot', 'captureSnapshot API');
   assertContains(parityModuleFile, 'runDiagnostic', 'runDiagnostic API');
   assertContains(parityModuleFile, 'cache-only-read-only', 'read-only marker');
